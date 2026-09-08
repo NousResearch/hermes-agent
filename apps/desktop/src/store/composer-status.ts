@@ -27,6 +27,10 @@ export type StatusItemState = 'done' | 'failed' | 'running'
 export type StatusItemType = 'background' | 'goal' | 'subagent' | 'todo'
 
 export interface ComposerStatusItem {
+  /** background: a completion or first watch notification is still awaited. */
+  awaitingNotification?: boolean
+  /** background: a notification obligation remains unsettled, including after exit. */
+  notificationPending?: boolean
   /** background: non-zero exit shown inline when failed. */
   exitCode?: number
   /** subagent: active tool label shown on the right. */
@@ -52,7 +56,14 @@ export interface ComposerStatusItem {
 // registry (`terminal(background=true)` spawns) via `process.list`.
 export const $backgroundStatusBySession = atom<Record<string, ComposerStatusItem[]>>({})
 
-// Stored session ids that have at least one RUNNING background process. The
+export const isAwaitedBackgroundWork = (item: ComposerStatusItem): boolean =>
+  item.type === 'background' &&
+  (item.notificationPending === true || (item.state === 'running' && item.awaitingNotification === true))
+
+const needsBackgroundRefresh = (item: ComposerStatusItem): boolean =>
+  item.state === 'running' || item.notificationPending === true
+
+// Stored session ids with awaited background work or an undelivered result. The
 // sidebar row reads this for a hollow dot — distinct from the filled dot of an
 // active LLM turn — so the user can tell at a glance "this session has
 // something chugging along in the background" even when the turn is idle.
@@ -71,7 +82,7 @@ export const $backgroundRunningSessionIds = computed(
     const ids = new Set<string>()
 
     for (const [runtimeId, items] of Object.entries(bg)) {
-      if (!items.some(i => i.state === 'running')) {
+      if (!items.some(isAwaitedBackgroundWork)) {
         continue
       }
 
@@ -99,12 +110,12 @@ const stopBackgroundPolling = () => {
 }
 
 const offBackgroundPolling = $backgroundStatusBySession.listen(background => {
-  if (!Object.values(background).some(items => items.some(item => item.state === 'running'))) {
+  if (!Object.values(background).some(items => items.some(needsBackgroundRefresh))) {
     stopBackgroundPolling()
   } else if (backgroundPollTimer === undefined) {
     backgroundPollTimer = setInterval(() => {
       for (const [sid, items] of Object.entries($backgroundStatusBySession.get())) {
-        if (!isSessionGone(sid) && items.some(item => item.state === 'running') && !backgroundRefreshes.has(sid)) {
+        if (!isSessionGone(sid) && items.some(needsBackgroundRefresh) && !backgroundRefreshes.has(sid)) {
           void refreshBackgroundProcesses(sid)
         }
       }
@@ -220,6 +231,8 @@ const goalToItem = (goal: { detail?: string; status: GoalStatus; title: string }
 // and a fully-unchanged map keeps its previous reference so `computed` skips
 // the notify entirely ("preserve reference identity on no-ops").
 const sameStatusItem = (a: ComposerStatusItem, b: ComposerStatusItem) =>
+  a.awaitingNotification === b.awaitingNotification &&
+  a.notificationPending === b.notificationPending &&
   a.id === b.id &&
   a.type === b.type &&
   a.state === b.state &&
@@ -326,9 +339,13 @@ const writeBackground = (sid: string, items: ComposerStatusItem[]) => {
 interface GatewayProcessEntry {
   command?: string
   exit_code?: number
+  notify_on_complete?: boolean
+  notification_pending?: boolean
   output_tail?: string
   session_id?: string
   status?: string
+  watch_hit?: boolean
+  watch_patterns?: string[]
 }
 
 const toBackgroundItem = (proc: GatewayProcessEntry): ComposerStatusItem => {
@@ -336,6 +353,10 @@ const toBackgroundItem = (proc: GatewayProcessEntry): ComposerStatusItem => {
   const exitCode = typeof proc.exit_code === 'number' ? proc.exit_code : undefined
 
   return {
+    // Notification metadata is the explicit completion contract. A silent
+    // server may stay in the process panel without holding the task open.
+    awaitingNotification: proc.notify_on_complete === true || (!!proc.watch_patterns?.length && !proc.watch_hit),
+    notificationPending: proc.notification_pending === true,
     exitCode,
     id: proc.session_id ?? '',
     output: proc.output_tail || undefined,
@@ -346,7 +367,12 @@ const toBackgroundItem = (proc: GatewayProcessEntry): ComposerStatusItem => {
 }
 
 const sameItem = (a: ComposerStatusItem, b: ComposerStatusItem) =>
-  a.state === b.state && a.title === b.title && a.output === b.output && a.exitCode === b.exitCode
+  a.awaitingNotification === b.awaitingNotification &&
+  a.notificationPending === b.notificationPending &&
+  a.state === b.state &&
+  a.title === b.title &&
+  a.output === b.output &&
+  a.exitCode === b.exitCode
 
 /**
  * Layout-stable sync of the registry snapshot into the store: existing rows
@@ -413,7 +439,7 @@ function applyBackgroundProcesses(sid: string, procs: GatewayProcessEntry[]) {
   // it for anything running again or gone from the snapshot.
   const finishedDelay = new Map(
     next
-      .filter(item => item.state !== 'running')
+      .filter(item => item.state !== 'running' && !item.notificationPending)
       .map(item => [item.id, item.state === 'failed' ? FAILURE_LINGER_MS : SUCCESS_LINGER_MS])
   )
 

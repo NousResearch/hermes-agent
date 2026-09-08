@@ -339,6 +339,11 @@ class ProcessSession:
     # session was closed at a user boundary (/new) instead of injecting into the NEW one.
     parent_session_id: str = ""
     notify_on_complete: bool = False            # Queue agent notification on exit
+    _completion_notification_settled: bool = field(default=False, repr=False)
+    _pending_watch_notifications: set = field(default_factory=set, repr=False)
+    # Never take the registry lock while holding the output lock: exit retention
+    # takes them in the opposite order. Notification state has its own short lock.
+    _notification_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
     watch_patterns: List[str] = field(default_factory=list)
     _watch_hits: int = field(default=0, repr=False)          # total matches delivered
     _watch_suppressed: int = field(default=0, repr=False)    # matches dropped by rate limit
@@ -494,6 +499,13 @@ class ProcessRegistry(ProcessCheckpointMixin):
             session._watch_strike_candidate = False
             # Emit and start a new cooldown window.
             session._watch_cooldown_until = now + WATCH_MIN_INTERVAL_SECONDS
+            # Reserve before publishing the hit: the first hit fulfills the wait
+            # barrier, but its follow-up has not even reached the queue yet.
+            notification = {
+                **self._watch_event_base(session),
+                "type": "watch_match",
+                "pattern": matched_pattern,
+            }
             session._watch_hits += 1
             suppressed = session._watch_suppressed
             session._watch_suppressed = 0
@@ -506,15 +518,11 @@ class ProcessRegistry(ProcessCheckpointMixin):
         if len(output) > 2000:
             output = output[:2000] + "\n...(truncated)"
         if self._global_watch_admit(now):
-            notification = {
-                **self._watch_event_base(session),
-                "type": "watch_match",
-                "pattern": matched_pattern,
-                "output": output,
-                "suppressed": suppressed,
-            }
+            notification.update(output=output, suppressed=suppressed)
             _redact_process_result(notification)
             self.completion_queue.put(notification)
+        else:
+            self.settle_notification(notification)
         # Even when the breaker drops the final match, still explain the silence.
         if lifetime_exhausted:
             self._emit_watch_disabled(
@@ -533,10 +541,13 @@ class ProcessRegistry(ProcessCheckpointMixin):
                 f"exactly one notification when the process exits."),
         })
 
-    @staticmethod
-    def _watch_event_base(session: ProcessSession) -> dict:
-        """Session identity + watcher routing fields shared by every watch event."""
+    def _watch_event_base(self, session: ProcessSession) -> dict:
+        """Reserve a distinct notice before publishing its trigger or queue entry."""
+        notification_id = uuid.uuid4().hex
+        with session._notification_lock:
+            session._pending_watch_notifications.add(notification_id)
         return {
+            "notification_id": notification_id,
             "session_id": session.id,
             "session_key": session.session_key,
             "task_id": session.task_id,
@@ -746,6 +757,9 @@ class ProcessRegistry(ProcessCheckpointMixin):
             id=f"proc_{uuid.uuid4().hex[:12]}", command=command, task_id=task_id,
             owner_task_id=owner_task_id or task_id, session_key=session_key, cwd=cwd,
             parent_session_id=get_session_env("HERMES_SESSION_ID", ""),
+            **({f"watcher_{key}": get_session_env(f"HERMES_SESSION_{key.upper()}", "")
+                for key in _WATCHER_ROUTE_KEYS}
+               if extra.get("notify_on_complete") or extra.get("watch_patterns") else {}),
             started_at=time.time(), **extra)
 
     @staticmethod
@@ -827,7 +841,8 @@ class ProcessRegistry(ProcessCheckpointMixin):
 
     def spawn_local(
         self, command: str, cwd: str = None, task_id: str = "", session_key: str = "",
-        env_vars: dict = None, use_pty: bool = False, owner_task_id: str = "") -> ProcessSession:
+        env_vars: dict = None, use_pty: bool = False, owner_task_id: str = "", *,
+        notify_on_complete: bool = False, watch_patterns: Optional[List[str]] = None) -> ProcessSession:
         """Spawn a background process locally (TERMINAL_ENV=local; other backends use
         spawn_via_env()). ``use_pty`` requests a pseudo-terminal via ptyprocess/pywinpty
         for interactive CLIs, falling back to a plain pipe when unavailable or failing."""
@@ -838,7 +853,9 @@ class ProcessRegistry(ProcessCheckpointMixin):
         from tools.terminal_tool_sudo import _rewrite_compound_background as _rewrite_bg
 
         safe_command = _rewrite_bg(command)
-        session = self._new_session(command, task_id, owner_task_id, session_key, _resolve_safe_cwd(cwd or os.getcwd()))
+        session = self._new_session(
+            command, task_id, owner_task_id, session_key, _resolve_safe_cwd(cwd or os.getcwd()),
+            notify_on_complete=notify_on_complete, watch_patterns=list(watch_patterns or []))
         pty_scope_attempted = False
         if use_pty:
             try:
@@ -922,12 +939,15 @@ class ProcessRegistry(ProcessCheckpointMixin):
 
     def spawn_via_env(
         self, env: Any, command: str, cwd: str = None, task_id: str = "", session_key: str = "",
-        timeout: int = 10, owner_task_id: str = "") -> ProcessSession:
+        timeout: int = 10, owner_task_id: str = "", *,
+        notify_on_complete: bool = False, watch_patterns: Optional[List[str]] = None) -> ProcessSession:
         """Spawn a background process inside a non-local backend's sandbox.
         The command is wrapped to capture its in-sandbox PID and redirect output to a
         log file that later execute() calls poll. No live pipe or stdin, but it runs in
         the correct sandbox context."""
-        session = self._new_session(command, task_id, owner_task_id, session_key, cwd, env_ref=env, pid_scope="sandbox")
+        session = self._new_session(
+            command, task_id, owner_task_id, session_key, cwd, env_ref=env, pid_scope="sandbox",
+            notify_on_complete=notify_on_complete, watch_patterns=list(watch_patterns or []))
         temp_dir = self._env_temp_dir(env)
         log_path, pid_path, exit_path = (f"{temp_dir}/hermes_bg_{session.id}.{ext}" for ext in ("log", "pid", "exit"))
         q = shlex.quote
@@ -1219,6 +1239,36 @@ class ProcessRegistry(ProcessCheckpointMixin):
 
     # ----- Query Methods -----
 
+    def _notification_pending(self, session: ProcessSession) -> bool:
+        # Arm with notify_on_complete, before any observer can expose exit. Queue
+        # removal is not delivery: a consumer may still be waiting for an idle turn.
+        # Historical read-only receipts have no notification to replay.
+        if session.id not in self._running and session.id not in self._finished:
+            return False
+        with session._notification_lock:
+            return bool(session._pending_watch_notifications) or (
+                session.notify_on_complete and not session._completion_notification_settled
+                and session.id not in self._completion_consumed)
+
+    def settle_notification(self, event: dict) -> None:
+        """Acknowledge accepted delivery or a deliberate drop, never a dequeue/requeue.
+
+        Separate from output consumption: delivering a notice must not suppress
+        existing messaging watchers or erase a child's unread completion receipt.
+        """
+        event_type = event.get("type", "completion")
+        if event_type not in {"completion", "watch_match", "watch_disabled"}:
+            return
+        with self._lock:
+            session_id = event.get("session_id", "")
+            session = self._running.get(session_id) or self._finished.get(session_id)
+            if session is not None:
+                with session._notification_lock:
+                    if event_type == "completion":
+                        session._completion_notification_settled = True
+                    else:
+                        session._pending_watch_notifications.discard(event.get("notification_id"))
+
     def is_completion_consumed(self, session_id: str) -> bool:
         """Check if a completion notification was already consumed via wait/log."""
         return session_id in self._completion_consumed
@@ -1386,6 +1436,7 @@ class ProcessRegistry(ProcessCheckpointMixin):
             _evt_sid = evt.get("session_id", "")
             if evt.get("type") == "completion" and self._drain_should_skip(
                 _evt_sid, skip_poll_observed=skip_poll_observed):
+                self.settle_notification(evt)
                 continue
             # Subagent-owned process notifications are suppressed by default — the
             # child's delegation result is the deliverable. Judge ownership on
@@ -1403,9 +1454,12 @@ class ProcessRegistry(ProcessCheckpointMixin):
                         "(delegation.surface_child_process_notifications=false): "
                         "type=%s session_id=%s task_id=%s",
                         evt.get("type", "completion"), _evt_sid, _evt_task_id)
+                    self.settle_notification(evt)
                     continue
             if text := format_process_notification(evt):
                 results.append((evt, text))
+            else:
+                self.settle_notification(evt)
         for evt in requeue:
             self.completion_queue.put(evt)
         return results
@@ -1840,6 +1894,7 @@ class ProcessRegistry(ProcessCheckpointMixin):
                 entry["exit_code"] = s.exit_code
             if s.detached:
                 entry["detached"] = True
+            entry["notification_pending"] = self._notification_pending(s)
             result.append(entry)
         return result
 
@@ -1936,9 +1991,10 @@ class ProcessRegistry(ProcessCheckpointMixin):
         """Drop expired finished sessions, then the oldest survivor while over
         MAX_PROCESSES. Must hold _lock."""
         now = time.time()
-        expired = [sid for sid, s in self._finished.items() if (now - s.started_at) > FINISHED_TTL_SECONDS]
+        eligible = {sid: s for sid, s in self._finished.items() if not self._notification_pending(s)}
+        expired = [sid for sid, s in eligible.items() if (now - s.started_at) > FINISHED_TTL_SECONDS]
         over_cap = len(self._running) + len(self._finished) - len(expired) >= MAX_PROCESSES
-        if over_cap and (survivors := [sid for sid in self._finished if sid not in expired]):
+        if over_cap and (survivors := [sid for sid in eligible if sid not in expired]):
             expired.append(min(survivors, key=lambda sid: self._finished[sid].started_at))
         for sid in expired:
             del self._finished[sid]

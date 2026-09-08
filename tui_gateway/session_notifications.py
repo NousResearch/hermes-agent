@@ -390,6 +390,9 @@ def _notif_dispatch_event(sid: str, session: dict, evt: dict, text: str) -> None
         _notif_submit(f"__notif__{int(time.time() * 1000)}", sid, session, text, "notification poller dispatch failed", **kwargs)
     except Exception:
         release_event_delivery(evt, claim)
+        # Process notices are non-durable and this failure path drops them.
+        from tools.process_registry import process_registry
+        process_registry.settle_notification(evt)
         return
     complete_event_delivery(evt, claim)
 
@@ -417,13 +420,21 @@ def _notif_handle_event(sid, session, evt, emitted, registry, fmt, deferred, com
                 evt_type, origin, key, sid)
         elif is_delegation:
             deferred.append(evt)
+            return True  # retained for resume, not accepted or dropped
         else:
             logger.debug("Dropping unowned %s notification during shutdown drain (origin=%r key=%r)", evt_type, origin, key)
+        registry.settle_notification(evt)
+        return True
+    owner = str(evt.get("owner_task_id") or evt.get("task_id") or "")
+    if not is_delegation and owner.startswith("sa-") and not registry._surface_child_process_notifications():
+        registry.settle_notification(evt)
         return True
     if evt_type == "completion" and registry.is_completion_consumed(evt.get("session_id", "")):
+        registry.settle_notification(evt)
         return True
     text = fmt(evt)
     if not text:
+        registry.settle_notification(evt)
         return True
     # Emit once per dedup key: a re-queued completion would otherwise re-emit every 0.5s while the session is busy,
     # while distinct watch_match events from one process must stay visible.
@@ -470,6 +481,7 @@ def _notif_dispatch_completions(sid, session, notifications, registry, deferred)
     except Exception:
         for event, _text, claim in claimed:
             release_event_delivery(event, claim)
+            registry.settle_notification(event)
         return
     for event, _text, claim in claimed:
         complete_event_delivery(event, claim)

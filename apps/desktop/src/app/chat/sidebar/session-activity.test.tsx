@@ -23,7 +23,13 @@ afterEach(() => {
   resetSidebarView()
 })
 
-const background = { id: 'process', type: 'background' as const, state: 'running' as const, title: '# Watching CI' }
+const background = {
+  id: 'process',
+  type: 'background' as const,
+  state: 'running' as const,
+  title: '# Watching CI',
+  awaitingNotification: true
+}
 
 function seedBackground() {
   publishSessionState('runtime', createClientSessionState('stored'))
@@ -91,7 +97,7 @@ describe('sidebar activity display', () => {
     }
   )
 
-  it('uses the live tool context and gives a blocking question priority', () => {
+  it('does not label an active tool or a blocking question as monitoring', () => {
     const state = {
       ...createClientSessionState('stored'),
       busy: true,
@@ -115,13 +121,13 @@ describe('sidebar activity display', () => {
     publishSessionState('runtime', state)
     toggleSidebarRowMeta('activity')
     render(<SidebarSessionActivity sessionId="stored" />)
-    expect(screen.getByRole('img', { name: 'Watching CI on the new PR' })).toBeTruthy()
+    expect(screen.queryByRole('img')).toBeNull()
     act(() => publishSessionState('runtime', { ...state, needsInput: true }))
-    expect(screen.getByRole('img', { name: 'Waiting for your answer' })).toBeTruthy()
+    expect(screen.queryByRole('img')).toBeNull()
     expect(screen.queryByRole('img', { name: 'Watching CI on the new PR' })).toBeNull()
   })
 
-  it('falls back to the real tool title when no human context was reported', () => {
+  it('leaves ordinary tool use to the existing working indication', () => {
     publishSessionState('runtime', {
       ...createClientSessionState('stored'),
       busy: true,
@@ -143,10 +149,10 @@ describe('sidebar activity display', () => {
     })
     toggleSidebarRowMeta('activity')
     render(<SidebarSessionActivity sessionId="stored" />)
-    expect(screen.getByRole('img', { name: 'Reading README.md' })).toBeTruthy()
+    expect(screen.queryByRole('img')).toBeNull()
   })
 
-  it('uses an explicit command comment instead of the flattened shell preview', () => {
+  it('does not classify a foreground tool as monitoring from its command comment', () => {
     publishSessionState('runtime', {
       ...createClientSessionState('stored'),
       busy: true,
@@ -171,7 +177,7 @@ describe('sidebar activity display', () => {
     })
     toggleSidebarRowMeta('activity')
     render(<SidebarSessionActivity sessionId="stored" />)
-    expect(screen.getByRole('img', { name: 'Watching CI' })).toBeTruthy()
+    expect(screen.queryByRole('img')).toBeNull()
     expect(screen.queryByText(/gh pr checks/)).toBeNull()
   })
 
@@ -190,7 +196,7 @@ describe('sidebar activity display', () => {
     })
     const show = await screen.findByRole('menuitem', { name: 'Show' })
     fireEvent.keyDown(show, { key: 'ArrowRight' })
-    const activity = await screen.findByRole('menuitemcheckbox', { name: 'Activity' })
+    const activity = await screen.findByRole('menuitemcheckbox', { name: 'Monitoring' })
     fireEvent.click(activity)
     expect($sidebarRowMeta.get()).toContain('activity')
     expect(activity.getAttribute('aria-checked')).toBe('true')

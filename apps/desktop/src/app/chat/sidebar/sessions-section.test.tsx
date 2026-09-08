@@ -1,30 +1,35 @@
-import { cleanup, render } from '@testing-library/react'
+import { act, cleanup, render, screen } from '@testing-library/react'
 import type * as React from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { SessionInfo } from '@/hermes'
+import { createClientSessionState } from '@/lib/chat-runtime'
+import { $backgroundStatusBySession } from '@/store/composer-status'
+import { clearAllSessionStates, publishSessionState } from '@/store/session-states'
 
 import { SidebarSessionsSection, VIRTUALIZE_THRESHOLD } from './sessions-section'
 import type { VirtualSessionListProps } from './virtual-session-list'
 
 afterEach(cleanup)
 
-vi.mock('@/i18n', () => ({
-  useI18n: () => ({
-    t: {
-      sidebar: {
-        dateDivider: {
-          earlierThisMonth: 'Earlier this month',
-          lastMonth: 'Last month',
-          lastWeek: 'Last week',
-          older: 'Older',
-          today: 'Today',
-          yesterday: 'Yesterday'
-        }
+vi.mock('@/i18n', () => {
+  const t = {
+    sidebar: {
+      statusDivider: { working: 'Working', done: 'Done' },
+      projects: { toggle: (label: string) => label },
+      dateDivider: {
+        earlierThisMonth: 'Earlier this month',
+        lastMonth: 'Last month',
+        lastWeek: 'Last week',
+        older: 'Older',
+        today: 'Today',
+        yesterday: 'Yesterday'
       }
     }
-  })
-}))
+  }
+
+  return { useI18n: () => ({ t }) }
+})
 
 const mockVirtualListPropsHistory: VirtualSessionListProps[] = []
 
@@ -58,6 +63,49 @@ function generateSessions(count: number): SessionInfo[] {
 }
 
 const noop = () => {}
+
+it('keeps a monitored task outside Done until its background obligation settles', () => {
+  publishSessionState('runtime', createClientSessionState('monitor'))
+
+  const process = {
+    id: 'watch',
+    type: 'background' as const,
+    state: 'running' as const,
+    title: 'Watching checks',
+    awaitingNotification: true
+  }
+
+  $backgroundStatusBySession.set({ runtime: [process] })
+
+  try {
+    render(
+      <SidebarSessionsSection
+        activeSessionId={null}
+        emptyState={null}
+        grouping="status"
+        label="Sessions"
+        onArchiveSession={noop}
+        onDeleteSession={noop}
+        onResumeSession={noop}
+        onToggle={noop}
+        onTogglePin={noop}
+        onToggleUnread={noop}
+        open
+        pinned={false}
+        sessions={[makeSession('monitor')]}
+      />
+    )
+    expect(screen.getByText('Working')).toBeTruthy()
+    expect(screen.queryByText('Done')).toBeNull()
+    act(() => $backgroundStatusBySession.set({ runtime: [{ ...process, state: 'done' }] }))
+    expect(screen.getByText('Done')).toBeTruthy()
+    expect(screen.queryByText('Working')).toBeNull()
+  } finally {
+    cleanup()
+    $backgroundStatusBySession.set({})
+    clearAllSessionStates()
+  }
+})
 
 describe('SidebarSessionsSection memoization & virtualizer stability', () => {
   it('memoizes flatRows and passes the exact same rows array reference across parent re-renders', () => {

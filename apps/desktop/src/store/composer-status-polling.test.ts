@@ -330,4 +330,19 @@ describe('shared background process refresh', () => {
     await vi.advanceTimersByTimeAsync(30_000)
     expect(request).not.toHaveBeenCalled()
   })
+
+  it('keeps polling an exited process until its pending notification is accepted', async () => {
+    const pending = { ...exited('ci'), notification_pending: true }
+    reconcileBackgroundProcesses('unmounted', [pending])
+    request.mockResolvedValue({ processes: [pending] })
+    await vi.advanceTimersByTimeAsync(15_000)
+    expect($backgroundRunningSessionIds.get()).toContain('unmounted')
+    expect($backgroundStatusBySession.get().unmounted?.[0]?.notificationPending).toBe(true)
+    expect(request).toHaveBeenCalledWith('process.list', { session_id: 'unmounted' })
+    request.mockResolvedValue({ processes: [{ ...pending, notification_pending: false }] })
+    await vi.advanceTimersByTimeAsync(5_000)
+    expect($backgroundRunningSessionIds.get()).not.toContain('unmounted')
+    await vi.advanceTimersByTimeAsync(4_000)
+    expect($backgroundStatusBySession.get().unmounted).toBeUndefined()
+  })
 })

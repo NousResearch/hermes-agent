@@ -1,6 +1,5 @@
 import { useStore } from '@nanostores/react'
 
-import { buildToolView } from '@/components/assistant-ui/tool/fallback-model'
 import { Codicon } from '@/components/ui/codicon'
 import { Tip } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
@@ -10,38 +9,15 @@ import { $sidebarRowMeta } from '@/store/layout'
 import { $sessionDotStateById } from '@/store/session-dot-state'
 import { $sidebarActivityById, type SidebarActivity } from '@/store/sidebar-activity'
 
-/** Display reported work, never classify a command or infer intent from prose. */
+/** The task label explains the monitoring state; it never determines it. */
 function activityLabel(activity: SidebarActivity): string {
-  if (activity.type === 'tool-call') {
-    // Shell/code calls may carry an explicit human-readable first-line comment.
-    // Prefer that label over the gateway's flattened command preview.
-    if (['terminal', 'execute_code', 'browser_exec'].includes(activity.toolName)) {
-      const code = activity.args?.command ?? activity.args?.code
-      const comment = typeof code === 'string' ? /^[ \t]*#[ \t]+([^\r\n]+)/u.exec(code)?.[1]?.trim() : undefined
-
-      if (comment) {
-        return comment
-      }
-    }
-
-    const context = activity.args?.context
-
-    return typeof context === 'string' && context.trim() ? context.trim() : buildToolView(activity, '').title
-  }
-
-  if (activity.type === 'background') {
-    // The registry keeps the first command line. A leading shell comment is
-    // already the agent's human label, not a command to show with a '#' prefix.
-    return activity.title.startsWith('# ') ? activity.title.slice(2).trim() : summarizeShellCommand(activity.title)
-  }
-
-  return activity.title
+  return activity.title.startsWith('# ') ? activity.title.slice(2).trim() : summarizeShellCommand(activity.title)
 }
 
 export function SidebarSessionActivity({ sessionId }: { sessionId: string }) {
   const enabled = useStore($sidebarRowMeta).includes('activity')
 
-  // Opting out must also opt out of projecting the live transcript stream.
+  // Opting out also avoids subscribing to this row's background activity.
   return enabled ? <SessionActivityLabel sessionId={sessionId} /> : null
 }
 
@@ -54,15 +30,9 @@ function SessionActivityLabel({ sessionId }: { sessionId: string }) {
   const detail = activity ? activityLabel(activity) : ''
   const r = t.sidebar.row
 
-  const label =
-    status === 'needs-input'
-      ? r.waitingForAnswer
-      : detail ||
-        (status === 'background'
-          ? r.backgroundRunning
-          : status === 'working' || status === 'stalled'
-            ? r.sessionRunning
-            : '')
+  // The existing arc already reports active work. This extra cue is only
+  // for work that remains after the agent has yielded, never another spinner.
+  const label = status === 'background' ? detail || r.activity : ''
 
   if (!label) {
     return null

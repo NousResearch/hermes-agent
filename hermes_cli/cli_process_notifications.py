@@ -33,7 +33,8 @@ class CLIProcessNotificationsMixin:
             if claim is None:
                 continue
             claimed.append((event, text))
-            complete_event_delivery(event, claim)
+            if event.get("type") == "async_delegation":
+                complete_event_delivery(event, claim)
         for notifications in group_process_notifications(claimed):
             event, text = notifications[0]
             if event.get("type", "completion") == "completion":
@@ -41,6 +42,9 @@ class CLIProcessNotificationsMixin:
             else:
                 pending = SubagentNotification(text, event) if event.get("type") == "async_delegation" else text
             self._pending_input.put(pending)
+            for event, _text in notifications:
+                if event.get("type") != "async_delegation":
+                    complete_event_delivery(event, "")
 
     def _tui_unwrap_input(self, user_input):
         """Unwrap ``_VoiceInputMessage`` / ``_SeededQueryMessage`` -> ``(text_or_tuple, is_voice_input, is_seeded_query)``."""

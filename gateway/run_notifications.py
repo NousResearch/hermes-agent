@@ -824,15 +824,17 @@ class GatewayNotificationsMixin:
         See #9290.
         """
         from gateway.run import _drain_gateway_watch_events, _format_gateway_process_notification
+        from tools.process_registry import process_registry
         watch_events = _drain_gateway_watch_events(completion_queue)
-        if self._load_background_notifications_mode() == "off":
-            return
+        enabled = self._load_background_notifications_mode() != "off"
         for evt in watch_events:
-            synth_text = _format_gateway_process_notification(evt)
-            if not synth_text:
-                continue
-            with _log_suppressed(logging.ERROR, "Watch notification injection error: %s"):
-                await self._inject_watch_notification(synth_text, evt)
+            try:
+                if enabled and (synth_text := _format_gateway_process_notification(evt)):
+                    with _log_suppressed(logging.ERROR, "Watch notification injection error: %s"):
+                        await self._inject_watch_notification(synth_text, evt)
+            finally:
+                # This existing one-shot path accepts or drops, never requeues.
+                process_registry.settle_notification(evt)
 
     def _adapter_by_platform_value(self, platform_name: str):
         """Literal ``p.value == platform_name`` scan over connected adapters (native adapters only)."""
@@ -1087,6 +1089,8 @@ class GatewayNotificationsMixin:
                     "/new); dropping notification (output remains available via process(action='log')).",
                     evt.get("session_id") or "<unknown>", parent_session_id,
                 )
+            from tools.process_registry import process_registry
+            process_registry.settle_notification(evt)
             claim.proceed = False
         elif verdict == "retry":
             # Transient uncertainty: tell the watcher to re-poll rather than drop or misroute.
@@ -1110,9 +1114,13 @@ class GatewayNotificationsMixin:
         accepted = False
         try:
             injection_result = await self._inject_watch_notification(synth_text, evt)
+            from tools.process_registry import process_registry
             if injection_result is not True:
+                if injection_result is None:  # no route: deliberate drop, not retry
+                    process_registry.settle_notification(evt)
                 return injection_result
             accepted = True
+            process_registry.settle_notification(evt)
             if identity is not None:
                 with self._completion_delivery_lock:
                     self._mark_completions_delivered_locked((identity,))
@@ -1171,6 +1179,9 @@ class GatewayNotificationsMixin:
         identities = [i for i in map(self._completion_delivery_identity, events) if i is not None]
         with self._completion_delivery_lock:
             self._mark_completions_delivered_locked(identities)
+        from tools.process_registry import process_registry
+        for event in events:
+            process_registry.settle_notification(event)
 
     async def _flush_process_completion_batch(self, key: tuple[str, ...]) -> None:
         """Deliver one short-window completion batch and resolve its waiters."""

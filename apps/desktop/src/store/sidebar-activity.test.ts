@@ -51,9 +51,9 @@ afterEach(() => {
 })
 
 describe('sidebar activity', () => {
-  it('maps the live tool to the stored session without selecting its chat', () => {
+  it('does not project active tools as monitoring', () => {
     publishSessionState('runtime', runningState())
-    expect($sidebarActivityById.get().stored).toBe(watching)
+    expect($sidebarActivityById.get().stored).toBeUndefined()
   })
 
   it('does not mistake an old unresolved tool for current work', () => {
@@ -82,7 +82,7 @@ describe('sidebar activity', () => {
     expect($sidebarActivityById.get().stored).toBeUndefined()
   })
 
-  it('keeps active delegation after the parent settles but not completed children or leftover todos', () => {
+  it('does not treat active delegation or leftover todos as monitoring', () => {
     publishSessionState('runtime', createClientSessionState('stored'))
 
     const child = {
@@ -102,14 +102,21 @@ describe('sidebar activity', () => {
     $subagentsBySession.set({ runtime: [child] })
     $sessionTiles.set([{ storedSessionId: 'stored', runtimeId: 'runtime' }])
     closeSessionTile('stored')
-    expect($sidebarActivityById.get().stored).toMatchObject({ type: 'subagent', title: 'Watching CI' })
+    expect($sidebarActivityById.get().stored).toBeUndefined()
     $subagentsBySession.set({ runtime: [{ ...child, status: 'completed' }] })
     $todosBySession.set({ runtime: [{ id: 'todo', content: 'Watch CI', status: 'in_progress' }] })
     expect($sidebarActivityById.get().stored).toBeUndefined()
   })
 
   it('keeps real background work after the turn settles and drops it on exit', () => {
-    const process = { type: 'background' as const, state: 'running' as const, title: 'Watching CI', id: 'proc' }
+    const process = {
+      type: 'background' as const,
+      state: 'running' as const,
+      title: 'Watching CI',
+      id: 'proc',
+      awaitingNotification: true
+    }
+
     publishSessionState('runtime', createClientSessionState('stored'))
     $backgroundStatusBySession.set({ runtime: [process] })
     $sessionTiles.set([{ storedSessionId: 'stored', runtimeId: 'runtime' }])
@@ -122,29 +129,47 @@ describe('sidebar activity', () => {
     expect($sidebarActivityById.get().stored).toBeUndefined()
   })
 
-  it('prefers the current tool over a background task', () => {
+  it('suppresses monitoring while the parent is working', () => {
     publishSessionState('runtime', runningState())
     $backgroundStatusBySession.set({
-      runtime: [{ type: 'background', state: 'running', title: 'Dev server', id: 'proc' }]
+      runtime: [
+        { type: 'background', state: 'running', title: 'Watching checks', id: 'proc', awaitingNotification: true }
+      ]
     })
-    expect($sidebarActivityById.get().stored).toBe(watching)
+    expect($sidebarActivityById.get().stored).toBeUndefined()
   })
 
   it('resolves compression aliases and draft runtime ids', () => {
     $sessions.set([makeSessionInfo({ id: 'tip', _lineage_root_id: 'stored' })])
-    publishSessionState('runtime', runningState())
-    expect($sidebarActivityById.get().tip).toBe(watching)
-    publishSessionState('draft', { ...runningState(), storedSessionId: null })
-    expect($sidebarActivityById.get().draft).toBe(watching)
+
+    const process = {
+      type: 'background' as const,
+      state: 'running' as const,
+      title: 'Watching checks',
+      id: 'proc',
+      awaitingNotification: true
+    }
+
+    publishSessionState('runtime', createClientSessionState('stored'))
+    $backgroundStatusBySession.set({ runtime: [process], draft: [process] })
+    expect($sidebarActivityById.get().tip).toBe(process)
+    publishSessionState('draft', { ...createClientSessionState(), storedSessionId: null })
+    expect($sidebarActivityById.get().draft).toBe(process)
   })
 
   it('keeps the map reference stable across prose deltas and unrelated idle writes', () => {
-    publishSessionState('runtime', runningState())
+    const idle = { ...runningState(), busy: false, turnLive: false }
+    publishSessionState('runtime', idle)
+    $backgroundStatusBySession.set({
+      runtime: [
+        { type: 'background', state: 'running', title: 'Watching checks', id: 'proc', awaitingNotification: true }
+      ]
+    })
     const previous = $sidebarActivityById.get()
     publishSessionState('other', createClientSessionState('other-stored'))
     expect($sidebarActivityById.get()).toBe(previous)
     publishSessionState('runtime', {
-      ...runningState(),
+      ...idle,
       messages: [
         { id: 'reply', role: 'assistant', pending: true, parts: [watching, { type: 'text', text: 'Progress' }] }
       ]

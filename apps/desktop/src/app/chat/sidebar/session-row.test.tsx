@@ -7,7 +7,6 @@ import type { SessionInfo } from '@/hermes'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import type * as ChatRuntime from '@/lib/chat-runtime'
 import type * as Time from '@/lib/time'
-import type * as ComposerStatusStore from '@/store/composer-status'
 import { $backgroundStatusBySession } from '@/store/composer-status'
 import { $sidebarRowMeta, resetSidebarView } from '@/store/layout'
 import { $pullRequestsByBranch, branchPrKey } from '@/store/pull-requests'
@@ -93,11 +92,7 @@ vi.mock('@/lib/time', async importOriginal => {
 // upstream (as happened twice already: $stalledSessionIds, then $sessions).
 // Overriding only the named atoms we actually control keeps this test
 // resilient to that drift.
-vi.mock('@/store/composer-status', async importOriginal => {
-  const actual = await importOriginal<typeof ComposerStatusStore>()
 
-  return { ...actual, $backgroundRunningSessionIds: atom<string[]>([]) }
-})
 vi.mock('@/store/session', async importOriginal => {
   const actual = await importOriginal<typeof SessionStore>()
 
@@ -189,7 +184,9 @@ describe('session row activity integration', () => {
     vi.stubGlobal('hermesDesktop', { openExternal })
     publishSessionState('runtime', createClientSessionState('s1'))
     $backgroundStatusBySession.set({
-      runtime: [{ id: 'watch', type: 'background', state: 'running', title: '# Watching CI' }]
+      runtime: [
+        { id: 'watch', type: 'background', state: 'running', title: '# Watching CI', awaitingNotification: true }
+      ]
     })
 
     const pr = {
@@ -218,7 +215,9 @@ describe('session row activity integration', () => {
   it.each([false, true])('keeps activity in the trailing actions, not the title stack (card=%s)', card => {
     publishSessionState('runtime', createClientSessionState('s1'))
     $backgroundStatusBySession.set({
-      runtime: [{ id: 'watch', type: 'background', state: 'running', title: '# Watching CI' }]
+      runtime: [
+        { id: 'watch', type: 'background', state: 'running', title: '# Watching CI', awaitingNotification: true }
+      ]
     })
     $sidebarRowMeta.set(['activity'])
     renderRow(makeSession({ title: 'Improve sidebar' }), { card })
@@ -237,7 +236,9 @@ describe('session row activity integration', () => {
   it('keeps archived rows quiet even if their runtime still has cached work', () => {
     publishSessionState('runtime', createClientSessionState('s1'))
     $backgroundStatusBySession.set({
-      runtime: [{ id: 'watch', type: 'background', state: 'running', title: '# Watching CI' }]
+      runtime: [
+        { id: 'watch', type: 'background', state: 'running', title: '# Watching CI', awaitingNotification: true }
+      ]
     })
     $sidebarRowMeta.set(['activity'])
     renderRow(makeSession({ title: 'Archived', archived: true }))

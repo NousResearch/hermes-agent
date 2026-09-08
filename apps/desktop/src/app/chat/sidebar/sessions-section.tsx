@@ -396,7 +396,11 @@ export function SidebarSessionsSection({
         : grouping === 'status'
           ? groupEntriesByStatus(
               displayEntries,
-              entry => hasLiveTurn(dotStates[entry.session.id] ?? 'idle'),
+              entry => {
+                const status = dotStates[entry.session.id] ?? 'idle'
+
+                return hasLiveTurn(status) || status === 'background'
+              },
               statusDividerLabels
             )
           : toSessionRows(displayEntries)

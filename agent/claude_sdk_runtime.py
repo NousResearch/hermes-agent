@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import copy
 import logging
-import threading
 from typing import Any, Dict, List, Optional
 
 from agent.redact import redact_sensitive_text
@@ -31,6 +30,9 @@ from agent.claude_sdk_runtime_fallback import (
 )
 from agent.claude_sdk_runtime_prompt import (
     build_system_prompt_append,
+)
+from agent.claude_sdk_runtime_session import (
+    _make_visibility_callbacks,
 )
 from agent.claude_sdk_runtime_tools import (
     _hybrid_bridge_enabled,
@@ -145,72 +147,6 @@ def run_claude_agent_sdk_turn(
         agent._sdk_approval_turn_ctx = current_approval_turn_context()
     except Exception:
         logger.debug("approval turn-context refresh failed", exc_info=True)
-
-    def _make_visibility_callbacks():
-        """Create visibility callbacks fenced to this exact Hermes turn."""
-        visibility_turn_id = str(getattr(agent, "_current_turn_id", "") or "")
-        lock = getattr(agent, "_sdk_visibility_lock", None)
-        if lock is None:
-            lock = threading.RLock()
-            agent._sdk_visibility_lock = lock
-        with lock:
-            agent._sdk_visibility_epoch = getattr(agent, "_sdk_visibility_epoch", 0) + 1
-            visibility_epoch = agent._sdk_visibility_epoch
-            agent._sdk_visibility_turn_id = visibility_turn_id
-            agent._sdk_visibility_iteration_count = 0
-            agent._sdk_stream_sink_accepted = False
-
-        def _visibility_is_current() -> bool:
-            with lock:
-                return (
-                    getattr(agent, "_sdk_visibility_epoch", None) == visibility_epoch
-                    and getattr(agent, "_sdk_visibility_turn_id", None) == visibility_turn_id
-                    and getattr(agent, "_current_turn_id", None) == visibility_turn_id
-                    and not getattr(agent, "_interrupt_requested", False)
-                )
-
-        def _on_tool_iteration() -> None:
-            with lock:
-                if not _visibility_is_current():
-                    return
-                agent._sdk_visibility_iteration_count += 1
-            try:
-                agent._touch_activity("completed SDK tool iteration")
-            except Exception:
-                logger.debug("claude-sdk iteration activity update failed", exc_info=True)
-
-        def _relay_interim_assistant(text: str) -> None:
-            if not _visibility_is_current() or not isinstance(text, str):
-                return
-            visible = agent._strip_think_blocks(text).strip()
-            if visible:
-                from agent.redact import redact_sensitive_text
-                visible = redact_sensitive_text(visible)
-            if not visible or visible == "(empty)" or agent._interim_text_was_delivered(visible):
-                return
-            callback = getattr(agent, "interim_assistant_callback", None)
-            if callback is None:
-                return
-            # Mirror the native lane (run_agent.py::_emit_interim_assistant_
-            # message): compute the flag instead of hardcoding it. With
-            # `agent.claude_agent_sdk.streaming` on, this prose has already
-            # been painted by the delta sink, and a False here makes the
-            # surface re-render it as fresh commentary on top of the
-            # streaming buffer instead of sealing the segment — the text
-            # visibly appears, is dropped, then reappears.
-            # Two signals, not one: the accumulator says the text was
-            # released, the flag says a surface accepted it. Sealing a segment
-            # nobody painted would drop the prose from the UI entirely.
-            already_streamed = bool(
-                getattr(agent, "_sdk_stream_sink_accepted", False)
-            ) and agent._interim_content_was_streamed(visible)
-            try:
-                callback(visible, already_streamed=already_streamed)
-                agent._record_delivered_interim_text(visible)
-            except Exception:
-                logger.debug("interim assistant relay raised", exc_info=True)
-
-        return _relay_interim_assistant, _on_tool_iteration
 
     def _create_session(resume_id: Optional[str]) -> None:
         from agent.runtime_cwd import resolve_agent_cwd, resolve_context_cwd
@@ -561,7 +497,7 @@ def run_claude_agent_sdk_turn(
     agent._sdk_issued_tool_effect = False
     _messages_before_sdk_attempt = copy.deepcopy(messages)
 
-    on_interim_assistant, on_tool_iteration = _make_visibility_callbacks()
+    on_interim_assistant, on_tool_iteration = _make_visibility_callbacks(agent)
     live_session = getattr(agent, "_claude_sdk_session", None)
     if live_session is not None:
         try:

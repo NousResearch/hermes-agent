@@ -10,6 +10,7 @@ import { RICH_INPUT_SLOT } from '../chat/composer/rich-editor'
 import { WiredPane } from '../contrib/wiring'
 
 import { useHudClickThrough } from './click-through'
+import { useHudEscape } from './escape'
 import { useHudGameOverlay } from './game-overlay'
 import { useHudGlass } from './glass'
 import { useHudGoto, useReportHudSession } from './handoff'
@@ -284,6 +285,10 @@ export function HudShell() {
   useHudGlass(rootRef, filled)
   useHudClickThrough(rootRef)
   useHudThreadFocus(rootRef)
+  // Escape puts the HUD away — the gesture people reach for first, and the one
+  // dismissal the HUD lacked (it was ⌘W or the exit button). Defers to any
+  // portalled overlay that owns the press (see `hudEscapeAction`).
+  useHudEscape(rootRef)
 
   // Edge/corner resize frame. The window is created non-resizable so dragging can
   // never be misread as a resize gesture (the Windows transparent-frameless

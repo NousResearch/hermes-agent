@@ -2462,7 +2462,7 @@ def _build_document_context_note(
         f"[The user sent a document: '{display_name}'. It is saved at: {agent_path}. "
         f"Its text is not inlined here (it's a binary format such as PDF or DOCX). "
         f"To read it, extract the document's text yourself — for example with the "
-        f"terminal tool or the ocr-and-documents skill — before answering, instead "
+        f"terminal tool (or the pdf skill for PDF/OCR) — before answering, instead "
         f"of asking the user to paste the contents.]")
 
 

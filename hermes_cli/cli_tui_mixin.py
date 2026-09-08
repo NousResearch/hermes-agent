@@ -1456,8 +1456,9 @@ class CLITuiMixin:
             event.app.invalidate()
             return True
         if self._secret_state:
-            self._submit_secret_response(buf.text)
+            value = buf.text
             buf.reset()
+            self._submit_secret_response(value)
             event.app.invalidate()
             return True
         if self._approval_state:
@@ -1857,12 +1858,9 @@ class CLITuiMixin:
         kb.add(Keys.BracketedPaste, eager=True)(self._tui_handle_paste)
         kb.add('c-v')(self._tui_handle_ctrl_v)
         kb.add('escape', 'v')(self._tui_handle_alt_v)
-        from hermes_cli.cli_subagent_monitor import open_monitor
-        kb.add('f6', filter=Condition(lambda: not any(
-            getattr(self, name, None) for name in (
-                '_clarify_state', '_approval_state', '_slash_confirm_state', '_sudo_state',
-                '_secret_state', '_model_picker_state', '_command_palette_state'))))(
-                    lambda event: open_monitor(self))
+        from hermes_cli.cli_subagent_monitor import modal_prompt_active, open_monitor
+        kb.add('f6', filter=Condition(lambda: not modal_prompt_active(self)))(
+            lambda event: open_monitor(self))
         return kb
 
     def _tui_bind_editor_and_stash(self, kb) -> None:

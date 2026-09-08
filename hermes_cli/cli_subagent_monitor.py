@@ -105,6 +105,12 @@ def read_tail(path):
         return 'Live transcript not available yet.'
 
 
+def modal_prompt_active(cli):
+    return any(getattr(cli, name, None) for name in (
+        '_clarify_state', '_approval_state', '_slash_confirm_state', '_sudo_state',
+        '_secret_state', '_model_picker_state', '_command_palette_state'))
+
+
 def build_monitor_application(monitor, **kwargs):
     from prompt_toolkit.application import Application
     from prompt_toolkit.data_structures import Point
@@ -235,8 +241,16 @@ def build_monitor_application(monitor, **kwargs):
         Window(FormattedTextControl(lambda: _clip(state['notice'], app.output.get_size().columns)), height=1),
         Window(FormattedTextControl(footer), height=1),
     ]), focused_element=roster)
+    def before_render(app):
+        # Prompts arrive on worker threads; exit on the UI loop, including the
+        # first frame if a prompt won the race with in_terminal() acquisition.
+        if modal_prompt_active(monitor.cli) and not app.is_done:
+            app.exit()
+        elif state['detail']:
+            update_tail()
+
     app = Application(layout=layout, key_bindings=kb, full_screen=True, mouse_support=False,
-                      before_render=lambda app: update_tail() if state['detail'] else None, **kwargs)
+                      before_render=before_render, **kwargs)
     return app
 
 
@@ -277,5 +291,5 @@ def install_dock(cli):
 
     cli._subagent_dock_widget = ConditionalContainer(
         Window(FormattedTextControl(text), wrap_lines=False),
-        filter=Condition(lambda: bool(monitor.entries)),
+        filter=Condition(lambda: bool(monitor.entries) and not modal_prompt_active(cli)),
     )

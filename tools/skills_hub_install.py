@@ -296,9 +296,17 @@ def check_for_skill_updates(
         if not bundle:
             results.append({**row, "status": "unavailable"})
             continue
-        current_hash, latest_hash = entry.get("content_hash", ""), bundle_content_hash(bundle)
+        lock_hash = entry.get("content_hash", "")
+        # The lock can predate canonical hashing or an out-of-band official
+        # update. Compare the validated profile-local content to the bundle.
+        try:
+            current_hash = content_hash(install_dir)
+        except OSError:
+            results.append({**row, "status": "unavailable"})
+            continue
+        latest_hash = bundle_content_hash(bundle)
         results.append({
             **row, "status": "up_to_date" if current_hash == latest_hash else "update_available",
-            "current_hash": current_hash, "latest_hash": latest_hash, "bundle": bundle,
+            "current_hash": current_hash, "lock_hash": lock_hash, "latest_hash": latest_hash, "bundle": bundle,
         })
     return results

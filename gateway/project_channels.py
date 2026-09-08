@@ -252,24 +252,34 @@ def ensure_channel(
 ) -> Optional[str]:
     """Return the id of text channel ``channel_name``, creating it if absent.
 
-    Adopts a pre-existing channel with the same name rather than creating a
-    duplicate — re-running provisioning after a manual channel rename or a
-    lost DB binding converges instead of spamming.
+    Adoption is **category-qualified**: a pre-existing channel is reused only
+    when it already sits under ``category_id``. A same-named channel elsewhere
+    in the guild is ignored, because the id returned here becomes the project's
+    ``discord_channel_id`` and is thereafter trusted by ``cwd_for_channel``,
+    session/thread mirroring, inbound cwd routing, and handoff routing —
+    binding an unrelated channel would hand it authority over a working
+    directory. This mirrors the invariant ``adopt_orphan_channels`` enforces in
+    the reverse direction.
+
+    When no category could be resolved there is nothing to qualify against, so
+    adoption is skipped entirely and a fresh channel is created instead.
     """
     if channels is None:
         channels = list_guild_channels(guild_id, token)
     wanted = channel_name.strip().lower()
-    for ch in channels:
-        if (
-            ch.get("type") == _CHANNEL_TYPE_TEXT
-            and str(ch.get("name", "")).strip().lower() == wanted
-        ):
-            logger.info(
-                "project_channels: adopting existing channel #%s (%s)",
-                channel_name,
-                ch.get("id"),
-            )
-            return str(ch.get("id"))
+    if category_id:
+        for ch in channels:
+            if (
+                ch.get("type") == _CHANNEL_TYPE_TEXT
+                and str(ch.get("name", "")).strip().lower() == wanted
+                and str(ch.get("parent_id") or "") == str(category_id)
+            ):
+                logger.info(
+                    "project_channels: adopting existing channel #%s (%s)",
+                    channel_name,
+                    ch.get("id"),
+                )
+                return str(ch.get("id"))
 
     payload: Dict[str, Any] = {"name": channel_name, "type": _CHANNEL_TYPE_TEXT}
     if category_id:
@@ -290,14 +300,51 @@ def ensure_channel(
 # ---------------------------------------------------------------------------
 
 
+def _colliding_project(conn: Any, project: Any, chan_name: str, config) -> Any:
+    """Return an ALREADY-BOUND project whose slug maps to ``chan_name``.
+
+    ``channel_name_for`` is **not injective**: project slugs validly contain
+    ``_`` (``_SLUG_RE`` in projects_db) while channel names cannot, so ``foo_bar``
+    and ``foo-bar`` both normalise to ``proj-foo-bar``. Two projects sharing one
+    channel makes inbound cwd routing order-dependent, because
+    ``project_for_channel`` resolves a single row.
+
+    Only projects that already hold a ``discord_channel_id`` count as a
+    collision: an unbound sibling has no claim yet, so first-come-first-served
+    lets one of the pair provision normally and refuses only the second. A
+    check against unbound siblings would deadlock the pair, refusing both.
+    """
+    from hermes_cli import projects_db as pdb
+
+    for other in pdb.list_projects(conn, include_archived=True):
+        if other.id == project.id or not other.discord_channel_id:
+            continue
+        if channel_name_for(other.slug, config) == chan_name:
+            return other
+    return None
+
+
 def provision_project(
     project_id: str, *, config: Optional[dict] = None, conn: Any = None
 ) -> Optional[str]:
     """Ensure a Discord channel exists for ``project_id`` and record the binding.
 
     Returns the channel id (existing or newly created), or None when the
-    feature is disabled, the token/guild is missing, or Discord refused. Never
+    feature is disabled, the token/guild is missing, Discord refused, or the
+    binding would not be a one-to-one qualified identity (see below). Never
     raises — project creation must succeed even when Discord is unreachable.
+
+    The binding is refused rather than forced in two collision cases, because
+    ``discord_channel_id`` grants a channel authority over a working directory
+    and there is no uniqueness constraint to fall back on:
+
+    * another project's slug normalises to the same channel name, so both would
+      claim one channel;
+    * the resolved channel is already bound to a different project.
+
+    Both are reported as warnings naming the other project; the operator
+    resolves them by renaming a slug, since silently sharing a channel makes
+    inbound routing depend on row order.
     """
     try:
         s = settings(config)
@@ -330,6 +377,17 @@ def provision_project(
             if project.discord_channel_id:
                 return project.discord_channel_id
 
+            chan_name = channel_name_for(project.slug, config)
+            clash = _colliding_project(conn, project, chan_name, config)
+            if clash is not None:
+                logger.warning(
+                    "project_channels: refusing to bind '%s' — slug '%s' maps to "
+                    "#%s, already claimed by project '%s'. Rename one slug so "
+                    "each project owns a distinct channel.",
+                    project.slug, project.slug, chan_name, clash.slug,
+                )
+                return None
+
             channels = list_guild_channels(guild_id, token)
             category_id = ensure_category(
                 guild_id, token, s["category_name"], channels=channels
@@ -340,12 +398,21 @@ def provision_project(
             channel_id = ensure_channel(
                 guild_id,
                 token,
-                channel_name_for(project.slug, config),
+                chan_name,
                 category_id=category_id,
                 topic=topic,
                 channels=channels,
             )
             if not channel_id:
+                return None
+            # One-to-one: never let two projects share a channel.
+            owner = pdb.project_for_channel(conn, channel_id, include_archived=True)
+            if owner is not None and owner.id != project.id:
+                logger.warning(
+                    "project_channels: refusing to bind '%s' to channel %s — "
+                    "already bound to project '%s'.",
+                    project.slug, channel_id, owner.slug,
+                )
                 return None
             pdb.update_project(conn, project_id, discord_channel_id=channel_id)
             return channel_id
@@ -602,6 +669,31 @@ def create_project_from_discord(
         )
         result["error"] = str(exc)
         return result
+
+
+def resolve_session_cwd(
+    stored_cwd: Optional[str], project_cwd: str
+) -> Tuple[str, bool]:
+    """Decide the cwd for a turn arriving through a project channel.
+
+    Returns ``(effective_cwd, should_persist)``.
+
+    The project's primary path is a **default for a session that has no
+    workspace yet**, never an override. A desktop/TUI/CLI session mirrored into
+    a Discord thread already owns an authoritative cwd — frequently a NESTED
+    path under the project — and continuing it from Discord must not transfer
+    workspace authority to the transport. ``update_session_cwd`` writes ``cwd``
+    unconditionally, so this guard is the only thing preventing a rewrite.
+
+    ``should_persist`` is True only for a session with no stored cwd:
+    ``_launch_cwd_for_session`` stamps cwd for ``source='cli'`` only, so a fresh
+    gateway session would otherwise stay NULL forever and never link to its
+    project (membership resolves from cwd via ``project_for_path``).
+    """
+    stored = str(stored_cwd or "").strip()
+    if stored:
+        return stored, False
+    return project_cwd, True
 
 
 def cwd_for_channel(
@@ -1215,6 +1307,7 @@ def relay_new_messages(
                 # Deliberately exempt from max_per_pass — truncating here would
                 # advance the mark past messages never posted.
                 limit = int(s.get("backfill_limit") or 0)
+                settled = 0
                 if limit > 0:
                     convo = [r for r in rows if _relayable(r)]
                     tail = convo[-limit:]
@@ -1226,25 +1319,60 @@ def relay_new_messages(
                             token=token,
                         )
                     for r in tail:
-                        if post_message(str(thread_id), _relay_text(r), token=token):
-                            relayed += 1
+                        if not post_message(
+                            str(thread_id), _relay_text(r), token=token
+                        ):
+                            # Settle only what Discord confirmed: park the mark
+                            # just below the failed row so the next pass resumes
+                            # there instead of skipping it forever.
+                            logger.warning(
+                                "project_channels: backfill delivery failed for "
+                                "session %s row %s; resuming there next pass",
+                                session_id, r.get("id"),
+                            )
+                            break
+                        relayed += 1
+                        settled = int(r.get("id") or 0)
                         time.sleep(_RELAY_POST_SPACING)
-                state[session_id] = highest
-                dirty = True
+                    else:
+                        # Whole tail delivered: everything up to `highest`
+                        # (including non-relayable rows after the tail) settles.
+                        settled = highest
+                else:
+                    # Backfill disabled: nothing to deliver, so the whole
+                    # history settles and only NEW turns relay.
+                    settled = highest
+                if settled:
+                    state[session_id] = settled
+                    dirty = True
                 continue
 
             for row in rows:
                 rid = int(row.get("id") or 0)
                 if rid <= last_seen:
                     continue
-                # Advance the mark for every row we consider, relayable or not:
-                # a skipped tool turn must never be re-examined next pass.
+                if not _relayable(row):
+                    # A skipped tool turn has nothing to deliver, so it settles
+                    # immediately and must never be re-examined next pass.
+                    state[session_id] = max(state.get(session_id, 0), rid)
+                    dirty = True
+                    continue
+                # Settle ONLY on a confirmed receipt. post_message retries once
+                # internally and still returns False on a second 429, a 403, a
+                # 5xx, or a network failure; advancing the mark first would put
+                # an undelivered row permanently behind the high-water mark.
+                # Stop at the first failure so the cursor stays contiguous and
+                # this row is retried next pass.
+                if not post_message(str(thread_id), _relay_text(row), token=token):
+                    logger.warning(
+                        "project_channels: relay delivery failed for session %s "
+                        "row %s; keeping cursor at %s for retry",
+                        session_id, rid, last_seen,
+                    )
+                    break
                 state[session_id] = max(state.get(session_id, 0), rid)
                 dirty = True
-                if not _relayable(row):
-                    continue
-                if post_message(str(thread_id), _relay_text(row), token=token):
-                    relayed += 1
+                relayed += 1
                 if relayed >= max_per_pass:
                     break
             if relayed >= max_per_pass:
@@ -1326,6 +1454,7 @@ __all__ = [
     "reconcile_thread_names",
     "relay_new_messages",
     "rename_channel",
+    "resolve_session_cwd",
     "sessions_needing_threads",
     "settings",
     "sync_all_projects",

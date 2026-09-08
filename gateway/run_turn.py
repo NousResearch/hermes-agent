@@ -351,25 +351,43 @@ class GatewayTurnMixin:
                     or source.chat_id,
                 )
                 if _proj_cwd:
+                    _db = (
+                        getattr(self._session_db, "_db", self._session_db)
+                        if self._session_db is not None else None
+                    )
+                    # The project primary path is only a DEFAULT for a session
+                    # that has no workspace yet. A mirrored desktop/TUI/CLI
+                    # session continuing through its Discord thread already owns
+                    # an authoritative cwd — often a NESTED path under the
+                    # project — and the transport must not seize that authority.
+                    _stored_cwd = ""
+                    if _db is not None:
+                        try:
+                            _row = await asyncio.to_thread(
+                                _db.get_session, session_entry.session_id
+                            )
+                            _stored_cwd = str((_row or {}).get("cwd") or "").strip()
+                        except Exception as _read_err:
+                            logger.debug(
+                                "project_channels: could not read session cwd: %s",
+                                _read_err,
+                            )
+                    _effective_cwd, _should_persist = _pc.resolve_session_cwd(
+                        _stored_cwd, _proj_cwd
+                    )
+
                     from tools.terminal_tool import register_task_env_overrides
 
                     register_task_env_overrides(
-                        session_entry.session_id, {"cwd": _proj_cwd}
+                        session_entry.session_id, {"cwd": _effective_cwd}
                     )
-                    # Also PERSIST it on the session row. _launch_cwd_for_session
-                    # only stamps cwd for source='cli', so a gateway session
-                    # would otherwise have cwd=NULL forever — and project
-                    # membership is resolved from cwd (project_for_path), so
-                    # without this a thread started in #proj-foo never links to
-                    # that project in /sessions project or the thread mirror.
-                    # update_session_cwd only writes non-empty values, so this
-                    # can't clobber a real cwd recorded by another surface.
-                    if self._session_db is not None:
+                    # Persist ONLY when the session has no cwd of its own —
+                    # see resolve_session_cwd for why the transport must not
+                    # seize workspace authority from an existing session.
+                    if _db is not None and _should_persist:
                         try:
                             await asyncio.to_thread(
-                                getattr(
-                                    self._session_db, "_db", self._session_db
-                                ).update_session_cwd,
+                                _db.update_session_cwd,
                                 session_entry.session_id,
                                 _proj_cwd,
                             )

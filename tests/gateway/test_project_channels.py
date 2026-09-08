@@ -69,6 +69,7 @@ class _FakeDiscord:
         self.calls = []  # (method, path)
         self._next_id = 1000
         self.fail_with_429 = 0  # fail the next N POSTs with a rate limit
+        self.fail_all_posts = False  # fail every message POST, through retries
 
     def install(self, pc_module, monkeypatch):
         monkeypatch.setattr(pc_module, "_request", self._request)
@@ -104,6 +105,11 @@ class _FakeDiscord:
             if self.fail_with_429 > 0:
                 self.fail_with_429 -= 1
                 return None  # _request returns None on 429
+            if self.fail_all_posts:
+                # A failure that SURVIVES post_message's internal retry: a
+                # second 429, a 403, a 5xx, or a network error all surface as
+                # None twice. Distinct from fail_with_429, which is transient.
+                return None
             cid = path.split("/")[2]
             self.messages.setdefault(cid, []).append(payload["content"])
             return {"id": str(self._next_id)}
@@ -184,16 +190,119 @@ def test_provision_is_idempotent(pc, pdb, fake_discord, tmp_path):
 
 
 def test_provision_adopts_existing_same_named_channel(pc, pdb, fake_discord, tmp_path):
-    """A pre-existing channel with the expected name is adopted, not duplicated."""
+    """A pre-existing channel IN THE CATEGORY is adopted, not duplicated."""
     cfg = _enabled_cfg()
     fake_discord.channels.append(
-        {"id": "777", "name": "proj-p", "type": 0, "parent_id": None}
+        {"id": "cat1", "name": "Projects", "type": 4, "parent_id": None}
+    )
+    fake_discord.channels.append(
+        {"id": "777", "name": "proj-p", "type": 0, "parent_id": "cat1"}
     )
     with pdb.connect_closing() as conn:
         pid = pdb.create_project(conn, name="P", folders=[str(tmp_path)])
     cid = pc.provision_project(pid, config=cfg)
     assert cid == "777"
     assert sum(1 for c in fake_discord.channels if c["name"] == "proj-p") == 1
+
+
+def test_provision_ignores_same_named_channel_outside_the_category(
+    pc, pdb, fake_discord, tmp_path
+):
+    """A same-named channel elsewhere in the guild must NOT gain project authority.
+
+    The id stored as discord_channel_id is trusted by cwd resolution, mirroring,
+    inbound routing and handoff, so binding an unrelated guild channel would
+    hand it authority over a working directory. Forward provisioning must
+    enforce the same category invariant that reverse adoption does.
+    """
+    cfg = _enabled_cfg()
+    fake_discord.channels.append(
+        {"id": "cat1", "name": "Projects", "type": 4, "parent_id": None}
+    )
+    # Same name, but under some other category (and one with no parent at all).
+    fake_discord.channels.append(
+        {"id": "999", "name": "proj-p", "type": 0, "parent_id": "other-cat"}
+    )
+    fake_discord.channels.append(
+        {"id": "998", "name": "proj-p", "type": 0, "parent_id": None}
+    )
+    with pdb.connect_closing() as conn:
+        pid = pdb.create_project(conn, name="P", folders=[str(tmp_path)])
+
+    cid = pc.provision_project(pid, config=cfg)
+
+    assert cid not in ("999", "998")
+    # A fresh channel was created under the configured category instead.
+    created = next(c for c in fake_discord.channels if str(c["id"]) == str(cid))
+    assert str(created["parent_id"]) == "cat1"
+    with pdb.connect_closing() as conn:
+        assert pdb.get_project(conn, pid).discord_channel_id == cid
+
+
+def test_slug_normalisation_collision_is_refused(pc, pdb, fake_discord, tmp_path):
+    """`foo_bar` and `foo-bar` must never acquire the same channel authority.
+
+    Slugs validly contain `_` but channel names cannot, so both normalise to
+    `proj-foo-bar`. There is no uniqueness constraint on discord_channel_id and
+    project_for_channel resolves a single row, so sharing one channel would make
+    inbound routing order-dependent. The second bind is refused.
+    """
+    cfg = _enabled_cfg()
+    fake_discord.channels.append(
+        {"id": "cat1", "name": "Projects", "type": 4, "parent_id": None}
+    )
+    a = tmp_path / "a"
+    b = tmp_path / "b"
+    a.mkdir()
+    b.mkdir()
+    with pdb.connect_closing() as conn:
+        pid1 = pdb.create_project(conn, name="A", slug="foo_bar", folders=[str(a)])
+        pid2 = pdb.create_project(conn, name="B", slug="foo-bar", folders=[str(b)])
+
+    first = pc.provision_project(pid1, config=cfg)
+    second = pc.provision_project(pid2, config=cfg)
+
+    assert first
+    assert second is None, "second project must not bind to the same channel"
+    with pdb.connect_closing() as conn:
+        assert pdb.get_project(conn, pid2).discord_channel_id is None
+        # And exactly one project owns that channel.
+        owner = pdb.project_for_channel(conn, first)
+        assert owner is not None and owner.id == pid1
+
+
+def test_provision_refuses_a_channel_already_bound_to_another_project(
+    pc, pdb, fake_discord, tmp_path
+):
+    """An already-bound channel is never silently shared."""
+    cfg = _enabled_cfg()
+    fake_discord.channels.append(
+        {"id": "cat1", "name": "Projects", "type": 4, "parent_id": None}
+    )
+    fake_discord.channels.append(
+        {"id": "555", "name": "proj-shared", "type": 0, "parent_id": "cat1"}
+    )
+    a = tmp_path / "a"
+    b = tmp_path / "b"
+    a.mkdir()
+    b.mkdir()
+    with pdb.connect_closing() as conn:
+        owner = pdb.create_project(conn, name="Owner", slug="shared", folders=[str(a)])
+        pdb.update_project(conn, owner, discord_channel_id="555")
+        # A different project whose slug also resolves to #proj-shared.
+        other = pdb.create_project(conn, name="Other", slug="shared2", folders=[str(b)])
+        # Force the name collision at the Discord layer, not the slug layer.
+        pdb.update_project(conn, other, name="shared")
+
+    # Directly exercise the one-to-one guard: ensure_channel would hand back 555.
+    cid = pc.ensure_channel(
+        "g1", "test-token", "proj-shared", category_id="cat1",
+        channels=fake_discord.channels,
+    )
+    assert cid == "555"
+    with pdb.connect_closing() as conn:
+        bound = pdb.project_for_channel(conn, "555")
+        assert bound is not None and bound.id == owner
 
 
 # ---------------------------------------------------------------------------
@@ -648,6 +757,137 @@ def test_rate_limited_backfill_does_not_lose_messages(
     bodies = "\n".join(fake_discord.messages.get(tid, []))
     for i in range(1, 4):
         assert f"m{i}" in bodies
+
+
+def test_relay_cursor_does_not_advance_past_an_undelivered_message(
+    pc, pdb, fake_discord, tmp_path
+):
+    """A failure that survives post_message's retry must not settle the cursor.
+
+    post_message retries once and can STILL fail (second 429, 403, 5xx,
+    network). Treating inspection as settlement would put that row permanently
+    behind the high-water mark. Contract: the row is retried on the next pass
+    and lands exactly once.
+    """
+    cfg = _enabled_cfg(backfill_limit=1)
+    root, cid = _mk_session_env(pc, pdb, fake_discord, tmp_path, cfg)
+    db = _FakeSessionDB(
+        [{"id": "s1", "source": "tui", "cwd": str(root), "title": "T"}],
+        {"s1": [{"id": 1, "role": "user", "content": "seed"}]},
+    )
+    results = pc.mirror_sessions_to_threads(db, config=cfg)
+    tid = results[0][1]
+    pc.relay_new_messages(db, config=cfg)  # first sight settles the seed
+
+    # A new turn arrives, but Discord is down for the whole pass.
+    db._messages["s1"] = [
+        {"id": 1, "role": "user", "content": "seed"},
+        {"id": 2, "role": "user", "content": "important"},
+    ]
+    fake_discord.fail_all_posts = True
+    assert pc.relay_new_messages(db, config=cfg) == 0
+    assert "important" not in "\n".join(fake_discord.messages.get(tid, []))
+
+    # Discord recovers: the next pass must deliver it, exactly once.
+    fake_discord.fail_all_posts = False
+    assert pc.relay_new_messages(db, config=cfg) == 1
+    bodies = fake_discord.messages.get(tid, [])
+    assert sum(1 for b in bodies if "important" in b) == 1
+
+    # And it settles — a third pass re-sends nothing.
+    assert pc.relay_new_messages(db, config=cfg) == 0
+    assert sum(1 for b in fake_discord.messages.get(tid, []) if "important" in b) == 1
+
+
+def test_relay_stops_at_the_first_failure_keeping_the_cursor_contiguous(
+    pc, pdb, fake_discord, tmp_path
+):
+    """Later messages are not skipped when an earlier one fails.
+
+    Delivering out of order would leave a hole the contiguous cursor can never
+    revisit, so the pass stops at the first failed row.
+    """
+    cfg = _enabled_cfg(backfill_limit=1)
+    root, cid = _mk_session_env(pc, pdb, fake_discord, tmp_path, cfg)
+    db = _FakeSessionDB(
+        [{"id": "s1", "source": "tui", "cwd": str(root), "title": "T"}],
+        {"s1": [{"id": 1, "role": "user", "content": "seed"}]},
+    )
+    results = pc.mirror_sessions_to_threads(db, config=cfg)
+    tid = results[0][1]
+    pc.relay_new_messages(db, config=cfg)
+
+    db._messages["s1"] = [
+        {"id": 1, "role": "user", "content": "seed"},
+        {"id": 2, "role": "user", "content": "first"},
+        {"id": 3, "role": "assistant", "content": "second"},
+    ]
+    fake_discord.fail_all_posts = True
+    assert pc.relay_new_messages(db, config=cfg) == 0
+
+    fake_discord.fail_all_posts = False
+    assert pc.relay_new_messages(db, config=cfg) == 2
+    bodies = "\n".join(fake_discord.messages.get(tid, []))
+    assert "first" in bodies and "second" in bodies
+
+
+def test_backfill_failure_resumes_at_the_undelivered_message(
+    pc, pdb, fake_discord, tmp_path
+):
+    """A first-sight backfill that fails partway must not skip the remainder."""
+    cfg = _enabled_cfg(backfill_limit=3)
+    root, cid = _mk_session_env(pc, pdb, fake_discord, tmp_path, cfg)
+    msgs = [{"id": i, "role": "user", "content": f"m{i}"} for i in range(1, 4)]
+    db = _FakeSessionDB(
+        [{"id": "s1", "source": "tui", "cwd": str(root), "title": "T"}],
+        {"s1": msgs},
+    )
+    results = pc.mirror_sessions_to_threads(db, config=cfg)
+    tid = results[0][1]
+
+    fake_discord.fail_all_posts = True
+    assert pc.relay_new_messages(db, config=cfg) == 0
+
+    fake_discord.fail_all_posts = False
+    pc.relay_new_messages(db, config=cfg)
+    bodies = "\n".join(fake_discord.messages.get(tid, []))
+    for i in range(1, 4):
+        assert f"m{i}" in bodies, f"m{i} was lost by the backfill"
+
+
+def test_nested_session_cwd_survives_a_mirrored_discord_continuation(
+    pc, pdb, fake_discord, tmp_path
+):
+    """A mirrored session rooted at a NESTED path keeps that path.
+
+    The project's primary folder is a default for a session with no workspace,
+    not an override. Continuing an existing desktop/TUI session from its
+    Discord thread must not transfer workspace authority to the transport —
+    update_session_cwd writes `cwd` unconditionally, so the caller's guard is
+    the only protection.
+    """
+    project_root = str(tmp_path / "proj")
+    nested = str(tmp_path / "proj" / "services" / "api")
+
+    effective, persist = pc.resolve_session_cwd(nested, project_root)
+    assert effective == nested, "runtime cwd must stay at the nested path"
+    assert persist is False, "must not rewrite the persisted cwd"
+
+
+def test_fresh_project_channel_session_defaults_to_the_project_root(
+    pc, pdb, fake_discord, tmp_path
+):
+    """A session with no cwd of its own adopts the project's primary folder.
+
+    _launch_cwd_for_session stamps cwd for source='cli' only, so without this a
+    gateway session stays NULL forever and never links to its project.
+    """
+    project_root = str(tmp_path / "proj")
+
+    for empty in (None, "", "   "):
+        effective, persist = pc.resolve_session_cwd(empty, project_root)
+        assert effective == project_root
+        assert persist is True
 
 
 # ---------------------------------------------------------------------------

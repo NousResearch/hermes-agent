@@ -344,8 +344,23 @@ def _wal_reset_repair_hint() -> str:
     See #75153.
     """
     try:
-        from hermes_cli.config import detect_install_method, get_project_root, recommended_update_command_for_method
-        method = detect_install_method(get_project_root())
+        from hermes_cli.image_provenance import read_image_provenance
+
+        provenance = read_image_provenance()
+        if provenance is not None:
+            if (
+                not provenance.valid
+                or provenance.manager != "docker"
+                or provenance.image != "nousresearch/hermes-agent"
+            ):
+                return "rebuild the immutable container image and restart Hermes"
+            method = provenance.manager
+        else:
+            from hermes_cli.config import detect_install_method, get_project_root
+
+            method = detect_install_method(get_project_root())
+
+        from hermes_cli.config import recommended_update_command_for_method
         cmd = recommended_update_command_for_method(method)
         if method in {"git", "unknown"}:
             return f"Hermes-managed installs can repair the embedded runtime with `{cmd}`"

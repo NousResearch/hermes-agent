@@ -186,7 +186,36 @@ def test_deliver_callback_accepts_matching_state():
     flow = _make_session()
     out = deliver_callback_flow("sess-relay-1", "hosp", code="abc", state="s3cr3tstate")
     assert out == {"ok": True, "session_id": "sess-relay-1"}
-    assert flow._callback == ("abc", "s3cr3tstate")
+    assert flow._callback == ("abc", "s3cr3tstate", None)
+
+
+def test_deliver_callback_forwards_iss():
+    """The client-redirect relay carries RFC 9207 ``iss`` into the flow. Desktop drives this path
+    against a remote backend, and mcp 2.x rejects a response missing ``iss`` when the authorization
+    server advertised ``authorization_response_iss_parameter_supported``."""
+    flow = _make_session()
+    out = deliver_callback_flow(
+        "sess-relay-1", "hosp", code="abc", state="s3cr3tstate", iss="https://as.example.com"
+    )
+    assert out["ok"] is True
+    assert flow._callback == ("abc", "s3cr3tstate", "https://as.example.com")
+
+
+def test_loopback_listener_forwards_iss():
+    """The gateway-hosted loopback listener parses ``iss`` off the redirect rather than dropping it."""
+    import urllib.request
+
+    flow = _make_session(session_id="sess-relay-loop", server="loopy", state="loopstate")
+    httpd = mcp_oauth_sessions._start_loopback_listener(flow)
+    try:
+        port = httpd.server_address[1]
+        urllib.request.urlopen(
+            f"http://127.0.0.1:{port}/callback?code=abc&state=loopstate&iss=https%3A%2F%2Fas.example.com",
+            timeout=5,
+        ).read()
+    finally:
+        httpd.shutdown()
+    assert flow._callback == ("abc", "loopstate", "https://as.example.com")
 
 
 def test_deliver_callback_rejects_state_mismatch():

@@ -54,12 +54,12 @@ class SessionPeersMixin:
             explicit_ids.add(owner)
         return explicit_ids
 
-    def _generated_runtime_peer_id(self, prefix: str, runtime_id: str) -> str:
+    def _generated_runtime_peer_id(self, prefix: str, runtime_id: str, reserved: set[str] | None = None) -> str:
         """Stable peer ID for an unknown prefixed runtime user; a hash suffix is added when
-        sanitizing changed the ID or it collides with an explicitly configured peer."""
+        sanitizing changed the ID or it collides with an explicitly configured or ``reserved`` peer."""
         raw_peer_id = f"{prefix}{runtime_id}"
         sanitized_peer_id = self._sanitize_id(raw_peer_id)
-        explicit_ids = self._explicit_user_peer_ids()
+        explicit_ids = self._explicit_user_peer_ids() | (reserved or set())
         if sanitized_peer_id == raw_peer_id and sanitized_peer_id not in explicit_ids:
             return sanitized_peer_id
         digest = hashlib.sha256(raw_peer_id.encode("utf-8")).hexdigest()
@@ -112,18 +112,26 @@ class SessionPeersMixin:
             return session.assistant_peer_id, target_peer_id
         return target_peer_id, None
 
-    def _peer_id_for_runtime_id(self, runtime_id: str) -> str:
+    def _session_human_peer_ids(self, key: str | None) -> set[str]:
+        """Peer IDs the session's human writes under: each runtime id and the peer resolved for ``key``."""
+        ids = {self._sanitize_id(runtime_id) for runtime_id in self._runtime_user_ids()}
+        if key:
+            ids.add(self._resolve_user_peer_id(key))
+        return ids
+
+    def _peer_id_for_runtime_id(self, runtime_id: str, key: str | None = None) -> str:
         """Honcho peer ID for one runtime identity: alias first, then prefix, as at session init.
 
         A ``bot:`` author is keyed by its full id (``bot:<profile>`` or ``bot:<connection>/<profile>``) and,
         without an alias, its peer is derived from everything after ``bot:`` with the same digest suffix
-        rule as prefixed runtime users, so it never lands on ``peerName`` or an alias target."""
+        rule as prefixed runtime users, so it never lands on ``peerName``, an alias target, or the peer
+        the session's human writes under."""
         alias = self._peer_aliases().get(runtime_id)
         if isinstance(alias, str) and alias.strip():
             return self._sanitize_id(alias.strip())
         if runtime_id.startswith(BOT_AUTHOR_PREFIX):
             ident = runtime_id[len(BOT_AUTHOR_PREFIX):].strip()
-            return self._generated_runtime_peer_id("", ident or runtime_id)
+            return self._generated_runtime_peer_id("", ident or runtime_id, reserved=self._session_human_peer_ids(key))
         prefix = self._cfg("runtime_peer_prefix", "")
         prefix = prefix.strip() if isinstance(prefix, str) else ""
         return self._generated_runtime_peer_id(prefix, runtime_id) if prefix else self._sanitize_id(runtime_id)
@@ -144,7 +152,7 @@ class SessionPeersMixin:
         if not runtime_id:
             return None
         if is_bot or runtime_id.startswith(BOT_AUTHOR_PREFIX):
-            return self._peer_id_for_runtime_id(runtime_id)
+            return self._peer_id_for_runtime_id(runtime_id, key)
         if self._config is not None and bool(getattr(self._config, "peer_name", None)) \
                 and getattr(self._config, "pin_peer_name", False) is True:
             return None

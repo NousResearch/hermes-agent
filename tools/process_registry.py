@@ -235,9 +235,12 @@ def restart_safe_gateway_child_argv(
     if not _is_supervised_gateway_process() or not os.environ.get("INVOCATION_ID"):
         return command
     if not _systemd_run_user_scope_available():
+        # Stored as the cron execution's error and shown on the job row: name the remedy.
         raise RuntimeError(
             "cannot create restart-safe systemd scope for gateway child: "
-            "systemd-run --user --scope is unavailable"
+            "systemd-run --user --scope is unavailable (usually no reachable user D-Bus session at "
+            f"/run/user/{os.getuid()}/bus). On a system-level service install, run "  # windows-footgun: ok — behind the _IS_LINUX return above
+            "`sudo loginctl enable-linger <gateway-user>` and restart the gateway."
         )
     scoped = _build_systemd_scope_argv(command, unit_suffix=unit_suffix)
     if scoped == command:

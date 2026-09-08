@@ -96,7 +96,7 @@ import type { GroupComposerDraft, GroupDraftSetter } from './group-panes'
 import { sendToGroupChat, stopGroupThread } from './group-rounds'
 import { clearGroupClarify } from './group-turns'
 import { botsText, useBots } from './i18n'
-import { displayName, slugify, stripPreviewMarkdown } from './labels'
+import { displayName, slugify } from './labels'
 import { botRosterMeta, setBotsWorkspaceOwner } from './routing'
 import { bumpBotOpenGeneration, getPluginCtx, ID } from './shared'
 import type { Attachment, BotMeta, GroupChat, GroupMember, GroupMessage, RosterRow } from './types'
@@ -449,13 +449,6 @@ function GroupChatSettingsDialog({ group, members, open, onClose, onRenamed }: G
 // work. Member turns are scoped to the thread that triggered them — deltas,
 // watermarks, and responder resolution all key on the thread id.
 
-/** One thread's slice of the room log, with each entry's index in that log. */
-interface GroupThreadBucket {
-  entries: Array<{ entry: GroupMessage; index: number }>
-  id: string
-  startIndex: number
-}
-
 interface GroupChatWorkspaceProps {
   group: string
   members: GroupMember[]
@@ -524,12 +517,7 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
   // @handle (the roster's name-device form when names collide across
   // connections). Naturally every speaker just shows its display name.
   const [revealedSpeaker, setRevealedSpeaker] = useState<null | string>(null)
-  // Threads, the Slack/Discord shape: entries carry a thread id. The most
-  // recently active thread renders open; older ones collapse to summary rows.
-  // `openThreads` is the user's explicit expand/collapse overrides, and
-  // `replyThread` is the thread whose reply box currently owns the composer
-  // (null = the main composer, which STARTS a new thread).
-  const [openThreads, setOpenThreads] = useState<Record<string, boolean>>({})
+  // Thread replies retain their own draft; the main composer starts a new topic.
   // Pending image attachments per composer: `null` thread key = the main
   // composer, otherwise the reply box of that thread. Data URLs, already
   // downscaled — they ride the send into every responding member's session.
@@ -826,12 +814,7 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
     // connection fields so their turns route to their own machines.
     const minted = sendToGroupChat(group, memberDescriptors(), text, null, images)
 
-    if (minted) {
-      setOpenThreads(prev => ({
-        ...prev,
-        [minted]: true
-      }))
-    } else {
+    if (!minted) {
       const restored = restoreGroupComposerDraft(composerKeyRef.current, cleared.revision, before)
 
       if (restored) {
@@ -866,12 +849,7 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
     // scoped to it.
     const sent = sendToGroupChat(group, memberDescriptors(), text, thread, images)
 
-    if (sent) {
-      setOpenThreads(prev => ({
-        ...prev,
-        [thread]: true
-      }))
-    } else {
+    if (!sent) {
       const restored = restoreGroupComposerDraft(composerKeyRef.current, cleared.revision, before)
 
       if (restored) {
@@ -1061,100 +1039,23 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
     )
   }
 
-  // Threads: group entries by thread id (hydration assigned legacy ids, but
-  // guard live pre-thread entries too), ordered by last activity — oldest
-  // first, so the busiest/newest thread sits at the bottom by the composer.
-  // The most recently ACTIVE thread renders open; older ones collapse to a
-  // Slack-style summary row unless explicitly opened. Every open thread gets
-  // its own reply box, which continues THAT thread.
-  const threadsById = new Map<string, GroupThreadBucket>()
-
-  for (let i = 0; i < room.log.length; i++) {
-    const entry = room.log[i]
-    const id = groupThreadOf(entry)
-    let bucket = threadsById.get(id)
-
-    if (!bucket) {
-      bucket = {
-        entries: [],
-        id,
-        startIndex: i
-      }
-      threadsById.set(id, bucket)
-    }
-
-    bucket.entries.push({
-      entry,
-      index: i
-    })
-  }
-
-  const threads = [...threadsById.values()].sort(
-    (a, b) => (a.entries[a.entries.length - 1].entry.at || 0) - (b.entries[b.entries.length - 1].entry.at || 0)
-  )
-
-  const newestThread = threads.length ? threads[threads.length - 1].id : null
+  // The public room is one arrival-ordered conversation. Thread ids scope
+  // replies and prompts, not visibility: a newer topic must never hide a
+  // member's completed answer or move it ahead of intervening messages.
+  const threadEnds = new Map<string, number>()
+  room.log.forEach((entry, index) => threadEnds.set(groupThreadOf(entry), index))
   const logChildren: ReactNode[] = []
-  threads.forEach(threadBucket => {
-    const { entries, id } = threadBucket
-    const head = entries.find(({ entry }) => entry.from.kind === 'user')?.entry || entries[0].entry
-    const isNewest = id === newestThread
-    const expanded = openThreads[id] ?? isNewest
+  room.log.forEach((entry, index) => {
+    logChildren.push(renderEntry(entry, index))
+    const id = groupThreadOf(entry)
 
-    if (!expanded) {
-      const replies = entries.length - 1
-      const headText = stripPreviewMarkdown(head?.text || '').slice(0, 80)
-      logChildren.push(
-        <RowButton
-          className="flex w-full items-center gap-2 rounded-md border border-(--ui-stroke-secondary) px-2 py-1.5 text-left text-xs text-(--ui-text-tertiary) transition-colors hover:bg-(--chrome-action-hover)"
-          key={`fold:${id}`}
-          onClick={() =>
-            setOpenThreads(prev => ({
-              ...prev,
-              [id]: true
-            }))
-          }
-          title={b.group.openThread}
-        >
-          <Codicon className="shrink-0 text-[0.65rem]" name="chevron-right" />
-          <span className="min-w-0 flex-1 truncate">{headText || b.group.threadFallback}</span>
-          <span className="shrink-0 text-[0.625rem] text-(--ui-text-quaternary)">{`${b.group.replyCount(replies)} · ${relativeTime(entries[entries.length - 1].entry.at)}`}</span>
-        </RowButton>
-      )
-
+    if (threadEnds.get(id) !== index) {
       return
-    }
-
-    // Open thread: a rail-indented block — collapse affordance, its entries,
-    // and its own reply box (Slack's "reply in thread").
-    const threadRows: ReactNode[] = []
-
-    if (!isNewest || openThreads[id] !== undefined) {
-      threadRows.push(
-        <RowButton
-          className="flex w-full items-center gap-1.5 px-2 pt-1 text-left text-[0.65rem] text-(--ui-text-quaternary) transition-colors hover:text-foreground"
-          key={`unfold:${id}`}
-          onClick={() =>
-            setOpenThreads(prev => ({
-              ...prev,
-              [id]: false
-            }))
-          }
-          title={b.group.collapseThreadLabel}
-        >
-          <Codicon className="text-[0.6rem]" name="chevron-down" />
-          {b.group.collapseThread}
-        </RowButton>
-      )
-    }
-
-    for (const { entry, index } of entries) {
-      threadRows.push(renderEntry(entry, index))
     }
 
     // Reply-in-thread: the newest thread's continuation ALSO lives here, so
     // the main composer below can stay "new thread" without ambiguity.
-    threadRows.push(
+    logChildren.push(
       replyThread === id ? (
         <form
           className="grid gap-0 px-2 pb-1"
@@ -1198,11 +1099,6 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
           {b.group.replyInThread}
         </Button>
       )
-    )
-    logChildren.push(
-      <div className="grid gap-1.5 border-l-2 border-(--ui-stroke-secondary) pl-1.5" key={`thread:${id}`}>
-        {threadRows}
-      </div>
     )
   })
 

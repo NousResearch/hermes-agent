@@ -1348,6 +1348,15 @@ The command must print **only** the token on stdout: either bare, or as JSON wit
 
 Precedence: an explicit `--api-key` flag still wins; otherwise `key_cmd` beats a static `api_key`/`key_env` on the same entry. The minted credential applies to the main agent turn and to auxiliary tasks (title generation, compression, vision, embedding) alike.
 
+Model discovery also honors `key_cmd` for both `providers:` and legacy
+`custom_providers:` entries, including `hermes model` setup. Helpers run only when
+an authenticated live catalog probe is needed: disabled discovery and warm catalog
+cache reads do not mint tokens. Catalogs are scoped to the command identity, so
+rotating a bearer does not invalidate the catalog. Probe helpers use their own
+short-lived token source, not the inference client's token cache; minted bearers
+are never saved to `config.yaml`. If a helper fails, discovery falls back to the
+configured model without exposing the helper's output.
+
 Not to be confused with `secrets.command`, which runs a helper **once at startup** to populate env vars process-wide. Use that for a vault/keychain helper handing back many secrets; use `key_cmd` when one provider's credential must be re-minted *during* a session.
 
 :::note Legacy format

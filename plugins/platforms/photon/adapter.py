@@ -44,7 +44,13 @@ from gateway.platforms.helpers import compile_mention_patterns, strip_markdown
 from .auth import load_project_credentials
 # Sidecar dir resolution is lazy (never at import): it probes the filesystem and may
 # mirror files. Tests monkeypatch sidecar_paths._SIDECAR_DIR.
-from .sidecar_paths import _NPM_ERROR_LOG_MAX_CHARS, _lock_newer_than_install, _npm_error_log, _sidecar_dir
+from .sidecar_paths import (
+    _NPM_ERROR_LOG_MAX_CHARS,
+    _lock_newer_than_install,
+    _npm_error_log,
+    _sidecar_dir,
+    sidecar_manifest_error,
+)
 from .sidecar_paths import dir_writable as _dir_writable
 import contextlib
 
@@ -992,6 +998,15 @@ class PhotonAdapter(BasePlatformAdapter):
 
     async def _ensure_sidecar_deps(self) -> None:
         """Cold-install or refresh sidecar node_modules before spawn (off the loop)."""
+        manifest_error = sidecar_manifest_error(_sidecar_dir())
+        if manifest_error:
+            raise PhotonSidecarStartupError(
+                "Photon sidecar manifests are unresolved; refusing automatic "
+                f"dependency installation or startup: {manifest_error}",
+                code="SIDECAR_MANIFEST_INVALID",
+                # A merge finishing can repair this without operator action.
+                retryable=True,
+            )
         if not sidecar_deps_installed():
             # Hosted images have no CLI for `hermes photon setup`: connect bootstraps deps itself.
             logger.info("[photon] sidecar deps not installed; installing into %s", _sidecar_dir())

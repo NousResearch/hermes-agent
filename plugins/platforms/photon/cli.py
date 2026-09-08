@@ -30,7 +30,12 @@ from hermes_cli.colors import Colors, color
 
 from . import auth as photon_auth
 from .adapter import sidecar_deps_installed
-from .sidecar_paths import _NPM_ERROR_LOG_MAX_CHARS, _npm_error_log, _sidecar_dir
+from .sidecar_paths import (
+    _NPM_ERROR_LOG_MAX_CHARS,
+    _npm_error_log,
+    _sidecar_dir,
+    sidecar_manifest_error,
+)
 import contextlib
 
 
@@ -393,6 +398,13 @@ def _cmd_telemetry(args: argparse.Namespace) -> int:
 
 
 def _install_sidecar() -> int:
+    manifest_error = sidecar_manifest_error(_sidecar_dir())
+    if manifest_error:
+        print(
+            "Refusing to install Photon sidecar dependencies: " + manifest_error,
+            file=sys.stderr,
+        )
+        return 1
     npm = shutil.which("npm") or "npm"
     if not shutil.which(npm):
         print(

@@ -34,6 +34,15 @@ def _make_local_adapter(monkeypatch: pytest.MonkeyPatch) -> PhotonAdapter:
     return PhotonAdapter(cfg)
 
 
+def _seed_manifests(sidecar_dir) -> None:
+    (sidecar_dir / "package.json").write_text(
+        '{"name": "photon-sidecar"}', encoding="utf-8"
+    )
+    (sidecar_dir / "package-lock.json").write_text(
+        '{"lockfileVersion": 3}', encoding="utf-8"
+    )
+
+
 class _ProbeClient:
     """Fake httpx.AsyncClient whose /healthz probe behavior is injectable."""
 
@@ -95,6 +104,7 @@ async def test_start_sidecar_spawns_with_stdin_pipe(
 
     monkeypatch.setattr(adapter, "_reap_stale_sidecar", _no_reap)
     (tmp_path / "node_modules" / "spectrum-ts").mkdir(parents=True)
+    _seed_manifests(tmp_path)
     monkeypatch.setattr(sidecar_paths, "_SIDECAR_DIR", tmp_path)
 
     spawned: Dict[str, Any] = {}
@@ -148,6 +158,7 @@ async def test_start_sidecar_local_mode_omits_cloud_credentials(
 
     monkeypatch.setattr(adapter, "_reap_stale_sidecar", _no_reap)
     (tmp_path / "node_modules" / "spectrum-ts").mkdir(parents=True)
+    _seed_manifests(tmp_path)
     monkeypatch.setattr(sidecar_paths, "_SIDECAR_DIR", tmp_path)
 
     spawned: Dict[str, Any] = {}
@@ -190,6 +201,7 @@ async def test_start_sidecar_cold_installs_missing_deps(
 ) -> None:
     """Missing dependencies are installed into the resolved writable sidecar."""
     adapter = _make_adapter(monkeypatch)
+    _seed_manifests(tmp_path)
     monkeypatch.setattr(sidecar_paths, "_SIDECAR_DIR", tmp_path)
 
     installs: List[str] = []
@@ -245,6 +257,7 @@ async def test_start_sidecar_reinstalls_empty_node_modules(
     error if that still doesn't produce spectrum-ts.
     """
     adapter = _make_adapter(monkeypatch)
+    _seed_manifests(tmp_path)
     (tmp_path / "node_modules").mkdir()  # empty — spectrum-ts absent
     monkeypatch.setattr(sidecar_paths, "_SIDECAR_DIR", tmp_path)
 
@@ -266,11 +279,38 @@ async def test_start_sidecar_raises_when_cold_install_fails(
     """If the bootstrap install can't produce node_modules, fail with the
     actionable error (surfaced as SIDECAR_FAILED by connect())."""
     adapter = _make_adapter(monkeypatch)
+    _seed_manifests(tmp_path)
     monkeypatch.setattr(sidecar_paths, "_SIDECAR_DIR", tmp_path)
     monkeypatch.setattr(photon_adapter, "_reinstall_sidecar_deps", lambda: None)
 
     with pytest.raises(RuntimeError, match="could not be installed"):
         await adapter._start_sidecar()
+
+
+@pytest.mark.asyncio
+async def test_start_sidecar_refuses_conflicted_manifest_before_install(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    adapter = _make_adapter(monkeypatch)
+    monkeypatch.setattr(sidecar_paths, "_SIDECAR_DIR", tmp_path)
+    (tmp_path / "package.json").write_text(
+        "<<<<<<< HEAD\n{}\n=======\n{}\n>>>>>>> main\n", encoding="utf-8"
+    )
+    (tmp_path / "package-lock.json").write_text("{}", encoding="utf-8")
+    installs: List[str] = []
+    monkeypatch.setattr(
+        photon_adapter, "_reinstall_sidecar_deps", lambda: installs.append("ran")
+    )
+
+    with pytest.raises(
+        photon_adapter.PhotonSidecarStartupError,
+        match="contains unresolved merge-conflict markers",
+    ) as exc_info:
+        await adapter._start_sidecar()
+
+    assert exc_info.value.code == "SIDECAR_MANIFEST_INVALID"
+    assert exc_info.value.retryable is True
+    assert installs == []
 
 
 @pytest.mark.asyncio

@@ -568,6 +568,23 @@ class TestPinTransition:
 
         assert sig_user_only != sig_both
 
+    def test_identity_signature_reflects_a_repointed_host_workspace(self, tmp_path, monkeypatch):
+        """``hermes honcho peers map`` can repoint a host block's workspace; the cached agent's manager
+        is bound to the old one until the signature changes."""
+        from plugins.memory.honcho import HonchoMemoryProvider
+
+        cfg_path = tmp_path / "honcho.json"
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        base = {"apiKey": "k", "peerName": "Igor", "aiPeer": "hermes"}
+        provider = HonchoMemoryProvider()
+
+        cfg_path.write_text(json.dumps({**base, "hosts": {"hermes": {"workspace": "old"}}}))
+        sig_old = provider.identity_signature()["workspace"]
+        cfg_path.write_text(json.dumps({**base, "hosts": {"hermes": {"workspace": "new"}}}))
+        sig_new = provider.identity_signature()["workspace"]
+
+        assert (sig_old, sig_new) == ("old", "new")
+
 
 class TestProfilePeerUniqueness:
     """Each Hermes profile can pin to its own unique peerName.

@@ -574,10 +574,13 @@ def _headless() -> tuple[bool, bool]:
         return False, True
 
 
-def _apply_grant_to_host(hermes_host: dict, cred) -> None:
-    """Store an OAuth grant on the host block; the wizard's final save persists it."""
+def _apply_grant_to_host(cfg: dict, hermes_host: dict, cred) -> None:
+    """Store an OAuth grant on the host block and in ``cfg``'s snapshot. install_grant already wrote it to disk,
+    so the final save must not copy it over a rotation that lands during the later prompts."""
     hermes_host["apiKey"] = cred.access_token
     hermes_host["oauth"] = cred.oauth_block()
+    if (snapshot := getattr(cfg, "snapshot", None)) is not None:
+        snapshot.setdefault("hosts", {}).setdefault(_host_key(), {}).update(apiKey=cred.access_token, oauth=cred.oauth_block())
     if cred.consent_peer_name:  # default the peer prompt to the consent name
         hermes_host["peerName"] = cred.consent_peer_name
     print("  Authorized — token saved. Let's finish configuring.\n")
@@ -605,7 +608,7 @@ def _setup_local_auth(cfg: dict, hermes_host: dict) -> None:
         print("\n  No local JWT set. Local no-auth ready.")
 
 
-def _setup_device_login(hermes_host: dict, write_path: Path, *, open_browser: bool) -> bool:
+def _setup_device_login(cfg: dict, hermes_host: dict, write_path: Path, *, open_browser: bool) -> bool:
     """RFC 8628 device-code sign-in. Returns False if setup must abort."""
     from plugins.memory.honcho.oauth_flow import (
         AccessDenied, AuthorizationTimeout, DeviceCode, DeviceCodeExpired, DeviceFlowError, authorize_via_device_code,
@@ -635,12 +638,12 @@ def _setup_device_login(hermes_host: dict, write_path: Path, *, open_browser: bo
               if isinstance(e, DeviceFlowError) and e.error == "http_429" else f"\n  Device sign-in failed: {e}\n" + _RETRY_HINT)
     else:
         print(" approved")
-        _apply_grant_to_host(hermes_host, cred)
+        _apply_grant_to_host(cfg, hermes_host, cred)
         return True
     return False
 
 
-def _setup_browser_login(hermes_host: dict, write_path: Path) -> bool:
+def _setup_browser_login(cfg: dict, hermes_host: dict, write_path: Path) -> bool:
     """Loopback OAuth sign-in. Tokens merge into the in-memory cfg so the wizard's final save
     keeps them; settings stay wizard-owned (apply_config=False). Returns False on abort."""
     from plugins.memory.honcho.oauth_flow import authorize_via_loopback
@@ -656,7 +659,7 @@ def _setup_browser_login(hermes_host: dict, write_path: Path) -> bool:
     except Exception as e:
         print(f"  OAuth sign-in failed: {e}\n" + _RETRY_HINT)
         return False
-    _apply_grant_to_host(hermes_host, cred)
+    _apply_grant_to_host(cfg, hermes_host, cred)
     return True
 
 
@@ -685,9 +688,9 @@ def _setup_cloud_auth(cfg: dict, hermes_host: dict, write_path: Path) -> bool:
                      default=default_method).strip().lower()
 
     if device_available and method in {"device", "d"}:
-        return _setup_device_login(hermes_host, write_path, open_browser=can_browse and not is_remote)
+        return _setup_device_login(cfg, hermes_host, write_path, open_browser=can_browse and not is_remote)
     if method in {"oauth", "o"}:
-        return _setup_browser_login(hermes_host, write_path)
+        return _setup_browser_login(cfg, hermes_host, write_path)
     # A leftover grant on the host block would shadow the pasted key.
     stale_grant = existing_oauth is not None or is_oauth_access_token(hermes_host.get("apiKey"))
     current = ("" if stale_grant else hermes_host.get("apiKey", "")) or cfg.get("apiKey", "")

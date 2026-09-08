@@ -892,6 +892,21 @@ class TestWriteConfigMergesOntoDisk:
         honcho_cli._write_config(cfg)
         assert json.loads(cfg_path.read_text())["hosts"]["hermes"] == {"apiKey": "hch-v3-pasted"}
 
+    def test_a_grant_the_login_installed_yields_to_a_later_rotation(self, monkeypatch, tmp_path):
+        import plugins.memory.honcho.oauth as oauth
+        honcho_cli, cfg_path = self._paths(monkeypatch, tmp_path, {"hosts": {"hermes": {"peerName": "alice"}}})
+        monkeypatch.setattr(honcho_cli, "_host_key", lambda: "hermes")
+        cfg = honcho_cli._read_config()
+        grant = {"access_token": "hch-at-login", "refresh_token": "hch-rt-login", "expires_in": 3600}
+        cred = oauth.install_grant(cfg_path, "hermes", grant, client_id="c", token_endpoint="e", apply_config=False)
+        honcho_cli._apply_grant_to_host(cfg, cfg["hosts"]["hermes"], cred)
+        self._rotate_on_disk(cfg_path)
+        cfg["hosts"]["hermes"]["recallMode"] = "tools"
+        honcho_cli._write_config(cfg)
+        out = json.loads(cfg_path.read_text())["hosts"]["hermes"]
+        assert out["apiKey"] == "hch-at-new" and out["oauth"] == {"refreshToken": "hch-rt-new"}
+        assert out["peerName"] == "alice" and out["recallMode"] == "tools"
+
     @pytest.mark.parametrize("build", [lambda cli: {"hosts": {"other": {"apiKey": "o"}}}, lambda cli: dict(cli._read_config())],
                              ids=["never read", "rebuilt from the read"])
     def test_a_plain_dict_is_written_whole(self, monkeypatch, tmp_path, build):

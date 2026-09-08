@@ -1456,18 +1456,74 @@ def _parse_model_config(raw, *, quiet: bool = False) -> dict:
     return {}
 
 
+def _row_model_config(row: dict | None) -> dict:
+    """Parse a session row's `model_config` JSON (dict or string form)."""
+    if not row:
+        return {}
+    raw = row.get("model_config")
+    if isinstance(raw, dict):
+        return raw
+    if isinstance(raw, str) and raw.strip():
+        try:
+            parsed = json.loads(raw)
+            if isinstance(parsed, dict):
+                return parsed
+        except Exception:
+            logger.debug("failed to parse stored session model_config", exc_info=True)
+    return {}
+
+
+def _row_has_explicit_override(row: dict | None) -> bool:
+    """True when the row carries an EXPLICIT session-scoped model override
+    (written by `config.set model|reasoning --session`). Bot Mode plumbing and
+    canonical sessions normally always follow the profile's current config; the
+    explicit marker is the one sanctioned exception — a deliberate per-session
+    pin that must survive idle reaping and apply on resume."""
+    return bool(_row_model_config(row).get("session_override"))
+
+
+def _persist_session_row_override(
+    session_id: str, patch: dict, model: str = ""
+) -> bool:
+    """Persist an explicit session-scoped model/reasoning override into the
+    session row's `model_config`, stamped with the `session_override` marker so
+    `_stored_session_runtime_overrides` honors it on resume even for Bot Mode
+    plumbing/canonical sessions. Best-effort: a write failure must never break
+    the in-memory switch that already happened."""
+    try:
+        db = _get_db()
+        if db is None:
+            return False
+        row = db.get_session(session_id)
+        if not row:
+            return False
+        config = _row_model_config(row)
+        config.update(patch)
+        config["session_override"] = True
+        if hasattr(db, "update_session_meta"):
+            db.update_session_meta(session_id, json.dumps(config), model or None)
+            return True
+    except Exception:
+        logger.debug("failed to persist session override", exc_info=True)
+    return False
+
+
 def _stored_session_runtime_overrides(row: dict | None) -> dict:
     """Runtime fields persisted with a stored session (model column, ``billing_provider``, JSON ``model_config``):
     resume restores the model/provider/reasoning THAT chat used, not the global pick. Plugin-owned Bot-Mode
     sessions are exempt and rebuild from the member profile's CURRENT config (a stale provider pin left
     room bots "out of Nous credits" after a profile switch); signals: ``room_plumbing`` /
-    ``follow_profile_config`` markers, the legacy hidden + "Group:" title, the title exactly "Bot Chat"."""
+    ``follow_profile_config`` markers, the legacy hidden + "Group:" title, the title exactly "Bot Chat".
+    An EXPLICIT per-session override (session_override marker) beats every exemption."""
     if not row:
         return {}
     model_config = _parse_model_config(row.get("model_config"), quiet=True)
     _row_title = str(row.get("title") or "").strip()
-    if (model_config.get("room_plumbing") or (row.get("hidden") and _row_title.startswith("Group:"))
-            or model_config.get("follow_profile_config") or _row_title == "Bot Chat"):
+    if (model_config.get("room_plumbing") and not _row_has_explicit_override(row)) or (
+        row.get("hidden") and _row_title.startswith("Group:") and not _row_has_explicit_override(row)
+    ) or (model_config.get("follow_profile_config") and not _row_has_explicit_override(row)) or (
+        _row_title == "Bot Chat" and not _row_has_explicit_override(row)
+    ):
         return {}
     overrides: dict = {}
     field = lambda k: str(model_config.get(k) or "").strip()

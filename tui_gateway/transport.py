@@ -244,7 +244,9 @@ class FanoutTransport:
                 if self._coalesce_events:
                     params = frame.get("params") if isinstance(frame, dict) else None
                     event_type = params.get("type") if isinstance(params, dict) else None
-                    if event_type:
+                    # Only full-state invalidations may replace pending events.
+                    # In particular, distinct session.reclaimed payloads must survive.
+                    if event_type in {"sessions.changed", "skin.changed"}:
                         for index, (pending_frame, pending_size) in enumerate(peer.pending):
                             pending_params = pending_frame.get("params") if isinstance(pending_frame, dict) else None
                             if isinstance(pending_params, dict) and pending_params.get("type") == event_type:

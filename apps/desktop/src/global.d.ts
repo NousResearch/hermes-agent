@@ -85,6 +85,16 @@ declare global {
       // `onBrowserPopoutClosed` so the caller can dock the tab again.
       openBrowserWindow: (tabId: string) => Promise<{ ok: boolean; error?: string }>
       onBrowserPopoutClosed: (callback: (tabId: string) => void) => () => void
+      // Pop the Skills Hub into its own full-size OS window. The embedded
+      // picker is scaled down (0.75) and capped at 75% of the app window, so
+      // the dedicated window is the readable way to browse the catalog.
+      openSkillsHubWindow?: () => Promise<{ ok: boolean; error?: string }>
+      // Hub state changed somewhere (an install/update in ANY window): tell
+      // main to fan the event out, and subscribe to the same broadcast so
+      // every window's hub/skills lists refetch (each renderer owns its own
+      // React Query client).
+      notifyHubChanged?: () => void
+      onHubChanged?: (callback: () => void) => () => void
       // Claim a one-shot cross-window ambient cue (turn-end sound / spoken
       // reply). Resolves true for the first window to claim a key, false for
       // peers — so N open windows don't all fire the same cue.

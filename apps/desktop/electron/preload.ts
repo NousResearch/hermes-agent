@@ -36,6 +36,19 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   openSessionInTerminal: (sessionId, opts) => ipcRenderer.invoke('hermes:window:openInTerminal', sessionId, opts),
   openWindow: () => ipcRenderer.invoke('hermes:window:openInstance'),
   openBrowserWindow: tabId => ipcRenderer.invoke('hermes:window:openBrowser', tabId),
+  // Pop the Skills Hub into its own full-size OS window (the embedded picker
+  // is scaled down and capped at 75% of the app window — hard to read).
+  openSkillsHubWindow: () => ipcRenderer.invoke('hermes:window:openSkillsHub'),
+  // Announce hub state changed to every window, and subscribe to the same
+  // broadcast from peers — the popped-out hub's installs must refresh the
+  // primary window's Skills list (each window has its own React Query client).
+  notifyHubChanged: () => ipcRenderer.send('hermes:hub:changed'),
+  onHubChanged: (callback: () => void) => {
+    const listener = () => callback()
+    ipcRenderer.on('hermes:hub:changed', listener)
+
+    return () => ipcRenderer.removeListener('hermes:hub:changed', listener)
+  },
   onBrowserPopoutClosed: callback => {
     const listener = (_event, tabId) => callback(tabId)
     ipcRenderer.on('hermes:browser-popout:closed', listener)

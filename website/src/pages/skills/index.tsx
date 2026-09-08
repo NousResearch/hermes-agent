@@ -500,7 +500,7 @@ function buildSearchHaystack(s: Skill): string {
 }
 
 export default function SkillsDashboard() {
-  // Picker embed mode (?embed=picker): the page is being iframed by a host
+  // Picker embed mode (?embed=picker): the page is iframed by a host
   // app (Hermes desktop's Bot Mode agent editor) as a skill PICKER. Site
   // chrome is hidden via a CSS class and every card gains an
   // "+ Add to this Agent" button that posts
@@ -509,9 +509,17 @@ export default function SkillsDashboard() {
   // own gateway (skills.manage) — the page never installs anything, so
   // there is no origin to trust in this direction; parents must validate
   // event.origin themselves before acting on the message.
-  const pickerMode =
-    typeof window !== "undefined" &&
-    new URLSearchParams(window.location.search).get("embed") === "picker";
+  //
+  // IMPORTANT: the flag is resolved in a post-hydration effect, NOT during
+  // render. Reading `new URLSearchParams(window.location.search)` while
+  // rendering makes SSR (typeof window === "undefined" → false) and the
+  // client (query present → true) disagree, and React in production keeps
+  // the server HTML on a hydration mismatch — so the pickerMode class never
+  // lands in the DOM and the docs navbar stays visible on the live site.
+  const [pickerMode, setPickerMode] = useState(false);
+  useEffect(() => {
+    setPickerMode(new URLSearchParams(window.location.search).get("embed") === "picker");
+  }, []);
 
   const pickSkill = useCallback(
     (skill: Skill) => {

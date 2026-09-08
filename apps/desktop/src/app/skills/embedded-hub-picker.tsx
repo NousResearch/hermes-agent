@@ -4,12 +4,13 @@ import { memo, type PointerEvent as ReactPointerEvent, useEffect, useRef, useSta
 import { Button } from '@/components/ui/button'
 import type { ProfileScope } from '@/hermes'
 import { useI18n } from '@/i18n'
-import { Loader2 } from '@/lib/icons'
+import { ExternalLink, Loader2 } from '@/lib/icons'
 import { useStoreSelector } from '@/lib/use-session-slice'
 import { cn } from '@/lib/utils'
 import { $hubActions, installHubSkill, UPDATE_ALL_KEY, updateHubSkills } from '@/store/hub-actions'
 import { notify, notifyError } from '@/store/notifications'
 import { $paneHeightOverride, setPaneHeightOverride } from '@/store/panes'
+import { openSkillsHubWindow } from '@/store/windows'
 
 // The REAL Skills Hub page (docs site) embedded as a one-click picker — the
 // same trick the Bot Mode agent editor uses. `?embed=picker` hides the docs
@@ -196,6 +197,10 @@ export const EmbeddedHubPicker = memo(function EmbeddedHubPicker({
           <Button disabled={updating} onClick={updateAll} size="xs" variant="text">
             {updating && <Loader2 className="size-3 animate-spin" />}
             {updating ? h.updating : h.updateAll}
+          </Button>
+          <Button onClick={() => void openSkillsHubWindow()} size="xs" title={h.pickerPopOut} variant="text">
+            <ExternalLink className="size-3" />
+            {h.pickerPopOut}
           </Button>
           <Button onClick={() => setPaneHeightOverride(HUB_PANE_ID, open ? 0 : undefined)} size="xs" variant="text">
             {open ? h.pickerHide : h.pickerBrowse}

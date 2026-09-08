@@ -11,6 +11,7 @@ import { queryClient } from '@/lib/query-client'
 import { invalidateSlashCompletions } from '@/lib/slash-completion-cache'
 import { upsertDesktopActionTask } from '@/store/activity'
 import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile'
+import { broadcastHubChanged } from '@/store/windows'
 
 const POLL_MS = 1200
 
@@ -70,6 +71,20 @@ $activeGatewayProfile.subscribe(value => {
   _hubProfile = key
 })
 
+// Cross-window hub state sync: a skill installed in the popped-out Skills Hub
+// (its own renderer, its own React Query client) must refresh THIS window's
+// hub sources and Skills list, and vice versa. Main fans `hermes:hub:changed`
+// out to every window after any hub action completes; we refetch on receipt.
+// Only wired when the preload bridge exposes the subscription (desktop only).
+if (typeof window !== 'undefined' && typeof window.hermesDesktop?.onHubChanged === 'function') {
+  window.hermesDesktop.onHubChanged(() => {
+    void queryClient.invalidateQueries({ queryKey: HUB_SOURCES_KEY })
+    void queryClient.invalidateQueries({ queryKey: SKILLS_LIST_KEY })
+    void queryClient.invalidateQueries({ queryKey: OFFICIAL_SKILLS_KEY })
+    invalidateSlashCompletions()
+  })
+}
+
 // One self-contained task: spawn → tail its own action log into the store →
 // mark resolved. Concurrency-safe: state is per-key, so parallel installs never
 // stomp each other, and the sources query is invalidated once at the end.
@@ -127,6 +142,11 @@ async function runHubAction(
     // …and the composer's `/` list, which caches the command catalog for an
     // hour and would otherwise keep offering the skill we just removed.
     invalidateSlashCompletions()
+
+    // Tell EVERY window (incl. a popped-out Skills Hub) that hub state
+    // changed — each renderer owns its own React Query client, so the local
+    // invalidations above can't reach the other windows' lists.
+    broadcastHubChanged()
 
     // A non-zero exit is a real failure — throw so the caller's catch toasts
     // it. Before this, a failed subprocess (scan gate, network, bad

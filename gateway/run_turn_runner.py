@@ -35,6 +35,16 @@ if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
 logger = logging.getLogger("gateway.run")
 
 
+class _ExecApprovalDeclined(RuntimeError):
+    """The connector refused the approval card's destination.
+
+    Raised (not returned) so it propagates out of `_approval_notify_sync` to
+    `_await_gateway_decision`, whose notify-failure path drops the central
+    approval queue entry and unblocks the waiting tool. A plain return
+    suppressed the text fallback but left that entry pending.
+    """
+
+
 class TurnRunner:
     """Per-turn collaborator carrying ``GatewayRunner._run_agent_inner``'s tool-progress callbacks."""
 
@@ -288,6 +298,11 @@ class TurnRunner:
         task_order: List[str] = dataclasses.field(default_factory=list)
         fallback_msg_id: Optional[str] = None
         native_failed: bool = False
+        # TERMINAL authorization refusal, distinct from native_failed: the
+        # connector refused this destination, so no later publication in this
+        # turn may re-deliver the task text through the text fallback. Declared
+        # rather than set dynamically so the state is visible where it lives.
+        egress_declined: bool = False
         anonymous_seq: int = 0
 
         @staticmethod
@@ -331,11 +346,27 @@ class TurnRunner:
     async def _task_card_send_or_edit_fallback(self, st) -> None:
         ctx = self._ctx
         text = st.fallback_text()
+        from gateway.relay.egress import declined_send
+
+        if getattr(st, "egress_declined", False):
+            return
         if st.fallback_msg_id:
             result = await st.adapter.edit_message(
                 chat_id=ctx.source.chat_id, message_id=st.fallback_msg_id, content=text, metadata=ctx._progress_metadata,
             )
             if getattr(result, "success", False):
+                return
+            # P5(b): R5-4 made a declined native CARD terminal but left this
+            # editable-text fallback: a declined edit fell through to
+            # _send_progress_text and re-sent the same task text to the refused
+            # chat. The decline must set the terminal state here too.
+            if declined_send(result):
+                logger.warning(
+                    "Task-card fallback edit DECLINED by the connector's egress "
+                    "guard; suppressing progress delivery for the rest of this "
+                    "turn (the destination is not approved)"
+                )
+                st.egress_declined = True
                 return
         result = await self._send_progress_text(st, text)
         if getattr(result, "success", False) and getattr(result, "message_id", None):
@@ -345,12 +376,36 @@ class TurnRunner:
         ctx = self._ctx
         if not st.tasks:
             return
+        if getattr(st, "egress_declined", False):
+            # The connector refused this destination earlier in the turn; every
+            # later publication would re-deliver the same task text there.
+            return
         if not st.native_failed:
             result = await st.adapter.send_native_task_card_progress(
                 chat_id=ctx.source.chat_id, tasks=st.visible_tasks(), title="Hermes is working",
                 reply_to=ctx._progress_reply_to, metadata=ctx._progress_metadata, fallback_text=st.fallback_text(),
             )
             if getattr(result, "success", False):
+                return
+            # P5(b): an AUTHORIZATION decline is not a broken card lane. The
+            # fallback below sends the same task text to the same chat, which
+            # turns a refused card into delivered plain text. Stop the lane
+            # without re-delivering; the refusal is already logged.
+            from gateway.relay.egress import declined_send
+
+            if declined_send(result):
+                # TERMINAL, and stored SEPARATELY from native_failed. Reusing
+                # native_failed suppressed exactly ONE update: the next progress
+                # event skipped this branch (the lane is already "failed") and
+                # went straight to the text fallback. A refusal does not expire
+                # after one tick.
+                st.egress_declined = True
+                st.native_failed = True
+                logger.warning(
+                    "Slack native task-card progress DECLINED by the connector's "
+                    "egress guard — suppressing the text fallback for the rest "
+                    "of this turn (the destination is not approved)"
+                )
                 return
             st.native_failed = True
             logger.warning(
@@ -1270,7 +1325,37 @@ class TurnRunner:
                         "stays armed for a late tap)"
                     )
                     return
+                if outcome == "declined":
+                    # P5(b): the connector AUTHORIZED this destination and
+                    # refused it. The text fallback below re-sends the same
+                    # content to the same chat, which would turn a refused
+                    # button card into a delivered plain-text one — the exact
+                    # leak the egress guard exists to stop. A decline is
+                    # definitive, so unlike `ambiguous` the registration is
+                    # torn down; unlike `failed`, nothing is re-sent.
+                    logger.warning(
+                        "Button-based approval DECLINED by the connector's "
+                        "egress guard — not falling back to text (the "
+                        "destination is not approved for this connection)"
+                    )
+                    # RAISE, do not return. This function is the notify_cb for
+                    # `_await_gateway_decision`, which already has a correct
+                    # undeliverable path: a raising notify drops the queue entry
+                    # and returns `notify_failed`, unblocking the tool. Returning
+                    # quietly suppressed the text fallback (right) but left the
+                    # CENTRAL approval entry pending (wrong) — the dangerous
+                    # command then blocked until the approval timeout. My earlier
+                    # comment claimed the registration was torn down; only the
+                    # adapter's private prompt map was.
+                    raise _ExecApprovalDeclined(
+                        "exec approval undeliverable: connector egress declined "
+                        "this destination"
+                    )
                 logger.warning("Button-based approval failed (send returned error), falling back to text")
+            except _ExecApprovalDeclined:
+                # Must escape this handler: the fallback below is a text send to
+                # the destination the connector just refused.
+                raise
             except Exception as e:
                 logger.warning("Button-based approval failed, falling back to text: %s", e)
         # Plain-text prompt with the adapter's typed prefix (e.g. `!approve`): typed "/" is blocked

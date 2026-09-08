@@ -341,6 +341,19 @@ class GatewayNotificationsMixin:
                                 "Queued-lane final reconciled by editing message %s in place (no duplicate send).",
                                 _sc_msg_id,
                             )
+                        else:
+                            # P5(b): a DECLINE is not "editing unavailable". The
+                            # send below re-delivers the whole response to the
+                            # chat the connector just refused.
+                            from gateway.relay.egress import declined_send
+
+                            if declined_send(_edit_res):
+                                logger.warning(
+                                    "Queued-lane reconcile edit DECLINED by the "
+                                    "connector's egress guard; not falling back "
+                                    "to a send (the destination is not approved)."
+                                )
+                                return
                     except Exception as _qe:
                         logger.debug("Queued-lane reconcile edit failed (%s); falling back to send.", _qe)
                 if not _reconciled:

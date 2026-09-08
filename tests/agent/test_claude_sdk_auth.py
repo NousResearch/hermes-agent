@@ -8,10 +8,8 @@ stand-ins, fake clients and shared builders live in
 
 import pytest
 
-from agent.transports.claude_agent_sdk_session import (
-    ClaudeAgentSdkSession,
-    classify_auth_failure,
-)
+from agent.transports.claude_agent_sdk_session import ClaudeAgentSdkSession
+from agent.transports.claude_agent_sdk_session_availability import classify_auth_failure
 from tests.agent.claude_sdk_fakes import (
     ResultMessage,
     _make_session,
@@ -113,7 +111,7 @@ class TestSdkAvailabilityGate:
         # provider.anthropic. A lean install otherwise dead-ends on
         # ImportError with no self-serve path.
         import tools.lazy_deps as lazy_deps
-        from agent.transports.claude_agent_sdk_session import (
+        from agent.transports.claude_agent_sdk_session_availability import (
             check_claude_sdk_available,
         )
 
@@ -145,7 +143,7 @@ class TestSdkAvailabilityGate:
         import types as _types
 
         import tools.lazy_deps as lazy_deps
-        from agent.transports.claude_agent_sdk_session import (
+        from agent.transports.claude_agent_sdk_session_availability import (
             check_claude_sdk_available,
         )
 
@@ -193,7 +191,7 @@ class TestSdkAvailabilityGate:
             return real_import(name, *args, **kwargs)
 
         monkeypatch.setattr(builtins, "__import__", _broken)
-        from agent.transports.claude_agent_sdk_session import (
+        from agent.transports.claude_agent_sdk_session_availability import (
             check_claude_sdk_available,
         )
 

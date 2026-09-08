@@ -15,6 +15,7 @@ from unittest.mock import patch
 
 import pytest
 
+import tools.file_operations as file_operations
 from tools.environments.local import LocalEnvironment
 from tools.file_operations import ExecuteResult, ShellFileOperations
 
@@ -351,6 +352,29 @@ class TestNativeRead:
         t.join(20)
         assert not t.is_alive(), "native read_file blocked on a writer-less FIFO"
         assert "not a regular file" in box["r"].error
+        assert calls == []
+
+    def test_large_scan_honors_interrupt(self, native, tmp_path, monkeypatch):
+        ops, calls = native
+        p = _write(tmp_path, "large.txt", b"line\n" * 300_000)
+        states = iter((False, True))
+        monkeypatch.setattr(file_operations, "is_interrupted", lambda: next(states))
+
+        result = ops.read_file(p)
+
+        assert result.error == "Interrupted"
+        assert calls == []
+
+    def test_large_scan_honors_terminal_timeout(self, native, tmp_path, monkeypatch):
+        ops, calls = native
+        p = _write(tmp_path, "large.txt", b"line\n")
+        ops.env.timeout = 1
+        times = iter((0.0, 1.0))
+        monkeypatch.setattr(file_operations.time, "monotonic", lambda: next(times))
+
+        result = ops.read_file(p)
+
+        assert result.error == "File read timed out after 1s."
         assert calls == []
 
 

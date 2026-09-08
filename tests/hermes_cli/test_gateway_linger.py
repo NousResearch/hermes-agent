@@ -67,15 +67,12 @@ class TestEnsureLingerEnabled:
         assert "sudo loginctl enable-linger testuser" in out
         assert "Permission denied" in out
 
-    def test_system_target_user_waits_for_that_users_bus(self, monkeypatch, capsys):
-        """Root installing a system unit enables linger for User= and waits for THAT uid's bus, not its own."""
+    def test_system_scope_enables_target_user_without_logout_messaging(self, monkeypatch, capsys):
         monkeypatch.setattr(gateway, "is_linux", lambda: True)
         monkeypatch.setattr(gateway, "is_termux", lambda: False)
         monkeypatch.setattr(gateway, "Path", lambda _path: SimpleNamespace(exists=lambda: False))
         monkeypatch.setattr(gateway, "get_systemd_linger_status", lambda username=None: (False, ""))
         monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/loginctl")
-        monkeypatch.setattr("pwd.getpwnam", lambda name: SimpleNamespace(pw_uid=1001))
-
         run_calls = []
 
         def fake_run(cmd, **kwargs):
@@ -83,36 +80,58 @@ class TestEnsureLingerEnabled:
             return SimpleNamespace(returncode=0, stdout="", stderr="")
 
         monkeypatch.setattr(gateway.subprocess, "run", fake_run)
-        waited = []
-        monkeypatch.setattr(
-            gateway, "_wait_for_user_dbus_socket", lambda timeout=3.0, uid=None: waited.append(uid) or True
-        )
 
         assert gateway._ensure_linger_enabled("alice", system=True) is True
 
         assert run_calls == [["loginctl", "enable-linger", "alice"]]
-        assert waited == [1001]
         out = capsys.readouterr().out
         assert "alice" in out and "logout" not in out
-        assert f"sudo systemctl restart {gateway.get_service_name()}.service" not in out
+
+    def test_system_scope_warning_uses_system_restart(self, monkeypatch, capsys):
+        monkeypatch.setattr(gateway, "is_linux", lambda: True)
+        monkeypatch.setattr(gateway, "is_termux", lambda: False)
+        monkeypatch.setattr(gateway, "Path", lambda _path: SimpleNamespace(exists=lambda: False))
+        monkeypatch.setattr(gateway, "get_systemd_linger_status", lambda username=None: (False, ""))
+        monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/loginctl")
+        monkeypatch.setattr(
+            gateway.subprocess, "run",
+            lambda *a, **k: SimpleNamespace(returncode=1, stdout="", stderr="Permission denied"),
+        )
+
+        assert gateway._ensure_linger_enabled("alice", system=True) is False
+
+        out = capsys.readouterr().out
+        assert f"sudo systemctl restart {gateway.get_service_name()}.service" in out
+        assert "systemctl --user" not in out
 
 
-
-class TestTargetUidSocketPaths:
-    def test_explicit_uid_ignores_callers_runtime_env(self, monkeypatch):
-        monkeypatch.setenv("XDG_RUNTIME_DIR", "/run/user/0")
-        assert gateway._user_dbus_socket_path(1001) == gateway.Path("/run/user/1001/bus")
-        assert gateway._user_systemd_private_socket_path(1001) == gateway.Path("/run/user/1001/systemd/private")
-
-    def test_wait_for_foreign_uid_does_not_adopt_env(self, monkeypatch):
-        monkeypatch.setattr(gateway, "_user_systemd_socket_ready", lambda uid=None: True)
+class TestEnsureSystemServiceLinger:
+    @pytest.mark.parametrize("running", [True, False])
+    def test_fresh_enable_waits_on_target_uid_and_hints_restart_only_when_running(
+        self, monkeypatch, capsys, running
+    ):
+        """Root installing a system unit waits for the TARGET user's bus (never adopting its own env) and
+        tells the operator to restart only when a bus-less gateway is already active."""
+        monkeypatch.setattr(gateway, "_ensure_linger_enabled", lambda username, system=False: True)
+        monkeypatch.setattr("pwd.getpwnam", lambda name: SimpleNamespace(pw_uid=1001))
+        waited = []
+        monkeypatch.setattr(gateway, "_wait_for_target_user_bus", lambda uid, timeout=5.0: waited.append(uid) or True)
         adopted = []
         monkeypatch.setattr(gateway, "_ensure_user_systemd_env", lambda: adopted.append(True))
+        monkeypatch.setattr(gateway, "_systemd_unit_is_active", lambda system=False: running)
 
-        assert gateway._wait_for_user_dbus_socket(timeout=0.1, uid=1001) is True
-        assert adopted == []
-        assert gateway._wait_for_user_dbus_socket(timeout=0.1) is True
-        assert adopted == [True]
+        gateway._ensure_system_service_linger("alice")
+
+        assert waited == [1001] and adopted == []
+        out = capsys.readouterr().out
+        assert (f"sudo systemctl restart {gateway.get_service_name()}.service" in out) is running
+
+    def test_already_enabled_skips_wait_and_activity_probe(self, monkeypatch):
+        monkeypatch.setattr(gateway, "_ensure_linger_enabled", lambda username, system=False: False)
+        monkeypatch.setattr(gateway, "_wait_for_target_user_bus", lambda uid, timeout=5.0: pytest.fail("waited"))
+        monkeypatch.setattr(gateway, "_systemd_unit_is_active", lambda system=False: pytest.fail("probed"))
+
+        gateway._ensure_system_service_linger("alice")
 
 
 def test_systemd_install_calls_linger_helper(monkeypatch, tmp_path, capsys):
@@ -167,25 +186,18 @@ def test_systemd_install_targets_linger_at_system_service_user(monkeypatch, tmp_
         lambda system=False, run_as_user=None: f"[Service]\nUser={run_as_user}\n",
     )
     monkeypatch.setattr(gateway, "_run_systemctl", lambda *args, **kwargs: None)
-    monkeypatch.setattr(
-        gateway, "_ensure_linger_enabled",
-        lambda username=None, system=False: helper_calls.append((username, system)) or False,
-    )
+    monkeypatch.setattr(gateway, "_ensure_system_service_linger", lambda username: helper_calls.append(username))
     monkeypatch.setattr(gateway, "print_systemd_scope_conflict_warning", lambda: None)
     monkeypatch.setattr(gateway, "print_legacy_unit_warning", lambda: None)
 
     gateway.systemd_install(system=True, run_as_user=user)
 
-    assert helper_calls == [(user, True)]
+    assert helper_calls == [user]
 
 
 @pytest.mark.parametrize("unit_is_current", [True, False])
-@pytest.mark.parametrize("running", [True, False])
-def test_existing_system_install_repairs_linger_and_says_restart(
-    monkeypatch, tmp_path, capsys, unit_is_current, running
-):
-    """Re-running install on an affected system service enables linger for User=; when the gateway is
-    already running it must be told to restart (systemctl start on an active unit is a no-op)."""
+def test_existing_system_install_repairs_linger_for_configured_user(monkeypatch, tmp_path, unit_is_current):
+    """Re-running install on an affected system service provisions linger for the unit's User=."""
     unit_path = tmp_path / "systemd" / "hermes-gateway.service"
     unit_path.parent.mkdir(parents=True)
     unit_path.write_text("[Service]\nUser=alice\n", encoding="utf-8")
@@ -198,14 +210,8 @@ def test_existing_system_install_repairs_linger_and_says_restart(
     monkeypatch.setattr(gateway, "systemd_unit_is_current", lambda system=False: unit_is_current)
     monkeypatch.setattr(gateway, "refresh_systemd_unit_if_needed", lambda system=False: None)
     monkeypatch.setattr(gateway, "_run_systemctl", lambda *args, **kwargs: None)
-    monkeypatch.setattr(gateway, "_systemd_unit_is_active", lambda system=False: running)
-    monkeypatch.setattr(
-        gateway, "_ensure_linger_enabled",
-        lambda username=None, system=False: helper_calls.append((username, system)) or True,
-    )
+    monkeypatch.setattr(gateway, "_ensure_system_service_linger", lambda username: helper_calls.append(username))
 
     gateway.systemd_install(system=True, run_as_user="alice")
 
-    assert helper_calls == [("alice", True)]
-    restart_hint = f"sudo systemctl restart {gateway.get_service_name()}.service"
-    assert (restart_hint in capsys.readouterr().out) is running
+    assert helper_calls == ["alice"]

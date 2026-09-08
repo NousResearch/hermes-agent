@@ -2000,22 +2000,19 @@ class SystemScopeRequiresRootError(RuntimeError):
         return self.args[0] if self.args else ""
 
 
-def _user_runtime_dir(uid: int | None = None) -> Path:
-    """``$XDG_RUNTIME_DIR`` or ``/run/user/<uid>`` (regardless of existence). An explicit *uid* — the
-    ``User=`` of a system unit while root installs it — ignores the caller's env."""
-    if uid is not None:
-        return Path(f"/run/user/{uid}")
+def _user_runtime_dir() -> Path:
+    """``$XDG_RUNTIME_DIR`` or ``/run/user/<uid>`` (regardless of existence)."""
     return Path(os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}")  # windows-footgun: ok — POSIX systemd helper, never invoked on Windows
 
 
-def _user_dbus_socket_path(uid: int | None = None) -> Path:
+def _user_dbus_socket_path() -> Path:
     """Return the expected per-user D-Bus socket path (regardless of existence)."""
-    return _user_runtime_dir(uid) / "bus"
+    return _user_runtime_dir() / "bus"
 
 
-def _user_systemd_private_socket_path(uid: int | None = None) -> Path:
+def _user_systemd_private_socket_path() -> Path:
     """Return the per-user systemd private socket path (regardless of existence)."""
-    return _user_runtime_dir(uid) / "systemd" / "private"
+    return _user_runtime_dir() / "systemd" / "private"
 
 
 def _path_exists_safe(path: Path) -> bool:
@@ -2042,10 +2039,10 @@ def _runtime_dir_is_ours(runtime_dir: str) -> bool:
         return False
 
 
-def _user_systemd_socket_ready(uid: int | None = None) -> bool:
+def _user_systemd_socket_ready() -> bool:
     """True when the user D-Bus socket OR the per-user systemd private socket exists (some distros
     expose only the latter and ``systemctl --user`` still works). Inaccessible counts as not-ready."""
-    return _path_exists_safe(_user_dbus_socket_path(uid)) or _path_exists_safe(_user_systemd_private_socket_path(uid))
+    return _path_exists_safe(_user_dbus_socket_path()) or _path_exists_safe(_user_systemd_private_socket_path())
 
 
 def _ensure_user_systemd_env() -> None:
@@ -2067,17 +2064,28 @@ def _ensure_user_systemd_env() -> None:
             os.environ["DBUS_SESSION_BUS_ADDRESS"] = f"unix:path={bus_path}"
 
 
-def _wait_for_user_dbus_socket(timeout: float = 3.0, *, uid: int | None = None) -> bool:
-    """Poll up to ``timeout`` s for a user systemd control socket (user@.service takes a moment after
-    enable-linger). Only our own bus (``uid`` omitted) is adopted into the environment."""
+def _wait_for_user_dbus_socket(timeout: float = 3.0) -> bool:
+    """Poll up to ``timeout`` s for a user systemd control socket (user@.service takes a moment after enable-linger)."""
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        if _user_systemd_socket_ready(uid):
-            if uid is None:
-                _ensure_user_systemd_env()
+        if _user_systemd_socket_ready():
+            _ensure_user_systemd_env()
             return True
         time.sleep(0.2)
-    return _user_systemd_socket_ready(uid)
+    return _user_systemd_socket_ready()
+
+
+def _wait_for_target_user_bus(uid: int, timeout: float = 5.0) -> bool:
+    """Poll for ``/run/user/<uid>/bus`` of ANOTHER account (the system unit's ``User=`` while root installs).
+    Only the D-Bus socket counts — ``systemd/private`` alone is enough for ``systemctl --user`` but not for
+    the ``systemd-run --user`` that restart-safe workers need. Never adopts anything into our env."""
+    bus = Path(f"/run/user/{uid}/bus")
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if _path_exists_safe(bus):
+            return True
+        time.sleep(0.2)
+    return _path_exists_safe(bus)
 
 
 def _loginctl_enable_linger(username: str) -> subprocess.CompletedProcess:
@@ -3013,30 +3021,30 @@ def _ensure_linger_enabled(username: str | None = None, *, system: bool = False)
     if result.returncode != 0:
         _print_linger_enable_warning(username, _completed_process_detail(result) or linger_detail, system=system)
         return False
-    if not system:
-        print("✓ Linger enabled — gateway will persist after logout")
-        return True
-    # logind starts user@<uid>.service asynchronously; a gateway started right after install must
-    # find the bus, so wait for the TARGET user's socket (root's own env says nothing about it).
-    import pwd
-    uid = pwd.getpwnam(username).pw_uid  # windows-footgun: ok — POSIX systemd helper, never invoked on Windows
-    if _wait_for_user_dbus_socket(timeout=5.0, uid=uid):
-        print(f"✓ Enabled linger for {username} — user D-Bus now available")
-    else:
-        print(f"⚠ Linger enabled for {username}, but /run/user/{uid}/bus did not appear within 5s.")
-        print(f"  Start the user manager: sudo systemctl start user@{uid}.service")
+    print(f"✓ Enabled linger for {username}" if system else "✓ Linger enabled — gateway will persist after logout")
     return True
 
 
-def _ensure_system_service_linger(username: str, *, running: bool = False) -> None:
+def _ensure_system_service_linger(username: str) -> None:
     """Enable linger for the installed unit's ``User=`` (root included: restart-safe workers always cross
-    ``systemd-run --user``, so a root gateway needs ``user@0.service`` just the same). A gateway that
-    was already ``running`` keeps its bus-less environment until restarted, and ``systemctl start`` on
-    an active unit is a no-op — say so rather than let the repair silently not take."""
-    if not _ensure_linger_enabled(username, system=True) or not running:
+    ``systemd-run --user``, so a root gateway needs ``user@0.service`` just the same).
+
+    After a fresh enable, wait for the TARGET user's bus: logind starts ``user@<uid>.service``
+    asynchronously and ``--start-now`` boots the gateway immediately. A gateway that was already running
+    keeps its bus-less environment and ``systemctl start`` on an active unit is a no-op — say so rather
+    than let the repair silently not take."""
+    if not _ensure_linger_enabled(username, system=True):
         return
-    print("  The running gateway was started without a user D-Bus; restart it to pick one up:")
-    print(f"    sudo systemctl restart {get_service_name()}.service")
+    import pwd
+    uid = pwd.getpwnam(username).pw_uid  # windows-footgun: ok — POSIX systemd helper, never invoked on Windows
+    if _wait_for_target_user_bus(uid):
+        print(f"✓ /run/user/{uid}/bus is up — cron and Kanban workers can use systemd-run --user")
+    else:
+        print(f"⚠ /run/user/{uid}/bus did not appear within 5s.")
+        print(f"  Start the user manager: sudo systemctl start user@{uid}.service")
+    if _systemd_unit_is_active(system=True):
+        print("  The running gateway was started without a user D-Bus; restart it to pick one up:")
+        print(f"    sudo systemctl restart {get_service_name()}.service")
 
 
 def _select_systemd_scope(system: bool = False) -> bool:
@@ -3146,7 +3154,7 @@ def systemd_install(
             print("Use --force to reinstall")
         configured_user = _read_systemd_user_from_unit(unit_path) if system else None
         if configured_user:
-            _ensure_system_service_linger(configured_user, running=_systemd_unit_is_active(system=True))
+            _ensure_system_service_linger(configured_user)
         return
 
     unit_path.parent.mkdir(parents=True, exist_ok=True)

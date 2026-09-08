@@ -132,6 +132,20 @@ def test_write_reply_validates_envelope_id(root):
     assert data["reply"] == "pong" and not data["error"]
 
 
+def test_write_reply_removes_settled_claimed_payload(root):
+    env = bot_relay.enqueue_envelope(
+        root, target=_rows()[1], message="private payload",
+        sender_profile="default", sender_handle="hermes",
+    )
+    assert bot_relay.claim_pending_envelopes(root)
+    claimed = bot_relay.relay_root(root) / bot_relay.CLAIMED_DIR / f"{env['id']}.json"
+    assert claimed.exists()
+
+    bot_relay.write_reply(root, env["id"], reply="done")
+
+    assert not claimed.exists(), "settled envelopes no longer need their plaintext payload"
+
+
 def test_write_reply_reason_passthrough_and_classification(root):
     # explicit reason is persisted verbatim
     path = bot_relay.write_reply(root, "c" * 32, error="boom", reason="delivery_timeout")

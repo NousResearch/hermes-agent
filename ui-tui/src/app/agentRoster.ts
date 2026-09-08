@@ -8,6 +8,9 @@ import type { SubagentProgress } from '../types.js'
 import { useTurnSelector } from './turnStore.js'
 import { $uiState } from './uiStore.js'
 
+// Session-local presentation only; never persisted to config.
+export const $agentDockCollapsed = atom(false)
+
 const EMPTY: SubagentListResponse = { subagents: [], delegations: [] }
 export const $agentSnapshot = atom<{ sid: string | null; data: SubagentListResponse }>({ sid: null, data: EMPTY })
 

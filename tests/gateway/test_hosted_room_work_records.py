@@ -112,6 +112,105 @@ def test_missing_task_store_is_not_claimed_to_be_empty(tmp_path):
     assert capture(db)["reason"] == "task_store_missing"
 
 
+@pytest.mark.parametrize("outcome", ["pending", "unavailable", "rejected"])
+def test_authority_scopes_preserve_pending_bytes_and_capture_independently(source, outcome):
+    from tests.gateway.test_hosted_room_replica_lineage import SUCCESSOR, FINAL, transfer
+    with rooms._transaction(source, immediate=True) as conn:
+        old = records.prepare_delivery_locked(conn, room_id="room", target_install_id="install:target",
+            route_generation="old", local_gateway_id=HOME, through_seq=1)
+        records.delivery_status_locked(conn, room_id="room", target_install_id="install:target",
+            route_generation="old", record=old, status=outcome)
+        frozen = dict(conn.execute(f"SELECT * FROM {records.PENDING_TABLE}").fetchone())
+    transfer(source)
+    with rooms._transaction(source, immediate=True) as conn:
+        current = records.prepare_delivery_locked(conn, room_id="room", target_install_id="install:target",
+            route_generation="new", local_gateway_id=SUCCESSOR, through_seq=2)
+        assert current["version"] == 2
+        assert current["authority"] == {"gateway_id": SUCCESSOR, "epoch": 2}
+        assert current["revision"] == 1
+        assert current["tasks"] == old["tasks"]
+        assert current["incompleteness"] == ["prior_authority_work_unknown"]
+        rows = [dict(r) for r in conn.execute(f"SELECT * FROM {records.PENDING_TABLE} ORDER BY producer_epoch")]
+        assert len(rows) == 2
+        assert rows[0] == {**frozen, "disposition": "superseded_authority"}
+        assert not records.delivery_status_locked(conn, room_id="room", target_install_id="install:target",
+            route_generation="old", record=old, status="acked")
+    transfer(source, SUCCESSOR, 2, FINAL)
+    third = records.capture(source, room_id="room", local_gateway_id=FINAL)
+    assert third["authority"]["epoch"] == 3 and third["revision"] == 1
+    with rooms._transaction(source) as conn:
+        assert conn.execute(f"SELECT COUNT(*) FROM {records.SOURCE_TABLE}").fetchone()[0] == 3
+        assert conn.execute(f"SELECT record_json FROM {records.SOURCE_TABLE} WHERE producer_epoch=1").fetchone()[0] == records.encode(old)
+
+
+def test_successor_with_empty_driver_store_does_not_manufacture_complete_evidence(source):
+    from tests.gateway.test_hosted_room_replica_lineage import transfer, SUCCESSOR
+    transfer(source)
+    with rooms._transaction(source, immediate=True) as conn:
+        conn.execute("DELETE FROM hosted_room_driver_tasks")
+    result = records.capture(source, room_id="room", local_gateway_id=SUCCESSOR)
+    assert result["tasks"] == []
+    assert result["incompleteness"] == ["prior_authority_work_unknown"]
+
+
+@pytest.mark.parametrize("retirement_first", [False, True])
+@pytest.mark.parametrize("invalid", [False, True])
+def test_v1_migration_preserves_exact_rows_and_marks_invalid(source, retirement_first, invalid):
+    from gateway import hosted_room_replica_retirement as retirement
+    record = capture(source)
+    data = "invalid original bytes" if invalid else json.dumps(record, indent=2)
+    with rooms._transaction(source, immediate=True) as conn:
+        for table in (records.SOURCE_TABLE, records.TARGET_TABLE, records.PENDING_TABLE):
+            conn.execute(f"DROP TABLE {table}")
+        for table in (records.SOURCE_TABLE, records.TARGET_TABLE):
+            conn.execute(f"CREATE TABLE {table} (room_id TEXT PRIMARY KEY, revision INTEGER NOT NULL, digest TEXT NOT NULL, record_json TEXT NOT NULL)")
+        conn.execute(f"CREATE TABLE {records.PENDING_TABLE} (room_id TEXT NOT NULL, target_install_id TEXT NOT NULL, route_generation TEXT NOT NULL, revision INTEGER NOT NULL, digest TEXT NOT NULL, record_json TEXT NOT NULL, status TEXT NOT NULL, PRIMARY KEY(room_id,target_install_id))")
+        conn.execute(f"INSERT INTO {records.SOURCE_TABLE} VALUES (?,?,?,?)", ("room", record["revision"], record["digest"], data))
+        conn.execute(f"INSERT INTO {records.PENDING_TABLE} VALUES (?,?,?,?,?,?,?)", ("room", "install:target", "old", record["revision"], record["digest"], data, "unavailable"))
+        if retirement_first:
+            retirement._initialize(conn)
+        records.initialize(conn)
+        retirement._initialize(conn)
+        records.initialize(conn)
+        for table in (records.SOURCE_TABLE, records.PENDING_TABLE):
+            row = conn.execute(f"SELECT * FROM {table}").fetchone()
+            assert row["record_json"] == data
+            assert (row["revision"], row["digest"]) == (record["revision"], record["digest"])
+            assert (row["producer_gateway_id"], row["producer_epoch"], row["disposition"]) == (
+                ("", 0, "invalid") if invalid else (HOME, 1, "current"))
+        if not invalid:
+            records.prepare_delivery_locked(conn, room_id="room", target_install_id="install:target",
+                route_generation="retry", local_gateway_id=HOME, through_seq=1)
+            assert conn.execute(f"SELECT record_json FROM {records.PENDING_TABLE}").fetchone()[0] == data
+
+
+@pytest.mark.parametrize("bound", ["rows", "bytes"])
+def test_all_scopes_count_against_capacity_without_evicting_old_evidence(source, monkeypatch, bound):
+    from tests.gateway.test_hosted_room_replica_lineage import SUCCESSOR, transfer
+    old = capture(source)
+    transfer(source)
+    if bound == "rows":
+        monkeypatch.setattr(records, "MAX_STORE_ROWS", 1)
+    else:
+        monkeypatch.setattr(records, "MAX_STORE_BYTES", len(records.encode(old).encode()))
+    with pytest.raises(records.WorkRecordCapacityError):
+        records.capture(source, room_id="room", local_gateway_id=SUCCESSOR)
+    with rooms._transaction(source) as conn:
+        assert conn.execute(f"SELECT record_json FROM {records.SOURCE_TABLE}").fetchone()[0] == records.encode(old)
+
+
+def test_same_producer_can_replace_latest_at_the_exact_store_row_limit(source, monkeypatch):
+    monkeypatch.setattr(records, "MAX_STORE_ROWS", 1)
+    old = capture(source)
+    held = driver.acquire_lease(source, room_id="room", gateway_id=HOME, authority_epoch=1,
+        process_generation="process", ttl_seconds=30, clock=lambda: 100)
+    driver.start_task(source, IDENTITY, held, expected_cancel_generation=0, clock=lambda: 100)
+    current = capture(source)
+    assert current["revision"] == old["revision"] + 1
+    with rooms._transaction(source) as conn:
+        assert conn.execute(f"SELECT COUNT(*) FROM {records.SOURCE_TABLE}").fetchone()[0] == 1
+
+
 def test_store_capacity_is_hard_bounded(source, monkeypatch):
     monkeypatch.setattr(records, "MAX_STORE_BYTES", 10)
     with pytest.raises(records.WorkRecordCapacityError):

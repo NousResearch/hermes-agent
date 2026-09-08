@@ -10,7 +10,7 @@ import {
   writeEnvFile,
   writeMockProviderConfig
 } from './fixtures'
-import { MOCK_REPLY, startMockServer } from './mock-server'
+import { MOCK_REPLY, startMockServer } from '../../../tests-js/scripts/mock-server'
 import { RealSessionBuilder } from './real-session-builder'
 import { expect, test } from './test'
 

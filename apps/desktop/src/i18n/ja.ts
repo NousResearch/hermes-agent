@@ -299,6 +299,13 @@ export const ja = defineLocale({
   },
 
   settings: {
+    plugins: {
+      installModal: {
+        installFromGit: 'Git からインストール',
+        reviewRepository: 'リポジトリを確認',
+        repoPlaceholder: 'https://github.com/owner/repo'
+      }
+    },
     closeSettings: '設定を閉じる',
     exportConfig: '設定を書き出す',
     importConfig: '設定を読み込む',
@@ -1395,6 +1402,10 @@ export const ja = defineLocale({
     emptyDesc: 'Hermes がスキルやメモリを蓄積すると、ここに表示されます。'
   },
   agents: {
+    extendedTranscript: '詳細な実行ログ',
+    transcriptTruncated: '最新の 16 KiB を表示',
+    transcriptUnavailable: 'ライブログは利用できません',
+
     close: 'エージェントを閉じる',
     title: 'スポーンツリー',
     subtitle: '現在のターンのライブサブエージェントのアクティビティ。',
@@ -1406,6 +1417,14 @@ export const ja = defineLocale({
     streaming: 'ストリーミング中',
     files: 'ファイル',
     moreFiles: count => `+${count} 件のファイル`,
+    moreAgents: count => `ほか ${count} 件のエージェント`,
+    queued: '待機中',
+    waitingActivity: 'アクティビティ待ち',
+    steer: '指示',
+    steerPlaceholder: 'このサブエージェントへの指示',
+    steerQueued: '次のチェックポイントで処理します',
+    stopRequested: '停止を要求しました',
+    requestRejected: 'サブエージェントが要求を受け付けませんでした',
     delegation: index => `委任 ${index}`,
     workers: count => `${count} ワーカー`,
     workersActive: count => `${count} アクティブ`,
@@ -2026,6 +2045,17 @@ export const ja = defineLocale({
   },
 
   sidebar: {
+    gatewayGroups: {
+      grouping: 'ゲートウェイとプロファイル',
+      rename: 'グループ名を変更',
+      aliasLabel: '表示名',
+      aliasHint: '表示名のみ変更します。ゲートウェイ名とプロファイル名は変わりません。',
+      resetName: '名前をリセット',
+      moveUp: '上に移動',
+      moveDown: '下に移動',
+      reorder: 'グループを並べ替え',
+      actions: 'グループの操作'
+    },
     nav: {
       'new-session': '新しいセッション',
       skills: 'スキルとツール',

@@ -514,10 +514,26 @@ def _prune_disbanded_replicas_locked(
     eligible = canonical
     retired_at = "disbanded_at"
     if table_exists(conn, RETIREMENT_TABLE):
+        retirement_columns = {row["name"] for row in conn.execute(f"PRAGMA table_info({RETIREMENT_TABLE})")}
+        replica_columns = {row["name"] for row in conn.execute("PRAGMA table_info(hosted_room_replicas)")}
+        legacy_scope = [
+            "retirement.authority_gateway_id=hosted_room_replicas.authority_gateway_id",
+            "retirement.authority_epoch=hosted_room_replicas.authority_epoch",
+        ]
+        if "version" in retirement_columns:
+            legacy_scope.append("retirement.version IS NULL")
+        if "replica_version" in replica_columns:
+            legacy_scope.append("hosted_room_replicas.replica_version IS NULL")
+        scopes = ["(" + " AND ".join(legacy_scope) + ")"]
+        if {"version", "lineage_sha256"} <= retirement_columns and {"replica_version", "lineage_sha256"} <= replica_columns:
+            # A v2 retiring sender can be ahead of the verified prefix head.
+            # Its frozen lineage, not that earlier head, binds the retired copy.
+            scopes.append("""(retirement.version=2 AND hosted_room_replicas.replica_version=2
+                AND retirement.lineage_sha256 IS NOT NULL
+                AND retirement.lineage_sha256=hosted_room_replicas.lineage_sha256)""")
         match = f"""SELECT retired_at FROM {RETIREMENT_TABLE} AS retirement
             WHERE retirement.room_id=hosted_room_replicas.room_id
-              AND retirement.authority_gateway_id=hosted_room_replicas.authority_gateway_id
-              AND retirement.authority_epoch=hosted_room_replicas.authority_epoch"""
+              AND ({' OR '.join(scopes)})"""
         eligible = f"({canonical} OR EXISTS ({match}))"
         retired_at = f"CASE WHEN {canonical} THEN disbanded_at ELSE ({match}) END"
     eligible += """ AND quarantine_reason IS NULL AND NOT EXISTS (

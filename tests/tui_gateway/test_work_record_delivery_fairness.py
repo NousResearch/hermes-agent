@@ -51,6 +51,100 @@ def copying(pair, monkeypatch):
     return pair
 
 
+def successor_copying(pair, monkeypatch, preferred):
+    """Extend the same fairness transport with enrolled v2 and exact profile auth."""
+    from gateway import hosted_room_replica_retirement as retirement
+    from gateway.hosted_room_passive_protocol import passive_capabilities
+    from tests.gateway.test_hosted_room_replica_lineage import SUCCESSOR, transfer
+    record_profiles(pair)
+    with rooms._transaction(pair.source, immediate=True) as conn:
+        records.prepare_delivery_locked(conn, room_id="room", target_install_id=TARGET,
+            route_generation="old", local_gateway_id=HOME, through_seq=1)
+        old = dict(conn.execute(f"SELECT * FROM {records.PENDING_TABLE}").fetchone())
+    transfer(pair.source, HOME)
+    for member, profile in (("reviewer", "reviewer"), ("z-other", "default")):
+        permissions = ("replicate",) if member == "reviewer" and preferred == "history_only" else ("replicate", records.PERMISSION)
+        link = save_link(pair.source, member_id=member, profile=profile, permissions=permissions,
+            home_install_id=SUCCESSOR, authority_gateway_id=SUCCESSOR, authority_epoch=2)
+        claims = peer.decode_room_grant(SECRET, link.grant, permission="replicate")
+        rooms.reserve_peer_room(pair.target, claims=claims, expires_at=claims["status_expires_at"])
+    entry = retirement.prepare_home_enrollment(pair.source, room_id="room", target_install_id=TARGET,
+        endpoint="http://127.0.0.1:9876", local_gateway_id=SUCCESSOR, secret=SECRET)
+    proof = retirement.enroll_target(pair.target, enrollment=entry, target_install_id=TARGET,
+        **retirement.home_enrollment_history(pair.source, enrollment_id=entry["enrollment_id"]))
+    assert retirement.confirm_home_enrollment(pair.source, enrollment_id=entry["enrollment_id"], proof=proof)
+    pair.records, pair.attempts, pair.probes = [], [], []
+    pair.recovered = False
+
+    def transport(request, *, timeout):
+        with sqlite3.connect(pair.source, timeout=0.1) as conn:
+            conn.execute("BEGIN IMMEDIATE")
+        token = request.get_header("Authorization").removeprefix("HermesRoom ")
+        claims = peer.decode_room_grant(SECRET, token, permission="replicate")
+        member = claims["member_id"]
+        if request.full_url.endswith("/capabilities"):
+            pair.probes.append(member)
+            capabilities = passive_capabilities()
+            if member == "reviewer" and preferred == "unsupported":
+                capabilities["work_record_versions"] = [1]
+            body = {"passive_replication": capabilities}
+            if member == "reviewer" and preferred == "missing":
+                body = {}
+            if member == "reviewer" and preferred == "malformed":
+                capabilities["work_record_versions"] = "2"
+            return io.BytesIO(json.dumps(body).encode())
+        if not request.full_url.endswith("/work-records"):
+            return pair.http(request, timeout=timeout)
+        record = json.loads(request.data)["record"]
+        pair.attempts.append(member)
+        pair.records.append(record)
+        if member == "reviewer" or not pair.recovered:
+            code = 403 if member == "reviewer" and preferred == "refused" else 503
+            raise urllib.error.HTTPError(request.full_url, code, "unavailable", {},
+                io.BytesIO(b'{"error":{"code":"unavailable"}}'))
+        reply = records.ingest(pair.target, record=record, token=token, secret=SECRET,
+            target_install_id=TARGET, target_profile=claims["target_profile"])
+        return io.BytesIO(json.dumps(reply).encode())
+
+    monkeypatch.setattr("hermes_cli.urllib_security.open_credentialed_url", transport)
+    monkeypatch.setattr(rooms, "local_authority_gateway_id", lambda: SUCCESSOR)
+    return old
+
+
+@pytest.mark.parametrize("preferred", ["unavailable", "refused", "history_only", "unsupported", "missing", "malformed"])
+def test_successor_busy_history_recovers_alternate_without_moving_pending_anchor(pair, monkeypatch, preferred):
+    from tests.gateway.test_hosted_room_replica_lineage import SUCCESSOR
+    old = successor_copying(pair, monkeypatch, preferred)
+    pub = publisher.HostedRoomReplicationPublisher(pair.source)
+    # One covered immutable current record; both profiles first encounter loss.
+    for member in ("reviewer", "z-other", "reviewer", "z-other"):
+        route = pub._load_route(("room", member))
+        pub._checkpoint(route)
+        pub._publish_locked(route)
+    with rooms._transaction(pair.source) as conn:
+        frozen = dict(conn.execute(f"SELECT * FROM {records.PENDING_TABLE} WHERE producer_epoch=2").fetchone())
+    assert frozen["status"] != "acked"
+    pair.recovered = True
+    pub = publisher.HostedRoomReplicationPublisher(pair.source)
+    before = len(pair.probes)
+    for turn in range(6):
+        rooms.append_event(pair.source, room_id="room", event_id=f"busy-v2-{turn}", kind="message.user",
+            actor={"kind": "user", "id": "owner"}, payload={"text": "growing"},
+            authority_gateway_id=SUCCESSOR, authority_epoch=2)
+        pub._publish_one(("room", "z-other" if turn % 2 == 0 else "reviewer"))
+        status = next(r for r in pub.status()["work_records"] if r["producer_epoch"] == 2)
+        if status["status"] == "acked":
+            break
+    assert status["status"] == "acked", pair.attempts
+    assert pair.attempts[-1] == "z-other"
+    assert len(pair.probes) == before  # Durable route-local capability cache.
+    assert all(records.encode(r) == frozen["record_json"] for r in pair.records)
+    with rooms._transaction(pair.source) as conn:
+        assert dict(conn.execute(f"SELECT * FROM {records.PENDING_TABLE} WHERE producer_epoch=1").fetchone()) == {
+            **old, "disposition": "superseded_authority"}
+        assert conn.execute(f"SELECT record_json FROM {records.PENDING_TABLE} WHERE producer_epoch=2").fetchone()[0] == frozen["record_json"]
+
+
 def add_task(source, suffix):
     append(source, f"message-{suffix}")
     seq = rooms.room_state(source, room_id="room")["latest_seq"]

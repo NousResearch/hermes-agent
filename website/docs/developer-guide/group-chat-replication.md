@@ -18,7 +18,9 @@ This initial implementation is API-first. Existing Group Chats and invitations k
 5. Register the resulting scoped grant and catalog on the home with `groups.peer.register`. Do not retain a broad API key in that route. The publisher confirms the installed enrollment through its scoped capability probe before copying.
 6. Inspect home `groups.state` under `driver_status.replication` and participant `groups.replica_state` for coverage. Retirement delivery appears separately from Bot execution status.
 
-The initial version supports fixed-roster, initial-authority (epoch 1) groups. It does not silently adopt an unverified authority history or change the participant roster. Earlier data-only invitations remain readable as that limited mode; owner-authorized retirement enrollment is needed for automatic cleanup.
+Legacy unversioned copying supports fixed-roster, initial-authority (epoch 1) groups. Passive history and retirement format 2 additionally support committed authority transitions with a pinned owner-enrolled descriptor and a fresh exact-scope target-issued grant. They do not change the participant roster or prove execution authority. Earlier data-only invitations remain readable in their limited mode; owner-authorized retirement enrollment is needed for automatic cleanup.
+
+Invitation and capability responses advertise a `passive_replication` sibling outside the unchanged RoomLink protocol-2 catalog: `history_versions: [1,2]`, `retirement_versions: [1,2]`, and `work_record_versions: [1]`. Missing or incompatible lineage support blocks later-epoch history without downgrading it to the legacy format. For a non-executing invitation, set `passive_only: true` with `replication: true`; this grants only `status` and `replicate`, plus `work_records` only when separately opted in. It never grants dispatch, Allow or Stop.
 
 Grant values are secrets. Never put them in examples, logs, screenshots or issue reports. Ordinary invitations do not gain replica-write access, and replication does not enable execution or change a Bot's approval policy. Grant refresh retains the original permissions and authorization horizon.
 
@@ -42,6 +44,8 @@ Follow the history-copy and retirement-enrollment setup above. When issuing a ne
 ```json
 {"replication": true, "work_records": true}
 ```
+
+Work records remain **version 1 and initial-authority only** in this merge/compatibility baseline. A later enrolled sender can copy history, but cannot deliver v1 work records under an old prefix header. The publisher exposes `work_record_status: unsupported_lineage` and leaves old pending payloads, revisions, digests and outcomes unchanged. Existing retained records remain historical evidence, not current post-transfer work coverage; producer-scoped storage and work-record v2 are a separate implementation gate.
 
 Require `work_records_version: 1` in the invitation response before treating this option as supported. The scoped capability probe also reports that version. An older response or a history-only grant does not enable work-record delivery. Existing grants do not silently acquire the new permission; keep a working route unchanged if the target cannot support the requested option.
 

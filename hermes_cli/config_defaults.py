@@ -1775,7 +1775,8 @@ DEFAULT_CONFIG = {
         # (sys.executable): max isolation, project deps/relative paths won't work. Env scrubbing
         # (*_API_KEY, *_TOKEN, *_SECRET, ...) and the tool whitelist apply in both modes.
         "mode": "project",
-        # Session kernels are always on locally (`kernel_mode` is ignored; remote backends run
+        # Session kernels are always on locally (`kernel_mode` is ignored) and remotely
+        # (tools/code_kernel_remote.py; a backend that cannot spawn a kernel fails open to
         # per-call). One kernel per (session owner, mode, interpreter, cwd, tool-set) keeps state
         # across calls and turns; subagents get their own. Kernels die with the session, after
         # kernel_idle_timeout idle seconds, or by LRU eviction past max_session_kernels. A

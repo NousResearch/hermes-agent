@@ -2324,8 +2324,8 @@ DEFAULT_CONFIG = {
         # e.g. "us-central1" only if your models are region-pinned.
         "region": "global",
     },
-    # Managed llama.cpp runtime (docs: user-guide/local-models): official binaries, one supervised
-    # llama-server in router mode. No context/VRAM knobs by design.
+    # llama.cpp runtime: official binaries, one supervised llama-server in router mode.
+    # Context/VRAM policy remains automatic; tensor placement is an explicit opt-in policy knob.
     "local_runtime": {
         # Off = detection-only (Hermes still finds an external llama-server you run).
         "enabled": False,
@@ -2335,6 +2335,8 @@ DEFAULT_CONFIG = {
         # cuda|metal|vulkan|hip|cpu.
         "backend": "auto",
         "models_max": 4,  # Router process: how many models may be resident at once.
+        # host preserves the legacy spill policy; auto lets llama.cpp place tensors itself.
+        "tensor_placement": "host",
         "port": 0,  # Port for the managed server. 0 = pick a free port at spawn.
         # Extra ports detection probes for an external llama-server (besides 8080).
         "detect_ports": [],

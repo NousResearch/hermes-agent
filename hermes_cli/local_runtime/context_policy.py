@@ -150,10 +150,22 @@ def growth_decision(profile: ModelProfile, budget: HardwareBudget, *,
                           reason=f"rung {current_window // 1024}K -> {next_rung // 1024}K")
 
 
-def spill_overrides(profile: ModelProfile) -> list[str]:
-    """-ot placement for spilled configs: expert/FFN weights to host so attention + KV stay
-    GPU-resident. MoE gets the expert pattern; hybrids push recurrent-layer FFNs (their
-    n_head_kv==0 layers carry no KV worth protecting)."""
+def validate_tensor_placement(tensor_placement: str) -> str:
+    """Validate the configured tensor-placement policy before runtime startup."""
+    if tensor_placement not in {"auto", "host"}:
+        raise ValueError(f"unsupported tensor placement: {tensor_placement!r}")
+    return tensor_placement
+
+
+def spill_overrides(profile: ModelProfile, *, tensor_placement: str = "host") -> list[str]:
+    """Return optional ``-ot`` rules for spilled discrete-GPU configurations.
+
+    ``host`` preserves the legacy policy; ``auto`` delegates tensor placement
+    to llama.cpp, which can be faster on some discrete GPUs.
+    """
+    validate_tensor_placement(tensor_placement)
+    if tensor_placement == "auto":
+        return []
     if profile.moe:
         return ["-ot", r"blk\.\d+\.ffn_.*_exps\.weight=CPU"]
     if profile.recurrent_layer_count:
@@ -163,10 +175,11 @@ def spill_overrides(profile: ModelProfile) -> list[str]:
 
 def launch_args(profile: ModelProfile, decision: WindowDecision, *, flash_attention: bool = True,
                 mtp_capable: bool = False, mtp_draft_depth: int = 3, uma: bool = False,
-                mtp_prefill: bool = False) -> list[str]:
+                mtp_prefill: bool = False, tensor_placement: str = "host") -> list[str]:
     """Per-model launch flags from a window decision. Explicit -c puts fit into
     spill-weights-and-hold-ctx; q8 KV cache wherever flash attention exists; -ot placement on
     spilled configs — DISCRETE cards only."""
+    validate_tensor_placement(tensor_placement)
     args = ["-c", str(decision.window)]
     if mtp_capable:
         args += ["--spec-type", "draft-mtp", "--spec-draft-n-max", str(mtp_draft_depth),
@@ -178,7 +191,7 @@ def launch_args(profile: ModelProfile, decision: WindowDecision, *, flash_attent
     if flash_attention:
         args += ["-ctk", "q8_0", "-ctv", "q8_0", "-fa", "on"]
     if decision.spilled and not uma:
-        args += spill_overrides(profile)
+        args += spill_overrides(profile, tensor_placement=tensor_placement)
     return args
 
 

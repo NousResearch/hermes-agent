@@ -32,6 +32,34 @@ def _write_presets(home, *model_ids):
     (pdir / "presets.ini").write_text(body, encoding="utf-8")
 
 
+def test_boot_passes_tensor_placement_to_preset_generation(tmp_path, monkeypatch):
+    import hermes_cli.local_runtime.bootstrap as boot
+    import hermes_cli.local_runtime.hardware as hardware
+    import hermes_cli.local_runtime.presets as presets
+
+    captured = {}
+    monkeypatch.setattr(hardware, "probe_budget", lambda planning=False: "budget")
+
+    def fake_generate(models_dir, budget, preset_path, **kwargs):
+        captured.update(models_dir=models_dir, budget=budget,
+                        preset_path=preset_path, kwargs=kwargs)
+        return []
+
+    monkeypatch.setattr(presets, "generate_presets", fake_generate)
+    preset_path = tmp_path / "presets.ini"
+
+    assert boot._generate_presets(tmp_path, preset_path, tensor_placement="auto") == preset_path
+    assert captured["kwargs"] == {"tensor_placement": "auto"}
+
+
+def test_invalid_tensor_placement_is_rejected_before_runtime_boot(monkeypatch):
+    from hermes_cli.local_runtime import bootstrap
+
+    with pytest.raises(ValueError, match="unsupported tensor placement"):
+        bootstrap.ensure_local_runtime(
+            {"local_runtime": {"enabled": False, "tensor_placement": "invalid"}})
+
+
 def test_presets_stale_when_a_staged_model_has_no_section(hermes_home):
     from hermes_cli.local_runtime.bootstrap import _presets_stale
 

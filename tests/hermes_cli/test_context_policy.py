@@ -300,10 +300,21 @@ def test_growth_refits_against_live_budget():
 # ── spill placement + launch args ────────────────────────────
 
 
-def test_spill_overrides_prefer_expert_and_recurrent_ffn():
-    assert "exps" in " ".join(spill_overrides(moe()))
-    assert "ffn" in " ".join(spill_overrides(hybrid()))
-    assert spill_overrides(dense()) == []
+def test_spill_overrides_are_configurable():
+    """Operators can keep legacy host pinning or delegate placement to llama.cpp."""
+    assert "exps" in " ".join(spill_overrides(moe()))  # default preserves compatibility
+    assert "exps" in " ".join(spill_overrides(moe(), tensor_placement="host"))
+    assert spill_overrides(moe(), tensor_placement="auto") == []
+    assert spill_overrides(hybrid(), tensor_placement="auto") == []
+    with pytest.raises(ValueError, match="unsupported tensor placement"):
+        spill_overrides(moe(), tensor_placement="invalid")
+
+
+def test_launch_args_auto_placement_omits_host_override():
+    p = moe()
+    spilled = WindowDecision(window=FLOOR, spill_bytes=4 * GIB, kv_on_gpu=True)
+    args = launch_args(p, spilled, tensor_placement="auto")
+    assert "-ot" not in args
 
 
 def test_launch_args_contract():

@@ -16,6 +16,7 @@ import time
 from pathlib import Path
 
 from hermes_cli.local_runtime.binaries import runtimes_root
+from hermes_cli.local_runtime.context_policy import validate_tensor_placement
 from hermes_cli.local_runtime.gguf import SPLIT_PART_RE, model_id_from_stem
 
 logger = logging.getLogger(__name__)
@@ -140,8 +141,7 @@ def refresh_local_runtime() -> bool:
         logger.warning("local runtime refresh failed: %s", exc)
         return False
 
-
-def _generate_presets(mdir: Path, preset_path: Path) -> Path | None:
+def _generate_presets(mdir: Path, preset_path: Path, *, tensor_placement: str = "host") -> Path | None:
     """Write the launch-policy INI for every staged model; returns the path to hand the router.
 
     Priced against CAPACITY, not live free VRAM: this runs while the outgoing server instance may
@@ -156,7 +156,8 @@ def _generate_presets(mdir: Path, preset_path: Path) -> Path | None:
     from hermes_cli.local_runtime.presets import generate_presets
 
     try:
-        for entry in generate_presets(mdir, probe_budget(planning=True), preset_path):
+        for entry in generate_presets(mdir, probe_budget(planning=True), preset_path,
+                                       tensor_placement=tensor_placement):
             if entry.refusal:
                 logger.warning("model refused by physics check: %s", entry.refusal)
         return preset_path
@@ -178,6 +179,8 @@ def ensure_local_runtime(config: dict, force: bool = False) -> "object | None":
     falls back to configured providers."""
     global _SUPERVISOR
     section = (config or {}).get("local_runtime") or {}
+    tensor_placement = validate_tensor_placement(
+        str(section.get("tensor_placement", "host")))
     if not force and not section.get("enabled"):
         return None
     if _SUPERVISOR is not None:
@@ -232,7 +235,9 @@ def ensure_local_runtime(config: dict, force: bool = False) -> "object | None":
 
         mdir = models_dir()
         mdir.mkdir(parents=True, exist_ok=True)
-        preset_path = _generate_presets(mdir, runtimes_root() / "presets.ini")
+        preset_path = _generate_presets(
+            mdir, runtimes_root() / "presets.ini",
+            tensor_placement=tensor_placement)
 
         sup = LlamaServerSupervisor(install_dir, mdir, preset_path=preset_path,
                                     models_max=int(section.get("models_max", 4)),

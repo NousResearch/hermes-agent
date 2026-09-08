@@ -112,6 +112,7 @@ local_runtime:
   enabled: false     # true = start the managed server with Hermes.
                      # The desktop "Use" button sets this automatically.
   backend: auto      # auto | cuda | metal | vulkan | hip | cpu
+  tensor_placement: host  # host = legacy spill rules; auto = llama.cpp placement
   tag: b10362        # pinned llama.cpp release; Hermes updates it with
                      # each release after re-validation
 ```

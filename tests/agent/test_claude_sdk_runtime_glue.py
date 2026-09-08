@@ -441,3 +441,78 @@ class TestModelAttribution:
         assert kwargs["cost_status"] == "unknown"
         assert kwargs["cost_source"] == "claude-agent-sdk-unverified"
         assert result["cost_status"] == "unknown"
+
+
+class TestTurnOrchestrationOrder:
+    """The orderings run_claude_agent_sdk_turn's phases must keep, pinned
+    beside the per-topic suites: (i) attempt effects reset BEFORE session
+    startup; (iii) terminal/stop state reconciled BEFORE the provider-fallback
+    decision. (ii) record-before-sink and (iv) flush-before-persist are pinned
+    by test_stream_relay_records_delivery_before_display_callback and
+    test_resume_id_persisted_after_flush_and_gated_on_persist_disabled."""
+
+    def test_session_startup_sees_the_reset_attempt_ledger(self, monkeypatch):
+        import agent.claude_sdk_runtime_session as session_mod
+
+        agent = _make_agent()
+        agent._claude_sdk_session = None
+        agent._current_streamed_assistant_text = "prior turn output"
+        agent._sdk_issued_tool_effect = True
+        seen = {}
+
+        def fake_create_session(
+            agent_, *, resume_id, on_interim_assistant, on_tool_iteration
+        ):
+            seen["streamed"] = agent_._current_streamed_assistant_text
+            seen["tool_effect"] = agent_._sdk_issued_tool_effect
+            seen["callbacks"] = (on_interim_assistant, on_tool_iteration)
+            agent_._claude_sdk_session = MagicMock()
+            agent_._claude_sdk_session.run_turn.return_value = _make_turn()
+
+        monkeypatch.setattr(session_mod, "_create_session", fake_create_session)
+
+        result = run_claude_agent_sdk_turn(
+            agent,
+            user_message="hi",
+            original_user_message="hi",
+            messages=[{"role": "user", "content": "hi"}],
+            effective_task_id="task-1",
+        )
+
+        assert seen["streamed"] == ""
+        assert seen["tool_effect"] is False
+        assert all(callable(cb) for cb in seen["callbacks"])
+        assert result["completed"] is True
+
+    def test_stopped_errored_turn_never_hands_off_to_another_provider(self):
+        agent = _make_agent()
+        stopped_turn = _make_turn(
+            interrupted=True,
+            error="HTTP 429 rate limit exceeded",
+            should_retire=True,
+            final_text="",
+            projected_messages=[],
+        )
+
+        def run_turn(**_kwargs):
+            # The /stop lands DURING the turn: the agent-level flag is raised
+            # while the session is still running, then the turn retires.
+            agent._interrupt_requested = True
+            return stopped_turn
+
+        agent._claude_sdk_session.run_turn.side_effect = run_turn
+
+        result = run_claude_agent_sdk_turn(
+            agent,
+            user_message="hi",
+            original_user_message="hi",
+            messages=[{"role": "user", "content": "hi"}],
+            effective_task_id="task-1",
+        )
+
+        assert "failover_reason" not in result
+        assert result["interrupted"] is True
+        assert result["failed"] is False
+        assert result["sdk_effects"]["interrupted"] is True
+        assert agent._claude_sdk_session is None
+        assert agent._interrupt_requested is False

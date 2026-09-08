@@ -10,34 +10,26 @@ issue #25267.
 
 * ``run_claude_agent_sdk_turn`` — drives one turn through a lazily-created
   ``ClaudeAgentSdkSession`` (used when ``agent.api_mode == "claude_agent_sdk"``).
+  This facade orchestrates the phases in their load-bearing order; the phase
+  bodies live in the ``claude_sdk_runtime_<topic>`` siblings and share one
+  per-turn ``_SdkTurnState``.
 """
 
 from __future__ import annotations
 
 import copy
 import logging
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from agent.redact import redact_sensitive_text
-from agent.claude_sdk_runtime_continuity import (
-    _persisted_sdk_session_id,
-    _render_continuity_digest,
-    _store_sdk_session_id,
-)
-from agent.claude_sdk_runtime_fallback import (
-    ClaudeSdkTurnEffects,
-    _sdk_provider_failover_reason,
-)
-from agent.claude_sdk_runtime_compaction import (
-    _emit_dangling_compaction_done,
-)
+from agent.claude_sdk_runtime_continuity import _persist_turn
+from agent.claude_sdk_runtime_fallback import _reconcile_turn_outcome
 from agent.claude_sdk_runtime_session import (
-    _create_session,
-    _make_visibility_callbacks,
+    _refresh_turn_visibility,
+    _run_sdk_attempts,
 )
-from agent.claude_sdk_runtime_usage import (
-    _record_claude_sdk_usage,
-)
+from agent.claude_sdk_runtime_state import _SdkTurnState
+from agent.claude_sdk_runtime_usage import _account_turn
 
 logger = logging.getLogger(__name__)
 
@@ -62,33 +54,89 @@ def run_claude_agent_sdk_turn(
       gateway restart/eviction  → same row, id persisted  → RESUME
       error/timeout retire      → id CLEARED → next turn fresh + digest
       stale/failed resume       → retire → clear → ONE fresh retry with digest
+
+    Phase order is load-bearing: attempt effects are reset BEFORE session
+    startup; terminal/stop state is reconciled BEFORE the provider-fallback
+    decision; projected messages are flushed BEFORE the resume id is
+    persisted. Approval context and the visibility callbacks refresh every
+    turn; prompt-append construction is session-creation work
+    (``claude_sdk_runtime_session``).
     """
     from agent.transports.claude_agent_sdk_session import _coerce_turn_input
 
     user_input = _coerce_turn_input(user_message)
-    if isinstance(user_input, str) and not user_input.strip():
-        agent._interrupt_requested = False
-        live_session = getattr(agent, "_claude_sdk_session", None)
-        if live_session is not None:
-            try:
-                live_session.consume_interrupt()
-            except Exception:
-                logger.debug("consume_interrupt failed", exc_info=True)
-        rejection = (
-            "This Claude Agent SDK route can't process an empty message. "
-            "Please send text or a supported image."
-        )
-        return {
-            "final_response": rejection,
-            "messages": messages,
-            "api_calls": 0,
-            "completed": False,
-            "partial": True,
-            "error": rejection,
-            "interrupted": False,
-            "agent_persisted": True,
-        }
+    rejection = _reject_empty_turn(agent, user_input, messages)
+    if rejection is not None:
+        return rejection
 
+    _refresh_approval_turn_context(agent)
+
+    # NOTE: the user message is ALREADY appended to messages by the standard
+    # run_conversation() flow before the early return reaches us. Do NOT
+    # append again — that would duplicate. (Same contract as codex_runtime.)
+
+    # An interrupt that landed before the SDK session exists (first turn, or
+    # right after a retire) only set agent._interrupt_requested — honor it
+    # here, mirroring the native loop's top-of-loop check, and consume the
+    # flag so the NEXT turn runs normally.
+    if getattr(agent, "_interrupt_requested", False):
+        return _interrupted_before_start(agent, messages)
+
+    # Stream/replay state belongs to this SDK attempt, never to the cached
+    # gateway agent.  Reset before session startup too: an authoritative auth
+    # failure may happen before a model call and must not inherit prior output.
+    agent._current_streamed_assistant_text = ""
+    agent._sdk_issued_tool_effect = False
+    state = _SdkTurnState(
+        user_input=user_input,
+        original_user_message=original_user_message,
+        messages=messages,
+        messages_before_attempt=copy.deepcopy(messages),
+    )
+
+    _refresh_turn_visibility(agent, state)
+    failure = _run_sdk_attempts(agent, state)
+    if failure is not None:
+        return failure
+    _reconcile_turn_outcome(agent, state)
+    _persist_turn(agent, state)
+    _account_turn(agent, state)
+    _maybe_spawn_background_review(
+        agent, state, should_review_memory=should_review_memory
+    )
+    return _assemble_turn_result(agent, state)
+
+
+def _reject_empty_turn(
+    agent, user_input: Any, messages: List[Dict[str, Any]]
+) -> Optional[Dict[str, Any]]:
+    """The empty-message rejection (no session, no model call), or None to proceed."""
+    if not (isinstance(user_input, str) and not user_input.strip()):
+        return None
+    agent._interrupt_requested = False
+    live_session = getattr(agent, "_claude_sdk_session", None)
+    if live_session is not None:
+        try:
+            live_session.consume_interrupt()
+        except Exception:
+            logger.debug("consume_interrupt failed", exc_info=True)
+    rejection = (
+        "This Claude Agent SDK route can't process an empty message. "
+        "Please send text or a supported image."
+    )
+    return {
+        "final_response": rejection,
+        "messages": messages,
+        "api_calls": 0,
+        "completed": False,
+        "partial": True,
+        "error": rejection,
+        "interrupted": False,
+        "agent_persisted": True,
+    }
+
+
+def _refresh_approval_turn_context(agent) -> None:
     # P1.b: refresh the approval-context snapshot EVERY turn (including
     # session-reuse turns). This runs on the agent turn thread, where the
     # session contextvars are visible; the SDK invokes the approval callback
@@ -103,280 +151,45 @@ def run_claude_agent_sdk_turn(
     except Exception:
         logger.debug("approval turn-context refresh failed", exc_info=True)
 
-    # NOTE: the user message is ALREADY appended to messages by the standard
-    # run_conversation() flow before the early return reaches us. Do NOT
-    # append again — that would duplicate. (Same contract as codex_runtime.)
 
-    # An interrupt that landed before the SDK session exists (first turn, or
-    # right after a retire) only set agent._interrupt_requested — honor it
-    # here, mirroring the native loop's top-of-loop check, and consume the
-    # flag so the NEXT turn runs normally.
-    if getattr(agent, "_interrupt_requested", False):
-        agent._interrupt_requested = False
-        live_session = getattr(agent, "_claude_sdk_session", None)
-        if live_session is not None:
-            # interrupt() also set the live session's event; consume it here
-            # or the NEXT legitimate message dies on the stale event with no
-            # model call.
-            try:
-                live_session.consume_interrupt()
-            except Exception:
-                logger.debug("consume_interrupt failed", exc_info=True)
-        return {
-            "final_response": "",
-            "messages": messages,
-            "api_calls": 0,
-            "completed": False,
-            "partial": True,
-            # Without this key the gateway's empty-response normalizer has no
-            # branch to take (interrupted absent, api_calls 0, partial True →
-            # every arm defeated) and the user's message dies in SILENCE.
-            # With it, api_calls==0 + interrupted surfaces the honest
-            # "interrupted before processing — send it again" path.
-            "interrupted": True,
-            "error": None,
-            "agent_persisted": True,
-        }
-
-    # Stream/replay state belongs to this SDK attempt, never to the cached
-    # gateway agent.  Reset before session startup too: an authoritative auth
-    # failure may happen before a model call and must not inherit prior output.
-    agent._current_streamed_assistant_text = ""
-    agent._sdk_issued_tool_effect = False
-    _messages_before_sdk_attempt = copy.deepcopy(messages)
-
-    on_interim_assistant, on_tool_iteration = _make_visibility_callbacks(agent)
+def _interrupted_before_start(agent, messages: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Honour an interrupt that landed before this turn's session existed."""
+    agent._interrupt_requested = False
     live_session = getattr(agent, "_claude_sdk_session", None)
     if live_session is not None:
+        # interrupt() also set the live session's event; consume it here
+        # or the NEXT legitimate message dies on the stale event with no
+        # model call.
         try:
-            live_session.set_turn_visibility_callbacks(
-                on_interim_assistant=on_interim_assistant,
-                on_tool_iteration=on_tool_iteration,
-            )
+            live_session.consume_interrupt()
         except Exception:
-            logger.debug("claude-sdk visibility callback refresh failed", exc_info=True)
+            logger.debug("consume_interrupt failed", exc_info=True)
+    return {
+        "final_response": "",
+        "messages": messages,
+        "api_calls": 0,
+        "completed": False,
+        "partial": True,
+        # Without this key the gateway's empty-response normalizer has no
+        # branch to take (interrupted absent, api_calls 0, partial True →
+        # every arm defeated) and the user's message dies in SILENCE.
+        # With it, api_calls==0 + interrupted surfaces the honest
+        # "interrupted before processing — send it again" path.
+        "interrupted": True,
+        "error": None,
+        "agent_persisted": True,
+    }
 
-    turn = None
-    resumed = False
-    send_input = user_input
-    for attempt in (0, 1):
-        if not hasattr(agent, "_claude_sdk_session") or agent._claude_sdk_session is None:
-            resume_id = _persisted_sdk_session_id(agent) if attempt == 0 else None
-            resumed = bool(resume_id)
-            send_input = user_input
-            if not resume_id and len(messages) > 1:
-                digest = _render_continuity_digest(messages[:-1])
-                if digest:
-                    if isinstance(user_input, list):
-                        send_input = [
-                            {"type": "text", "text": digest},
-                            *user_input,
-                        ]
-                    else:
-                        send_input = digest + user_input
-            _create_session(
-                agent,
-                resume_id=resume_id,
-                on_interim_assistant=on_interim_assistant,
-                on_tool_iteration=on_tool_iteration,
-            )
 
-        try:
-            turn = agent._claude_sdk_session.run_turn(user_input=send_input)
-        except Exception as exc:
-            safe_exc = redact_sensitive_text(str(exc), force=True)
-            # A PreCompact hook may have opened a transient user-visible status.
-            # This exception bypasses the normal terminal edge below; clear it
-            # here so a later unrelated turn cannot announce stale completion.
-            if getattr(agent, "_sdk_compaction_pending", False):
-                agent._sdk_compaction_pending = False
-                try:
-                    emit = getattr(agent, "_emit_status", None)
-                    if callable(emit):
-                        emit("⚠️ Context compaction interrupted")
-                except Exception:
-                    logger.debug("failed to close interrupted compaction status", exc_info=True)
-            # Do not use logger.exception here: it appends the raw exception
-            # string after the redacted message to the log record.
-            logger.error("claude-agent-sdk turn failed: %s", safe_exc)
-            try:
-                agent._claude_sdk_session.close()
-            except Exception:
-                pass
-            agent._claude_sdk_session = None
-            if resumed and attempt == 0:
-                # A raising RESUMED session is a suspect resume — clear the
-                # id and give the turn one fresh chance (digest included).
-                _store_sdk_session_id(agent, None)
-                resumed = False
-                continue
-            return {
-                "final_response": f"claude-agent-sdk turn failed: {safe_exc}",
-                "messages": messages,
-                "api_calls": 0,
-                "completed": False,
-                "partial": True,
-                # run_turn consumes its own exceptions into TurnResult, so
-                # anything RAISING here is a dead turn, not a recoverable
-                # partial — mark it failed so one-shot runs exit nonzero
-                # (mirrors conversation_loop's generic non-retryable return).
-                "failed": True,
-                "error": safe_exc,
-            }
-
-        if getattr(turn, "should_retire", False):
-            logger.warning(
-                "claude-agent-sdk session retired (turn error: %s)",
-                redact_sensitive_text(str(turn.error or ""), force=True),
-            )
-            try:
-                agent._claude_sdk_session.close()
-            except Exception:
-                pass
-            agent._claude_sdk_session = None
-            # Error/timeout retire always clears the persisted resume id —
-            # never resume a conversation that just failed.
-            _store_sdk_session_id(agent, None)
-            if (
-                resumed
-                and attempt == 0
-                and not getattr(turn, "interrupted", False)
-            ):
-                # Stale/failed resume: one fresh retry with digest. Never for
-                # an INTERRUPTED retire (user /stop that killed the CLI, or a
-                # hard watchdog trip) — re-running the stopped turn in full
-                # would evaporate the stop and deliver the answer anyway.
-                resumed = False
-                continue
-        break
-
-    _sdk_effects = ClaudeSdkTurnEffects(
-        tool=(
-            bool(getattr(agent, "_sdk_issued_tool_effect", False))
-            or int(getattr(turn, "tool_iterations", 0) or 0) > 0
-        ),
-        streamed=bool(getattr(agent, "_current_streamed_assistant_text", "")),
-        projected=bool(getattr(turn, "projected_messages", None)),
-        interrupted=bool(
-            getattr(turn, "interrupted", False)
-            or getattr(agent, "_interrupt_requested", False)
-        ),
-        mutated=messages != _messages_before_sdk_attempt,
-    )
-    _sdk_failover_reason = None
-    if getattr(turn, "error", None) and _sdk_effects.replay_safe:
-        _sdk_failover_reason = _sdk_provider_failover_reason(
-            agent,
-            str(turn.error),
-            getattr(turn, "fatal_reason", None),
-        )
-        if _sdk_failover_reason is not None and agent._claude_sdk_session is not None:
-            # A provider switch must never retain transport/session state from
-            # the failed SDK backend.
-            try:
-                agent._claude_sdk_session.close()
-            except Exception:
-                pass
-            agent._claude_sdk_session = None
-            _store_sdk_session_id(agent, None)
-
-    # FALLBACK ONLY. _on_compact_boundary above is the real terminal edge and
-    # normally clears the flag mid-turn; reaching here means the CLI started a
-    # compaction and never streamed its compact_boundary (older/newer CLI, or a
-    # turn that died mid-compaction). A completed turn still proves the
-    # compaction ended, so this closes the dangling status rather than leaving
-    # "🗜️ Compacting..." as the user's last word from the turn.
-    #
-    # Do NOT promote this back to the primary path: end-of-turn is exactly where
-    # end-of-turn progress cleanup deletes the message, so the notice is emitted
-    # and destroyed in the same instant (see _handle_compact_boundary).
-    _emit_dangling_compaction_done(agent)
-
-    # Interrupt handoff (codex_runtime parity, its ~739-746): capture BEFORE
-    # the consume below zeroes the agent flag — the result dict needs it, and
-    # without an "interrupted" key the gateway's queued-drain classifies an
-    # interrupted turn as a plain partial error and DELIVERS the abandoned
-    # turn's error text ("⚠️ Processing stopped… Try again", 2026-08-09
-    # barge-in incident) instead of discarding it via its interrupted branch.
-    _user_interrupted = bool(
-        getattr(turn, "interrupted", False)
-        and getattr(agent, "_interrupt_requested", False)
-    )
-
-    if getattr(turn, "interrupted", False):
-        # The interrupt was honored by THIS turn — consume the agent-level
-        # flag so the next turn is not short-circuited by it.
-        agent._interrupt_requested = False
-        if agent._claude_sdk_session is not None:
-            # The abandoned stream may still hold the interrupted turn's
-            # ResultMessage; a REUSED client would serve it as the NEXT
-            # turn's answer. Retire the client — the persisted id below lets
-            # the next turn RESUME the same SDK conversation cleanly.
-            try:
-                agent._claude_sdk_session.close()
-            except Exception:
-                pass
-            agent._claude_sdk_session = None
-
-    if turn.projected_messages:
-        messages.extend(turn.projected_messages)
-        # Early-return path bypasses conversation_loop's per-step persistence;
-        # flush the new projected rows ourselves (idempotent via the intrinsic
-        # _DB_PERSISTED_MARKER — the user turn was flushed at turn start).
-        if getattr(agent, "_session_db", None) is not None:
-            try:
-                agent._flush_messages_to_session_db(messages)
-            except Exception:
-                logger.debug(
-                    "claude-sdk projected-message flush failed", exc_info=True
-                )
-
-    if not getattr(turn, "should_retire", False) and _sdk_failover_reason is None:
-        # Persist the SDK session id for restart/eviction/interrupt resume.
-        # AFTER the flush on purpose: the flush's _ensure_db_session retry is
-        # what (re)creates the session row when turn-start persistence hit a
-        # transient lock — storing first would silently discard the id.
-        thread_id = getattr(turn, "thread_id", None)
-        if thread_id:
-            _store_sdk_session_id(agent, thread_id)
-
-    # Counter ticks — _turns_since_memory/_user_turn_count are incremented by
-    # run_conversation()'s pre-loop block; only _iters_since_skill is ours.
-    agent._iters_since_skill = (
-        getattr(agent, "_iters_since_skill", 0) + turn.tool_iterations
-    )
-    usage_result = (
-        _record_claude_sdk_usage(agent, turn)
-        if getattr(turn, "api_call_made", True)
-        else {}
-    )
-
-    should_review_skills = False
-    # Skill-review cadence belongs to review policy, not foreground tool
-    # availability. If routed, a distinct normal runtime owns optional writes.
-    if (
-        agent._skill_nudge_interval > 0
-        and agent._iters_since_skill >= agent._skill_nudge_interval
-    ):
-        should_review_skills = True
-        agent._iters_since_skill = 0
-
-    if not turn.interrupted and turn.error is None:
-        try:
-            agent._sync_external_memory_for_turn(
-                original_user_message=original_user_message,
-                final_response=turn.final_text,
-                interrupted=False,
-                messages=messages,
-            )
-        except Exception:
-            logger.debug("external memory sync raised", exc_info=True)
-
+def _maybe_spawn_background_review(
+    agent, state: _SdkTurnState, *, should_review_memory: bool
+) -> None:
+    turn = state.turn
     if (
         turn.final_text
         and not turn.interrupted
         and not agent.skip_background_review
-        and (should_review_memory or should_review_skills)
+        and (should_review_memory or state.should_review_skills)
     ):
         # #25267 suppressed this spawn unconditionally: the fork inherits
         # api_mode="claude_agent_sdk" and early-returns into a fresh SDK
@@ -403,9 +216,9 @@ def run_claude_agent_sdk_turn(
         if routed:
             try:
                 agent._spawn_background_review(
-                    messages_snapshot=list(messages),
+                    messages_snapshot=list(state.messages),
                     review_memory=should_review_memory,
-                    review_skills=should_review_skills,
+                    review_skills=state.should_review_skills,
                 )
             except Exception:
                 logger.debug("background review spawn raised", exc_info=True)
@@ -415,22 +228,25 @@ def run_claude_agent_sdk_turn(
                 "(memory=%s, skills=%s) — the review fork cannot write on "
                 "this runtime",
                 should_review_memory,
-                should_review_skills,
+                state.should_review_skills,
             )
 
+
+def _assemble_turn_result(agent, state: _SdkTurnState) -> Dict[str, Any]:
+    turn = state.turn
     result = {
         "final_response": turn.final_text,
-        "messages": messages,
+        "messages": state.messages,
         "api_calls": int(getattr(turn, "api_call_made", True)),
         "completed": not turn.interrupted and turn.error is None,
         "partial": turn.interrupted or turn.error is not None,
-        "failed": bool(turn.error) and not _sdk_effects.interrupted,
+        "failed": bool(turn.error) and not state.effects.interrupted,
         "error": redact_sensitive_text(str(turn.error or ""), force=True) if turn.error else None,
-        "interrupted": _user_interrupted,
-        "sdk_effects": _sdk_effects.as_result_dict(),
+        "interrupted": state.user_interrupted,
+        "sdk_effects": state.effects.as_result_dict(),
         **(
-            {"failover_reason": _sdk_failover_reason.value}
-            if _sdk_failover_reason is not None
+            {"failover_reason": state.failover_reason.value}
+            if state.failover_reason is not None
             else {}
         ),
         # Same persistence contract as the codex app-server path: we flushed
@@ -438,7 +254,7 @@ def run_claude_agent_sdk_turn(
         # user turn (append_message has no dedup).
         "agent_persisted": True,
         "claude_sdk_session_id": turn.thread_id,
-        **usage_result,
+        **state.usage_result,
     }
     # Fatal startup/auth/billing refusals surface the same machine-readable
     # fields the chat_completions path sets (conversation_loop), so the -Q

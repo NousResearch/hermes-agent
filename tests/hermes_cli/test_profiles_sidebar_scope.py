@@ -56,8 +56,8 @@ def _seed_session(home, session_id, *, source, cwd=None, tokens=None, cost=None)
     """One session with a message, so it clears the sidebar's min_messages=1.
 
     ``cwd`` is what attaches it to a project — without one it lands in Home.
-    ``tokens`` is an (input, output) pair; both it and ``cost`` are written
-    straight to the row, the shape a finished turn leaves behind.
+    ``tokens`` is an (input, output[, cache read, cache write]) tuple; it and
+    ``cost`` are written straight to the row, the shape a finished turn leaves behind.
     """
     import sqlite3
 
@@ -75,9 +75,12 @@ def _seed_session(home, session_id, *, source, cwd=None, tokens=None, cost=None)
 
     conn = sqlite3.connect(home / "state.db")
     try:
+        token_buckets = tuple(tokens or (0, 0))
+        token_buckets += (0,) * (4 - len(token_buckets))
         conn.execute(
-            "UPDATE sessions SET input_tokens = ?, output_tokens = ?, estimated_cost_usd = ? WHERE id = ?",
-            (*(tokens or (0, 0)), cost or 0.0, session_id),
+            "UPDATE sessions SET input_tokens = ?, output_tokens = ?, cache_read_tokens = ?, "
+            "cache_write_tokens = ?, estimated_cost_usd = ? WHERE id = ?",
+            (*token_buckets, cost or 0.0, session_id),
         )
         conn.commit()
     finally:
@@ -159,7 +162,10 @@ class TestCrossProfileProjectTree:
         shared.mkdir(parents=True)
 
         for name, home in profiles_on_disk.items():
-            _seed_session(home, f"{name}-chat", source="cli", cwd=shared, tokens=(100, 20), cost=0.25)
+            _seed_session(
+                home, f"{name}-chat", source="cli", cwd=shared,
+                tokens=(40, 20, 60, 0), cost=0.25,
+            )
             _seed_project(home, "Shared", shared)
 
         payload = client.get("/api/profiles/projects/tree").json()

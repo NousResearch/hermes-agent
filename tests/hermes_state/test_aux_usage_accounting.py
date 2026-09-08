@@ -40,6 +40,29 @@ def _usage_rows(db, session_id):
 
 
 class TestRecordAuxiliaryUsage:
+    def test_store_total_includes_cached_and_auxiliary_tokens(self, db):
+        db.create_session("anthropic-session", source="desktop")
+        db.append_message("anthropic-session", role="user", content="hi")
+        db.update_token_counts(
+            "anthropic-session",
+            input_tokens=600_000,
+            output_tokens=75_964,
+            cache_read_tokens=3_000_000,
+            cache_write_tokens=364_768,
+            model="claude-opus-4-6",
+            billing_provider="anthropic",
+        )
+        db.record_auxiliary_usage(
+            "anthropic-session",
+            "compression",
+            model="claude-haiku-4-5",
+            billing_provider="anthropic",
+            input_tokens=1_000,
+            output_tokens=100,
+        )
+
+        assert db.usage_totals()["tokens"] == 4_041_832
+
     def test_records_task_row(self, db):
         db.create_session("s1", source="cli")
         db.record_auxiliary_usage(

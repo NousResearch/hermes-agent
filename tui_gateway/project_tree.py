@@ -341,7 +341,9 @@ def _project_node(
         "sessionCount": session_count, "lastActive": last_active,
         # Totals over the same sessions `sessionCount` counts (billed cost, else estimated).
         "totalTokens": sum(
-            (s.get("input_tokens") or 0) + (s.get("output_tokens") or 0) for s in rows),
+            sum(s.get(key) or 0 for key in (
+                "input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens"))
+            for s in rows),
         "totalCostUsd": sum(
             float(s.get("actual_cost_usd") or s.get("estimated_cost_usd") or 0) for s in rows),
         "repos": repos, "previewSessions": preview_sessions}

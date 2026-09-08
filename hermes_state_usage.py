@@ -17,6 +17,10 @@ logger = logging.getLogger("hermes_state")
 _TOKEN_COUNTERS = ("input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens", "reasoning_tokens")
 
 
+def _billed_token_sql(prefix: str = "") -> str:
+    return " + ".join(f"COALESCE({prefix}{column}, 0)" for column in _TOKEN_COUNTERS[:4])
+
+
 def _token_update_sql(delta: bool) -> str:
     """``UPDATE sessions`` for one usage report: *delta* adds to the stored counters (CLI
     per-call path), otherwise sets them (gateway cumulative path). Cost/route columns
@@ -385,16 +389,28 @@ class SessionUsageMixin:
         self._execute_write(lambda conn: self._record_model_usage(conn, session_id, task=task, **usage))
 
     def usage_totals(self, *, min_message_count: int = 1, include_archived: bool = False) -> Dict[str, float]:
-        """Tokens and spend across the whole store (one scan), so the sidebar total does not
-        shrink with paging. Spend prefers the billed figure over the estimate."""
+        """Billed tokens and spend across the whole store, including cache and auxiliary calls."""
         where = ["parent_session_id IS NULL", "message_count >= ?"]
         params: List[Any] = [min_message_count]
         if not include_archived:
             where.append("COALESCE(archived, 0) = 0")
         row = self._read_one(f"""
-            SELECT COALESCE(SUM(COALESCE(input_tokens, 0) + COALESCE(output_tokens, 0)), 0),
-                   COALESCE(SUM(COALESCE(actual_cost_usd, estimated_cost_usd, 0)), 0)
-              FROM sessions
-             WHERE {' AND '.join(where)}
+            WITH eligible AS (
+                SELECT * FROM sessions WHERE {' AND '.join(where)}
+            )
+            SELECT COALESCE(SUM({_billed_token_sql()}), 0) + COALESCE((
+                       SELECT SUM({_billed_token_sql('session_model_usage.')})
+                         FROM session_model_usage
+                         JOIN eligible ON eligible.id = session_model_usage.session_id
+                        WHERE session_model_usage.task <> ''
+                   ), 0),
+                   COALESCE(SUM(COALESCE(actual_cost_usd, estimated_cost_usd, 0)), 0) + COALESCE((
+                       SELECT SUM(COALESCE(session_model_usage.actual_cost_usd,
+                                           session_model_usage.estimated_cost_usd, 0))
+                         FROM session_model_usage
+                         JOIN eligible ON eligible.id = session_model_usage.session_id
+                        WHERE session_model_usage.task <> ''
+                   ), 0)
+              FROM eligible
             """, params)
         return {"tokens": int(row[0] or 0), "cost_usd": float(row[1] or 0.0)}

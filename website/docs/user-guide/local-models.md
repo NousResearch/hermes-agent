@@ -113,6 +113,8 @@ local_runtime:
                      # The desktop "Use" button sets this automatically.
   backend: auto      # auto | cuda | metal | vulkan | hip | cpu
   tensor_placement: host  # host = legacy spill rules; auto = llama.cpp placement
+                      # For discrete GPUs, host keeps selected spill tensors on system RAM;
+                      # auto lets llama.cpp choose placement. UMA systems never force host pinning.
   tag: b10362        # pinned llama.cpp release; Hermes updates it with
                      # each release after re-validation
 ```

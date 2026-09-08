@@ -15,6 +15,7 @@ from hermes_cli.config import (
     get_hermes_home,
     ensure_hermes_home,
     get_compatible_custom_providers,
+    validate_config_structure,
     _explicit_config_paths,
     _normalize_max_turns_config,
     is_provider_enabled,
@@ -32,6 +33,56 @@ from hermes_cli.config import (
     write_platform_config_field,
     _sanitize_env_lines,
 )
+
+
+class TestConfigCheck:
+    def test_reports_local_runtime_structure_issues(self, monkeypatch, capsys):
+        import hermes_cli.config as config_mod
+
+        monkeypatch.setattr(config_mod, "check_config_version", lambda **_: (41, 41))
+        monkeypatch.setattr(config_mod, "get_missing_config_fields", lambda: [])
+        monkeypatch.setattr(config_mod, "get_env_value", lambda _name: "")
+        monkeypatch.setattr(config_mod, "validate_config_structure", lambda: [
+            config_mod.ConfigIssue(
+                "error",
+                "local_runtime.tensor_placement must be 'host' or 'auto', got 'invalid'",
+                "Set local_runtime.tensor_placement to host or auto",
+            )
+        ])
+
+        config_mod._cmd_config_check(type("Args", (), {})())
+        output = capsys.readouterr().out
+        assert "Config structure issues" in output
+        assert "local_runtime.tensor_placement" in output
+
+
+    def test_invalid_tensor_placement_is_reported(self):
+        issues = validate_config_structure({
+            "local_runtime": {"tensor_placement": "invalid"},
+        })
+        assert any(
+            issue.severity == "error"
+            and "local_runtime.tensor_placement" in issue.message
+            for issue in issues
+        )
+
+    def test_valid_tensor_placement_is_accepted(self):
+        for placement in ("host", "auto"):
+            issues = validate_config_structure({
+                "local_runtime": {"tensor_placement": placement},
+            })
+            assert not any("local_runtime.tensor_placement" in issue.message for issue in issues)
+
+    def test_non_string_tensor_placement_is_reported(self):
+        for placement in ([], {}, 1):
+            issues = validate_config_structure({
+                "local_runtime": {"tensor_placement": placement},
+            })
+            assert any(
+                issue.severity == "error"
+                and "local_runtime.tensor_placement" in issue.message
+                for issue in issues
+            )
 
 
 class TestGetHermesHome:

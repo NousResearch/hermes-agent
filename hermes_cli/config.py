@@ -1169,6 +1169,20 @@ def _validate_fallback_model(fb: Any, issues: List[ConfigIssue]) -> None:
                         suffix=" — fallback will be disabled")
 
 
+def _validate_local_runtime(config: Dict[str, Any], issues: List[ConfigIssue]) -> None:
+    runtime = config.get("local_runtime")
+    if not isinstance(runtime, dict) or "tensor_placement" not in runtime:
+        return
+    placement = runtime.get("tensor_placement")
+    if not isinstance(placement, str) or placement not in {"host", "auto"}:
+        _issue(
+            issues,
+            "error",
+            f"local_runtime.tensor_placement must be 'host' or 'auto', got {placement!r}",
+            "Set local_runtime.tensor_placement to host (legacy spill rules) or auto (llama.cpp placement)",
+        )
+
+
 def _validate_web_backends(config: Dict[str, Any], issues: List[ConfigIssue]) -> None:
     """A stale web backend selection otherwise fails only at the first web_search/web_extract
     call with a generic "no registered provider" error; warn at startup instead."""
@@ -1206,6 +1220,7 @@ def validate_config_structure(config: Optional[Dict[str, Any]] = None) -> List["
 
     issues: List[ConfigIssue] = []
     _validate_voice(config, issues)
+    _validate_local_runtime(config, issues)
     cp = config.get("custom_providers")
     fb = config.get("fallback_model")
     for value, validator in ((cp, _validate_custom_providers), (fb, _validate_fallback_model)):
@@ -3715,6 +3730,17 @@ def _cmd_config_check(args):
         print()
         print(color(f"  {len(missing_config)} new config option(s) available", Colors.YELLOW))
         print("    Run 'hermes config migrate' to add them")
+
+    structure_issues = validate_config_structure()
+    if structure_issues:
+        print()
+        print(color("  Config structure issues:", Colors.BOLD))
+        for issue in structure_issues:
+            marker = "✗" if issue.severity == "error" else "⚠"
+            print(color(f"    {marker} {issue.message}",
+                        Colors.RED if issue.severity == "error" else Colors.YELLOW))
+            if issue.hint:
+                print(f"      → {issue.hint.splitlines()[0]}")
 
     print()
 

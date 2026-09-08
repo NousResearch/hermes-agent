@@ -308,12 +308,22 @@ def test_spill_overrides_are_configurable():
     assert spill_overrides(hybrid(), tensor_placement="auto") == []
     with pytest.raises(ValueError, match="unsupported tensor placement"):
         spill_overrides(moe(), tensor_placement="invalid")
+    for invalid in ([], {}, 1):
+        with pytest.raises(ValueError, match="unsupported tensor placement"):
+            spill_overrides(moe(), tensor_placement=invalid)
 
 
 def test_launch_args_auto_placement_omits_host_override():
     p = moe()
     spilled = WindowDecision(window=FLOOR, spill_bytes=4 * GIB, kv_on_gpu=True)
     args = launch_args(p, spilled, tensor_placement="auto")
+    assert "-ot" not in args
+
+
+def test_auto_placement_preserves_uma_no_host_override():
+    p = moe()
+    spilled = WindowDecision(window=FLOOR, spill_bytes=4 * GIB, kv_on_gpu=True)
+    args = launch_args(p, spilled, tensor_placement="auto", uma=True)
     assert "-ot" not in args
 
 

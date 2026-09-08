@@ -91,6 +91,7 @@ Routes define how different webhook sources are handled. Each route is a named e
 | `deliver_only` | No | If `true`, skip the agent entirely — the rendered `prompt` template becomes the literal message that gets delivered. Zero LLM cost, sub-second delivery. See [Direct Delivery Mode](#direct-delivery-mode) for use cases. Requires `deliver` to be a real target (not `log`). |
 | `cron_job` | No | Fire an existing cron job (by ID or name) on each event instead of starting a fresh webhook agent session. The rendered `prompt` becomes transient per-run context; the job's own prompt, skills, model, and delivery settings apply. Mutually exclusive with `deliver_only`. See [Event-Triggered Cron Jobs](#event-triggered-cron-jobs). |
 | `coalesce` | No | Debounce rapid distinct events on the same logical entity into one agent run. Block with a required `key` (payload field or template identifying the entity, e.g. `pull_request.number`), optional `window_seconds` (quiet window, default 30) and `max_wait_seconds` (dispatch cap, default 300). See [Event Coalescing](#event-coalescing). Mutually exclusive with `deliver_only` and `cron_job`. |
+| `mirror_to_session` | No | Default `true`. After a successful delivery to a chat platform, the delivered message is also written into that chat's session transcript (as a labelled user turn, the same way cron briefs are), so when you reply in that chat the agent knows what it just sent you. Set `false` to keep the target chat's history untouched. |
 
 ### Full example
 
@@ -358,6 +359,8 @@ The `deliver` field controls where the agent's response goes after processing th
 | `bluebubbles` | Routes the response to BlueBubbles (iMessage). Uses the home channel, or specify `chat_id` in `deliver_extra`. |
 
 For cross-platform delivery, the target platform must also be enabled and connected in the gateway. If no `chat_id` is provided in `deliver_extra`, the response is sent to that platform's configured home channel.
+
+A delivered response is mirrored into the target chat's session transcript as `[Webhook delivery: <route>]` followed by the message, so a follow-up reply in that chat ("so he's out?") has the context of what the webhook run said. The mirror is best-effort: it never fails the delivery, and it is skipped when the chat has no gateway session yet (nobody has talked to the agent there). Set `mirror_to_session: false` on the route to disable it.
 
 ---
 

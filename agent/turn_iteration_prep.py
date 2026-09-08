@@ -61,7 +61,8 @@ def _maybe_inject_iteration_budget_warning(agent: Any, messages: Any) -> bool:
     if kanban_worker:
         notice += (
             " While tools are still available, call kanban_complete only if all task "
-            "requirements are verified; otherwise persist a kanban_comment handoff and "
+            "requirements are verified, or kanban_request_review if it is ready for "
+            "review; otherwise persist a kanban_comment handoff and "
             "continue. A diff or commit alone is not completion evidence."
         )
     # Only the current tool-result tail is mutable; an older turn may already be cached.

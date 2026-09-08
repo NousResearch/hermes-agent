@@ -145,6 +145,8 @@ def test_feasibility_check_passes_live_main_runtime():
     agent.base_url = "https://chatgpt.com/backend-api/codex"
     agent.api_key = "codex-token"
     agent.api_mode = "codex_responses"
+    agent.session_id = "feasibility-session"
+    agent.reasoning_config = {"effort": "high"}
 
     mock_client = MagicMock()
     mock_client.base_url = "https://chatgpt.com/backend-api/codex"
@@ -164,6 +166,8 @@ def test_feasibility_check_passes_live_main_runtime():
             "api_key": "codex-token",
             "api_mode": "codex_responses",
             "auth_mode": "",
+            "session_id": agent.session_id,
+            "reasoning_config": agent.reasoning_config,
         },
     )
 

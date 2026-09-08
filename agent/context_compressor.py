@@ -3218,7 +3218,7 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
             "base_url": self.base_url,
             "api_key": self.api_key,
             "api_mode": self.api_mode,
-            "reasoning_config": copy.deepcopy(self.reasoning_config),
+            "reasoning_config": copy.deepcopy(getattr(self, "reasoning_config", None)),
         }
 
     def _call_summary_llm(self, prompt: str, prompt_started_at: float) -> str:

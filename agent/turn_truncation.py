@@ -1,10 +1,13 @@
 """Truncation recovery (``finish_reason == "length"``) for the conversation turn loop.
 
 Handles thinking-budget exhaustion, repetition-dominated truncation, content-filter stream
-stalls escalated to the fallback chain, text continuation nudges (up to 4, with the ceiling
-exit that drops the fragment trail), truncated tool-call retries with max_tokens boosts, and
-the final roll-back. Nothing here imports ``agent.conversation_loop`` at module level
-(cycle); loop-internal helpers are imported lazily so tests patching them keep working.
+stalls escalated to the fallback chain, text continuation nudges (up to 4, ceiling exit drops
+the fragment trail), truncated tool-call retries with max_tokens boosts, and the final
+roll-back. Thinking-budget exhaustion is only ever declared for a REAL length truncation
+(finish_reason="length" and no dropped-stream stub); a stub's length label is a Hermes
+classification of a dropped connection, not proof the budget was exhausted. Nothing here
+imports ``agent.conversation_loop`` at module level (cycle); loop-internal helpers are
+imported lazily so tests patching them keep working.
 """
 
 from __future__ import annotations
@@ -51,6 +54,11 @@ _CEILING_NO_TEXT = (
     "⚠️ **No visible answer was produced.** The model hit its output-token limit on every "
     "continuation attempt — its reasoning consumed the entire budget each time.\n\nTo fix this:\n"
     "→ Lower reasoning effort: `/reasoning low` or `/reasoning none`\n→ Or raise max_tokens for this model"
+)
+_CEILING_STREAM_DROPPED = (
+    "⚠️ **No visible answer was produced after repeated truncated or interrupted responses.** "
+    "The stream did not deliver a visible answer in 4 continuation attempts.\n\n"
+    "→ Try again, switch models with `/model`, or check the provider/network"
 )
 
 
@@ -138,14 +146,24 @@ class _Trunc(TruncationVerdict):
         return getattr(self.response, "id", "") == PARTIAL_STREAM_STUB_ID
 
 
-def _abort_reason(agent: Any, content: Any, has_tool_calls: bool) -> Optional[tuple]:
-    """``(vprint, user response, error)`` when continuation must NOT be attempted:
-    thinking exhausted the budget (reasoning blocks with no visible text after them —
-    ``content=None`` from non-<think> models is normal truncation), or a repetition loop
-    burned the budget on one fragment (reasoning stripped first)."""
+def _abort_reason(agent: Any, content: Any, has_tool_calls: bool, *, is_stub: bool = False) -> Optional[tuple]:
+    """``(vprint, user response, error)`` when continuation must NOT be attempted: thinking
+    exhausted the budget (reasoning blocks with no visible text after them — ``content=None``
+    from non-<think> models is normal truncation), or a repetition loop burned the budget on
+    one fragment (reasoning stripped first).
+
+    ``is_stub`` gates ONLY the thinking-exhaustion heuristic: a partial-stream stub carries no
+    finish_reason/usage from the wire, so unterminated reasoning inside one proves nothing
+    about the budget. Repetition detection is content-deterministic and stays active for
+    stubs."""
     if has_tool_calls:
         return None
-    if content and _THINK_TAG_RE.search(content) and not agent._has_content_after_think_block(content):
+    if (
+        not is_stub
+        and content
+        and _THINK_TAG_RE.search(content)
+        and not agent._has_content_after_think_block(content)
+    ):
         return _THINKING_EXHAUSTED
     visible = agent._strip_think_blocks(content) if isinstance(content, str) else content
     if visible and is_repetition_dominated(visible):
@@ -194,10 +212,10 @@ def _content_filter_fallback(st: _Trunc, _retry: TurnRetryState) -> Optional[Tru
 
 
 def _continue_text(st: _Trunc, _retry: TurnRetryState, assistant_message: Any) -> TruncationVerdict:
-    """Text truncation (no tool calls): append the fragment + a continuation nudge (up to
-    4), then the ceiling exit that drops the fragment trail and keeps the stitched partial.
-    Never appends an interim assistant row with NO visible content — strict providers
-    reject it with 400 — only the nudge."""
+    """Text truncation (no tool calls): append the visible fragment + a continuation nudge
+    (up to 4), then the ceiling exit that drops the fragment trail and keeps the stitched
+    partial. Interim rows are only appended when they carry visible content — strict
+    providers reject empty rows with 400."""
     from agent.conversation_loop import _get_continuation_prompt, _join_truncated_parts
 
     agent = st.agent
@@ -208,11 +226,19 @@ def _continue_text(st: _Trunc, _retry: TurnRetryState, assistant_message: Any) -
     if not _interim_content and not st.is_stub:
         # Thinking-only truncation: continuing with thinking ON re-burns the budget.
         agent._ephemeral_reasoning_off = True
+    # Append a fragment only when it carries VISIBLE text: reasoning-only raw content would
+    # persist an empty row, and an unterminated tag inside a raw fragment would swallow the
+    # continuation answer at the final strip. Edge whitespace is preserved — a stripped
+    # fragment blurs the model's stitching point, and _join_truncated_parts injects a
+    # newline only where two fragments would otherwise glue.
+    _visible_content = None
     if _interim_content:
+        _visible_content = agent._strip_think_blocks(_interim_content)
+    if _visible_content and _visible_content.strip():
         interim_msg = agent._build_assistant_message(assistant_message, st.finish_reason)
         interim_msg["_length_continuation_fragment"] = True  # ceiling exit drops these
         append_message(messages, interim_msg)
-        st.truncated_response_parts.append(_interim_content)
+        st.truncated_response_parts.append(_visible_content)
 
     if n < 4:
         _dropped_tools = getattr(st.response, "_dropped_tool_names", None)
@@ -238,7 +264,9 @@ def _continue_text(st: _Trunc, _retry: TurnRetryState, assistant_message: Any) -
     agent._ephemeral_reasoning_off = False
     agent._vprint(
         f"{agent.log_prefix}⚠️  Response still truncated after {n} continuation attempts — "
-        + ("keeping the partial response received so far." if partial_response
+        + ("stream kept dropping with no visible answer"
+           if st.is_stub and not partial_response else
+           "keeping the partial response received so far." if partial_response
            else "no visible text was produced."),
         force=True,
     )
@@ -256,8 +284,9 @@ def _continue_text(st: _Trunc, _retry: TurnRetryState, assistant_message: Any) -
             "role": "assistant", "content": partial_response, "finish_reason": "length"
         })
     agent._session_messages = messages
+    _ceiling_copy = _CEILING_STREAM_DROPPED if (st.is_stub and not partial_response) else _CEILING_NO_TEXT
     return st.end_turn(
-        partial_response or _CEILING_NO_TEXT,
+        partial_response or _ceiling_copy,
         "Response remained truncated after 4 continuation attempts",
     )
 
@@ -330,7 +359,9 @@ def recover_from_truncation(
     _trunc_content = getattr(_trunc_msg, "content", None) if _trunc_msg else None
     _trunc_has_tool_calls = bool(getattr(_trunc_msg, "tool_calls", None)) if _trunc_msg else False
 
-    abort = _abort_reason(agent, _trunc_content, _trunc_has_tool_calls)
+    abort = _abort_reason(
+        agent, _trunc_content, _trunc_has_tool_calls, is_stub=st.is_stub,
+    )
     if abort is not None:
         line, user_response, error = abort
         agent._vprint(f"{agent.log_prefix}{line}", force=True)

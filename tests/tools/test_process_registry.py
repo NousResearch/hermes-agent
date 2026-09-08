@@ -937,41 +937,6 @@ class TestSpawnEnvSanitization:
         # A failed launch must not be exposed as a running/tracked session.
         assert session.id not in registry._running
 
-    def test_env_poller_quotes_temp_paths_with_spaces(self, registry):
-        session = _make_session(sid="proc_space")
-        session.exited = False
-
-        class FakeEnv:
-            def __init__(self):
-                self.commands = []
-                self._responses = iter([
-                    {"output": "6 0\nhello\n"},
-                    {"output": "1\n"},
-                    {"output": "0\n"},
-                ])
-
-            def execute(self, command, **kwargs):
-                self.commands.append((command, kwargs))
-                return next(self._responses)
-
-        env = FakeEnv()
-
-        with patch("tools.process_registry.time.sleep", return_value=None), \
-            patch.object(registry, "_move_to_finished"):
-            registry._env_poller_loop(
-                session,
-                env,
-                "/path with spaces/hermes_bg.log",
-                "/path with spaces/hermes_bg.pid",
-                "/path with spaces/hermes_bg.exit",
-            )
-
-        assert "'/path with spaces/hermes_bg.log'" in env.commands[0][0]
-        assert "cat '/path with spaces/hermes_bg.log'" not in env.commands[0][0]
-        assert "'/path with spaces/hermes_bg.pid'" in env.commands[1][0]
-        assert "'/path with spaces/hermes_bg.exit'" in env.commands[2][0]
-
-
 class TestEnvPollerIncrementalRead:
     """The sandbox log poller must read only new bytes, not the whole file.
 
@@ -994,11 +959,24 @@ class TestEnvPollerIncrementalRead:
                 return next(self._responses)
 
         env = FakeEnv()
+        session.pid = 4242
+        session.env_ref = env
+        execute = env.execute
+
+        def group_aware_execute(command, **kwargs):
+            result = execute(command, **kwargs)
+            if command == "LC_ALL=C ps -eo pid=,pgid=,stat=":
+                alive = result["output"].strip() == "0"
+                return {"returncode": 0, "output": "1 1 S\n" + ("4242 4242 S\n" if alive else "")}
+            return result
+
+        env.execute = group_aware_execute
         with patch("tools.process_registry.time.sleep", return_value=None), \
             patch.object(registry, "_move_to_finished"):
             registry._env_poller_loop(
                 session, env, "/tmp/bg.log", "/tmp/bg.pid", "/tmp/bg.exit"
             )
+        assert session.exit_code == 0, "poller must complete normally, not consume an exhausted fake"
         return env.commands
 
 
@@ -1334,7 +1312,6 @@ class TestKillProcess:
         registry._finished[s.id] = s
         result = registry.kill_process(s.id)
         assert result["status"] == "already_exited"
-
 
     def test_kill_detached_session_uses_host_pid(self, registry):
         s = _make_session(sid="proc_detached", command="sleep 999")

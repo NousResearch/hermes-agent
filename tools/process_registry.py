@@ -14,7 +14,6 @@ import shlex
 import signal
 import stat
 import subprocess
-import tempfile
 import threading
 import time
 import uuid
@@ -35,6 +34,7 @@ from hermes_cli.config import get_hermes_home
 from tools.process_registry_notifications import format_process_notification, is_child_process_notification, should_surface_notification
 from tools.process_registry_checkpoint import ProcessCheckpointMixin
 from tools.process_registry_termination import ProcessTerminationMixin
+from tools.process_registry_remote import RemoteProcessMixin
 from tools.process_registry_results import load_completed_results, save_completed_result
 from tools.process_registry_env_log import log_delta_command
 
@@ -698,7 +698,7 @@ def _is_wsl_launcher_command(command: str) -> bool:
     return False
 
 
-class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin):
+class ProcessRegistry(RemoteProcessMixin, ProcessTerminationMixin, ProcessCheckpointMixin):
     """In-memory registry of running and finished background processes.
     Thread-safe: accessed from executor threads (terminal_tool, process handlers),
     the gateway asyncio loop (watchers, reset checks) and the cleanup thread."""
@@ -1116,19 +1116,6 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin):
             wsl_chain=_is_wsl_launcher_command(command),
             started_at=time.time(), **extra)
 
-    @staticmethod
-    def _env_temp_dir(env: Any) -> str:
-        """Return the writable sandbox temp dir for env-backed background tasks."""
-        get_temp_dir = getattr(env, "get_temp_dir", None)
-        if callable(get_temp_dir):
-            try:
-                temp_dir = get_temp_dir()
-                if isinstance(temp_dir, str) and temp_dir.startswith("/"):
-                    return temp_dir.rstrip("/") or "/"
-            except Exception as exc:
-                logger.debug("Could not resolve environment temp dir: %s", exc)
-        return tempfile.gettempdir()
-
     def _scope_argv(self, session: ProcessSession, safe_command: str, unit_suffix: str, label: str) -> list[str]:
         """Login-shell argv for *safe_command* (parity with LocalEnvironment: rc files
         sourced, user tools on PATH), wrapped in a transient systemd scope when we are
@@ -1301,11 +1288,14 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin):
         temp_dir = self._env_temp_dir(env)
         log_path, pid_path, exit_path = (f"{temp_dir}/hermes_bg_{session.id}.{ext}" for ext in ("log", "pid", "exit"))
         q = shlex.quote
+        # ``setsid`` makes the stored PID the leader of a dedicated remote
+        # process group.  _signal_kill can therefore stop script descendants
+        # instead of only the shell wrapper that launched them.
+        payload = f"bash -c {q(command)}; rc=$?; printf '%s\\n' \"$rc\" > {q(exit_path)}"
         bg_command = (
-            f"mkdir -p {q(temp_dir)} && "
-            f"( nohup bash -lc {q(command)} > {q(log_path)} 2>&1; "
-            f"rc=$?; printf '%s\\n' \"$rc\" > {q(exit_path)} ) & "
-            f"echo $! > {q(pid_path)} && cat {q(pid_path)}")
+            f"if mkdir -p {q(temp_dir)}; then setsid bash -lc {q(payload)} "
+            f"</dev/null > {q(log_path)} 2>&1 & "
+            f"echo $! > {q(pid_path)} && cat {q(pid_path)}; fi")
         try:
             result = env.execute(bg_command, timeout=timeout, rewrite_compound_background=False)
             output = result.get("output", "").strip()
@@ -1493,10 +1483,13 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin):
                     self._check_watch_patterns(session, delta)
                     self._emit_output(session, delta)
 
-                check = env.execute(
-                    f"kill -0 \"$(cat {q(pid_path)} 2>/dev/null)\" 2>/dev/null; echo $?", timeout=5)
-                check_output = check.get("output", "").strip()
-                if check_output and check_output.splitlines()[-1].strip() != "0":
+                try:
+                    group_alive = bool(self._remote_group_members(session))
+                except RuntimeError:
+                    # Neither a dead wrapper nor an unavailable probe proves
+                    # that its group is empty. Keep the cleanup handle for retry.
+                    continue
+                if not group_alive:
                     # Exited -- read the exit code captured by the wrapper shell.
                     exit_str = env.execute(f"cat {q(exit_path)} 2>/dev/null", timeout=5).get("output", "").strip()
                     try:
@@ -1506,8 +1499,9 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin):
                     self._finish_exited(session, exit_code)
                     return
             except Exception:
-                # Environment might be gone (sandbox reaped, etc.). A kill that already
-                # settled the session keeps its result.
+                # Failed cleanup keeps its handle; ordinary backend loss still exits.
+                if getattr(session, "_remote_cleanup_pending", False):
+                    continue
                 self._finish_exited(session, -1, reason="lost", source="backend_lost")
                 return
 
@@ -2280,7 +2274,11 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin):
             # leaves Git Bash descendants behind.
             self._terminate_host_pid(session.process.pid, session.host_start_time)
         elif session.env_ref and session.pid:
-            session.env_ref.execute(f"kill {session.pid} 2>/dev/null", timeout=5)
+            # spawn_via_env starts every remote process with setsid, so this
+            # PID is its own process-group leader. Terminate the entire group;
+            # a wrapper-only kill would orphan a script child it backgrounded.
+            session._remote_cleanup_pending = True
+            self._terminate_remote_group(session)
         elif session.detached and session.pid_scope == "host" and session.pid:
             # Same fate as poll/list: a gone or reused PID means our process is
             # gone — never tree-kill the stranger — but a live PID with an

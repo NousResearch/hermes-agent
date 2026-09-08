@@ -646,6 +646,9 @@ def _action_create(a: dict[str, Any]) -> str:
         return tool_error("schedule is required for create", success=False)
     canonical_skills = _canonical_skills(a["skill"], a["skills"])
     _no_agent = bool(a["no_agent"])
+    effective_target = str(a["target"] or ("backend" if script else "scheduler")).strip().lower()
+    if effective_target not in {"scheduler", "backend"}:
+        return tool_error("Cron target must be either 'scheduler' or 'backend'.", success=False)
     # no_agent=True -> the script IS the job (prompt/skills optional); else prompt or skills.
     if _no_agent:
         if not script:
@@ -660,8 +663,8 @@ def _action_create(a: dict[str, Any]) -> str:
         return tool_error("create requires either prompt or at least one skill", success=False)
     error = (
         (prompt and _scan_cron_prompt(prompt))
-        or (script and _validate_cron_script_path(script))
-        or (a["monitor_script"] and _validate_cron_script_path(a["monitor_script"]))
+        or (script and _validate_cron_script_path(script, effective_target, workdir=a["workdir"]))
+        or (a["monitor_script"] and _validate_cron_script_path(a["monitor_script"], "scheduler"))
         # A model-supplied base_url must not route a named provider's stored credential
         # to an attacker endpoint.
         or _validate_cron_base_url(a["provider"], a["base_url"])
@@ -691,7 +694,7 @@ def _action_create(a: dict[str, Any]) -> str:
             # [] is an explicit zero-tool allowlist, not a clear back to the unrestricted default (#82010).
             enabled_toolsets=a["enabled_toolsets"] if a["enabled_toolsets"] is not None else None,
             workdir=_normalize_optional_job_value(a["workdir"]),
-            no_agent=_no_agent, attach_to_session=a["attach_to_session"],
+            no_agent=_no_agent, target=effective_target, attach_to_session=a["attach_to_session"],
             monitor_script=_normalize_optional_job_value(a["monitor_script"]),
             monitor_url=_normalize_optional_job_value(a["monitor_url"]),
             # CLI-only lane: absent from CRONJOB_SCHEMA and the model dispatch (models don't pick models).
@@ -867,10 +870,17 @@ def _update_core_fields(job: dict[str, Any], a: dict[str, Any], updates: dict[st
 def _update_script_fields(job: dict[str, Any], a: dict[str, Any], updates: dict[str, Any]) -> Optional[str]:
     """script / monitor_script / monitor_url (empty string clears); returns an error string or None."""
     monitor_script, monitor_url = a["monitor_script"], a["monitor_url"]
+    if a["target"] is not None:
+        target = str(a["target"]).strip().lower()
+        if target not in {"scheduler", "backend"}:
+            return "Cron target must be either 'scheduler' or 'backend'."
+        updates["target"] = target
     for field, value in (("script", a["script"]), ("monitor_script", monitor_script)):
         if value is not None:
             if value:
-                path_error = _validate_cron_script_path(value)
+                target = "scheduler" if field == "monitor_script" else _pick(updates, job, "target") or "scheduler"
+                workdir = (_normalize_optional_job_value(a["workdir"]) or None) if a["workdir"] is not None else _pick(updates, job, "workdir")
+                path_error = _validate_cron_script_path(value, target, workdir=workdir)
                 if path_error:
                     return path_error
             updates[field] = _normalize_optional_job_value(value) if value else None
@@ -932,6 +942,13 @@ def _update_run_fields(job: dict[str, Any], a: dict[str, Any], updates: dict[str
         if job.get("state") != "paused":
             updates["state"] = "scheduled"
             updates["enabled"] = True
+    effective_script = _pick(updates, job, "script")
+    if effective_script and (a["script"] is not None or a["target"] is not None or a["workdir"] is not None):
+        path_error = _validate_cron_script_path(
+            effective_script, _pick(updates, job, "target") or "scheduler",
+            workdir=_pick(updates, job, "workdir"))
+        if path_error:
+            return path_error
     return None
 
 
@@ -1004,6 +1021,7 @@ def cronjob(
     enabled_toolsets: Optional[list[str]] = None,
     workdir: Optional[str] = None,
     no_agent: Optional[bool] = None,
+    target: Optional[str] = None,
     attach_to_session: Optional[bool] = None,
     monitor_script: Optional[str] = None,
     monitor_url: Optional[str] = None,
@@ -1111,6 +1129,10 @@ Jobs run in a fresh session with no current-chat context, so prompts must be sel
                 "type": "string",
                 "description": _script_description("the profile HERMES_HOME")
             },
+            "target": {
+                "type": "string", "enum": ["scheduler", "backend"], "default": "backend",
+                "description": "Script execution target. New script jobs default to backend; use scheduler explicitly for profile scripts. Legacy jobs without a target retain scheduler behavior."
+            },
             "monitor": {
                 "type": "string",
                 "description": "Optional change-detector that gates the agent: an http(s) URL (fetched each tick) or a script path (same rules as `script`, run each tick) — cheap, no LLM. Output identical to the previous tick skips the agent run entirely; changed output wakes the agent with a diff injected into the prompt. First tick always runs (baseline). Output must be deterministic (no timestamps) or every tick looks changed. Incompatible with no_agent. On update, '' clears."
@@ -1169,7 +1191,7 @@ def check_cronjob_requirements() -> bool:
 # different model. Programmatic callers of cronjob() itself retain the parameters.
 _HANDLER_FORWARDED_ARGS = (
     "job_id", "prompt", "schedule", "name", "repeat", "deliver", "failure_deliver", "skill", "skills", "reason",
-    "script", "context_from", "continuity", "enabled_toolsets", "workdir", "no_agent", "attach_to_session",
+    "script", "target", "context_from", "continuity", "enabled_toolsets", "workdir", "no_agent", "attach_to_session",
     "paused_reason", "pinned")
 
 

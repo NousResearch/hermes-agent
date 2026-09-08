@@ -324,6 +324,9 @@ class CronJobCreate(BaseModel):
     provider: Optional[str] = None
     base_url: Optional[str] = None
     script: Optional[str] = None
+    # Dashboard profile-script picks default this to scheduler in its handler;
+    # explicit backend values name an absolute path visible to that backend.
+    target: Optional[Literal["scheduler", "backend"]] = None
     context_from: Optional[Any] = None
     enabled_toolsets: Optional[list[str]] = None
     workdir: Optional[str] = None

@@ -75,3 +75,22 @@ Consequences:
 - Regression coverage exercises the real production path
   (`set_hermes_home_override()`) rather than only the env-var path, and
   includes a dedicated relative-import leak test.
+
+## 2026-09-07: Delegated-task reliability upgrade baseline and upstream reconciliation
+
+Status: Accepted for implementation from Phase 0; no production implementation has been approved by this ADR alone.
+
+Context:
+The deployed KenseiAgent runtime is frozen at `98a4aa453c1c576798a4461d5b2902d805eef71d`. The prior pre-update baseline `924ab09a84` is obsolete and must not be used. Current upstream contains delegation completion-unit/group behaviour and per-model OpenRouter routing that are not present in this fork, while KenseiAgent has fork-specific profile, authority, verification/synthesis, receipt, transcript and redaction behaviour that must survive reconciliation.
+
+Decision:
+- Phase 0 freezes the deployed baseline and performs source-level reconciliation before production changes.
+- Upstream completion work is treated as one behaviour chain: per-task completion groups, crash recovery, failed-child notices, per-conversation batch numbering, task-first CLI/TUI notices, grouping documentation, and the per-group notice integration. The live upstream default is determined from current source, not PR-day prose. A branch-only or superseded change is not treated as current upstream.
+- Upstream per-model routing is an overlay at the shared `_provider_preferences_for_agent` chokepoint. `provider_routing.models.<model-id>` remains distinct from `fallback_providers`, delegated provider/model pins, profile scope and credentials. It is OpenRouter request routing only; direct providers and any provider path that rejects the routing object must not receive it.
+- Adopt or adapt upstream behaviour only after preserving Kensei-specific profile scope, depth-3 delegation, cycle/ancestry controls, output schemas, verify/synthesis, completion persistence/restart restoration, sanitised child context, live transcripts/task indexes, capability ceilings, custom provider profiles, credential pools, fallback registry, delegation overrides and existing flat routing.
+- Every code phase requires an independent Kensei audit with GO / REVISE / STOP before the next phase. BUILD, local merge, remote push, activation, restart and production deployment remain separate decisions.
+
+Consequences:
+- Phase 1 must witness RED conformance tests for profile delegation, completion units/groups and provider-routing overlays before implementation.
+- Phase 5 must salvage the upstream completion-unit design rather than create a competing aggregator, while still proving dispatch-to-client delivery across supported surfaces and restart/session-rotation conditions.
+- Child workers remain same-process logically scoped workers; no OS sandbox, writable child long-term memory, automatic deployment/restart or unproven aggregator rewrite is introduced by this programme.

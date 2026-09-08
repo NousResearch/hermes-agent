@@ -68,6 +68,14 @@ class ExpertisePolePilotSkillTests(unittest.TestCase):
         self.assertIn("not loadable", packaging_note)
         self.assertTrue((PACK_ROOT / "domains" / "seo" / "workflows" / "evidence-to-action.md").is_file())
 
+    def test_reference_pack_has_a_nonexecuted_independent_review_packet(self) -> None:
+        packet = PACK_ROOT / "reports" / "INDEPENDENT-REVIEW-PACKET.md"
+        text = packet.read_text(encoding="utf-8")
+        self.assertIn("**Status:** `PREPARED — not executed`", text)
+        self.assertIn("## Declaration of independence", text)
+        self.assertIn("must not state that a review was executed", text)
+        self.assertIn("`retain experimental`", text)
+
     def test_reference_pack_validator_passes_and_discloses_blocked_gates(self) -> None:
         audit_path = PACK_ROOT / "evaluations" / "audit_pack.py"
         spec = importlib.util.spec_from_file_location("expertise_pole_audit", audit_path)

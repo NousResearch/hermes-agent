@@ -44,6 +44,21 @@ class AuditPackTests(unittest.TestCase):
         self.assertEqual("blocked-no-spend", report["research_status"], report)
         self.assertEqual("blocked-no-spend", report["independent_review_status"], report)
 
+    def test_independent_review_packet_is_ready_without_claiming_a_review(self) -> None:
+        packet = ROOT / "reports" / "INDEPENDENT-REVIEW-PACKET.md"
+        text = packet.read_text(encoding="utf-8")
+        for marker in (
+            "**Status:** `PREPARED — not executed`",
+            "## Declaration of independence",
+            "## Review input set",
+            "## Mandatory attacks",
+            "## Non-objectives",
+            "## Expected reviewer deliverables",
+        ):
+            self.assertIn(marker, text)
+        self.assertIn("`retain experimental`", text)
+        self.assertIn("must not state that a review was executed", text)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -9,7 +9,8 @@ Ce répertoire contient un **socle expérimental auditable** et un pilote SEO à
 - [`reports/TRACEABILITY-MATRIX.md`](reports/TRACEABILITY-MATRIX.md) — exigence → preuve → statut.
 - [`reports/MATURITY-DECISION.md`](reports/MATURITY-DECISION.md) — ce qui n’est **pas** promu et les gates bloquants.
 - [`reports/OPEN-DECISIONS.md`](reports/OPEN-DECISIONS.md) — décisions demandant Vincent.
-- [`domains/seo/evaluations/runs/RUN-001.md`](domains/seo/evaluations/runs/RUN-001.md) — preuve de régression locale.
+- [`reports/INDEPENDENT-REVIEW-PACKET.md`](reports/INDEPENDENT-REVIEW-PACKET.md) — paquet reproductible prêt pour une revue distincte, sans prétendre qu’elle a eu lieu.
+- [`domains/seo/evaluations/runs/RUN-001.md`](domains/seo/evaluations/runs/RUN-001.md) et [`RUN-002.md`](domains/seo/evaluations/runs/RUN-002.md) — preuves de régression locale et de préparation de revue.
 
 ## Vérification locale
 

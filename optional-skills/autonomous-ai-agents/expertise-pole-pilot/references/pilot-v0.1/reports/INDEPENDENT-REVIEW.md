@@ -11,6 +11,8 @@ La tentative de déléguer une revue à un sous-agent séparé a été refusée 
 **Aucun avis indépendant n'a été remis.** Ce fichier ne simule pas une revue et ne liste donc aucun défaut comme s'il avait été constaté par un tiers.
 
 ## Paquet à remettre à un critique distinct
+Le protocole exécutable et les livrables attendus sont dans `reports/INDEPENDENT-REVIEW-PACKET.md` (`PREPARED — not executed`). Il complète, sans remplacer, ce statut de blocage.
+
 - `support-pole/` (les douze documents canoniques et templates) ;
 - `domains/seo/` (neuf documents, six profils, trois skills, workflow, fixtures et sorties) ;
 - `reports/PHASE-0-INVENTORY.md`, `TRACEABILITY-MATRIX.md`, `COVERAGE-REPORT.md` ;

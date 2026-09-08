@@ -11,6 +11,6 @@
 | Sources primaires + OSS | SOURCES | transparence | recherche bloquée, aucun faux résultat | bloqué sans autorisation |
 | Skills vérifiables | skills/* | `test_audit_pack` | six rubriques obligatoires | passé structurellement |
 | Six scénarios/régression | evaluations/ | CASE + RUN-001 | outputs locaux + 6 tests OK | passé fixture |
-| Revue contradictoire indépendante | INDEPENDENT-REVIEW | critique distincte | blocage NO-SPEND documenté | **bloqué** |
+| Revue contradictoire indépendante | INDEPENDENT-REVIEW + INDEPENDENT-REVIEW-PACKET | critique distincte | paquet préparé ; blocage NO-SPEND documenté | **prêt à exécuter, non exécuté** |
 | Maturation | MATURITY-DECISION | revue finale | critères/limites | expérimental, aucune promotion |
 | Pas d'action interdite | EXECUTION-LOG | audit local | déclaration + guard | couvert |

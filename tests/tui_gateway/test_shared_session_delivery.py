@@ -28,5 +28,6 @@ def test_reattach_preserves_terminal_delivery(monkeypatch):
     assert len(first.frames) == 1
     second.close()
     assert server._close_sessions_for_transport(second) == (0, 0)
+    assert second not in session.get("viewers", {})
     server._emit("message.complete", "shared", {"text": "still attached"})
     assert len(first.frames) == 2

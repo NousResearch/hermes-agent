@@ -714,6 +714,11 @@ class WeixinAdapter(BasePlatformAdapter):
         # Tunables: ``extra.<key>`` else env ``WEIXIN_<KEY>`` (e.g. WEIXIN_SEND_CHUNK_RETRIES).
         self._send_chunk_delay_seconds = float(_extra_or_env(extra, "send_chunk_delay_seconds", "1.5"))
         self._send_chunk_retries = int(_extra_or_env(extra, "send_chunk_retries", "4"))
+        # iLink renders an outbound reply twice when sendmessage echoes the peer's context_token (#105506);
+        # keep echoing by default, but let operators turn it off per account.
+        self._send_context_token = _coerce_bool(
+            _extra_or_env(extra, "send_context_token", "true"), default=True
+        )
         self._send_chunk_retry_delay_seconds = float(_extra_or_env(extra, "send_chunk_retry_delay_seconds", "1.0"))
         self._send_text_gate = asyncio.Lock()
         self._rate_limit_circuit_threshold = max(1, int(_extra_or_env(extra, "rate_limit_circuit_threshold", "1")))
@@ -1072,7 +1077,11 @@ class WeixinAdapter(BasePlatformAdapter):
     async def send(self, chat_id: str, content: str, reply_to: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None) -> SendResult:
         if not self._send_session or not self._token:
             return SendResult(success=False, error="Not connected")
-        context_token = self._token_store.get(self._account_id, chat_id)
+        context_token = (
+            self._token_store.get(self._account_id, chat_id)
+            if self._send_context_token
+            else None
+        )
         last_message_id: Optional[str] = None
         # Extract MEDIA: tags and bare local file paths before text delivery.
         media_files, cleaned_content = self.extract_media(content)
@@ -1189,7 +1198,11 @@ class WeixinAdapter(BasePlatformAdapter):
         if not upload_url:
             raise RuntimeError(f"getUploadUrl returned neither upload_param nor upload_full_url: {upload_response}")
         encrypted_query_param = await _upload_ciphertext(self._send_session, ciphertext=ciphertext, upload_url=upload_url)
-        context_token = self._token_store.get(self._account_id, chat_id)
+        context_token = (
+            self._token_store.get(self._account_id, chat_id)
+            if self._send_context_token
+            else None
+        )
         # iLink expects aes_key as base64(hex_string), not base64(raw_bytes) — otherwise images render as grey boxes.
         item_kwargs = {
             "encrypt_query_param": encrypted_query_param, "aes_key_for_api": base64.b64encode(aes_key.hex().encode("ascii")).decode("ascii"),
@@ -1255,7 +1268,10 @@ async def send_weixin_direct(
         return {"error": "Weixin account ID missing. Configure WEIXIN_ACCOUNT_ID or platforms.weixin.extra.account_id."}
     token_store = ContextTokenStore(str(get_hermes_home()))
     token_store.restore(account_id)
-    context_token = token_store.get(account_id, chat_id)
+    send_context_token = _coerce_bool(
+        _extra_or_env(extra, "send_context_token", "true"), default=True
+    )
+    context_token = token_store.get(account_id, chat_id) if send_context_token else None
     live_adapter = _LIVE_ADAPTERS.get(resolved_token)
     send_session = getattr(live_adapter, '_send_session', None)
     if send_session is not None and not send_session.closed and send_session._loop is asyncio.get_running_loop():

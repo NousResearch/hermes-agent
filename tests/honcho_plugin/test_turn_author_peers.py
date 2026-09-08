@@ -79,7 +79,7 @@ class TestResolveAuthorPeerId:
         assert mgr.resolve_author_peer_id("telegram:group1", "111222") is None
 
     def test_bot_author_lands_on_its_profile_peer(self):
-        """A cloned profile's aiPeer defaults to the profile name, so the sender reuses its AI peer."""
+        """A clean profile name that no configured peer claims is the peer as is."""
         mgr = _manager(_config(), runtime_id="7654321")
         assert mgr.resolve_author_peer_id("telegram:dm1", "bot:coder") == "coder"
 
@@ -91,13 +91,36 @@ class TestResolveAuthorPeerId:
         mgr = _manager(_config(runtime_peer_prefix="telegram_"), runtime_id="7654321")
         assert mgr.resolve_author_peer_id("telegram:dm1", "bot:coder") == "coder"
 
-    def test_bot_author_profile_name_is_sanitized(self):
+    def test_bot_author_profile_name_is_sanitized_with_a_digest(self):
+        """Sanitizing is lossy, so a changed name carries a digest like a prefixed runtime user."""
         mgr = _manager(_config(), runtime_id="7654321")
-        assert mgr.resolve_author_peer_id("telegram:dm1", "bot:my profile.v2") == "my-profile-v2"
+        peer = mgr.resolve_author_peer_id("telegram:dm1", "bot:my profile.v2")
+        assert peer.startswith("my-profile-v2-") and peer != "my-profile-v2"
+
+    def test_bot_authors_that_sanitize_alike_get_different_peers(self):
+        mgr = _manager(_config(), runtime_id="7654321")
+        dotted = mgr.resolve_author_peer_id("telegram:dm1", "bot:a.b")
+        dashed = mgr.resolve_author_peer_id("telegram:dm1", "bot:a-b")
+        assert dotted != dashed
+        assert dashed == "a-b"
+
+    def test_bot_author_named_like_the_owner_never_lands_on_the_owner_peer(self):
+        """``bot:eri`` with ``peerName: eri`` is another agent, not the operator."""
+        for pinned in (False, True):
+            mgr = _manager(_config(peer_name="eri", pin_peer_name=pinned), runtime_id="7654321")
+            peer = mgr.resolve_author_peer_id("telegram:dm1", "bot:eri", is_bot=True)
+            assert peer != mgr._declared_owner_peer_id()
+            assert peer.startswith("eri-")
+
+    def test_bot_author_named_like_an_alias_target_gets_a_digest(self):
+        mgr = _manager(_config(user_peer_aliases={"111222": "coder"}), runtime_id="7654321")
+        peer = mgr.resolve_author_peer_id("telegram:dm1", "bot:coder")
+        assert peer != "coder" and peer.startswith("coder-")
 
     def test_bot_author_without_a_profile_keeps_the_raw_id(self):
         mgr = _manager(_config(), runtime_id="7654321")
-        assert mgr.resolve_author_peer_id("telegram:dm1", "bot:") == "bot-"
+        peer = mgr.resolve_author_peer_id("telegram:dm1", "bot:")
+        assert peer.startswith("bot-") and peer != mgr._declared_owner_peer_id()
 
     def test_pin_peer_name_does_not_collapse_bot_authors(self):
         """The pin unifies the operator's accounts. A bot's words never land under the human's peer."""

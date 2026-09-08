@@ -581,14 +581,18 @@ hermes auth list                                         # Show all pools
 hermes auth list openrouter                              # Show specific provider
 hermes auth add openrouter --api-key sk-or-v1-xxx        # Add API key
 hermes auth add anthropic --type oauth                   # Add OAuth credential
+hermes auth add openai-codex --type oauth --priority 0   # Add an account and try it first
 hermes auth remove openrouter 2                          # Remove by index
+hermes auth priority openrouter backup-key 0             # Move a credential to the front of fill_first order
 hermes auth reset openrouter                             # Clear cooldowns
+hermes auth reset openrouter 2                           # Clear the cooldown on one credential
+hermes auth refresh openai-codex work                    # Refresh one OAuth credential and clear its cooldown
 hermes auth status anthropic                             # Show auth status for a provider
 hermes auth logout anthropic                             # Log out and clear stored auth state
 hermes auth spotify                                      # Authenticate Hermes with Spotify via PKCE
 ```
 
-Subcommands: `add`, `list`, `remove`, `reset`, `status`, `logout`, `spotify`. When called with no subcommand, launches the interactive management wizard.
+Subcommands: `add`, `list`, `remove`, `reset`, `priority`, `refresh`, `status`, `logout`, `spotify`. When called with no subcommand, launches the interactive management wizard.
 
 ## `hermes status`
 
@@ -604,7 +608,7 @@ hermes status [--all] [--deep]
 ## `hermes cron`
 
 ```bash
-hermes cron <list|create|edit|pause|resume|run|remove|status|tick>
+hermes cron <list|create|edit|pause|resume|run|remove|status|runs|incidents|doctor|tick>
 ```
 
 | Subcommand | Description |
@@ -617,6 +621,7 @@ hermes cron <list|create|edit|pause|resume|run|remove|status|tick>
 | `run` | Trigger a job on the next scheduler tick. |
 | `remove` | Delete a scheduled job. |
 | `status` | Check whether the cron scheduler is running. |
+| `doctor` | Read-only fleet health check: failed runs, failed deliveries, overdue/missing `next_run_at`, missing scripts or workdirs. Exits non-zero when issues are found. |
 | `tick` | Run due jobs once and exit. |
 
 The cron **trigger** is pluggable via the `cron.provider` config key. Empty
@@ -1017,6 +1022,21 @@ Restore a previously created Hermes backup into your Hermes home directory. All 
 Stop the gateway before importing to avoid conflicts with running processes.
 :::
 
+### SQLite databases
+
+`.db` members (`state.db`, `kanban.db`, `response_store.db`, …) are not published with a rename like ordinary files. Renaming would replace the file's inode while a gateway, dashboard, or WebUI process still holds the old one open: that process would keep reading pre-import pages and keep writing sessions nobody else can see, and those sessions would simply be absent from the database everyone opens next — with nothing logged. Instead the imported pages are written **into the existing database file**, the same way `/snapshot restore` does it, so every open connection converges on the imported data.
+
+If the live database cannot be replaced safely — the page copy failed *and* another process still holds the file open — the import leaves that database untouched and lists it under `Warnings (N files skipped)`. Stop the holding processes and re-run.
+
+Importing an older backup over newer work is still allowed, but it is no longer silent. When the imported `state.db` holds fewer messages than the one it replaced, the summary reports it:
+
+```
+  ⚠ Session data replaced by older backup contents:
+    state.db: 12 session(s) / 8912 message(s) -> 3 / 24
+    Anything recorded after the backup was taken is not in it.
+    Recover from a newer backup or snapshot: hermes snapshot list
+```
+
 ### Examples
 ```bash
 hermes import ~/hermes-backup-20260423.zip           # Prompts before overwriting existing config
@@ -1156,6 +1176,27 @@ Subcommands:
 | `env-path` | Print the `.env` file path. |
 | `check` | Check for missing or stale config. |
 | `migrate` | Add newly introduced options interactively. |
+
+### Dots inside key names
+
+`hermes config set/get/unset` use `.` as the nesting separator, but many real
+key names contain literal dots — model IDs (`grok-4.6`, `glm-5.3-flash`),
+Matrix room IDs (`!room:example.org`), versioned provider names. Two rules
+make these addressable:
+
+- **Existing keys just work.** When navigating an existing mapping, an
+  existing literal key that matches the dotted remainder is preferred over
+  splitting. `hermes config set providers.p.models.grok-4.6.supports_vision true`
+  updates the real `grok-4.6` entry (and `get`/`unset` resolve the same way).
+- **Creating a new dotted key requires escaping.** Escape literal dots with a
+  backslash: `hermes config set 'providers.p.models.grok-4\.7.context_length' 128000`
+  creates the literal `grok-4.7` key. (Quote the key so your shell keeps the
+  backslash.)
+
+If an unescaped write would create a nested mapping that shadows an existing
+dotted sibling (e.g. creating `grok-4` next to an existing `grok-4.6`), the
+command fails with an error instead of silently writing a phantom entry the
+runtime would never read.
 
 ## `hermes pairing`
 
@@ -1583,7 +1624,7 @@ Migrate your OpenClaw setup to Hermes. Reads from `~/.openclaw` (or a custom pat
 
 The migration covers 30+ categories across persona, memory, skills, model providers, messaging platforms, agent behavior, session policies, MCP servers, TTS, and more. Items are either **directly imported** into Hermes equivalents or **archived** for manual review.
 
-**Directly imported:** SOUL.md, MEMORY.md, USER.md, AGENTS.md, skills (4 source directories), default model, custom providers, MCP servers, messaging platform tokens and allowlists (Telegram, Discord, Slack, WhatsApp, Signal, Matrix, Mattermost), agent defaults (reasoning effort, compression, human delay, timezone, sandbox), session reset policies, approval rules, TTS config, browser settings, tool settings, exec timeout, command allowlist, gateway config, and API keys from 3 sources.
+**Directly imported:** SOUL.md, MEMORY.md, USER.md, AGENTS.md, skills (4 source directories), default model, custom providers, MCP servers, messaging platform tokens and allowlists (Telegram, Discord, Slack, WhatsApp, Signal, Matrix, Mattermost), agent defaults (reasoning effort, compression, human delay, timezone, sandbox), approval rules, TTS config, browser settings, tool settings, exec timeout, command allowlist, gateway config, and API keys from 3 sources.
 
 **Archived for manual review:** Cron jobs, plugins, hooks/webhooks, memory backend (QMD), skills registry config, UI/identity, logging, multi-agent setup, channel bindings, IDENTITY.md, TOOLS.md, HEARTBEAT.md, BOOTSTRAP.md.
 

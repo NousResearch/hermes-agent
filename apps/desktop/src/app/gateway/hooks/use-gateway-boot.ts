@@ -20,11 +20,13 @@ import {
 import { resetBackgroundPollingGuard } from '@/store/composer-status'
 import {
   $gateway,
+  activeGateway,
   activeGatewayConnectionId,
   closeLegacySecondaryGateways,
   closeSecondaryGateways,
   configureGatewayRegistry,
   disposeSecondariesForConnection,
+  ensureActiveGatewayOpen,
   ensureGatewayForProfile,
   gatewayActivationEpoch,
   isActivePrimary,
@@ -44,7 +46,9 @@ import {
   isCurrentGatewaySwitch,
   registerGatewaySwitchLifecycle
 } from '@/store/gateway-switch'
+import { checkLocalRuntimeUpdate, watchLocalRuntimeJobs } from '@/store/local-runtime-jobs'
 import { notify, notifyError } from '@/store/notifications'
+import { loadPoolLimits } from '@/store/pool-limits'
 import {
   $activeGatewayProfile,
   normalizeProfileKey,
@@ -70,6 +74,7 @@ import {
   $sessionTiles,
   $workingSessionIds,
   foregroundSessionScopes,
+  forgetProfileOnlyRuntimeOwners,
   liveSessionScopes,
   openTileGatewayScopes,
   reconcileBusyStatesOnReconnect,
@@ -297,7 +302,7 @@ export function useGatewayBoot({
       }, LIVENESS_REPROBE_DELAY_MS)
     }
 
-    const attemptReconnect = async () => {
+    const attemptReconnect = async (manual?: { profile: string; activationEpoch: number }) => {
       if (cancelled || reconnecting || gatewayOpen() || $gatewaySwitching.get()) {
         return
       }
@@ -368,23 +373,29 @@ export function useGatewayBoot({
         // A legacy remote primary has no registry identity to scope by; fall
         // back to preserving only Bot runtimes owned by provably-live
         // secondaries so the restarted backend's own tiles still rebind.
+        const primaryConnectionId = primaryRuntimeConnectionId(conn)
         resetTileRuntimeBindings(
-          primaryRuntimeConnectionId(conn) ?? { liveConnectionIds: liveSecondaryConnectionIds() }
+          manual && primaryConnectionId
+            ? { connectionId: primaryConnectionId, profile: manual.profile }
+            : (primaryConnectionId ?? { liveConnectionIds: liveSecondaryConnectionIds() })
         )
         // The status-stack poll guard latches session ids the OLD runtime
         // reported gone (4001). A respawned backend re-mints runtimes, so
         // those ids may be live again after re-resume — clear the latch with
         // the same lifetime as the runtime bindings it shadows.
         resetBackgroundPollingGuard()
+
         // Same staleness, other half: pre-reconnect busy flags are keyed by
         // those dead runtime ids and would never receive their terminal
         // busy:false — clear them or the sidebar running arc lies forever
         // (#53902/#73082). A genuinely live turn re-asserts busy on its next
         // post-reconnect event.
-        reconcileBusyStatesOnReconnect()
-        // Resync state that may have moved on the backend while we were asleep.
-        await callbacksRef.current.refreshHermesConfig().catch(() => undefined)
-        await callbacksRef.current.refreshSessions().catch(() => undefined)
+        // A manual retry may finish after the user has moved to another route.
+        if (!manual || (isActivePrimary() && gatewayActivationEpoch() === manual.activationEpoch)) {
+          reconcileBusyStatesOnReconnect()
+          await callbacksRef.current.refreshHermesConfig().catch(() => undefined)
+          await callbacksRef.current.refreshSessions().catch(() => undefined)
+        }
       } catch (err) {
         // OAuth session expired mid-reconnect: surface the actionable "sign in
         // again" recovery overlay once instead of silently looping the backoff
@@ -417,12 +428,12 @@ export function useGatewayBoot({
             })
           }
 
-          scheduleReconnect()
+          scheduleReconnect(manual)
         }
       }
     }
 
-    function scheduleReconnect() {
+    function scheduleReconnect(manual?: { profile: string; activationEpoch: number }) {
       if (cancelled || reconnecting || reconnectTimer !== null || gatewayOpen() || $gatewaySwitching.get()) {
         return
       }
@@ -435,7 +446,7 @@ export function useGatewayBoot({
       reconnectAttempt += 1
       reconnectTimer = setTimeout(() => {
         reconnectTimer = null
-        void attemptReconnect()
+        void attemptReconnect(manual)
       }, delay)
     }
 
@@ -663,6 +674,12 @@ export function useGatewayBoot({
 
         completeDesktopBoot()
         bootCompleted = true
+        // Rediscover local-runtime jobs (model downloads, runtime installs)
+        // that were running before a reload — the backend registry is the
+        // authority; this just resumes following it.
+        watchLocalRuntimeJobs()
+        // One-per-session engine-update pointer (enabled runtimes only).
+        void checkLocalRuntimeUpdate()
       } catch (err) {
         const mayPublishFailure =
           !cancelled && (switchToken === null ? !$gatewaySwitching.get() : isCurrentGatewaySwitch(switchToken))
@@ -752,6 +769,7 @@ export function useGatewayBoot({
       // primary thread or a just-created session's owner hold is bound to
       // (#93892).
       foregroundScopes: foregroundSessionScopes,
+      onLocalProfileRetired: forgetProfileOnlyRuntimeOwners,
       onActiveConnectionChanged: publish,
       // Keep $activeGatewayProfile in lockstep with the registry's OWN record
       // of which profile the active socket serves. The registry is the only
@@ -847,7 +865,34 @@ export function useGatewayBoot({
     const forceReconnectNow = () => reconnectNow({ forceOpenSocket: true })
     const offPowerResume = desktop.onPowerResume?.(() => void forceReconnectNow())
     const offConnectionApplied = desktop.onConnectionApplied?.(() => void softSwitch())
-    const offGatewayReconnect = registerGatewayReconnect(forceReconnectNow)
+
+    const offGatewayReconnect = registerGatewayReconnect(async () => {
+      if (cancelled || !bootCompleted || $gatewaySwitching.get()) {
+        return
+      }
+
+      // Explicit recovery targets the route the user is viewing, not every
+      // warm profile. A responsive ping does not prove delivery is unstuck.
+      if (!isActivePrimary()) {
+        activeGateway()?.close()
+
+        if (!(await ensureActiveGatewayOpen())) {
+          throw new Error('Hermes gateway is not connected')
+        }
+
+        return
+      }
+
+      gateway.close()
+      clearReconnectTimer()
+      reconnectAttempt = 0
+      reconnectFailingSince = null
+      escalated = false
+      await attemptReconnect({
+        profile: normalizeProfileKey($activeGatewayProfile.get()),
+        activationEpoch: gatewayActivationEpoch()
+      })
+    })
 
     // Registry lifecycle: a removed connection's secondaries must close NOW
     // (remote/cloud have no local process whose death would drop the socket —
@@ -892,6 +937,10 @@ export function useGatewayBoot({
     // macOS wake often restores focus without a visibilitychange — without
     // this a socket dropped during sleep sits closed until the user clicks.
     window.addEventListener('focus', onFocus)
+
+    // Pool limits are main-process state; mirror them once for the Settings
+    // rows and prewarmProfileBackend's saturation guard.
+    void loadPoolLimits()
 
     // Keep live pool backends alive while this window is open (the main process
     // can't observe the direct renderer↔backend WS). No-op for the primary.

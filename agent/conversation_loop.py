@@ -29,6 +29,7 @@ from agent.prompt_caching import (
     strip_anthropic_tool_cache_control,
 )
 from agent.runtime_cwd import resolve_agent_cwd
+from agent.surface_switch import identity_line_value, note_inert_pinned_tools, stage_surface_switch_note
 from agent.turn_context import PreflightCompressionTimedOut, build_turn_context
 from agent.turn_retry_state import TurnRetryState
 # Phase helpers of the turn loop, bound at import so a source-tree swap cannot load a
@@ -677,7 +678,7 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
             except Exception:
                 pass
             agent._cached_system_prompt = agent._build_system_prompt(system_message)
-            _stage_surface_switch_note(agent, agent._cached_system_prompt, conversation_history)
+            stage_surface_switch_note(agent, agent._cached_system_prompt, conversation_history)
             # Persist so the NEXT turn restores the new bytes verbatim (cache break is
             # once per capability change). on_session_start not re-fired: continuation.
             _persist_system_prompt(
@@ -691,7 +692,7 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
         agent._cached_system_prompt = stored_prompt
         # The reused bytes may describe the surface this conversation STARTED on; correct that
         # at the tail of the request instead of rebuilding the prompt in front of it (#104414).
-        announced_switch = _stage_surface_switch_note(agent, stored_prompt, conversation_history)
+        announced_switch = stage_surface_switch_note(agent, stored_prompt, conversation_history)
         # Same contract for tools[]: pin the array to the order this session already
         # sent (tools freeze) instead of re-probing every check_fn on a fresh AIAgent.
         # The pin holds ON the announcing turn too.  tools[] is serialized AHEAD of the system
@@ -704,11 +705,11 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
         try:
             saved_tools = session_row.get("tool_names") if session_row else None
             if saved_tools:
-                from tools.mcp_tool_agent import restore_agent_tool_prefix
-                built_for_this_surface = _agent_tool_names(agent)
+                from tools.mcp_tool_agent import _def_name, restore_agent_tool_prefix
+                built_for_this_surface = [_def_name(t) for t in agent.tools or []]
                 restore_agent_tool_prefix(agent, json.loads(saved_tools))
                 if announced_switch:
-                    _note_inert_pinned_tools(agent, built_for_this_surface)
+                    note_inert_pinned_tools(agent, built_for_this_surface)
         except Exception:
             logger.debug("tool prefix restore skipped", exc_info=True)
         # Prompt-section callbacks are new-session-only; recover their frozen bytes
@@ -745,7 +746,7 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
     # transcript by an earlier switch does not — retire it here too, or a rebuild for an
     # unrelated reason (a model switch) would leave the newest interface statement in the
     # request naming a surface the conversation has left (#104414).
-    _stage_surface_switch_note(agent, agent._cached_system_prompt, conversation_history)
+    stage_surface_switch_note(agent, agent._cached_system_prompt, conversation_history)
 
     # Plugin hook: on_session_start — fired once for a brand-new session, not on continuation.
     try:
@@ -773,157 +774,17 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
     )
 
 
-# A surface switch (desktop <-> TUI, a session resumed under a different host) changes only
-# which interface renders the reply, but the surface guidance and the ``Platform:`` trailer are
-# embedded in the persisted prompt.  Rebuilding for it produced a system prompt that diverged
-# from the cached one within its first blocks, so the ENTIRE request behind it re-prefilled —
-# a 220K-token session came back at a 1% cache hit (#104414).  The stored bytes are therefore
-# kept and the CURRENT surface's guidance is delivered on the per-turn user-message channel
-# instead: that lands after the cached prefix, is stamped into the byte-stable ``api_content``
-# sidecar so later turns replay it unchanged, and the prompt itself converges at the next
-# rebuild boundary (compaction).
-_SURFACE_SWITCH_NOTE_PREFIX = "[System: This conversation is now being answered on a different interface: "
-
-
-def _stored_prompt_platform(prompt: str) -> str:
-    """The ``Platform:`` value the stored prompt was built with ("" when absent).
-
-    Parses only the authoritative identity portion before `# Hermes runtime environment`
-    so embedder prose (e.g. HERMES_ENVIRONMENT_HINT decoys) cannot shadow it.
-    """
-    identity, runtime_marker, _ = prompt.rpartition(f"\n\n{RUNTIME_ENVIRONMENT_HEADING}\n\n")
-    runtime_marker = runtime_marker if prompt.endswith(RUNTIME_ENVIRONMENT_END) else ""
-    lines = (identity if runtime_marker else prompt).splitlines()
-
-    prefix = "Platform:"
-    matches = [line[len(prefix):].strip() for line in lines if line.startswith(prefix)]
-    return matches[-1] if matches else ""
-
-
-def _transcript_row_texts(msg):
-    """Every string the model actually saw for one transcript row: the wire sidecar first,
-    then the stored content (plain string, or the text parts of a multimodal list)."""
-    if not isinstance(msg, dict):
-        return
-    sidecar = msg.get("api_content")
-    if isinstance(sidecar, str):
-        yield sidecar
-    content = msg.get("content")
-    if isinstance(content, str):
-        yield content
-    elif isinstance(content, list):
-        for part in content:
-            if isinstance(part, dict) and isinstance(part.get("text"), str):
-                yield part["text"]
-
-
-def _last_announced_surface(conversation_history) -> str:
-    """The surface named by the NEWEST surface note in the transcript ("" when there is none).
-
-    The note is stamped into the ``api_content`` sidecar and persisted, so it is the last thing
-    the model was TOLD it is running on — and it outranks the stored prompt's own ``Platform:``
-    trailer once a switch has been announced.  Only the newest note counts: an older one names
-    a surface the conversation has since left.  Reading it back is also what stops a fresh
-    AIAgent per turn (the gateway shape) from stacking one copy of the note per turn.
-    """
-    for msg in reversed(conversation_history or []):
-        for text in _transcript_row_texts(msg):
-            if _SURFACE_SWITCH_NOTE_PREFIX in text:
-                return text.rsplit(_SURFACE_SWITCH_NOTE_PREFIX, 1)[1].split(".", 1)[0].strip()
-    return ""
-
-
-def _agent_tool_names(agent) -> list:
-    """The names in ``agent.tools``, in wire order ([] when the attribute is unreadable)."""
-    names = []
-    try:
-        for entry in getattr(agent, "tools", None) or []:
-            name = (entry.get("function") or {}).get("name", "") if isinstance(entry, dict) else ""
-            if name:
-                names.append(name)
-    except Exception:
-        return []
-    return names
-
-
-def _note_inert_pinned_tools(agent, built_for_this_surface: list) -> None:
-    """Name the pinned tools THIS surface did not build, at the end of the switch note.
-
-    The freeze keeps a previous surface's tools on the wire deliberately — removing them is the
-    one thing that would still re-prefill the request behind the preserved prompt — so the model
-    has to be TOLD they are inert here, or it plans around a ``focus_pane`` that a terminal turn
-    can only answer with ``tool_error("desktop only")``.  Rides the note, so it is one-shot and
-    lands behind the cached prefix like the rest of the correction.
-    """
-    surface_names = set(built_for_this_surface)
-    inert = [name for name in _agent_tool_names(agent) if name not in surface_names]
-    note = getattr(agent, "_surface_switch_note", "") or ""
-    if not inert or not note:
-        return
-    agent._surface_switch_note = note + (
-        "\n[System: These tools stay listed for this conversation (dropping them would discard "
-        "the cached request prefix) but were not loaded for this interface — expect a call to "
-        f"one of them to fail: {', '.join(inert)}.]"
-    )
-
-
-def _stage_surface_switch_note(agent, prompt: str, conversation_history) -> bool:
-    """Stage a correction when the request would otherwise misdescribe the current surface.
-
-    Compares the runtime surface against what the model was last told — the newest surface note
-    if one exists, else ``prompt``'s own ``Platform:`` trailer.  Consulting the note matters in
-    both directions: switching BACK to the surface the prompt was built for (desktop -> tui ->
-    desktop) leaves the trailer agreeing with the runtime while a stale note still tells the
-    model otherwise, and a rebuild for an unrelated reason (a model switch) refreshes the prompt
-    but not that note.
-
-    The full surface guidance is attached only when the prompt itself is out of date; when the
-    prompt already describes the current surface the note just retires the stale one.  Returns
-    whether it staged — the caller pairs that with re-persisting the tool names, because this is
-    the turn the surface's toolset changes under it.
-    """
-    current = str(getattr(agent, "platform", "") or "").strip()
-    described = _stored_prompt_platform(prompt)
-    told = _last_announced_surface(conversation_history) or described
-    if not current or not told or told == current:
-        return False
-    from agent.system_prompt import platform_surface_hint
-    hint = platform_surface_hint(agent) if described != current else ""
-    where = "the guidance below" if hint else "the interface section in the system prompt above"
-    note = (
-        f"{_SURFACE_SWITCH_NOTE_PREFIX}{current}. Any earlier interface guidance in this "
-        f"conversation is superseded — follow {where} for formatting, file delivery and any "
-        "interface-specific capability.]"
-    )
-    agent._surface_switch_note = f"{note}\n{hint}" if hint else note
-    logger.info(
-        "Session %s switched surface %s -> %s; keeping the stored system prompt and delivering "
-        "the new surface guidance as a turn note (prefix cache preserved).",
-        agent.session_id, told, current,
-    )
-    return True
-
-
 def _stored_prompt_matches_runtime(agent, prompt: str) -> bool:
     """Return False when the persisted runtime-identity lines are stale."""
 
     identity, runtime_marker, runtime = prompt.rpartition(f"\n\n{RUNTIME_ENVIRONMENT_HEADING}\n\n")
     # Legacy prose may quote the heading, but only the new renderer ends in this boundary.
     runtime_marker = runtime_marker if prompt.endswith(RUNTIME_ENVIRONMENT_END) else ""
-    # The final runtime block can contain embedder prose, not authoritative identity.
-    lines = (identity if runtime_marker else prompt).splitlines()
-
-    def line_value(label: str) -> str:
-        """Last matching line wins — safe ONLY for volatile-tier fields at the END of the
-        prompt (embedded project context could shadow earlier fields; see ``host_info_value``)."""
-        prefix = f"{label}:"
-        matches = [line[len(prefix):].strip() for line in lines if line.startswith(prefix)]
-        return matches[-1] if matches else ""
 
     def host_info_value(label: str) -> str:
         """New prompts delimit runtime hints; legacy prompts put them before context."""
         prefix = f"{label}:"
-        host_lines = runtime.split("\n\n", 1)[0].splitlines() if runtime_marker else lines
+        host_lines = (runtime.split("\n\n", 1)[0] if runtime_marker else prompt).splitlines()
         for idx, line in enumerate(host_lines):
             if line.startswith("User home directory:"):
                 for candidate in host_lines[idx + 1: idx + 4]:
@@ -933,9 +794,9 @@ def _stored_prompt_matches_runtime(agent, prompt: str) -> bool:
 
     # Model/provider identity, then cwd drift.  A cwd change is a real content change (context
     # files, the workspace snapshot and the coding posture are all resolved from it), so it
-    # still rebuilds; the runtime surface does not — see the note above.
+    # still rebuilds; the runtime surface does not (agent/surface_switch.py).
     for label, attr in (("Model", "model"), ("Provider", "provider")):
-        stored = line_value(label)
+        stored = identity_line_value(prompt, label)
         current = str(getattr(agent, attr, "") or "").strip()
         if stored and current and stored != current:
             return False
@@ -946,7 +807,7 @@ def _stored_prompt_matches_runtime(agent, prompt: str) -> bool:
         return False
     # Platform is deliberately NOT an identity field: a surface switch does not invalidate the
     # stored bytes, it only makes their interface section out of date, and that is corrected by
-    # _stage_surface_switch_note without touching the cached prefix (#104414).
+    # agent.surface_switch.stage_surface_switch_note without touching the cached prefix (#104414).
     return True
 
 

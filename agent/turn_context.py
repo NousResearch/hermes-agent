@@ -125,16 +125,10 @@ def consume_gateway_turn_context_notes(agent: Any) -> str:
 
 
 def consume_surface_switch_note(agent: Any) -> str:
-    """Pop the one-shot surface-change note staged by the system-prompt restore.
-
-    Rides the same user-message channel as the gateway's must-deliver notes: a session that
-    moved between surfaces keeps its stored system prompt (rebuilding it re-prefills the whole
-    request) and gets the new surface's guidance here, behind the cached prefix (#104414).
-    """
+    """Pop the one-shot surface-switch note staged by the system-prompt restore (#104414); it rides
+    the same user-message channel as the gateway's must-deliver notes, behind the cached prefix."""
     note = getattr(agent, "_surface_switch_note", "") or ""
-    if hasattr(agent, "_surface_switch_note"):
-        with suppress(Exception):
-            agent._surface_switch_note = ""
+    agent._surface_switch_note = ""
     return note if isinstance(note, str) else ""
 
 

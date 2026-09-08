@@ -191,15 +191,19 @@ export function buildLocationPayload({ latitude, longitude, name, address } = {}
 
 function textFromQuotedMessage(quotedMessage) {
   if (!quotedMessage) return '';
-  if (quotedMessage.conversation) return quotedMessage.conversation;
-  if (quotedMessage.extendedTextMessage?.text) return quotedMessage.extendedTextMessage.text;
-  if (quotedMessage.imageMessage?.caption) return quotedMessage.imageMessage.caption;
-  if (quotedMessage.videoMessage?.caption) return quotedMessage.videoMessage.caption;
-  if (quotedMessage.documentMessage?.caption) return quotedMessage.documentMessage.caption;
-  if (quotedMessage.documentMessage?.fileName) return `[Document: ${quotedMessage.documentMessage.fileName}]`;
-  if (quotedMessage.locationMessage) return formatLocationText(quotedMessage.locationMessage, false);
-  if (quotedMessage.contactMessage) return formatContactText(quotedMessage.contactMessage);
-  if (quotedMessage.pollCreationMessage) return formatPollText(quotedMessage.pollCreationMessage);
+  // A quoted payload can arrive inside the same wrappers as a top-level message
+  // (ephemeralMessage for disappearing-message replies, viewOnce…); normalize
+  // first so wrapped quotes keep their text (#106066).
+  const content = getMessageContent({ message: quotedMessage });
+  if (content.conversation) return content.conversation;
+  if (content.extendedTextMessage?.text) return content.extendedTextMessage.text;
+  if (content.imageMessage?.caption) return content.imageMessage.caption;
+  if (content.videoMessage?.caption) return content.videoMessage.caption;
+  if (content.documentMessage?.caption) return content.documentMessage.caption;
+  if (content.documentMessage?.fileName) return `[Document: ${content.documentMessage.fileName}]`;
+  if (content.locationMessage) return formatLocationText(content.locationMessage, false);
+  if (content.contactMessage) return formatContactText(content.contactMessage);
+  if (content.pollCreationMessage) return formatPollText(content.pollCreationMessage);
   return '';
 }
 

@@ -2818,10 +2818,10 @@ def _finish_completed_run(d: _RunDelivery, fire_owner: Optional[str], execution_
     if d.blocked_config:
         mark_kwargs["status"] = "blocked_config"
     marked = mark_job_run(job["id"], d.success, d.error, **mark_kwargs)
-    if fire_owner is not None and not marked:
-        finish_execution(
-            execution_id, success=False,
-            error="Fire claim ownership lost before terminal completion.")
+    if not marked:
+        error = "Cron terminal metadata write failed: mark_job_run did not persist jobs.json"
+        finish_execution(execution_id, success=False, error=error)
+        logger.error("Job %s terminal metadata was not persisted; failing closed", job["id"])
         return True
     delivery_outcome = _classify_delivery_outcome(
         delivery_error=d.delivery_error,

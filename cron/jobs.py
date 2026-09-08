@@ -92,6 +92,12 @@ _fire_fence_lock_state = threading.local()
 # _jobs_lock(), so blocking forever on a wedged sibling process would freeze the ticker and every
 # job. 30s is far above any legitimate critical section yet under one status-alarm threshold.
 _JOBS_LOCK_TIMEOUT_SECONDS = 30.0
+
+# Durable operator-visible accounting for terminal metadata writes that cannot
+# find their job record. The profile extension collector consumes this sidecar.
+_last_mark_not_found_count = 0
+_last_mark_not_found_at: Optional[str] = None
+_last_mark_not_found_job: Optional[str] = None
 OUTPUT_DIR = CRON_DIR / "output"
 ONESHOT_GRACE_SECONDS = 120
 
@@ -2270,11 +2276,35 @@ def mark_job_run(
     def locked():
         found = _with_job(job_id, apply, missing=_MISSING)
         if found is _MISSING:
-            logger.warning("mark_job_run: job_id %s not found, skipping save", job_id)
+            global _last_mark_not_found_count, _last_mark_not_found_at, _last_mark_not_found_job
+            now = _hermes_now().isoformat()
+            _last_mark_not_found_count += 1
+            _last_mark_not_found_at = now
+            _last_mark_not_found_job = job_id
+            stats_path = _current_cron_store().cron_dir / "mark_job_run_drops.json"
+            try:
+                previous = json.loads(stats_path.read_text(encoding="utf-8"))
+                count = max(int(previous.get("count", 0)), _last_mark_not_found_count)
+            except (FileNotFoundError, OSError, ValueError, TypeError, AttributeError):
+                count = _last_mark_not_found_count
+            try:
+                atomic_write_text(stats_path, json.dumps({
+                    "count": count, "last_at": now, "last_job_id": job_id,
+                }, sort_keys=True))
+            except OSError:
+                logger.exception("mark_job_run: failed to persist drop counter")
+            logger.error(
+                "mark_job_run: job_id %s not found; terminal metadata was not persisted "
+                "(drop_count=%d, counter=%s)", job_id, count, stats_path)
             return False
         return found
 
     return _under_fire_fence(job_id, locked)
+
+
+def get_mark_not_found_stats() -> tuple[int, Optional[str], Optional[str]]:
+    """Return process-local drop count, timestamp, and last missing job id."""
+    return _last_mark_not_found_count, _last_mark_not_found_at, _last_mark_not_found_job
 
 
 def _write_oneshot_diagnostic(job: Dict[str, Any], text: str, what: str) -> bool:

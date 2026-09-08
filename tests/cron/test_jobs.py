@@ -1,5 +1,6 @@
 """Tests for cron/jobs.py — schedule parsing, job CRUD, and due-job detection."""
 
+import json
 import threading
 import pytest
 from datetime import datetime, timedelta, timezone
@@ -18,6 +19,7 @@ from cron.jobs import (
     resume_job,
     remove_job,
     mark_job_run,
+    get_mark_not_found_stats,
     advance_next_run,
     claim_dispatch,
     claim_job_for_fire,
@@ -616,6 +618,13 @@ class TestResolveJobRef:
 
 
 class TestMarkJobRun:
+    def test_missing_job_persists_probe_visible_drop_counter(self, tmp_cron_dir):
+        assert mark_job_run("missing-job", success=True) is False
+        stats = json.loads((tmp_cron_dir / "cron" / "mark_job_run_drops.json").read_text())
+        assert stats["count"] >= 1
+        assert stats["last_job_id"] == "missing-job"
+        assert get_mark_not_found_stats()[2] == "missing-job"
+
     def test_increments_completed(self, tmp_cron_dir):
         job = create_job(prompt="Test", schedule="every 1h")
         mark_job_run(job["id"], success=True)

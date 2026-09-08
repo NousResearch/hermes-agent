@@ -363,7 +363,8 @@ CREATE TABLE IF NOT EXISTS messages (
     compacted INTEGER NOT NULL DEFAULT 0,
     api_content TEXT,
     display_kind TEXT,
-    display_metadata TEXT
+    display_metadata TEXT,
+    display_order INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS session_model_usage (
@@ -513,6 +514,22 @@ CREATE INDEX IF NOT EXISTS idx_async_delegations_delivery
 DEFERRED_INDEX_SQL = """
 CREATE INDEX IF NOT EXISTS idx_messages_session_active
     ON messages(session_id, active, timestamp);
+CREATE INDEX IF NOT EXISTS idx_messages_display_page
+    ON messages(session_id, display_order, active DESC, id DESC)
+    WHERE active = 1 OR compacted = 1;
+CREATE INDEX IF NOT EXISTS idx_messages_display_backfill
+    ON messages(session_id) WHERE display_order IS NULL AND (active = 1 OR compacted = 1);
+CREATE TRIGGER IF NOT EXISTS messages_display_order_insert
+AFTER INSERT ON messages WHEN new.display_order IS NULL
+BEGIN
+    UPDATE messages SET display_order = COALESCE((
+        SELECT MIN(COALESCE(display_order, id)) FROM messages
+        WHERE session_id = new.session_id AND id <> new.id
+          AND (active = 1 OR compacted = 1)
+          AND role IS new.role AND content IS new.content AND timestamp IS new.timestamp
+          AND tool_call_id IS new.tool_call_id AND tool_calls IS new.tool_calls AND tool_name IS new.tool_name
+    ), new.id) WHERE id = new.id;
+END;
 CREATE INDEX IF NOT EXISTS idx_messages_active_null
     ON messages(active) WHERE active IS NULL;
 CREATE INDEX IF NOT EXISTS idx_sessions_session_key

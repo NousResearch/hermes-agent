@@ -14,6 +14,13 @@ job of ``include_inactive`` (audit / debug reads).
 
 import pytest
 
+from agent.context_compressor import (
+    HISTORICAL_TASK_HEADING,
+    SUMMARY_PREFIX,
+    _MERGED_PRIOR_CONTEXT_HEADER,
+    _MERGED_SUMMARY_DELIMITER,
+    _SUMMARY_END_MARKER,
+)
 from hermes_state import SessionDB
 
 
@@ -139,6 +146,65 @@ class TestDisplayDedupe:
             )
 
         db._execute_write(_do)
+
+    def test_latest_bounded_page_has_bounded_database_work(self, db):
+        for sid, count in (("small", 2_000), ("large", 20_000)):
+            db.create_session(sid, source="desktop")
+            db.append_messages_batch(
+                sid,
+                [{"role": "assistant", "content": f"row-{index}"} for index in range(count)],
+                chunk_rows=500,
+            )
+
+        db._wal_active = False
+
+        def progress_steps(sid):
+            callbacks = 0
+
+            def progress():
+                nonlocal callbacks
+                callbacks += 1
+                return 0
+
+            db._conn.set_progress_handler(progress, 100)
+            try:
+                page = db.get_messages(
+                    sid, include_compacted=True, latest=True, limit=120)
+            finally:
+                db._conn.set_progress_handler(None, 0)
+            assert len(page) == 120
+            return callbacks
+
+        small_steps = progress_steps("small")
+        large_steps = progress_steps("large")
+        assert large_steps < small_steps * 3
+
+    def test_composite_handoff_keeps_live_turn_identity_and_first_position(self, db):
+        sid = "composite"
+        db.create_session(sid, source="desktop")
+        original_id = db.append_message(sid, role="user", content="live ask", timestamp=100.0)
+        later_id = db.append_message(sid, role="assistant", content="later answer", timestamp=200.0)
+        db._execute_write(lambda conn: conn.execute(
+            "UPDATE messages SET active = 0, compacted = 1 WHERE session_id = ?", (sid,)))
+        carrier = (
+            f"{_MERGED_PRIOR_CONTEXT_HEADER}\n"
+            "live ask\n\n"
+            f"{_MERGED_SUMMARY_DELIMITER}\n\n"
+            f"{SUMMARY_PREFIX}\n\n"
+            f"{HISTORICAL_TASK_HEADING}\nold work\n\n"
+            f"{_SUMMARY_END_MARKER}"
+        )
+        carrier_id = db.append_message(sid, role="user", content=carrier, timestamp=100.0)
+        # Simulate rows written before display_order existed; lazy backfill must use
+        # the same normalized user-turn key as the historical Python projection.
+        db._execute_write(lambda conn: conn.execute(
+            "UPDATE messages SET display_order = NULL WHERE session_id = ?", (sid,)))
+
+        messages = db.get_messages(sid, include_compacted=True)
+
+        assert [message["id"] for message in messages] == [carrier_id, later_id]
+        assert messages[0]["content"] == carrier
+        assert original_id not in [message["id"] for message in messages]
 
     def test_copied_protected_tail_is_surfaced_once(self, db):
         """A message copied across compaction epochs appears exactly once."""

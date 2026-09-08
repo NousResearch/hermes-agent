@@ -249,6 +249,23 @@ class SessionMessagesMixin:
             _str_or_none(msg.get("api_content")), _str_or_none(msg.get("display_kind")),
             self._encode_display_metadata(msg.get("display_metadata")))
 
+    def _inherit_composite_display_order(self, conn, row_id: int, session_id: str, msg: Dict[str, Any],
+                                         message_timestamp: float, tool_calls: Any) -> None:
+        handoff, live_view = split_user_originated_turn(msg)
+        if handoff is None or live_view is None:
+            return
+        encoded_content = self._encode_content(live_view.get("content"))
+        encoded_tool_calls = json.dumps(tool_calls) if tool_calls else None
+        row = conn.execute(
+            "SELECT MIN(COALESCE(display_order, id)) FROM messages "
+            "WHERE session_id = ? AND id <> ? AND (active = 1 OR compacted = 1) "
+            "AND role = 'user' AND content IS ? AND timestamp IS ? AND tool_call_id IS ? "
+            "AND tool_calls IS ? AND tool_name IS ?",
+            (session_id, row_id, encoded_content, message_timestamp, msg.get("tool_call_id"),
+             encoded_tool_calls, msg.get("tool_name"))).fetchone()
+        if row is not None and row[0] is not None:
+            conn.execute("UPDATE messages SET display_order = ? WHERE id = ?", (row[0], row_id))
+
     @staticmethod
     def _bump_session_counters(conn, session_id: str, inserted: int, tool_calls: int, *, unit: bool) -> None:
         """Bump sessions.* counters after an insert; *unit* bakes the ``+ 1`` literal into the SQL."""
@@ -278,12 +295,16 @@ class SessionMessagesMixin:
         # Encode outside the write txn (display metadata first: log-order parity).
         msg["display_metadata"] = self._encode_display_metadata(display_metadata)
         tool_calls = _parse_tool_calls(tool_calls)
+        message_timestamp = _coerce_timestamp(timestamp, time.time())
         params = self._message_row_params(
-            session_id, role, msg, tool_calls, _coerce_timestamp(timestamp, time.time()), keep_reasoning=True)
+            session_id, role, msg, tool_calls, message_timestamp, keep_reasoning=True)
         def _do(conn):
             self._check_transcript_write_guards(conn, session_id, compression_lock_holder,
                 turn_lease_holder=turn_lease_holder, turn_lease_ttl_seconds=turn_lease_ttl_seconds)
             msg_id = conn.execute(_INSERT_MESSAGE_SQL, params).lastrowid
+            if msg_id is not None:
+                self._inherit_composite_display_order(
+                    conn, int(msg_id), session_id, msg, message_timestamp, tool_calls)
             self._bump_session_counters(conn, session_id, 1, _tool_calls_count(tool_calls), unit=True)
             return msg_id
         # THE critical write (failure aborts the turn): long patience so a sibling legitimately
@@ -431,6 +452,8 @@ class SessionMessagesMixin:
                 session_id, role, msg, tool_calls, message_timestamp, keep_reasoning=role == "assistant"))
             if cur.lastrowid is not None:
                 msg["_row_id"] = cur.lastrowid
+                self._inherit_composite_display_order(
+                    conn, int(cur.lastrowid), session_id, msg, message_timestamp, tool_calls)
             inserted += 1
             tool_calls_total += _tool_calls_count(tool_calls)
             now_ts = max(now_ts, message_timestamp) + 1e-6
@@ -583,6 +606,19 @@ class SessionMessagesMixin:
             ") AND content IS ?",
             (_scrub_surrogates(api_content), session_id, self._encode_content(content)))
 
+    def _display_dedupe_key(self, row) -> Tuple[Any, ...]:
+        """Historical display identity, including normalized live content from user handoff carriers."""
+        dedupe_content = row["content"]
+        if row["role"] == "user":
+            handoff, live_view = split_user_originated_turn({
+                "role": "user", "content": self._decode_content(row["content"]),
+                "display_kind": row["display_kind"],
+                "display_metadata": self._decode_display_metadata(row["display_metadata"])})
+            if handoff is not None and live_view is not None:
+                dedupe_content = self._encode_content(live_view.get("content"))
+        return (row["role"], dedupe_content, row["timestamp"],
+                row["tool_call_id"], row["tool_calls"], row["tool_name"])
+
     def _dedupe_display_generations(self, rows):
         """Collapse compaction generations so each logical message appears once (the protected tail is copied
         into each generation: same role/content/timestamp, different ``active``/id); prefer the live row, then
@@ -590,18 +626,7 @@ class SessionMessagesMixin:
         seen: Dict[Tuple[Any, ...], Any] = {}
         first_id: Dict[Tuple[Any, ...], int] = {}
         for row in rows:
-            dedupe_content = row["content"]
-            if row["role"] == "user":
-                handoff, live_view = split_user_originated_turn({
-                    "role": "user", "content": self._decode_content(row["content"]),
-                    "display_kind": row["display_kind"],
-                    "display_metadata": self._decode_display_metadata(row["display_metadata"])})
-                if handoff is not None and live_view is not None:
-                    dedupe_content = self._encode_content(live_view.get("content"))
-            # Tool fields key too: identical tool messages collapse, distinct calls with equal
-            # role/content/timestamp never merge.
-            key = (row["role"], dedupe_content, row["timestamp"],
-                row["tool_call_id"], row["tool_calls"], row["tool_name"])
+            key = self._display_dedupe_key(row)
             cur = seen.get(key)
             if cur is None or (row["active"], row["id"]) > (cur["active"], cur["id"]):
                 seen[key] = row
@@ -609,6 +634,36 @@ class SessionMessagesMixin:
         # Order by the logical message's FIRST row, not the chosen representative's: a protected-tail
         # copy in a newer generation has a higher id than messages emitted after the original.
         return [seen[key] for key in sorted(seen, key=first_id.__getitem__)]
+
+    def _ensure_display_order(self, session_id: str) -> bool:
+        """Backfill one legacy session once, preserving the pre-index display identity exactly."""
+        missing_sql = (
+            "SELECT 1 FROM messages WHERE session_id = ? AND (active = 1 OR compacted = 1) "
+            "AND display_order IS NULL LIMIT 1")
+        if self._read_one(missing_sql, (session_id,)) is None:
+            return True
+        if getattr(self, "read_only", False):
+            return False
+
+        def _do(conn):
+            missing = conn.execute(missing_sql, (session_id,)).fetchone()
+            if missing is None:
+                return True
+            rows = conn.execute(
+                "SELECT * FROM messages WHERE session_id = ? AND (active = 1 OR compacted = 1) ORDER BY id",
+                (session_id,)).fetchall()
+            first_id: Dict[Tuple[Any, ...], int] = {}
+            keyed_rows = []
+            for row in rows:
+                key = self._display_dedupe_key(row)
+                first_id[key] = min(first_id.get(key, row["id"]), row["id"])
+                keyed_rows.append((row["id"], key))
+            conn.executemany(
+                "UPDATE messages SET display_order = ? WHERE id = ?",
+                [(first_id[key], row_id) for row_id, key in keyed_rows])
+            return True
+
+        return bool(self._execute_write(_do))
 
     def _row_to_message_dict(self, row, *, warn_context: str, summary_flag: bool) -> Dict[str, Any]:
         """``dict(row)`` with content/tool_calls/display_metadata decoded; *summary_flag* keeps
@@ -640,8 +695,26 @@ class SessionMessagesMixin:
         if after_id is not None and include_compacted:
             raise ValueError("after_id is incompatible with include_compacted (deduped display reads use offset paging)")
         active_clause = self._active_clause(include_inactive, include_compacted)
-        if include_compacted:
-            # Full display set (the UI row cap lives in the endpoint), dedupe, then page ([:None] is a no-op).
+        if include_compacted and not include_inactive and self._ensure_display_order(session_id):
+            direction = "DESC" if latest else "ASC"
+            sql = f"""WITH page AS (
+                    SELECT display_order FROM messages
+                    WHERE session_id = ? AND (active = 1 OR compacted = 1)
+                    GROUP BY display_order ORDER BY display_order {direction}
+                    LIMIT ? OFFSET ?
+                )
+                SELECT chosen.* FROM page
+                JOIN messages AS chosen ON chosen.id = (
+                    SELECT candidate.id FROM messages AS candidate
+                    WHERE candidate.session_id = ?
+                      AND candidate.display_order = page.display_order
+                      AND (candidate.active = 1 OR candidate.compacted = 1)
+                    ORDER BY candidate.active DESC, candidate.id DESC LIMIT 1
+                )
+                ORDER BY page.display_order ASC"""
+            rows = self._read_all(sql, [session_id, -1 if limit is None else limit, offset, session_id])
+        elif include_compacted:
+            # Read-only legacy stores cannot persist display identities; retain the exact old projection.
             rows = self._dedupe_display_generations(self._read_all(
                 "SELECT * FROM messages WHERE session_id = ?" + active_clause + " ORDER BY id ASC", [session_id]))
             rows = rows[::-1][offset:][:limit][::-1] if latest else rows[offset:][:limit]

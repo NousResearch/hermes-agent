@@ -500,9 +500,18 @@ def _stage_turn_user_message(
         and pending_cli_message.get("content") == expected_persist_content
     ):
         user_msg = pending_cli_message
+        # Capture the exact bytes this dict carried BEFORE we restore the API-facing
+        # variant below. A close/early flush may have already committed THESE bytes to
+        # a durable row (stamping `_row_id` on this same dict) before this restore
+        # runs. If the sidecar backfill later matches on the live (restored) content
+        # instead of what is actually on disk, the row-addressed UPDATE silently
+        # touches zero rows (#102194 follow-up).
+        _persisted_content = user_msg.get("content")
         # CLI-staged value is the clean text; restore the API-facing variant (e.g. voice
         # prefix) on the same dict, keeping any close-path durable marker.
         user_msg["content"] = user_message
+        if _persisted_content != user_message:
+            user_msg["_persisted_content"] = _persisted_content
     else:
         user_msg = {"role": "user", "content": user_message}
         if isinstance(pending_cli_message, dict):
@@ -698,10 +707,28 @@ def _stamp_api_content_sidecar(
     """api_content sidecar — persist what you send: injected context lives only in the
     API copy, so stamp the exact sent bytes on the live dict for replay."""
     _turn_user_msg = messages[current_turn_user_idx]
-    _api_content = compose_user_api_content(
-        _turn_user_msg.get("content", ""), ext_prefetch_cache, plugin_user_context
-    )
-    if _api_content is None or _api_content == _turn_user_msg.get("content"):
+    # A close/early flush can persist THIS row's clean text before the prologue
+    # restores an API-facing variant (e.g. voice prefix) onto the same dict
+    # (`_stage_turn_user_message`). That helper records the exact bytes that landed in
+    # the durable row as `_persisted_content` before overwriting `content`. The row
+    # must be matched — and updated — against THOSE bytes, never the live (possibly
+    # rewritten) `content`: matching on live content is what made the row-addressed
+    # backfill silently update zero rows (#102194 follow-up).
+    _persisted_content = _turn_user_msg.pop("_persisted_content", None)
+    _live_content = _turn_user_msg.get("content", "")
+    _composed = compose_user_api_content(_live_content, ext_prefetch_cache, plugin_user_context)
+    if _composed is not None:
+        _api_content = _composed
+    elif _persisted_content is not None and _persisted_content != _live_content:
+        # No memory/plugin injection this turn, but the durable row already holds
+        # different (clean) bytes than what this turn actually sends — e.g. the
+        # close-flush persisted "hello" and this dict was restored to "[voice] hello".
+        # Backfill the live bytes so replay resends what was really sent instead of
+        # silently keeping the earlier, now-stale row content forever.
+        _api_content = _live_content
+    else:
+        _api_content = None
+    if _api_content is None:
         return
     _turn_user_msg["api_content"] = _api_content
     # When this turn's user row was ALREADY materialized before the sidecar could be
@@ -734,6 +761,12 @@ def _stamp_api_content_sidecar(
     )
     if not (_has_valid_row_id or _in_place_compacted):
         return
+    # Match the durable row on the bytes it actually holds on disk (the pre-flushed
+    # clean text) when we captured one; otherwise fall back to the live content, same
+    # as before this fix (the ordinary in-place-compaction / no-early-flush case).
+    _match_content = (
+        _persisted_content if _persisted_content is not None else _turn_user_msg.get("content")
+    )
     _db = getattr(agent, "_session_db", None)
     if _db is not None:
         try:
@@ -741,7 +774,7 @@ def _stamp_api_content_sidecar(
                 _db.set_message_api_content(
                     agent.session_id,
                     _row_id,
-                    _turn_user_msg.get("content"),
+                    _match_content,
                     _api_content,
                 )
             else:
@@ -749,7 +782,7 @@ def _stamp_api_content_sidecar(
                 # backfill, which is safe here because archive_and_compact just made
                 # this message the newest active user row.
                 _db.set_latest_user_api_content(
-                    agent.session_id, _turn_user_msg.get("content"), _api_content
+                    agent.session_id, _match_content, _api_content
                 )
         except Exception:
             logger.warning(

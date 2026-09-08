@@ -1496,13 +1496,17 @@ class TestSerialCoalesceFrameFlow:
 
 
 class TestFinalFrameAckTimeoutSemantics:
-    """Regression: final-frame ack timeout must not raise / trigger fallback.
+    """Regression: final-frame ack timeout must not raise / trigger a fallback loop.
 
-    See docs/rca-wecom-stream-final-ack-timeout-duplicate.md — when WeCom's
-    ack returns past the 5s window but the frame *was* delivered, raising
-    causes the upper layer to fall back to a normal markdown send and the
-    user sees the same content twice.  The fix: treat ack timeout as
-    success-with-uncertainty and let the caller mark the turn delivered.
+    See docs/rca-wecom-stream-final-ack-timeout-duplicate.md and PR #96942. When
+    WeCom's ack does not return, raising causes the upper layer to fall back to a
+    normal markdown send and the user sees the same content twice. Superseding
+    the old "assume delivered" sentinel: the final frame is RE-SENT once (safe /
+    cumulative within the 10-min window); if the re-send's ack ALSO times out the
+    result degrades to ``settlement_indeterminate`` (errcode 0, ``ack_pending``) —
+    a success-shaped, no-raise response the caller records as sent-but-unconfirmed
+    (NOT finalized). The removed ``ack_timeout_assumed_delivered`` must never
+    appear (it falsely reported delivery and could silently drop the answer).
     """
 
     @pytest.mark.asyncio
@@ -1512,7 +1516,8 @@ class TestFinalFrameAckTimeoutSemantics:
         adapter = WeComAdapter(PlatformConfig(enabled=True))
         adapter._ws = MagicMock(closed=False)
         adapter._REPLY_ACK_TIMEOUT = 0.05  # snappy for the test
-        # _send_json succeeds but no ack ever arrives.
+        # _send_json succeeds but no ack ever arrives — both the first attempt and
+        # the re-send time out.
         adapter._send_json = AsyncMock()
 
         response = await adapter._send_reply_queued(
@@ -1521,11 +1526,15 @@ class TestFinalFrameAckTimeoutSemantics:
             is_final=True,
         )
 
-        # Aligned-with-official semantics: success-shaped response with the
-        # ack_pending flag set so callers can log / observe but no exception.
+        # No raise; success-shaped with ack_pending so callers can observe. On the
+        # double timeout the errmsg is the indeterminate signal, NOT the removed
+        # assume-delivered sentinel.
         assert response.get("errcode") == 0
         assert response.get("ack_pending") is True
-        assert "ack_timeout" in response.get("errmsg", "")
+        assert response.get("errmsg") == "settlement_indeterminate"
+        assert response.get("errmsg") != "ack_timeout_assumed_delivered"
+        # The final frame was re-sent exactly once (two identical finish=true sends).
+        assert adapter._send_json.await_count == 2
 
     @pytest.mark.asyncio
     async def test_final_frame_send_failure_still_raises(self):

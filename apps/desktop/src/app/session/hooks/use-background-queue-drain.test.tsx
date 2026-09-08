@@ -2,6 +2,21 @@ import { act, cleanup, render, waitFor } from '@testing-library/react'
 import type { MutableRefObject } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import type * as WindowsStore from '@/store/windows'
+
+const { isWatchWindowMock } = vi.hoisted(() => ({
+  isWatchWindowMock: vi.fn(() => false)
+}))
+
+vi.mock('@/store/windows', async importOriginal => {
+  const actual = await importOriginal<typeof WindowsStore>()
+
+  return {
+    ...actual,
+    isWatchWindow: isWatchWindowMock
+  }
+})
+
 import { createClientSessionState } from '@/lib/chat-runtime'
 import {
   $parkedQueueSessions,
@@ -61,6 +76,8 @@ function Harness({
 describe('useBackgroundQueueDrain', () => {
   beforeEach(() => {
     vi.useRealTimers()
+    isWatchWindowMock.mockReset()
+    isWatchWindowMock.mockReturnValue(false)
     clearAllSessionStates()
   })
 
@@ -221,5 +238,28 @@ describe('useBackgroundQueueDrain', () => {
 
     expect(submitText).toHaveBeenCalledTimes(2)
     expect(getQueuedPrompts('stored-session-a')).toHaveLength(0)
+  })
+
+  it('does not submit shared queued prompts from a spectator watch window', async () => {
+    isWatchWindowMock.mockReturnValue(true)
+    const runtimeMap = { current: new Map([['stored-session-a', 'rt-session-a']]) }
+    const submitText = vi.fn(async () => false)
+
+    enqueueQueuedPrompt('stored-session-a', { text: 'stay in the primary window', attachments: [] })
+
+    render(
+      <Harness
+        runtimeMap={runtimeMap}
+        selectedStoredSessionId="watched-child"
+        submitText={submitText}
+      />
+    )
+
+    await act(async () => {
+      await Promise.resolve()
+    })
+
+    expect(submitText).not.toHaveBeenCalled()
+    expect(getQueuedPrompts('stored-session-a')).toHaveLength(1)
   })
 })

@@ -115,7 +115,7 @@ def _admit_prompt_turn(
     return images, agent
 
 
-def _record_turn_marker(session: dict, text: Any) -> str:
+def _record_turn_marker(session: dict, text: Any, *, auto_continue: bool = True) -> str:
     """Write the durable crash marker; returns the session key it was written under (compression
     can rotate session_key mid-turn).  A surviving marker means the process died mid-turn.
     The key is published before the disk write so an interrupt racing startup can retire
@@ -127,7 +127,8 @@ def _record_turn_marker(session: dict, text: Any) -> str:
     if isinstance(marker_text, str) and marker_text.strip():
         with session["history_lock"]:
             session["_active_turn_marker_key"] = marker_key
-        record_turn_start(marker_home, marker_key, marker_text, attempts=marker_attempt)
+        record_turn_start(marker_home, marker_key, marker_text, attempts=marker_attempt,
+                          auto_continue=auto_continue)
         with session["history_lock"]:
             marker_cancelled = bool(session.get("_turn_cancel_requested"))
         if marker_cancelled:
@@ -779,11 +780,16 @@ def _run_prompt_submit(
         st = _TurnRun(
             session["agent"], session.pop("one_turn_model_restore", None), terminal_callback,
             receipt_committed=terminal_callback is None)
-        st.marker_key = _record_turn_marker(session, text)
+        st.marker_key = _record_turn_marker(session, text, auto_continue=terminal_callback is None)
         goal_followup = None
         try:
             prepared = _prepare_turn_input(sid, session, st, text, images)
             if prepared is None:
+                if st.terminal_callback is not None and not st.receipt_attempted:
+                    st.receipt_attempted = True
+                    st.terminal_callback({
+                        "status": "failed", "text": "", "error": "Context injection refused."})
+                    st.receipt_committed = True
                 return
             prompt, run_message, cols, streamer = prepared
             _invoke_agent(

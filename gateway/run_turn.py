@@ -343,6 +343,9 @@ class GatewayTurnMixin:
         self._cache_session_source(session_key, source)
         if await asyncio.to_thread(self._is_telegram_topic_lane, source):
             session_entry = await self._hmwa_heal_telegram_topic_binding(source, session_entry, session_key)
+        from gateway.run_heartbeat_acceptance import resolve_heartbeat_owner
+        if not await resolve_heartbeat_owner(self, event, session_entry):
+            return
         return source, session_entry, session_key
 
     async def _hmwa_heal_telegram_topic_binding(self, source, session_entry, session_key):
@@ -1644,6 +1647,8 @@ class GatewayTurnMixin:
         }
         if prepared.persist_user_display_kind:
             _user_entry["display_kind"] = prepared.persist_user_display_kind
+        if prepared.persistence_owner:
+            _user_entry["display_metadata"] = {"gateway_input_owner": prepared.persistence_owner}
         if getattr(event, "message_id", None):
             _user_entry["message_id"] = str(event.message_id)
         return _user_entry
@@ -1790,22 +1795,13 @@ class GatewayTurnMixin:
         # Retain Slack thread/workspace routing so a failed turn cannot leave its status visible.
         await self._hmwa_stop_typing_for_turn(event, source)
         logger.exception("Agent error in session %s", session_key)
-        # Failures before run_conversation() (provider/httpx init) can't persist the inbound turn:
-        # append the user message here once, unless the latest user row already matches it.
+        # Replay can coalesce inputs; only this input's durable marker establishes ownership.
         try:
             if prepared.message_text is not None and session_entry is not None:
-                try:
-                    _recent_transcript = await self.async_session_store.load_transcript(session_entry.session_id)
-                except Exception:
-                    _recent_transcript = []
-                _expected_user_content = (
-                    prepared.persist_user_message if prepared.persist_user_message is not None
-                    else prepared.message_text
+                _owned = await self.async_session_store.has_input_owner(
+                    prepared.persistence_session_id, prepared.persistence_owner,
                 )
-                _last_user = next(
-                    (_msg for _msg in reversed(_recent_transcript[-10:]) if _msg.get("role") == "user"), None,
-                )
-                if _last_user is None or _last_user.get("content") != _expected_user_content:
+                if not _owned:
                     await self.async_session_store.append_to_transcript(
                         session_entry.session_id, self._hmwa_user_transcript_entry(event, prepared, time.time()),
                     )
@@ -1861,6 +1857,8 @@ class GatewayTurnMixin:
         persist_user_message: Any
         persist_user_timestamp: Any
         persist_user_display_kind: Optional[str]
+        persistence_session_id: Optional[str] = None
+        persistence_owner: Optional[str] = None
 
     async def _hmwa_prepare_turn(self, event, source, session_entry, session_key, _quick_key, run_generation):
         """Everything between session resolution and the agent run: session open, task-local env,
@@ -1904,6 +1902,9 @@ class GatewayTurnMixin:
         # from []. Restore task-local context here (before the broad cleanup finally).
         try:
             history = await self.async_session_store.load_transcript(session_entry.session_id)
+            history = await self._hmwa_run_session_hygiene(
+                event, source, session_entry, session_key, history, _quick_key, run_generation,
+            )
         except TranscriptReadError:
             self._clear_session_env(_session_env_tokens)
             return (
@@ -1911,10 +1912,6 @@ class GatewayTurnMixin:
                 "processed. Ask the operator to inspect state.db, then resend after it is healthy. "
                 "Use /reset only if you intentionally want to start a new conversation."
             ), _session_env_tokens
-
-        history = await self._hmwa_run_session_hygiene(
-            event, source, session_entry, session_key, history, _quick_key, run_generation,
-        )
 
         await self._hmwa_first_contact_notes(source, history, turn_sidecar_notes)
 
@@ -1943,9 +1940,16 @@ class GatewayTurnMixin:
         # Bind this run generation to the adapter so deferred post-delivery callbacks are released
         # by the run that registered them.
         self._bind_adapter_run_generation(self._adapter_for_source(source), session_key, run_generation)
+        # Delivery IDs are only unique in their transport namespace. Keyless turns
+        # need their own identity, even when another process writes to this session.
+        import uuid
+        namespace = [source.platform.value, source.profile, source.scope_id,
+                     source.chat_id, source.thread_id, str(event.message_id)]
+        owner = (str(uuid.uuid5(uuid.NAMESPACE_URL, json.dumps(namespace)))
+                 if event.message_id else str(uuid.uuid4()))
         return self._PreparedTurn(
             history, context_prompt, message_text, persist_user_message, persist_user_timestamp,
-            persist_user_display_kind,
+            persist_user_display_kind, session_entry.session_id, owner,
         ), _session_env_tokens
 
     async def _handle_message_with_agent(self, event, source, _quick_key: str, run_generation: int):
@@ -1990,8 +1994,14 @@ class GatewayTurnMixin:
 
             # Capture the launch session id so post-run compression publication is identity-guarded
             # (a /new may move session_entry.session_id while the old run is still unwinding).
+            from gateway.run_heartbeat_acceptance import heartbeat_owner_is_current
+            if not heartbeat_owner_is_current(self, event, session_key):
+                return
             _run_start_session_id = session_entry.session_id
             _turn_started_monotonic = time.monotonic()
+            # Admission/typing is not execution. All routing, authorization and
+            # turn preparation gates have passed when the agent runner is entered.
+            event._heartbeat_execution_started = True
             agent_result = await self._run_agent(
                 message=message_text, context_prompt=prepared.context_prompt, history=history, source=source,
                 session_id=_run_start_session_id, session_key=session_key,
@@ -2001,6 +2011,7 @@ class GatewayTurnMixin:
                 persist_user_message=prepared.persist_user_message,
                 persist_user_timestamp=prepared.persist_user_timestamp,
                 persist_user_display_kind=prepared.persist_user_display_kind,
+                persist_user_display_metadata={"gateway_input_owner": prepared.persistence_owner},
                 message_type=event.message_type,
                 ephemeral_user_context=getattr(event, "ephemeral_user_context", None),
             )
@@ -3870,6 +3881,7 @@ class GatewayTurnMixin:
         moa_config: Optional[dict] = None,
         persist_user_message: Optional[Any] = None, persist_user_timestamp: Optional[float] = None,
         persist_user_display_kind: Optional[str] = None, message_type: Optional[str] = None,
+        persist_user_display_metadata: Optional[dict] = None,
     ) -> Dict[str, Any]:
         """Run the agent; returns the full run_conversation result dict.
 
@@ -3899,6 +3911,7 @@ class GatewayTurnMixin:
             persist_user_message=persist_user_message,
             persist_user_timestamp=persist_user_timestamp,
             persist_user_display_kind=persist_user_display_kind,
+            persist_user_display_metadata=persist_user_display_metadata,
         )
         _status_thread_metadata = self._run_agent_bind_turn_wiring(
             turn_ctx, turn_runner, source, event_message_id, disp._native_slack_task_cards,

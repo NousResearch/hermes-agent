@@ -18,6 +18,7 @@ from typing import Any, Callable, Dict, List, Optional
 
 from agent.memory_manager import sanitize_context
 from agent.memory_provider import MemoryProvider, is_trivial_prompt
+from agent.turn_author import a2a_key
 from plugins.memory.honcho.client import HonchoClientConfig, resolve_config_path, spawn_context_thread
 from plugins.memory.honcho.dialectic import DialecticMixin
 from plugins.memory.honcho.tool_schemas import ALL_TOOL_SCHEMAS
@@ -674,7 +675,7 @@ class HonchoMemoryProvider(DialecticMixin, MemoryProvider):
             if not bot_peer_id or bot_peer_id == self._manager.assistant_peer_id():
                 logger.debug("Honcho sync skipped a bot-authored turn: author %s has no peer of its own", author_id)
                 return
-            session_key = self._a2a_session_key(author_id)
+            session_key = self._a2a_session_key({**author, "id": author_id})
             # The bot is the a2a session's own user peer, so its messages need no per-message author.
             session_kwargs["user_peer_id"] = bot_peer_id
             author_peer_id = None
@@ -696,12 +697,13 @@ class HonchoMemoryProvider(DialecticMixin, MemoryProvider):
             self._sync_thread.join(timeout=5.0)
         self._sync_thread = self._spawn_write(_sync, "honcho-sync", "Honcho sync_turn failed: %s")
 
-    def _a2a_session_key(self, author_id: str) -> str:
-        """Honcho session for one sender bot's turns into this agent, stable across turns.
+    def _a2a_session_key(self, author: Dict[str, Any]) -> str:
+        """Honcho session for one sender bot's turns into this agent, named from core's ``a2a_key``.
 
         The digest keeps two ids apart when sanitizing would make them equal."""
-        digest = hashlib.sha256(author_id.encode("utf-8")).hexdigest()[:8]
-        key = f"{self._session_key}:a2a:{re.sub(r'[^a-zA-Z0-9_-]', '-', author_id)}-{digest}"
+        prefix, _, ident = (a2a_key(author) or "").partition(":")
+        digest = hashlib.sha256(ident.encode("utf-8")).hexdigest()[:8]
+        key = f"{self._session_key}:{prefix}:{re.sub(r'[^a-zA-Z0-9_-]', '-', ident)}-{digest}"
         return HonchoClientConfig._enforce_session_id_limit(key, key)
 
     def _bot_turn_write_refusal(self) -> Optional[str]:

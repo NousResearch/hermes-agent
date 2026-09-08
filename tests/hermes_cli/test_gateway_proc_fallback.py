@@ -115,7 +115,7 @@ class TestProcFallback:
                 return ["12345", "self"]
             raise FileNotFoundError
 
-        def _stat(path):
+        def _stat(path, **kwargs):
             st = MagicMock()
             st.st_uid = os.getuid()
             return st

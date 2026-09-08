@@ -41,7 +41,7 @@ It will:
 
 1. Download and verify `bws v2.0.0` into `~/.hermes/bin/bws`.
 2. Prompt you for the access token (input is hidden). Stored in `~/.hermes/.env` as `BWS_ACCESS_TOKEN`.
-3. Ask which Bitwarden region your machine account belongs to — **US Cloud**, **EU Cloud**, or **self-hosted / custom URL**. Stored in `config.yaml` as `secrets.bitwarden.server_url` and passed to `bws` as `BWS_SERVER_URL`.
+3. Ask which Bitwarden region your machine account belongs to — **US Cloud**, **EU Cloud**, or **self-hosted / custom URL** (`https://`, or `http://` for localhost only). Stored in `config.yaml` as `secrets.bitwarden.server_url` and passed to `bws` as `BWS_SERVER_URL`.
 4. List the projects the machine account can see; pick one. Stored in `config.yaml` as `secrets.bitwarden.project_id`.
 5. Test-fetch the project's secrets and show you which env vars will resolve.
 6. Flip `secrets.bitwarden.enabled: true`.
@@ -116,8 +116,8 @@ secrets:
 |---|---|---|
 | `enabled` | `false` | Master switch. When false, Bitwarden is never contacted. |
 | `access_token_env` | `BWS_ACCESS_TOKEN` | Env var name that holds the bootstrap token. Change this if you already use `BWS_ACCESS_TOKEN` for something else. |
-| `project_id` | `""` | UUID of the project to sync from. |
-| `server_url` | `""` | Bitwarden region or self-hosted endpoint. Empty = `bws` default (US Cloud, `https://vault.bitwarden.com`). Set to `https://vault.bitwarden.eu` for EU Cloud, or your own URL for self-hosted. Plumbed into the `bws` subprocess as `BWS_SERVER_URL`. |
+| `project_id` | `""` | UUID of the project to sync from. Rejected if it isn't UUID-shaped. |
+| `server_url` | `""` | Bitwarden region or self-hosted endpoint. Empty = `bws` default (US Cloud, `https://vault.bitwarden.com`). Set to `https://vault.bitwarden.eu` for EU Cloud, or your own URL for self-hosted. Plumbed into the `bws` subprocess as `BWS_SERVER_URL`. Must be `https://` — the access token is sent to this endpoint, so plaintext `http://` is refused except for `localhost`. A `BWS_SERVER_URL` inherited from your shell is held to the same rule and dropped (with a warning) if it fails. |
 | `cache_ttl_seconds` | `300` | How long an in-process or disk fetch result is reused. Set to `0` to disable fresh-cache reuse. |
 | `encrypted_cache.enabled` | `false` | Store the last successful fetch in an AES-GCM encrypted cache at `~/.hermes/cache/bws_cache.enc.json`. |
 | `encrypted_cache.max_stale_seconds` | `0` | When encrypted caching is enabled, allow that cache to be used only after network/timeout failures, up to this age. Authentication failures never use stale secrets. A successful encrypted write removes the legacy plaintext `cache/bws_cache.json`. |

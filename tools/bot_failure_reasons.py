@@ -11,6 +11,7 @@ provider 401 bodies (e.g. Anthropic) say "invalid, blocked or out of funds".
 from __future__ import annotations
 
 import re
+from typing import Any
 
 # platform-side
 RUNTIME_OFFLINE = "runtime_offline"
@@ -52,6 +53,25 @@ def is_auto_retryable(reason: str) -> bool:
 RETRY_RESUME = "resume"
 RETRY_COMPRESS_THEN_RESUME = "compress_then_resume"
 RETRY_NONE = "none"
+
+
+def transport_failure_reason(proc: Any) -> str:
+    """Typed reason for a failed ``hermes ... -Q`` delivery turn, classified from the stream that
+    actually carries it.
+
+    A failed turn splits across BOTH streams: the provider prose lands on **stdout** ("API call
+    failed after 3 retries: HTTP 500: ..."), while **stderr** keeps session bookkeeping
+    ("Session ... Starting fresh.", "session_id: ...") plus the typed refusal marker
+    (``hermes_cli.active_sessions.format_refusal_stderr``). Reading ``stderr or stdout`` therefore
+    only ever saw the bookkeeping — non-empty on every run — so every transient provider failure
+    classified as :data:`UNKNOWN` and the callers' retry gates never opened.
+
+    Both streams are classified and the first typed answer wins, so provider prose on stdout is
+    seen while a refusal marker on stderr still outranks nothing.
+    """
+    texts = [text.strip()[-500:] for text in (getattr(proc, "stdout", ""), getattr(proc, "stderr", ""))
+             if text and text.strip()]
+    return next((reason for reason in map(classify_agent_error, texts) if reason != UNKNOWN), UNKNOWN)
 
 
 def retry_action(reason: str) -> str:

@@ -29,11 +29,15 @@ TURN_ATTEMPT_TIMEOUT_SECONDS = 600
 TURN_MAX_ATTEMPTS = 2  # first attempt + the policy-gated re-run
 
 
-def _run_delivery(profile: str, tmp: str) -> subprocess.CompletedProcess:
+def _run_delivery(profile: str, tmp: str, *, resuming: bool = False) -> subprocess.CompletedProcess:
     from tools.bot_relay import local_delivery_command
+    # The re-run replays the SAME session and the SAME payload file, and the failed attempt already
+    # persisted the user row, so the retried process is told to adopt it rather than append a second
+    # copy (agent.turn_context.RESUME_UNANSWERED_TURN_ENV).
+    env = {**os.environ, "HERMES_RESUME_UNANSWERED_TURN": "1"} if resuming else None
     return subprocess.run(
         local_delivery_command(profile, tmp), capture_output=True, text=True, encoding="utf-8",
-        errors="replace", timeout=TURN_ATTEMPT_TIMEOUT_SECONDS)
+        errors="replace", timeout=TURN_ATTEMPT_TIMEOUT_SECONDS, env=env)
 
 
 @method("bot_relay.roster.sync")
@@ -124,17 +128,17 @@ def _(rid, params: dict, _root=_relay_root, _run=_run_delivery) -> dict:
                     # transcript first (no fresh session is minted). Auth/quota/config never retry.
                     # See #93091.
                     from tools.bot_failure_reasons import (
-                        RETRY_NONE, classify_agent_error, retry_action)
-                    if retry_action(classify_agent_error(_detail(proc))) != RETRY_NONE:
-                        proc = _run(resolved, tmp)
+                        RETRY_NONE, retry_action, transport_failure_reason)
+                    if retry_action(transport_failure_reason(proc)) != RETRY_NONE:
+                        proc = _run(resolved, tmp, resuming=True)
         finally:
             with contextlib.suppress(OSError):
                 os.unlink(tmp)
         if proc.returncode != 0:
-            from tools.bot_failure_reasons import classify_agent_error
+            from tools.bot_failure_reasons import transport_failure_reason
             detail = _detail(proc)
             return _err(rid, 5092, f"delivery turn failed: {detail or proc.returncode}",
-                        data={"reason": classify_agent_error(detail)})
+                        data={"reason": transport_failure_reason(proc)})
         return _ok(rid, {"reply": (proc.stdout or "").strip()})
     except subprocess.TimeoutExpired:
         return _err(rid, 5093, "delivery turn timed out")

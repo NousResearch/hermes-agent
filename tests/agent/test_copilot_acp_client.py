@@ -421,3 +421,24 @@ def test_run_prompt_receives_picker_model():
             model="gpt-5.6-terra", messages=[{"role": "user", "content": "hi"}]
         )
     assert seen["model"] == "gpt-5.6-terra"
+
+
+@pytest.mark.parametrize('home_mode', ['real', 'profile'])
+def test_subprocess_home_override_does_not_inherit_stale_real_home(tmp_path, monkeypatch, home_mode):
+    from agent.copilot_acp_client import _build_subprocess_env
+
+    selected = tmp_path / 'selected-home'
+    selected.mkdir()
+    stale = tmp_path / 'parent-home'
+    stale.mkdir()
+    profile = tmp_path / 'profiles' / 'coder'
+    (profile / 'home').mkdir(parents=True)
+    monkeypatch.setenv('HOME', str(selected))
+    monkeypatch.setenv('HERMES_REAL_HOME', str(stale))
+    monkeypatch.setenv('HERMES_HOME', str(profile))
+    monkeypatch.setenv('TERMINAL_HOME_MODE', home_mode)
+
+    env = _build_subprocess_env()
+
+    assert env['HERMES_REAL_HOME'] == str(selected)
+    assert env['HOME'] == str(profile / 'home' if home_mode == 'profile' else selected)

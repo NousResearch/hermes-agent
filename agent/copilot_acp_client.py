@@ -122,6 +122,9 @@ def _build_subprocess_env() -> dict[str, str]:
     # See #29157.
     env = hermes_subprocess_env(inherit_credentials=True)
     env["HOME"] = _resolve_home_dir()
+    # A selected child HOME must not be overridden by the parent's stale
+    # real-home hint when applying the shared profile/real-home policy.
+    env["HERMES_REAL_HOME"] = env["HOME"]
     apply_subprocess_home_env(env)
     return env
 

@@ -847,6 +847,28 @@ def managed_callback_guard():
         _MANAGED_CALLBACK_DEPTH.reset(token)
 
 
+@contextlib.contextmanager
+def new_execution_root():
+    """Clear the relay-execution markers a copy_context() carried in, for an independent turn root.
+
+    A delegate_task child runs on a worker thread launched with
+    ``copy_context().run(...)``, and that copy is taken while the PARENT is mid
+    tool/LLM callback — so ``_MANAGED_CALLBACK_DEPTH`` (>0) and ``_CURRENT_TURN``
+    (the parent's turn) ride along into the child. The child is not nested
+    execution on the parent's blocked loop; it owns its own conversation and
+    turn, so its own LLM/tool calls must be managed. Reset both for the child's
+    context and restore on exit. Nested suppression *inside* the child still
+    works: its own managed callbacks re-enter ``managed_callback_guard`` and
+    push the depth back up while they run."""
+    depth_token = _MANAGED_CALLBACK_DEPTH.set(0)
+    turn_token = _CURRENT_TURN.set(None)
+    try:
+        yield
+    finally:
+        _CURRENT_TURN.reset(turn_token)
+        _MANAGED_CALLBACK_DEPTH.reset(depth_token)
+
+
 def _warn_on_error(what: str, callback: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
     """Run fail-open telemetry work: log ``Hermes Relay <what> failed`` and return None on error."""
     try:

@@ -49,6 +49,23 @@ def test_delivery_is_idempotent_fenced_and_permanent(tmp_path, terminal_status):
             assert path.stat().st_mode & 0o077 == 0
 
 
+def test_corrupt_receipt_does_not_block_other_pending_delivery(tmp_path):
+    from tools import bot_live_delivery as mailbox
+
+    owner = dict(profile_home=str(tmp_path.resolve()), session_id="chat",
+                 lease_id="lease", live_session_id="live")
+    queued = mailbox.deliver_to_live_owner(tmp_path, owner, "healthy")
+    root = tmp_path / "runtime" / mailbox.DELIVERY_DIR_NAME
+    (root / ("d" * 32 + ".json")).write_text("{truncated", encoding="utf-8")
+    (root / ("e" * 32 + ".json")).write_text("[]", encoding="utf-8")
+    (root / ("f" * 32 + ".json")).write_text("{}", encoding="utf-8")
+
+    claimed = mailbox.claim_pending_delivery(tmp_path, owner)
+
+    assert claimed is not None
+    assert claimed["delivery_id"] == queued["delivery_id"]
+
+
 def test_fifo_survives_clock_rollback(tmp_path, monkeypatch):
     from tools import bot_live_delivery as mailbox
 

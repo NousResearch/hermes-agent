@@ -106,6 +106,16 @@ def _read(path: Path) -> dict[str, Any] | None:
         return None
 
 
+def _read_for_scan(path: Path) -> dict[str, Any] | None:
+    """Read one mailbox record while isolating damage to a corrupt receipt."""
+    try:
+        record = _read(path)
+        required = ("delivery_id", "status", "created_at", "owner")
+        return record if isinstance(record, dict) and all(key in record for key in required) else None
+    except (OSError, ValueError):
+        return None
+
+
 def _write(path: Path, record: dict[str, Any]) -> None:
     fd, temporary = tempfile.mkstemp(dir=path.parent, prefix=".delivery-")
     try:
@@ -143,7 +153,7 @@ def deliver_to_live_owner(
         # high-water mark, allocated while holding the cross-process lock.
         sequence = max((record.get("sequence", record["created_at"])
                         for candidate in root.glob("*.json")
-                        if (record := _read(candidate)) is not None), default=0) + 1
+                        if (record := _read_for_scan(candidate)) is not None), default=0) + 1
         record = dict(delivery_id=key, id=key, owner=pinned, **pinned,
                       message=message, status="queued", created_at=time.time_ns(),
                       sequence=sequence)
@@ -181,7 +191,7 @@ def claim_pending_delivery(
     with _locked(profile_home) as root:
         pending = []
         for path in root.glob("*.json"):
-            record = _read(path)
+            record = _read_for_scan(path)
             if record is not None and record["status"] == "queued" and _matches(profile_home, record, current):
                 pending.append(record)
         if not pending:

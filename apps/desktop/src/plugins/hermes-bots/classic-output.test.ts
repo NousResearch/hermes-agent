@@ -697,3 +697,24 @@ it.each(['corrupt', 'offline', 'new-member', 'new-group'] as const)('refuses byt
   await expect(room.output.readClassicAttachment('Workshop', reply.images[0], recipient)).rejects.toThrow()
   expect(room.gateway.attaches).toHaveLength(0)
 })
+
+it.each(['reply', 'attachment'] as const)('keeps a Files handoff on its original room when renamed during %s read', async phase => {
+  const room = await setup()
+  room.chat.appendGroupChatEntry('Workshop', { kind: 'user', name: 'You' }, '@writer share', 'thread')
+  const request = host.requestProfile
+  let changed = false
+  host.requestProfile = async (route: any, method: string, params: any) => {
+    const result = await request(route, method, params)
+    if (!changed && method === 'session.export.read' && Boolean(params.artifact_id) === (phase === 'attachment')) {
+      changed = true
+      const { renameGroupChat } = await import('./group-chat-view')
+      await renameGroupChat('Workshop', 'Gallery', members)
+    }
+    return result
+  }
+  await room.rounds.runGroupChatRounds('Workshop', members, 'thread')
+  expect(changed).toBe(true)
+  expect(room.chat.$groupChats.get().Workshop).toBeUndefined()
+  expect(room.chat.$groupChats.get().Gallery.log.filter(entry => entry.images?.[0]?.classicExport)).toHaveLength(1)
+  expect(room.gateway.attaches.find(call => call.profile === 'reviewer')?.data).toBe(`data:${item.mime};base64,${content}`)
+})

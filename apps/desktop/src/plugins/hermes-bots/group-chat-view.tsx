@@ -102,7 +102,7 @@ import {
 } from './group-panes'
 import type { GroupComposerDraft, GroupDraftSetter } from './group-panes'
 import { sendToGroupChatDurably, stopGroupThread } from './group-rounds'
-import { clearGroupClarify } from './group-turns'
+import { clearGroupClarify, renameGroupClarify } from './group-turns'
 import { $hostedRoomCleanup } from './hosted-room-cleanup'
 import { reconnectHostedGroupChatPeer } from './hosted-room-reauthorization'
 import {
@@ -402,9 +402,8 @@ export async function renameGroupChat(
     $groupHostedNeedsYou.set(hostedNeeds)
   }
 
-  // Mirrored clarify cards key by group name; drop the old room's — the
-  // next poll re-mirrors any still-blocking question under the new name.
-  clearGroupClarify(oldName)
+  // Pending prompt attention follows the same room through a rename.
+  renameGroupClarify(oldName, next)
 
   // Local memberships: swap the name inside each member's canonical groups
   // list (syncs cross-machine via ui_meta). Remote members' seating lives in

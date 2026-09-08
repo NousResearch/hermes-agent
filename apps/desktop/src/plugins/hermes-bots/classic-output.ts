@@ -3,7 +3,7 @@ import { host } from '@hermes/plugin-sdk'
 
 import { $groupChats } from './group-chat'
 import { GroupFileDeliveryError } from './group-file-delivery'
-import { groupMemberKey } from './group-membership'
+import { followGroupChat, groupMemberKey } from './group-membership'
 import { botConnectionRoute, requestForBot } from './routing'
 import type { Attachment, GroupChat, GroupMember } from './types'
 
@@ -216,75 +216,83 @@ export async function readClassicAttachment(
   attachment: Attachment,
   recipient?: GroupMember
 ): Promise<Attachment> {
-  const ref = attachment.classicExport
-  const room = $groupChats.get()[group]
-  const current = () => $groupChats.get()[group]?.roomId === ref?.group && !$groupChats.get()[group]?.tombstone
+  const binding = followGroupChat(group, name => {
+    group = name
+  })
+  try {
+    const ref = attachment.classicExport
+    const room = $groupChats.get()[group]
+    const current = () =>
+      binding.isLive() && $groupChats.get()[group]?.roomId === ref?.group && !$groupChats.get()[group]?.tombstone
 
-  if (!ref || !room || room.roomId !== ref.group || !current()) {
-    throw new GroupFileDeliveryError('File group changed.')
-  }
+    if (!ref || !room || room.roomId !== ref.group || !current()) {
+      throw new GroupFileDeliveryError('File group changed.')
+    }
 
-  if (recipient) {
-    const target = await capability(recipient)
+    if (recipient) {
+      const target = await capability(recipient)
+
+      if (
+        !target ||
+        !(room.members || []).some(member => groupMemberKey(member) === groupMemberKey(recipient)) ||
+        !ref.recipients.some(
+          member => member.installation === target.installation && member.profile === profileFor(recipient)
+        )
+      ) {
+        throw new GroupFileDeliveryError('This member was not a recipient of the shared file.')
+      }
+    }
+
+    const response = (await withSource(ref.source, ref.session, runtime =>
+      requestForBot(ref.source, 'session.export.read', {
+        session_id: runtime,
+        installation: ref.installation,
+        group_id: ref.group,
+        export_id: ref.exportId,
+        artifact_id: ref.artifactId
+      })
+    )) as Record<string, any>
+
+    const item = response.item
 
     if (
-      !target ||
-      !(room.members || []).some(member => groupMemberKey(member) === groupMemberKey(recipient)) ||
-      !ref.recipients.some(
-        member => member.installation === target.installation && member.profile === profileFor(recipient)
-      )
+      response.generation !== ref.generation ||
+      response.group_id !== ref.group ||
+      response.export_id !== ref.exportId ||
+      !item ||
+      item.artifact_id !== ref.artifactId ||
+      item.sha256 !== ref.sha256 ||
+      item.name !== attachment.name ||
+      item.kind !== attachment.kind ||
+      item.mime !== attachment.mime ||
+      item.size !== attachment.size ||
+      typeof response.content_base64 !== 'string' ||
+      response.content_base64.length > 20_000_000 ||
+      !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(response.content_base64)
     ) {
-      throw new GroupFileDeliveryError('This member was not a recipient of the shared file.')
+      throw new GroupFileDeliveryError('File verification failed.')
     }
+
+    const bytes = Uint8Array.from(atob(response.content_base64), c => c.charCodeAt(0))
+
+    const digest = Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', bytes)), c =>
+      c.toString(16).padStart(2, '0')
+    ).join('')
+
+    if (
+      bytes.length !== attachment.size ||
+      digest !== ref.sha256 ||
+      !current() ||
+      (recipient &&
+        !($groupChats.get()[group]?.members || []).some(member => groupMemberKey(member) === groupMemberKey(recipient)))
+    ) {
+      throw new GroupFileDeliveryError('File bytes or recipient changed.')
+    }
+
+    return { ...attachment, data: `data:${attachment.mime};base64,${response.content_base64}` }
+  } finally {
+    binding.dispose()
   }
-
-  const response = (await withSource(ref.source, ref.session, runtime =>
-    requestForBot(ref.source, 'session.export.read', {
-      session_id: runtime,
-      installation: ref.installation,
-      group_id: ref.group,
-      export_id: ref.exportId,
-      artifact_id: ref.artifactId
-    })
-  )) as Record<string, any>
-
-  const item = response.item
-
-  if (
-    response.generation !== ref.generation ||
-    response.group_id !== ref.group ||
-    response.export_id !== ref.exportId ||
-    !item ||
-    item.artifact_id !== ref.artifactId ||
-    item.sha256 !== ref.sha256 ||
-    item.name !== attachment.name ||
-    item.kind !== attachment.kind ||
-    item.mime !== attachment.mime ||
-    item.size !== attachment.size ||
-    typeof response.content_base64 !== 'string' ||
-    response.content_base64.length > 20_000_000 ||
-    !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(response.content_base64)
-  ) {
-    throw new GroupFileDeliveryError('File verification failed.')
-  }
-
-  const bytes = Uint8Array.from(atob(response.content_base64), c => c.charCodeAt(0))
-
-  const digest = Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', bytes)), c =>
-    c.toString(16).padStart(2, '0')
-  ).join('')
-
-  if (
-    bytes.length !== attachment.size ||
-    digest !== ref.sha256 ||
-    !current() ||
-    (recipient &&
-      !($groupChats.get()[group]?.members || []).some(member => groupMemberKey(member) === groupMemberKey(recipient)))
-  ) {
-    throw new GroupFileDeliveryError('File bytes or recipient changed.')
-  }
-
-  return { ...attachment, data: `data:${attachment.mime};base64,${response.content_base64}` }
 }
 
 export async function retireClassicGroup(room: GroupChat) {

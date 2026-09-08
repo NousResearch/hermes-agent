@@ -105,7 +105,9 @@ describe('which bots are working right now', () => {
     expect(activeBots([local, remote], owner, false, NOW)).toEqual([])
     expect(activeBots([local, remote], null, true, NOW)).toEqual([])
     expect(activeBots([local, remote], { ...owner, authoritative: false }, true, NOW)).toEqual([])
-    expect(activeBots([row({ name: 'analyst', remoteSource: true })], { ...owner, connectionId: '' }, true, NOW)).toEqual([])
+    expect(
+      activeBots([row({ name: 'analyst', remoteSource: true })], { ...owner, connectionId: '' }, true, NOW)
+    ).toEqual([])
   })
 
   it('includes activity inside the liveness window and excludes activity outside it', () => {

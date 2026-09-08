@@ -6,8 +6,9 @@ import { $displayTimestamps } from '@/store/display-timestamps'
 
 import { stubThreadEnvironment } from '../test-utils'
 
-import { Thread } from '.'
 import { AsyncResultDisclosure } from './system-message'
+
+import { Thread } from '.'
 
 // Timeline timestamps render only when `display.timestamps` is enabled.
 $displayTimestamps.set(true)

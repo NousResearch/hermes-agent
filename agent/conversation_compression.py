@@ -3273,7 +3273,11 @@ def _commit_compaction(
                 # re-baseline transcript handling.
                 compacted_in_place = True
                 # In-place still updates the current row's prompt; rotation published it atomically above.
-                agent._session_db.update_system_prompt(agent.session_id, new_system_prompt)
+                agent._session_db.update_system_prompt(
+                    agent.session_id,
+                    new_system_prompt,
+                    global_policy_snapshot=agent._global_policy_snapshot,
+                )
                 agent._last_flushed_db_idx = 0
             else:
                 # Bind old_session_id first: it is the rollback key in the handler below.

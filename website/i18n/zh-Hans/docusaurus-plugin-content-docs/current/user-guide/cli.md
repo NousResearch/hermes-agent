@@ -102,6 +102,7 @@ hermes -w -z "Fix issue #123"     # 在 worktree 中以单次查询模式运行
 | `Ctrl+G` | 在 `$EDITOR`（vim/nvim/nano/VS Code 等）中打开当前输入缓冲区。保存并退出后，编辑后的文本将作为下一条 prompt 发送——适合编写长篇多段落 prompt。 |
 | `Ctrl+X Ctrl+E` | 外部编辑器的 Emacs 风格备用绑定（与 `Ctrl+G` 行为相同）。 |
 | `Ctrl+C` | 中断 agent（2 秒内双击强制退出） |
+| `F6` | 打开全屏实时子智能体监视器，保留输入草稿。方向键选择，`Enter` 查看近期日志，`s` 引导，`x` 请求停止并确认。 |
 | `Ctrl+D` | 退出 |
 | `Ctrl+Z` | 将 Hermes 挂起到后台（仅 Unix）。在 shell 中运行 `fg` 恢复。 |
 | `Tab` | 接受自动建议（ghost text）或自动补全斜杠命令 |

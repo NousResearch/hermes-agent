@@ -385,7 +385,21 @@ The TUI ships a `/agents` overlay (alias `/tasks`) that turns recursive `delegat
 - Kill and pause controls — cancel a specific subagent mid-flight without interrupting its siblings
 - Post-hoc review: step through each subagent's turn-by-turn history even after they've returned to the parent
 
-The classic CLI just prints `/agents` as a text summary; the TUI is where the overlay shines. See [TUI — Slash commands](/user-guide/tui#slash-commands).
+### Live activity above the composer
+
+The classic CLI, TUI, and Desktop automatically show live subagents above the composer. You can keep writing while watching the live count, task names, elapsed time, and latest activity. The terminal dock limits visible rows according to screen height and shows how many additional workers are hidden; Desktop previews up to three workers.
+
+| Surface | Expand and inspect | Control a selected worker |
+|---|---|---|
+| Classic CLI | **F6** opens the full-screen live roster; arrows select, **Enter** opens the transcript tail, **PgUp/PgDn** scroll | **s** opens a separate steering input; **x**, then **y** requests stop |
+| TUI | **Ctrl+T** or `/agents` opens the full-height tree; **Enter** opens detail; **t** opens the live transcript tail | **e** opens steering; **x** stops the selected worker; **X** stops its subtree |
+| Desktop | Expand **Subagents** above the composer, then select a worker to inspect its activity and details | **Steer** queues guidance; **Stop** requests interruption for that worker |
+
+Closing the terminal monitor returns to your existing composer draft. Steering uses its own input and acknowledges **queued**, not delivery: the child consumes guidance at a checkpoint. Stop does not interrupt unrelated siblings.
+
+The live transcript tail is a bounded recent excerpt, not an unlimited conversation browser. A child leaving the live registry leaves the dock; completion messages and the TUI/Desktop history views remain the place to review finished work. Latest activity is an observation, not a percentage-complete estimate.
+
+The classic CLI's `/agents` and `/tasks` commands still print a text summary; **F6** is the immediate interactive monitor, including while the parent is busy. See [TUI — Slash commands](/user-guide/tui#slash-commands).
 
 On the classic CLI and every gateway platform (Telegram, Discord, Slack, ...),
 `/agents` also lists **background delegations with live per-child activity**,

@@ -126,6 +126,37 @@ Auth reuses the same env vars as the Meta chat provider — `MODEL_API_KEY`
 as aliases. Set `META_BASE_URL` to point at a proxy or alternate host. Text-to-image
 only for now; responses are saved to `$HERMES_HOME/cache/images/`.
 
+## FAL: GPT Image 2.5
+
+Select **GPT Image 2.5 Flare** or **GPT Image 2.5 Sunburst** under
+`hermes tools` → Image Generation → FAL.ai. The model IDs are:
+
+- `openai/gpt-image-2.5/flare/text-to-image`
+- `openai/gpt-image-2.5/sunburst/text-to-image`
+
+For example:
+
+```bash
+hermes config set image_gen.provider fal
+hermes config set image_gen.model openai/gpt-image-2.5/flare/text-to-image
+```
+
+Providing `image_url` or reference images automatically selects the corresponding
+`openai/gpt-image-2.5/flare/edit` or `openai/gpt-image-2.5/sunburst/edit` endpoint.
+Both accept up to 16 source images. Hermes pins quality to `medium`, matching its
+existing FAL GPT Image policy rather than FAL's higher-cost `high` default.
+Landscape and portrait use 4:3 presets to satisfy the minimum pixel count;
+square uses `square_hd`. Upscaling remains off unless requested.
+
+FAL bills by tokens, not a fixed image price: $5/M text input, $1.25/M cached
+text input, $10/M text output, $8/M image input, $2/M cached image input, and
+$30/M image output, rounded up to $0.0001 per request. See the
+[Flare](https://fal.ai/models/openai/gpt-image-2.5/flare/text-to-image) and
+[Sunburst](https://fal.ai/models/openai/gpt-image-2.5/sunburst/text-to-image)
+pages. Direct FAL requires a funded `FAL_KEY`; managed-gateway availability
+depends on that gateway's endpoint allowlist and is not implied by FAL availability.
+Existing provider and model defaults are unchanged.
+
 ## OpenAI API: GPT Image 2.5
 
 The **OpenAI** provider supports GPT Image 2.5 Flare (fast everyday creation)
@@ -154,7 +185,7 @@ does not estimate 2.5 token consumption. See the official
 The **OpenAI (Codex auth)** provider remains separate: its backend can accept
 an image-model value without honoring that selection, so a successful image
 alone does not verify Flare or Sunburst routing. These selections are offered
-only through the direct OpenAI API provider, not Codex auth or FAL.
+through the direct OpenAI API provider and FAL, not as verified Codex-auth selections.
 
 ## Usage
 
@@ -196,7 +227,7 @@ Two inputs drive the edit:
 
 | Backend | Image-to-image | Reference cap | How |
 |---|---|---|---|
-| **FAL.ai** (edit-capable models below) | ✓ | up to 9 | routes to the model's `/edit` endpoint |
+| **FAL.ai** (edit-capable models below) | ✓ | up to 16 (per model) | routes to the model's `/edit` endpoint |
 | **OpenAI** (GPT Image 2 / 2.5 Flare / Sunburst) | ✓ | up to 16 | `images.edit()` |
 | **xAI** (Grok Imagine) | ✓ | 1 | `/v1/images/edits` (`grok-imagine-image-quality`) |
 | **Krea** (`Krea 2`) | ✓ | up to 10 | reference-guided generation (`image_style_references`) |
@@ -205,7 +236,7 @@ Two inputs drive the edit:
 
 FAL models with an editing endpoint: `flux-2/klein/9b`, `flux-2-pro`,
 `nano-banana-pro`, `gpt-image-1.5`, `gpt-image-2`, `ideogram/v3`, and
-`qwen-image`. Pure text-to-image FAL models (`z-image/turbo`, `recraft`,
+`qwen-image`, plus GPT Image 2.5 Flare and Sunburst above. Pure text-to-image FAL models (`z-image/turbo`, `recraft`,
 `krea/*`) reject image inputs with a clear error pointing you at an
 edit-capable model.
 

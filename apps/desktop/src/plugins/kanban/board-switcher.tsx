@@ -273,7 +273,14 @@ function BoardSettingsDialog({ board, onClose }: { board: BoardMeta | null; onCl
   const toggle = useMutation({
     mutationFn: (patch: Record<string, unknown>) => updateBoard(slug, patch),
     onError: err => host.notify({ kind: 'error', message: errText(err) }),
-    onSuccess: () => void qc.invalidateQueries({ queryKey: BOARDS_KEY })
+    onSuccess: (_, patch) => {
+      // Optimistically update the local board object so switches reflect
+      // the new state immediately, without waiting for query refetch
+      if (board) {
+        Object.assign(board, patch)
+      }
+      void qc.invalidateQueries({ queryKey: BOARDS_KEY })
+    }
   })
 
   return (

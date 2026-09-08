@@ -45,6 +45,7 @@ def env(tmp_path, monkeypatch):
     monkeypatch.setattr(module, '_bound_server', SimpleNamespace())
     monkeypatch.setattr(module, '_service', None)
     monkeypatch.setattr(module, '_transport', None)
+    monkeypatch.setattr(module, '_binding', None)
     monkeypatch.setattr(services, 'HostedRoomService', Service)
     return SimpleNamespace(root=root, home=home, module=module, created=created)
 

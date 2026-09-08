@@ -172,9 +172,13 @@ async def _lifespan(app: "FastAPI"):
 
     def _start_hosted_rooms() -> None:
         try:
-            _hosted_groups.start_hosted_room_service()
-        except Exception:
-            _log.exception("Hosted Group Chat recovery failed during backend startup")
+            while not hosted_room_start_cancel.is_set():
+                try:
+                    _hosted_groups.start_hosted_room_service(cancel_event=hosted_room_start_cancel)
+                except Exception:
+                    _log.exception("Hosted Group Chat recovery failed; will retry")
+                if hosted_room_start_cancel.wait(1.0):
+                    break
         finally:
             if hosted_room_start_cancel.is_set():
                 _hosted_groups.stop_hosted_room_service(timeout=1.0)
@@ -239,8 +243,8 @@ async def _lifespan(app: "FastAPI"):
         yield
     finally:
         hosted_room_start_cancel.set()
-        _hosted_groups.stop_hosted_room_service(timeout=5.0)
-        hosted_room_start_thread.join(timeout=1.0)
+        await asyncio.to_thread(_hosted_groups.stop_hosted_room_service, timeout=5.0)
+        await asyncio.to_thread(hosted_room_start_thread.join, timeout=1.0)
         if cron_stop is not None:
             cron_stop.set()
         pty_reaper_task.cancel()

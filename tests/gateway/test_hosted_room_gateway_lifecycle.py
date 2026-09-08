@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import threading
 import time
 from types import SimpleNamespace
@@ -91,8 +92,9 @@ async def test_messaging_gateway_supervisor_starts_without_dashboard(monkeypatch
     def get_service():
         return service if state["running"] else None
 
-    def start_service():
-        state["starts"] += 1
+    def start_service(**kwargs):
+        if not state["running"]:
+            state["starts"] += 1
         state["running"] = True
         return service
 
@@ -118,8 +120,10 @@ async def test_dead_room_worker_is_restarted_by_gateway_task_supervision(monkeyp
 
     starts = {"count": 0}
 
-    def fail_start():
+    def fail_start(**kwargs):
         starts["count"] += 1
+        if starts["count"] == 3:
+            runner._running = False
         raise RuntimeError("worker unavailable")
 
     monkeypatch.setattr(methods_groups, "get_hosted_room_service", lambda: None)
@@ -140,12 +144,12 @@ async def test_dead_room_worker_is_restarted_by_gateway_task_supervision(monkeyp
     )
 
     for _ in range(200):
-        if starts["count"] == 2 and not runner._background_tasks:
+        if starts["count"] == 3 and not runner._background_tasks:
             break
         await asyncio.sleep(0.01)
     runner._running = False
 
-    assert starts["count"] == 2
+    assert starts["count"] == 3
     assert runner._background_tasks == set()
 
 
@@ -232,3 +236,201 @@ def test_dashboard_and_gateway_workers_share_one_fenced_execution_owner(tmp_path
     assert len(gateway_rpc.submits) + len(dashboard_rpc.submits) == 1
     events = hosted_rooms.read_events(db, room_id="room-1", since_seq=0)["events"]
     assert sum(event["kind"] == "message.member" for event in events) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("owner", ["gateway", "web"])
+async def test_native_owners_recover_companion_without_retargeting(tmp_path, monkeypatch, owner):
+    from tui_gateway import methods_groups, hosted_room_service
+    from plugins.platforms.telegram import hosted_room_transport as telegram
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    service, rpc = _service(tmp_path / "state.db", profiles=("default", "ops"))
+    service.create_room(room_id="room", name="Room", members=[
+        {"member_id": "default", "profile": "default", "handle": "hermes"},
+        {"member_id": "ops", "profile": "ops", "handle": "ops"}])
+    monkeypatch.setattr(methods_groups, "_bound_server", _server())
+    monkeypatch.setattr(methods_groups, "_service", None)
+    monkeypatch.setattr(methods_groups, "_transport", None)
+    monkeypatch.setattr(methods_groups, "_binding", None)
+    monkeypatch.setattr(hosted_room_service, "HostedRoomService", lambda *a, **kw: service)
+    binding = dict(enabled=True, room_id="room", queue_db=str(tmp_path / "queue.db"),
+                   chat_id=-123, owner_id=1, control_profile="default",
+                   bots={"default": {"id": 1, "username": "hermes_bot"},
+                         "ops": {"id": 2, "username": "ops_bot"}})
+    binding_path = tmp_path / "binding.json"
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(json.dumps({"gateway": {"hosted_rooms": {
+        "telegram": {"binding_file": str(binding_path)}}}}))
+    # Configured but invalid must fail closed, then recover on the same owner.
+    binding_path.write_text("{}")
+    companions = []
+    release = threading.Event()
+
+    class Companion(telegram.Transport):
+        def __init__(self, *args):
+            super().__init__(*args)
+            companions.append(self)
+
+        def _run(self):
+            if len(companions) == 1:
+                self.error = "scripted startup failure"
+                self.ready.set()
+                assert release.wait(15)
+            else:
+                self.ready.set()
+                assert self.halt.wait(15)
+
+        def stop(self, *, timeout=5.0):
+            return super().stop(timeout=min(timeout, 0.02))
+
+    monkeypatch.setattr(telegram, "Transport", Companion)
+    runner = GatewayRunner.__new__(GatewayRunner)
+    runner._running = True
+    watcher = None
+    client = None
+    pending = []
+
+    def accept(**kwargs):
+        pending.append(kwargs["on_terminal"])
+        rpc.submits.append(kwargs["profile"])
+        return {"accepted": True}
+
+    monkeypatch.setattr(rpc, "submit", accept)
+
+    async def until(predicate):
+        async with asyncio.timeout(10):
+            while not predicate():
+                await asyncio.sleep(0.01)
+
+    try:
+        with pytest.raises(ValueError):
+            methods_groups.start_hosted_room_service()
+        assert methods_groups._service is None
+        if owner == "gateway":
+            watcher = asyncio.create_task(runner._hosted_room_worker_watcher(interval=0.02))
+        else:
+            from fastapi.testclient import TestClient
+            from hermes_cli import web_server
+            monkeypatch.setattr(web_server, "_warm_gateway_module", lambda: None)
+            client = TestClient(web_server.app)
+            client.__enter__()
+        binding_path.write_text(json.dumps(binding))
+        await until(lambda: companions and companions[0].halt.is_set())
+        first = companions[0]
+        first_worker = first.thread
+        assert methods_groups.get_hosted_room_service() is service
+        assert first.thread.is_alive()
+        assert first._mutex is not None
+        # Explicit retry also refuses to release a live publisher's ownership.
+        with pytest.raises(RuntimeError, match="did not stop"):
+            await asyncio.to_thread(methods_groups.start_hosted_room_service)
+        assert companions == [first]
+        assert methods_groups._transport is first
+        # No successful binding yet: an operator can repair initial config, but
+        # the previous worker and mutex must cease before it can be adopted.
+        with methods_groups._service_lock:
+            binding["chat_id"] = -124
+            binding_path.write_text(json.dumps(binding))
+            release.set()
+        await until(lambda: len(companions) == 2 and companions[1].ready.is_set())
+        second = companions[1]
+        assert not first_worker.is_alive() and first._mutex is None
+        assert second._mutex is not None
+        assert second.service is service
+        assert second.config == binding
+        # Accepted room work still uses the original coordinator after recovery.
+        service.send(room_id="room", event_id="accepted", payload={"text": "@hermes inspect"})
+        await until(lambda: rpc.submits == ["default"])
+        config_path.write_text("gateway: []\n")
+        assert await asyncio.to_thread(methods_groups.start_hosted_room_service) is service
+        assert methods_groups._transport is second
+        second.halt.set()
+        await until(lambda: len(companions) == 3 and companions[2].ready.is_set())
+        assert companions[2].config == binding
+        assert methods_groups.get_hosted_room_service() is service
+        assert second._mutex is None
+        assert len(rpc.submits) == 1
+        pending.pop()({"status": "settled", "text": "accepted work survived"})
+        await until(lambda: hosted_room_driver.list_tasks(
+            service.db_path, room_id="room", status="settled"))
+    finally:
+        for terminal in pending:
+            terminal({"status": "settled", "text": "test cleanup"})
+        release.set()
+        runner._running = False
+        if watcher is not None:
+            watcher.cancel()
+            await asyncio.gather(watcher, return_exceptions=True)
+            await runner._stop_hosted_room_worker()
+        if client is not None:
+            await asyncio.to_thread(client.__exit__, None, None, None)
+        await asyncio.to_thread(methods_groups.stop_hosted_room_service)
+    assert methods_groups._transport is None
+    assert methods_groups._service is None
+    assert all(item.thread is None and item._mutex is None for item in companions)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("owner", ["gateway", "web"])
+async def test_cancelled_native_start_cannot_revive_after_shutdown(tmp_path, monkeypatch, owner):
+    from tui_gateway import methods_groups
+    from plugins.platforms.telegram import hosted_room_transport as telegram
+
+    entered, release = threading.Event(), threading.Event()
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(methods_groups, "_bound_server", _server())
+    monkeypatch.setattr(methods_groups, "_service", None)
+    monkeypatch.setattr(methods_groups, "_transport", None)
+    monkeypatch.setattr(methods_groups, "_binding", None)
+
+    def blocked_binding():
+        entered.set()
+        assert release.wait(10)
+        return None
+
+    monkeypatch.setattr(telegram, "hosted_room_binding_path", blocked_binding)
+    cancellation = []
+    native_start = methods_groups.start_hosted_room_service
+
+    def start_service(*, cancel_event):
+        cancellation.append(cancel_event)
+        return native_start(cancel_event=cancel_event)
+
+    monkeypatch.setattr(methods_groups, "start_hosted_room_service", start_service)
+    runner = GatewayRunner.__new__(GatewayRunner)
+    client = None
+    start = None
+    stop = None
+    try:
+        if owner == "gateway":
+            start = asyncio.create_task(runner._ensure_hosted_room_worker())
+        else:
+            from fastapi.testclient import TestClient
+            from hermes_cli import web_server
+            monkeypatch.setattr(web_server, "_warm_gateway_module", lambda: None)
+            client = TestClient(web_server.app)
+            client.__enter__()
+        assert await asyncio.to_thread(entered.wait, 5)
+        if start is not None:
+            start.cancel()
+            stop = asyncio.create_task(runner._stop_hosted_room_worker())
+        else:
+            stop = asyncio.create_task(asyncio.to_thread(client.__exit__, None, None, None))
+        assert await asyncio.to_thread(cancellation[0].wait, 5)
+        release.set()
+        await asyncio.wait_for(stop, 10)
+        if start is not None:
+            with pytest.raises(asyncio.CancelledError):
+                await start
+        assert methods_groups._service is None
+        assert methods_groups._transport is None
+        assert native_start(cancel_event=cancellation[0]) is None
+        assert methods_groups._service is None
+    finally:
+        release.set()
+        if start is not None:
+            await asyncio.gather(start, return_exceptions=True)
+            await runner._stop_hosted_room_worker()
+        if stop is not None:
+            await asyncio.gather(stop, return_exceptions=True)

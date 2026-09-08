@@ -29,6 +29,8 @@ _run_store_lock = threading.Lock()
 _bound_server = None
 _service = None
 _transport = None
+_UNBOUND_BINDING = object()
+_binding = _UNBOUND_BINDING
 
 _WORKER_UNAVAILABLE = "Group Chat worker is unavailable. Restart the Hermes gateway and try again."
 _DRIVER_UNAVAILABLE = "hosted room driver is unavailable"
@@ -57,9 +59,9 @@ def _stop_room_transport(*, timeout: float = 5.0) -> bool:
     return stopped
 
 
-def start_hosted_room_service():
+def start_hosted_room_service(*, cancel_event=None):
     """Start one process-owned hosted room service, and its optional transport, idempotently."""
-    global _service, _transport
+    global _service, _transport, _binding
     if _bound_server is None:
         return None
     from gateway.hosted_rooms import default_db_path
@@ -73,13 +75,21 @@ def start_hosted_room_service():
     # Transport ownership belongs to canonical room storage, not a member's ingress
     # config. Named gateways share the root DB but can ingest for a separate serve.
     from hermes_constants import set_hermes_home_override, reset_hermes_home_override
-    config_scope = set_hermes_home_override(db_path.parent)
-    try:
-        path = hosted_room_binding_path()
-        binding = load_binding(path) if path is not None else None
-    finally:
-        reset_hermes_home_override(config_scope)
     with _service_lock:
+        if cancel_event is not None and cancel_event.is_set():
+            return None
+        # Routing changes require restart after the first successful start. Until
+        # then config can be repaired; an active binding is captured for recovery.
+        binding = _binding
+        if _service is None or _service.db_path != db_path or _binding is _UNBOUND_BINDING:
+            config_scope = set_hermes_home_override(db_path.parent)
+            try:
+                path = hosted_room_binding_path()
+                binding = load_binding(path) if path is not None else None
+            finally:
+                reset_hermes_home_override(config_scope)
+        if cancel_event is not None and cancel_event.is_set():
+            return None
         if _service is not None and _service.db_path != db_path:
             # Neither handle may be dropped before its worker actually ceased: a service that is
             # still running would otherwise be replaced while it still owns accepted turns.
@@ -88,25 +98,34 @@ def start_hosted_room_service():
             if not _service.stop(timeout=1.0):
                 raise RuntimeError("hosted room service did not stop; it was not replaced")
             _service = None
-        created = _service is None
-        if created:
+        if _service is None:
             # Roster discovery and the native turn locks resolve member profiles from this root;
             # without it they would look beside the room's own storage.
             _service = HostedRoomService(
                 _bound_server, db_path=db_path, profiles_root=get_default_hermes_root())
+            _binding = _UNBOUND_BINDING
         _service.start()
-        if _transport is not None and _transport.config != binding:
+        if cancel_event is not None and cancel_event.is_set():
+            return None
+        if _transport is not None and not _room_transport_healthy(_transport):
             if not _stop_room_transport(timeout=5.0):
-                raise RuntimeError("previous Telegram transport did not stop; binding was not replaced")
+                raise RuntimeError("previous Telegram transport did not stop; its handle was kept")
+        if cancel_event is not None and cancel_event.is_set():
+            return None
         if _transport is None and binding is not None:
             _transport = Transport(_service, binding)
             try:
                 _transport.start()
             except BaseException:
-                if _stop_room_transport(timeout=5.0) and created and _service.stop(timeout=1.0):
-                    _service = None
+                _stop_room_transport(timeout=5.0)
                 raise
+        _binding = binding
         return _service
+
+
+def _room_transport_healthy(transport):
+    return (transport.thread is not None and transport.thread.is_alive()
+            and transport.ready.is_set() and not transport.error and not transport.halt.is_set())
 
 
 def stop_hosted_room_service(*, timeout: float = 5.0) -> bool:
@@ -147,8 +166,7 @@ def _telegram_delivery(service, room_id, params=None):
             raise ValueError("This room has no active Telegram transport")
         if params is None:
             return transport.status()
-        if (transport.halt.is_set() or transport.error or not transport.ready.is_set()
-                or transport.thread is None or not transport.thread.is_alive()):
+        if not _room_transport_healthy(transport):
             raise ValueError("Telegram transport is unavailable; restart the gateway before reconciling")
         if params.get("confirm") is not True:
             raise ValueError("Telegram reconciliation requires confirm=true after external readback")

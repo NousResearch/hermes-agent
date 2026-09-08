@@ -92,7 +92,7 @@ def test_hosted_room_recovery_cannot_block_or_abort_backend_startup(monkeypatch)
     started = threading.Event()
     release = threading.Event()
 
-    def blocked_failure():
+    def blocked_failure(**kwargs):
         started.set()
         release.wait(timeout=2.0)
         raise RuntimeError("state.db is locked")

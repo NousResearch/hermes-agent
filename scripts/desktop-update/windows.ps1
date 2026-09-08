@@ -124,9 +124,14 @@ function Get-UiHtmlPath {
 function Get-DefaultBrowserExe {
     # The OS default browser, read from the UserChoice ProgId that the
     # Windows Settings app writes (https first, http as fallback). Only
-    # Chromium-family browsers (ChromeHTML / MSEdgeHTM) support the
-    # --app + --user-data-dir combo the shim relies on; any other
-    # default browser returns $null and degrades to the WinForms card.
+    # Chromium-family browsers support the --app + --user-data-dir combo
+    # the shim relies on. Any non-Chromium default (Firefox, Safari, etc.)
+    # returns $null and degrades to the WinForms card.
+    #
+    # Checks for known Chromium ProgIds by prefix (ChromeHTML / MSEdgeHTM /
+    # BraveHTML / ChromiumHTM / BraveOHTML / VivaldiHTM / OperaStableHTM).
+    # Channel builds (Beta/Dev/Canary) deliberately return $null and degrade
+    # to the safe fallback (#95549: don't drive the wrong profile).
     $progId = $null
     foreach ($proto in @("https", "http")) {
         try {
@@ -135,12 +140,40 @@ function Get-DefaultBrowserExe {
         if ($progId) { break }
     }
     if (-not $progId) { return $null }
-    $family = switch ($progId) {
-        "ChromeHTML" { "Google\Chrome\Application\chrome.exe" }
-        "MSEdgeHTM"  { "Microsoft\Edge\Application\msedge.exe" }
-        default      { $null }
+
+    # Stable Chromium family prefixes and their install trees. Case-insensitive.
+    $chromiumFamilies = @(
+        @{ prefix = "ChromeHTML"; install = @("Google", "Chrome", "Application", "chrome.exe") }
+        @{ prefix = "MSEdgeHTM"; install = @("Microsoft", "Edge", "Application", "msedge.exe") }
+        @{ prefix = "BraveHTML"; install = @("BraveSoftware", "Brave-Browser", "Application", "brave.exe") }
+        @{ prefix = "BraveOHTML"; install = @("BraveSoftware", "Brave-Origin", "Application", "brave.exe") }
+        @{ prefix = "ChromiumHTM"; install = @("Chromium", "Application", "chrome.exe") }
+        @{ prefix = "VivaldiHTM"; install = @("Vivaldi", "Application", "vivaldi.exe") }
+        @{ prefix = "OperaStableHTM"; install = @("Opera", "launcher.exe") }
+    )
+
+    # Channel build prefixes deliberately rejected (β/dev/canary):
+    $channelProgIds = @("ChromeBHTML", "ChromeDHTML", "ChromeSSHTML", "ChromeCanaryHTML",
+                        "MSEdgeBHTML", "MSEdgeDHTML", "MSEdgeCHTML",
+                        "BraveBetaHTML", "BraveNightlyHTML",
+                        "BraveOBHTML", "BraveODHTML", "BraveOSHTM",
+                        "ChromiumBHTML", "ChromiumDHTML",
+                        "VivaldiBetaHTM", "VivaldiSnapshotHTM",
+                        "OperaBetaHTM", "OperaDevHTM")
+    $lowerProgId = $progId.ToLowerInvariant()
+    foreach ($chan in $channelProgIds) {
+        if ($lowerProgId -eq $chan.ToLowerInvariant()) { return $null }
+    }
+
+    $family = $null
+    foreach ($entry in $chromiumFamilies) {
+        if ($lowerProgId.StartsWith($entry.prefix.ToLowerInvariant())) {
+            $family = $entry.install
+            break
+        }
     }
     if (-not $family) { return $null }
+
     # Exact path from the ProgId's open command first, then standard roots.
     try {
         $cmd = (Get-ItemProperty -Path "Registry::HKEY_CLASSES_ROOT\$progId\shell\open\command" -ErrorAction Stop).'(default)'
@@ -151,7 +184,7 @@ function Get-DefaultBrowserExe {
     } catch {}
     foreach ($root in @($env:ProgramFiles, ${env:ProgramFiles(x86)}, $env:LOCALAPPDATA)) {
         if (-not $root) { continue }
-        $p = Join-Path $root $family
+        $p = Join-Path $root (Join-Path -Path $family[0..($family.Length - 2)] -ChildPath $family[-1])
         if (Test-Path -LiteralPath $p) { return $p }
     }
     return $null

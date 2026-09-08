@@ -8,10 +8,8 @@ stand-ins, fake clients and shared builders live in
 
 import pytest
 
-from agent.transports.claude_agent_sdk_session import (
-    ClaudeAgentSdkSession,
-    classify_auth_failure,
-)
+from agent.transports.claude_agent_sdk_session import ClaudeAgentSdkSession
+from agent.transports.claude_agent_sdk_session_availability import classify_auth_failure
 from tests.agent.claude_sdk_fakes import (
     ResultMessage,
     _make_session,
@@ -136,7 +134,7 @@ class TestSdkAvailabilityGate:
         import types as _types
 
         import pm.client
-        from agent.transports.claude_agent_sdk_session import (
+        from agent.transports.claude_agent_sdk_session_availability import (
             check_claude_sdk_available,
         )
 
@@ -162,7 +160,7 @@ class TestSdkAvailabilityGate:
         import sys as _sys
         import types as _types
 
-        from agent.transports.claude_agent_sdk_session import (
+        from agent.transports.claude_agent_sdk_session_availability import (
             check_claude_sdk_available,
         )
 
@@ -203,7 +201,7 @@ class TestSdkAvailabilityGate:
         import pm.client
         from pm import install_hint
         from pm.package import InstallError
-        from agent.transports.claude_agent_sdk_session import (
+        from agent.transports.claude_agent_sdk_session_availability import (
             check_claude_sdk_available,
         )
 

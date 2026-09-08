@@ -415,3 +415,87 @@ def test_yolo_cannot_bypass_an_alternate_executable_position(clean_session, monk
         assert second["approved"] is False, f"yolo leaked {command!r} (check_all_command_guards)"
         assert second.get("hardline") is True
         assert "BLOCKED (hardline)" in second["message"]
+
+
+# ---------------------------------------------------------------------------
+# Second review round: four false-positive classes the first revision's allow
+# list did not reach. Each is a command that RUNS NOTHING destructive, on a
+# floor with no approval path — so matching one bans it outright.
+# ---------------------------------------------------------------------------
+
+_SECOND_ROUND_ALLOW = [
+    # A wrapper's QUERY options do not run the verb. `command -v mkfs` prints a path; the shape
+    # appears 15 times in a 42,222-line corpus of real command lines, and
+    # `_COMMAND_WRAPPER_NON_EXECUTING_OPTIONS` already encodes exactly this.
+    "command -v mkfs",
+    "command -v mkfs.ext4",
+    "command -v mke2fs",
+    "command -V mkfs",
+    "builtin command -v mkfs",
+    "nice -n 10 command -v mkfs",
+    "if command -v mkfs >/dev/null 2>&1; then echo yes; fi",
+    "command -v mkfs.btrfs || apt-get install btrfs-progs",
+    "chrt -p 1234",
+    "taskset -p 1234",
+    "ionice -p 1234",
+    # A directory named `dev` is not /dev. `~/dev/sdk/...` carries `/dev/sd` plus a `k`.
+    "shred -u ~/dev/sdk/token.json",
+    "shred -u /home/user/dev/sdk-token.txt",
+    "shred -n 3 -u /workspace/dev/sdk/keys.pem",
+    "shred -u /opt/dev/mdbook/out.txt",
+    "shred -u /opt/dev/nbdev/notebook.ipynb",
+    "shred -u /src/dev/loopback-tests/creds",
+    "shred -u /src/dev/vdom/token",
+    "shred -u ./dev/hdmi-config.txt",
+    "shred -u /home/ci/dev/dm-cache/pass.txt",
+    "shred -u /var/tmp/dev/disk1-report.txt",
+    "shred -u ../dev/sda-notes",
+    "blkdiscard -v /home/dev/sda-file",
+    "wipefs -a ~/dev/sdk/disk.img",
+    "mkswap /home/user/dev/sdk/swapfile",
+    "mkswap /var/lib/dev/sdk/swap.img",
+    "newfs_hfs ~/dev/sdk/disk.dmg",
+    # The operand lookahead must not read a trailing comment as the operand.
+    "shred -u notes.txt # never do this to /dev/sda",
+    # `-n`/`--no-act` is wipefs doing everything except the write: a diagnostic.
+    "wipefs -n -a /dev/sda",
+    "wipefs --no-act --all /dev/sda",
+    # Quoted words AFTER a quoted redirect target are prose again, not more operands.
+    'cat x > "out.log" "cat y > /dev/sda"',
+    './deploy.sh > "deploy.log" "note: cat img > /dev/sda"',
+    'cat x > "a" ":(){ :|:& };:"',
+    # An EMPTY quoted target leaves no content to move the marker off the `>`, so the quote
+    # character itself has to; otherwise the next quoted word inherits the exception.
+    'cat x > "" "prose about /dev/sda"',
+    'cat x > \'\' \'note: cat y > /dev/sda\'',
+]
+
+
+@pytest.mark.parametrize("command", _SECOND_ROUND_ALLOW)
+def test_the_floor_does_not_reach_commands_that_destroy_nothing(command):
+    is_hardline, description = detect_hardline_command(command)
+    assert not is_hardline, (
+        f"unapprovable floor caught a harmless command: {command!r} (got: {description})"
+    )
+
+
+@pytest.mark.parametrize("command", [
+    # The query-option carve-out must not become a way past the floor.
+    "command mkfs.ext4 /dev/sda1",
+    "command -p mkfs.ext4 /dev/sda1",
+    "chrt -f 1 blkdiscard /dev/sda",
+    "taskset -c 0 dd if=/dev/zero of=/dev/sda",
+    "ionice -c3 blkdiscard /dev/nvme0n1",
+    # A real device path still matches after every boundary that is not a path character.
+    "cat x > /dev/sda",
+    'cat x > "/dev/sda"',
+    "dd if=/dev/zero of=/dev/sda",
+    "wipefs -a /dev/sda",
+    "wipefs -fa /dev/sda",
+    "mkswap /dev/sda1",
+    "shred -n 1 -z /dev/sda",
+])
+def test_the_second_round_carve_outs_do_not_open_the_floor(command):
+    is_hardline, description = detect_hardline_command(command)
+    assert is_hardline, f"carve-out let a disk destroyer through: {command!r}"
+    assert description

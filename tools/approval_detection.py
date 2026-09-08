@@ -46,7 +46,12 @@ _SYSTEM_CONFIG_PATH = rf'(?:/etc/|{_MACOS_PRIVATE_SYSTEM_PATH})'
 # nvme0n1p2) come along; `disk` alone requires a digit because bare /dev/disk is the by-* symlink
 # DIRECTORY, not a device.
 _BLOCK_DEVICE_PATH = (
-    r'/dev/(?:(?:sd|hd|vd|xvd|nvme|mmcblk|md|dm-|loop|nbd)[a-z0-9]*'
+    # The lookbehind is what makes this a PATH rather than a substring. Without it any
+    # directory called ``dev`` matched: ``~/dev/sdk/token.json`` carries ``/dev/sd`` + ``k``,
+    # so ``shred -u ~/dev/sdk/token.json`` and ``mkswap /home/user/dev/sdk/swapfile`` hit an
+    # unapprovable floor. A real device path is never preceded by a word character, a dot or
+    # a tilde; ``//dev/sda``, ``of=/dev/sda`` and a quoted operand all still match.
+    r'(?<![\w.~-])/dev/(?:(?:sd|hd|vd|xvd|nvme|mmcblk|md|dm-|loop|nbd)[a-z0-9]*'
     r'|r?disk[0-9]+[a-z0-9]*'
     r'|mapper/[^\s;&|<>()"\']+'
     r'|disk/by-(?:id|uuid|path|label|partuuid|partlabel)/[^\s;&|<>()"\']+)'
@@ -94,7 +99,15 @@ _CMDPOS = (
 # every hardline rule here would collide with that work rather than complement it.
 _CMDPOS_EXEC = (
     _CMDPOS
-    + r'(?:(?:command|builtin|nice|ionice|stdbuf|chrt|taskset)\s+(?:-[^\s]+\s+|\d+\s+)*)*'
+    # A wrapper's QUERY options do not run the verb, so they must not peel to it:
+    # ``command -v mkfs`` prints a path, and ``chrt -p``/``taskset -p``/``ionice -p``
+    # interrogate a pid. _COMMAND_WRAPPER_NON_EXECUTING_OPTIONS below is the same list, and
+    # the argv walk already honours it -- peeling them here contradicted it and made the
+    # canonical ``if command -v mkfs >/dev/null; then`` probe unrunnable on a floor with no
+    # approval path. ``command``'s query flag also bundles (``-vp``), matching that walk.
+    + r'(?:(?:command|builtin)\s+(?:-(?![^\s]*[vV])[^\s]+\s+)*'
+    + r'|(?:chrt|taskset|ionice)\s+(?:-(?!p\b|-pid\b|-pgid\b|-uid\b)[^\s]+\s+|\d+\s+)*'
+    + r'|(?:nice|stdbuf)\s+(?:-[^\s]+\s+|\d+\s+)*)*'
     + r'(?:(?:[\w.+-]*/)*(?:busybox|toybox)\s+)?'
     + r'(?:[\w.+-]*/)*'
 )
@@ -132,17 +145,20 @@ HARDLINE_PATTERNS = [
     # `mkswap /swapfile` / `newfs_hfs disk.dmg` write a FILE and must keep working. diskutil is
     # gated on its destructive verbs — `diskutil list|info|mount|unmount|apfs list` are read-only.
     (_CMDPOS_EXEC + r'(?:(?:mkfs(?:\.[a-z0-9]+)?|mke2fs)(?=\s|$|[;|&)])'
-     rf'|(?:mkswap|newfs(?:_[a-z0-9]+)?)\b[^;|&\n]*{_BLOCK_DEVICE_PATH}'
+     rf'|(?:mkswap|newfs(?:_[a-z0-9]+)?)\b[^;|&\n#]*{_BLOCK_DEVICE_PATH}'
      r'|diskutil\s+(?:[a-z]+\s+)?(?:erase(?:disk|volume)|zerodisk|randomdisk|secureerase|reformat|partitiondisk)\b)',
      "format filesystem (mkfs)"),
     # Whole-device wipes that are neither dd nor a redirect: each erases the partition table or the
     # raw sectors of the device it is pointed at. Every branch needs BOTH its destructive flag and a
     # raw block device operand on the same command, so `wipefs /dev/sda` (prints signatures),
     # `sgdisk -p /dev/sda` (prints the table), `blkdiscard --help` and `shred secret.txt` still run.
-    (_CMDPOS_EXEC + r'(?:wipefs\b(?=[^;|&\n]*\s(?:-[a-z]*a[a-z]*|--all)\b)'
+    # ``-n``/``--no-act`` is wipefs doing everything except the write, so it is a diagnostic
+    # and must stay runnable; the destructive-flag lookahead alone matched the ``a`` in
+    # ``-na`` and matched ``--all`` beside ``--no-act``.
+    (_CMDPOS_EXEC + r'(?:wipefs\b(?![^;|&\n]*\s(?:-[a-z]*n[a-z]*|--no-act)\b)(?=[^;|&\n]*\s(?:-[a-z]*a[a-z]*|--all)\b)'
      r'|sgdisk\b(?=[^;|&\n]*\s(?:-z|--zap-all|-o|--clear)\b)'
      r'|blkdiscard\b|shred\b)'
-     rf'(?=[^;|&\n]*{_BLOCK_DEVICE_PATH})', "wipe raw block device"),
+     rf'(?=[^;|&\n#]*{_BLOCK_DEVICE_PATH})', "wipe raw block device"),
     # `dd` is a command-name token, so anchor it to command position like mkfs/rm/shutdown (#93392): quoted
     # prose such as `git commit -m "never dd of=/dev/sda"` is an argument, not a command. The argument tail
     # ([^\n]*of=/dev/...) is kept so flag order doesn't matter.
@@ -207,19 +223,31 @@ def _mask_quoted_prose(command: str) -> str:
     last_significant = ""
     keep_operand = False
     for kind, i, j, quote in _scan_shell(command, subst="q", naive_backtick=True):
+        piece = command[i:j]
         if kind == "quote":
             # `quote` is the state the step was READ in, so None marks the opening quote.
             keep_operand = quote is None and last_significant == ">"
-            out.append(command[i:j])
-            continue
-        if quote is None or kind == "subst" or keep_operand:
-            piece = command[i:j]
             out.append(piece)
-            stripped = piece.rstrip()
-            if stripped and quote is None:
-                last_significant = stripped[-1]
-        else:
+            # The quote character itself is significant: without this the `>` stayed the last
+            # thing seen across the whole operand, so EVERY later quoted word was unmasked too and
+            # `cat x > "out.log" "cat y > /dev/sda"` read the prose as a redirect.
+            last_significant = piece[-1:] or last_significant
+            continue
+        if not (quote is None or kind == "subst" or keep_operand):
             out.append(" " * (j - i))
+            continue  # masked text is prose; it cannot arm the exception either
+        # Inside a kept operand, a `>` is prose, not an operator: a redirect target is a PATH and
+        # paths do not contain one. Blanking it stops a span that normalization only LOOKED like an
+        # operand -- `cat x > '' 'note: cat y > /dev/sda'`, where the empty pair is dropped before
+        # this runs -- from carrying a second redirect. A real `"/dev/disk0"` is untouched.
+        out.append(piece.replace(">", " ") if keep_operand and quote is not None else piece)
+        stripped = piece.rstrip()
+        if stripped:
+            # An ESCAPED `>` is a literal argument, not a redirect operator -- real bash prints
+            # `hello > /dev/disk0` for `echo hello \> "/dev/disk0"` and writes nothing -- so it
+            # must not arm the exception. Recording the backslash keeps it distinct from an
+            # operator without needing a second flag.
+            last_significant = "\\" if kind == "esc" else stripped[-1]
     return "".join(out)
 
 

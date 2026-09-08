@@ -13,11 +13,22 @@ import hmac
 import json
 import logging
 import os
+import stat
+import subprocess
 import time
+import urllib.error
+import urllib.request
 import uuid
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
+
+try:
+    from cryptography.hazmat.primitives.asymmetric import ed25519
+    from cryptography.exceptions import InvalidSignature
+    _HAS_ED25519 = True
+except ImportError:
+    _HAS_ED25519 = False
 
 logger = logging.getLogger("hermes.global_mesh")
 
@@ -31,13 +42,161 @@ def get_hermes_dir() -> Path:
         return Path(os.path.expanduser("~/.hermes"))
 
 
-def compute_signature(payload_bytes: bytes, secret_key: str) -> str:
-    """Deterministic HMAC-SHA256 signature for task authentication and proof-of-execution."""
+def _write_secure_file(path: Path, content: str, mode: int = 0o600) -> None:
+    """Write text content to file with strict owner-only permissions (0600)."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
+    if hasattr(os, "O_BINARY"):
+        flags |= os.O_BINARY
+    fd = os.open(str(path), flags, mode)
+    try:
+        with open(fd, "w", encoding="utf-8", closefd=False) as f:
+            f.write(content)
+    finally:
+        os.close(fd)
+    try:
+        os.chmod(str(path), mode)
+    except (OSError, NotImplementedError):
+        pass
+
+
+def compute_signature(payload_bytes: bytes, secret_or_private_key: str) -> str:
+    """Compute signature using asymmetric Ed25519 private key or HMAC-SHA256 fallback."""
+    if _HAS_ED25519 and len(secret_or_private_key) == 64:
+        try:
+            priv = ed25519.Ed25519PrivateKey.from_private_bytes(bytes.fromhex(secret_or_private_key))
+            return priv.sign(payload_bytes).hex()
+        except Exception:
+            pass
     return hmac.new(
-        secret_key.encode("utf-8"),
+        secret_or_private_key.encode("utf-8"),
         payload_bytes,
-        hashlib.sha256
+        hashlib.sha256,
     ).hexdigest()
+
+
+def verify_signature(payload_bytes: bytes, signature_hex: str, public_key_or_secret: str) -> bool:
+    """Verify cryptographic signature using Ed25519 public key or HMAC fallback."""
+    if _HAS_ED25519:
+        if len(public_key_or_secret) == 64:
+            # Try interpreting as Ed25519 public key
+            try:
+                pub = ed25519.Ed25519PublicKey.from_public_bytes(bytes.fromhex(public_key_or_secret))
+                pub.verify(bytes.fromhex(signature_hex), payload_bytes)
+                return True
+            except (InvalidSignature, ValueError):
+                pass
+            except Exception:
+                pass
+            # Try interpreting as Ed25519 private key (derives public key)
+            try:
+                priv = ed25519.Ed25519PrivateKey.from_private_bytes(bytes.fromhex(public_key_or_secret))
+                priv.public_key().verify(bytes.fromhex(signature_hex), payload_bytes)
+                return True
+            except (InvalidSignature, ValueError):
+                pass
+            except Exception:
+                pass
+
+    # HMAC fallback comparison
+    try:
+        expected = hmac.new(
+            public_key_or_secret.encode("utf-8"),
+            payload_bytes,
+            hashlib.sha256,
+        ).hexdigest()
+        if hmac.compare_digest(signature_hex, expected):
+            return True
+    except Exception:
+        pass
+    return False
+
+
+def probe_local_gpu() -> Optional[GPUDescriptor]:
+    """Probe the host system for physical GPU/accelerator hardware.
+
+    Checks in order:
+    1. PyTorch CUDA / ROCm / MPS
+    2. nvidia-smi CLI
+    Returns None if no physical hardware accelerator is detected.
+    """
+    # 1. PyTorch check
+    try:
+        import torch
+        if torch.cuda.is_available():
+            dev_name = torch.cuda.get_device_name(0)
+            props = torch.cuda.get_device_properties(0)
+            total_mb = int(props.total_memory / (1024 * 1024))
+            try:
+                free_b, _ = torch.cuda.mem_get_info()
+                free_mb = int(free_b / (1024 * 1024))
+            except Exception:
+                free_mb = total_mb
+            backend = "rocm" if getattr(torch.version, "hip", None) else "cuda"
+            supported = ["hermes-3-8b"]
+            if total_mb >= 32768:
+                supported.append("hermes-3-70b")
+            return GPUDescriptor(
+                device_name=dev_name,
+                vram_mb=total_mb,
+                free_vram_mb=free_mb,
+                compute_backend=backend,
+                supported_models=supported,
+                compute_rating=round(total_mb / 4096.0, 2),
+                reputation_score=1.0,
+            )
+        elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+            import psutil
+            total_ram_mb = int(psutil.virtual_memory().total / (1024 * 1024))
+            free_ram_mb = int(psutil.virtual_memory().available / (1024 * 1024))
+            mps_vram = int(total_ram_mb * 0.75)
+            mps_free = int(free_ram_mb * 0.75)
+            supported = ["hermes-3-8b"]
+            if mps_vram >= 32768:
+                supported.append("hermes-3-70b")
+            return GPUDescriptor(
+                device_name="Apple Silicon (MPS)",
+                vram_mb=mps_vram,
+                free_vram_mb=mps_free,
+                compute_backend="mps",
+                supported_models=supported,
+                compute_rating=round(mps_vram / 4096.0, 2),
+                reputation_score=1.0,
+            )
+    except (ImportError, Exception):
+        pass
+
+    # 2. nvidia-smi CLI
+    try:
+        res = subprocess.run(
+            ["nvidia-smi", "--query-gpu=name,memory.total,memory.free", "--format=csv,noheader,nounits"],
+            capture_output=True,
+            text=True,
+            timeout=3.0,
+        )
+        if res.returncode == 0 and res.stdout.strip():
+            line = res.stdout.strip().splitlines()[0]
+            parts = [p.strip() for p in line.split(",")]
+            if len(parts) >= 3:
+                name = parts[0]
+                total_mb = int(float(parts[1]))
+                free_mb = int(float(parts[2]))
+                supported = ["hermes-3-8b"]
+                if total_mb >= 32768:
+                    supported.append("hermes-3-70b")
+                return GPUDescriptor(
+                    device_name=name,
+                    vram_mb=total_mb,
+                    free_vram_mb=free_mb,
+                    compute_backend="cuda",
+                    supported_models=supported,
+                    compute_rating=round(total_mb / 4096.0, 2),
+                    reputation_score=1.0,
+                )
+    except (FileNotFoundError, subprocess.TimeoutExpired, Exception):
+        pass
+
+    return None
 
 
 @dataclass
@@ -168,6 +327,72 @@ class MeshExecutionReceipt:
         )
 
 
+def http_transport(
+    peer: MeshNodeInfo,
+    task: MeshTaskRequest,
+    timeout_s: float = 60.0,
+) -> MeshExecutionReceipt:
+    """Execute a task remotely on a peer node via HTTP/HTTPS transport."""
+    url = peer.endpoint.rstrip("/")
+    if not (url.startswith("http://") or url.startswith("https://")):
+        return MeshExecutionReceipt(
+            task_id=task.task_id,
+            executor_id=peer.node_id,
+            status="failed",
+            output="",
+            tokens=0,
+            latency_ms=0.0,
+            error_message=f"Unsupported endpoint scheme: {peer.endpoint}. Must be http:// or https://",
+        )
+
+    task_url = f"{url}/mesh/task"
+    headers = {
+        "Content-Type": "application/json",
+        "User-Agent": "Hermes-Global-Mesh/1.0",
+        "X-Hermes-Requester-Id": task.requester_id,
+        "X-Hermes-Task-Signature": task.signature,
+    }
+    payload_bytes = json.dumps(task.to_dict()).encode("utf-8")
+    req = urllib.request.Request(task_url, data=payload_bytes, headers=headers, method="POST")
+
+    t_start = time.time()
+    try:
+        with urllib.request.urlopen(req, timeout=timeout_s) as resp:
+            raw = resp.read().decode("utf-8")
+            data = json.loads(raw)
+            receipt = MeshExecutionReceipt.from_dict(data)
+            receipt.latency_ms = round((time.time() - t_start) * 1000, 2)
+            return receipt
+    except urllib.error.HTTPError as exc:
+        err_msg = f"HTTP {exc.code}: {exc.reason}"
+        try:
+            body = exc.read().decode("utf-8")
+            err_data = json.loads(body)
+            if "error" in err_data:
+                err_msg += f" - {err_data['error']}"
+        except Exception:
+            pass
+        return MeshExecutionReceipt(
+            task_id=task.task_id,
+            executor_id=peer.node_id,
+            status="failed",
+            output="",
+            tokens=0,
+            latency_ms=round((time.time() - t_start) * 1000, 2),
+            error_message=err_msg,
+        )
+    except Exception as exc:
+        return MeshExecutionReceipt(
+            task_id=task.task_id,
+            executor_id=peer.node_id,
+            status="failed",
+            output="",
+            tokens=0,
+            latency_ms=round((time.time() - t_start) * 1000, 2),
+            error_message=f"Network transport error: {exc}",
+        )
+
+
 class GlobalMeshCoordinator:
     """Coordinates internet-scale P2P compute discovery, capability matching, and failover."""
 
@@ -182,9 +407,21 @@ class GlobalMeshCoordinator:
         self.state_dir.mkdir(parents=True, exist_ok=True)
         self.peers_file = self.state_dir / "global_mesh_peers.json"
 
-        # Identity & Cryptographic secret
+        # Identity & Cryptographic asymmetric keypair
         self.node_id = node_id or self._load_or_create_node_id()
-        self.secret_key = secret_key or self._load_or_create_secret_key()
+        if secret_key:
+            self.secret_key = secret_key
+            if _HAS_ED25519 and len(secret_key) == 64:
+                try:
+                    priv = ed25519.Ed25519PrivateKey.from_private_bytes(bytes.fromhex(secret_key))
+                    self.public_key = priv.public_key().public_bytes_raw().hex()
+                except Exception:
+                    self.public_key = hashlib.sha256(secret_key.encode("utf-8")).hexdigest()[:32]
+            else:
+                self.public_key = hashlib.sha256(secret_key.encode("utf-8")).hexdigest()[:32]
+        else:
+            self.secret_key, self.public_key = self._load_or_create_keypair()
+
         self.rendezvous_url = rendezvous_url or "https://mesh.hermes.ai/rendezvous"
 
         self.local_node: Optional[MeshNodeInfo] = None
@@ -202,43 +439,65 @@ class GlobalMeshCoordinator:
                 pass
         new_id = f"node-{uuid.uuid4().hex[:16]}"
         try:
-            id_file.write_text(new_id, encoding="utf-8")
+            _write_secure_file(id_file, new_id, 0o644)
         except Exception:
             pass
         return new_id
 
-    def _load_or_create_secret_key(self) -> str:
+    def _load_or_create_keypair(self) -> Tuple[str, str]:
+        """Load or securely generate an asymmetric Ed25519 keypair."""
         key_file = self.state_dir / "mesh_node_secret.key"
         if key_file.exists():
             try:
                 content = key_file.read_text(encoding="utf-8").strip()
-                if content:
-                    return content
+                if len(content) == 64:
+                    if _HAS_ED25519:
+                        try:
+                            priv = ed25519.Ed25519PrivateKey.from_private_bytes(bytes.fromhex(content))
+                            pub_hex = priv.public_key().public_bytes_raw().hex()
+                            return content, pub_hex
+                        except Exception:
+                            pass
+                    pub_hex = hashlib.sha256(content.encode("utf-8")).hexdigest()[:32]
+                    return content, pub_hex
             except Exception:
                 pass
-        new_key = hashlib.sha256(os.urandom(32)).hexdigest()
+
+        if _HAS_ED25519:
+            priv = ed25519.Ed25519PrivateKey.generate()
+            priv_hex = priv.private_bytes_raw().hex()
+            pub_hex = priv.public_key().public_bytes_raw().hex()
+        else:
+            priv_hex = hashlib.sha256(os.urandom(32)).hexdigest()
+            pub_hex = hashlib.sha256(priv_hex.encode("utf-8")).hexdigest()[:32]
+
         try:
-            key_file.write_text(new_key, encoding="utf-8")
-        except Exception:
-            pass
-        return new_key
+            _write_secure_file(key_file, priv_hex, 0o600)
+        except Exception as exc:
+            logger.error("Failed to write mesh secret key securely: %s", exc)
+
+        return priv_hex, pub_hex
 
     def init_local_node(
         self,
         endpoint: str = "mesh://direct",
-        offer_gpu: bool = True,
+        offer_gpu: Optional[bool] = None,
         vram_mb: Optional[int] = None,
         backend: Optional[str] = None,
         device_name: Optional[str] = None,
         supported_models: Optional[List[str]] = None,
     ) -> MeshNodeInfo:
-        """Initialize the local node descriptor with hardware capabilities."""
-        gpu_desc = None
-        if offer_gpu:
-            vram = vram_mb if vram_mb is not None else 16384
-            dev = device_name or "Virtual DePIN Accelerator"
+        """Initialize local node descriptor with verified hardware capabilities."""
+        gpu_desc: Optional[GPUDescriptor] = None
+
+        if offer_gpu is False:
+            gpu_desc = None
+        elif vram_mb is not None or device_name is not None or backend is not None:
+            # Explicit hardware configuration provided by caller
+            vram = vram_mb if vram_mb is not None else 8192
+            dev = device_name or "Custom GPU Accelerator"
             b = backend or "cuda"
-            models = supported_models or ["hermes-3-8b", "hermes-3-70b", "llama-3-8b"]
+            models = supported_models or ["hermes-3-8b"]
             gpu_desc = GPUDescriptor(
                 device_name=dev,
                 vram_mb=vram,
@@ -248,6 +507,16 @@ class GlobalMeshCoordinator:
                 compute_rating=round(vram / 4096.0, 2),
                 reputation_score=1.0,
             )
+        elif offer_gpu is True or offer_gpu is None:
+            # Auto-probe host hardware for physical accelerator
+            probed = probe_local_gpu()
+            if probed:
+                gpu_desc = probed
+            elif offer_gpu is True:
+                logger.warning("No physical GPU detected on host. Defaulting to client-only mode.")
+                gpu_desc = None
+            else:
+                gpu_desc = None
 
         self.local_node = MeshNodeInfo(
             node_id=self.node_id,
@@ -256,7 +525,7 @@ class GlobalMeshCoordinator:
             gpu=gpu_desc,
             last_seen=time.time(),
             is_active=True,
-            public_key=hashlib.sha256(self.secret_key.encode("utf-8")).hexdigest()[:32],
+            public_key=self.public_key,
         )
         return self.local_node
 
@@ -280,7 +549,7 @@ class GlobalMeshCoordinator:
         return True
 
     def prune_inactive_peers(self, timeout_seconds: float = 300.0) -> int:
-        """Remove or deactivate peers that haven't sent a heartbeat within the timeout."""
+        """Remove peers that haven't sent a heartbeat within the timeout."""
         now = time.time()
         pruned_count = 0
         to_remove = []
@@ -314,7 +583,6 @@ class GlobalMeshCoordinator:
                 continue
             candidates.append(peer)
 
-        # Sort by capability: reputation * compute_rating * free_vram
         def score(p: MeshNodeInfo) -> float:
             g = p.gpu
             if not g:
@@ -357,7 +625,6 @@ class GlobalMeshCoordinator:
     def execute_task_locally(self, task: MeshTaskRequest) -> MeshExecutionReceipt:
         """Simulate or invoke local agent runtime inference for an incoming mesh task."""
         t_start = time.time()
-        # Basic check
         if self.local_node and self.local_node.gpu:
             if self.local_node.gpu.free_vram_mb < task.min_vram_mb:
                 return MeshExecutionReceipt(
@@ -370,7 +637,6 @@ class GlobalMeshCoordinator:
                     error_message=f"Insufficient free VRAM: {self.local_node.gpu.free_vram_mb}MB < {task.min_vram_mb}MB",
                 )
 
-        # Mock / local inference turn
         output = f"[Hermes Swarm Compute Engine] Processed prompt on {self.node_id}: {task.payload[:100]}..."
         tokens = len(output.split()) * 2
         latency_ms = round((time.time() - t_start) * 1000, 2)
@@ -387,9 +653,8 @@ class GlobalMeshCoordinator:
         return receipt
 
     def verify_receipt(self, receipt: MeshExecutionReceipt, executor_pubkey_or_secret: str) -> bool:
-        """Verify the cryptographic proof-of-execution on receipt."""
-        expected = compute_signature(receipt.canonical_bytes(), executor_pubkey_or_secret)
-        return hmac.compare_digest(receipt.proof_sig, expected)
+        """Verify the cryptographic proof-of-execution on receipt using asymmetric Ed25519 public key."""
+        return verify_signature(receipt.canonical_bytes(), receipt.proof_sig, executor_pubkey_or_secret)
 
     def delegate_task(
         self,
@@ -422,11 +687,12 @@ class GlobalMeshCoordinator:
             try:
                 if transport_fn:
                     receipt = transport_fn(candidate, task)
+                elif candidate.endpoint.startswith("http://") or candidate.endpoint.startswith("https://"):
+                    receipt = http_transport(candidate, task, timeout_s=task.timeout_s)
                 else:
                     receipt = self._default_mock_transport(candidate, task)
 
                 if receipt.status == "completed":
-                    # Reward reputation
                     if candidate.gpu:
                         candidate.gpu.reputation_score = round(min(1.0, candidate.gpu.reputation_score + 0.05), 4)
                     self.save_peers()
@@ -451,7 +717,7 @@ class GlobalMeshCoordinator:
         )
 
     def _default_mock_transport(self, peer: MeshNodeInfo, task: MeshTaskRequest) -> MeshExecutionReceipt:
-        """Default loopback execution simulating remote HTTP/WebRTC transport."""
+        """Loopback execution simulating remote transport for test and mesh:// mock endpoints."""
         output = f"[Hermes Global Mesh Output from {peer.node_id}] Successfully executed {task.target_model}"
         receipt = MeshExecutionReceipt(
             task_id=task.task_id,
@@ -463,6 +729,59 @@ class GlobalMeshCoordinator:
         )
         receipt.proof_sig = compute_signature(receipt.canonical_bytes(), "mock-peer-key")
         return receipt
+
+    def sync_rendezvous(
+        self,
+        rendezvous_url: Optional[str] = None,
+        timeout_s: float = 10.0,
+    ) -> Tuple[bool, List[MeshNodeInfo]]:
+        """Announce local node to rendezvous server and fetch active swarm peers."""
+        url = (rendezvous_url or self.rendezvous_url).rstrip("/")
+        if not (url.startswith("http://") or url.startswith("https://")):
+            logger.warning("Rendezvous URL must start with http:// or https://: %s", url)
+            return False, []
+
+        announced_peers: List[MeshNodeInfo] = []
+        if self.local_node:
+            announce_url = f"{url}/announce"
+            body = json.dumps(self.local_node.to_dict()).encode("utf-8")
+            req = urllib.request.Request(
+                announce_url,
+                data=body,
+                headers={
+                    "Content-Type": "application/json",
+                    "User-Agent": "Hermes-Global-Mesh/1.0",
+                },
+                method="POST",
+            )
+            try:
+                with urllib.request.urlopen(req, timeout=timeout_s) as resp:
+                    pass
+            except Exception as exc:
+                logger.warning("Failed to announce to rendezvous %s: %s", announce_url, exc)
+
+        peers_url = f"{url}/peers"
+        req = urllib.request.Request(
+            peers_url,
+            headers={
+                "Accept": "application/json",
+                "User-Agent": "Hermes-Global-Mesh/1.0",
+            },
+            method="GET",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=timeout_s) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+                peer_list = data if isinstance(data, list) else data.get("peers", [])
+                for p_data in peer_list:
+                    peer = MeshNodeInfo.from_dict(p_data)
+                    if peer.node_id != self.node_id:
+                        self.register_peer(peer)
+                        announced_peers.append(peer)
+                return True, announced_peers
+        except Exception as exc:
+            logger.warning("Failed to fetch peers from rendezvous %s: %s", peers_url, exc)
+            return False, []
 
     def save_peers(self) -> None:
         """Persist peer registry to disk."""

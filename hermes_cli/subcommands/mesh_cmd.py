@@ -15,6 +15,7 @@ from gateway.global_mesh import (
     GPUDescriptor,
     GlobalMeshCoordinator,
     MeshNodeInfo,
+    probe_local_gpu,
 )
 
 
@@ -26,22 +27,30 @@ def _format_vram(mb: int) -> str:
 
 def mesh_join(args: argparse.Namespace) -> int:
     coordinator = GlobalMeshCoordinator(rendezvous_url=args.rendezvous)
+    offer_gpu = False if args.no_gpu else (True if args.offer_gpu or args.vram or args.backend or args.device else None)
+
     node = coordinator.init_local_node(
         endpoint=args.endpoint or "mesh://direct",
-        offer_gpu=not args.no_gpu,
+        offer_gpu=offer_gpu,
         vram_mb=args.vram,
         backend=args.backend,
         device_name=args.device,
     )
+
+    # Attempt to sync with rendezvous server
+    synced, discovered_peers = coordinator.sync_rendezvous(timeout_s=5.0)
+
     print(f"\033[32mSuccessfully registered node with Hermes Global Mesh!\033[0m")
     print(f"Node ID:       {node.node_id}")
-    print(f"Rendezvous:    {coordinator.rendezvous_url}")
+    print(f"Rendezvous:    {coordinator.rendezvous_url} {'[SYNCED]' if synced else '[STANDALONE/OFFLINE]'}")
     print(f"Public Key:    {node.public_key}")
     if node.gpu:
         print(f"GPU Backend:   {node.gpu.compute_backend.upper()} ({node.gpu.device_name})")
         print(f"Total VRAM:    {_format_vram(node.gpu.vram_mb)}")
     else:
-        print(f"GPU Offert:    Disabled (Client-only mode)")
+        print(f"GPU Compute:   Disabled (Client-only mode - no physical accelerator detected)")
+    if discovered_peers:
+        print(f"Swarm Peers:   Discovered {len(discovered_peers)} active peers from rendezvous")
     return 0
 
 
@@ -59,6 +68,8 @@ def mesh_status(args: argparse.Namespace) -> int:
     if summary["local_gpu"]:
         lg = summary["local_gpu"]
         print(f"Local Hardware:     {lg['device_name']} [{lg['compute_backend'].upper()}] - {_format_vram(lg['free_vram_mb'])} free")
+    else:
+        print(f"Local Hardware:     Client-only (no GPU advertised)")
     return 0
 
 
@@ -121,10 +132,11 @@ def build_mesh_parser(subparsers: argparse._SubParsersAction) -> None:
     p_join = mesh_subparsers.add_parser("join", help="Join the global DePIN mesh and announce hardware")
     p_join.add_argument("--rendezvous", default="https://mesh.hermes.ai/rendezvous", help="Rendezvous discovery server URL")
     p_join.add_argument("--endpoint", default="mesh://direct", help="Publicly routable or relay endpoint")
+    p_join.add_argument("--offer-gpu", action="store_true", help="Explicitly offer GPU compute")
     p_join.add_argument("--no-gpu", action="store_true", help="Join in client-only mode (do not offer GPU compute)")
-    p_join.add_argument("--vram", type=int, default=16384, help="Available VRAM in megabytes (default 16384 MB)")
-    p_join.add_argument("--backend", default="cuda", choices=["cuda", "rocm", "mps", "vulkan", "cpu"], help="Hardware acceleration backend")
-    p_join.add_argument("--device", default="NVIDIA RTX 4090", help="Human-readable accelerator device name")
+    p_join.add_argument("--vram", type=int, default=None, help="Available VRAM in megabytes (auto-detected if omitted)")
+    p_join.add_argument("--backend", default=None, choices=["cuda", "rocm", "mps", "vulkan", "cpu"], help="Hardware acceleration backend (auto-detected if omitted)")
+    p_join.add_argument("--device", default=None, help="Human-readable accelerator device name (auto-detected if omitted)")
     p_join.set_defaults(func=mesh_join)
 
     # status

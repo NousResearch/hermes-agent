@@ -1,8 +1,14 @@
 """Tests for the Hermes Global Internet GPU DePIN & Swarm Mesh."""
 
+import io
+import json
 import os
+import stat
+import sys
 import time
+import urllib.error
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 import pytest
 
 from gateway.global_mesh import (
@@ -12,6 +18,9 @@ from gateway.global_mesh import (
     MeshNodeInfo,
     MeshTaskRequest,
     compute_signature,
+    http_transport,
+    probe_local_gpu,
+    verify_signature,
 )
 
 
@@ -26,11 +35,24 @@ def test_node_identity_and_keypair(temp_mesh_dir):
     coord = GlobalMeshCoordinator(state_dir=temp_mesh_dir)
     assert coord.node_id.startswith("node-")
     assert len(coord.secret_key) == 64
+    assert len(coord.public_key) in (32, 64)
 
     # Persistence check
     coord2 = GlobalMeshCoordinator(state_dir=temp_mesh_dir)
     assert coord2.node_id == coord.node_id
     assert coord2.secret_key == coord.secret_key
+    assert coord2.public_key == coord.public_key
+
+
+def test_secure_file_permissions(temp_mesh_dir):
+    coord = GlobalMeshCoordinator(state_dir=temp_mesh_dir)
+    key_file = temp_mesh_dir / "mesh_node_secret.key"
+    assert key_file.exists()
+
+    if os.name != "nt":
+        file_mode = stat.S_IMODE(key_file.stat().st_mode)
+        # Verify 0o600 permissions on POSIX systems
+        assert file_mode == 0o600
 
 
 def test_gpu_descriptor_serialization():
@@ -53,7 +75,7 @@ def test_gpu_descriptor_serialization():
     assert restored.supported_models == ["hermes-3-8b", "hermes-3-70b"]
 
 
-def test_local_node_initialization(temp_mesh_dir):
+def test_local_node_initialization_with_explicit_hardware(temp_mesh_dir):
     coord = GlobalMeshCoordinator(state_dir=temp_mesh_dir)
     node = coord.init_local_node(
         endpoint="https://node1.hermes.ai:8443",
@@ -68,6 +90,64 @@ def test_local_node_initialization(temp_mesh_dir):
     assert node.gpu.vram_mb == 32768
     assert node.gpu.compute_backend == "mps"
     assert node.gpu.device_name == "Apple M3 Max"
+
+
+def test_local_node_auto_probe_client_only_when_no_gpu(temp_mesh_dir):
+    coord = GlobalMeshCoordinator(state_dir=temp_mesh_dir)
+    # When probe returns None, auto-probing must fall back to client-only mode
+    with patch("gateway.global_mesh.probe_local_gpu", return_value=None):
+        node = coord.init_local_node(offer_gpu=None)
+        assert node.gpu is None
+
+
+def test_probe_local_gpu_cuda_mocked():
+    mock_torch = MagicMock()
+    mock_torch.cuda.is_available.return_value = True
+    mock_torch.cuda.get_device_name.return_value = "NVIDIA A100-SXM4-80GB"
+    mock_props = MagicMock()
+    mock_props.total_memory = 80 * 1024 * 1024 * 1024
+    mock_torch.cuda.get_device_properties.return_value = mock_props
+    mock_torch.cuda.mem_get_info.return_value = (70 * 1024 * 1024 * 1024, 80 * 1024 * 1024 * 1024)
+    mock_torch.version.hip = None
+
+    with patch.dict(sys.modules, {"torch": mock_torch}):
+        gpu = probe_local_gpu()
+        assert gpu is not None
+        assert gpu.device_name == "NVIDIA A100-SXM4-80GB"
+        assert gpu.vram_mb == 81920
+        assert gpu.free_vram_mb == 71680
+        assert gpu.compute_backend == "cuda"
+        assert "hermes-3-70b" in gpu.supported_models
+
+
+def test_probe_local_gpu_nvidia_smi_mocked():
+    mock_res = MagicMock()
+    mock_res.returncode = 0
+    mock_res.stdout = "NVIDIA GeForce RTX 3080, 10240, 8500\n"
+
+    with patch.dict(sys.modules, {"torch": None}):
+        with patch("subprocess.run", return_value=mock_res):
+            gpu = probe_local_gpu()
+            assert gpu is not None
+            assert gpu.device_name == "NVIDIA GeForce RTX 3080"
+            assert gpu.vram_mb == 10240
+            assert gpu.free_vram_mb == 8500
+            assert gpu.compute_backend == "cuda"
+
+
+def test_asymmetric_ed25519_verification(temp_mesh_dir):
+    coord = GlobalMeshCoordinator(state_dir=temp_mesh_dir)
+    payload = b"Delegated turn prompt instructions"
+
+    sig = compute_signature(payload, coord.secret_key)
+    # Valid signature verified with public key
+    assert verify_signature(payload, sig, coord.public_key)
+
+    # Tampered payload rejected
+    assert not verify_signature(payload + b"tampered", sig, coord.public_key)
+
+    # Invalid public key rejected
+    assert not verify_signature(payload, sig, "00" * 32)
 
 
 def test_peer_registration_and_heartbeat(temp_mesh_dir):
@@ -166,11 +246,10 @@ def test_task_creation_and_cryptographic_signatures(temp_mesh_dir):
 
     assert task.task_id.startswith("mtask-")
     assert task.requester_id == coord.node_id
-    assert len(task.signature) == 64
+    assert len(task.signature) in (64, 128)
 
-    # Verify signature
-    expected = compute_signature(task.canonical_bytes(), coord.secret_key)
-    assert task.signature == expected
+    # Verify signature using public key
+    assert verify_signature(task.canonical_bytes(), task.signature, coord.public_key)
 
 
 def test_local_execution_and_receipt_proof(temp_mesh_dir):
@@ -183,7 +262,97 @@ def test_local_execution_and_receipt_proof(temp_mesh_dir):
     assert receipt.status == "completed"
     assert receipt.executor_id == coord.node_id
     assert "quantum" in receipt.output
-    assert coord.verify_receipt(receipt, coord.secret_key)
+    # Verify receipt using executor public key
+    assert coord.verify_receipt(receipt, coord.public_key)
+
+
+def test_http_transport_success():
+    peer = MeshNodeInfo(node_id="peer-remote", endpoint="https://peer.remote.ai:8443")
+    task = MeshTaskRequest(
+        task_id="mtask-test-1",
+        requester_id="node-local",
+        target_model="hermes-3-8b",
+        min_vram_mb=8192,
+        payload="Say hello",
+    )
+
+    expected_receipt = {
+        "task_id": "mtask-test-1",
+        "executor_id": "peer-remote",
+        "status": "completed",
+        "output": "Hello from peer",
+        "tokens": 12,
+        "latency_ms": 32.5,
+        "proof_sig": "abcdef",
+    }
+
+    mock_resp = MagicMock()
+    mock_resp.read.return_value = json.dumps(expected_receipt).encode("utf-8")
+    mock_resp.__enter__.return_value = mock_resp
+
+    with patch("urllib.request.urlopen", return_value=mock_resp) as mock_urlopen:
+        receipt = http_transport(peer, task)
+        assert receipt.status == "completed"
+        assert receipt.executor_id == "peer-remote"
+        assert receipt.output == "Hello from peer"
+
+        # Verify request parameters
+        call_args = mock_urlopen.call_args
+        req = call_args[0][0]
+        assert req.get_full_url() == "https://peer.remote.ai:8443/mesh/task"
+        assert req.get_method() == "POST"
+        assert req.get_header("Content-type") == "application/json"
+        assert req.get_header("X-hermes-requester-id") == "node-local"
+
+
+def test_http_transport_network_error():
+    peer = MeshNodeInfo(node_id="peer-offline", endpoint="https://offline.node.ai:8443")
+    task = MeshTaskRequest(
+        task_id="mtask-test-2",
+        requester_id="node-local",
+        target_model="hermes-3-8b",
+        min_vram_mb=8192,
+        payload="Say hello",
+    )
+
+    with patch("urllib.request.urlopen", side_effect=urllib.error.URLError("Connection refused")):
+        receipt = http_transport(peer, task)
+        assert receipt.status == "failed"
+        assert "Connection refused" in receipt.error_message
+
+
+def test_rendezvous_sync(temp_mesh_dir):
+    coord = GlobalMeshCoordinator(
+        state_dir=temp_mesh_dir,
+        rendezvous_url="https://rendezvous.hermes.ai",
+    )
+    coord.init_local_node(endpoint="https://my.node:8443", offer_gpu=False)
+
+    peers_payload = {
+        "peers": [
+            {
+                "node_id": "peer-synced-1",
+                "endpoint": "https://synced1.mesh:8443",
+                "gpu": {
+                    "device_name": "A100",
+                    "vram_mb": 81920,
+                    "free_vram_mb": 65536,
+                    "compute_backend": "cuda",
+                    "supported_models": ["hermes-3-70b"],
+                },
+            }
+        ]
+    }
+
+    mock_resp = MagicMock()
+    mock_resp.read.return_value = json.dumps(peers_payload).encode("utf-8")
+    mock_resp.__enter__.return_value = mock_resp
+
+    with patch("urllib.request.urlopen", return_value=mock_resp):
+        success, peers = coord.sync_rendezvous()
+        assert success is True
+        assert len(peers) == 1
+        assert "peer-synced-1" in coord.peers
 
 
 def test_delegation_with_failover_and_reputation(temp_mesh_dir):
@@ -216,7 +385,6 @@ def test_delegation_with_failover_and_reputation(temp_mesh_dir):
     coord.register_peer(flaky_peer)
     coord.register_peer(solid_peer)
 
-    # Mock transport where flaky_peer fails, triggering failover to solid_peer
     def mock_transport(peer: MeshNodeInfo, task: MeshTaskRequest) -> MeshExecutionReceipt:
         if peer.node_id == "node-flaky":
             return MeshExecutionReceipt(

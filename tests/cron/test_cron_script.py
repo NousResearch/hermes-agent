@@ -282,7 +282,7 @@ class TestRunJobScript:
         sys.platform == "win32",
         reason="Windows always takes the overlay/creationflags branch",
     )
-    def test_non_windows_script_preserves_default_text_decoding(self, cron_env, monkeypatch):
+    def test_non_windows_script_uses_lossy_utf8_decode(self, cron_env, monkeypatch):
         # No platform patching: the Linux CI host already takes this branch.
         from cron import scheduler as sched_mod
         from cron import scheduler_script as sched_script
@@ -320,8 +320,10 @@ class TestRunJobScript:
         assert captured["argv"] == [sys.executable, str(script.resolve())]
         assert captured["kwargs"]["text"] is True
         assert "creationflags" not in captured["kwargs"]
-        assert "encoding" not in captured["kwargs"]
-        assert "errors" not in captured["kwargs"]
+        # After #105582: POSIX now matches Windows — script stdout is decoded as
+        # UTF-8 with errors="replace" so a stray non-UTF-8 byte no longer crashes the tick.
+        assert captured["kwargs"]["encoding"] == "utf-8"
+        assert captured["kwargs"]["errors"] == "replace"
 
     def test_non_overlay_branch_keeps_plain_argv(self, cron_env, monkeypatch):
         """When the Windows uv-venv overlay is NOT active, the invocation must
@@ -383,8 +385,9 @@ class TestRunJobScript:
     def test_invalid_utf8_stdout_does_not_raise(self, cron_env):
         """Truncated/invalid UTF-8 in script stdout must never escape as an
         exception (#47393) — a raised UnicodeDecodeError higher up would
-        silently drop the whole delivery (#42384). The run may fail, but it
-        must fail as a (False, message) result the scheduler can deliver.
+        silently drop the whole delivery (#42384). After #105582 the run no
+        longer fails either: the undecodable bytes are lossily replaced, so
+        the decodable prefix survives as output and the alert is delivered.
         """
         from cron.scheduler_script import _run_job_script
 
@@ -399,9 +402,12 @@ class TestRunJobScript:
 
         success, output = _run_job_script("bad_bytes.py")  # must not raise
 
-        assert isinstance(success, bool)
+        # Before #105582 this returned (False, "Script execution failed: ...")
+        # and the alert bytes were dropped. Now the run succeeds and the
+        # decodable prefix survives as lossy output.
+        assert success is True
         assert isinstance(output, str)
-        assert output  # a message is always produced, never a silent drop
+        assert "partial" in output
 
 
 class TestBuildJobPromptWithScript:

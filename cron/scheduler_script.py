@@ -341,21 +341,22 @@ def _run_job_script(
         if sys.platform == "win32":
             popen_kwargs = {
                 "creationflags": windows_hide_flags()
-                | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0),
-                # Lossy UTF-8 decode — locale-mismatched bytes from the STT command must not raise in the
-                # reader threads on non-UTF-8 Windows (#45099).
-                # Lossy UTF-8 decode — locale-mismatched bytes from the TTS command must not raise in the
-                # reader threads on non-UTF-8 Windows (#45099).
-                "encoding": "utf-8",
-                "errors": "replace"}
+                | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)}
         env = build_subprocess_env()
         env.update(env_overlay)
         # Subprocess cwd only (default: scripts-dir parent). NEVER os.chdir() the process.
         # Use the job's workdir as the subprocess cwd when configured, otherwise default to the scripts-dir
         # parent (back-compat). NEVER mutate the Python process cwd — that would leak into concurrent
         # gateway sessions (#69396).
+        # Lossy UTF-8 decode for script stdout on BOTH platforms: a stray non-UTF-8 byte (a chunked
+        # multibyte write, a binary source the watchdog inspects, or locale-mismatched output) must not
+        # raise UnicodeDecodeError in communicate() and silently drop the whole tick's output. Windows
+        # needed this for the command pipes (#45099); POSIX had the same strict-default hole even under a
+        # UTF-8 locale — build_subprocess_env sets PYTHONUTF8=1 so the child writes UTF-8, and
+        # errors="replace" makes the remaining undecodable bytes lossy instead of fatal (#105582).
         proc = subprocess.Popen(
             argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+            encoding="utf-8", errors="replace",
             cwd=workdir or str(path.parent), env=env, **popen_kwargs)
         deadline = time.monotonic() + script_timeout
         while True:

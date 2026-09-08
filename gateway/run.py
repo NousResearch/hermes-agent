@@ -5478,6 +5478,7 @@ _PLUGIN_COMPAT_LAZY = {
     'SessionEntry': ('gateway.session', 'SessionEntry'),
     'TranscriptReadError': ('gateway.session_transcript', 'TranscriptReadError'),
     'TurnContext': ('gateway.turn_context', 'TurnContext'),
+    '_build_interim_media_delivery_payload': ('gateway.run_turn', '_build_interim_media_delivery_payload'),
     'TurnLeaseTimeoutError': ('gateway.turn_lease', 'TurnLeaseTimeoutError'),
     'TurnRunner': ('gateway.run_turn_runner', 'TurnRunner'),
     'arm_shutdown_watchdog': ('gateway.shutdown_watchdog', 'arm_shutdown_watchdog'),

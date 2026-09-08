@@ -710,6 +710,49 @@ describe('preserveLocalAssistantErrors', () => {
 })
 
 describe('upsertToolPart', () => {
+  it('retains first-match semantics after a contextual ID remap', () => {
+    const indexes = new Map<string, number>()
+    const old: ChatMessagePart[] = [toolCallPart('a'), toolCallPart('a')]
+    const remapped = upsertToolPart(old, { name: 'read_file', tool_id: 'c', context: 'path' }, 'running', 1, indexes)
+    const payload = { name: 'read_file', tool_id: 'a' }
+    expect(upsertToolPart(remapped, payload, 'running', 2, indexes)).toEqual(upsertToolPart(remapped, payload, 'running', 2))
+  })
+
+  it('matches unindexed updates across duplicate IDs, remaps and old snapshots', () => {
+    const indexes = new Map<string, number>()
+    let parts: ChatMessagePart[] = [toolCallPart('a'), toolCallPart('a'), toolCallPart('b')]
+
+    for (let step = 0; step < 40; step += 1) {
+      const payload = { name: 'read_file', tool_id: ['a', 'b', 'c'][step % 3], context: 'context', result: { step } }
+      const phase = step % 2 === 0 ? 'running' : 'complete'
+      expect(upsertToolPart(parts, payload, phase, step, indexes)).toEqual(upsertToolPart(parts, payload, phase, step))
+      parts = upsertToolPart(parts, payload, phase, step, indexes)
+
+      if (step % 3 === 0) {parts = [...parts].reverse()}
+    }
+  })
+
+  it('closes every open prose part, including non-tail restored parts', () => {
+    for (const indexes of [undefined, new Map<string, number>()]) {
+      const parts: ChatMessagePart[] = [{ type: 'text', text: 'open text' }, toolCallPart('old'), { type: 'reasoning', text: 'open thought' }]
+      const result = upsertToolPart(parts, { name: 'read_file', tool_id: 'new' }, 'running', 42, indexes)
+      expect(result[0]).toMatchObject({ completedAt: 42 })
+      expect(result[2]).toMatchObject({ completedAt: 42 })
+      expect(parts[0]).not.toHaveProperty('completedAt')
+    }
+  })
+
+  it('rebuilds stable indexes after a same-length timeline replacement', () => {
+    const indexes = new Map<string, number>()
+    const first = upsertToolPart([toolCallPart('a'), toolCallPart('b')], { name: 'read_file', tool_id: 'a' }, 'running', 1, indexes)
+    const replacement = [first[1], first[0]]
+    const updated = upsertToolPart(replacement, { name: 'read_file', tool_id: 'a' }, 'running', 2, indexes)
+    expect(updated).toHaveLength(2)
+    expect(updated[1]).toMatchObject({ toolCallId: 'a' })
+    expect(updated[0]).toBe(replacement[0])
+  })
+
+
   it('updates a stable-id row without scanning a warm tool timeline', () => {
     const raw = Array.from({ length: 2_000 }, (_, index) => toolCallPart(`call-${index}`))
 

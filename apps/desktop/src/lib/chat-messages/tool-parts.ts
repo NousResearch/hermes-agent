@@ -9,7 +9,8 @@ function toolId(payload: GatewayEventPayload | undefined): string {
 }
 
 let liveToolCounter = 0
-const stableIndexLengths = new WeakMap<Map<string, number>, number>()
+const stableIndexParts = new WeakMap<Map<string, number>, WeakRef<ChatMessagePart[]>>()
+const stableOpenParts = new WeakMap<Map<string, number>, number[]>()
 
 function nextLiveToolId(name: string): string {
   liveToolCounter += 1
@@ -156,21 +157,27 @@ function hasToolMatchOverlap(left: string[], right: string[]): boolean {
 }
 
 function synchronizeStableIndices(parts: ChatMessagePart[], stableIndices: Map<string, number>): void {
-  if (stableIndexLengths.get(stableIndices) === parts.length) {
+  if (stableIndexParts.get(stableIndices)?.deref() === parts) {
     return
   }
 
   stableIndices.clear()
+  const openParts: number[] = []
 
   for (let index = 0; index < parts.length; index += 1) {
     const part = parts[index]
 
-    if (part?.type === 'tool-call' && part.toolCallId) {
+    if (part?.type === 'tool-call' && part.toolCallId && !stableIndices.has(part.toolCallId)) {
       stableIndices.set(part.toolCallId, index)
+    }
+
+    if ((part?.type === 'text' || part?.type === 'reasoning') && part.completedAt === undefined) {
+      openParts.push(index)
     }
   }
 
-  stableIndexLengths.set(stableIndices, parts.length)
+  stableOpenParts.set(stableIndices, openParts)
+  stableIndexParts.set(stableIndices, new WeakRef(parts))
 }
 
 function findToolPartIndex(
@@ -319,15 +326,6 @@ function completeOpenStreamParts(parts: ChatMessagePart[], completedAt: number):
   )
 }
 
-function completeOpenStreamTail(parts: ChatMessagePart[], completedAt: number, next: ChatMessagePart[]): void {
-  const index = parts.length - 1
-  const tail = parts[index]
-
-  if ((tail?.type === 'text' || tail?.type === 'reasoning') && tail.completedAt === undefined) {
-    next[index] = { ...tail, completedAt } as ChatMessagePart
-  }
-}
-
 export function upsertToolPart(
   parts: ChatMessagePart[],
   payload: GatewayEventPayload | undefined,
@@ -335,6 +333,10 @@ export function upsertToolPart(
   occurredAt = Date.now() / 1000,
   stableIndices?: Map<string, number>
 ): ChatMessagePart[] {
+  if (stableIndices) {
+    synchronizeStableIndices(parts, stableIndices)
+  }
+
   const stableId = toolId(payload)
   const name = payload?.name || 'tool'
   const index = findToolPartIndex(parts, name, stableId, payload, phase, stableIndices)
@@ -362,17 +364,24 @@ export function upsertToolPart(
     })
   } satisfies ChatMessagePart
 
-  const next = parts.slice()
-  // A completion can be the first tool event observed after reconnect, so it
-  // also constitutes a text/reasoning -> tool boundary when no start arrived.
-  completeOpenStreamTail(parts, occurredAt, next)
+  // Close every open text/reasoning part, including restored non-tail rows.
+  // Indexed timelines remember those rows; direct callers retain the full pass.
+  const next = stableIndices ? parts.slice() : completeOpenStreamParts(parts, occurredAt)
+
+  if (stableIndices) {
+    for (const openIndex of stableOpenParts.get(stableIndices) ?? []) {
+      next[openIndex] = { ...parts[openIndex], completedAt: occurredAt } as ChatMessagePart
+    }
+
+    stableOpenParts.set(stableIndices, [])
+  }
 
   if (index === -1) {
     stableIndices?.set(id, next.length)
     next.push(base)
 
     if (stableIndices) {
-      stableIndexLengths.set(stableIndices, next.length)
+      stableIndexParts.set(stableIndices, new WeakRef(next))
     }
 
     return next
@@ -380,6 +389,15 @@ export function upsertToolPart(
 
   next[index] = { ...parts[index], ...base }
   stableIndices?.set(id, index)
+
+  if (stableIndices) {
+    if (prev?.type === 'tool-call' && prev.toolCallId !== id) {
+      // A renamed first occurrence may reveal another row with the old ID.
+      stableIndexParts.delete(stableIndices)
+    } else {
+      stableIndexParts.set(stableIndices, new WeakRef(next))
+    }
+  }
 
   return next
 }

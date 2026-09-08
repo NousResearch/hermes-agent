@@ -94,11 +94,11 @@ export function stripGeneratedImageEchoes(text: string, sources: readonly string
 
 /** Strip generated-image echoes from text parts, dropping any part left empty.
  *  The image lives in the tool slot; prose keeps the agent's actual words. */
-export function dedupeGeneratedImageEchoesInParts<T extends TextLike & ToolLike>(parts: readonly T[]): T[] {
+export function dedupeGeneratedImageEchoesInParts<T extends TextLike & ToolLike>(parts: T[]): T[] {
   const sources = generatedImageEchoSources(parts)
 
   if (!sources.length) {
-    return [...parts]
+    return parts
   }
 
   return parts

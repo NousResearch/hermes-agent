@@ -189,7 +189,7 @@ export function useMessageStream({
   )
 
   const queuedDeltasRef = useRef<Map<string, QueuedStreamDelta[]>>(new Map())
-  const toolPartIndicesRef = useRef<Map<string, Map<string, number>>>(new Map())
+  const toolPartIndicesRef = useRef<WeakMap<ChatMessagePart[], Map<string, number>>>(new WeakMap())
   const flushHandleRef = useRef<number | null>(null)
   const lastFlushAtRef = useRef<number>(0)
   // What the previous flush cost on the main thread — drives the adaptive
@@ -481,17 +481,20 @@ export function useMessageStream({
         }
       }
 
-      let stableIndices = toolPartIndicesRef.current.get(sessionId)
+      const upsert = (parts: ChatMessagePart[]) => {
+        // Cache ownership follows immutable timeline arrays, not every session
+        // ever seen by this hook. Evicted arrays and their indexes can be GC'd.
+        const stableIndices = toolPartIndicesRef.current.get(parts) ?? new Map<string, number>()
+        const next = upsertToolPart(parts, payload, phase, occurredAt, stableIndices)
+        toolPartIndicesRef.current.set(next, stableIndices)
 
-      if (!stableIndices) {
-        stableIndices = new Map()
-        toolPartIndicesRef.current.set(sessionId, stableIndices)
+        return dedupeGeneratedImageEchoesInParts(next)
       }
 
       mutateStream(
         sessionId,
-        parts => dedupeGeneratedImageEchoesInParts(upsertToolPart(parts, payload, phase, occurredAt, stableIndices)),
-        () => upsertToolPart([], payload, phase, occurredAt, stableIndices),
+        upsert,
+        () => upsert([]),
         { pending: m => phase !== 'complete' || (m.pending ?? false) },
         occurredAt
       )

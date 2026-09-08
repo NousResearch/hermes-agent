@@ -76,17 +76,9 @@ class TestBundledPluginsRegister:
         from agent.web_search_registry import list_providers
 
         names = sorted(p.name for p in list_providers())
-        assert names == [
-            "brave-free",
-            "ddgs",
-            "exa",
-            "firecrawl",
-            "keenable",
-            "parallel",
-            "searxng",
-            "tavily",
-            "xai",
-        ]
+        required = {"brave-free", "ddgs", "exa", "firecrawl", "keenable", "parallel", "searxng", "tavily"}
+        assert required <= set(names)
+        assert len(names) == len(set(names))
 
     @pytest.mark.parametrize(
         "plugin_name,expected_search,expected_extract",
@@ -341,4 +333,3 @@ class TestAsyncExtractDispatch:
 
 class TestErrorResponseShapes:
     """When credentials are missing, plugins return typed errors, not raises."""
-

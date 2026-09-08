@@ -1048,6 +1048,15 @@ class SessionMessagesMixin:
         sql = "SELECT COUNT(*) FROM messages" + (" WHERE session_id = ?" if session_id else "")
         return self._read_one(sql, (session_id,) if session_id else ())[0]
 
+    def has_gateway_input_owner(self, session_id: str, owner: str) -> bool:
+        """Probe the accepted-input marker without allocating message bodies or archives."""
+        return self._read_one(
+            "SELECT 1 FROM messages WHERE session_id = ? AND role = 'user' "
+            "AND observed = 0 AND (active = 1 OR compacted = 1) "
+            "AND CASE WHEN json_valid(display_metadata) "
+            "THEN json_extract(display_metadata, '$.gateway_input_owner') END = ? LIMIT 1",
+            (session_id, owner)) is not None
+
     def has_platform_message_id(self, session_id: str, platform_message_id: str) -> bool:
         """True when *platform_message_id* exists (partial-index probe; the gateway's transient-failure dedupe).
 

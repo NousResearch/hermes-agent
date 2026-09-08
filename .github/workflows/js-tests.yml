@@ -72,7 +72,7 @@ jobs:
       #     its lint, ui, electron and plugin suites all run together. That
       #     is the same selection rule the old matrix job used.
       #
-      # Discovery is ``npm query .workspace``. A new package or a new
+      # Discovery reads the root ``workspaces`` globs. A new package or a new
       # ``check:*`` script needs no change here. An empty list is an error and
       # not an empty run, because an empty run reports green after it checks
       # nothing.

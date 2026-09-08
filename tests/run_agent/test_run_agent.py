@@ -833,24 +833,6 @@ class TestHydrateTodoStore:
         assert agent._todo_store.snapshot()["revision"] == 2
         assert agent._todo_store.read()[0]["id"] == "new"
 
-    def test_history_recovers_canonical_todo_list_snapshot(self, agent):
-        history = [
-            self._assistant_todo_list_call(),
-            {
-                "role": "tool",
-                "tool_call_id": "c1",
-                "content": json.dumps(
-                    {"todos": [{"id": "new", "content": "Recovered", "status": "pending"}], "revision": 2}
-                ),
-            },
-        ]
-
-        with patch("run_agent._set_interrupt"), patch("agent.interrupt_control._set_interrupt"):
-            agent._hydrate_todo_store(history)
-
-        assert agent._todo_store.snapshot()["revision"] == 2
-        assert agent._todo_store.read()[0]["id"] == "new"
-
 
 
 

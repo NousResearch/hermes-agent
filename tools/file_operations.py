@@ -654,17 +654,8 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
     def _native_read_enabled(self) -> bool:
         """Whether ``read_file`` and ``search_files`` may bypass the shell: only POSIX + ``LocalEnvironment``
         (file is on this host, path already native; Windows keeps the shell path since
-        file_operations holds Git-Bash-style paths there). The ``terminal.native_file_read``
-        config setting controls the fast path; the legacy environment override remains a
-        narrow emergency disable for existing deployments."""
-        try:
-            from hermes_cli.config import load_config_readonly
-
-            terminal_config = (load_config_readonly() or {}).get("terminal") or {}
-            if terminal_config.get("native_file_read", True) is False:
-                return False
-        except Exception:  # noqa: BLE001 - file tools remain usable in stripped installs
-            logger.debug("Could not load native file-read config; using defaults", exc_info=True)
+        file_operations holds Git-Bash-style paths there). ``HERMES_NATIVE_FILE_READ=0``
+        turns the fast path off."""
         flag = os.environ.get("HERMES_NATIVE_FILE_READ", "1").strip().lower()
         if flag in ("0", "false", "no", "off"):
             return False

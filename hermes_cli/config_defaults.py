@@ -264,8 +264,6 @@ DEFAULT_CONFIG = {
         # traceback.
         "degraded_mode": "warn",
         "cwd": ".",  # Use current directory
-        # Use the native POSIX file-read/search fast path when the configured environment is local.
-        "native_file_read": True,
         # Root for terminal session temp files (background logs/pid/exit files, code-exec
         # sandboxes). Empty = TMPDIR/TMP/TEMP if set, else HERMES_HOME/cache/terminal (auto-pruned
         # after 72h) — NOT tmpfs /tmp, which is RAM-capped and fills under load. Must be an existing
@@ -1213,6 +1211,11 @@ DEFAULT_CONFIG = {
     "delegation": {
         "model": "",  # e.g. "google/gemini-3-flash-preview" (empty = inherit parent)
         "provider": "",  # e.g. "openrouter" (empty = inherit parent provider + credentials)
+        # Fallback chain for delegated children (same entry format as the top-level list).
+        # For an unpinned child, null = inherit the parent chain; [] = disable fallback.
+        # A child pinned by provider, endpoint, or model gets no fallback unless this
+        # setting declares one explicitly.
+        "fallback_providers": None,
         "base_url": "",  # direct OpenAI-compatible endpoint for subagents
         "api_key": "",  # key for delegation.base_url (falls back to OPENAI_API_KEY)
         # Wire protocol for delegation.base_url: "chat_completions" | "codex_responses" |
@@ -1563,6 +1566,8 @@ DEFAULT_CONFIG = {
     # Plugin system. `enabled`/`disabled` lists are written by `hermes plugins enable|disable` and
     # deliberately omitted here so an empty default never clobbers a user allow-list.
     "plugins": {
+        # Maximum serialized payload size for API lifecycle hooks. Minimum 1000; max 600000.
+        "hook_payload_max_chars": 50000,
         # Wall-clock cap (seconds) for one in-process Python plugin hook callback; shell hooks keep
         # their own per-entry `timeout`. 0 = no cap (sync call on agent thread). Max 600.
         "hook_callback_timeout": 30,

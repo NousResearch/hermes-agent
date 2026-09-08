@@ -3479,6 +3479,7 @@ class BasePlatformAdapter(ABC):
     async def handle_message(self, event: MessageEvent) -> None:
         """Process an incoming message; returns quickly by spawning a background
         task so new messages (and interrupts) can arrive while an agent runs."""
+        event._gateway_accepted = False
         if not self._message_handler:
             return
         if event.allow_gateway_control:
@@ -3501,7 +3502,7 @@ class BasePlatformAdapter(ABC):
             await self._handle_message_while_active(event, session_key)
             return
         # Guard installed synchronously BEFORE the task spawns so a second message can't race in.
-        self._start_session_processing(event, session_key)
+        event._gateway_accepted = self._start_session_processing(event, session_key)
 
     async def _handle_message_while_active(self, event: MessageEvent, session_key: str) -> None:
         """Route a message that arrived while ``session_key`` is busy: bypass
@@ -3554,10 +3555,15 @@ class BasePlatformAdapter(ABC):
                     return
             except Exception as e:
                 logger.error("[%s] Busy-session handler failed: %s", self.name, e, exc_info=True)
+        # Without a runner FIFO, do not merge a wake into an occupied human slot
+        # (or collapse distinct wakes into one turn). Its caller can retry admission.
+        if event.internal and session_key in self._pending_messages:
+            return
         # Photo bursts/albums: queue without interrupting; they run after the current task.
         if event.message_type == MessageType.PHOTO:
             logger.debug("[%s] Queuing photo follow-up for session %s without interrupt", self.name, session_key)
             merge_pending_message_event(self._pending_messages, session_key, event)
+            event._gateway_accepted = True
             return
         if self._is_queue_text_debounce_candidate(event):
             logger.debug("[%s] New text message while session %s is active — "
@@ -3569,6 +3575,7 @@ class BasePlatformAdapter(ABC):
                          "(no interrupt, will cascade after current turn)", self.name, session_key)
             merge_pending_message_event(self._pending_messages, session_key, event,
                                         merge_text=event.message_type == MessageType.TEXT)
+            event._gateway_accepted = True
 
     @staticmethod
     def _get_human_delay() -> float:

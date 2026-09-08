@@ -2599,9 +2599,12 @@ def _record_fire_ownership_lost(job_id: str, fire_owner: Optional[str], executio
 def _classify_delivery_outcome(
     *, delivery_error, should_deliver: bool, unresolved_origin: bool,
     normalized_deliver: str, incident_acked: bool, success: bool,
+    delivery_queued=None,
 ) -> str:
     if delivery_error:
         return "failed"
+    if should_deliver and delivery_queued:
+        return "queued"
     if should_deliver and unresolved_origin:
         return "not_configured"
     if should_deliver and normalized_deliver != "local":
@@ -2803,7 +2806,13 @@ def _finish_interrupted_run(job: dict, execution_id: str, delivery_error: Option
 def _finish_completed_run(d: _RunDelivery, fire_owner: Optional[str], execution_id: str) -> bool:
     """mark_job_run (owner-fenced) + execution ledger row for a run that reached delivery."""
     job = d.job
+    if not d.should_deliver and job.get("last_delivery_queued"):
+        from cron.jobs import update_job
+        update_job(job["id"], {"last_delivery_queued": None})
+        job["last_delivery_queued"] = None
     mark_kwargs = {"delivery_error": d.delivery_error}
+    if d.success and not d.delivery_error and d.should_deliver and job.get("last_delivery_queued"):
+        mark_kwargs["status"] = "delivery_queued"
     if fire_owner is not None:
         mark_kwargs["expected_fire_owner"] = fire_owner
     if d.blocked_config:
@@ -2816,6 +2825,7 @@ def _finish_completed_run(d: _RunDelivery, fire_owner: Optional[str], execution_
         return True
     delivery_outcome = _classify_delivery_outcome(
         delivery_error=d.delivery_error,
+        delivery_queued=job.get("last_delivery_queued"),
         should_deliver=d.should_deliver,
         unresolved_origin=d.unresolved_origin,
         # Read the lane the notice was actually routed through (failure_deliver on failure).
@@ -2861,7 +2871,8 @@ def _deliver_crash_failure(
     )
     delivery_outcome = _classify_delivery_outcome(
         delivery_error=delivery_error, should_deliver=True, unresolved_origin=unresolved_origin,
-        normalized_deliver=normalized_deliver, incident_acked=False, success=False)
+        normalized_deliver=normalized_deliver, incident_acked=False, success=False,
+        delivery_queued=job.get("last_delivery_queued"))
     if delivery_outcome in ("delivered", "not_configured"):
         _mark_incident_alerted(failure_incident_id)
     return delivery_error, delivery_outcome

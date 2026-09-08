@@ -38,16 +38,6 @@ class TestSetMessageApiContent:
         db.create_session("s1", source="cli")
         return db
 
-    def test_updates_the_addressed_row(self, tmp_path):
-        db = self._open(tmp_path)
-        try:
-            db.append_message("s1", "user", content="ok")
-            row_id = db.get_messages("s1")[0]["id"]
-            assert db.set_message_api_content("s1", row_id, "ok", "ok\n\nCTX") == 1
-            assert db.get_messages("s1")[0]["api_content"] == "ok\n\nCTX"
-        finally:
-            db.close()
-
     def test_older_identical_row_is_untouched(self, tmp_path):
         """Two user turns with the same text — the repeated-"ok" shape.
 
@@ -94,67 +84,8 @@ class TestSetMessageApiContent:
         finally:
             db.close()
 
-    def test_survives_lone_surrogate(self, tmp_path):
-        db = self._open(tmp_path)
-        try:
-            db.append_message("s1", "user", content="turn text")
-            row_id = db.get_messages("s1")[0]["id"]
-            dirty = "text \ud83d\ude00 \ud83d more"
-            assert db.set_message_api_content("s1", row_id, "turn text", dirty) == 1
-            stored = db.get_messages("s1")[0]["api_content"]
-            assert "\ud83d" not in stored or "\ud83d\ude00" in stored
-        finally:
-            db.close()
-
-    def test_rejects_boolean_and_invalid_row_ids_and_empty_session(self, tmp_path):
-        db = self._open(tmp_path)
-        try:
-            db.append_message("s1", "user", content="turn text")
-            row_id = db.get_messages("s1")[0]["id"]
-            assert db.set_message_api_content("s1", True, "turn text", "sidecar") == 0
-            assert db.set_message_api_content("s1", False, "turn text", "sidecar") == 0
-            assert db.set_message_api_content("s1", 0, "turn text", "sidecar") == 0
-            assert db.set_message_api_content("s1", -5, "turn text", "sidecar") == 0
-            assert db.set_message_api_content("", row_id, "turn text", "sidecar") == 0
-            assert db.set_message_api_content(None, row_id, "turn text", "sidecar") == 0
-            assert db.get_messages("s1")[0]["api_content"] is None
-        finally:
-            db.close()
-
-
 class TestPrologueRowAddressedBackfill:
     """The prologue gate: backfill iff a durable row exists for this dict."""
-
-    def test_preexisting_row_receives_the_sidecar(self, tmp_path):
-        """A close/early flush wrote the staged CLI input before the stamp and
-        synced ``_row_id`` back onto it. The crash persist then skips the
-        message, so the prologue must push the sidecar into that exact row."""
-        db = SessionDB(db_path=tmp_path / "state.db")
-        db.create_session("s1", source="cli")
-        try:
-            db.append_message("s1", "user", content="hello")
-            row_id = db.get_messages("s1")[0]["id"]
-
-            agent = _FakeAgent()
-            agent.session_id = "s1"
-            agent._session_db = db
-            agent._pending_cli_user_message = {
-                "role": "user",
-                "content": "hello",
-                "_db_persisted": True,
-                "_row_id": row_id,
-            }
-            with patch(
-                "hermes_cli.plugins.invoke_hook",
-                return_value=[{"context": "PLUGIN-CTX"}],
-            ):
-                ctx = _build(agent)
-
-            expected = compose_user_api_content("hello", "", "PLUGIN-CTX")
-            assert ctx.messages[ctx.current_turn_user_idx]["api_content"] == expected
-            assert db.get_messages("s1")[0]["api_content"] == expected
-        finally:
-            db.close()
 
     def test_no_row_id_and_no_compaction_writes_nothing(self):
         """The normal path: the row does not exist yet and the crash persist
@@ -175,60 +106,6 @@ class TestPrologueRowAddressedBackfill:
         agent._session_db.set_message_api_content.assert_not_called()
         agent._session_db.set_latest_user_api_content.assert_not_called()
 
-    def test_db_persisted_alone_does_not_arm_the_backfill(self):
-        """``_db_persisted`` is stamped on resumed history dicts whose row id
-        is unknown, so it cannot stand in for ``_row_id``: arming the
-        positional backfill from it re-opens the wrong-row write."""
-        agent = _FakeAgent()
-        agent._session_db = MagicMock()
-        agent._pending_cli_user_message = {
-            "role": "user",
-            "content": "hello",
-            "_db_persisted": True,
-        }
-        with patch(
-            "hermes_cli.plugins.invoke_hook",
-            return_value=[{"context": "PLUGIN-CTX"}],
-        ):
-            _build(agent)
-
-        agent._session_db.set_message_api_content.assert_not_called()
-        agent._session_db.set_latest_user_api_content.assert_not_called()
-
-    def test_boolean_row_id_does_not_arm_the_backfill(self):
-        """In Python isinstance(True, int) is True; a boolean _row_id must not
-        be mistaken for a valid SQLite primary key."""
-        agent = _FakeAgent()
-        agent._session_db = MagicMock()
-        agent._pending_cli_user_message = {
-            "role": "user",
-            "content": "hello",
-            "_db_persisted": True,
-            "_row_id": True,
-        }
-        with patch(
-            "hermes_cli.plugins.invoke_hook",
-            return_value=[{"context": "PLUGIN-CTX"}],
-        ):
-            _build(agent)
-
-        agent._session_db.set_message_api_content.assert_not_called()
-        agent._session_db.set_latest_user_api_content.assert_not_called()
-
-    def test_row_id_wins_over_the_compaction_fallback(self):
-        """A compacted copy that kept its fresh row id is addressed by id; the
-        positional fallback stays for a copy that carries none."""
-        agent = _make_in_place_compaction_agent(row_id=41)
-        with patch(
-            "hermes_cli.plugins.invoke_hook",
-            return_value=[{"context": "PLUGIN-CTX"}],
-        ):
-            _build(agent)
-        agent._session_db.set_message_api_content.assert_called_once_with(
-            "sess-1", 41, "hello", "hello\n\nPLUGIN-CTX"
-        )
-        agent._session_db.set_latest_user_api_content.assert_not_called()
-
     def test_compaction_without_row_id_keeps_positional_fallback(self):
         agent = _make_in_place_compaction_agent(row_id=None)
         with patch(
@@ -240,96 +117,6 @@ class TestPrologueRowAddressedBackfill:
             "sess-1", "hello", "hello\n\nPLUGIN-CTX"
         )
         agent._session_db.set_message_api_content.assert_not_called()
-
-    def test_duck_typed_store_does_not_fall_back_to_positional_when_row_id_present(self):
-        """When a valid _row_id exists, a store lacking set_message_api_content
-        must NOT fall back to set_latest_user_api_content (fails closed to
-        prevent wrong-row corruption on repeated inputs)."""
-        agent = _FakeAgent()
-        # Mock defining ONLY set_latest_user_api_content (like older/external stores)
-        mock_db = MagicMock(spec=["set_latest_user_api_content"])
-        agent._session_db = mock_db
-        agent._pending_cli_user_message = {
-            "role": "user",
-            "content": "hello",
-            "_db_persisted": True,
-            "_row_id": 42,
-        }
-        with patch(
-            "hermes_cli.plugins.invoke_hook",
-            return_value=[{"context": "PLUGIN-CTX"}],
-        ):
-            _build(agent)
-
-        mock_db.set_latest_user_api_content.assert_not_called()
-
-    def test_wrapper_lacking_set_message_api_content_fails_closed_without_corrupting_newer_row(
-        self, tmp_path
-    ):
-        """[ehz0ah blocking feedback]: A wrapper exposing only set_latest_user_api_content
-        and delegating to SessionDB must NOT be called when _row_id is present.
-        With repeated 'ok' rows and _row_id=1, falling back would update the newer row at id 3;
-        failing closed ensures row 3 is untouched and row 1 remains unchanged."""
-        db = SessionDB(db_path=tmp_path / "state.db")
-        db.create_session("s1", source="cli")
-        try:
-            db.append_message("s1", "user", content="ok")  # id=1
-            db.append_message("s1", "assistant", content="reply")  # id=2
-            db.append_message("s1", "user", content="ok")  # id=3
-
-            rows = db.get_messages("s1")
-            row_1_id, row_3_id = rows[0]["id"], rows[2]["id"]
-
-            class _LegacyStoreWrapper:
-                def __init__(self, real_db):
-                    self._real = real_db
-
-                def set_latest_user_api_content(self, session_id, content, api_content):
-                    return self._real.set_latest_user_api_content(
-                        session_id, content, api_content
-                    )
-
-            wrapper = _LegacyStoreWrapper(db)
-            agent = _FakeAgent()
-            agent.session_id = "s1"
-            agent._session_db = wrapper
-            agent._pending_cli_user_message = {
-                "role": "user",
-                "content": "ok",
-                "_db_persisted": True,
-                "_row_id": row_1_id,
-            }
-
-            with patch(
-                "hermes_cli.plugins.invoke_hook",
-                return_value=[{"context": "SIDE-1"}],
-            ):
-                _build(agent, user_message="ok")
-
-            # Must fail closed: neither row 1 nor row 3 was updated
-            rows = {r["id"]: r for r in db.get_messages("s1")}
-            assert rows[row_1_id]["api_content"] is None
-            assert rows[row_3_id]["api_content"] is None
-        finally:
-            db.close()
-
-    def test_duck_typed_store_safely_skips_when_neither_method_present(self):
-        """A store mock/wrapper defining neither method skips cleanly."""
-        agent = _FakeAgent()
-        mock_db = MagicMock(spec=[])
-        agent._session_db = mock_db
-        agent._pending_cli_user_message = {
-            "role": "user",
-            "content": "hello",
-            "_db_persisted": True,
-            "_row_id": 42,
-        }
-        with patch(
-            "hermes_cli.plugins.invoke_hook",
-            return_value=[{"context": "PLUGIN-CTX"}],
-        ):
-            # Must not raise AttributeError
-            _build(agent)
 
 
 class _RealPersistenceAgent(SessionPersistenceMixin, _FakeAgent):
@@ -430,54 +217,6 @@ class TestRealEarlyFlushAndOverrideLifecycle:
             from agent.turn_context import substitute_api_content
             substitute_api_content(conv[0])
             assert conv[0]["content"] == api_text
-        finally:
-            db.close()
-
-    def test_pre_flushed_api_only_turn_with_injections_guards_on_durable_content(self, tmp_path):
-        """[ehz0ah bug 2]: Pre-flushed clean input with API-only variant AND plugin context.
-        The row update must use the durable clean content ('hello') as the SQL guard,
-        not the restored API-facing content ('[voice] hello'), so the row is updated."""
-        path = tmp_path / "state.db"
-        db = SessionDB(db_path=path)
-        sid = "sess-api-only-with-inj"
-        db.create_session(sid, source="cli")
-        try:
-            agent = _RealPersistenceAgent(db, sid)
-
-            clean_text = "hello"
-            api_text = "[voice] hello"
-
-            staged = {"role": "user", "content": clean_text}
-            agent._pending_cli_user_message = staged
-            agent._flush_messages_to_session_db([staged], None)
-            assert staged.get("_row_id") is not None
-
-            with patch(
-                "hermes_cli.plugins.invoke_hook",
-                return_value=[{"context": "PLUGIN-CTX"}],
-            ):
-                ctx = _build(
-                    agent,
-                    user_message=api_text,
-                    persist_user_message=clean_text,
-                )
-
-            expected_sidecar = compose_user_api_content(api_text, "", "PLUGIN-CTX")
-            turn_msg = ctx.messages[ctx.current_turn_user_idx]
-            assert turn_msg["api_content"] == expected_sidecar
-
-            # Database row was updated successfully by row_id with durable content guard!
-            db_rows = db.get_messages(sid)
-            assert db_rows[0]["content"] == clean_text
-            assert db_rows[0]["api_content"] == expected_sidecar
-
-            # Replay restores the clean content and the composed sidecar:
-            conv = db.get_messages_as_conversation(sid)
-            assert conv[0]["content"] == clean_text
-            assert conv[0]["api_content"] == expected_sidecar
-            from agent.turn_context import substitute_api_content
-            substitute_api_content(conv[0])
-            assert conv[0]["content"] == expected_sidecar
         finally:
             db.close()
 

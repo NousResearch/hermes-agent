@@ -675,7 +675,8 @@ class TestPrefetchServerRetainVisibility:
         )
         provider.sync_turn("hello", "world")
         provider._retain_queue.join()
-        assert "op-async-1" in provider._pending_retain_ops
+        # ops are tracked per (bank_id, op_id) so multi-bank writes poll the right bank
+        assert ("test-bank", "op-async-1") in provider._pending_retain_ops
 
     def test_tracks_multiple_operation_ids(self, provider):
         provider._client.aretain_batch = AsyncMock(
@@ -685,7 +686,7 @@ class TestPrefetchServerRetainVisibility:
         )
         provider.sync_turn("hello", "world")
         provider._retain_queue.join()
-        assert {"op-a", "op-b"} <= provider._pending_retain_ops
+        assert {("test-bank", "op-a"), ("test-bank", "op-b")} <= provider._pending_retain_ops
 
     def test_sync_retain_tracks_no_ops(self, provider_with_config):
         p = provider_with_config(retain_async=False)
@@ -711,7 +712,7 @@ class TestPrefetchServerRetainVisibility:
 
         provider.sync_turn("hello", "world")
         provider._retain_queue.join()
-        assert "op-1" in provider._pending_retain_ops
+        assert ("test-bank", "op-1") in provider._pending_retain_ops
 
         provider.queue_prefetch("next turn query")
         if provider._prefetch_thread:

@@ -599,11 +599,12 @@ def test_delivery_turn_author_from_envelope_sender_fields():
 
 
 def test_delivery_turn_author_qualifies_a_remote_sender_by_its_connection():
-    """Two machines can both run ``ops``; the Desktop's connection id keeps them apart, and its own gateway
-    (``local``) keeps the bare id."""
+    """A relayed DM always crosses gateways, so the sender's connection id is part of the author id, ``local``
+    included; the recipient's own ``ops`` is the only bare ``bot:ops``."""
     remote = bot_relay.delivery_turn_author("ops", "ops-bot", "cloud-1")
     assert remote == {"id": "bot:cloud-1/ops", "name": "ops-bot", "is_bot": True}
-    assert bot_relay.delivery_turn_author("ops", "ops-bot", "local") == {"id": "bot:ops", "name": "ops-bot", "is_bot": True}
+    assert bot_relay.delivery_turn_author("ops", "ops-bot", "local") == {"id": "bot:local/ops", "name": "ops-bot", "is_bot": True}
+    # An older Desktop that sends no connection id still yields an author.
     assert bot_relay.delivery_turn_author("ops", "ops-bot", "") == {"id": "bot:ops", "name": "ops-bot", "is_bot": True}
 
 

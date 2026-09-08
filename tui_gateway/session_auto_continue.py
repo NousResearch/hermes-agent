@@ -137,8 +137,7 @@ def _enqueue_prompt(session: dict, text: Any, transport: Any, image_paths: list[
     # See #84417.
     _drop_queued_duplicates_of_inflight_user(session)
     text_only = not image_paths and isinstance(text, str)
-    # Never queue a text-only self-copy of the live prompt: draining it would restart it. Another sender's
-    # identical text is their message, not a copy.
+    # A text-only self-copy of the live prompt would restart it on drain; an authored copy is another sender's message.
     if text_only and not turn_author and text.strip() == _ac_inflight_original(session) != "":
         return
     queued = {"text": text, "transport": transport, **({"image_paths": image_paths} if image_paths else {}),

@@ -4575,14 +4575,30 @@ async def _await_thread_exit(
     return not thread.is_alive()
 
 
-async def _shutdown_mcp_servers_nonblocking(timeout: float = 5.0) -> bool:
-    """Close MCP servers off-loop with a bounded wait; True when done within ``timeout``.
-    ``shutdown_mcp_servers()`` can block ~15s; on the loop thread short-grace supervisors (s6 3s)
-    SIGKILL us before ``mark_exited()`` runs, so every later boot reports a phantom unclean death.
-    On timeout shutdown proceeds and the daemon thread is left to finish or die.
+async def _shutdown_mcp_servers_nonblocking(timeout: float | None = None) -> bool:
+    """Close MCP servers off-loop with a bounded wait (#82874).
+    ``shutdown_mcp_servers()`` is synchronous and can block for its full internal future
+    wait when the MCP loop and its stdio children are torn down concurrently (every process
+    in the tree gets SIGTERM at once under a container/supervisor stop). Calling it directly
+    from the gateway event-loop thread freezes the loop for that whole window, so
+    supervisors with a shorter kill grace (s6-overlay defaults to 3s) SIGKILL the gateway
+    before ``lifecycle_ledger.mark_exited()`` runs and every subsequent boot reports a
+    phantom unclean death.
 
-    See #82874.
+    Run it on a daemon thread instead and poll with ``_await_thread_exit`` so the loop keeps
+    servicing teardown. If it does not finish within ``timeout`` we proceed with shutdown;
+    the daemon thread is left to finish (or die with the process) in the background. Returns
+    True when the MCP shutdown completed within the budget.
+
+    ``timeout`` defaults to ``tools.mcp_tool._MCP_TEARDOWN_BUDGET_SECONDS`` (2.75s) rather
+    than a bare 5.0s: the funnel must stay under a container supervisor's ~3s kill grace so
+    the clean-exit marker is still written before SIGKILL (#82874 round-2).
     """
+    if timeout is None:
+        from tools.mcp_tool import _MCP_TEARDOWN_BUDGET_SECONDS
+
+        timeout = _MCP_TEARDOWN_BUDGET_SECONDS
+
     def _do() -> None:
         try:
             from tools.mcp_tool_lifecycle import shutdown_mcp_servers

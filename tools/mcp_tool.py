@@ -245,6 +245,35 @@ _STDIO_RESPAWN_WAIT_SEC = 15.0
 _DEFAULT_KEEPALIVE_INTERVAL, _MIN_KEEPALIVE_INTERVAL = 180, 5
 # One bounded cancellation cycle at final shutdown so resistant tasks cannot hang exit.
 _MCP_LOOP_DRAIN_TIMEOUT = 3.0
+
+# Ceiling for the server-drain segment of shutdown_mcp_servers() (#82874 round-2). Container
+# supervisors (s6-overlay, etc.) grant only ~3s of kill grace before SIGKILL, and a 15s wait
+# here held the exit funnel open past the grace period, so a wedged MCP server silently cost
+# the gateway its clean-exit record. 2s is ample for well-behaved server.shutdown()
+# implementations (they self-enforce their own close timeouts); a server that hasn't returned
+# in 2s won't return in 15s either.
+_MCP_SHUTDOWN_DRAIN_SECONDS = 2
+
+# Total wall-clock budget for the whole MCP teardown funnel in shutdown_mcp_servers(): the
+# server-shutdown drain plus the loop drain and the thread join inside _stop_mcp_loop(). The
+# funnel sits on the gateway's clean-exit critical path: on SIGTERM a container supervisor
+# grants only ~3s of kill grace before SIGKILL, so a teardown that exceeds it silently loses
+# the clean-exit record (#82874). Each blocking segment derives its own wait from this ONE
+# budget (see _teardown_clamp), so no sub-wait can push the TOTAL past the budget. The
+# orphan-PID reap at the end of _stop_mcp_loop() is deliberately EXCLUDED: it runs on its own
+# detached thread the exit path never joins, so its SIGTERM -> 2s -> SIGKILL dance cannot
+# hold the funnel open right when a slow stdio child most needs its graceful window.
+_MCP_TEARDOWN_BUDGET_SECONDS = 2.75
+
+
+def _teardown_clamp(seconds: float, budget_remaining: float) -> float:
+    """Clamp a teardown segment's own wait to the budget left for it.
+
+    Returns 0.0 when the budget is empty (min/max stop negatives). Used by every bounded
+    wait in shutdown_mcp_servers()/_stop_mcp_loop() so no sub-wait can push the TOTAL
+    teardown past _MCP_TEARDOWN_BUDGET_SECONDS.
+    """
+    return max(0.0, min(seconds, budget_remaining))
 # JSON-RPC 2.0 "method not found" (server without optional ``ping``); _ensure_mcp_sdk()
 # overrides it from mcp.types once loaded.
 _JSONRPC_METHOD_NOT_FOUND = -32601

@@ -70,11 +70,13 @@ def test_initial_connect_failure_is_registry_owned_and_reaped(monkeypatch, tmp_p
             if task is not current and not task.done()
         )
 
-    def _observed_stop(*, only_if_idle=False):
+    def _observed_stop(*, only_if_idle=False, teardown_budget=None):
         pending_at_stop.extend(
             _mcp_loop._run_on_mcp_loop(_pending_tasks, timeout=5)
         )
-        return real_stop(only_if_idle=only_if_idle)
+        return real_stop(
+            only_if_idle=only_if_idle, teardown_budget=teardown_budget,
+        )
 
     monkeypatch.setattr(_mcp_loop, "_stop_mcp_loop", _observed_stop)
 

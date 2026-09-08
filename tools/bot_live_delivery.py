@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import stat
 import tempfile
 import time
 import uuid
@@ -90,7 +91,7 @@ def _locked(home: Path | str):
     created = not root.is_dir()
     root.parent.mkdir(parents=True, exist_ok=True)
     root.mkdir(mode=0o700, exist_ok=True)
-    if root.stat().st_mode & 0o077:
+    if stat.S_IMODE(root.stat().st_mode) != 0o700:
         root.chmod(0o700)
     if created:
         _fsync_dir(root.parent)

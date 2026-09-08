@@ -17,8 +17,8 @@ from unittest.mock import patch
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
 from tools.code_kernel_remote import (
+    _REGISTRY,
     _REMOTE_KERNELS,
-    _REMOTE_KERNELS_LOCK,
     RemoteKernel,
     execute_in_remote_kernel,
     shutdown_all_remote_kernels,
@@ -270,7 +270,7 @@ class TestIdleReapAndCapEviction(RemoteKernelBase):
             # cannot race a concurrent insert and raise ``dictionary changed
             # size during iteration``.
             while True:
-                with _REMOTE_KERNELS_LOCK:
+                with _REGISTRY.lock:
                     if any(k.attached for k in _REMOTE_KERNELS.values()):
                         break
             env = ScriptedEnv(_spawn_ok_handlers([_cell()]))

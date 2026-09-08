@@ -221,21 +221,21 @@ class TestChromeFallback:
         assert result == {"success": False, "error": "stop"}
 
     def test_chrome_fallback_records_owner_before_launch(self, tmp_path):
-        import tools.browser_tool as bt
-
         mock_proc = MagicMock()
         mock_proc.wait.return_value = None
         mock_proc.returncode = 1
 
-        with patch("tools.browser_tool._run_browser_command", return_value={
+        with patch("tools.browser_tool_session._run_browser_command", return_value={
                  "success": True, "data": {"url": "https://example.com/"}
              }), \
-             patch("tools.browser_tool._find_agent_browser", return_value="/usr/bin/agent-browser"), \
-             patch("tools.browser_tool._chromium_installed", return_value=True), \
+             patch("tools.browser_tool_install._find_agent_browser", return_value="/usr/bin/agent-browser"), \
+             patch("tools.browser_tool_install._chromium_installed", return_value=True), \
              patch("tools.browser_tool._socket_safe_tmpdir", return_value=str(tmp_path)), \
-             patch("tools.browser_tool._write_owner_pid") as write_owner, \
+             patch("tools.browser_tool_lifecycle._write_owner_pid") as write_owner, \
              patch("subprocess.Popen", return_value=mock_proc):
-            bt._run_chrome_fallback_command("task1", "screenshot", [], timeout=30)
+            bt_lightpanda_fallback._run_chrome_fallback_command(
+                "task1", "screenshot", [], timeout=30
+            )
 
         write_owner.assert_called_once()
         socket_dir, session_name = write_owner.call_args.args

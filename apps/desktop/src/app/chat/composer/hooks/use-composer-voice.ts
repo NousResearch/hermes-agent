@@ -64,6 +64,11 @@ export function useComposerVoice({
   // A tile's composer speaks ITS transcript, not the primary chat's.
   const { $messages } = useComposerScope()
   const [voiceConversationActive, setVoiceConversationActive] = useState(false)
+  // Barge-in can retain a submit callback from a render where the interrupted
+  // turn was still busy. Read the current gate when its transcript arrives so
+  // that stale closure does not silently drop the next voice turn.
+  const busyRef = useRef(busy)
+  busyRef.current = busy
   const ownsWakeIndicatorRef = useRef(false)
   const previousSessionIdRef = useRef(sessionId)
   const voiceStartRequest = useStore($voiceConversationStartRequest)
@@ -125,7 +130,7 @@ export function useComposerVoice({
   }
 
   const submitVoiceTurn = async (text: string) => {
-    if (busy) {
+    if (busyRef.current) {
       return
     }
 

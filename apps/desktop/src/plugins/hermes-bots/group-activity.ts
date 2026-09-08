@@ -10,7 +10,8 @@
 import { atom } from '@hermes/plugin-sdk'
 
 import { $groupChats, groupSpeakerLabel } from './group-chat'
-import type { GroupActivityEvent, GroupActivityKind } from './types'
+import { groupMemberKey } from './group-membership'
+import type { GroupActivityEvent, GroupActivityKind, GroupMember } from './types'
 
 // ── group activity feed ─────────────────────────────────────────────────────
 // Runtime-only, bounded per-room record of turn events that feeds the
@@ -67,6 +68,21 @@ export function currentGroupActivity(group: string) {
   const epoch = ($groupChats.get()[group] || {}).epoch || 0
 
   return ($groupActivity.get()[group] || {}).events?.filter(event => (event.epoch || 0) === epoch) || []
+}
+
+/** The identity an activity row should label: the room's working key
+ *  (route-qualified, e.g. `local::default`) when the recorder knows the
+ *  member descriptor, else the member name it was given. Raw names stay
+ *  as-is — groupSpeakerLabel resolves both forms, and 'You' passes
+ *  through untouched.
+ *
+ *  NOT for display strings that feed raw-name helpers (the clarify /
+ *  approval card's `member` badge): those carry the plain name and match
+ *  their member through `memberKey` instead. */
+export function groupActivityMemberId(member: GroupMember, name?: null | string) {
+  const key = groupMemberKey(member)
+
+  return key || String(name || member?.name || '').trim()
 }
 
 /** Human label for one activity event, used by the collapsed summary and

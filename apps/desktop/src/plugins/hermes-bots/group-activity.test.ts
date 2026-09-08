@@ -268,4 +268,50 @@ describe('feed shape', () => {
     expect(label({ kind: 'cancelled', member: null })).toBe('turn interrupted by a newer message')
     expect(label({ kind: 'settled', member: null })).toBe('turn settled')
   })
+
+  it('#102294: activity rows label scoped members through the working key, not the raw name', async () => {
+    const room = await loadRoom({ turn: () => 'Mira at your service' })
+
+    const scopedMember: GroupMember[] = [
+      {
+        connectionId: 'cloud',
+        connectionKind: 'cloud',
+        connectionLabel: 'Cloud',
+        name: 'default',
+        remoteSource: true,
+        route: { connectionId: 'cloud', mode: 'remote', profile: 'default', targetProfile: 'default' },
+        sourceScoped: true,
+        title: ''
+      }
+    ]
+
+    room.data.$botMeta.set({ 'cloud::default': { title: 'Mira' } })
+
+    room.rounds.sendToGroupChat('Scoped activity', scopedMember, 'status?')
+    await drain(() => Boolean(room.chat.$groupChats.get()['Scoped activity']?.running))
+
+    const events = feed(room, 'Scoped activity').filter(
+      event => typeof event.member === 'string' && event.member !== 'You'
+    )
+
+    const labels = events.map(event => room.activity.groupActivityLabel(event))
+
+    expect(events.length).toBeGreaterThan(0)
+    // Recorded identity is the route-qualified working key...
+    expect(events.every(event => event.member === 'cloud::default')).toBe(true)
+    // ...which groupSpeakerLabel resolves to the scoped Bot Meta v2 title.
+    expect(labels).toContain('Mira replied')
+    expect(labels.some(label => label.startsWith('Mira is working') || label.startsWith('Mira queued'))).toBe(true)
+  })
+
+  it('#102294: raw-name member events keep the legacy label for unique unknown names', async () => {
+    const { activity } = await loadRoom()
+
+    const label = (event: Omit<GroupActivityEntry, 'at' | 'epoch'>) =>
+      activity.groupActivityLabel({ at: 0, epoch: 0, ...event })
+
+    // A member name with no roster row anywhere keeps rendering verbatim —
+    // no regression for legacy rooms / stale persisted members.
+    expect(label({ kind: 'replied', member: 'research' })).toBe('research replied')
+  })
 })

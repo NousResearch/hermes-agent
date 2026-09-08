@@ -32,6 +32,9 @@ def mentions_other_participants(adapter: "TelegramAdapter", message: "Message") 
 def group_trigger_text(adapter: "TelegramAdapter", message: "Message", text: Optional[str]) -> Optional[str]:
     """Strip our own handle only when we are the sole addressee. With other participants named,
     ``@research_bot , @ops_bot are you both listening?`` must not reach us as ``, @ops_bot …``."""
+    # MessageEvent parses command suffixes and arguments; their mentions must stay intact.
+    if (text or "").lstrip().startswith("/"):
+        return text
     if adapter._is_group_chat(message) and mentions_other_participants(adapter, message):
         return text
     return adapter._clean_bot_trigger_text(text)

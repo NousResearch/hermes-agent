@@ -52,7 +52,6 @@ const PERIODS = [
 // Must match _AUX_TASK_SLOTS in hermes_cli/web_server.py.
 const AUX_TASKS: readonly { key: string; label: string; hint: string }[] = [
   { key: "vision", label: "Vision", hint: "Image analysis" },
-  { key: "web_extract", label: "Web Extract", hint: "Page summarization" },
   { key: "compression", label: "Compression", hint: "Context compaction" },
   { key: "skills_hub", label: "Skills Hub", hint: "Skill search" },
   { key: "approval", label: "Approval", hint: "Smart auto-approve" },
@@ -768,7 +767,7 @@ function MoaModelsModal({
       aggregator_temperature: draft.aggregator_temperature,
       reference_timeout: draft.reference_timeout,
       degraded_reference_policy: draft.degraded_reference_policy,
-      max_tokens: draft.max_tokens,
+
       enabled: draft.enabled,
     };
     setDraft((prev) => ({

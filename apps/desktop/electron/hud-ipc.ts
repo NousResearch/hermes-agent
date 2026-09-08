@@ -2,9 +2,16 @@
 // from main.ts; the HUD window handle and session-id latch stay injected
 // because main.ts owns the window lifecycle and the close broadcast reads the
 // latch when handing the session back to the app window.
-import { type BrowserWindow, ipcMain } from 'electron'
+import { type BrowserWindow, ipcMain, screen } from 'electron'
 
+import { createHudDragSession } from './hud-drag'
+import { normalizeHudResizeBounds } from './hud-geometry'
+import { hudWindowingView, resolveHudWindowing } from './hud-windowing'
 import { hudFrostFor, type TranslucencyState } from './translucency'
+
+function hudWindowing() {
+  return resolveHudWindowing(process.platform, process.env, process.argv)
+}
 
 export interface HudIpcDeps {
   isMac: boolean
@@ -13,6 +20,7 @@ export interface HudIpcDeps {
   getHudWindow: () => BrowserWindow | null
   openHudWindow: (sessionId: null | string, profile: null | string) => void
   closeHudWindow: () => void
+  resetHudLayout: () => boolean
   setHudSessionId: (sessionId: null | string) => void
 }
 
@@ -22,8 +30,47 @@ export function registerHudIpc({
   getHudWindow,
   openHudWindow,
   closeHudWindow,
+  resetHudLayout,
   setHudSessionId
 }: HudIpcDeps) {
+  const hudDrag = createHudDragSession()
+
+  // The renderer needs this before first paint so X11 never installs the
+  // Chromium drag region that steals modifier-drag gestures from the WM.
+  // Main answers because it owns the actual Ozone backend selection.
+  ipcMain.on('hermes:hud:native-drag', event => {
+    event.returnValue = hudWindowing().move === 'native-drag'
+  })
+
+  ipcMain.on('hermes:hud:windowing', event => {
+    event.returnValue = hudWindowingView(hudWindowing())
+  })
+
+  // X11/KWin window transfer: a renderer-driven grab is temporarily sticky so
+  // the user can keep Ctrl+primary-button held while invoking KDE's desktop
+  // switch shortcut. Clearing sticky on release makes Chromium assign the
+  // window to `_NET_CURRENT_DESKTOP`, exactly like releasing a native titlebar
+  // drag on the destination desktop. Native Wayland owns its move loop and
+  // Windows/macOS stay out of this Linux-specific bridge.
+  ipcMain.on('hermes:hud:workspace-transfer', (event, transferring) => {
+    const hudWindow = getHudWindow()
+
+    if (
+      !hudWindow ||
+      hudWindow.isDestroyed() ||
+      event.sender !== hudWindow.webContents ||
+      !hudWindowing().workspaceTransfer
+    ) {
+      return
+    }
+
+    try {
+      hudWindow.setVisibleOnAllWorkspaces(Boolean(transferring))
+    } catch {
+      // Workspace APIs are window-manager capabilities — best effort.
+    }
+  })
+
   // Whether the band currently covers the window below the bar. The renderer
   // is the only party that can know this (it measures the transcript), and it
   // is half of the frost decision — the other half is the user's setting,
@@ -111,9 +158,45 @@ export function registerHudIpc({
   ipcMain.on('hermes:hud:ignore-mouse', (_event, ignore) => {
     const hudWindow = getHudWindow()
 
-    if (hudWindow && !hudWindow.isDestroyed()) {
-      hudWindow.setIgnoreMouseEvents(Boolean(ignore), { forward: true })
+    if (!hudWindow || hudWindow.isDestroyed()) {
+      return
     }
+
+    // On X11 ignore-mouse is a one-way door: setIgnoreMouseEvents(false)
+    // cannot restore the input region afterwards. Veto the request there so
+    // the HUD stays a normal solid window. Native Wayland and macOS/Windows
+    // keep the per-element path.
+    if (Boolean(ignore) && !hudWindowing().ignoreMouse) {
+      return
+    }
+
+    hudWindow.setIgnoreMouseEvents(Boolean(ignore), { forward: true })
+  })
+
+  ipcMain.on('hermes:hud:begin-move', event => {
+    const hudWindow = getHudWindow()
+
+    if (
+      !hudWindow ||
+      hudWindow.isDestroyed() ||
+      event.sender !== hudWindow.webContents ||
+      !hudWindowing().clientPlacement
+    ) {
+      return
+    }
+
+    const [x, y] = hudWindow.getPosition()
+    hudDrag.begin(screen.getCursorScreenPoint(), { x, y })
+  })
+
+  ipcMain.on('hermes:hud:end-move', event => {
+    const hudWindow = getHudWindow()
+
+    if (hudWindow && !hudWindow.isDestroyed() && event.sender !== hudWindow.webContents) {
+      return
+    }
+
+    hudDrag.end()
   })
 
   ipcMain.on('hermes:hud:move-by', (event, delta) => {
@@ -123,30 +206,33 @@ export function registerHudIpc({
       return
     }
 
-    const dx = Number(delta?.x)
-    const dy = Number(delta?.y)
     const width = Number(delta?.width)
     const height = Number(delta?.height)
 
-    if (!Number.isFinite(dx) || !Number.isFinite(dy) || !Number.isFinite(width) || !Number.isFinite(height)) {
+    if (!Number.isFinite(width) || !Number.isFinite(height) || !hudWindowing().clientPlacement) {
       return
     }
 
-    const [x, y] = hudWindow.getPosition()
+    const origin = hudDrag.origin(screen.getCursorScreenPoint())
 
-    // setBounds — NOT setPosition: on Windows, a transparent frameless window
-    // silently grows ~1px per setPosition call (worse at >100% DPI). The renderer
-    // snapshots outerWidth/outerHeight when the composer drag arms and re-pins
-    // to that size on every moveBy (same pattern as the pet overlay drag).
+    if (!origin) {
+      return
+    }
+
+    // Cursor − grab offset in Electron DIP (see hud-drag.ts). setBounds —
+    // NOT setPosition: on Windows, a transparent frameless window silently
+    // grows ~1px per setPosition call (worse at >100% DPI). The renderer
+    // snapshots outerWidth/outerHeight when the composer drag arms and
+    // re-pins to that size on every move (same pattern as the pet overlay).
     hudWindow.setBounds({
-      x: Math.round(x + dx),
-      y: Math.round(y + dy),
+      x: origin.x,
+      y: origin.y,
       width: Math.round(width),
       height: Math.round(height)
     })
   })
 
-  // Resize from the HUD's corner handle. The window is created non-resizable
+  // Resize from the HUD's edge/corner handles. The window is created non-resizable
   // (see spawnHudWindow — a transparent frameless window must not expose a
   // system resize hot-zone, or dragging grows it), which on Windows/Linux also
   // blocks programmatic setBounds sizing — so briefly flip resizable on while
@@ -158,21 +244,41 @@ export function registerHudIpc({
       return
     }
 
+    const nextBounds = normalizeHudResizeBounds(bounds)
+
+    if (!nextBounds) {
+      return
+    }
+
     const win = hudWindow
-    const width = Math.max(380, Math.round(Number(bounds.width)))
-    const height = Math.max(160, Math.round(Number(bounds.height)))
+    const { width, height } = nextBounds
     const [curW, curH] = win.getSize()
     const resizing = width !== curW || height !== curH
+    const restoreResizeLock = resizing && !win.isResizable()
 
-    if (resizing && !win.isResizable()) {
-      win.setResizable(true)
+    try {
+      if (restoreResizeLock) {
+        win.setResizable(true)
+      }
+
+      win.setBounds(nextBounds)
+    } catch {
+      // The window may disappear between validation and the native call.
+    } finally {
+      if (restoreResizeLock && !win.isDestroyed()) {
+        win.setResizable(false)
+      }
+    }
+  })
+
+  ipcMain.handle('hermes:hud:reset-layout', event => {
+    const hudWindow = getHudWindow()
+
+    if (!hudWindow || hudWindow.isDestroyed() || event.sender !== hudWindow.webContents) {
+      return { ok: false }
     }
 
-    win.setBounds({ x: Math.round(Number(bounds.x)), y: Math.round(Number(bounds.y)), width, height })
-
-    if (resizing) {
-      win.setResizable(false)
-    }
+    return { ok: resetHudLayout() }
   })
 
   // The HUD renderer reporting which session it is on, so the close broadcast

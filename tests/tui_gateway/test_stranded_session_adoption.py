@@ -389,3 +389,35 @@ def test_donor_retired_reports_false_on_retirement_failure(stores, monkeypatch):
     assert result["adopted"] is True
     assert result["donor_retired"] is False
     assert not default_db.get_session(STRANDED_ID)["archived"]
+
+
+def test_donor_growth_between_export_and_retire_blocks_retirement(stores, monkeypatch):
+    """TOCTOU close-out (review on #93369): messages appended to the donor
+    AFTER export but BEFORE retirement must block the non-recoverable
+    stamp — the retire loop re-reads live counts, not export-time ones."""
+    default_db, profile_db = stores
+    _seed_stranded(default_db)
+
+    real_export = default_db.export_session_lineage
+
+    def _export_then_append(session_id):
+        payload = real_export(session_id)
+        # Another backend appends AFTER the export snapshot is taken.
+        default_db.append_message(STRANDED_ID, "user", "raced question")
+        default_db.append_message(STRANDED_ID, "assistant", "raced answer")
+        return payload
+
+    monkeypatch.setattr(default_db, "export_session_lineage", _export_then_append)
+    result = profile_db.adopt_session_lineage_from(default_db, STRANDED_ID)
+
+    # Adoption itself still serves (profile copy has the snapshot)...
+    assert result["adopted"] is True
+    # ...but the grown donor is NOT stamped behind a non-recoverable archive.
+    assert result["donor_retired"] is False
+    donor = default_db.get_session(STRANDED_ID)
+    assert not donor["archived"], "raced donor growth must stay reachable"
+    assert len(default_db.get_messages(STRANDED_ID)) == 8
+    # The next resume retries: donor now ahead → export-time guard catches it.
+    second = profile_db.adopt_session_lineage_from(default_db, STRANDED_ID)
+    assert second["donor_retired"] is False
+    assert not default_db.get_session(STRANDED_ID)["archived"]

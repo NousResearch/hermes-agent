@@ -63,6 +63,20 @@ Jobs are stored in `~/.hermes/cron/jobs.json` with atomic write semantics (write
 }
 ```
 
+### `last_status` literals
+
+`last_status` is a closed set written only by `cron.jobs.mark_job_run`. Every
+renderer (`hermes cron list`/`doctor`, the `cronjob` tool, the web dashboard
+badge, the Desktop routine inspector) maps each literal explicitly — a consumer
+must never test `== "ok"` for "the user got their result":
+
+| Literal | Meaning | Detail field |
+|---------|---------|--------------|
+| `ok` | Agent run succeeded and (if targeted) delivery was confirmed | — |
+| `error` | Agent run failed | `last_error` |
+| `delivery_failed` | Agent run succeeded, but the output never reached its target | `last_delivery_error` (`last_error` is `null`) |
+| `blocked_config` | Pre-dispatch validation refused to burn a run | `last_error` |
+
 ### Job Lifecycle States
 
 | State | Meaning |
@@ -216,6 +230,16 @@ The script timeout defaults to 3600 seconds (1 hour). `_get_script_timeout()` re
 4. **Default** — 3600 seconds (1 hour)
 
 This timeout bounds the **pre-run script only**, not the agent. Skill-based / LLM-driven jobs run on a separate *inactivity*-based budget (`HERMES_CRON_TIMEOUT`, default 600s of idle time, `0` = unlimited) — they can run for hours as long as they keep calling tools or streaming tokens, and are only killed after the configured idle period with no activity. Scripts are dispatched to a persistent thread pool (not held under the tick lock), so a long-running script does not block other due jobs from firing.
+
+On timeout or ownership cancellation, `cron.scheduler_script` uses the shared
+`agent.deadline.kill_process_tree` hard-kill path. On POSIX it briefly stops and
+rescans the live tree before signalling descendants and their parent, including
+children in separate sessions with no inherited output pipes. This closes the
+fork-after-snapshot race. The stop wait is bounded; discovery or permission
+failures still use best-effort group cleanup, not a sandbox guarantee. Any target
+stopped by cleanup is resumed if termination fails; already-stopped targets keep
+their original state. Explicit graceful signals do not suspend their recipients.
+Windows continues to use `taskkill /F /T`.
 
 ### Provider Recovery
 

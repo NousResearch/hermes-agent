@@ -229,7 +229,7 @@ function SidebarSessionRowImpl({
               <Tip label={absoluteAge} side="top">
                 <time
                   aria-label={`${age}, ${absoluteAge}`}
-                  className="pointer-events-auto focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-sidebar-ring"
+                  className="pointer-events-auto focus-visible:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-sidebar-ring"
                   dateTime={timestampDate.toISOString()}
                   tabIndex={0}
                 >

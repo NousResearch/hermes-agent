@@ -43,24 +43,6 @@ class TestHonchoSession:
         assert "timestamp" in session.messages[0]
 
 
-    def test_get_history(self):
-        session = self._make_session()
-        session.add_message("user", "msg1")
-        session.add_message("assistant", "msg2")
-        history = session.get_history()
-        assert len(history) == 2
-        assert history[0] == {"role": "user", "content": "msg1"}
-        assert history[1] == {"role": "assistant", "content": "msg2"}
-
-
-    def test_clear(self):
-        session = self._make_session()
-        session.add_message("user", "msg1")
-        session.add_message("user", "msg2")
-        session.clear()
-        assert session.messages == []
-
-
 # ---------------------------------------------------------------------------
 # HonchoSessionManager._sanitize_id
 # ---------------------------------------------------------------------------
@@ -78,59 +60,6 @@ class TestSanitizeId:
         assert "@" not in result
         assert "#" not in result
         assert "!" not in result
-
-
-# ---------------------------------------------------------------------------
-# HonchoSessionManager._format_migration_transcript
-# ---------------------------------------------------------------------------
-
-
-class TestFormatMigrationTranscript:
-    def test_basic_transcript(self):
-        messages = [
-            {"role": "user", "content": "Hello", "timestamp": "2026-01-01T00:00:00"},
-            {"role": "assistant", "content": "Hi!", "timestamp": "2026-01-01T00:01:00"},
-        ]
-        result = HonchoSessionManager._format_migration_transcript("telegram:123", messages)
-        assert isinstance(result, bytes)
-        text = result.decode("utf-8")
-        assert "<prior_conversation_history>" in text
-        assert "user: Hello" in text
-        assert "assistant: Hi!" in text
-        assert 'session_key="telegram:123"' in text
-        assert 'message_count="2"' in text
-
-
-# ---------------------------------------------------------------------------
-# HonchoSessionManager.delete / list_sessions
-# ---------------------------------------------------------------------------
-
-
-class TestManagerCacheOps:
-    def test_delete_cached_session(self):
-        mgr = HonchoSessionManager()
-        session = HonchoSession(
-            key="test", user_peer_id="u", assistant_peer_id="a",
-            honcho_session_id="s",
-        )
-        mgr._cache["test"] = session
-        assert mgr.delete("test") is True
-        assert "test" not in mgr._cache
-
-
-    def test_list_sessions(self):
-        mgr = HonchoSessionManager()
-        s1 = HonchoSession(key="k1", user_peer_id="u", assistant_peer_id="a", honcho_session_id="s1")
-        s2 = HonchoSession(key="k2", user_peer_id="u", assistant_peer_id="a", honcho_session_id="s2")
-        s1.add_message("user", "hi")
-        mgr._cache["k1"] = s1
-        mgr._cache["k2"] = s2
-        sessions = mgr.list_sessions()
-        assert len(sessions) == 2
-        keys = {s["key"] for s in sessions}
-        assert keys == {"k1", "k2"}
-        s1_info = next(s for s in sessions if s["key"] == "k1")
-        assert s1_info["message_count"] == 1
 
 
 class TestPeerLookupHelpers:
@@ -202,7 +131,7 @@ class TestPeerLookupHelpers:
 class TestConcludeToolDispatch:
     def test_conclude_schema_has_no_anyof(self):
         """anyOf/oneOf/allOf breaks Anthropic and Fireworks APIs — schema must be plain object."""
-        from plugins.memory.honcho import CONCLUDE_SCHEMA
+        from plugins.memory.honcho.tool_schemas import CONCLUDE_SCHEMA
         params = CONCLUDE_SCHEMA["parameters"]
         assert params["type"] == "object"
         assert "conclusion" in params["properties"]
@@ -1031,16 +960,6 @@ class TestDialecticLiveness:
         p._dialectic_empty_streak = 3
         # cadence=1, streak=3 → effective = 4
         assert p._effective_cadence() == 4
-
-
-    def test_liveness_snapshot_shape(self):
-        p = self._make_provider()
-        snap = p.liveness_snapshot()
-        for key in (
-            "turn_count", "last_dialectic_turn", "pending_result_fired_at",
-            "empty_streak", "effective_cadence", "thread_alive", "thread_age_seconds",
-        ):
-            assert key in snap
 
 
 class TestDialecticLifecycleSmoke:

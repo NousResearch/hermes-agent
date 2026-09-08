@@ -15,6 +15,7 @@
 //
 // This also runs on a laptop: `node .github/scripts/run-workspace-checks.mjs`.
 // `--concurrency N` sets the limit. `--list` prints the units and exits.
+// `--shard I/N` selects a deterministic round-robin subset for CI matrix jobs.
 
 import { execFileSync, spawn } from 'node:child_process'
 import { availableParallelism } from 'node:os'
@@ -76,7 +77,20 @@ function runUnit(unit) {
 
 async function main() {
   const argv = process.argv.slice(2)
-  const units = discoverUnits()
+  let units = discoverUnits()
+
+  const shardIdx = argv.indexOf('--shard')
+  if (shardIdx !== -1) {
+    const raw = argv[shardIdx + 1]
+    const match = /^(\d+)\/(\d+)$/.exec(raw ?? '')
+    const shard = match ? Number(match[1]) : 0
+    const shardCount = match ? Number(match[2]) : 0
+    if (!match || shard < 1 || shard > shardCount) {
+      console.error(`::error::--shard must be I/N with 1 <= I <= N, got ${raw ?? '(missing)'}`)
+      process.exit(2)
+    }
+    units = units.filter((_, index) => index % shardCount === shard - 1)
+  }
 
   if (units.length === 0) {
     console.error(

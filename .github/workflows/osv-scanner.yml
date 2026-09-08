@@ -1,8 +1,8 @@
 name: OSV-Scanner
 
 # Scans lockfiles (uv.lock, package-lock.json) against the OSV vulnerability
-# database. Runs on every PR/push (via the ci.yml orchestrator's workflow_call)
-# and on a weekly schedule against main.
+# database. Runs on every PR (via the ci.yml orchestrator's workflow_call), on
+# pushes to main, and on a weekly schedule against main.
 #
 # This is detection-only — OSV-Scanner does NOT open PRs or modify pins.
 # It reports known CVEs in currently-pinned dependency versions so we can
@@ -15,7 +15,9 @@ name: OSV-Scanner
 # dep became known-vulnerable" case.
 #
 # Uses Google's officially-recommended reusable workflow, pinned by SHA.
-# Findings land in the repo's Security tab (Code Scanning > OSV-Scanner).
+# Findings land in the repo's Security tab for direct main/scheduled scans. PR
+# scans keep the artifact and unified review status without creating a
+# baseline-mismatch check.
 # fail-on-vuln is disabled so the job does not block merges on pre-existing
 # vulnerabilities in pinned deps that we may need to patch deliberately.
 #
@@ -25,10 +27,18 @@ name: OSV-Scanner
 
 on:
   workflow_call:
+    inputs:
+      upload-sarif:
+        description: "Upload SARIF to Code Scanning (disabled for PR baseline mismatch)"
+        type: boolean
+        required: false
+        default: true
   schedule:
     # Weekly scan against main — catches CVEs published after merge for
     # deps that haven't changed since.
     - cron: '0 9 * * 1'
+  push:
+    branches: [main]
   workflow_dispatch:
 
 permissions:
@@ -40,7 +50,7 @@ permissions:
 jobs:
   scan:
     name: Scan lockfiles
-    uses: google/osv-scanner-action/.github/workflows/osv-scanner-reusable.yml@9a498708959aeaef5ef730655706c5a1df1edbc2 # v2.3.8
+    uses: google/osv-scanner-action/.github/workflows/osv-scanner-reusable.yml@baa4139e56d6312335d899e6ba045fa16d1d3d0b # v2.5.1
     with:
       # Scan explicit lockfiles rather than recursing, so we only look at
       # the five sources of truth and skip vendored / test / worktree dirs.
@@ -53,6 +63,10 @@ jobs:
       # The upstream reusable workflow uploads this exact file under its
       # fixed artifact name, which the wrapper downloads below.
       results-file-name: osv-results.sarif
+      # Direct schedule/push/dispatch runs do not populate workflow_call
+      # inputs. In a called workflow github.event_name remains the caller's
+      # original event, so exclude both PR and workflow_call contexts here.
+      upload-sarif: ${{ inputs.upload-sarif || (github.event_name != 'pull_request' && github.event_name != 'workflow_call') }}
       fail-on-vuln: false
 
   emit-status:

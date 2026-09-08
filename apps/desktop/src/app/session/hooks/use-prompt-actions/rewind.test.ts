@@ -163,6 +163,21 @@ describe('survivorRowIdsFrom', () => {
   it('keeps integer ids and nulls anything else', () => {
     expect(survivorRowIdsFrom({ survivor_user_row_ids: [7, null, 9.5, '11', 12] })).toEqual([7, null, null, null, 12])
   })
+
+  it('prefers the explicit old-to-new row id map', () => {
+    const parsed = survivorRowIdsFrom({
+      survivor_user_row_ids: [100, 200],
+      survivor_row_id_map: { '11': 101, '21': 201, '31': null }
+    })
+
+    expect(parsed).toEqual(
+      new Map([
+        [11, 101],
+        [21, 201],
+        [31, null]
+      ])
+    )
+  })
 })
 
 describe('rebindSurvivorRowIds', () => {
@@ -216,6 +231,30 @@ describe('rebindSurvivorRowIds', () => {
     const messages = [user('u0', 7)]
 
     expect(rebindSurvivorRowIds(messages, [7])[0]).toBe(messages[0])
+  })
+
+  it('rebinds a paged tail by previous row id instead of global position', () => {
+    const messages = [
+      user('archived-u250', 800),
+      user('tail-u298', 901),
+      assistant('tail-a298', 902),
+      user('edited', 903)
+    ]
+
+    const rebound = rebindSurvivorRowIds(
+      messages,
+      new Map([
+        [901, 1001],
+        [902, 1002],
+        [903, null]
+      ])
+    )
+
+    expect(rebound[0]).toBe(messages[0])
+    expect(rebound[0].rowId).toBe(800)
+    expect(rebound[1].rowId).toBe(1001)
+    expect(rebound[2].rowId).toBe(1002)
+    expect(rebound[3].rowId).toBeUndefined()
   })
 })
 
@@ -478,7 +517,18 @@ describe('runRewindSubmit durable-address discipline (#87059)', () => {
   it('leaves a bound durable rowId untouched (no extra history call) and drops the client ordinal', async () => {
     const calls: Call[] = []
 
-    await runRewindSubmit(makeGateway(calls), 'sid', 'fixed prompt', 1, undefined, false, undefined, 13, 'typo prompt')
+    await runRewindSubmit(
+      makeGateway(calls),
+      'sid',
+      'fixed prompt',
+      1,
+      undefined,
+      false,
+      undefined,
+      13,
+      'typo prompt',
+      [11, 12, 13]
+    )
 
     expect(calls.some(call => call.method === 'session.history')).toBe(false)
 
@@ -486,6 +536,8 @@ describe('runRewindSubmit durable-address discipline (#87059)', () => {
 
     expect(submit?.params?.truncate_before_row_id).toBe(13)
     expect(submit?.params?.truncate_before_user_ordinal).toBeUndefined()
+    expect(submit?.params?.confirm_empty_truncate).toBe(true)
+    expect(submit?.params?.rebind_survivor_row_ids).toEqual([11, 12, 13])
   })
 
   it('drops the client ordinal whenever a durable row id is present, including a complete live transcript (#88082, #89244)', async () => {

@@ -1266,6 +1266,13 @@ def create_task(
         branch_name = str(branch_name).strip() or None
     if branch_name and workspace_kind != "worktree":
         raise ValueError("branch_name is only valid for worktree workspaces")
+    # Server-stamped-identity convention (#102693 family): every task row carries a
+    # non-NULL author. Surfaces holding session identity (dashboard API, CLI/desktop
+    # parser default, worker profile env) stamp explicitly and pass through; a
+    # programmatic create that omits the author is stamped with a machine-vocabulary
+    # label so its cards stay tellable from human-authored ones.
+    if created_by is None or not str(created_by).strip():
+        created_by = "unattributed"
 
     # A project-scoped board anchors every new task to its project's repo
     # (deterministic worktree + branch) without each surface repeating it.

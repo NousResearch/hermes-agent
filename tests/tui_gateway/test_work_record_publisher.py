@@ -2,6 +2,10 @@
 
 import sqlite3
 import threading
+from contextlib import closing
+
+import pytest
+import hermes_state_wal
 
 from gateway import hosted_room_driver as driver
 from gateway import hosted_room_links as links
@@ -13,7 +17,42 @@ from tui_gateway.hosted_room_peer_http import PeerRunsHTTPClient, PeerRunsHTTPEr
 from tui_gateway.hosted_room_replication import HostedRoomReplicationPublisher
 
 
-def test_unavailable_record_target_does_not_block_healthy_target_or_hold_source_sqlite(tmp_path, monkeypatch):
+def test_work_record_initializer_reserves_writer_before_reading_schema(tmp_path, monkeypatch):
+    from gateway import hosted_room_work_storage as storage
+
+    source = tmp_path / "initialize.db"
+    rooms.create_room(source, room_id="room", name="Workshop", members=[], authority_gateway_id="home")
+    initialize_locked = storage._initialize_locked
+    with closing(sqlite3.connect(source, timeout=0)) as competing_writer:
+        def check_writer_reserved(conn):
+            conn.execute("SELECT name FROM sqlite_master").fetchall()
+            # A deferred read can otherwise lose its write upgrade immediately,
+            # even with a busy timeout, when another publisher reserves the writer.
+            try:
+                with pytest.raises(sqlite3.OperationalError, match="database is locked"):
+                    competing_writer.execute("BEGIN IMMEDIATE")
+            finally:
+                competing_writer.rollback()
+            initialize_locked(conn)
+        monkeypatch.setattr(storage, "_initialize_locked", check_writer_reserved)
+        with closing(sqlite3.connect(source)) as conn:
+            conn.row_factory = sqlite3.Row
+            storage.initialize(conn)
+            assert not conn.in_transaction
+            with conn:
+                conn.execute("BEGIN IMMEDIATE")
+                storage.initialize(conn)
+                assert conn.in_transaction  # Never commit the caller's transaction.
+
+
+@pytest.mark.parametrize("journal_mode", ["wal", "delete"])
+def test_unavailable_record_target_does_not_block_healthy_target_or_hold_source_sqlite(tmp_path, monkeypatch, journal_mode):
+    monkeypatch.setattr(hermes_state_wal, "resolve_journal_mode", lambda: journal_mode)
+    unexpected_requests = []
+    def unexpected_request(client, path, **kwargs):
+        unexpected_requests.append(path)
+        raise AssertionError(f"unexpected unmocked peer request: {path}")
+    monkeypatch.setattr(PeerRunsHTTPClient, "_request", unexpected_request)
     home, secret = "install:home", b"test-work-record-target-secret-not-real"
     monkeypatch.setattr(rooms, "local_authority_gateway_id", lambda: home)
     source = tmp_path / "source.db"
@@ -50,15 +89,23 @@ def test_unavailable_record_target_does_not_block_healthy_target_or_hold_source_
     pub = HostedRoomReplicationPublisher(source)
     for member in members:
         pub._publish_one(("room", member["member_id"]))
+    with closing(sqlite3.connect(source)) as conn:
+        actual_mode = conn.execute("PRAGMA journal_mode").fetchone()[0]
+        # Keep the vulnerable-runtime safety fallback, including in the WAL case.
+        expected_mode = "delete" if hermes_state_wal.is_sqlite_wal_reset_vulnerable() else journal_mode
+        assert actual_mode == expected_mode
     blocked, release, healthy = threading.Event(), threading.Event(), threading.Event()
     def copy_records(client, *, grant, target_profile, record):
-        with sqlite3.connect(source, timeout=1) as conn:
-            conn.execute("BEGIN IMMEDIATE")  # transport must not hold a source transaction
         target, installation = targets[client.base_url]
+        if installation.endswith("-1"):
+            assert blocked.wait(3)  # Prove progress during the other transport's outage.
+        with closing(sqlite3.connect(source, timeout=1)) as conn, conn:
+            conn.execute("BEGIN IMMEDIATE")  # transport must not hold a source transaction
         if installation.endswith("-0"):
             blocked.set()
-            release.wait(3)
+            release.wait()  # Only test cleanup releases the unavailable transport.
             raise PeerRunsHTTPError("unavailable", retryable=True, ambiguous=True)
+        assert not release.is_set()
         result = records.ingest(target, record=record, token=grant, secret=secret,
                                 target_install_id=installation, target_profile=target_profile)
         healthy.set()
@@ -66,12 +113,14 @@ def test_unavailable_record_target_does_not_block_healthy_target_or_hold_source_
     monkeypatch.setattr(PeerRunsHTTPClient, "replicate_work_records", copy_records)
     pub.start()
     try:
-        assert blocked.wait(5)
-        assert healthy.wait(3)
+        assert blocked.wait(5), (pub.status(), unexpected_requests)
+        assert healthy.wait(3), (pub.status(), unexpected_requests)
         assert pub.status()["workers"] == 2
+        assert unexpected_requests == []
     finally:
         release.set()
         assert pub.stop(timeout=5)
+
     states = {row["target_install_id"]: row["status"] for row in pub.status()["work_records"]}
     assert states == {"install:target-0": "unavailable", "install:target-1": "acked"}
 

@@ -9,8 +9,14 @@ INVALID_TABLE = "hosted_room_work_records_invalid"
 
 
 def initialize(conn):
-    # RELEASE commits a first opener, but never commits a caller-owned BEGIN.
-    # DDL is otherwise autocommitted before SQLite implicitly begins row copies.
+    if not conn.in_transaction:
+        # Reserve the writer before schema reads. A deferred SAVEPOINT can lose
+        # its write upgrade to another publisher without honoring busy_timeout.
+        conn.execute("BEGIN IMMEDIATE")
+        with conn:
+            _initialize_locked(conn)
+        return
+    # Nested initialization must never commit or roll back caller-owned work.
     conn.execute("SAVEPOINT work_record_initialize")
     try:
         _initialize_locked(conn)

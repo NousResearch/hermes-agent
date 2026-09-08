@@ -1274,14 +1274,21 @@ def _hand_marker_to_home_owner(path: Path) -> None:
     rather than the file's previous owner because a marker is normally created fresh. Best-effort:
     a failed chown is logged, never raised — the marker itself was written."""
     geteuid = getattr(os, "geteuid", None)
-    chown = getattr(os, "chown", None)
-    if os.name != "posix" or geteuid is None or chown is None or geteuid() != 0:
+    # lchown, never chown: os.chown FOLLOWS symlinks, and every premise of this handover says the
+    # directory belongs to someone less privileged than the writer. That someone can leave a symlink
+    # at the marker path, and a following chown would hand them ownership of whatever it points at —
+    # an authorized_keys, a unit file, /etc/shadow — which is a root compromise, not a marker fix.
+    # It also settles the swap-a-file-for-a-symlink race between the ownership check below and the
+    # call: lchown cannot traverse, so there is nothing to win by racing it. A marker that IS a
+    # symlink is never legitimate, and retargeting the link itself hands out nothing.
+    lchown = getattr(os, "lchown", None)
+    if os.name != "posix" or geteuid is None or lchown is None or geteuid() != 0:
         return  # Windows, or an unprivileged writer whose marker already suits the home
     home_owner = _path_owner(path.parent)
     if home_owner is None or home_owner[0] == 0 or _path_owner(path) == home_owner:
         return  # root's own home has nobody to hand it to; equal ownership needs no chown
     try:
-        chown(path, home_owner[0], home_owner[1])
+        lchown(path, home_owner[0], home_owner[1])
     except OSError as e:
         logger.warning(
             "Could not hand %s to uid=%s gid=%s (owner of %s): %s — a gateway running as that "

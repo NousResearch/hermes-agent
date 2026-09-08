@@ -63,10 +63,22 @@ def _owners(mapping):
 
 
 def _record_chowns(monkeypatch):
+    """Record hand-over calls, and fail loudly if the code reaches for a FOLLOWING chown.
+
+    The seam is ``os.lchown`` on purpose: the marker sits in a directory owned by someone less
+    privileged than the writer, so a chown that traverses a symlink there hands that someone
+    ownership of the link's target. Patching only ``lchown`` would let a regression to ``chown``
+    run the real syscall and pass silently, so both are patched and ``chown`` is a hard failure.
+    """
     calls = []
     monkeypatch.setattr(
-        status.os, "chown", lambda path, uid, gid: calls.append((str(path), uid, gid))
+        status.os, "lchown", lambda path, uid, gid: calls.append((str(path), uid, gid))
     )
+
+    def _followed(*args, **kwargs):
+        raise AssertionError(f"hand-over used a symlink-following chown{args}")
+
+    monkeypatch.setattr(status.os, "chown", _followed)
     return calls
 
 
@@ -74,6 +86,7 @@ def _refuse_chown(monkeypatch):
     def _fail(*args, **kwargs):
         raise AssertionError(f"unexpected chown{args}")
 
+    monkeypatch.setattr(status.os, "lchown", _fail)
     monkeypatch.setattr(status.os, "chown", _fail)
 
 
@@ -136,7 +149,7 @@ class TestRootWrittenMarkerOwnership:
         def _boom(*args, **kwargs):
             raise PermissionError("simulated chown failure")
 
-        monkeypatch.setattr(status.os, "chown", _boom)
+        monkeypatch.setattr(status.os, "lchown", _boom)
 
         with caplog.at_level(logging.WARNING, logger="gateway.status"):
             assert status.write_planned_stop_marker(target_pid=12345) is True
@@ -237,6 +250,48 @@ def _target_pid_read_as(uid: int, gid: int, marker: Path) -> str:
     _, wait_status = os.waitpid(child, 0)
     assert os.waitstatus_to_exitcode(wait_status) == 0, f"reader child failed: {output}"
     return output
+
+
+@pytest.mark.linux_only
+def test_a_symlink_at_the_marker_path_does_not_move_its_targets_ownership():
+    """The hand-over must not become a way to give away files the home owner does not own.
+
+    Every premise of the hand-over says the HERMES_HOME directory belongs to someone less
+    privileged than the writer, so its contents are attacker-controlled from the writer's point of
+    view. If the chown followed a symlink planted at the marker path, a root writer would hand that
+    someone ownership of whatever it pointed at. Real uids, real symlink, no patched seams.
+    """
+    geteuid = getattr(os, "geteuid", None)
+    if geteuid is None or geteuid() != 0:
+        pytest.skip("needs a real root writer")
+    account = _unprivileged_account()
+    if account is None:
+        pytest.skip("no unprivileged account available to hand the marker to")
+    uid, gid = account
+
+    workdir = Path(tempfile.mkdtemp(prefix="hermes-marker-symlink-"))
+    try:
+        home = workdir / "home"
+        home.mkdir()
+        os.chown(home, uid, gid)
+        target = workdir / "root-owned"
+        target.write_text("not yours\n", encoding="utf-8")
+        os.chown(target, 0, 0)
+        (home / status._PLANNED_STOP_MARKER_FILENAME).symlink_to(target)
+
+        os.environ["HERMES_HOME"] = str(home)
+        try:
+            status.write_planned_stop_marker(os.getpid())
+        finally:
+            os.environ.pop("HERMES_HOME", None)
+
+        after = os.stat(target)
+        assert (after.st_uid, after.st_gid) == (0, 0), (
+            "a symlink at the marker path handed away ownership of its target "
+            f"(now {after.st_uid}:{after.st_gid})"
+        )
+    finally:
+        shutil.rmtree(workdir, ignore_errors=True)
 
 
 @pytest.mark.linux_only

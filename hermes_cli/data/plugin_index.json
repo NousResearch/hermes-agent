@@ -63,6 +63,18 @@
       "capabilities": ["tools"],
       "api_version": 1,
       "added_at": "2026-08-12"
+    },
+    {
+      "name": "hermes-rustpush-imessage",
+      "description": "Local-only iMessage platform plugin for Hermes using pinned OpenBubbles RustPush over a same-user Unix socket; no Messages.app automation or third-party relay.",
+      "author": "boobutler",
+      "tags": ["imessage", "messaging", "macos", "local-first", "rustpush"],
+      "repo": "boobutler/hermes-rustpush-imessage",
+      "ref": "695f74755cbcdbcd742baa51021fdb96a78ac10e",
+      "homepage": "https://github.com/boobutler/hermes-rustpush-imessage",
+      "capabilities": ["platform"],
+      "api_version": 1,
+      "added_at": "2026-09-02"
     }
   ]
 }

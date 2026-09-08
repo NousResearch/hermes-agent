@@ -82,7 +82,7 @@ class TestHermesSessionIdPlumbing:
         # SDK process uses the validated runtime cwd, while prompt discovery
         # keeps None as the native fallback sentinel so the install-tree guard
         # can distinguish fallback from an operator-selected directory.
-        import agent.claude_sdk_runtime as rt
+        import agent.claude_sdk_runtime_session as rt
         import agent.transports.claude_agent_sdk_session as sdk_session_mod
 
         captured = {}
@@ -153,7 +153,7 @@ class TestHermesSessionIdPlumbing:
     def _run_with_spy_session(monkeypatch, config_block):
         """Drive one runtime turn with a kwargs-capturing session and the
         given agent.claude_agent_sdk config block; returns captured kwargs."""
-        import agent.claude_sdk_runtime as rt
+        import agent.claude_sdk_runtime_session as rt
         import agent.transports.claude_agent_sdk_session as sdk_session_mod
         import hermes_cli.config as cfg
 

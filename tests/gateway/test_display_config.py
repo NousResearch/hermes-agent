@@ -50,6 +50,33 @@ class TestResolveDisplaySetting:
         assert resolve_display_setting(config, "slack", "tool_progress") == "off"
         assert resolve_display_setting(config, "telegram", "tool_progress") == "all"
 
+    def test_chat_and_thread_progress_overrides_are_more_specific_than_platform(self):
+        from gateway.display_config import resolve_display_setting
+
+        config = {
+            "display": {
+                "platforms": {
+                    "telegram": {
+                        "tool_progress": "all",
+                        "chats": {
+                            "-100123": {"tool_progress": False},
+                            "-100123:65": {"tool_progress": "verbose"},
+                        },
+                    }
+                }
+            }
+        }
+
+        assert resolve_display_setting(
+            config, "telegram", "tool_progress", chat_id=-100123,
+        ) == "off"
+        assert resolve_display_setting(
+            config, "telegram", "tool_progress", chat_id="-100123", thread_id=65,
+        ) == "verbose"
+        assert resolve_display_setting(
+            config, "telegram", "tool_progress", chat_id="-100999",
+        ) == "all"
+
 
 # ---------------------------------------------------------------------------
 # Backward compatibility: tool_progress_overrides

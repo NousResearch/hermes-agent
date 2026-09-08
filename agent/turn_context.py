@@ -466,6 +466,7 @@ def _bind_turn_identity(
     agent._persist_user_message_override = persist_user_message
     agent._persist_user_message_timestamp = persist_user_timestamp
     agent._persist_user_message_platform_id = persist_user_platform_id
+    agent._current_turn_timestamp = persist_user_timestamp
     # Unique task_id when not provided isolates VMs between tasks.
     effective_task_id = task_id or str(uuid.uuid4())
     agent._current_task_id = effective_task_id
@@ -494,7 +495,7 @@ _PER_TURN_RESET_STATE: Tuple[Tuple[str, Any], ...] = (
     ("_tool_guardrail_halt_decision", None), ("_vision_supported", True),
     ("_iteration_budget_warning_injected", False),
     ("_run_budget_wrapup_injected", False), ("_verification_stop_nudges", 0),
-    ("_pre_verify_nudges", 0),
+    ("_pre_verify_nudges", 0), ("_current_turn_timestamp", None),
 )
 
 
@@ -504,8 +505,11 @@ def _reset_per_turn_agent_state(agent: Any) -> None:
         setattr(agent, name, value)
     agent._turn_failed_file_mutations = {}
     agent._turn_file_mutation_paths = set()
-    agent._tool_guardrails.reset_for_turn()
-    _reset_consol = getattr(agent._memory_store, "reset_consolidation_failures", None)
+    _guardrails = getattr(agent, "_tool_guardrails", None)
+    if _guardrails is not None and hasattr(_guardrails, "reset_for_turn"):
+        _guardrails.reset_for_turn()
+    _mem = getattr(agent, "_memory_store", None)
+    _reset_consol = getattr(_mem, "reset_consolidation_failures", None) if _mem is not None else None
     if callable(_reset_consol):
         _reset_consol()
 
@@ -563,6 +567,8 @@ def _stage_turn_user_message(
     # CLI input is stamped when staged; gateway input may carry the platform event
     # time. Preserve either value and cover any legacy unstamped handoff.
     stamp_message_timestamp(user_msg, timestamp=persist_user_timestamp)
+    if agent is not None and getattr(agent, "_current_turn_timestamp", None) is None:
+        agent._current_turn_timestamp = user_msg.get("timestamp")
 
     # Synthesized turns stamp their transcript type so the crash persist writes a typed
     # row; the model still receives role/content unchanged (api_messages strips both).
@@ -1034,6 +1040,7 @@ def _sanitize_model_for(agent: Any, moa_config: Any) -> Any:
 def build_api_messages(
     agent: Any, messages: List[Dict[str, Any]], *, current_turn_user_idx: Any,
     ext_prefetch_cache: Any, plugin_user_context: Any, moa_config: Any, active_system_prompt: Any,
+    now: Optional[float] = None,
 ) -> Tuple[List[Dict[str, Any]], str]:
     """Build the wire copy of ``messages`` for one API call plus the effective system
     message. Returns ``(api_messages, effective_system)``.
@@ -1055,10 +1062,33 @@ def build_api_messages(
         and 0 <= current_turn_user_idx < len(messages)
         else None
     )
+
+    turn_now = now
+    if turn_now is None and agent is not None:
+        _agent_ts = getattr(agent, "_current_turn_timestamp", None)
+        if isinstance(_agent_ts, (int, float)):
+            turn_now = float(_agent_ts)
+    if turn_now is None and isinstance(current_turn_message, dict):
+        _msg_ts = current_turn_message.get("timestamp")
+        if isinstance(_msg_ts, (int, float)):
+            turn_now = float(_msg_ts)
+        elif isinstance(_msg_ts, str):
+            try:
+                turn_now = float(_msg_ts)
+            except ValueError:
+                pass
+    if turn_now is None:
+        turn_now = time.time()
+    if agent is not None:
+        with suppress(Exception):
+            agent._current_turn_timestamp = turn_now
+
     # Replay consumers rewrite interrupted blocks, dangling tails, and expired
     # confirmations on read. Apply the exact same transform to this request-only
     # copy before sidecars are substituted; the durable transcript remains intact.
-    canonical_messages = canonicalize_replay_history(messages)
+    # The expiry evaluation is frozen for the active turn so tool-loop iterations
+    # cannot rewrite the prefix or withdraw confirmation mid-turn.
+    canonical_messages = canonicalize_replay_history(messages, now=turn_now)
 
     api_messages = []
     for idx, msg in enumerate(canonical_messages):

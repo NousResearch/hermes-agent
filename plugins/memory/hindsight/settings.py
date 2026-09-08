@@ -41,7 +41,7 @@ _PROVIDER_DEFAULT_MODELS = {
 }
 # The embedded daemon speaks OpenAI wire format for these providers.
 _OPENAI_WIRE_PROVIDERS = {"openai_compatible", "openrouter"}
-_OBSERVATION_SCOPE_KEYWORDS = {"per_tag", "combined", "all_combinations"}
+_OBSERVATION_SCOPE_KEYWORDS = {"per_tag", "combined", "all_combinations", "shared"}
 
 
 def _parse_int_setting(value: Any, default: int) -> int:

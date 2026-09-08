@@ -283,6 +283,8 @@ class TestConfig:
     def test_observation_scopes_keyword_config(self, provider_with_config):
         p = provider_with_config(observation_scopes="per_tag")
         assert p._observation_scopes == "per_tag"
+        p_shared = provider_with_config(observation_scopes="shared")
+        assert p_shared._observation_scopes == "shared"
 
 
     def test_custom_config_values(self, provider_with_config):

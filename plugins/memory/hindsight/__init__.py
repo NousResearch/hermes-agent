@@ -415,7 +415,7 @@ class HindsightMemoryProvider(MemoryProvider):
             {"key": "memory_mode", "description": "Memory integration mode", "default": "hybrid", "choices": ["hybrid", "context", "tools"]},
             {"key": "recall_prefetch_method", "description": "Auto-recall method", "default": "recall", "choices": ["recall", "reflect"]},
             {"key": "retain_tags", "description": "Default tags applied to retained memories (comma-separated)", "default": ""},
-            {"key": "observation_scopes", "description": "How observations are scoped during consolidation: 'combined' (default — one pass over all tags), 'per_tag' (one isolated observation per tag), 'all_combinations' (every tag subset — expensive), or a JSON list of tag-lists for explicit custom scopes. Empty uses Hindsight's 'combined' default.", "default": ""},
+            {"key": "observation_scopes", "description": "How observations are scoped during consolidation: 'combined' (default — one pass over all tags), 'shared' (global untagged belief pool), 'per_tag' (one isolated observation per tag), 'all_combinations' (every tag subset — expensive), or a JSON list of tag-lists for explicit custom scopes. Empty uses Hindsight's 'combined' default.", "default": ""},
             {"key": "retain_source", "description": "Metadata source value attached to retained memories (identifies the client that stored them)", "default": _DEFAULT_RETAIN_SOURCE},
             {"key": "retain_user_prefix", "description": "Label used before user turns in retained transcripts", "default": "User"},
             {"key": "retain_assistant_prefix", "description": "Label used before assistant turns in retained transcripts", "default": "Assistant"},

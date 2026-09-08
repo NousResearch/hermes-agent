@@ -26,6 +26,164 @@ export function isGroupPassText(text: unknown) {
   return /^\(?\s*pass\s*\)?\.?$/i.test(trimmed)
 }
 
+// --- external write reconciliation (#93813) ---------------------------------
+//
+// Member sessions are persistent Hermes sessions titled "Group: <room>".
+// Besides this plugin's own turn prompts, other writers legitimately append
+// to them: the bot itself via `hermes -p <bot> chat -c "Group: <room>"`, cron
+// jobs, or the agent's own tools. Those rows land in the session transcript
+// but never reach the room log, so the room view silently diverges from what
+// members actually said. The sweep below mirrors such unseen rows into the
+// room log as entries authored by that member.
+//
+// Classification heuristic:
+//   - Room-fed prompts start with ROOM_PROMPT_MARKER_PREFIX.
+//   - A user row without that marker = an external post by this member.
+//   - An assistant row is external iff the nearest preceding user row was
+//     external (its reply belongs to the member's own exchange).
+//   - Tool rows and empty rows are never mirrored.
+
+/** Matches the room-fed prompt header built by group-rounds.ts. */
+const ROOM_PROMPT_MARKER_PREFIX = '[Group chat: "'
+const GROUP_RECONCILE_MAX_ENTRIES = 10
+
+function isRoomFedUserText(text: unknown) {
+  return String(text || '').startsWith(ROOM_PROMPT_MARKER_PREFIX)
+}
+
+/** Conversational text of a resumed message row ('' for tool/empty rows). */
+function reconciledRowText(msg: GroupTurnTranscriptMessage | undefined) {
+  if (!msg || msg.role === 'tool') {
+    return ''
+  }
+
+  const text = typeof msg.content === 'string'
+    ? msg.content
+    : Array.isArray(msg.content)
+      ? msg.content.map(p => (typeof p === 'string' ? p : p?.text || '')).join('')
+      : msg?.text || ''
+
+  return String(text).trim()
+}
+
+/** Split a member's unseen transcript window into external-origin entries.
+ *  `seenCount` is how many leading messages the room already accounted for.
+ *
+ *  Returns at most GROUP_RECONCILE_MAX_ENTRIES entries plus `cursor`, the
+ *  absolute message index (in `messages`) of the last KEPT entry's row. The
+ *  caller advances its per-member cursor to `cursor` — never to
+ *  `messages.length` — so rows beyond the cap are picked up by the next
+ *  sweep instead of being silently dropped. */
+function collectExternalGroupEntries(messages: GroupTurnTranscriptMessage[], seenCount: number) {
+  const rows = Array.isArray(messages) ? messages.slice(Math.max(0, seenCount)) : []
+  const entries: Array<{ role: string; text: string }> = []
+  let lastUserWasExternal = false
+  // Absolute index of the last row that produced a KEPT entry (capped).
+  let cursor = Math.max(0, seenCount) - 1
+
+  rows.forEach((row, offset) => {
+    const absIndex = Math.max(0, seenCount) + offset
+    const text = reconciledRowText(row)
+
+    if (!text) {
+      return
+    }
+
+    if (row.role === 'user') {
+      lastUserWasExternal = !isRoomFedUserText(text)
+
+      if (lastUserWasExternal && entries.length < GROUP_RECONCILE_MAX_ENTRIES) {
+        entries.push({ role: 'user', text })
+        cursor = absIndex
+      }
+
+      return
+    }
+
+    // Assistant rows mirror only when they belong to an external exchange —
+    // room-driven replies are committed by the turn machinery itself.
+    if (row.role === 'assistant' && lastUserWasExternal && entries.length < GROUP_RECONCILE_MAX_ENTRIES) {
+      entries.push({ role: 'assistant', text })
+      cursor = absIndex
+    }
+  })
+
+  return {
+    entries,
+    totalRows: Array.isArray(messages) ? messages.length : 0,
+    cursor
+  }
+}
+
+/** Mirror collected external entries into the room log. Entries are already
+ *  capped by the collector; the cursor advances only to the last mirrored
+ *  row so anything beyond the cap is picked up by the next sweep (silent
+ *  overflow loss guard). */
+function commitExternalGroupEntries(group: string, member: GroupMember, entries: Array<{ role: string; text: string }>, cursorIndex: number) {
+  const memberKey = groupMemberKey(member)
+  let committed = 0
+
+  for (const entry of entries) {
+    if (isGroupPassText(entry.text)) {
+      continue
+    }
+
+    appendGroupChatEntry(
+      group,
+      { kind: 'member', name: member.name, ...(member.remoteSource ? { source: member.connectionLabel || member.connectionId } : {}) },
+      entry.text,
+      'legacy'
+    )
+    committed += 1
+  }
+
+  updateGroupChat(group, (room: GroupChatRoom) => {
+    room.externalCursors = { ...(room.externalCursors || {}), [memberKey]: cursorIndex + 1 }
+
+    return room
+  })
+
+  return committed
+}
+
+/** Reconcile unseen external writes for one member. Returns true when any
+ *  room-log entry was added. The cursor advances to the last mirrored row;
+ *  with more external rows than GROUP_RECONCILE_MAX_ENTRIES, the remainder
+ *  is picked up on subsequent turns instead of being dropped. */
+async function reconcileExternalGroupWrites(group: string, member: GroupMember, resumeState: GroupSessionSnapshot | undefined, fallbackSeenCount?: number) {
+  const memberKey = groupMemberKey(member)
+  const room = ($groupChats.get()[group] || {}) as GroupChatRoom
+
+  const seenCount = Math.max(
+    0,
+    Number(room.externalCursors?.[memberKey] ?? fallbackSeenCount ?? 0)
+  )
+
+  const messages = Array.isArray(resumeState?.messages) ? resumeState.messages : []
+
+  if (messages.length <= seenCount) {
+    return false
+  }
+
+  const { entries, cursor } = collectExternalGroupEntries(messages, seenCount)
+
+  if (!entries.length) {
+    // Nothing worth mirroring in this window — still advance the cursor so
+    // stale rows are not rescanned forever.
+    updateGroupChat(group, (r: GroupChatRoom) => {
+      r.externalCursors = { ...(r.externalCursors || {}), [memberKey]: messages.length }
+
+      return r
+    })
+
+    return false
+  }
+
+  commitExternalGroupEntries(group, member, entries, cursor)
+
+  return true
+}
+
 /** One transcript entry in a `session.resume` snapshot, as the turn harvester
  *  reads it — the session's own message shape, not the plugin's GroupMessage.
  *  `content` is a plain string on most providers and a part array on the rest. */
@@ -633,6 +791,16 @@ async function runGroupChatMemberTurnLeased(
       session_id: stored || runtime,
       profile: member.name
     })) as GroupSessionSnapshot
+
+    // #93813: mirror any external writes (CLI `chat -c "Group: ..."`, cron,
+    // agent tools) that landed in this member's session since we last looked.
+    // Runs BEFORE the baseline is taken so mirrored content is treated as
+    // already-seen history, not as part of this turn's reply window.
+    try {
+      await reconcileExternalGroupWrites(group, member, pre)
+    } catch {
+      /* reconciliation is best-effort; never block the turn */
+    }
 
     before = Array.isArray(pre?.messages) ? pre.messages.length : pre?.message_count || 0
 

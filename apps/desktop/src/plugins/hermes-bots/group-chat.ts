@@ -669,6 +669,7 @@ export function mergeRemoteGroupChatSnapshotIntoRooms(
       watermarks: bounded.watermarks,
       sessions: existing.sessions && typeof existing.sessions === 'object' ? existing.sessions : {},
       stranded: existing.stranded && typeof existing.stranded === 'object' ? existing.stranded : {},
+      externalCursors: existing.externalCursors && typeof existing.externalCursors === 'object' ? existing.externalCursors : {},
       members: [...members.values()],
       ...(projectedRoomId || existing.roomId
         ? {
@@ -741,6 +742,7 @@ export function durableGroupChatRooms(all: Record<string, GroupChat> = $groupCha
       watermarks: room.watermarks || {},
       sessions: room.sessions || {},
       stranded: room.stranded || {},
+      externalCursors: room.externalCursors || {},
       members: Array.isArray(room.members) ? room.members : [],
       // Immutable room identity: without this, a room merged in via the
       // remote-sync path (the only caller of this function) loses its
@@ -1341,6 +1343,9 @@ export function updateGroupChat(
         // must too — otherwise a window restart silently releases a bot the
         // user explicitly stopped.
         holds: room.holds || {},
+        // #93813: per-member external-write reconcile cursors. Persisted so
+        // external posts aren't re-mirrored after a window restart.
+        externalCursors: room.externalCursors || {},
         // Source-qualified member descriptors keep the room whole when the
         // active connection changes and today's local members become remote.
         members: Array.isArray(room.members) ? room.members : [],

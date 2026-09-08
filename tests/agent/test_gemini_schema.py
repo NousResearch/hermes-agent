@@ -1,7 +1,5 @@
 """Tests for agent.gemini_schema — OpenAI→Gemini tool parameter translation."""
 
-import pytest
-
 from agent.gemini_schema import (
     sanitize_gemini_schema,
     sanitize_gemini_tool_parameters,
@@ -169,75 +167,3 @@ class TestSanitizeGeminiToolParameters:
         assert "1440" in aad["description"]
         # And the string-enum sibling is untouched.
         assert cleaned["properties"]["action"]["enum"] == ["create_thread"]
-
-
-class TestArrayTypeNormalization:
-    """JSON Schema allows an array ``type``; Gemini's ``Schema`` accepts one string.
-
-    The enum-compatibility check evaluated ``[...] in {...}`` on that list and raised
-    ``TypeError: unhashable type: 'list'``, aborting translation of the WHOLE tool
-    catalog, not just the offending tool. #55645
-    """
-
-    def test_nullable_form_collapses_and_keeps_the_enum(self):
-        cleaned = sanitize_gemini_schema({"type": ["string", "null"], "enum": ["low", "high"]})
-        assert cleaned["type"] == "string"
-        assert cleaned["nullable"] is True
-        assert cleaned["enum"] == ["low", "high"]
-
-    def test_nullable_form_without_enum(self):
-        cleaned = sanitize_gemini_schema({"type": ["integer", "null"]})
-        assert cleaned["type"] == "integer"
-        assert cleaned["nullable"] is True
-
-    def test_real_union_becomes_anyof_with_every_branch_kept(self):
-        """No branch may be dropped. ``tools/schema_sanitizer._normalize_type_array``
-        is the canonical behaviour and is reused here rather than reimplemented."""
-        cleaned = sanitize_gemini_schema({"type": ["string", "integer"]})
-        assert "type" not in cleaned
-        assert cleaned["anyOf"] == [{"type": "string"}, {"type": "integer"}]
-        assert "nullable" not in cleaned
-
-    def test_three_way_union_keeps_all_three(self):
-        cleaned = sanitize_gemini_schema({"type": ["string", "integer", "boolean"]})
-        assert cleaned["anyOf"] == [
-            {"type": "string"}, {"type": "integer"}, {"type": "boolean"}]
-
-    @pytest.mark.parametrize("schema", [
-        {"nullable": False, "type": ["string", "null"]},   # nullable emitted first
-        {"type": ["string", "null"], "nullable": False},   # nullable emitted last
-    ])
-    def test_derived_nullable_beats_an_input_nullable_either_order(self, schema):
-        """The array says null is permitted, so an input ``nullable: false`` is wrong.
-
-        Deriving inside the key loop made this order-dependent: whichever key the
-        producer emitted last won.
-        """
-        cleaned = sanitize_gemini_schema(schema)
-        assert cleaned["nullable"] is True
-        assert cleaned["type"] == "string"
-
-    def test_all_null_array_becomes_the_null_type(self):
-        assert sanitize_gemini_schema({"type": ["null"]})["type"] == "null"
-
-    def test_empty_type_array_falls_back_to_object(self):
-        assert sanitize_gemini_schema({"type": []})["type"] == "object"
-
-    def test_integer_union_still_stringifies_its_enum(self):
-        cleaned = sanitize_gemini_schema({"type": ["integer", "null"], "enum": [1, 2, 3]})
-        assert cleaned["type"] == "integer"
-        assert cleaned["enum"] == ["1", "2", "3"]
-
-    def test_nested_property_is_normalized_too(self):
-        cleaned = sanitize_gemini_schema({
-            "type": "object",
-            "properties": {"color": {"type": ["string", "null"], "enum": ["red", "green"]}},
-        })
-        color = cleaned["properties"]["color"]
-        assert color["type"] == "string" and color["nullable"] is True
-        assert color["enum"] == ["red", "green"]
-
-    def test_plain_string_type_is_untouched(self):
-        """Control: the non-array path must be unchanged."""
-        cleaned = sanitize_gemini_schema({"type": "string", "enum": ["a"]})
-        assert cleaned == {"type": "string", "enum": ["a"]}

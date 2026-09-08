@@ -55,7 +55,9 @@ class HostedRoomServerRPC:
                 raise LocalSessionBindingError("The Group Chat session title is invalid.")
             binding = lookup_binding(self.db_path, room_id=title.removeprefix("Group: "), profile=profile)
             if binding is not None:
-                return {"session_id": binding["session_id"], "title": title}
+                with self.server._profile_db({"profile": profile}) as db:
+                    chain = self._verified_context_chain(db, binding["session_id"], binding)
+                return {"session_id": chain[-1][0], "title": title}
         result = self._call(
             "session.list", {"profile": profile, "title": title, "include_hidden": True})
         rows = result.get("sessions")
@@ -115,13 +117,31 @@ class HostedRoomServerRPC:
             if current is None or current.get("source") != "bot_room" or current.get("archived"):
                 raise LocalSessionBindingError("The private Bot session is unavailable.")
             anchor = binding["session_id"] if binding is not None else stored_id
-            original = db.get_session(anchor)
-            if (original is None or original.get("source") != "bot_room" or original.get("archived")
-                    or db.get_compression_tip(anchor) != stored_id
-                    or (binding is not None and original.get("started_at") != binding["session_started_at"])):
+            chain = self._verified_context_chain(db, anchor, binding)
+            if chain[-1][0] != stored_id:
                 raise LocalSessionBindingError("The private Bot context no longer matches its recorded identity.")
             record_binding(self.db_path, task=task, execution_generation=execution_generation,
-                           profile=profile, session_id=anchor, session_started_at=original["started_at"])
+                           profile=profile, session_id=anchor, session_started_at=chain[0][1], context_chain=chain)
+
+    @staticmethod
+    def _verified_context_chain(db, anchor, binding):
+        from gateway.hosted_room_local_sessions import LocalSessionBindingError
+        if db is None:
+            raise LocalSessionBindingError("The private Bot conversation store is unavailable.")
+        chain = []
+        for key in db.get_compression_chain(anchor):
+            row = db.get_session(key)
+            if row is None or row.get("source") != "bot_room" or row.get("archived"):
+                raise LocalSessionBindingError("The private Bot continuation is unavailable.")
+            chain.append((key, row["started_at"]))
+        if not chain or row.get("end_reason") == "compression":
+            raise LocalSessionBindingError("The private Bot continuation is incomplete.")
+        if binding is not None and (
+            chain[0] != (binding["session_id"], binding["session_started_at"])
+            or (binding["last_session_id"], binding["last_session_started_at"]) not in chain
+        ):
+            raise LocalSessionBindingError("The private Bot continuation was lost or replaced.")
+        return chain
 
     def history(self, *, profile: str, session_id: str, source: str) -> Sequence[Mapping[str, Any]]:
         del source

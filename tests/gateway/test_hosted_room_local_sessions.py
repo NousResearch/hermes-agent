@@ -115,6 +115,21 @@ def test_one_private_session_cannot_be_bound_to_two_rooms(turn):
     assert count(turn.path) == 1
 
 
+def test_last_admitted_continuation_cannot_regress_or_be_replaced(turn):
+    original = record(turn)
+    chain = [("private-session", 100.0), ("child", 110.0)]
+    advanced = record(turn, context_chain=chain)
+    assert advanced["session_id"] == original["session_id"]
+    assert advanced["last_session_id"] == "child"
+    for stale in ([chain[0]], [chain[0], ("child", 111.0)], [chain[0], ("other-child", 120.0)]):
+        with pytest.raises(bindings.LocalSessionBindingError):
+            record(turn, context_chain=stale)
+        assert bindings.lookup_binding(turn.path, room_id="room", profile=turn.profile) == advanced
+    newest = record(turn, context_chain=[*chain, ("next-child", 120.0)])
+    assert newest["last_session_id"] == "next-child"
+    assert newest["session_id"] == original["session_id"]
+
+
 def test_original_identity_remains_readable_for_cleanup_after_demotion(turn, monkeypatch):
     first = record(turn)
     rooms.claim_authority(turn.path, room_id="room", expected_gateway_id="origin", expected_epoch=1,

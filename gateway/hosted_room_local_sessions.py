@@ -22,12 +22,14 @@ _TABLE = "hosted_room_local_sessions"
 _COLUMNS = {
     "room_id", "member_id", "profile", "gateway_id", "session_id",
     "session_started_at", "first_task_id", "first_execution_generation", "created_at",
+    "last_session_id", "last_session_started_at",
 }
 _DDL = f"""CREATE TABLE IF NOT EXISTS {_TABLE} (
     room_id TEXT NOT NULL, member_id TEXT NOT NULL, profile TEXT NOT NULL,
     gateway_id TEXT NOT NULL, session_id TEXT NOT NULL, session_started_at REAL NOT NULL,
     first_task_id TEXT NOT NULL, first_execution_generation INTEGER NOT NULL,
-    created_at REAL NOT NULL, PRIMARY KEY(room_id, member_id),
+    created_at REAL NOT NULL, last_session_id TEXT NOT NULL, last_session_started_at REAL NOT NULL,
+    PRIMARY KEY(room_id, member_id),
     UNIQUE(room_id, profile), UNIQUE(profile, session_id),
     FOREIGN KEY(room_id) REFERENCES hosted_rooms(room_id) ON DELETE CASCADE)"""
 
@@ -106,7 +108,7 @@ def lookup_binding(db_path: DbPath, *, room_id: str, profile: str) -> dict[str, 
 
 def record_binding(
     db_path: DbPath, *, task: driver.TaskIdentity, execution_generation: int,
-    profile: str, session_id: str, session_started_at: float, clock=time.time,
+    profile: str, session_id: str, session_started_at: float, context_chain=None, clock=time.time,
 ) -> dict[str, Any] | None:
     """Capture identity at the real submit boundary, fenced with current task state."""
     if type(execution_generation) is not int or execution_generation < 1:
@@ -115,6 +117,16 @@ def record_binding(
     if (isinstance(session_started_at, bool) or not isinstance(session_started_at, (int, float))
             or not math.isfinite(session_started_at) or session_started_at < 0):
         raise LocalSessionBindingError("The stored Bot session identity is invalid.")
+    chain = list(context_chain) if context_chain is not None else [(session_id, session_started_at)]
+    if not chain or len(chain) > 101 or chain[0] != (session_id, session_started_at):
+        raise LocalSessionBindingError("The private Bot continuation is invalid.")
+    seen = set()
+    for key, started_at in chain:
+        driver._identifier(key, label="session_id")
+        if (key in seen or isinstance(started_at, bool) or not isinstance(started_at, (int, float))
+                or not math.isfinite(started_at) or started_at < 0):
+            raise LocalSessionBindingError("The private Bot continuation is invalid.")
+        seen.add(key)
     gateway_id = hosted_rooms.local_authority_gateway_id()
     with driver._transaction(db_path) as conn:
         room, member_id = _local_member(conn, task.room_id, profile, gateway_id)
@@ -144,10 +156,15 @@ def record_binding(
         if prior is not None:
             if tuple(prior[key] for key in ("profile", "gateway_id", "session_id", "session_started_at")) != expected:
                 raise LocalSessionBindingError("Another private Bot session is already bound to this Group Chat.")
-            return dict(prior)
+            if (prior["last_session_id"], prior["last_session_started_at"]) not in chain:
+                raise LocalSessionBindingError("The private Bot continuation was lost or replaced.")
+            conn.execute(f"UPDATE {_TABLE} SET last_session_id=?,last_session_started_at=? WHERE room_id=? AND member_id=?",
+                         (*chain[-1], task.room_id, member_id))
+            return dict(conn.execute(f"SELECT * FROM {_TABLE} WHERE room_id=? AND member_id=?",
+                                     (task.room_id, member_id)).fetchone())
         try:
-            conn.execute(f"""INSERT INTO {_TABLE} VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                         (task.room_id, member_id, *expected, task.task_id, execution_generation, now))
+            conn.execute(f"""INSERT INTO {_TABLE} VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                         (task.room_id, member_id, *expected, task.task_id, execution_generation, now, *chain[-1]))
         except sqlite3.IntegrityError as exc:
             raise LocalSessionBindingError("The private Bot session already belongs to another Group Chat.") from exc
         return dict(conn.execute(f"SELECT * FROM {_TABLE} WHERE room_id=? AND member_id=?",

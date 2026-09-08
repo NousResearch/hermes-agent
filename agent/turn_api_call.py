@@ -219,6 +219,13 @@ def nous_rate_limit_guard(
         )
 
     if agent.provider == "nous":
+        # A gateway ``x-nous-model-switch`` recorded on the previous response moves this session
+        # (and the config default, when it still names the free tier's model) before the next call.
+        try:
+            from hermes_cli.anon_auth import apply_model_switch
+            apply_model_switch(agent)
+        except Exception:
+            pass
         try:
             from agent.nous_rate_guard import (
                 nous_rate_limit_remaining, format_remaining as _fmt_nous_remaining

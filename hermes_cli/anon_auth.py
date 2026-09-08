@@ -31,7 +31,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Dict, Optional
 
 from hermes_cli.auth_constants import (
-    AuthError, DEFAULT_NOUS_PORTAL_URL, _decode_jwt_claims, httpx)
+    AuthError, DEFAULT_NOUS_PORTAL_URL, DEFAULT_NOUS_WELCOME_URL, _decode_jwt_claims, httpx)
 
 logger = logging.getLogger("hermes_cli.auth")
 
@@ -226,7 +226,11 @@ def apply_exchange_to_state(state: Dict[str, Any], exchanged: Dict[str, Any]) ->
         expires_at = datetime.fromtimestamp(float(exp), tz=timezone.utc)
     else:
         expires_at = now + timedelta(seconds=int(exchanged.get("expires_in") or 900))
-    inference_url = _validate_nous_inference_url_from_network(exchanged.get("inference_base_url"))
+    # NAS names the welcome host on every exchange; absent (older NAS) or outside the allowlist
+    # (a staging host without NOUS_INFERENCE_BASE_URL set), the literal stands in. Never the paid
+    # host: the gateway cross-refuses an anonymous JWT there.
+    inference_url = (_validate_nous_inference_url_from_network(exchanged.get("inference_base_url"))
+                     or DEFAULT_NOUS_WELCOME_URL)
     scope = claims.get("scope") or claims.get("scp") or state.get("scope")
     if isinstance(scope, (list, tuple)):
         scope = " ".join(str(s) for s in scope)
@@ -235,8 +239,7 @@ def apply_exchange_to_state(state: Dict[str, Any], exchanged: Dict[str, Any]) ->
         obtained_at=now.isoformat(), expires_at=expires_at.isoformat(),
         expires_in=max(0, int((expires_at - now).total_seconds())),
         account_tier=str(claims.get("account_tier") or ANON_ACCOUNT_TIER))
-    if inference_url:
-        state["inference_base_url"] = inference_url
+    state["inference_base_url"] = inference_url
     for key in ("user_id", "org_id"):
         if exchanged.get(key):
             state[key] = exchanged[key]
@@ -423,6 +426,172 @@ def clear_dead_guest(reason: str, *, dead_token: Optional[str] = None) -> None:
     global _mint_failed
     _mint_failed = False
     logger.info("Nous free-tier identity retired (%s); a new one is set up on next use", reason)
+
+
+# --- Gateway welcome-tier contract: structured refusals and the model-switch header ------------------
+#
+# The inference gateway answers a welcome-tier request it will not serve with a structured 429
+# (``{status, message, reason, retry_after, alternates?, upgrade_url?}``), and a request on the wrong
+# host with a 400 (or a 403 while the tier is dark) whose message names the right host. A NAMED
+# account that still asks for ``nous/welcome`` is served the id's backing model and told what to
+# switch to in the ``x-nous-model-switch`` response header. Every rule for reading those lives here;
+# the error classifier and the turn loop only call in.
+
+MODEL_SWITCH_HEADER = "x-nous-model-switch"
+# Fairshare refusal reasons the welcome tier can answer with (api ``FairshareRefusalReason``).
+WELCOME_REFUSAL_REASONS = frozenset(
+    {"model_not_free", "feature_not_free", "at_capacity", "admission_closed", "rate_limited"})
+# Reasons that mean "not on this tier, ever": no retry helps, only a sign-in or another provider.
+WELCOME_TIER_GATE_REASONS = frozenset({"model_not_free", "feature_not_free"})
+# Gateway messages (lowercased substrings) for a request on the wrong host or a dark tier.
+_WELCOME_ROUTE_REFUSALS = (
+    ("anonymous accounts must use", "anon_on_paid_host"),
+    ("serves anonymous hermes agent accounts only", "named_on_welcome_host"),
+    ("anonymous accounts are not accepted", "tier_disabled"),
+)
+_WELCOME_ROUTE_COPY = {
+    "anon_on_paid_host": "The Nous free tier must use its own inference host ({host}); "
+                         "Hermes is pointed at the paid one. Restart Hermes to re-read the route, "
+                         "or unset NOUS_INFERENCE_BASE_URL if you set it.",
+    "named_on_welcome_host": "This Nous account must use the Nous Portal inference host, "
+                             "not the free tier's. Run /model and pick the Nous row again.",
+    "tier_disabled": "The Nous free tier is switched off right now. {signin}",
+}
+_SIGNIN_CHAT = "Sign in with a Nous account for the full catalog: /login."
+_SIGNIN_TERMINAL = "Sign in with a Nous account for the full catalog: `hermes auth upgrade`."
+
+
+def parse_welcome_refusal(body: Any) -> Optional[Dict[str, Any]]:
+    """The structured welcome-tier refusal in a gateway 429 body, or None for any other shape.
+
+    Returns ``{"reason", "retry_after", "alternates", "upgrade_url"}`` with ``retry_after`` an int
+    of whole seconds (0 when the gateway sent none) and ``alternates`` a list of model ids.
+    """
+    if not isinstance(body, dict):
+        return None
+    reason = body.get("reason")
+    if not isinstance(reason, str) or reason not in WELCOME_REFUSAL_REASONS:
+        return None
+    raw_retry = body.get("retry_after")
+    try:
+        retry_after = max(0, int(float(raw_retry))) if raw_retry not in (None, "") else 0
+    except (TypeError, ValueError):
+        retry_after = 0
+    raw_alternates = body.get("alternates")
+    alternates = [str(a) for a in raw_alternates if isinstance(a, str) and a] if isinstance(raw_alternates, list) else []
+    upgrade_url = body.get("upgrade_url")
+    return {"reason": reason, "retry_after": retry_after, "alternates": alternates,
+            "upgrade_url": upgrade_url if isinstance(upgrade_url, str) else ""}
+
+
+def welcome_refusal_copy(refusal: Dict[str, Any], *, model: str = "", in_chat: bool = True) -> str:
+    """User copy for a structured welcome-tier refusal: what happened and the one way forward.
+
+    Never guest / anonymous / claim; ``in_chat`` picks ``/login`` over the terminal verb."""
+    signin = _SIGNIN_CHAT if in_chat else _SIGNIN_TERMINAL
+    reason = str(refusal.get("reason") or "")
+    alternates = refusal.get("alternates") or []
+    serves = alternates[0] if alternates else GUEST_MODEL
+    retry = int(refusal.get("retry_after") or 0)
+    wait = f"Retrying in {retry}s." if retry > 0 else "Try again shortly."
+    if reason == "model_not_free":
+        what = f"{model} isn't on the Nous free tier" if model else "That model isn't on the Nous free tier"
+        return f"{what}; it serves {serves} only. {signin}"
+    if reason == "feature_not_free":
+        return f"This feature isn't on the Nous free tier. {signin}"
+    if reason == "at_capacity":
+        return f"The Nous free tier is at capacity and briefly paused. {wait} {signin}"
+    if reason == "admission_closed":
+        return f"The Nous free tier isn't admitting new sessions right now. {wait} {signin}"
+    if reason == "rate_limited":
+        return f"Nous free tier rate limit active \u2014 resets in {retry}s. {signin}"
+    return f"The Nous free tier refused this request ({reason}). {signin}"
+
+
+def welcome_route_refusal(status: Any, message: Any) -> Optional[str]:
+    """Which host cross-refusal a gateway 400/403 is, by its message; None for any other error.
+
+    ``"anon_on_paid_host"``: a free-tier JWT reached the paid host. ``"named_on_welcome_host"``: an
+    account or API key reached the free tier's host. ``"tier_disabled"``: the tier is dark
+    (``WELCOME_MODE=off``). Each is deterministic for the request: retrying cannot help."""
+    if status not in (400, 403):
+        return None
+    text = str(message or "").lower()
+    return next((kind for needle, kind in _WELCOME_ROUTE_REFUSALS if needle in text), None)
+
+
+def welcome_route_refusal_copy(kind: str, *, in_chat: bool = True) -> str:
+    template = _WELCOME_ROUTE_COPY.get(kind) or "The Nous inference gateway refused this route."
+    return template.format(
+        host=DEFAULT_NOUS_WELCOME_URL, signin=_SIGNIN_CHAT if in_chat else _SIGNIN_TERMINAL)
+
+
+def note_model_switch(agent: Any, headers: Any) -> Optional[str]:
+    """Record the gateway's ``x-nous-model-switch`` header on *agent* for the next call, if present.
+
+    The header arrives on a NAMED account's response that asked for ``nous/welcome`` (the gateway
+    served the backing model and billed it normally): the free tier's model no longer belongs in
+    this install's configuration. Recorded here, applied by :func:`apply_model_switch` between
+    calls so a response still streaming is never re-labelled under itself. Returns the backing id.
+    """
+    if headers is None:
+        return None
+    value = None
+    try:
+        value = headers.get(MODEL_SWITCH_HEADER)
+        if value is None and hasattr(headers, "items"):
+            value = next((v for k, v in headers.items() if str(k).lower() == MODEL_SWITCH_HEADER), None)
+    except Exception:
+        return None
+    backing = str(value or "").strip()
+    if not backing:
+        return None
+    requested = str(getattr(agent, "model", "") or "")
+    if backing == requested:
+        return None
+    try:
+        agent._nous_pending_model_switch = (requested, backing)
+    except Exception:
+        return None
+    return backing
+
+
+def apply_model_switch(agent: Any) -> Optional[str]:
+    """Move *agent* (and the config default, when it still names the switched id) to the backing
+    model the gateway named. Returns the new model, or None when nothing was pending.
+
+    Runs once per recorded header, between calls. The conversation keeps its history; only the id
+    the next request carries changes, so a promoted account stops relying on the gateway's reverse
+    map. The config write is the same one a sign-in completion uses, so ``hermes model`` and the
+    gateway's config re-read agree with the live session.
+    """
+    pending = getattr(agent, "_nous_pending_model_switch", None)
+    if not pending:
+        return None
+    agent._nous_pending_model_switch = None
+    requested, backing = pending
+    if str(getattr(agent, "model", "") or "") != requested:
+        return None  # the session already moved (a /model, a sign-in sweep)
+    agent.model = backing
+    logger.info("Nous gateway asked to switch %s -> %s; applied for this session", requested, backing)
+    try:
+        from hermes_cli.config import load_config_readonly
+        raw = load_config_readonly().get("model")
+        model_cfg = raw if isinstance(raw, dict) else ({"default": raw} if isinstance(raw, str) else {})
+        if str(model_cfg.get("default") or "").strip() == requested:
+            from hermes_cli.auth import _update_config_for_provider
+            _update_config_for_provider(
+                "nous", str(getattr(agent, "base_url", "") or ""), default_model=backing)
+            logger.info("Config default model moved %s -> %s", requested, backing)
+    except Exception as exc:
+        logger.debug("model switch: config default left as is: %s", exc)
+    status = getattr(agent, "_buffer_status", None)
+    if callable(status):
+        try:
+            status(f"Model is now {backing} (your account's model; {requested} is the free tier's).")
+        except Exception:
+            pass
+    return backing
 
 
 # One-time CLI notice: an install whose inference is carried by an explicit provider learns once that

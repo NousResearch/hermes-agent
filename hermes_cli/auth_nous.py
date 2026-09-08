@@ -21,7 +21,7 @@ from urllib.parse import urlparse
 from hermes_cli.auth_codex import _pool_entries
 from hermes_cli.auth_constants import (
     _decode_jwt_claims, AUTH_LOCK_TIMEOUT_SECONDS, AuthError, DEFAULT_NOUS_CLIENT_ID,
-    DEFAULT_NOUS_INFERENCE_URL, DEFAULT_NOUS_PORTAL_URL, DEFAULT_NOUS_SCOPE,
+    DEFAULT_NOUS_INFERENCE_URL, DEFAULT_NOUS_PORTAL_URL, DEFAULT_NOUS_SCOPE, DEFAULT_NOUS_WELCOME_URL,
     DEVICE_AUTH_POLL_INTERVAL_CAP_SECONDS, NOUS_AUTH_PATH_INVOKE_JWT, NOUS_BILLING_MANAGE_SCOPE,
     NOUS_DEVICE_CODE_SOURCE, NOUS_INFERENCE_INVOKE_SCOPE, NOUS_INVOKE_JWT_MIN_TTL_SECONDS,
     _nous_err, httpx)
@@ -364,7 +364,9 @@ def _nous_shared_shape(src: Dict[str, Any]) -> Dict[str, Any]:
         "scope": src.get("scope") or DEFAULT_NOUS_SCOPE,
         "client_id": src.get("client_id") or DEFAULT_NOUS_CLIENT_ID,
         "portal_base_url": src.get("portal_base_url") or DEFAULT_NOUS_PORTAL_URL,
-        "inference_base_url": src.get("inference_base_url") or DEFAULT_NOUS_INFERENCE_URL,
+        # A guest's route defaults to the welcome host: the paid host cross-refuses its JWT.
+        "inference_base_url": src.get("inference_base_url") or (
+            DEFAULT_NOUS_WELCOME_URL if src.get("auth_method") == "anonymous" else DEFAULT_NOUS_INFERENCE_URL),
         "obtained_at": src.get("obtained_at"), "expires_at": src.get("expires_at"),
         **{k: src[k] for k in ("auth_method", "account_tier", "anon_token", "user_id", "org_id")
            if src.get(k) not in (None, "")}}
@@ -805,10 +807,13 @@ def _nous_effective_routing(state: Dict[str, Any]) -> tuple[str, str, str, str]:
                 "(host %r or scheme not allowed), using default",
                 portal_url, portal_host)
             portal_url = DEFAULT_NOUS_PORTAL_URL
+    # A guest never falls back to the paid host: the gateway cross-refuses an anonymous JWT there
+    # (400 naming the welcome host), so an absent or disallowed URL heals to the welcome literal.
+    from hermes_cli.anon_auth import is_guest_state
     stored_inference_url = (
         _validate_nous_inference_url_from_network(
             _optional_base_url(state.get("inference_base_url")))
-        or DEFAULT_NOUS_INFERENCE_URL)
+        or (DEFAULT_NOUS_WELCOME_URL if is_guest_state(state) else DEFAULT_NOUS_INFERENCE_URL))
     return (
         portal_url, stored_inference_url, _nous_inference_env_override() or stored_inference_url,
         str(state.get("client_id") or DEFAULT_NOUS_CLIENT_ID))

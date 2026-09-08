@@ -39,6 +39,8 @@ class FakePortal:
         self.dead_tokens: set[str] = set()
         self.gate_closed = False
         self.minted = 0
+        # What the token exchange names as the inference host; None = an older NAS that omits it.
+        self.inference_base_url: str | None = WELCOME
 
     def handler(self, request: httpx.Request) -> httpx.Response:
         path = request.url.path
@@ -55,9 +57,11 @@ class FakePortal:
             token = json.loads(request.content)["token"]
             if token in self.dead_tokens:
                 return httpx.Response(404, json={"error": "unknown_token"})
-            return httpx.Response(200, json={"access_token": _jwt(), "token_type": "Bearer", "expires_in": 900,
-                                             "user_id": "nas_user:1", "org_id": "nas_org:1",
-                                             "inference_base_url": WELCOME})
+            body = {"access_token": _jwt(), "token_type": "Bearer", "expires_in": 900,
+                    "user_id": "nas_user:1", "org_id": "nas_org:1"}
+            if self.inference_base_url:
+                body["inference_base_url"] = self.inference_base_url
+            return httpx.Response(200, json=body)
         return httpx.Response(500, json={"error": f"unexpected {path}"})
 
 
@@ -176,6 +180,39 @@ class TestResolverIsUnchanged:
         assert runtime["provider"] == "nous"
         assert runtime["base_url"].rstrip("/") == WELCOME
         assert runtime["api_key"]
+
+
+class TestRouteFallback:
+    """A guest never falls back to the paid host: the gateway cross-refuses an anonymous JWT there."""
+
+    def test_exchange_without_inference_url_routes_to_welcome_literal(self, portal):
+        portal.inference_base_url = None
+        anon_auth.ensure_portal_identity(blocking=True)
+        from hermes_cli.runtime_provider import resolve_runtime_provider
+        runtime = resolve_runtime_provider()
+        assert runtime["base_url"].rstrip("/") == WELCOME
+        state = _load_auth_store()["providers"]["nous"]
+        assert state["inference_base_url"].rstrip("/") == WELCOME
+
+    def test_disallowed_inference_host_heals_to_welcome_literal(self, portal):
+        portal.inference_base_url = "https://welcome-api.staging-nousresearch.com/v1"
+        anon_auth.ensure_portal_identity(blocking=True)
+        from hermes_cli.runtime_provider import resolve_runtime_provider
+        runtime = resolve_runtime_provider()
+        assert runtime["base_url"].rstrip("/") == WELCOME
+
+    def test_guest_state_without_url_never_resolves_to_the_paid_host(self, portal):
+        from hermes_cli.auth_nous import _nous_effective_routing
+        guest = {"auth_method": "anonymous", "anon_token": "anon_x"}
+        _portal, stored, effective, _client = _nous_effective_routing(guest)
+        assert stored.rstrip("/") == WELCOME and effective.rstrip("/") == WELCOME
+        _portal, stored, _effective, _client = _nous_effective_routing({"refresh_token": "r"})
+        assert stored.rstrip("/") == "https://inference-api.nousresearch.com/v1"
+
+    def test_shared_store_shape_keeps_a_guest_on_the_welcome_host(self, portal):
+        from hermes_cli.auth_nous import _nous_shared_shape
+        shape = _nous_shared_shape({"auth_method": "anonymous", "anon_token": "anon_x"})
+        assert shape["inference_base_url"].rstrip("/") == WELCOME
 
 
 class TestTokenAcquisitionSeam:

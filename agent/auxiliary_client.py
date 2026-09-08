@@ -2234,13 +2234,38 @@ def _try_nous(vision: bool = False) -> Tuple[Optional[OpenAI], Optional[str]]:
         return None, None
     if runtime is None and nous:
         logger.debug("Auxiliary Nous: runtime JWT refresh failed; checking stored auth.json token.")
+    if runtime is not None:
+        api_key, base_url = runtime
+    else:
+        api_key = _nous_api_key(nous or {})
+        if not api_key:
+            logger.warning(
+                "Auxiliary Nous client unavailable: no usable inference JWT found "
+                "(run: hermes auth add nous)."
+            )
+            _mark_provider_unhealthy("nous", ttl=60)
+            return None, None
+        base_url = str(
+            (nous or {}).get("inference_base_url") or os.getenv("NOUS_INFERENCE_BASE_URL", _NOUS_DEFAULT_BASE_URL)
+        ).rstrip("/")
+    lane = "vision" if vision else "text"
+    # The free tier's host serves exactly one model (text only): asking it for the Portal's
+    # recommended aux model is a guaranteed 429 ``model_not_free``. Pin the route's model instead,
+    # and leave vision to the next provider in the ladder (the welcome model takes no images).
+    from hermes_cli.anon_auth import GUEST_MODEL, route_is_welcome_host
     global auxiliary_is_nous
+    if route_is_welcome_host(base_url):
+        if vision:
+            logger.debug("Auxiliary/vision: Nous free tier serves no vision model; skipping Nous")
+            return None, None
+        auxiliary_is_nous = True
+        logger.debug("Auxiliary/%s: Nous free tier; using %s", lane, GUEST_MODEL)
+        return _create_openai_client(api_key=api_key, base_url=base_url), GUEST_MODEL
     auxiliary_is_nous = True
     logger.debug("Auxiliary client: Nous Portal")
     # Portal recommended-models is authoritative (tier-aware); _NOUS_MODEL when unreachable/null.
     # Probes skip the lookup: exact model is irrelevant and it hits the network.
     model = _NOUS_MODEL
-    lane = "vision" if vision else "text"
     if not _aux_probe_active():
         try:
             from hermes_cli.models import get_nous_recommended_aux_model
@@ -2256,20 +2281,6 @@ def _try_nous(vision: bool = False) -> Tuple[Optional[OpenAI], Optional[str]]:
                 "falling back to %s",
                 lane, exc, model,
             )
-    if runtime is not None:
-        api_key, base_url = runtime
-    else:
-        api_key = _nous_api_key(nous or {})
-        if not api_key:
-            logger.warning(
-                "Auxiliary Nous client unavailable: no usable inference JWT found "
-                "(run: hermes auth add nous)."
-            )
-            _mark_provider_unhealthy("nous", ttl=60)
-            return None, None
-        base_url = str(
-            (nous or {}).get("inference_base_url") or os.getenv("NOUS_INFERENCE_BASE_URL", _NOUS_DEFAULT_BASE_URL)
-        ).rstrip("/")
     return _create_openai_client(api_key=api_key, base_url=base_url), model
 
 
@@ -2998,7 +3009,7 @@ def _contains_any(text: str, needles: Tuple[str, ...]) -> bool:
 _PAYMENT_KEYWORDS = (
     "credits", "insufficient funds", "can only afford", "billing", "payment required",
     "out of funds", "run out of funds", "balance_depleted", "no usable credits",
-    "model_not_supported_on_free_tier", "not available on the free tier",
+    "model_not_supported_on_free_tier", "not available on the free tier", "isn't available on the free tier",
     "requires a subscription", "upgrade for access", "upgrade for higher limits",
     "reached your session usage limit", "quota exceeded", "quota_exceeded",
     "too many tokens per day", "daily limit", "tokens per day", "daily quota", "resource exhausted",
@@ -3031,7 +3042,7 @@ _RATE_LIMIT_KEYWORDS = (
 _RATE_LIMIT_BILLING_KEYWORDS = (
     "credits", "insufficient funds", "billing", "payment required", "can only afford",
     "out of funds", "run out of funds", "balance_depleted", "no usable credits",
-    "model_not_supported_on_free_tier", "not available on the free tier",
+    "model_not_supported_on_free_tier", "not available on the free tier", "isn't available on the free tier",
 )
 
 

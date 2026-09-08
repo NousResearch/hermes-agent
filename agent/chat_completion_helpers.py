@@ -2707,6 +2707,7 @@ class _StreamingCall(StreamingWaitMonitor):
         response = self._attempt_stream_response = getattr(raw_stream, "response", None)
         self.agent._capture_rate_limits(response)
         self.agent._capture_credits(response)
+        self.agent._capture_nous_model_switch(response)
         self.agent._stream_diag_capture_response(self.clients.diag, response)
         self.agent._check_openrouter_cache_status(response)
         self._writer_token = claim_stream_writer(self.agent)

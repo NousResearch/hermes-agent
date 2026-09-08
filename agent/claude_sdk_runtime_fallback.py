@@ -106,6 +106,41 @@ def _reconcile_turn_outcome(agent, state: _SdkTurnState) -> None:
     and the interrupt hand-off follow.
     """
     turn = state.turn
+
+    if (
+        not bool(getattr(turn, "terminal_result_accepted", False))
+        and not bool(getattr(turn, "interrupted", False))
+        and bool(getattr(agent, "_interrupt_requested", False))
+    ):
+        # No terminal result committed, so the concurrent stop still belongs
+        # to this turn. Mark it before effects/retry/failover handling so the
+        # normal interrupt handoff consumes the agent flag and retires safely.
+        turn.interrupted = True
+
+    if (
+        bool(getattr(turn, "terminal_result_accepted", False))
+        and not bool(getattr(turn, "interrupted", False))
+        and bool(getattr(agent, "_interrupt_requested", False))
+    ):
+        if getattr(turn, "error", None):
+            # A failed terminal result is not a completed answer to preserve.
+            # Keep the stop authoritative so retry/failover cannot replay the
+            # failed prompt after the user asked to abandon it.
+            turn.interrupted = True
+        else:
+            # The transport accepted a successful terminal ResultMessage
+            # before this stop was observed. Consume both layers of the late
+            # signal so neither effects nor the next turn are poisoned.
+            agent._interrupt_requested = False
+            live_session = getattr(agent, "_claude_sdk_session", None)
+            if live_session is not None:
+                try:
+                    live_session.consume_interrupt()
+                except Exception:
+                    logger.debug(
+                        "late terminal interrupt consume failed", exc_info=True
+                    )
+
     state.effects = ClaudeSdkTurnEffects(
         tool=(
             bool(getattr(agent, "_sdk_issued_tool_effect", False))

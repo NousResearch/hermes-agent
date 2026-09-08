@@ -118,7 +118,16 @@ class TestA2aRouting:
         provider = _provider()
         keys = {provider._a2a_session_key({"id": bot, "is_bot": True}) for bot in ("bot:a.b", "bot:a-b", "bot:a_b", "bot:a:b")}
         assert len(keys) == 4
-        assert all(key.startswith("Bot-Chat:a2a:bot-a") for key in keys)
+        assert all(key.startswith("Bot-Chat:a2a:hermes-assistant:bot-a") for key in keys)
+
+    def test_two_recipients_sharing_a_session_key_get_different_sessions(self):
+        """Two profiles with one workspace and one session key must not merge a sender's DMs."""
+        ivy, holly = _provider(), _provider()
+        ivy._config = HonchoClientConfig(workspace_id="shared", ai_peer="ivy")
+        holly._config = HonchoClientConfig(workspace_id="shared", ai_peer="holly")
+
+        assert ivy._a2a_session_key(BOT_AUTHOR) != holly._a2a_session_key(BOT_AUTHOR)
+        assert ivy._a2a_session_key(BOT_AUTHOR).startswith("Bot-Chat:a2a:ivy:bot-coder-")
 
     def test_long_session_key_stays_within_the_honcho_limit(self):
         provider = _provider()

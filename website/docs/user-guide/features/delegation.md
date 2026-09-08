@@ -498,6 +498,10 @@ tail -f ~/.hermes/cache/delegation/live/deleg_ab12cd34/task-0.log
 
 Each line is timestamped and shows the child's assistant text, thinking snippets, tool calls (`-> tool_name({args})`), tool results, and a final status marker. A `manifest.json` in the same directory describes the batch (goals, task count, per-task status). The logs persist after completion — they double as the full-fidelity operational record alongside the summary — and directories older than 7 days are pruned automatically on new dispatches. Because they live under `cache/delegation`, they are also readable from remote terminal backends (Docker/Modal/SSH).
 
+:::note Transcripts are for humans watching; they are not how the parent waits
+The result of a background child re-enters the parent's conversation as a new message on its own, after the parent ends its turn. The parent agent should not `tail`, poll line counts, or check for output files to find out whether a child has finished: that burns turns and never speeds the result up. The transcripts exist so *you* can follow a child's work live, and so the parent can look at what a child did when the result needs interpreting. To act on a child while it runs, use `delegate_task(action="list" | "steer" | "stop")` rather than reading its log.
+:::
+
 ## Depth Limit and Nested Orchestration
 
 By default, delegation is **flat**: a parent (depth 0) spawns children (depth 1), and those children cannot delegate further. This prevents runaway recursive delegation.

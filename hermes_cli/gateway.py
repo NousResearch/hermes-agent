@@ -2343,7 +2343,7 @@ def _require_root_for_system_service(action: str) -> None:
         raise SystemScopeRequiresRootError(f"System gateway {action} requires root. Re-run with sudo.", action)
 
 
-def _system_service_identity(run_as_user: str | None = None) -> tuple[str, str, str]:
+def _system_service_identity(run_as_user: str | None = None) -> tuple[str, str, str, int]:
     import getpass
     import grp
     import pwd
@@ -2364,7 +2364,7 @@ def _system_service_identity(run_as_user: str | None = None) -> tuple[str, str, 
         user_info = pwd.getpwnam(username)
     except KeyError as e:
         raise ValueError(f"Unknown user: {username}") from e
-    return username, grp.getgrgid(user_info.pw_gid).gr_name, user_info.pw_dir
+    return username, grp.getgrgid(user_info.pw_gid).gr_name, user_info.pw_dir, user_info.pw_uid
 
 
 def _read_systemd_user_from_unit(unit_path: Path) -> str | None:
@@ -2765,7 +2765,7 @@ def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) 
     restart_timeout = resolve_systemd_timeout_stop_sec(_get_restart_drain_timeout(), _get_cron_drain_timeout())
 
     if system:
-        username, group_name, home_dir = _system_service_identity(run_as_user)
+        username, group_name, home_dir, uid = _system_service_identity(run_as_user)
         hermes_home = _hermes_home_for_target_user(home_dir)
         # Profile arg relative to the TARGET user's ~/.hermes when hermes_home lives under it.
         target_root = Path(home_dir) / ".hermes"
@@ -2785,6 +2785,10 @@ def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) 
         path_entries = [e for e in _target_node_entries if e not in path_entries] + path_entries
         user_home = Path(home_dir)
         identity_lines = f"User={username}\nGroup={group_name}\n"
+        # Restart-safe cron/Kanban workers cross `systemd-run --user`, which needs this user's manager;
+        # without the ordering the gateway and user@<uid>.service race at boot and the one-shot bus
+        # adoption in run_gateway() can miss (#104893).
+        ordering_lines = f"After=user@{uid}.service\nWants=user@{uid}.service\n"
         env_lines = (
             f'Environment="HOME={home_dir}"\n'
             f'Environment="USER={username}"\n'
@@ -2795,7 +2799,7 @@ def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) 
         hermes_home = str(get_hermes_home().resolve())
         profile_arg = _profile_arg(hermes_home)
         user_home = Path.home()
-        identity_lines = env_lines = ""
+        identity_lines = env_lines = ordering_lines = ""
         wanted_by = "default.target"
 
     watchdog_seconds = _systemd_watchdog_seconds(hermes_home)
@@ -2810,7 +2814,7 @@ def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) 
 Description={SERVICE_DESCRIPTION}
 After=network-online.target
 Wants=network-online.target
-StartLimitIntervalSec=0
+{ordering_lines}StartLimitIntervalSec=0
 
 [Service]
 Type={systemd_type}

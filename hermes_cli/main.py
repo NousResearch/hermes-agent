@@ -492,6 +492,20 @@ def _under_gateway_supervisor(argv: list) -> bool:
     ).strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _profile_name_from_homes(*homes: Optional[str]) -> str:
+    """Best-effort profile name for a HERMES_HOME path: ``…/.hermes/profiles/x``
+    → ``x``; anything else (root install, custom dir, unset) → ``''``."""
+    for h in homes:
+        if h:
+            try:
+                p = Path(h)
+                if p.parent.name == "profiles":
+                    return p.name
+            except (TypeError, ValueError, OSError):
+                pass
+    return ""
+
+
 def _apply_profile_override() -> None:
     """Pre-parse --profile/-p and set HERMES_HOME before imports."""
     argv = sys.argv[1:]
@@ -543,6 +557,15 @@ def _apply_profile_override() -> None:
         sys.argv = sys.argv[:start] + sys.argv[start + consume :]
 
 
+# Caller-identity snapshot (self-DM guard input): record WHICH profile context
+# launched this process, BEFORE the override can re-point HERMES_HOME to the
+# `-p` target. Agents inherit HERMES_HOME from their session, so this names
+# the launching profile; human shells (no profile env) snapshot as '' and
+# never trip the guard. setdefault: an outer guard chain wins.
+os.environ.setdefault(
+    "HERMES_CALLER_PROFILE",
+    _profile_name_from_homes(os.environ.get("HERMES_HOME")),
+)
 _apply_profile_override()
 
 # Windows launcher self-heal — the ``hermes`` command is a COPY of the venv
@@ -1651,12 +1674,78 @@ _CHAT_PASSTHROUGH = (
 )
 
 
+def _enforce_self_dm_guard(args) -> None:
+    """Refuse the self-DM fork shape: `chat -c "Bot Chat" --create-if-missing`
+    launched from inside an agent session of the SAME profile.
+
+    Incident class: that command does not message anyone — it spawns a
+    SECOND full agent context of the profile with no dispatcher run record;
+    the fork shares the profile's kanban identity and once terminated a live
+    claimant's run mid-flight. The native message_agent tool refuses
+    self-messages (tools/bot_mode_dm.py); this closes the raw-CLI fallback
+    vector.
+
+    Fires only when the LAUNCHING context is itself a hermes agent session
+    (HERMES_CALLER_PROFILE snapshot taken before -p re-pointing) AND the
+    resolved profile equals it AND the target is the canonical "Bot Chat".
+    Humans (no caller snapshot) and cross-profile relays are unaffected;
+    --allow-self-bot-chat is the explicit escape hatch.
+
+    Resolution order is derived identity first: the profile named by the
+    POST-override HERMES_HOME (what `-p` actually selected), then the
+    inherited HERMES_PROFILE label, then the active profile. HERMES_PROFILE
+    is a launcher-inherited label that -p does not rewrite, so reading it
+    first misclassified a real cross-profile relay (forge running
+    `hermes -p elon chat …` resolved as forge == caller and was refused).
+    """
+    from tools.bot_mode_probe import BOT_CHAT_TITLE
+
+    if str(getattr(args, "continue_last", None) or "") != BOT_CHAT_TITLE:
+        return
+    if not getattr(args, "create_if_missing", False):
+        return
+    if not os.environ.get("HERMES_AGENT"):
+        return
+    caller = (os.environ.get("HERMES_CALLER_PROFILE") or "").strip()
+    if not caller:
+        return  # human shell / non-agent context: never trip the guard
+    from hermes_cli.profiles import get_active_profile_name
+    # Derived identity first: -p re-points HERMES_HOME but not the inherited
+    # HERMES_PROFILE label, so the post-override home names the actually
+    # selected profile. Label/env and active-profile are fallbacks for homes
+    # that don't resolve to a profile name (root installs, custom dirs).
+    resolved = (
+        _profile_name_from_homes(os.environ.get("HERMES_HOME"))
+        or os.environ.get("HERMES_PROFILE")
+        or get_active_profile_name()
+        or ""
+    )
+    if resolved != caller:
+        return  # cross-profile relay: legitimate bot-mode fallback send
+    if getattr(args, "allow_self_bot_chat", False):
+        return  # explicit operator escape hatch
+    print(
+        f"Error: refused to start a 'Bot Chat' session as profile "
+        f"'{resolved}' from inside that same profile's agent session — "
+        f"this is the self-DM shape that forks a second unregistered "
+        f"agent context of your own profile (its kanban actions would "
+        f"be attributed to the profile and could clobber a live "
+        f"claimant's run). If you meant to message another agent, use "
+        f"its profile: `hermes -p <target> chat …`. If you really want "
+        f"a nested Bot Chat in your own profile, pass "
+        f"--allow-self-bot-chat.",
+        file=sys.stderr,
+    )
+    sys.exit(1)
+
+
 def cmd_chat(args):
     """Run interactive chat CLI."""
     _apply_safe_mode(args)
     _apply_user_config_bypass(args)
     _guard_noninteractive_user_config(args)
     use_tui = _resolve_use_tui(args)
+    _enforce_self_dm_guard(args)
 
     _resolve_chat_session_args(args, use_tui)
 

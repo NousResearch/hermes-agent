@@ -64,9 +64,15 @@ def worker_env(monkeypatch, tmp_path):
     try:
         tid = kb.create_task(conn, title="worker-test", assignee="test-worker")
         kb.claim_task(conn, tid)
+        # The real dispatcher pins HERMES_KANBAN_RUN_ID at spawn
+        # (kanban_db_dispatch env block); the run-identity guard keys off it.
+        run_id = int(conn.execute(
+            "SELECT current_run_id FROM tasks WHERE id = ?",
+            (tid,)).fetchone()["current_run_id"])
     finally:
         conn.close()
     monkeypatch.setenv("HERMES_KANBAN_TASK", tid)
+    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(run_id))
     return tid
 
 
@@ -189,9 +195,15 @@ def test_complete_goal_mode_rejected_by_judge(monkeypatch, tmp_path):
             body="Must achieve X with verified evidence.", goal_mode=True
         )
         kb.claim_task(conn, goal_task_id)
+        # The real dispatcher pins HERMES_KANBAN_RUN_ID at spawn; the
+        # run-identity guard keys off it (see worker_env above).
+        run_id = int(conn.execute(
+            "SELECT current_run_id FROM tasks WHERE id = ?",
+            (goal_task_id,)).fetchone()["current_run_id"])
     finally:
         conn.close()
     monkeypatch.setenv("HERMES_KANBAN_TASK", goal_task_id)
+    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(run_id))
 
     # Mock the judge to reject the completion. The gate only runs when a
     # judge is reachable, so force the availability probe True as well.
@@ -257,9 +269,15 @@ def _make_goal_mode_worker_env(monkeypatch, tmp_path):
             body="Must achieve X.", goal_mode=True,
         )
         kb.claim_task(conn, goal_task_id)
+        # The real dispatcher pins HERMES_KANBAN_RUN_ID at spawn; the
+        # run-identity guard keys off it (see worker_env above).
+        run_id = int(conn.execute(
+            "SELECT current_run_id FROM tasks WHERE id = ?",
+            (goal_task_id,)).fetchone()["current_run_id"])
     finally:
         conn.close()
     monkeypatch.setenv("HERMES_KANBAN_TASK", goal_task_id)
+    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(run_id))
     return goal_task_id
 
 

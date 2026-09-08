@@ -396,6 +396,12 @@ def heartbeat_worker(
         if expected_run_id is not None:
             sql += " AND current_run_id = ?"
             params += (int(expected_run_id),)
+        else:
+            # Run-identity CAS: None binds the write to an unclaimed row
+            # instead of omitting the ownership predicate (see kanban_db
+            # complete_task) — a heartbeat must never land on someone
+            # else's freshly claimed run.
+            sql += " AND current_run_id IS NULL"
         cur = conn.execute(sql, params)
         if cur.rowcount != 1:
             return False

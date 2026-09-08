@@ -5852,3 +5852,84 @@ class TestFts5SanitizerCharacterClass:
         # text; keep % intact there (pre-existing contract).
         sanitized = self._sanitize("完成50%")
         assert "%" in sanitized
+        # text; keep % intact there (pre-existing contract).
+        sanitized = self._sanitize("完成50%")
+        assert "%" in sanitized
+# =========================================================================
+# Cron run-history job filtering
+# =========================================================================
+
+class TestCronJobRunsFiltering:
+    """Regression for #92133: list_cron_job_runs must not return another
+    job's runs when one job id is an underscore-extension of another."""
+
+    def _seed(self, db):
+        # 'backup' and 'backup_weekly' — second is an extension of the first.
+        rows = [
+            ("cron_backup_20260822_120000_a", "cron", 1.0),
+            ("cron_backup_20260822_130000_b", "cron", 2.0),
+            # These belong to backup_weekly, but their literal text starts with
+            # 'cron_backup_' so they sort inside backup's id range.
+            ("cron_backup_weekly_20260822_140000_c", "cron", 3.0),
+            ("cron_backup_weekly_20260822_150000_d", "cron", 4.0),
+            # Unrelated job must never leak either.
+            ("cron_report_20260822_160000_e", "cron", 5.0),
+        ]
+        db._conn.executemany(
+            "INSERT INTO sessions (id, source, started_at) VALUES (?, ?, ?)",
+            rows,
+        )
+        db._conn.commit()
+
+    def test_parent_job_does_not_include_extended_job_runs(self, db):
+        self._seed(db)
+        runs = db.list_cron_job_runs("backup", limit=10)
+        ids = [r["id"] for r in runs]
+        assert "cron_backup_20260822_120000_a" in ids
+        assert "cron_backup_20260822_130000_b" in ids
+        # The backup_weekly runs must NOT leak into backup.
+        for leak in ("cron_backup_weekly_20260822_140000_c",
+                     "cron_backup_weekly_20260822_150000_d"):
+            assert leak not in ids
+
+    def test_extended_job_returns_its_own_runs_only(self, db):
+        self._seed(db)
+        runs = db.list_cron_job_runs("backup_weekly", limit=10)
+        ids = [r["id"] for r in runs]
+        assert "cron_backup_weekly_20260822_140000_c" in ids
+        assert "cron_backup_weekly_20260822_150000_d" in ids
+        # Parent backup runs and unrelated jobs stay out.
+        assert "cron_backup_20260822_120000_a" not in ids
+        assert "cron_report_20260822_160000_e" not in ids
+
+    def test_digit_led_extended_job_does_not_leak_into_parent(self, db):
+        """A job whose extension is digit-led (``run1_20260101_replay``) must
+        not leak its runs into the parent's (``run1``) history.
+
+        Before the tighter glob, the parent predicate was ``[0-9]{8}*``; the
+        extended job's remainder ``20260101_replay_<ts>`` starts with 8 digits
+        and slipped through as a parent run. Both globs now require the
+        remainder after the 8 leading digits to be '_' then digits (timestamp)
+        or to be the bare 8-digit run index — a digit-led <label> fails both.
+        """
+        rows = [
+            ("cron_run1_20260822_120000", "cron", 1.0),
+            # Extended job's run: shares cron_run1_ prefix, remainder is
+            # digit-led label '20260101_replay_...'.
+            ("cron_run1_20260101_replay_20260822_130000", "cron", 2.0),
+            ("cron_run1_20260101_replay_20260822_140000", "cron", 3.0),
+        ]
+        db._conn.executemany(
+            "INSERT INTO sessions (id, source, started_at) VALUES (?, ?, ?)",
+            rows,
+        )
+        db._conn.commit()
+
+        runs = db.list_cron_job_runs("run1", limit=10)
+        ids = [r["id"] for r in runs]
+        # Parent's own timestamp-shaped run is present.
+        assert "cron_run1_20260822_120000" in ids
+        # The digit-led extended job's runs must NOT leak in.
+        for leak in ("cron_run1_20260101_replay_20260822_130000",
+                     "cron_run1_20260101_replay_20260822_140000"):
+            assert leak not in ids

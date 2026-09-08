@@ -175,12 +175,28 @@ class SessionPortabilityMixin:
         prefix = f"cron_{job_id}_"
         # Half-open upper bound: bump the final byte so the range covers exactly the prefix.
         prefix_hi = prefix[:-1] + chr(ord(prefix[-1]) + 1)
+        # The range [prefix, prefix_hi) matches every id whose literal text starts with
+        # ``cron_{job_id}_``. Cron job ids are free-form (cron/jobs.py coerces the id
+        # verbatim), so a job whose id is an underscore-extension of another (backup vs
+        # backup_weekly) sorts its runs INSIDE the parent's range. A run's remainder after
+        # the prefix is a bounded token: a ``%Y%m%d_%H%M%S`` timestamp or a ``%08d`` run
+        # index. GLOB is full-string and treats '_' as a literal (unlike LIKE), so require
+        # exactly one of two shapes — 8 digits + '_' + digits (timestamp) or the bare 8-digit
+        # run index — excluding an extended job's text- or digit-led-label remainders from
+        # the parent's history. Post-filter on the already-bounded range scan.
+        ts_glob = "[0-9]" * 8 + "_" + "[0-9]" * 2 + "*"
+        run_index_glob = "[0-9]" * 8
+        where = ("s.source = 'cron' AND s.id >= ? AND s.id < ? "
+                 "AND (substr(s.id, ? + 1) GLOB ? OR substr(s.id, ? + 1) GLOB ?)")
         query = _rich_select(
-            "s.*", "s.source = 'cron' AND s.id >= ? AND s.id < ?",
+            "s.*", where,
             "\n            ORDER BY s.started_at DESC, s.id DESC\n            LIMIT ? OFFSET ?",
             prompt_select=f",\n                {_PROMPT_RESOLVED_SQL}",
         )
-        return [self._rich_row(row) for row in self._read_rows(query, (prefix, prefix_hi, limit, offset))]
+        return [self._rich_row(row) for row in self._read_rows(
+            query,
+            (prefix, prefix_hi, len(prefix), ts_glob, len(prefix), run_index_glob, limit, offset),
+        )]
 
     def _get_session_rich_row(self, session_id: str, compact_rows: bool = False) -> Optional[Dict[str, Any]]:
         """One session with the ``list_sessions_rich`` enriched columns, or None.

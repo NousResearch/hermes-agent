@@ -6319,8 +6319,18 @@ async def _standalone_send(
         async with aiohttp.ClientSession(
             timeout=aiohttp.ClientTimeout(total=30), **_sess_kw) as session:
             payload = _standalone_post_kwargs(chat_id, formatted, unfurl_kwargs, thread_id)
+            # Reuse the live adapter's renderer without opening a gateway/socket.
+            renderer = SlackAdapter.__new__(SlackAdapter)
+            renderer.config = pconfig
+            blocks = renderer._maybe_blocks(message)
+            if blocks:
+                payload["blocks"] = blocks
             for tok in tokens:
                 data = await _slack_json_post(session, tok, "chat.postMessage", payload, _req_kw)
+                if (not data.get("ok") and "blocks" in payload
+                        and SlackAdapter._is_block_payload_rejection(RuntimeError(data.get("error", "")))):
+                    payload.pop("blocks")
+                    data = await _slack_json_post(session, tok, "chat.postMessage", payload, _req_kw)
                 if data.get("ok"):
                     return {
                         "success": True, "platform": "slack", "chat_id": chat_id,

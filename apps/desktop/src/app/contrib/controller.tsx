@@ -34,6 +34,7 @@ import {
   toggleTargetZoneTabStrip,
   watchContributedPanes
 } from '@/components/pane-shell/tree/store'
+import { $workspaceOwnerLabels, workspaceOwnerTitle } from '@/components/pane-shell/workspace-scope'
 import { SidebarProvider } from '@/components/ui/sidebar'
 import { discoverBundledPlugins } from '@/contrib/plugins'
 import { Slot } from '@/contrib/react/slot'
@@ -70,6 +71,7 @@ import {
 } from '@/store/review'
 import { $currentCwd, $selectedStoredSessionId, $sessions, $yoloActive, sessionMatchesStoredId } from '@/store/session'
 import { watchSessionPins } from '@/store/session-pin-sync'
+import { $botChatScopes } from '@/store/session-states'
 import { watchUnreadWriteGuard } from '@/store/session-unread-remote'
 import { $statusbarVisible } from '@/store/statusbar-prefs'
 import { isBrowserWindow, isHudWindow } from '@/store/windows'
@@ -82,6 +84,7 @@ import { startSessionDrag } from '../chat/session-drag'
 import {
   SessionTileCloseConfirm,
   stackSessionTilesIntoMain,
+  startUnrestoredTileTitleBackfill,
   watchSessionTiles,
   WorkspaceTabMenu
 } from '../chat/session-tile'
@@ -177,7 +180,6 @@ registry.registerMany([
   {
     id: 'workspace',
     area: 'panes',
-    workspaceMode: 'sessions',
     // Live-retitled to the loaded session by syncWorkspaceTitle below.
     title: NEW_SESSION_TITLE,
     data: {
@@ -452,11 +454,13 @@ discoverBundledPlugins()
 watchContributedPanes()
 
 // Session + route (page) tiles: persisted splits register panes docked beside
-// main. A popped-out Browser has no layout tree — registering tiles there
-// would still run, and preview-tile watching would try to dock into a tree
-// this window never renders.
-if (!isBrowserWindow()) {
+// main. A popped-out Browser and the HUD have no layout tree — registering
+// tiles there would still run, and preview-tile watching would try to dock
+// into a tree this window never renders (and, in the HUD, paint a webview
+// into the transparent overlay).
+if (!isBrowserWindow() && !isHudWindow()) {
   watchSessionTiles()
+  startUnrestoredTileTitleBackfill()
   watchRouteTiles()
   watchPreviewTiles()
 }
@@ -488,10 +492,14 @@ const syncWorkspaceTitle = () => {
   registry.register({
     id: 'workspace',
     area: 'panes',
-    workspaceMode: 'sessions',
     // The placeholder, not the draft's live name — `tabTitle` below renders
     // that. Keeping it here would re-register the pane on every keystroke.
-    title: stored ? storedSessionTitle(stored) : NEW_SESSION_TITLE,
+    // A bot chat reads as its BOT: every canonical Bot Chat is stored under
+    // the same name, which told two open bots apart by nothing (#99152).
+    title: workspaceOwnerTitle(
+      stored ? storedSessionTitle(stored) : NEW_SESSION_TITLE,
+      selected ? $botChatScopes.get()[selected] : undefined
+    ),
     data: {
       // The tab's status dot — the SAME primitive the sidebar row and session
       // tiles render, so the main tab never disagrees with its sidebar row. A
@@ -516,6 +524,8 @@ const syncWorkspaceTitle = () => {
 
 $selectedStoredSessionId.listen(syncWorkspaceTitle)
 $sessions.listen(syncWorkspaceTitle)
+$botChatScopes.listen(syncWorkspaceTitle)
+$workspaceOwnerLabels.listen(syncWorkspaceTitle)
 $workspaceIsPage.listen(syncWorkspaceTitle)
 
 // Layout reset collapses every session tile into main as a tab (after the
@@ -821,6 +831,7 @@ export function ContribController() {
   if (isHudWindow()) {
     return (
       <ContribWiring>
+        <AppContextMenu />
         <HudShell />
       </ContribWiring>
     )

@@ -206,6 +206,9 @@ export const $dismissedWorktreeIds = persistentAtom(
   [] as string[],
   Codecs.stringArray
 )
+// Only successful git removals may reappear on discovery. Explicit hides,
+// including legacy dismissals without provenance, remain hidden.
+export const $removedWorktreeIds = persistentAtom('hermes.desktop.removedWorktrees', [] as string[], Codecs.stringArray)
 export const $sidebarPinsOpen = atom(true)
 export const $sidebarRecentsOpen = atom(true)
 // Cron-job sessions live in their own section below recents, collapsed by
@@ -399,6 +402,18 @@ export const $panesFlipped = persistentAtom(PANES_FLIPPED_STORAGE_KEY, false, Co
 export const $isSidebarResizing = atom(false)
 export const $sessionsLimit = atom(SIDEBAR_SESSIONS_PAGE_SIZE)
 
+// Live date/status divider ids (`list-group:yesterday`, …) currently in the
+// recents list. Not persisted — the open/closed choice lives on
+// `$sidebarWorkspaceNodeOpen`; this just names what's on screen so "Collapse
+// all" can fold every labelled bucket, including ones never toggled.
+export const $sidebarListGroupIds = atom<string[]>([])
+
+// Date/status dividers share `$sidebarWorkspaceNodeOpen` under this prefix so
+// they don't collide with repo paths.
+export function listGroupNodeId(key: string): string {
+  return `list-group:${key}`
+}
+
 // Resolve a node's open state against its default (absent = follow default).
 export function workspaceNodeOpen(id: string, defaultOpen = true): boolean {
   return $sidebarWorkspaceNodeOpen.get()[id] ?? defaultOpen
@@ -455,8 +470,9 @@ export function filterVisibleProjects<T extends { id: string; isAuto?: boolean }
   return projects.filter(project => !(project.isAuto && dismissed.has(project.id)))
 }
 
-// Hide a worktree row after it's been removed via git.
-export function dismissWorktree(id: string): void {
+export function dismissWorktree(id: string, { removed = false }: { removed?: boolean } = {}): void {
+  const removedIds = $removedWorktreeIds.get().filter(worktreeId => worktreeId !== id)
+  $removedWorktreeIds.set(removed ? [...removedIds, id] : removedIds)
   const current = $dismissedWorktreeIds.get()
 
   if (!current.includes(id)) {
@@ -467,6 +483,7 @@ export function dismissWorktree(id: string): void {
 // A hidden worktree becomes visible again as soon as the user explicitly starts
 // or opens work there (for example, selecting an already-checked-out branch).
 export function restoreWorktree(id: string): void {
+  $removedWorktreeIds.set($removedWorktreeIds.get().filter(worktreeId => worktreeId !== id))
   const current = $dismissedWorktreeIds.get()
 
   if (current.includes(id)) {

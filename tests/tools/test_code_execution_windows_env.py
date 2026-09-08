@@ -27,7 +27,7 @@ import textwrap
 
 import pytest
 
-from tools.code_execution_tool import (
+from tools.code_execution_env import (
     _SECRET_SUBSTRINGS,
     _WINDOWS_ESSENTIAL_ENV_VARS,
     _scrub_child_env,
@@ -562,10 +562,10 @@ class TestChildStdioIsUtf8:
     so LLM scripts can print non-ASCII without crashing on Windows."""
 
     def test_popen_env_sets_pythonioencoding_utf8(self):
-        """Source-level check: the Popen call site must set
+        """Source-level check: the child env builder must set
         PYTHONIOENCODING=utf-8 in child_env."""
-        import tools.code_execution_tool as cet
-        src = open(cet.__file__, encoding="utf-8").read()
+        import tools.code_execution_env as cee
+        src = open(cee.__file__, encoding="utf-8").read()
         assert 'child_env["PYTHONIOENCODING"] = "utf-8"' in src, (
             "PYTHONIOENCODING=utf-8 missing from child env — Windows "
             "scripts that print non-ASCII will crash with "

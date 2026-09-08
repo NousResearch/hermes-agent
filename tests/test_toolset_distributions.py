@@ -64,3 +64,41 @@ class TestDistributionStructure:
             for ts_name, prob in dist["toolsets"].items():
                 assert 0 < prob <= 100, f"{name}.{ts_name} has invalid probability {prob}"
 
+
+class TestGroupedCompoundEntries:
+    """"+"-grouped entries roll once and select all members together (#64503)."""
+
+    def test_hit_roll_selects_all_members_together(self, monkeypatch):
+        import toolset_distributions as td
+
+        monkeypatch.setattr(td.random, "random", lambda: 0.0)  # every roll hits
+        result = sample_toolsets_from_distribution("browser_tasks")
+        assert "browser" in result
+        assert "search" in result
+        assert "browser+search" not in result  # members, not the raw key
+
+    def test_fallback_expands_compound_members(self, monkeypatch):
+        import toolset_distributions as td
+
+        monkeypatch.setitem(
+            td.DISTRIBUTIONS,
+            "_test_compound_fallback",
+            {"description": "t", "toolsets": {"browser+search": 60, "web": 10}},
+        )
+        monkeypatch.setattr(td.random, "random", lambda: 1.0)  # every roll misses
+        result = sample_toolsets_from_distribution("_test_compound_fallback")
+        assert set(result) == {"browser", "search"}
+
+    def test_invalid_member_skips_whole_entry(self, monkeypatch, capsys):
+        import toolset_distributions as td
+
+        monkeypatch.setitem(
+            td.DISTRIBUTIONS,
+            "_test_compound_invalid",
+            {"description": "t", "toolsets": {"browser+__not_a_toolset__": 100, "web": 100}},
+        )
+        monkeypatch.setattr(td.random, "random", lambda: 0.0)
+        result = sample_toolsets_from_distribution("_test_compound_invalid")
+        assert "browser" not in result  # invalid member disqualifies the group
+        assert "web" in result
+        assert "not valid" in capsys.readouterr().out

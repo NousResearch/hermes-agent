@@ -121,12 +121,14 @@ export const PreviewStatusRow = memo(function PreviewStatusRow({ item, onDismiss
     >
       <Tip
         label={
-          // inline-flex (not flex): a block child collapses Tip's decoration
-          // wrapper geometry and mis-positions the tooltip (#62022).
-          <span className="inline-flex flex-col gap-0.5">
-            <span>{item.target}</span>
+          // Inline flow with a hard break, not a flex column: Tip's background
+          // only wraps inline content, so a flex box would light the first
+          // line and leave the rest dark-on-dark.
+          <>
+            {item.target}
+            <br />
             <span className="opacity-70">{t.preview.linkHint}</span>
-          </span>
+          </>
         }
       >
         <span className="min-w-0 truncate text-[0.73rem] leading-4 text-foreground/92">{item.label}</span>

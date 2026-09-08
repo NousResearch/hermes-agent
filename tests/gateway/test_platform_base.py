@@ -9,7 +9,6 @@ import pytest
 from gateway.platforms.base import (
     BasePlatformAdapter,
     GATEWAY_SECRET_CAPTURE_UNSUPPORTED_MESSAGE,
-    MessageEvent,
     SendResult,
     cache_audio_from_bytes,
     cache_image_from_bytes,
@@ -21,6 +20,7 @@ from gateway.platforms.base import (
     _prefix_within_utf16_limit,
     cache_audio_from_bytes,
 )
+from gateway.platforms.event import MessageEvent
 
 
 def test_media_delivery_denies_encrypted_bitwarden_cache(tmp_path, monkeypatch):
@@ -678,6 +678,34 @@ class TestMediaDeliveryDefaultMode:
 
         assert BasePlatformAdapter.validate_media_delivery_path(str(artifact)) == str(artifact.resolve())
 
+    def test_denylist_blocks_session_stores_but_not_neighbouring_artifacts(self, tmp_path, monkeypatch):
+        """The SQLite session/kanban stores (and WAL/SHM sidecars, whose mtime is always fresh),
+        legacy ``sessions/`` transcripts and the copied browser cookie store hold every secret ever
+        pasted into a chat; ``MEDIA:~/.hermes/state.db`` must not exfiltrate them (#41071). Named
+        boards keep their DB beside the ATTACHMENTS the gateway already allowlists, so the board
+        attachment stays deliverable while ``kanban.db`` next to it does not."""
+        self._patch_roots(monkeypatch)
+
+        fake_home = tmp_path / "home"
+        hermes_dir = fake_home / ".hermes"
+        hermes_dir.mkdir(parents=True)
+        monkeypatch.setenv("HOME", str(fake_home))
+        monkeypatch.setattr("gateway.platforms.base._HERMES_HOME", hermes_dir)
+        monkeypatch.setattr("gateway.platforms.base._HERMES_ROOT", hermes_dir)
+        board = hermes_dir / "kanban" / "boards" / "team-a"
+        (board / "attachments").mkdir(parents=True)
+
+        denied = ["state.db", "state.db-wal", "state.db-shm", "kanban.db", "kanban.db-wal",
+                  "sessions/20260101_abc.json", "browser-profile/Default/Cookies",
+                  "kanban/boards/team-a/kanban.db", "kanban/boards/team-a/kanban.db-wal"]
+        allowed = ["kanban/boards/team-a/attachments/report.pdf", "adhoc_report.pdf", "logs/agent.log"]
+        for rel in denied + allowed:
+            path = hermes_dir / rel
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(b"SQLite format 3\x00")
+        assert [rel for rel in denied if BasePlatformAdapter.validate_media_delivery_path(str(hermes_dir / rel))] == []
+        assert [rel for rel in allowed if not BasePlatformAdapter.validate_media_delivery_path(str(hermes_dir / rel))] == []
+
     def test_strict_mode_envvar_restores_legacy_behavior(self, tmp_path, monkeypatch):
         """Setting HERMES_MEDIA_DELIVERY_STRICT=1 reactivates the older
         allowlist+recency logic. A stale file outside the allowlist is
@@ -943,6 +971,72 @@ class TestShouldSendMediaAsAudio:
 # ---------------------------------------------------------------------------
 
 
+class TestIsSenderAuthorized:
+    """``_is_sender_authorized`` is a tri-state: True / False / unknown.
+
+    Callers gate credentialed side effects on an explicit ``is True``, so a
+    truthy non-boolean must resolve to unknown rather than being coerced
+    into an authorization by ``bool()``.
+    """
+
+    def _adapter(self):
+        class StubAdapter(BasePlatformAdapter):
+            async def connect(self, *, is_reconnect: bool = False):
+                return True
+
+            async def disconnect(self):
+                pass
+
+            async def send(self, *a, **kw):
+                pass
+
+            async def get_chat_info(self, *a):
+                return {}
+
+        from gateway.config import Platform, PlatformConfig
+
+        return StubAdapter(config=PlatformConfig(enabled=True, token="test"),
+                           platform=Platform.TELEGRAM)
+
+    def test_no_check_registered_is_unknown(self):
+        assert self._adapter()._is_sender_authorized("user") is None
+
+    def test_empty_user_id_is_unknown(self):
+        adapter = self._adapter()
+        adapter.set_authorization_check(lambda *_a: True)
+        assert adapter._is_sender_authorized("") is None
+
+    def test_true_and_false_propagate(self):
+        adapter = self._adapter()
+        adapter.set_authorization_check(lambda *_a: True)
+        assert adapter._is_sender_authorized("user") is True
+        adapter.set_authorization_check(lambda *_a: False)
+        assert adapter._is_sender_authorized("user") is False
+
+    @pytest.mark.parametrize("result", ["allowed", 1, object(), [1]])
+    def test_truthy_non_boolean_is_unknown(self, result):
+        adapter = self._adapter()
+        adapter.set_authorization_check(lambda *_a: result)
+        assert adapter._is_sender_authorized("user") is None
+
+    def test_raising_check_is_unknown(self):
+        def boom(*_a):
+            raise RuntimeError("auth backend down")
+
+        adapter = self._adapter()
+        adapter.set_authorization_check(boom)
+        assert adapter._is_sender_authorized("user") is None
+
+    def test_check_receives_chat_context(self):
+        seen = []
+        adapter = self._adapter()
+        adapter.set_authorization_check(
+            lambda user_id, chat_type, chat_id: seen.append((user_id, chat_type, chat_id)) or True
+        )
+        adapter._is_sender_authorized("user", "group", "chan")
+        assert seen == [("user", "group", "chan")]
+
+
 class TestTruncateMessage:
     def _adapter(self):
         """Create a minimal adapter instance for testing static/instance methods."""
@@ -1156,8 +1250,15 @@ class TestMediaDeliveryDiagnosability:
             with caplog.at_level("WARNING"):
                 out = BasePlatformAdapter.filter_media_delivery_paths([(str(outside), False)])
         assert out == []
-        # The dropped path must be in the log so operators can diagnose it.
-        assert str(outside) in caplog.text
+        # The dropped path must be in the log so operators can diagnose it, with the REASON: a policy
+        # rejection reads differently from a path that simply does not exist (#100074).
+        assert str(outside) in caplog.text and "denied by the delivery policy" in caplog.text
+
+    def test_missing_file_is_logged_as_not_found_not_unsafe(self, tmp_path, caplog):
+        ghost = tmp_path / "never-written.pdf"
+        with caplog.at_level("WARNING"):
+            assert BasePlatformAdapter.filter_media_delivery_paths([(str(ghost), False)]) == []
+        assert "not found on this host" in caplog.text and "unsafe" not in caplog.text
 
     def test_crafted_null_path_does_not_abort_batch(self, tmp_path, monkeypatch):
         """One crafted ~\\x00 path must not drop every other attachment."""
@@ -1270,7 +1371,8 @@ class TestDockerProfileSandboxMediaTranslation:
 
     @staticmethod
     def _sandbox_dir(task_id: str = "default"):
-        from tools.environments.base import get_sandbox_dir, sanitize_task_id_for_path
+        from tools.environments.base import get_sandbox_dir
+        from tools.environments.path_utils import sanitize_task_id_for_path
 
         name = task_id if task_id == "default" else sanitize_task_id_for_path(task_id)
         return get_sandbox_dir() / "docker" / name

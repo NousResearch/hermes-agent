@@ -575,6 +575,8 @@ def _notif_drain_ready(sid, session, registry, *, shutdown=False):
                 ready.append(event)
                 actions.append(action)
     return ready, actions
+
+
 def _poll_bot_live_delivery_once(sid: str, session: dict) -> bool:
     """Run one durable envelope only after local FIFO/continuations yield the idle boundary."""
     from tools.bot_live_delivery import claim_pending_delivery, complete_delivery, find_canonical_live_owner
@@ -624,12 +626,6 @@ def _poll_bot_live_delivery_once(sid: str, session: dict) -> bool:
         _notif_release_turn(session)
         terminal_receipt({"status": "failed", "error": "live session owner could not start the delivery turn"})
     return started
-
-
-def _notification_poller_loop(stop_event: threading.Event, sid: str, session: dict) -> None:
-    """Daemon thread (started by _init_session()) that drains the process-global completion_queue for this session
-    (ownership routing: _notif_handle_event) and polls ``kanban_notify_subs`` every ``_KANBAN_POLL_SECONDS`` — the
-    delivery path for platform="tui" rows.
 
 
 def _notification_poller_loop(stop_event: threading.Event, sid: str, session: dict) -> None:

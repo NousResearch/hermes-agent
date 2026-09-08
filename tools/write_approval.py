@@ -250,18 +250,47 @@ def _find_skill_path(name: str) -> Optional[Path]:
 
 
 def skill_pending_diff(record: Dict[str, Any]) -> str:
-    """Full content (create) or unified diff vs. the on-disk skill (edit/patch/write_file),
-    rendered by /skills diff <id> on surfaces that can show it."""
+    """Full content or unified diff for a pending skill write."""
     payload = record.get("payload", {})
     action = payload.get("action", "")
     name = payload.get("name", "")
     if action == "create":
         return payload.get("content") or ""
+    if action == "patch" and isinstance(payload.get("evidence_merge"), dict):
+        em = payload["evidence_merge"]
+        if "_preview" in em:
+            return em["_preview"]
+        if "_candidate_content" in em:
+            skill_dir = _find_skill_path(name)
+            current = (skill_dir / "SKILL.md").read_text(encoding="utf-8") if skill_dir else ""
+            diff = difflib.unified_diff(current.splitlines(keepends=True),
+                                        em["_candidate_content"].splitlines(keepends=True),
+                                        fromfile=f"a/{name}/SKILL.md", tofile=f"b/{name}/SKILL.md")
+            return "".join(diff) or "(no textual change)"
+    if action == "batch":
+        chunks = []
+        for i, op in enumerate(payload.get("operations", [])):
+            em = op.get("evidence_merge") if isinstance(op, dict) else None
+            if isinstance(em, dict) and "_preview" in em:
+                chunks.append(em["_preview"])
+                continue
+            if isinstance(em, dict) and "_candidate_content" in em:
+                skill_dir = _find_skill_path(op.get("name", name))
+                if not skill_dir:
+                    chunks.append(f"batch op {i}: target skill missing")
+                    continue
+                old = (skill_dir / "SKILL.md").read_text(encoding="utf-8")
+                diff = difflib.unified_diff(
+                    old.splitlines(keepends=True), em["_candidate_content"].splitlines(keepends=True),
+                    fromfile=f"a/{op.get('name', name)}/SKILL.md",
+                    tofile=f"b/{op.get('name', name)}/SKILL.md")
+                chunks.append("".join(diff))
+            else:
+                chunks.append(f"batch op {i}: {op.get('action', '?')} on {op.get('name', name)}")
+        return "".join(chunks) or "(empty batch)"
     if action not in {"edit", "patch", "write_file"}:
         return {"remove_file": f"remove file: {payload.get('file_path')} from skill '{name}'",
                 "delete": f"delete skill '{name}'"}.get(action, f"({action} on '{name}')")
-
-    # patch/write_file target a file inside the skill; edit always targets SKILL.md.
     target_label, current = "SKILL.md", ""
     skill_dir = _find_skill_path(name)
     if skill_dir:
@@ -270,7 +299,6 @@ def skill_pending_diff(record: Dict[str, Any]) -> str:
         with suppress(Exception):
             p = skill_dir / target_label
             current = p.read_text(encoding="utf-8") if p.exists() else ""
-
     if action == "patch":
         old_s, new_s = payload.get("old_string") or "", payload.get("new_string") or ""
         new = current.replace(old_s, new_s) if current else f"(patch {old_s!r} → {new_s!r})"

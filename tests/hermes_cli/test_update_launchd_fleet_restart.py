@@ -205,6 +205,7 @@ class TestGetServicePidsScoping:
             "launchd_gateway_labels_for_install",
             lambda: ["ai.hermes.gateway", "ai.hermes.gateway-a", "ai.hermes.gateway-b"],
         )
+        monkeypatch.setattr(gw.subprocess, "run", lambda *_a, **_kw: _completed())
         located = {
             "ai.hermes.gateway": (f"gui/{UID}", 100),
             "ai.hermes.gateway-a": (f"gui/{UID}", 200),
@@ -642,12 +643,15 @@ class TestWaitForLaunchdServicePid:
 
 
 class TestIncompleteWarningMentionsLaunchctl:
+    @pytest.mark.macos_only
     def test_launchd_labels_get_launchctl_hint(self, capsys):
         _warn_incomplete_gateway_fleet_restart(["ai.hermes.gateway-merit-ops"])
         out = capsys.readouterr().out
         assert "Update incomplete" in out
-        assert "launchctl kickstart -k" in out
+        assert "launchctl bootstrap" in out
+        assert "~/Library/LaunchAgents/<label>.plist" in out
 
+    @pytest.mark.linux_only
     def test_systemd_units_keep_systemctl_hint(self, capsys):
         _warn_incomplete_gateway_fleet_restart(["hermes-gateway-coder"])
         out = capsys.readouterr().out

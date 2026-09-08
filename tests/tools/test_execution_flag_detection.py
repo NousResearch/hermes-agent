@@ -4,6 +4,7 @@ import os
 import shlex
 import shutil
 import subprocess
+import sys
 import time
 
 import pytest
@@ -39,14 +40,37 @@ def test_real_read_tool_binaries_confirm_option_ownership(
         ("rg", ["--hostname-bin=-payload-marker", "needle", "{input}"], None, False),
         ("sort", ["--buffer-size=1K", "--compress-program", "-payload-marker"], "{bulk}", False),
         ("ag", ["--pager=-payload-marker", "needle", "{input}"], None, True),
-        ("man", ["--pager", "-payload-marker", "ls"], None, True),
-        ("man", ["-P", "-payload-marker", "ls"], None, True),
     ],
 )
 def test_real_binaries_execute_leading_dash_program_payload(
     tmp_path, tool, args, stdin, needs_tty
 ):
     """A PATH marker proves these binaries do not reparse '-program' as an option."""
+    if tool == "sort":
+        # This is GNU sort's external-compressor protocol. macOS ships a BSD
+        # sort with similar flags but a different spill/compression pipeline.
+        tool = shutil.which("gsort") or shutil.which("sort")
+        if tool is None:
+            pytest.skip("GNU sort is not installed")
+        version = subprocess.run(
+            [tool, "--version"], capture_output=True, text=True,
+            encoding="utf-8", errors="replace", timeout=5
+        )
+        if "GNU coreutils" not in version.stdout:
+            pytest.skip("GNU sort is not installed")
+    _assert_program_payload(tmp_path, tool, args, stdin, needs_tty)
+
+
+@pytest.mark.linux_only
+@pytest.mark.parametrize("pager_option", ["--pager", "-P"])
+def test_man_db_executes_leading_dash_pager(tmp_path, pager_option):
+    # man-db's long options and util-linux script syntax are Linux-specific.
+    _assert_program_payload(
+        tmp_path, "man", [pager_option, "-payload-marker", "ls"], None, True
+    )
+
+
+def _assert_program_payload(tmp_path, tool, args, stdin, needs_tty):
     if shutil.which(tool) is None or (needs_tty and shutil.which("script") is None):
         pytest.skip(f"{tool} or script is not installed")
 
@@ -70,7 +94,10 @@ def test_real_binaries_execute_leading_dash_program_payload(
     }
     argv = [tool, *resolved_args]
     if needs_tty:
-        argv = ["script", "-qec", shlex.join(argv), "/dev/null"]
+        if sys.platform == "darwin":
+            argv = ["script", "-q", "/dev/null", *argv]
+        else:
+            argv = ["script", "-qec", shlex.join(argv), "/dev/null"]
 
     subprocess.run(argv, input=input_text, text=True, capture_output=True, env=env, timeout=20)
 

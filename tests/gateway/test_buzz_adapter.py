@@ -3061,8 +3061,8 @@ class TestInboundMediaAuthorizationGate:
         assert result.raw_response is None
 
     @pytest.mark.asyncio
-    async def test_live_media_redacts_long_path_before_bounding(self, tmp_path):
-        parent = tmp_path
+    async def test_live_media_redacts_long_path_before_bounding(self, short_tmp_path):
+        parent = short_tmp_path
         private_parts = []
         for index in range(6):
             part = f"private-{index}-" + ("x" * 150)
@@ -3071,6 +3071,7 @@ class TestInboundMediaAuthorizationGate:
             parent.mkdir()
         media = parent / "handoff.txt"
         media.write_text("safe handoff", encoding="utf-8")
+        assert len(str(media)) > 900  # Redaction must happen before truncation.
         adapter = _make_adapter()
         adapter._run_cli = AsyncMock(
             return_value=(

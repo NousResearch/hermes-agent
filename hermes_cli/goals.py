@@ -530,6 +530,12 @@ class GoalGate:
         )
 
 
+def _gate_definitions(gates: List[GoalGate]) -> List[Tuple[str, int, int]]:
+    """The user-owned gate definition, excluding per-turn execution receipts."""
+    return [(gate.command, gate.timeout_seconds, gate.max_retries) for gate in gates]
+
+
+
 def run_gate(gate: GoalGate, *, cwd: Optional[str] = None) -> Tuple[bool, int, str]:
     """Run one gate through the shell. Returns ``(passed, exit_code, output_tail)``; a timeout kills
     the process and counts as exit code -1."""
@@ -1341,7 +1347,7 @@ class GoalManager:
                 or current.subgoals != state.subgoals
                 or current.max_turns != state.max_turns
                 or current.contract != state.contract
-                or current.gates != state.gates
+                or _gate_definitions(current.gates) != _gate_definitions(state.gates)
             ):
                 outcome[0] = "replaced"
                 return current_json

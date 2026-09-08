@@ -15,6 +15,7 @@ import { $uiState } from '../app/uiStore.js'
 import type { GatewayClient } from '../gatewayClient.js'
 import type { DelegationPauseResponse, DelegationStatusResponse, SubagentInterruptResponse } from '../gatewayTypes.js'
 import { asRpcResult } from '../lib/rpc.js'
+import { statusGlyph as agentStatusGlyph } from '../lib/subagentGlyph.js'
 import {
   buildSubagentTree,
   descendantIds,
@@ -90,16 +91,6 @@ const FILTER_PREDICATES: Record<FilterMode, (n: SubagentNode) => boolean> = {
     n.item.status === 'timeout'
 }
 
-const STATUS_GLYPH: Record<Status, { color: (t: Theme) => string; glyph: string }> = {
-  running: { color: t => t.color.accent, glyph: '●' },
-  queued: { color: t => t.color.muted, glyph: '○' },
-  completed: { color: t => t.color.statusGood, glyph: '✓' },
-  interrupted: { color: t => t.color.warn, glyph: '■' },
-  failed: { color: t => t.color.error, glyph: '✗' },
-  timeout: { color: t => t.color.warn, glyph: '⌛' },
-  error: { color: t => t.color.error, glyph: '⚠' }
-}
-
 // Heatmap palette — cold → hot, resolved against the active theme.
 const heatPalette = (t: Theme) => [t.color.border, t.color.accent, t.color.primary, t.color.warn, t.color.error]
 
@@ -124,12 +115,7 @@ const indentFor = (depth: number): string => '  '.repeat(Math.max(0, depth))
 const formatRowId = (n: number): string => String(n + 1).padStart(2, ' ')
 const cycle = <T,>(order: readonly T[], current: T): T => order[(order.indexOf(current) + 1) % order.length]!
 
-const statusGlyph = (item: SubagentProgress, t: Theme) => {
-  // Defensive fallback for cross-version snapshots with unknown statuses.
-  const g = STATUS_GLYPH[item.status] ?? STATUS_GLYPH.error
-
-  return { color: g.color(t), glyph: g.glyph }
-}
+const statusGlyph = (item: SubagentProgress, t: Theme) => agentStatusGlyph(item.status, t)
 
 const prepareRows = (tree: SubagentNode[], sort: SortMode, filter: FilterMode): SubagentNode[] =>
   tree.length === 0 ? [] : flattenTree([...tree].sort(SORT_COMPARATORS[sort])).filter(FILTER_PREDICATES[filter])
@@ -642,7 +628,7 @@ export function AgentsOverlay({ gw, initialHistoryIndex = 0, onClose, t }: Agent
   const selected = rows[cursor] ?? null
 
   const cols = stdout?.columns ?? 80
-  const { rows: rowsH, start: listWindowStart, timelineRows } = rosterViewport(stdout?.rows ?? 24, rows.length, cursor)
+  const { rows: rowsH, start: listWindowStart, timelineRows } = rosterViewport((stdout?.rows ?? 24) - (flash ? 1 : 0), rows.length, cursor)
 
   // ── Effects ────────────────────────────────────────────────────────
 
@@ -957,7 +943,8 @@ export function AgentsOverlay({ gw, initialHistoryIndex = 0, onClose, t }: Agent
       )}
 
       <Box flexDirection="column" marginTop={1}>
-        {flash ? <Text color={t.color.accent}>{flash}</Text> : null}
+        <Text color={t.color.accent} wrap="truncate-end">Enter detail · e steer · t tail · x stop · Esc back</Text>
+        {flash ? <Text color={t.color.accent} wrap="truncate-end">{flash}</Text> : null}
 
         {mode === 'list' ? (
           <Text color={t.color.muted} wrap="truncate-end">

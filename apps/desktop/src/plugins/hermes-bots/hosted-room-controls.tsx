@@ -1,11 +1,12 @@
-import { atom, Button, Codicon, ErrorState, GlyphSpinner, host, RowButton, useValue } from '@hermes/plugin-sdk'
+import { atom, Button, Codicon, ConfirmDialog, ErrorState, GlyphSpinner, host, RowButton, useValue } from '@hermes/plugin-sdk'
 import { useEffect, useRef, useState } from 'react'
 
 import {
-  $hostedDirectories, $hostedRooms, approveHostedTask, discoverHostedRooms, fetchHostedAttachment, invalidateHostedRoom,
+  $hostedDirectories, $hostedRooms, approveHostedTask, discardHostedInput, discoverHostedRooms, fetchHostedAttachment, invalidateHostedRoom,
   refreshHostedRoom, retryHostedTask, sendHostedInput, stopHostedRoom
 } from './hosted-room-client'
 import { hostedHolds, hostedPendingActions } from './hosted-room-protocol'
+import { useBots } from './i18n'
 import type { Attachment } from './types'
 
 const unknownConnection = atom('')
@@ -106,18 +107,21 @@ export function HostedRoomAttachment({ attachment, eventId, roomKey }: {
 /** Polling only observes the server. Parking/closing this view never stops or
  * resubmits work, and a transport failure waits for explicit recovery. */
 export function HostedRoomStatus({ roomKey, visible }: HostedRoomStatusProps) {
+  const b = useBots()
   const cache = useValue($hostedRooms)[roomKey]
   const gateway = useValue(host.state.gateway)
+  const [discard, setDiscard] = useState<{ roomKey: string; eventId: string } | null>(null)
   useEffect(() => {
     if (!visible) {return}
     let disposed = false
     let timer: ReturnType<typeof setTimeout> | undefined
 
     const poll = async () => {
-      await refreshHostedRoom(roomKey)
+      // Keep the clock alive, but never retry a failed fetch without explicit recovery.
+      if (!$hostedRooms.get()[roomKey]?.error) {await refreshHostedRoom(roomKey)}
 
       if (!disposed) {timer = setTimeout(() => {
-        if (!$hostedRooms.get()[roomKey]?.error) {void poll()}
+        void poll()
       }, 2000)}
     }
 
@@ -141,7 +145,7 @@ export function HostedRoomStatus({ roomKey, visible }: HostedRoomStatusProps) {
 
   return (
     <div className="grid gap-1 border-b border-(--ui-stroke-tertiary) px-2.5 pb-2 text-xs text-(--ui-text-secondary)">
-      <p>Gateway-hosted · {cache?.capabilities?.attachments ? 'Attachments enabled' : 'Text only'} · Backend Discussion policy: manual holds match Desktop, round policy does not.</p>
+      <p>Gateway-hosted · {cache?.capabilities?.attachments ? 'Attachments enabled' : 'Text only'} · {b.group.hostedDiscussion}</p>
       <p>{cache?.capabilities?.persistentProcess ? 'Gateway reports an independently hosted process.' : 'Gateway does not advertise persistence. Work only survives Desktop exit on an independently run gateway.'}</p>
       <div className="flex items-center gap-2" role="status">
         {cache?.loading ? <GlyphSpinner spinner="breathe" /> : null}
@@ -189,8 +193,20 @@ export function HostedRoomStatus({ roomKey, visible }: HostedRoomStatusProps) {
           <p>Pending input, acceptance may be uncertain: {cache.pending.text}</p>
           {cache.pending.attachments?.length ? <p>Saved attachments: {cache.pending.attachments.map(attachment => attachment.name || 'attachment').join(', ')}</p> : null}
           <Button disabled={cache.busy} onClick={() => void sendHostedInput(roomKey)} size="xs" variant="secondary">Retry saved input</Button>
+          <Button disabled={cache.busy} onClick={() => setDiscard({ roomKey, eventId: cache.pending!.eventId })} size="xs" variant="ghost">{b.group.discardSavedInput}</Button>
         </div>
       ) : null}
+      <ConfirmDialog
+        confirmLabel={b.group.discardLocalInput}
+        description={b.group.discardSavedWarning}
+        destructive
+        onClose={() => setDiscard(null)}
+        onConfirm={async () => {
+          if (discard) {await discardHostedInput(discard.roomKey, discard.eventId)}
+        }}
+        open={discard !== null}
+        title={b.group.discardSavedTitle}
+      />
     </div>
   )
 }

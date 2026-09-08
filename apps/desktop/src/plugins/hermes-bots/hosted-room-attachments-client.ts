@@ -57,6 +57,14 @@ function decodedSize(contentBase64: string): number {
 }
 
 function stagedAttachmentInput(attachment: Attachment) {
+  // Match Python _name: strip Unicode whitespace, count code points, reject lone surrogates.
+  // eslint-disable-next-line no-control-regex -- Python str.strip includes these four separators.
+  const name = (attachment.name ?? 'attachment').replace(/^[\p{White_Space}\u001c-\u001f]+|[\p{White_Space}\u001c-\u001f]+$/gu, '')
+
+  if (!name || [...name].length > 255 || name === '.' || name === '..' || name.includes('\0') || /[/\\\n\r\p{Surrogate}]/u.test(name)) {
+    throw new Error('Attachment name must be a valid basename of at most 255 characters.')
+  }
+
   const match = /^data:([^;,]+);base64,([A-Za-z0-9+/=\s]+)$/.exec(String(attachment.data || ''))
 
   if (!match) {
@@ -80,7 +88,7 @@ function stagedAttachmentInput(attachment: Attachment) {
     content_base64: contentBase64,
     kind: attachment.kind,
     mime: match[1].toLowerCase(),
-    name: String(attachment.name || 'attachment')
+    name
   }
 }
 

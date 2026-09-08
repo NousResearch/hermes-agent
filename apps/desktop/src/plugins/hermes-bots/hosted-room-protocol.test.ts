@@ -161,6 +161,30 @@ describe('authority and replay', () => {
     expect(applyHostedPage(previous, page([], 1, 1), { ...room, latest_seq: 1 }).events).toBe(previous.events)
   })
 
+  it.each(['message.user', 'message.member'])('validates %s manifests before admitting a renderable page', kind => {
+    const attachment = { attachment_id: `att_${'a'.repeat(32)}`, kind: 'file', name: 'mock.txt', mime: 'text/plain', size: 4 }
+    const previous = { cursor: 1, events: [event(1)] }
+    const transcript = hostedTranscript(previous)
+    const payload = { text: 'Text with a file', thread_id: 'mock-thread', member_id: 'mock-member', attachments: [attachment] }
+
+    for (const attachments of [
+      {}, [{ ...attachment, attachment_id: 'invalid' }], [{ ...attachment, kind: 'unknown' }],
+      [{ ...attachment, name: '' }], [{ ...attachment, mime: '' }], [{ ...attachment, size: 1.5 }]
+    ]) {
+      const bad = event(3, { kind, payload: { ...payload, attachments } })
+      expect(() => hostedTranscript({ cursor: 3, events: [bad] })).toThrow()
+      expect(() => applyHostedPage(previous, page([event(2), bad]), room)).toThrow()
+      expect(previous.cursor).toBe(1)
+      expect(hostedTranscript(previous)).toEqual(transcript)
+    }
+
+    const accepted = applyHostedPage(previous, page([event(2), event(3, { kind, payload })]), room)
+    expect(hostedTranscript(accepted).log.at(-1)?.images).toEqual([{
+      attachmentId: attachment.attachment_id, kind: 'file', name: attachment.name,
+      mime: attachment.mime, size: attachment.size, data: ''
+    }])
+  })
+
   it.each([
     ['gap', page([event(2), event(4)])],
     ['reordered', page([event(3), event(2)])],

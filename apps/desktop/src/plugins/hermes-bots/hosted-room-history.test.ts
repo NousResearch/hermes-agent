@@ -42,5 +42,14 @@ it('rejects a missing source and leaves non-adoption room events unchanged', () 
   }
 
   expect(() => hostedTranscript({ cursor: 1, events: [bad] })).toThrow('Both legacy')
+  const previous = { cursor: 1, events: [{ ...event, event_id: 'good-created', payload: {} }] }
+  const transcript = hostedTranscript(previous)
+  expect(() => applyHostedPage(previous, {
+    authority: { gateway_id: 'host', epoch: 1 }, events: [{ ...bad, seq: 2 }], cursor: 2, latest_seq: 2, has_more: false
+  }, {
+    room_id: 'room', name: 'Shared', members: [], authority_gateway_id: 'host', authority_epoch: 1, latest_seq: 2
+  })).toThrow('Both legacy')
+  expect(previous.cursor).toBe(1)
+  expect(hostedTranscript(previous)).toEqual(transcript)
   expect(hostedTranscript({ cursor: 1, events: [{ ...event, payload: {} }] }).log).toEqual([])
 })

@@ -270,16 +270,20 @@ export function applyHostedPage(previous: HostedReplay, raw: unknown, room: Host
 
     if (kind === 'message.user' || kind === 'message.member') {
       text(payload.thread_id)
+      const attachments = hostedAttachments(payload)
 
       if (kind === 'message.member') {
         text(payload.text)
         text(payload.member_id)
-      } else if (typeof payload.text !== 'string' || (!payload.text && !hostedAttachments(payload).length)) {
+      } else if (typeof payload.text !== 'string' || (!payload.text && !attachments.length)) {
         // An attachment-only user message is valid and carries the empty string, exactly as
         // the gateway's own payload validation accepts it.
         throw new Error('Invalid hosted room message payload')
       }
     }
+
+    // Validate imported records at admission too, before they can poison the rendered cache.
+    if (kind === 'room.created') {legacyHistoryTranscript({ kind, payload, event_id: id })}
 
     if (typeof event.created_at !== 'number' || !Number.isFinite(event.created_at)) {throw new Error('Invalid hosted room timestamp')}
     const epoch = event.authority_epoch === null ? null : integer(event.authority_epoch, 1)
@@ -310,7 +314,7 @@ export function hostedMembers(room: HostedRoomSummary): GroupMember[] {
 
 /** Imported records are a read-only archive, not native turns or planner input.
  * Keep source order and isolate thread/entry identities across independent histories. */
-function legacyHistoryTranscript(event: HostedEvent): GroupMessage[] {
+function legacyHistoryTranscript(event: Pick<HostedEvent, 'kind' | 'payload' | 'event_id'>): GroupMessage[] {
   if (event.kind !== 'room.created' || !('legacy_history' in event.payload)) {return []}
   const history = hostedRecord(event.payload.legacy_history)
 

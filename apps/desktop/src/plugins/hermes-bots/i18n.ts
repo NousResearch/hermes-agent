@@ -189,6 +189,11 @@ type BotsMessages = {
     disbandHint: (group: string) => string
     disbandLabel: (group: string) => string
     disbandAction: string
+    hostedDiscussion: string
+    discardSavedInput: string
+    discardSavedTitle: string
+    discardLocalInput: string
+    discardSavedWarning: string
     disbanding: string
     disbandDone: string
     disbanded: (group: string) => string
@@ -413,6 +418,11 @@ const en: BotsMessages = {
     disbandHint: group => `Disband the ${group} group chat`,
     disbandLabel: group => `Disband ${group}`,
     disbandAction: 'Disband',
+    hostedDiscussion: 'The backend coordinates the discussion.',
+    discardSavedInput: 'Discard saved input',
+    discardSavedTitle: 'Discard saved input?',
+    discardLocalInput: 'Discard local input',
+    discardSavedWarning: 'This removes only the input saved on this Desktop. It does not cancel possibly accepted backend work, which may still complete. Retry saved input instead if you want to preserve its retry identity.',
     disbanding: 'Disbanding…',
     disbandDone: 'Disbanded',
     disbanded: group => `Disbanded “${group}”`,
@@ -630,6 +640,11 @@ const ja: BotsMessages = {
     disbandHint: group => `${group}グループチャットを解散`,
     disbandLabel: group => `${group}を解散`,
     disbandAction: '解散',
+    hostedDiscussion: 'バックエンドがディスカッションを調整します。',
+    discardSavedInput: '保存済みの入力を破棄',
+    discardSavedTitle: '保存済みの入力を破棄しますか？',
+    discardLocalInput: 'ローカルの入力を破棄',
+    discardSavedWarning: 'このDesktopに保存された入力だけを削除します。バックエンドがすでに受け付けた可能性のある処理はキャンセルされず、完了する場合があります。再試行時の識別情報を保持したい場合は、保存済みの入力を再試行してください。',
     disbanding: '解散中…',
     disbandDone: '解散しました',
     disbanded: group => `「${group}」を解散しました`,
@@ -843,6 +858,11 @@ const zh: BotsMessages = {
     disbandHint: group => `解散 ${group} 群聊`,
     disbandLabel: group => `解散 ${group}`,
     disbandAction: '解散',
+    hostedDiscussion: '讨论由后端协调。',
+    discardSavedInput: '丢弃已保存的输入',
+    discardSavedTitle: '丢弃已保存的输入？',
+    discardLocalInput: '丢弃本地输入',
+    discardSavedWarning: '这只会删除保存在此 Desktop 上的输入，不会取消后端可能已接受的工作，该工作仍可能完成。如果要保留重试标识，请改为重试已保存的输入。',
     disbanding: '正在解散…',
     disbandDone: '已解散',
     disbanded: group => `已解散“${group}”`,
@@ -1056,6 +1076,11 @@ const zhHant: BotsMessages = {
     disbandHint: group => `解散 ${group} 群組聊天`,
     disbandLabel: group => `解散 ${group}`,
     disbandAction: '解散',
+    hostedDiscussion: '討論由後端協調。',
+    discardSavedInput: '捨棄已儲存的輸入',
+    discardSavedTitle: '捨棄已儲存的輸入？',
+    discardLocalInput: '捨棄本機輸入',
+    discardSavedWarning: '這只會刪除儲存在此 Desktop 上的輸入，不會取消後端可能已接受的工作，該工作仍可能完成。如果要保留重試識別資訊，請改為重試已儲存的輸入。',
     disbanding: '正在解散…',
     disbandDone: '已解散',
     disbanded: group => `已解散「${group}」`,

@@ -1,18 +1,23 @@
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import type { ComponentProps } from 'react'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
 import type * as Client from './hosted-room-client'
 import type * as Controls from './hosted-room-controls'
 import { hostedPendingActions, hostedRoomKey } from './hosted-room-protocol'
+import { translateBots } from './i18n-test-helper'
 import type { Attachment } from './types'
 
 const { host } = vi.hoisted(() => ({ host: {} as Record<string, unknown> }))
 vi.mock('@hermes/plugin-sdk', async () => {
   const { pluginSdkMock } = await import('./group-test-utils')
+  const { useStore } = await import('@nanostores/react')
 
   return {
     ...await pluginSdkMock(host),
+    useValue: useStore,
+    usePluginI18n: () => translateBots,
+    ConfirmDialog: (await import('../../components/ui/confirm-dialog')).ConfirmDialog,
     Button: ({ size: _size, variant: _variant, ...props }: ComponentProps<'button'> & { size?: string, variant?: string }) => <button type="button" {...props} />,
     RowButton: (props: ComponentProps<'button'>) => <button type="button" {...props} />,
     Codicon: () => null,
@@ -58,7 +63,44 @@ beforeEach(async () => {
   vi.spyOn(client, 'fetchHostedAttachment').mockResolvedValue({ ...attachment, data: 'data:text/plain;base64,dGVzdA==' })
 })
 
-afterEach(() => { cleanup(); vi.restoreAllMocks() })
+afterEach(() => { cleanup(); vi.useRealTimers(); vi.restoreAllMocks() })
+
+it('stops fetching on error and resumes polling after explicit successful refresh', async () => {
+  vi.useFakeTimers()
+  vi.mocked(client.refreshHostedRoom).mockImplementationOnce(async () => {
+    client.$hostedRooms.set({ [key]: { ...client.$hostedRooms.get()[key], error: 'mock outage' } })
+  }).mockImplementation(async () => {
+    client.$hostedRooms.set({ [key]: { ...client.$hostedRooms.get()[key], error: undefined } })
+  })
+  const view = render(<controls.HostedRoomStatus roomKey={key} visible />)
+  await act(async () => { await vi.advanceTimersByTimeAsync(6000) })
+  expect(client.refreshHostedRoom).toHaveBeenCalledTimes(1)
+  await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Refresh room' })) })
+  expect(client.refreshHostedRoom).toHaveBeenCalledTimes(2)
+  await act(async () => { await vi.advanceTimersByTimeAsync(4000) })
+  expect(client.refreshHostedRoom).toHaveBeenCalledTimes(4)
+  view.unmount()
+  await act(async () => { await vi.advanceTimersByTimeAsync(4000) })
+  expect(client.refreshHostedRoom).toHaveBeenCalledTimes(4)
+})
+
+it('requires confirmation to discard only the identified local input and warns backend work may still complete', async () => {
+  const discard = vi.fn().mockResolvedValue(undefined)
+  vi.spyOn(client, 'discardHostedInput').mockImplementation(discard)
+  client.$hostedRooms.set({ [key]: { ...client.$hostedRooms.get()[key],
+    pending: { eventId: 'saved-id', text: 'saved text', threadId: 'saved-thread' } } })
+  render(<controls.HostedRoomStatus roomKey={key} visible={false} />)
+  fireEvent.click(screen.getByRole('button', { name: 'Discard saved input' }))
+  expect(discard).not.toHaveBeenCalled()
+  expect(screen.getByRole('dialog').textContent).toMatch(/does not cancel.*may still complete/i)
+  fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+  expect(discard).not.toHaveBeenCalled()
+  fireEvent.click(screen.getByRole('button', { name: 'Discard saved input' }))
+  act(() => client.$hostedRooms.set({ [key]: { ...client.$hostedRooms.get()[key],
+    pending: { eventId: 'newer-id', text: 'newer text', threadId: 'newer-thread' } } }))
+  fireEvent.click(screen.getByRole('button', { name: 'Discard local input' }))
+  await waitFor(() => expect(discard).toHaveBeenCalledExactlyOnceWith(key, 'saved-id'))
+})
 
 it('shows the actual command as inert text and sends the exact request with once/deny only', () => {
   render(<controls.HostedRoomStatus roomKey={key} visible={false} />)

@@ -292,7 +292,7 @@ export async function sendHostedInput(
   try {
     let pending = await storage().get<PendingInput | null>(pendingKey(key), null)
 
-    if (pending && text !== undefined && (pending.text !== text.trim() || (threadId && pending.threadId !== threadId) ||
+    if (pending && text !== undefined && (pending.text !== text.trim() || pending.threadId !== threadId ||
         (attachments !== undefined && !sameAttachments(pending.attachments || [], attachments)))) {
       throw new Error('Resolve the pending input before sending another message')
     }
@@ -301,13 +301,13 @@ export async function sendHostedInput(
       const picked = attachments || []
 
       if (!text?.trim() && !picked.length) {throw new Error('Enter a message or attach a file')}
-      prepareHostedMessageAttachments(picked)
+      const prepared = prepareHostedMessageAttachments(picked)
       // Ids and bytes are frozen HERE, before the first network call: a retry re-stages the
       // same uploads (idempotent on the host) rather than minting a second set.
       pending = {
         eventId: crypto.randomUUID(), text: text?.trim() || '', threadId: threadId || crypto.randomUUID(),
         ...(picked.length ? {
-          attachments: picked.map(entry => ({ ...entry, uploadId: entry.uploadId || crypto.randomUUID() }))
+          attachments: picked.map((entry, index) => ({ ...entry, name: prepared[index].name, uploadId: entry.uploadId || crypto.randomUUID() }))
         } : {})
       }
       // Failure to persist is fatal: never risk minting a second id on reload.
@@ -401,6 +401,40 @@ export async function sendHostedInput(
   if (sent) {await refreshHostedRoom(key)}
 
   return sent
+}
+
+/** Forget only the locally saved input the user confirmed, never cancel backend work. */
+export async function discardHostedInput(key: string, eventId: string): Promise<void> {
+  if (!$hostedRooms.get()[key] || operations.has(key)) {
+    throw new Error('A room operation is active or the room is unavailable. Try again when it finishes.')
+  }
+
+  operations.add(key)
+  bump(key)
+  patchRoom(key, { busy: true })
+
+  try {
+    const store = storage()
+    const pending = await store.get<PendingInput | null>(pendingKey(key), null)
+
+    if (!eventId || pending?.eventId !== eventId) {
+      throw new Error('The saved input changed. Refresh the room before discarding it.')
+    }
+
+    await store.remove(pendingKey(key))
+
+    if (await store.get<PendingInput | null>(pendingKey(key), null) !== null) {
+      throw new Error('Desktop could not verify removal of the saved input. Retry the discard.')
+    }
+
+    patchRoom(key, { pending: undefined, error: undefined })
+  } catch (error) {
+    patchRoom(key, { error: message(error) })
+    throw error
+  } finally {
+    operations.delete(key)
+    patchRoom(key, { busy: false, loading: false })
+  }
 }
 
 /** Fetch one committed attachment's bytes on explicit request. Replay stays metadata-only, so

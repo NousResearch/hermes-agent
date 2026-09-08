@@ -139,6 +139,38 @@ describe('attachment preflight before durable admission', () => {
   const file = { kind: 'file' as const, name: 'mock.txt', data: 'data:text/plain;base64,dGVzdA==' }
 
   it.each([
+    ['  mock.txt  ', 'mock.txt'],
+    ['\u001c\u0085mock.txt\u0085\u001f', 'mock.txt'],
+    ['a'.repeat(255), 'a'.repeat(255)],
+    ['\u{1f600}'.repeat(255), '\u{1f600}'.repeat(255)]
+  ])('normalizes the filename before persistence and accepts the native receipt (%#)', async (name, normalized) => {
+    caps.methods = [...baseCapabilities.methods, 'groups.attachment.put', 'groups.attachment.read']
+    caps.features = [...baseCapabilities.features, 'attachment_ids']
+    rpc.mockImplementation(async (...args) => {
+      if (args[1] === 'groups.attachment.put') {
+        const input = args[2]
+        expect(disk.get(pendingKey)).toMatchObject({ attachments: [{ name: normalized }] })
+
+        return { attachment: { attachment_id: `att_${'a'.repeat(32)}`, kind: input.kind,
+          mime: input.mime, name: normalized, size: 4 } }
+      }
+
+      return respond(...args)
+    })
+    expect(await client.sendHostedInput(key, '', null, [{ ...file, name }])).toBe(true)
+    expect(sentCalls()[0][2]).toMatchObject({ payload: { attachments: [{ name: normalized }] } })
+  })
+
+  it('rejects invalid native basenames before saving any pending input', async () => {
+    for (const name of ['', '  ', '.', '..', 'a/b', 'a\\b', 'a\u0000b', 'a\nb', 'a\rb', 'a'.repeat(256), '\ud800']) {
+      expect(await client.sendHostedInput(key, '', null, [{ ...file, name }])).toBe(false)
+      expect(disk.get(pendingKey)).toBeUndefined()
+      expect(cache().pending).toBeUndefined()
+      expect(rpc).not.toHaveBeenCalled()
+    }
+  })
+
+  it.each([
     ['too many files', Array.from({ length: 9 }, () => ({ ...file }))],
     ['missing bytes', [{ ...file, data: '' }]],
     ['invalid base64 padding', [{ ...file, data: 'data:text/plain;base64,QQ=Q' }]],
@@ -223,6 +255,19 @@ describe('ownership and capabilities', () => {
 })
 
 describe('durable send and acknowledgements', () => {
+  it('does not consume a fresh main draft as a saved reply retry before pending hydration', async () => {
+    const pending = { eventId: 'saved-event', text: 'continue', threadId: 'saved-reply' }
+    disk.set(pendingKey, pending)
+    const onQueued = vi.fn()
+    expect(cache().pending).toBeUndefined()
+    expect(await client.sendHostedInput(key, 'continue', null, [], onQueued)).toBe(false)
+    expect(onQueued).not.toHaveBeenCalled()
+    expect(rpc).not.toHaveBeenCalled()
+    expect(disk.get(pendingKey)).toEqual(pending)
+    expect(await client.sendHostedInput(key)).toBe(true)
+    expect(sentCalls()[0][2]).toMatchObject({ event_id: pending.eventId,
+      payload: { text: pending.text, thread_id: pending.threadId } })
+  })
   it('hands off the composer while admission is held, before delayed post-send refresh', async () => {
     const refreshing = deferred<void>()
     const release = deferred<void>()
@@ -286,7 +331,8 @@ describe('durable send and acknowledgements', () => {
     const nativeContext = createPluginContext('hosted-room-quota-proof')
 
     ;(await import('./shared')).setPluginCtx(nativeContext)
-    vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
+    // Node 26's test setup supplies a plain-object Storage, not Storage.prototype.
+    vi.spyOn(window.localStorage, 'setItem').mockImplementation(() => {
       throw new DOMException('Quota exceeded', 'QuotaExceededError')
     })
     expect(await client.sendHostedInput(key, 'Mock input', null, [
@@ -428,7 +474,108 @@ describe('durable send and acknowledgements', () => {
   })
 })
 
+describe('local saved-input discard', () => {
+  it('verifies removal, excludes concurrent operations and invalidates late replay without touching backend work', async () => {
+    caps.driver = false
+    expect(await client.sendHostedInput(key, 'unsendable')).toBe(false)
+    const pending = cache().pending!
+    const entered = deferred<void>()
+    const oldState = deferred<unknown>()
+    rpc.mockImplementation(async (...args) => {
+      if (args[1] === 'groups.state') {
+        entered.resolve()
+
+        return oldState.promise
+      }
+
+      return respond(...args)
+    })
+    const refreshing = client.refreshHostedRoom(key)
+    await entered.promise
+    rpc.mockClear()
+    const removing = deferred<void>()
+    const release = deferred<void>()
+    ctx.storage.remove = vi.fn(async storageKey => {
+      removing.resolve()
+      await release.promise
+      disk.delete(storageKey)
+    })
+    const discarding = client.discardHostedInput(key, pending.eventId)
+    await removing.promise
+    expect(await client.sendHostedInput(key, 'new draft')).toBe(false)
+    await client.stopHostedRoom(key)
+    await client.refreshHostedRoom(key)
+    expect(rpc).not.toHaveBeenCalled()
+    release.resolve()
+    await discarding
+    expect(disk.has(pendingKey)).toBe(false)
+    expect(cache()).toMatchObject({ busy: false, loading: false, pending: undefined, error: undefined })
+    expect(rpc).not.toHaveBeenCalled()
+    expect(await client.sendHostedInput(key, 'new saved input')).toBe(false)
+    const newer = cache().pending
+    expect(newer?.eventId).not.toBe(pending.eventId)
+    oldState.resolve({ room: baseRoom })
+    await refreshing
+    expect(cache().pending).toBe(newer)
+    expect(disk.get(pendingKey)).toEqual(newer)
+  })
+
+  it('retains pending on failed removal, rejects stale confirmation and cannot race an active send', async () => {
+    caps.driver = false
+    await client.sendHostedInput(key, 'saved')
+    const pending = cache().pending!
+    ctx.storage.remove = vi.fn(async () => {})
+    await expect(client.discardHostedInput(key, pending.eventId)).rejects.toThrow(/verify/)
+    expect(cache().pending).toEqual(pending)
+    expect(disk.get(pendingKey)).toEqual(pending)
+    ctx.storage.remove = vi.fn(async storageKey => { disk.delete(storageKey) })
+    await expect(client.discardHostedInput(key, 'stale-id')).rejects.toThrow(/changed/)
+    expect(ctx.storage.remove).not.toHaveBeenCalled()
+    expect(disk.get(pendingKey)).toEqual(pending)
+    const entered = deferred<void>()
+    const release = deferred<unknown>()
+    rpc.mockImplementation(async () => {
+      entered.resolve()
+
+      return release.promise
+    })
+    const sending = client.sendHostedInput(key)
+    await entered.promise
+    await expect(client.discardHostedInput(key, pending.eventId)).rejects.toThrow(/operation/)
+    expect(ctx.storage.remove).not.toHaveBeenCalled()
+    release.reject(new Error('mock timeout'))
+    await sending
+    expect(disk.get(pendingKey)).toEqual(pending)
+  })
+})
+
 describe('atomic replay and async ordering', () => {
+  it.each(['message.user', 'message.member', 'room.created'])('keeps the last renderable cache on invalid %s payload and recovers on valid replay', async kind => {
+    const payload = { text: 'Good text', thread_id: 'mock-thread', member_id: 'mock-member' }
+    log = [event(1, { kind: 'message.user', payload })]
+    await client.refreshHostedRoom(key)
+    const before = cache()
+    const transcript = hostedTranscript(before)
+    caps.max_log_limit = 1
+    log.push(event(2), event(3, { kind, payload: kind === 'room.created'
+      ? { legacy_history: { version: 1, sources: [] } }
+      : { ...payload, attachments: [{ attachment_id: 'invalid' }] }
+    }))
+    await client.refreshHostedRoom(key)
+    expect(cache().error).toBeTruthy()
+    expect(cache().loading).toBe(false)
+    expect(cache().cursor).toBe(before.cursor)
+    expect(cache().events).toBe(before.events)
+    expect(cache().room).toBe(before.room)
+    expect(hostedTranscript(cache())).toEqual(transcript)
+
+    log[2] = event(3, { kind, payload: kind === 'room.created' ? {} : payload })
+    await client.refreshHostedRoom(key)
+    expect(cache().error).toBeUndefined()
+    expect(cache().cursor).toBe(3)
+    expect(() => hostedTranscript(cache())).not.toThrow()
+  })
+
   it('replays multiple pages from the last validated cursor, including invisible control events', async () => {
     caps.max_log_limit = 1
     log = [event(1), event(2), event(3)]

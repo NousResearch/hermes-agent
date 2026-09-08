@@ -9,6 +9,7 @@ import sqlite3
 from collections import Counter
 
 from gateway import hosted_rooms as rooms
+from gateway import hosted_room_work_storage as storage
 from gateway.hosted_room_replica_retirement import copy_retired_locked, roster_digest
 from gateway.hosted_rooms_common import identifier, table_exists
 
@@ -22,7 +23,7 @@ MAX_STORE_ROWS = 512
 SOURCE_TABLE = "hosted_room_work_records_source"
 TARGET_TABLE = "hosted_room_work_records_target"
 PENDING_TABLE = "hosted_room_work_records_pending"
-BLOCKED_DELIVERY_STATUSES = {"rejected", "needs_reauthorization", "invalid_ack"}
+BLOCKED_DELIVERY_STATUSES = {"rejected", "needs_reauthorization", "invalid_ack", "unsupported_lineage"}
 LIMITATIONS = ["process_local_approvals_not_captured", "field_journals_not_captured",
                "external_effects_not_captured", "absent_record_is_not_non_admission", "not_execution_checkpoint"]
 _PHASES = {"queued", "running", "indeterminate", "stopping", "deferred", "settled", "failed", "cancelled"}
@@ -77,14 +78,20 @@ def _sha(value):
 
 
 def validate(record: dict) -> dict:
-    _fields(record, _FIELDS)
-    if type(record["version"]) is not int or record["version"] != VERSION:
+    v2 = isinstance(record, dict) and type(record.get("version")) is int and record["version"] == 2
+    _fields(record, _FIELDS | {"lineage_sha256", "incompleteness"} if v2 else _FIELDS)
+    if type(record["version"]) is not int or record["version"] not in {1, 2}:
         raise WorkRecordError("work record version is unsupported")
     _id(record["room_id"])
     _id(record["home_install_id"])
     _fields(record["authority"], {"gateway_id", "epoch"})
-    if record["authority"] != {"gateway_id": record["home_install_id"], "epoch": 1} or type(record["authority"]["epoch"]) is not int:
+    _integer(record["authority"]["epoch"], minimum=1)
+    if record["authority"]["gateway_id"] != record["home_install_id"] or (not v2 and record["authority"]["epoch"] != 1):
         raise WorkRecordError("work record authority is unsupported")
+    if v2:
+        _sha(record["lineage_sha256"])
+        if record["incompleteness"] != ["prior_authority_work_unknown"]:
+            raise WorkRecordError("work record incompleteness is required")
     _sha(record["roster_sha256"])
     _integer(record["revision"], minimum=1)
     _fields(record["history"], {"seq", "event_sha256"})
@@ -122,9 +129,10 @@ def validate(record: dict) -> dict:
         for name in _RECEIPT_FIELDS - {"authority_epoch", "execution_generation"}:
             _id(receipt[name])
         _integer(receipt["execution_generation"], minimum=1)
-        if (receipt["room_id"] != record["room_id"] or receipt["home_install_id"] != record["home_install_id"]
-                or receipt["authority_gateway_id"] != record["home_install_id"]
-                or type(receipt["authority_epoch"]) is not int or receipt["authority_epoch"] != 1):
+        _integer(receipt["authority_epoch"], minimum=1)
+        if (receipt["room_id"] != record["room_id"]
+                or receipt["authority_gateway_id"] != receipt["home_install_id"]
+                or (not v2 and (receipt["home_install_id"] != record["home_install_id"] or receipt["authority_epoch"] != 1))):
             raise WorkRecordError("work record receipt lineage conflicts")
         key = tuple(receipt[k] for k in sorted(_RECEIPT_FIELDS - {"run_id", "session_id"}))
         if key in receipt_ids:
@@ -148,15 +156,7 @@ def validate(record: dict) -> dict:
 
 
 def initialize(conn: sqlite3.Connection) -> None:
-    for table, parent in ((SOURCE_TABLE, "hosted_rooms"), (TARGET_TABLE, "hosted_room_replicas")):
-        conn.execute(f"""CREATE TABLE IF NOT EXISTS {table} (
-            room_id TEXT PRIMARY KEY, revision INTEGER NOT NULL, digest TEXT NOT NULL, record_json TEXT NOT NULL,
-            FOREIGN KEY(room_id) REFERENCES {parent}(room_id) ON DELETE CASCADE)""")
-    conn.execute(f"""CREATE TABLE IF NOT EXISTS {PENDING_TABLE} (
-        room_id TEXT NOT NULL, target_install_id TEXT NOT NULL, route_generation TEXT NOT NULL,
-        revision INTEGER NOT NULL, digest TEXT NOT NULL, record_json TEXT NOT NULL,
-        status TEXT NOT NULL, PRIMARY KEY(room_id,target_install_id),
-        FOREIGN KEY(room_id) REFERENCES hosted_rooms(room_id) ON DELETE CASCADE)""")
+    storage.initialize(conn)
     for operation in ("INSERT", "UPDATE"):
         conn.execute(f"""CREATE TRIGGER IF NOT EXISTS trg_work_records_active_{operation.lower()}
             BEFORE {operation} ON {TARGET_TABLE}
@@ -177,6 +177,9 @@ def initialize(conn: sqlite3.Connection) -> None:
 def initialize_retirement_guards(conn):
     """Either owner may initialize first; persist guards for older SQLite writers."""
     from gateway.hosted_room_replica_retirement import RETIREMENT_TABLE
+    storage.initialize_lineage_guards(conn)
+    if table_exists(conn, storage.INVALID_TABLE):
+        storage._invalid_guards(conn)
     if not table_exists(conn, TARGET_TABLE) or not table_exists(conn, RETIREMENT_TABLE):
         return
     for operation in ("INSERT", "UPDATE"):
@@ -190,16 +193,17 @@ def initialize_retirement_guards(conn):
         BEGIN DELETE FROM {TARGET_TABLE} WHERE room_id=NEW.room_id; END""")
 
 
-def _budget(conn, table, room_id, data, target_install_id=None):
-    total, count = 0, 0
-    for name in (SOURCE_TABLE, TARGET_TABLE, PENDING_TABLE):
-        row = conn.execute(f"SELECT COALESCE(SUM(length(CAST(record_json AS BLOB))),0),COUNT(*) FROM {name}").fetchone()
-        total, count = total + row[0], count + row[1]
+def _budget(conn, table, room_id, data, target_install_id=None, *, producer=None):
+    total_sql, count_sql = storage.usage_sql((SOURCE_TABLE, TARGET_TABLE, PENDING_TABLE, storage.INVALID_TABLE))
+    total, count = conn.execute(f"SELECT {total_sql}, {count_sql}").fetchone()
     where, args = "room_id=?", (room_id,)
     if target_install_id is not None:
         where, args = where + " AND target_install_id=?", (*args, target_install_id)
+    if producer is not None:
+        where += " AND producer_gateway_id=? AND producer_epoch=?"
+        args = (*args, producer["gateway_id"], producer["epoch"])
     old = conn.execute(f"SELECT length(CAST(record_json AS BLOB)) FROM {table} WHERE {where}", args).fetchone()
-    if total - (old[0] if old else 0) + len(data.encode("utf-8")) > MAX_STORE_BYTES or (old is None and count >= MAX_STORE_ROWS):
+    if total - (old[0] if old else 0) + len(data.encode("utf-8")) > MAX_STORE_BYTES or (count - (1 if old else 0) + 1 > MAX_STORE_ROWS):
         raise WorkRecordCapacityError("work record storage is full")
 
 
@@ -258,7 +262,7 @@ def capture(db_path, *, room_id: str, local_gateway_id: str, through_seq: int | 
 def capture_locked(conn, *, room_id, local_gateway_id, through_seq=None):
     initialize(conn)
     room = conn.execute("SELECT * FROM hosted_rooms WHERE room_id=?", (room_id,)).fetchone()
-    if (room is None or room["authority_gateway_id"] != local_gateway_id or room["authority_epoch"] != 1
+    if (room is None or room["authority_gateway_id"] != local_gateway_id
             or conn.execute("SELECT 1 FROM hosted_room_quarantine WHERE room_id=?", (room_id,)).fetchone()):
         raise WorkRecordError("work record source is unavailable")
     seq = room["next_seq"] - 1
@@ -269,8 +273,8 @@ def capture_locked(conn, *, room_id, local_gateway_id, through_seq=None):
     stop = conn.execute("""SELECT seq,payload_json FROM hosted_room_events
         WHERE room_id=? AND kind='room.stop_requested' ORDER BY seq DESC LIMIT 1""", (room_id,)).fetchone()
     content = {
-        "version": VERSION, "room_id": room_id, "home_install_id": local_gateway_id,
-        "authority": {"gateway_id": local_gateway_id, "epoch": 1},
+        "version": 1 if room["authority_epoch"] == 1 else 2, "room_id": room_id, "home_install_id": local_gateway_id,
+        "authority": {"gateway_id": local_gateway_id, "epoch": room["authority_epoch"]},
         "roster_sha256": roster_digest(json.loads(room["members_json"])),
         "history": {"seq": seq, "event_sha256": history_anchor(conn, "hosted_room_events", room_id, seq)},
         "availability": "unavailable" if reason else "available", "reason": reason,
@@ -278,7 +282,13 @@ def capture_locked(conn, *, room_id, local_gateway_id, through_seq=None):
         "stop": {"closing": fence is not None, "revocation_complete": fence is not None and fence[0] is not None,
                  "seq": stop["seq"] if stop else 0, "cancel_id": json.loads(stop["payload_json"]).get("cancel_id") if stop else None},
     }
-    previous = conn.execute(f"SELECT * FROM {SOURCE_TABLE} WHERE room_id=?", (room_id,)).fetchone()
+    spans = None
+    if content["version"] == 2:
+        from gateway import hosted_room_work_lineage as lineage
+        spans, content["lineage_sha256"] = lineage.source_prefix_locked(conn, room_id, content["authority"], seq)
+        content["incompleteness"] = ["prior_authority_work_unknown"]
+    previous = conn.execute(f"SELECT * FROM {SOURCE_TABLE} WHERE room_id=? AND producer_gateway_id=? AND producer_epoch=?",
+                            storage.scope(content)).fetchone()
     revision = previous["revision"] + 1 if previous else 1
     record = {**content, "revision": revision, "digest": digest(content)}
     if len(encode(record).encode("utf-8")) > MAX_BYTES:
@@ -287,6 +297,8 @@ def capture_locked(conn, *, room_id, local_gateway_id, through_seq=None):
     try:
         validate(record)
         _validate_roster(record, json.loads(room["members_json"]))
+        if spans is not None:
+            lineage.validate_provenance(record, spans)
     except WorkRecordError:
         if reason is not None:
             raise
@@ -294,9 +306,7 @@ def capture_locked(conn, *, room_id, local_gateway_id, through_seq=None):
         record = validate({**content, "revision": revision, "digest": digest(content)})
     if previous is not None and previous["digest"] == record["digest"]:
         return json.loads(previous["record_json"])
-    data = encode(record)
-    _budget(conn, SOURCE_TABLE, room_id, data)
-    conn.execute(f"INSERT OR REPLACE INTO {SOURCE_TABLE} VALUES (?,?,?,?)", (room_id, revision, record["digest"], data))
+    storage.save_locked(conn, SOURCE_TABLE, record)
     return record
 
 
@@ -343,7 +353,7 @@ def _ingest_audited_locked(conn, *, checked, row, token, secret, target_install_
     from gateway.hosted_room_passive_lineage import current_locked
     enrolled = current_locked(conn, room_id)
     # The retained prefix may still say epoch 1 after owner enrollment advances.
-    # V1 has no producer-scoped storage: never overwrite it for a later sender.
+    # Historical evidence is not writable through an old enrolled sender.
     if enrolled is not None and checked["authority"] != {
         "gateway_id": enrolled["authority_gateway_id"], "epoch": enrolled["authority_epoch"],
     }:
@@ -351,23 +361,26 @@ def _ingest_audited_locked(conn, *, checked, row, token, secret, target_install_
     if checked["authority"] != {"gateway_id": row["authority_gateway_id"], "epoch": row["authority_epoch"]}:
         raise WorkRecordError("work record lineage conflicts")
     _validate_roster(checked, members)
+    if checked["version"] == 2:
+        from gateway.hosted_room_work_lineage import target_prefix_locked
+        target_prefix_locked(conn, row, checked)
     prefix = checked["history"]
     if prefix["seq"] > row["last_seq"] or prefix["event_sha256"] != history_anchor(
         conn, "hosted_room_replica_events", room_id, prefix["seq"],
     ):
         raise WorkRecordPrefixError("work record history prefix conflicts")
-    old = conn.execute(f"SELECT * FROM {TARGET_TABLE} WHERE room_id=?", (room_id,)).fetchone()
+    old = conn.execute(f"SELECT * FROM {TARGET_TABLE} WHERE room_id=? AND producer_gateway_id=? AND producer_epoch=?", storage.scope(checked)).fetchone()
     if old is not None:
         previous = json.loads(old["record_json"])
         if checked["revision"] < old["revision"] or (checked["revision"] == old["revision"] and checked["digest"] != old["digest"]):
             raise WorkRecordError("work record revision conflicts")
         if prefix["seq"] < previous["history"]["seq"]:
             raise WorkRecordError("work record history regresses")
-    data = encode(checked)
-    _budget(conn, TARGET_TABLE, room_id, data)
-    conn.execute(f"INSERT OR REPLACE INTO {TARGET_TABLE} VALUES (?,?,?,?)",
-                 (room_id, checked["revision"], checked["digest"], data))
-    return {"room_id": room_id, "revision": checked["revision"], "digest": checked["digest"], "passive": True}
+    storage.save_locked(conn, TARGET_TABLE, checked)
+    ack = {"room_id": room_id, "revision": checked["revision"], "digest": checked["digest"], "passive": True}
+    if checked["version"] == 2:
+        ack.update(version=2, authority=checked["authority"], lineage_sha256=checked["lineage_sha256"])
+    return ack
 
 
 def discard_retired_locked(conn, room_id):
@@ -379,7 +392,8 @@ def pending_delivery_is_anchored_locked(conn, *, room_id, target_install_id, thr
     """Routing hint only; transmission still revalidates the exact pending record."""
     if not table_exists(conn, PENDING_TABLE):
         return False
-    row = conn.execute(f"SELECT status,record_json FROM {PENDING_TABLE} WHERE room_id=? AND target_install_id=?",
+    initialize(conn)
+    row = conn.execute(f"SELECT status,record_json FROM {PENDING_TABLE} WHERE room_id=? AND target_install_id=? AND disposition='current'",
                        (room_id, target_install_id)).fetchone()
     if row is None or row["status"] == "acked":
         return False
@@ -393,8 +407,13 @@ def pending_delivery_is_anchored_locked(conn, *, room_id, target_install_id, thr
 def prepare_delivery_locked(conn, *, room_id, target_install_id, route_generation, local_gateway_id, through_seq):
     """Freeze a source view now; expose it only after its history is acknowledged."""
     initialize(conn)
-    key = (room_id, target_install_id)
-    old = conn.execute(f"SELECT * FROM {PENDING_TABLE} WHERE room_id=? AND target_install_id=?", key).fetchone()
+    current = conn.execute("SELECT authority_gateway_id,authority_epoch FROM hosted_rooms WHERE room_id=?", (room_id,)).fetchone()
+    if current is None or current["authority_gateway_id"] != local_gateway_id:
+        raise WorkRecordError("work record source is unavailable")
+    key = (room_id, current["authority_gateway_id"], current["authority_epoch"], target_install_id)
+    old = conn.execute(f"SELECT * FROM {PENDING_TABLE} WHERE room_id=? AND producer_gateway_id=? AND producer_epoch=? AND target_install_id=?", key).fetchone()
+    if old is not None and old["disposition"] != "current":
+        raise WorkRecordError("pending work record is not current")
     if old is not None and old["status"] != "acked":
         if old["route_generation"] == route_generation and old["status"] in BLOCKED_DELIVERY_STATUSES:
             return None
@@ -408,37 +427,87 @@ def prepare_delivery_locked(conn, *, room_id, target_install_id, route_generatio
         record = capture_locked(conn, room_id=room_id, local_gateway_id=local_gateway_id)
         if old is not None and (old["revision"], old["digest"]) == (record["revision"], record["digest"]):
             return None
-    data = encode(record)
-    _budget(conn, PENDING_TABLE, room_id, data, target_install_id)
-    conn.execute(f"INSERT OR REPLACE INTO {PENDING_TABLE} VALUES (?,?,?,?,?,?,?)",
-                 (*key, route_generation, record["revision"], record["digest"], data, "pending"))
+    if old is not None and old["status"] != "acked":
+        # A legitimate migrated JSON spelling is still immutable pending bytes.
+        conn.execute(f"""UPDATE {PENDING_TABLE} SET route_generation=?,status='pending'
+            WHERE room_id=? AND producer_gateway_id=? AND producer_epoch=? AND target_install_id=?
+            AND disposition='current'""", (route_generation, *key))
+    else:
+        storage.save_locked(conn, PENDING_TABLE, record, target_install_id=target_install_id, route_generation=route_generation)
     # Persist the anchor even while history is behind. Recapturing the moving
     # source tip on each attempt can otherwise starve a busy group indefinitely.
     return record if record["history"]["seq"] <= through_seq else None
 
 
 def delivery_status_locked(conn, *, room_id, target_install_id, route_generation, record, status):
+    storage.reconcile_locked(conn)
     return conn.execute(f"""UPDATE {PENDING_TABLE} SET status=? WHERE room_id=? AND target_install_id=?
-        AND route_generation=? AND revision=? AND digest=?""",
-                        (status, room_id, target_install_id, route_generation, record["revision"], record["digest"])).rowcount == 1
+        AND route_generation=? AND revision=? AND digest=? AND producer_gateway_id=? AND producer_epoch=?
+        AND disposition='current'""",
+        (status, room_id, target_install_id, route_generation, record["revision"], record["digest"],
+         record["authority"]["gateway_id"], record["authority"]["epoch"])).rowcount == 1
 
 
 def delivery_summaries_locked(conn, room_id=None):
     if not table_exists(conn, PENDING_TABLE):
         return []
-    return [dict(row) for row in conn.execute(f"""SELECT room_id,target_install_id,revision,digest,status
-        FROM {PENDING_TABLE} WHERE (? IS NULL OR room_id=?) ORDER BY room_id,target_install_id""", (room_id, room_id))]
+    initialize(conn)
+    summaries = []
+    fields = ("room_id", "target_install_id", "revision", "digest", "status", "producer_gateway_id", "producer_epoch", "disposition")
+    for row in conn.execute(f"SELECT * FROM {PENDING_TABLE} WHERE (? IS NULL OR room_id=?) ORDER BY room_id,target_install_id", (room_id, room_id)):
+        item = {k: row[k] for k in fields}
+        item["source_loss_safe"] = False
+        try:
+            record = storage.validate_stored(row)
+            if row["disposition"] == "invalid":
+                raise WorkRecordError("invalid evidence")
+            item["incompleteness"] = record.get("incompleteness", [])
+            if record["availability"] != "available":
+                item["incompleteness"] = [*item["incompleteness"], "work_evidence_unknown"]
+        except (WorkRecordError, ValueError, TypeError, KeyError):
+            item.update(disposition="invalid", incompleteness=["invalid_work_evidence"])
+        summaries.append(item)
+    for row in conn.execute(f"SELECT * FROM {storage.INVALID_TABLE} WHERE source_table=? AND (? IS NULL OR room_id=?)",
+                            (PENDING_TABLE, room_id, room_id)):
+        summaries.append({**{k: row[k] for k in fields if k not in {"producer_gateway_id", "producer_epoch"}},
+                          "producer_gateway_id": None, "producer_epoch": None,
+                          "source_loss_safe": False, "incompleteness": ["invalid_work_evidence"]})
+    return summaries
 
 
 def summary_locked(conn, room_id):
+    missing = {"availability": "not_retained", "source_loss_safe": False, "incompleteness": ["work_evidence_unknown"]}
     if not table_exists(conn, TARGET_TABLE):
-        return {"availability": "not_retained", "source_loss_safe": False}
-    row = conn.execute(f"SELECT record_json FROM {TARGET_TABLE} WHERE room_id=?", (room_id,)).fetchone()
-    if row is None:
-        return {"availability": "not_retained", "source_loss_safe": False}
-    record = validate(json.loads(row[0]))
-    return {"mode": "passive_work_records", "source_loss_safe": False,
-            **{k: record[k] for k in ("revision", "digest", "history", "availability", "reason", "stop", "limitations")},
-            "task_count": len(record["tasks"]), "receipt_count": len(record["receipts"]),
-            "phases": dict(Counter(t["phase"] for t in record["tasks"])),
-            "tasks": record["tasks"], "receipts": record["receipts"]}
+        return missing
+    initialize(conn)
+    from gateway.hosted_room_passive_lineage import current_locked, enrolled_history
+    enrolled = current_locked(conn, room_id)
+    head = conn.execute("SELECT authority_gateway_id,authority_epoch FROM hosted_room_replicas WHERE room_id=?", (room_id,)).fetchone()
+    current = enrolled if enrolled is not None else head
+    scopes, selected = [], None
+    for row in conn.execute(f"SELECT * FROM {TARGET_TABLE} WHERE room_id=? ORDER BY producer_epoch", (room_id,)):
+        producer = {"gateway_id": row["producer_gateway_id"], "epoch": row["producer_epoch"]}
+        item = {"producer": producer, "disposition": row["disposition"], "source_loss_safe": False}
+        try:
+            if row["disposition"] == "invalid":
+                raise WorkRecordError("stored work evidence is explicitly invalid")
+            record = storage.validate_stored(row)
+            item.update({k: record[k] for k in ("revision", "digest", "history", "availability", "reason", "stop", "limitations")})
+            item.update(task_count=len(record["tasks"]), receipt_count=len(record["receipts"]),
+                phases=dict(Counter(t["phase"] for t in record["tasks"])), tasks=record["tasks"], receipts=record["receipts"],
+                incompleteness=record.get("incompleteness", []))
+            if record["availability"] != "available":
+                item["incompleteness"] = [*item["incompleteness"], "work_evidence_unknown"]
+            if record["version"] == 2 and enrolled is not None:
+                from gateway.hosted_room_work_lineage import task_origins
+                item["task_origins"] = task_origins(record, enrolled_history(enrolled))
+        except (WorkRecordError, ValueError, TypeError):
+            item.update(availability="invalid", incompleteness=["invalid_work_evidence"])
+        if row["disposition"] == "current" and current is not None and producer == {"gateway_id": current["authority_gateway_id"], "epoch": current["authority_epoch"]}:
+            selected = item
+        scopes.append(item)
+    for row in conn.execute(f"SELECT source_table FROM {storage.INVALID_TABLE} WHERE room_id=? AND source_table=?",
+                            (room_id, TARGET_TABLE)):
+        scopes.append({"producer": None, "disposition": "invalid", "availability": "invalid",
+                       "source_loss_safe": False, "incompleteness": ["invalid_work_evidence"]})
+    return {"mode": "passive_work_records", **(selected or missing), "scopes": scopes}

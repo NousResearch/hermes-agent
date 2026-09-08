@@ -161,6 +161,8 @@ class HostedRoomReplicationPublisher:
                     conn.execute(f"ALTER TABLE {table} ADD COLUMN pending_lineage_sha256 TEXT")
             if "passive_version" not in {r["name"] for r in conn.execute(f"PRAGMA table_info({_TABLE})")}:
                 conn.execute(f"ALTER TABLE {_TABLE} ADD COLUMN passive_version INTEGER")
+            if "work_record_version" not in {r["name"] for r in conn.execute(f"PRAGMA table_info({_TABLE})")}:
+                conn.execute(f"ALTER TABLE {_TABLE} ADD COLUMN work_record_version INTEGER")
 
     @contextmanager
     def _transaction(self):
@@ -351,7 +353,7 @@ class HostedRoomReplicationPublisher:
                 target_install_id=excluded.target_install_id, target_profile=excluded.target_profile,
                 authority_gateway_id=excluded.authority_gateway_id, authority_epoch=excluded.authority_epoch,
                 acked_seq=0, source_latest_seq=0, pending_end=NULL, pending_latest=NULL,
-                pending_name=NULL, pending_lineage_sha256=NULL, passive_version=NULL,
+                pending_name=NULL, pending_lineage_sha256=NULL, passive_version=NULL, work_record_version=NULL,
                 status='pending', work_record_status='pending', updated_at=excluded.updated_at
                 WHERE generation!=excluded.generation""", (
                     *route.key, route.generation, route.link.catalog.installation_id, route.link.target_profile,
@@ -394,7 +396,7 @@ class HostedRoomReplicationPublisher:
             ).fetchall()
             target = conn.execute(f"SELECT * FROM {_TARGET_TABLE} WHERE room_id=? AND target_install_id=?",
                                   (initial.key[0], initial.link.catalog.installation_id)).fetchone()
-            work_ready = (initial.room["authority_epoch"] == 1 and target is not None
+            work_ready = (target is not None
                           and (target["acked_seq"] > 0 or target["status"] == "acked")
                           and work_records.pending_delivery_is_anchored_locked(
                               conn, room_id=initial.key[0], target_install_id=initial.link.catalog.installation_id,
@@ -415,8 +417,11 @@ class HostedRoomReplicationPublisher:
             route = _Route((link.room_id, link.member_id), link, room, _generation(link, room))
             checkpoint = self._checkpoint(route)
             if checkpoint is not None and checkpoint["status"] not in _BLOCKED:
-                opted_in = (room["authority_epoch"] == 1
-                            and work_records.PERMISSION in _replication_hint(link.grant).get("permissions", ()))
+                # Unknown capability gets one normal negotiation attempt, not a
+                # blind v2 send. Known history-only peers cannot starve a capable
+                # alternate; the exact generation cache resets on replacement.
+                opted_in = (work_records.PERMISSION in _replication_hint(link.grant).get("permissions", ())
+                            and (room["authority_epoch"] == 1 or checkpoint["work_record_version"] in (None, 2)))
                 refused = checkpoint["work_record_status"] in work_records.BLOCKED_DELIVERY_STATUSES
                 work_rank = 2 if opted_in and refused else 0 if opted_in else 1
                 unavailable = checkpoint["status"] == "unavailable"
@@ -479,7 +484,7 @@ class HostedRoomReplicationPublisher:
         cached = self._checkpoint(route)
         if cached is None or cached["status"] in _BLOCKED:
             return False, None
-        if cached["passive_version"] == 2:
+        if cached["passive_version"] == 2 and cached["work_record_version"] is not None:
             return True, None
         try:
             proof = client.probe(grant=route.link.grant)
@@ -492,8 +497,9 @@ class HostedRoomReplicationPublisher:
         with self._transaction() as conn:
             if not self._current(conn, route):
                 return False, None
-            conn.execute(f"UPDATE {_TABLE} SET passive_version=2 WHERE room_id=? AND member_id=? AND generation=?",
-                         (*route.key, route.generation))
+            work_version = 2 if 2 in proof["passive_replication"]["work_record_versions"] else 0
+            conn.execute(f"UPDATE {_TABLE} SET passive_version=2, work_record_version=? WHERE room_id=? AND member_id=? AND generation=?",
+                         (work_version, *route.key, route.generation))
         return True, proof
 
     def _publish_locked(self, route: _Route) -> bool:
@@ -598,9 +604,10 @@ class HostedRoomReplicationPublisher:
         if work_records.PERMISSION not in _replication_hint(route.link.grant).get("permissions", ()):
             return False
         if route.room["authority_epoch"] != 1:
-            # Preserve old pending bytes/outcomes; history has its own progress.
-            self._record_work_failure(route, "unsupported_lineage")
-            return False
+            cached = self._checkpoint(route)
+            if cached is None or cached["work_record_version"] != 2:
+                self._record_work_failure(route, "unsupported_lineage")
+                return False
         try:
             with self._transaction() as conn:
                 if not self._current(conn, route):
@@ -618,7 +625,7 @@ class HostedRoomReplicationPublisher:
                     conn.execute(f"""UPDATE {_TABLE} SET work_record_status='acked'
                         WHERE room_id=? AND member_id=? AND generation=? AND EXISTS (
                             SELECT 1 FROM {work_records.PENDING_TABLE}
-                            WHERE room_id=? AND target_install_id=? AND status='acked')""",
+                            WHERE room_id=? AND target_install_id=? AND status='acked' AND disposition='current')""",
                         (*route.key, route.generation, route.key[0], route.link.catalog.installation_id))
             history_confirmed = checkpoint["acked_seq"] > 0 or checkpoint["status"] == "acked"
             if record is None or not history_confirmed or self._stop.is_set():
@@ -629,7 +636,11 @@ class HostedRoomReplicationPublisher:
                 reply = client.replicate_work_records(grant=route.link.grant, target_profile=route.link.target_profile, record=record)
                 if (not isinstance(reply, dict) or reply.get("room_id") != route.key[0]
                         or type(reply.get("revision")) is not int or reply["revision"] != record["revision"]
-                        or reply.get("digest") != record["digest"] or reply.get("passive") is not True):
+                        or reply.get("digest") != record["digest"] or reply.get("passive") is not True
+                        or (record["version"] == 2 and (type(reply.get("version")) is not int or reply["version"] != 2
+                            or reply.get("authority") != record["authority"]
+                            or type(reply["authority"].get("epoch")) is not int
+                            or reply.get("lineage_sha256") != record["lineage_sha256"]))):
                     status = "invalid_ack"
             except PeerRunsHTTPError as exc:
                 status = "unavailable"

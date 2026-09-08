@@ -2,8 +2,7 @@
 
 
 def passive_capabilities():
-    # Phase A integrates legacy work evidence, not later-lineage work-record v2.
-    return {"history_versions": [1, 2], "retirement_versions": [1, 2], "work_record_versions": [1]}
+    return {"history_versions": [1, 2], "retirement_versions": [1, 2], "work_record_versions": [1, 2]}
 
 
 def supports_lineage(response):

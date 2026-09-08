@@ -1,6 +1,7 @@
 """A v1 prefix header is not authorization for a successor-enrolled copy."""
 
 import pytest
+import sqlite3
 
 from gateway import hosted_room_driver as driver
 from gateway import hosted_room_replicas as replicas
@@ -37,6 +38,9 @@ def test_old_v1_work_cannot_update_a_successor_enrolled_initial_prefix(pair):
         enrollment_id="successor", replace_enrollment_id="original")
     retirement.enroll_target(target, enrollment=successor, target_install_id=TARGET,
         authority_history=spans, expected_enrollment_id="original")
+    with sqlite3.connect(target) as raw:
+        with pytest.raises(sqlite3.IntegrityError, match="historical"):
+            raw.execute(f"UPDATE {records.TARGET_TABLE} SET record_json=? WHERE room_id='room'", (records.encode(late),))
     state = replicas.replica_state(target, room_id="room")
     assert state["authority"] == first["authority"]
     assert state["source_authority"] == {"gateway_id": SUCCESSOR, "epoch": 2}
@@ -50,4 +54,7 @@ def test_old_v1_work_cannot_update_a_successor_enrolled_initial_prefix(pair):
     fresh, _ = grant(target, permissions=("status", "replicate", "work_records"), grant_id="successor",
         home_install_id=SUCCESSOR, authority_gateway_id=SUCCESSOR, authority_epoch=2)
     assert ingest(pair, fresh, page=rooms.read_events(source, room_id="room", replica_version=2))["lineage_status"] == "verified"
-    assert replicas.replica_state(target, room_id="room")["work_records"]["digest"] == first["digest"]
+    work = replicas.replica_state(target, room_id="room")["work_records"]
+    assert work["availability"] == "not_retained"
+    assert work["scopes"][0]["digest"] == first["digest"]
+    assert work["scopes"][0]["disposition"] == "historical"

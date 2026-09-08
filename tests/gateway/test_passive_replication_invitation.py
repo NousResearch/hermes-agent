@@ -43,7 +43,8 @@ async def test_passive_invitation_can_copy_but_cannot_execute(setup, surface, wo
         assert set(claims["permissions"]) == {"status", "replicate"} | ({"work_records"} if work_records else set())
         versions = result["passive_replication"]
         assert 2 in versions["history_versions"] and 2 in versions["retirement_versions"]
-        assert versions["work_record_versions"] == [records.VERSION]
+        assert records.VERSION in versions["work_record_versions"]
+        assert 2 in versions["work_record_versions"]
         assert records.VERSION == 1  # Phase A cannot advertise later-lineage work support.
         assert result["work_records_version"] == records.VERSION
         assert peer.GatewayRoomCatalog.from_mapping(result["catalog"]).catalog_digest == result["catalog"]["catalog_digest"]

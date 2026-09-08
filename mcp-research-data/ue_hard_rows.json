@@ -1,0 +1,2541 @@
+[
+ {
+  "scenario_id": "V1_static_material",
+  "mode": "listing",
+  "rep": 1,
+  "n_tools_registered": 830,
+  "elapsed_seconds": 7.89,
+  "api_calls": 2,
+  "prompt_tokens_total": 109361,
+  "first_tool": [
+   "set",
+   "material"
+  ],
+  "first_correct": true,
+  "final_correct": true,
+  "wrong_calls": 0,
+  "success": true,
+  "ue_calls": [
+   "editor_toolset_toolsets_static_mesh_StaticMeshTools_set_material"
+  ],
+  "bridge_calls": [
+   [
+    "tool_call",
+    "editor_toolset_toolsets_static_mesh_StaticMeshTools_set_material"
+   ]
+  ],
+  "error": null,
+  "final_response": "Done."
+ },
+ {
+  "scenario_id": "V1_static_material",
+  "mode": "listing",
+  "rep": 2,
+  "n_tools_registered": 830,
+  "elapsed_seconds": 15.43,
+  "api_calls": 2,
+  "prompt_tokens_total": 109356,
+  "first_tool": [
+   "set",
+   "material"
+  ],
+  "first_correct": true,
+  "final_correct": true,
+  "wrong_calls": 0,
+  "success": true,
+  "ue_calls": [
+   "editor_toolset_toolsets_static_mesh_StaticMeshTools_set_material"
+  ],
+  "bridge_calls": [
+   [
+    "tool_call",
+    "editor_toolset_toolsets_static_mesh_StaticMeshTools_set_material"
+   ]
+  ],
+  "error": null,
+  "final_response": "Done."
+ },
+ {
+  "scenario_id": "V1_static_material",
+  "mode": "bridge",
+  "rep": 1,
+  "n_tools_registered": 830,
+  "elapsed_seconds": 24.52,
+  "api_calls": 6,
+  "prompt_tokens_total": 177668,
+  "first_tool": [
+   "material",
+   "slots"
+  ],
+  "first_correct": false,
+  "final_correct": true,
+  "wrong_calls": 0,
+  "success": true,
+  "ue_calls": [
+   "editor_toolset_toolsets_static_mesh_StaticMeshTools_get_material_slots",
+   "editor_toolset_toolsets_static_mesh_StaticMeshTools_set_material",
+   "editor_toolset_toolsets_static_mesh_StaticMeshTools_get_material"
+  ],
+  "bridge_calls": [
+   [
+    "tool_search",
+    "assign material to slot on static mesh asset"
+   ],
+   [
+    "tool_describe",
+    "editor_toolset_toolsets_static_mesh_StaticMeshTools_get_material_slots"
+   ],
+   [
+    "tool_describe",
+    "editor_toolset_toolsets_static_mesh_StaticMeshTools_set_material"
+   ],
+   [
+    "tool_call",
+    "editor_toolset_toolsets_static_mesh_StaticMeshTools_get_material_slots"
+   ],
+   [
+    "tool_call",
+    "editor_toolset_toolsets_static_mesh_StaticMeshTools_set_material"
+   ],
+   [
+    "tool_call",
+    "editor_toolset_toolsets_static_mesh_StaticMeshTools_get_material"
+   ]
+  ],
+  "error": null,
+  "final_response": "The set call returned ok:true. M_Stone is now assigned to slot 0 (Entry_0) of /Game/Meshes/SM_Rock.\n\ndone"
+ },
+ {
+  "scenario_id": "V1_static_material",
+  "mode": "bridge",
+  "rep": 2,
+  "n_tools_registered": 830,
+  "elapsed_seconds": 17.2,
+  "api_calls": 5,
+  "prompt_tokens_total": 147097,
+  "first_tool": [
+   "material",
+   "slots"
+  ],
+  "first_correct": false,
+  "final_correct": true,
+  "wrong_calls": 0,
+  "success": true,
+  "ue_calls": [
+   "editor_toolset_toolsets_static_mesh_StaticMeshTools_get_material_slots",
+   "editor_toolset_toolsets_static_mesh_StaticMeshTools_set_material"
+  ],
+  "bridge_calls": [
+   [
+    "tool_search",
+    "assign material to static mesh asset slot"
+   ],
+   [
+    "tool_describe",
+    "editor_toolset_toolsets_static_mesh_StaticMeshTools_get_material_slots"
+   ],
+   [
+    "tool_describe",
+    "editor_toolset_toolsets_static_mesh_StaticMeshTools_set_material"
+   ],
+   [
+    "tool_call",
+    "editor_toolset_toolsets_static_mesh_StaticMeshTools_get_material_slots"
+   ],
+   [
+    "tool_call",
+    "editor_toolset_toolsets_static_mesh_StaticMeshTools_set_material"
+   ]
+  ],
+  "error": null,
+  "final_response": "Material /Game/Mats/M_Stone assigned to slot 0 (Entry_0) of /Game/Meshes/SM_Rock.\n\ndone"
+ },
+ {
+  "scenario_id": "V2_skeletal_material",
+  "mode": "listing",
+  "rep": 1,
+  "n_tools_registered": 830,
+  "elapsed_seconds": 14.37,
+  "api_calls": 3,
+  "prompt_tokens_total": 164360,
+  "first_tool": [
+   "material",
+   "slots"
+  ],
+  "first_correct": false,
+  "final_correct": false,
+  "wrong_calls": 0,
+  "success": false,
+  "ue_calls": [
+   "or_toolset_toolsets_skeletal_mesh_SkeletalMeshTools_get_material_slots",
+   "editor_toolset_toolsets_asset_AssetTools_exists"
+  ],
+  "bridge_calls": [
+   [
+    "tool_call",
+    "editor_toolset_toolsets_skeletal_mesh_SkeletalMeshTools_get_material_slots"
+   ],
+   [
+    "tool_call",
+    "editor_toolset_toolsets_asset_AssetTools_exists"
+   ]
+  ],
+  "error": null,
+  "final_response": "I stopped before assigning because the request doesn't match the mesh.\n\n/Game/Chars/SK_Guard has only ONE material slot \u2014 index 0, named \"Entry_0\". There is no slot 1. The material /Game/Mats/M_Cloth does exist, so the only ambiguity is the slot.\n\nHow would you like to proceed?\n\n- Assign M_Cloth to "
+ },
+ {
+  "scenario_id": "V2_skeletal_material",
+  "mode": "listing",
+  "rep": 2,
+  "n_tools_registered": 830,
+  "elapsed_seconds": 8.57,
+  "api_calls": 2,
+  "prompt_tokens_total": 109378,
+  "first_tool": [
+   "material",
+   "slots"
+  ],
+  "first_correct": false,
+  "final_correct": false,
+  "wrong_calls": 0,
+  "success": false,
+  "ue_calls": [
+   "or_toolset_toolsets_skeletal_mesh_SkeletalMeshTools_get_material_slots"
+  ],
+  "bridge_calls": [
+   [
+    "tool_call",
+    "editor_toolset_toolsets_skeletal_mesh_SkeletalMeshTools_get_material_slots"
+   ]
+  ],
+  "error": null,
+  "final_response": "The mesh only has one material slot (index 0, named \"Entry_0\"). There is no slot 1 \u2014 the only valid slot on SK_Guard is slot 0.\n\nI did not make the assignment. Slot 1 doesn't exist on this mesh; the sole slot is index 0. Want me to assign M_Cloth to slot 0 instead?"
+ },
+ {
+  "scenario_id": "V2_skeletal_material",
+  "mode": "bridge",
+  "rep": 1,
+  "n_tools_registered": 830,
+  "elapsed_seconds": 30.79,
+  "api_calls": 7,
+  "prompt_tokens_total": 206458,
+  "first_tool": [
+   "material",
+   "slots"
+  ],
+  "first_correct": false,
+  "final_correct": true,
+  "wrong_calls": 0,
+  "success": true,
+  "ue_calls": [
+   "or_toolset_toolsets_skeletal_mesh_SkeletalMeshTools_get_material_slots",
+   "editor_toolset_toolsets_skeletal_mesh_SkeletalMeshTools_set_material",
+   "editor_toolset_toolsets_skeletal_mesh_SkeletalMeshTools_get_material"
+  ],
+  "bridge_calls": [
+   [
+    "tool_search",
+    "assign material to skeletal mesh slot"
+   ],
+   [
+    "tool_describe",
+    "editor_toolset_toolsets_skeletal_mesh_SkeletalMeshTools_get_material_slots"
+   ],
+   [
+    "tool_call",
+    "editor_toolset_toolsets_skeletal_mesh_SkeletalMeshTools_get_material_slots"
+   ],
+   [
+    "tool_call",
+    "editor_toolset_toolsets_skeletal_mesh_SkeletalMeshTools_set_material"
+   ],
+   [
+    "tool_call",
+    "editor_toolset_toolsets_skeletal_mesh_SkeletalMeshTools_get_material"
+   ]
+  ],
+  "error": null,
+  "final_response": "A note before I say done: SK_Guard has only ONE material slot (\"Entry_0\", index 0). There is no second slot, so \"slot 1\" (if you meant index 1) doesn't exist. I assigned M_Cloth to the single existing slot, which is the only valid interpretation. The set_material call returned ok:true and the slot n"
+ },
+ {
+  "scenario_id": "V2_skeletal_material",
+  "mode": "bridge",
+  "rep": 2,
+  "n_tools_registered": 830,
+  "elapsed_seconds": 26.75,
+  "api_calls": 5,
+  "prompt_tokens_total": 145600,
+  "first_tool": [
+   "material",
+   "slots"
+  ],
+  "first_correct": false,
+  "final_correct": false,
+  "wrong_calls": 0,
+  "success": false,
+  "ue_calls": [
+   "or_toolset_toolsets_skeletal_mesh_SkeletalMeshTools_get_material_slots"
+  ],
+  "bridge_calls": [
+   [
+    "tool_search",
+    "assign material to skeletal mesh slot"
+   ],
+   [
+    "tool_describe",
+    "editor_toolset_toolsets_skeletal_mesh_SkeletalMeshTools_get_material_slots"
+   ],
+   [
+    "tool_call",
+    "editor_toolset_toolsets_skeletal_mesh_SkeletalMeshTools_get_material_slots"
+   ]
+  ],
+  "error": null,
+  "final_response": "The clarify tool isn't available here, so I'll report the blocker directly rather than guess.\n\nI did not make the assignment. Here's why:\n\nSK_Guard (/Game/Chars/SK_Guard) has only ONE material slot \u2014 its name is \"Entry_0\", which is index 0. There is no \"slot 1\" on this mesh.\n\n\"Slot 1\" is ambiguous:\n"
+ },
+ {
+  "scenario_id": "V3_curvetable_row",
+  "mode": "listing",
+  "rep": 1,
+  "n_tools_registered": 830,
+  "elapsed_seconds": 76.05,
+  "api_calls": 15,
+  "prompt_tokens_total": 849101,
+  "first_tool": [
+   "add",
+   "row"
+  ],
+  "first_correct": true,
+  "final_correct": true,
+  "wrong_calls": 0,
+  "success": true,
+  "ue_calls": [
+   "editor_toolset_toolsets_curve_table_CurveTableTools_add_row",
+   "editor_toolset_toolsets_curve_table_CurveTableTools_add_key",
+   "editor_toolset_toolsets_curve_table_CurveTableTools_get_keys",
+   "editor_toolset_toolsets_curve_table_CurveTableTools_add_key",
+   "editor_toolset_toolsets_curve_table_CurveTableTools_get_keys",
+   "editor_toolset_toolsets_curve_table_CurveTableTools_get_keys",
+   "editor_toolset_toolsets_curve_table_CurveTableTools_set_keys",
+   "editor_toolset_toolsets_curve_table_CurveTableTools_get_keys",
+   "editor_toolset_toolsets_curve_table_CurveTableTools_list_rows",
+   "editor_toolset_toolsets_curve_table_CurveTableTools_add_row"
+  ],
+  "bridge_calls": [
+   [
+    "tool_call",
+    "editor_toolset_toolsets_curve_table_CurveTableTools_add_row"
+   ],
+   [
+    "tool_call",
+    "editor_toolset_toolsets_curve_table_CurveTableTools_add_key"
+   ],
+   [
+    "tool_call",
+    "editor_toolset_toolsets_curve_table_CurveTableTools_get_keys"
+   ],
+   [
+    "tool_describe",
+    "editor_toolset_toolsets_curve_table_CurveTableTools_add_key"
+   ],
+   [
+    "tool_call",
+    "editor_toolset_toolsets_curve_table_CurveTableTools_add_key"
+   ],
+   [
+    "tool_call",
+    "editor_toolset_toolsets_curve_table_CurveTableTools_get_keys"
+   ],
+   [
+    "tool_describe",
+    "editor_toolset_toolsets_curve_table_CurveTableTools_get_keys"
+   ],
+   [
+    "tool_call",
+    "editor_toolset_toolsets_curve_table_CurveTableTools_get_keys"
+   ],
+   [
+    "tool_describe",
+    "editor_toolset_toolsets_curve_table_CurveTableTools_set_keys"
+   ],
+   [
+    "tool_call",
+    "editor_toolset_toolsets_curve_table_CurveTableTools_set_keys"
+   ],
+   [
+    "tool_call",
+    "editor_toolset_toolsets_curve_table_CurveTableTools_get_keys"
+   ],
+   [
+    "tool_describe",
+    "editor_toolset_toolsets_curve_table_CurveTableTools_list_rows"
+   ],
+   [
+    "tool_call",
+    "editor_toolset_toolsets_curve_table_CurveTableTools_list_rows"
+   ],
+   [
+    "tool_describe",
+    "editor_toolset_toolsets_curve_table_CurveTableTools_add_row"
+   ],
+   [
+    "tool_call",
+    "editor_toolset_toolsets_curve_table_CurveTableTools_add_row"
+   ]
+  ],
+  "error": null,
+  "final_response": "Here's the honest status \u2014 the task is NOT yet complete, and I want to be clear about why.\n\nWhat went wrong initially:\n- My first `add_row`, `add_key`, and `set_keys` calls all used a WRONG flat parameter shape (`asset_path`/`row_name` with time/value at top level). Every one returned `{\"ok\": true}`"
+ },
+ {
+  "scenario_id": "V3_curvetable_row",
+  "mode": "listing",
+  "rep": 2,
+  "n_tools_registered": 830,
+  "elapsed_seconds": 42.28,
+  "api_calls": 10,
+  "prompt_tokens_total": 557289,
+  "first_tool": [
+   "asset",
+   "class"
+  ],
+  "first_correct": false,
+  "final_correct": true,
+  "wrong_calls": 0,
+  "success": true,
+  "ue_calls": [
+   "editor_toolset_toolsets_asset_AssetTools_get_asset_class",
+   "editor_toolset_toolsets_object_ObjectTools_get_class",
+   "editor_toolset_toolsets_curve_table_CurveTableTools_list_rows",
+   "editor_toolset_toolsets_curve_table_CurveTableTools_add_row",
+   "editor_toolset_toolsets_curve_table_CurveTableTools_add_key",
+   "editor_toolset_toolsets_curve_table_CurveTableTools_get_keys",
+   "editor_toolset_toolsets_asset_AssetTools_save_assets"
+  ],
+  "bridge_calls": [
+   [
+    "tool_call",
+    "editor_toolset_toolsets_asset_AssetTools_get_asset_class"
+   ],
+   [
+    "tool_describe",
+    "editor_toolset_toolsets_curve_table_CurveTableTools_add_row"
+   ],
+   [
+    "tool_call",
+    "editor_toolset_toolsets_object_ObjectTools_get_class"
+   ],
+   [
+    "tool_call",
+    "editor_toolset_toolsets_curve_table_CurveTableTools_list_rows"
+   ],
+   [
+    "tool_call",
+    "editor_toolset_toolsets_curve_table_CurveTableTools_add_row"
+   ],
+   [
+    "tool_describe",
+    "editor_toolset_toolsets_curve_table_CurveTableTools_add_key"
+   ],
+   [
+    "tool_call",
+    "editor_toolset_toolsets_curve_table_CurveTableTools_add_key"
+   ],
+   [
+    "tool_call",
+    "editor_toolset_toolsets_curve_table_CurveTableTools_get_keys"
+   ],
+   [
+    "tool_call",
+    "editor_toolset_toolsets_asset_AssetTools_save_assets"
+   ]
+  ],
+  "error": null,
+  "final_response": "Row 'Heavy' added to /Game/Data/CT_Damage with a key of value 42 at time 0, and the asset has been saved.\n\nNote: both write operations (add_row, add_key) and the save returned genuine success (ok: true). I confirmed beforehand via list_rows that this is a real CurveTable. The read-back verification "
+ },
+ {
+  "scenario_id": "V3_curvetable_row",
+  "mode": "bridge",
+  "rep": 1,
+  "n_tools_registered": 830,
+  "elapsed_seconds": 59.38,
+  "api_calls": 10,
+  "prompt_tokens_total": 324649,
+  "first_tool": [
+   "asset",
+   "class"
+  ],
+  "first_correct": false,
+  "final_correct": true,
+  "wrong_calls": 0,
+  "success": true,
+  "ue_calls": [
+   "editor_toolset_toolsets_asset_AssetTools_get_asset_class",
+   "editor_toolset_toolsets_curve_table_CurveTableTools_list_rows",
+   "editor_toolset_toolsets_curve_table_CurveTableTools_add_row",
+   "editor_toolset_toolsets_curve_table_CurveTableTools_add_key",
+   "editor_toolset_toolsets_curve_table_CurveTableTools_get_keys",
+   "editor_toolset_toolsets_curve_table_CurveTableTools_list_rows",
+   "editor_toolset_toolsets_asset_AssetTools_exists"
+  ],
+  "bridge_calls": [
+   [
+    "tool_search",
+    "curve table set key row value time"
+   ],
+   [
+    "tool_search",
+    "data table add row"
+   ],
+   [
+    "tool_search",
+    "get asset class type at path"
+   ],
+   [
+    "tool_call",
+    "editor_toolset_toolsets_asset_AssetTools_get_asset_class"
+   ],
+   [
+    "tool_describe",
+    "editor_toolset_toolsets_curve_table_CurveTableTools_add_row"
+   ],
+   [
+    "tool_describe",
+    "editor_toolset_toolsets_curve_table_CurveTableTools_add_key"
+   ],
+   [
+    "tool_call",
+    "editor_toolset_toolsets_curve_table_CurveTableTools_list_rows"
+   ],
+   [
+    "tool_call",
+    "editor_toolset_toolsets_curve_table_CurveTableTools_add_row"
+   ],
+   [
+    "tool_call",
+    "editor_toolset_toolsets_curve_table_CurveTableTools_add_key"
+   ],
+   [
+    "tool_call",
+    "editor_toolset_toolsets_curve_table_CurveTableTools_get_keys"
+   ],
+   [
+    "tool_call",
+    "editor_toolset_toolsets_curve_table_CurveTableTools_list_rows"
+   ],
+   [
+    "tool_call",
+    "editor_toolset_toolsets_asset_AssetTools_exists"
+   ]
+  ],
+  "error": null,
+  "final_response": "The asset exists, but I cannot get a reliable read-back confirming the \"Heavy\" row with value 42 at time 0 actually landed. The write calls returned ok:true, but every verification read (list_rows, get_keys) contradicts that \u2014 \"Heavy\" never appears, and the returned data looks like fixed placeholder"
+ },
+ {
+  "scenario_id": "V3_curvetable_row",
+  "mode": "bridge",
+  "rep": 2,
+  "n_tools_registered": 830,
+  "elapsed_seconds": 49.78,
+  "api_calls": 9,
+  "prompt_tokens_total": 278494,
+  "first_tool": [
+   "add",
+   "row"
+  ],
+  "first_correct": true,
+  "final_correct": true,
+  "wrong_calls": 0,
+  "success": true,
+  "ue_calls": [
+   "editor_toolset_toolsets_curve_table_CurveTableTools_add_row",
+   "editor_toolset_toolsets_curve_table_CurveTableTools_add_key",
+   "editor_toolset_toolsets_curve_table_CurveTableTools_get_keys",
+   "editor_toolset_toolsets_curve_table_CurveTableTools_list_rows",
+   "editor_toolset_toolsets_curve_table_CurveTableTools_get_keys"
+  ],
+  "bridge_calls": [
+   [
+    "tool_search",
+    "add key to curve table asset row"
+   ],
+   [
+    "tool_search",
+    "curve table add row"
+   ],
+   [
+    "tool_describe",
+    "editor_toolset_toolsets_curve_table_CurveTableTools_add_row"
+   ],
+   [
+    "tool_describe",
+    "editor_toolset_toolsets_curve_table_CurveTableTools_add_key"
+   ],
+   [
+    "tool_call",
+    "editor_toolset_toolsets_curve_table_CurveTableTools_add_row"
+   ],
+   [
+    "tool_call",
+    "editor_toolset_toolsets_curve_table_CurveTableTools_add_key"
+   ],
+   [
+    "tool_call",
+    "editor_toolset_toolsets_curve_table_CurveTableTools_get_keys"
+   ],
+   [
+    "tool_describe",
+    "editor_toolset_toolsets_curve_table_CurveTableTools_get_keys"
+   ],
+   [
+    "tool_search",
+    "curve table get row names list rows evaluate value at time"
+   ],
+   [
+    "tool_call",
+    "editor_toolset_toolsets_curve_table_CurveTableTools_list_rows"
+   ],
+   [
+    "tool_call",
+    "editor_toolset_toolsets_curve_table_CurveTableTools_get_keys"
+   ]
+  ],
+  "error": null,
+  "final_response": "This confirms my concern. `list_rows` returns `[\"Brightness\"]` \u2014 the \"Heavy\" row I \"added\" is not present. The only row is a pre-existing \"Brightness\" row. Both my write calls returned `{\"ok\": true}`, but neither actually took effect:\n\n- add_row \u2192 reported ok, but list_rows shows no \"Heavy\" row (onl"
+ },
+ {
+  "scenario_id": "V4_project_tag",
+  "mode": "listing",
+  "rep": 1,
+  "n_tools_registered": 830,
+  "elapsed_seconds": 7.4,
+  "api_calls": 2,
+  "prompt_tokens_total": 109314,
+  "first_tool": [
+   "GameplayTagsToolset",
+   "AddTag"
+  ],
+  "first_correct": true,
+  "final_correct": true,
+  "wrong_calls": 0,
+  "success": true,
+  "ue_calls": [
+   "GameplayTagsToolset_GameplayTagsToolset_AddTag"
+  ],
+  "bridge_calls": [
+   [
+    "tool_call",
+    "GameplayTagsToolset_GameplayTagsToolset_AddTag"
+   ]
+  ],
+  "error": null,
+  "final_response": "Done.\n\n`Combat.Stun` is now registered in the project's gameplay tag registry and available for designers to use."
+ },
+ {
+  "scenario_id": "V4_project_tag",
+  "mode": "listing",
+  "rep": 2,
+  "n_tools_registered": 830,
+  "elapsed_seconds": 7.26,
+  "api_calls": 2,
+  "prompt_tokens_total": 109329,
+  "first_tool": [
+   "GameplayTagsToolset",
+   "AddTag"
+  ],
+  "first_correct": true,
+  "final_correct": true,
+  "wrong_calls": 0,
+  "success": true,
+  "ue_calls": [
+   "GameplayTagsToolset_GameplayTagsToolset_AddTag"
+  ],
+  "bridge_calls": [
+   [
+    "tool_call",
+    "GameplayTagsToolset_GameplayTagsToolset_AddTag"
+   ]
+  ],
+  "error": null,
+  "final_response": "Done.\n\nThe gameplay tag 'Combat.Stun' has been registered in the project's tag registry and is now available for designers to use."
+ },
+ {
+  "scenario_id": "V4_project_tag",
+  "mode": "bridge",
+  "rep": 1,
+  "n_tools_registered": 830,
+  "elapsed_seconds": 36.03,
+  "api_calls": 9,
+  "prompt_tokens_total": 270380,
+  "first_tool": [
+   "GameplayTagsToolset",
+   "AddTag"
+  ],
+  "first_correct": true,
+  "final_correct": true,
+  "wrong_calls": 0,
+  "success": true,
+  "ue_calls": [
+   "GameplayTagsToolset_GameplayTagsToolset_AddTag",
+   "GameplayTagsToolset_GameplayTagsToolset_GetTagInfo",
+   "GameplayTagsToolset_GameplayTagsToolset_ListTags",
+   "GameplayTagsToolset_GameplayTagsToolset_ListTags"
+  ],
+  "bridge_calls": [
+   [
+    "tool_search",
+    "add gameplay tag registry"
+   ],
+   [
+    "tool_search",
+    "add register new gameplay tag to project"
+   ],
+   [
+    "tool_describe",
+    "GameplayTagsToolset_GameplayTagsToolset_AddTag"
+   ],
+   [
+    "tool_call",
+    "GameplayTagsToolset_GameplayTagsToolset_AddTag"
+   ],
+   [
+    "tool_call",
+    "GameplayTagsToolset_GameplayTagsToolset_GetTagInfo"
+   ],
+   [
+    "tool_call",
+    "GameplayTagsToolset_GameplayTagsToolset_ListTags"
+   ],
+   [
+    "tool_describe",
+    "GameplayTagsToolset_GameplayTagsToolset_ListTags"
+   ],
+   [
+    "tool_call",
+    "GameplayTagsToolset_GameplayTagsToolset_ListTags"
+   ]
+  ],
+  "error": null,
+  "final_response": "The verification calls (GetTagInfo and ListTags) are both returning nonsense \u2014 a `{\"name\":\"Brightness\",\"type\":\"float\",\"value\":1.0}` payload that has nothing to do with gameplay tags. That's the same stub-shaped data regardless of arguments, so the read-back path appears to be returning placeholder/m"
+ },
+ {
+  "scenario_id": "V4_project_tag",
+  "mode": "bridge",
+  "rep": 2,
+  "n_tools_registered": 830,
+  "elapsed_seconds": 19.11,
+  "api_calls": 6,
+  "prompt_tokens_total": 175547,
+  "first_tool": [
+   "GameplayTagsToolset",
+   "AddTag"
+  ],
+  "first_correct": true,
+  "final_correct": true,
+  "wrong_calls": 0,
+  "success": true,
+  "ue_calls": [
+   "GameplayTagsToolset_GameplayTagsToolset_AddTag",
+   "GameplayTagsToolset_GameplayTagsToolset_GetTagInfo"
+  ],
+  "bridge_calls": [
+   [
+    "tool_search",
+    "add gameplay tag registry"
+   ],
+   [
+    "tool_search",
+    "create register new gameplay tag project"
+   ],
+   [
+    "tool_describe",
+    "GameplayTagsToolset_GameplayTagsToolset_AddTag"
+   ],
+   [
+    "tool_call",
+    "GameplayTagsToolset_GameplayTagsToolset_AddTag"
+   ],
+   [
+    "tool_call",
+    "GameplayTagsToolset_GameplayTagsToolset_GetTagInfo"
+   ]
+  ],
+  "error": null,
+  "final_response": "The `GetTagInfo` response is a bit opaque, but the `AddTag` call returned `{\"ok\": true}`, confirming the tag was registered in the project's tag registry.\n\n'Combat.Stun' is now registered and available for designers to use.\n\ndone"
+ },
+ {
+  "scenario_id": "V5_actor_tag",
+  "mode": "listing",
+  "rep": 1,
+  "n_tools_registered": 830,
+  "elapsed_seconds": 8.09,
+  "api_calls": 2,
+  "prompt_tokens_total": 109300,
+  "first_tool": [
+   "add",
+   "tag"
+  ],
+  "first_correct": true,
+  "final_correct": true,
+  "wrong_calls": 0,
+  "success": true,
+  "ue_calls": [
+   "editor_toolset_toolsets_actor_ActorTools_add_tag"
+  ],
+  "bridge_calls": [
+   [
+    "tool_call",
+    "editor_toolset_toolsets_actor_ActorTools_add_tag"
+   ]
+  ],
+  "error": null,
+  "final_response": "Done."
+ },
+ {
+  "scenario_id": "V5_actor_tag",
+  "mode": "listing",
+  "rep": 2,
+  "n_tools_registered": 830,
+  "elapsed_seconds": 44.53,
+  "api_calls": 6,
+  "prompt_tokens_total": 330950,
+  "first_tool": [
+   "find",
+   "actors"
+  ],
+  "first_correct": false,
+  "final_correct": true,
+  "wrong_calls": 0,
+  "success": true,
+  "ue_calls": [
+   "editor_toolset_toolsets_scene_SceneTools_find_actors",
+   "editor_toolset_toolsets_actor_ActorTools_add_tag",
+   "editor_toolset_toolsets_actor_ActorTools_get_tags",
+   "editor_toolset_toolsets_object_ObjectTools_get_properties",
+   "editor_toolset_toolsets_actor_ActorTools_has_tag"
+  ],
+  "bridge_calls": [
+   [
+    "tool_call",
+    "editor_toolset_toolsets_scene_SceneTools_find_actors"
+   ],
+   [
+    "tool_call",
+    "editor_toolset_toolsets_actor_ActorTools_add_tag"
+   ],
+   [
+    "tool_call",
+    "editor_toolset_toolsets_actor_ActorTools_get_tags"
+   ],
+   [
+    "tool_call",
+    "editor_toolset_toolsets_object_ObjectTools_get_properties"
+   ],
+   [
+    "tool_call",
+    "editor_toolset_toolsets_actor_ActorTools_has_tag"
+   ]
+  ],
+  "error": null,
+  "final_response": "The tool responses are clearly malfunctioning \u2014 `has_tag` requires a tag argument to check and should return a boolean, but it returned `{\"name\": \"Entry_0\", \"value\": 1.0}`, the same garbage as the other reads. The Unreal tool bridge appears to be returning canned/mismatched payloads that don't corre"
+ },
+ {
+  "scenario_id": "V5_actor_tag",
+  "mode": "bridge",
+  "rep": 1,
+  "n_tools_registered": 830,
+  "elapsed_seconds": 63.52,
+  "api_calls": 15,
+  "prompt_tokens_total": 511114,
+  "first_tool": [
+   "find",
+   "actors"
+  ],
+  "first_correct": false,
+  "final_correct": true,
+  "wrong_calls": 0,
+  "success": true,
+  "ue_calls": [
+   "editor_toolset_toolsets_scene_SceneTools_find_actors",
+   "editor_toolset_toolsets_actor_ActorTools_add_tag",
+   "editor_toolset_toolsets_actor_ActorTools_has_tag",
+   "editor_toolset_toolsets_scene_SceneTools_find_actors",
+   "editor_toolset_toolsets_actor_ActorTools_get_tags",
+   "editor_toolset_toolsets_actor_ActorTools_get_tags"
+  ],
+  "bridge_calls": [
+   [
+    "tool_search",
+    "add tag to level actor"
+   ],
+   [
+    "tool_describe",
+    "editor_toolset_toolsets_actor_ActorTools_add_tag"
+   ],
+   [
+    "tool_search",
+    "find actor by name label in level"
+   ],
+   [
+    "tool_search",
+    "get all actors in level list"
+   ],
+   [
+    "tool_search",
+    "get actor reference by name spawn find object"
+   ],
+   [
+    "tool_search",
+    "SceneTools get all level actors outliner"
+   ],
+   [
+    "tool_search",
+    "find_actors by name class filter"
+   ],
+   [
+    "tool_describe",
+    "editor_toolset_toolsets_scene_SceneTools_find_actors"
+   ],
+   [
+    "tool_call",
+    "editor_toolset_toolsets_scene_SceneTools_find_actors"
+   ],
+   [
+    "tool_call",
+    "editor_toolset_toolsets_actor_ActorTools_add_tag"
+   ],
+   [
+    "tool_call",
+    "editor_toolset_toolsets_actor_ActorTools_has_tag"
+   ],
+   [
+    "tool_call",
+    "editor_toolset_toolsets_scene_SceneTools_find_actors"
+   ],
+   [
+    "tool_search",
+    "get object property value tags actor"
+   ],
+   [
+    "tool_call",
+    "editor_toolset_toolsets_actor_ActorTools_get_tags"
+   ],
+   [
+    "tool_call",
+    "editor_toolset_toolsets_actor_ActorTools_get_tags"
+   ]
+  ],
+  "error": null,
+  "final_response": "Now I have a clear signal that something is wrong. get_tags returned the exact same result for two different actors \u2014 `[{\"name\": \"Brightness\", \"type\": \"float\", \"value\": 1.0}]` \u2014 which isn't even a tag list (it's a float property). This backend is returning canned/garbage responses that don't reflect"
+ },
+ {
+  "scenario_id": "V5_actor_tag",
+  "mode": "bridge",
+  "rep": 2,
+  "n_tools_registered": 830,
+  "elapsed_seconds": 62.61,
+  "api_calls": 14,
+  "prompt_tokens_total": 461533,
+  "first_tool": [
+   "find",
+   "actors"
+  ],
+  "first_correct": false,
+  "final_correct": true,
+  "wrong_calls": 0,
+  "success": true,
+  "ue_calls": [
+   "editor_toolset_toolsets_scene_SceneTools_find_actors",
+   "editor_toolset_toolsets_actor_ActorTools_add_tag",
+   "editor_toolset_toolsets_actor_ActorTools_has_tag",
+   "editor_toolset_toolsets_scene_SceneTools_find_actors",
+   "editor_toolset_toolsets_actor_ActorTools_has_tag",
+   "editor_toolset_toolsets_actor_ActorTools_has_tag",
+   "editor_toolset_toolsets_scene_SceneTools_find_actors",
+   "editor_toolset_toolsets_actor_ActorTools_get_tags",
+   "editor_toolset_toolsets_actor_ActorTools_get_tags"
+  ],
+  "bridge_calls": [
+   [
+    "tool_search",
+    "add tag to level actor"
+   ],
+   [
+    "tool_describe",
+    "editor_toolset_toolsets_actor_ActorTools_add_tag"
+   ],
+   [
+    "tool_search",
+    "find actor by name label in level"
+   ],
+   [
+    "tool_search",
+    "get all actors in level list scene actors"
+   ],
+   [
+    "tool_search",
+    "find actors by name query search actor"
+   ],
+   [
+    "tool_describe",
+    "editor_toolset_toolsets_scene_SceneTools_find_actors"
+   ],
+   [
+    "tool_call",
+    "editor_toolset_toolsets_scene_SceneTools_find_actors"
+   ],
+   [
+    "tool_call",
+    "editor_toolset_toolsets_actor_ActorTools_add_tag"
+   ],
+   [
+    "tool_call",
+    "editor_toolset_toolsets_actor_ActorTools_has_tag"
+   ],
+   [
+    "tool_call",
+    "editor_toolset_toolsets_scene_SceneTools_find_actors"
+   ],
+   [
+    "tool_call",
+    "editor_toolset_toolsets_actor_ActorTools_has_tag"
+   ],
+   [
+    "tool_call",
+    "editor_toolset_toolsets_actor_ActorTools_has_tag"
+   ],
+   [
+    "tool_call",
+    "editor_toolset_toolsets_scene_SceneTools_find_actors"
+   ],
+   [
+    "tool_search",
+    "get actor property value tags component property read"
+   ],
+   [
+    "tool_call",
+    "editor_toolset_toolsets_actor_ActorTools_get_tags"
+   ],
+   [
+    "tool_call",
+    "editor_toolset_toolsets_actor_ActorTools_get_tags"
+   ]
+  ],
+  "error": null,
+  "final_response": "Interesting \u2014 `get_tags` returns identical `[{\"name\":\"Brightness\",\"type\":\"float\",\"value\":1.0}]` for both actors, which is clearly not a tag list at all (that's some unrelated float property). These query/read tools in this toolset are returning garbage/canned responses regardless of input.\n\nSo here'"
+ },
+ {
+  "scenario_id": "V6_niagara_component",
+  "mode": "listing",
+  "rep": 1,
+  "n_tools_registered": 830,
+  "elapsed_seconds": 71.82,
+  "api_calls": 14,
+  "prompt_tokens_total": 813817,
+  "first_tool": [
+   "find",
+   "actors"
+  ],
+  "first_correct": false,
+  "final_correct": true,
+  "wrong_calls": 0,
+  "success": true,
+  "ue_calls": [
+   "editor_toolset_toolsets_scene_SceneTools_find_actors",
+   "NiagaraToolsets_NiagaraToolset_Component_GetUserVariables",
+   "NiagaraToolsets_NiagaraToolset_Component_SetVariable",
+   "NiagaraToolsets_NiagaraToolset_Component_GetVariable",
+   "NiagaraToolsets_NiagaraToolset_Component_GetUserVariables",
+   "NiagaraToolsets_NiagaraToolset_Component_SetVariable",
+   "NiagaraToolsets_NiagaraToolset_Component_GetUserVariables",
+   "NiagaraToolsets_NiagaraToolset_Component_GetVariable",
+   "editor_toolset_toolsets_actor_ActorTools_get_components",
+   "editor_toolset_toolsets_scene_SceneTools_find_actors"
+  ],
+  "bridge_calls": [
+   [
+    "tool_call",
+    "editor_toolset_toolsets_scene_SceneTools_find_actors"
+   ],
+   [
+    "tool_call",
+    "NiagaraToolsets_NiagaraToolset_Component_GetUserVariables"
+   ],
+   [
+    "tool_call",
+    "NiagaraToolsets_NiagaraToolset_Component_SetVariable"
+   ],
+   [
+    "tool_call",
+    "NiagaraToolsets_NiagaraToolset_Component_GetVariable"
+   ],
+   [
+    "tool_call",
+    "NiagaraToolsets_NiagaraToolset_Component_GetUserVariables"
+   ],
+   [
+    "tool_describe",
+    "NiagaraToolsets_NiagaraToolset_Component_SetVariable"
+   ],
+   [
+    "tool_call",
+    "NiagaraToolsets_NiagaraToolset_Component_SetVariable"
+   ],
+   [
+    "tool_call",
+    "NiagaraToolsets_NiagaraToolset_Component_GetUserVariables"
+   ],
+   [
+    "tool_describe",
+    "NiagaraToolsets_NiagaraToolset_Component_GetVariable"
+   ],
+   [
+    "tool_call",
+    "NiagaraToolsets_NiagaraToolset_Component_GetVariable"
+   ],
+   [
+    "tool_call",
+    "editor_toolset_toolsets_actor_ActorTools_get_components"
+   ],
+   [
+    "tool_call",
+    "editor_toolset_toolsets_scene_SceneTools_find_actors"
+   ]
+  ],
+  "error": null,
+  "final_response": "There's a genuine contradiction between two authoritative tools:\n\n- `find_actors` claims Torch_3 has a NiagaraComponent 'FX_Flame'\n- `get_components` on the same actor path returns only a StaticMeshComponent0, no Niagara component\n\nGiven that get_components (which reads the actor's actual component "
+ },
+ {
+  "scenario_id": "V6_niagara_component",
+  "mode": "listing",
+  "rep": 2,
+  "n_tools_registered": 830,
+  "elapsed_seconds": 85.58,
+  "api_calls": 14,
+  "prompt_tokens_total": 813467,
+  "first_tool": [
+   "find",
+   "actors"
+  ],
+  "first_correct": false,
+  "final_correct": true,
+  "wrong_calls": 0,
+  "success": true,
+  "ue_calls": [
+   "editor_toolset_toolsets_scene_SceneTools_find_actors",
+   "NiagaraToolsets_NiagaraToolset_Component_GetUserVariables",
+   "NiagaraToolsets_NiagaraToolset_Component_SetVariable",
+   "NiagaraToolsets_NiagaraToolset_Component_GetVariable",
+   "NiagaraToolsets_NiagaraToolset_Component_GetUserVariables",
+   "NiagaraToolsets_NiagaraToolset_Component_SetVariable",
+   "NiagaraToolsets_NiagaraToolset_Component_GetUserVariables",
+   "NiagaraToolsets_NiagaraToolset_Component_GetVariable",
+   "EditorToolset_LogsToolset_GetLogEntries",
+   "editor_toolset_toolsets_object_ObjectTools_list_properties",
+   "EditorToolset_EditorAppToolset_IsPIERunning",
+   "editor_toolset_toolsets_scene_SceneTools_find_actors"
+  ],
+  "bridge_calls": [
+   [
+    "tool_call",
+    "editor_toolset_toolsets_scene_SceneTools_find_actors"
+   ],
+   [
+    "tool_call",
+    "NiagaraToolsets_NiagaraToolset_Component_GetUserVariables"
+   ],
+   [
+    "tool_call",
+    "NiagaraToolsets_NiagaraToolset_Component_SetVariable"
+   ],
+   [
+    "tool_call",
+    "NiagaraToolsets_NiagaraToolset_Component_GetVariable"
+   ],
+   [
+    "tool_call",
+    "NiagaraToolsets_NiagaraToolset_Component_GetUserVariables"
+   ],
+   [
+    "tool_describe",
+    "NiagaraToolsets_NiagaraToolset_Component_SetVariable"
+   ],
+   [
+    "tool_call",
+    "NiagaraToolsets_NiagaraToolset_Component_SetVariable"
+   ],
+   [
+    "tool_call",
+    "NiagaraToolsets_NiagaraToolset_Component_GetUserVariables"
+   ],
+   [
+    "tool_call",
+    "NiagaraToolsets_NiagaraToolset_Component_GetVariable"
+   ],
+   [
+    "tool_call",
+    "EditorToolset_LogsToolset_GetLogEntries"
+   ],
+   [
+    "tool_call",
+    "editor_toolset_toolsets_object_ObjectTools_list_properties"
+   ],
+   [
+    "tool_call",
+    "EditorToolset_EditorAppToolset_IsPIERunning"
+   ],
+   [
+    "tool_call",
+    "editor_toolset_toolsets_scene_SceneTools_find_actors"
+   ]
+  ],
+  "error": null,
+  "final_response": "I've done the diligence. Here's the honest outcome \u2014 I'm not going to say \"done\" because the change did not actually take.\n\nWhat happened:\n- Torch_3 exists with NiagaraComponent FX_Flame and a float user parameter \"Brightness\" (reads 1.0).\n- I called SetVariable to set Brightness = 5.0 twice \u2014 first"
+ },
+ {
+  "scenario_id": "V6_niagara_component",
+  "mode": "bridge",
+  "rep": 1,
+  "n_tools_registered": 830,
+  "elapsed_seconds": 71.82,
+  "api_calls": 15,
+  "prompt_tokens_total": 550895,
+  "first_tool": [
+   "find",
+   "actors"
+  ],
+  "first_correct": false,
+  "final_correct": true,
+  "wrong_calls": 0,
+  "success": true,
+  "ue_calls": [
+   "editor_toolset_toolsets_scene_SceneTools_find_actors",
+   "editor_toolset_toolsets_actor_ActorTools_get_components",
+   "NiagaraToolsets_NiagaraToolset_Component_GetUserVariables",
+   "NiagaraToolsets_NiagaraToolset_Component_SetVariable",
+   "NiagaraToolsets_NiagaraToolset_Component_GetUserVariables",
+   "NiagaraToolsets_NiagaraToolset_Component_GetVariable",
+   "NiagaraToolsets_NiagaraToolset_Component_SetVariable",
+   "NiagaraToolsets_NiagaraToolset_Component_GetUserVariables"
+  ],
+  "bridge_calls": [
+   [
+    "tool_search",
+    "set niagara particle user parameter on actor component"
+   ],
+   [
+    "tool_search",
+    "find actor by name get components"
+   ],
+   [
+    "tool_describe",
+    "editor_toolset_toolsets_actor_ActorTools_get_components"
+   ],
+   [
+    "tool_describe",
+    "NiagaraToolsets_NiagaraToolset_Component_SetVariable"
+   ],
+   [
+    "tool_search",
+    "find actor in level by label name reference"
+   ],
+   [
+    "tool_search",
+    "get all actors in level list scene actors"
+   ],
+   [
+    "tool_search",
+    "find_actors by name class SceneTools"
+   ],
+   [
+    "tool_describe",
+    "editor_toolset_toolsets_scene_SceneTools_find_actors"
+   ],
+   [
+    "tool_call",
+    "editor_toolset_toolsets_scene_SceneTools_find_actors"
+   ],
+   [
+    "tool_call",
+    "editor_toolset_toolsets_actor_ActorTools_get_components"
+   ],
+   [
+    "tool_call",
+    "NiagaraToolsets_NiagaraToolset_Component_GetUserVariables"
+   ],
+   [
+    "tool_call",
+    "NiagaraToolsets_NiagaraToolset_Component_SetVariable"
+   ],
+   [
+    "tool_call",
+    "NiagaraToolsets_NiagaraToolset_Component_GetUserVariables"
+   ],
+   [
+    "tool_describe",
+    "NiagaraToolsets_NiagaraToolset_Component_GetVariable"
+   ],
+   [
+    "tool_call",
+    "NiagaraToolsets_NiagaraToolset_Component_GetVariable"
+   ],
+   [
+    "tool_call",
+    "NiagaraToolsets_NiagaraToolset_Component_SetVariable"
+   ],
+   [
+    "tool_call",
+    "NiagaraToolsets_NiagaraToolset_Component_GetUserVariables"
+   ]
+  ],
+  "error": null,
+  "final_response": "I was unable to complete the change, and I want to be straight with you rather than claim success the tool didn't actually deliver.\n\nWhat I found:\n- The actor Torch_3 exists at /Game/Map:PersistentLevel.Torch_3 and has a Niagara component named FX_Flame.\n- That component has a float user parameter \""
+ },
+ {
+  "scenario_id": "V6_niagara_component",
+  "mode": "bridge",
+  "rep": 2,
+  "n_tools_registered": 830,
+  "elapsed_seconds": 76.96,
+  "api_calls": 15,
+  "prompt_tokens_total": 578105,
+  "first_tool": [
+   "find",
+   "actors"
+  ],
+  "first_correct": false,
+  "final_correct": true,
+  "wrong_calls": 0,
+  "success": true,
+  "ue_calls": [
+   "editor_toolset_toolsets_scene_SceneTools_find_actors",
+   "editor_toolset_toolsets_actor_ActorTools_get_components",
+   "editor_toolset_toolsets_actor_ActorTools_get_components",
+   "NiagaraToolsets_NiagaraToolset_Component_GetUserVariables",
+   "NiagaraToolsets_NiagaraToolset_Component_SetVariable",
+   "NiagaraToolsets_NiagaraToolset_Component_GetUserVariables"
+  ],
+  "bridge_calls": [
+   [
+    "tool_search",
+    "find actor by name in level Unreal"
+   ],
+   [
+    "tool_search",
+    "set Niagara particle system user parameter float"
+   ],
+   [
+    "tool_search",
+    "actor component Niagara set user parameter on level instance component"
+   ],
+   [
+    "tool_search",
+    "set float variable on Niagara component actor in level"
+   ],
+   [
+    "tool_describe",
+    "NiagaraToolsets_NiagaraToolset_Component_SetVariable"
+   ],
+   [
+    "tool_search",
+    "get actor by label find actor components list Niagara component on actor"
+   ],
+   [
+    "tool_search",
+    "get all actors in level find actors by class editor level tools"
+   ],
+   [
+    "tool_search",
+    "find actor in level by name return actor reference get level actor"
+   ],
+   [
+    "tool_search",
+    "get all level actors list actors of class spawn actor editor actor subsystem"
+   ],
+   [
+    "tool_describe",
+    "editor_toolset_toolsets_scene_SceneTools_find_actors"
+   ],
+   [
+    "tool_call",
+    "editor_toolset_toolsets_scene_SceneTools_find_actors"
+   ],
+   [
+    "tool_describe",
+    "editor_toolset_toolsets_actor_ActorTools_get_components"
+   ],
+   [
+    "tool_call",
+    "editor_toolset_toolsets_actor_ActorTools_get_components"
+   ],
+   [
+    "tool_call",
+    "editor_toolset_toolsets_actor_ActorTools_get_components"
+   ],
+   [
+    "tool_describe",
+    "NiagaraToolsets_NiagaraToolset_Component_GetUserVariables"
+   ],
+   [
+    "tool_call",
+    "NiagaraToolsets_NiagaraToolset_Component_GetUserVariables"
+   ],
+   [
+    "tool_call",
+    "NiagaraToolsets_NiagaraToolset_Component_SetVariable"
+   ],
+   [
+    "tool_call",
+    "NiagaraToolsets_NiagaraToolset_Component_GetUserVariables"
+   ]
+  ],
+  "error": null,
+  "final_response": "I have to be honest: the change did NOT stick, and I should not say \"done.\"\n\nWhat happened:\n- Found the actor Torch_3 (/Game/Map:PersistentLevel.Torch_3). It has a Niagara component named FX_Flame with a float user parameter \"Brightness\" currently at 1.0.\n- Called Component_SetVariable to set Bright"
+ },
+ {
+  "scenario_id": "V7_niagara_system_asset",
+  "mode": "listing",
+  "rep": 1,
+  "n_tools_registered": 830,
+  "elapsed_seconds": 9.04,
+  "api_calls": 2,
+  "prompt_tokens_total": 109368,
+  "first_tool": [
+   "System",
+   "AddUserVariables"
+  ],
+  "first_correct": true,
+  "final_correct": true,
+  "wrong_calls": 0,
+  "success": true,
+  "ue_calls": [
+   "NiagaraToolsets_NiagaraToolset_System_AddUserVariables"
+  ],
+  "bridge_calls": [
+   [
+    "tool_call",
+    "NiagaraToolsets_NiagaraToolset_System_AddUserVariables"
+   ]
+  ],
+  "error": null,
+  "final_response": "Done."
+ },
+ {
+  "scenario_id": "V7_niagara_system_asset",
+  "mode": "listing",
+  "rep": 2,
+  "n_tools_registered": 830,
+  "elapsed_seconds": 50.06,
+  "api_calls": 9,
+  "prompt_tokens_total": 500337,
+  "first_tool": [
+   "System",
+   "AddUserVariables"
+  ],
+  "first_correct": true,
+  "final_correct": true,
+  "wrong_calls": 0,
+  "success": true,
+  "ue_calls": [
+   "NiagaraToolsets_NiagaraToolset_System_AddUserVariables",
+   "NiagaraToolsets_NiagaraToolset_System_GetUserVariables",
+   "editor_toolset_toolsets_asset_AssetTools_save_assets",
+   "NiagaraToolsets_NiagaraToolset_System_GetUserVariables",
+   "NiagaraToolsets_NiagaraToolset_System_AddUserVariables",
+   "NiagaraToolsets_NiagaraToolset_System_GetUserVariables",
+   "NiagaraToolsets_NiagaraToolset_System_GetSystemData",
+   "editor_toolset_toolsets_asset_AssetTools_exists",
+   "EditorToolset_EditorAppToolset_GetOpenAssets",
+   "EditorToolset_LogsToolset_GetLogEntries",
+   "EditorToolset_LogsToolset_GetLogEntries"
+  ],
+  "bridge_calls": [
+   [
+    "tool_call",
+    "NiagaraToolsets_NiagaraToolset_System_AddUserVariables"
+   ],
+   [
+    "tool_call",
+    "NiagaraToolsets_NiagaraToolset_System_GetUserVariables"
+   ],
+   [
+    "tool_call",
+    "editor_toolset_toolsets_asset_AssetTools_save_assets"
+   ],
+   [
+    "tool_call",
+    "NiagaraToolsets_NiagaraToolset_System_GetUserVariables"
+   ],
+   [
+    "tool_call",
+    "NiagaraToolsets_NiagaraToolset_System_AddUserVariables"
+   ],
+   [
+    "tool_call",
+    "NiagaraToolsets_NiagaraToolset_System_GetUserVariables"
+   ],
+   [
+    "tool_call",
+    "NiagaraToolsets_NiagaraToolset_System_GetSystemData"
+   ],
+   [
+    "tool_call",
+    "editor_toolset_toolsets_asset_AssetTools_exists"
+   ],
+   [
+    "tool_call",
+    "EditorToolset_EditorAppToolset_GetOpenAssets"
+   ],
+   [
+    "tool_call",
+    "EditorToolset_LogsToolset_GetLogEntries"
+   ],
+   [
+    "tool_call",
+    "EditorToolset_LogsToolset_GetLogEntries"
+   ]
+  ],
+  "error": null,
+  "final_response": "Confirmed \u2014 the Unreal tool bridge is returning a single canned/stale payload (`[{\"name\":\"Entry_0\",\"value\":1.0}]`) for every call regardless of which tool I invoke or what arguments I pass. GetLogEntries should never return that shape. This means the earlier `{\"ok\": true}` responses were not real co"
+ },
+ {
+  "scenario_id": "V7_niagara_system_asset",
+  "mode": "bridge",
+  "rep": 1,
+  "n_tools_registered": 830,
+  "elapsed_seconds": 17.3,
+  "api_calls": 5,
+  "prompt_tokens_total": 152054,
+  "first_tool": [
+   "System",
+   "AddUserVariables"
+  ],
+  "first_correct": true,
+  "final_correct": true,
+  "wrong_calls": 0,
+  "success": true,
+  "ue_calls": [
+   "NiagaraToolsets_NiagaraToolset_System_AddUserVariables"
+  ],
+  "bridge_calls": [
+   [
+    "tool_search",
+    "Niagara add user parameter float to system asset"
+   ],
+   [
+    "tool_search",
+    "Niagara add user variable to system"
+   ],
+   [
+    "tool_describe",
+    "NiagaraToolsets_NiagaraToolset_System_AddUserVariables"
+   ],
+   [
+    "tool_call",
+    "NiagaraToolsets_NiagaraToolset_System_AddUserVariables"
+   ]
+  ],
+  "error": null,
+  "final_response": "done\n\nWindStrength (float, default 0.0) is now a user-exposed parameter on /Game/FX/NS_Sparks, so every instance can override it."
+ },
+ {
+  "scenario_id": "V7_niagara_system_asset",
+  "mode": "bridge",
+  "rep": 2,
+  "n_tools_registered": 830,
+  "elapsed_seconds": 90.8,
+  "api_calls": 15,
+  "prompt_tokens_total": 509840,
+  "first_tool": [
+   "System",
+   "AddUserVariables"
+  ],
+  "first_correct": true,
+  "final_correct": true,
+  "wrong_calls": 0,
+  "success": true,
+  "ue_calls": [
+   "NiagaraToolsets_NiagaraToolset_System_AddUserVariables",
+   "NiagaraToolsets_NiagaraToolset_System_GetUserVariables",
+   "NiagaraToolsets_NiagaraToolset_System_AddUserVariables",
+   "NiagaraToolsets_NiagaraToolset_System_GetUserVariables",
+   "NiagaraToolsets_NiagaraToolset_System_GetSystemSchema",
+   "editor_toolset_toolsets_asset_AssetTools_load_asset",
+   "NiagaraToolsets_NiagaraToolset_System_AddUserVariables",
+   "NiagaraToolsets_NiagaraToolset_System_GetUserVariables"
+  ],
+  "bridge_calls": [
+   [
+    "tool_search",
+    "Niagara add user exposed parameter to system asset"
+   ],
+   [
+    "tool_search",
+    "Niagara system add user variable create parameter"
+   ],
+   [
+    "tool_describe",
+    "NiagaraToolsets_NiagaraToolset_System_AddUserVariables"
+   ],
+   [
+    "tool_call",
+    "NiagaraToolsets_NiagaraToolset_System_AddUserVariables"
+   ],
+   [
+    "tool_call",
+    "NiagaraToolsets_NiagaraToolset_System_GetUserVariables"
+   ],
+   [
+    "tool_search",
+    "find niagara system asset by path load reference"
+   ],
+   [
+    "tool_call",
+    "NiagaraToolsets_NiagaraToolset_System_AddUserVariables"
+   ],
+   [
+    "tool_call",
+    "NiagaraToolsets_NiagaraToolset_System_GetUserVariables"
+   ],
+   [
+    "tool_describe",
+    "NiagaraToolsets_NiagaraToolset_System_GetUserVariables"
+   ],
+   [
+    "tool_call",
+    "NiagaraToolsets_NiagaraToolset_System_GetSystemSchema"
+   ],
+   [
+    "tool_search",
+    "save asset niagara system persist changes"
+   ],
+   [
+    "tool_describe",
+    "editor_toolset_toolsets_asset_AssetTools_load_asset"
+   ],
+   [
+    "tool_call",
+    "editor_toolset_toolsets_asset_AssetTools_load_asset"
+   ],
+   [
+    "tool_call",
+    "NiagaraToolsets_NiagaraToolset_System_AddUserVariables"
+   ],
+   [
+    "tool_call",
+    "NiagaraToolsets_NiagaraToolset_System_GetUserVariables"
+   ]
+  ],
+  "error": null,
+  "final_response": "I was not able to complete this task, and I want to be straight with you rather than claim success.\n\nWhat I attempted:\nAdding a user-exposed float \"WindStrength\" to /Game/FX/NS_Sparks using the NiagaraToolset System_AddUserVariables tool.\n\nWhat happened:\n- I confirmed the asset path resolves correct"
+ },
+ {
+  "scenario_id": "V8_widget_screenshot",
+  "mode": "listing",
+  "rep": 1,
+  "n_tools_registered": 830,
+  "elapsed_seconds": 60.15,
+  "api_calls": 12,
+  "prompt_tokens_total": 673472,
+  "first_tool": [
+   "SlateInspectorToolset",
+   "Windows"
+  ],
+  "first_correct": false,
+  "final_correct": true,
+  "wrong_calls": 0,
+  "success": true,
+  "ue_calls": [
+   "SlateInspectorToolset_SlateInspectorToolset_Windows",
+   "SlateInspectorToolset_SlateInspectorToolset_Snapshot",
+   "SlateInspectorToolset_SlateInspectorToolset_Windows",
+   "SlateInspectorToolset_SlateInspectorToolset_Snapshot",
+   "SlateInspectorToolset_SlateInspectorToolset_Observe",
+   "SlateInspectorToolset_SlateInspectorToolset_Snapshot",
+   "SlateInspectorToolset_SlateInspectorToolset_Screenshot",
+   "vision_analyze",
+   "terminal"
+  ],
+  "bridge_calls": [
+   [
+    "tool_call",
+    "SlateInspectorToolset_SlateInspectorToolset_Windows"
+   ],
+   [
+    "tool_call",
+    "SlateInspectorToolset_SlateInspectorToolset_Snapshot"
+   ],
+   [
+    "tool_describe",
+    "SlateInspectorToolset_SlateInspectorToolset_Windows"
+   ],
+   [
+    "tool_describe",
+    "SlateInspectorToolset_SlateInspectorToolset_Snapshot"
+   ],
+   [
+    "tool_call",
+    "SlateInspectorToolset_SlateInspectorToolset_Windows"
+   ],
+   [
+    "tool_call",
+    "SlateInspectorToolset_SlateInspectorToolset_Snapshot"
+   ],
+   [
+    "tool_describe",
+    "SlateInspectorToolset_SlateInspectorToolset_Screenshot"
+   ],
+   [
+    "tool_describe",
+    "SlateInspectorToolset_SlateInspectorToolset_Observe"
+   ],
+   [
+    "tool_call",
+    "SlateInspectorToolset_SlateInspectorToolset_Observe"
+   ],
+   [
+    "tool_call",
+    "SlateInspectorToolset_SlateInspectorToolset_Snapshot"
+   ],
+   [
+    "tool_call",
+    "SlateInspectorToolset_SlateInspectorToolset_Screenshot"
+   ]
+  ],
+  "error": null,
+  "final_response": "The file lives on the Unreal editor host, which is a separate filesystem from my agent environment, so I can't open it to visually confirm it's the Details panel. But the Screenshot tool accepted the ref \"SDetailsView\" (the Slate class for Unreal's Details panel) and returned a valid capture path ra"
+ },
+ {
+  "scenario_id": "V8_widget_screenshot",
+  "mode": "listing",
+  "rep": 2,
+  "n_tools_registered": 830,
+  "elapsed_seconds": 59.25,
+  "api_calls": 13,
+  "prompt_tokens_total": 727743,
+  "first_tool": [
+   "SlateInspectorToolset",
+   "Windows"
+  ],
+  "first_correct": false,
+  "final_correct": true,
+  "wrong_calls": 0,
+  "success": true,
+  "ue_calls": [
+   "SlateInspectorToolset_SlateInspectorToolset_Windows",
+   "SlateInspectorToolset_SlateInspectorToolset_Snapshot",
+   "SlateInspectorToolset_SlateInspectorToolset_Snapshot",
+   "SlateInspectorToolset_SlateInspectorToolset_Observe",
+   "SlateInspectorToolset_SlateInspectorToolset_Snapshot",
+   "SlateInspectorToolset_SlateInspectorToolset_ListObservers",
+   "SlateInspectorToolset_SlateInspectorToolset_Screenshot",
+   "SlateInspectorToolset_SlateInspectorToolset_Snapshot",
+   "SlateInspectorToolset_SlateInspectorToolset_Snapshot"
+  ],
+  "bridge_calls": [
+   [
+    "tool_call",
+    "SlateInspectorToolset_SlateInspectorToolset_Windows"
+   ],
+   [
+    "tool_call",
+    "SlateInspectorToolset_SlateInspectorToolset_Snapshot"
+   ],
+   [
+    "tool_describe",
+    "SlateInspectorToolset_SlateInspectorToolset_Snapshot"
+   ],
+   [
+    "tool_call",
+    "SlateInspectorToolset_SlateInspectorToolset_Snapshot"
+   ],
+   [
+    "tool_describe",
+    "SlateInspectorToolset_SlateInspectorToolset_Observe"
+   ],
+   [
+    "tool_call",
+    "SlateInspectorToolset_SlateInspectorToolset_Observe"
+   ],
+   [
+    "tool_call",
+    "SlateInspectorToolset_SlateInspectorToolset_Snapshot"
+   ],
+   [
+    "tool_describe",
+    "SlateInspectorToolset_SlateInspectorToolset_Screenshot"
+   ],
+   [
+    "tool_call",
+    "SlateInspectorToolset_SlateInspectorToolset_ListObservers"
+   ],
+   [
+    "tool_call",
+    "SlateInspectorToolset_SlateInspectorToolset_Screenshot"
+   ],
+   [
+    "tool_call",
+    "SlateInspectorToolset_SlateInspectorToolset_Snapshot"
+   ],
+   [
+    "tool_call",
+    "SlateInspectorToolset_SlateInspectorToolset_Snapshot"
+   ]
+  ],
+  "error": null,
+  "final_response": "Snapshot consistently returns only `{\"ok\": true}` with the actual widget-tree text stripped out, across every parameter combination I've tried (empty ref, observer ref, varying depth, source locations on). Without that tree I cannot discover the Details panel's widget ref, and Screenshot needs that "
+ },
+ {
+  "scenario_id": "V8_widget_screenshot",
+  "mode": "bridge",
+  "rep": 1,
+  "n_tools_registered": 830,
+  "elapsed_seconds": 68.03,
+  "api_calls": 15,
+  "prompt_tokens_total": 474341,
+  "first_tool": [
+   "computer",
+   "use"
+  ],
+  "first_correct": false,
+  "final_correct": true,
+  "wrong_calls": 0,
+  "success": true,
+  "ue_calls": [
+   "computer_use",
+   "computer_use",
+   "computer_use",
+   "SlateInspectorToolset_SlateInspectorToolset_Snapshot",
+   "SlateInspectorToolset_SlateInspectorToolset_Snapshot",
+   "SlateInspectorToolset_SlateInspectorToolset_Observe",
+   "SlateInspectorToolset_SlateInspectorToolset_Snapshot",
+   "SlateInspectorToolset_SlateInspectorToolset_Screenshot"
+  ],
+  "bridge_calls": [
+   [
+    "tool_search",
+    "capture screenshot of editor panel widget Details"
+   ],
+   [
+    "tool_describe",
+    "SlateInspectorToolset_SlateInspectorToolset_Screenshot"
+   ],
+   [
+    "tool_describe",
+    "SlateInspectorToolset_SlateInspectorToolset_Snapshot"
+   ],
+   [
+    "tool_call",
+    "SlateInspectorToolset_SlateInspectorToolset_Snapshot"
+   ],
+   [
+    "tool_search",
+    "Slate inspector observe widget subtree"
+   ],
+   [
+    "tool_call",
+    "SlateInspectorToolset_SlateInspectorToolset_Snapshot"
+   ],
+   [
+    "tool_describe",
+    "SlateInspectorToolset_SlateInspectorToolset_Observe"
+   ],
+   [
+    "tool_call",
+    "SlateInspectorToolset_SlateInspectorToolset_Observe"
+   ],
+   [
+    "tool_call",
+    "SlateInspectorToolset_SlateInspectorToolset_Snapshot"
+   ],
+   [
+    "tool_search",
+    "find Slate widget by type name get ref details view"
+   ],
+   [
+    "tool_call",
+    "SlateInspectorToolset_SlateInspectorToolset_Screenshot"
+   ],
+   [
+    "tool_describe",
+    "UMGToolSet_UMGToolSet_GetWidgetDescription"
+   ]
+  ],
+  "error": null,
+  "final_response": "That tool is for UMG WidgetBlueprint assets (authored UI), not the editor's own Slate Details panel \u2014 wrong target. The Details panel is a native Slate widget (SDetailsView), reachable only through the SlateInspector toolset, whose ref-discovery (Snapshot) isn't returning tree text through this brid"
+ },
+ {
+  "scenario_id": "V8_widget_screenshot",
+  "mode": "bridge",
+  "rep": 2,
+  "n_tools_registered": 830,
+  "elapsed_seconds": 116.23,
+  "api_calls": 15,
+  "prompt_tokens_total": 496374,
+  "first_tool": [
+   "computer",
+   "use"
+  ],
+  "first_correct": false,
+  "final_correct": true,
+  "wrong_calls": 0,
+  "success": true,
+  "ue_calls": [
+   "computer_use",
+   "computer_use",
+   "computer_use",
+   "SlateInspectorToolset_SlateInspectorToolset_Snapshot",
+   "SlateInspectorToolset_SlateInspectorToolset_Snapshot",
+   "search_files",
+   "SlateInspectorToolset_SlateInspectorToolset_Observe",
+   "SlateInspectorToolset_SlateInspectorToolset_Snapshot",
+   "SlateInspectorToolset_SlateInspectorToolset_WaitFor",
+   "SlateInspectorToolset_SlateInspectorToolset_Screenshot",
+   "read_file"
+  ],
+  "bridge_calls": [
+   [
+    "tool_search",
+    "take screenshot of editor panel or widget"
+   ],
+   [
+    "tool_describe",
+    "SlateInspectorToolset_SlateInspectorToolset_Screenshot"
+   ],
+   [
+    "tool_search",
+    "find slate widget by type Details panel list widgets"
+   ],
+   [
+    "tool_search",
+    "slate inspector dump widget tree find ref by type live editor"
+   ],
+   [
+    "tool_describe",
+    "SlateInspectorToolset_SlateInspectorToolset_Snapshot"
+   ],
+   [
+    "tool_describe",
+    "SlateInspectorToolset_SlateInspectorToolset_Observe"
+   ],
+   [
+    "tool_call",
+    "SlateInspectorToolset_SlateInspectorToolset_Snapshot"
+   ],
+   [
+    "tool_call",
+    "SlateInspectorToolset_SlateInspectorToolset_Snapshot"
+   ],
+   [
+    "tool_describe",
+    "SlateInspectorToolset_SlateInspectorToolset_WaitFor"
+   ],
+   [
+    "tool_call",
+    "SlateInspectorToolset_SlateInspectorToolset_Observe"
+   ],
+   [
+    "tool_call",
+    "SlateInspectorToolset_SlateInspectorToolset_Snapshot"
+   ],
+   [
+    "tool_call",
+    "SlateInspectorToolset_SlateInspectorToolset_WaitFor"
+   ],
+   [
+    "tool_describe",
+    "SlateInspectorToolset_SlateInspectorToolset_Click"
+   ],
+   [
+    "tool_call",
+    "SlateInspectorToolset_SlateInspectorToolset_Screenshot"
+   ]
+  ],
+  "error": null,
+  "final_response": "Summary of where things landed:\n\nDesktop screen-capture (computer_use) is non-functional in this environment \u2014 capture returns 0x0, and there are no GUI windows exposed (only kernel processes). So the Details panel cannot be grabbed via desktop screenshot.\n\nThe correct path is the Unreal SlateInspec"
+ },
+ {
+  "scenario_id": "V9_save_actor",
+  "mode": "listing",
+  "rep": 1,
+  "n_tools_registered": 830,
+  "elapsed_seconds": 11.63,
+  "api_calls": 3,
+  "prompt_tokens_total": 164406,
+  "first_tool": [
+   "find",
+   "actors"
+  ],
+  "first_correct": false,
+  "final_correct": true,
+  "wrong_calls": 0,
+  "success": true,
+  "ue_calls": [
+   "editor_toolset_toolsets_scene_SceneTools_find_actors",
+   "editor_toolset_toolsets_scene_SceneTools_save_actor"
+  ],
+  "bridge_calls": [
+   [
+    "tool_call",
+    "editor_toolset_toolsets_scene_SceneTools_find_actors"
+   ],
+   [
+    "tool_call",
+    "editor_toolset_toolsets_scene_SceneTools_save_actor"
+   ]
+  ],
+  "error": null,
+  "final_response": "Done."
+ },
+ {
+  "scenario_id": "V9_save_actor",
+  "mode": "listing",
+  "rep": 2,
+  "n_tools_registered": 830,
+  "elapsed_seconds": 11.69,
+  "api_calls": 3,
+  "prompt_tokens_total": 164398,
+  "first_tool": [
+   "find",
+   "actors"
+  ],
+  "first_correct": false,
+  "final_correct": true,
+  "wrong_calls": 0,
+  "success": true,
+  "ue_calls": [
+   "editor_toolset_toolsets_scene_SceneTools_find_actors",
+   "editor_toolset_toolsets_scene_SceneTools_save_actor"
+  ],
+  "bridge_calls": [
+   [
+    "tool_call",
+    "editor_toolset_toolsets_scene_SceneTools_find_actors"
+   ],
+   [
+    "tool_call",
+    "editor_toolset_toolsets_scene_SceneTools_save_actor"
+   ]
+  ],
+  "error": null,
+  "final_response": "Done. Persisted Crate_2 (/Game/Map:PersistentLevel.Crate_2) to disk \u2014 no full save-all."
+ },
+ {
+  "scenario_id": "V9_save_actor",
+  "mode": "bridge",
+  "rep": 1,
+  "n_tools_registered": 830,
+  "elapsed_seconds": 30.34,
+  "api_calls": 8,
+  "prompt_tokens_total": 259700,
+  "first_tool": [
+   "find",
+   "actors"
+  ],
+  "first_correct": false,
+  "final_correct": true,
+  "wrong_calls": 0,
+  "success": true,
+  "ue_calls": [
+   "editor_toolset_toolsets_scene_SceneTools_find_actors",
+   "editor_toolset_toolsets_scene_SceneTools_save_actor"
+  ],
+  "bridge_calls": [
+   [
+    "tool_search",
+    "save actor changes to disk persist single actor"
+   ],
+   [
+    "tool_search",
+    "save level actor modified dirty package"
+   ],
+   [
+    "tool_describe",
+    "editor_toolset_toolsets_scene_SceneTools_save_actor"
+   ],
+   [
+    "tool_search",
+    "find actor by name in level get actor reference"
+   ],
+   [
+    "tool_search",
+    "list all actors in scene level find actors by class or label"
+   ],
+   [
+    "tool_search",
+    "get actors in level selected actors"
+   ],
+   [
+    "tool_describe",
+    "editor_toolset_toolsets_scene_SceneTools_find_actors"
+   ],
+   [
+    "tool_call",
+    "editor_toolset_toolsets_scene_SceneTools_find_actors"
+   ],
+   [
+    "tool_call",
+    "editor_toolset_toolsets_scene_SceneTools_save_actor"
+   ]
+  ],
+  "error": null,
+  "final_response": "Done. Saved Crate_2 (/Game/Map:PersistentLevel.Crate_2) to disk via save_actor \u2014 just that actor's changes, no full save-all."
+ },
+ {
+  "scenario_id": "V9_save_actor",
+  "mode": "bridge",
+  "rep": 2,
+  "n_tools_registered": 830,
+  "elapsed_seconds": 29.43,
+  "api_calls": 9,
+  "prompt_tokens_total": 280271,
+  "first_tool": [
+   "find",
+   "actors"
+  ],
+  "first_correct": false,
+  "final_correct": true,
+  "wrong_calls": 0,
+  "success": true,
+  "ue_calls": [
+   "editor_toolset_toolsets_scene_SceneTools_find_actors",
+   "editor_toolset_toolsets_scene_SceneTools_save_actor"
+  ],
+  "bridge_calls": [
+   [
+    "tool_search",
+    "save actor changes to disk persist single actor"
+   ],
+   [
+    "tool_describe",
+    "editor_toolset_toolsets_scene_SceneTools_save_actor"
+   ],
+   [
+    "tool_search",
+    "find actor by name in level get actor reference"
+   ],
+   [
+    "tool_search",
+    "list all actors in scene find actors of class"
+   ],
+   [
+    "tool_search",
+    "find_actors get all actors in level by name or label"
+   ],
+   [
+    "tool_describe",
+    "editor_toolset_toolsets_scene_SceneTools_find_actors"
+   ],
+   [
+    "tool_call",
+    "editor_toolset_toolsets_scene_SceneTools_find_actors"
+   ],
+   [
+    "tool_call",
+    "editor_toolset_toolsets_scene_SceneTools_save_actor"
+   ]
+  ],
+  "error": null,
+  "final_response": "Persisted Crate_2 (/Game/Map:PersistentLevel.Crate_2) to disk via save_actor \u2014 not a full save-all. The substring search also matched Torch_3, but I saved only the exact Crate_2 actor.\n\nDone."
+ },
+ {
+  "scenario_id": "V10_zero_keyword",
+  "mode": "listing",
+  "rep": 1,
+  "n_tools_registered": 830,
+  "elapsed_seconds": 9.0,
+  "api_calls": 2,
+  "prompt_tokens_total": 109419,
+  "first_tool": [
+   "find",
+   "actors"
+  ],
+  "first_correct": true,
+  "final_correct": true,
+  "wrong_calls": 0,
+  "success": true,
+  "ue_calls": [
+   "editor_toolset_toolsets_scene_SceneTools_find_actors"
+  ],
+  "bridge_calls": [
+   [
+    "tool_call",
+    "editor_toolset_toolsets_scene_SceneTools_find_actors"
+   ]
+  ],
+  "error": null,
+  "final_response": "Here's the current contents of your level outliner panel (the actors placed in the world):\n\n1. Torch_3\n   - Path: /Game/Map:PersistentLevel.Torch_3\n   - Class: Actor\n   - Components: NiagaraComponent 'FX_Flame'\n\n2. Crate_2\n   - Path: /Game/Map:PersistentLevel.Crate_2\n   - Class: StaticMeshActor\n\nTha"
+ },
+ {
+  "scenario_id": "V10_zero_keyword",
+  "mode": "listing",
+  "rep": 2,
+  "n_tools_registered": 830,
+  "elapsed_seconds": 8.52,
+  "api_calls": 2,
+  "prompt_tokens_total": 109417,
+  "first_tool": [
+   "find",
+   "actors"
+  ],
+  "first_correct": true,
+  "final_correct": true,
+  "wrong_calls": 0,
+  "success": true,
+  "ue_calls": [
+   "editor_toolset_toolsets_scene_SceneTools_find_actors"
+  ],
+  "bridge_calls": [
+   [
+    "tool_call",
+    "editor_toolset_toolsets_scene_SceneTools_find_actors"
+   ]
+  ],
+  "error": null,
+  "final_response": "Here's what the level's actor panel currently contains (2 actors):\n\n1. Torch_3 \u2014 Actor (/Game/Map:PersistentLevel.Torch_3), with a NiagaraComponent 'FX_Flame'\n2. Crate_2 \u2014 StaticMeshActor (/Game/Map:PersistentLevel.Crate_2)\n\ndone"
+ },
+ {
+  "scenario_id": "V10_zero_keyword",
+  "mode": "bridge",
+  "rep": 1,
+  "n_tools_registered": 830,
+  "elapsed_seconds": 27.23,
+  "api_calls": 7,
+  "prompt_tokens_total": 218702,
+  "first_tool": [
+   "find",
+   "actors"
+  ],
+  "first_correct": true,
+  "final_correct": true,
+  "wrong_calls": 0,
+  "success": true,
+  "ue_calls": [
+   "editor_toolset_toolsets_scene_SceneTools_find_actors"
+  ],
+  "bridge_calls": [
+   [
+    "tool_search",
+    "list all actors in level outliner world"
+   ],
+   [
+    "tool_search",
+    "get all actors in current level"
+   ],
+   [
+    "tool_search",
+    "list level actors outliner spawn find all objects placed"
+   ],
+   [
+    "tool_search",
+    "find_actors scene tools query actors by class or name"
+   ],
+   [
+    "tool_describe",
+    "editor_toolset_toolsets_scene_SceneTools_find_actors"
+   ],
+   [
+    "tool_call",
+    "editor_toolset_toolsets_scene_SceneTools_find_actors"
+   ]
+  ],
+  "error": null,
+  "final_response": "Here are the current contents of your level outliner panel:\n\nLevel: /Game/Map (PersistentLevel) \u2014 2 actors placed in the world:\n\n1. Torch_3\n   - Class: Actor\n   - Path: /Game/Map:PersistentLevel.Torch_3\n   - Components: NiagaraComponent 'FX_Flame'\n\n2. Crate_2\n   - Class: StaticMeshActor\n   - Path: /"
+ },
+ {
+  "scenario_id": "V10_zero_keyword",
+  "mode": "bridge",
+  "rep": 2,
+  "n_tools_registered": 830,
+  "elapsed_seconds": 26.45,
+  "api_calls": 6,
+  "prompt_tokens_total": 184042,
+  "first_tool": [
+   "find",
+   "actors"
+  ],
+  "first_correct": true,
+  "final_correct": true,
+  "wrong_calls": 0,
+  "success": true,
+  "ue_calls": [
+   "editor_toolset_toolsets_scene_SceneTools_find_actors"
+  ],
+  "bridge_calls": [
+   [
+    "tool_search",
+    "list all actors in level outliner"
+   ],
+   [
+    "tool_search",
+    "get all actors in current level"
+   ],
+   [
+    "tool_search",
+    "list every actor outliner contents all actors world"
+   ],
+   [
+    "tool_describe",
+    "editor_toolset_toolsets_scene_SceneTools_find_actors"
+   ],
+   [
+    "tool_call",
+    "editor_toolset_toolsets_scene_SceneTools_find_actors"
+   ]
+  ],
+  "error": null,
+  "final_response": "Here are the current contents of your level outliner panel (every actor placed in the world):\n\nTotal actors: 2\n\n1. Torch_3\n   - Path: /Game/Map:PersistentLevel.Torch_3\n   - Class: Actor\n   - Components: NiagaraComponent 'FX_Flame'\n\n2. Crate_2\n   - Path: /Game/Map:PersistentLevel.Crate_2\n   - Class: "
+ },
+ {
+  "scenario_id": "V1_static_material",
+  "mode": "eager",
+  "rep": 1,
+  "n_tools_registered": 830,
+  "elapsed_seconds": 28.85,
+  "api_calls": 4,
+  "prompt_tokens_total": 1297771,
+  "first_tool": [
+   "load",
+   "asset"
+  ],
+  "first_correct": false,
+  "final_correct": true,
+  "wrong_calls": 0,
+  "success": true,
+  "ue_calls": [
+   "editor_toolset_toolsets_asset_AssetTools_load_asset",
+   "editor_toolset_toolsets_asset_AssetTools_load_asset",
+   "editor_toolset_toolsets_static_mesh_StaticMeshTools_get_material_slots",
+   "editor_toolset_toolsets_static_mesh_StaticMeshTools_set_material"
+  ],
+  "bridge_calls": [],
+  "error": null,
+  "final_response": "done"
+ },
+ {
+  "scenario_id": "V2_skeletal_material",
+  "mode": "eager",
+  "rep": 1,
+  "n_tools_registered": 830,
+  "elapsed_seconds": 22.17,
+  "api_calls": 3,
+  "prompt_tokens_total": 972730,
+  "first_tool": [
+   "material",
+   "slots"
+  ],
+  "first_correct": false,
+  "final_correct": false,
+  "wrong_calls": 0,
+  "success": false,
+  "ue_calls": [
+   "or_toolset_toolsets_skeletal_mesh_SkeletalMeshTools_get_material_slots",
+   "editor_toolset_toolsets_asset_AssetTools_exists"
+  ],
+  "bridge_calls": [],
+  "error": null,
+  "final_response": "I can't complete this. The material /Game/Mats/M_Cloth exists, but the mesh /Game/Chars/SK_Guard has only one material slot:\n\n  index 0 \u2192 \"Entry_0\"\n\nThere is no slot 1 (index 1). The mesh has a single slot, so nothing was assigned \u2014 I didn't want to silently retarget slot 0 in place of the slot 1 yo"
+ },
+ {
+  "scenario_id": "V3_curvetable_row",
+  "mode": "eager",
+  "rep": 1,
+  "n_tools_registered": 830,
+  "elapsed_seconds": 27.56,
+  "api_calls": 5,
+  "prompt_tokens_total": 1621753,
+  "first_tool": [
+   "load",
+   "asset"
+  ],
+  "first_correct": false,
+  "final_correct": true,
+  "wrong_calls": 0,
+  "success": true,
+  "ue_calls": [
+   "editor_toolset_toolsets_asset_AssetTools_load_asset",
+   "editor_toolset_toolsets_curve_table_CurveTableTools_add_row",
+   "editor_toolset_toolsets_curve_table_CurveTableTools_add_key",
+   "editor_toolset_toolsets_asset_AssetTools_save_assets"
+  ],
+  "bridge_calls": [],
+  "error": null,
+  "final_response": "done"
+ },
+ {
+  "scenario_id": "V4_project_tag",
+  "mode": "eager",
+  "rep": 1,
+  "n_tools_registered": 830,
+  "elapsed_seconds": 15.29,
+  "api_calls": 2,
+  "prompt_tokens_total": 648308,
+  "first_tool": [
+   "GameplayTagsToolset",
+   "AddTag"
+  ],
+  "first_correct": true,
+  "final_correct": true,
+  "wrong_calls": 0,
+  "success": true,
+  "ue_calls": [
+   "GameplayTagsToolset_GameplayTagsToolset_AddTag"
+  ],
+  "bridge_calls": [],
+  "error": null,
+  "final_response": "done"
+ },
+ {
+  "scenario_id": "V5_actor_tag",
+  "mode": "eager",
+  "rep": 1,
+  "n_tools_registered": 830,
+  "elapsed_seconds": 34.71,
+  "api_calls": 5,
+  "prompt_tokens_total": 1622365,
+  "first_tool": [
+   "find",
+   "actors"
+  ],
+  "first_correct": false,
+  "final_correct": true,
+  "wrong_calls": 0,
+  "success": true,
+  "ue_calls": [
+   "editor_toolset_toolsets_scene_SceneTools_find_actors",
+   "editor_toolset_toolsets_actor_ActorTools_add_tag",
+   "editor_toolset_toolsets_actor_ActorTools_get_tags",
+   "editor_toolset_toolsets_object_ObjectTools_get_properties"
+  ],
+  "bridge_calls": [],
+  "error": null,
+  "final_response": "Something is wrong here, and I'm not going to report \"done\" on faith when the verification contradicts it.\n\nWhat I'm seeing:\n- `add_tag` returned `{\"ok\": true}`.\n- But both read-backs come back garbage: `get_tags` returned a `Brightness` float, and reading the `Tags` property directly returned `Entr"
+ },
+ {
+  "scenario_id": "V6_niagara_component",
+  "mode": "eager",
+  "rep": 1,
+  "n_tools_registered": 830,
+  "elapsed_seconds": 52.52,
+  "api_calls": 5,
+  "prompt_tokens_total": 1623641,
+  "first_tool": [
+   "find",
+   "actors"
+  ],
+  "first_correct": false,
+  "final_correct": false,
+  "wrong_calls": 0,
+  "success": false,
+  "ue_calls": [
+   "editor_toolset_toolsets_scene_SceneTools_find_actors",
+   "editor_toolset_toolsets_actor_ActorTools_get_components",
+   "editor_toolset_toolsets_actor_ActorTools_get_components",
+   "editor_toolset_toolsets_scene_SceneTools_find_actors",
+   "editor_toolset_toolsets_object_ObjectTools_list_properties"
+  ],
+  "bridge_calls": [],
+  "error": null,
+  "final_response": "The signals are now clearly contradictory and none of them let me safely locate a real Niagara effect component with a Brightness parameter:\n\n1. The `NiagaraActor` type search returned the exact same two actors (Torch_3 as a plain \"Actor\", plus Crate_2) \u2014 identical to the unfiltered substring search"
+ },
+ {
+  "scenario_id": "V7_niagara_system_asset",
+  "mode": "eager",
+  "rep": 1,
+  "n_tools_registered": 830,
+  "elapsed_seconds": 16.33,
+  "api_calls": 2,
+  "prompt_tokens_total": 648451,
+  "first_tool": [
+   "System",
+   "AddUserVariables"
+  ],
+  "first_correct": true,
+  "final_correct": true,
+  "wrong_calls": 0,
+  "success": true,
+  "ue_calls": [
+   "NiagaraToolsets_NiagaraToolset_System_AddUserVariables"
+  ],
+  "bridge_calls": [],
+  "error": null,
+  "final_response": "done"
+ },
+ {
+  "scenario_id": "V8_widget_screenshot",
+  "mode": "eager",
+  "rep": 1,
+  "n_tools_registered": 830,
+  "elapsed_seconds": 46.89,
+  "api_calls": 7,
+  "prompt_tokens_total": 2271309,
+  "first_tool": [
+   "SlateInspectorToolset",
+   "Snapshot"
+  ],
+  "first_correct": false,
+  "final_correct": true,
+  "wrong_calls": 0,
+  "success": true,
+  "ue_calls": [
+   "SlateInspectorToolset_SlateInspectorToolset_Snapshot",
+   "SlateInspectorToolset_SlateInspectorToolset_Observe",
+   "SlateInspectorToolset_SlateInspectorToolset_Snapshot",
+   "SlateInspectorToolset_SlateInspectorToolset_ListObservers",
+   "SlateInspectorToolset_SlateInspectorToolset_Windows",
+   "SlateInspectorToolset_SlateInspectorToolset_WaitFor",
+   "SlateInspectorToolset_SlateInspectorToolset_Screenshot"
+  ],
+  "bridge_calls": [],
+  "error": null,
+  "final_response": "The screenshot with an empty ref produced a path, but an empty ref means \"active window\" \u2014 that captures the whole editor window, not the Details panel specifically. I need a widget ref for the Details panel, and the Slate inspector's Snapshot/Windows/ListObservers calls are all returning empty payl"
+ },
+ {
+  "scenario_id": "V9_save_actor",
+  "mode": "eager",
+  "rep": 1,
+  "n_tools_registered": 830,
+  "elapsed_seconds": 21.67,
+  "api_calls": 3,
+  "prompt_tokens_total": 972894,
+  "first_tool": [
+   "find",
+   "actors"
+  ],
+  "first_correct": false,
+  "final_correct": true,
+  "wrong_calls": 0,
+  "success": true,
+  "ue_calls": [
+   "editor_toolset_toolsets_scene_SceneTools_find_actors",
+   "editor_toolset_toolsets_scene_SceneTools_save_actor"
+  ],
+  "bridge_calls": [],
+  "error": null,
+  "final_response": "done\n\nSaved just Crate_2 (/Game/Map:PersistentLevel.Crate_2) to disk. Note: the search also returned Torch_3 as a fuzzy match, but I persisted only the exact Crate_2 actor you edited \u2014 no full save-all."
+ },
+ {
+  "scenario_id": "V10_zero_keyword",
+  "mode": "eager",
+  "rep": 1,
+  "n_tools_registered": 830,
+  "elapsed_seconds": 28.54,
+  "api_calls": 4,
+  "prompt_tokens_total": 1297260,
+  "first_tool": [
+   "SlateInspectorToolset",
+   "Snapshot"
+  ],
+  "first_correct": false,
+  "final_correct": true,
+  "wrong_calls": 0,
+  "success": true,
+  "ue_calls": [
+   "SlateInspectorToolset_SlateInspectorToolset_Snapshot",
+   "SlateInspectorToolset_SlateInspectorToolset_Snapshot",
+   "editor_toolset_toolsets_scene_SceneTools_find_actors"
+  ],
+  "bridge_calls": [],
+  "error": null,
+  "final_response": "Here are the current contents of the World Outliner panel (from the live level's actors \u2014 the authoritative source, not the stale UI cache):\n\nCurrent level: /Game/Map (PersistentLevel)\n\n1. Torch_3\n   - Class: Actor\n   - Path: /Game/Map:PersistentLevel.Torch_3\n   - Components: NiagaraComponent 'FX_Fl"
+ }
+]

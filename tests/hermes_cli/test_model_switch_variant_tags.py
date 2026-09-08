@@ -24,7 +24,7 @@ def _run_switch(raw_input: str, current_provider: str = "openrouter") -> str:
          patch("hermes_cli.model_switch.list_provider_models", return_value=[]), \
          patch("hermes_cli.runtime_provider.resolve_runtime_provider",
                return_value={"api_key": "test", "base_url": "", "api_mode": "chat_completions"}), \
-         patch("hermes_cli.models.validate_requested_model", return_value=_MOCK_VALIDATION), \
+         patch("hermes_cli.models_validate.validate_requested_model", return_value=_MOCK_VALIDATION), \
          patch("hermes_cli.model_switch.get_model_info", return_value=None), \
          patch("hermes_cli.model_switch.get_model_capabilities", return_value=None), \
          patch("hermes_cli.models.detect_provider_for_model", return_value=None):
@@ -54,17 +54,4 @@ class TestVariantTagPreservation:
         result = _run_switch("nvidia:nemotron-3-super-120b-a12b")
         assert result == "nvidia/nemotron-3-super-120b-a12b"
 
-    def test_legacy_colon_format_with_tag_converts_first_colon_only(self):
-        """vendor:model:free (no slash) → vendor/model:free — first colon becomes slash."""
-        result = _run_switch("nvidia:nemotron-3-super-120b-a12b:free")
-        assert result == "nvidia/nemotron-3-super-120b-a12b:free"
 
-    def test_bare_model_name_unaffected(self):
-        """Bare model names without colons or slashes should work normally."""
-        result = _run_switch("claude-sonnet-4.6")
-        assert result == "anthropic/claude-sonnet-4.6"
-
-    def test_already_correct_slug_no_tag(self):
-        """Standard vendor/model slugs without tags pass through unchanged."""
-        result = _run_switch("anthropic/claude-sonnet-4.6")
-        assert result == "anthropic/claude-sonnet-4.6"

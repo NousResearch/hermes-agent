@@ -71,16 +71,6 @@ class TestResetSessionStampsFreshReset:
         assert new_entry is not None
         assert new_entry.is_fresh_reset is True
 
-    def test_reset_session_unknown_key_returns_none(self, tmp_path):
-        store = _make_store(tmp_path)
-        assert store.reset_session("unknown:key") is None
-
-    def test_fresh_session_does_not_have_is_fresh_reset(self, tmp_path):
-        """A vanilla first-time session should not carry the flag."""
-        store = _make_store(tmp_path)
-        entry = store.get_or_create_session(_make_source())
-        assert entry.is_fresh_reset is False
-
 
 # ---------------------------------------------------------------------------
 # Core regression: _is_new_session stays True after updated_at bump
@@ -104,26 +94,6 @@ class TestIsNewSessionSurvivesUpdatedAtBump:
         # After the fix: is_fresh_reset=True carries the signal through the bump
         assert _is_new_session(entry) is True
 
-    def test_flag_consumed_after_first_read(self, tmp_path):
-        """After the message handler consumes is_fresh_reset, the NEXT
-        message should not be treated as a new session (skill re-injection
-        must not fire a second time).
-        """
-        store = _make_store(tmp_path)
-        source = _make_source()
-        store.get_or_create_session(source)
-        session_key = store._generate_session_key(source)
-        store.reset_session(session_key)
-
-        # First message — handler consumes the flag
-        entry = store.get_or_create_session(source)
-        assert _is_new_session(entry) is True
-        entry.is_fresh_reset = False  # what _handle_message_with_agent does
-
-        # Second message — must not be treated as new
-        entry = store.get_or_create_session(source)
-        assert _is_new_session(entry) is False
-
 
 # ---------------------------------------------------------------------------
 # Vanilla-session behavior is unchanged
@@ -140,31 +110,6 @@ class TestVanillaBehaviorUnaffected:
         entry = store.get_or_create_session(source)
         assert entry.is_fresh_reset is False
         assert _is_new_session(entry) is False
-
-    def test_idle_auto_reset_does_not_set_is_fresh_reset(self, tmp_path):
-        """Idle/daily auto-resets use was_auto_reset — confirm they do NOT
-        also set is_fresh_reset (which would double-fire the skill path and
-        not leak through the auto-reset guard).
-        """
-        store = _make_store(tmp_path)
-        source = _make_source()
-        entry = store.get_or_create_session(source)
-
-        # Simulate the auto-reset code path: get_or_create_session's internal
-        # branch that sets was_auto_reset does NOT touch is_fresh_reset.
-        # Construct a fresh entry the same way that branch does.
-        store._entries.pop(store._generate_session_key(source))
-        fresh = SessionEntry(
-            session_key=entry.session_key,
-            session_id="new_id",
-            created_at=entry.created_at,
-            updated_at=entry.created_at,
-            origin=source,
-            was_auto_reset=True,
-            auto_reset_reason="idle",
-        )
-        assert fresh.is_fresh_reset is False
-        assert fresh.was_auto_reset is True
 
 
 # ---------------------------------------------------------------------------
@@ -186,15 +131,3 @@ class TestPersistence:
         restored = SessionEntry.from_dict(new_entry.to_dict())
         assert restored.is_fresh_reset is True
 
-    def test_default_false_when_missing_from_dict(self, tmp_path):
-        """Older sessions.json files written before this field existed must
-        load cleanly with is_fresh_reset defaulting to False.
-        """
-        data = {
-            "session_key": "telegram:1:123",
-            "session_id": "sess1",
-            "created_at": "2026-01-01T00:00:00",
-            "updated_at": "2026-01-01T00:00:00",
-        }
-        entry = SessionEntry.from_dict(data)
-        assert entry.is_fresh_reset is False

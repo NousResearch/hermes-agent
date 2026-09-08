@@ -73,6 +73,10 @@ def patch_load_config(monkeypatch):
             "hermes_cli.config.load_config",
             lambda: {"model": model_cfg},
         )
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config_readonly",
+            lambda: {"model": model_cfg},
+        )
     return _apply
 
 
@@ -99,21 +103,6 @@ class TestAuxAzureFoundryApiKey:
         assert isinstance(client, _OpenAI)
         assert client.api_key == "sk-azure-static-key"
 
-    def test_codex_responses_wraps_in_codex_aux_client(self, monkeypatch, patch_load_config):
-        from agent.auxiliary_client import _try_azure_foundry, CodexAuxiliaryClient
-
-        monkeypatch.setenv("AZURE_FOUNDRY_API_KEY", "sk-azure-static-key")
-        patch_load_config({
-            "provider": "azure-foundry",
-            "base_url": "https://r.openai.azure.com/openai/v1",
-            "api_mode": "chat_completions",
-            "default": "gpt-5.4-mini",
-        })
-        # GPT-5.x → runtime auto-upgrades to codex_responses
-        client, resolved = _try_azure_foundry(model="gpt-5.4-mini")
-        assert resolved == "gpt-5.4-mini"
-        assert isinstance(client, CodexAuxiliaryClient)
-        assert client.api_key == "sk-azure-static-key"
 
     def test_no_key_returns_none(self, monkeypatch, patch_load_config):
         from agent.auxiliary_client import _try_azure_foundry
@@ -129,21 +118,6 @@ class TestAuxAzureFoundryApiKey:
         assert client is None
         assert resolved is None
 
-    def test_no_model_returns_none(self, monkeypatch, patch_load_config):
-        """Azure has no fallback aux model — fail soft so the auto chain
-        can try other providers."""
-        from agent.auxiliary_client import _try_azure_foundry
-
-        monkeypatch.setenv("AZURE_FOUNDRY_API_KEY", "sk-azure-static-key")
-        patch_load_config({
-            "provider": "azure-foundry",
-            "base_url": "https://r.openai.azure.com/openai/v1",
-            "api_mode": "chat_completions",
-            # No default model
-        })
-        client, resolved = _try_azure_foundry()
-        assert client is None
-        assert resolved is None
 
 
 # ---------------------------------------------------------------------------

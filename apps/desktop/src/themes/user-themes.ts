@@ -12,8 +12,11 @@
 
 import { atom, computed } from 'nanostores'
 
+import { registry } from '@/contrib/registry'
+
+import { $backendThemes } from './backend-sync'
 import { BUILTIN_THEMES } from './presets'
-import type { DesktopTheme, DesktopThemeColors } from './types'
+import { type DesktopTheme, isValidTheme } from './types'
 
 const USER_THEMES_KEY = 'hermes-desktop-user-themes-v1'
 
@@ -21,27 +24,6 @@ const USER_THEMES_KEY = 'hermes-desktop-user-themes-v1'
 // (see `convertVscodeColorTheme`). This is the one place that convention is read
 // back out, so every install surface can tell what's already installed.
 const MARKETPLACE_DESC_PREFIX = 'VS Code · '
-
-// The minimal set of color keys a stored theme must carry to be usable. We keep
-// this loose — `applyTheme` tolerates missing optionals via fallbacks — but a
-// theme with no background/foreground/primary is junk and gets dropped.
-const REQUIRED_COLOR_KEYS: ReadonlyArray<keyof DesktopThemeColors> = ['background', 'foreground', 'primary']
-
-function isValidTheme(value: unknown): value is DesktopTheme {
-  if (!value || typeof value !== 'object') {
-    return false
-  }
-
-  const theme = value as Partial<DesktopTheme>
-
-  if (typeof theme.name !== 'string' || typeof theme.label !== 'string' || !theme.colors) {
-    return false
-  }
-
-  const colors = theme.colors as unknown as Record<string, unknown>
-
-  return REQUIRED_COLOR_KEYS.every(key => typeof colors[key] === 'string')
-}
 
 function readStored(): Record<string, DesktopTheme> {
   try {
@@ -142,12 +124,49 @@ export const $marketplaceInstalls = computed($userThemes, themes => {
   return map
 })
 
-/** Resolve a theme by name across the merged registry (built-in + user). */
-export function resolveTheme(name: string): DesktopTheme | undefined {
-  return BUILTIN_THEMES[name] ?? $userThemes.get()[name]
+// ── Contributed themes — the `themes` registry area ─────────────────────────
+// A data contribution IS a DesktopTheme. Same validity bar as an installed
+// theme; built-in names can't be shadowed, and user-installed themes win over
+// contributed ones of the same name (the user's explicit install is intent).
+
+export const THEMES_AREA = 'themes'
+
+export function contributedThemes(): DesktopTheme[] {
+  const seen = new Set<string>()
+  const out: DesktopTheme[] = []
+
+  for (const c of registry.getArea(THEMES_AREA)) {
+    const theme = c.data as DesktopTheme | undefined
+
+    if (theme && isValidTheme(theme) && !BUILTIN_THEMES[theme.name] && !seen.has(theme.name)) {
+      seen.add(theme.name)
+      out.push(theme)
+    }
+  }
+
+  return out
 }
 
-/** Built-ins first (stable order), then user themes by install order. */
+/** Resolve a theme by name across the merged set (built-in + user + backend + contributed). */
+export function resolveTheme(name: string): DesktopTheme | undefined {
+  return (
+    BUILTIN_THEMES[name] ??
+    $userThemes.get()[name] ??
+    $backendThemes.get()[name] ??
+    contributedThemes().find(theme => theme.name === name)
+  )
+}
+
+/** Built-ins first (stable order), then contributed, then backend skins, then user installs. */
 export function listAllThemes(): DesktopTheme[] {
-  return [...Object.values(BUILTIN_THEMES), ...Object.values($userThemes.get())]
+  const user = $userThemes.get()
+  const backend = $backendThemes.get()
+  const shadows = (theme: DesktopTheme) => user[theme.name] || backend[theme.name]
+
+  return [
+    ...Object.values(BUILTIN_THEMES),
+    ...contributedThemes().filter(theme => !shadows(theme)),
+    ...Object.values(backend).filter(theme => !user[theme.name]),
+    ...Object.values(user)
+  ]
 }

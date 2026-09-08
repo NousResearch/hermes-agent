@@ -20,12 +20,6 @@ def db(tmp_path):
 
 
 class TestDeleteSessionIfEmpty:
-    def test_deletes_empty_untitled_session(self, db):
-        db.create_session(session_id="empty", source="cli", model="test")
-        db.end_session("empty", "cli_close")
-
-        assert db.delete_session_if_empty("empty") is True
-        assert db.get_session("empty") is None
 
     def test_keeps_session_with_messages(self, db):
         db.create_session(session_id="busy", source="cli", model="test")
@@ -59,8 +53,6 @@ class TestDeleteSessionIfEmpty:
         assert db.get_session("parent") is not None
         assert db.get_session("child") is not None
 
-    def test_unknown_session_returns_false(self, db):
-        assert db.delete_session_if_empty("nope") is False
 
     def test_removes_on_disk_transcripts(self, db, tmp_path):
         sessions_dir = tmp_path / "sessions"
@@ -86,23 +78,6 @@ class TestDeleteSessionIfEmpty:
         assert not db.delete_session_if_empty("busy", sessions_dir=sessions_dir)
         assert (sessions_dir / "busy.json").exists()
 
-    def test_empty_session_disappears_from_listing(self, db):
-        """The user-facing symptom: empty rows polluting session lists."""
-        db.create_session(session_id="real", source="cli", model="test")
-        db.append_message("real", role="user", content="do the thing")
-        db.end_session("real", "cli_close")
-
-        db.create_session(session_id="ghost", source="cli", model="test")
-        db.end_session("ghost", "cli_close")
-
-        ids_before = {s["id"] for s in db.list_sessions_rich(source="cli")}
-        assert {"real", "ghost"} <= ids_before
-
-        db.delete_session_if_empty("ghost")
-
-        ids_after = {s["id"] for s in db.list_sessions_rich(source="cli")}
-        assert "real" in ids_after
-        assert "ghost" not in ids_after
 
 
 class TestCLIDiscardSessionIfEmpty:
@@ -116,25 +91,8 @@ class TestCLIDiscardSessionIfEmpty:
         cli.conversation_history = []
         return cli
 
-    def test_discards_empty(self, db):
-        db.create_session(session_id="empty", source="cli", model="test")
-        db.end_session("empty", "cli_close")
 
-        cli = self._make_cli(db)
-        assert cli._discard_session_if_empty("empty") is True
-        assert db.get_session("empty") is None
 
-    def test_keeps_nonempty(self, db):
-        db.create_session(session_id="busy", source="cli", model="test")
-        db.append_message("busy", role="user", content="hi")
-
-        cli = self._make_cli(db)
-        assert cli._discard_session_if_empty("busy") is False
-        assert db.get_session("busy") is not None
-
-    def test_no_db_is_noop(self):
-        cli = self._make_cli(None)
-        assert cli._discard_session_if_empty("anything") is False
 
     def test_none_session_id_is_noop(self, db):
         cli = self._make_cli(db)

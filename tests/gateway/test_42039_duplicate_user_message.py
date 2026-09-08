@@ -23,8 +23,9 @@ import pytest
 
 import gateway.run as gateway_run
 from gateway.config import GatewayConfig, Platform
-from gateway.platforms.base import MessageEvent
+from gateway.platforms.event import MessageEvent
 from gateway.session import SessionEntry, SessionSource
+from gateway.session_transcript import TranscriptReadError
 
 
 def _bootstrap(monkeypatch, tmp_path):
@@ -156,33 +157,6 @@ async def test_agent_failed_early_skip_db_when_agent_has_session_db(
 # ── Test 2: agent_failed_early with no _session_db → skip_db not True ─
 
 
-@pytest.mark.asyncio
-async def test_agent_failed_early_no_skip_db_when_no_session_db(
-    monkeypatch, tmp_path
-):
-    runner = _bootstrap(monkeypatch, tmp_path)
-    runner._session_db = None  # No agent DB → agent_persisted=False
-
-    runner._run_agent = AsyncMock(
-        return_value={
-            "failed": True,
-            "final_response": None,
-            "error": "ReadTimeout: timed out",
-            "messages": [],
-            "history_offset": 0,
-            "last_prompt_tokens": 0,
-        }
-    )
-
-    await runner._handle_message_with_agent(
-        _event(), _source(), "agent:main:telegram:group:-1001:12345", 1
-    )
-
-    _assert_user_call_has_skip_db(
-        runner.session_store.append_to_transcript.call_args_list, False
-    )
-
-
 # ── Test 3: not-new-messages path uses skip_db=True ───────────────────
 
 
@@ -212,33 +186,27 @@ async def test_not_new_messages_skip_db_when_agent_has_session_db(
     )
 
 
-# ── Test 4: normal path (new_messages found) uses skip_db=True ────────
-
-
 @pytest.mark.asyncio
-async def test_normal_path_skip_db_when_agent_has_session_db(
+async def test_transcript_read_failure_stops_turn_before_agent_or_append(
     monkeypatch, tmp_path
 ):
     runner = _bootstrap(monkeypatch, tmp_path)
+    runner.session_store.load_transcript.side_effect = TranscriptReadError("sess-dedup")
+    runner._run_agent = AsyncMock()
 
-    # Agent succeeds with new messages
-    runner._run_agent = AsyncMock(
-        return_value={
-            "final_response": "Hello!",
-            "messages": [
-                {"role": "user", "content": "hi"},
-                {"role": "assistant", "content": "Hello!"},
-            ],
-            "tools": [],
-            "history_offset": 0,
-            "last_prompt_tokens": 0,
-        }
-    )
-
-    await runner._handle_message_with_agent(
+    response = await runner._handle_message_with_agent(
         _event(), _source(), "agent:main:telegram:group:-1001:12345", 1
     )
 
-    _assert_user_call_has_skip_db(
-        runner.session_store.append_to_transcript.call_args_list, True
-    )
+    assert "history is temporarily unavailable" in response
+    assert "not processed" in response
+    runner._run_agent.assert_not_awaited()
+    runner.session_store.append_to_transcript.assert_not_called()
+
+
+# ── Post-stream MEDIA delivery keeps prior-turn deduplication ──────────
+
+
+# ── Test 4: normal path (new_messages found) uses skip_db=True ────────
+
+

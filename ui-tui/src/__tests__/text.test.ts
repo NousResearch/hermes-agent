@@ -224,6 +224,17 @@ describe('edgePreview', () => {
   })
 })
 
+describe('thinkingPreview over-bound tail', () => {
+  it('retains the live tail when reasoning exceeds the clean bound', () => {
+    const TAIL = '<<<LIVE_TAIL_MARKER>>>'
+    // Slightly above the 24k clean-tail bound, so the implementation must trim.
+    const reasoning = 'A'.repeat(25_000) + '\n' + TAIL
+    const result = thinkingPreview(reasoning, 'full')
+    expect(result).toContain(TAIL)
+    // The bounded window is shorter than the 25k prefix, but the tail remains.
+    expect(result.length).toBeLessThanOrEqual(25_000)
+  })
+})
 describe('pasteTokenLabel', () => {
   it('builds readable long-paste labels with counts', () => {
     const label = pasteTokenLabel('Vampire Bondage ropes slipped from her neck, still stained with blood', 250)

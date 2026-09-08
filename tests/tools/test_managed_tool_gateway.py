@@ -6,6 +6,7 @@ from pathlib import Path
 import sys
 from unittest.mock import patch
 
+
 MODULE_PATH = Path(__file__).resolve().parents[2] / "tools" / "managed_tool_gateway.py"
 MODULE_SPEC = spec_from_file_location("managed_tool_gateway_test_module", MODULE_PATH)
 assert MODULE_SPEC and MODULE_SPEC.loader

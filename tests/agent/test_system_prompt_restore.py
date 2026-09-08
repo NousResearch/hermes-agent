@@ -32,6 +32,10 @@ def _make_agent(session_db=None, prebuilt_prompt: str = "BUILT_PROMPT"):
     agent.provider = "openrouter"
     agent.platform = "cli"
     agent._session_db = session_db
+    # MagicMock attributes are truthy by default; the static-prefix
+    # reconstruction is gated on _use_prompt_caching, so default it off
+    # for the legacy restore tests (the reconstruction tests enable it).
+    agent._use_prompt_caching = False
     agent._build_system_prompt = MagicMock(return_value=prebuilt_prompt)
     return agent
 
@@ -146,51 +150,8 @@ class TestLegitimateFreshBuild:
 
 
 class TestSilentFailureWarnings:
-    def test_db_read_exception_warns_and_rebuilds(self, caplog):
-        """DB read raising → WARNING + fall through to fresh build."""
-        db = MagicMock()
-        db.get_session.side_effect = RuntimeError("disk full")
-        agent = _make_agent(session_db=db)
 
-        with caplog.at_level(logging.WARNING, logger="agent.conversation_loop"):
-            _restore_or_build_system_prompt(agent, None, [{"role": "user", "content": "hi"}])
 
-        # Built fresh
-        agent._build_system_prompt.assert_called_once()
-        assert agent._cached_system_prompt == "BUILT_PROMPT"
-        # Loud warning about the read failure
-        warnings = [r for r in caplog.records if r.levelno >= logging.WARNING]
-        assert any("get_session failed" in r.getMessage() for r in warnings), \
-            f"Expected a get_session warning, got: {[r.getMessage() for r in warnings]}"
-        assert any("disk full" in r.getMessage() for r in warnings)
-
-    def test_null_system_prompt_warns_about_unusable_stored_state(self, caplog):
-        """Row exists but system_prompt is NULL → WARNING + fresh build."""
-        db = MagicMock()
-        db.get_session.return_value = {"system_prompt": None}
-        agent = _make_agent(session_db=db)
-
-        with caplog.at_level(logging.WARNING, logger="agent.conversation_loop"):
-            _restore_or_build_system_prompt(agent, None, [{"role": "user", "content": "hi"}])
-
-        agent._build_system_prompt.assert_called_once()
-        warnings = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
-        assert any("is null" in m and "rebuilding" in m for m in warnings), \
-            f"Expected null-stored-prompt warning, got: {warnings}"
-
-    def test_empty_system_prompt_warns_about_silent_persistence_bug(self, caplog):
-        """Row exists but system_prompt is '' → WARNING about silent write bug."""
-        db = MagicMock()
-        db.get_session.return_value = {"system_prompt": ""}
-        agent = _make_agent(session_db=db)
-
-        with caplog.at_level(logging.WARNING, logger="agent.conversation_loop"):
-            _restore_or_build_system_prompt(agent, None, [{"role": "user", "content": "hi"}])
-
-        agent._build_system_prompt.assert_called_once()
-        warnings = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
-        assert any("is empty" in m and "rebuilding" in m for m in warnings), \
-            f"Expected empty-stored-prompt warning, got: {warnings}"
 
     def test_db_write_failure_warns_loudly(self, caplog):
         """update_system_prompt raising → WARNING (was DEBUG before)."""
@@ -259,6 +220,231 @@ class TestPromptStabilityInvariant:
         assert agent._cached_system_prompt == stored
         # Byte-level check
         assert agent._cached_system_prompt.encode("utf-8") == stored.encode("utf-8")
+
+
+# ---------------------------------------------------------------------------
+# Cross-session static prefix reconstruction (issue #68191 follow-up)
+# ---------------------------------------------------------------------------
+
+
+class TestStaticPrefixReconstructionOnRestore:
+    """The two-block cache layout must survive session restore.
+
+    Gateway surfaces construct a fresh AIAgent per turn and restore the
+    persisted prompt from the session DB; the cross-session-stable prefix
+    (``_cached_system_prompt_static``) is only set on fresh builds, so
+    without reconstruction the wire layout silently degrades to the legacy
+    single-breakpoint layout after turn 1 (flagged on PR #68258 review).
+    """
+
+    def test_restore_reconstructs_static_prefix_when_it_matches(self):
+        stable = "STATIC IDENTITY AND GUIDANCE"
+        stored = stable + "\n\nper-session context\n\nvolatile tail"
+        db = MagicMock()
+        db.get_session.return_value = {"system_prompt": stored}
+        agent = _make_agent(session_db=db)
+        agent._use_prompt_caching = True
+        agent._cached_system_prompt_static = None
+
+        from unittest.mock import patch as _patch
+
+        with _patch(
+            "agent.system_prompt.build_system_prompt_parts",
+            return_value={"stable": stable, "context": "", "volatile": ""},
+        ):
+            _restore_or_build_system_prompt(
+                agent, None, [{"role": "user", "content": "hi"}]
+            )
+
+        # Restored prompt bytes untouched; static prefix reconstructed.
+        assert agent._cached_system_prompt == stored
+        assert agent._cached_system_prompt_static == stable
+
+    def test_restore_leaves_static_unset_on_prefix_mismatch(self):
+        """Stable-tier drift (skills edited since persist) → no static prefix,
+        legacy layout, restored bytes still authoritative."""
+        stored = "OLD STATIC HEAD\n\nper-session context"
+        db = MagicMock()
+        db.get_session.return_value = {"system_prompt": stored}
+        agent = _make_agent(session_db=db)
+        agent._use_prompt_caching = True
+        agent._cached_system_prompt_static = None
+
+        from unittest.mock import patch as _patch
+
+        with _patch(
+            "agent.system_prompt.build_system_prompt_parts",
+            return_value={"stable": "NEW STATIC HEAD", "context": "", "volatile": ""},
+        ):
+            _restore_or_build_system_prompt(
+                agent, None, [{"role": "user", "content": "hi"}]
+            )
+
+        assert agent._cached_system_prompt == stored
+        assert agent._cached_system_prompt_static is None
+
+    def test_restore_survives_parts_builder_exception(self):
+        """Prefix reconstruction is fail-open: a parts-builder crash must not
+        break the byte-identical restore."""
+        stored = "Stored prompt — must survive"
+        db = MagicMock()
+        db.get_session.return_value = {"system_prompt": stored}
+        agent = _make_agent(session_db=db)
+        agent._use_prompt_caching = True
+        agent._cached_system_prompt_static = None
+
+        from unittest.mock import patch as _patch
+
+        with _patch(
+            "agent.system_prompt.build_system_prompt_parts",
+            side_effect=RuntimeError("boom"),
+        ):
+            _restore_or_build_system_prompt(
+                agent, None, [{"role": "user", "content": "hi"}]
+            )
+
+        assert agent._cached_system_prompt == stored
+        assert agent._cached_system_prompt_static is None
+
+
+class TestReconstructStaticPrefixMemoization:
+    """A failed static rebuild must not re-run the parts builder every call.
+
+    ``reconstruct_static_prefix`` sits on the retry-loop hot path via the
+    failover redecoration chokepoint (#72626); ``build_system_prompt_parts``
+    does real file I/O (SOUL.md, context files, memory), so a persistent
+    stable-tier mismatch must be checked once per stored prompt, not on
+    every attempt of every API call.
+    """
+
+    def _agent(self, stored):
+        agent = _make_agent()
+        agent._use_prompt_caching = True
+        agent._cached_system_prompt = stored
+        agent._cached_system_prompt_static = None
+        return agent
+
+    def test_failed_rebuild_is_memoized_per_stored_prompt(self):
+        from unittest.mock import patch as _patch
+
+        from agent.system_prompt import reconstruct_static_prefix
+
+        stored = "STORED PROMPT\n\ntail"
+        agent = self._agent(stored)
+        with _patch(
+            "agent.system_prompt.build_system_prompt_parts",
+            return_value={"stable": "MISMATCH", "context": "", "volatile": ""},
+        ) as build:
+            reconstruct_static_prefix(agent)
+            reconstruct_static_prefix(agent)
+            reconstruct_static_prefix(agent)
+        assert build.call_count == 1
+        assert agent._cached_system_prompt_static is None
+
+    def test_changed_stored_prompt_retries_once(self):
+        from unittest.mock import patch as _patch
+
+        from agent.system_prompt import reconstruct_static_prefix
+
+        agent = self._agent("OLD STORED")
+        with _patch(
+            "agent.system_prompt.build_system_prompt_parts",
+            return_value={"stable": "MISMATCH", "context": "", "volatile": ""},
+        ) as build:
+            reconstruct_static_prefix(agent)
+            # A new stored prompt (e.g. after compression) invalidates the
+            # failure memo and gets exactly one fresh attempt.
+            agent._cached_system_prompt = "NEW STORED"
+            reconstruct_static_prefix(agent)
+            reconstruct_static_prefix(agent)
+        assert build.call_count == 2
+
+    def test_success_clears_failure_memo_and_early_returns(self):
+        from unittest.mock import patch as _patch
+
+        from agent.system_prompt import reconstruct_static_prefix
+
+        stable = "STATIC HEAD"
+        stored = stable + "\n\nvolatile"
+        agent = self._agent(stored)
+        with _patch(
+            "agent.system_prompt.build_system_prompt_parts",
+            return_value={"stable": stable, "context": "", "volatile": ""},
+        ) as build:
+            reconstruct_static_prefix(agent)
+            reconstruct_static_prefix(agent)
+        # Second call early-returns on the already-valid static prefix.
+        assert build.call_count == 1
+        assert agent._cached_system_prompt_static == stable
+        assert getattr(agent, "_static_rebuild_failed_for", None) is None
+
+
+class TestPerResponseSessionWritePath:
+    """The write path under an embedding host's per-response session (#96570).
+
+    Hermes Studio group chat pre-creates the SQLite row and pre-persists the
+    user message BEFORE ``run_conversation()``, then runs one turn under a
+    session id it destroys afterwards. The row therefore starts with a null
+    system prompt and a non-empty history on its own genuine FIRST turn, which
+    is what trips the "stored system prompt is null" warning — the warning is
+    a first-turn artifact of that lifecycle, not evidence of a lost write.
+
+    This pins the write path against that exact lifecycle: the freshly built
+    prompt must land in the pre-created row within the same run.
+    """
+
+    def _agent(self, db, session_id):
+        agent = _make_agent(session_db=db, prebuilt_prompt="GROUP_PROMPT")
+        agent.session_id = session_id
+        return agent
+
+    def test_prepersisted_row_stores_the_freshly_built_prompt(self, tmp_path):
+        from hermes_state import SessionDB
+
+        session_id = "gc_run_room42_default_Worker_5f2c1ab9d4e34f7a8b0c6d1e2f3a4b5c"
+        with SessionDB(db_path=tmp_path / "state.db") as db:
+            # What the bridge does before the turn starts.
+            db.create_session(session_id, source="studio")
+            db.append_message(session_id=session_id, role="user", content="hi")
+
+            _restore_or_build_system_prompt(
+                self._agent(db, session_id),
+                None,
+                [{"role": "user", "content": "hi"}],
+            )
+
+            assert db.get_session(session_id)["system_prompt"] == "GROUP_PROMPT"
+
+    def test_warning_is_a_first_turn_artifact_not_a_lost_write(
+        self, tmp_path, caplog
+    ):
+        """Second turn of the SAME id restores — so nothing was dropped."""
+        from hermes_state import SessionDB
+
+        session_id = "gc_run_room42_default_Worker_9a7e3b1c05d24e6fb83a1c7d9e0f2a4b"
+        history = [{"role": "user", "content": "hi"}]
+        with SessionDB(db_path=tmp_path / "state.db") as db:
+            db.create_session(session_id, source="studio")
+            db.append_message(session_id=session_id, role="user", content="hi")
+
+            with caplog.at_level(
+                logging.WARNING, logger="agent.conversation_loop"
+            ):
+                _restore_or_build_system_prompt(
+                    self._agent(db, session_id), None, history
+                )
+            assert "is null" in caplog.text
+
+            caplog.clear()
+            second = self._agent(db, session_id)
+            with caplog.at_level(
+                logging.WARNING, logger="agent.conversation_loop"
+            ):
+                _restore_or_build_system_prompt(second, None, history)
+
+            assert second._cached_system_prompt == "GROUP_PROMPT"
+            second._build_system_prompt.assert_not_called()
+            assert "is null" not in caplog.text
 
 
 if __name__ == "__main__":

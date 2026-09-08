@@ -9,14 +9,19 @@ permissions:
 jobs:
   docs-site-checks:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
-          node-version: 22
+          node-version: 26
           cache: npm
           cache-dependency-path: website/package-lock.json
+
+      - name: grab npm 12
+        run: |
+          npm i -g npm@12
 
       - name: Install website dependencies
         uses: ./.github/actions/retry
@@ -44,5 +49,8 @@ jobs:
         working-directory: website
 
       - name: Build Docusaurus
-        run: npm run build
+        # Build only the default (en) locale in CI — the full bilingual
+        # build runs in deploy-site.yml on push-to-main / release.
+        # Same pattern Docusaurus uses internally (build:fast --locale en).
+        run: npm run build:fast
         working-directory: website

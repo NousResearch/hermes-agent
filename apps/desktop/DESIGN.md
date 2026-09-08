@@ -91,10 +91,11 @@ for call-site shadow or border inventions.
 | Token | Use |
 | --- | --- |
 | `--ui-stroke-primary…quaternary` | hairlines, in descending strength |
-| `--ui-stroke-tertiary` | the default in-panel divider / list hairline |
+| `--ui-stroke-tertiary` | the default in-panel divider / list hairline — and every bordered surface in the transcript |
 | `--stroke-nous` | the overlay hairline (pairs with `shadow-nous`) |
 | `--ui-text-primary / -secondary / -tertiary` | text hierarchy |
 | `--ui-bg-quaternary` | soft control fill (secondary button) |
+| `--ui-widget-surface-background` | fill for inline chat widgets (`WIDGET_SHELL_CLASS`) |
 | `--chrome-action-hover` | hover fill for quiet controls |
 | `--theme-primary`, `--ui-accent` | brand/accent |
 
@@ -117,11 +118,55 @@ that sit inside a heading/sentence; replaces `h-auto px-0 py-0`), `micro`
 (status-stack/table-footers), and the icon family `icon` / `icon-xs` /
 `icon-sm` / `icon-lg` / `icon-titlebar`.
 
+**Tooltips only when hover teaches something new.** `<Tip>` is for discovery,
+not a tax on every icon. Ask: does hover reveal something the user cannot
+already see or infer? If not, skip the tip; keep an `aria-label` for a11y.
+
+Tip unlabeled chrome when the job (or a keybind / truncated path / host /
+other detail) is not already on screen — toolbar / titlebar / statusbar icons,
+`TipKeybindLabel` shortcuts, ownership chips, unlabeled icon grids.
+
+Do **not** tip:
+
+- Menu triggers (kebabs / ⋯ / `ActionsMenu` / `DropdownMenuTrigger`) — the
+  affordance is "open menu"; verbs live in the menu. Never tip
+  `"Actions for ${row title}"` / `"Project actions"` / `"Actions"`.
+- Close / dismiss X buttons — the glyph is the label (`aria-label` only).
+- Controls whose visible label already says what the tip would ("click to…",
+  paraphrases of the same words, timer labels restating "Running").
+
+Never use native HTML `title=` on buttons — unstyled, ~500ms OS delay, clashes
+with the themed `Tip`. `src/components/ui/__tests__/no-native-title.test.ts`
+fails on any `<button>` / `<Button>` that still carries `title=`.
+
+**Tooltip timing.** A hover is not a click — the cursor crosses triggers on
+the way somewhere else. `Tip` waits 200ms before the first open so a sweep
+does not flash a trail. After a tip has opened the page is warm: the next
+trigger within 300ms opens instantly. The cooldown starts on close, so a
+hover a second later waits again. Close is immediate. `OverflowTip` stays
+on its own longer delay (list titles must not trail while scanning).
+
+**Slash descriptions.** Keep autocomplete rows single-line and ellipsized, but reveal the complete catalog description in the shared themed tooltip when hovering anywhere on a slash row. Size that tooltip to the window with collision padding and word wrapping; it must not intercept row selection. Catalog and completion producers preserve the full author-supplied description.
+
+**Model search.** Model filters and their highlighted labels treat hyphens, dots, underscores and spaces equivalently. Preserve original label spelling inside marks. The shared highlighter remains literal for other surfaces such as the command palette; model callers explicitly opt in. Model identifier search does not use dictionary spellcheck.
+
+**Keybind hints in tooltips.** On a tipped button bound to a rebindable hotkey,
+use `<TipKeybindLabel actionId="..." />` — it reads the i18n label and the
+current combo from `$bindings`. Pass `text={...}` only when the label is
+context-dependent (e.g. "Show" / "Hide"). Never hardcode combos; always use
+`useKeybindHint` or `TipKeybindLabel`.
+
 Notes:
 - Text buttons are square (no radius) and sized by padding + line-height (no
   fixed heights). Only icon buttons carry the shared 4px radius.
 - SVGs inherit `size-3.5` (`size-3` at `xs`). Don't re-set icon size.
 - Polymorph with `asChild` when the button must render as a link/Slot.
+
+## Badges — one component
+
+`src/components/ui/badge.tsx`. Variants: `default` (tinted primary), `muted`,
+`warn`, `destructive`, `outline`, `solid` (primary fill — icon-corner counts).
+Sizes: `default`, `xs`, `overlay` (titlebar glyph counts).
 
 ## Form controls
 
@@ -162,6 +207,15 @@ Notes:
 - **Empty:** `EmptyState` for plain page bodies; `PanelEmpty` for overlay
   master/detail empties with an icon and action. Don't hand-roll a third
   centered empty.
+- **Confirmation:** `ConfirmDialog` is the only way we ask "are you sure". It
+  opens focused on Confirm, so `Enter` confirms and `Esc` cancels, and it owns
+  the pending → done → close beat and the inline error — a call site passes an
+  async `onConfirm` and nothing else. A third way out (e.g. "Remove from
+  sidebar" beside "Delete worktree") goes in the one `secondaryAction` slot.
+  Never `window.confirm`: it's an unstyled blocking Chromium modal. A handler
+  that wants the answer inline instead of a mounted dialog calls `confirm()`
+  from `src/store/confirm.ts`, which renders this same primitive through the
+  single `ConfirmHost` at the shell — the way `notify()` backs notifications.
 
 ## Chat, tools & boot surfaces
 
@@ -169,6 +223,17 @@ Notes:
   existing components under `src/components/assistant-ui` and
   `src/app/chat/composer`; do not fork a second markdown, message, tool-call, or
   approval renderer for one feature.
+- **Inline widgets** — a tool result that renders as a panel the user reads or
+  acts on (clarify, artifact card) wears `WIDGET_SHELL_CLASS`
+  (`src/components/chat/widget-shell.ts`): shared radius, the
+  `--ui-widget-surface-background` fill, no border. Its actions sit *outside*
+  the panel, below it. Don't give one widget its own radius or fill.
+- Bordered surfaces in the transcript (tables, fences, callouts, attachments)
+  use `--ui-stroke-tertiary`. Not `border-border` — that's the app-wide
+  default and reads too hot against the thread.
+- Interactive directive chips in the composer expose their action on hover.
+  The action stays visible for a 500ms grace period while the pointer crosses
+  from the chip to the floating pill; leaving both dismisses it.
 - A tool result may expose an inline action that opens a preview. It must not
   open the rail automatically.
 - Install, onboarding, connecting, boot failure, and reauthentication are
@@ -176,7 +241,12 @@ Notes:
   semantics when unifying appearance.
 - Respect `AppShell` overlay ownership. Persistent terminal/content layers,
   route overlays, dialogs, and boot surfaces must not compete through ad-hoc
-  z-index literals.
+  z-index literals. Pick a rung of the ladder in `styles.css` instead —
+  `--z-modal-backdrop` / `--z-modal` / `--z-modal-popover`, `--z-over-modal`
+  (toasts, tooltips, command surfaces) and `--z-over-modal-content`,
+  `--z-switcher-backdrop` / `--z-switcher`, then the boot chain
+  `--z-connecting` → `--z-onboarding` → `--z-setup` → `--z-crash`. Plain
+  `z-10`/`z-20` are still right for stacking *within* one component.
 
 ## Iconography & brand
 
@@ -274,10 +344,15 @@ The detailed state contract lives in the scoped
 ## Before you add something — checklist
 
 - [ ] Reuse a primitive (`Button`, `SearchField`, `SegmentedControl`,
-      `ListRow`, `Loader`, `ErrorState`, `LogView`) instead of forking one?
+      `ListRow`, `Loader`, `ErrorState`, `LogView`, `ConfirmDialog`) instead of
+      forking one?
 - [ ] Tokens (`--ui-*`, `shadow-nous`, `--stroke-nous`) — zero raw colors /
       one-off shadows?
 - [ ] No `className` overriding a primitive's padding / size / radius / chrome?
+- [ ] Tips only where hover teaches something new (no kebab / menu-trigger
+      tips; unlabeled chrome that needs discovery gets `<Tip>` + `aria-label`)?
+- [ ] No native `title=` on buttons?
+- [ ] Keybind hints on tipped buttons use `useKeybindHint` / `TipKeybindLabel`?
 - [ ] Overlay uses `shadow-nous` + `border-(--stroke-nous)`, no hard border?
 - [ ] Flat — no card-in-card, no gratuitous row dividers?
 - [ ] No automatic navigation, focus steal, or pane opening from background

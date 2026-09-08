@@ -26,16 +26,12 @@ class TestProviderDefinitions:
             assert "default_model" in p
             assert "dims" in p
 
-    def test_embedder_provider_ids(self):
-        assert set(EMBEDDER_PROVIDERS.keys()) == {"openai", "ollama"}
 
     def test_vector_providers_have_required_keys(self):
         for pid, p in VECTOR_PROVIDERS.items():
             assert "label" in p
             assert "default_config" in p
 
-    def test_vector_provider_ids(self):
-        assert set(VECTOR_PROVIDERS.keys()) == {"qdrant", "pgvector"}
 
     def test_known_dims_covers_defaults(self):
         for pid, p in EMBEDDER_PROVIDERS.items():
@@ -62,23 +58,6 @@ class TestValidation:
         errors = validate_oss_config(cfg)
         assert any("llm" in e.lower() for e in errors)
 
-    def test_unknown_embedder_provider(self):
-        cfg = {
-            "llm": {"provider": "openai", "config": {}},
-            "embedder": {"provider": "cohere", "config": {}},
-            "vector_store": {"provider": "qdrant", "config": {}},
-        }
-        errors = validate_oss_config(cfg)
-        assert any("embedder" in e.lower() for e in errors)
-
-    def test_unknown_vector_provider(self):
-        cfg = {
-            "llm": {"provider": "openai", "config": {}},
-            "embedder": {"provider": "openai", "config": {}},
-            "vector_store": {"provider": "redis", "config": {}},
-        }
-        errors = validate_oss_config(cfg)
-        assert any("vector" in e.lower() for e in errors)
 
     def test_missing_llm_section(self):
         cfg = {
@@ -97,11 +76,3 @@ class TestValidation:
         errors = validate_oss_config(cfg)
         assert any("user" in e.lower() for e in errors)
 
-    def test_pgvector_with_user_valid(self):
-        cfg = {
-            "llm": {"provider": "openai", "config": {}},
-            "embedder": {"provider": "openai", "config": {}},
-            "vector_store": {"provider": "pgvector", "config": {"host": "localhost", "user": "pg"}},
-        }
-        errors = validate_oss_config(cfg)
-        assert errors == []

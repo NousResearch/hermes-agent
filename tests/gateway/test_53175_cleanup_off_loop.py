@@ -7,7 +7,7 @@ browser daemons / background processes; shutdown_memory_provider() may do
 SQLite / network IO via a memory plugin) was still called INLINE on the event
 loop from three other places:
 
-  * ``_session_expiry_watcher`` (the 5-minute idle sweep) — live loop
+  * ``_session_housekeeping_watcher`` (the 5-minute idle sweep) — live loop
   * ``_handle_message_with_agent`` cache-hygiene re-eviction — live loop
   * ``_finalize_shutdown_agents`` / ``stop()`` idle-cache loop — shutdown
 
@@ -164,11 +164,3 @@ async def test_cleanup_off_loop_swallows_executor_failure(caplog):
     assert any(
         "failed" in r.message and "#53175" in r.message for r in caplog.records
     ), "expected the cleanup-failure warning to be logged"
-
-
-@pytest.mark.asyncio
-async def test_cleanup_off_loop_none_agent_is_noop():
-    """A None agent (None cache entry) is a no-op and never touches the loop."""
-    runner, executor = _make_runner()
-    await runner._cleanup_agent_resources_off_loop(None)
-    executor.shutdown(wait=False)

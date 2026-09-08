@@ -57,6 +57,7 @@ gateway:
     more:                  "... agus {count} eile"
     running_processes:     "**Próisis chúlra ag rith:** {count}"
     async_jobs:            "**Tascanna asincrónacha gateway:** {count}"
+    background_delegations: "**Tarmligin sa chúlra:** {count}"
     none:                  "Níl aon ghníomhairí gníomhacha ná tascanna ag rith."
     state_starting:        "ag tosú"
     state_running:         "ag rith"
@@ -71,8 +72,16 @@ gateway:
     always_plural:         "✅ Orduithe ceadaithe (patrún ceadaithe go buan) ({count} ordú). Tá an gníomhaire ag atosú..."
 
   background:
-    usage:                 "Úsáid: /background <leid>\nSampla: /background Déan achoimre ar phríomhscéalta HN inniu\n\nRitheann an leid i seisiún ar leith. Is féidir leat leanúint leis an gcomhrá — taispeánfar an toradh anseo nuair a bheidh sé críochnaithe."
+    usage:                 "Úsáid: /bg <leid>\nSampla: /bg Déan achoimre ar phríomhscéalta HN inniu\n\nRitheann an leid i seisiún ar leith. Is féidir leat leanúint leis an gcomhrá — taispeánfar an toradh anseo nuair a bheidh sé críochnaithe."
     started:               "🔄 Tasc cúlra tosaithe: \"{preview}\"\nAitheantas an tasc: {task_id}\nIs féidir leat leanúint leis an gcomhrá — taispeánfar na torthaí nuair a bheidh sé críochnaithe."
+
+  btw:
+    usage:                 "Úsáid: /btw <ceist>\nSampla: /btw cén comhad ina raibh an earráid sin?\n\nFreagraíonn ceist thaobhach ghasta faoin gcomhrá seo gan cur isteach air. Le haghaidh tasc cúlra neamhspleách, úsáid /bg <leid>."
+    no_history:            "Níl aon chomhrá ann fós — seol do cheist mar ghnáth-theachtaireacht ina ionad."
+    no_provider:           "❌ Ní féidir an cheist a fhreagairt: níl dintiúir sholáthraí cumraithe."
+    started:               "💬 Ceist thaobhach: \"{preview}\"\nÁ freagairt ó léargas ar an gcomhrá seo — leanann an obair reatha ar aghaidh."
+    answer:                "💬 /btw: \"{preview}\"\n\n{answer}"
+    failed:                "❌ Theip ar /btw: \"{preview}\"\n{error}"
 
   branch:
     db_unavailable:        "Níl bunachar sonraí na seisiún ar fáil."
@@ -101,6 +110,7 @@ gateway:
     summary_failed:        "⚠️ Theip ar ghiniúint achoimre ({error}). Baineadh {count} teachtaireacht stairiúil agus cuireadh ionadaí ina n-áit; níl an comhthéacs roimhe seo in-aisghabhála a thuilleadh. Smaoinigh ar an gcumraíocht auxiliary.compression a sheiceáil."
     aborted:               "⚠️ Cuireadh deireadh leis an dlúthú ({error}). Níor baineadh aon teachtaireacht — tá an comhrá gan athrú. Rith /compress chun é a thriail arís, /reset le haghaidh seisiún glan, nó seiceáil do chumraíocht samhla auxiliary.compression."
     aux_failed:            "ℹ️ Theip ar an tsamhail dlúthúcháin chumraithe `{model}` ({error}). Aisghafa ag baint úsáide as do phríomhshamhail — tá an comhthéacs slán — ach b'fhéidir gur mhaith leat `auxiliary.compression.model` i config.yaml a sheiceáil."
+    turnhold_deferred:     "ℹ️ Cuireadh comhbhrú comhthéacs siar — tá an achoimre fós á sruthú. Ag leanúint ar aghaidh gan chomhbhrú don seal seo."
     failed:                "Theip ar dhlúthú: {error}"
 
   debug:
@@ -128,6 +138,11 @@ gateway:
     label_normal:          "NORMAL"
     status_fast:           "fast"
     status_normal:         "normal"
+    picker_title:          "⚡ **Priority Processing**\\n\\nMód reatha: `{mode}`\\n\\nRoghnaigh rogha:"
+    choice_fast:           "fast — Priority Processing ar siúl"
+    choice_normal:         "normal — gnáthphróiseáil"
+    choice_auto:           "auto — tapa do na chéad soicindí de gach seal"
+    choice_cold:           "cold — tapa don chéad seal de sheisiún amháin"
 
   footer:
     status:                "📎 Buntásc rite: **{state}**\nRéimsí: `{fields}`\nArdán: `{platform}`"
@@ -142,7 +157,7 @@ gateway:
     no_goal_set:           "Níl aon sprioc socraithe."
     paused:                "⏸ Sprioc curtha ar sos: {goal}"
     no_resume:             "Níl aon sprioc le hatosú."
-    resumed:               "▶ Sprioc atosaithe: {goal}\nSeol teachtaireacht ar bith chun leanúint, nó fan — déanfaidh mé an chéad chéim eile sa chéad seal eile."
+    resumed:               "▶ Sprioc atosaithe: {goal}\nAg leanúint ar aghaidh anois — déanfaidh mé an chéad chéim eile láithreach."
     invalid:               "Sprioc neamhbhailí: {error}"
     set:                   "⊙ Sprioc socraithe (buiséad {budget} seal): {goal}\nLeanfaidh mé ag obair go dtí go bhfuil an sprioc críochnaithe, go gcuirfidh tú ar sos / go nglanfaidh tú í, nó go n-úsáidfear an buiséad.\nSmacht: /goal status · /goal pause · /goal resume · /goal clear"
 
@@ -166,9 +181,15 @@ gateway:
       crashed:             "crashed (worker exited); dispatcher will retry"
       timed_out:           "timed out; dispatcher will retry"
       blocked:             "blocked; needs attention"
+      review_requested:    "handed off for review; the implementation is done"
+      changes_requested:   "review requested changes (BLOCK); implementation is not approved"
+      block_loop_detected: "routed to triage after repeated blocks; needs a decision"
       status_default:      "status changed"
       status_joiner:       ", "
       message:             "[kanban] Task {task_id} {status}.\nTitle: {title}\nAssignee: @{assignee}\nBoard: {board}\n\nCheck the result or decide the next step."
+      handoff:             "Result: {summary}"
+      review_detail:       "Review feedback: {reason}\nInspect the existing card and its current review run; return work to the same implementation task. Do not treat this BLOCK as approval and do not create a duplicate task."
+      guidance:            "This is an automatic task-status notification, not a request to decompose the task again. Inspect the current board before creating follow-up tasks; do not recreate tasks or graphs that already exist."
 
   personality:
     none_configured:       "Níl aon phearsantachtaí cumraithe in `{path}/config.yaml`"
@@ -190,14 +211,19 @@ gateway:
     level_disabled:            "none (díchumasaithe)"
     scope_session:             "sárú seisiúin"
     scope_global:              "cumraíocht dhomhanda"
-    status:                    "🧠 **Socruithe Réasúnaíochta**\n\n**Iarracht:** `{level}`\n**Scóip:** {scope}\n**Taispeáint:** {display}\n\n_Úsáid:_ `/reasoning <none|minimal|low|medium|high|xhigh|reset|show|hide> [--global]`"
+    status:                    "🧠 **Socruithe Réasúnaíochta**\n\n**Iarracht:** `{level}`\n**Scóip:** {scope}\n**Taispeáint:** {display}\n\n_Úsáid:_ `/reasoning <none|minimal|low|medium|high|xhigh|max|ultra|reset|show|hide> [--global]`"
     display_on:                "ar ✓"
     display_off:               "as"
     display_set_on:            "🧠 ✓ Taispeáint réasúnaíochta: **AR**\nTaispeánfar smaointeoireacht na samhla roimh gach freagra ar **{platform}**."
     display_set_off:           "🧠 ✓ Taispeáint réasúnaíochta: **AS** do **{platform}**"
     reset_global_unsupported:  "⚠️ Ní thacaítear le `/reasoning reset --global`. Úsáid `/reasoning <level> --global` chun an réamhshocrú domhanda a athrú."
     reset_done:                "🧠 ✓ Sárú réasúnaíochta seisiúin glanta; ag titim siar ar an gcumraíocht dhomhanda."
-    unknown_arg:               "⚠️ Argóint anaithnid: `{arg}`\n\n**Leibhéil bhailí:** none, minimal, low, medium, high, xhigh\n**Taispeáint:** show, hide\n**Coinnigh:** cuir `--global` leis chun sábháil thar an seisiún seo"
+    unknown_arg:               "⚠️ Argóint anaithnid: `{arg}`\n\n**Leibhéil bhailí:** none, minimal, low, medium, high, xhigh, max, ultra\n**Taispeáint:** show, hide\n**Coinnigh:** cuir `--global` leis chun sábháil thar an seisiún seo"
+    picker_title:              "🧠 **Socruithe Réasúnaíochta**\\n\\n**Iarracht:** `{level}`\\n**Scóip:** {scope}\\n**Taispeáint:** {display}\\n\\nRoghnaigh rogha:"
+    choice_none:               "none — díchumasaigh réasúnaíocht"
+    choice_reset:              "reset — glan sárú an tseisiúin"
+    choice_show:               "taispeáin réasúnaíocht sna freagraí"
+    choice_hide:               "folaigh réasúnaíocht ó na freagraí"
     set_global:                "🧠 ✓ Iarracht réasúnaíochta socraithe go `{effort}` (sábháilte sa chumraíocht)\n_(éifeachtach ón gcéad teachtaireacht eile)_"
     set_global_save_failed:    "🧠 ✓ Iarracht réasúnaíochta socraithe go `{effort}` (seisiún amháin — theip ar shábháil cumraíochta)\n_(éifeachtach ón gcéad teachtaireacht eile)_"
     set_session:               "🧠 ✓ Iarracht réasúnaíochta socraithe go `{effort}` (seisiún amháin — cuir `--global` leis chun é a choinneáil)\n_(éifeachtach ón gcéad teachtaireacht eile)_"
@@ -249,6 +275,7 @@ Use `/title My Session` to name the current room session, `/resume --all` to lis
 Future messages in this room will use that transcript until `/reset` or another `/resume`.{msg_part}"
     blocked_not_owner:     "⚠️ /resume blocked: '**{name}**' belongs to a different user or chat. You can only resume sessions from this chat."
     no_named_sessions:     "Níor aimsíodh aon seisiún ainmnithe.\nÚsáid `/title M'Ainm Seisiúin` chun do sheisiún reatha a ainmniú, ansin `/resume M'Ainm Seisiúin` chun filleadh air níos déanaí."
+    all_requires_admin: "_Nóta: teastaíonn riarthóir cumraithe le `--all` (liostú traschomhrá); ní thaispeántar ach seisiúin an chomhrá seo._"
     list_header:           "📋 **Seisiúin Ainmnithe**\n"
     list_item:             "• **{title}**{preview_part}"
     list_item_numbered:    "{index}. **{title}**{preview_part}"
@@ -272,11 +299,37 @@ Future messages in this room will use that transcript until `/reset` or another 
     none_found:            "Níor aimsíodh aon seicphointe do {cwd}"
     invalid_number:        "Uimhir seicphointe neamhbhailí. Úsáid 1-{max}."
     restored:              "✅ Aischurtha go seicphointe {hash}: {reason}\nSábháladh roghchóip réamh-rollback go huathoibríoch."
+    kept_user_edits:       "↷ Coinníodh do chuid athruithe láimhe: {files}\nÚsáid /rollback <N> --all chun iad sin a aischur freisin."
+    kept_oversize:         "↷ Coinnithe (ró-mhór do sheicphointí, níl aon chóip stóráilte le filleadh uirthi): {files}"
+    failed_deletes:        "⚠️ Níorbh fhéidir a bhaint (fágtha ina áit): {files}"
     restore_failed:        "❌ {error}"
+
+  diff:
+    not_enabled:           "Níl seicphointí cumasaithe, mar sin níl aon bhonnlíne seisiúin ann.\nCumasaigh in config.yaml:\n```\ncheckpoints:\n  enabled: true\n```\nOibríonn /diff simplí fós — úsáideann sé git go díreach."
+    no_changes:            "Gan athruithe."
+    failed:                "{error}"
 
   set_home:
     save_failed:           "Theip ar shábháil chainéil bhaile: {error}"
     success:               "✅ Cainéal baile socraithe go **{name}** (ID: {chat_id}).\nSeachadfar tascanna cron agus teachtaireachtaí trasardáin anseo."
+  context:
+    header:                "🧠 **Context Window**"
+    model:                 "Model: `{model}`"
+    window:                "Window: {total} tokens"
+    in_use:                "In use: {used} / {total} ({pct}%)"
+    bar:                   "{bar}"
+    headroom:              "Headroom to limit: {headroom} tokens"
+    threshold:             "Auto-compresses at: {threshold} ({threshold_pct}%) — {to_go} to go"
+    over_threshold:        "⚠️ **Over auto-compression threshold ({threshold}, {threshold_pct}%)**"
+    compressions:          "Compressions this session: {count}"
+    last_savings:          "Last compression freed: {savings}% of context"
+    totals_header:         "Session totals (cumulative across {calls} API calls)"
+    totals_line:           "Input {input} · Output {output} · Reasoning {reasoning}"
+    total_billed:          "Total billed: {total}"
+    throughput_note:       "_Throughput, not context size — each call re-sends the window above._"
+    estimated:             "Estimated context: ~{count} tokens across {messages} messages"
+    detail_after_first:    "_(Full compression and throughput stats available after the first agent response)_"
+    no_data:               "No context data available yet. Send a message to start a session."
 
   status:
     header:                "📊 **Stádas Hermes Gateway**"
@@ -294,7 +347,7 @@ Future messages in this room will use that transcript until `/reset` or another 
     model_provider:        "**Model:** `{model}` ({provider})"
     context:               "**Context:** {used} / {total} ({pct}%)"
     context_used:          "**Context:** ~{used} tokens"
-    tokens:                "**Comharthaí:** {tokens}"
+    tokens:                "**Lifetime tokens billed:** {tokens} _(not your current context size; use `/context`)_"
     agent_running:         "**Gníomhaire ag rith:** {state}"
     state_yes:             "Tá ⚡"
     state_no:              "Níl"

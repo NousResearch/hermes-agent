@@ -1,10 +1,11 @@
 import { useStore } from '@nanostores/react'
 import { useEffect } from 'react'
-import { $route, $bootstrap, initialize } from './store'
-import Welcome from './routes/welcome'
+
+import Failure from './routes/failure'
 import Progress from './routes/progress'
 import Success from './routes/success'
-import Failure from './routes/failure'
+import Welcome from './routes/welcome'
+import { $bootstrap, $route, initialize } from './store'
 
 /*
  * App shell — Hermes Setup.

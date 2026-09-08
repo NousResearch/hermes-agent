@@ -1,75 +1,46 @@
-import { useStore } from '@nanostores/react'
-import { type MutableRefObject, useCallback, useEffect } from 'react'
+import { useCallback } from 'react'
 
 import { gatewayEventCompletedFileDiff } from '@/lib/gateway-events'
+import { normalizeOrLocalPreviewTarget } from '@/lib/local-preview'
+import { reachablePreviewUrl } from '@/lib/preview-reach'
 import {
-  $previewTarget,
-  $sessionPreviewRegistry,
+  $previewTabs,
   beginPreviewServerRestart,
+  closePreviewMatching,
+  closeRightRail,
   completePreviewServerRestart,
-  getSessionPreviewRecord,
+  openPreview,
   progressPreviewServerRestart,
-  requestPreviewReload,
-  setPreviewTarget
+  requestPreviewReload
 } from '@/store/preview'
-import { $currentCwd } from '@/store/session'
+import { $activeSessionId, $currentCwd } from '@/store/session'
+import { $focusedRuntimeId, $sessionTiles } from '@/store/session-states'
 import type { RpcEvent } from '@/types/hermes'
 
 type EventHandler = (event: RpcEvent) => void
 
 interface PreviewRoutingOptions {
-  activeSessionIdRef: MutableRefObject<string | null>
   baseHandleGatewayEvent: EventHandler
   currentCwd: string
-  currentView: string
   requestGateway: <T = unknown>(method: string, params?: Record<string, unknown>) => Promise<T>
-  routedSessionId: string | null
-  selectedStoredSessionId: string | null
 }
 
 function asRecord(payload: unknown): Record<string, unknown> {
   return payload && typeof payload === 'object' ? (payload as Record<string, unknown>) : {}
 }
 
-function activePreviewSessionId(
-  activeSessionIdRef: MutableRefObject<string | null>,
-  routedSessionId: string | null,
-  selectedStoredSessionId: string | null
-): string {
-  return selectedStoredSessionId || routedSessionId || activeSessionIdRef.current || ''
+function sessionIsOnScreen(sessionId: string): boolean {
+  return (
+    sessionId === $focusedRuntimeId.get() ||
+    sessionId === $activeSessionId.get() ||
+    $sessionTiles.get().some(tile => tile.runtimeId === sessionId)
+  )
 }
 
-export function usePreviewRouting({
-  activeSessionIdRef,
-  baseHandleGatewayEvent,
-  currentCwd,
-  currentView,
-  requestGateway,
-  routedSessionId,
-  selectedStoredSessionId
-}: PreviewRoutingOptions) {
-  const previewRegistry = useStore($sessionPreviewRegistry)
-  const previewSessionId = activePreviewSessionId(activeSessionIdRef, routedSessionId, selectedStoredSessionId)
-
-  // Restore a *user-opened* preview when its session becomes active. Tool
-  // results no longer auto-register/open a preview — the inline preview card in
-  // the tool row is the only entry point, so HTML artifacts never pop the rail
-  // open on their own.
-  useEffect(() => {
-    if (currentView !== 'chat' || !previewSessionId) {
-      setPreviewTarget(null)
-
-      return
-    }
-
-    const record = getSessionPreviewRecord(previewSessionId)
-
-    setPreviewTarget(record?.normalized ?? null)
-  }, [currentView, previewRegistry, previewSessionId])
-
+export function usePreviewRouting({ baseHandleGatewayEvent, currentCwd, requestGateway }: PreviewRoutingOptions) {
   const restartPreviewServer = useCallback(
     async (url: string, context?: string) => {
-      const sessionId = activeSessionIdRef.current
+      const sessionId = $focusedRuntimeId.get()
 
       if (!sessionId) {
         throw new Error('No active session for background restart')
@@ -94,12 +65,88 @@ export function usePreviewRouting({
 
       return taskId
     },
-    [activeSessionIdRef, currentCwd, requestGateway]
+    [currentCwd, requestGateway]
   )
 
   const handleDesktopGatewayEvent = useCallback<EventHandler>(
     event => {
       baseHandleGatewayEvent(event)
+
+      if (event.type === 'preview.open') {
+        // Agent-driven open in response to an explicit user request ("show
+        // cnn.com in the preview pane"). Honor it for any session that's ON
+        // SCREEN — the primary chat or an open tile — not only the focused
+        // one: the turn's window routing already scoped the event to this
+        // window, and gating on focus made the open silently vanish whenever
+        // the user's click had moved focus to a different zone by the time
+        // the tool ran (an "open reddit" they explicitly asked for). A
+        // session that is NOT visible anywhere still can't yank the pane
+        // open (offer, don't hijack). Routes through the same normalizer as
+        // the file browser so URLs, localhost, and file paths all resolve.
+        const { url, label } = asRecord(event.payload)
+        const target = typeof url === 'string' ? url.trim() : ''
+
+        if (target && (!event.session_id || sessionIsOnScreen(event.session_id))) {
+          void normalizeOrLocalPreviewTarget(target, $currentCwd.get() || currentCwd || undefined).then(
+            async resolved => {
+              if (!resolved) {
+                return
+              }
+
+              const trimmedLabel = typeof label === 'string' ? label.trim() : ''
+              // The agent's loopback is the GATEWAY's loopback. Give the pane a
+              // URL this machine can load, keeping the original as the label so
+              // the user still sees the address the agent named.
+              const url = resolved.kind === 'url' ? await reachablePreviewUrl(resolved.url) : resolved.url
+              const reached = url === resolved.url ? resolved : { ...resolved, label: resolved.label || target, url }
+
+              openPreview(trimmedLabel ? { ...reached, label: trimmedLabel } : reached, 'tool-result')
+            }
+          )
+        }
+
+        return
+      }
+
+      if (event.type === 'preview.close') {
+        // Agent-driven close via close_preview. Same on-screen gate as open:
+        // a session the user can see may tidy the pane it opened; a hidden
+        // background turn must not dismiss the user's preview.
+        const { url } = asRecord(event.payload)
+        const target = typeof url === 'string' ? url.trim() : ''
+
+        if (event.session_id && !sessionIsOnScreen(event.session_id)) {
+          return
+        }
+
+        if (!target) {
+          closeRightRail()
+
+          return
+        }
+
+        if (closePreviewMatching(target)) {
+          return
+        }
+
+        void normalizeOrLocalPreviewTarget(target, $currentCwd.get() || currentCwd || undefined).then(
+          async resolved => {
+            const candidates = [target]
+
+            if (resolved) {
+              candidates.push(resolved.source, resolved.url)
+
+              if (resolved.kind === 'url') {
+                candidates.push(await reachablePreviewUrl(resolved.url))
+              }
+            }
+
+            closePreviewMatching(...candidates)
+          }
+        )
+
+        return
+      }
 
       if (event.type === 'preview.restart.complete') {
         const { task_id, text } = asRecord(event.payload)
@@ -115,18 +162,18 @@ export function usePreviewRouting({
         }
       }
 
-      if (event.session_id && event.session_id !== activeSessionIdRef.current) {
+      if (event.session_id && event.session_id !== $focusedRuntimeId.get()) {
         return
       }
 
       // Only refresh an already-open live preview when a file changes; never
       // open one unprompted. (Preview links are surfaced from the tool row into
       // the status stack — see tool-fallback.tsx.)
-      if ($previewTarget.get()?.kind === 'url' && gatewayEventCompletedFileDiff(event)) {
+      if ($previewTabs.get().some(tab => tab.target.kind === 'url') && gatewayEventCompletedFileDiff(event)) {
         requestPreviewReload()
       }
     },
-    [activeSessionIdRef, baseHandleGatewayEvent]
+    [baseHandleGatewayEvent, currentCwd]
   )
 
   return { handleDesktopGatewayEvent, restartPreviewServer }

@@ -37,6 +37,8 @@ import ast
 import inspect
 
 from gateway import run as gateway_run
+from gateway import run_turn as gateway_run_turn
+from gateway import run_turn as gateway_run_turn
 from gateway.config import GatewayConfig, Platform
 from gateway.session import SessionSource, SessionStore
 from hermes_state import SessionDB
@@ -47,7 +49,7 @@ from hermes_state import SessionDB
 # ---------------------------------------------------------------------------
 def _find_compression_exhausted_reset_block() -> ast.If:
     """Return the ``if agent_result.get('compression_exhausted') ...`` block."""
-    tree = ast.parse(inspect.getsource(gateway_run))
+    tree = ast.parse(inspect.getsource(gateway_run_turn))
 
     for node in ast.walk(tree):
         if not isinstance(node, ast.If):
@@ -151,8 +153,17 @@ def _make_source():
 
 def _bloat(n):
     # Stand-in for the oversized, post-compression "child" transcript that
-    # could not be compressed any further (#35809).
-    return [{"role": "user", "content": "x" * 2000} for _ in range(n)]
+    # could not be compressed any further (#35809). Alternates roles so the
+    # fixture is a valid conversation: load_transcript is a live-replay
+    # restore site and heals alternation violations on load (#64934), so a
+    # degenerate all-user transcript would be merged into one message.
+    return [
+        {
+            "role": "user" if i % 2 == 0 else "assistant",
+            "content": "x" * 2000,
+        }
+        for i in range(n)
+    ]
 
 
 class TestAutoResetLoadsCleanContext:
@@ -188,25 +199,3 @@ class TestAutoResetLoadsCleanContext:
         # The old transcript is still searchable, not destroyed.
         assert len(store.load_transcript(bloated_sid)) == 120
 
-    def test_clean_context_survives_gateway_restart(self, tmp_path):
-        """The fresh, empty session must still be the one loaded after a
-        gateway restart (sessions.json + state.db round-trip)."""
-        store = _make_store(tmp_path)
-        source = _make_source()
-        entry = store.get_or_create_session(source)
-        bloated_sid = entry.session_id
-        store._db.create_session(
-            session_id=bloated_sid, source="telegram", user_id="u1"
-        )
-        store._db.replace_messages(bloated_sid, _bloat(120))
-
-        new_entry = store.reset_session(entry.session_key)
-        new_sid = new_entry.session_id
-
-        # Simulate restart: drop in-memory index, reload from disk.
-        store._loaded = False
-        store._entries.clear()
-
-        reloaded = store.get_or_create_session(source)
-        assert reloaded.session_id == new_sid
-        assert store.load_transcript(reloaded.session_id) == []

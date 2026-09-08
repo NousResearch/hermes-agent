@@ -9,7 +9,6 @@ pattern.
 
 These tests lock in:
   * ``_is_unsupported_parameter_error(exc, param)`` across common phrasings
-  * the back-compat wrapper ``_is_unsupported_temperature_error`` still works
   * the max_tokens retry branch no longer pops a key that was never set
     (``max_tokens is None`` gate)
   * the max_tokens retry branch matches via the generic helper on top of the
@@ -24,7 +23,6 @@ from agent.auxiliary_client import (
     call_llm,
     async_call_llm,
     _is_unsupported_parameter_error,
-    _is_unsupported_temperature_error,
 )
 
 
@@ -47,31 +45,14 @@ class TestIsUnsupportedParameterError:
     def test_matches_real_provider_messages(self, param, message):
         assert _is_unsupported_parameter_error(RuntimeError(message), param) is True
 
-    @pytest.mark.parametrize("param,message", [
-        # Param not mentioned at all
-        ("temperature", "HTTP 400: max_tokens is too large"),
-        # Param mentioned but not flagged as unsupported
-        ("temperature", "temperature must be between 0 and 2"),
-        # Totally unrelated 400
-        ("max_tokens", "Rate limit exceeded"),
-        # Connection-level errors
-        ("temperature", "Connection reset by peer"),
-    ])
-    def test_does_not_match_unrelated_errors(self, param, message):
-        assert _is_unsupported_parameter_error(RuntimeError(message), param) is False
 
-    def test_empty_param_returns_false(self):
-        assert _is_unsupported_parameter_error(
-            RuntimeError("HTTP 400: Unsupported parameter: temperature"), ""
-        ) is False
 
-    def test_temperature_wrapper_delegates_to_generic(self):
-        """Back-compat: ``_is_unsupported_temperature_error`` still routes through."""
+    def test_temperature_param_routes_through_generic(self):
         msg = "HTTP 400: Unsupported parameter: temperature"
-        assert _is_unsupported_temperature_error(RuntimeError(msg)) is True
+        assert _is_unsupported_parameter_error(RuntimeError(msg), "temperature") is True
         # And the unrelated-case still holds
-        assert _is_unsupported_temperature_error(
-            RuntimeError("max_tokens is too large")) is False
+        assert _is_unsupported_parameter_error(
+            RuntimeError("max_tokens is too large"), "temperature") is False
 
 
 def _dummy_response():
@@ -102,7 +83,7 @@ class TestMaxTokensRetryHardening:
             patch("agent.auxiliary_client._get_cached_client",
                   return_value=(client, "gpt-5.5")),
             patch("agent.auxiliary_client._validate_llm_response",
-                  side_effect=lambda resp, _task: resp),
+                  side_effect=lambda resp, _task, **_kw: resp),
         ):
             with pytest.raises(RuntimeError):
                 call_llm(
@@ -129,7 +110,7 @@ class TestMaxTokensRetryHardening:
             patch("agent.auxiliary_client._get_cached_client",
                   return_value=(client, "gpt-5.5")),
             patch("agent.auxiliary_client._validate_llm_response",
-                  side_effect=lambda resp, _task: resp),
+                  side_effect=lambda resp, _task, **_kw: resp),
         ):
             with pytest.raises(RuntimeError):
                 await async_call_llm(

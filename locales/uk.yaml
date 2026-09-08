@@ -53,6 +53,7 @@ gateway:
     more:                  "... і ще {count}"
     running_processes:     "**Фонові процеси, що виконуються:** {count}"
     async_jobs:            "**Асинхронні задачі гейтвея:** {count}"
+    background_delegations: "**Фонові делегування:** {count}"
     none:                  "Немає активних агентів або задач."
     state_starting:        "запускається"
     state_running:         "виконується"
@@ -67,8 +68,16 @@ gateway:
     always_plural:         "✅ Команди схвалено (шаблон схвалено назавжди) ({count} команд). Агент відновлює роботу…"
 
   background:
-    usage:                 "Використання: /background <запит>\nПриклад: /background Підсумуй найкращі історії з HN сьогодні\n\nЗапускає запит в окремому сеансі. Можна продовжити спілкування — результат з'явиться тут після завершення."
+    usage:                 "Використання: /bg <запит>\nПриклад: /bg Підсумуй найкращі історії з HN сьогодні\n\nЗапускає запит в окремому сеансі. Можна продовжити спілкування — результат з'явиться тут після завершення."
     started:               "🔄 Фонове завдання запущено: «{preview}»\nID завдання: {task_id}\nМожна продовжити спілкування — результати з'являться тут після завершення."
+
+  btw:
+    usage:                 "Використання: /btw <питання>\nПриклад: /btw у якому файлі була та помилка?\n\nВідповідає на швидке побіжне питання про цю розмову, не перериваючи її. Для незалежного фонового завдання використовуйте /bg <запит>."
+    no_history:            "Розмови ще немає — надішліть питання звичайним повідомленням."
+    no_provider:           "❌ Не вдалося відповісти: облікові дані провайдера не налаштовано."
+    started:               "💬 Побіжне питання: «{preview}»\nВідповідаю за знімком цієї розмови — поточна робота триває."
+    answer:                "💬 /btw: «{preview}»\n\n{answer}"
+    failed:                "❌ /btw не вдалося: «{preview}»\n{error}"
 
   branch:
     db_unavailable:        "База даних сеансів недоступна."
@@ -97,6 +106,7 @@ gateway:
     summary_failed:        "⚠️ Не вдалося згенерувати зведення ({error}). {count} історичних повідомлень було видалено та замінено заповнювачем; попередній контекст більше не можна відновити. Перевірте конфігурацію моделі auxiliary.compression."
     aborted:               "⚠️ Стиснення скасовано ({error}). Жодне повідомлення не було видалено — розмова не змінилася. Виконайте /compress, щоб повторити спробу, /reset для нової сесії, або перевірте конфігурацію моделі auxiliary.compression."
     aux_failed:            "ℹ️ Налаштована модель стиснення `{model}` зазнала збою ({error}). Відновлено за допомогою основної моделі — контекст не пошкоджений — але варто перевірити `auxiliary.compression.model` у config.yaml."
+    turnhold_deferred:     "ℹ️ Стиснення контексту відкладено — підсумок ще передається. Продовжуємо цей хід без стиснення."
     failed:                "Стиснення не вдалося: {error}"
 
   debug:
@@ -124,6 +134,11 @@ gateway:
     label_normal:          "NORMAL"
     status_fast:           "fast"
     status_normal:         "normal"
+    picker_title:          "⚡ **Priority Processing**\\n\\nПоточний режим: `{mode}`\\n\\nОберіть варіант:"
+    choice_fast:           "fast — Priority Processing увімкнено"
+    choice_normal:         "normal — стандартна обробка"
+    choice_auto:           "auto — швидко в перші секунди кожного ходу"
+    choice_cold:           "cold — швидко лише на першому ході сесії"
 
   footer:
     status:                "📎 Нижній колонтитул середовища: **{state}**\nПоля: `{fields}`\nПлатформа: `{platform}`"
@@ -138,7 +153,7 @@ gateway:
     no_goal_set:           "Ціль не встановлено."
     paused:                "⏸ Ціль призупинено: {goal}"
     no_resume:             "Немає цілі для продовження."
-    resumed:               "▶ Ціль відновлено: {goal}\nНадішліть будь-яке повідомлення, щоб продовжити, або зачекайте — я зроблю наступний крок у наступному ході."
+    resumed:               "▶ Ціль відновлено: {goal}\nПродовжую зараз — негайно зроблю наступний крок."
     invalid:               "Неприпустима ціль: {error}"
     set:                   "⊙ Ціль встановлено (бюджет {budget} ходів): {goal}\nЯ продовжуватиму працювати, доки ціль не буде досягнута, ви її не призупините/очистите, або бюджет не вичерпається.\nКерування: /goal status · /goal pause · /goal resume · /goal clear"
 
@@ -162,9 +177,15 @@ gateway:
       crashed:             "crashed (worker exited); dispatcher will retry"
       timed_out:           "timed out; dispatcher will retry"
       blocked:             "blocked; needs attention"
+      review_requested:    "handed off for review; the implementation is done"
+      changes_requested:   "review requested changes (BLOCK); implementation is not approved"
+      block_loop_detected: "routed to triage after repeated blocks; needs a decision"
       status_default:      "status changed"
       status_joiner:       ", "
       message:             "[kanban] Task {task_id} {status}.\nTitle: {title}\nAssignee: @{assignee}\nBoard: {board}\n\nCheck the result or decide the next step."
+      handoff:             "Result: {summary}"
+      review_detail:       "Review feedback: {reason}\nInspect the existing card and its current review run; return work to the same implementation task. Do not treat this BLOCK as approval and do not create a duplicate task."
+      guidance:            "This is an automatic task-status notification, not a request to decompose the task again. Inspect the current board before creating follow-up tasks; do not recreate tasks or graphs that already exist."
 
   personality:
     none_configured:       "У `{path}/config.yaml` не налаштовано жодної особистості"
@@ -186,14 +207,19 @@ gateway:
     level_disabled:            "none (вимкнено)"
     scope_session:             "перевизначення сеансу"
     scope_global:              "глобальна конфігурація"
-    status:                    "🧠 **Налаштування мислення**\n\n**Зусилля:** `{level}`\n**Область:** {scope}\n**Показ:** {display}\n\n_Використання:_ `/reasoning <none|minimal|low|medium|high|xhigh|reset|show|hide> [--global]`"
+    status:                    "🧠 **Налаштування мислення**\n\n**Зусилля:** `{level}`\n**Область:** {scope}\n**Показ:** {display}\n\n_Використання:_ `/reasoning <none|minimal|low|medium|high|xhigh|max|ultra|reset|show|hide> [--global]`"
     display_on:                "увімкнено ✓"
     display_off:               "вимкнено"
     display_set_on:            "🧠 ✓ Показ мислення: **УВІМКНЕНО**\nДумки моделі будуть показуватися перед кожною відповіддю на **{platform}**."
     display_set_off:           "🧠 ✓ Показ мислення: **ВИМКНЕНО** для **{platform}**"
     reset_global_unsupported:  "⚠️ `/reasoning reset --global` не підтримується. Використовуйте `/reasoning <level> --global`, щоб змінити глобальне значення за замовчуванням."
     reset_done:                "🧠 ✓ Перевизначення мислення для сеансу скинуто; повернення до глобальної конфігурації."
-    unknown_arg:               "⚠️ Невідомий аргумент: `{arg}`\n\n**Дійсні рівні:** none, minimal, low, medium, high, xhigh\n**Показ:** show, hide\n**Зберегти:** додайте `--global`, щоб зберегти поза цим сеансом"
+    unknown_arg:               "⚠️ Невідомий аргумент: `{arg}`\n\n**Дійсні рівні:** none, minimal, low, medium, high, xhigh, max, ultra\n**Показ:** show, hide\n**Зберегти:** додайте `--global`, щоб зберегти поза цим сеансом"
+    picker_title:              "🧠 **Налаштування мислення**\\n\\n**Зусилля:** `{level}`\\n**Область:** {scope}\\n**Показ:** {display}\\n\\nОберіть варіант:"
+    choice_none:               "none — вимкнути мислення"
+    choice_reset:              "reset — скинути перевизначення сесії"
+    choice_show:               "показувати мислення у відповідях"
+    choice_hide:               "приховувати мислення у відповідях"
     set_global:                "🧠 ✓ Зусилля мислення встановлено на `{effort}` (збережено в конфігурації)\n_(набуде чинності з наступного повідомлення)_"
     set_global_save_failed:    "🧠 ✓ Зусилля мислення встановлено на `{effort}` (лише цей сеанс — не вдалося зберегти конфігурацію)\n_(набуде чинності з наступного повідомлення)_"
     set_session:               "🧠 ✓ Зусилля мислення встановлено на `{effort}` (лише цей сеанс — додайте `--global`, щоб зберегти)\n_(набуде чинності з наступного повідомлення)_"
@@ -245,6 +271,7 @@ Use `/title My Session` to name the current room session, `/resume --all` to lis
 Future messages in this room will use that transcript until `/reset` or another `/resume`.{msg_part}"
     blocked_not_owner:     "⚠️ /resume blocked: '**{name}**' belongs to a different user or chat. You can only resume sessions from this chat."
     no_named_sessions:     "Іменованих сеансів не знайдено.\nВикористайте `/title Мій сеанс`, щоб назвати поточний сеанс, потім `/resume Мій сеанс`, щоб повернутися до нього."
+    all_requires_admin: "_Примітка: `--all` (список між чатами) потребує налаштованого адміністратора; показано лише сеанси цього чату._"
     list_header:           "📋 **Іменовані сеанси**\n"
     list_item:             "• **{title}**{preview_part}"
     list_item_numbered:    "{index}. **{title}**{preview_part}"
@@ -268,11 +295,37 @@ Future messages in this room will use that transcript until `/reset` or another 
     none_found:            "Контрольних точок для {cwd} не знайдено"
     invalid_number:        "Недійсний номер контрольної точки. Використовуйте 1-{max}."
     restored:              "✅ Відновлено до контрольної точки {hash}: {reason}\nЗнімок перед відкатом збережено автоматично."
+    kept_user_edits:       "↷ Ваші ручні правки збережено: {files}\nВикористайте /rollback <N> --all, щоб відновити і їх."
+    kept_oversize:         "↷ Збережено (завеликий для контрольних точок, немає збереженої копії для відкату): {files}"
+    failed_deletes:        "⚠️ Не вдалося видалити (залишено на місці): {files}"
     restore_failed:        "❌ {error}"
+
+  diff:
+    not_enabled:           "Контрольні точки не ввімкнено, тому базової лінії сесії немає.\nУвімкніть у config.yaml:\n```\ncheckpoints:\n  enabled: true\n```\nЗвичайний /diff все одно працює — він використовує git напряму."
+    no_changes:            "Змін немає."
+    failed:                "{error}"
 
   set_home:
     save_failed:           "Не вдалося зберегти головний канал: {error}"
     success:               "✅ Головний канал встановлено на **{name}** (ID: {chat_id}).\nCron-завдання та міжплатформні повідомлення доставлятимуться сюди."
+  context:
+    header:                "🧠 **Context Window**"
+    model:                 "Model: `{model}`"
+    window:                "Window: {total} tokens"
+    in_use:                "In use: {used} / {total} ({pct}%)"
+    bar:                   "{bar}"
+    headroom:              "Headroom to limit: {headroom} tokens"
+    threshold:             "Auto-compresses at: {threshold} ({threshold_pct}%) — {to_go} to go"
+    over_threshold:        "⚠️ **Over auto-compression threshold ({threshold}, {threshold_pct}%)**"
+    compressions:          "Compressions this session: {count}"
+    last_savings:          "Last compression freed: {savings}% of context"
+    totals_header:         "Session totals (cumulative across {calls} API calls)"
+    totals_line:           "Input {input} · Output {output} · Reasoning {reasoning}"
+    total_billed:          "Total billed: {total}"
+    throughput_note:       "_Throughput, not context size — each call re-sends the window above._"
+    estimated:             "Estimated context: ~{count} tokens across {messages} messages"
+    detail_after_first:    "_(Full compression and throughput stats available after the first agent response)_"
+    no_data:               "No context data available yet. Send a message to start a session."
 
   status:
     header:                "📊 **Стан Hermes Gateway**"
@@ -290,7 +343,7 @@ Future messages in this room will use that transcript until `/reset` or another 
     model_provider:        "**Model:** `{model}` ({provider})"
     context:               "**Context:** {used} / {total} ({pct}%)"
     context_used:          "**Context:** ~{used} tokens"
-    tokens:                "**Токени:** {tokens}"
+    tokens:                "**Lifetime tokens billed:** {tokens} _(not your current context size; use `/context`)_"
     agent_running:         "**Агент активний:** {state}"
     state_yes:             "Так ⚡"
     state_no:              "Ні"

@@ -53,6 +53,7 @@ gateway:
     more:                  "... 還有 {count} 個"
     running_processes:     "**執行中的背景程序：** {count}"
     async_jobs:            "**閘道非同步任務：** {count}"
+    background_delegations: "**背景委派：** {count}"
     none:                  "沒有作用中的代理或執行中的任務。"
     state_starting:        "啟動中"
     state_running:         "執行中"
@@ -67,8 +68,16 @@ gateway:
     always_plural:         "✅ 指令已批准（永久允許該模式）（{count} 條指令）。代理正在恢復…"
 
   background:
-    usage:                 "用法：/background <提示>\n範例：/background 摘要今天 HN 上的熱門故事\n\n在獨立工作階段中執行該提示。你可以繼續聊天 — 完成後結果將顯示於此。"
+    usage:                 "用法：/bg <提示>\n範例：/bg 摘要今天 HN 上的熱門故事\n\n在獨立工作階段中執行該提示。你可以繼續聊天 — 完成後結果將顯示於此。"
     started:               "🔄 背景任務已啟動：「{preview}」\n任務 ID：{task_id}\n你可以繼續聊天 — 完成後結果將顯示於此。"
+
+  btw:
+    usage:                 "用法：/btw <問題>\n範例：/btw 那個錯誤在哪個檔案？\n\n在不打斷目前工作的情況下，回答關於此對話的快速問題。若要執行獨立的背景任務，請使用 /bg <提示>。"
+    no_history:            "尚無對話 — 請將問題作為一般訊息傳送。"
+    no_provider:           "❌ 無法回答問題：未設定供應商憑證。"
+    started:               "💬 順帶一問：「{preview}」\n正根據此對話的快照回答 — 目前的工作繼續進行。"
+    answer:                "💬 /btw:「{preview}」\n\n{answer}"
+    failed:                "❌ /btw 失敗：「{preview}」\n{error}"
 
   branch:
     db_unavailable:        "工作階段資料庫無法使用。"
@@ -97,6 +106,7 @@ gateway:
     summary_failed:        "⚠️ 摘要產生失敗（{error}）。{count} 則歷史訊息已被移除並以佔位符取代；先前的上下文已無法復原。建議檢查 auxiliary.compression 模型設定。"
     aborted:               "⚠️ 壓縮已中止 ({error})。未刪除任何訊息 — 對話保持不變。執行 /compress 重試，執行 /reset 開始新工作階段，或檢查你的 auxiliary.compression 模型設定。"
     aux_failed:            "ℹ️ 設定的壓縮模型 `{model}` 失敗（{error}）。已使用主要模型復原 — 上下文完整 — 但您可能想檢查 config.yaml 中的 `auxiliary.compression.model`。"
+    turnhold_deferred:     "ℹ️ 上下文壓縮已延後 — 摘要仍在產生中。本回合將不壓縮繼續。"
     failed:                "壓縮失敗：{error}"
 
   debug:
@@ -124,6 +134,11 @@ gateway:
     label_normal:          "NORMAL"
     status_fast:           "fast"
     status_normal:         "normal"
+    picker_title:          "⚡ **Priority Processing**\\n\\n目前模式：`{mode}`\\n\\n請選擇："
+    choice_fast:           "fast — 開啟 Priority Processing"
+    choice_normal:         "normal — 標準處理"
+    choice_auto:           "auto — 每輪的前幾秒快速"
+    choice_cold:           "cold — 僅會話的第一輪快速"
 
   footer:
     status:                "📎 執行階段頁尾：**{state}**\n欄位：`{fields}`\n平台：`{platform}`"
@@ -138,7 +153,7 @@ gateway:
     no_goal_set:           "未設定目標。"
     paused:                "⏸ 目標已暫停：{goal}"
     no_resume:             "沒有可恢復的目標。"
-    resumed:               "▶ 目標已恢復：{goal}\n傳送任意訊息繼續，或等待 — 我會在下一輪繼續推進。"
+    resumed:               "▶ 目標已恢復：{goal}\n立即繼續 — 我馬上進行下一步。"
     invalid:               "無效目標：{error}"
     set:                   "⊙ 目標已設定（{budget} 輪預算）：{goal}\n我會持續工作直到目標完成、你暫停／清除目標，或預算耗盡。\n控制指令：/goal status · /goal pause · /goal resume · /goal clear"
 
@@ -162,9 +177,15 @@ gateway:
       crashed:             "crashed (worker exited); dispatcher will retry"
       timed_out:           "timed out; dispatcher will retry"
       blocked:             "blocked; needs attention"
+      review_requested:    "handed off for review; the implementation is done"
+      changes_requested:   "review requested changes (BLOCK); implementation is not approved"
+      block_loop_detected: "routed to triage after repeated blocks; needs a decision"
       status_default:      "status changed"
       status_joiner:       ", "
       message:             "[kanban] Task {task_id} {status}.\nTitle: {title}\nAssignee: @{assignee}\nBoard: {board}\n\nCheck the result or decide the next step."
+      handoff:             "結果：{summary}"
+      review_detail:       "Review feedback: {reason}\nInspect the existing card and its current review run; return work to the same implementation task. Do not treat this BLOCK as approval and do not create a duplicate task."
+      guidance:            "這是自動任務狀態通知，不是再次分解任務的請求。建立後續任務前請先檢查目前看板；不要重複建立已存在的任務或任務圖。"
 
   personality:
     none_configured:       "`{path}/config.yaml` 中未設定人格"
@@ -186,14 +207,19 @@ gateway:
     level_disabled:            "none（已停用）"
     scope_session:             "工作階段覆寫"
     scope_global:              "全域設定"
-    status:                    "🧠 **推理設定**\n\n**強度：** `{level}`\n**範圍：** {scope}\n**顯示：** {display}\n\n_用法：_ `/reasoning <none|minimal|low|medium|high|xhigh|reset|show|hide> [--global]`"
+    status:                    "🧠 **推理設定**\n\n**強度：** `{level}`\n**範圍：** {scope}\n**顯示：** {display}\n\n_用法：_ `/reasoning <none|minimal|low|medium|high|xhigh|max|ultra|reset|show|hide> [--global]`"
     display_on:                "開啟 ✓"
     display_off:               "關閉"
     display_set_on:            "🧠 ✓ 推理顯示：**開啟**\n在 **{platform}** 上每次回應前將顯示模型的思考過程。"
     display_set_off:           "🧠 ✓ **{platform}** 上的推理顯示：**關閉**"
     reset_global_unsupported:  "⚠️ 不支援 `/reasoning reset --global`。請使用 `/reasoning <level> --global` 變更全域預設值。"
     reset_done:                "🧠 ✓ 已清除本工作階段的推理覆寫；回退至全域設定。"
-    unknown_arg:               "⚠️ 未知參數：`{arg}`\n\n**有效級別：** none, minimal, low, medium, high, xhigh\n**顯示：** show, hide\n**持久化：** 加上 `--global` 可跨工作階段儲存"
+    unknown_arg:               "⚠️ 未知參數：`{arg}`\n\n**有效級別：** none, minimal, low, medium, high, xhigh, max, ultra\n**顯示：** show, hide\n**持久化：** 加上 `--global` 可跨工作階段儲存"
+    picker_title:              "🧠 **推理設定**\\n\\n**強度：** `{level}`\\n**範圍：** {scope}\\n**顯示：** {display}\\n\\n請選擇："
+    choice_none:               "none — 停用推理"
+    choice_reset:              "reset — 清除工作階段覆寫"
+    choice_show:               "在回覆中顯示推理"
+    choice_hide:               "在回覆中隱藏推理"
     set_global:                "🧠 ✓ 推理強度已設定為 `{effort}`（已儲存到設定）\n_（下一則訊息生效）_"
     set_global_save_failed:    "🧠 ✓ 推理強度已設定為 `{effort}`（僅本工作階段 — 設定儲存失敗）\n_（下一則訊息生效）_"
     set_session:               "🧠 ✓ 推理強度已設定為 `{effort}`（僅本工作階段 — 加上 `--global` 可持久化）\n_（下一則訊息生效）_"
@@ -245,6 +271,7 @@ Use `/title My Session` to name the current room session, `/resume --all` to lis
 Future messages in this room will use that transcript until `/reset` or another `/resume`.{msg_part}"
     blocked_not_owner:     "⚠️ /resume blocked: '**{name}**' belongs to a different user or chat. You can only resume sessions from this chat."
     no_named_sessions:     "找不到已命名的工作階段。\n使用 `/title 我的工作階段` 為目前工作階段命名，然後使用 `/resume 我的工作階段` 返回。"
+    all_requires_admin: "_注意：`--all`（跨聊天清單）需要已設定的管理員；僅顯示本聊天的工作階段。_"
     list_header:           "📋 **已命名工作階段**\n"
     list_item:             "• **{title}**{preview_part}"
     list_item_numbered:    "{index}. **{title}**{preview_part}"
@@ -268,11 +295,37 @@ Future messages in this room will use that transcript until `/reset` or another 
     none_found:            "找不到 {cwd} 的檢查點"
     invalid_number:        "無效的檢查點編號。請使用 1-{max}。"
     restored:              "✅ 已還原至檢查點 {hash}：{reason}\n已自動儲存回復前的快照。"
+    kept_user_edits:       "↷ 已保留您的手動編輯：{files}\n若也要還原這些檔案，請使用 /rollback <N> --all。"
+    kept_oversize:         "↷ 已保留（檔案過大無法納入檢查點，沒有可還原的儲存副本）：{files}"
+    failed_deletes:        "⚠️ 無法移除（保留原檔）：{files}"
     restore_failed:        "❌ {error}"
+
+  diff:
+    not_enabled:           "檢查點未啟用，因此沒有工作階段基準線。\n在 config.yaml 中啟用:\n```\ncheckpoints:\n  enabled: true\n```\n一般 /diff 仍然可用 — 它直接使用 git。"
+    no_changes:            "沒有變更。"
+    failed:                "{error}"
 
   set_home:
     save_failed:           "無法儲存主頻道：{error}"
     success:               "✅ 主頻道已設定為 **{name}**（ID：{chat_id}）。\n排程任務和跨平台訊息將傳送至此處。"
+  context:
+    header:                "🧠 **Context Window**"
+    model:                 "Model: `{model}`"
+    window:                "Window: {total} tokens"
+    in_use:                "In use: {used} / {total} ({pct}%)"
+    bar:                   "{bar}"
+    headroom:              "Headroom to limit: {headroom} tokens"
+    threshold:             "Auto-compresses at: {threshold} ({threshold_pct}%) — {to_go} to go"
+    over_threshold:        "⚠️ **Over auto-compression threshold ({threshold}, {threshold_pct}%)**"
+    compressions:          "Compressions this session: {count}"
+    last_savings:          "Last compression freed: {savings}% of context"
+    totals_header:         "Session totals (cumulative across {calls} API calls)"
+    totals_line:           "Input {input} · Output {output} · Reasoning {reasoning}"
+    total_billed:          "Total billed: {total}"
+    throughput_note:       "_Throughput, not context size — each call re-sends the window above._"
+    estimated:             "Estimated context: ~{count} tokens across {messages} messages"
+    detail_after_first:    "_(Full compression and throughput stats available after the first agent response)_"
+    no_data:               "No context data available yet. Send a message to start a session."
 
   status:
     header:                "📊 **Hermes 閘道狀態**"
@@ -290,7 +343,7 @@ Future messages in this room will use that transcript until `/reset` or another 
     model_provider:        "**Model:** `{model}` ({provider})"
     context:               "**Context:** {used} / {total} ({pct}%)"
     context_used:          "**Context:** ~{used} tokens"
-    tokens:                "**Token 數：** {tokens}"
+    tokens:                "**Lifetime tokens billed:** {tokens} _(not your current context size; use `/context`)_"
     agent_running:         "**代理執行中：** {state}"
     state_yes:             "是 ⚡"
     state_no:              "否"

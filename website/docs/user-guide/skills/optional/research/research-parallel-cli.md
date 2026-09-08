@@ -1,21 +1,21 @@
 ---
-title: "Parallel Cli"
+title: "Parallel Cli — Agent-native web search, deep research, and enrichment"
 sidebar_label: "Parallel Cli"
-description: "Optional vendor skill for Parallel CLI — agent-native web search, extraction, deep research, enrichment, FindAll, and monitoring"
+description: "Agent-native web search, deep research, and enrichment"
 ---
 
 {/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
 
 # Parallel Cli
 
-Optional vendor skill for Parallel CLI — agent-native web search, extraction, deep research, enrichment, FindAll, and monitoring. Prefer JSON output and non-interactive flows.
+Agent-native web search, deep research, and enrichment.
 
 ## Skill metadata
 
 | | |
 |---|---|
 | Source | Optional — install with `hermes skills install official/research/parallel-cli` |
-| Path | `optional-skills/research/parallel-cli` |
+| Path | `optional-skills/research\parallel-cli` |
 | Version | `1.1.0` |
 | Author | Hermes Agent |
 | License | MIT |

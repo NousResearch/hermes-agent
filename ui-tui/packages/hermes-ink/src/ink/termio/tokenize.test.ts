@@ -3,6 +3,31 @@ import { describe, expect, it } from 'vitest'
 import { createTokenizer, type Token } from './tokenize.js'
 
 describe('tokenizer escape-sequence boundaries', () => {
+  it.each(['\r', '\n'])('keeps ESC+%j together when received in one feed', lineEnding => {
+    const t = createTokenizer({ legacyAltEnter: true })
+    const sequence = `\x1b${lineEnding}`
+
+    expect(t.feed(sequence)).toEqual([{ type: 'sequence', value: sequence }])
+    expect(t.buffer()).toBe('')
+  })
+
+  it.each(['\r', '\n'])('reassembles ESC+%j split across two feeds', lineEnding => {
+    const t = createTokenizer({ legacyAltEnter: true })
+    const sequence = `\x1b${lineEnding}`
+
+    expect(t.feed('\x1b')).toEqual([])
+    expect(t.feed(lineEnding)).toEqual([{ type: 'sequence', value: sequence }])
+    expect(t.buffer()).toBe('')
+  })
+
+  it.each(['\r', '\n'])('keeps Escape distinct when it is flushed before %j', lineEnding => {
+    const t = createTokenizer({ legacyAltEnter: true })
+
+    expect(t.feed('\x1b')).toEqual([])
+    expect(t.flush()).toEqual([{ type: 'sequence', value: '\x1b' }])
+    expect(t.feed(lineEnding)).toEqual([{ type: 'text', value: lineEnding }])
+  })
+
   it('reassembles a CSI mouse sequence split across two feeds', () => {
     const t = createTokenizer({ x10Mouse: true })
 

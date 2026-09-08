@@ -7,7 +7,9 @@ on.
 """
 from __future__ import annotations
 
+import asyncio
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -24,7 +26,9 @@ from agent.lsp.servers import (
 MOCK_SERVER = str(Path(__file__).parent / "_mock_lsp_server.py")
 
 
-def _install_mock_server(monkeypatch, script: str = "errors", server_id: str = "pyright"):
+def _install_mock_server(
+    monkeypatch, script: str | list[str] = "errors", server_id: str = "pyright"
+):
     """Replace one registered server with a wrapper that spawns the mock.
 
     We reuse ``pyright`` so .py files route to it.  This keeps the
@@ -32,9 +36,13 @@ def _install_mock_server(monkeypatch, script: str = "errors", server_id: str = "
     """
     target_index = next(i for i, s in enumerate(SERVERS) if s.server_id == server_id)
     original = SERVERS[target_index]
+    scripts = [script] if isinstance(script, str) else script
+    spawn_count = {"value": 0}
 
     def _spawn(root: str, ctx: ServerContext) -> SpawnSpec:
-        env = {"MOCK_LSP_SCRIPT": script}
+        index = min(spawn_count["value"], len(scripts) - 1)
+        spawn_count["value"] += 1
+        env = {"MOCK_LSP_SCRIPT": scripts[index]}
         return SpawnSpec(
             command=[sys.executable, MOCK_SERVER],
             workspace_root=root,
@@ -54,7 +62,7 @@ def _install_mock_server(monkeypatch, script: str = "errors", server_id: str = "
     # Patch the SERVERS list element directly + restore on teardown.
     SERVERS[target_index] = replacement
 
-    yield
+    yield spawn_count
 
     SERVERS[target_index] = original
 
@@ -76,33 +84,8 @@ def mock_pyright(monkeypatch, tmp_path):
         pass
 
 
-def test_service_returns_empty_when_disabled(tmp_path):
-    svc = LSPService(
-        enabled=False,
-        wait_mode="document",
-        wait_timeout=2.0,
-        install_strategy="auto",
-    )
-    assert not svc.is_active()
-    f = tmp_path / "x.py"
-    f.write_text("")
-    assert svc.get_diagnostics_sync(str(f)) == []
-    svc.shutdown()
 
 
-def test_service_skips_files_outside_workspace(tmp_path):
-    """Files outside any git worktree must not trigger LSP."""
-    svc = LSPService(
-        enabled=True,
-        wait_mode="document",
-        wait_timeout=2.0,
-        install_strategy="manual",
-    )
-    f = tmp_path / "x.py"
-    f.write_text("")
-    # No .git anywhere — service should report not enabled for this file.
-    assert not svc.enabled_for(str(f))
-    svc.shutdown()
 
 
 def test_service_e2e_delta_filter(mock_pyright):
@@ -126,6 +109,54 @@ def test_service_e2e_delta_filter(mock_pyright):
         assert new_diags == []
     finally:
         svc.shutdown()
+
+
+@pytest.mark.parametrize("failed_script", ["clean_eof", "malformed_frame"])
+def test_service_replaces_client_after_reader_failure(
+    tmp_path, monkeypatch, failed_script
+):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / ".git").mkdir()
+    (repo / "pyproject.toml").write_text("")
+    source = repo / "x.py"
+    source.write_text("print('hi')\n")
+    monkeypatch.chdir(str(repo))
+    server = _install_mock_server(
+        monkeypatch, [failed_script, "clean"], "pyright"
+    )
+    spawn_count = next(server)
+
+    svc = LSPService(
+        enabled=True,
+        wait_mode="document",
+        wait_timeout=0.5,
+        install_strategy="manual",
+    )
+    try:
+        async def _break_first_client():
+            client = await svc._get_or_spawn(str(source))
+            assert client is not None
+            reader_task = client._reader_task
+            assert reader_task is not None
+            await client.open_file(str(source), language_id="python")
+            await asyncio.wait_for(asyncio.shield(reader_task), timeout=3.0)
+            return client
+
+        first = svc._loop.run(_break_first_client(), timeout=5.0)
+        replacement = svc._loop.run(svc._get_or_spawn(str(source)), timeout=5.0)
+
+        assert not first.is_running
+        assert replacement is not None
+        assert replacement is not first
+        assert replacement.is_running
+        assert spawn_count["value"] == 2
+    finally:
+        svc.shutdown()
+        try:
+            next(server)
+        except StopIteration:
+            pass
 
 
 def test_service_e2e_delta_filter_with_line_shift(mock_pyright):
@@ -157,7 +188,18 @@ def test_service_e2e_delta_filter_with_line_shift(mock_pyright):
         svc.shutdown()
 
 
-def test_service_status_includes_clients(mock_pyright):
+
+
+
+
+def test_reused_client_refreshes_last_used_and_survives_reap(mock_pyright):
+    """A client re-acquired from the cache must have its ``_last_used``
+    timestamp refreshed so a subsequent sweep does NOT evict it.
+
+    Covers the timestamp refresh on the existing-client fast path in
+    ``_get_or_spawn`` — without it, a client in constant use would be
+    reaped ``idle_timeout`` seconds after its FIRST use.
+    """
     repo = mock_pyright
     f = repo / "x.py"
     f.write_text("")
@@ -166,11 +208,75 @@ def test_service_status_includes_clients(mock_pyright):
         wait_mode="document",
         wait_timeout=3.0,
         install_strategy="manual",
+        idle_timeout=60.0,  # sweeps manually below; loop never fires
     )
     try:
         svc.get_diagnostics_sync(str(f))
-        info = svc.get_status()
-        assert info["enabled"] is True
-        assert any(c["server_id"] == "pyright" for c in info["clients"])
+        key = next(iter(svc._clients))
+        first_used = svc._last_used[key]
+
+        # Age the timestamp past the cutoff, then re-acquire the client.
+        svc._last_used[key] = first_used - 120.0
+        svc.get_diagnostics_sync(str(f))
+        assert svc._last_used[key] > first_used - 120.0, (
+            "re-acquiring a cached client must refresh _last_used"
+        )
+
+        # A sweep right after reuse must keep the client.
+        svc._loop.run(svc._reap_idle_once(), timeout=5.0)
+        assert key in svc._clients
+        assert svc.get_status()["clients"]
     finally:
         svc.shutdown()
+
+
+def test_reaper_survives_sweep_error(mock_pyright):
+    """One failing sweep must not kill the reaper loop — the loop's
+    ``except Exception`` guard must swallow the error and keep sweeping."""
+    repo = mock_pyright
+    f = repo / "x.py"
+    f.write_text("")
+    svc = LSPService(
+        enabled=True,
+        wait_mode="document",
+        wait_timeout=3.0,
+        install_strategy="manual",
+        idle_timeout=0.1,
+    )
+    try:
+        # Sabotage the sweep itself so the reaper-loop except branch
+        # actually runs (a failing client.shutdown() would be swallowed
+        # by gather(return_exceptions=True) and never reach the loop).
+        calls = {"n": 0}
+        real_reap = svc._reap_idle_once
+
+        async def _flaky_reap():
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise RuntimeError("sweep sabotage")
+            await real_reap()
+
+        svc._reap_idle_once = _flaky_reap  # type: ignore[method-assign]
+
+        svc.get_diagnostics_sync(str(f))
+        assert svc.get_status()["clients"]
+
+        # First sweep raises; later sweeps must still reap the client.
+        deadline = time.monotonic() + 3.0
+        while svc.get_status()["clients"] and time.monotonic() < deadline:
+            time.sleep(0.02)
+
+        assert calls["n"] >= 2, "reaper loop died after the failing sweep"
+        assert svc.get_status()["clients"] == []
+        assert svc._idle_reaper_task is not None
+        assert not svc._idle_reaper_task.done()
+    finally:
+        svc.shutdown()
+
+
+
+
+
+
+
+

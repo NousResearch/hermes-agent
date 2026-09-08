@@ -1,5 +1,5 @@
 import { useStore } from '@nanostores/react'
-import { type ReactNode, useEffect, useRef, useState } from 'react'
+import { type CSSProperties, type ReactNode, useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
@@ -58,6 +58,7 @@ export function NotificationStack() {
     }
   }, [defaultStack.length])
 
+  // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
   useEffect(() => {
     const latest = notifications[0]
 
@@ -91,9 +92,9 @@ export function NotificationStack() {
   )
 }
 
-// Portaled to <body> with a z above the Radix dialog layer (overlay z-[120],
-// content z-[130]) — see the top-center variant below for why.
-const REGION_BASE = 'pointer-events-none fixed z-[200] flex gap-2'
+// Portaled to <body> on the over-modal rung so a toast clears an open dialog —
+// see the top-center variant below for why.
+const REGION_BASE = 'pointer-events-none fixed z-(--z-over-modal) flex gap-2'
 
 // Primary stack: top-center, collapsed to the latest toast with a "+N more"
 // expander + clear-all — the noisy/important surface (errors, warnings,
@@ -118,7 +119,7 @@ function TopCenterStack({
       aria-label={copy.region}
       className={cn(
         REGION_BASE,
-        'left-1/2 top-[calc(var(--titlebar-height,34px)+0.75rem)] w-[min(32rem,calc(100%-2rem))] -translate-x-1/2 flex-col'
+        'left-1/2 top-[calc(var(--titlebar-height,34px)+0.75rem)] w-[min(40rem,calc(100%-2rem))] -translate-x-1/2 flex-col'
       )}
       role="region"
     >
@@ -162,12 +163,49 @@ function BottomRightStack({
   )
 }
 
+// Emphasize only the leading money figure ("$16.00" — the amount used) with the
+// accent color (semibold), leaving the rest of the line in its default muted
+// tone. No accent, or no figure in the message → render the text untouched.
+function renderMessage(message: string, accent?: string): ReactNode {
+  const match = accent ? /\$\d+(?:\.\d{2})?/.exec(message) : null
+
+  if (!match) {
+    return message
+  }
+
+  const start = match.index
+  const end = start + match[0].length
+
+  return (
+    <>
+      {message.slice(0, start)}
+      <span className="font-semibold" style={{ color: accent }}>
+        {match[0]}
+      </span>
+      {message.slice(end)}
+    </>
+  )
+}
+
+// AlertTitle defaults to a single-line clamp. Toast errors are often a full
+// sentence, so the toast wraps — then caps height and scrolls instead of
+// growing down the chat or clipping with an ellipsis.
+export function toastTitleClassName() {
+  return 'col-start-auto line-clamp-none max-h-[4.5em] overflow-y-auto overscroll-contain whitespace-normal wrap-break-word'
+}
+
 function NotificationItem({ notification }: { notification: AppNotification }) {
   const styles = tone[notification.kind]
   const Icon = styles.icon
   const hasDetail = Boolean(notification.detail && notification.detail !== notification.message)
   const { t } = useI18n()
   const copy = t.notifications
+
+  // Nudge the icon down to sit on the first text line, in `ch` so it tracks the
+  // toast's font size instead of a fixed rem. `accentColor` (when set) tints the
+  // icon + message as a severity ramp, overriding the kind's default color.
+  const accent = notification.accentColor
+  const iconStyle: CSSProperties = { marginTop: '0.42ch', ...(accent ? { color: accent } : {}) }
 
   return (
     <Alert
@@ -177,14 +215,19 @@ function NotificationItem({ notification }: { notification: AppNotification }) {
       variant={styles.variant}
     >
       {notification.icon ? (
-        <Codicon className={styles.iconClass} name={notification.icon} size="1rem" />
+        <Codicon className={styles.iconClass} name={notification.icon} size="1rem" style={iconStyle} />
       ) : (
-        <Icon className={styles.iconClass} />
+        <Icon className={styles.iconClass} style={iconStyle} />
       )}
       <div className="col-start-2 min-w-0">
-        {notification.title && <AlertTitle className="col-start-auto">{notification.title}</AlertTitle>}
+        {notification.title && (
+          <AlertTitle className={toastTitleClassName()} title={notification.title}>
+            {notification.title}
+          </AlertTitle>
+        )}
         <AlertDescription className="col-start-auto">
-          <p className="m-0">{notification.message}</p>
+          <p className="m-0 wrap-break-word">{renderMessage(notification.message, accent)}</p>
+          {notification.meta && <p className="m-0 text-xs text-muted-foreground tabular-nums">{notification.meta}</p>}
           {hasDetail && <NotificationDetail detail={notification.detail || ''} />}
           {notification.action && (
             <Button
@@ -193,9 +236,9 @@ function NotificationItem({ notification }: { notification: AppNotification }) {
                 notification.action?.onClick()
                 dismissNotification(notification.id)
               }}
-              size="xs"
+              size="sm"
               type="button"
-              variant="textStrong"
+              variant="default"
             >
               {notification.action.label}
             </Button>

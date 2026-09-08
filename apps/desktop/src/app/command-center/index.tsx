@@ -1,14 +1,15 @@
-import { useStore } from '@nanostores/react'
 import { type MouseEvent, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { LogTail } from '@/components/chat/log-tail'
 import { PageLoader } from '@/components/page-loader'
 import { Button } from '@/components/ui/button'
+import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { SearchField } from '@/components/ui/search-field'
 import { SegmentedControl } from '@/components/ui/segmented-control'
 import { ResponsiveTabs } from '@/components/ui/tab-dropdown'
+import { Tip } from '@/components/ui/tooltip'
 import { getActionStatus, getLogs, getStatus, getUsageAnalytics, restartGateway, updateHermes } from '@/hermes'
-import type { ActionStatusResponse, AnalyticsResponse, StatusResponse } from '@/hermes'
+import type { ActionStatusResponse, AnalyticsResponse, SessionInfo, StatusResponse } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { sessionTitle } from '@/lib/chat-runtime'
 import { compactNumber } from '@/lib/format'
@@ -25,6 +26,7 @@ import {
 } from '@/lib/icons'
 import { exportSession } from '@/lib/session-export'
 import { fmtDateTime } from '@/lib/time'
+import { useStoreSelector } from '@/lib/use-session-slice'
 import { cn } from '@/lib/utils'
 import { upsertDesktopActionTask } from '@/store/activity'
 import { $pinnedSessionIds, pinSession, unpinSession } from '@/store/layout'
@@ -46,6 +48,12 @@ const LOG_LEVELS = ['ALL', 'INFO', 'WARNING', 'ERROR'] as const
 
 const USAGE_PERIODS = [7, 30, 90] as const
 type UsagePeriod = (typeof USAGE_PERIODS)[number]
+
+// Stable empty arrays so the selector returns the same reference when we're
+// not on the Sessions tab — useStoreSelector bails out on Object.is, so the
+// component never re-renders from $sessions ticks while on System/Usage/etc.
+const EMPTY_SESSIONS: readonly never[] = []
+const EMPTY_PINNED: readonly string[] = []
 
 interface CommandCenterViewProps {
   initialSection?: CommandCenterSection
@@ -94,17 +102,18 @@ function RowIconButton({
   title: string
 }) {
   return (
-    <Button
-      aria-label={title}
-      className={cn('text-(--ui-text-tertiary) hover:bg-(--chrome-action-hover) hover:text-foreground', className)}
-      onClick={onClick}
-      size="icon-xs"
-      title={title}
-      type="button"
-      variant="ghost"
-    >
-      {children}
-    </Button>
+    <Tip label={title}>
+      <Button
+        aria-label={title}
+        className={cn('text-(--ui-text-tertiary) hover:bg-(--chrome-action-hover) hover:text-foreground', className)}
+        onClick={onClick}
+        size="icon-xs"
+        type="button"
+        variant="ghost"
+      >
+        {children}
+      </Button>
+    </Tip>
   )
 }
 
@@ -127,12 +136,15 @@ function EmptyPanel({ action, description, title }: { action?: ReactNode; descri
 export function CommandCenterView({ initialSection, onClose, onDeleteSession, onOpenSession }: CommandCenterViewProps) {
   const { t } = useI18n()
   const cc = t.commandCenter
-  const sessions = useStore($sessions)
-  const pinnedSessionIds = useStore($pinnedSessionIds)
-
+  // $sessions ticks on every streaming token (title updates, new sessions),
+  // but we only need the data on the Sessions tab. Subscribe conditionally so
+  // the System/Usage/Maintenance tabs don't re-render on every stream delta.
   const [section, setSection] = useRouteEnumParam('section', SECTIONS, initialSection ?? 'sessions')
+  const sessions = useStoreSelector($sessions, s => (section === 'sessions' ? s : EMPTY_SESSIONS))
+  const pinnedSessionIds = useStoreSelector($pinnedSessionIds, s => (section === 'sessions' ? s : EMPTY_PINNED))
 
   const [query, setQuery] = useState('')
+  const [pendingDelete, setPendingDelete] = useState<SessionInfo | null>(null)
   const [status, setStatus] = useState<StatusResponse | null>(null)
   const [logs, setLogs] = useState<string[]>([])
   const [logFile, setLogFile] = useState<(typeof LOG_FILES)[number]>('agent')
@@ -292,25 +304,29 @@ export function CommandCenterView({ initialSection, onClose, onDeleteSession, on
     [cc, refreshSystem]
   )
 
+  const navGroups = useMemo(
+    () =>
+      SECTIONS.map(value => ({
+        active: section === value,
+        icon:
+          value === 'sessions'
+            ? MessageCircle
+            : value === 'system'
+              ? Activity
+              : value === 'maintenance'
+                ? Wrench
+                : BarChart3,
+        id: value,
+        label: cc.sections[value],
+        onSelect: () => setSection(value)
+      })),
+    [cc, section, setSection]
+  )
+
   return (
     <OverlayView closeLabel={cc.close} onClose={onClose}>
       <OverlaySplitLayout>
-        <OverlayNav
-          groups={SECTIONS.map(value => ({
-            active: section === value,
-            icon:
-              value === 'sessions'
-                ? MessageCircle
-                : value === 'system'
-                  ? Activity
-                  : value === 'maintenance'
-                    ? Wrench
-                    : BarChart3,
-            id: value,
-            label: cc.sections[value],
-            onSelect: () => setSection(value)
-          }))}
-        />
+        <OverlayNav groups={navGroups} />
 
         <OverlayMain>
           <header className="mb-4 flex items-center justify-between gap-3 max-[47.5rem]:mb-2">
@@ -381,7 +397,7 @@ export function CommandCenterView({ initialSection, onClose, onDeleteSession, on
                           </RowIconButton>
                           <RowIconButton
                             className="hover:text-destructive"
-                            onClick={() => void onDeleteSession(session.id)}
+                            onClick={() => setPendingDelete(session)}
                             title={cc.deleteSession}
                           >
                             <Trash2 className="size-3.5" />
@@ -495,6 +511,19 @@ export function CommandCenterView({ initialSection, onClose, onDeleteSession, on
           )}
         </OverlayMain>
       </OverlaySplitLayout>
+      {pendingDelete && (
+        <ConfirmDialog
+          busyLabel={t.sidebar.row.deleting}
+          confirmLabel={t.common.delete}
+          description={t.sidebar.row.deleteDesc(sessionTitle(pendingDelete))}
+          destructive
+          doneLabel={t.sidebar.row.deleted}
+          onClose={() => setPendingDelete(null)}
+          onConfirm={() => void onDeleteSession(pendingDelete.id)}
+          open
+          title={t.sidebar.row.deleteTitle}
+        />
+      )}
     </OverlayView>
   )
 }

@@ -24,6 +24,7 @@ violation (does not modify files).
 
 from __future__ import annotations
 
+import ast
 import os
 import re
 import sys
@@ -35,6 +36,27 @@ TUI_CONTEXT_DIRS = [
     "tools/",
     "plugins/",
     "tui_gateway/",
+]
+
+# User plugin roots — scanned at runtime if they exist.  Plugins load from
+# ``get_hermes_home() / "plugins"`` (user) and ``./.hermes/plugins/`` (project,
+# gated behind ``HERMES_ENABLE_PROJECT_PLUGINS``) — see
+# ``hermes_cli/plugins.py:10-12``.  The guard only checked the bundled
+# ``plugins/`` dir, missing user-installed code that spawns subprocesses
+# (gap reported in #67639).
+#
+# Import is deferred to ``main()`` (after ``os.chdir(repo_root)``) because
+# this script runs as a standalone subprocess — ``hermes_constants`` isn't
+# on ``sys.path`` until the repo root is added.
+
+# subprocess and os APIs that inherit stdin by default when called without
+# an explicit stdin= argument.  The original regex only covered run/Popen
+# (gap #1 in #67639); call, check_output, check_call, os.system, and
+# asyncio.create_subprocess_* all inherit fd 0 equally.
+_SUBPROCESS_PATTERNS = [
+    r"subprocess\.(run|Popen|call|check_output|check_call)\s*\([\"'a-zA-Z_\[\(]",
+    r"os\.system\s*\([\"'a-zA-Z_\[\(]",
+    r"asyncio\.create_subprocess_(exec|shell)\s*\([\"'a-zA-Z_\[\(]",
 ]
 
 # Files with intentional stdin= override (e.g. input= creates a pipe).
@@ -63,17 +85,59 @@ SKIP_DIRS = {
 }
 
 
+_SPLAT_RE = re.compile(r"\*\*\s*([A-Za-z_][A-Za-z0-9_]*)")
+
+
+def _splat_carries_stdin(call_text: str, content: str) -> bool:
+    """True when the call splats ``**name`` / ``**name(...)`` and ``name`` is defined in
+    the same file (assignment or ``def``) whose OWN expression/body sets ``stdin=``.
+
+    Shared kwargs helpers (``_RUN_KW = dict(..., stdin=DEVNULL)``, ``def _run_kwargs(): return
+    dict(..., stdin=DEVNULL)``) legitimately carry the guard; we only accept them when the
+    definition provably sets stdin= — never on the helper's name alone, and never because an
+    unrelated later call in the file happens to pass ``stdin=``.
+    """
+    names = set(_SPLAT_RE.findall(call_text))
+    if not names:
+        return False
+    try:
+        tree = ast.parse(content)
+    except SyntaxError:
+        return False
+    for name in names:
+        node = None
+        for n in ast.walk(tree):
+            if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name == name:
+                node = n
+                break
+            if isinstance(n, (ast.Assign, ast.AnnAssign)):
+                targets = n.targets if isinstance(n, ast.Assign) else [n.target]
+                if any(isinstance(t, ast.Name) and t.id == name for t in targets):
+                    node = n.value if n.value is not None else n
+                    break
+        if node is None:
+            return False
+        # stdin appears as a keyword (dict(stdin=...)) or as a dict-literal key ({"stdin": ...})
+        # somewhere INSIDE this definition — not merely nearby in the file.
+        has = any(
+            (isinstance(sub, ast.keyword) and sub.arg == "stdin")
+            or (isinstance(sub, ast.Constant) and sub.value == "stdin")
+            for sub in ast.walk(node)
+        )
+        if not has:
+            return False
+    return True
+
+
 def find_subprocess_calls(content: str, filepath: str) -> list[dict]:
-    """Find all subprocess.run/Popen calls missing stdin= in content."""
+    """Find all subprocess/os/asyncio calls missing stdin= in content."""
     violations = []
     lines = content.split("\n")
 
     # Match only actual function calls — not comments, docstrings, or prose.
-    # The pattern requires an opening paren followed by an arg character
-    # (quote, bracket, letter, or closing paren for empty calls).
-    # This excludes ``subprocess.Popen(...)`` in docstrings and
-    # subprocess.run(...) in comments.
-    pattern = re.compile(r'subprocess\.(run|Popen)\s*\(["\'a-zA-Z_\[\(]')
+    # Multiple patterns cover subprocess.run/Popen/call/check_output/check_call,
+    # os.system, and asyncio.create_subprocess_exec/shell.
+    patterns = [re.compile(p) for p in _SUBPROCESS_PATTERNS]
 
     for i, line in enumerate(lines):
         # Skip comments.
@@ -85,7 +149,7 @@ def find_subprocess_calls(content: str, filepath: str) -> list[dict]:
         if "``subprocess" in line:
             continue
 
-        if not pattern.search(line):
+        if not any(p.search(line) for p in patterns):
             continue
 
         # Collect the full call (may span multiple lines).
@@ -110,6 +174,11 @@ def find_subprocess_calls(content: str, filepath: str) -> list[dict]:
 
                         # Has input= → creates a pipe, safe.
                         if "input=" in call_text:
+                            break
+
+                        # Splats a same-file kwargs helper whose definition
+                        # sets stdin= → the guard travels with the helper.
+                        if _splat_carries_stdin(call_text, content):
                             break
 
                         # Inline exemption marker on the call itself or within
@@ -138,6 +207,11 @@ def main() -> int:
     repo_root = Path(__file__).resolve().parent.parent
     os.chdir(repo_root)
 
+    # Add repo root to sys.path so we can import hermes_constants (this script
+    # runs as a standalone subprocess, not as a module).
+    sys.path.insert(0, str(repo_root))
+    from hermes_constants import get_hermes_home
+
     all_violations = []
 
     for tui_dir in TUI_CONTEXT_DIRS:
@@ -157,7 +231,33 @@ def main() -> int:
             if any(skip.rstrip("/") in parts for skip in SKIP_DIRS):
                 continue
 
-            content = py_file.read_text()
+            content = py_file.read_text(encoding="utf-8")
+            violations = find_subprocess_calls(content, rel)
+            all_violations.extend(violations)
+
+    # Scan user plugin directories (Gap 1: guard missed user-installed
+    # plugins in get_hermes_home()/plugins/ and project plugins in
+    # ./.hermes/plugins/, where code like ori/hooks.py can spawn
+    # subprocesses with inherited stdin — #67639).
+    plugin_roots: list[Path] = [get_hermes_home() / "plugins"]
+    if os.environ.get("HERMES_ENABLE_PROJECT_PLUGINS"):
+        plugin_roots.append(Path.cwd() / ".hermes" / "plugins")
+    seen_roots: set[Path] = set()
+    for plugin_root in plugin_roots:
+        resolved = plugin_root.resolve()
+        if resolved in seen_roots or not resolved.is_dir():
+            continue
+        seen_roots.add(resolved)
+
+        for py_file in resolved.rglob("*.py"):
+            rel = str(py_file)
+            if py_file.name in ("conftest.py",) or "/tests/" in rel:
+                continue
+
+            try:
+                content = py_file.read_text(encoding="utf-8")
+            except Exception:
+                continue
             violations = find_subprocess_calls(content, rel)
             all_violations.extend(violations)
 

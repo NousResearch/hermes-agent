@@ -2,8 +2,14 @@ import { useStore } from '@nanostores/react'
 import type * as React from 'react'
 import { useState } from 'react'
 
+import {
+  type ActionItemSpec,
+  ActionsContextMenu,
+  DROPDOWN_KIT,
+  type MenuKit,
+  renderActionItem
+} from '@/components/ui/actions-menu'
 import { Codicon } from '@/components/ui/codicon'
-import { ColorSwatches } from '@/components/ui/color-swatches'
 import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import {
   DropdownMenu,
@@ -14,7 +20,6 @@ import {
 } from '@/components/ui/dropdown-menu'
 import { Popover, PopoverAnchor, PopoverContent } from '@/components/ui/popover'
 import { useI18n } from '@/i18n'
-import { PROFILE_SWATCHES } from '@/lib/profile-color'
 import { cn } from '@/lib/utils'
 import { $panesFlipped, dismissAutoProject } from '@/store/layout'
 import {
@@ -24,48 +29,117 @@ import {
   openProjectRename,
   revealPath,
   setActiveProject,
-  updateProject
+  setProjectAppearance
 } from '@/store/projects'
 
+import { ProjectAppearancePicker } from './project-appearance'
 import type { SidebarProjectTree } from './workspace-groups'
 
-// Curated codicons for the project glyph (tinted by the chosen color).
-const ICONS = [
-  'folder-library',
-  'repo',
-  'rocket',
-  'beaker',
-  'flame',
-  'star-full',
-  'heart',
-  'zap',
-  'target',
-  'lightbulb',
-  'tools',
-  'device-desktop',
-  'device-mobile',
-  'terminal',
-  'dashboard',
-  'globe',
-  'broadcast',
-  'cloud',
-  'database',
-  'package',
-  'book',
-  'organization',
-  'bug',
-  'shield',
-  'key',
-  'gift',
-  'telescope',
-  'home'
-]
+// Shared per-project state + handlers, so the kebab dropdown and the row's
+// right-click menu drive the exact same actions. Modeled on git GUIs (GitHub
+// Desktop / GitKraken): reveal in the file manager, copy path, and "Remove from
+// sidebar" (never deletes files — auto projects are dismissed, explicit ones
+// drop their entry). Explicit projects additionally get rename / add folder /
+// set active.
+function useProjectActions({
+  project,
+  isActive,
+  scoped,
+  onExitScope
+}: {
+  project: SidebarProjectTree
+  isActive: boolean
+  scoped: boolean
+  onExitScope?: () => void
+}) {
+  const { t } = useI18n()
+  const p = t.sidebar.projects
+  const target = { id: project.id, name: project.label }
+  const [confirmDeleteOpen, setConfirmDeleteOpen] = useState(false)
 
-// Per-project actions, modeled on git GUIs (GitHub Desktop / GitKraken): reveal
-// in the file manager, copy path, and "Remove from sidebar" (never deletes files
-// — auto projects are dismissed, explicit ones drop their entry). Explicit
-// projects additionally get rename / add folder / set active. Hidden until the
-// row is hovered (group/workspace), matching the + affordance.
+  const removeAuto = () => {
+    dismissAutoProject(project.id)
+
+    if (scoped) {
+      onExitScope?.()
+    }
+  }
+
+  const confirmDelete = async () => {
+    await deleteProject(project.id)
+
+    if (scoped) {
+      onExitScope?.()
+    }
+  }
+
+  // Rename / add folder / set active — explicit projects only (auto ones lack a
+  // materialized record). Appearance is handled per-surface (popover vs submenu)
+  // by the caller since its picker chrome differs.
+  const identityItems: ActionItemSpec[] = project.isAuto
+    ? []
+    : [
+        { icon: 'edit', key: 'rename', label: p.menuRename, onSelect: () => openProjectRename(target) },
+        {
+          icon: 'new-folder',
+          key: 'add-folder',
+          label: p.menuAddFolder,
+          onSelect: () => openProjectAddFolder(target)
+        },
+        {
+          disabled: isActive,
+          icon: 'target',
+          key: 'set-active',
+          label: p.menuSetActive,
+          onSelect: () => void setActiveProject(project.id)
+        }
+      ]
+
+  const pathItems: ActionItemSpec[] = [
+    {
+      disabled: !project.path,
+      icon: 'folder-opened',
+      key: 'reveal',
+      label: p.reveal,
+      onSelect: () => void revealPath(project.path)
+    },
+    {
+      disabled: !project.path,
+      icon: 'copy',
+      key: 'copy',
+      label: p.copyPath,
+      onSelect: () => void copyPath(project.path)
+    }
+  ]
+
+  const dangerItem: ActionItemSpec = project.isAuto
+    ? { icon: 'trash', key: 'remove', label: p.removeFromSidebar, onSelect: removeAuto, variant: 'destructive' }
+    : {
+        icon: 'trash',
+        key: 'delete',
+        label: `${p.menuDelete}…`,
+        onSelect: () => setConfirmDeleteOpen(true),
+        variant: 'destructive'
+      }
+
+  const confirmDialog = (
+    <ConfirmDialog
+      confirmLabel={p.menuDelete}
+      description={p.deleteConfirm}
+      destructive
+      onClose={() => setConfirmDeleteOpen(false)}
+      onConfirm={confirmDelete}
+      open={confirmDeleteOpen}
+      title={`${p.menuDelete} "${project.label}"?`}
+    />
+  )
+
+  return { confirmDialog, dangerItem, identityItems, pathItems }
+}
+
+// Per-project actions. The kebab keeps its row-anchored Appearance popover; the
+// right-click menu (ProjectContextMenu) renders the same actions with Appearance
+// as a submenu. Hidden until the row is hovered, matching the + affordance.
 export function ProjectMenu({
   project,
   isActive,
@@ -87,30 +161,40 @@ export function ProjectMenu({
 }) {
   const { t } = useI18n()
   const p = t.sidebar.projects
-  const target = { id: project.id, name: project.label }
-  const [confirmDeleteOpen, setConfirmDeleteOpen] = useState(false)
   const [appearanceOpen, setAppearanceOpen] = useState(false)
   // Open toward the content area: right when the sidebar is on the left, left
   // when the panes are flipped (sidebar on the right).
   const panesFlipped = useStore($panesFlipped)
 
-  const removeAuto = () => {
-    dismissAutoProject(project.id)
+  const { confirmDialog, dangerItem, identityItems, pathItems } = useProjectActions({
+    isActive,
+    onExitScope,
+    project,
+    scoped
+  })
 
-    if (scoped) {
-      onExitScope?.()
+  // Appearance writes route through the adopt-aware helper: an auto project is
+  // materialized on its first change (its id then changes), so close the picker
+  // on adopt to stop a second write double-creating from a now-stale node.
+  const applyAppearance = async (patch: { color?: null | string; icon?: null | string }) => {
+    if (await setProjectAppearance(project, patch)) {
+      setAppearanceOpen(false)
     }
   }
 
-  const confirmDelete = async () => {
-    await deleteProject(project.id)
+  // Set color / pick an icon — shown for explicit projects and for auto ones
+  // (where selecting adopts the repo as a real project so the look sticks).
+  const appearanceItem = (
+    <DropdownMenuItem onSelect={() => setAppearanceOpen(true)}>
+      <Codicon name="symbol-color" size="0.875rem" />
+      <span>{p.menuAppearance}</span>
+    </DropdownMenuItem>
+  )
 
-    if (scoped) {
-      onExitScope?.()
-    }
-  }
-
-  const trigger = (
+  // When anchorRef is absent, PopoverAnchor wraps the trigger so the
+  // appearance popover positions against this button. Keep asChild chains free
+  // of non-forwarding wrappers (#67500).
+  const triggerButton = (
     <DropdownMenuTrigger asChild>
       <button
         aria-label={p.menu}
@@ -128,13 +212,15 @@ export function ProjectMenu({
     </DropdownMenuTrigger>
   )
 
+  const trigger = anchorRef ? triggerButton : <PopoverAnchor asChild>{triggerButton}</PopoverAnchor>
+
   return (
     <Popover onOpenChange={setAppearanceOpen} open={appearanceOpen}>
       {/* Position the appearance popover against the row (when a ref is wired);
           the kebab is only the dropdown trigger then. */}
       {anchorRef ? <PopoverAnchor virtualRef={anchorRef as React.RefObject<HTMLElement>} /> : null}
       <DropdownMenu>
-        {anchorRef ? trigger : <PopoverAnchor asChild>{trigger}</PopoverAnchor>}
+        {trigger}
         {/* Closing the menu refocuses the trigger (also the popover anchor),
             which the appearance popover would read as focus-outside and die on.
             Suppress that refocus so it survives. */}
@@ -144,47 +230,27 @@ export function ProjectMenu({
           onCloseAutoFocus={event => event.preventDefault()}
           sideOffset={6}
         >
-          {!project.isAuto && (
+          {project.isAuto ? (
+            // Inherited (auto) repos can still be themed — the change adopts the
+            // repo as a real project. Rename / add-folder / set-active stay out
+            // until then (they need the materialized record).
+            project.path && (
+              <>
+                {appearanceItem}
+                <DropdownMenuSeparator />
+              </>
+            )
+          ) : (
             <>
-              <DropdownMenuItem onSelect={() => openProjectRename(target)}>
-                <Codicon name="edit" size="0.875rem" />
-                <span>{p.menuRename}</span>
-              </DropdownMenuItem>
-              <DropdownMenuItem onSelect={() => setAppearanceOpen(true)}>
-                <Codicon name="symbol-color" size="0.875rem" />
-                <span>{p.menuAppearance}</span>
-              </DropdownMenuItem>
-              <DropdownMenuItem onSelect={() => openProjectAddFolder(target)}>
-                <Codicon name="new-folder" size="0.875rem" />
-                <span>{p.menuAddFolder}</span>
-              </DropdownMenuItem>
-              <DropdownMenuItem disabled={isActive} onSelect={() => void setActiveProject(project.id)}>
-                <Codicon name="target" size="0.875rem" />
-                <span>{p.menuSetActive}</span>
-              </DropdownMenuItem>
+              {identityItems.slice(0, 1).map(item => renderActionItem(DROPDOWN_KIT, item))}
+              {appearanceItem}
+              {identityItems.slice(1).map(item => renderActionItem(DROPDOWN_KIT, item))}
               <DropdownMenuSeparator />
             </>
           )}
-          <DropdownMenuItem disabled={!project.path} onSelect={() => void revealPath(project.path)}>
-            <Codicon name="folder-opened" size="0.875rem" />
-            <span>{p.reveal}</span>
-          </DropdownMenuItem>
-          <DropdownMenuItem disabled={!project.path} onSelect={() => void copyPath(project.path)}>
-            <Codicon name="copy" size="0.875rem" />
-            <span>{p.copyPath}</span>
-          </DropdownMenuItem>
+          {pathItems.map(item => renderActionItem(DROPDOWN_KIT, item))}
           <DropdownMenuSeparator />
-          {project.isAuto ? (
-            <DropdownMenuItem onSelect={removeAuto} variant="destructive">
-              <Codicon name="trash" size="0.875rem" />
-              <span>{p.removeFromSidebar}</span>
-            </DropdownMenuItem>
-          ) : (
-            <DropdownMenuItem onSelect={() => setConfirmDeleteOpen(true)} variant="destructive">
-              <Codicon name="trash" size="0.875rem" />
-              <span>{`${p.menuDelete}…`}</span>
-            </DropdownMenuItem>
-          )}
+          {renderActionItem(DROPDOWN_KIT, dangerItem)}
         </DropdownMenuContent>
       </DropdownMenu>
       <PopoverContent
@@ -194,42 +260,86 @@ export function ProjectMenu({
         side={panesFlipped ? 'left' : 'right'}
         sideOffset={6}
       >
-        <ColorSwatches
-          clearIcon="circle-slash"
-          clearLabel={p.noColor}
-          onChange={color => void updateProject(project.id, { color })}
-          swatches={PROFILE_SWATCHES}
-          value={project.color ?? null}
+        <ProjectAppearancePicker
+          color={project.color ?? null}
+          icon={project.icon ?? null}
+          noColorLabel={p.noColor}
+          onColor={color => void applyAppearance({ color })}
+          onIcon={icon => void applyAppearance({ icon })}
         />
-        {/* Same 6 columns + gap as the swatch grid so the popover keeps the
-            profile picker's width (icons flex to fill, not fixed-width). */}
-        <div className="mt-2 grid grid-cols-6 gap-1.5">
-          {ICONS.map(name => (
-            <button
-              aria-label={name}
-              className={cn(
-                'grid aspect-square place-items-center rounded-md text-(--ui-text-tertiary) transition hover:bg-(--ui-control-hover-background)',
-                project.icon === name && 'bg-(--ui-control-active-background) text-foreground'
-              )}
-              key={name}
-              onClick={() => void updateProject(project.id, { icon: project.icon === name ? null : name })}
-              style={project.icon === name && project.color ? { color: project.color } : undefined}
-              type="button"
-            >
-              <Codicon name={name} size="0.8125rem" />
-            </button>
-          ))}
-        </div>
       </PopoverContent>
-      <ConfirmDialog
-        confirmLabel={p.menuDelete}
-        description={p.deleteConfirm}
-        destructive
-        onClose={() => setConfirmDeleteOpen(false)}
-        onConfirm={confirmDelete}
-        open={confirmDeleteOpen}
-        title={`${p.menuDelete} "${project.label}"?`}
-      />
+      {confirmDialog}
     </Popover>
+  )
+}
+
+interface ProjectContextMenuProps {
+  project: SidebarProjectTree
+  isActive: boolean
+  scoped?: boolean
+  onExitScope?: () => void
+  children: React.ReactNode
+}
+
+// Wrap a project row so right-clicking it opens the same actions as its kebab.
+// The kebab's row-anchored Appearance popover can't nest in a context menu, so
+// here Appearance is a submenu with the same swatch + icon picker.
+export function ProjectContextMenu({
+  project,
+  isActive,
+  scoped = false,
+  onExitScope,
+  children
+}: ProjectContextMenuProps) {
+  const { t } = useI18n()
+  const p = t.sidebar.projects
+
+  const { confirmDialog, dangerItem, identityItems, pathItems } = useProjectActions({
+    isActive,
+    onExitScope,
+    project,
+    scoped
+  })
+
+  const canTheme = !project.isAuto || Boolean(project.path)
+
+  const applyAppearance = (patch: { color?: null | string; icon?: null | string }) => {
+    void setProjectAppearance(project, patch)
+  }
+
+  const items = (kit: MenuKit) => (
+    <>
+      {identityItems.map(item => renderActionItem(kit, item))}
+      {canTheme && (
+        <kit.Sub>
+          <kit.SubTrigger>
+            <Codicon name="symbol-color" size="0.875rem" />
+            <span>{p.menuAppearance}</span>
+          </kit.SubTrigger>
+          <kit.SubContent className="w-auto p-2">
+            <ProjectAppearancePicker
+              color={project.color ?? null}
+              icon={project.icon ?? null}
+              noColorLabel={p.noColor}
+              onColor={color => applyAppearance({ color })}
+              onIcon={icon => applyAppearance({ icon })}
+            />
+          </kit.SubContent>
+        </kit.Sub>
+      )}
+      {(identityItems.length > 0 || canTheme) && <kit.Separator />}
+      {pathItems.map(item => renderActionItem(kit, item))}
+      <kit.Separator />
+      {renderActionItem(kit, dangerItem)}
+    </>
+  )
+
+  return (
+    <>
+      <ActionsContextMenu ariaLabel={p.menu} contentClassName="w-48" items={items}>
+        {children}
+      </ActionsContextMenu>
+      {confirmDialog}
+    </>
   )
 }

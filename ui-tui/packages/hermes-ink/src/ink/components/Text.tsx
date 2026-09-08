@@ -84,6 +84,19 @@ export function shouldUseAnsiDim(env: NodeJS.ProcessEnv = process.env): boolean 
   return !env.VTE_VERSION
 }
 
+/**
+ * Terminals that ignore SGR 2 need a literal color instead. The tone is
+ * theme-supplied (setDimFallbackColor, called from the theme effect) so it
+ * stays inside the active palette; the slate below is only the pre-theme
+ * boot default. A hardcoded value here reads as an off-palette foreground
+ * next to themed spans on the same line — cold gray beside warm ink.
+ */
+let dimFallbackColor: Color = LEGACY_APPLE_DIM_COLOR
+
+export function setDimFallbackColor(color: Color | undefined): void {
+  dimFallbackColor = color || LEGACY_APPLE_DIM_COLOR
+}
+
 export function dimColorFallback(env: NodeJS.ProcessEnv = process.env): Color | undefined {
   const override = (env.HERMES_TUI_DIM ?? '').trim()
 
@@ -91,7 +104,7 @@ export function dimColorFallback(env: NodeJS.ProcessEnv = process.env): Color | 
     return undefined
   }
 
-  return (env.TERM_PROGRAM ?? '').trim() === 'Apple_Terminal' ? LEGACY_APPLE_DIM_COLOR : undefined
+  return (env.TERM_PROGRAM ?? '').trim() === 'Apple_Terminal' ? dimFallbackColor : undefined
 }
 
 const memoizedStylesForWrap: Record<NonNullable<Styles['textWrap']>, Styles> = {

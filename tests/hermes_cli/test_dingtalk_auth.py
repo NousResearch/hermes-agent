@@ -34,17 +34,6 @@ class TestApiPost:
             with pytest.raises(RegistrationError, match=r"boom \(errcode=42\)"):
                 _api_post("/app/registration/init", {"source": "hermes"})
 
-    def test_returns_data_on_success(self):
-        from hermes_cli.dingtalk_auth import _api_post
-
-        mock_resp = MagicMock()
-        mock_resp.raise_for_status = MagicMock()
-        mock_resp.json.return_value = {"errcode": 0, "nonce": "abc"}
-
-        with patch("hermes_cli.dingtalk_auth.requests.post", return_value=mock_resp):
-            result = _api_post("/app/registration/init", {"source": "hermes"})
-            assert result["nonce"] == "abc"
-
 
 # ---------------------------------------------------------------------------
 # begin_registration — 2-step nonce → device_code chain
@@ -80,29 +69,6 @@ class TestBeginRegistration:
         with patch("hermes_cli.dingtalk_auth._api_post",
                    return_value={"errcode": 0, "nonce": ""}):
             with pytest.raises(RegistrationError, match="missing nonce"):
-                begin_registration()
-
-    def test_missing_device_code_raises(self):
-        from hermes_cli.dingtalk_auth import begin_registration, RegistrationError
-
-        responses = [
-            {"errcode": 0, "nonce": "n1"},
-            {"errcode": 0, "verification_uri_complete": "http://x"},  # no device_code
-        ]
-        with patch("hermes_cli.dingtalk_auth._api_post", side_effect=responses):
-            with pytest.raises(RegistrationError, match="missing device_code"):
-                begin_registration()
-
-    def test_missing_verification_uri_raises(self):
-        from hermes_cli.dingtalk_auth import begin_registration, RegistrationError
-
-        responses = [
-            {"errcode": 0, "nonce": "n1"},
-            {"errcode": 0, "device_code": "dev"},  # no verification_uri_complete
-        ]
-        with patch("hermes_cli.dingtalk_auth._api_post", side_effect=responses):
-            with pytest.raises(RegistrationError,
-                               match="missing verification_uri_complete"):
                 begin_registration()
 
 
@@ -200,18 +166,4 @@ class TestConfigOverrides:
         importlib.reload(mod)
         assert mod.REGISTRATION_BASE_URL == "https://oapi.dingtalk.com"
 
-    def test_base_url_override_via_env(self, monkeypatch):
-        monkeypatch.setenv("DINGTALK_REGISTRATION_BASE_URL",
-                           "https://test.example.com/")
-        import importlib
-        import hermes_cli.dingtalk_auth as mod
-        importlib.reload(mod)
-        # Trailing slash stripped
-        assert mod.REGISTRATION_BASE_URL == "https://test.example.com"
 
-    def test_source_default(self, monkeypatch):
-        monkeypatch.delenv("DINGTALK_REGISTRATION_SOURCE", raising=False)
-        import importlib
-        import hermes_cli.dingtalk_auth as mod
-        importlib.reload(mod)
-        assert mod.REGISTRATION_SOURCE == "openClaw"

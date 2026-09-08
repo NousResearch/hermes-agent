@@ -1,12 +1,35 @@
 import { PassThrough } from 'stream'
 
 import { Box, renderSync } from '@hermes/ink'
+import chalk from 'chalk'
 import React from 'react'
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { AUDIO_DIRECTIVE_RE, INLINE_RE, Md, MEDIA_LINE_RE, stripInlineMarkup } from '../components/markdown.js'
+import { __resetLinkTitleCache, fetchLinkTitle } from '../lib/externalLink.js'
 import { stripAnsi } from '../lib/text.js'
-import { DEFAULT_THEME } from '../theme.js'
+import { DEFAULT_THEME, LIGHT_THEME } from '../theme.js'
+
+afterEach(() => {
+  __resetLinkTitleCache()
+  vi.unstubAllGlobals()
+})
+
+// Stub the network and warm the shared title cache, so a subsequent render
+// has the resolved title available synchronously.
+const stubFetchedTitle = (url: string, title: string) => {
+  vi.stubGlobal(
+    'fetch',
+    vi.fn().mockResolvedValue(
+      new Response(`<html><head><title>${title}</title></head></html>`, {
+        headers: { 'content-type': 'text/html' },
+        status: 200
+      })
+    )
+  )
+
+  return fetchLinkTitle(url)
+}
 
 const matches = (text: string) => [...text.matchAll(INLINE_RE)].map(m => m[0])
 const BEL = String.fromCharCode(7)
@@ -266,19 +289,37 @@ describe('Md link labels', () => {
     expect(rendered).not.toContain('https://www.expedia.com/things-to-do/puerto-rico-el-yunque-rainforest-adventure')
   })
 
-  it('keeps explicit markdown labels as the immediate fallback', () => {
+  it('keeps the authored markdown label even when a page title resolves', async () => {
+    const url = 'https://www.expedia.com/things-to-do/puerto-rico-el-yunque-rainforest-adventure'
+
+    // Warm the shared cache so `useLinkTitle` would have a title to render
+    // synchronously — the label must still win.
+    await stubFetchedTitle(url, 'El Yunque Rainforest Adventure | Expedia')
+
     const lines = renderPlain(
       React.createElement(
         Box,
         { width: 80 },
-        React.createElement(Md, {
-          t: DEFAULT_THEME,
-          text: '[Trip details](https://www.expedia.com/things-to-do/puerto-rico-el-yunque-rainforest-adventure)'
-        })
+        React.createElement(Md, { t: DEFAULT_THEME, text: `[Trip details](${url})` })
       )
     )
 
-    expect(lines.join('\n')).toContain('Trip details')
+    const rendered = lines.join('\n')
+
+    expect(rendered).toContain('Trip details')
+    expect(rendered).not.toContain('El Yunque Rainforest Adventure | Expedia')
+  })
+
+  it('still resolves titles for links whose label is just the URL', async () => {
+    const url = 'https://www.expedia.com/things-to-do/puerto-rico-el-yunque-rainforest-adventure'
+
+    await stubFetchedTitle(url, 'Rainforest Adventure Tour')
+
+    const lines = renderPlain(
+      React.createElement(Box, { width: 120 }, React.createElement(Md, { t: DEFAULT_THEME, text: `[${url}](${url})` }))
+    )
+
+    expect(lines.join('\n')).toContain('Rainforest Adventure Tour')
   })
 })
 
@@ -327,5 +368,91 @@ describe('renderTable CJK width alignment', () => {
     // The CJK row is the one that drifted before the fix.  It must
     // align with the rest now.
     expect(qwenCol2).toBe(headerCol2)
+  })
+})
+
+describe('body prose stays in the theme palette', () => {
+  // Prose used to render in the terminal's DEFAULT foreground while inline
+  // tokens beside it carried a theme color, so one line mixed two inks.
+  // Because an inline token can match mid-word, so could a single word.
+  // LIGHT_THEME is the vehicle here because every tone in it is hex, so
+  // emitted SGR maps back to palette entries without format juggling.
+  const foregroundRuns = (text: string): string[] => {
+    // chalk is a singleton and defaults to level 0 under vitest (no TTY),
+    // which would emit no SGR at all and make every assertion here vacuous.
+    const savedLevel = chalk.level
+    chalk.level = 3
+
+    const stdout = new PassThrough()
+    const stdin = new PassThrough()
+    const stderr = new PassThrough()
+    let output = ''
+
+    Object.assign(stdout, { columns: 80, isTTY: true, rows: 24 })
+    Object.assign(stdin, { isTTY: false })
+    Object.assign(stderr, { isTTY: false })
+    stdout.on('data', chunk => {
+      output += chunk.toString()
+    })
+
+    const instance = renderSync(
+      React.createElement(Box, { width: 70 }, React.createElement(Md, { cols: 68, t: LIGHT_THEME, text })),
+      {
+        patchConsole: false,
+        stderr: stderr as NodeJS.WriteStream,
+        stdin: stdin as NodeJS.ReadStream,
+        stdout: stdout as NodeJS.WriteStream
+      }
+    )
+
+    instance.unmount()
+    instance.cleanup()
+    chalk.level = savedLevel
+
+    return [...output.matchAll(new RegExp(`${ESC}\\[38;2;(\\d+);(\\d+);(\\d+)m`, 'g'))].map(
+      m =>
+        '#' +
+        m
+          .slice(1, 4)
+          .map(v => Number(v).toString(16).padStart(2, '0'))
+          .join('')
+    )
+  }
+
+  const PALETTE = new Set(
+    Object.values(LIGHT_THEME.color)
+      .filter((v): v is string => typeof v === 'string' && v.startsWith('#'))
+      .map(v => v.toLowerCase())
+  )
+
+  const INK = LIGHT_THEME.color.text.toLowerCase()
+
+  it('opens a paragraph with the theme ink, not the terminal default', () => {
+    expect(foregroundRuns('plain prose line')[0]).toBe(INK)
+  })
+
+  it('keeps every foreground on a mixed-token line inside the palette', () => {
+    // `render_terminal_output` trips the underscore-italic token mid-word —
+    // the exact shape that split one word across two inks.
+    const fg = foregroundRuns('set the `flag` and re-render_terminal_output for the run')
+
+    expect(fg.length).toBeGreaterThan(0)
+
+    for (const c of fg) {
+      expect(PALETTE.has(c)).toBe(true)
+    }
+  })
+
+  it('returns to the theme ink after an inline token, not to the terminal default', () => {
+    const fg = foregroundRuns('before `code` after')
+
+    expect(fg[0]).toBe(INK)
+    expect(fg.at(-1)).toBe(INK)
+  })
+
+  it('themes list-item prose too', () => {
+    for (const text of ['- a bullet item', '1. a numbered item']) {
+      expect(foregroundRuns(text)).toContain(INK)
+    }
   })
 })

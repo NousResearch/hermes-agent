@@ -1,27 +1,27 @@
 ---
-title: "Kanban Video Orchestrator — Plan, set up, and monitor a multi-agent video production pipeline backed by Hermes Kanban"
+title: "Kanban Video Orchestrator — Plan and run multi-agent video production pipelines"
 sidebar_label: "Kanban Video Orchestrator"
-description: "Plan, set up, and monitor a multi-agent video production pipeline backed by Hermes Kanban"
+description: "Plan and run multi-agent video production pipelines"
 ---
 
 {/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
 
 # Kanban Video Orchestrator
 
-Plan, set up, and monitor a multi-agent video production pipeline backed by Hermes Kanban. Use when the user wants to make ANY video — narrative film, product/marketing, music video, explainer, ASCII/terminal art, abstract/generative loop, comic, 3D, real-time/installation — and the work warrants decomposition into specialized profiles (writer, designer, animator, renderer, voice, editor, etc.) coordinated through a kanban board. Performs adaptive discovery to scope the brief, designs an appropriate team for the requested style, generates the setup script that creates Hermes profiles + initial kanban task, then helps monitor execution and intervene when tasks stall or fail. Routes scenes to whichever Hermes rendering / audio / design skill fits each beat (`ascii-video`, `manim-video`, `p5js`, `comfyui`, `touchdesigner-mcp`, `blender-mcp`, `pixel-art`, `baoyu-comic`, `claude-design`, `excalidraw`, `songsee`, `heartmula`, …) plus external APIs for TTS, image-gen, and image-to-video as needed.
+Plan and run multi-agent video production pipelines.
 
 ## Skill metadata
 
 | | |
 |---|---|
 | Source | Optional — install with `hermes skills install official/creative/kanban-video-orchestrator` |
-| Path | `optional-skills/creative/kanban-video-orchestrator` |
+| Path | `optional-skills/creative\kanban-video-orchestrator` |
 | Version | `1.0.0` |
 | Author | ['SHL0MS', 'alt-glitch'] |
 | License | MIT |
 | Platforms | linux, macos, windows |
 | Tags | `video`, `kanban`, `multi-agent`, `orchestration`, `production-pipeline` |
-| Related skills | [`ascii-video`](/docs/user-guide/skills/bundled/creative/creative-ascii-video), [`manim-video`](/docs/user-guide/skills/bundled/creative/creative-manim-video), [`p5js`](/docs/user-guide/skills/bundled/creative/creative-p5js), [`comfyui`](/docs/user-guide/skills/bundled/creative/creative-comfyui), [`touchdesigner-mcp`](/docs/user-guide/skills/bundled/creative/creative-touchdesigner-mcp), [`blender-mcp`](/docs/user-guide/skills/optional/creative/creative-blender-mcp), [`pixel-art`](/docs/user-guide/skills/optional/creative/creative-pixel-art), [`ascii-art`](/docs/user-guide/skills/bundled/creative/creative-ascii-art), [`songwriting-and-ai-music`](/docs/user-guide/skills/bundled/creative/creative-songwriting-and-ai-music), [`heartmula`](/docs/user-guide/skills/bundled/media/media-heartmula), [`songsee`](/docs/user-guide/skills/bundled/media/media-songsee), `spotify`, [`youtube-content`](/docs/user-guide/skills/bundled/media/media-youtube-content), [`claude-design`](/docs/user-guide/skills/bundled/creative/creative-claude-design), [`excalidraw`](/docs/user-guide/skills/bundled/creative/creative-excalidraw), [`architecture-diagram`](/docs/user-guide/skills/bundled/creative/creative-architecture-diagram), [`concept-diagrams`](/docs/user-guide/skills/optional/creative/creative-concept-diagrams), [`baoyu-comic`](/docs/user-guide/skills/optional/creative/creative-baoyu-comic), [`baoyu-infographic`](/docs/user-guide/skills/bundled/creative/creative-baoyu-infographic), [`humanizer`](/docs/user-guide/skills/bundled/creative/creative-humanizer), [`gif-search`](/docs/user-guide/skills/bundled/media/media-gif-search), [`meme-generation`](/docs/user-guide/skills/optional/creative/creative-meme-generation) |
+| Related skills | [`ascii-video`](/docs/user-guide/skills/bundled/creative/creative-ascii-video), [`manim-video`](/docs/user-guide/skills/bundled/creative/creative-manim-video), [`p5js`](/docs/user-guide/skills/bundled/creative/creative-p5js), [`comfyui`](/docs/user-guide/skills/optional/creative/creative-comfyui), [`touchdesigner-mcp`](/docs/user-guide/skills/optional/creative/creative-touchdesigner-mcp), [`pixel-art`](/docs/user-guide/skills/optional/creative/creative-pixel-art), [`ascii-art`](/docs/user-guide/skills/optional/creative/creative-ascii-art), [`songwriting-and-ai-music`](/docs/user-guide/skills/bundled/creative/creative-songwriting-and-ai-music), [`heartmula`](/docs/user-guide/skills/optional/creative/creative-heartmula), [`songsee`](/docs/user-guide/skills/bundled/media/media-songsee), [`youtube-content`](/docs/user-guide/skills/bundled/media/media-youtube-content), [`claude-design`](/docs/user-guide/skills/bundled/creative/creative-claude-design), [`excalidraw`](/docs/user-guide/skills/optional/creative/creative-excalidraw), [`architecture-diagram`](/docs/user-guide/skills/bundled/creative/creative-architecture-diagram), [`concept-diagrams`](/docs/user-guide/skills/optional/creative/creative-concept-diagrams), [`baoyu-comic`](/docs/user-guide/skills/optional/creative/creative-baoyu-comic), [`baoyu-infographic`](/docs/user-guide/skills/bundled/creative/creative-baoyu-infographic), [`humanizer`](/docs/user-guide/skills/bundled/creative/creative-humanizer), [`gif-search`](/docs/user-guide/skills/bundled/media/media-gif-search), [`meme-generation`](/docs/user-guide/skills/optional/creative/creative-meme-generation) |
 
 ## Reference: full SKILL.md
 
@@ -45,7 +45,7 @@ This skill does **not** render anything itself. It is a meta-pipeline that:
 
 The actual rendering happens inside the kanban once it's running, via whichever
 existing skills + tools fit the scenes — `ascii-video`, `manim-video`, `p5js`,
-`comfyui`, `touchdesigner-mcp`, `blender-mcp`, `songwriting-and-ai-music`,
+`comfyui`, `touchdesigner-mcp`, `songwriting-and-ai-music`,
 `heartmula`, external APIs, or plain Python with PIL + ffmpeg.
 
 ## When NOT to use this skill
@@ -76,7 +76,7 @@ time, listen, then proceed. Make reasonable assumptions whenever the user
 implies an answer.
 
 For complete intake patterns and per-style question banks, see
-**[references/intake.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/creative/kanban-video-orchestrator/references/intake.md)**.
+**[references/intake.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/creative\kanban-video-orchestrator/references/intake.md)**.
 
 ### Step 2 — Brief
 
@@ -100,10 +100,10 @@ clone.** Most videos need 4-7 profiles. The director is always present; the
 rest are picked by what the brief actually requires.
 
 For the role library and per-style team compositions, see
-**[references/role-archetypes.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/creative/kanban-video-orchestrator/references/role-archetypes.md)**.
+**[references/role-archetypes.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/creative\kanban-video-orchestrator/references/role-archetypes.md)**.
 
 For mapping role → which Hermes skills + toolsets it loads, see
-**[references/tool-matrix.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/creative/kanban-video-orchestrator/references/tool-matrix.md)**.
+**[references/tool-matrix.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/creative\kanban-video-orchestrator/references/tool-matrix.md)**.
 
 ### Step 4 — Setup
 
@@ -118,7 +118,7 @@ Generate a setup script (`setup.sh`) and run it. The script:
 7. Fires the initial `hermes kanban create` task assigned to the director
 
 Use `scripts/bootstrap_pipeline.py` to generate setup.sh from a brief +
-team-design JSON. See **[references/kanban-setup.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/creative/kanban-video-orchestrator/references/kanban-setup.md)**
+team-design JSON. See **[references/kanban-setup.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/creative\kanban-video-orchestrator/references/kanban-setup.md)**
 for the setup script structure, profile config patterns, and the critical
 "shared workspace" rule.
 
@@ -149,14 +149,14 @@ heartbeats. When a worker's output fails review, the standard interventions are:
 3. Adjust the brief's scope and let the director re-decompose
 
 For diagnostic patterns, intervention recipes, and the "task is stuck"
-playbook, see **[references/monitoring.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/creative/kanban-video-orchestrator/references/monitoring.md)**.
+playbook, see **[references/monitoring.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/creative\kanban-video-orchestrator/references/monitoring.md)**.
 
 ## Reference: worked examples
 
 Six concrete pipelines covering very different video styles — narrative film,
 product/marketing, music video, math/algorithm explainer, ASCII video, real-time
 installation — showing how the same workflow yields very different teams and
-task graphs. See **[references/examples.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/creative/kanban-video-orchestrator/references/examples.md)**.
+task graphs. See **[references/examples.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/creative\kanban-video-orchestrator/references/examples.md)**.
 
 ## Critical rules
 
@@ -186,8 +186,9 @@ task graphs. See **[references/examples.md](https://github.com/NousResearch/herm
 6. **The director never executes.** Even with the full `kanban + terminal +
    file` toolset, the director's `SOUL.md` rules forbid it from executing
    work itself. It decomposes and routes only — every concrete task becomes
-   a `hermes kanban create` call to a specialist profile. The
-   auto-injected kanban orchestration guidance spells this out further.
+   a `hermes kanban create` call to a specialist profile. The kanban
+   orchestration guidance auto-injected into every kanban worker's system
+   prompt spells this out further.
 
 7. **Don't over-decompose.** A 30-second product video does NOT need 20 tasks.
    Aim for the smallest task graph that still parallelizes well and exposes the

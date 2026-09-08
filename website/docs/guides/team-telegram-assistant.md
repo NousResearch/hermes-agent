@@ -374,7 +374,7 @@ On a shared team bot, use Docker as the terminal backend so agent commands run i
 
 ```bash
 # In ~/.hermes/.env
-TERMINAL_BACKEND=docker
+TERMINAL_ENV=docker
 TERMINAL_DOCKER_IMAGE=nikolaik/python-nodejs:python3.11-nodejs20
 ```
 

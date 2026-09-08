@@ -164,15 +164,19 @@ def test_real_db_policy_snapshot_lifecycle_survives_resume_rebuild_and_rotation(
     policy_file.write_text("Policy A", encoding="utf-8")
     monkeypatch.setenv("HERMES_HOME", str(home))
     db = SessionDB(db_path=tmp_path / "state.db")
+    delegated = None
     try:
         parent = _new_agent(monkeypatch, db, "parent", None)
         parent._cached_system_prompt = parent._build_system_prompt(None)
         parent._ensure_db_session()
         parent_prompt = parent._cached_system_prompt
+        parent_row = db.get_session("parent")
         policy_a = parent._global_policy_snapshot
         assert "Policy A" in parent_prompt
+        assert "Policy B" not in parent_prompt
         assert parent_prompt.count("GLOBAL POLICY (shared across all Hermes profiles)") == 1
-        assert db.get_session("parent")["global_policy_snapshot"] == policy_a
+        assert parent_row["system_prompt"].encode("utf-8") == parent_prompt.encode("utf-8")
+        assert parent_row["global_policy_snapshot"] == policy_a
 
         # Disk policy mutates after the first-turn atomic publication.
         policy_file.write_text("Policy B", encoding="utf-8")
@@ -181,12 +185,30 @@ def test_real_db_policy_snapshot_lifecycle_survives_resume_rebuild_and_rotation(
         assert resumed._global_policy_snapshot == policy_a
         assert resumed._cached_system_prompt == parent_prompt
 
-        # Delegated children receive the explicit frozen value rather than
-        # rereading the now-changed disk policy.
-        delegated = _new_agent(monkeypatch, db, "delegated", resumed._global_policy_snapshot)
-        delegated_prompt = delegated._build_system_prompt(None)
+        # The real delegation constructor must pass the resumed parent snapshot
+        # into the normal child AIAgent prompt and its durable child row.
+        from tools.delegate_tool import _build_child_agent
+
+        monkeypatch.setattr("tools.delegate_tool._load_config", lambda: {})
+        delegated = _build_child_agent(
+            task_index=0,
+            goal="Verify frozen policy propagation",
+            context=None,
+            toolsets=["file"],
+            model=None,
+            max_iterations=1,
+            task_count=1,
+            parent_agent=resumed,
+        )
+        delegated._cached_system_prompt = delegated._build_system_prompt(None)
+        delegated._ensure_db_session()
+        delegated_prompt = delegated._cached_system_prompt
+        delegated_row = db.get_session(delegated.session_id)
         assert "Policy A" in delegated_prompt and "Policy B" not in delegated_prompt
         assert delegated_prompt.count("GLOBAL POLICY (shared across all Hermes profiles)") == 1
+        assert delegated_row["system_prompt"].encode("utf-8") == delegated_prompt.encode("utf-8")
+        assert delegated._global_policy_snapshot == policy_a
+        assert delegated_row["global_policy_snapshot"] == policy_a
 
         # Missing prompt recovery must rebuild from stored A and publish A.
         db.update_system_prompt("parent", None)
@@ -238,4 +260,6 @@ def test_real_db_policy_snapshot_lifecycle_survives_resume_rebuild_and_rotation(
         assert "Policy A" in rotated_child_prompt and "Policy B" not in rotated_child_prompt
         assert rotated_child_prompt.count("GLOBAL POLICY (shared across all Hermes profiles)") == 1
     finally:
+        if delegated is not None:
+            delegated.close()
         db.close()

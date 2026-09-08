@@ -4318,6 +4318,31 @@ def _named_custom_api_key(custom_entry: Dict[str, Any], provider: str, custom_ba
     return custom_key or "no-key-required"
 
 
+def _named_custom_key_for_base(custom_base: str) -> str:
+    """Named custom provider credential matching ``custom_base`` ("" when no entry matches).
+
+    A pinned aux route whose provider name degrades to ``custom`` (non-built-in name paired
+    with an explicit base_url) must still authenticate with that provider's configured
+    credential chain; falling straight through to the OPENAI_API_KEY / same-host-main ladder
+    sends a placeholder (or the main provider's key when the hosts happen to match) and the
+    pinned endpoint 401s. (#105721)
+    """
+    with contextlib.suppress(Exception):
+        from hermes_cli.runtime_provider import _get_named_custom_provider, find_custom_provider_identity
+        stripped = str(custom_base or "").rstrip("/")
+        # Entry URLs and aux pins may disagree on a trailing /v1; try both spellings.
+        for base in (stripped, stripped[: -3] if stripped.lower().endswith("/v1") else None):
+            if not base:
+                continue
+            identity = find_custom_provider_identity(base)
+            name = identity.split(":", 1)[1].strip() if identity and ":" in identity else (identity or "").strip()
+            entry = _get_named_custom_provider(name) if name else None
+            if entry is not None:
+                key = _named_custom_api_key(entry, name, base)
+                return "" if key == "no-key-required" else key
+    return ""
+
+
 def _build_bedrock_client(provider: str, model: Optional[str], *, raw_codex: bool) -> Tuple[Optional[Any], Optional[str]]:
     """AWS Bedrock: Claude → Anthropic Bedrock SDK (prompt caching, thinking); OpenAI models
     (GPT-5.5/5.6) → Bedrock Mantle's OpenAI Responses endpoint; everything else → Converse API."""
@@ -4546,6 +4571,7 @@ def _resolve_custom_branch(req: _ResolveRequest) -> _ResolveResult:
             wrap_base = (req.explicit_base_url or "").strip().rstrip("/")
         custom_key = (
             (req.explicit_api_key or "").strip()
+            or _named_custom_key_for_base(custom_base)
             or _scoped_key_env("OPENAI_API_KEY")
             or _read_main_api_key_if_same_host(custom_base)
             or "no-key-required"  # local servers don't need auth

@@ -1,6 +1,7 @@
 """Tests for named custom provider and 'main' alias resolution in auxiliary_client."""
 
 import json
+import os
 from unittest.mock import patch, MagicMock
 
 import pytest
@@ -441,3 +442,97 @@ class TestResolveProviderClientMainRuntimeCustom:
         assert model == "explicit-model"
         assert "explicit.example.com" in str(client.base_url)
         assert client.api_key == "sk-explicit"
+
+
+class TestPinnedVisionNamedCustomCredentials:
+    """A pinned auxiliary.vision route must authenticate with the named provider's credential.
+
+    The vision resolution path re-resolves the task config with an explicit provider +
+    base_url, which degrades a named custom provider to bare ``custom``; the custom branch
+    must then still use that provider's configured credential chain instead of falling
+    straight through to the OPENAI_API_KEY / same-host-main / placeholder ladder (#105721).
+    """
+
+    def test_pinned_provider_base_url_uses_entry_credential(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.setenv("HERMES_TEST_BEANS_KEY", "sentinel-beans-key")
+        _write_config(tmp_path, {
+            "model": {
+                "default": "main-flash",
+                "provider": "zai",
+                "base_url": "https://api.z.ai/api/coding/paas/v4",
+            },
+            "auxiliary": {
+                "vision": {
+                    "provider": "beans",
+                    "model": "vision-model",
+                    "base_url": "http://beans.local/v1",
+                },
+            },
+            "custom_providers": [
+                {"name": "beans", "base_url": "http://beans.local/v1", "key_env": "HERMES_TEST_BEANS_KEY"},
+            ],
+        })
+        from agent.auxiliary_client import resolve_vision_provider_client
+
+        provider, client, model = resolve_vision_provider_client(
+            provider="beans", model="vision-model", base_url="http://beans.local/v1", api_key=None,
+        )
+
+        expected = os.environ["HERMES_TEST_BEANS_KEY"]
+        assert client is not None
+        assert "beans.local" in str(client.base_url)
+        assert client.api_key == expected
+
+    def test_pinned_provider_entry_url_without_v1_suffix(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.setenv("HERMES_TEST_BEANS_KEY", "sentinel-beans-key")
+        _write_config(tmp_path, {
+            "auxiliary": {
+                "vision": {
+                    "provider": "beans",
+                    "model": "vision-model",
+                    "base_url": "http://beans.local/v1",
+                },
+            },
+            "custom_providers": [
+                {"name": "beans", "base_url": "http://beans.local", "key_env": "HERMES_TEST_BEANS_KEY"},
+            ],
+        })
+        from agent.auxiliary_client import resolve_vision_provider_client
+
+        provider, client, model = resolve_vision_provider_client(
+            provider="beans", model="vision-model", base_url="http://beans.local/v1", api_key=None,
+        )
+
+        expected = os.environ["HERMES_TEST_BEANS_KEY"]
+        assert client is not None
+        assert "beans.local" in str(client.base_url)
+        assert client.api_key == expected
+
+    def test_no_matching_entry_keeps_placeholder_fallback(self, tmp_path, monkeypatch):
+        """No custom_providers entry for the pinned endpoint: the existing fallback ladder
+        (and its placeholder) stays unchanged — the fix only adds a resolution source."""
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        _write_config(tmp_path, {
+            "model": {
+                "default": "main-flash",
+                "provider": "zai",
+                "base_url": "https://api.z.ai/api/coding/paas/v4",
+            },
+            "auxiliary": {
+                "vision": {
+                    "provider": "beans",
+                    "model": "vision-model",
+                    "base_url": "http://beans.local/v1",
+                },
+            },
+        })
+        from agent.auxiliary_client import resolve_vision_provider_client
+
+        provider, client, model = resolve_vision_provider_client(
+            provider="beans", model="vision-model", base_url="http://beans.local/v1", api_key=None,
+        )
+
+        assert client is not None
+        assert client.api_key == "no-key-required"

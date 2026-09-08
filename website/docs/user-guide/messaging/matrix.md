@@ -124,6 +124,10 @@ MATRIX_ALLOW_ROOM_MENTIONS=false
 Hermes sends structured Matrix user mentions for explicit Matrix IDs such as `@alice:example.org`. Room-wide `@room` notifications are disabled by default; set `MATRIX_ALLOW_ROOM_MENTIONS=true` only in rooms where the bot is allowed to notify everyone.
 :::
 
+:::note Several bots in one room
+When more than one Hermes profile shares a room, only the bot that is actually mentioned should wake. Modern clients attach an `m.mentions` block (MSC3952) to every message; when that block is present Hermes treats it as the whole truth, so a bare bot name in prose ("ask bob for the digest", with no pill) is just a name, even with `require_mention: true`. Hermes also writes an `m.mentions` block on every message it sends, so one bot's reply never wakes a sibling by naming it. Clients that send no block fall back to the text heuristics (`@localpart`, the full user ID, a pill, or the bare localpart).
+:::
+
 :::note
 If you are upgrading from a version that did not have `MATRIX_REQUIRE_MENTION`, the bot previously responded to all messages in rooms. To preserve that behavior, set `MATRIX_REQUIRE_MENTION=false`.
 :::

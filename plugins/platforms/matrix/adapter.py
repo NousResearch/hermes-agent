@@ -1931,8 +1931,8 @@ class MatrixAdapter(BasePlatformAdapter):
         chat_type = "dm" if is_dm else "group"
         thread_id = relates_to.get("event_id") if relates_to.get("rel_type") == "m.thread" else None
         formatted_body = source_content.get("formatted_body")
-        mentions_block = source_content.get("m.mentions") or {}  # MSC3952: authoritative signal
-        mention_user_ids = mentions_block.get("user_ids") if isinstance(mentions_block, dict) else None
+        mentions_block = source_content.get("m.mentions")  # MSC3952: authoritative when present, even if empty
+        mention_user_ids = (mentions_block.get("user_ids") or []) if isinstance(mentions_block, dict) else None
         is_mentioned = self._is_bot_mentioned(body, formatted_body, mention_user_ids)
         if not is_dm:
             # Whitelist first: non-listed rooms are dropped even when @mentioned (DMs exempt).
@@ -2639,9 +2639,9 @@ class MatrixAdapter(BasePlatformAdapter):
     def _build_text_message_content(self, text: str, msgtype: str = "m.text") -> Dict[str, Any]:
         """Build Matrix text content with HTML and outbound mention metadata."""
         msg_content: Dict[str, Any] = {"msgtype": msgtype, "body": text}
-        mention_user_ids = self._extract_outbound_mentions(text)
-        if mention_user_ids:
-            msg_content["m.mentions"] = {"user_ids": mention_user_ids}
+        # Always write the block (MSC3952): an empty one tells other bots in the room that a name in
+        # this prose is not a mention, which is what keeps sibling agents from waking each other.
+        msg_content["m.mentions"] = {"user_ids": self._extract_outbound_mentions(text)}
         if self._allow_room_mentions and self._has_outbound_room_mention(text):
             msg_content.setdefault("m.mentions", {})["room"] = True
         html = self._markdown_to_html(self._inject_outbound_mention_links(text))
@@ -2702,8 +2702,11 @@ class MatrixAdapter(BasePlatformAdapter):
         self, body: str, formatted_body: Optional[str] = None, mention_user_ids: Optional[list] = None) -> bool:
         """True if the bot is mentioned; ``m.mentions.user_ids`` (MSC3952) is authoritative
         even when the body has no ``@bot`` text (pills may live only in formatted_body)."""
-        if mention_user_ids and self._user_id and self._user_id in mention_user_ids:
-            return True
+        if mention_user_ids is not None:
+            # The sender's client wrote an m.mentions block (MSC3952), so it is the whole truth even when
+            # empty: a bare localpart in the prose is a name, not a mention. Several bots sharing one
+            # room depend on this; the body heuristics below serve only clients that send no block.
+            return bool(self._user_id and self._user_id in mention_user_ids)
         if not body and not formatted_body:
             return False
         if self._user_id and self._user_id in body:

@@ -303,9 +303,18 @@ def handle_computer_use(args: Dict[str, Any], **kwargs) -> Any:
                            "hint": "If the cua-driver binary is missing, run `hermes computer-use install`. "
                                    "If a Python dependency is missing, the error above shows the exact install command."})
     try:
+        owner = _backend_owner_key(session_id)
         with _backend_lock:
-            call_lock = _backend_call_locks.setdefault(_backend_owner_key(session_id), threading.RLock())
+            call_lock = _backend_call_locks.get(owner)
+        if call_lock is None:
+            return json.dumps({"error": "computer_use session released before dispatch"})
         with call_lock:
+            # Release/replacement can detach us after lookup or while we wait for an action.
+            # Validate the pair under the cache lock; keep only the call lock during I/O,
+            # so release drains admitted actions without blocking unrelated owners.
+            with _backend_lock:
+                if _backends.get(owner) is not backend or _backend_call_locks.get(owner) is not call_lock:
+                    return json.dumps({"error": "computer_use session released or backend replaced before dispatch"})
             return _dispatch(backend, action, args)
     except Exception as e:
         logger.exception("computer_use %s failed", action)

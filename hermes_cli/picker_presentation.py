@@ -6,6 +6,7 @@ background GET /models. Route IDs and provider identities remain unchanged.
 from __future__ import annotations
 
 import json
+import math
 import threading
 import time
 import unicodedata
@@ -16,7 +17,7 @@ from hermes_cli.providers import custom_provider_aliases
 _MAX_BYTES = 65536
 _MAX_AGE = 15
 _STATES = {'ready': '● Ready', 'loading': '◐ Loading', 'idle': '○ Idle / unloaded',
-           'unavailable': '! Unavailable', 'unknown': '? Unknown'}
+           'error': '! Error', 'unavailable': '! Unavailable', 'unknown': '? Unknown'}
 
 
 def _text(value, default=''):
@@ -54,7 +55,7 @@ def attach_picker_presentation(rows, user_providers=None, custom_providers=None,
     """Attach static labels immediately; refresh optional metadata off the UI thread.
 
     Each open owns its rows and worker results. An older open cannot overwrite a
-    new picker, and stale observations never retain mutable backing identities.
+    new picker. Expiry invalidates residency, not the published backing identity.
     """
     entries = [dict(value, name=key) for key, value in (user_providers or {}).items() if isinstance(value, dict)]
     entries += [e for e in (custom_providers or []) if isinstance(e, dict)]
@@ -90,6 +91,28 @@ def attach_picker_presentation(rows, user_providers=None, custom_providers=None,
     return workers
 
 
+def _nonnegative_number(value):
+    # JSON integers can exceed float range; compare before math converts them.
+    return type(value) in (int, float) and 0 <= value <= 1.7976931348623157e308 and math.isfinite(value)
+
+
+def _fresh_residency(details, received_at):
+    """A new GET cannot renew an old observation; no cross-host clock subtraction.
+
+    Older metadata without an age contract retains its identity but cannot
+    establish current residency. The UI also caps observation age at 15 seconds.
+    """
+    freshness = details.get('freshness')
+    if not isinstance(freshness, dict) or freshness.get('stale') is not False:
+        return False
+    age, maximum = freshness.get('age_s'), freshness.get('max_age_s')
+    if not all(_nonnegative_number(v) for v in
+               (age, maximum, details.get('observed_at'), received_at)) or maximum <= 0:
+        return False
+    elapsed = time.monotonic() - received_at
+    return 0 <= elapsed and age + elapsed <= min(maximum, _MAX_AGE)
+
+
 def route_fields(row, model):
     presentation = row.get('picker_presentation') or {}
     details = presentation.get('models', {}).get(model) or {}
@@ -101,11 +124,9 @@ def route_fields(row, model):
         label = _text(row.get('name'), 'Provider') + ':' + role.title()
     if not label:
         return None
-    observed = presentation.get('observed_at')
-    if observed is None or not 0 <= time.monotonic() - observed <= _MAX_AGE:
-        details = {}
     backing = _text(details.get('backing_model'), 'Unknown model')
-    state = _STATES.get(_text(details.get('residency')), _STATES['unknown'])
+    residency = details.get('residency') if _fresh_residency(details, presentation.get('observed_at')) else 'unknown'
+    state = _STATES.get(_text(residency), _STATES['unknown'])
     # Role is not residency: shared auxiliary metadata carries the main backing.
     if details.get('mode') == 'shared-main':
         state = 'Shared main · ' + state

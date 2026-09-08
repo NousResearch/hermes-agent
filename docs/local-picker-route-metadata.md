@@ -33,18 +33,19 @@ continue to use original provider/model IDs. Unloaded/unknown rows remain select
 The configured base URL's existing `/models` endpoint may include optional metadata:
 
 ```json
-{"data":[{"id":"active:aux","metadata":{"role":"aux","backing_model":"exact-main-alias","residency":"unknown"}}]}
+{"data":[{"id":"active:aux","metadata":{"role":"aux","backing_model":"exact-main-alias","residency":"ready","mode":"shared-main","observed_at":1700000000,"freshness":{"age_s":2,"max_age_s":15,"stale":false}}}]}
 ```
 
-The current TF8 producer supplies `role`, `backing_model` (string or null), and
-`residency` (`loading` only when authoritatively confirmed; otherwise `unknown`).
+The richer TF8 contract supplies `role`, `backing_model` (string or null),
+`residency` (`ready`, `loading`, `idle`, `error`, or `unknown`), `mode`
+(`local` or `shared-main`), a Unix `observed_at`, and `freshness` as above.
 Aux shared-main uses the actual main alias as its backing model. API policy labels
 are not physical identity. Hermes does not infer identity/residency from a role,
 port, health response or `/status`.
 
-The consumer also understands future authoritative `ready`, `idle`, `unavailable`
-states and an optional `mode: shared-main` description. These are **not claims that
-TF8 currently emits those states**. Dots always accompany words, not color alone.
+The consumer retains `unavailable` compatibility and an optional `mode: shared-main`
+description. Dots always accompany words, not color alone. Old metadata without
+the freshness contract preserves backing identity but shows unknown residency.
 
 ## Freshness and failure
 
@@ -54,9 +55,13 @@ are refused to avoid forwarding credentials. No inference, lifecycle, wake, repa
 or route-selection API is invoked. Ordinary providers add no metadata requests.
 
 The picker initially shows stable labels with `Unknown model · ? Unknown`. It
-invalidates when its worker completes. Client receipt age is monotonic: after 15
-seconds, backing/state become unknown when next rendered. There is no automatic
-polling: close/reopen `/model` to obtain a fresh observation. Each opening owns its
+invalidates when its worker completes. Residency expires using producer `age_s`
+plus monotonic time since receipt, bounded by both producer `max_age_s` and the
+UI's 15-second cap. `stale: true` or malformed/missing freshness immediately yields
+unknown residency; the published backing identity and shared-main mode remain.
+The producer timestamp is validated, not subtracted from the client's wall clock.
+A new GET never resets producer age. There is no automatic polling: close/reopen
+`/model` to fetch the latest producer observation. Each opening owns its
 rows, so an old worker cannot overwrite a newer picker. This is an in-memory
 observation, never a persisted runtime cache. Timeout/unsupported/malformed data
 leaves unknown; it must never manufacture intentional idle or ready.

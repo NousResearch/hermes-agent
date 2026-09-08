@@ -15,6 +15,8 @@ def test_picker_displays_backing_and_named_role_not_raw_alias(tmp_path, monkeypa
         'active:aux': {'role': 'aux', 'backing_model': 'Qwen3.8-27b', 'residency': 'idle', 'mode': 'shared-main'},
         'auto': {'role': 'auto', 'backing_model': 'Qwen3.8-27b', 'residency': 'ready'},
     }
+    for details in metadata.values():
+        details.update(observed_at=time.time(), freshness={'age_s': 0, 'max_age_s': 15, 'stale': False})
     monkeypatch.setattr('hermes_cli.picker_presentation._fetch_metadata', lambda entry: metadata)
     entry = {'name': 'Turbofit', 'base_url': 'http://127.0.0.1:1/v1', 'picker_metadata': True,
              'models': {i: {'picker_label': label} for i, label in [
@@ -117,7 +119,7 @@ def test_stale_and_unsupported_metadata_are_unknown(monkeypatch):
     row = {'picker_presentation': {'labels': {'active:aux': 'Turbofit:Aux'},
            'models': {'active:aux': {'backing_model': 'old-backing', 'residency': 'ready'}},
            'observed_at': time.monotonic() - 60}}
-    assert route_fields(row, 'active:aux') == ('Turbofit:Aux', 'Unknown model', '? Unknown')
+    assert route_fields(row, 'active:aux') == ('Turbofit:Aux', 'old-backing', '? Unknown')
     row['picker_presentation']['observed_at'] = time.monotonic()
     row['picker_presentation']['models']['active:aux']['residency'] = 'down'
     assert route_fields(row, 'active:aux') == ('Turbofit:Aux', 'old-backing', '? Unknown')

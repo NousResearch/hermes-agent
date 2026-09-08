@@ -613,7 +613,9 @@ def _prior_tool_keys(prior_snapshot: List[Dict]) -> Tuple[set, set]:
 def _action_lines(data: Dict, detail: Dict, verbose: bool) -> List[str]:
     """Summary line(s) for one successful notify-tool result (``[]`` when nothing to report)."""
     if data.get("staged"):
-        return []
+        # The fork's own review summary is never published back, so an unattended-review
+        # consolidation proposal must surface here or it is silently lost (#105921).
+        return [data["message"]] if data.get("proposal_staged") and data.get("message") else []
     message = data.get("message", "")
     target = data.get("target", "") or detail.get("target", "")
     is_skill = detail.get("tool") == "skill_manage"
@@ -1014,11 +1016,16 @@ def _release_fork_clients(review_agent: Any) -> None:
 def _run_review_fork(
     agent: Any, messages_snapshot: List[Dict], prompt: str, task_cfg: Optional[Dict[str, Any]],
     review_run: Optional[_BackgroundReviewRun], st: _ReviewForkState, review_memory: bool = False,
+    explicit: bool = False,
 ) -> None:
     """Fork phase (inside thread-scoped silence): build the fork, run the prompt under the tool
     whitelist, snapshot its messages/usage, release its clients. Partial progress lands on ``st``
-    so the caller's error path still sees usage and the fork to clean up."""
-    st.review_agent, _rt, _routed = build_cache_parity_fork(agent, task_cfg, max_iterations=_REVIEW_MAX_ITERATIONS)
+    so the caller's error path still sees usage and the fork to clean up. ``explicit`` (/refine)
+    forks under the ``refine_review`` origin: a user-requested review keeps the full memory
+    operation set — the unattended-only delete gate must not treat it as automatic."""
+    st.review_agent, _rt, _routed = build_cache_parity_fork(
+        agent, task_cfg, max_iterations=_REVIEW_MAX_ITERATIONS,
+        write_origin="refine_review" if explicit else "background_review")
     _track_review_fork(agent, st.review_agent, register=True)
     from hermes_cli.plugins import set_thread_tool_whitelist, clear_thread_tool_whitelist
     review_whitelist, configured_extra_tools = _review_tool_whitelist(st.review_agent, task_cfg, review_memory)
@@ -1081,7 +1088,7 @@ def _publish_review_summary(agent: Any, actions: List[str]) -> None:
 def _run_review_in_thread(
     agent: Any, messages_snapshot: List[Dict], prompt: str,
     task_cfg: Optional[Dict[str, Any]] = None, review_run: Optional[_BackgroundReviewRun] = None,
-    review_memory: bool = False,
+    review_memory: bool = False, explicit: bool = False,
 ) -> None:
     """Daemon-thread worker: build the fork, run the prompt, surface the action summary via
     ``agent._safe_print`` / ``background_review_callback``. ``review_run`` (from
@@ -1116,7 +1123,7 @@ def _run_review_in_thread(
         # their console output (#55769 / #55925). ``thread_scoped_silence`` routes only this thread's writes
         # to devnull and leaves all other threads on the real streams.
         with thread_scoped_silence():
-            _run_review_fork(agent, messages_snapshot, prompt, task_cfg, review_run, st, review_memory)
+            _run_review_fork(agent, messages_snapshot, prompt, task_cfg, review_run, st, review_memory, explicit)
         # A buggy/legacy tool response shape must NOT take down the whole review (the outer
         # except would discard every action the fork DID complete), so coerce to an empty list.
         try:
@@ -1173,11 +1180,14 @@ def spawn_background_review_thread(
     agent: Any, messages_snapshot: List[Dict], review_memory: bool = False,
     review_skills: bool = False, focus: Optional[str] = None,
     task_cfg: Optional[Dict[str, Any]] = None, review_run: Optional[_BackgroundReviewRun] = None,
+    explicit: bool = False,
 ):
     """Return ``(target, prompt)``; the caller builds the ``threading.Thread`` so test patches of
     ``run_agent.threading.Thread`` keep working. ``focus`` (``/refine [instructions]``) is appended
     to the chosen prompt; automatic reviews pass ``None``. ``task_cfg`` is the pre-loaded
-    ``auxiliary.background_review`` block; when omitted it is read once here."""
+    ``auxiliary.background_review`` block; when omitted it is read once here. ``explicit``
+    (/refine) propagates to the fork's write origin so user-requested reviews keep the full
+    memory operation set."""
     if task_cfg is None:
         task_cfg = _background_review_task_config()
     # Per-agent overrides (agent._MEMORY_REVIEW_PROMPT etc.) keep working.
@@ -1192,7 +1202,7 @@ def spawn_background_review_thread(
     def _target() -> None:  # resolves _run_review_in_thread at call time (tests patch it)
         _run_review_in_thread(
             agent, messages_snapshot, prompt, task_cfg=task_cfg, review_run=review_run,
-            review_memory=review_memory)
+            review_memory=review_memory, explicit=explicit)
 
     return _target, prompt
 

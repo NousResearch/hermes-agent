@@ -167,12 +167,14 @@ def run_oneshot(
     toolsets: object = None,
     skills: object = None,
     usage_file: Optional[str] = None,
+    resume: Optional[str] = None,
 ) -> int:
     """Execute a single prompt and print only the final content block.
 
     Model/provider fall back to ``HERMES_INFERENCE_MODEL`` and config.yaml. ``usage_file`` gets a
-    JSON usage report even when the run fails. Returns the exit code; the caller owns process
-    termination.
+    JSON usage report even when the run fails. ``resume`` is a session id (already normalized by
+    the CLI layer: latest/title/--continue resolution) whose transcript is loaded and continued
+    by this turn. Returns the exit code; the caller owns process termination.
     """
     # Silence every stdlib logger: AIAgent, tools and provider adapters log to stderr through the
     # root logger. File handlers from setup_logging() keep working (level-independent).
@@ -220,6 +222,7 @@ def run_oneshot(
                 toolsets=explicit_toolsets,
                 use_config_toolsets=use_config_toolsets,
                 skills=skills,
+                resume=resume,
             )
         except BaseException as exc:  # noqa: BLE001
             # Capture anything escaping the agent (OSError from prompt_toolkit on a non-TTY pipe,
@@ -340,6 +343,28 @@ def _resolve_model_and_provider(cfg: dict, model: Optional[str], provider: Optio
     return choice
 
 
+def _load_resume_target(session_db, resume: Optional[str]) -> tuple[Optional[str], list]:
+    """Resolve ``resume`` to ``(session_id, conversation_history)`` for a oneshot turn.
+
+    Follows the same contract as the interactive CLI resume: compression-chain redirect via
+    ``resolve_resume_session_id``, safe-resume guard, model-projection history with
+    ``session_meta`` rows dropped. An unknown session raises (the user passed an explicit id;
+    silently starting a fresh session is the resume-dropped failure mode this exists to fix —
+    see #105892). An empty stored transcript keeps the turn as a fresh session.
+    """
+    if not resume:
+        return None, []
+    if session_db is None:
+        raise RuntimeError(f"cannot resume session {resume}: session store unavailable")
+    resolved = session_db.resolve_resume_session_id(resume) or resume
+    if not session_db.get_session(resolved):
+        raise RuntimeError(f"session not found: {resume}")
+    session_db.assert_resume_safe(resolved, tip_only=True)
+    restored, _display = session_db.get_resume_conversations(resolved)
+    history = [m for m in restored if m.get("role") != "session_meta"]
+    return (resolved if history else None), history
+
+
 def _run_agent(
     prompt: str,
     model: Optional[str] = None,
@@ -347,6 +372,7 @@ def _run_agent(
     toolsets: object = None,
     use_config_toolsets: bool = True,
     skills: object = None,
+    resume: Optional[str] = None,
 ) -> tuple[str, dict]:
     """Build an AIAgent exactly like a normal CLI chat turn, run one conversation, and return
     ``(final_response, run_result)``. Imports are local to keep CLI startup cheap."""
@@ -382,6 +408,7 @@ def _run_agent(
     skills_prompt = _build_preloaded_skills_prompt(skills)
 
     session_db = _create_session_db_for_oneshot()
+    resume_sid, conversation_history = _load_resume_target(session_db, resume)
     # The try spans agent construction (not just ``chat``) so the store is always closed, even when
     # ``AIAgent(...)`` raises — the one-shot exit path hard-exits via os._exit and skips finalizers.
     agent = None
@@ -397,6 +424,7 @@ def _run_agent(
             quiet_mode=True,
             platform="cli",
             session_db=session_db,
+            session_id=resume_sid,
             credential_pool=runtime.get("credential_pool"),
             fallback_model=get_fallback_chain(cfg) or None,
             ephemeral_system_prompt=skills_prompt,
@@ -410,7 +438,7 @@ def _run_agent(
         agent.stream_delta_callback = None
         agent.tool_gen_callback = None
 
-        result = agent.run_conversation(prompt)
+        result = agent.run_conversation(prompt, conversation_history=conversation_history or None)
         return (result.get("final_response") or "", result)
     finally:
         _close_agent(agent, session_db)

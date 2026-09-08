@@ -27,16 +27,32 @@ from agent.message_sanitization import _sanitize_surrogates
 from hermes_constants import get_hermes_home
 from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple, TypeVar, cast
 
-from hermes_state_common import escape_like as _escape_like, stat_db_file_identity as _stat_db_file_identity
+from hermes_state_common import (
+    escape_like as _escape_like,
+    stat_db_file_identity as _stat_db_file_identity,
+)
 from hermes_state_errors import (
-    _DELETED_WAL_GENERATION_MSG, _DISK_IO_ERROR_MARKER, _STATE_DB_CORRUPT_MSG, _STATE_DB_GENERATION_KEY,
-    _STATE_DB_REPLACED_MSG, DeletedWalGenerationError, SessionCompressionInProgressError, StateDbCorruptError,
-    StateDbReplacedError, _is_no_more_rows, classify_persistence_error, is_malformed_db_error,
+    _DELETED_WAL_GENERATION_MSG,
+    _DISK_IO_ERROR_MARKER,
+    _STATE_DB_CORRUPT_MSG,
+    _STATE_DB_GENERATION_KEY,
+    _STATE_DB_REPLACED_MSG,
+    DeletedWalGenerationError,
+    SessionCompressionInProgressError,
+    StateDbCorruptError,
+    StateDbReplacedError,
+    _is_no_more_rows,
+    classify_persistence_error,
+    is_malformed_db_error,
     is_malformed_schema_error,
 )
 from hermes_state_guard import (
-    _STATE_DB_GUARD_BYPASS_ENV, _in_test_context, _is_production_state_db, _real_platform_state_root,
-    _set_last_init_error, get_last_init_error,
+    _STATE_DB_GUARD_BYPASS_ENV,
+    _in_test_context,
+    _is_production_state_db,
+    _real_platform_state_root,
+    _set_last_init_error,
+    get_last_init_error,
 )
 from hermes_state_readpool import _READ_POOL_MAX, _proc_fd_targets, _read_budget_for
 from hermes_state_sessions import SessionSessionsMixin
@@ -46,13 +62,27 @@ from hermes_state_telegram import SessionTelegramTopicsMixin
 from hermes_state_schema import SessionSchemaMixin
 import hermes_state_holders as _state_holders
 from hermes_state_dbfile import (
-    _canonical_sqlite_path, _connect_tracked_db, _read_sqlite_application_id, _stat_sqlite_sidecar_identity,
-    _watched_sqlite_sidecar_paths, is_zeroed_state_db, quarantine_cross_process_lock, quarantine_zeroed_state_db,
+    _canonical_sqlite_path,
+    _connect_tracked_db,
+    _read_sqlite_application_id,
+    _stat_sqlite_sidecar_identity,
+    _watched_sqlite_sidecar_paths,
+    is_zeroed_state_db,
+    quarantine_cross_process_lock,
+    quarantine_zeroed_state_db,
     refuse_deleted_wal_generation,
 )
 from hermes_state_messages import SessionMessagesMixin
-from hermes_state_wal import _WAL_INCOMPAT_MARKERS, apply_database_pragmas, apply_wal_with_fallback
-from hermes_state_repair import _claim_repair_attempt, preflight_db_writability, repair_state_db_schema
+from hermes_state_wal import (
+    _WAL_INCOMPAT_MARKERS,
+    apply_database_pragmas,
+    apply_wal_with_fallback,
+)
+from hermes_state_repair import (
+    _claim_repair_attempt,
+    preflight_db_writability,
+    repair_state_db_schema,
+)
 from hermes_state_titles import SessionTitlesMixin
 from hermes_state_usage import SessionUsageMixin
 from hermes_state_maintenance import SessionMaintenanceMixin
@@ -74,6 +104,7 @@ def _configured_transcript_limit(key: str, fallback: int = _MAX_SAFE_MESSAGES) -
     """``sessions.<key>`` from config.yaml (lazy import: circular at load), else *fallback*; 0 disables."""
     try:
         from hermes_cli.config import load_config_readonly
+
         value = (load_config_readonly().get("sessions") or {}).get(key)
         if value is None:
             return fallback
@@ -93,7 +124,10 @@ def resolved_max_export_messages() -> int:
 
 class SessionResumeTooLargeError(ValueError):
     def __init__(
-        self, message_count: int, limit: int = _MAX_SAFE_MESSAGES, scope: str = "across its lineage",
+        self,
+        message_count: int,
+        limit: int = _MAX_SAFE_MESSAGES,
+        scope: str = "across its lineage",
     ):
         self.message_count, self.limit = message_count, limit
         super().__init__(
@@ -104,8 +138,14 @@ class SessionResumeTooLargeError(ValueError):
 
 
 class SessionExportTooLargeError(ValueError):
-    def __init__(self, session_id: str, message_count: int, limit: int = _MAX_SAFE_MESSAGES):
-        self.session_id, self.message_count, self.limit = session_id, message_count, limit
+    def __init__(
+        self, session_id: str, message_count: int, limit: int = _MAX_SAFE_MESSAGES
+    ):
+        self.session_id, self.message_count, self.limit = (
+            session_id,
+            message_count,
+            limit,
+        )
         super().__init__(
             f"session '{session_id}' has at least {message_count} active messages; "
             f"safe in-memory export limit is {limit}"
@@ -123,7 +163,9 @@ def _compression_lock_holder_process_is_dead(holder: str) -> bool:
         return False
     if psutil is not None:
         try:
-            return not psutil.pid_exists(pid)  # recycled PIDs read as alive (conservative)
+            return not psutil.pid_exists(
+                pid
+            )  # recycled PIDs read as alive (conservative)
         except Exception:
             return False
     # psutil-less fallback is POSIX-only: on Windows os.kill(pid, 0) maps sig=0 to
@@ -171,7 +213,11 @@ _READ_ONLY_IOERR_RETRY_ATTEMPTS, _READ_ONLY_IOERR_RETRY_BACKOFF_S = 3, 0.05
 def _default_db_path() -> Path:
     """Default state DB path at CALL time: a re-pointed ``DEFAULT_DB_PATH`` wins, else
     ``get_hermes_home()`` is resolved fresh (a runtime HERMES_HOME redirect works regardless of import)."""
-    return DEFAULT_DB_PATH if DEFAULT_DB_PATH != _IMPORT_DEFAULT_DB_PATH else get_hermes_home() / "state.db"
+    return (
+        DEFAULT_DB_PATH
+        if DEFAULT_DB_PATH != _IMPORT_DEFAULT_DB_PATH
+        else get_hermes_home() / "state.db"
+    )
 
 
 # Live-DB guard knobs live HERE (not in hermes_state_guard): the hermetic conftest monkeypatches
@@ -188,7 +234,11 @@ def _ensure_test_isolation(db_path: Path) -> None:
     Env alone is not enough: a child spawned with a rebuilt environment loses ``PYTEST_*`` and
     ``HERMES_HOME`` together, which is precisely the state in which it writes to production (#82770).
     """
-    if _STATE_DB_GUARD_BYPASS or os.environ.get(_STATE_DB_GUARD_BYPASS_ENV) or not _in_test_context():
+    if (
+        _STATE_DB_GUARD_BYPASS
+        or os.environ.get(_STATE_DB_GUARD_BYPASS_ENV)
+        or not _in_test_context()
+    ):
         return
     try:
         resolved = Path(db_path).expanduser().resolve()
@@ -227,10 +277,14 @@ def _is_background_review_harness_message(msg: Dict[str, Any]) -> bool:
     if not isinstance(msg, dict) or msg.get("role") not in {"user", "system"}:
         return False
     content = msg.get("content")
-    return isinstance(content, str) and content.lstrip().startswith(_REVIEW_HARNESS_PREFIXES)
+    return isinstance(content, str) and content.lstrip().startswith(
+        _REVIEW_HARNESS_PREFIXES
+    )
 
 
-def _strip_background_review_harness(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def _strip_background_review_harness(
+    messages: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
     """Drop harness messages and the curator-mode assistant reply that immediately followed each."""
     if not messages:
         return messages
@@ -255,13 +309,21 @@ _STALE_TOOL_CALL_MARKER_RE = re.compile(r"^\[[A-Za-z_][A-Za-z0-9_.-]*\]$")
 def _is_stale_tool_call_marker_message(msg: Dict[str, Any]) -> bool:
     """Assistant tool-call turn whose content is a bare ``[marker]`` (an older
     conversation_loop persisted a local template's marker as the final response)."""
-    if not isinstance(msg, dict) or msg.get("role") != "assistant" or not msg.get("tool_calls"):
+    if (
+        not isinstance(msg, dict)
+        or msg.get("role") != "assistant"
+        or not msg.get("tool_calls")
+    ):
         return False
     content = msg.get("content")
-    return isinstance(content, str) and bool(_STALE_TOOL_CALL_MARKER_RE.fullmatch(content.strip()))
+    return isinstance(content, str) and bool(
+        _STALE_TOOL_CALL_MARKER_RE.fullmatch(content.strip())
+    )
 
 
-def _strip_stale_tool_call_markers(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def _strip_stale_tool_call_markers(
+    messages: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
     """Blank stale ``[marker]`` assistant content (replaying it teaches the model
     to keep emitting it); tool_call/result pairing stays intact."""
     repaired = 0
@@ -270,17 +332,22 @@ def _strip_stale_tool_call_markers(messages: List[Dict[str, Any]]) -> List[Dict[
         repaired += 1
     if repaired:
         logger.info(
-            "Cleared %d stale tool-call marker message(s) while restoring session (#78148)", repaired,
+            "Cleared %d stale tool-call marker message(s) while restoring session (#78148)",
+            repaired,
         )
     return messages
 
 
-def format_session_db_unavailable(prefix: str = "Session database not available") -> str:
+def format_session_db_unavailable(
+    prefix: str = "Session database not available",
+) -> str:
     """User-facing message with the captured init cause (+ WAL-docs hint for NFS/SMB locking failures)."""
     cause = get_last_init_error()
     if not cause:
         return f"{prefix}."
-    hint = " (state.db may be on NFS/SMB/FUSE/ZFS — see https://www.sqlite.org/wal.html)"
+    hint = (
+        " (state.db may be on NFS/SMB/FUSE/ZFS — see https://www.sqlite.org/wal.html)"
+    )
     return f"{prefix}: {cause}{hint if any(m in cause.lower() for m in _WAL_INCOMPAT_MARKERS) else ''}."
 
 
@@ -325,9 +392,17 @@ def _foreign_state_db_holders(db_path: Path) -> List[Tuple[int, str]]:
 
 
 class SessionDB(
-    SessionSessionsMixin, SessionFtsSetupMixin, SessionSearchMixin, SessionSchemaMixin,
-    SessionPortabilityMixin, SessionTelegramTopicsMixin, SessionCompressionMixin,
-    SessionGatewayMixin, SessionMaintenanceMixin, SessionUsageMixin, SessionTitlesMixin,
+    SessionSessionsMixin,
+    SessionFtsSetupMixin,
+    SessionSearchMixin,
+    SessionSchemaMixin,
+    SessionPortabilityMixin,
+    SessionTelegramTopicsMixin,
+    SessionCompressionMixin,
+    SessionGatewayMixin,
+    SessionMaintenanceMixin,
+    SessionUsageMixin,
+    SessionTitlesMixin,
     SessionMessagesMixin,
 ):
     """SQLite-backed session storage with FTS5 search; many reader threads, one writer (WAL)."""
@@ -336,7 +411,13 @@ class SessionDB(
     # sources have their own lifecycle owners; unknown sources fail closed.
     # See #60609.
     _AUTO_PRUNE_STALE_OPEN_SOURCES: Tuple[str, ...] = (
-        "cli", "cron", "kanban", "acp", "api_server", "subagent", "tool",
+        "cli",
+        "cron",
+        "kanban",
+        "acp",
+        "api_server",
+        "subagent",
+        "tool",
     )
 
     # ── Write-contention tuning ──
@@ -346,7 +427,11 @@ class SessionDB(
     # optimize); attempt-counted budgets destroyed turns on a healthy store. Transcript
     # writes (failure aborts the turn) get the long budget; observation-only activity
     # writes sit on the response-critical path and get a sub-second one.
-    _WRITE_PATIENCE_S, _TRANSCRIPT_WRITE_PATIENCE_S, _ACTIVITY_WRITE_PATIENCE_S = 20.0, 60.0, 0.5
+    _WRITE_PATIENCE_S, _TRANSCRIPT_WRITE_PATIENCE_S, _ACTIVITY_WRITE_PATIENCE_S = (
+        20.0,
+        60.0,
+        0.5,
+    )
     # A live compression lock gets a short wait (compression publishes in seconds), but the lease
     # is a correctness boundary: a writer still locked out afterwards is refused.
     # Observation-only activity heartbeat/label writes (#76354 review S1): these run on (or adjacent to) the
@@ -359,17 +444,31 @@ class SessionDB(
     # after this budget must still be refused rather than allowed to land a stale turn in a session whose
     # compression is genuinely long-running or wedged.
     _COMPRESSION_BUSY_WAIT_S = 5.0
-    _WRITE_RETRY_MIN_S, _WRITE_RETRY_MAX_S = 0.020, 0.150  # fast jitter for the first _SLOW_AFTER_S
+    _WRITE_RETRY_MIN_S, _WRITE_RETRY_MAX_S = (
+        0.020,
+        0.150,
+    )  # fast jitter for the first _SLOW_AFTER_S
     _WRITE_RETRY_SLOW_AFTER_S = 2.0
     _WRITE_RETRY_SLOW_MIN_S, _WRITE_RETRY_SLOW_MAX_S = 0.250, 1.000
     # PASSIVE WAL checkpoint every N successful writes.
     _CHECKPOINT_EVERY_N_WRITES = 50
     # Bounded FTS ``'merge'`` (ms of lock each) instead of ``'optimize'`` (9-18s per index on a 10GB
     # DB, longer than a writer's patience); up to _COMMANDS_PER_PASS per index, stopping on no-progress.
-    _FTS_MERGE_EVERY_N_WRITES, _FTS_MERGE_MAX_PAGES_PER_INDEX, _FTS_MERGE_COMMANDS_PER_PASS = 1000, 500, 4
+    (
+        _FTS_MERGE_EVERY_N_WRITES,
+        _FTS_MERGE_MAX_PAGES_PER_INDEX,
+        _FTS_MERGE_COMMANDS_PER_PASS,
+    ) = 1000, 500, 4
     # Imports cap lower than exports: an import holds one BEGIN IMMEDIATE.
-    _IMPORT_MAX_SESSIONS, _IMPORT_MAX_MESSAGES_PER_SESSION, _IMPORT_MAX_TOTAL_MESSAGES = 500, 10_000, 50_000
-    _IMPORT_MAX_SESSION_BYTES, _IMPORT_MAX_TOTAL_BYTES = 5 * 1024 * 1024, 25 * 1024 * 1024
+    (
+        _IMPORT_MAX_SESSIONS,
+        _IMPORT_MAX_MESSAGES_PER_SESSION,
+        _IMPORT_MAX_TOTAL_MESSAGES,
+    ) = 500, 10_000, 50_000
+    _IMPORT_MAX_SESSION_BYTES, _IMPORT_MAX_TOTAL_BYTES = (
+        5 * 1024 * 1024,
+        25 * 1024 * 1024,
+    )
     # Accounting workers retire when idle so a bound-method target can't keep an abandoned SessionDB alive.
     _TOKEN_WRITER_IDLE_SECONDS = 30.0
 
@@ -425,7 +524,9 @@ class SessionDB(
         # Read-path split (WAL only): reads borrow from a BOUNDED read-only pool so they
         # never queue behind writer flushes on self._lock (see _read_ctx); unbounded
         # per-thread connections pinned fds for the process lifetime and hit EMFILE.
-        self._read_pool: "queue.LifoQueue[sqlite3.Connection]" = queue.LifoQueue(maxsize=_READ_POOL_MAX)
+        self._read_pool: "queue.LifoQueue[sqlite3.Connection]" = queue.LifoQueue(
+            maxsize=_READ_POOL_MAX
+        )
         # Permits bound PEAK descriptors (the pool bounds only the idle set), shared per
         # DATABASE PATH; acquired non-blocking so a permitless reader degrades to the writer lock.
         # One permit per live read connection, held from before the open in _get_read_conn() until after the
@@ -451,12 +552,19 @@ class SessionDB(
         self._db_file_application_id: int = 0
         self._db_sidecar_identity: Dict[str, tuple] = {}
         self._db_replaced = self._db_wal_generation_lost = False
-        self._db_corrupt, self._db_corrupt_reason = False, ""  # sticky quarantine (StateDbCorruptError)
-        self._fts_usermerge_floor_applied = False  # one-shot usermerge-floor write guard
+        self._db_corrupt, self._db_corrupt_reason = (
+            False,
+            "",
+        )  # sticky quarantine (StateDbCorruptError)
+        self._fts_usermerge_floor_applied = (
+            False  # one-shot usermerge-floor write guard
+        )
         self._fts_enabled = self._fts_stale = self._trigram_available = False
         # _fts_cjk_loaded: tokenizer on the writer connection; _fts_cjk_available: messages_fts_cjk
         # is queryable AND not marked stale.
-        self._fts_cjk_loaded = self._fts_cjk_available = self._fts_unavailable_warned = False
+        self._fts_cjk_loaded = self._fts_cjk_available = (
+            self._fts_unavailable_warned
+        ) = False
         self._conn = None
         # Async token accounting; distinct from self._lock so enqueue/flush never contends with writes.
         self._token_queue: deque = deque()
@@ -510,11 +618,14 @@ class SessionDB(
         except sqlite3.DatabaseError as exc:
             # A malformed schema fails on the very first statement (before _init_schema), so the
             # FTS-rebuild layer never sees it: repair sqlite_master in place (backup first), reopen once.
-            if not is_malformed_schema_error(exc) or not _claim_repair_attempt(self.db_path):
+            if not is_malformed_schema_error(exc) or not _claim_repair_attempt(
+                self.db_path
+            ):
                 raise
             logger.error(
                 "state.db schema is malformed (%s) — attempting automatic "
-                "repair (a backup copy is made first).", exc,
+                "repair (a backup copy is made first).",
+                exc,
             )
             self._close_connection_quietly(self._conn)
             if not repair_state_db_schema(self.db_path).get("repaired"):
@@ -535,10 +646,13 @@ class SessionDB(
                 try:
                     apply_database_pragmas(conn, db_label="state.db")
                     cursor = conn.cursor()
-                    self._fts_enabled = self._fts_table_probe(cursor, "messages_fts") is True
+                    self._fts_enabled = (
+                        self._fts_table_probe(cursor, "messages_fts") is True
+                    )
                     if self._fts_enabled:
                         self._trigram_available = (
-                            self._fts_table_probe(cursor, "messages_fts_trigram") is True
+                            self._fts_table_probe(cursor, "messages_fts_trigram")
+                            is True
                         )
                 except BaseException:
                     self._conn = None
@@ -559,8 +673,12 @@ class SessionDB(
         """``mode=ro`` tracked connection with Row factory. check_same_thread=False: pooled connections
         are borrowed by whichever thread reads next; exclusive ownership is enforced by pool checkout."""
         conn = _connect_tracked_db(
-            f"file:{self.db_path}?mode=ro", tracking_path=self.db_path, uri=True,
-            check_same_thread=False, timeout=timeout, isolation_level=None,
+            f"file:{self.db_path}?mode=ro",
+            tracking_path=self.db_path,
+            uri=True,
+            check_same_thread=False,
+            timeout=timeout,
+            isolation_level=None,
         )
         conn.row_factory = sqlite3.Row
         return conn
@@ -592,11 +710,16 @@ class SessionDB(
         jittered application-level retry handles contention, not SQLite's busy handler;
         isolation_level=None: explicit BEGIN IMMEDIATE."""
         conn = _connect_tracked_db(
-            str(self.db_path), check_same_thread=False, timeout=1.0, isolation_level=None,
+            str(self.db_path),
+            check_same_thread=False,
+            timeout=1.0,
+            isolation_level=None,
         )
         try:
             conn.row_factory = sqlite3.Row
-            self._wal_active = apply_wal_with_fallback(conn, db_label="state.db") == "wal"
+            self._wal_active = (
+                apply_wal_with_fallback(conn, db_label="state.db") == "wal"
+            )
             apply_database_pragmas(conn, db_label="state.db")
             conn.execute("PRAGMA foreign_keys=ON")
             self._fts_cjk_loaded = load_fts5_cjk_extension(conn)
@@ -636,7 +759,9 @@ class SessionDB(
                 now = time.monotonic()
                 if now >= deadline:
                     raise
-                jitter = random.uniform(self._WRITE_RETRY_SLOW_MIN_S, self._WRITE_RETRY_SLOW_MAX_S)
+                jitter = random.uniform(
+                    self._WRITE_RETRY_SLOW_MIN_S, self._WRITE_RETRY_SLOW_MAX_S
+                )
                 time.sleep(min(jitter, max(deadline - now, 0.001)))
 
     # ── Read-path split ──
@@ -651,21 +776,27 @@ class SessionDB(
             return None
         with self._read_conns_lock:
             failed_at = self._read_open_failed_at
-            backing_off = failed_at and time.monotonic() - failed_at < _READ_OPEN_RETRY_SECONDS
+            backing_off = (
+                failed_at and time.monotonic() - failed_at < _READ_OPEN_RETRY_SECONDS
+            )
             if self._read_conns_closed or backing_off:
                 return None
         # Permit BEFORE the open: openers race for permits, not descriptors.
         if not self._read_budget.acquire(self):
             logger.debug(
                 "read pool at capacity (%d) for %s; serving this read from the "
-                "locked writer connection", _READ_POOL_MAX, self.db_path,
+                "locked writer connection",
+                _READ_POOL_MAX,
+                self.db_path,
             )
             return None
         conn = None  # bound before the try so the handlers can close a half-open one
         try:
             conn = self._connect_read_only(timeout=5.0)
             apply_database_pragmas(conn, db_label="state.db")
-            if self._fts_cjk_loaded:  # registers in the connection, not the file: ro is fine
+            if (
+                self._fts_cjk_loaded
+            ):  # registers in the connection, not the file: ro is fine
                 load_fts5_cjk_extension(conn)
         except BaseException as exc:
             # A half-open connection (open ok, extension load failed) is a live tracked descriptor,
@@ -678,7 +809,9 @@ class SessionDB(
                 raise
             with self._read_conns_lock:
                 self._read_open_failed_at = time.monotonic()
-            logger.debug("read-only connection open failed for %s", self.db_path, exc_info=True)
+            logger.debug(
+                "read-only connection open failed for %s", self.db_path, exc_info=True
+            )
             return None
         return conn
 
@@ -759,7 +892,9 @@ class SessionDB(
         self._halt_if_db_generation_changed()
         logger.warning(
             "state.db connection for %s was closed while a %s was still in "
-            "flight — reopening (teardown/worker race, #94736)", self.db_path, context,
+            "flight — reopening (teardown/worker race, #94736)",
+            self.db_path,
+            context,
         )
         try:
             self._conn = self._open_writer_conn()
@@ -771,7 +906,9 @@ class SessionDB(
             ) from exc
 
     def _execute_write(
-        self, fn: Callable[[sqlite3.Connection], T], patience_s: Optional[float] = None,
+        self,
+        fn: Callable[[sqlite3.Connection], T],
+        patience_s: Optional[float] = None,
     ) -> T:
         """Run *fn(conn)* inside BEGIN IMMEDIATE with jittered lock retry; commit
         is handled here (callers must not commit). Returns *fn*'s result.
@@ -781,7 +918,9 @@ class SessionDB(
         if patience_s is None:
             patience_s = self._WRITE_PATIENCE_S
         deadline = time.monotonic() + patience_s
-        compression_deadline: Optional[float] = None  # set on the first compression-busy collision
+        compression_deadline: Optional[float] = (
+            None  # set on the first compression-busy collision
+        )
         # One retry for SQLITE_IOERR raised by BEGIN IMMEDIATE itself (callback not run: nothing
         # replayed). Once fn has started, an IOERR leaves settlement unknown and must propagate.
         # The callback has not run at that point, so there is no durable effect to replay and the retry is
@@ -825,7 +964,9 @@ class SessionDB(
                 # refused rather than left to land a stale turn once a long-running or wedged compression
                 # finally lets go.
                 if compression_deadline is None:
-                    compression_deadline = min(time.monotonic() + self._COMPRESSION_BUSY_WAIT_S, deadline)
+                    compression_deadline = min(
+                        time.monotonic() + self._COMPRESSION_BUSY_WAIT_S, deadline
+                    )
                 if self._sleep_before_write_retry(
                     compression_deadline, self._COMPRESSION_BUSY_WAIT_S
                 ):
@@ -834,7 +975,9 @@ class SessionDB(
             except sqlite3.Error as exc:
                 # 'no more rows' is a transient engine error on contended WAL appends (some builds
                 # raise it as InterfaceError, a sibling of DatabaseError): retry like locked/busy.
-                if _is_no_more_rows(exc) and self._sleep_before_write_retry(deadline, patience_s):
+                if _is_no_more_rows(exc) and self._sleep_before_write_retry(
+                    deadline, patience_s
+                ):
                     continue
                 err_msg = str(exc).lower()
                 if isinstance(exc, sqlite3.OperationalError):
@@ -850,7 +993,9 @@ class SessionDB(
                             "process; the database itself is healthy)"
                         ) from exc
                     if (
-                        _DISK_IO_ERROR_MARKER in err_msg and not fn_started and not ioerr_begin_retried
+                        _DISK_IO_ERROR_MARKER in err_msg
+                        and not fn_started
+                        and not ioerr_begin_retried
                         and self._sleep_before_write_retry(deadline, patience_s)
                     ):
                         # Retry on the SAME connection: close()+reopen would cancel this process's
@@ -862,7 +1007,8 @@ class SessionDB(
                     # An out-of-band replace surfaces as this same corruption class; in-file repair
                     # on a NEW generation amplifies the damage.
                     if (
-                        "not a database" in err_msg or is_malformed_db_error(exc)
+                        "not a database" in err_msg
+                        or is_malformed_db_error(exc)
                         or self._is_fts_write_corruption_error(exc)
                     ):
                         self._raise_if_db_replaced()
@@ -876,21 +1022,32 @@ class SessionDB(
                 raise
 
     def _write_sql(
-        self, sql: str, params: Any = (), *, many: bool = False, patience_s: Optional[float] = None,
+        self,
+        sql: str,
+        params: Any = (),
+        *,
+        many: bool = False,
+        patience_s: Optional[float] = None,
     ) -> None:
         """Run one INSERT/UPDATE/DELETE through ``_execute_write``."""
+
         def _do(conn):
             (conn.executemany if many else conn.execute)(sql, params)
+
         self._execute_write(_do, patience_s=patience_s)
 
-    def _write_rowcount(self, sql: str, params: Any = (), *, patience_s: Optional[float] = None) -> int:
+    def _write_rowcount(
+        self, sql: str, params: Any = (), *, patience_s: Optional[float] = None
+    ) -> int:
         """Run one UPDATE/DELETE through ``_execute_write``; return rows changed
         (``SELECT changes()`` when the driver reports None / negative)."""
+
         def _do(conn):
             rowcount = conn.execute(sql, params).rowcount
             if rowcount is None or rowcount < 0:
                 rowcount = conn.execute("SELECT changes()").fetchone()[0]
             return rowcount
+
         return self._execute_write(_do, patience_s=patience_s)
 
     def _read_one(self, sql: str, params: Any = ()) -> Optional[sqlite3.Row]:
@@ -919,7 +1076,8 @@ class SessionDB(
                     (_STATE_DB_GENERATION_KEY, token),
                 )
                 row = self._conn.execute(
-                    "SELECT value FROM state_meta WHERE key = ?", (_STATE_DB_GENERATION_KEY,),
+                    "SELECT value FROM state_meta WHERE key = ?",
+                    (_STATE_DB_GENERATION_KEY,),
                 ).fetchone()
                 if row and row[0]:
                     token = str(row[0])
@@ -972,15 +1130,21 @@ class SessionDB(
         base = os.fspath(self.db_path)
         if recorded:
             return any(
-                _stat_db_file_identity(Path(base + suffix)) != ident for suffix, ident in recorded.items()
+                _stat_db_file_identity(Path(base + suffix)) != ident
+                for suffix, ident in recorded.items()
             )
-        if not self._wal_active:  # no sidecar generation to lose; keep /proc off the hot path
+        if (
+            not self._wal_active
+        ):  # no sidecar generation to lose; keep /proc off the hot path
             return False
         if sys.platform.startswith("linux"):
             watched = _watched_sqlite_sidecar_paths(self.db_path)
             try:
                 for target in _proc_fd_targets(os.getpid()):
-                    if " (deleted)" in target and _canonical_sqlite_path(target) in watched:
+                    if (
+                        " (deleted)" in target
+                        and _canonical_sqlite_path(target) in watched
+                    ):
                         return True
             except OSError:
                 return False
@@ -999,10 +1163,12 @@ class SessionDB(
         # through stale WAL/shm assumptions (#89332). Refuse instead.
         if self._db_replaced or self._db_file_was_replaced():
             self._db_replaced = True
+            self._disable_close_time_checkpoint()
             logger.error(_STATE_DB_REPLACED_MSG)
             raise StateDbReplacedError(_STATE_DB_REPLACED_MSG)
         if self._db_wal_generation_lost or self._wal_generation_was_lost():
             self._db_wal_generation_lost = True
+            self._disable_close_time_checkpoint()
             logger.error(_DELETED_WAL_GENERATION_MSG)
             raise DeletedWalGenerationError(_DELETED_WAL_GENERATION_MSG)
 
@@ -1027,7 +1193,9 @@ class SessionDB(
 
     def _corrupt_error(self, prefix: str = "") -> "StateDbCorruptError":
         """Build the quarantine error for this handle (message assembled once)."""
-        return StateDbCorruptError(f"{prefix}{_STATE_DB_CORRUPT_MSG} (cause: {self._db_corrupt_reason})")
+        return StateDbCorruptError(
+            f"{prefix}{_STATE_DB_CORRUPT_MSG} (cause: {self._db_corrupt_reason})"
+        )
 
     def _halt_db_corrupt(self, exc: BaseException) -> None:
         """Quarantine this handle and raise; never run in-file repair here."""
@@ -1038,7 +1206,9 @@ class SessionDB(
             "state.db %s reported structural corruption outside the FTS "
             "indexes (%s); quarantining this handle: no further writes, no "
             "automatic reopen, no explicit WAL checkpoint at close. Stop the "
-            "gateway and run `hermes sessions recover --source %s --inspect-only`.", self.db_path, exc,
+            "gateway and run `hermes sessions recover --source %s --inspect-only`.",
+            self.db_path,
+            exc,
             self.db_path,
         )
         err = self._corrupt_error()
@@ -1063,7 +1233,8 @@ class SessionDB(
         except Exception:
             logger.debug(
                 "Could not disable SQLite's close-time checkpoint on the quarantined handle for %s",
-                self.db_path, exc_info=True,
+                self.db_path,
+                exc_info=True,
             )
 
     def _raise_if_db_corrupt(self) -> None:
@@ -1077,10 +1248,13 @@ class SessionDB(
         if now >= deadline:
             return False
         slow = now - (deadline - patience_s) >= self._WRITE_RETRY_SLOW_AFTER_S
-        jitter = random.uniform(*(
-            (self._WRITE_RETRY_SLOW_MIN_S, self._WRITE_RETRY_SLOW_MAX_S) if slow
-            else (self._WRITE_RETRY_MIN_S, self._WRITE_RETRY_MAX_S)
-        ))
+        jitter = random.uniform(
+            *(
+                (self._WRITE_RETRY_SLOW_MIN_S, self._WRITE_RETRY_SLOW_MAX_S)
+                if slow
+                else (self._WRITE_RETRY_MIN_S, self._WRITE_RETRY_MAX_S)
+            )
+        )
         time.sleep(min(jitter, max(deadline - now, 0.001)))
         return True
 
@@ -1095,13 +1269,16 @@ class SessionDB(
         Previous TRUNCATE strategy caused B-tree corruption on large databases (65K+ pages) due to the
         exclusive-lock I/O pressure from checkpointing thousands of frames at once (issue #45383).
         """
-        if self._db_corrupt:
-            return  # quarantined: never checkpoint over a damaged image
+        # Quarantined: never checkpoint over a damaged image or stale/replaced generation.
+        if self._db_corrupt or self._db_wal_generation_lost or self._db_replaced:
+            return
         try:
             with self._lock:
                 result = self._conn.execute("PRAGMA wal_checkpoint(PASSIVE)").fetchone()
                 if result and result[1] > 0:
-                    logger.debug("WAL checkpoint: %d/%d pages checkpointed", result[2], result[1])
+                    logger.debug(
+                        "WAL checkpoint: %d/%d pages checkpointed", result[2], result[1]
+                    )
         except Exception as exc:
             logger.warning("WAL checkpoint (PASSIVE) failed: %s", exc)
 
@@ -1137,6 +1314,7 @@ class SessionDB(
         """
         if self._shared_registry_owned:
             from hermes_state_registry import release
+
             release(self)
             return
         self._stop_token_writer()
@@ -1150,13 +1328,27 @@ class SessionDB(
             pass
         with self._lock:
             if self._conn:
-                if self._db_corrupt:  # quarantined: no checkpoint over a damaged image
+                # Quarantined handles (corruption + split-brain/replaced generation) must not checkpoint:
+                # a corrupted image has torn B-trees; a stale WAL generation will checkpoint under wrong
+                # page numbers into the main DB (exactly the shutdown-time cause of this incident).
+                _quarantine_reason = None
+                if self._db_corrupt:
+                    _quarantine_reason = (
+                        f"structural corruption ({self._db_corrupt_reason})"
+                    )
+                elif self._db_wal_generation_lost:
+                    _quarantine_reason = "deleted WAL generation (split-brain)"
+                elif self._db_replaced:
+                    _quarantine_reason = "replaced state.db file"
+                if _quarantine_reason:
                     logger.warning(
                         "Skipping the close-time WAL checkpoint for %s: this "
-                        "handle observed structural corruption (%s). Take a "
-                        "snapshot of state.db, -wal and -shm before restarting, "
-                        "then run `hermes sessions recover --source %s --inspect-only`.", self.db_path,
-                        self._db_corrupt_reason, self.db_path,
+                        "handle observed %s. Take a snapshot of state.db, -wal and -shm "
+                        "before restarting, then run `hermes sessions recover --source %s "
+                        "--inspect-only`.",
+                        self.db_path,
+                        _quarantine_reason,
+                        self.db_path,
                     )
                 elif not self.read_only:  # PASSIVE, not TRUNCATE (see docstring)
                     try:
@@ -1167,7 +1359,9 @@ class SessionDB(
                         # on a sole-opener/quiescent connection.
                         self._conn.execute("PRAGMA wal_checkpoint(PASSIVE)")
                     except Exception as exc:
-                        logger.debug("WAL checkpoint (PASSIVE) at close failed: %s", exc)
+                        logger.debug(
+                            "WAL checkpoint (PASSIVE) at close failed: %s", exc
+                        )
                 conn, self._conn = self._conn, None
                 self._close_connection_quietly(conn)
                 # A clean close lets SQLite unlink the sidecars (a legitimate end of the
@@ -1188,12 +1382,21 @@ class SessionDB(
     # order, coalescing consecutive deltas whose route fields are EQUAL (so the merged
     # UPDATE equals applying them sequentially). Exact readers call flush_token_counts().
     _TOKEN_DELTA_SUM_FIELDS = (
-        "input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens", "reasoning_tokens",
+        "input_tokens",
+        "output_tokens",
+        "cache_read_tokens",
+        "cache_write_tokens",
+        "reasoning_tokens",
         "api_call_count",
     )
     _TOKEN_DELTA_COST_FIELDS = ("estimated_cost_usd", "actual_cost_usd")
     _TOKEN_DELTA_ROUTE_FIELDS = (
-        "model", "cost_status", "cost_source", "pricing_version", "billing_provider", "billing_base_url",
+        "model",
+        "cost_status",
+        "cost_source",
+        "pricing_version",
+        "billing_provider",
+        "billing_base_url",
         "billing_mode",
     )
 
@@ -1202,7 +1405,11 @@ class SessionDB(
     # Title provenance, lowest to highest authority: auto-titling may only replace a
     # strictly lower-authority title (``derived`` -> ``llm`` once; never a user-typed name).
     TITLE_SOURCE_DERIVED, TITLE_SOURCE_LLM, TITLE_SOURCE_USER = "derived", "llm", "user"
-    _TITLE_SOURCE_RANK = {TITLE_SOURCE_DERIVED: 0, TITLE_SOURCE_LLM: 1, TITLE_SOURCE_USER: 2}
+    _TITLE_SOURCE_RANK = {
+        TITLE_SOURCE_DERIVED: 0,
+        TITLE_SOURCE_LLM: 1,
+        TITLE_SOURCE_USER: 2,
+    }
 
     # Bot Mode's canonical chat is resolved by exact-title lookup: the title IS the identity,
     # so _set_session_title refuses renames of a hidden row holding it.
@@ -1231,10 +1438,14 @@ class SessionDB(
         """Read state_meta[key] on self._lock (not _read_ctx): fts_rebuild_step reads progress before its
         write transaction and a WAL reader would not see it."""
         with self._lock:
-            row = self._conn.execute("SELECT value FROM state_meta WHERE key = ?", (key,)).fetchone()
+            row = self._conn.execute(
+                "SELECT value FROM state_meta WHERE key = ?", (key,)
+            ).fetchone()
         return None if row is None else row[0]
 
-    def set_meta(self, key: str, value: str, *, cursor: Optional[sqlite3.Cursor] = None) -> None:
+    def set_meta(
+        self, key: str, value: str, *, cursor: Optional[sqlite3.Cursor] = None
+    ) -> None:
         """Upsert state_meta[key]; with ``cursor`` the write is inline (the caller already holds a
         transaction — nesting BEGIN IMMEDIATE would deadlock)."""
         sql = (
@@ -1255,6 +1466,7 @@ class SessionDB(
         gate = f"kanban_worker_source_retagged:{prefix}"
         if self.get_meta(gate) == "1":
             return 0
+
         def _do(conn):
             cursor = conn.execute(
                 "UPDATE sessions SET source = 'kanban' "
@@ -1265,6 +1477,7 @@ class SessionDB(
             retagged = cursor.rowcount or 0
             self.set_meta(gate, "1", cursor=cursor)
             return retagged
+
         return self._execute_write(_do)
 
     def list_meta_prefix(self, prefix: str) -> List[Tuple[str, str]]:
@@ -1273,7 +1486,8 @@ class SessionDB(
         if not prefix:
             return []
         rows = self._read_all(
-            "SELECT key, value FROM state_meta WHERE key LIKE ? ESCAPE '\\'", (_escape_like(prefix) + "%",),
+            "SELECT key, value FROM state_meta WHERE key LIKE ? ESCAPE '\\'",
+            (_escape_like(prefix) + "%",),
         )
         return [(row[0], row[1]) for row in rows]
 
@@ -1289,8 +1503,10 @@ class AsyncSessionDB:
         attr = getattr(self._db, name)
         if not callable(attr):
             return attr
+
         async def _offloaded(*args, **kwargs):
             return await asyncio.to_thread(attr, *args, **kwargs)
+
         return _offloaded
 
 
@@ -1310,52 +1526,73 @@ MAX_SAFE_RESUME_MESSAGES = 20_000
 
 
 _PLUGIN_COMPAT_LAZY = {
-    'AUTO_VACUUM_MIN_FREELIST_RATIO': ('hermes_state_common', 'AUTO_VACUUM_MIN_FREELIST_RATIO'),
-    'ActivityProvenance': ('agent.session_activity', 'ActivityProvenance'),
-    'CompressionSessionBusyError': ('hermes_state_errors', 'CompressionSessionBusyError'),
-    'CompressionSessionClosedError': ('hermes_state_errors', 'CompressionSessionClosedError'),
-    'DEFERRED_INDEX_SQL': ('hermes_state_common', 'DEFERRED_INDEX_SQL'),
-    'FTS_CJK_STALE_KEY': ('hermes_state_common', 'FTS_CJK_STALE_KEY'),
-    'FTS_CJK_TABLE_SQL': ('hermes_state_fts', 'FTS_CJK_TABLE_SQL'),
-    'FTS_CJK_TRIGGER_SQL': ('hermes_state_fts', 'FTS_CJK_TRIGGER_SQL'),
-    'FTS_REBUILD_DEFERRAL_KEY': ('hermes_state_common', 'FTS_REBUILD_DEFERRAL_KEY'),
-    'FTS_SQL': ('hermes_state_common', 'FTS_SQL'),
-    'FTS_STALE_KEY': ('hermes_state_common', 'FTS_STALE_KEY'),
-    'FTS_STORAGE_VERSION': ('hermes_state_common', 'FTS_STORAGE_VERSION'),
-    'FTS_TRIGRAM_SQL': ('hermes_state_common', 'FTS_TRIGRAM_SQL'),
-    'LEGACY_FTS_SQL': ('hermes_state_common', 'LEGACY_FTS_SQL'),
-    'LEGACY_FTS_TRIGRAM_SQL': ('hermes_state_common', 'LEGACY_FTS_TRIGRAM_SQL'),
-    'MAX_FTS5_QUERY_CHARS': ('hermes_state_common', 'MAX_FTS5_QUERY_CHARS'),
-    'PERSISTENCE_ERROR_CAUSES': ('hermes_state_errors', 'PERSISTENCE_ERROR_CAUSES'),
-    'SCHEMA_SQL': ('hermes_state_common', 'SCHEMA_SQL'),
-    'SCHEMA_VERSION': ('hermes_state_common', 'SCHEMA_VERSION'),
-    'SESSION_STATUS_COMPLETE': ('hermes_state_sessions', 'SESSION_STATUS_COMPLETE'),
-    'SESSION_STATUS_EMPTY': ('hermes_state_sessions', 'SESSION_STATUS_EMPTY'),
-    'SESSION_STATUS_ERROR': ('hermes_state_sessions', 'SESSION_STATUS_ERROR'),
-    'SESSION_STATUS_INTERRUPTED': ('hermes_state_sessions', 'SESSION_STATUS_INTERRUPTED'),
-    'SKILL_EXCERPT_JOINT': ('agent.skill_commands', 'SKILL_EXCERPT_JOINT'),
-    'SKILL_SCAFFOLD_SQL_LIKE': ('agent.skill_commands', 'SKILL_SCAFFOLD_SQL_LIKE'),
-    'SessionTurnLeaseLostError': ('hermes_state_errors', 'SessionTurnLeaseLostError'),
-    'WalUnsupportedError': ('hermes_state_wal', 'WalUnsupportedError'),
-    'apply_durability_barriers': ('hermes_state_repair', 'apply_durability_barriers'),
-    'classify_session_status': ('hermes_state_sessions', 'classify_session_status'),
-    'collect_state_db_stats': ('hermes_state_dbfile', 'collect_state_db_stats'),
-    'count_db_holders': ('hermes_state_dbfile', 'count_db_holders'),
-    'describe_skill_invocation': ('agent.skill_commands', 'describe_skill_invocation'),
-    'fts5_cjk_so_path': ('hermes_state_fts', 'fts5_cjk_so_path'),
-    'is_advisory_lock_contention': ('hermes_state_common', 'is_advisory_lock_contention'),
-    'is_automatic_end_reason': ('hermes_state_common', 'is_automatic_end_reason'),
-    'is_disk_full_error': ('hermes_state_errors', 'is_disk_full_error'),
-    'is_sqlite_wal_reset_vulnerable': ('hermes_state_wal', 'is_sqlite_wal_reset_vulnerable'),
-    'is_transient_sqlite_error': ('hermes_state_errors', 'is_transient_sqlite_error'),
-    'iter_deleted_sqlite_sidecar_holders': ('hermes_state_dbfile', 'iter_deleted_sqlite_sidecar_holders'),
-    'release_or_close': ('hermes_state_registry', 'release_or_close'),
-    'report_startup_progress': ('hermes_startup_watchdog', 'report_startup_progress'),
-    'resolve_journal_mode': ('hermes_state_wal', 'resolve_journal_mode'),
-    'resolve_synchronous_level': ('hermes_state_wal', 'resolve_synchronous_level'),
-    'sanitize_context': ('agent.memory_manager', 'sanitize_context'),
-    'sqlite_source_id': ('hermes_state_wal', 'sqlite_source_id'),
-    'workspace_key': ('hermes_state_sessions', 'workspace_key'),
+    "AUTO_VACUUM_MIN_FREELIST_RATIO": (
+        "hermes_state_common",
+        "AUTO_VACUUM_MIN_FREELIST_RATIO",
+    ),
+    "ActivityProvenance": ("agent.session_activity", "ActivityProvenance"),
+    "CompressionSessionBusyError": (
+        "hermes_state_errors",
+        "CompressionSessionBusyError",
+    ),
+    "CompressionSessionClosedError": (
+        "hermes_state_errors",
+        "CompressionSessionClosedError",
+    ),
+    "DEFERRED_INDEX_SQL": ("hermes_state_common", "DEFERRED_INDEX_SQL"),
+    "FTS_CJK_STALE_KEY": ("hermes_state_common", "FTS_CJK_STALE_KEY"),
+    "FTS_CJK_TABLE_SQL": ("hermes_state_fts", "FTS_CJK_TABLE_SQL"),
+    "FTS_CJK_TRIGGER_SQL": ("hermes_state_fts", "FTS_CJK_TRIGGER_SQL"),
+    "FTS_REBUILD_DEFERRAL_KEY": ("hermes_state_common", "FTS_REBUILD_DEFERRAL_KEY"),
+    "FTS_SQL": ("hermes_state_common", "FTS_SQL"),
+    "FTS_STALE_KEY": ("hermes_state_common", "FTS_STALE_KEY"),
+    "FTS_STORAGE_VERSION": ("hermes_state_common", "FTS_STORAGE_VERSION"),
+    "FTS_TRIGRAM_SQL": ("hermes_state_common", "FTS_TRIGRAM_SQL"),
+    "LEGACY_FTS_SQL": ("hermes_state_common", "LEGACY_FTS_SQL"),
+    "LEGACY_FTS_TRIGRAM_SQL": ("hermes_state_common", "LEGACY_FTS_TRIGRAM_SQL"),
+    "MAX_FTS5_QUERY_CHARS": ("hermes_state_common", "MAX_FTS5_QUERY_CHARS"),
+    "PERSISTENCE_ERROR_CAUSES": ("hermes_state_errors", "PERSISTENCE_ERROR_CAUSES"),
+    "SCHEMA_SQL": ("hermes_state_common", "SCHEMA_SQL"),
+    "SCHEMA_VERSION": ("hermes_state_common", "SCHEMA_VERSION"),
+    "SESSION_STATUS_COMPLETE": ("hermes_state_sessions", "SESSION_STATUS_COMPLETE"),
+    "SESSION_STATUS_EMPTY": ("hermes_state_sessions", "SESSION_STATUS_EMPTY"),
+    "SESSION_STATUS_ERROR": ("hermes_state_sessions", "SESSION_STATUS_ERROR"),
+    "SESSION_STATUS_INTERRUPTED": (
+        "hermes_state_sessions",
+        "SESSION_STATUS_INTERRUPTED",
+    ),
+    "SKILL_EXCERPT_JOINT": ("agent.skill_commands", "SKILL_EXCERPT_JOINT"),
+    "SKILL_SCAFFOLD_SQL_LIKE": ("agent.skill_commands", "SKILL_SCAFFOLD_SQL_LIKE"),
+    "SessionTurnLeaseLostError": ("hermes_state_errors", "SessionTurnLeaseLostError"),
+    "WalUnsupportedError": ("hermes_state_wal", "WalUnsupportedError"),
+    "apply_durability_barriers": ("hermes_state_repair", "apply_durability_barriers"),
+    "classify_session_status": ("hermes_state_sessions", "classify_session_status"),
+    "collect_state_db_stats": ("hermes_state_dbfile", "collect_state_db_stats"),
+    "count_db_holders": ("hermes_state_dbfile", "count_db_holders"),
+    "describe_skill_invocation": ("agent.skill_commands", "describe_skill_invocation"),
+    "fts5_cjk_so_path": ("hermes_state_fts", "fts5_cjk_so_path"),
+    "is_advisory_lock_contention": (
+        "hermes_state_common",
+        "is_advisory_lock_contention",
+    ),
+    "is_automatic_end_reason": ("hermes_state_common", "is_automatic_end_reason"),
+    "is_disk_full_error": ("hermes_state_errors", "is_disk_full_error"),
+    "is_sqlite_wal_reset_vulnerable": (
+        "hermes_state_wal",
+        "is_sqlite_wal_reset_vulnerable",
+    ),
+    "is_transient_sqlite_error": ("hermes_state_errors", "is_transient_sqlite_error"),
+    "iter_deleted_sqlite_sidecar_holders": (
+        "hermes_state_dbfile",
+        "iter_deleted_sqlite_sidecar_holders",
+    ),
+    "release_or_close": ("hermes_state_registry", "release_or_close"),
+    "report_startup_progress": ("hermes_startup_watchdog", "report_startup_progress"),
+    "resolve_journal_mode": ("hermes_state_wal", "resolve_journal_mode"),
+    "resolve_synchronous_level": ("hermes_state_wal", "resolve_synchronous_level"),
+    "sanitize_context": ("agent.memory_manager", "sanitize_context"),
+    "sqlite_source_id": ("hermes_state_wal", "sqlite_source_id"),
+    "workspace_key": ("hermes_state_sessions", "workspace_key"),
 }
 
 
@@ -1365,6 +1602,9 @@ def __getattr__(name):  # PEP 562 — lazy so no import cycles
         raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
     import importlib
     from hermes_cli.plugin_compat import warn_once
+
     warn_once(__name__, name, *target)
     return getattr(importlib.import_module(target[0]), target[1])
+
+
 # ---- END PLUGIN-COMPAT ----

@@ -1069,6 +1069,10 @@ export const ar = defineLocale({
     failedToUpdate: name => `فشل تحديث ${name}`
   },
   agents: {
+    extendedTranscript: 'سجل موسّع',
+    transcriptTruncated: 'عرض أحدث 16 KiB',
+    transcriptUnavailable: 'السجل المباشر غير متاح',
+
     close: 'إغلاق الوكلاء',
     title: 'شجرة التوليد',
     subtitle: 'نشاط الوكلاء الفرعيين المباشر للدور الحالي.',

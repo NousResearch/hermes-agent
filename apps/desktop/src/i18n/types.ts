@@ -1393,6 +1393,9 @@ export interface Translations {
     resetToMine: string
   }
   agents: {
+    extendedTranscript: string
+    transcriptTruncated: string
+    transcriptUnavailable: string
     close: string
     title: string
     subtitle: string

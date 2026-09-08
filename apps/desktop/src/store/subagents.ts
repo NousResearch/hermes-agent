@@ -212,6 +212,62 @@ function toProgress(payload: SubagentPayload, prev: SubagentProgress | undefined
   }
 }
 
+/** Reconcile a scoped, race-checked snapshot without replacing stream history. */
+export function reconcileSubagentSnapshot(
+  sid: string,
+  children: SubagentPayload[],
+  delegations: SubagentPayload[] = []
+) {
+  const represented = new Set(children.map(child => str(child.delegation_id)).filter(Boolean))
+
+  const payloads: SubagentPayload[] = [
+    ...children,
+    ...delegations
+      .filter(unit => unit.status === 'running' && !represented.has(str(unit.delegation_id)) && str(unit.delegation_id))
+      .map(unit => ({
+        ...unit,
+        subagent_id: `delegation:${str(unit.delegation_id)}`,
+        started_at: unit.dispatched_at,
+        status: 'queued'
+      }))
+  ]
+
+  const map = $subagentsBySession.get()
+  const previous = map[sid] ?? []
+  const ids = new Set(payloads.map(p => str(p.subagent_id)).filter(Boolean))
+  const next = previous.filter(item => TERMINAL.has(item.status) || ids.has(item.id))
+
+  for (const payload of payloads) {
+    const id = str(payload.subagent_id)
+
+    if (!id) {
+      continue
+    }
+
+    const index = next.findIndex(item => item.id === id)
+    const prev = next[index]
+
+    if (prev && TERMINAL.has(prev.status)) {
+      continue
+    }
+
+    const projected = toProgress(payload, prev)
+    projected.startedAt = (num(payload.started_at) ?? 0) * 1000 || prev?.startedAt || projected.startedAt
+    projected.updatedAt = prev?.updatedAt ?? projected.startedAt
+    projected.currentTool = str(payload.current_tool) || undefined
+
+    if (index < 0) {
+      next.push(projected)
+    } else {
+      next[index] = JSON.stringify(prev) === JSON.stringify(projected) ? prev : projected
+    }
+  }
+
+  if (next.length !== previous.length || next.some((item, index) => item !== previous[index])) {
+    $subagentsBySession.set({ ...map, [sid]: next })
+  }
+}
+
 export function clearSessionSubagents(sid: string) {
   const map = $subagentsBySession.get()
 

@@ -1754,6 +1754,10 @@ export const zh: Translations = {
     resetToMine: '返回我的图谱'
   },
   agents: {
+    extendedTranscript: '扩展记录',
+    transcriptTruncated: '显示最新 16 KiB',
+    transcriptUnavailable: '实时记录不可用',
+
     close: '关闭代理',
     title: '派生树',
     subtitle: '当前回合的子代理实时活动。',

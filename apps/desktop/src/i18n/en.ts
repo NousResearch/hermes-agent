@@ -1582,6 +1582,10 @@ export const en: Translations = {
     resetToMine: 'Back to my map'
   },
   agents: {
+    extendedTranscript: 'Extended transcript',
+    transcriptTruncated: 'Showing the latest 16 KiB',
+    transcriptUnavailable: 'Live transcript unavailable',
+
     close: 'Close agents',
     title: 'Spawn tree',
     subtitle: 'Live subagent activity for the current turn.',

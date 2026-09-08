@@ -11,6 +11,7 @@ import { useSessionSlice } from '@/lib/use-session-slice'
 import { $subagentsBySession, type SubagentProgress } from '@/store/subagents'
 
 import { SubagentControls } from './subagent-controls'
+import { SubagentTranscript } from './subagent-transcript'
 
 interface SubagentSectionProps {
   sessionId: string
@@ -78,7 +79,7 @@ export function SubagentSection({ sessionId }: SubagentSectionProps) {
       </StatusSection>
       {detail && (
         <div className="max-h-[25vh] overflow-y-auto overscroll-contain px-3 py-2" data-slot="composer-subagent-detail">
-          {(detail.status === 'running' || detail.status === 'queued') && (
+          {!detail.id.startsWith('delegation:') && (
             <SubagentControls
               key={`${sessionId}:${detail.id}`}
               sessionId={sessionId}
@@ -88,6 +89,9 @@ export function SubagentSection({ sessionId }: SubagentSectionProps) {
             />
           )}
           <SubagentRow node={{ ...detail, children: [] }} nowMs={nowMs} />
+          {!detail.id.startsWith('delegation:') && (
+            <SubagentTranscript key={`tail:${sessionId}:${detail.id}`} sessionId={sessionId} subagentId={detail.id} />
+          )}
         </div>
       )}
     </div>

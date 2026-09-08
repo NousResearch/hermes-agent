@@ -270,6 +270,9 @@ describe('runWindowsUpdateForceRelease', () => {
     if (outcome.kind === 'needs-elevation') {
       assert.equal(outcome.holders[0]?.pid, 901)
       assert.match(outcome.message, /Administrator|elevat/i)
+      assert.match(outcome.message, /close the listed processes/i)
+      assert.match(outcome.message, /retry the update/i)
+      assert.doesNotMatch(outcome.message, /choose force update/i)
     }
   })
 

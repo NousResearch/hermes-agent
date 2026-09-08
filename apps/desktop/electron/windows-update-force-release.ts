@@ -315,8 +315,8 @@ function elevationMessage(holders: readonly ForceReleaseHolder[]): string {
     .join('; ')
 
   return (
-    'Update needs Administrator permission to stop processes still locking this Hermes install. ' +
-    `Survivors: ${sample || 'unknown'}. Choose Force update (Administrator) to continue, or close those processes and retry.`
+    'Update could not stop processes still locking this Hermes install. ' +
+    `Survivors: ${sample || 'unknown'}. Close the listed processes (using Administrator permission if needed), then retry the update.`
   )
 }
 

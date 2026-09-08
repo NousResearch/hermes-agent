@@ -220,6 +220,11 @@ _CONTEXT_OVERFLOW_PATTERNS = (
     # Together/Fireworks-style: "Input length 131393 exceeds the maximum allowed input length of 131040
     # tokens."  No other pattern in this list matches that wording. (port of anomalyco/opencode#37848)
     "maximum allowed input length",
+    # OmniRoute combo admission overflow. The structured ``code`` is the
+    # primary signal (see ``_CONTEXT_OVERFLOW_ERROR_CODES``); this covers the
+    # re-wrapped form where a custom-provider wrapper drops the body entirely
+    # and only the message text survives.
+    "largest known context limit",
 )
 
 # Last entry: OpenRouter 404 when no endpoint supports tool calling —
@@ -445,6 +450,8 @@ _MESSAGE_TAIL_RULES = (
     (_TIMEOUT_MESSAGE_PATTERNS, _V_TIMEOUT), (_CONNECTION_MESSAGE_PATTERNS, _V_TIMEOUT),
 )
 
+_CONTEXT_OVERFLOW_ERROR_CODES = ("context_length_exceeded", "max_tokens_exceeded")
+
 # Structured error code → verdict. The error-code rate_limit verdict rotates
 # but does not set should_fallback (unlike the message/status paths).
 _ERROR_CODE_VERDICTS: Dict[str, Verdict] = {
@@ -452,7 +459,7 @@ _ERROR_CODE_VERDICTS: Dict[str, Verdict] = {
                     _v(_R.rate_limit, should_rotate_credential=True)),
     **dict.fromkeys(_BILLING_ERROR_CODES, _V_BILLING),
     **dict.fromkeys(("model_not_found", "model_not_available", "invalid_model"), _V_MODEL_NOT_FOUND),
-    **dict.fromkeys(("context_length_exceeded", "max_tokens_exceeded"), _V_CONTEXT_OVERFLOW),
+    **dict.fromkeys(_CONTEXT_OVERFLOW_ERROR_CODES, _V_CONTEXT_OVERFLOW),
     **dict.fromkeys(_MEMORY_CEILING_ERROR_CODES, _V_OVERLOADED),
     "invalid_encrypted_content": _V_INVALID_ENCRYPTED,
 }
@@ -790,6 +797,15 @@ def _classify_400(c: _Ctx) -> Verdict:
     # 400 whose wording a proxy stripped would fall through to format_error.
     if code in _MEMORY_CEILING_ERROR_CODES:
         return _V_OVERLOADED
+    # Structured overflow code on a 400. The message-pattern tail below only
+    # recognises overflow it has seen the wording for, so a provider that
+    # reports overflow correctly in ``code`` but phrases the message its own
+    # way (OmniRoute combo admission: "…the largest known context limit in
+    # this combo is N tokens") would fall through to format_error and abort a
+    # session that compaction can rescue. Checked after the request-shape
+    # guards above so a malformed body still fails fast.
+    if code in _CONTEXT_OVERFLOW_ERROR_CODES:
+        return _V_CONTEXT_OVERFLOW
     verdict = _first_match(msg, _400_TAIL_RULES)
     if verdict is not None:
         return verdict

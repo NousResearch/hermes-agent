@@ -1542,6 +1542,60 @@ class TestExpandedOverflowPatterns:
         assert result.reason == FailoverReason.context_overflow
         assert result.should_compress is True
 
+    def test_400_structured_overflow_code_beats_unknown_wording(self):
+        # A 400 whose body reports overflow in `code` but phrases the message
+        # in wording no pattern knows. `_classify_400` used to fall through to
+        # format_error and abort a session compaction could have rescued.
+        e = MockAPIError(
+            "HTTP 400: Request requires approximately 273875 tokens, but the "
+            "largest known context limit in this combo is 272000 tokens. "
+            "Reduce or compact the request context.",
+            status_code=400,
+            body={
+                "message": "Request requires approximately 273875 tokens, but the "
+                           "largest known context limit in this combo is 272000 tokens.",
+                "type": "invalid_request_error",
+                "code": "context_length_exceeded",
+            },
+        )
+        result = classify_api_error(
+            e, provider="custom", model="subscriptions-quality",
+            approx_tokens=191_765, context_length=272_000,
+        )
+        assert result.reason == FailoverReason.context_overflow
+        assert result.retryable is True
+        assert result.should_compress is True
+
+    def test_400_malformed_body_still_fails_fast_over_overflow_code(self):
+        # The request-shape guards must stay ahead of the overflow code: a
+        # malformed message array is not fixable by compression.
+        e = MockAPIError(
+            "Invalid request body: messages: text content blocks must be non-empty",
+            status_code=400,
+            body={"code": "context_length_exceeded"},
+        )
+        result = classify_api_error(
+            e, provider="custom", model="m", approx_tokens=200_000, num_messages=400,
+        )
+        assert result.reason == FailoverReason.format_error
+        assert result.retryable is False
+
+    def test_omniroute_wrapped_context_limit_without_status_triggers_compression(self):
+        # Same provider error after a custom-provider wrapper dropped both the
+        # status code and the body: only the message text is left to go on.
+        e = Exception(
+            "HTTP 400: Request requires approximately 278690 tokens, but the "
+            "largest known context limit in this combo is 272000 tokens. "
+            "Reduce or compact the request context."
+        )
+        result = classify_api_error(
+            e, provider="custom", model="subscriptions-quality",
+            approx_tokens=191_765, context_length=272_000,
+        )
+        assert result.reason == FailoverReason.context_overflow
+        assert result.retryable is True
+        assert result.should_compress is True
+
     def test_request_too_large_message_only_is_payload_too_large(self):
         # Anthropic's structured 413 type re-wrapped by a proxy with no
         # status attribute — was falling through to `unknown`.

@@ -916,6 +916,25 @@ direnv allow    # one-time
 # Subsequent entries are near-instant (stamp file skips dep install)
 ```
 
+#### Without nix installed
+
+`.envrc` only calls `use flake` when `nix` is actually on PATH. On a checkout
+without nix — a bootstrap/managed install, or a plain `pip install -e .` clone —
+it logs one status line and falls back to the checkout's virtualenv instead,
+probing `.venv` then `venv` (the same order `scripts/run_tests.sh` uses):
+
+```
+direnv: nix not found — skipping 'use flake'; falling back to the local venv
+```
+
+The fallback exports `VIRTUAL_ENV` and prepends its `bin` via `PATH_add`, so
+direnv unwinds the change on leaving the directory. If neither venv exists,
+nothing is exported — create one with `python -m venv .venv && .venv/bin/python
+-m pip install -e ".[dev]"`.
+
+`.envrc` also sources an optional `.envrc.local` (gitignored) if present, for
+machine-specific overrides.
+
 ### Flake Checks
 
 The flake includes build-time verification that runs in CI and locally:

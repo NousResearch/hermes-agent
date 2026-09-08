@@ -107,10 +107,14 @@ def _plan_goal_compression_recovery(
 
 def _admit_prompt_turn(
     sid: str, session: dict, text: Any, image_paths: list[str] | None,
-    queued_prompt_generation: int | None) -> tuple[list[str], Any] | None:
+    queued_prompt_generation: int | None, hosted_task: dict | None = None) -> tuple[list[str], Any] | None:
     """Ownership + liveness gate every turn source must cross; ``(images, agent)`` or None.
     Synthesized turns (auto-continue, wake-ups) call ``_run_prompt_submit`` directly — the
     bypass that once let a second backend run a duplicate turn."""
+    if hosted_task is not None:
+        with session["history_lock"]:
+            if session.get("_hosted_room_task") != hosted_task:
+                return None
     # When the session already holds its lease this is a cheap dict check. See #94778.
     if (ownership_refusal := _ensure_active_session_slot(sid, session)) is not None:
         logger.info(
@@ -118,10 +122,17 @@ def _admit_prompt_turn(
             session.get("session_key") or sid,
             getattr(ownership_refusal, "reason", None) or "refused")
         with session["history_lock"]:
-            session["running"] = False
+            if hosted_task is None or session.get("_hosted_room_task") == hosted_task:
+                session["running"] = False
         _emit("error", sid, {"message": str(ownership_refusal)})
         return None
     with session["history_lock"]:
+        # Readiness is not an execution grant. Stop may have landed since that
+        # check; validate its latch and the accepted proof before clearing it.
+        if hosted_task is not None and (
+                session.get("_hosted_room_task") != hosted_task
+                or session.get("_turn_cancel_requested") or not session.get("running")):
+            return None
         if session.get("_closing") or (
             queued_prompt_generation is not None
             and int(session.get("_queued_prompt_generation", 0)) != queued_prompt_generation):
@@ -435,6 +446,50 @@ def _run_post_turn_followups(
         _hook_failure("completion queue drain", _drain_exc)
 
 
+def _persist_hosted_terminal_receipt(
+    session: dict,
+    receipt: dict[str, Any],
+    *, task: dict | None,
+) -> tuple[dict[str, Any], bool]:
+    """Commit private task proof before invoking the process-local callback."""
+
+    status = receipt.get("status")
+    if not isinstance(task, dict) or status == "cancelled":
+        return receipt, False
+    from gateway import hosted_room_driver as driver_state
+    from gateway.hosted_rooms import default_db_path
+    from tui_gateway.hosted_room_driver import _bounded_terminal_result
+
+    terminal_status = "settled" if status == "settled" else "failed"
+    identity = driver_state.TaskIdentity(
+        room_id=str(task.get("room_id") or ""),
+        task_id=str(task.get("task_id") or ""),
+        thread_id=str(task.get("thread_id") or ""),
+        turn_id=str(task.get("turn_id") or ""),
+    )
+    generation = int(task.get("execution_generation") or 0)
+    settlement_id = f"reply:{identity.task_id}:{generation}"
+    bounded = _bounded_terminal_result({**receipt, "message_id": settlement_id})
+    # Also called before agent readiness, before _prepare_turn_input binds the profile.
+    token = set_hermes_home_override(_session_home(session))
+    try:
+        driver_state.record_terminal_receipt(
+            default_db_path(),
+            identity,
+            execution_generation=generation,
+            settlement_id=settlement_id,
+            status=terminal_status,
+            result=bounded,
+            clock=time.time,
+        )
+    finally:
+        reset_hermes_home_override(token)
+    # The observer reads this very result from SQLite. Do not independently rebuild it
+    # in the callback: replay equality includes message_id, error and truncation metadata.
+    return {**bounded, "status": terminal_status, "settlement_id": settlement_id, "result": bounded}, True
+
+
+
 @dataclasses.dataclass(slots=True)
 class _TurnRun:
     """Shared state of one turn thread.  ``agent`` is bound eagerly so except/finally always
@@ -457,6 +512,36 @@ class _TurnRun:
     prompt_text: str = ""
     marker_key: str = ""
     receipt_attempted: bool = False
+    hosted_task: dict | None = None
+
+
+def _deliver_hosted_terminal_receipt(session: dict, st: _TurnRun, receipt: dict) -> None:
+    st.receipt_attempted = True
+    receipt, st.receipt_committed = _persist_hosted_terminal_receipt(session, receipt, task=st.hosted_task)
+    st.terminal_callback(receipt)
+    st.receipt_committed = True
+
+
+def _finish_cancelled_hosted_start(
+    session: dict, task: dict, callback, marker_key: str = "", *, release_admission: bool = True) -> bool:
+    """Retire only the cancelled accepted owner; never release a replacement."""
+    with session["history_lock"]:
+        if session.get("_hosted_room_task") != task or not session.get("_turn_cancel_requested"):
+            return False
+    try:
+        callback({"status": "cancelled", "text": ""})
+    except Exception:
+        logger.exception("hosted room startup cancellation callback failed")
+    finally:
+        with session["history_lock"]:
+            if release_admission and session.get("_hosted_room_task") == task:
+                _retire_turn_marker(session, marker_key)
+                session.pop("_active_turn_marker_key", None)
+                session.pop("_hosted_room_task", None)
+                _clear_inflight_turn(session)
+                session["last_active"] = time.time()
+                session["running"] = False
+    return True
 
 
 def _prepare_turn_input(sid: str, session: dict, st: _TurnRun, text: Any, images: list[str]):
@@ -828,9 +913,15 @@ def _run_prompt_submit(
     display_metadata: dict | None = None, image_paths: list[str] | None = None,
     queued_prompt_generation: int | None = None,
     terminal_callback: Callable[[dict[str, Any]], None] | None = None,
-    turn_author: dict | None = None) -> bool:
-    admitted = _admit_prompt_turn(sid, session, text, image_paths, queued_prompt_generation)
+    hosted_task: dict | None = None) -> bool:
+    if terminal_callback is not None:
+        with session["history_lock"]:
+            proof = hosted_task if hosted_task is not None else session.get("_hosted_room_task")
+            hosted_task = dict(proof) if isinstance(proof, dict) else None
+    admitted = _admit_prompt_turn(sid, session, text, image_paths, queued_prompt_generation, hosted_task)
     if admitted is None:
+        if hosted_task is not None:
+            _finish_cancelled_hosted_start(session, hosted_task, terminal_callback)
         return False
     images, agent = admitted
     # The ONE INFO record proving a prompt was accepted by THIS process; ties ui sid,
@@ -856,10 +947,16 @@ def _run_prompt_submit(
         runtime_session_token = _current_runtime_session_record.set(session)
         st = _TurnRun(
             session["agent"], session.pop("one_turn_model_restore", None), terminal_callback,
-            receipt_committed=terminal_callback is None)
-        st.marker_key = _record_turn_marker(session, text, auto_continue=terminal_callback is None)
+            receipt_committed=terminal_callback is None, hosted_task=hosted_task)
+        st.marker_key = _record_turn_marker(session, text)
         goal_followup = None
         try:
+            if hosted_task is not None and _finish_cancelled_hosted_start(
+                    session, hosted_task, terminal_callback, st.marker_key, release_admission=False):
+                # This inner turn already owns model-restore/finalizer state.
+                # Keep admission until _finish_turn has retired that state.
+                st.receipt_committed = True
+                return
             prepared = _prepare_turn_input(sid, session, st, text, images)
             if prepared is None:
                 if st.terminal_callback is not None and not st.receipt_attempted:
@@ -888,13 +985,21 @@ def _run_prompt_submit(
             _finish_turn(sid, session, st)
             _current_runtime_session_record.reset(runtime_session_token)
             reset_transport(transport_token)
-            # A stale interim closure must not fire during a later turn.
-            st.agent.interim_assistant_callback = None
             with session["history_lock"]:
-                session["running"] = False
-                session["last_active"] = time.time()
-                if not st.error_retained:
-                    _clear_inflight_turn(session)
+                if st.hosted_task is None or session.get("_hosted_room_task") == st.hosted_task:
+                    # A stale closure or finalizer must never touch a replacement.
+                    st.agent.interim_assistant_callback = None
+                    # Retire proof BEFORE releasing admission for the next turn.
+                    if st.receipt_committed:
+                        _retire_turn_marker(session, st.marker_key)
+                        if session.get("_active_turn_marker_key") == st.marker_key:
+                            session.pop("_active_turn_marker_key", None)
+                        session.pop("_hosted_room_task", None)
+                    session.pop("_auto_continue_scheduled", None)
+                    session["running"] = False
+                    session["last_active"] = time.time()
+                    if not st.error_retained:
+                        _clear_inflight_turn(session)
             # Closing bookend of "tui prompt accepted" — exactly one per accepted prompt.
             # agent.session_id is re-read because compression may have rotated it (an
             # accepted/finished pair whose id changed IS a rotation trace).

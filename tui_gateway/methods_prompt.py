@@ -504,14 +504,37 @@ def _persist_session_row_for_submit(rid, session):
     return error
 
 
-def _run_after_agent_ready(rid, sid, session, text, display_kind, hosted_terminal_callback, turn_author=None):
+def _run_after_agent_ready(
+    rid, sid, session, text, display_kind, hosted_terminal_callback, *, hosted_task=None):
     """Turn thread body: patient wait for a deferred build (a slow build must not eat the
     accepted in-flight message), then run."""
     # The wait delivers the prompt when the still-running build completes, honors a cancel promptly, notices
     # the user once past the slow threshold, and only errors when the build itself fails or the bounded cap
     # expires. See #63078.
+    if hosted_task is not None:
+        with session["history_lock"]:
+            if session.get("_hosted_room_task") != hosted_task:
+                return
+        if _finish_cancelled_hosted_start(session, hosted_task, hosted_terminal_callback):
+            return
+    marker_key = _record_turn_marker(session, text) if hosted_terminal_callback is not None else ""
     err = _wait_agent_for_prompt(session, rid, sid)
+    if hosted_task is not None:
+        with session["history_lock"]:
+            if session.get("_hosted_room_task") != hosted_task:
+                return
+        if _finish_cancelled_hosted_start(session, hosted_task, hosted_terminal_callback, marker_key):
+            return
     if err:
+        message = (err.get("error") or {}).get("message", "agent initialization failed")
+        st = _TurnRun(session.get("agent"), None, hosted_terminal_callback,
+                      receipt_committed=hosted_terminal_callback is None, marker_key=marker_key,
+                      hosted_task=hosted_task)
+        if hosted_terminal_callback is not None:
+            try:
+                _deliver_hosted_terminal_receipt(session, st, {"status": "failed", "text": "", "error": message})
+            except Exception:
+                logger.exception("hosted room pre-agent terminal receipt commit failed")
         # Terminal frame + retained snapshot (not a bare "error" event): the snapshot is
         # the only way resume shows this to a disconnected client.
         _emit_terminal_turn_error(
@@ -534,7 +557,7 @@ def _run_after_agent_ready(rid, sid, session, text, display_kind, hosted_termina
             return
     _run_prompt_submit(
         rid, sid, session, text, display_kind=display_kind,
-        terminal_callback=hosted_terminal_callback, turn_author=turn_author)
+        terminal_callback=hosted_terminal_callback, hosted_task=hosted_task)
 
 
 _TRUNCATION_PARAMS = (
@@ -547,6 +570,8 @@ def _lock_in_submit_turn(
     cut, mark the turn running + in flight.  Returns ``(err, survivor_fields)``."""
     fields = {}
     with session["history_lock"]:
+        if hosted_task is not None and session.get("running"):
+            return _err(rid, 4091, "hosted room member session is busy"), fields
         # A watch session's run lives in the PARENT turn (own running flag False); typing
         # mid-run would build a second agent racing the child on the same stored session.
         if session.get("lazy") and _child_run_active(str(session.get("session_key") or "")):
@@ -595,93 +620,13 @@ def _(rid, params: dict) -> dict:
     hosted_task = params.get("_hosted_task")
     hosted_terminal_callback = params.get("_hosted_terminal_callback")
     internal_hosted_submit = hosted_task is not None or hosted_terminal_callback is not None
-    if internal_hosted_submit:
-        if session.get("source") != "bot_room":
-            return _err(rid, 4120, "hosted room turns require a bot_room session")
-        if not isinstance(hosted_task, dict) or not callable(hosted_terminal_callback):
-            return _err(rid, 4120, "invalid hosted room turn proof")
-        required_hosted_fields = {
-            "room_id",
-            "task_id",
-            "thread_id",
-            "turn_id",
-            "execution_generation",
-        }
-        if set(hosted_task) != required_hosted_fields or not all(
-            isinstance(hosted_task.get(field), str) and hosted_task[field]
-            for field in required_hosted_fields - {"execution_generation"}
-        ) or not isinstance(hosted_task.get("execution_generation"), int):
-            return _err(rid, 4120, "invalid hosted room turn proof")
-        # Persist the authority identity independently from the bounded display
-        # title. Older Desktop clients can later submit directly into this
-        # session, so the compatibility fence must recover the real room id.
-        session["hosted_room_id"] = hosted_task["room_id"]
-    else:
-        # Older Desktop builds know the `Group: <room-id>` session title but
-        # not the hosted authority marker. Once a gateway owns that room, a
-        # direct prompt into its member session would start a second renderer
-        # driver. Fence it server-side instead of trusting client awareness.
-        room_id = str(session.get("hosted_room_id") or "").strip()
-        session_key = str(session.get("session_key") or "").strip()
-        if not room_id and session_key:
-            try:
-                with _session_db(session) as db:
-                    if db is not None:
-                        room_id = str(
-                            db.get_session_model_config_value(
-                                session_key, "hosted_room_id", ""
-                            )
-                            or ""
-                        ).strip()
-            except Exception:
-                room_id = ""
-        title = str(session.get("title") or "")
-        if room_id or title.startswith("Group: "):
-            try:
-                from gateway.hosted_rooms import (
-                    HostedRoomError,
-                    RoomProbeUnavailableError,
-                    default_db_path,
-                    probe_hosted_room,
-                )
-                from tui_gateway.hosted_room_driver import (
-                    RoomSessionIdentityUnavailableError,
-                    recover_room_id_from_session_title,
-                )
-
-                db_path = default_db_path()
-                if not room_id:
-                    recovered_room_id = recover_room_id_from_session_title(
-                        db_path,
-                        title,
-                    )
-                    room_id = recovered_room_id or title.removeprefix(
-                        "Group: "
-                    ).strip()
-                hosted = probe_hosted_room(db_path, room_id=room_id)
-            except (RoomProbeUnavailableError, RoomSessionIdentityUnavailableError):
-                return _err(
-                    rid,
-                    5122,
-                    "Could not verify this group. Try again after the gateway recovers.",
-                )
-            except HostedRoomError:
-                # Legacy Desktop sessions used the display name after
-                # "Group: "; those names are not hosted room ids.
-                pass
-            except Exception:
-                return _err(
-                    rid,
-                    5122,
-                    "Could not verify this group. Try again after the gateway recovers.",
-                )
-            else:
-                if hosted:
-                    return _err(
-                        rid,
-                        4122,
-                        "This room is managed by its gateway. Update Hermes Desktop to continue it.",
-                    )
+    err = (
+        _hosted_submit_error(rid, session, hosted_task, hosted_terminal_callback)
+        if internal_hosted_submit else _legacy_group_fence_error(rid, session, params))
+    if err is not None:
+        return err
+    # Bind this accepted attempt independently of the mutable session dictionary.
+    hosted_task = dict(hosted_task) if hosted_task is not None else None
     if (limit_message := _ensure_active_session_slot(sid, session)) is not None:
         # The refusal reason travels as machine-readable data, not as prose.
         #
@@ -1262,84 +1207,11 @@ def _(rid, params: dict) -> dict:
         sid, session, session.get("agent_ready")
     ):
         _start_agent_build(sid, session)
-
-    def run_after_agent_ready() -> None:
-        # Patient wait (#63078): the user's message is already the accepted
-        # in-flight turn, so a slow deferred build must not eat it. The wait
-        # delivers the prompt when the still-running build completes, honors a
-        # cancel promptly, notices the user once past the slow threshold, and
-        # only errors when the build itself fails or the bounded cap expires.
-        err = _wait_agent_for_prompt(session, rid, sid)
-        if err:
-            error_message = (err.get("error") or {}).get(
-                "message", "agent initialization failed"
-            )
-            if hosted_terminal_callback is not None:
-                terminal_receipt_committed = False
-                try:
-                    terminal_receipt, terminal_receipt_committed = (
-                        _persist_hosted_terminal_receipt(
-                            session,
-                            {"status": "failed", "text": "", "error": error_message},
-                        )
-                    )
-                    hosted_terminal_callback(terminal_receipt)
-                except Exception:
-                    logger.exception(
-                        "hosted room agent initialization terminal receipt commit failed"
-                    )
-                finally:
-                    if terminal_receipt_committed:
-                        with session["history_lock"]:
-                            session.pop("_hosted_room_task", None)
-            # Terminal frame + retained snapshot (not a bare "error" event +
-            # cleared inflight): if the client is disconnected right now, the
-            # retained snapshot is the only way resume can show this failure.
-            _emit_terminal_turn_error(
-                sid,
-                session,
-                error_message,
-                # Agent construction never reached the provider: this is a
-                # local-runtime failure (env/config/venv), not an API error.
-                error_surface={"layer": "runtime", "code": "agent_init_failed", "retryable": True},
-            )
-            with session["history_lock"]:
-                session["running"] = False
-                session["last_active"] = time.time()
-            _emit("session.info", sid, _session_info(session.get("agent"), session))
-            return
-        with session["history_lock"]:
-            if session.get("_turn_cancel_requested") or not session.get("running"):
-                session["running"] = False
-                _clear_inflight_turn(session)
-                # Surface the cancellation to the client. Without this emit the
-                # turn vanishes silently — the Desktop sees `prompt.submit`
-                # return `{"status": "streaming"}` but never receives a
-                # `message.start` or `error` event, so the composer shows no
-                # feedback (issue #63078 server-side half). Match the
-                # `_wait_agent` error branch above: emit, then bail.
-                _emit(
-                    "error",
-                    sid,
-                    {
-                        "message": "Turn cancelled before the agent was ready"
-                        if session.get("_turn_cancel_requested")
-                        else "Session no longer running before the agent was ready"
-                    },
-                )
-                return
-        _run_prompt_submit(
-            rid,
-            sid,
-            session,
-            text,
-            display_kind=display_kind,
-            terminal_callback=hosted_terminal_callback,
-        )
-
-    run_thread = threading.Thread(target=run_after_agent_ready, daemon=True)
-    # Keep a handle so session.interrupt can tell a live turn from a stuck
-    # `running` flag (a turn that died without clearing it) and recover the latter.
+    run_thread = threading.Thread(
+        target=lambda: _run_after_agent_ready(
+            rid, sid, session, text, display_kind, hosted_terminal_callback, hosted_task=hosted_task),
+        daemon=True)
+    # Handle lets session.interrupt tell a live turn from a stuck `running` flag.
     session["_run_thread"] = run_thread
     run_thread.start()
     return _ok(

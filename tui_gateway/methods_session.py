@@ -2817,6 +2817,41 @@ def _(rid, params: dict, session: dict) -> dict:
 
 
 # ── interrupt / steer / redirect ─────────────────────────────────────
+def _interrupt_exact_hosted_turn(sid: str, session: dict, expected: str, proof) -> bool:
+    """Claim and cancel the same local attempt, without an agent-build wait in between.
+
+    Keep all session-wide effects inside the admission lock: even queue/approval cleanup
+    after a successful check must not reach the next generation. Hosted submits reject
+    compute isolation, so this path never needs to start or address a compute worker.
+    """
+    if (not isinstance(proof, dict) or set(proof) != _HOSTED_TASK_FIELDS
+            or proof.get("task_id") != expected
+            or type(proof.get("execution_generation")) is not int):
+        return False
+    from agent.interrupt_compat import request_hard_interrupt
+    from tools.approval import resolve_gateway_approval
+
+    with session["history_lock"]:
+        if not session.get("running") or session.get("_hosted_room_task") != proof:
+            return False
+        if session.get("_hosted_room_stop_claim") == proof:
+            return True  # Stop caller and observer may acknowledge the same attempt.
+        session["_turn_cancel_requested"] = True
+        session["queued_prompt"] = None
+        session.pop("queued_prompts", None)
+        session["_queued_prompt_generation"] = int(session.get("_queued_prompt_generation", 0)) + 1
+        request_hard_interrupt(session.get("agent"))
+        _clear_pending(sid)
+        resolve_gateway_approval(session["session_key"], "deny", resolve_all=True)
+        active_marker_key = str(session.pop("_active_turn_marker_key", "") or "")
+        _retire_turn_marker(session, active_marker_key)
+        # Admission precedes publication/start of the readiness thread. A missing
+        # or not-yet-alive handle is not proof that its accepted owner has exited.
+        # That owner retires running after observing this cancellation latch.
+        session["_hosted_room_stop_claim"] = dict(proof)
+    return True
+
+
 @method("session.interrupt")
 def _(rid, params: dict) -> dict:
     expected_hosted_task_id = str(

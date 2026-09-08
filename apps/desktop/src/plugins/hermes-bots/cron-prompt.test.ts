@@ -23,6 +23,25 @@ function argvOf(prompt: string): string[] {
   const command = prompt.slice(prompt.indexOf('hermes '), prompt.lastIndexOf('\n\nIf the command'))
   const result = spawnSync('sh', ['-c', `hermes() { printf '%s\\037' "$@"; }\n${command}`], { encoding: 'utf8' })
 
+  // Windows ships Git Bash, not a `sh` executable on the desktop's PATH. Keep
+  // a real shell oracle on both hosts: string assertions cannot prove quoting.
+  const isWindows = process.platform === 'win32'
+
+  const shell = isWindows
+    ? findGitBash({ isWindows, env: process.env, fileExists: existsSync })
+    : 'sh'
+
+  expect(shell, 'Git Bash is required for the Windows shell-quoting regression').not.toBeNull()
+
+  const result = spawnSync(shell!, [...(isWindows ? ['--noprofile', '--norc'] : []), '-c',
+    `hermes() { printf '%s\\037' "$@"; }\n${command}`], {
+    encoding: 'utf8',
+    input: '',
+    timeout: 10_000,
+    windowsHide: true
+  })
+
+  expect(result.error).toBeUndefined()
   expect(result.status, result.stderr).toBe(0)
 
   return result.stdout.split('\u001f').slice(0, -1)

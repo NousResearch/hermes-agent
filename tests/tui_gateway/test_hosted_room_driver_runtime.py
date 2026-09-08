@@ -1667,10 +1667,14 @@ def test_stop_before_prompt_admission_never_starts_the_cancelled_task(db: Path):
     identity = _identity()
     _admit(db, identity)
     rpc = FakeSessionRPC(auto_complete=False)
-    runtime = _runtime(db, rpc, active_poll_interval_seconds=10.0)
+    # This tests wake/retry delivery, not expiry of the fixture's 0.4s lease.
+    # Keep authority time fixed while real thread barriers control the retry.
+    authority_now = time.time()
+    runtime = _runtime(db, rpc, active_poll_interval_seconds=10.0, clock=lambda: authority_now)
     original_interrupt = rpc.interrupt
     original_record_error = runtime._record_error
     attempts = 0
+    recorded_errors = []
     worker_failure_recorded = threading.Event()
     release_worker = threading.Event()
 
@@ -1682,6 +1686,7 @@ def test_stop_before_prompt_admission_never_starts_the_cancelled_task(db: Path):
         return original_interrupt(**kwargs)
 
     def block_worker_after_retry_failure(message: str) -> None:
+        recorded_errors.append(message)
         original_record_error(message)
         if message.startswith("stop retry remains pending"):
             worker_failure_recorded.set()
@@ -1690,18 +1695,24 @@ def test_stop_before_prompt_admission_never_starts_the_cancelled_task(db: Path):
     rpc.interrupt = flaky_interrupt
     runtime._record_error = block_worker_after_retry_failure
     runtime.start()
-    assert rpc.submitted.wait(1.0)
-    stopping = runtime.cancel(identity, cancel_id="cancel-retry")
-    assert stopping["status"] == "stopping"
-    assert state.get_task(db, identity)["status"] == "stopping"
-    assert worker_failure_recorded.wait(1.0)
-    cycles = runtime.status()["cycles"]
-    runtime.wakeup()
-    release_worker.set()
-    _wait_for(lambda: runtime.status()["cycles"] > cycles)
-    _wait_for(lambda: state.get_task(db, identity)["status"] == "cancelled")
-    assert attempts >= 3
-    assert runtime.stop(timeout=5.0)
+    try:
+        assert rpc.submitted.wait(1.0)
+        stopping = runtime.cancel(identity, cancel_id="cancel-retry")
+        assert stopping["status"] == "stopping"
+        assert state.get_task(db, identity)["status"] == "stopping"
+        assert worker_failure_recorded.wait(1.0)
+        cycles = runtime.status()["cycles"]
+        runtime.wakeup()
+        release_worker.set()
+        _wait_for(lambda: runtime.status()["cycles"] > cycles)
+        _wait_for(lambda: state.get_task(db, identity)["status"] == "cancelled")
+        assert attempts >= 3
+    except AssertionError as exc:
+        raise AssertionError({"attempts": attempts, "errors": recorded_errors,
+                              "runtime": runtime.status(), "task": state.get_task(db, identity)}) from exc
+    finally:
+        release_worker.set()
+        assert runtime.stop(timeout=5.0)
     assert state.get_task(db, identity)["status"] == "cancelled"
 
 
@@ -2182,13 +2193,16 @@ def test_profile_turn_lock_covers_resolve_submit_and_terminal_observation(db: Pa
     _admit(db, identity)
     locks = RecordingTurnLocks()
     rpc = FakeSessionRPC(required_lock=locks)
-    runtime = _runtime(db, rpc, locks)
+    authority_now = time.time()
+    runtime = _runtime(db, rpc, locks, clock=lambda: authority_now)
 
-    runtime.start()
-    _wait_for(lambda: state.get_task(db, identity)["status"] == "settled")
+    # Drive one actual scheduling cycle; a concurrent idle/recovery cycle is
+    # not part of the resolve/submit/terminal lock span asserted here.
+    runtime._run_cycle()
+    assert state.get_task(db, identity)["status"] == "settled"
     assert runtime.stop(timeout=5.0)
 
-    assert locks.events == [("lock-enter", PROFILE), ("lock-exit", PROFILE)]
+    assert locks.events == [("lock-enter", PROFILE), ("lock-exit", PROFILE)], runtime.status()
     methods = [method for method, _params in rpc.calls]
     assert methods.index("resolve_exact") < methods.index("submit")
     assert methods.index("submit") < methods.index("complete")

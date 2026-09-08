@@ -228,7 +228,8 @@ def test_blocked_context_reference_completes_hosted_terminal_callback(
         ),
     )
 
-    def persist(_session, receipt):
+    def persist(_session, receipt, *, task):
+        assert task == session["_hosted_room_task"]
         persisted.append(receipt)
         return ({**receipt, "settlement_id": "reply:task-1:1"}, True)
 

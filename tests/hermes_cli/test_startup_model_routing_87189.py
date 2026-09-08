@@ -60,6 +60,22 @@ def test_startup_route_non_aggregator_current_provider_still_routes(monkeypatch)
     assert route == model_switch.StartupModelRoute("deepseek-v4-pro", "nous", "")
 
 
+def test_startup_route_keeps_named_provider_declared_slash_model(monkeypatch):
+    monkeypatch.setattr(model_switch, "DIRECT_ALIASES", {})
+    route = model_switch.resolve_startup_model_route(
+        "deepseek/deepseek-v4-flash",
+        current_provider="custom:commandcode",
+        user_providers={
+            "deepseek": {"base_url": "https://api.deepseek.com/v1"},
+            "commandcode": {
+                "base_url": "https://api.commandcode.ai/provider/v1",
+                "models": {"deepseek/deepseek-v4-flash": {}},
+            },
+        },
+    )
+    assert route is None
+
+
 def test_startup_route_resolves_dict_alias_and_preserves_endpoint(monkeypatch):
     monkeypatch.setattr(
         model_switch,

@@ -668,10 +668,16 @@ export function AgentsOverlay({ gw, initialHistoryIndex = 0, onClose, t }: Agent
   }, [cursor, historyIndex, mode])
 
   useEffect(() => {
-    // Warm caps + paused flag on open.
+    // A control acknowledgement or newer hydration must win over this request.
+    const initial = $delegationState.get()
+    let active = true
     gw.request<DelegationStatusResponse>('delegation.status', {})
-      .then(r => applyDelegationStatus(asRpcResult<DelegationStatusResponse>(r)))
+      .then(r => {
+        if (active && $delegationState.get() === initial) {applyDelegationStatus(asRpcResult<DelegationStatusResponse>(r))}
+      })
       .catch(() => {})
+
+    return () => { active = false }
   }, [gw])
 
   useEffect(() => {

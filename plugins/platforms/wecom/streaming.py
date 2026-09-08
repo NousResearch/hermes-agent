@@ -96,10 +96,15 @@ class StreamSendOutcome:
     ``result.value`` so the gateway's ``getattr(ok, "value", None) == "indeterminate"`` check still works.
 
     ``rotated`` is True when a rotation sealed the old bubble on (or before, for the deferred
-    active-timer case) this call. The adapter does NOT report a split length — the gateway advances its
-    own split offset to its clean seal point (``_native_committed_len``)."""
+    active-timer case) this call. ``seal_len`` is the RELATIVE body length the rotation sealed the old
+    bubble with (``turn.rotation_seal_body_len`` == len(accumulated_text) at seal), measured from the
+    gateway's split offset in force when this frame's body was composed. The gateway advances its split
+    offset to ``previous_offset + seal_len`` so the fresh bubble carries only the post-seal tail. When
+    ``seal_len`` is None the gateway falls back to ``_native_committed_len`` (its own clean seal point) —
+    correct for the passive/deferred path where seal used the previous body, and for bare-bool returns."""
     result: StreamFrameResult
     rotated: bool = False
+    seal_len: Optional[int] = None
 
     def __bool__(self) -> bool:
         return bool(self.result)
@@ -689,11 +694,20 @@ class WeComStreamMixin:
             _turn_holder=holder, is_overlay_frame=is_overlay_frame, body_text=body_text,
         )
         rotated = False
+        seal_len: Optional[int] = None
         turn = holder.get("turn")
         if turn is not None and turn.pending_rotation_signal:
             rotated = True
+            # The RELATIVE body length the rotation sealed the old bubble with (== len(accumulated_text)
+            # at seal). _rotate_stream_locked recorded it; surface it so the gateway advances its split
+            # offset to the ACTUAL seal point rather than assuming its clean _native_committed_len. This
+            # matters when the ACTIVE timer seals mid-flight of THIS frame's body send — accumulated_text
+            # was already advanced to this frame's grown length, so the seal point is that length, not the
+            # previous committed length the gateway would otherwise assume. May be None if the value was
+            # already consumed (finalize path) or cleared — the gateway then falls back correctly.
+            seal_len = turn.rotation_seal_body_len
             turn.pending_rotation_signal = False  # drained — report once
-        return StreamSendOutcome(result=result, rotated=rotated)
+        return StreamSendOutcome(result=result, rotated=rotated, seal_len=seal_len)
 
     async def _send_stream_frame_core(self, text: str, *, chat: str, reply_to: Optional[str] = None, finalize: bool = False, turn_id: Optional[str] = None, _turn_holder: Optional[dict] = None, is_overlay_frame: bool = False, body_text: Optional[str] = None) -> StreamFrameResult:
         """Core stream-frame logic with per-turn state, Layer 2 rotation, and overlay/body_text handling."""
@@ -763,8 +777,13 @@ class WeComStreamMixin:
             await self._send_stream_reply(turn.req_id, turn.stream_id, text, finish=False)
             turn.last_sent_content = text
             # An intermediate body has now flowed on the fresh bubble; the gateway's split offset already
-            # slices subsequent frames, so a pending finalize-seal offset would be stale — drop it.
-            turn.rotation_seal_body_len = None
+            # slices subsequent frames, so a pending finalize-seal offset would be stale — drop it. BUT if
+            # the ACTIVE timer sealed DURING the send above (pending_rotation_signal now set), that seal's
+            # rotation_seal_body_len belongs to the rotation this call is about to report to the gateway
+            # (drained in _send_stream_frame_inner) — keep it so the gateway can advance its split offset to
+            # the real mid-flight seal point instead of assuming its clean committed length.
+            if not turn.pending_rotation_signal:
+                turn.rotation_seal_body_len = None
             return StreamFrameResult.DELIVERED
         except WeComStreamExpiredError:
             # Intermediates are overwritten by the next frame anyway; expiring here would duplicate.

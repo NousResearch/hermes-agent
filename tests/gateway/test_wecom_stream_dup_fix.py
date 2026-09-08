@@ -743,6 +743,56 @@ class TestRotationSplitSignal:
         finally:
             await adapter.disconnect()
 
+    @pytest.mark.asyncio
+    async def test_midflight_seal_reports_seal_len_of_advanced_body(self):
+        """When the active timer seals DURING a frame's body send — AFTER
+        ``turn.accumulated_text`` was advanced to that frame's grown body — the
+        reported outcome's ``seal_len`` must equal ``len(accumulated_text)`` at
+        seal (the grown body), NOT the previous body length.  This is the relative
+        seal point the gateway needs to split at.
+
+        Deterministic: the fake ``_send_stream_reply`` performs the seal itself on
+        the target content-frame's finish=False invocation (the ``sealed`` guard
+        stops the re-entrant finish=true close from re-sealing)."""
+        adapter = _make_adapter(keepalive_enabled=False)
+        try:
+            state = {"sealed": False, "seal_len_at_seal": None}
+
+            async def _reply(req_id, stream_id, content, finish=False, **kw):
+                if not finish and content == "AAAABBBB" and not state["sealed"]:
+                    state["sealed"] = True
+                    t = adapter._stream_turns[f"{CHAT_ID}:{TURN_ID}"]
+                    # accumulated_text was advanced to the grown body before this send.
+                    assert t.accumulated_text == "AAAABBBB"
+                    await adapter._rotate_stream_locked(t, TURN_ID)
+                    # _rotate_stream_locked records the seal length off accumulated_text.
+                    state["seal_len_at_seal"] = t.rotation_seal_body_len
+                return {"errcode": 0}
+            adapter._send_stream_reply = AsyncMock(side_effect=_reply)
+
+            await adapter._send_stream_frame_inner(
+                "AAAA", chat=CHAT_ID, finalize=False, turn_id=TURN_ID,
+            )
+            turn = adapter._stream_turns[f"{CHAT_ID}:{TURN_ID}"]
+            # Active band [555, 570): passive up-front check (>= 570) must not fire.
+            turn.start_time = __import__("time").monotonic() - 560.0
+
+            out = await adapter._send_stream_frame_inner(
+                "AAAABBBB", chat=CHAT_ID, finalize=False, turn_id=TURN_ID,
+            )
+
+            assert state["sealed"], "the mid-flight seal must have fired"
+            assert state["seal_len_at_seal"] == 8, (
+                "the seal recorded the grown body length (len('AAAABBBB'))"
+            )
+            assert out.rotated is True, "the same frame reports the rotation"
+            assert out.seal_len == 8, (
+                "outcome.seal_len must be the relative body length the rotation "
+                f"sealed with (== len(accumulated_text) at seal = 8); got {out.seal_len}"
+            )
+        finally:
+            await adapter.disconnect()
+
 
 class TestRotationNoLossEndToEnd:
     """The check every earlier attempt missed: concatenating each bubble's final
@@ -832,6 +882,97 @@ class TestRotationNoLossEndToEnd:
             seen = self._concat_bubbles(calls)
             assert seen == "AAAABBBBCCCC", (
                 f"active-path concat must equal the full response; got {seen!r}"
+            )
+        finally:
+            await adapter.disconnect()
+
+    @pytest.mark.asyncio
+    async def test_active_midflight_seal_advances_offset_to_real_seal_point(self):
+        """Regression for the mid-flight active-timer seal (bug #96942-followup).
+
+        The active timer fires in the band [safe-lead, safe) — 555s <= age < 570s
+        — i.e. BELOW the passive up-front check (>= 570 at streaming.py L716), so
+        the frame does NOT passive-rotate up front.  It proceeds to set
+        ``turn.accumulated_text`` to THIS frame's grown body (L2), and then, DURING
+        the finish=False body send, the active timer seals the OLD bubble with that
+        already-advanced body — recording ``rotation_seal_body_len = L2`` and
+        ``pending_rotation_signal = True``.  The SAME frame then reports
+        ``rotated=True`` to the gateway.
+
+        The bug: the gateway assumed the seal point equals the PREVIOUS committed
+        length (L1) and advanced its split offset to L1 — so every later frame
+        re-sliced ``_accumulated[L1:]`` and re-emitted the sealed tail
+        ``_accumulated[L1:L2]`` on the fresh bubble (repeated "BBBB").
+
+        The fix surfaces the adapter's real relative ``seal_len`` (== L2) so the
+        gateway advances the offset to L2 — the fresh bubble carries only the
+        post-seal tail, no repeat.
+
+        Deterministic (no wall clock): the fake ``_send_stream_reply`` performs the
+        seal itself on the target content frame's finish=False invocation, exactly
+        mimicking the active timer sealing mid-await after accumulated_text was set.
+        """
+        adapter = _make_adapter(keepalive_enabled=False)
+        try:
+            calls = []
+            state = {"sealed": False}
+
+            async def rec(req_id, stream_id, content, finish=False, **kw):
+                calls.append((stream_id, finish, content))
+                # On the target intermediate body send (finish=False, the grown
+                # "AAAABBBB" body), seal mid-await — like the active timer running
+                # concurrently AFTER turn.accumulated_text was advanced to "AAAABBBB".
+                # _rotate_stream_locked itself calls _send_stream_reply(finish=True)
+                # for the seal close; the `sealed` guard keeps that re-entrant call
+                # from recursing into another seal.
+                if (not finish and content == "AAAABBBB" and not state["sealed"]):
+                    state["sealed"] = True
+                    turn = adapter._stream_turns[f"{CHAT_ID}:{TURN_ID}"]
+                    await adapter._rotate_stream_locked(turn, TURN_ID)
+                return {"errcode": 0}
+            adapter._send_stream_reply = rec
+
+            c = self._make_gateway_consumer(adapter)
+
+            # Frame 1: seed + "AAAA".  offset=0, committed=4.
+            c._accumulated = "AAAA"
+            await c._send_or_edit("AAAA", finalize=False)
+            assert c._native_committed_len == 4
+            assert c._native_split_offset == 0
+
+            # Age into the active band [555, 570): the passive up-front check
+            # (>= 570) must NOT fire, so the next frame advances accumulated_text
+            # to "AAAABBBB" BEFORE the mid-flight seal happens.
+            turn = adapter._stream_turns[f"{CHAT_ID}:{TURN_ID}"]
+            turn.start_time = __import__("time").monotonic() - 560.0
+
+            # Frame 2: "AAAABBBB" — the mid-flight seal fires inside its body send.
+            c._accumulated = "AAAABBBB"
+            await c._send_or_edit("AAAABBBB", finalize=False)
+
+            # The offset must advance to the REAL seal point L2 (=8), not the stale
+            # previous committed length L1 (=4).
+            assert c._native_split_offset == 8, (
+                "mid-flight active seal advanced accumulated_text to the grown body "
+                "before sealing — the gateway must split at that real seal point (8), "
+                f"not the stale previous committed length (4); got "
+                f"{c._native_split_offset}"
+            )
+
+            # Frame 3: next delta on the fresh bubble — must carry only "CCCC".
+            c._accumulated = "AAAABBBBCCCC"
+            await c._send_or_edit("AAAABBBBCCCC", finalize=False)
+
+            seen = self._concat_bubbles(calls)
+            assert seen == "AAAABBBBCCCC", (
+                f"mid-flight-seal concat across bubbles must equal the full response "
+                f"(no repeat, no loss); got {seen!r}"
+            )
+            # The sealed old-bubble frame carried the full grown body "AAAABBBB".
+            seal_frames = [c2 for c2 in calls if c2[1] is True]
+            assert seal_frames, "expected a finish=true seal of the old bubble"
+            assert "AAAABBBB" in seal_frames[0][2], (
+                f"sealed old bubble must carry the grown body; got {seal_frames[0][2]!r}"
             )
         finally:
             await adapter.disconnect()

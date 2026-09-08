@@ -414,14 +414,23 @@ class StreamTransportMixin:
         # Tri-state: StreamFrameResult/StreamSendOutcome (WeCom) or bare bool (other adapters). __bool__
         # makes DELIVERED/INDETERMINATE truthy and FAILED falsy; distinguish INDETERMINATE by .value.
         is_indeterminate = getattr(ok, "value", None) == "indeterminate"
-        # Layer 2 rotation observed: the seal point is _accumulated as of the PREVIOUS pushed frame
-        # (_native_committed_len), NOT len(_accumulated) — the current buffer already includes this frame's
-        # own increment, which the adapter DEFERRED to the fresh bubble (carried by the next frame's slice).
+        # Layer 2 rotation observed. The seal point is where the adapter ACTUALLY sealed the old bubble.
+        # Normally that equals the previous committed length (the deferred passive/active-timer case seals
+        # with the PREVIOUS body), but when the active timer seals mid-flight of THIS frame's body send the
+        # adapter had already advanced its sealed body to this frame's grown length — so it reports the real
+        # relative seal length via ``seal_len``. Advance the offset to (offset in force when this frame was
+        # composed) + seal_len; ``split_offset`` was captured above BEFORE any mutation, so it is that
+        # origin. Fall back to _native_committed_len when seal_len is absent (bare-bool adapters / no report)
+        # — which is the previous committed length for the deferred case, yielding the same value.
         if ok and getattr(ok, "rotated", False):
-            self._native_split_offset = getattr(self, "_native_committed_len", 0)
-            logger.info("[stream] native rotation observed — split offset -> %d (seal point = previous "
-                        "committed length; turn=%s); fresh bubble carries incremental text only.",
-                        self._native_split_offset, self._turn_id)
+            seal_len = getattr(ok, "seal_len", None)
+            if seal_len is not None:
+                self._native_split_offset = split_offset + seal_len
+            else:
+                self._native_split_offset = getattr(self, "_native_committed_len", 0)
+            logger.info("[stream] native rotation observed — split offset -> %d (seal_len=%s, origin=%d; "
+                        "turn=%s); fresh bubble carries incremental text only.",
+                        self._native_split_offset, seal_len, split_offset, self._turn_id)
         if ok:
             self._already_sent = True
             self._last_sent_text = text

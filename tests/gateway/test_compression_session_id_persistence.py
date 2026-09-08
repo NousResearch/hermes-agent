@@ -25,6 +25,10 @@ import textwrap
 from unittest.mock import MagicMock, call
 
 from gateway import run as gateway_run
+from gateway import run_turn as gateway_run_turn
+from gateway import run_turn_runner as gateway_run_turn_runner
+from gateway import run_turn as gateway_run_turn
+from gateway import run_turn_runner as gateway_run_turn_runner
 from gateway.session_context import set_current_session_id, get_session_env
 
 
@@ -108,8 +112,9 @@ def test_every_post_compression_session_id_assignment_persists():
     would compress correctly, the gateway would update its in-memory
     session_id, then drop it on next gateway restart.
     """
-    source = inspect.getsource(gateway_run)
-    assignments = _session_id_assignments_followed_by_save(source)
+    assignments = []
+    for mod in (gateway_run, gateway_run_turn, gateway_run_turn_runner):
+        assignments += _session_id_assignments_followed_by_save(inspect.getsource(mod))
     assert assignments, (
         "No ``session_entry.session_id = ...`` assignments found in gateway/run.py — "
         "either the structure changed or the AST walker is broken."

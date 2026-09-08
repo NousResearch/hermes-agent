@@ -137,10 +137,13 @@ async def test_failed_primary_pool_is_discarded_and_closed(monkeypatch):
     try:
         response = await transport.handle_async_request(_telegram_request())
         assert response.status_code == 200
-        assert len(instances) == 3
-        assert instances[0].closed
+        # IPv4-first (#87015): .220 succeeds on the first try, so the
+        # dual-stack hostname pool is never opened and never discarded.
+        # Instances: 1 primary (unused this request) + 1 fallback (.220).
+        assert len(instances) == 2
+        assert not instances[0].closed
         assert not instances[1].closed
-        assert not instances[2].closed
+        assert transport._sticky_ip == "149.154.167.220"
     finally:
         await transport.aclose()
 

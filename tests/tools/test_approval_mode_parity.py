@@ -3,8 +3,8 @@
 The approval mode (``approvals.mode``) and timeout (``approvals.timeout``)
 must resolve identically on every surface that consults them:
 
-  - the canonical core: ``tools.approval._get_approval_mode`` /
-    ``tools.approval._get_approval_timeout``
+  - the canonical core: ``tools.approval_context._get_approval_mode`` /
+    ``tools.approval_context._get_approval_timeout``
   - the TUI gateway: ``tui_gateway.server._load_approval_mode`` (delegates
     to the core as of the decision-core migration)
   - the codex app-server surface: ``agent/codex_runtime.py`` feeds
@@ -113,8 +113,9 @@ def test_mode_and_timeout_parity_across_surfaces(
 
     _write_config(hermes_home, yaml_text)
 
-    core_mode = approval_mod._get_approval_mode()
-    core_timeout = approval_mod._get_approval_timeout()
+    ctx = importlib.import_module("tools.approval_context")
+    core_mode = ctx._get_approval_mode()
+    core_timeout = ctx._get_approval_timeout()
     tui_mode = tui_server._load_approval_mode()
 
     # Canonical resolver matches expectations.
@@ -142,15 +143,15 @@ def test_tui_loader_delegates_to_core(hermes_home, tui_server):
     Pin the delegation seam directly: patching the core resolver changes
     what the TUI reports, proving there is no independent config read left.
     """
-    approval_mod = _approval_module()
+    approval_context = importlib.import_module("tools.approval_context")
 
-    with patch.object(approval_mod, "_get_approval_mode", return_value="smart"):
+    with patch.object(approval_context, "_get_approval_mode", return_value="smart"):
         assert tui_server._load_approval_mode() == "smart"
-    with patch.object(approval_mod, "_get_approval_mode", return_value="off"):
+    with patch.object(approval_context, "_get_approval_mode", return_value="off"):
         assert tui_server._load_approval_mode() == "off"
     # Defensive clamp: an out-of-vocabulary value from the core is coerced
     # to manual rather than leaking an unknown mode to the TUI client.
     with patch.object(
-        approval_mod, "_get_approval_mode", return_value="weird"
+        approval_context, "_get_approval_mode", return_value="weird"
     ):
         assert tui_server._load_approval_mode() == "manual"

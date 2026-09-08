@@ -11,21 +11,50 @@ run the actual commands and verify exit codes — the exact paths the
 reviewer flagged as unproven.
 """
 
+import os
 import subprocess
 import sys
 from pathlib import Path
 
 import pytest
+from hermes_cli import update_cmd
 
 
 def _run_hermes(args: list[str], timeout: int = 30) -> subprocess.CompletedProcess[str]:
-    """Run hermes CLI as a subprocess from repo root."""
+    """Run hermes CLI as a subprocess from repo root.
+
+    The child runs with all git remote URLs rewritten to an unreachable
+    local path (GIT_CONFIG_* env overrides). These tests assert the
+    lazy-crypto / no-self-lock invariants of the dispatch path, NOT update
+    connectivity — but ``hermes update --check`` really does ``git fetch``
+    against github.com when run bare. Under remote throttling that fetch
+    can exceed the subprocess timeout and TimeoutExpired the test (exactly
+    what happened on CI during the 2026-08-17 GitHub incident: both update
+    tests red on main for hours with no code change). Rewriting the URLs
+    makes the fetch fail instantly and deterministically; the update path
+    still exercises its full parser/dispatch/fetch code and exits 1, which
+    the assertions already accept.
+    """
     repo_root = Path(__file__).parent.parent
+    env = dict(os.environ)
+    env.update(
+        {
+            "GIT_CONFIG_COUNT": "2",
+            # Rewrite every https:// and ssh remote to a nonexistent local
+            # path so any fetch fails in milliseconds without touching the
+            # network. insteadOf matching is prefix-based.
+            "GIT_CONFIG_KEY_0": "url.file:///nonexistent-hermes-test-remote/.insteadOf",
+            "GIT_CONFIG_VALUE_0": "https://",
+            "GIT_CONFIG_KEY_1": "url.file:///nonexistent-hermes-test-remote/.insteadOf",
+            "GIT_CONFIG_VALUE_1": "git@",
+        }
+    )
     return subprocess.run(
         [sys.executable, "-m", "hermes_cli.main"] + args,
         capture_output=True,
         text=True,
         cwd=str(repo_root),
+        env=env,
         timeout=timeout,
     )
 
@@ -159,8 +188,8 @@ import hermes_cli.main as m
 # without doing network I/O.  cmd_update (in main.py) calls
 # _self()._cmd_update_check(branch=..., branch_explicit=...) where _self()
 # resolves the hermes_cli.main module's lazily re-exported attribute —
-# so the patch must land on hermes_cli.main._cmd_update_check.
-with patch('hermes_cli.main._cmd_update_check', capture_update_check):
+# so the patch must land on update_cmd._cmd_update_check.
+with patch('hermes_cli.update_cmd._cmd_update_check', capture_update_check):
     try:
         m.main()
     except SystemExit as e:

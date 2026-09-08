@@ -3,9 +3,29 @@ from unittest.mock import AsyncMock
 
 from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.platforms.base import BasePlatformAdapter
-from gateway.restart import GATEWAY_FATAL_CONFIG_EXIT_CODE
+from gateway.restart import GATEWAY_FATAL_CONFIG_EXIT_CODE, is_global_startup_conflict
 from gateway.run import GatewayRunner
-from gateway.status import read_runtime_status
+from gateway.status import read_runtime_status, write_runtime_status
+
+
+@pytest.mark.parametrize(
+    "code, expected",
+    [
+        ("telegram-bot-token_lock", True),   # BasePlatformAdapter._acquire_platform_lock
+        ("discord-bot-token_lock", True),
+        ("whatsapp-session_lock", True),
+        ("feishu_app_lock", True),
+        ("lock_conflict", True),             # buzz / irc / line identity conflicts
+        ("telegram_connect_error", False),
+        ("telegram_auth_error", False),
+        ("relay_membership_required", False),
+        ("duplicate_credential", False),
+        ("", False),
+        (None, False),
+    ],
+)
+def test_is_global_startup_conflict_matches_lock_code_families(code, expected):
+    assert is_global_startup_conflict(code) is expected
 
 
 class _RetryableFailureAdapter(BasePlatformAdapter):
@@ -136,7 +156,22 @@ async def test_start_gateway_replace_aborts_when_force_killed_pid_still_alive(
     )
     monkeypatch.setattr(
         "gateway.status.terminate_pid",
-        lambda pid, force=False: calls.append((pid, force)),
+        lambda pid, force=False, **kwargs: calls.append((pid, force)),
+    )
+    # Ownership guard (#89315): legitimate same-home replace fixture — the
+    # persisted record is bound to target pid 42 in this home.
+    monkeypatch.setattr(
+        "gateway.status._read_pid_record",
+        lambda path=None: {
+            "pid": 42,
+            "kind": "hermes-gateway",
+            "argv": ["python", "-m", "hermes_cli.main", "gateway", "run"],
+            "start_time": 0,
+            "hermes_home": str(tmp_path),
+        },
+    )
+    monkeypatch.setattr(
+        "gateway.status._get_process_start_time", lambda pid: 0 if pid == 42 else None
     )
     # _pid_exists never goes False — the force-kill did not take.
     monkeypatch.setattr("gateway.status._pid_exists", lambda pid: True)
@@ -191,7 +226,7 @@ async def test_start_gateway_replace_writes_takeover_marker_before_sigterm(
         })
         return True
 
-    def record_terminate(pid, force=False):
+    def record_terminate(pid, force=False, **kwargs):
         events.append(f"terminate_pid(pid={pid}, force={force})")
 
     class _CleanExitRunner:
@@ -215,6 +250,23 @@ async def test_start_gateway_replace_writes_takeover_marker_before_sigterm(
         _pid_state["alive"] = False
     monkeypatch.setattr("gateway.status.get_running_pid", _mock_get_running_pid)
     monkeypatch.setattr("gateway.status.remove_pid_file", _mock_remove_pid_file)
+    # Ownership guard (#89315): this test simulates a legitimate same-home
+    # replace, so the persisted pid record must be a valid BOUND record for
+    # the target pid in THIS home. start_time 0 matches the legacy fixture's
+    # convention; the live probe is patched to agree.
+    monkeypatch.setattr(
+        "gateway.status._read_pid_record",
+        lambda path=None: {
+            "pid": 42,
+            "kind": "hermes-gateway",
+            "argv": ["python", "-m", "hermes_cli.main", "gateway", "run"],
+            "start_time": 0,
+            "hermes_home": str(tmp_path),
+        },
+    )
+    monkeypatch.setattr(
+        "gateway.status._get_process_start_time", lambda pid: 0 if pid == 42 else None
+    )
     monkeypatch.setattr(
         "gateway.status.release_all_scoped_locks",
         lambda **kwargs: 0,
@@ -263,7 +315,7 @@ async def test_start_gateway_replace_clears_marker_on_permission_denied(
         })
         return True
 
-    def raise_permission(pid, force=False):
+    def raise_permission(pid, force=False, **kwargs):
         raise PermissionError("simulated EPERM")
 
     monkeypatch.setattr("gateway.status.get_running_pid", lambda: 42)
@@ -303,6 +355,11 @@ async def test_runner_degrades_gracefully_when_all_adapters_missing(monkeypatch,
     )
     runner = GatewayRunner(config)
 
+    # A previous gateway run connected successfully. Missing adapters on this
+    # run must overwrite that persisted state instead of leaving them healthy.
+    for platform in config.platforms:
+        write_runtime_status(platform=platform.value, platform_state="connected")
+
     # Simulate _create_adapter returning None for ALL platforms (missing library /
     # missing credentials — no connection attempt ever made).
     monkeypatch.setattr(runner, "_create_adapter", lambda platform, cfg: None)
@@ -318,11 +375,62 @@ async def test_runner_degrades_gracefully_when_all_adapters_missing(monkeypatch,
     # Runtime state must remain "running", not "startup_failed".
     state = read_runtime_status()
     assert state["gateway_state"] == "running"
+    for platform in config.platforms:
+        platform_state = state["platforms"][platform.value]
+        assert platform_state["state"] == "failed"
+        assert platform_state["error_code"] == "adapter_unavailable"
+        assert platform_state["error_message"]
     # A warning must be emitted explaining why no platforms connected.
     assert any(
         "No adapter could be created" in record.message
         for record in caplog.records
     ), "Expected degraded-mode warning when all adapters are missing"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("write_error", [PermissionError("read-only status file"), OSError("disk full")])
+async def test_missing_adapter_status_write_error_does_not_block_other_platforms(
+    monkeypatch, tmp_path, write_error,
+):
+    """Status persistence is best-effort, including the unavailable-adapter path."""
+    import gateway.status as status
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    config = GatewayConfig(
+        platforms={
+            Platform.TELEGRAM: PlatformConfig(enabled=True, token="***"),
+            Platform.DISCORD: PlatformConfig(enabled=True, token="***"),
+        },
+        sessions_dir=tmp_path / "sessions",
+    )
+    runner = GatewayRunner(config)
+    successful_adapter = _SuccessfulAdapter()
+    monkeypatch.setattr(
+        runner, "_create_adapter",
+        lambda platform, cfg: None if platform == Platform.TELEGRAM else successful_adapter,
+    )
+    write_runtime_status(platform="telegram", platform_state="connected")
+    original_write = status._write_json_file
+    failed_writes = []
+
+    def fail_unavailable_status_write(path, payload):
+        telegram = payload.get("platforms", {}).get("telegram", {})
+        if telegram.get("error_code") == "adapter_unavailable":
+            failed_writes.append(path)
+            raise write_error
+        return original_write(path, payload)
+
+    # Keep the real status wrapper and serialization path; fail only the disk
+    # write for the unavailable adapter, never the high-level wrapper itself.
+    monkeypatch.setattr(status, "_write_json_file", fail_unavailable_status_write)
+
+    assert await runner.start() is True
+    assert failed_writes, "the unavailable-adapter status write was not exercised"
+    assert runner.adapters[Platform.DISCORD] is successful_adapter
+    assert Platform.TELEGRAM not in runner.adapters
+    state = read_runtime_status()
+    assert state["gateway_state"] == "running"
+    assert state["platforms"]["discord"]["state"] == "connected"
 
 
 class _NonRetryableFailureAdapter(BasePlatformAdapter):
@@ -413,3 +521,113 @@ async def test_start_gateway_propagates_fatal_config_exit_code(monkeypatch, tmp_
     assert exc_info.value.code == GATEWAY_FATAL_CONFIG_EXIT_CODE
 
 
+class _ForeignTokenLockAdapter(BasePlatformAdapter):
+    """Connects exactly like telegram/discord do: production
+    ``_acquire_platform_lock`` first, which emits ``{scope}_lock`` with
+    ``retryable=True`` (so a mid-run reconnect can recover, #54167)."""
+
+    def __init__(self):
+        super().__init__(PlatformConfig(enabled=True, token="***"), Platform.TELEGRAM)
+
+    async def connect(self, *, is_reconnect: bool = False) -> bool:
+        return self._acquire_platform_lock(
+            "telegram-bot-token", self.config.token, "Telegram bot token"
+        )
+
+    async def disconnect(self) -> None:
+        self._release_platform_lock()
+        self._mark_disconnected()
+
+    async def send(self, chat_id, content, reply_to=None, metadata=None):
+        raise NotImplementedError
+
+    async def get_chat_info(self, chat_id):
+        return {"id": chat_id}
+
+
+@pytest.mark.asyncio
+async def test_live_foreign_token_lock_at_startup_exits_ex_config(monkeypatch, tmp_path):
+    """Salvage of #83183 claim 1: a LIVE foreign holder of the bot token at
+    zero-connected startup is a single-writer conflict, not a transient blip.
+
+    ``_acquire_platform_lock`` deliberately emits the conflict retryable so a
+    *mid-run* reconnect can recover once the holder exits.  The startup router
+    used to key solely off that flag, so the gateway stayed alive, deaf, and
+    retry-queued forever instead of exiting 78 (EX_CONFIG)."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("HERMES_GATEWAY_LOCK_DIR", str(tmp_path / "locks"))
+    # A live foreign holder: acquire_scoped_lock reports (False, record).
+    monkeypatch.setattr(
+        "gateway.status.acquire_scoped_lock",
+        lambda scope, identity, metadata=None: (
+            False,
+            {"pid": 424242, "start_time": 1, "hermes_home": "/other/home", "profile": "other"},
+        ),
+    )
+    config = GatewayConfig(
+        platforms={Platform.TELEGRAM: PlatformConfig(enabled=True, token="***")},
+        sessions_dir=tmp_path / "sessions",
+    )
+    runner = GatewayRunner(config)
+    monkeypatch.setattr(
+        runner, "_create_adapter", lambda platform, platform_config: _ForeignTokenLockAdapter()
+    )
+
+    ok = await runner.start()
+
+    assert ok is True
+    assert runner.should_exit_cleanly is True
+    assert runner.exit_code == GATEWAY_FATAL_CONFIG_EXIT_CODE
+    assert runner._failed_platforms == {}
+    state = read_runtime_status()
+    assert state["gateway_state"] == "startup_failed"
+    assert state["platforms"]["telegram"]["state"] == "fatal"
+    assert state["platforms"]["telegram"]["error_code"] == "telegram-bot-token_lock"
+
+
+@pytest.mark.asyncio
+async def test_token_lock_plus_retryable_peer_stays_alive(monkeypatch, tmp_path):
+    """A lock conflict alongside a genuinely transient peer failure is the
+    NS-609 mixed mode: the lock is parked fatal, the peer keeps its retry, and
+    the gateway stays alive (no exit 78)."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("HERMES_GATEWAY_LOCK_DIR", str(tmp_path / "locks"))
+    monkeypatch.setattr(
+        "gateway.status.acquire_scoped_lock",
+        lambda scope, identity, metadata=None: (False, {"pid": 424242, "start_time": 1}),
+    )
+    config = GatewayConfig(
+        platforms={
+            Platform.TELEGRAM: PlatformConfig(enabled=True, token="***"),
+            Platform.DISCORD: PlatformConfig(enabled=True, token="***"),
+        },
+        sessions_dir=tmp_path / "sessions",
+    )
+    runner = GatewayRunner(config)
+
+    class _DiscordBlip(_RetryableFailureAdapter):
+        def __init__(self):
+            BasePlatformAdapter.__init__(
+                self, PlatformConfig(enabled=True, token="***"), Platform.DISCORD
+            )
+
+    monkeypatch.setattr(
+        runner,
+        "_create_adapter",
+        lambda platform, cfg: (
+            _ForeignTokenLockAdapter() if platform is Platform.TELEGRAM else _DiscordBlip()
+        ),
+    )
+
+    ok = await runner.start()
+    try:
+        assert ok is True
+        assert runner.should_exit_cleanly is False
+        assert runner.exit_code is None
+        assert set(runner._failed_platforms) == {Platform.DISCORD}
+        state = read_runtime_status()
+        assert state["gateway_state"] == "running"
+        assert state["platforms"]["telegram"]["state"] == "fatal"
+        assert state["platforms"]["discord"]["state"] == "retrying"
+    finally:
+        await runner.stop()

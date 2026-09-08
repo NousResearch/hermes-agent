@@ -3078,6 +3078,11 @@ def request_review(
             },
             run_id=run_id,
         )
+    if _kanban_observer_consumed("kanban_task_review_requested"):
+        _fire_task_hook(
+            "kanban_task_review_requested", get_task(conn, task_id), task_id, run_id,
+            summary=_first_line(summary, 400) or None,
+        )
     return _ret(True)
 
 

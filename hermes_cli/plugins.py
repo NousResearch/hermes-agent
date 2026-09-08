@@ -141,9 +141,12 @@ VALID_HOOKS: Set[str] = {
     "pre_transcription",
     # Kanban task observers (hermes_cli.kanban_db), fired AFTER the DB commit so a slow plugin never
     # holds the SQLite write lock; returns ignored. claimed fires in the DISPATCHER right before
-    # spawn; completed/blocked fire in the WORKER (or whichever process drove it). Kwargs: task_id,
-    # board, assignee, run_id, profile_name; completed adds summary, blocked adds reason.
+    # spawn; completed/blocked/review_requested fire in the WORKER (or whichever process drove it).
+    # Kwargs: task_id, board, assignee, run_id, profile_name; completed adds summary, blocked adds
+    # reason, review_requested adds summary. review_requested fires only after request_review()'s
+    # running/ready -> review transition commits; a failed/refused transition never fires it.
     "kanban_task_claimed", "kanban_task_completed", "kanban_task_blocked",
+    "kanban_task_review_requested",
     # Kanban worker/mutation/tick observers; returns ignored; fire sites short-circuit on
     # has_hook(). Kwargs: task_id, profile_name, board, assignee, run_id plus, per hook:
     # worker_spawned (DISPATCHER, after PID persisted, inside the dispatch lock — stay fast):

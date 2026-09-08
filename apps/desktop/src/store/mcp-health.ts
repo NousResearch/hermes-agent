@@ -175,6 +175,8 @@ function arm(): void {
 }
 
 function disarm(): void {
+  sweepQueued = false
+
   if (timer !== null) {
     clearInterval(timer)
     timer = null

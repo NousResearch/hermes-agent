@@ -117,3 +117,20 @@ it('coalesces reconnects during a sweep into one fresh follow-up sweep', async (
   await flush()
   expect(mocks.getHermesConfigRecord).toHaveBeenCalledTimes(2)
 })
+
+it.each(['stop', 'disconnect'])('drops the queued sweep on %s', async action => {
+  let release!: (config: Record<string, unknown>) => void
+  mocks.getHermesConfigRecord.mockReturnValueOnce(new Promise(resolve => { release = resolve })).mockResolvedValue({ mcp_servers: {} })
+  startMcpHealthChecker()
+  mocks.gatewayState.set('open')
+  mocks.gatewayState.set('closed')
+  mocks.gatewayState.set('open')
+
+  if (action === 'stop') {stopMcpHealthChecker()}
+  else {mocks.gatewayState.set('closed')}
+
+  release({ mcp_servers: {} })
+  await flush()
+  await flush()
+  expect(mocks.getHermesConfigRecord).toHaveBeenCalledTimes(1)
+})

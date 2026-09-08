@@ -122,3 +122,31 @@ def test_turn_runner_passes_the_author_only_when_set_and_only_to_an_agent_that_d
         srv._run_prompt_submit("rid", "ui-sid", _session(agent=agent, running=True), "ping", turn_author=author)
 
     assert seen == [AUTHOR, "not passed", "legacy called"]
+
+
+def test_a_human_prompt_after_a_relayed_dm_runs_without_an_author(turn_env, monkeypatch):
+    """The author rides on the queued entry and the run call, never on the session, so the human prompt that
+    follows a drained relayed dm reaches ``run_conversation`` unattributed."""
+    seen = []
+
+    def run_conversation(user_message, *, turn_author="not passed", **kwargs):
+        seen.append((user_message, turn_author))
+        return {"final_response": "ok"}
+
+    monkeypatch.setattr(srv, "_interrupt_busy_session", lambda *a, **k: None)
+    agent = types.SimpleNamespace(session_id="a", run_conversation=run_conversation, clear_interrupt=lambda: None,
+                                  interrupt=lambda: None)
+    session = _session(agent=agent, running=True)
+    srv._sessions["sid"] = session
+    try:
+        params = {"session_id": "sid", "text": "ping", "queued": True, "_turn_author": DeliveryAuthor(AUTHOR)}
+        assert _result(srv._methods["prompt.submit"]("r", params)) == {"status": "queued"}
+        session["running"] = False
+        assert srv._drain_queued_prompt("d", "sid", session) is True
+        session["running"] = True
+        srv._run_prompt_submit("r2", "sid", session, "human note")
+    finally:
+        srv._sessions.pop("sid", None)
+
+    assert seen == [("ping", AUTHOR), ("human note", "not passed")]
+    assert "turn_author" not in session and not session.get("queued_prompt")

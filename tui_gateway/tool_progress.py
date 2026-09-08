@@ -358,10 +358,14 @@ def _on_tool_progress(
     sid: str, event_type: str, name: str | None = None, preview: str | None = None,
     _args: dict | None = None, **_kwargs,
 ):
-    if not _tool_progress_enabled(sid) or (event_type == "tool.started" and name):
+    if event_type == "tool.started" and name:
         return
+    # Subagent lifecycle is application state (Desktop status stack, TUI spawn tree), not
+    # tool-progress chrome: it must survive display.tool_progress=off like todo.updated does.
     if event_type.startswith("subagent."):
         return _progress_subagent(sid, name, preview, _kwargs, event_type)
+    if not _tool_progress_enabled(sid):
+        return
     handler, requires = _PROGRESS_HANDLERS.get(event_type, (None, None))
     if handler is not None and (requires is None or {"name": name, "preview": preview}[requires]):
         handler(sid, name, preview, _kwargs)

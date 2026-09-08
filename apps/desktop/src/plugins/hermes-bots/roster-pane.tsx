@@ -66,6 +66,20 @@ import { displayName } from './labels'
 import { deleteBot, mergeServerMeta, pullServerAvatars } from './profile-ops'
 import { $activityToasts, setActivityToasts, trackInboundActivity } from './roster-actions'
 import {
+  $draggingBotPinned,
+  $draggingBotScope,
+  $rosterOrder,
+  clearRosterOrder,
+  hasAnyCustomRosterOrder,
+  moveRosterItem,
+  orderRosterRows,
+  persistRosterOrder,
+  pruneRosterOrder,
+  removeBotFromRosterOrder,
+  rosterSectionScope
+} from './roster-order'
+import { ReorderableRosterRow } from './roster-order-row'
+import {
   botNeedsHandleLabel,
   filterBotsByGateway,
   GatewayKindGlyph,
@@ -83,6 +97,7 @@ import type { BotMeta, GatewaySource, GroupMember, RosterActivityFilter, RosterK
 import {
   $botSections,
   $draggingBot,
+  botSectionId,
   createBotSection,
   deleteBotSection,
   groupRowsBySection,
@@ -294,6 +309,7 @@ export function BotsPane() {
   const rosterHydrated = useValue($rosterHydrated)
   const selectionHydrated = useValue($selectedRosterHydrated)
   const selectedRosterKey = useValue($selectedRosterKey)
+  const rosterOrder = useValue($rosterOrder)
 
   // The socket opening (boot, SSH reconnect, sleep/wake) is the signal to
   // retry immediately instead of waiting out the poll interval.
@@ -338,6 +354,23 @@ export function BotsPane() {
 
     return activityOf(b) - activityOf(a)
   })
+
+  useEffect(() => {
+    if (!dragging) {
+      $draggingBotScope.set(null)
+      $draggingBotPinned.set(null)
+
+      return
+    }
+
+    const dragged = roster.find(bot => botRosterKey(bot) === dragging)
+
+    if (dragged) {
+      const sectionId = botSectionId(dragged, allMeta)
+      $draggingBotScope.set(rosterSectionScope(sectionId, dragged.connectionId))
+      $draggingBotPinned.set(isBotPinned(dragged, allMeta))
+    }
+  }, [dragging, roster, allMeta])
 
   // React Query can briefly report neither loading nor data while the plugin
   // and the persisted connection registry hydrate. Keep that transition in a
@@ -515,6 +548,7 @@ export function BotsPane() {
     pullServerAvatars(activeSourceRoster)
     trackInboundActivity(roster)
     backfillMessagingProtocol(activeSourceRoster)
+    pruneRosterOrder(new Set(roster.map(botRosterKey)))
     // React Query owns the stable server snapshot; derived arrays intentionally
     // follow that snapshot rather than retriggering on their own atom writes.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -554,31 +588,64 @@ export function BotsPane() {
     return <GroupChatWorkspace group={groupChatName} members={groupChatMembers} />
   }
 
-  const renderBotRow = (bot: RosterRow, keyPrefix = '') => (
-    <BotRow
-      bot={bot}
-      key={`${keyPrefix}${botRosterKey(bot)}`}
-      onDelete={setDeleting}
-      onEdit={setEditing}
-      onGroup={setGrouping}
-      onNewSection={target => setSectionDialog({ bot: target, mode: 'create' })}
-      showHandle={botNeedsHandleLabel(bot, roster, allMeta)}
-    />
-  )
+  const renderBotRow = (
+    bot: RosterRow,
+    keyPrefix = '',
+    scopeKey?: string,
+    onReorder?: (sourceKey: string, targetKey: string, position: 'before' | 'after') => void
+  ) => {
+    const itemKey = botRosterKey(bot)
+    const pinned = isPinned(bot)
 
-  const renderGroupRow = (row: { members: GroupMember[]; name: string }) => (
-    <GroupRow
-      active={groupChatName === row.name}
-      group={row.name}
-      key={`group:${row.name}`}
-      members={row.members}
-      needsYou={Boolean(groupNeedsYou[row.name])}
-      onDisband={setDeletingGroup}
-      onOpen={openGroupChat}
-    />
-  )
+    const row = (
+      <BotRow
+        bot={bot}
+        onDelete={setDeleting}
+        onEdit={setEditing}
+        onGroup={setGrouping}
+        onNewSection={target => setSectionDialog({ bot: target, mode: 'create' })}
+        showHandle={botNeedsHandleLabel(bot, roster, allMeta)}
+      />
+    )
 
-  const removeSection = (id: string) => {
+    if (!scopeKey || !onReorder) {
+      return <div key={`${keyPrefix}${itemKey}`}>{row}</div>
+    }
+
+    return (
+      <ReorderableRosterRow
+        itemKey={itemKey}
+        key={`${keyPrefix}${itemKey}`}
+        onReorder={onReorder}
+        pinned={pinned}
+        scopeKey={scopeKey}
+      >
+        {row}
+      </ReorderableRosterRow>
+    )
+  }
+
+  const renderGroupRow = (row: { members: GroupMember[]; name: string }) => {
+    const itemKey = `group:${row.name}`
+
+    return (
+      <GroupRow
+        active={groupChatName === row.name}
+        group={row.name}
+        key={itemKey}
+        members={row.members}
+        needsYou={Boolean(groupNeedsYou[row.name])}
+        onDisband={setDeletingGroup}
+        onOpen={openGroupChat}
+      />
+    )
+  }
+
+  const removeSection = (id: string, scopeKey?: string) => {
+    if (scopeKey) {
+      clearRosterOrder(scopeKey)
+    }
+
     const name = userSections.find(section => section.id === id)?.name || ''
     const { members, undo } = deleteBotSection(id, roster)
 
@@ -602,9 +669,49 @@ export function BotsPane() {
   type UserSectionRow = { bot: RosterRow; kind?: 'bot' } | RosterGroupRow
 
   const renderUserSections = (rows: UserSectionRow[], keyPrefix = '') => {
-    // No sections made: the plain list, exactly as before this feature.
+    const connectionId = keyPrefix
+      ? keyPrefix.replace(/:$/, '')
+      : gatewayFilter !== 'all'
+        ? gatewayFilter
+        : gatewayOptions[0]?.connectionId || 'local'
+
+    // No sections made: the plain list, reorderable within Unassigned
     if (!userSections.length) {
-      return rows.map(row => (row.kind === 'group' ? renderGroupRow(row) : renderBotRow(row.bot, keyPrefix)))
+      const scopeKey = rosterSectionScope(null, connectionId)
+      const sectionOrderKeys = rosterOrder[scopeKey] || []
+
+      const plainGroupRows = rows.filter((r): r is RosterGroupRow => r.kind === 'group')
+      const plainBotRows = rows.filter((r): r is { bot: RosterRow; kind?: 'bot' } => r.kind !== 'group')
+
+      const allSectionBots = roster.filter(
+        b =>
+          botSectionId(b, allMeta) === null &&
+          (!connectionId || connectionId === 'all' || b.connectionId === connectionId)
+      )
+
+      const allSectionBotKeys = allSectionBots.map(botRosterKey)
+
+      const orderableBotRows = plainBotRows.map(r => ({
+        ...r,
+        pinned: isPinned(r.bot),
+        activity: activityOf(r.bot),
+        created: botRosterMeta(r.bot, allMeta)?.created || r.bot.ui_meta?.['hermes-bots']?.created || 0
+      }))
+
+      const orderedBotRows = orderRosterRows(orderableBotRows, row => botRosterKey(row.bot), sectionOrderKeys)
+
+      const handleReorder = (sourceKey: string, targetKey: string, position: 'before' | 'after') => {
+        const nextOrder = moveRosterItem(sectionOrderKeys, allSectionBotKeys, sourceKey, targetKey, position)
+        persistRosterOrder({
+          ...rosterOrder,
+          [scopeKey]: nextOrder
+        })
+      }
+
+      return [
+        ...plainGroupRows.map(renderGroupRow),
+        ...orderedBotRows.map(row => renderBotRow(row.bot, keyPrefix, scopeKey, handleReorder))
+      ]
     }
 
     const nested = Boolean(keyPrefix)
@@ -623,6 +730,41 @@ export function BotsPane() {
           const key = `${keyPrefix}${block.id ? `user-section:${block.id}` : UNASSIGNED_SECTION_KEY}`
           const collapsed = rosterSectionCollapsed(key)
           const order = userSections.findIndex(section => section.id === block.id)
+          const scopeKey = rosterSectionScope(block.id, connectionId)
+          const sectionOrderKeys = rosterOrder[scopeKey] || []
+          const hasCustomOrder = sectionOrderKeys.length > 0
+
+          const allSectionBots = roster.filter(
+            b =>
+              botSectionId(b, allMeta) === (block.id ?? null) &&
+              (!connectionId || connectionId === 'all' || b.connectionId === connectionId)
+          )
+
+          const allSectionBotKeys = allSectionBots.map(botRosterKey)
+
+          const blockGroupRows = block.rows.filter((r): r is RosterGroupRow => r.kind === 'group')
+          const blockBotRows = block.rows.filter((r): r is { bot: RosterRow; kind?: 'bot' } => r.kind !== 'group')
+
+          const orderableBotRows = blockBotRows.map(r => ({
+            ...r,
+            pinned: isPinned(r.bot),
+            activity: activityOf(r.bot),
+            created: botRosterMeta(r.bot, allMeta)?.created || r.bot.ui_meta?.['hermes-bots']?.created || 0
+          }))
+
+          const orderedBotRows = orderRosterRows(orderableBotRows, row => botRosterKey(row.bot), sectionOrderKeys)
+
+          const handleReorder = (sourceKey: string, targetKey: string, position: 'before' | 'after') => {
+            const nextOrder = moveRosterItem(sectionOrderKeys, allSectionBotKeys, sourceKey, targetKey, position)
+            persistRosterOrder({
+              ...rosterOrder,
+              [scopeKey]: nextOrder
+            })
+          }
+
+          const resetSectionOrder = () => {
+            clearRosterOrder(scopeKey)
+          }
 
           return (
             <SectionDropZone
@@ -637,6 +779,9 @@ export function BotsPane() {
                 // `block.id` is null for Unassigned, which is exactly the value
                 // moveBotsToSection wants for "clear the assignment".
                 if (bot) {
+                  const oldSectionId = botSectionId(bot, allMeta)
+                  const oldScopeKey = rosterSectionScope(oldSectionId, bot.connectionId)
+                  removeBotFromRosterOrder(rosterKey, oldScopeKey)
                   void moveBotsToSection([bot], block.id)
                 }
               }}
@@ -646,18 +791,23 @@ export function BotsPane() {
                 canMoveUp={order > 0}
                 collapsed={collapsed}
                 count={block.rows.length}
+                hasCustomOrder={hasCustomOrder}
                 id={block.id}
                 name={block.name}
-                onDelete={() => block.id && removeSection(block.id)}
+                onDelete={() => {
+                  if (block.id) {
+                    removeSection(block.id, scopeKey)
+                  }
+                }}
                 onMove={delta => block.id && moveBotSection(block.id, delta)}
                 onRename={() => block.id && setSectionDialog({ id: block.id, mode: 'rename', name: block.name })}
+                onResetOrder={hasCustomOrder ? resetSectionOrder : undefined}
                 onToggle={() => toggleRosterSection(key)}
               />
               {collapsed ? null : block.rows.length ? (
                 <div className="grid min-w-0 gap-0.5">
-                  {block.rows.map(row =>
-                    row.kind === 'group' ? renderGroupRow(row) : renderBotRow(row.bot, `${key}:`)
-                  )}
+                  {blockGroupRows.map(renderGroupRow)}
+                  {orderedBotRows.map(row => renderBotRow(row.bot, `${key}:`, scopeKey, handleReorder))}
                 </div>
               ) : (
                 // Empty section: a quiet dashed slot that says what it is for,
@@ -769,6 +919,15 @@ export function BotsPane() {
                 <Codicon className="mr-1.5" name="new-folder" />
                 {b.sections.newSection}
               </DropdownMenuItem>
+              {hasAnyCustomRosterOrder(rosterOrder) ? (
+                <>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem onSelect={() => clearRosterOrder()}>
+                    <Codicon className="mr-1.5" name="clear-all" />
+                    {b.sections.resetOrder}
+                  </DropdownMenuItem>
+                </>
+              ) : null}
             </DropdownMenuContent>
           </DropdownMenu>
         </div>
@@ -1046,6 +1205,7 @@ export function BotsPane() {
           }
 
           const name = deleting.name
+          removeBotFromRosterOrder(botRosterKey(deleting))
           await deleteBot(deleting)
           await refetch()
           host.notify({

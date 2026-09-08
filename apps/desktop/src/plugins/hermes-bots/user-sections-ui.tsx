@@ -118,12 +118,14 @@ interface UserSectionHeaderProps {
   canMoveUp: boolean
   collapsed: boolean
   count: number
+  hasCustomOrder?: boolean
   /** null for Unassigned, which has no record and therefore no menu. */
   id: null | string
   name: string
   onDelete: () => void
   onMove: (delta: number) => void
   onRename: () => void
+  onResetOrder?: () => void
   onToggle: () => void
 }
 
@@ -132,28 +134,79 @@ export function UserSectionHeader({
   canMoveUp,
   collapsed,
   count,
+  hasCustomOrder,
   id,
   name,
   onDelete,
   onMove,
   onRename,
+  onResetOrder,
   onToggle
 }: UserSectionHeaderProps) {
   const b = useBots()
   const { t } = useI18n()
 
-  // Unassigned has no record to rename, reorder or delete — it is whatever is
-  // left over — so it gets the plain heading rather than a menu of disabled
-  // items.
+  // Unassigned has no record to rename, reorder or delete - it is whatever is
+  // left over - but when it has a custom order, offer Reset custom order.
   if (!id) {
+    if (!hasCustomOrder || !onResetOrder) {
+      return (
+        <RosterSectionHeader
+          collapsed={collapsed}
+          count={count}
+          icon="inbox"
+          label={b.sections.unassigned}
+          onToggle={onToggle}
+        />
+      )
+    }
+
+    const unassignedItems = [{ icon: 'clear-all', label: b.sections.resetOrder, onSelect: onResetOrder }]
+
+    const unassignedAction = (
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          <button
+            aria-label={b.sections.options(b.sections.unassigned)}
+            className="shrink-0 rounded-md p-0.5 text-(--ui-text-quaternary) opacity-0 transition hover:text-foreground group-hover/section:opacity-100 focus-visible:opacity-100 data-[state=open]:opacity-100"
+            type="button"
+          >
+            <Codicon name="ellipsis" />
+          </button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="end">
+          {unassignedItems.map(item => (
+            <DropdownMenuItem key={item.label} onSelect={item.onSelect}>
+              <Codicon className="mr-1.5" name={item.icon} />
+              {item.label}
+            </DropdownMenuItem>
+          ))}
+        </DropdownMenuContent>
+      </DropdownMenu>
+    )
+
     return (
-      <RosterSectionHeader
-        collapsed={collapsed}
-        count={count}
-        icon="inbox"
-        label={b.sections.unassigned}
-        onToggle={onToggle}
-      />
+      <ContextMenu>
+        <ContextMenuTrigger asChild>
+          <div data-section-id="unassigned" data-slot="bots-section-heading">
+            <RosterSectionHeader
+              action={unassignedAction}
+              collapsed={collapsed}
+              count={count}
+              icon="inbox"
+              label={b.sections.unassigned}
+              onToggle={onToggle}
+            />
+          </div>
+        </ContextMenuTrigger>
+        <ContextMenuContent>
+          {unassignedItems.map(item => (
+            <ContextMenuItem key={item.label} onSelect={item.onSelect}>
+              {item.label}
+            </ContextMenuItem>
+          ))}
+        </ContextMenuContent>
+      </ContextMenu>
     )
   }
 
@@ -163,7 +216,10 @@ export function UserSectionHeader({
   const items = [
     { icon: 'edit', label: b.sections.rename, onSelect: onRename },
     { disabled: !canMoveUp, icon: 'arrow-up', label: b.sections.moveUp, onSelect: () => onMove(-1) },
-    { disabled: !canMoveDown, icon: 'arrow-down', label: b.sections.moveDown, onSelect: () => onMove(1) }
+    { disabled: !canMoveDown, icon: 'arrow-down', label: b.sections.moveDown, onSelect: () => onMove(1) },
+    ...(hasCustomOrder && onResetOrder
+      ? [{ icon: 'clear-all', label: b.sections.resetOrder, onSelect: onResetOrder }]
+      : [])
   ]
 
   const action = (

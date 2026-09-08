@@ -165,6 +165,15 @@ export function moveBotSection(id: string, delta: number): void {
   persistBotSections(next)
 }
 
+export type BotMoveListener = (bot: RosterRow, targetSectionId: null | string) => void
+const botMoveListeners = new Set<BotMoveListener>()
+
+export function onBotMovedToSection(listener: BotMoveListener): () => void {
+  botMoveListeners.add(listener)
+
+  return () => botMoveListeners.delete(listener)
+}
+
 /**
  * `null` clears the assignment (back to Unassigned). One `saveBotMeta` per
  * bot — membership is a field on each bot's own profile, so that IS one write
@@ -174,6 +183,14 @@ export function moveBotSection(id: string, delta: number): void {
 export async function moveBotsToSection(bots: RosterRow[], sectionId: null | string): Promise<void> {
   for (const bot of bots || []) {
     if (bot && botSectionId(bot, $botMeta.get()) !== (sectionId || null)) {
+      for (const listener of botMoveListeners) {
+        try {
+          listener(bot, sectionId || null)
+        } catch {
+          // best-effort listener notification
+        }
+      }
+
       await saveBotMeta(bot, { sectionId: sectionId || null })
     }
   }

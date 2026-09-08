@@ -352,6 +352,13 @@ class HostedRoomPolicyCheckpoint:
                 event = _event_from_room_row(claim)
                 stopped_through_seq = max(stopped_through_seq,
                     self._checked_recovery_floor(recovery, event, event["payload"]))
+            else:
+                # A warm cursor can be past the recovery claim. Its durable
+                # history still requires evidence even if the decision is lost.
+                claims = conn.execute("""SELECT payload_json FROM hosted_room_events
+                    WHERE room_id=? AND kind='authority.claimed'""", (room_id,))
+                if any("recovery_id" in json.loads(claim["payload_json"]) for claim in claims):
+                    raise RuntimeError("The Group Chat recovery record is missing, changed, or not ready.")
             thread = conn.execute("""SELECT thread_id, discussion_event_id FROM hosted_room_policy_threads
                    WHERE room_id=? AND completed=0 AND latest_user_seq>?
                    ORDER BY latest_user_seq, thread_id LIMIT 1""", (room_id, stopped_through_seq)).fetchone()

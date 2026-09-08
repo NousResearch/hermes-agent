@@ -78,6 +78,47 @@ def test_claim_without_its_active_exact_record_cannot_plan(staged, damage):
         HostedRoomPolicyCheckpoint(target).snapshot(room_id="room", latest_seq=rooms.room_state(target, room_id="room")["latest_seq"])
 
 
+@pytest.mark.parametrize("lost_floor", [False, True])
+def test_warm_projection_still_requires_durable_recovery_record(staged, lost_floor):
+    target, old, pending = staged
+    expose_to_planner(target)
+    checkpoint = HostedRoomPolicyCheckpoint(target)
+    room = rooms.room_state(target, room_id="room")
+    warm = checkpoint.snapshot(room_id="room", latest_seq=room["latest_seq"])
+    assert warm.events == ()
+    assert warm.stopped_through_seq > old["seq"]
+    with sqlite3.connect(target) as conn:
+        record = conn.execute(f"SELECT * FROM {TABLE} WHERE room_id='room'").fetchone()
+        conn.execute(f"DELETE FROM {TABLE} WHERE room_id='room'")
+        if lost_floor:
+            conn.execute("UPDATE hosted_room_policy_cursors SET stopped_through_seq=0 WHERE room_id='room'")
+    if not lost_floor:
+        request(target, "fresh-after-cache", "@reviewer A new request.", TARGET, pending["authority_epoch"])
+    room = rooms.room_state(target, room_id="room")
+    history = rooms.read_events(target, room_id="room")["events"]
+    try:
+        snapshot = checkpoint.snapshot(room_id="room", latest_seq=room["latest_seq"])
+    except RuntimeError as exc:
+        assert "recovery record" in str(exc)
+    else:
+        pytest.fail(f"Missing durable decision accepted after warm sync: lost_floor={lost_floor}, "
+                    f"floor={snapshot.stopped_through_seq}, events={[event['event_id'] for event in snapshot.events]}")
+    assert rooms.read_events(target, room_id="room")["events"] == history
+    # Only restoring the exact durable evidence permits planning again; a lost
+    # derived floor is rebuilt without converting old context into a new request.
+    with sqlite3.connect(target) as conn:
+        conn.execute(f"INSERT INTO {TABLE} VALUES(?,?,?,?,?,?,?,?,?,?)", record)
+    restored = HostedRoomPolicyCheckpoint(target).snapshot(room_id="room", latest_seq=room["latest_seq"])
+    assert restored.stopped_through_seq == warm.stopped_through_seq
+    if lost_floor:
+        assert restored.events == ()
+    else:
+        decision = discussion.plan_next_task(room, list(restored.events), local_profiles=["default"],
+                                            initial_watermarks=restored.watermarks)
+        assert decision.discussion_event_id == "fresh-after-cache"
+        assert any(event["event_id"] == old["event_id"] for event in restored.events)
+
+
 def test_ordinary_authority_claim_does_not_discard_pending_work(saved):
     source = saved[0]
     old = request(source, "existing-work", "@reviewer Keep this request.", HOME, 1)

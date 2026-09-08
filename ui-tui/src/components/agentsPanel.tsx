@@ -6,6 +6,7 @@ import { useAgentRoster } from '../app/agentRoster.js'
 import { patchOverlayState } from '../app/overlayStore.js'
 import { $uiState } from '../app/uiStore.js'
 import { type AgentRows, buildAgentRows, dockRowLimit } from '../lib/agentRows.js'
+import { mix } from '../lib/color.js'
 import { statusGlyph } from '../lib/subagentGlyph.js'
 import { fmtDuration } from '../lib/subagentTree.js'
 import { compactPreview } from '../lib/text.js'
@@ -15,7 +16,7 @@ export function AgentsPanelView({ cols, hidden, rows, running, t }: AgentRows & 
   if (!running) {return null}
 
   return (
-    <Box flexDirection="column" flexShrink={0} width={cols}>
+    <Box backgroundColor={mix(t.color.statusBg, t.color.shellDollar, 0.12)} flexDirection="column" flexShrink={0} width={cols}>
       <Text bold color={t.color.accent} onClick={() => patchOverlayState({ agents: true })} wrap="truncate-end">
         {`▾ ${running} live agents${hidden ? ` · +${hidden} more` : ''} · Ctrl+T expand`}
       </Text>

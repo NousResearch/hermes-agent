@@ -5,9 +5,11 @@ import React from 'react'
 import stripAnsi from 'strip-ansi'
 import { expect, it } from 'vitest'
 
+import { renderToScreen } from '../../packages/hermes-ink/src/ink/render-to-screen.js'
+import { cellAtIndex } from '../../packages/hermes-ink/src/ink/screen.js'
 import { AgentsPanelView } from '../components/agentsPanel.js'
 import { buildAgentRows, dockRowLimit } from '../lib/agentRows.js'
-import { DEFAULT_THEME } from '../theme.js'
+import { DARK_THEME, DEFAULT_THEME, LIGHT_THEME } from '../theme.js'
 import type { SubagentProgress } from '../types.js'
 
 const agent = (id: string): SubagentProgress => ({
@@ -56,6 +58,15 @@ it('bounds painted chrome by viewport while retaining true live count and activi
   }
 
   expect(dockRowLimit(14)).toBeLessThan(dockRowLimit(40))
+
+  for (const t of [DARK_THEME, LIGHT_THEME]) {
+    const rows = buildAgentRows(agents, [], 45000, dockRowLimit(20))
+    const { screen, height } = renderToScreen(<AgentsPanelView cols={80} {...rows} t={t} />, 80)
+    // Ink marks fills in the low style bit: even blank edge cells must paint.
+    const filled = Array.from({ length: height * 80 }, (_, i) => cellAtIndex(screen, i).styleId & 1)
+
+    expect(filled.every(Boolean)).toBe(true)
+  }
 })
 
 it('deduplicates async batches and hides settled history without dropping live work', () => {

@@ -793,7 +793,11 @@ def _task_prefers_fast_model(task: Optional[str]) -> bool:
 
 
 # Dedicated vision models for direct providers whose main chat model differs.
-_PROVIDER_VISION_MODELS: Dict[str, str] = {"xiaomi": "mimo-v2.5", "zai": "glm-5v-turbo"}
+# zai: glm-5.3-flash is the GLM Coding Plan's multimodal model (glm-5v-turbo returns 1311
+# "not included in your subscription plan" for Coding Plan keys); on the general pay-as-you-go
+# surface glm-5v-turbo still works, but the coding endpoint order in _ZAI_OPENAI_VISION_URLS
+# makes glm-5.3-flash the default that works on both key types.
+_PROVIDER_VISION_MODELS: Dict[str, str] = {"xiaomi": "mimo-v2.5", "zai": "glm-5.3-flash"}
 
 
 def _resolve_provider_vision_default(provider: str) -> Optional[str]:
@@ -5078,8 +5082,16 @@ def _vision_auto_route(
 
 
 # ZAI vision must use the OpenAI-compatible endpoint: the Anthropic wire rejects max_tokens on
-# multimodal calls (error 1210).
-_ZAI_OPENAI_VISION_URLS = ("https://open.bigmodel.cn/api/paas/v4", "https://api.z.ai/api/paas/v4")
+# multimodal calls (error 1210). Coding Plan keys only have balance on the /coding/ endpoints —
+# the general endpoints return 1113 "Insufficient balance" for them — so try coding surfaces
+# first (mirrors hermes_cli.auth_zai_kimi.ZAI_ENDPOINTS priority, without importing it here to
+# keep the agent/auth layering one-way).
+_ZAI_OPENAI_VISION_URLS = (
+    "https://api.z.ai/api/coding/paas/v4",
+    "https://open.bigmodel.cn/api/coding/paas/v4",
+    "https://open.bigmodel.cn/api/paas/v4",
+    "https://api.z.ai/api/paas/v4",
+)
 
 
 def resolve_vision_provider_client(

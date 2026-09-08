@@ -1,4 +1,5 @@
 """Opt-in current-query alignment and bounded late-worker isolation."""
+import json
 import threading
 import time
 
@@ -127,3 +128,27 @@ def test_timeout_keeps_single_flight_and_late_result_cannot_publish():
         provider._manager.get_prefetch_context = superseded
         assert provider.prefetch("Plan the garden") == ""
         assert provider._last_context_turn == provider._last_dialectic_turn == -999
+
+
+def test_missing_peer_notice_surfaces_once():
+    provider = HonchoMemoryProvider()
+    provider._config = HonchoClientConfig(timeout=0.05)
+    provider._recall_sync = True
+    provider._init_peer_failure = "No runtime identity or peerName"
+    first = provider.prefetch("What did we decide about the schema?")
+    assert "Honcho memory is off" in first
+    assert "hermes honcho peer --user" in first
+    assert provider.prefetch("And the index?") == ""
+
+
+def test_prefetch_writes_the_injection_log(tmp_path):
+    provider = make_provider()
+    provider._injection_log_path = str(tmp_path / "injection.log")
+    provider.on_turn_start(1, "Plan the garden")
+    result = provider.prefetch("Plan the garden")
+    assert "base:Plan the garden" in result
+    assert provider.prefetch("Plan the garden") == ""
+    records = [json.loads(line) for line in (tmp_path / "injection.log").read_text().splitlines()]
+    assert [r["reason"] for r in records] == ["injected", "recall-sync-empty"]
+    assert records[0]["payload"] == result and records[0]["turn"] == 1
+    assert records[1]["payload"] == "" and records[1]["bytes"] == 0

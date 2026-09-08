@@ -555,9 +555,9 @@ class HonchoMemoryProvider(DialecticMixin, MemoryProvider):
 
         if self._recall_sync:
             from plugins.memory.honcho.recall_sync import prefetch_sync
-            notice = self._pop_auth_notice()
-            result = prefetch_sync(self, query)
-            return "\n\n".join(part for part in (notice, result) if part)
+            notice = self._pop_auth_notice() or self._pop_peer_notice()
+            payload = "\n\n".join(part for part in (notice, prefetch_sync(self, query)) if part)
+            return self._log_injection("injected" if payload else "recall-sync-empty", payload)
 
         first_turn_base_deadline = (time.monotonic() + self._first_turn_wait(self._FIRST_TURN_BASE_TIMEOUT)
                                     if self._turn_count <= 1 else None)

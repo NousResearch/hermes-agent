@@ -34,7 +34,7 @@ def prefetch_sync(provider, query: str) -> str:
             if provider._init_thread is not None:
                 provider._init_thread.join(timeout=max(0.0, deadline - time.monotonic()))
             if not provider._session_ready():
-                return provider._pop_auth_notice()
+                return provider._pop_auth_notice() or provider._pop_peer_notice()
         manager = provider._manager
         if (generation is not provider._recall_generation or session != provider._session_key
                 or turn != provider._turn_count or time.monotonic() >= deadline):

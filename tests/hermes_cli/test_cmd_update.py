@@ -89,7 +89,15 @@ def _patch_gateway_discovery():
     """
     with patch("hermes_cli.gateway.find_gateway_pids", return_value=[]), \
          patch("hermes_cli.gateway.supports_systemd_services", return_value=False), \
-         patch("hermes_cli.gateway.find_profile_gateway_processes", return_value=[]):
+         patch("hermes_cli.gateway.find_profile_gateway_processes", return_value=[]), \
+         patch("hermes_cli.main._prepare_kanban_drain_for_update", return_value=None), \
+         patch("hermes_cli.main._purge_stale_hermes_modules"), \
+         patch("hermes_cli.update_cmd._finish_dashboard_update_cleanup"), \
+         patch("hermes_cli.main._finish_dashboard_update_cleanup"):
+        # These tests exercise update mechanics, not the embedded dispatcher.
+        # Keep the new safety boundary out of the live-board path; its
+        # enabled/drain/refusal contract has dedicated fixture tests in
+        # test_update_cron_deadlock_guard.py.
         yield
 
 

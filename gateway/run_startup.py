@@ -1004,6 +1004,7 @@ class GatewayStartupMixin:
                 self._update_platform_runtime_status(
                     platform.value, platform_state="retrying" if _degraded else "connected", error_code=None,
                     error_message=adapter.DEGRADED_STATUS_MESSAGE if _degraded else None,
+                    needs_attention=False, retrying_since=None,
                 )
                 logger.info("\u2713 %s connected%s", platform.value, " (degraded)" if _degraded else "")
                 continue

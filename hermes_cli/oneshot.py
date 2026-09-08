@@ -350,7 +350,10 @@ def _load_resume_target(session_db, resume: Optional[str]) -> tuple[Optional[str
     ``resolve_resume_session_id``, safe-resume guard, model-projection history with
     ``session_meta`` rows dropped. An unknown session raises (the user passed an explicit id;
     silently starting a fresh session is the resume-dropped failure mode this exists to fix —
-    see #105892). An empty stored transcript keeps the turn as a fresh session.
+    see #105892). An empty stored transcript still returns the resolved id: the turn replays
+    nothing but is recorded under the requested session — ``hermes -z "hello" -c <title>
+    --create-if-missing`` must fill the titled session it created, not mint a fresh id
+    (same contract as the interactive /resume of an empty session).
     """
     if not resume:
         return None, []
@@ -362,7 +365,7 @@ def _load_resume_target(session_db, resume: Optional[str]) -> tuple[Optional[str
     session_db.assert_resume_safe(resolved, tip_only=True)
     restored, _display = session_db.get_resume_conversations(resolved)
     history = [m for m in restored if m.get("role") != "session_meta"]
-    return (resolved if history else None), history
+    return resolved, history
 
 
 def _run_agent(

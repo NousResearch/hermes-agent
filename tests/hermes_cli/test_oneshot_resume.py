@@ -73,12 +73,26 @@ class TestLoadResumeTarget:
         finally:
             db.close()
 
-    def test_empty_session_starts_fresh(self, tmp_path):
-        # Chat's contract: a resumed session with no messages starts fresh (same session
-        # id, no history rows to replay) — oneshot must not crash or resurrect the id.
+    def test_empty_session_keeps_resolved_id(self, tmp_path):
+        # Chat's contract: a resumed session with no messages starts fresh (no rows to
+        # replay) but the turn is recorded under the SELECTED id. Dropping the id here
+        # re-minted a session for `hermes -z "hello" -c <title> --create-if-missing`,
+        # leaving the freshly created titled session empty (review on #105957).
         db = _db_with_session(tmp_path, "s1")
         try:
-            assert _load_resume_target(db, "s1") == (None, [])
+            assert _load_resume_target(db, "s1") == ("s1", [])
+        finally:
+            db.close()
+
+    def test_empty_compression_head_without_rows_keeps_head_id(self, tmp_path):
+        # A chain head with no descendant rows must not fall through to a fresh id either:
+        # the turn stays anchored to the resolved head (redirect only happens when the
+        # descendant actually holds messages).
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.create_session(session_id="head", source="cli")
+        db.create_session(session_id="child", source="cli", parent_session_id="head")
+        try:
+            assert _load_resume_target(db, "head") == ("head", [])
         finally:
             db.close()
 

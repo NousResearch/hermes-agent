@@ -37,7 +37,9 @@ export default [
   {
     files: ['**/*.test.tsx'],
     rules: {
-      'no-restricted-globals': ['warn', 'document']
+      // The desktop renderer deliberately runs browser-backed tests. `document`
+      // is a legitimate DOM global here, not an accidental Node global.
+      'no-restricted-globals': 'off'
     }
   },
   {

@@ -2,7 +2,13 @@ import { translateNow } from '@/i18n'
 import { textPart } from '@/lib/chat-messages'
 import { coerceGatewayText } from '@/lib/chat-runtime'
 import { isProviderSetupErrorMessage } from '@/lib/provider-setup-errors'
-import { type AgentNoticePayload, clearAgentNotice, nativeNoticeInput, showAgentNotice } from '@/store/agent-notices'
+import {
+  type AgentNoticePayload,
+  clearAgentNotice,
+  nativeNoticeInput,
+  publishAgentNotice,
+  showAgentNotice
+} from '@/store/agent-notices'
 import { clearClarifyRequest } from '@/store/clarify'
 import { reconcileSessionCompacting, setSessionCompacting } from '@/store/compaction'
 import { refreshBackgroundProcesses } from '@/store/composer-status'
@@ -137,6 +143,7 @@ export function handleStatusEvent(ctx: GatewayEventContext): boolean {
     const notice = event.payload as AgentNoticePayload | undefined
 
     showAgentNotice(notice)
+    publishAgentNotice(notice)
 
     // The urgent pair (access paused / restored) also breaks through as a
     // native OS notification when Hermes is backgrounded; dispatch is gated

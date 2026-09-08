@@ -30,7 +30,7 @@ export function useComposerBranch({ clearDraft, cwd, draftRef }: UseComposerBran
       scope.attachments.clear()
       requestStartWorkSession(path, text)
     },
-    [clearDraft, draftRef]
+    [clearDraft, draftRef, scope.attachments]
   )
 
   // Branch off into a NEW worktree (base = branch name, or current HEAD). A

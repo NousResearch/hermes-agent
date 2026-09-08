@@ -956,7 +956,7 @@ function ClarifyToolBatchPending({ onAnswered, request }: { onAnswered: () => vo
 
   // qids only exist on the gateway request — args are a hydration-race
   // fallback for display, never answerable (no ids to respond with).
-  const questions = request?.questions ?? []
+  const questions = useMemo(() => request?.questions ?? [], [request?.questions])
   const ready = Boolean(request?.requestId) && questions.length > 0
 
   const [staged, setStaged] = useState<Record<string, { choices: string[]; draft: string }>>({})

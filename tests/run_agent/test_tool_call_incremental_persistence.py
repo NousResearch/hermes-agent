@@ -904,4 +904,3 @@ def test_flush_concurrent_nonblank_winner_adopts_canonical_content(tmp_path):
     assert messages[-1]["content"] == "Canonical winner answer from sibling"
     assert messages[-1]["_db_persisted"] is True
     assert messages[-1]["_row_id"] == row_id
-

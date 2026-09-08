@@ -239,3 +239,68 @@ def test_default_budget_admits_a_wide_benign_wrapper_graph(tmp_path):
     evil.write_text("hermes gateway restart\n", encoding="utf-8")
     hub.write_text(hub.read_text() + f"bash {evil}\n", encoding="utf-8")
     assert guard(f"bash {hub}") is True
+
+
+# --- non-shell sources do not burn the remote-read budget (#105758) ---------
+
+
+def _minified_node_bundle(shebang: str | None) -> str:
+    """A minified Node CLI bundle's slash-containing tokens (regex literals, strings), one per
+    line so each sits in command position and is yielded as a candidate script path."""
+    tokens = "\n".join(f"/n+{i}/g" for i in range(80))
+    prefix = "" if shebang is None else shebang + "\n"
+    return f"{prefix}{tokens}\nmodule.exports=1\n"
+
+
+def test_non_shell_bundle_does_not_exhaust_remote_read_budget(tmp_path):
+    """A Node CLI bundle referenced as the executable: shell-tokenizing its regex literals
+    used to yield 64+ garbage paths, exhaust the remote-read budget, and fail closed (#105758)."""
+    bundle = tmp_path / "ob"
+    bundle.write_text(_minified_node_bundle("#!/usr/bin/env node"), encoding="utf-8")
+    reads: list[str] = []
+
+    def remote(path: str):
+        reads.append(path)
+        return None
+
+    assert guard(f"{bundle} --version", read_remote_script=remote) is False
+    assert reads == []
+
+
+def test_non_shell_bundle_without_shebang_is_still_allowed(tmp_path):
+    """Shebang-less bundles (executed via the kernel's sh fallback only when shell-shaped)
+    are the same false-positive class; literal commands are still direct-scanned below."""
+    bundle = tmp_path / "tool"
+    bundle.write_text(_minified_node_bundle(None), encoding="utf-8")
+    reads: list[str] = []
+
+    def remote(path: str):
+        reads.append(path)
+        return None
+
+    assert guard(f"{bundle} --version", read_remote_script=remote) is False
+    assert reads == []
+
+
+def test_literal_lifecycle_command_in_non_shell_source_still_blocked(tmp_path):
+    """Gating only the recursive walk must not gate the regex: a literal lifecycle command
+    in ANY referenced text — shell or not — stays blocked."""
+    script = tmp_path / "note.txt"
+    script.write_text("echo 'run this later:'\nhermes gateway restart\n", encoding="utf-8")
+
+    assert guard(f"bash {script}") is True
+
+
+def test_shell_invocations_still_recurse_into_references(tmp_path):
+    """Forced-shell references (``bash <script>`` on a shebang-less script) and bare paths whose
+    own shebang is a POSIX shell keep the full recursive walk: a sourced second-level script
+    holding the lifecycle command is still found."""
+    inner = tmp_path / "inner.sh"
+    inner.write_text("echo prep\nhermes gateway restart\n", encoding="utf-8")
+    forced = tmp_path / "forced.sh"
+    forced.write_text("source ./inner.sh\n", encoding="utf-8")
+    shebanged = tmp_path / "shebanged.sh"
+    shebanged.write_text("#!/bin/sh\nsource ./inner.sh\n", encoding="utf-8")
+
+    assert guard(f"bash {forced}") is True
+    assert guard(f"{shebanged}") is True

@@ -2842,6 +2842,8 @@ class TelegramAdapter(BasePlatformAdapter):
                 # same builder for the next attempt and discard the old one.
                 if rebuild_app and _attempt < _max_connect - 1:
                     old_app = self._app
+                    with contextlib.suppress(Exception):
+                        await _shutdown_abandoned_app(old_app)
                     self._app = builder.build()
                     self._bot = self._app.bot
                     # Same order as connect(): plugin handlers BEFORE core, or a rebuilt app keeps
@@ -2849,8 +2851,6 @@ class TelegramAdapter(BasePlatformAdapter):
                     # rest of the process.
                     self._wire_plugin_handlers(self._app)
                     self._register_handlers(self._app)  # keep core and observer handlers in lockstep
-                    with contextlib.suppress(Exception):
-                        await _shutdown_abandoned_app(old_app)
 
     def _wire_plugin_handlers(self, native=None) -> None:
         from .hosted_room_ingress import wire

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import sqlite3
 import threading
 import time
 from types import SimpleNamespace
@@ -113,6 +114,89 @@ async def test_messaging_gateway_supervisor_starts_without_dashboard(monkeypatch
     state["running"] = False
     await runner._ensure_hosted_room_worker()
     assert state["starts"] == 2
+
+
+@pytest.mark.asyncio
+async def test_healthy_ensure_skips_attachment_recovery_but_dead_restart_reconciles(tmp_path, monkeypatch):
+    from gateway.hosted_room_attachments import UNCOMMITTED_TTL_SECONDS
+    from tui_gateway import methods_groups
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    service, _ = _service(hosted_rooms.default_db_path())
+    monkeypatch.setattr(methods_groups, "_bound_server", service.server)
+    monkeypatch.setattr(methods_groups, "_service", service)
+    monkeypatch.setattr(methods_groups, "_transport", None)
+    monkeypatch.setattr(methods_groups, "_binding", None)
+    # A real supervisor thread whose exit is independent of the runtime stop flag.
+    release = threading.Event()
+    monkeypatch.setattr(service.runtime, "_worker_loop", lambda: release.wait(15))
+    store = service.attachments
+    now = [100.0]
+    monkeypatch.setattr(store, "clock", lambda: now[0])
+    hosted_rooms.create_room(service.db_path, room_id="room", name="Room",
+                             members=[{"member_id": "default"}],
+                             authority_gateway_id=hosted_rooms.local_authority_gateway_id())
+    attachment = store.put(room_id="room", upload_id="retained", kind="file",
+                           name="note.txt", mime="text/plain", data=b"retained bytes")
+    manifest = [{key: attachment[key] for key in ("attachment_id", "kind", "name", "mime", "size")}]
+    store.commit_message(room_id="room", event_id="retained", manifest=manifest,
+                         recipient_member_ids=("default",), viewer_access=True, hold_until_event=True)
+    reconcile = Mock(wraps=store.reconcile_room_events)
+    prune = Mock(wraps=store.prune)
+    sweep = Mock(wraps=store._sweep_orphans)
+    monkeypatch.setattr(store, "reconcile_room_events", reconcile)
+    monkeypatch.setattr(store, "prune", prune)
+    monkeypatch.setattr(store, "_sweep_orphans", sweep)
+    runner = GatewayRunner.__new__(GatewayRunner)
+    try:
+        assert await runner._ensure_hosted_room_worker() is service
+        first = service.runtime._thread
+        assert first.is_alive()
+        assert [spy.call_count for spy in (reconcile, prune, sweep)] == [1, 1, 1]
+        # Simulate an event committed just before a crash, without finalizing its attachment.
+        room = hosted_rooms.room_state(service.db_path, room_id="room")
+        hosted_rooms.append_event(
+            service.db_path, room_id="room", event_id="retained", kind="message.user",
+            actor={"kind": "user", "id": "desktop"},
+            authority_gateway_id=room["authority_gateway_id"], authority_epoch=room["authority_epoch"],
+            payload={"text": "inspect", "attachments": manifest}, now=now[0])
+        with sqlite3.connect(service.db_path) as conn:
+            conn.execute("UPDATE hosted_room_attachments SET expires_at=? WHERE attachment_id=?",
+                         (now[0] + UNCOMMITTED_TTL_SECONDS, attachment["attachment_id"]))
+        now[0] += UNCOMMITTED_TTL_SECONDS + 1
+        orphan = store.blob_root / ".tmp-interrupted-upload"
+        orphan.write_bytes(b"orphan")
+        for _ in range(5):
+            assert await runner._ensure_hosted_room_worker() is service
+        assert service.runtime._thread is first
+        assert [spy.call_count for spy in (reconcile, prune, sweep)] == [1, 1, 1]
+        assert orphan.read_bytes() == b"orphan"
+
+        # A live draining thread must not have its stop intent cleared by ensure.
+        assert not service.stop(timeout=0)
+        with pytest.raises(RuntimeError, match="did not start"):
+            await runner._ensure_hosted_room_worker()
+        assert service.runtime.status()["stopping"]
+        assert service.runtime._thread is first
+        assert [spy.call_count for spy in (reconcile, prune, sweep)] == [1, 1, 1]
+        release.set()
+        await asyncio.to_thread(first.join, 5)
+        assert not first.is_alive()
+        release.clear()
+        service.runtime._stop.clear()  # Also exercise dead-without-stop recovery.
+        assert await runner._ensure_hosted_room_worker() is service
+        assert service.runtime._thread is not first
+        assert service.runtime._thread.is_alive()
+        assert [spy.call_count for spy in (reconcile, prune, sweep)] == [2, 2, 2]
+        assert not orphan.exists()
+        assert store.read(room_id="room", attachment_id=attachment["attachment_id"],
+                          recipient_member_id="default").data == b"retained bytes"
+    finally:
+        release.set()
+        assert await runner._stop_hosted_room_worker()
+    assert methods_groups._service is None
+    assert await runner._ensure_hosted_room_worker() is None
+    assert methods_groups._service is None
 
 
 @pytest.mark.asyncio

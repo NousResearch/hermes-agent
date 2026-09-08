@@ -370,7 +370,7 @@ class Transport:
                 size, digest = int(ref["size"]), str(ref["sha256"])
                 with Path(ref["path"]).open("rb") as handle:
                     data = handle.read(MAX_ATTACHMENT_BYTES + 1)
-            except (KeyError, OSError, TypeError, ValueError) as exc:
+            except (KeyError, FileNotFoundError, TypeError, ValueError) as exc:
                 raise ValueError(f"unusable media reference: {type(exc).__name__}") from exc
             if (len(data) != size or len(data) > MAX_ATTACHMENT_BYTES
                     or hashlib.sha256(data).hexdigest() != digest):
@@ -378,7 +378,16 @@ class Transport:
             verified.append((ref, data))
         return verified
 
+    def reject_input(self, event_id: str, error: ValueError) -> None:
+        with self.db() as db:
+            db.execute(
+                "UPDATE inbox SET state='rejected', result=? WHERE event_id=?",
+                (json.dumps({"error": str(error)[:256]}), event_id))
+        logger.warning("hosted room input quarantined event=%s", event_id)
+
     def ingest(self) -> None:
+        from gateway.hosted_room_attachments import AttachmentError
+
         with self.db() as db:
             rows = db.execute(
                 "SELECT * FROM inbox WHERE state='pending' ORDER BY message_id LIMIT 25").fetchall()
@@ -393,11 +402,7 @@ class Transport:
                 # Quarantine invalid routing or media, never invent a conversation. Only these
                 # are terminal here; an uncertain service acceptance stays pending under its
                 # original event id.
-                with self.db() as db:
-                    db.execute(
-                        "UPDATE inbox SET state='rejected', result=? WHERE event_id=?",
-                        (json.dumps({"error": str(exc)}), row["event_id"]))
-                logger.warning("hosted room input quarantined event=%s", row["event_id"])
+                self.reject_input(row["event_id"], exc)
                 continue
             if not media and row["text"].strip().split("@", 1)[0].lower() in {"/stop", "!stop"}:
                 count = self.service.stop_room(self.room, cancel_id=row["event_id"])
@@ -411,13 +416,21 @@ class Transport:
                         flags=re.IGNORECASE)
                 # The canonical upload is idempotent on the Telegram-derived upload id, so a
                 # retried input stages the same bytes instead of a second attachment.
-                attachments = [
-                    {key: uploaded[key] for key in ("attachment_id", "kind", "name", "size", "mime")}
-                    for uploaded in (
-                        self.service.put_attachment(
-                            room_id=self.room, upload_id=ref["upload_id"], kind=ref["kind"],
-                            name=ref["name"], mime=ref["mime"], data=data)
-                        for ref, data in media)]
+                try:
+                    attachments = [
+                        {key: uploaded[key] for key in ("attachment_id", "kind", "name", "size", "mime")}
+                        for uploaded in (
+                            self.service.put_attachment(
+                                room_id=self.room, upload_id=ref["upload_id"], kind=ref["kind"],
+                                name=ref["name"], mime=ref["mime"], data=data)
+                            for ref, data in media)]
+                except AttachmentError as exc:
+                    # Only the base class means invalid upload input. Quota, integrity and
+                    # conflict subclasses describe store state, not a poison receipt.
+                    if type(exc) is not AttachmentError:
+                        raise
+                    self.reject_input(row["event_id"], exc)
+                    continue
                 event = self.service.send(
                     room_id=self.room, event_id=row["event_id"],
                     payload={"text": text, "thread_id": thread_id,

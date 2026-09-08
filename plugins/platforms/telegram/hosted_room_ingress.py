@@ -85,7 +85,6 @@ def wire(application, adapter) -> bool:
     assert config is not None  # include_disabled returns every validated binding.
     chat_id, owner_id = config["chat_id"], config["owner_id"]
     db_path = Path(config["queue_db"])
-    initialize_queue(db_path)
     from telegram.ext import ApplicationHandlerStop, MessageHandler, filters
 
     async def incoming(update, context):
@@ -121,5 +120,11 @@ def wire(application, adapter) -> bool:
             raise ApplicationHandlerStop
 
     application.add_handler(MessageHandler(filters.Chat(chat_id), incoming), group=-50)
+    try:
+        initialize_queue(db_path)
+    except (OSError, sqlite3.Error) as exc:
+        # The validated group is already reserved: storage failure must neither take
+        # other chats offline nor let this room become independent conversations.
+        log.error("Hosted room queue initialization failed closed: %s", type(exc).__name__)
     log.warning("Canonical Telegram ingress wired chat=%s owner=%s", chat_id, owner_id)
     return config["enabled"]

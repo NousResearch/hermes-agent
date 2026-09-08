@@ -23,7 +23,7 @@ from plugins.platforms.telegram import hosted_room_transport as transport
 
 
 @pytest.fixture
-def binding_env(tmp_path, monkeypatch):
+def binding_env(tmp_path, monkeypatch, request):
     home = tmp_path / ".hermes"
     home.mkdir()
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
@@ -33,6 +33,8 @@ def binding_env(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_GATEWAY_LOCK_DIR", str(tmp_path / "locks"))
     identities = {"alpha": {"id": 1, "username": "alpha_test_bot"},
                   "beta": {"id": 2, "username": "beta_test_bot"}}
+    if getattr(request, 'param', None) == 'three-bots':
+        identities['gamma'] = {'id': 3, 'username': 'gamma_test_bot'}
     for profile in identities:
         folder = home / "profiles" / profile
         folder.mkdir(parents=True)
@@ -48,7 +50,9 @@ def binding_env(tmp_path, monkeypatch):
     create_room(db_path, room_id=binding["room_id"], name="Native transport",
                 authority_gateway_id="test-owner", members=[
                     {"member_id": "one", "profile": "alpha", "handle": "first"},
-                    {"member_id": "two", "profile": "beta", "handle": "second"}])
+                    {"member_id": "two", "profile": "beta", "handle": "second"},
+                    *([{"member_id": "three", "profile": "gamma", "handle": "third"}]
+                      if 'gamma' in identities else [])])
     return binding, config, SimpleNamespace(db_path=db_path)
 
 
@@ -957,3 +961,218 @@ def test_queue_migration_preserves_old_ambiguous_delivery_and_cursor(tmp_path):
             'old-output', 1, 'alpha', 'thread', 'uncertain', None, 1, None, None)
         assert db.execute('SELECT seq FROM cursor').fetchone() == (12,)
         assert db.execute('SELECT count(*) FROM delivery_resolutions').fetchone() == (0,)
+
+
+@pytest.mark.parametrize('rebuild', [False, True])
+def test_queue_init_failure_reserves_room_without_breaking_native_initialization(
+        binding_env, monkeypatch, rebuild):
+    from gateway.config import PlatformConfig
+    from plugins.platforms.telegram.adapter import TelegramAdapter
+    from plugins.platforms.telegram import hosted_room_ingress as ingress
+
+    binding, _, _ = binding_env
+    monkeypatch.setattr(ingress, 'initialize_queue', Mock(side_effect=sqlite3.OperationalError('locked')))
+    fallback = []
+
+    async def other(update, context):
+        fallback.append(update.effective_chat.id)
+
+    async def exercise():
+        adapter = TelegramAdapter(PlatformConfig(enabled=True, token='123:local-test'))
+        builder = Application.builder().token('123:local-test').request(LocalRequest(fail_first=rebuild))
+        adapter._app = original = builder.build()
+        adapter._bot = original.bot
+        monkeypatch.setattr(adapter, '_register_handlers', lambda app: app.add_handler(
+            TypeHandler(Update, other), group=0))
+        adapter._wire_plugin_handlers(original)
+        adapter._register_handlers(original)
+        await adapter._initialize_app_with_retries(builder)
+        app = adapter._app
+        try:
+            assert (app is not original) is rebuild
+            assert adapter._hosted_room_ingress_active
+            for chat in (binding['chat_id'], -555):
+                await app.process_update(Update.de_json({'update_id': abs(chat), 'message': {
+                    'message_id': 1, 'date': 1, 'chat': {'id': chat, 'type': 'supergroup'},
+                    'from': {'id': 42, 'is_bot': False, 'first_name': 'Owner'},
+                    'text': 'must not create a parallel room'}}, app.bot))
+        finally:
+            await app.shutdown()
+
+    asyncio.run(exercise())
+    assert fallback == [-555]
+
+
+@pytest.mark.parametrize('invalid', ['name', 'mime'])
+@pytest.mark.parametrize('binding_env', ['three-bots'], indirect=True)
+def test_invalid_upload_does_not_block_later_input_or_three_bot_output(recovery, monkeypatch, invalid):
+    import hashlib
+    from gateway import hosted_rooms
+
+    item, _, _ = recovery
+    monkeypatch.setattr(item.service, 'prepare_room', lambda binding: None)
+    data = b'valid text bytes'
+    path = item.path.parent / 'cached.txt'
+    path.write_bytes(data)
+    ref = dict(path=str(path), size=len(data), sha256=hashlib.sha256(data).hexdigest(),
+               upload_id='telegram:-999:1:0', kind='file', name='cached.txt', mime='text/plain')
+    ref.update({'name': '..'} if invalid == 'name' else {'mime': 'image/png'})
+    with item.db() as db:
+        for number in (1, 2):
+            db.execute('INSERT INTO inbox(event_id,chat_id,message_id,user_id,text,received_at,media_json)'
+                       ' VALUES(?,-999,?,42,?,1,?)', (f'telegram:-999:{number}', number,
+                       f'input {number}', json.dumps({'attachments': [ref]}) if number == 1 else None))
+    # Exercise publication under each configured identity without starting any model work.
+    for member in ('two', 'three'):
+        hosted_rooms.append_event(item.service.db_path, room_id=item.room,
+            authority_gateway_id='test-owner', authority_epoch=1, event_id=f'output-{member}',
+            kind='message.member', actor={'kind': 'member', 'id': member},
+            payload={'text': member, 'member_id': member, 'thread_id': f'thread-{member}'})
+        hosted_rooms.append_event(item.service.db_path, room_id=item.room,
+            authority_gateway_id='test-owner', authority_epoch=1, event_id=f'settled-{member}',
+            kind='turn.settled', actor={'kind': 'gateway', 'id': 'test-owner'},
+            payload={'message_event_id': f'output-{member}'})
+    sends, closed = [], []
+
+    class Bot:
+        def __init__(self, token):
+            self.profile = token
+
+        async def initialize(self):
+            pass
+
+        async def get_me(self):
+            return SimpleNamespace(**item.config['bots'][self.profile])
+
+        async def send_message(self, **kwargs):
+            sends.append(self.profile)
+            return SimpleNamespace(message_id=100 + len(sends))
+
+        send_document = send_message
+
+        async def shutdown(self):
+            closed.append(self.profile)
+
+    async def step(delay):
+        item.halt.set()
+
+    monkeypatch.setattr('telegram.Bot', Bot)
+    monkeypatch.setattr(transport, '_member_token', lambda profile: profile)
+    monkeypatch.setattr(transport.asyncio, 'sleep', step)
+    asyncio.run(item.run())
+    with item.db() as db:
+        assert [tuple(row) for row in db.execute('SELECT event_id,state FROM inbox ORDER BY message_id')] == [
+            ('telegram:-999:1', 'rejected'), ('telegram:-999:2', 'accepted')]
+        assert {tuple(row) for row in db.execute(
+            "SELECT event_id,profile,thread_id FROM deliveries WHERE status='sent'")} == {
+                ('output', 'alpha', 'thread'), ('output-two', 'beta', 'thread-two'),
+                ('output-three', 'gamma', 'thread-three')}
+    assert set(sends) == set(closed) == {'alpha', 'beta', 'gamma'}
+    assert [event['event_id'] for event in item.events() if event['kind'] == 'message.user'] == ['telegram:-999:2']
+    # Restart-style reread must not retry the poison receipt or duplicate the valid event.
+    item.ingest()
+    assert [event['event_id'] for event in item.events() if event['kind'] == 'message.user'] == ['telegram:-999:2']
+
+
+@pytest.mark.parametrize('failure', [
+    'cache-io', 'upload-db', 'upload-network', 'quota', 'integrity', 'conflict',
+    'send-db', 'send-network', 'send-value', 'accepted-commit', 'rejected-commit', 'commit-response',
+])
+def test_input_operational_failures_stay_pending_and_retry_original_identity(recovery, monkeypatch, failure):
+    import hashlib
+    from gateway.hosted_room_attachments import (
+        AttachmentConflictError, AttachmentIntegrityError, AttachmentQuotaError,
+    )
+    from telegram.error import NetworkError
+
+    item, _, _ = recovery
+    monkeypatch.setattr(item.service, 'prepare_room', lambda binding: None)
+    data = b'input bytes'
+    path = item.path.parent / 'retry.txt'
+    path.write_bytes(data)
+    ref = dict(path=str(path), size=len(data), sha256=hashlib.sha256(data).hexdigest(),
+               upload_id='telegram:-999:1:0', kind='file', name='retry.txt', mime='text/plain')
+    if failure == 'rejected-commit':
+        ref['name'] = '..'
+    with item.db() as db:
+        db.execute('INSERT INTO inbox(event_id,chat_id,message_id,user_id,text,received_at,media_json)'
+                   ' VALUES(?, -999, 1, 42, ?, 1, ?)', ('telegram:-999:1', 'caption',
+                   json.dumps({'attachments': [ref]})))
+        if failure in {'accepted-commit', 'rejected-commit'}:
+            db.execute("CREATE TRIGGER unavailable BEFORE UPDATE OF state ON inbox "
+                       "BEGIN SELECT RAISE(ABORT,'receipt unavailable'); END")
+    error = sqlite3.OperationalError('unavailable')
+    if failure in {'accepted-commit', 'rejected-commit'}:
+        error = sqlite3.IntegrityError('receipt unavailable')
+    with monkeypatch.context() as patch:
+        if failure == 'cache-io':
+            original_open = Path.open
+
+            def unavailable(cached, *args, **kwargs):
+                if cached == path:
+                    raise OSError('temporary cache I/O failure')
+                return original_open(cached, *args, **kwargs)
+
+            patch.setattr(Path, 'open', unavailable)
+            error = OSError('temporary cache I/O failure')
+        elif failure in {'upload-db', 'upload-network', 'quota', 'integrity', 'conflict'}:
+            error = {'upload-db': error, 'upload-network': NetworkError('offline'),
+                     'quota': AttachmentQuotaError('full'), 'integrity': AttachmentIntegrityError('damaged'),
+                     'conflict': AttachmentConflictError('conflict')}[failure]
+            patch.setattr(item.service, 'put_attachment', Mock(side_effect=error))
+        elif failure in {'send-db', 'send-network', 'send-value', 'commit-response'}:
+            error = {'send-db': error, 'send-network': NetworkError('offline'),
+                     'send-value': ValueError('admission refused'), 'commit-response': error}[failure]
+            original_send = item.service.send
+
+            def unavailable_send(**kwargs):
+                if failure == 'commit-response':
+                    original_send(**kwargs)
+                raise error
+
+            patch.setattr(item.service, 'send', unavailable_send)
+        with pytest.raises(type(error)):
+            item.ingest()
+    with item.db() as db:
+        row = db.execute('SELECT event_id,state,result FROM inbox').fetchone()
+        assert tuple(row) == ('telegram:-999:1', 'pending', None)
+        db.execute('DROP TRIGGER IF EXISTS unavailable')
+    events = [event for event in item.events() if event['kind'] == 'message.user']
+    assert len(events) == int(failure in {'accepted-commit', 'commit-response'})
+    item.ingest()
+    item.ingest()
+    with item.db() as db:
+        assert db.execute('SELECT state FROM inbox').fetchone()[0] == (
+            'rejected' if failure == 'rejected-commit' else 'accepted')
+    events = [event for event in item.events() if event['kind'] == 'message.user']
+    assert [event['event_id'] for event in events] == ([] if failure == 'rejected-commit' else ['telegram:-999:1'])
+
+
+def test_retry_binding_failure_still_closes_abandoned_native_app(binding_env, monkeypatch):
+    from gateway.config import PlatformConfig
+    from plugins.platforms.telegram.adapter import TelegramAdapter
+
+    _, path, _ = binding_env
+    closed = []
+
+    class BrokenBindingRequest(LocalRequest):
+        async def do_request(self, *args, **kwargs):
+            path.write_text('{invalid')
+            raise OSError('offline')
+
+        async def shutdown(self):
+            closed.append(True)
+
+    async def exercise():
+        adapter = TelegramAdapter(PlatformConfig(enabled=True, token='123:local-test'))
+        builder = Application.builder().token('123:local-test').request(BrokenBindingRequest())
+        adapter._app = builder.build()
+        adapter._bot = adapter._app.bot
+        adapter._wire_plugin_handlers(adapter._app)
+        with pytest.raises(ValueError):
+            await adapter._initialize_app_with_retries(builder)
+        assert not adapter._hosted_room_ingress_active
+        assert not adapter._app.handlers
+
+    asyncio.run(exercise())
+    assert closed, 'binding failure skipped cleanup of the abandoned HTTP client'

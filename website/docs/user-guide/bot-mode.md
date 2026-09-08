@@ -162,6 +162,8 @@ Run the backend with the normal `hermes serve --isolated` command and keep the e
 
 An active room binding preserves pending Telegram updates on normal cold gateway startup. Telegram's queue is per bot, so this also preserves backlog in other chats on that gateway; those messages still use normal routing and authorization. Unbound or disabled gateways keep the existing cold-start behavior. Do not run competing pollers: forced polling-conflict takeover can still discard pending updates, and preserving startup backlog does not make Telegram acknowledgement and local persistence atomic.
 
+If queue initialization fails after the binding has been validated, the group stays reserved and unrelated chats can still connect. Room inputs that cannot be persisted are rejected, never routed to independent agents. Repair queue storage and restart the participating gateways. A malformed or unreadable binding still prevents connection because the gateway cannot safely determine which routing to reserve.
+
 The transport holds a machine-local OS lock before recovering its queue. A second backend for the same room/group cannot take ownership. Accepted input IDs, reply mappings and per-part delivery receipts survive restart. A send with an unknown outcome is **not automatically repeated**: reconcile it against Telegram before authorizing a retry. Stop cancels current room work; persistent member holds are a separate room policy.
 
 #### Recovering blocked Telegram output

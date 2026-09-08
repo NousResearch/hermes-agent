@@ -171,9 +171,13 @@ class HostedRoomService:
         return acquire_turn_lock(self.profiles_root, profile)
 
     def start(self) -> None:
-        self.attachments.reconcile_room_events()
-        self.attachments.prune()
-        self.runtime.start()
+        with self._policy_lock:
+            # Match runtime.start(): a live draining worker must not be restarted either.
+            if self.runtime.status()["running"]:
+                return
+            self.attachments.reconcile_room_events()
+            self.attachments.prune()
+            self.runtime.start()
 
     def stop(self, *, timeout: float = 5.0) -> bool:
         return self.runtime.stop(timeout=timeout)

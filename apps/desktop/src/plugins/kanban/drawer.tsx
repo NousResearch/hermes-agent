@@ -31,6 +31,7 @@ import { type ReactNode, useEffect, useRef, useState } from 'react'
 
 import {
   $boardSlug,
+  $kanbanScope,
   addComment,
   deleteTask,
   estimateTask,
@@ -39,7 +40,7 @@ import {
   fetchTask,
   logKey,
   patchTask,
-  PROFILES_KEY,
+  profilesKey,
   reassignTask,
   reclaimTask,
   taskKey,
@@ -241,7 +242,13 @@ function AssigneeMenu({
   onReassign: (p: string) => void
 }) {
   const k = useKanban()
-  const { data: roster } = useQuery({ queryKey: PROFILES_KEY, queryFn: fetchProfiles, staleTime: 60_000 })
+  const scope = useValue($kanbanScope)
+
+  const { data: roster } = useQuery({
+    queryKey: profilesKey(scope),
+    queryFn: () => fetchProfiles(scope),
+    staleTime: 60_000
+  })
 
   return (
     <DropdownMenu>
@@ -551,12 +558,13 @@ export function TaskDrawer({
   const k = useKanban()
   const qc = useQueryClient()
   const slug = useValue($boardSlug)
+  const scope = useValue($kanbanScope)
 
   // Socket-invalidated (bindApi); the interval is only the socketless heartbeat.
   const { data: detail, error } = useQuery({
     enabled: !!id,
-    queryFn: () => fetchTask(id!),
-    queryKey: taskKey(slug, id ?? ''),
+    queryFn: () => fetchTask(id!, scope),
+    queryKey: taskKey(slug, id ?? '', scope),
     refetchInterval: 30_000
   })
 
@@ -566,8 +574,8 @@ export function TaskDrawer({
 
   const { data: log } = useQuery({
     enabled: !!id,
-    queryFn: () => fetchLog(id!),
-    queryKey: logKey(slug, id ?? ''),
+    queryFn: () => fetchLog(id!, scope),
+    queryKey: logKey(slug, id ?? '', scope),
     refetchInterval: running ? 3_000 : 15_000
   })
 
@@ -585,7 +593,7 @@ export function TaskDrawer({
 
   const invalidate = () => {
     void qc.invalidateQueries({ queryKey: taskKey(slug, id!) })
-    void qc.invalidateQueries({ queryKey: ['kanban', 'board', slug] })
+    void qc.invalidateQueries({ queryKey: ['kanban', 'board', $kanbanScope.get(), slug] })
   }
 
   // Optimistic status change against the task cache; rolls back + toasts on a

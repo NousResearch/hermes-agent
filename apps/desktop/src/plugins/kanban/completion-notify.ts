@@ -4,8 +4,8 @@
  * No maintained exact-fit OSS exists and the SDK
  * has no kanban event door, so this module rides the kanban plugin's EXISTING
  * /events socket (api.ts onEventsFrame). No new WebSocket, no new process,
- * no DB, no auth, no persistence — cursor is an in-memory per-board high-water
- * mark. Notifies on the same terminal kinds the gateway watcher pings
+ * no DB, no auth, no persistence — cursor is an in-memory per-server/board
+ * high-water mark. Notifies on the same terminal kinds the gateway watcher pings
  * (gateway/kanban_watchers.py): 'completed' (kanban_db.complete_task —
  * payload: summary + artifacts), 'blocked' (payload: reason), 'gave_up'
  * (payload: error), 'crashed', 'timed_out', and 'block_loop_detected'
@@ -17,8 +17,8 @@
  *    desktop shell fires only while the user is AWAY from Hermes. This is the
  *    door that covers "walked away and the worker hit a blocker".
  *
- * Cursor contract: first observation of a board baselines
- * seen[board] = GET /board latest_event_id (MAX task_events.id for that
+ * Cursor contract: first observation of a server/board pair baselines
+ * seen[server, board] = GET /board latest_event_id (MAX task_events.id for that
  * board). Events id <= seen are historical/replay — never notified, no
  * cursor change. id > seen advances cursor for EVERY kind; only terminal
  * kinds emit. Reconnect replays from 0; cursor filters. Board switch never
@@ -54,7 +54,7 @@ const TERMINAL_NOTIFY = new Map<string, { titleKey: string; toast: ToastKind }>(
   ['timed_out', { titleKey: 'notify.timedOutTitle', toast: 'warning' }]
 ])
 
-const seenEventIdByBoard = new Map<string, number>()
+const seenEventIdByRoute = new Map<string, number>()
 const baselinePending = new Set<string>()
 
 let rest: Rest | null = null
@@ -91,23 +91,23 @@ export function bindCompletionNotify(r: Rest, pluginTranslate?: PluginTranslate,
   osDoor = os ?? null
 }
 
-async function ensureBaseline(slug: string): Promise<void> {
-  if (seenEventIdByBoard.has(slug) || baselinePending.has(slug)) {
+async function ensureBaseline(slug: string, cursorKey: string): Promise<void> {
+  if (seenEventIdByRoute.has(cursorKey) || baselinePending.has(cursorKey)) {
     return
   }
 
-  baselinePending.add(slug)
+  baselinePending.add(cursorKey)
 
   try {
     const board = (await rest!<{ latest_event_id?: unknown }>(`/board?board=${encodeURIComponent(slug)}`)) as {
       latest_event_id?: unknown
     }
 
-    seenEventIdByBoard.set(slug, typeof board.latest_event_id === 'number' ? board.latest_event_id : 0)
+    seenEventIdByRoute.set(cursorKey, typeof board.latest_event_id === 'number' ? board.latest_event_id : 0)
   } catch {
     // Fail-closed: unknown baseline → notifications stay suppressed.
   } finally {
-    baselinePending.delete(slug)
+    baselinePending.delete(cursorKey)
   }
 }
 
@@ -177,13 +177,19 @@ function notifyOne(kind: string, spec: { titleKey: string; toast: ToastKind }, e
 /** Consume one /events frame for a board. Returns true when a terminal-event
  *  notification was fired. Never throws: notification failure cannot
  *  interfere with api.ts cache invalidation. */
-export async function onKanbanEventsFrame(slug: string, events?: CompletionEvent[]): Promise<boolean> {
+export async function onKanbanEventsFrame(
+  slug: string,
+  events?: CompletionEvent[],
+  serverScope = ''
+): Promise<boolean> {
   if (!events?.length || slug === '' || !rest) {
     return false
   }
 
-  await ensureBaseline(slug)
-  const seen = seenEventIdByBoard.get(slug)
+  const cursorKey = serverScope ? `${serverScope}\0${slug}` : slug
+
+  await ensureBaseline(slug, cursorKey)
+  const seen = seenEventIdByRoute.get(cursorKey)
 
   if (seen === undefined) {
     return false
@@ -198,7 +204,7 @@ export async function onKanbanEventsFrame(slug: string, events?: CompletionEvent
     }
 
     cursor = ev.id
-    seenEventIdByBoard.set(slug, cursor)
+    seenEventIdByRoute.set(cursorKey, cursor)
     const spec = TERMINAL_NOTIFY.get(ev.kind ?? '')
 
     if (spec) {

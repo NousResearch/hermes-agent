@@ -25,6 +25,10 @@ const RETHROTTLE_DELAY_MS = 5_000
 
 export interface ThrottleWindowLike {
   isDestroyed(): boolean
+  /** Optional window-state probes. When absent the window is treated as
+   * off-screen, which preserves the pre-existing busy-only semantics. */
+  isMinimized?(): boolean
+  isVisible?(): boolean
   webContents?: {
     isDestroyed(): boolean
     setBackgroundThrottling(allowed: boolean): void
@@ -54,6 +58,20 @@ export function createStreamThrottle(
   let unthrottled = false
   let trailing: unknown = null
 
+  /** A window the user can actually see. Chromium throttles rAF on a
+   * throttled webContents, so an on-screen-but-blurred window stops animating
+   * while IPC-driven DOM updates still land -- it reads as a freeze. Anything
+   * on screen therefore never gets throttled, regardless of the busy dial.
+   * Missing probes mean "not on screen" so injected test fakes keep their
+   * busy-only behaviour. */
+  function isOnScreen(win: ThrottleWindowLike): boolean {
+    try {
+      return win.isVisible?.() === true && win.isMinimized?.() !== true
+    } catch {
+      return false
+    }
+  }
+
   function apply(win: ThrottleWindowLike) {
     if (win.isDestroyed()) {
       windows.delete(win)
@@ -68,7 +86,7 @@ export function createStreamThrottle(
     }
 
     try {
-      contents.setBackgroundThrottling(!unthrottled)
+      contents.setBackgroundThrottling(!unthrottled && !isOnScreen(win))
     } catch {
       // A window mid-teardown can throw; it's about to leave the set anyway.
     }
@@ -86,6 +104,13 @@ export function createStreamThrottle(
     register(win) {
       windows.add(win)
       win.on?.('closed', () => windows.delete(win))
+
+      // Visibility transitions change the throttling verdict on their own, so
+      // re-apply rather than waiting for the next busy edge.
+      for (const event of ['minimize', 'restore', 'show', 'hide']) {
+        win.on?.(event, () => apply(win))
+      }
+
       apply(win)
     },
 

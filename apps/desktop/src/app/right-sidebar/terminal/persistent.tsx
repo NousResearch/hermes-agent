@@ -210,7 +210,11 @@ export function PersistentTerminal({ onAddSelectionToChat }: PersistentTerminalP
             scheduleMeasure('ancestor-mutation')
           })
 
-    pauseController = createRendererLoopPauseController(handleVisibilityChange)
+    // Opts into blur-pausing explicitly. Unlike the decorative animations, this
+    // drives overlay rect measurement: parking it on blur is a deliberate perf
+    // choice, and it is what hides a stale overlay when a tab switch happens
+    // while the window is unfocused.
+    pauseController = createRendererLoopPauseController(handleVisibilityChange, { pauseWhenUnfocused: true })
 
     if (measure('initial')) {
       scheduleMeasure('settle')

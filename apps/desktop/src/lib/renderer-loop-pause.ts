@@ -5,7 +5,13 @@ interface WindowStatePayload {
 
 export const RENDERER_ANIMATIONS_PAUSED_ATTRIBUTE = 'data-renderer-animations-paused'
 
-export function createRendererLoopPauseController(onChange: () => void, { pauseWhenUnfocused = true } = {}) {
+// `pauseWhenUnfocused` defaults to false. Blur is not "not being looked at":
+// on a multi-monitor desktop an unfocused window is usually still fully
+// visible, and pausing its animations there reads as the app having frozen.
+// Real invisibility (document hidden, or the main process reporting
+// minimized/not-visible) still pauses, which is where the renderer-wake saving
+// actually mattered. Callers that want blur to pause opt in explicitly.
+export function createRendererLoopPauseController(onChange: () => void, { pauseWhenUnfocused = false } = {}) {
   let windowPaused = false
   let windowFocused = document.hasFocus()
 
@@ -53,8 +59,10 @@ export function createRendererLoopPauseController(onChange: () => void, { pauseW
 
 /**
  * Mirrors the main window's observability onto :root so continuous decorative
- * CSS animations can sleep with the JS renderer loops. The caller owns the
- * returned cleanup; overlay windows intentionally do not install this state.
+ * CSS animations can sleep with the JS renderer loops. Sleeping is keyed to the
+ * window being genuinely invisible (hidden/minimized), never to mere blur.
+ * The caller owns the returned cleanup; overlay windows intentionally do not
+ * install this state.
  */
 export function installRendererAnimationPauseState(): () => void {
   const root = document.documentElement

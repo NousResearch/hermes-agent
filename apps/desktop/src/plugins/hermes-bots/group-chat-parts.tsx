@@ -159,6 +159,7 @@ interface GroupMentionInputProps {
   'aria-label'?: string
   autoFocus?: boolean
   className?: string
+  disabled?: boolean
   members: GroupMember[]
   onChange: (value: string) => void
   onPaste?: (event: ClipboardEvent<HTMLTextAreaElement>) => void
@@ -435,19 +436,35 @@ export function GroupClarifyCard({ entry, members }: GroupClarifyCardProps) {
         ? `${answerFor(questions[0])} — ${entry.command || entry.question || b.group.commandApproval}`
         : questions.map(q => (questions.length > 1 ? `${q.question}: ${answerFor(q)}` : answerFor(q))).join('\n')
 
-      appendGroupChatEntry(
-        group,
-        {
-          kind: 'user',
-          name: 'You'
-        },
-        summary,
-        entry.thread || 'legacy'
-      )
+      // Hosted rooms replay one authoritative gateway log. The approval RPC
+      // currently emits no room event, so do not invent a Desktop-only entry
+      // that another client cannot observe or order.
+      if (!entry.hostedApproval) {
+        appendGroupChatEntry(
+          group,
+          {
+            kind: 'user',
+            name: 'You'
+          },
+          summary,
+          entry.thread || 'legacy'
+        )
+      }
     } catch (err: any) {
+      const nested = err?.error && typeof err.error === 'object' ? err.error : null
+      const detail = String(err?.message || nested?.message || '')
+
+      const hostedApprovalStale =
+        Number(err?.code ?? nested?.code) === 5119 &&
+        /fenc|identity is unavailable|no longer pending|not found|stale/i.test(detail)
+
       host.notify({
         kind: 'error',
-        message: b.group.answerFailed(botHandle(entry.member, member), String(err?.message || err))
+        message: entry.hostedApproval
+          ? hostedApprovalStale
+            ? b.group.hostedApprovalFailed
+            : b.group.hostedApprovalRetry
+          : b.group.answerFailed(botHandle(entry.member, member), String(err?.message || err))
       })
     } finally {
       setSending(false)

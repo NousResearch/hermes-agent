@@ -306,19 +306,45 @@ describe('per-member delta', () => {
 
 describe('threads', () => {
   it('mints a new thread per composer send and lands replies in it', async () => {
-    const room = await loadRoom()
-    const member: GroupMember[] = [{ name: 'research', title: '' }]
+    const now = vi.spyOn(Date, 'now').mockReturnValue(1788408000000)
+    let sequence = 10000
 
-    const first = room.rounds.sendToGroupChat('Rooms', member, 'first topic')
-    await settle(room, 'Rooms')
-    const second = room.rounds.sendToGroupChat('Rooms', member, 'second topic')
-    await settle(room, 'Rooms')
+    const uuid = vi
+      .spyOn(globalThis.crypto, 'randomUUID')
+      .mockImplementation(() => `00000000-0000-4000-8000-${(--sequence).toString(16).padStart(12, '0')}`)
 
-    expect(first).toBeTruthy()
-    expect(second).toBeTruthy()
-    expect(first).not.toBe(second)
-    expect(log(room, 'Rooms')[0].thread).toBe(first)
-    expect(log(room, 'Rooms')[1].thread).toBe(second)
+    try {
+      const room = await loadRoom({ turn: ({ n }) => (n === 1 ? 'first reply' : 'second reply') })
+      const member: GroupMember[] = [{ name: 'research', title: '' }]
+
+      const first = room.rounds.sendToGroupChat('Rooms', member, 'first topic')
+      await settle(room, 'Rooms')
+      const second = room.rounds.sendToGroupChat('Rooms', member, 'second topic')
+      await settle(room, 'Rooms')
+
+      expect(first).toBeTruthy()
+      expect(second).toBeTruthy()
+      expect(first).not.toBe(second)
+
+      const messages = log(room, 'Rooms')
+
+      expect(messages).toHaveLength(4)
+
+      // Equal timestamps may sort by entry ID; identity must not depend on position.
+      for (const [text, kind, thread] of [
+        ['first topic', 'user', first],
+        ['first reply', 'member', first],
+        ['second topic', 'user', second],
+        ['second reply', 'member', second]
+      ]) {
+        expect(messages.filter(message => message.text === text)).toEqual([
+          expect.objectContaining({ from: expect.objectContaining({ kind }), thread })
+        ])
+      }
+    } finally {
+      now.mockRestore()
+      uuid.mockRestore()
+    }
   })
 
   it('continues an explicit thread and scopes the member delta to it', async () => {
@@ -394,6 +420,32 @@ describe('turn prompt', () => {
 })
 
 describe('attachments', () => {
+  it('keeps a required file pending when staging fails while healthy members continue', async () => {
+    const room = await loadRoom()
+    const request = host.request as (method: string, params: Record<string, unknown>) => Promise<unknown>
+
+    host.request = async (method: string, params: Record<string, unknown>) => {
+      if (method === 'file.attach' && String(params.session_id).includes('builder')) {
+        throw new Error('file staging unavailable')
+      }
+
+      return request(method, params)
+    }
+
+    const sent = room.rounds.sendToGroupChat('Required', MEMBERS.slice(0, 2), 'review the file', null, [
+      { kind: 'file', name: 'welcome.md', data: 'data:text/markdown;base64,aGVsbG8=' }
+    ])
+
+    await settle(room, 'Required')
+    expect(room.gateway.calls.filter(call => call.profile === 'builder')).toHaveLength(0)
+    expect(room.gateway.calls.some(call => call.profile === 'research')).toBe(true)
+    expect(room.chat.$groupChats.get().Required.watermarks[`${sent}::builder`] || 0).toBe(0)
+    host.request = request
+    await room.rounds.runGroupChatRounds('Required', MEMBERS.slice(0, 2), sent!)
+    expect(room.gateway.calls.filter(call => call.profile === 'builder')).toHaveLength(1)
+    expect(room.gateway.attaches.some(call => call.profile === 'builder' && call.data.endsWith('aGVsbG8='))).toBe(true)
+  })
+
   it('stages them into EVERY responding member session before that member submits', async () => {
     const room = await loadRoom()
 

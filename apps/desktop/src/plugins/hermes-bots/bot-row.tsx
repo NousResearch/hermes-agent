@@ -55,8 +55,9 @@ import {
   ROSTER_KEY,
   saveBotMeta
 } from './data'
-import { $groupChats, $groupChatWorkspace } from './group-chat'
+import { $groupChats, $groupChatWorkspace, groupChatHostedGateway } from './group-chat'
 import { botGroups, groupLastActivity } from './group-membership'
+import { hostedMessageSpeaker } from './group-message-author'
 import { fallbackSelectionAfterHide, isBotHidden, isBotPinned } from './hidden-bots'
 import { useBots } from './i18n'
 import { displayName, stripPreviewMarkdown } from './labels'
@@ -473,22 +474,41 @@ export function GroupRow({ active, group, members, needsYou, onOpen, onDisband }
   // Room previews speak the same handle vocabulary as the roster, mentions
   // and the group prompt: the primary profile is @hermes, not @default.
   const lastFrom = last?.from?.name || ''
+  const hostedSpeaker = last ? hostedMessageSpeaker(last.from, room, members) : null
 
   const lastHandle = botHandle(
     lastFrom || 'bot',
     members.find(member => member?.name === lastFrom)
   )
 
-  const preview = last
-    ? `${last.from?.kind === 'user' ? 'You' : `@${lastHandle}`}: ${stripPreviewMarkdown(last.text) || '…'}`
-    : `${members.length} bots`
+  const speaker = hostedSpeaker
+    ? hostedSpeaker.handle
+      ? `@${hostedSpeaker.handle}`
+      : hostedSpeaker.display
+    : last?.from?.kind === 'user'
+      ? 'You'
+      : `@${lastHandle}`
+
+  const preview = last ? `${speaker}: ${stripPreviewMarkdown(last.text) || '…'}` : `${members.length} bots`
 
   const availableMembers = members.filter(member => botSourceStatus(member).available).length
   const availabilityLabel = `${availableMembers} of ${members.length} available`
+  const hosted = Boolean(groupChatHostedGateway(room))
+
+  const hostWarning =
+    hosted && (room.hostedStatus?.state === 'offline' || room.hostedStatus?.state === 'unsupported')
+      ? room.hostedStatus.label
+      : null
+
+  const allUnavailable = hosted ? Boolean(hostWarning) : availableMembers === 0
+  const someUnavailable = !hosted && members.length > 0 && availableMembers < members.length
+  const warningLabel = hostWarning || (someUnavailable ? availabilityLabel : null)
 
   const row = (
     <RowButton
-      aria-label={`${group}, ${members.length} bots, ${availabilityLabel}`}
+      aria-label={[group, `${members.length} bots`, hosted ? hostWarning : availabilityLabel]
+        .filter(Boolean)
+        .join(', ')}
       className={cn(
         'flex w-full min-w-0 max-w-full items-center gap-2.5 overflow-hidden rounded-md px-2 py-2 text-left transition-colors',
         'hover:bg-(--chrome-action-hover)',
@@ -505,7 +525,7 @@ export function GroupRow({ active, group, members, needsYou, onOpen, onDisband }
             alt=""
             className={cn(
               'size-8 rounded-md object-cover ring-1 ring-(--ui-stroke-tertiary)',
-              availableMembers === 0 && 'grayscale opacity-60'
+              allUnavailable && 'grayscale opacity-60'
             )}
             src={room.image}
           />
@@ -513,16 +533,16 @@ export function GroupRow({ active, group, members, needsYou, onOpen, onDisband }
           <span
             className={cn(
               'flex size-8 items-center justify-center rounded-md bg-(--chrome-action-hover) text-(--ui-text-tertiary)',
-              availableMembers === 0 && 'opacity-60'
+              allUnavailable && 'opacity-60'
             )}
           >
             <Codicon name="organization" />
           </span>
         )}
-        {members.length > 0 && availableMembers < members.length ? (
-          <Tip label={availabilityLabel}>
+        {warningLabel ? (
+          <Tip label={warningLabel}>
             <span
-              aria-label={availabilityLabel}
+              aria-label={warningLabel}
               className="absolute -bottom-0.5 -right-0.5 flex size-4 items-center justify-center rounded-full bg-(--ui-bg-primary) text-[0.625rem] text-amber-600 ring-1 ring-(--ui-stroke-tertiary) dark:text-amber-300"
             >
               <Codicon name="debug-disconnect" />

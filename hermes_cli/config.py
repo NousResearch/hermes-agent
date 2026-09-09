@@ -19,7 +19,7 @@ import unicodedata
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
-from typing import Dict, Any, Optional, List, Tuple, Set
+from typing import Dict, Any, Optional, List, Tuple, Set, cast
 
 import yaml
 
@@ -200,19 +200,33 @@ _CONFIG_LOCK = threading.RLock()
 # path -> last successfully loaded (expanded) config; served after a parse failure so a
 # mid-edit broken YAML never silently drops user overrides (e.g. approvals.deny rules).
 _LAST_EXPANDED_CONFIG_BY_PATH: Dict[str, Any] = {}
-# path -> (user_mtime_ns, user_size, managed_mtime_ns, managed_size, merged, env_ref_snapshot).
-# load_config() returns a deepcopy of the cached value while the signature matches (skips
-# safe_load + merge + normalize + expand, ~13 ms). Writers use atomic_yaml_write (fresh inode
-# -> new mtime_ns) so no explicit invalidation is needed. The managed-file signature is folded
-# in so editing the managed-scope config.yaml invalidates, and the env snapshot invalidates
-# when a referenced ${VAR} changes value (late .env load, in-process rotation).
-# (path, mtime_ns, size) -> cached expanded config dict. load_config() returns a deepcopy of the cached
-# value when the file hasn't changed since the last load, skipping yaml.safe_load + _deep_merge +
-# _normalize_* + _expand_env_vars (~13 ms/call). save_config() + migrate_config() write via
-# atomic_yaml_write which produces a fresh inode, so stat() sees a new mtime_ns and the next load
-# repopulates automatically — no explicit invalidation hook. See #58514.
-_LOAD_CONFIG_CACHE: Dict[str, Tuple[int, int, int, int, Dict[str, Any], Dict[str, Optional[str]]]] = {}
-# path -> (mtime_ns, size, raw yaml dict) for read_raw_config() (no defaults merged in).
+# path -> cached expanded config dict.
+# load_config() returns a deepcopy of the cached value when the file
+# hasn't changed since the last load, skipping yaml.safe_load +
+# _deep_merge + _normalize_* + _expand_env_vars (~13 ms/call).
+# save_config() + migrate_config() write via atomic_yaml_write which
+# produces a fresh inode, so stat() sees a new mtime_ns and the next
+# load repopulates automatically — no explicit invalidation hook.
+# Cached tuple is (user_mtime_ns, user_size, managed_mtime_ns, managed_size,
+# merged_value, env_ref_snapshot, load_succeeded). The managed-file signature
+# is folded in so editing the managed-scope config.yaml invalidates the cache (see
+# managed_scope), and the env snapshot invalidates it when a referenced ${VAR}
+# changes value (late .env load, in-process rotation — #58514).
+_LOAD_CONFIG_CACHE: Dict[
+    str,
+    Tuple[
+        int,
+        int,
+        int,
+        int,
+        Dict[str, Any],
+        Dict[str, Optional[str]],
+        bool,
+    ],
+] = {}
+# (path, mtime_ns, size) -> cached raw yaml dict. Same pattern as
+# _LOAD_CONFIG_CACHE but for read_raw_config() — used when callers want
+# the user's on-disk values without defaults merged in.
 _RAW_CONFIG_CACHE: Dict[str, Tuple[int, int, Dict[str, Any]]] = {}
 
 # Env var names written to .env that aren't in OPTIONAL_ENV_VARS (managed by setup/provider
@@ -1992,14 +2006,29 @@ def load_config() -> Dict[str, Any]:
     """Load the merged configuration (DEFAULT_CONFIG + config.yaml + managed scope, env-expanded).
     Cached on the file signature; returns a deepcopy since most call sites mutate the result.
     Read-only hot paths should use ``load_config_readonly()`` to skip the deepcopy."""
-    return _load_config_impl(want_deepcopy=True)
+    config, _ = _load_config_impl(want_deepcopy=True, validate_current_files=False)
+    return config
+
+
+def load_config_with_status() -> Tuple[Dict[str, Any], bool]:
+    """Load mutable config and report whether current files loaded successfully.
+
+    The ordinary loader deliberately serves last-known-good config, or defaults
+    in a fresh process, when user config cannot be read or parsed. Consent and
+    policy gates must be able to distinguish those fallbacks from a successful
+    load, so this API revalidates current user and managed files and returns
+    ``False`` for a fallback result while preserving the same non-throwing config
+    value. The ordinary dict-only loaders retain their cached behavior.
+    """
+    return _load_config_impl(want_deepcopy=True, validate_current_files=True)
 
 
 def load_config_readonly() -> Dict[str, Any]:
     """``load_config()`` without the defensive deepcopy (~half of the 265us cache-hit cost).
     **Mutating the returned dict (or any nested structure) corrupts the in-process cache for
     every subsequent caller** — only for code paths that never write to the result."""
-    return _load_config_impl(want_deepcopy=False)
+    config, _ = _load_config_impl(want_deepcopy=False, validate_current_files=False)
+    return config
 
 
 def _ensure_dict(parent: Dict[str, Any], key: str) -> Dict[str, Any]:
@@ -2157,25 +2186,35 @@ def _last_known_good_fallback(config_path: Path, path_key: str, cache_sig, exc: 
     return lkg_copy
 
 
-def _merge_managed_overlay(expanded: Dict[str, Any]) -> Tuple[Dict[str, Any], Any]:
-    """Apply the managed-scope overlay; returns ``(merged, managed_config_or_falsy)``.
+def _merge_managed_overlay(
+    expanded: Dict[str, Any], *, use_cache: bool
+) -> Tuple[Dict[str, Any], Any, bool]:
+    """Apply the managed-scope overlay; return merged config, overlay and load status.
     Managed wins at the leaf and is applied AFTER user expansion so a user ``${VAR}`` cannot shadow
     a managed literal: managed values expand only against the process environment. This
     deliberately inverts the usual env-over-config precedence for the keys the managed layer pins
     (docs/design/managed-scope.md §4.1)."""
-    managed_config = managed_scope.load_managed_config()
+    managed_config, managed_loaded = managed_scope.load_managed_config_with_status(
+        use_cache=use_cache
+    )
     if not managed_config:
-        return expanded, managed_config
+        return expanded, managed_config, managed_loaded
     # Same canonicalization as the user config BEFORE merging (parity with
     # managed_scope.apply_managed_overlay) so the merged result never exposes a nested dict.
     managed_normalized = _normalize_root_model_keys(managed_config)
     if isinstance(managed_normalized.get("model"), str):
         managed_normalized = dict(managed_normalized)
         managed_normalized["model"] = {"default": managed_normalized["model"]}
-    return _deep_merge(expanded, _expand_env_vars(managed_normalized)), managed_config
+    return (
+        _deep_merge(expanded, _expand_env_vars(managed_normalized)),
+        managed_config,
+        managed_loaded,
+    )
 
 
-def _load_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
+def _load_config_impl(
+    *, want_deepcopy: bool, validate_current_files: bool
+) -> Tuple[Dict[str, Any], bool]:
     with _CONFIG_LOCK:
         ensure_hermes_home()
         config_path = get_config_path()
@@ -2184,7 +2223,12 @@ def _load_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
         user_sig, cache_sig = _load_config_cache_sig(config_path)
 
         cached = _LOAD_CONFIG_CACHE.get(path_key)
-        if cached is not None and cache_sig is not None and cached[:4] == cache_sig:
+        if (
+            not validate_current_files
+            and cached is not None
+            and cache_sig is not None
+            and cached[:4] == cache_sig
+        ):
             # Signatures match, but the cached expansion is only valid if every ${VAR} it was
             # expanded against still has the same value — otherwise a load before
             # load_hermes_dotenv() pins unexpanded literals for the process lifetime.
@@ -2192,9 +2236,15 @@ def _load_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
             # (e.g. auxiliary.<task>.api_key) for the life of the process (#58514).
             env_snapshot = cached[5] if len(cached) > 5 else {}
             if all(_env_ref_lookup(k) == v for k, v in env_snapshot.items()):
-                return copy.deepcopy(cached[4]) if want_deepcopy else cached[4]
+                value = copy.deepcopy(cached[4]) if want_deepcopy else cached[4]
+                # Cache entries created before status tracking cannot prove a
+                # successful load and therefore fail closed for status-aware
+                # callers. Normal load_config callers still receive the value.
+                succeeded = bool(cached[6]) if len(cached) > 6 else False
+                return value, succeeded
 
         config = copy.deepcopy(DEFAULT_CONFIG)
+        load_succeeded = True
 
         if user_sig is not None:
             try:
@@ -2210,12 +2260,27 @@ def _load_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
 
                 config = _deep_merge(config, user_config)
             except Exception as e:
+                load_succeeded = False
                 lkg_copy = _last_known_good_fallback(config_path, path_key, cache_sig, e)
                 if lkg_copy is not None:
-                    return copy.deepcopy(lkg_copy) if want_deepcopy else lkg_copy
+                    value = copy.deepcopy(lkg_copy) if want_deepcopy else lkg_copy
+                    return value, False
 
         normalized = _canonicalize_config(config)
-        expanded, managed_config = _merge_managed_overlay(_expand_env_vars(normalized))
+        expanded, managed_config, managed_loaded = _merge_managed_overlay(
+            cast(Dict[str, Any], _expand_env_vars(normalized)),
+            use_cache=not validate_current_files,
+        )
+        load_succeeded = load_succeeded and managed_loaded
+        if not managed_loaded:
+            # A temporarily unreadable/malformed administrator overlay must not
+            # replace the effective configuration for ordinary callers. Keep
+            # serving the last merged value while status-aware policy gates see
+            # ``False`` and therefore cannot authorize from that stale value.
+            previous = cached[4] if cached is not None else _LAST_EXPANDED_CONFIG_BY_PATH.get(path_key)
+            if previous is not None:
+                value = copy.deepcopy(previous) if want_deepcopy else previous
+                return value, False
         _LAST_EXPANDED_CONFIG_BY_PATH[path_key] = copy.deepcopy(expanded)
         if cache_sig is not None:
             # The cache stores its own deepcopy so load_config() callers can mutate freely while
@@ -2225,14 +2290,28 @@ def _load_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
             env_snapshot = _env_ref_snapshot(normalized)
             if managed_config:
                 _env_ref_snapshot(managed_config, env_snapshot)
-            _LOAD_CONFIG_CACHE[path_key] = (*cache_sig, cached_copy, env_snapshot)
-            # Readonly path returns the same object later calls will see (identity invariant).
+            _LOAD_CONFIG_CACHE[path_key] = (
+                cache_sig[0],
+                cache_sig[1],
+                cache_sig[2],
+                cache_sig[3],
+                cached_copy,
+                env_snapshot,
+                load_succeeded,
+            )
+            # On the readonly path return the same cached object subsequent
+            # calls will see — keeps "two readonly calls return the same
+            # object" invariant that callers may rely on for identity checks.
             if not want_deepcopy:
-                return cached_copy
+                return cached_copy, load_succeeded
         else:
             _LOAD_CONFIG_CACHE.pop(path_key, None)
-        # First-load result is a fresh dict (not aliased to the cache); safe to return directly.
-        return expanded
+        # First-load result is a fresh dict (not aliased to the cache); safe
+        # to return directly. For the deepcopy=True path this is the
+        # canonical "freshly-built mutable result" the function has always
+        # returned. For the deepcopy=False path with no cache (e.g. config
+        # file missing), it's also fine — callers get an isolated object.
+        return expanded, load_succeeded
 
 
 _SECURITY_COMMENT = """

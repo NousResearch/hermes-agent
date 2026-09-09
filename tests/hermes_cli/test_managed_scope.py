@@ -28,6 +28,35 @@ def _write_managed(tmp_path, monkeypatch, *, config=None, env=None):
     return managed
 
 
+def test_existing_empty_managed_dir_is_successful_config_noop(tmp_path, monkeypatch):
+    from hermes_cli import managed_scope
+
+    _write_managed(tmp_path, monkeypatch)
+
+    config, loaded = managed_scope.load_managed_config_with_status()
+
+    assert config == {}
+    assert loaded is True
+
+
+@pytest.mark.parametrize(
+    "body",
+    ["[]\n", "- item\n", "scalar\n", "null\n", "key: [unterminated\n"],
+    ids=["empty-list", "list", "scalar", "null", "malformed"],
+)
+def test_invalid_managed_config_reports_unsuccessful_load(
+    tmp_path, monkeypatch, body
+):
+    from hermes_cli import managed_scope
+
+    _write_managed(tmp_path, monkeypatch, config=body)
+
+    config, loaded = managed_scope.load_managed_config_with_status()
+
+    assert config == {}
+    assert loaded is False
+
+
 
 
 

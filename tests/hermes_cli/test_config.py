@@ -19,6 +19,8 @@ from hermes_cli.config import (
     _normalize_max_turns_config,
     is_provider_enabled,
     load_config,
+    load_config_readonly,
+    load_config_with_status,
     load_env,
     migrate_config,
     read_raw_config,
@@ -144,6 +146,13 @@ class TestLoadConfigDefaults:
             assert config["agent"]["max_turns"] == 42
             assert "max_turns" not in config
 
+    def test_missing_file_is_a_successful_default_load(self, tmp_path):
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            config, loaded = load_config_with_status()
+
+        assert loaded is True
+        assert config["kanban"] == DEFAULT_CONFIG["kanban"]
+
 
 class TestLoadConfigParseFailure:
     """A YAML parse failure must NOT silently fall back to defaults.
@@ -187,6 +196,115 @@ class TestLoadConfigParseFailure:
             # User is told where the backup landed
             assert str(baks[0]) in err
 
+    def test_fresh_process_default_fallback_reports_unsuccessful_load(
+        self, tmp_path, capsys
+    ):
+        """Fallback defaults remain usable but cannot authorize policy gates."""
+        (tmp_path / "config.yaml").write_text(
+            "kanban:\n  auto_subscribe_on_create: [unterminated\n",
+            encoding="utf-8",
+        )
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            config, loaded = load_config_with_status()
+            cached_config, cached_loaded = load_config_with_status()
+
+        assert loaded is False
+        assert cached_loaded is False
+        assert config["kanban"] == DEFAULT_CONFIG["kanban"]
+        assert cached_config == config
+        capsys.readouterr()
+
+    def test_malformed_managed_overlay_reports_unsuccessful_load(
+        self, tmp_path, caplog
+    ):
+        """A skipped administrator overlay cannot authorize a consent gate."""
+        home = tmp_path / "home"
+        managed = tmp_path / "managed"
+        home.mkdir()
+        managed.mkdir()
+        (home / "config.yaml").write_text(
+            "kanban:\n  auto_subscribe_on_create: true\n",
+            encoding="utf-8",
+        )
+        (managed / "config.yaml").write_text(
+            "kanban:\n  auto_subscribe_on_create: [unterminated\n",
+            encoding="utf-8",
+        )
+        from hermes_cli import managed_scope
+
+        managed_scope.invalidate_managed_cache()
+        with patch.dict(
+            os.environ,
+            {
+                "HERMES_HOME": str(home),
+                "HERMES_MANAGED_DIR": str(managed),
+            },
+        ):
+            config, loaded = load_config_with_status()
+
+        assert loaded is False
+        assert config["kanban"]["auto_subscribe_on_create"] is True
+        managed_scope.invalidate_managed_cache()
+        caplog.clear()
+
+    @pytest.mark.parametrize("failure", ["stat", "read"])
+    def test_warm_cache_revalidates_managed_config_for_status_loads(
+        self, tmp_path, monkeypatch, failure
+    ):
+        """A cached opt-in cannot authorize policy after managed I/O fails."""
+        from hermes_cli import managed_scope
+
+        home = tmp_path / "home"
+        managed = tmp_path / "managed"
+        home.mkdir()
+        managed.mkdir()
+        (home / "config.yaml").write_text(
+            "kanban:\n  auto_subscribe_on_create: true\n",
+            encoding="utf-8",
+        )
+        managed_config = managed / "config.yaml"
+        if failure == "read":
+            managed_config.write_text("display:\n  skin: mono\n", encoding="utf-8")
+
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        monkeypatch.setenv("HERMES_MANAGED_DIR", str(managed))
+        managed_scope.invalidate_managed_cache()
+
+        warm, warm_loaded = load_config_with_status()
+        assert warm_loaded is True
+        assert warm["kanban"]["auto_subscribe_on_create"] is True
+
+        if failure == "stat":
+            real_stat = Path.stat
+
+            def deny_managed_stat(path, *args, **kwargs):
+                if path == managed_config:
+                    raise PermissionError("synthetic managed stat denial")
+                return real_stat(path, *args, **kwargs)
+
+            monkeypatch.setattr(Path, "stat", deny_managed_stat)
+        else:
+            real_open = open
+
+            def deny_managed_read(file, *args, **kwargs):
+                if Path(file) == managed_config:
+                    raise PermissionError("synthetic managed read denial")
+                return real_open(file, *args, **kwargs)
+
+            monkeypatch.setattr("builtins.open", deny_managed_read)
+
+        cached, cached_loaded = load_config_with_status()
+
+        assert cached_loaded is False
+        assert cached == warm
+        mutable = load_config()
+        readonly = load_config_readonly()
+        assert mutable == warm
+        assert readonly == warm
+        assert mutable is not readonly
+        managed_scope.invalidate_managed_cache()
+
 
 
     def test_last_known_good_retained_within_process(self, tmp_path, capsys):
@@ -211,7 +329,8 @@ class TestLoadConfigParseFailure:
                 "approvals:\n  deny:\n    - 'curl*evil.com*'\n"
             )
 
-            good = load_config()
+            good, good_loaded = load_config_with_status()
+            assert good_loaded is True
             assert good["model"]["default"] == "test/custom-model"
             assert good["approvals"]["deny"] == ["curl*evil.com*"]
             capsys.readouterr()
@@ -220,8 +339,9 @@ class TestLoadConfigParseFailure:
             time.sleep(0.05)
             cfg.write_text("approvals:\n  deny: [unclosed\n  :::bad {{{\n")
 
-            after = load_config()
+            after, after_loaded = load_config_with_status()
             # Last-known-good retained — NOT defaults
+            assert after_loaded is False
             assert after["model"]["default"] == "test/custom-model"
             assert after["approvals"]["deny"] == ["curl*evil.com*"]
             # Warning says we kept the previous config, not defaults

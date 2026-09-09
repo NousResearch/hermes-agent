@@ -237,6 +237,35 @@ class TestGatewayConfigPluginPlatform:
         finally:
             _reg.unregister("testplat")
 
+    @pytest.mark.parametrize("credential_field", ["token", "api_key"])
+    @pytest.mark.parametrize("connectivity_hook", ["is_connected", "validate_config"])
+    def test_plugin_connectivity_hook_precedes_generic_credentials(
+        self, monkeypatch, credential_field, connectivity_hook
+    ):
+        """Stale generic credentials cannot override a plugin's failed probe."""
+        from gateway.config import PlatformConfig
+        from gateway.platform_registry import platform_registry as _reg
+
+        platform_name = f"stale-{credential_field}-{connectivity_hook}"
+        entry = PlatformEntry(
+            name=platform_name,
+            label="Stale plugin",
+            adapter_factory=lambda cfg: None,
+            check_fn=lambda: True,
+        )
+        setattr(entry, connectivity_hook, lambda cfg: False)
+        _reg.register(entry)
+        monkeypatch.setattr("hermes_cli.plugins.discover_plugins", lambda: None)
+        try:
+            platform = Platform(platform_name)
+            config = PlatformConfig(enabled=True)
+            setattr(config, credential_field, "stale-credential")
+            gateway_config = GatewayConfig(platforms={platform: config})
+
+            assert platform not in gateway_config.get_connected_platforms()
+        finally:
+            _reg.unregister(platform_name)
+
 
 # ── Extended PlatformEntry fields ─────────────────────────────────────
 

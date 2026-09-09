@@ -577,6 +577,8 @@ hermes kanban create "Translate the docs site to French" \
 
 Use it for open-ended, multi-step, or "keep going until X is true" cards. Skip it for cheap one-shot work — the per-turn judge overhead isn't worth it, and the dispatcher's existing retry/circuit-breaker already handles transient worker failures. The judge is only as good as your goal text, so write the body as **explicit acceptance criteria**.
 
+The completion judge is dependency-graph aware. If a card has downstream tasks that remain `todo` because they depend on this card, the judge receives those child ids, titles, assignees, and statuses. A pure planning, decomposition, routing, or engineering-decision card can therefore finish with a concrete architecture/routing handoff; it is not forced to produce implementation evidence that can only exist after its children are released. This does **not** relax implementation cards: creating children is never a substitute for the implementation and verification required by the current card.
+
 :::note Goal-mode cards borrow the `/goal` engine — they don't connect to it
 `--goal` runs the continuation loop *inside that one card's worker session*. It shares the engine with the [`/goal` slash command](./goals), not the state: setting a `/goal` in a chat session never creates, claims, or moves a kanban card, and a goal-mode card's loop is invisible to any chat session's `/goal status`. If you want this conversation to keep iterating, use [`/goal`](./goals); if you want work on the board, create a card.
 :::
@@ -676,7 +678,8 @@ Config knobs (all under `kanban:` in `~/.hermes/config.yaml`):
 | `auto_decompose_per_tick` | `3` | Cap on decompositions per dispatcher tick. Excess defers to the next tick. |
 | `orchestrator_profile` | `""` | Profile assigned to the root/orchestration task after decomposition. Empty = fall back to active default profile. |
 | `default_assignee` | `""` | Where a child task lands when the LLM picks an unknown profile. Empty = fall back to active default. |
-| `auto_subscribe_on_create` | `true` | When `kanban_create` runs inside a persistent gateway/TUI session, terminal events resume that originating agent with a synthetic status turn. Set to `false` for passive completion or to require explicit `kanban_notify-subscribe` calls. Independent of `auto_decompose`. |
+| `auto_subscribe_on_create` | `true` | Single consent gate for every route automatically added by `kanban_create`: gateway/TUI origin, parent/creator inheritance, and the explicit headless technical home. Set to `false` for passive completion or to require explicit `notify-subscribe` calls. If config cannot be read or parsed, creation still succeeds but no automatic route is added (`subscribed=false`); fallback defaults or last-known-good values do not authorize a route. Independent of `auto_decompose`. |
+| `headless_notification_home_platform` | `""` | Optional fail-closed fallback for a worker-created card with no inherited origin. Set this to a platform whose configured home channel is explicitly reserved for technical Kanban notifications. Empty means no fallback; Hermes never guesses among ordinary home channels. |
 | `done_sub_retention_days` | `30` | Notify subscriptions survive `done` (reopen-safe) and are removed on `archived`. The notifier GC purges subscriptions whose task has been `done` or `blocked` with no new events for this many days, bounding sub-table growth on boards that never archive. `0` disables the sweep. |
 
 And the two auxiliary LLM slots:
@@ -935,7 +938,7 @@ This is the whole point of the separation:
 - You spot a card that needs human context → `/kanban comment t_xyz "use the 2026 schema, not 2025"` lands on the task thread and the *next* run of that task will read it in `kanban_show()`.
 - You want to know what your fleet is doing without stopping the orchestrator → `/kanban list --mine` or `/kanban stats` inspects the board without touching your main conversation.
 
-### Auto-subscribe on `/kanban create` (gateway only)
+### Notification origin for created cards
 
 When you create a task from the gateway with `/kanban create "…"`, the originating chat (platform + chat id + thread id) is automatically subscribed to that task's terminal events (`completed`, `blocked`, `gave_up`, `crashed`, `timed_out`). You'll get one message back per terminal event — including the first line of the worker's result summary on `completed` — without having to poll or remember the task id.
 
@@ -952,13 +955,14 @@ bot> ✓ t_9fc1a3 completed by transcriber
 
 Subscriptions survive a task reaching `done` — completion is reversible (a reviewer or controller can reopen a done task), so the origin session keeps getting notified through reopen cycles. They auto-remove on `archived` (the irreversible end state). On boards that never archive, a GC sweep purges subscriptions for tasks that have sat in `done` or `blocked` with no new activity for `kanban.done_sub_retention_days` days (default 30; set 0 to disable), so stale rows don't accumulate forever. If you script a create with `--json` (machine output) the auto-subscribe is skipped — the assumption is that scripted callers want to manage subscriptions explicitly via `/kanban notify-subscribe`.
 
-Dispatcher workers creating tasks through `kanban_create` or `hermes kanban create`
-copy the owning task's durable notification subscriptions even without `parents`
-dependency links. Destinations, route anchors, and delivery modes are preserved;
-a passive subscription is not upgraded to a wake by auto-subscribe. This copies
-existing subscriptions independently of `auto_subscribe_on_create`, which controls
-adding the current conversation as a new destination. No destination is invented
-for a bare CLI session or a worker whose owning task has no subscriptions.
+For tasks created through `kanban_create`, `kanban.auto_subscribe_on_create: true`
+and a successful current config load form one gate for every automatic route:
+explicit parent subscriptions, the creator task's durable route, a live gateway/TUI
+origin, and the technical-home fallback. Inherited destinations retain their route
+anchors and delivery modes; a passive subscription is not upgraded to a wake. If
+the gate is closed, no automatic route is persisted. Explicit `notify-subscribe`
+calls remain separate, and no destination is invented for a bare CLI session or a
+worker whose owning task has no subscriptions.
 
 For `kanban_create`, session lineage resolves in this order: explicit `session_id`,
 the owning worker task's durable session, request-scoped API origin, then the
@@ -968,6 +972,16 @@ session. Session lineage is not itself a notification destination: changing
 `notify-unsubscribe` to change where events are delivered.
 
 A chat-originated auto-subscribe is created in `notify+wake` mode: on a terminal event the destination agent both receives the passive message **and** takes a real turn, so it can read the board context and reply in its own voice. See [Delivery modes](#delivery-modes) below.
+
+`kanban_create` also preserves notification origin when it runs in a dispatcher-spawned worker, where no live gateway ContextVars exist. Resolution is deterministic and stops at the first available route:
+
+1. an origin already inherited from explicit parent tasks;
+2. the current worker card's durable subscription (creator context), copied without adding a dependency edge;
+3. the configured home channel for `kanban.headless_notification_home_platform`.
+
+The third route is opt-in and passive (`notify`, not `notify+wake`). Merely having a Telegram, Slack, or other ordinary home channel configured is not enough, because that channel may be personal, executive, or unrelated to technical operations. Hermes uses only the selected platform's existing gateway home-channel record, requires that record's platform provenance to match the selection, and never invents a chat or thread id. The selected adapter must also be enabled and satisfy the gateway's canonical connectivity check before the route is stored. Plugin platforms participate through their registered `is_connected`/validation contract; generic `token` or `api_key` fields do not override that contract. A connected Relay does not by itself prove that a disabled logical platform is currently fronted—the negotiated capability is runtime-only—so a stale Relay-era logical home fails closed. Leave the setting empty to keep origin-less headless cards unsubscribed.
+
+Automatic origin resolution is consent-sensitive. If `config.yaml` cannot be read or parsed, `kanban_create` still creates the card, but it does not add a gateway/TUI session route, inherit the creator card's route, or use the technical-home fallback; the response reports `subscribed=false`.
 
 ### Output truncation in messaging
 

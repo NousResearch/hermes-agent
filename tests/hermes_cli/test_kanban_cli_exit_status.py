@@ -16,6 +16,9 @@ def _run_hermes(home: Path, *args: str, marker: bool = False) -> subprocess.Comp
     env = os.environ.copy()
     env["HERMES_HOME"] = str(home)
     env["HERMES_KANBAN_HOME"] = str(home)
+    # Bind the paired-home exception to the same explicit isolation provenance
+    # exported by tests/conftest.py, rather than to path equality alone.
+    env["HERMES_TEST_ISOLATION"] = str(home)
     for name in (
         "HERMES_KANBAN_BOARD",
         "HERMES_KANBAN_DB",

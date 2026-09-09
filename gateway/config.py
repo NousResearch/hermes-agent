@@ -605,8 +605,35 @@ class GatewayConfig:
         return sorted(connected, key=lambda p: str(p.value))
 
     def _is_platform_connected(self, platform: Platform, config: PlatformConfig) -> bool:
+        """Check whether a single platform is sufficiently configured."""
         checker = _PLATFORM_CONNECTED_CHECKERS.get(platform)
-        # Weixin needs token AND account_id, so it must bypass the generic token branch.
+        # Plugin connectivity hooks are authoritative for plugin platforms and
+        # must run before generic token/api_key handling. A stale credential in
+        # a shared PlatformConfig field cannot prove that a plugin-specific
+        # endpoint, account, or other requirement is configured.
+        try:
+            from gateway.platform_registry import platform_registry
+            try:
+                from hermes_cli.plugins import discover_plugins
+                discover_plugins()
+            except Exception:
+                pass
+            entry = platform_registry.get(platform.value)
+            if entry and entry.source == "plugin":
+                if entry.is_connected is not None:
+                    return entry.is_connected(config)
+                if entry.validate_config is not None:
+                    return entry.validate_config(config)
+                return True
+            if platform.value not in _BUILTIN_PLATFORM_VALUES:
+                return False
+        except Exception:
+            # A plugin whose registry or connectivity contract cannot be
+            # evaluated is not proven connected.
+            return False
+
+        # Weixin requires both a token and an account_id (checked first so
+        # the generic token branch doesn't let it through without account_id).
         if platform == Platform.WEIXIN:
             return checker(config)
         if config.token or config.api_key:
@@ -614,27 +641,10 @@ class GatewayConfig:
         if checker is not None:
             return checker(config)
 
-        # Plugin platforms; force (idempotent) discovery for directly-constructed configs.
+        # Non-plugin registry entries (currently Relay) retain their registry
+        # fallback after built-in credential and platform-specific checks.
         try:
             from gateway.platform_registry import platform_registry
-            with contextlib.suppress(Exception):
-                # Iterate built-in platforms plus any registered plugin platforms so plugin authors get the
-                # same shared-key bridging (#24836).
-                # Registry-driven enable for plugin platforms. Built-ins have explicit blocks above. A
-                # plugin platform is enabled when its credentials are configured (``is_connected``) and its
-                # dependencies are either present (passive ``check_fn``) or installable on demand
-                # (``ensure_deps_fn``, run later by ``create_adapter()`` — never here). Plugins that need to
-                # seed ``PlatformConfig.extra`` from env vars (e.g. Google Chat's project_id /
-                # subscription_name) can supply ``env_enablement_fn`` on their PlatformEntry — called here
-                # BEFORE adapter construction. Enablement gate (#31116): when a plugin registers
-                # ``is_connected`` (the "has the user actually configured credentials for this?" check), we
-                # MUST consult it before flipping ``enabled = True``. Otherwise ``check_fn`` alone — a
-                # passive "is the SDK importable?" probe — silently enables platforms the user never opted
-                # into, and the gateway then tries to connect to Discord / Teams / Google Chat with no token
-                # and emits noisy retry-forever errors. ``_platform_status`` was already fixed for the same
-                # bug class in commit 7849a3d73; this is the runtime counterpart.
-                from hermes_cli.plugins import discover_plugins
-                discover_plugins()
             entry = platform_registry.get(platform.value)
             if entry:
                 check = entry.is_connected if entry.is_connected is not None else entry.validate_config

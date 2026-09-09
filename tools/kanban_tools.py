@@ -18,7 +18,7 @@ from typing import Any, Callable, Optional
 from agent.redact import redact_sensitive_text
 from hermes_cli.goals import judge_goal
 from tools.registry import registry, tool_error
-from hermes_cli.config import cfg_get, load_config
+from hermes_cli.config import cfg_get, load_config, load_config_with_status
 from tools.kanban_tools_schemas import (
     KANBAN_ATTACH_SCHEMA,
     KANBAN_ATTACH_URL_SCHEMA, KANBAN_ATTACHMENTS_SCHEMA, KANBAN_BLOCK_SCHEMA, KANBAN_COMMENT_SCHEMA,
@@ -371,7 +371,7 @@ _GOAL_GATE_MESSAGES = {
             "matching the card before requesting review.")}}
 
 
-def _goal_gate(tool_name: str, task, tid: str, evidence: str) -> None:
+def _goal_gate(tool_name: str, kb, conn, task, tid: str, evidence: str) -> None:
     """Goal-mode pre-handoff judge gate: a worker must not complete / request
     review before acceptance criteria are met. ``blocked`` gets its own
     guidance; any other non-``done`` verdict gets the ``continue`` guidance.
@@ -380,7 +380,9 @@ def _goal_gate(tool_name: str, task, tid: str, evidence: str) -> None:
         return
     try:
         verdict, reason, _, _, _ = judge_goal(
-            goal=f"{task.title}\n\n{task.body or ''}".strip(), last_response=evidence.strip())
+            goal=kb.goal_mode_handoff_goal(conn, task),
+            last_response=evidence.strip(),
+        )
     except Exception as judge_exc:
         logger.warning(
             "goal judge check failed, allowing lifecycle handoff: %s", judge_exc, exc_info=True)
@@ -561,7 +563,7 @@ def _handle_complete(args: dict, **kw) -> str:
         # judge by calling kanban_complete before acceptance criteria are met. Only enforce when a judge is
         # actually reachable — see _goal_judge_available for why an unavailable judge fails open.
         task = kb.get_task(conn, tid)
-        _goal_gate("kanban_complete", task, tid, (summary or result or "").strip())
+        _goal_gate("kanban_complete", kb, conn, task, tid, (summary or result or "").strip())
         try:
             ok = kb.complete_task(
                 conn, tid, result=result, summary=summary, metadata=metadata,
@@ -641,7 +643,7 @@ def _handle_request_review(args: dict, **kw) -> str:
     # Reviewer is model-supplied free text stored durably on the event payload.
     reviewer = _redact_opt(args.get("reviewer") or None)
     with _board(args.get("board")) as (kb, conn):
-        _goal_gate("kanban_request_review", kb.get_task(conn, tid), tid, summary)
+        _goal_gate("kanban_request_review", kb, conn, kb.get_task(conn, tid), tid, summary)
         ok, fail_reason = kb.request_review(
             conn, tid, summary=summary, metadata=metadata, reviewer=reviewer,
             expected_run_id=_worker_run_id(tid), with_reason=True)
@@ -825,6 +827,7 @@ def _handle_create(args: dict, **kw) -> str:
     _check(model_override or not provider_override, "'provider' requires 'model' to be set as well")
     parents = _coerce_str_list(args.get("parents") or [], "parents", "task ids")
     with _board(args.get("board")) as (kb, conn):
+        auto_subscribe_cfg = _load_auto_subscription_config()
         from tools.async_delegation import _current_origin_session_id
         self_tid = (os.environ.get("HERMES_KANBAN_TASK")
                     if _is_dispatcher_owned_worker() else None)
@@ -843,6 +846,7 @@ def _handle_create(args: dict, **kw) -> str:
             workspace_path=workspace_path, project_id=project_id,
             project_source_task_id=project_source_task_id, triage=triage,
             creator_task_id=self_tid,
+            inherit_parent_notify_subs=auto_subscribe_cfg is not None,
             idempotency_key=args.get("idempotency_key"),
             max_runtime_seconds=_opt_int(args.get("max_runtime_seconds")), skills=skills,
             model_override=model_override, provider_override=provider_override,
@@ -851,7 +855,12 @@ def _handle_create(args: dict, **kw) -> str:
             initial_status=str(args.get("initial_status") or "running"),
             created_by=os.environ.get("HERMES_PROFILE") or "worker", session_id=session_id)
         landed = _fields(kb.get_task(conn, new_tid), _CREATED_FIELDS)
-        return _ok(task_id=new_tid, **landed, subscribed=_maybe_auto_subscribe(conn, new_tid))
+        subscribed = (
+            _maybe_auto_subscribe(conn, new_tid, auto_subscribe_cfg)
+            if auto_subscribe_cfg is not None
+            else False
+        )
+        return _ok(task_id=new_tid, **landed, subscribed=subscribed)
 
 
 def _resolve_notify_target() -> Optional[dict[str, Any]]:
@@ -899,22 +908,39 @@ def _resolve_notify_target() -> Optional[dict[str, Any]]:
         delivery_metadata=delivery_metadata or None)
 
 
-def _maybe_auto_subscribe(conn: Any, task_id: str) -> bool:
-    """Subscribe the calling session to completion/block events; True iff a row was
-    written (surfaced as ``subscribed`` so an orchestrator can fall back to explicit
-    ``kanban_notify-subscribe``). Gated by ``kanban.auto_subscribe_on_create`` (default
-    True). Failures are logged and swallowed: bookkeeping must never fail kanban_create."""
+def _load_auto_subscription_config() -> Optional[dict[str, Any]]:
+    """Return config only when automatic notification consent is evaluable."""
     try:
-        if not cfg_get(load_config(), "kanban", "auto_subscribe_on_create", default=True):
-            return False
-    except Exception:
-        pass  # unreadable config keeps the user-friendly default (True)
+        cfg, config_loaded = load_config_with_status()
+        if not config_loaded:
+            logger.warning("Skipping kanban auto-subscribe because config fallback is active")
+            return None
+        if not cfg_get(cfg, "kanban", "auto_subscribe_on_create", default=True):
+            return None
+        return cfg
+    except Exception as config_exc:
+        logger.warning(
+            "Skipping kanban auto-subscribe because config could not be loaded (%s)",
+            type(config_exc).__name__,
+        )
+        return None
+
+
+def _maybe_auto_subscribe(conn: Any, task_id: str, cfg: dict[str, Any]) -> bool:
+    """Add a live route, inherited route, or explicit technical-home route."""
     target = None
     try:
+        from hermes_cli import kanban_db_notify as _kbn
         target = _resolve_notify_target()
         if target is None:
-            return False  # CLI / cron / test — no persistent channel
-        from hermes_cli import kanban_db_notify as _kbn
+            if _kbn.list_notify_subs(conn, task_id):
+                return True
+            creator_task_id = os.environ.get("HERMES_KANBAN_TASK", "")
+            if creator_task_id and creator_task_id != task_id:
+                from hermes_cli import kanban_db as _kb
+                if _kb.inherit_notify_subs(conn, task_id, (creator_task_id,)):
+                    return True
+            return _subscribe_headless_notification_home(conn, task_id, cfg)
         # Inheritance and explicit subscriptions already encode the delivery policy.
         # Auto-subscribe must not turn a passive destination into an agent wake.
         if any(sub["platform"] == target["platform"] and sub["chat_id"] == target["chat_id"]
@@ -927,6 +953,64 @@ def _maybe_auto_subscribe(conn: Any, task_id: str) -> bool:
         logger.warning(
             "_maybe_auto_subscribe failed: %r (platform=%r key_set=%r)",
             _exc, target["platform"] if target else "", bool(target and target["chat_id"]))
+        return False
+
+
+def _subscribe_headless_notification_home(
+    conn: Any, task_id: str, cfg: dict[str, Any]
+) -> bool:
+    """Subscribe only to an explicitly designated, connected technical home."""
+    platform_name = str(
+        cfg_get(
+            cfg,
+            "kanban",
+            "headless_notification_home_platform",
+            default="",
+        )
+        or ""
+    ).strip().lower()
+    if not platform_name:
+        return False
+    try:
+        from gateway.config import Platform, load_gateway_config
+        from hermes_cli import kanban_db as _kb
+
+        platform = Platform(platform_name)
+        gateway_config = load_gateway_config()
+        if platform not in gateway_config.get_connected_platforms():
+            return False
+        home = gateway_config.get_home_channel(platform)
+        if home is None or home.platform != platform or not str(home.chat_id).strip():
+            return False
+        delivery_metadata: dict[str, Any] = {}
+        if home.thread_id:
+            delivery_metadata["thread_id"] = str(home.thread_id)
+        if home.scope_id:
+            delivery_metadata["scope_id"] = str(home.scope_id)
+        _kb.add_notify_sub(
+            conn,
+            task_id=task_id,
+            platform=platform.value,
+            chat_id=str(home.chat_id),
+            thread_id=str(home.thread_id) if home.thread_id else None,
+            user_id=str(home.user_id) if home.user_id else None,
+            chat_type="dm",
+            notifier_profile=os.environ.get("HERMES_PROFILE") or "default",
+            delivery_mode="notify",
+            delivery_metadata=delivery_metadata or None,
+        )
+        return True
+    except (KeyError, TypeError, ValueError):
+        logger.warning(
+            "Ignoring invalid kanban.headless_notification_home_platform=%r",
+            platform_name,
+        )
+        return False
+    except Exception:
+        logger.warning(
+            "Unable to resolve configured headless kanban notification home",
+            exc_info=True,
+        )
         return False
 
 

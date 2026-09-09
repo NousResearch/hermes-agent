@@ -26,6 +26,7 @@ _CACHE_LOCK = threading.Lock()
 # path_key -> (mtime_ns, size, parsed)
 _CONFIG_CACHE: Dict[str, tuple] = {}
 _ENV_CACHE: Dict[str, tuple] = {}
+_MISSING = object()
 
 
 def _under_pytest() -> bool:
@@ -58,23 +59,28 @@ def invalidate_managed_cache() -> None:
         _ENV_CACHE.clear()
 
 
-def _cached_read(path: Path, cache: Dict[str, tuple], parse):
-    """Shared (mtime_ns, size)-keyed read; returns a deepcopy of the parsed value.
+def _cached_read_with_status(
+    path: Path, cache: Dict[str, tuple], parse, *, use_cache: bool = True
+):
+    """Shared cached read returning ``(value, current_file_loaded)``.
 
-    ``None`` when the file is absent or fails to parse (fail-open). A parse failure is logged
-    LOUDLY — the admin needs to know their policy isn't applied — but never raises, so a malformed
-    managed file can't brick startup.
+    An absent optional file is a successful no-op. Read or parse failures return
+    ``(None, False)`` and are logged, while preserving the managed scope's
+    non-throwing startup behavior.
     """
     try:
         st = path.stat()
+    except FileNotFoundError:
+        return _MISSING, True
     except OSError:
-        return None  # absent
+        return None, False
     key = (st.st_mtime_ns, st.st_size)
     path_key = str(path)
-    with _CACHE_LOCK:
-        hit = cache.get(path_key)
-        if hit is not None and hit[:2] == key:
-            return copy.deepcopy(hit[2])
+    if use_cache:
+        with _CACHE_LOCK:
+            hit = cache.get(path_key)
+            if hit is not None and hit[:2] == key:
+                return copy.deepcopy(hit[2]), True
     try:
         with open(path, encoding="utf-8") as f:
             parsed = parse(f)
@@ -82,11 +88,19 @@ def _cached_read(path: Path, cache: Dict[str, tuple], parse):
         logger.warning(
             "managed scope: failed to parse %s: %s — IGNORING this managed file. "
             "Admin policy from this file is NOT being applied. Fix and restart.",
-            path, exc)
-        return None
+            path,
+            exc,
+        )
+        return None, False
     with _CACHE_LOCK:
-        cache[path_key] = (*key, copy.deepcopy(parsed))
-    return parsed
+        cache[path_key] = (key[0], key[1], copy.deepcopy(parsed))
+    return parsed, True
+
+
+def _cached_read(path: Path, cache: Dict[str, tuple], parse):
+    """Compatibility wrapper returning only the parsed managed value."""
+    parsed, _ = _cached_read_with_status(path, cache, parse)
+    return None if parsed is _MISSING else parsed
 
 
 def _load_managed_file(name: str, cache: Dict[str, tuple], parse) -> dict:
@@ -99,7 +113,29 @@ def _load_managed_file(name: str, cache: Dict[str, tuple], parse) -> dict:
 
 def load_managed_config() -> dict:
     """Parsed managed config.yaml, or {} when absent/malformed (fail-open)."""
-    return _load_managed_file("config.yaml", _CONFIG_CACHE, lambda f: yaml.safe_load(f) or {})
+    config, _ = load_managed_config_with_status()
+    return config
+
+
+def load_managed_config_with_status(*, use_cache: bool = True) -> tuple[dict, bool]:
+    """Return managed config and whether an existing file loaded successfully.
+
+    ``use_cache=False`` revalidates the current file for consent/policy callers.
+    """
+    managed_dir = get_managed_dir()
+    if managed_dir is None:
+        return {}, True
+    parsed, loaded = _cached_read_with_status(
+        managed_dir / "config.yaml",
+        _CONFIG_CACHE,
+        yaml.safe_load,
+        use_cache=use_cache,
+    )
+    if parsed is _MISSING:
+        return {}, True
+    if not isinstance(parsed, dict):
+        return {}, False
+    return parsed, loaded
 
 
 def load_managed_env() -> Dict[str, str]:

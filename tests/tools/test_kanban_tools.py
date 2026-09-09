@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
+import sys
 from concurrent.futures import ThreadPoolExecutor
 
 import pytest
@@ -218,6 +220,130 @@ def test_complete_goal_mode_rejected_by_judge(monkeypatch, tmp_path):
         assert task.status == "running"  # Should still be running, not done
     finally:
         conn2.close()
+
+
+def test_complete_goal_mode_planner_handoff_includes_blocked_child_graph(
+    monkeypatch, tmp_path
+):
+    """A planner must be judged on its routing handoff, not evidence that can
+    only be produced by children still dependency-gated on that handoff."""
+    from pathlib import Path as _Path
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("HERMES_PROFILE", "planner")
+    monkeypatch.setattr(_Path, "home", lambda: tmp_path)
+    kb._INITIALIZED_PATHS.clear()
+    kb.init_db()
+    with kb.connect() as conn:
+        planner = kb.create_task(
+            conn,
+            title="Decompose the implementation",
+            body="Decide interfaces and route implementation to specialists.",
+            assignee="planner",
+            goal_mode=True,
+        )
+        claimed = kb.claim_task(conn, planner)
+        assert claimed is not None
+        child = kb.create_task(
+            conn,
+            title="Implement the decided interface",
+            assignee="builder",
+            parents=[planner],
+        )
+    monkeypatch.setenv("HERMES_KANBAN_TASK", planner)
+    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(claimed.current_run_id))
+
+    seen_goal = ""
+
+    def graph_aware_judge(goal, last_response, **kwargs):
+        nonlocal seen_goal
+        seen_goal = goal
+        if (
+            "dependency-gated until this task completes" in goal
+            and child in goal
+            and "Implement the decided interface" in goal
+        ):
+            return "done", "routing handoff satisfies this planner card", False, None, False
+        return "continue", "waiting for downstream implementation evidence", False, None, False
+
+    monkeypatch.setattr(kt, "_goal_judge_available", lambda: True)
+    monkeypatch.setattr(kt, "judge_goal", graph_aware_judge)
+
+    result = json.loads(kt._handle_complete({
+        "summary": "Interfaces decided; implementation routed to the builder child."
+    }))
+
+    assert result.get("ok") is True, result
+    assert child in seen_goal
+    with kb.connect() as conn:
+        planner_after = kb.get_task(conn, planner)
+        child_after = kb.get_task(conn, child)
+        assert planner_after is not None
+        assert child_after is not None
+        assert planner_after.status == "done"
+        assert child_after.status == "ready"
+
+
+def test_complete_goal_mode_implementation_with_gated_child_stays_running(
+    monkeypatch, tmp_path
+):
+    """A todo child cannot replace this implementation card's own evidence."""
+    from pathlib import Path as _Path
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("HERMES_PROFILE", "builder")
+    monkeypatch.setattr(_Path, "home", lambda: tmp_path)
+    kb._INITIALIZED_PATHS.clear()
+    kb.init_db()
+    with kb.connect() as conn:
+        implementation = kb.create_task(
+            conn,
+            title="Implement the notification guard",
+            body="Change the code and run the focused regression tests.",
+            assignee="builder",
+            goal_mode=True,
+        )
+        claimed = kb.claim_task(conn, implementation)
+        assert claimed is not None
+        child = kb.create_task(
+            conn,
+            title="Run downstream QA",
+            assignee="reviewer",
+            parents=[implementation],
+        )
+    monkeypatch.setenv("HERMES_KANBAN_TASK", implementation)
+    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(claimed.current_run_id))
+
+    def strict_judge(goal, last_response, **kwargs):
+        assert "implementation card" in goal
+        assert "not a substitute" in goal
+        assert child in goal
+        return "continue", "missing implementation and test evidence", False, None, False
+
+    monkeypatch.setattr(kt, "_goal_judge_available", lambda: True)
+    monkeypatch.setattr(kt, "judge_goal", strict_judge)
+
+    result = json.loads(kt._handle_complete({
+        "summary": "Created the QA child; it will implement and verify the fix."
+    }))
+
+    assert "error" in result
+    assert "missing implementation and test evidence" in result["error"]
+    with kb.connect() as conn:
+        implementation_after = kb.get_task(conn, implementation)
+        child_after = kb.get_task(conn, child)
+        assert implementation_after is not None
+        assert child_after is not None
+        assert implementation_after.status == "running"
+        assert child_after.status == "todo"
 
 
 def test_block_happy_path(worker_env):
@@ -923,6 +1049,752 @@ def test_create_subscribes_tui_session_via_session_key(monkeypatch, worker_env):
     assert subs[0]["chat_id"] == "tui-session-abc"
     assert subs[0]["chat_type"] == "dm"
     assert subs[0]["delivery_mode"] == "notify"
+
+
+def test_create_malformed_config_fresh_process_fails_closed_for_gateway(tmp_path):
+    """A fresh process must distinguish invalid YAML from legitimate defaults."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    (home / "config.yaml").write_text(
+        "kanban:\n  auto_subscribe_on_create: [unterminated\n",
+        encoding="utf-8",
+    )
+    env = {
+        key: value
+        for key, value in os.environ.items()
+        if not key.startswith("HERMES_KANBAN_")
+        and not key.startswith("HERMES_SESSION_")
+    }
+    env.update({
+        "HERMES_HOME": str(home),
+        "HERMES_PROFILE": "fresh-config-probe",
+        "HERMES_SESSION_PLATFORM": "telegram",
+        "HERMES_SESSION_CHAT_ID": "must-not-persist",
+    })
+    probe = """
+import json
+from hermes_cli import kanban_db as kb
+from tools import kanban_tools as kt
+
+kb.init_db()
+with kb.connect() as conn:
+    worker = kb.create_task(conn, title="worker", assignee="fresh-config-probe")
+    kb.claim_task(conn, worker)
+
+import os
+os.environ["HERMES_KANBAN_TASK"] = worker
+result = json.loads(kt._handle_create({"title": "child", "assignee": "peer"}))
+with kb.connect() as conn:
+    subscriptions = list(kb.list_notify_subs(conn, result["task_id"]))
+print(json.dumps({"result": result, "subscriptions": subscriptions}))
+"""
+
+    completed = subprocess.run(
+        [sys.executable, "-c", probe],
+        cwd=str(__import__("pathlib").Path(__file__).parents[2]),
+        env=env,
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    observed = json.loads(completed.stdout)
+
+    assert observed["result"]["ok"] is True, completed.stderr
+    assert observed["result"]["subscribed"] is False
+    assert observed["subscriptions"] == []
+
+
+def test_create_malformed_config_fresh_process_does_not_inherit_parent(tmp_path):
+    """Fallback defaults must not authorize parent routes in a fresh worker."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    (home / "config.yaml").write_text(
+        "kanban:\n  auto_subscribe_on_create: [unterminated\n",
+        encoding="utf-8",
+    )
+    env = {
+        key: value
+        for key, value in os.environ.items()
+        if not key.startswith("HERMES_KANBAN_")
+        and not key.startswith("HERMES_SESSION_")
+    }
+    env.update({
+        "HERMES_HOME": str(home),
+        "HERMES_PROFILE": "fresh-parent-probe",
+    })
+    probe = """
+import json
+import os
+from hermes_cli import kanban_db as kb
+from tools import kanban_tools as kt
+
+kb.init_db()
+with kb.connect() as conn:
+    parent = kb.create_task(conn, title="parent", assignee="fresh-parent-probe")
+    kb.claim_task(conn, parent)
+    kb.add_notify_sub(
+        conn,
+        task_id=parent,
+        platform="telegram",
+        chat_id="must-not-inherit",
+        notifier_profile="fresh-parent-probe",
+    )
+os.environ["HERMES_KANBAN_TASK"] = parent
+result = json.loads(kt._handle_create({
+    "title": "child",
+    "assignee": "peer",
+    "parents": [parent],
+}))
+with kb.connect() as conn:
+    subscriptions = list(kb.list_notify_subs(conn, result["task_id"]))
+print(json.dumps({"result": result, "subscriptions": subscriptions}))
+"""
+
+    completed = subprocess.run(
+        [sys.executable, "-c", probe],
+        cwd=str(__import__("pathlib").Path(__file__).parents[2]),
+        env=env,
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    observed = json.loads(completed.stdout)
+
+    assert observed["result"]["ok"] is True, completed.stderr
+    assert observed["result"]["subscribed"] is False
+    assert observed["subscriptions"] == []
+
+
+def test_create_inherits_parent_with_existing_empty_managed_dir(tmp_path):
+    """An absent optional managed config must not suppress a valid user opt-in."""
+    home = tmp_path / ".hermes"
+    managed = tmp_path / "managed"
+    home.mkdir()
+    managed.mkdir()
+    (home / "config.yaml").write_text(
+        "kanban:\n  auto_subscribe_on_create: true\n",
+        encoding="utf-8",
+    )
+    env = {
+        key: value
+        for key, value in os.environ.items()
+        if not key.startswith("HERMES_KANBAN_")
+        and not key.startswith("HERMES_SESSION_")
+    }
+    env.update({
+        "HERMES_HOME": str(home),
+        "HERMES_MANAGED_DIR": str(managed),
+        "HERMES_PROFILE": "empty-managed-parent-probe",
+    })
+    probe = """
+import json
+import os
+from hermes_cli import kanban_db as kb
+from tools import kanban_tools as kt
+
+kb.init_db()
+with kb.connect() as conn:
+    parent = kb.create_task(conn, title="parent", assignee="empty-managed-parent-probe")
+    kb.claim_task(conn, parent)
+    kb.add_notify_sub(
+        conn,
+        task_id=parent,
+        platform="telegram",
+        chat_id="parent-route",
+        notifier_profile="empty-managed-parent-probe",
+    )
+os.environ["HERMES_KANBAN_TASK"] = parent
+result = json.loads(kt._handle_create({
+    "title": "child",
+    "assignee": "peer",
+    "parents": [parent],
+}))
+with kb.connect() as conn:
+    subscriptions = list(kb.list_notify_subs(conn, result["task_id"]))
+print(json.dumps({"result": result, "subscriptions": subscriptions}))
+"""
+
+    completed = subprocess.run(
+        [sys.executable, "-c", probe],
+        cwd=str(__import__("pathlib").Path(__file__).parents[2]),
+        env=env,
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    observed = json.loads(completed.stdout)
+
+    assert observed["result"]["ok"] is True, completed.stderr
+    assert observed["result"]["subscribed"] is True
+    assert [
+        (sub["platform"], sub["chat_id"])
+        for sub in observed["subscriptions"]
+    ] == [("telegram", "parent-route")]
+
+
+@pytest.mark.parametrize("failure", ["stat", "read"])
+def test_create_warm_cache_managed_failure_creates_no_subscription(
+    tmp_path, monkeypatch, failure
+):
+    """Task creation survives stale consent without persisting any candidate route."""
+    from pathlib import Path
+    from gateway.config import GatewayConfig, HomeChannel, Platform, PlatformConfig
+    from hermes_cli import config as config_mod
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import managed_scope
+    from tools import kanban_tools as kt
+
+    home = tmp_path / ".hermes"
+    managed = tmp_path / "managed"
+    home.mkdir()
+    managed.mkdir()
+    (home / "config.yaml").write_text(
+        "kanban:\n"
+        "  auto_subscribe_on_create: true\n"
+        "  headless_notification_home_platform: telegram\n",
+        encoding="utf-8",
+    )
+    managed_config = managed / "config.yaml"
+    if failure == "read":
+        managed_config.write_text("display:\n  skin: mono\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("HERMES_MANAGED_DIR", str(managed))
+    monkeypatch.setenv("HERMES_PROFILE", "warm-cache-probe")
+    monkeypatch.setenv("HERMES_SESSION_PLATFORM", "telegram")
+    monkeypatch.setenv("HERMES_SESSION_CHAT_ID", "live-route-must-not-persist")
+    monkeypatch.delenv("HERMES_KANBAN_DB", raising=False)
+    gateway_cfg = GatewayConfig(
+        platforms={
+            Platform.TELEGRAM: PlatformConfig(
+                enabled=True,
+                token="test-token",
+                home_channel=HomeChannel(
+                    platform=Platform.TELEGRAM,
+                    chat_id="technical-home-must-not-persist",
+                    name="Engineering Ops",
+                ),
+            )
+        }
+    )
+    monkeypatch.setattr("gateway.config.load_gateway_config", lambda: gateway_cfg)
+    managed_scope.invalidate_managed_cache()
+    kb._INITIALIZED_PATHS.clear()
+    kb.init_db()
+    with kb.connect() as conn:
+        parent = kb.create_task(conn, title="parent", assignee="parent-owner")
+        kb.add_notify_sub(
+            conn,
+            task_id=parent,
+            platform="telegram",
+            chat_id="parent-route-must-not-persist",
+            notifier_profile="parent-owner",
+        )
+        worker = kb.create_task(conn, title="worker", assignee="warm-cache-probe")
+        claimed = kb.claim_task(conn, worker)
+        assert claimed is not None
+        kb.add_notify_sub(
+            conn,
+            task_id=worker,
+            platform="telegram",
+            chat_id="creator-route-must-not-persist",
+            notifier_profile="warm-cache-probe",
+        )
+    monkeypatch.setenv("HERMES_KANBAN_TASK", worker)
+    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(claimed.current_run_id))
+    assert config_mod.load_config_with_status()[1] is True
+
+    if failure == "stat":
+        real_stat = Path.stat
+
+        def deny_managed_stat(path, *args, **kwargs):
+            if path == managed_config:
+                raise PermissionError("synthetic managed stat denial")
+            return real_stat(path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "stat", deny_managed_stat)
+    else:
+        real_open = open
+
+        def deny_managed_read(file, *args, **kwargs):
+            if file == managed_config:
+                raise PermissionError("synthetic managed read denial")
+            return real_open(file, *args, **kwargs)
+
+        monkeypatch.setattr("builtins.open", deny_managed_read)
+    result = json.loads(kt._handle_create({
+        "title": "child",
+        "assignee": "peer",
+        "parents": [parent],
+    }))
+
+    assert result.get("ok") is True, result
+    assert result["subscribed"] is False
+    with kb.connect() as conn:
+        assert kb.get_task(conn, result["task_id"]) is not None
+        assert list(kb.list_notify_subs(conn, result["task_id"])) == []
+    managed_scope.invalidate_managed_cache()
+
+
+@pytest.mark.parametrize("surface", ["gateway", "tui"])
+def test_create_config_load_failure_fails_closed_for_live_sessions(
+    monkeypatch, worker_env, surface
+):
+    """Unreadable consent config must not create a gateway or TUI route."""
+    from tools import kanban_tools as kt
+
+    if surface == "gateway":
+        monkeypatch.setenv("HERMES_SESSION_PLATFORM", "telegram")
+        monkeypatch.setenv("HERMES_SESSION_CHAT_ID", "private-chat")
+        monkeypatch.delenv("HERMES_SESSION_KEY", raising=False)
+    else:
+        monkeypatch.delenv("HERMES_SESSION_PLATFORM", raising=False)
+        monkeypatch.delenv("HERMES_SESSION_CHAT_ID", raising=False)
+        monkeypatch.setenv("HERMES_SESSION_KEY", "private-tui-session")
+    monkeypatch.setattr(
+        kt,
+        "load_config_with_status",
+        lambda: (_ for _ in ()).throw(OSError("denied")),
+    )
+
+    result = json.loads(kt._handle_create({
+        "title": f"config failure from {surface}",
+        "assignee": "peer",
+    }))
+
+    assert result.get("ok") is True, result
+    assert result["subscribed"] is False
+    assert _list_subs_for_task(result["task_id"]) == []
+
+
+def test_headless_config_load_failure_does_not_inherit_creator_origin(
+    monkeypatch, worker_env
+):
+    """Unreadable consent config must also stop durable creator inheritance."""
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    with kb.connect() as conn:
+        kb.add_notify_sub(
+            conn,
+            task_id=worker_env,
+            platform="telegram",
+            chat_id="private-creator-origin",
+            notifier_profile="creator",
+            delivery_mode="notify+wake",
+        )
+    for key in (
+        "HERMES_SESSION_PLATFORM",
+        "HERMES_SESSION_CHAT_ID",
+        "HERMES_SESSION_KEY",
+        "HERMES_SESSION_ID",
+    ):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setattr(
+        kt,
+        "load_config_with_status",
+        lambda: (_ for _ in ()).throw(OSError("denied")),
+    )
+
+    result = json.loads(kt._handle_create({
+        "title": "headless child with unreadable config",
+        "assignee": "peer",
+    }))
+
+    assert result.get("ok") is True, result
+    assert result["subscribed"] is False
+    assert _list_subs_for_task(result["task_id"]) == []
+
+
+@pytest.mark.parametrize("config_mode", ["load-error", "disabled"])
+def test_create_does_not_inherit_parent_when_auto_subscription_unavailable(
+    monkeypatch, worker_env, config_mode
+):
+    """Every automatic route, including parent inheritance, uses one gate."""
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    with kb.connect() as conn:
+        kb.add_notify_sub(
+            conn,
+            task_id=worker_env,
+            platform="telegram",
+            chat_id="private-parent-origin",
+            notifier_profile="creator",
+            delivery_mode="notify+wake",
+        )
+    for key in (
+        "HERMES_SESSION_PLATFORM",
+        "HERMES_SESSION_CHAT_ID",
+        "HERMES_SESSION_KEY",
+        "HERMES_SESSION_ID",
+    ):
+        monkeypatch.delenv(key, raising=False)
+    if config_mode == "load-error":
+        monkeypatch.setattr(
+            kt,
+            "load_config_with_status",
+            lambda: (_ for _ in ()).throw(OSError("denied")),
+        )
+    else:
+        monkeypatch.setattr(
+            kt,
+            "load_config_with_status",
+            lambda: ({"kanban": {"auto_subscribe_on_create": False}}, True),
+        )
+
+    result = json.loads(kt._handle_create({
+        "title": f"parent child with {config_mode}",
+        "assignee": "peer",
+        "parents": [worker_env],
+    }))
+
+    assert result.get("ok") is True, result
+    assert result["subscribed"] is False
+    assert _list_subs_for_task(result["task_id"]) == []
+
+
+def test_create_inherits_parent_when_auto_subscription_enabled(monkeypatch, worker_env):
+    """The consent gate must preserve valid positive parent inheritance."""
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    with kb.connect() as conn:
+        kb.add_notify_sub(
+            conn,
+            task_id=worker_env,
+            platform="telegram",
+            chat_id="allowed-parent-origin",
+            notifier_profile="creator",
+            delivery_mode="notify+wake",
+        )
+    for key in (
+        "HERMES_SESSION_PLATFORM",
+        "HERMES_SESSION_CHAT_ID",
+        "HERMES_SESSION_KEY",
+        "HERMES_SESSION_ID",
+    ):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setattr(
+        kt,
+        "load_config_with_status",
+        lambda: ({"kanban": {"auto_subscribe_on_create": True}}, True),
+    )
+
+    result = json.loads(kt._handle_create({
+        "title": "parent child with consent",
+        "assignee": "peer",
+        "parents": [worker_env],
+    }))
+
+    assert result.get("ok") is True, result
+    assert result["subscribed"] is True
+    subscriptions = _list_subs_for_task(result["task_id"])
+    assert [(sub["platform"], sub["chat_id"]) for sub in subscriptions] == [
+        ("telegram", "allowed-parent-origin")
+    ]
+
+
+def test_headless_worker_child_inherits_creator_task_origin(monkeypatch, worker_env):
+    """A dispatcher-spawned worker has no live gateway session context, but its
+    child must retain the originating task's durable notification route."""
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    with kb.connect() as conn:
+        kb.add_notify_sub(
+            conn,
+            task_id=worker_env,
+            platform="telegram",
+            chat_id="technical-chat",
+            thread_id="incident-thread",
+            user_id="operator",
+            notifier_profile="engineering",
+            delivery_mode="notify+wake",
+        )
+    for key in (
+        "HERMES_SESSION_PLATFORM",
+        "HERMES_SESSION_CHAT_ID",
+        "HERMES_SESSION_THREAD_ID",
+        "HERMES_SESSION_USER_ID",
+        "HERMES_SESSION_KEY",
+        "HERMES_SESSION_ID",
+    ):
+        monkeypatch.delenv(key, raising=False)
+
+    result = json.loads(kt._handle_create({
+        "title": "headless recovery child",
+        "assignee": "engineering",
+    }))
+
+    assert result.get("ok") is True, result
+    assert result["subscribed"] is True
+    subs = _list_subs_for_task(result["task_id"])
+    assert len(subs) == 1
+    assert subs[0]["platform"] == "telegram"
+    assert subs[0]["chat_id"] == "technical-chat"
+    assert subs[0]["thread_id"] == "incident-thread"
+    assert subs[0]["notifier_profile"] == "engineering"
+
+
+def test_headless_worker_uses_explicit_technical_home_fallback(
+    monkeypatch, worker_env
+):
+    """An origin-less worker may fall back only to the platform explicitly
+    designated for technical kanban notifications."""
+    from pathlib import Path
+    from gateway.config import GatewayConfig, HomeChannel, Platform, PlatformConfig
+    from tools import kanban_tools as kt
+
+    home = Path(__import__("os").environ["HERMES_HOME"])
+    (home / "config.yaml").write_text(
+        "kanban:\n  headless_notification_home_platform: telegram\n"
+    )
+    gateway_cfg = GatewayConfig(
+        platforms={
+            Platform.TELEGRAM: PlatformConfig(
+                enabled=True,
+                token="test-token",
+                home_channel=HomeChannel(
+                    platform=Platform.TELEGRAM,
+                    chat_id="engineering-home",
+                    name="Engineering Ops",
+                    thread_id="technical-alerts",
+                    user_id="oncall-operator",
+                ),
+            )
+        }
+    )
+    monkeypatch.setattr("gateway.config.load_gateway_config", lambda: gateway_cfg)
+    for key in (
+        "HERMES_SESSION_PLATFORM",
+        "HERMES_SESSION_CHAT_ID",
+        "HERMES_SESSION_KEY",
+        "HERMES_SESSION_ID",
+    ):
+        monkeypatch.delenv(key, raising=False)
+
+    result = json.loads(kt._handle_create({
+        "title": "headless technical recovery",
+        "assignee": "engineering",
+    }))
+
+    assert result.get("ok") is True, result
+    assert result["subscribed"] is True
+    subs = _list_subs_for_task(result["task_id"])
+    assert len(subs) == 1
+    assert subs[0]["platform"] == "telegram"
+    assert subs[0]["chat_id"] == "engineering-home"
+    assert subs[0]["thread_id"] == "technical-alerts"
+    assert subs[0]["user_id"] == "oncall-operator"
+    assert subs[0]["notifier_profile"] == "test-worker"
+
+
+@pytest.mark.parametrize(
+    ("enabled", "token"),
+    [(False, "test-token"), (True, None)],
+    ids=["disabled", "unconfigured"],
+)
+def test_headless_technical_home_requires_connected_platform(
+    monkeypatch, worker_env, enabled, token
+):
+    """A stale home cannot subscribe when its adapter would not connect."""
+    from pathlib import Path
+    from gateway.config import GatewayConfig, HomeChannel, Platform, PlatformConfig
+    from tools import kanban_tools as kt
+
+    home = Path(os.environ["HERMES_HOME"])
+    (home / "config.yaml").write_text(
+        "kanban:\n  headless_notification_home_platform: telegram\n"
+    )
+    gateway_cfg = GatewayConfig(
+        platforms={
+            Platform.TELEGRAM: PlatformConfig(
+                enabled=enabled,
+                token=token,
+                home_channel=HomeChannel(
+                    platform=Platform.TELEGRAM,
+                    chat_id="stale-home",
+                    name="Stale",
+                ),
+            )
+        }
+    )
+    monkeypatch.setattr("gateway.config.load_gateway_config", lambda: gateway_cfg)
+    for key in ("HERMES_SESSION_PLATFORM", "HERMES_SESSION_CHAT_ID", "HERMES_SESSION_KEY"):
+        monkeypatch.delenv(key, raising=False)
+
+    result = json.loads(kt._handle_create({"title": "no stale route", "assignee": "peer"}))
+
+    assert result.get("ok") is True, result
+    assert result["subscribed"] is False
+    assert _list_subs_for_task(result["task_id"]) == []
+
+
+def test_headless_technical_home_requires_matching_home_platform(
+    monkeypatch, worker_env
+):
+    """A home from another platform cannot be persisted under the opt-in one."""
+    from pathlib import Path
+    from gateway.config import GatewayConfig, HomeChannel, Platform, PlatformConfig
+    from tools import kanban_tools as kt
+
+    home = Path(os.environ["HERMES_HOME"])
+    (home / "config.yaml").write_text(
+        "kanban:\n  headless_notification_home_platform: telegram\n"
+    )
+    gateway_cfg = GatewayConfig(
+        platforms={
+            Platform.TELEGRAM: PlatformConfig(
+                enabled=True,
+                token="telegram-token",
+                home_channel=HomeChannel(
+                    platform=Platform.SLACK,
+                    chat_id="slack-channel-id",
+                    name="Malformed cross-platform home",
+                ),
+            )
+        }
+    )
+    monkeypatch.setattr("gateway.config.load_gateway_config", lambda: gateway_cfg)
+    for key in ("HERMES_SESSION_PLATFORM", "HERMES_SESSION_CHAT_ID", "HERMES_SESSION_KEY"):
+        monkeypatch.delenv(key, raising=False)
+
+    result = json.loads(kt._handle_create({
+        "title": "cross-platform route",
+        "assignee": "peer",
+    }))
+
+    assert result.get("ok") is True, result
+    assert result["subscribed"] is False
+    assert _list_subs_for_task(result["task_id"]) == []
+
+
+def test_headless_technical_home_rejects_unproven_relay_fronted_route(
+    monkeypatch, worker_env
+):
+    """A connected Relay alone does not prove a disabled logical route is live."""
+    from pathlib import Path
+    from gateway.config import GatewayConfig, HomeChannel, Platform, PlatformConfig
+    from tools import kanban_tools as kt
+
+    home = Path(os.environ["HERMES_HOME"])
+    (home / "config.yaml").write_text(
+        "kanban:\n  headless_notification_home_platform: slack\n"
+    )
+    gateway_cfg = GatewayConfig(
+        platforms={
+            Platform.RELAY: PlatformConfig(
+                enabled=True, extra={"relay_url": "wss://relay.invalid"}
+            ),
+            Platform.SLACK: PlatformConfig(
+                enabled=False,
+                home_channel=HomeChannel(
+                    platform=Platform.SLACK,
+                    chat_id="relay-era-home",
+                    name="Old relay home",
+                ),
+            ),
+        }
+    )
+    monkeypatch.setattr("gateway.config.load_gateway_config", lambda: gateway_cfg)
+    for key in ("HERMES_SESSION_PLATFORM", "HERMES_SESSION_CHAT_ID", "HERMES_SESSION_KEY"):
+        monkeypatch.delenv(key, raising=False)
+
+    result = json.loads(kt._handle_create({"title": "relay route", "assignee": "peer"}))
+
+    assert result["subscribed"] is False
+    assert _list_subs_for_task(result["task_id"]) == []
+
+
+@pytest.mark.parametrize(
+    ("endpoint", "expected_subscribed"),
+    [("configured", True), ("missing", False)],
+    ids=["connected", "not-connected"],
+)
+def test_headless_technical_home_uses_only_connected_plugin_platform(
+    monkeypatch, worker_env, endpoint, expected_subscribed
+):
+    """Plugin is eligible only through its registered connectivity contract."""
+    from pathlib import Path
+    from gateway.config import GatewayConfig, HomeChannel, Platform, PlatformConfig
+    from gateway.platform_registry import PlatformEntry, platform_registry
+    from tools import kanban_tools as kt
+
+    platform_name = "kanban-technical-test-plugin"
+    entry = PlatformEntry(
+        name=platform_name,
+        label="Kanban technical test",
+        adapter_factory=lambda cfg: None,
+        check_fn=lambda: True,
+        is_connected=lambda cfg: cfg.extra.get("endpoint") == "configured",
+    )
+    platform_registry.register(entry)
+    platform = Platform(platform_name)
+    home = Path(os.environ["HERMES_HOME"])
+    (home / "config.yaml").write_text(
+        f"kanban:\n  headless_notification_home_platform: {platform_name}\n"
+    )
+    gateway_cfg = GatewayConfig(
+        platforms={
+            platform: PlatformConfig(
+                enabled=True,
+                extra={"endpoint": endpoint},
+                home_channel=HomeChannel(
+                    platform=platform,
+                    chat_id="plugin-home",
+                    name="Plugin ops",
+                ),
+            )
+        }
+    )
+    monkeypatch.setattr("gateway.config.load_gateway_config", lambda: gateway_cfg)
+    monkeypatch.setattr("hermes_cli.plugins.discover_plugins", lambda: None)
+    for key in ("HERMES_SESSION_PLATFORM", "HERMES_SESSION_CHAT_ID", "HERMES_SESSION_KEY"):
+        monkeypatch.delenv(key, raising=False)
+    try:
+        result = json.loads(kt._handle_create({"title": "plugin route", "assignee": "peer"}))
+    finally:
+        platform_registry.unregister(platform_name)
+
+    assert result["subscribed"] is expected_subscribed
+    subs = _list_subs_for_task(result["task_id"])
+    expected_routes = [(platform_name, "plugin-home")] if expected_subscribed else []
+    assert [(sub["platform"], sub["chat_id"]) for sub in subs] == expected_routes
+
+
+def test_headless_worker_does_not_guess_from_ordinary_home_channel(
+    monkeypatch, worker_env
+):
+    """A configured messaging home is not implicitly a technical contract;
+    without the kanban opt-in it could be a CEO or other unrelated channel."""
+    from types import SimpleNamespace
+    from gateway.config import HomeChannel, Platform
+    from tools import kanban_tools as kt
+
+    gateway_cfg = SimpleNamespace(
+        get_home_channel=lambda platform: HomeChannel(
+            platform=Platform.TELEGRAM,
+            chat_id="unrelated-home",
+            name="Unrelated Home",
+        )
+    )
+    monkeypatch.setattr("gateway.config.load_gateway_config", lambda: gateway_cfg)
+    for key in (
+        "HERMES_SESSION_PLATFORM",
+        "HERMES_SESSION_CHAT_ID",
+        "HERMES_SESSION_KEY",
+        "HERMES_SESSION_ID",
+    ):
+        monkeypatch.delenv(key, raising=False)
+
+    result = json.loads(kt._handle_create({
+        "title": "must remain unsubscribed",
+        "assignee": "engineering",
+    }))
+
+    assert result.get("ok") is True, result
+    assert result["subscribed"] is False
+    assert _list_subs_for_task(result["task_id"]) == []
 
 
 def test_create_does_not_subscribe_in_cli_session(monkeypatch, worker_env):

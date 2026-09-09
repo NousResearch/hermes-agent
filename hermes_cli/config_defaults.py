@@ -1696,12 +1696,23 @@ DEFAULT_CONFIG = {
     # promotes dependency-satisfied todos to ready, and fires `hermes -p <assignee> chat -q ...` per
     # claimable task. Run ONE dispatcher per profile; two on the same kanban.db race for claims.
     "kanban": {
-        # Auto-subscribe the originating gateway/TUI session to completion + block events when
-        # kanban_create is called from a session with a persistent delivery channel. Disable for
-        # profiles that prefer explicit kanban_notify-subscribe calls per task.
+        # Allow automatic notification routes when ``kanban_create`` runs.
+        # This single consent gate covers gateway/TUI origins, inherited
+        # parent/creator routes, and the explicit headless technical home.
+        # Disable to mirror pre-feature behaviour — e.g. for a profile that
+        # prefers explicit ``kanban_notify-subscribe`` calls per task.
         "auto_subscribe_on_create": True,
-        # Run the dispatcher inside the gateway process (~300µs per idle tick). False only if you
-        # run it as a separate unit or don't want the gateway spawning workers.
+        # Optional fail-closed fallback for cards created by a headless worker
+        # with no inherited origin subscription. Set to a platform name whose
+        # gateway home channel is explicitly designated for technical Kanban
+        # notifications. Empty means no fallback; Hermes never guesses among
+        # ordinary home channels (which may be personal/executive chats).
+        "headless_notification_home_platform": "",
+        # Run the dispatcher inside the gateway process. On by default —
+        # the cost is ~300µs every `dispatch_interval_seconds` when idle,
+        # and gateway is the supervisor users already have. Set to false
+        # only if you run the dispatcher as a separate systemd unit or
+        # don't want the gateway to spawn workers.
         "dispatch_in_gateway": True,
         # Auto-claim tasks in the review column and spawn the assigned profile with the bundled
         # sdlc-review skill. Disable where every review is done manually from the dashboard.

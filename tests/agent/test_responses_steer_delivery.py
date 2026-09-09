@@ -18,7 +18,7 @@ from agent.interrupt_control import InterruptControlMixin
 from agent.message_sanitization import uniquify_tool_call_ids
 from agent.transports.codex import ResponsesApiTransport
 from agent.transports.types import ToolCall
-from agent.turn_iteration_prep import _inject_steer_into_newest_tool_result
+from agent.turn_iteration_prep import _inject_steer_after_newest_tool_result
 
 SENTINEL = "Please include the violet sentinel in the answer."
 
@@ -67,11 +67,18 @@ def test_repaired_results_retain_steering_through_projection(wire, duplicate, bo
             {"type": "image_url", "image_url": {"url": f"https://example.invalid/image{i}.png"}},
         ] if multimodal else f"result{i}"
         messages.append({"role": "tool", "tool_call_id": call["id"], "content": content})
+    original_results = copy.deepcopy(messages[2:])
     assert agent.steer(SENTINEL)
     if boundary == "post_tool":
         apply_pending_steer_to_tool_results(agent, messages, 2)
     else:
-        _inject_steer_into_newest_tool_result(agent, messages, agent._drain_pending_steer())
+        steer_text = agent._drain_pending_steer()
+        assert steer_text is not None
+        _inject_steer_after_newest_tool_result(agent, messages, steer_text)
+    assert messages[2:4] == original_results
+    assert messages[4]["role"] == "user"
+    assert messages[4]["display_kind"] == "steer"
+    assert messages[4]["content"].count(SENTINEL) == 1
     repair_message_sequence(agent, messages)
     payload = (transport.convert_messages(messages, is_github_responses=True)
                if wire == "responses" else convert_messages_to_anthropic(messages))
@@ -233,12 +240,20 @@ def test_loop_delivers_repaired_batch_and_resumes_pairing(
     from agent.conversation_compression import _ensure_compressed_has_user_turn
     from agent.context_compressor import SUMMARY_PREFIX
     live = result["messages"]
-    # Retained repaired tool tail needs no extra anchor; a dropped tail does.
+    # Steering has its own row; retaining only the tool batch drops human intent.
+    steer_rows = [msg for msg in live if msg.get("display_kind") == "steer"]
+    assert len(steer_rows) == 1
+    assert steer_rows[0]["role"] == "user"
+    assert steer_rows[0]["content"].count(SENTINEL) == 1
     tool_block = next(i for i, msg in enumerate(live) if msg.get("tool_calls"))
     retained = [{"role": "user", "content": SUMMARY_PREFIX + " Earlier work."},
-                *copy.deepcopy(live[tool_block:tool_block + 3])]
+                *copy.deepcopy(live[tool_block:tool_block + 3]), *copy.deepcopy(steer_rows)]
     assert _ensure_compressed_has_user_turn(live, retained) == "already_present"
     assert json.dumps(retained).count(SENTINEL) == 1
+    tool_only = [{"role": "user", "content": SUMMARY_PREFIX + " Earlier work."},
+                 *copy.deepcopy(live[tool_block:tool_block + 3])]
+    assert _ensure_compressed_has_user_turn(live, tool_only) == "inserted"
+    assert json.dumps(tool_only).count(SENTINEL) == 1
     dropped = [{"role": "user", "content": SUMMARY_PREFIX + " Earlier work."}]
     assert _ensure_compressed_has_user_turn(live, dropped) == "inserted"
     assert json.dumps(dropped).count(SENTINEL) == 1
@@ -261,9 +276,15 @@ def test_loop_delivers_repaired_batch_and_resumes_pairing(
     assert {call["response_item_id"] for call in durable_calls} == {"fc_item0", "fc_item1"}
     assert {msg["tool_call_id"] for msg in results} == {item["call_id"] for item in outputs}
     assert all(any(query in json.dumps(msg["content"]) for msg in results) for query in executed)
-    # Existing upstream limitation: post-flush content mutation is not a DB update.
-    assert SENTINEL not in json.dumps(durable)
+    # The separate steering row survives restart without rewriting tool results.
+    durable_steers = [msg for msg in durable if msg.get("display_kind") == "steer"]
+    assert len(durable_steers) == 1
+    assert durable_steers[0]["role"] == "user"
+    assert durable_steers[0]["content"] == steer_rows[0]["content"]
+    assert json.dumps(durable).count(SENTINEL) == 1
+    assert SENTINEL not in json.dumps(results)
     resumed = ResponsesApiTransport().convert_messages(durable, is_github_responses=True)
+    assert json.dumps(resumed).count(SENTINEL) == 1
     assert len([item for item in resumed if item.get("type") == "function_call_output"]) == 2
 
 

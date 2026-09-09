@@ -95,28 +95,43 @@ def test_auxiliary_calls_share_the_main_turn_session_key():
         aux._RUNTIME_MAIN_CONTEXT.reset(token)
 
 
-def test_out_of_turn_aux_calls_get_stable_fallback_key(monkeypatch):
-    """No turn scope and no readable session_id → header still sent with a stable key (#105011)."""
+def test_stateless_scope_gives_stable_key_and_scopes_isolate(monkeypatch):
+    """Out-of-turn calls inside one stateless operation share its key;
+    different operations get different keys; no scope → header omitted (#105011)."""
     from agent import opencode_affinity
     from agent import portal_tags
 
     monkeypatch.setattr(portal_tags, "get_affinity_scope", lambda: "")
     monkeypatch.setattr(portal_tags, "get_conversation_context", lambda: "")
-    monkeypatch.setattr(opencode_affinity, "_FALLBACK_SESSION_KEY", None)
 
-    first = opencode_affinity.opencode_session_headers(
-        "opencode-go", "https://opencode.ai/zen/go/v1", None
-    )
-    second = opencode_affinity.opencode_session_headers(
-        "opencode-go", "https://opencode.ai/zen/go/v1", None
-    )
+    with opencode_affinity.stateless_operation_scope("dashboard-refresh-7"):
+        first = opencode_affinity.opencode_session_headers(
+            "opencode-go", "https://opencode.ai/zen/go/v1", None
+        )
+        second = opencode_affinity.opencode_session_headers(
+            "opencode-go", "https://opencode.ai/zen/go/v1", None
+        )
     assert first == second
-    assert first["x-opencode-session"].startswith("hermes-aux-")
+    assert first["x-opencode-session"].startswith("dashboard-refresh-7-")
 
-    # Explicit session_id still wins over the fallback.
-    pinned = opencode_affinity.opencode_session_headers(
-        "opencode-go", "https://opencode.ai/zen/go/v1", "sess-1"
+    with opencode_affinity.stateless_operation_scope("plugin-sync-2"):
+        third = opencode_affinity.opencode_session_headers(
+            "opencode-go", "https://opencode.ai/zen/go/v1", None
+        )
+    assert third["x-opencode-session"] != first["x-opencode-session"]
+
+    # No scope at all → the header is omitted rather than pinned to an
+    # install-wide identity.
+    bare = opencode_affinity.opencode_session_headers(
+        "opencode-go", "https://opencode.ai/zen/go/v1", None
     )
+    assert bare == {}
+
+    # Explicit session_id still wins over the operation key.
+    with opencode_affinity.stateless_operation_scope("dashboard-refresh-7"):
+        pinned = opencode_affinity.opencode_session_headers(
+            "opencode-go", "https://opencode.ai/zen/go/v1", "sess-1"
+        )
     assert pinned["x-opencode-session"] == "sess-1"
 
     # Non-OpenCode targets stay untouched.
@@ -128,32 +143,21 @@ def test_out_of_turn_aux_calls_get_stable_fallback_key(monkeypatch):
     )
 
 
-def test_fallback_key_is_per_install(monkeypatch):
-    from agent import opencode_affinity
-
-    monkeypatch.setattr(opencode_affinity, "_FALLBACK_SESSION_KEY", None)
-    monkeypatch.setenv("HERMES_HOME", "/tmp/install-a")
-    key_a = opencode_affinity._fallback_session_key()
-    monkeypatch.setattr(opencode_affinity, "_FALLBACK_SESSION_KEY", None)
-    monkeypatch.setenv("HERMES_HOME", "/tmp/install-b")
-    key_b = opencode_affinity._fallback_session_key()
-    assert key_a != key_b
-    assert key_a.startswith("hermes-aux-") and key_b.startswith("hermes-aux-")
-
-
-def test_aux_call_from_plain_thread_carries_the_header():
-    """HTTP-handler threads (kanban Specify/Decompose) have no turn scope — the built
-    kwargs must still carry the affinity header instead of omitting it."""
+def test_aux_call_from_plain_thread_carries_operation_key():
+    """HTTP-handler threads (kanban Specify/Decompose) have no turn scope — inside a
+    stateless operation scope the built kwargs carry that operation's key."""
     import threading
 
     from agent import auxiliary_client as aux
+    from agent import opencode_affinity
 
     result = {}
 
     def run():
-        kwargs = aux._build_call_kwargs(
-            "opencode-go", "glm-5", _MSGS, base_url="https://opencode.ai/zen/go/v1"
-        )
+        with opencode_affinity.stateless_operation_scope("kanban-specify-42"):
+            kwargs = aux._build_call_kwargs(
+                "opencode-go", "glm-5", _MSGS, base_url="https://opencode.ai/zen/go/v1"
+            )
         result["key"] = (kwargs.get("extra_headers") or {}).get(
             "x-opencode-session", ""
         )
@@ -161,4 +165,4 @@ def test_aux_call_from_plain_thread_carries_the_header():
     thread = threading.Thread(target=run)
     thread.start()
     thread.join()
-    assert result["key"].startswith("hermes-aux-")
+    assert result["key"].startswith("kanban-specify-42-")

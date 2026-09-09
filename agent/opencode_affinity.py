@@ -18,38 +18,55 @@ so the header cannot drift per code path.
 from __future__ import annotations
 
 import hashlib
+from contextvars import ContextVar
 from typing import Any, Optional
 
 OPENCODE_SESSION_HEADER = "x-opencode-session"
 
-_FALLBACK_SESSION_KEY: Optional[str] = None
+_STATELESS_OP_CONTEXT: ContextVar[Optional[str]] = ContextVar(
+    "stateless_op_context", default=None
+)
+_STATELESS_OP_KEY: ContextVar[Optional[str]] = ContextVar(
+    "stateless_op_key", default=None
+)
 
 
-def _fallback_session_key() -> str:
-    """Stable per-install affinity key for calls outside any conversation scope.
+def stateless_operation_scope(key: Optional[str] = None):
+    """Bind out-of-turn calls to one operation identity (context manager).
 
-    Dashboard/plugin HTTP-handler threads run aux LLM calls with no turn scope and
-    no readable runtime session_id; the relay hard-rejects a header-less request
-    (400 MissingSessionID), so those calls pin to this process-cached key instead.
-    Derived from the Hermes home so separate installs (and separate containers)
-    route to independent backends.
+    Dashboard/plugin HTTP-handler threads run aux LLM calls with no conversation
+    scope; the relay hard-rejects a header-less request (400 MissingSessionID).
+    The owner of such an operation wraps its execution in this scope and every
+    call inside projects the same operation key instead of falling back to an
+    install-wide identity. Without a key a fresh one is minted per scope entry,
+    so unrelated operations never share a backend.
     """
-    global _FALLBACK_SESSION_KEY
-    if _FALLBACK_SESSION_KEY is None:
-        home = ""
-        try:
-            from hermes_constants import get_hermes_home
+    import contextlib
+    import uuid
 
-            home = str(get_hermes_home())
-        except Exception:
-            home = ""
-        digest = (
-            hashlib.sha256(home.encode("utf-8", errors="replace")).hexdigest()[:16]
-            if home
-            else ""
-        )
-        _FALLBACK_SESSION_KEY = f"hermes-aux-{digest}" if digest else "hermes-aux"
-    return _FALLBACK_SESSION_KEY
+    @contextlib.contextmanager
+    def _scope():
+        token_op = _STATELESS_OP_CONTEXT.set(key or f"hermes-op-{uuid.uuid4().hex[:12]}")
+        token_key = _STATELESS_OP_KEY.set(None)
+        try:
+            yield
+        finally:
+            _STATELESS_OP_KEY.reset(token_key)
+            _STATELESS_OP_CONTEXT.reset(token_op)
+
+    return _scope()
+
+
+def _stateless_session_key() -> Optional[str]:
+    """Key for the current stateless operation, minted lazily inside the scope."""
+    op = _STATELESS_OP_CONTEXT.get()
+    if op is None:
+        return None
+    key = _STATELESS_OP_KEY.get()
+    if key is None:
+        key = f"{op}-{hashlib.sha256(op.encode('utf-8')).hexdigest()[:8]}"
+        _STATELESS_OP_KEY.set(key)
+    return key
 
 
 def is_opencode_target(provider: Optional[str], base_url: Optional[str]) -> bool:
@@ -103,9 +120,11 @@ def opencode_session_headers(
     except Exception:
         key = str(session_id or "")
     # Out-of-turn aux callers (dashboard/plugin HTTP-handler threads) have no scope at all:
-    # pin them to the per-install fallback rather than omitting the header, which the relay
-    # hard-rejects with 400 MissingSessionID.
-    return {OPENCODE_SESSION_HEADER: key or _fallback_session_key()}
+    # only when the stateless operation owner wrapped the work in a scope do we project its
+    # operation key. With no scope the header is omitted — an install-global fallback would
+    # collapse every unrelated background operation onto one backend.
+    key = key or _stateless_session_key()
+    return {OPENCODE_SESSION_HEADER: key} if key else {}
 
 
 def merge_opencode_session_headers(

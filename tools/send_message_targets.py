@@ -21,7 +21,7 @@ _WEIXIN_TARGET_RE = re.compile(r"^\s*((?:wxid|gh|v\d+|wm|wb)_[A-Za-z0-9_-]+|[A-Z
 _YUANBAO_TARGET_RE = re.compile(r"^\s*((?:group|direct):[^:]+)\s*$")
 # E.164 phone recipients ("+1555..."): the '+' fails the isdigit() rule and the channel directory
 # cannot resolve a raw number, so keep the '+' and treat it as explicit.
-_PHONE_PLATFORMS = frozenset({"photon", "signal", "sms", "whatsapp"})
+_PHONE_PLATFORMS = frozenset({"photon", "signal", "sms", "whatsapp", "bluebubbles"})
 _E164_TARGET_RE = re.compile(r"^\s*\+(\d{7,15})\s*$")
 _PHOTON_DM_GUID_RE = re.compile(r"^any;-;\+\d{6,}$")  # mirrors _DM_CHAT_GUID_RE in the photon adapter
 # WhatsApp JIDs (@g.us, @s.whatsapp.net, @lid, broadcast/newsletter) and Buzz UUIDs are native targets
@@ -31,6 +31,7 @@ _BUZZ_UUID_RE = re.compile(r"^\s*[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}
 _EMAIL_TARGET_RE = re.compile(r"^\s*[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\s*$")
 # Exceptions to "<PLATFORM>_HOME_CHANNEL" for error hints (email reads EMAIL_HOME_ADDRESS).
 _HOME_CHANNEL_ENV_OVERRIDES = {"email": "EMAIL_HOME_ADDRESS"}
+_BLUEBUBBLES_GUID_RE = re.compile(r"^\s*[A-Za-z0-9_+-]+;[+-];[^\s;]+\s*$")
 
 _UNRESOLVED = object()  # sentinel: stop parsing, target is NOT explicit (skip generic rules)
 
@@ -109,6 +110,8 @@ _PLATFORM_PARSERS = {
     "yuanbao": _parse_yuanbao,
     "ntfy": _parse_nonempty,
     "email": _parse_regex_stripped(_EMAIL_TARGET_RE),
+    "bluebubbles": lambda ref: (_parse_regex_stripped(_BLUEBUBBLES_GUID_RE)(ref)
+                                or _parse_regex_stripped(_EMAIL_TARGET_RE)(ref)),
     # Native WhatsApp JIDs pass through verbatim; E.164 numbers use the phone rule.
     "whatsapp": _parse_regex_stripped(_WHATSAPP_JID_RE),
     "buzz": _parse_regex_stripped(_BUZZ_UUID_RE),

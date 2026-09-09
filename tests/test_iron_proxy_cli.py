@@ -338,3 +338,47 @@ def test_cmd_setup_audit_log_failure_is_warning_not_abort(hermes_home, monkeypat
 
     rc = proxy_cli.cmd_setup(_args())
     assert rc == 0
+
+
+# ---------------------------------------------------------------------------
+# Rootless-docker unreachable-bind refusal (#106909)
+# ---------------------------------------------------------------------------
+
+
+def test_cmd_setup_refuses_before_side_effects_when_bind_unreachable(
+    hermes_home, monkeypatch, capsys,
+):
+    """Rootless + no bridge: setup aborts before installing anything, loudly."""
+    monkeypatch.setattr(
+        ip, "rootless_unreachable_bind_reason", lambda: "synthetic: rootless, no bridge")
+
+    def must_not_call(*a, **kw):
+        pytest.fail("setup must abort before side effects")
+    monkeypatch.setattr(ip, "find_iron_proxy", must_not_call)
+
+    rc = proxy_cli.cmd_setup(_args())
+    assert rc == 1
+    out = capsys.readouterr().out
+    assert "Refusing setup" in out
+    assert "rootless" in out
+
+
+def test_cmd_start_refuses_without_starting_when_bind_unreachable(
+    hermes_home, monkeypatch,
+):
+    """An existing loopback config on a rootless-no-bridge host: start refuses."""
+    from hermes_cli.config import load_config, save_config
+    cfg = load_config()
+    cfg.setdefault("proxy", {})["enabled"] = True
+    save_config(cfg)
+
+    monkeypatch.setattr(
+        ip, "rootless_unreachable_bind_reason", lambda: "synthetic: rootless, no bridge")
+
+    def must_not_call(**kw):
+        pytest.fail("start_proxy must not run when the bind is unreachable")
+    monkeypatch.setattr(ip, "start_proxy", must_not_call)
+    monkeypatch.setattr(ip, "discover_uncovered_providers", lambda **kw: [])
+
+    rc = proxy_cli.cmd_start(_args())
+    assert rc == 1

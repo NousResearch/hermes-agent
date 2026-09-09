@@ -92,6 +92,10 @@ def cmd_setup(args: argparse.Namespace) -> int:
         "[dim]Project: https://github.com/ironsh/iron-proxy  (Apache-2.0)[/dim]",
         border_style="cyan",
     ))
+    if (bind_reason := ip.rootless_unreachable_bind_reason()) is not None:
+        console.print(f"[red]✗ Refusing setup: {bind_reason}[/red]")
+        console.print("  See issue #106909 for the per-driver endpoint work; re-run setup once fixed.")
+        return 1
     if not _setup_install_binary(console):
         return 1
     ca = _setup_ca_cert(console)
@@ -339,6 +343,9 @@ def cmd_start(args: argparse.Namespace) -> int:
     if not proxy_cfg.get("enabled"):
         console.print("[yellow]proxy.enabled is false — run `hermes egress setup` first.[/yellow]")
         return 1
+    if (bind_reason := ip.rootless_unreachable_bind_reason()) is not None:
+        return _refuse(console, bind_reason,
+                       "Re-run `hermes egress setup` once Docker provides a host-visible bridge.")
     # ``credential_source: bitwarden`` refreshes upstream secrets from BSM at startup — that is
     # the rotation guarantee distinguishing it from ``env``.
     credential_source = proxy_cfg.get("credential_source", "env")

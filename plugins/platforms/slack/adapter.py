@@ -34,6 +34,7 @@ sys.path.insert(0, str(_Path(__file__).resolve().parents[3]))
 
 from agent.secret_scope import UnscopedSecretError, get_secret
 from gateway.config import Platform, PlatformConfig
+from gateway.slash_commands_resolve_platforms import PlatformAccessResolversMixin
 from gateway.platforms.helpers import MessageDeduplicator
 from gateway.platforms.base import (
     gateway_trust_env, BasePlatformAdapter,
@@ -850,10 +851,16 @@ def _extra_or_env_channel_set_getter(
     return getter
 
 
-class SlackAdapter(BasePlatformAdapter):
+class SlackAdapter(PlatformAccessResolversMixin, BasePlatformAdapter):
     """Slack bot adapter (Socket Mode).
     Needs SLACK_BOT_TOKEN (xoxb-, API calls) and SLACK_APP_TOKEN (xapp-, Socket Mode). DMs +
     mention-gated channels, threads, attachments, slash commands, status text."""
+
+    # /access env carriers (gateway/slash_commands_access.py contract).
+    ACCESS_ALLOWLIST_ENV_KEYS = {
+        "user": ("SLACK_ALLOWED_USERS",),
+        "group": ("SLACK_ALLOWED_CHANNELS",),
+    }
 
     MAX_MESSAGE_LENGTH = 39000  # Slack API allows 40,000 chars; leave margin
     supports_code_blocks = True  # Slack mrkdwn renders fenced code blocks
@@ -4358,7 +4365,16 @@ class SlackAdapter(BasePlatformAdapter):
         from gateway.platforms.base import resolve_channel_skills
         # Remaining ``<@UID>`` are OTHER participants (own mention stripped
         # above); render as ``@DisplayName`` so the agent knows who is addressed.
+        # Capture the raw mention ids BEFORE humanizing — /access and the generic
+        # mention fallback resolve against these.
+        import re as _re
+        mentions = [{"id": mid, "label": ""} for mid in _re.findall(r"<@([UW][A-Z0-9]+)(?:\|[^>]*)?>", text or "")]
         text = await self._humanize_user_mentions(text, chat_id=channel_id, team_id=team_id)
+        metadata = {
+            "slack_team_id": team_id, "slack_channel_id": channel_id,
+            "slack_thread_ts": thread_ts}
+        if mentions:
+            metadata["mentions"] = mentions
         return MessageEvent(
             text=(command_probe_text if is_command_text else text),
             message_type=msg_type,
@@ -4373,9 +4389,7 @@ class SlackAdapter(BasePlatformAdapter):
             # thread_ts is the thread root, not an explicit reply (root is in channel_context).
             reply_to_text=None,
             auto_skill=resolve_channel_skills(self.config.extra, channel_id, None),
-            metadata={
-                "slack_team_id": team_id, "slack_channel_id": channel_id,
-                "slack_thread_ts": thread_ts})
+            metadata=metadata)
 
     def _note_attachment_failure(
         self, notices: List[str], detail: Optional[str], fallback_msg: str, *fallback_args: Any,

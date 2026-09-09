@@ -922,9 +922,21 @@ class GoogleChatAdapter(BasePlatformAdapter):
             user_id=(sender_email or sender_name), user_name=sender.get("displayName") or sender_email or sender_name,
             thread_id=session_thread_id, user_id_alt=(sender_name or None),
         )
+        # Standard mention metadata: Chat annotations carry USER_MENTION with the
+        # users/{id} resource name + display name (skip the bot's own mention).
+        mention_meta = []
+        for annotation in (msg.get("annotations") or []):
+            if annotation.get("type") != "USER_MENTION":
+                continue
+            mentioned = annotation.get("userMention") or {}
+            user = mentioned.get("user") or {}
+            uid = str(user.get("name") or "")
+            if uid and uid != (sender_name or ""):
+                mention_meta.append({"id": uid, "label": str(user.get("displayName") or "")})
         return MessageEvent(
             text=text, message_type=message_type, source=source, raw_message=msg, message_id=msg.get("name") or None,
             media_urls=media_urls, media_types=media_types,
+            metadata={"mentions": mention_meta} if mention_meta else None,
         )
 
     async def _download_attachment(self, attachment: Dict[str, Any]) -> Tuple[Optional[str], Optional[str]]:

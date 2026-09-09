@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -56,6 +57,15 @@ GRID: List[tuple] = [
     ("italic", "This is *italic* text."),
     ("bold-italic", "Mix of **bold** and *italic* in one line."),
     ("strikethrough", "This is ~~struck~~ text."),
+    # A single `~` (model meaning "approximately"/"range") is NOT a valid
+    # markdown strike — the parser leaves it literal and WhatsApp's native
+    # open→close pairing would re-read it as strike. Renderer breaks the
+    # pair by space-flanking the offending open (`~ `): ASCII preserved.
+    ("tilde-approx", "cost ~2.00USD~ total"),
+    # The trailing `~` is space-preceded (an open, not a close) → no valid
+    # pair → WhatsApp never formats it; left untouched.
+    ("tilde-space-safe", "~5USD ~4USD and range ~5 to ~10"),
+    ("tilde-mixed", "~~done~~ and ~maybe~"),
     ("inline-code", "Run `pip install hermes` to start."),
     ("fenced-code", "```\nprint('hello')\n```"),
     ("fenced-code-lang", "```python\ndef f(x):\n    return x * 2\n```"),
@@ -64,6 +74,10 @@ GRID: List[tuple] = [
     ("header-h1", "# Big Title\nBody follows."),
     ("header-h2", "## Section\nBody follows."),
     ("header-h3", "### Sub-section\nBody follows."),
+    # h3 renders in Unicode italic; lowercase "h" maps to U+1D455 which is
+    # deliberately UNASSIGNED in Unicode (duplicates Planck constant ℎ) —
+    # the styler must substitute ℎ (U+210E) or every device shows tofu.
+    ("header-h3-italic-h", "### high hopes\nBody follows."),
     ("ul-list", "- first\n- second\n- third"),
     ("ol-list", "1. first\n2. second\n3. third"),
     ("nested-list", "- outer\n  - inner one\n  - inner two\n- outer two"),
@@ -145,13 +159,25 @@ def _oracles() -> Dict[str, Callable[[str], str]]:
 
     wa = object.__new__(WhatsAppBehaviorMixin)  # format_message needs no __init__
 
+    def whatsapp_render(text: str) -> str:
+        # Pin the oracle to the *default* pipeline config. Unicode font
+        # formatting defaults ON but can be flipped by WHATSAPP_UNICODE_FORMATTING
+        # in the developer's shell — vectors are a committed artifact and must
+        # be reproducible regardless of the ambient environment.
+        saved = os.environ.pop("WHATSAPP_UNICODE_FORMATTING", None)
+        try:
+            return wa.format_message(text)
+        finally:
+            if saved is not None:
+                os.environ["WHATSAPP_UNICODE_FORMATTING"] = saved
+
     return {
         # These format_message implementations are self-free (asserted by
         # tests/conformance/test_vector_generator.py) — invoked unbound.
         "telegram": lambda s: TelegramAdapter.format_message(None, s),  # type: ignore[arg-type]
         "slack": lambda s: SlackAdapter.format_message(None, s),  # type: ignore[arg-type]
         "discord": lambda s: DiscordAdapter.format_message(None, s),  # type: ignore[arg-type]
-        "whatsapp": wa.format_message,
+        "whatsapp": whatsapp_render,
     }
 
 
@@ -175,6 +201,12 @@ _EXPECT_OVERRIDES: Dict[str, Dict[str, tuple]] = {
     "whatsapp": {
         "placeholder-injection": ("divergent", "placeholder alphabets are renderer-internal"),
         "unclosed-fence": ("divergent", "unterminated fence handling differs; both degrade without dropping content"),
+        "backslash-in-code": ("divergent", "corpus puts a fence opener mid-line (invalid CommonMark); renderer keeps the code backslashes and degrades the stray fence — the regex-era formatter passed raw markdown through"),
+        # Tables flatten by default on WhatsApp (alignment collapses under
+        # soft-wrap); the flatten output is parity against the oracle.
+        # `table-monospace-opt-in` exercises the explicit monospace opt-in.
+        "table-simple": ("parity", "default flatten renders key/value lines"),
+        "table-cjk": ("parity", "default flatten renders key/value lines"),
     },
     "discord": {
         "table-simple": ("divergent", "native converts GFM tables to bullet groups; connector passes raw markdown through (port deferred — parity report Phase 4/oracle section)"),

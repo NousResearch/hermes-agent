@@ -1778,6 +1778,23 @@ class BasePlatformAdapter(ABC):
     # Typing indicator renders TEXT (status line); the gateway then feeds set_status_text().
     supports_status_text: bool = False
 
+    # ---------------------------------------------------------------- /access contract
+    # ``/access`` (gateway/slash_commands_access.py) manages this platform's allowlists
+    # from chat.  Adapters OPT INTO rich reference resolution by overriding:
+    #
+    #   resolve_access_ref(ref, *, scope, event) -> AccessResolution | None
+    #
+    # Return an AccessResolution with `canonical` filled; one with `candidates` set asks
+    # the sender to disambiguate; None means "not my shape" — the core's generic
+    # fallbacks then try (event mention metadata, reply-to author, mention-wrapper
+    # stripping, and for WhatsApp-family adapters phone normalization via
+    # ``_access_phone_jid``).  ``metadata["mentions"]`` on MessageEvent ([{id, label}])
+    # feeds the generic path on every platform.  ACCESS_ALLOWLIST_ENV_KEYS ({"user":
+    # (...), "group": (...)}) names the env carriers to keep in sync for env-gated
+    # deployments.  Platforms without a resolver still work: raw ids pass through.
+    async def resolve_access_ref(self, ref: str, *, scope: str, event=None):
+        return None
+
     def set_status_text(self, chat_id: str, text: Optional[str]) -> None:
         """Set or clear (``None``) the live working-state phrase for a chat. In-memory only: the
         next typing refresh renders it; a no-op store on adapters that never read

@@ -25,6 +25,7 @@ from gateway.platforms.base import EphemeralReply
 from gateway.platforms.event import MessageEvent
 from gateway.session import AsyncSessionStore
 from gateway.session_transcript import TranscriptReadError
+from gateway.slash_commands_access import GatewayAccessCommandsMixin
 from gateway.slash_commands_goals import GatewayGoalCommandsMixin
 from gateway.slash_commands_model import GatewayModelCommandsMixin
 from gateway.slash_commands_session import GatewaySessionCommandsMixin
@@ -161,7 +162,8 @@ class GatewaySlashCommandsMixin(
     GatewayModelCommandsMixin,
     GatewaySessionCommandsMixin,
     GatewayStatusCommandsMixin,
-    GatewayGoalCommandsMixin):
+    GatewayGoalCommandsMixin,
+    GatewayAccessCommandsMixin):
     """In-session slash-command handlers for GatewayRunner (plus the helpers the sibling mixins share)."""
 
     async_session_store: AsyncSessionStore

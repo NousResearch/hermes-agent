@@ -2011,12 +2011,21 @@ class MatrixAdapter(BasePlatformAdapter):
             extra["message_type"] = MessageType.COMMAND if body.startswith("/") else MessageType.TEXT
         elif _is_bare_media_filename(media_msgtype, body):
             body = ""  # transport filename, not user text
+        # Standard mention metadata (MSC3952 m.mentions.user_ids) — consumed by /access
+        # and mention-based features.  Read straight from the event source (the gating
+        # path derives the same list for its own mention check).
+        mentions_block = source_content.get("m.mentions") or {}
+        mention_user_ids = mentions_block.get("user_ids") if isinstance(mentions_block, dict) else None
+        mention_meta = [{"id": str(uid), "label": ""} for uid in (mention_user_ids or [])
+                        if uid and uid != sender]
         return MessageEvent(
             text=body, source=source, raw_message=source_content, message_id=event_id,
             reply_to_message_id=reply_to, reply_to_text=reply_to_text, reply_to_author_id=reply_to_author_id,
             reply_to_author_name=reply_to_author_name,
             # Top-level sender fields mirror source.* — downstream prompt code reads them.
-            user_id=sender, user_name=display_name, **extra)
+            user_id=sender, user_name=display_name,
+            metadata={"mentions": mention_meta} if mention_meta else None,
+            **extra)
 
     async def _handle_text_message(
         self, room_id: str, sender: str, event_id: str, event_ts: float, source_content: dict,

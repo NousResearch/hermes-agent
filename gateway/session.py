@@ -14,6 +14,11 @@ from typing import Dict, List, Optional, Any
 
 from .config import Platform, GatewayConfig, HomeChannel
 from .whatsapp_identity import canonical_whatsapp_identifier
+
+# The three WhatsApp transports (Baileys bridge, WAHA plugin, Meta Cloud) deliver the
+# same human in different wire dialects (@s.whatsapp.net / @c.us / bare wa_id); session
+# keys fold them to one canonical form so dialect flips never split a conversation.
+_WHATSAPP_FAMILY = frozenset({Platform.WHATSAPP, Platform.WHATSAPP_CLOUD, Platform("waha")})
 from gateway.session_persistence import SessionPersistenceMixin, _DB_UNPINNED
 from gateway.session_recovery import SessionRecoveryMixin
 from gateway.session_lifecycle import SessionLifecycleMixin, _iso, _new_session_id, _now, _parse_iso
@@ -631,9 +636,10 @@ def _session_key_namespace(profile: Optional[str]) -> str:
 
 def _canonical_participant(source: SessionSource) -> Optional[str]:
     """Sender id for key isolation; WhatsApp JID/LID aliases are canonicalized so alias flips
-    cannot split one member into two sessions."""
+    cannot split one member into two sessions.  Covers the whole WhatsApp family — the
+    transports deliver different dialects of the same member."""
     participant_id = source.user_id_alt or source.user_id
-    if participant_id and source.platform == Platform.WHATSAPP:
+    if participant_id and source.platform in _WHATSAPP_FAMILY:
         participant_id = canonical_whatsapp_identifier(str(participant_id)) or participant_id
     return participant_id
 
@@ -649,10 +655,14 @@ def build_session_key(
     compatibility). DMs are isolated per chat_id, falling back to the sender id, then to one
     session per platform. Groups add the participant id only when ``group_sessions_per_user`` and
     not in a thread (threads are shared unless ``thread_sessions_per_user``).
-    """
+
+    The whole WhatsApp family (Baileys ``whatsapp``, WAHA plugin ``waha``, Meta Cloud
+    ``whatsapp_cloud``) canonicalizes ids to the shared internal standard (bare digits) —
+    the transports speak different wire dialects (``@s.whatsapp.net`` / ``@c.us`` / bare
+    ``wa_id``) but one human must map to one session key everywhere."""
     is_dm = source.chat_type == "dm"
     chat_id = source.chat_id
-    if is_dm and source.platform == Platform.WHATSAPP:
+    if is_dm and source.platform in _WHATSAPP_FAMILY:
         chat_id = canonical_whatsapp_identifier(chat_id)
     # Discord auto-thread continuity: key a channel-initiating message on the thread it WILL be
     # delivered into (prospective_thread_id), and normalize the chat_type slot to "thread" so
@@ -890,6 +900,7 @@ class SessionStore(
         now = _now()
         if not force_new:
             self._adopt_legacy_slack_entry(source, session_key)
+            self._adopt_legacy_whatsapp_entry(source, session_key)
 
         # Phase 1 (lock): snapshot the entry for stale/reset checks.
         with self._lock:

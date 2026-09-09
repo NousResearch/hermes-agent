@@ -255,6 +255,7 @@ except ImportError:
     from ffmpeg_utils import resolve_ffmpeg_executable
 
 from gateway.config import Platform, PlatformConfig
+from gateway.slash_commands_resolve_platforms import PlatformAccessResolversMixin
 
 from gateway.platforms.helpers import (
     MessageDeduplicator, ThreadParticipationTracker, convert_table_to_bullets,
@@ -986,7 +987,13 @@ def _read_discord_prompt_timeout() -> int:
 from plugins.platforms.discord.adapter_media import DiscordMediaMixin
 
 
-class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
+class DiscordAdapter(DiscordMediaMixin, PlatformAccessResolversMixin, BasePlatformAdapter):
+
+    # /access env carriers (gateway/slash_commands_access.py contract).
+    ACCESS_ALLOWLIST_ENV_KEYS = {
+        "user": ("DISCORD_ALLOWED_USERS",),
+        "group": ("DISCORD_ALLOWED_CHANNELS",),
+    }
     """Discord bot adapter: guild/DM messages, threads, slash commands, button approvals, reactions."""
 
     MAX_MESSAGE_LENGTH = 2000
@@ -5821,12 +5828,17 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             reply_to_id = str(message.reference.message_id)
             if message.reference.resolved:
                 reply_to_text = getattr(message.reference.resolved, "content", None) or None
+        # Mention metadata for /access and the generic mention fallback: discord.py
+        # resolves message.mentions to Member/User objects with stable snowflake ids.
+        mentions = [{"id": str(m.id), "label": getattr(m, "display_name", None) or getattr(m, "name", "") or str(m.id)}
+                    for m in (message.mentions or [])]
         event = MessageEvent(
             text=event_text, message_type=msg_type, source=source, raw_message=message,
             message_id=str(message.id), media_urls=media_urls, media_types=media_types,
             reply_to_message_id=reply_to_id, reply_to_text=reply_to_text,
             timestamp=message.created_at, auto_skill=_skills, channel_prompt=_channel_prompt,
             channel_context=_channel_context,
+            metadata={"mentions": mentions} if mentions else None,
         )
         # Track participation so follow-ups in this thread don't need @mention.
         if thread_id:

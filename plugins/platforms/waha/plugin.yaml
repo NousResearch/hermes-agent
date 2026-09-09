@@ -1,0 +1,57 @@
+name: waha-platform
+label: WhatsApp via WAHA
+kind: platform
+version: 1.0.0
+description: >
+  WhatsApp gateway adapter for Hermes Agent over WAHA (WhatsApp HTTP API,
+  github.com/devlikeapro/waha). Third transport alongside the Baileys bridge
+  (WhatsAppAdapter) and Meta Cloud API (WhatsAppCloudAdapter): all three share
+  the WhatsAppBehaviorMixin (gating, mention rules, allow-lists, markdown).
+  WAHA is self-hosted (NOWEB/WEBJS/GOWS engines) and exposes a plain REST API —
+  no Meta business verification, no linked-device subprocess. Inbound messages
+  arrive via a WAHA session webhook registered on this adapter's local HTTP
+  receiver; outbound goes through /api/sendText and friends.
+author: FarelRA
+requires_env:
+  - name: WAHA_BASE_URL
+    description: "Base URL of your WAHA instance (e.g. http://127.0.0.1:3000 or https://waha.example.com)"
+    prompt: "WAHA base URL"
+    url: "https://waha.devlike.pro/"
+    password: false
+  - name: WAHA_API_KEY
+    description: "WAHA API key (X-Api-Key) if the instance has WHATSAPP_API_KEY set"
+    prompt: "WAHA API key (empty if unauthenticated)"
+    password: true
+  - name: WAHA_SESSION
+    description: "WAHA session name to use (created/started by the WAHA dashboard or API)"
+    prompt: "WAHA session name"
+    password: false
+optional_env:
+  - name: WAHA_ALLOWED_USERS
+    description: "Comma-separated WhatsApp numbers (with country code, no +) allowed to talk to the bot"
+    prompt: "Allowed users (comma-separated)"
+    password: false
+  - name: WAHA_GROUP_ALLOW_FROM
+    description: "Comma-separated group JIDs (123@g.us) where the bot may operate"
+    prompt: "Allowed groups (comma-separated)"
+    password: false
+  - name: WAHA_GROUP_POLICY
+    description: "Group policy: open | allowlist | pairing (default: pairing)"
+    prompt: "Group policy"
+    password: false
+  - name: WAHA_REQUIRE_MENTION
+    description: "Require @mention/reply/keyword in groups before responding (true/false)"
+    prompt: "Require mention in groups?"
+    password: false
+  - name: WAHA_WEBHOOK_PORT
+    description: "Local HTTP port for the WAHA inbound webhook receiver (default: 8655)"
+    prompt: "Webhook receiver port"
+    password: false
+  - name: WAHA_WEBHOOK_URL_PUBLIC
+    description: "Public URL WAHA should POST webhooks to (default: http://<host>:8655/webhooks/waha — WAHA and Hermes on the same host/network)"
+    prompt: "Public webhook URL (or empty for default)"
+    password: false
+  - name: WAHA_HOME_CHANNEL
+    description: "Default chat JID for cron / notification delivery"
+    prompt: "Home chat (or empty)"
+    password: false

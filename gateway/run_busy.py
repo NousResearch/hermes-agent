@@ -753,7 +753,7 @@ class GatewayBusySessionMixin:
     _PLAIN_COMMANDS = (
         "status", "context", "restart", "approve", "deny", "pause", "agents", "bg", "btw",
         "kanban", "subgoal", "heartbeat", "busy", "yolo", "verbose", "footer", "help",
-        "commands", "profile", "update", "version",
+        "commands", "profile", "update", "version", "access",
     )
     # Dispatched only on the idle path (busy dispatch has its own allowlist).
     _IDLE_COMMANDS = (
@@ -967,6 +967,16 @@ class GatewayBusySessionMixin:
             return None
         policy = _policy_for_source(self.config, source)
         if not policy.enabled or policy.can_run(source.user_id, canonical_cmd):
+            return None
+        # WhatsApp transports deliver the same human in several dialects; the admin
+        # list is canonicalized at policy build, so retry the comparison with the
+        # canonical form of the sender before denying.
+        try:
+            from gateway.whatsapp_identity import canonical_phone_jid
+            canonical_user = canonical_phone_jid(source.user_id or "")
+        except Exception:
+            canonical_user = ""
+        if canonical_user and canonical_user != source.user_id and policy.can_run(canonical_user, canonical_cmd):
             return None
         logger.info(
             "Slash command /%s denied for %s:%s (not admin, not in user_allowed_commands)",

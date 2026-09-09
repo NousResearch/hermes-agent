@@ -181,8 +181,9 @@ class TestSendText:
             )
         )
 
-        # MAX_MESSAGE_LENGTH = 4096 from the mixin. 8500 chars forces 2+ chunks.
-        long_text = "a" * 8500
+        # MAX_MESSAGE_LENGTH = 65,536 from the mixin (WhatsApp's real cap).
+        # 85,000 chars forces 2+ chunks.
+        long_text = "a" * 85000
         await adapter.send("15551234567", long_text)
 
         # At least 2 POST calls
@@ -434,7 +435,7 @@ class TestWebhookDispatch:
             "wamid.HBgLMTM1NTc4MjU2OTgVAGHAYWYET688aASGNTI1QzZFQjhEMDk2QQA="
         )
         assert event.source.platform == Platform.WHATSAPP_CLOUD
-        assert event.source.chat_id == "13557825698"
+        assert event.source.chat_id == "13557825698@s.whatsapp.net"  # canonical internal form
         assert event.source.user_name == "Jessica Laverdetman"
         assert event.source.chat_type == "dm"
 
@@ -649,6 +650,25 @@ class TestSendVideo:
         assert payload["type"] == "video"
         assert payload["video"]["link"] == "https://cdn.example.com/v.mp4"
         assert payload["video"]["caption"] == "clip"
+
+
+class TestCloudCaptionFormats:
+    @pytest.mark.asyncio
+    async def test_video_caption_converts_markdown(self):
+        """Cloud API media captions get the markdown→WhatsApp conversion so a
+        caption never leaks raw # / ** markers onto the media bubble."""
+        adapter = _make_adapter()
+        adapter._http_client = MagicMock()
+        adapter._http_client.post = AsyncMock(return_value=_mock_message_response())
+
+        await adapter.send_video(
+            "15551234567",
+            "https://cdn.example.com/v.mp4",
+            caption="# Cap\n\nBody **bold**.",
+        )
+        payload = adapter._http_client.post.call_args.kwargs["json"]
+        assert payload["type"] == "video"
+        assert payload["video"]["caption"] == "𝐂𝐚𝐩\n\nBody *bold*."
 
 
 class TestSendMethodsAcceptBaseClassKwargs:
@@ -1266,7 +1286,7 @@ class TestInboundWamidCache:
             raw, {"15551234567": "Alice"}, {}
         )
         assert event is not None
-        assert adapter._last_inbound_wamid_by_chat["15551234567"] == "wamid.AAA"
+        assert adapter._last_inbound_wamid_by_chat["15551234567@s.whatsapp.net"] == "wamid.AAA"
 
 
 class TestSendTyping:

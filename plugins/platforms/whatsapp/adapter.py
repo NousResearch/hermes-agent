@@ -171,7 +171,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.whatsapp_common import WhatsAppBehaviorMixin
-from gateway.whatsapp_identity import to_whatsapp_jid
+from gateway.whatsapp_identity import canonical_phone_jid, to_engine_chat_id
 from gateway.platforms.base import (
     BasePlatformAdapter, SendResult, SUPPORTED_DOCUMENT_TYPES, cache_image_from_url, cache_audio_from_url,
 )
@@ -248,6 +248,12 @@ def _needs_bridge(method):
 class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
     """Transport over a local Node.js (Baileys) HTTP bridge; behavior lives in ``WhatsAppBehaviorMixin``. config.extra: bridge_script /
     bridge_port (3000) / session_path, dm_policy / group_policy (open|allowlist|disabled|pairing), allow_from / group_allow_from, send_read_receipts."""
+
+    # /access env carriers (gateway/slash_commands_access.py contract).
+    ACCESS_ALLOWLIST_ENV_KEYS = {
+        "user": ("WHATSAPP_ALLOWED_USERS",),
+        "group": ("WHATSAPP_GROUP_ALLOWED_USERS",),
+    }
 
     _DEFAULT_BRIDGE_DIR = None  # resolved in __init__
     splits_long_messages = True  # send() chunks via truncate_message()
@@ -565,7 +571,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         """Format markdown for WhatsApp, chunk preserving code blocks, send sequentially."""
         if not content or not content.strip():
             return SendResult(success=True, message_id=None)
-        chat_id = to_whatsapp_jid(chat_id)
+        chat_id = to_engine_chat_id(chat_id, "baileys")
         try:
             chunks = self.truncate_message(self.format_message(content), self._outgoing_chunk_limit())
             sent_message_ids: list[str] = []
@@ -589,9 +595,36 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
 
     @_needs_bridge
     async def edit_message(self, chat_id: str, message_id: str, content: str, *, finalize: bool = False) -> SendResult:
+        """Edit a previously sent message via the WhatsApp bridge.
+
+        Streaming responses are delivered as a series of edits to one
+        message (the stream consumer sends the full accumulated buffer each
+        time). Without the markdown→WhatsApp conversion here, the preview
+        *and* the final message would show raw ``#``/``**`` markers — the
+        same leak ``send()`` would have. ``format_message`` never raises
+        (legacy fallback inside), so delivery can't break.
+        """
         try:
-            async with self._bridge_req("post", "edit", 15, json={"chatId": to_whatsapp_jid(chat_id), "messageId": message_id, "message": content}) as resp:
-                return SendResult(success=True, message_id=message_id) if resp.status == 200 else SendResult(success=False, error=await resp.text())
+            async with self._bridge_req("post", "edit", 15, json={"chatId": to_engine_chat_id(chat_id, "baileys"), "messageId": message_id, "message": self.format_message(content)}) as resp:
+                if resp.status != 200:
+                    return SendResult(success=False, error=await resp.text())
+                data = await resp.json()
+                # The bridge splits an oversized edit (past WhatsApp's
+                # 65,536-char limit) and sends chunk 2+ as continuation
+                # messages, returning their ids in ``messageIds``. Surface
+                # them exactly like ``send()`` does so the stream consumer
+                # re-targets subsequent edits at the LAST visible bubble
+                # instead of the original (mirrors ``send()``'s continuation
+                # contract). Single-chunk edits return no ids and keep the
+                # original ``message_id``.
+                continuation_ids = [str(i) for i in (data.get("messageIds") or []) if i]
+                if continuation_ids:
+                    return SendResult(
+                        success=True,
+                        message_id=continuation_ids[-1],
+                        continuation_message_ids=tuple(continuation_ids),
+                    )
+                return SendResult(success=True, message_id=message_id)
         except Exception as e:
             return SendResult(success=False, error=str(e))
 
@@ -599,14 +632,14 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
     async def _send_media_to_bridge(self, chat_id: str, file_path: str, media_type: str, caption: Optional[str] = None, file_name: Optional[str] = None) -> SendResult:
         if not os.path.exists(file_path):
             return SendResult(success=False, error=f"File not found: {file_path}")
-        payload: Dict[str, Any] = {"chatId": to_whatsapp_jid(chat_id), "filePath": file_path, "mediaType": media_type}
-        payload.update({k: v for k, v in (("caption", caption), ("fileName", file_name)) if v})
+        payload: Dict[str, Any] = {"chatId": to_engine_chat_id(chat_id, "baileys"), "filePath": file_path, "mediaType": media_type}
+        payload.update({k: v for k, v in (("caption", self.format_message(caption) if caption else None), ("fileName", file_name)) if v})
         return await self._post_bridge_message("send-media", payload, timeout=120)
 
     @_needs_bridge
     async def send_poll(self, chat_id: str, question: str, options: list[str], *, selectable_count: int = 1) -> SendResult:
         """Native WhatsApp poll (low-level transport primitive; approval UX stays gateway-owned)."""
-        payload: Dict[str, Any] = {"chatId": to_whatsapp_jid(chat_id), "question": question, "options": list(options or []), "selectableCount": selectable_count}
+        payload: Dict[str, Any] = {"chatId": to_engine_chat_id(chat_id, "baileys"), "question": question, "options": list(options or []), "selectableCount": selectable_count}
         return await self._post_bridge_message("send-poll", payload, timeout=30)
 
     async def send_clarify(self, chat_id: str, question: str, choices: Optional[list], clarify_id: str, session_key: str,
@@ -624,7 +657,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
     async def send_location(self, chat_id: str, latitude: float, longitude: float, *, name: Optional[str] = None, address: Optional[str] = None,
                             reply_to: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None) -> SendResult:
         try:
-            payload: Dict[str, Any] = {"chatId": to_whatsapp_jid(chat_id), "latitude": float(latitude), "longitude": float(longitude)}
+            payload: Dict[str, Any] = {"chatId": to_engine_chat_id(chat_id, "baileys"), "latitude": float(latitude), "longitude": float(longitude)}
         except Exception as e:
             return SendResult(success=False, error=str(e))
         payload.update({k: v for k, v in (("name", name), ("address", address)) if v})
@@ -658,7 +691,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         with suppress(Exception):
             import aiohttp
             # ``async with`` — a bare ``await session.post(...)`` leaves the response (and its CLOSE_WAIT socket) alive until GC.
-            async with self._http_session.post(self._bridge_url("typing"), json={"chatId": to_whatsapp_jid(chat_id)}, timeout=aiohttp.ClientTimeout(total=5)):
+            async with self._http_session.post(self._bridge_url("typing"), json={"chatId": to_engine_chat_id(chat_id, "baileys")}, timeout=aiohttp.ClientTimeout(total=5)):
                 pass
 
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
@@ -666,7 +699,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             return {"name": "Unknown", "type": "dm"}
         if not await self._check_managed_bridge_exit():
             try:
-                async with self._bridge_req("get", f"chat/{to_whatsapp_jid(chat_id)}", 10) as resp:
+                async with self._bridge_req("get", f"chat/{to_engine_chat_id(chat_id, 'baileys')}", 10) as resp:
                     if resp.status == 200:
                         data = await resp.json()
                         return {"name": data.get("name", chat_id), "type": "group" if data.get("isGroup") else "dm", "participants": data.get("participants", [])}
@@ -692,6 +725,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                             if event:
                                 # Fire-and-forget: a slow bridge /read must not delay dispatch.
                                 asyncio.create_task(self._send_read_receipt(msg_data))
+                                event = self._apply_whatsapp_group_observe_attribution(event, msg_data)
                                 if event.message_type == MessageType.TEXT:
                                     self._enqueue_text_event(event)
                                 else:
@@ -740,6 +774,102 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             return MessageType.TEXT
         return next((kind for needle, kind in _MEDIA_NEEDLES if needle in media_type), MessageType.DOCUMENT)
 
+    # ------------------------------------------------------------------ /access resolution
+
+    async def resolve_access_ref(self, ref: str, *, scope: str, event=None):
+        """Turn a human-supplied reference into a canonical id (the /access contract).
+
+        Phones in any format resolve through the shared mixin; group names and
+        @PushNames resolve through the bridge's ``/groups`` endpoint (Baileys
+        groupMetadata).  ``None`` when not WhatsApp-shaped; ambiguity returns
+        ``candidates`` instead of a guess."""
+        from gateway.slash_commands_access import AccessResolution
+
+        text = str(ref or "").strip()
+        if not text:
+            return None
+        if scope == "group":
+            return await self._access_resolve_group(text)
+        return await self._access_resolve_user(text, event)
+
+    async def _access_bridge_groups(self) -> dict:
+        """``{jid: {"subject": …, "participants": [jid, …]}}`` from the bridge; {} when
+        the bridge is down or the endpoint predates this feature."""
+        try:
+            async with self._bridge_req("get", "groups", 15) as resp:
+                body = await resp.json(content_type=None)
+                return body if isinstance(body, dict) else {}
+        except Exception:
+            logger.debug("[whatsapp] /access group roster unavailable", exc_info=True)
+            return {}
+
+    async def _access_resolve_group(self, text: str) -> "AccessResolution":
+        from gateway.slash_commands_access import AccessResolution
+
+        if "@" in text:
+            return AccessResolution(canonical=canonical_phone_jid(text))
+        groups = await self._access_bridge_groups()
+        entries = [(gid, str(g.get("subject") or "")) for gid, g in groups.items() if isinstance(g, dict)]
+        lowered = text.lower()
+        exact = [(gid, subj) for gid, subj in entries if subj == text]
+        if len(exact) == 1:
+            return AccessResolution(canonical=exact[0][0], label=exact[0][1])
+        ci = [(gid, subj) for gid, subj in entries if subj.lower() == lowered]
+        if len(ci) == 1:
+            return AccessResolution(canonical=ci[0][0], label=ci[0][1])
+        substring = [(gid, subj) for gid, subj in entries if lowered in subj.lower()]
+        if len(substring) == 1:
+            return AccessResolution(canonical=substring[0][0], label=substring[0][1])
+        if substring:
+            return AccessResolution(candidates=tuple(substring[:8]))
+        # Unknown to the bridge roster: empty, not raw text (a stored name
+        # would never match the gate, which compares group JIDs).
+        return AccessResolution()
+
+    async def _access_resolve_user(self, text: str, event) -> "AccessResolution":
+        from gateway.slash_commands_access import AccessResolution
+
+        if text.startswith("@"):
+            # PushName: the triggering chat's participants (authoritative roster).
+            needle = text[1:].lower()
+            chat_id = event.source.chat_id if event is not None and event.source else ""
+            for jid, pushname in await self._access_contacts(chat_id):
+                if (pushname or "").lower() == needle:
+                    return AccessResolution(canonical=jid, label=pushname)
+            matches = [(jid, pn) for jid, pn in await self._access_contacts("") if (pn or "").lower() == needle]
+            if len(matches) == 1:
+                return AccessResolution(canonical=matches[0][0], label=matches[0][1])
+            if matches:
+                return AccessResolution(candidates=tuple(matches[:8]))
+            learned = self._access_pushname_lookup(needle)
+            if learned:
+                return AccessResolution(canonical=learned, label=text[1:])
+            return AccessResolution()
+        if "@" in text:
+            return AccessResolution(canonical=canonical_phone_jid(text))
+        return None  # phone-shaped: the shared mixin's generic fallback normalizes it
+
+    async def _access_contacts(self, chat_id: str) -> list:
+        """``[(canonical jid, pushname), …]`` for one group's participants (or across
+        every participating group when ``chat_id`` is empty).  The bridge exposes
+        participant JIDs; pushnames come from the group's stored member names when the
+        bridge provides them, else the JID local part."""
+        contacts: list = []
+        groups = await self._access_bridge_groups()
+        if chat_id and chat_id.endswith("@g.us"):
+            meta = groups.get(chat_id) or {}
+            for pid in meta.get("participants") or []:
+                jid = canonical_phone_jid(str(pid))
+                if jid:
+                    contacts.append((jid, jid.split("@", 1)[0]))
+            return contacts
+        for gid, meta in groups.items():
+            for pid in (meta.get("participants") or []):
+                jid = canonical_phone_jid(str(pid))
+                if jid:
+                    contacts.append((jid, jid.split("@", 1)[0]))
+        return contacts
+
     async def _collect_bridge_media(self, data: Dict[str, Any], msg_type: MessageType) -> tuple[list, list]:
         """``mediaUrls`` → ``(cached_urls, media_types)``: remote image/audio cached locally; absolute paths only inside a cache dir."""
         accepted: list[tuple] = []  # (url_or_path, mime)
@@ -785,14 +915,41 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 print(f"[{self.name}] Failed to read document text: {e}", flush=True)
         return body
 
+    async def _observe_bridge_group_message(self, data: Dict[str, Any]) -> None:
+        """Observe one skipped group message: transcript-only, media cached to disk so the
+        model can inspect it on demand at trigger time (no agent/API calls at observe time)."""
+        msg_type = self._classify_bridge_message(data)
+        body = str(data.get("body") or "").strip()
+        try:
+            cached_urls, _media_types = await self._collect_bridge_media(data, msg_type)
+        except Exception as e:
+            print(f"[{self.name}] Observe media download failed: {e}", flush=True)
+            cached_urls = []
+        refs = self._whatsapp_observe_media_references(cached_urls, msg_type)
+        if refs:
+            ref_block = "\n".join(refs)
+            body = f"{body}\n{ref_block}" if body else ref_block
+        self._observe_unmentioned_group_message(data, msg_type, body)
+
     async def _build_message_event(self, data: Dict[str, Any]) -> Optional[MessageEvent]:
-        """Build a MessageEvent from bridge message data, downloading images to cache."""
+        """Build a MessageEvent from bridge message data, downloading images to cache.
+
+        Group messages the mention gate skips are stored as observed context (no
+        dispatch) when ``observe_unmentioned_group_messages`` is on — see
+        ``_should_observe_unmentioned_group_message``."""
         try:
             if not self._should_process_message(data):
+                if self._should_observe_unmentioned_group_message(data):
+                    await self._observe_bridge_group_message(data)
                 return None
             msg_type = self._classify_bridge_message(data)
-            source = self.build_source(chat_id=data.get("chatId", ""), chat_name=data.get("chatName"), chat_type="group" if data.get("isGroup", False) else "dm",
-                                       user_id=data.get("senderId"), user_name=data.get("senderName"))
+            # Inbound boundary: the bridge speaks @s.whatsapp.net natively, but accept
+            # any dialect (@c.us, bare digits) and store the one canonical form.
+            source = self.build_source(chat_id=canonical_phone_jid(data.get("chatId", "")), chat_name=data.get("chatName"), chat_type="group" if data.get("isGroup", False) else "dm",
+                                       user_id=canonical_phone_jid(data.get("senderId")), user_name=data.get("senderName"))
+            # Learn the sender's real pushName for /access @Name resolution (group
+            # rosters carry JIDs without names).
+            self.remember_pushname(data.get("senderId"), data.get("senderName"))
             cached_urls, media_types = await self._collect_bridge_media(data, msg_type)
             body = data.get("body", "")
             if data.get("isGroup"):
@@ -809,6 +966,11 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 ("whatsapp_native_type", str(data.get("nativeType") or "").strip()),
                 ("whatsapp_native", native_metadata if isinstance(native_metadata, dict) else None),
             ) if v}
+            # Standard mention metadata: the bridge forwards contextInfo.mentionedJid
+            # (canonicalized) — consumed by /access and mention-based features.
+            mentions = [{"id": mid, "label": ""} for mid in (data.get("mentionedIds") or []) if mid]
+            if mentions:
+                metadata["mentions"] = mentions
             # ``fromOwner`` = owner-typed inbound fromMe (gated by WHATSAPP_FORWARD_OWNER_MESSAGES at the bridge); surfaced as
             # metadata AND a text prefix so the marker survives downstream failures before silent_ingest.
             if data.get("fromOwner"):
@@ -850,10 +1012,35 @@ async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_f
         return {"error": "aiohttp not installed. Run: pip install aiohttp"}
     try:
         bridge_port = (getattr(pconfig, "extra", {}) or {}).get("bridge_port", 3000)
-        normalized_chat_id = to_whatsapp_jid(chat_id)
+        normalized_chat_id = to_engine_chat_id(chat_id, "baileys")
         media = media_files or []
+        # Apply the same markdown→WhatsApp conversion the in-gateway send()
+        # applies. Cron deliveries run in a separate process and bypass
+        # adapter.send(), so without this the raw # / ** markers would leak
+        # to WhatsApp. format_message never raises (legacy fallback inside),
+        # but guard anyway: delivery must never break.
+        text = message or ""
+        try:
+            text = WhatsAppBehaviorMixin.format_message(
+                object.__new__(WhatsAppBehaviorMixin), text
+            )
+        except Exception:  # noqa: BLE001 - delivery must never fail
+            logger.warning(
+                "format_message failed in _standalone_send; sending raw", exc_info=True
+            )
         # A caption only applies to a single media file — never repeat it across a multi-file send.
         media_caption = caption if (caption and len(media) == 1) else None
+        # Keep captions consistent with body text: convert markdown→WhatsApp
+        # so a caption never leaks raw # / ** markers onto the media bubble.
+        if media_caption:
+            try:
+                media_caption = WhatsAppBehaviorMixin.format_message(
+                    object.__new__(WhatsAppBehaviorMixin), media_caption
+                )
+            except Exception:  # noqa: BLE001 - delivery must never fail
+                logger.warning(
+                    "format_message failed for caption; sending raw", exc_info=True
+                )
         last_message_id = None
         async with aiohttp.ClientSession() as session:
             async def _post(path, payload, total, error_label=None):
@@ -864,8 +1051,8 @@ async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_f
                         return (await resp.json()).get("messageId"), None
                     return None, {} if error_label is None else {"error": f"WhatsApp {error_label} error ({resp.status}): {await resp.text()}"}
             # 1) Text first (skipped when media-only or when the text rides as the caption).
-            if (message or "").strip() and not media_caption:
-                last_message_id, err = await _post("send", {"chatId": normalized_chat_id, "message": message}, 30, "bridge")
+            if text.strip() and not media_caption:
+                last_message_id, err = await _post("send", {"chatId": normalized_chat_id, "message": text}, 30, "bridge")
                 if err:
                     return err
             # 2) Each media file as a native attachment (mediaType picks the WhatsApp kind).
@@ -962,5 +1149,5 @@ def register(ctx) -> None:
         install_hint="WhatsApp requires a Node.js bridge — see the WhatsApp messaging docs",
         setup_fn=interactive_setup, apply_yaml_config_fn=_apply_yaml_config, allowed_users_env="WHATSAPP_ALLOWED_USERS",
         allow_all_env="WHATSAPP_ALLOW_ALL_USERS", cron_deliver_env_var="WHATSAPP_HOME_CHANNEL",
-        standalone_sender_fn=_standalone_send, max_message_length=4096, emoji="💬", allow_update_command=True,
+        standalone_sender_fn=_standalone_send, max_message_length=65536, emoji="💬", allow_update_command=True,
     )

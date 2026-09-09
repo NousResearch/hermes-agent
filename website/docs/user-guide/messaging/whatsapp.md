@@ -187,13 +187,79 @@ When `send_read_receipts` is `true`, the adapter marks policy-accepted inbound m
 
 ---
 
+## Group Chats: Mentions and Observed Context
+
+In groups, Hermes only responds when addressed: a `@mention`, a reply to one of its
+messages, a slash command, or a configured mention pattern (keyword). Everything else
+is ignored — no API calls, no cost.
+
+```yaml
+# ~/.hermes/config.yaml
+whatsapp:
+  group_policy: allowlist
+  group_allow_from:
+    - "120363001234567890@g.us"
+  require_mention: true
+  observe_unmentioned_group_messages: true
+```
+
+With `observe_unmentioned_group_messages: true`, unmentioned group messages from
+allowlisted groups are appended to the group's shared session transcript as observed
+context, but they do not dispatch the agent. When a later `@mention`, reply, or
+mention-pattern keyword triggers a turn in that same group, the model sees the whole
+accumulated context — so "what did I miss?" works even though Hermes stayed silent.
+Observed lines are attributed `[sender|id]` and the triggering message carries a
+safety prompt so the model treats prior observed lines as context, not instructions
+addressed to it. Equivalent environment variable:
+`WHATSAPP_OBSERVE_UNMENTIONED_GROUP_MESSAGES=true`.
+
+**Media in observed messages** is downloaded to the local cache (no agent or API
+calls at observation time) and recorded as a reference the model can inspect on
+demand when a later turn triggers: `[image: /path]` (with a `vision_analyze`
+pointer), `[voice note: /path]`, `[audio: /path]`, `[video: <url>]`,
+`[document: /path]`. A failed download degrades to `[image (unavailable: download
+failed)]` — observation never raises.
+
+**Bounds and retention.** Observed context is injected as an API-only block on the
+triggering turn, so context compression can never shrink it — the size is managed
+structurally instead:
+
+```yaml
+gateway:
+  observed_context_max_chars: 512000   # injection budget (~128K tokens); 0 = unlimited
+  observed_context_max_rows: 4000      # verbatim row budget; 0 = unlimited
+```
+
+When the verbatim observed set overflows roughly half the char budget, the oldest
+messages are **compressed, not deleted**: a background pass summarizes them (via the
+aux compression model, with secret redaction) into one rolling summary row appended to
+the session transcript. Later compactions **update that summary iteratively** instead
+of starting over, so decisions, participants, links, and open threads survive. The
+injected block is then: latest summary + verbatim messages after it. A hard cap still
+guards the pathological case (compaction lagging or aux model failing): beyond it the
+oldest verbatim rows are omitted first with a `[... N older observed messages omitted
+...]` note.
+
+Nothing is ever removed from the transcript: original messages stay searchable via
+session search; only what is injected per turn is bounded.
+
+**Scoping.** Observation and attribution only apply to mention-gated, allowlisted
+groups. In `group_policy: open` groups or `free_response_chats`, messages dispatch
+normally with their real per-user sender — observed context is never collected and
+triggered turns are never re-attributed there.
+
+---
+
 ## Message Formatting & Delivery
 
 WhatsApp supports **streaming (progressive) responses** — the bot edits its message in real-time as the AI generates text, just like Discord and Telegram. Internally, WhatsApp is classified as a TIER_MEDIUM platform for delivery capabilities.
 
 ### Chunking
 
-Long responses are automatically split into multiple messages at **4,096 characters** per chunk (WhatsApp's practical display limit). You don't need to configure anything — the gateway handles splitting and sends chunks sequentially.
+Long responses are sent as **one bubble up to WhatsApp's real per-message limit of
+65,536 characters** (code points). You don't need to configure anything — the gateway
+handles splitting at that cap for the rare oversized answer and sends chunks
+sequentially.
 
 ### WhatsApp-Compatible Markdown
 

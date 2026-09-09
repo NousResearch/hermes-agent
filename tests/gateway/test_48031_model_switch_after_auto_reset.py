@@ -23,8 +23,8 @@ from __future__ import annotations
 import ast
 import inspect
 
-from gateway import run as gateway_run
-from gateway import slash_commands as gateway_slash
+from gateway import run_turn as gateway_run_turn
+from gateway import slash_commands_model as gateway_slash
 
 
 def _assigns_false(node: ast.AST, attr: str) -> bool:
@@ -47,7 +47,7 @@ def test_run_consumes_was_auto_reset_in_cleanup_block():
     `session_entry.was_auto_reset = False` so the cleanup (which pops the
     session model/reasoning overrides) cannot re-fire on the next message and
     wipe an override stored between turns (#48031)."""
-    tree = ast.parse(inspect.getsource(gateway_run))
+    tree = ast.parse(inspect.getsource(gateway_run_turn))
 
     # Find the cleanup branch: an `if <flag>:` block that clears the
     # conversation scope (post-funnel: one _clear_conversation_scope call
@@ -75,13 +75,13 @@ def test_run_consumes_was_auto_reset_in_cleanup_block():
 
 
 def test_slash_command_model_path_consumes_was_auto_reset():
-    """The slash-command model path in gateway/slash_commands.py must consume
+    """The slash-command model path in gateway/slash_commands_model.py must consume
     `was_auto_reset` before storing the new model override, so a
     /model-first-after-auto-reset isn't wiped by the next message's cleanup
     (#48031)."""
     src = inspect.getsource(gateway_slash)
     tree = ast.parse(src)
     assert _assigns_false(tree, "was_auto_reset"), (
-        "gateway/slash_commands.py model path must set "
+        "gateway/slash_commands_model.py model path must set "
         "`was_auto_reset = False` before storing the model override (#48031)."
     )

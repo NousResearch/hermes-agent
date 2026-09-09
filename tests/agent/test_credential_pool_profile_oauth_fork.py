@@ -160,7 +160,67 @@ def test_strip_helper_is_a_noop_without_credentials(tmp_path):
     assert strip_cloned_single_use_oauth_grants(tmp_path) == {"pool": [], "providers": [], "files": []}
 
 
-# ── B. borrowed rotation commits to root, never a profile copy ───────────
+@pytest.mark.parametrize(
+    "link",
+    [
+        lambda target, alias: alias.symlink_to(target),
+        lambda target, alias: os.link(target, alias),
+    ],
+    ids=["symlink", "hardlink"],
+)
+def test_strip_helper_leaves_shared_root_auth_store_unchanged(fleet, link):
+    """A shared auth store is one grant, not a cloned credential copy."""
+    from hermes_cli.auth import strip_cloned_single_use_oauth_grants
+
+    root = fleet["root"]
+    _seed_codex_grant(root)
+    before = (root / "auth.json").read_text()
+    shared = _shared_profile(fleet, "shared", link=link)
+
+    assert strip_cloned_single_use_oauth_grants(shared) == {
+        "pool": [], "providers": [], "files": [],
+    }
+    assert (root / "auth.json").read_text() == before
+
+
+def test_strip_helper_fails_closed_when_root_store_cannot_be_resolved(fleet, monkeypatch):
+    """Credential hygiene must not mutate auth when store identity is unknown."""
+    from hermes_cli.auth import strip_cloned_single_use_oauth_grants
+    import hermes_constants
+
+    root = fleet["root"]
+    _seed_codex_grant(root)
+    before = (root / "auth.json").read_text()
+    shared = _shared_profile(
+        fleet, "shared", link=lambda target, alias: alias.symlink_to(target))
+    monkeypatch.setattr(
+        hermes_constants, "get_default_hermes_root",
+        lambda: (_ for _ in ()).throw(OSError("root unavailable")))
+
+    assert strip_cloned_single_use_oauth_grants(shared) == {
+        "pool": [], "providers": [], "files": [],
+    }
+    assert (root / "auth.json").read_text() == before
+
+
+def test_strip_helper_fails_closed_when_store_identity_check_errors(fleet, monkeypatch):
+    """A transient stat failure must not be interpreted as two stores."""
+    from hermes_cli.auth import strip_cloned_single_use_oauth_grants
+
+    root = fleet["root"]
+    _seed_codex_grant(root)
+    copied = _profile(fleet, "copied")
+    (copied / "auth.json").write_text((root / "auth.json").read_text())
+    before = (copied / "auth.json").read_text()
+    monkeypatch.setattr(
+        type(copied), "samefile",
+        lambda *args, **kwargs: (_ for _ in ()).throw(OSError("stat unavailable")))
+
+    assert strip_cloned_single_use_oauth_grants(copied) == {
+        "pool": [], "providers": [], "files": [],
+    }
+    assert (copied / "auth.json").read_text() == before
+
 
 def test_first_profile_rotation_does_not_strand_root_or_siblings(fleet):
     from agent.credential_pool import load_pool
@@ -365,6 +425,81 @@ def test_heal_never_deletes_the_only_surviving_copy(fleet):
     assert "anthropic" not in (json.loads((fleet["root"] / "auth.json").read_text())["credential_pool"])
 
 
+@pytest.mark.parametrize("shape", ["pool", "provider"])
+@pytest.mark.parametrize("claims", [True, False])
+def test_heal_preserves_independent_grants_for_same_account(fleet, shape, claims):
+    """An account can have independent device logins; identity is not lineage."""
+    import base64
+    from hermes_cli.auth import heal_forked_single_use_oauth_grants
+
+    def pair(tag):
+        payload = base64.urlsafe_b64encode(json.dumps({
+            "sub": "same-account", "exp": int(time.time()) + 3600, "jti": tag,
+        }).encode()).decode().rstrip("=")
+        return {"access_token": "h." + payload + ".s" if claims else tag,
+                "refresh_token": "independent-" + tag}
+
+    def store(tag):
+        tokens = pair(tag)
+        if shape == "provider":
+            return {"version": 1, "providers": {"openai-codex": {"tokens": tokens}}}
+        return {"version": 1, "providers": {}, "credential_pool": {"openai-codex": [{
+            "id": tag, "auth_type": "oauth", "source": "manual:device_code", **tokens,
+        }]}}
+
+    root = fleet["root"] / "auth.json"
+    kid = _profile(fleet, "independent")
+    kid.mkdir(parents=True, exist_ok=True)
+    profile = kid / "auth.json"
+    root.write_text(json.dumps(store("root-grant")))
+    profile.write_text(json.dumps(store("profile-grant")))
+    before = (root.read_bytes(), profile.read_bytes())
+    fleet["use"](kid)
+    assert heal_forked_single_use_oauth_grants("openai-codex") is None
+    assert (root.read_bytes(), profile.read_bytes()) == before
+    if claims:
+        from agent.credential_pool import load_pool
+        for _ in range(3):
+            selected = load_pool("openai-codex").select()
+            assert selected is not None
+            assert selected.refresh_token == "independent-profile-grant"
+        assert root.read_bytes() == before[0]
+
+
+def test_heal_rotated_fork_moves_provider_block_with_the_pool_row(fleet):
+    """Copied pool-row id proves the fork even after both sides rotated past token equality.
+
+    Root's load_pool() re-seeds its device_code row FROM providers.<id>.tokens, so root's block
+    must carry the fresher pair too or the next root load resurrects the spent one.
+    """
+    from agent.credential_pool import load_pool
+    from hermes_cli.auth import heal_forked_single_use_oauth_grants
+
+    def store(tag, exp_off):
+        tokens = {"access_token": "at-" + tag, "refresh_token": "rt-" + tag}
+        issued = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() + exp_off - 3600))
+        return {"version": 1,
+                "providers": {"openai-codex": {"tokens": tokens, "last_refresh": issued}},
+                "credential_pool": {"openai-codex": [{
+                    "id": "shared-id", "auth_type": "oauth", "source": "device_code", **tokens,
+                    "expires_at_ms": int((time.time() + exp_off) * 1000)}]}}
+
+    root = fleet["root"] / "auth.json"
+    kid = _profile(fleet, "rotated")
+    kid.mkdir(parents=True, exist_ok=True)
+    root.write_text(json.dumps(store("old", 100)))
+    (kid / "auth.json").write_text(json.dumps(store("new", 3600)))
+    fleet["use"](kid)
+    assert heal_forked_single_use_oauth_grants("openai-codex")["adopted"] is True
+    r, p = json.loads(root.read_text()), json.loads((kid / "auth.json").read_text())
+    assert r["credential_pool"]["openai-codex"][0]["refresh_token"] == "rt-new"
+    assert r["providers"]["openai-codex"]["tokens"]["refresh_token"] == "rt-new"
+    assert "openai-codex" not in p["providers"]
+    assert "openai-codex" not in p.get("credential_pool", {})
+    fleet["use"](fleet["root"])
+    assert {e.refresh_token for e in load_pool("openai-codex").entries()} == {"rt-new"}
+
+
 def test_heal_leaves_a_different_account_alone(fleet):
     """A profile row whose JWT identity names ANOTHER account is not root's grant."""
     import base64
@@ -450,3 +585,112 @@ def test_heal_is_a_noop_in_classic_mode(fleet):
     before = (fleet["root"] / "auth.json").read_text()
     assert heal_forked_single_use_oauth_grants("anthropic") is None
     assert (fleet["root"] / "auth.json").read_text() == before
+
+
+# ── C. a SHARED root store is not a fork (#101356) ───────────────────────
+
+def _seed_codex_grant(root):
+    """Give the root store an openai-codex pool row AND a providers block."""
+    fresh = int((time.time() + 3600) * 1000)
+    store = json.loads((root / "auth.json").read_text())
+    store["credential_pool"]["openai-codex"] = [{
+        "id": "cdx001", "label": "codex", "auth_type": "oauth", "priority": 0,
+        "source": "manual:device_code", "access_token": "cdx-AT0",
+        "refresh_token": "cdx-RT0", "expires_at_ms": fresh,
+    }]
+    store["providers"]["openai-codex"] = {
+        "tokens": {"access_token": "cdx-AT0", "refresh_token": "cdx-RT0", "expires_at_ms": fresh},
+        "last_refresh": fresh / 1000.0,
+    }
+    (root / "auth.json").write_text(json.dumps(store))
+
+
+def _shared_profile(fleet, name, *, link):
+    """Profile whose auth.json IS the root store (``link`` makes the alias)."""
+    pdir = _profile(fleet, name)
+    pdir.mkdir(parents=True, exist_ok=True)
+    alias = pdir / "auth.json"
+    if alias.is_symlink() or alias.exists():
+        alias.unlink()
+    link(fleet["root"] / "auth.json", alias)
+    return pdir
+
+
+def test_heal_skips_profile_auth_json_symlinked_to_the_root_store(fleet):
+    """#101356: `ln -s ~/.hermes/auth.json <profile>/auth.json` shares ONE store.
+    Both sides of the consolidation read the same file, so every row looks like
+    a fork of itself — healing would strip the shared grant through the link."""
+    from hermes_cli.auth import consume_oauth_heal_notices, heal_forked_single_use_oauth_grants
+
+    root = fleet["root"]
+    _seed_codex_grant(root)
+    before = (root / "auth.json").read_text()
+
+    shared = _shared_profile(fleet, "shared", link=lambda target, alias: alias.symlink_to(target))
+    fleet["use"](shared)
+
+    assert heal_forked_single_use_oauth_grants("openai-codex") is None
+    assert (root / "auth.json").read_text() == before
+    assert (shared / "auth.json").is_symlink()
+    assert consume_oauth_heal_notices() == []
+    store = json.loads((root / "auth.json").read_text())
+    assert [r["id"] for r in store["credential_pool"]["openai-codex"]] == ["cdx001"]
+    assert store["providers"]["openai-codex"]["tokens"]["refresh_token"] == "cdx-RT0"
+
+
+def test_heal_skips_profile_auth_json_hardlinked_to_the_root_store(fleet):
+    """Same class as the symlink: a hardlink resolves to a different name but
+    is the same inode, so it is still one store, not a forked copy."""
+    from hermes_cli.auth import heal_forked_single_use_oauth_grants
+
+    root = fleet["root"]
+    _seed_codex_grant(root)
+    before = (root / "auth.json").read_text()
+
+    shared = _shared_profile(fleet, "twin", link=lambda target, alias: os.link(target, alias))
+    fleet["use"](shared)
+
+    assert heal_forked_single_use_oauth_grants("openai-codex") is None
+    assert (root / "auth.json").read_text() == before
+    assert (shared / "auth.json").samefile(root / "auth.json")
+
+
+def test_heal_leaves_an_aliased_anthropic_singleton_alone(fleet):
+    """Separate auth.jsons but a profile `.anthropic_oauth.json` symlinked to
+    root's: one shared grant, not a fork. The heal must not self-compare it
+    or unlink the alias (#101356 sibling site)."""
+    from hermes_cli.auth import heal_forked_single_use_oauth_grants
+
+    root = fleet["root"]
+    (root / ".anthropic_oauth.json").write_text(json.dumps({
+        "accessToken": "AT-shared", "refreshToken": "RT-shared",
+        "expiresAt": int((time.time() + 3600) * 1000),
+    }))
+    kid = _profile(fleet, "kid")
+    kid.mkdir(parents=True, exist_ok=True)
+    (kid / "auth.json").write_text(json.dumps({"providers": {}, "credential_pool": {}}))
+    (kid / ".anthropic_oauth.json").symlink_to(root / ".anthropic_oauth.json")
+    before = (root / ".anthropic_oauth.json").read_text()
+
+    fleet["use"](kid)
+    assert heal_forked_single_use_oauth_grants("anthropic") is None
+    assert (kid / ".anthropic_oauth.json").is_symlink()
+    assert (root / ".anthropic_oauth.json").read_text() == before
+
+
+def test_heal_same_store_skip_is_memoized_off_the_hot_path(fleet, monkeypatch):
+    """The shared-store skip must record the clean mark so load_pool()'s
+    per-call heal does not re-stat/resolve both paths every model call."""
+    from hermes_cli import auth as auth_mod
+
+    root = fleet["root"]
+    _seed_codex_grant(root)
+    shared = _shared_profile(fleet, "shared", link=lambda target, alias: alias.symlink_to(target))
+    fleet["use"](shared)
+
+    assert auth_mod.heal_forked_single_use_oauth_grants("openai-codex") is None
+    assert "openai-codex" in auth_mod._oauth_heal_clean_marks
+    calls = []
+    monkeypatch.setattr(auth_mod, "_is_same_auth_store", lambda *a: calls.append(a) or True)
+    assert auth_mod.heal_forked_single_use_oauth_grants("openai-codex") is None
+    assert calls == [], "same-store check ran again despite the clean mark"

@@ -10,7 +10,8 @@ from gateway.session import SessionSource, build_session_key
 from gateway.run import GatewayRunner
 from gateway.profile_routing import ProfileRoute, ProfileRouteRejected
 from gateway.config import GatewayConfig, Platform
-from gateway.platforms.base import BasePlatformAdapter, MessageEvent
+from gateway.platforms.base import BasePlatformAdapter
+from gateway.platforms.event import MessageEvent
 
 
 @pytest.fixture
@@ -21,6 +22,8 @@ def mock_runner():
     # Bind the actual methods to the mock
     runner._profile_name_for_source = GatewayRunner._profile_name_for_source.__get__(runner)
     runner._resolve_profile_home_for_source = GatewayRunner._resolve_profile_home_for_source.__get__(runner)
+    # _handle_message's ingress gates (profile route rejection) live in this helper.
+    runner._hm_admit_event = GatewayRunner._hm_admit_event.__get__(runner)
     return runner
 
 

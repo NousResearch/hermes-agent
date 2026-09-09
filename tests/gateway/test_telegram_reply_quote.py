@@ -55,7 +55,7 @@ def _make_message(
 
 def test_native_partial_quote_used_as_reply_to_text():
     """When ``message.quote`` is present, prefer the selected substring."""
-    from gateway.platforms.base import MessageType
+    from gateway.platforms.event import MessageType
 
     adapter = _make_adapter()
     msg = _make_message(

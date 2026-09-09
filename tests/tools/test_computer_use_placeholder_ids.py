@@ -91,7 +91,7 @@ def test_malformed_ids_are_not_treated_as_placeholders():
 
 
 def test_placeholder_predicate():
-    from tools.computer_use.cua_backend import _is_placeholder_id
+    from tools.computer_use.cua_backend_parse import _is_placeholder_id
 
     assert _is_placeholder_id(0) is True
     assert _is_placeholder_id("0") is True

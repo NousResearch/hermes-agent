@@ -143,3 +143,51 @@ def test_routing_persistence_failure_does_not_spawn(kanban_home, monkeypatch):
         task = kb.get_task(conn, task_id)
         assert task.status == "ready"
         assert task.current_run_id is None
+
+
+def test_explicit_claude_dispatch_uses_claude_run_profile(kanban_home, monkeypatch):
+    from hermes_cli.kanban_implement import run_implement_slash
+    from hermes_cli import kanban_db_dispatch as kbd
+
+    task_id = _task(assignee="some-other-lane")
+    monkeypatch.setattr("hermes_cli.kanban_implement.implement_command_enabled", lambda: True)
+    monkeypatch.setattr(kbd, "_profile_exists_fn", lambda: lambda _name: True)
+    monkeypatch.setattr(kbd, "_default_spawn", lambda task, workspace, **_kwargs: 123)
+    result = run_implement_slash(f"/implement {task_id} --profile rozmilo-claude")
+    assert result["dispatch_status"] == "started"
+    assert result["selected_profile"] == "rozmilo-claude"
+    assert result["reviewer_profile"] == "rozmilo-codex"
+    with kbc.connect() as conn:
+        assert kb.latest_run(conn, task_id).profile == "rozmilo-claude"
+
+
+@pytest.mark.parametrize("status", ["blocked", "done", "archived"])
+def test_ineligible_status_does_not_claim_or_spawn(kanban_home, monkeypatch, status):
+    from hermes_cli.kanban_implement import run_implement_slash
+    from hermes_cli import kanban_db_dispatch as kbd
+
+    task_id = _task()
+    with kbc.connect() as conn:
+        conn.execute("UPDATE tasks SET status = ? WHERE id = ?", (status, task_id))
+        conn.commit()
+    monkeypatch.setattr("hermes_cli.kanban_implement.implement_command_enabled", lambda: True)
+    monkeypatch.setattr(kbd, "_default_spawn", lambda *_args, **_kwargs: pytest.fail("spawned"))
+    result = run_implement_slash(task_id)
+    assert result["dispatch_status"] == "not_eligible"
+    with kbc.connect() as conn:
+        task = kb.get_task(conn, task_id)
+        assert task.current_run_id is None
+
+
+def test_human_gate_event_is_authoritative(kanban_home, monkeypatch):
+    from hermes_cli import kanban_implement as adapter
+    from hermes_cli.kanban_implement import run_implement_slash
+
+    task_id = _task()
+    monkeypatch.setattr(adapter, "implement_command_enabled", lambda: True)
+    with kbc.connect() as conn:
+        with kb.write_txn(conn):
+            kb._append_event(conn, task_id, "human_gate_required", {"required": True})
+    result = run_implement_slash(task_id)
+    assert result["dispatch_status"] == "not_eligible"
+    assert result["human_gate_required"] is True

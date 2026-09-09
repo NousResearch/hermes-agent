@@ -1432,6 +1432,7 @@ def dispatch_once(
     reconcile_orphans: bool = True,
     task_id: Optional[str] = None,
     before_spawn_fn=None,
+    spawn_profile: Optional[str] = None,
 ) -> DispatchResult:
     """Run one dispatcher tick under the board's single-writer lock.
 
@@ -1457,6 +1458,7 @@ def dispatch_once(
             reconcile_orphans=reconcile_orphans,
             task_id=task_id,
             before_spawn_fn=before_spawn_fn,
+            spawn_profile=spawn_profile,
         )
 
     try:
@@ -1514,6 +1516,7 @@ def _dispatch_lane_task(
     per_profile_cap: Optional[int],
     per_profile_running: dict[str, int],
     before_spawn_fn=None,
+    spawn_profile: Optional[str] = None,
 ) -> bool:
     """Guard, claim, resolve the workspace and spawn one ready/review row.
     Returns True when a spawn slot was consumed (real or ``dry_run``); every
@@ -1524,16 +1527,17 @@ def _dispatch_lane_task(
     # would fail ``hermes -p <assignee>`` at startup and loop ready→crash→ready
     # forever. Bucketed apart from skipped_unassigned: the operator cannot fix
     # it by assigning a profile, and health telemetry suppresses "stuck" for it.
+    effective_assignee = spawn_profile or assignee
     profile_exists = _profile_exists_fn()
-    if profile_exists is not None and not profile_exists(assignee):
+    if profile_exists is not None and not profile_exists(effective_assignee):
         result.skipped_nonspawnable.append(task_id)
         return False
     # Per-profile cap: one profile's local model / API quota / browser pool
     # must not be overwhelmed by a fan-out even with global headroom.
     if per_profile_cap is not None:
-        current = per_profile_running.get(assignee, 0)
+        current = per_profile_running.get(effective_assignee, 0)
         if current >= per_profile_cap:
-            result.skipped_per_profile_capped.append((task_id, assignee, current))
+            result.skipped_per_profile_capped.append((task_id, effective_assignee, current))
             return False
     guard_reason = check_respawn_guard(conn, task_id, lane=lane)
     if guard_reason is not None:
@@ -1557,8 +1561,8 @@ def _dispatch_lane_task(
             per_profile_running[name] = per_profile_running.get(name, 0) + 1
 
     if dry_run:
-        result.spawned.append((task_id, assignee, ""))
-        _count_spawn(assignee)
+        result.spawned.append((task_id, effective_assignee, ""))
+        _count_spawn(effective_assignee)
         return True
     claim = _kb.claim_review_task if lane == "review" else _kb.claim_task
     on_claim_fn = None
@@ -1566,10 +1570,18 @@ def _dispatch_lane_task(
         on_claim_fn = lambda claim_conn, claimed: before_spawn_fn(
             claim_conn, claimed, board=board, lane=lane, workspace=None,
         )
-    claimed = claim(conn, task_id, ttl_seconds=ttl_seconds, on_claim_fn=on_claim_fn)
+    if spawn_profile is None:
+        claimed = claim(conn, task_id, ttl_seconds=ttl_seconds, on_claim_fn=on_claim_fn)
+    else:
+        claimed = claim(
+            conn, task_id, ttl_seconds=ttl_seconds, on_claim_fn=on_claim_fn,
+            profile_override=spawn_profile,
+        )
     if claimed is None:
         return False
     try:
+        if spawn_profile:
+            claimed.assignee = spawn_profile
         resolved_branch_name = None
         if claimed.workspace_kind == "worktree":
             workspace, resolved_branch_name = _kbw._resolve_worktree_workspace(claimed, board=board)
@@ -1797,6 +1809,7 @@ def _dispatch_once_locked(
     reconcile_orphans: bool = True,
     task_id: Optional[str] = None,
     before_spawn_fn=None,
+    spawn_profile: Optional[str] = None,
 ) -> DispatchResult:
     """One dispatcher tick: reclaim stale/crashed running tasks, promote
     todo -> ready, then atomically claim each spawnable ready/review row and
@@ -1847,7 +1860,7 @@ def _dispatch_once_locked(
         dry_run=dry_run, ttl_seconds=ttl_seconds, board=board,
         failure_limit=failure_limit, spawn_fn=spawn_fn,
         per_profile_cap=per_profile_cap, per_profile_running=per_profile_running,
-        before_spawn_fn=before_spawn_fn,
+        before_spawn_fn=before_spawn_fn, spawn_profile=spawn_profile,
     )
     default_assignee = _resolve_default_assignee(default_assignee)
     spawned = 0

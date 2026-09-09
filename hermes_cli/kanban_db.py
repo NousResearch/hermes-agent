@@ -2155,7 +2155,7 @@ def _parents_satisfied(conn: sqlite3.Connection, task_id: str) -> bool:
 
 def _claim_and_open_run(
     conn: sqlite3.Connection, task_id: str, source_status: str, lock: str, expires: int, now: int,
-    *, event_extra: Optional[dict] = None,
+    *, event_extra: Optional[dict] = None, profile_override: Optional[str] = None,
 ) -> Optional[int]:
     """CAS ``source_status -> running``, open a run row, emit ``claimed``; None
     when the CAS lost. Caller holds the txn."""
@@ -2187,7 +2187,8 @@ def _claim_and_open_run(
         ) VALUES (?, ?, ?, 'running', ?, ?, ?, ?)
         """,
         (
-            task_id, trow["assignee"] if trow else None, trow["current_step_key"] if trow else None,
+            task_id, profile_override or (trow["assignee"] if trow else None),
+            trow["current_step_key"] if trow else None,
             lock, expires, trow["max_runtime_seconds"] if trow else None, now,
         ),
     )
@@ -2202,7 +2203,7 @@ def _claim_and_open_run(
 
 def claim_task(
     conn: sqlite3.Connection, task_id: str, *, ttl_seconds: Optional[int] = None,
-    claimer: Optional[str] = None, on_claim_fn=None,
+    claimer: Optional[str] = None, on_claim_fn=None, profile_override: Optional[str] = None,
 ) -> Optional[Task]:
     """Atomically transition ``ready -> running``.
 
@@ -2227,10 +2228,14 @@ def claim_task(
         _reclaim_dangling_run(
             conn, task_id, statuses=("ready",), now=now, note="invariant recovery on re-claim",
         )
-        run_id = _claim_and_open_run(conn, task_id, "ready", lock, expires, now)
+        run_id = _claim_and_open_run(
+            conn, task_id, "ready", lock, expires, now, profile_override=profile_override,
+        )
         if run_id is None:
             return None
         claimed = get_task(conn, task_id)
+        if claimed is not None and profile_override:
+            claimed.assignee = profile_override
         if claimed is not None and on_claim_fn is not None:
             on_claim_fn(conn, claimed)
     _fire_task_hook("kanban_task_claimed", claimed, task_id, run_id)
@@ -2239,7 +2244,7 @@ def claim_task(
 
 def claim_review_task(
     conn: sqlite3.Connection, task_id: str, *, ttl_seconds: Optional[int] = None,
-    claimer: Optional[str] = None, on_claim_fn=None,
+    claimer: Optional[str] = None, on_claim_fn=None, profile_override: Optional[str] = None,
 ) -> Optional[Task]:
     """Atomic ``review -> running`` (None when lost). Parents are re-checked
     (one may have reopened meanwhile) and a NEW run tracks the reviewer
@@ -2260,11 +2265,14 @@ def claim_review_task(
                 )
             return None
         run_id = _claim_and_open_run(
-            conn, task_id, "review", lock, expires, now, event_extra={"source_status": "review"},
+            conn, task_id, "review", lock, expires, now,
+            event_extra={"source_status": "review"}, profile_override=profile_override,
         )
         if run_id is None:
             return None
         claimed = get_task(conn, task_id)
+        if claimed is not None and profile_override:
+            claimed.assignee = profile_override
         if claimed is not None and on_claim_fn is not None:
             on_claim_fn(conn, claimed)
         return claimed

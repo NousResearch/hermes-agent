@@ -1434,12 +1434,16 @@ def _run_conversation_turn(
     persist_user_platform_id: Optional[str] = None,
     turn_author: Optional[Dict[str, Any]] = None,
     moa_config: Optional[dict[str, Any]] = None,
+    title_user_message: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Run a complete conversation with tool calling until completion; returns the result dict.
 
     ``stream_callback``: per-text-delta callback (TTS). ``persist_user_message``: clean text to
     store when ``user_message`` carries API-only synthetic prefixes; timestamp / platform id are
-    stored as metadata (platform id lets restart drain recovery dedup). ``persist_user_display_*``:
+    stored as metadata (platform id lets restart drain recovery dedup).
+    ``title_user_message``: optional pre-injection text for titles only (None uses the
+    model-facing message; an empty string suppresses titling for this turn).
+    ``persist_user_display_*``:
     display-only event rendering; the model still receives the message unchanged."""
     if moa_config is None:
         user_message, moa_config, persist_user_message = _decode_inline_moa_turn(
@@ -1478,6 +1482,7 @@ def _run_conversation_turn(
             # MoA turns append per-call aggregated context to the API copy of the
             # user message, so no byte-stable api_content sidecar can be stamped.
             moa_active=bool(moa_config),
+            title_user_message=title_user_message,
         )
     except PreflightCompressionTimedOut as _preflight_timeout_exc:
         return _preflight_timeout_result(agent, _preflight_timeout_exc, conversation_history)
@@ -1584,6 +1589,7 @@ def run_conversation(
     persist_user_platform_id: Optional[str] = None,
     moa_config: Optional[dict[str, Any]] = None,
     turn_author: Optional[Dict[str, Any]] = None,
+    title_user_message: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Run one turn (see ``_run_conversation_turn``) and export the current-turn boundary.
 
@@ -1608,6 +1614,7 @@ def run_conversation(
         persist_user_platform_id=persist_user_platform_id,
         moa_config=moa_config,
         turn_author=turn_author,
+        title_user_message=title_user_message,
     )
     return export_current_turn_boundary(agent, result, user_message)
 

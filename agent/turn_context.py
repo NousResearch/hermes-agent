@@ -152,7 +152,9 @@ def append_notes_to_multimodal_content(content: Any, notes: str) -> bool:
 _UNTITLED_PLATFORMS = frozenset({"cron", "subagent"})
 
 
-def _maybe_title_session_at_turn_start(agent: Any, messages: List[Any]) -> None:
+def _maybe_title_session_at_turn_start(
+    agent: Any, messages: List[Any], title_user_message: Optional[str] = None,
+) -> None:
     """Kick off auto-titling for the session's first user message; never fatal."""
     session_db = getattr(agent, "_session_db", None)
     session_id = getattr(agent, "session_id", None)
@@ -165,11 +167,14 @@ def _maybe_title_session_at_turn_start(agent: Any, messages: List[Any]) -> None:
         from agent.title_generator import maybe_auto_title
 
         # Turn's user message as text; image-only turns yield "" and are skipped.
-        user_text = ""
-        for msg in reversed(messages or []):
-            if isinstance(msg, dict) and msg.get("role") == "user":
-                user_text = flatten_message_text(msg.get("content")).strip()
-                break
+        if title_user_message is not None:
+            user_text = title_user_message.strip()
+        else:
+            user_text = ""
+            for msg in reversed(messages or []):
+                if isinstance(msg, dict) and msg.get("role") == "user":
+                    user_text = flatten_message_text(msg.get("content")).strip()
+                    break
         if not user_text:
             return
         # The session row is created lazily; force it now or the title write matches
@@ -858,6 +863,7 @@ def build_turn_context(
     restore_or_build_system_prompt,
     install_safe_stdio, sanitize_surrogates, summarize_user_message_for_log, set_session_context,
     set_current_write_origin, ra, moa_active: bool=False,
+    title_user_message: Optional[str]=None,
 ) -> TurnContext:
     """Run the once-per-turn setup and return the loop's input context.
 
@@ -1000,7 +1006,7 @@ def build_turn_context(
 
     # Title the session now: the row exists and titling depends only on the user's ask,
     # so it runs concurrently with the turn. Daemon thread, no-op once titled.
-    _maybe_title_session_at_turn_start(agent, messages)
+    _maybe_title_session_at_turn_start(agent, messages, title_user_message)
 
     return TurnContext(
         user_message=user_message, original_user_message=original_user_message, messages=messages,

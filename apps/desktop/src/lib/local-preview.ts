@@ -197,11 +197,14 @@ export function localPreviewTarget(rawTarget: string, cwd?: string | null): Prev
 
   if (/^file:\/\//i.test(raw)) {
     try {
-      path = decodeURIComponent(new URL(raw).pathname)
+      const url = new URL(raw)
+      const pathname = decodeURIComponent(url.pathname)
+
+      path = url.hostname ? `//${url.hostname}${pathname}` : pathname.replace(/^\/([a-z]:\/)/i, '$1')
     } catch {
       path = raw.replace(/^file:\/\//i, '')
     }
-  } else if (!raw.startsWith('/') && cwd) {
+  } else if (!raw.startsWith('/') && !raw.startsWith('\\\\') && !/^[a-z]:[\\/]/i.test(raw) && cwd) {
     path = joinPath(cwd, raw)
   }
 

@@ -2,6 +2,7 @@
 """Run Docker boot-time config migrations safely."""
 from __future__ import annotations
 
+import filecmp
 import shutil
 import sys
 from pathlib import Path
@@ -22,11 +23,28 @@ from utils import env_var_enabled
 
 
 def _backup_existing(paths: Iterable[Path]) -> dict[Path, Path]:
-    """Snapshot each file into backups/config/; an identical existing snapshot is reused."""
+    """Snapshot each file into backups/config/; an identical existing snapshot is reused.
+
+    A file that does not currently exist gets no entry (nothing to roll back to). When
+    ``backup_config`` skips a live file — same bytes as the newest ``pre-docker-migrate``
+    snapshot, but also an empty file, a same-second name collision, or a write error — only
+    fall back to that newest snapshot when its bytes still match the file on disk right now;
+    otherwise a failed migration's rollback would restore stale content (e.g. resurrecting a
+    deleted .env with a since-revoked API key) instead of leaving the file alone.
+    """
     backups: dict[Path, Path] = {}
     for path in paths:
-        dest = backup_config(path, "pre-docker-migrate") or next(
-            iter(list_config_backups(path, "pre-docker-migrate")), None)
+        if not path.is_file():
+            continue
+        dest = backup_config(path, "pre-docker-migrate")
+        if dest is None:
+            existing = next(iter(list_config_backups(path, "pre-docker-migrate")), None)
+            if existing is not None:
+                try:
+                    if filecmp.cmp(path, existing, shallow=False):
+                        dest = existing
+                except OSError:
+                    pass
         if dest is not None:
             backups[path] = dest
     return backups

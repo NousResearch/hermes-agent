@@ -17,10 +17,6 @@ itself; a body that raises is logged at debug and rescheduled — one bad
 callback must never kill the shared thread.  A handle never overlaps itself:
 it is re-queued only once its in-flight run has returned.  A worker-start
 failure never retires the handle: it is re-queued and logged at warning.
-
-Prior art: per-handle-worker isolation follows #102458 (jfreshpicks);
-bounded-pool alternatives #102615/#102657/#104488 were rejected for
-preserving a shared starvation domain; originates from #102030.
 """
 
 from __future__ import annotations
@@ -71,7 +67,7 @@ class PeriodicScheduler:
     def schedule(self, fn: Callable[[], object], interval: float) -> ScheduledHandle:
         handle = ScheduledHandle(self, fn, float(interval))
         with self._cond:
-            heapq.heappush(self._heap, (time.monotonic() + handle._interval, next(self._seq), handle))
+            self._requeue(handle)
             if self._thread is None or not self._thread.is_alive():
                 self._thread = threading.Thread(target=self._run, name=_THREAD_NAME, daemon=True)
                 self._thread.start()
@@ -107,11 +103,12 @@ class PeriodicScheduler:
                 exc_info=True,
             )
             if not handle._cancelled:
-                heapq.heappush(
-                    self._heap,
-                    (time.monotonic() + handle._interval, next(self._seq), handle),
-                )
-                self._cond.notify_all()
+                self._requeue(handle)
+                self._cond.notify()
+
+    def _requeue(self, handle: ScheduledHandle) -> None:
+        """Push ``handle``'s next due time (``_cond`` held)."""
+        heapq.heappush(self._heap, (time.monotonic() + handle._interval, next(self._seq), handle))
 
     def _run_callback(self, handle: ScheduledHandle) -> None:
         stop = False
@@ -125,11 +122,8 @@ class PeriodicScheduler:
                 if stop:
                     handle._cancelled = True
                 elif not handle._cancelled:
-                    heapq.heappush(
-                        self._heap,
-                        (time.monotonic() + handle._interval, next(self._seq), handle),
-                    )
-                self._cond.notify_all()
+                    self._requeue(handle)
+                self._cond.notify()
 
     def _run(self) -> None:
         while True:

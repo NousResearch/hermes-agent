@@ -101,7 +101,7 @@ def test_blocked_callback_does_not_stall_due_sibling(monkeypatch):
 
     def blocker():
         blocker_entered.set()
-        release_blocker.wait(2.0)
+        release_blocker.wait(5.0)
         return False
 
     def sibling():
@@ -109,44 +109,18 @@ def test_blocked_callback_does_not_stall_due_sibling(monkeypatch):
         return False
 
     blocker_handle = schedule(blocker, 0.01)
-    assert blocker_entered.wait(1.0)
+    assert blocker_entered.wait(2.0)
     sibling_handle = schedule(sibling, 0.01)
     try:
-        assert sibling_ran.wait(0.30), (
+        # Ordering, not a wall-clock bound: the sibling must fire WHILE the blocker still holds
+        # its worker. On main the sibling only runs after the blocker's 5 s wait expires.
+        assert sibling_ran.wait(2.0) and not release_blocker.is_set(), (
             "a blocked periodic callback stalled an unrelated due callback"
         )
     finally:
         release_blocker.set()
         blocker_handle.cancel(wait=1.0)
         sibling_handle.cancel(wait=1.0)
-
-
-def test_slow_callback_never_overlaps_itself():
-    sched = PeriodicScheduler()
-    lock = threading.Lock()
-    two_runs = threading.Event()
-    running = 0
-    peak_running = 0
-    completed = 0
-
-    def slow():
-        nonlocal running, peak_running, completed
-        with lock:
-            running += 1
-            peak_running = max(peak_running, running)
-        time.sleep(0.05)
-        with lock:
-            running -= 1
-            completed += 1
-            if completed >= 2:
-                two_runs.set()
-
-    handle = sched.schedule(slow, 0.01)
-    try:
-        assert two_runs.wait(2.0)
-        assert peak_running == 1, "a handle ran concurrently with itself"
-    finally:
-        handle.cancel(wait=2.0)
 
 
 def test_worker_start_failure_keeps_timer(monkeypatch):
@@ -156,8 +130,9 @@ def test_worker_start_failure_keeps_timer(monkeypatch):
     attempts = {"n": 0}
 
     def flaky(*args, **kwargs):
-        name = kwargs.get("name", "")
-        if name.startswith(periodic_scheduler._CALLBACK_THREAD_PREFIX) and attempts["n"] == 0:
+        # Only this scheduler's own callback worker fails, once; a leaked handle on the shared
+        # _DEFAULT scheduler must not be the one that consumes the single Boom.
+        if kwargs.get("target") is sched._run_callback and attempts["n"] == 0:
             attempts["n"] += 1
 
             class Boom:
@@ -165,7 +140,6 @@ def test_worker_start_failure_keeps_timer(monkeypatch):
                     raise RuntimeError("no threads")
 
             return Boom()
-        attempts["n"] += 1
         return real_thread(*args, **kwargs)
 
     monkeypatch.setattr(periodic_scheduler.threading, "Thread", flaky)

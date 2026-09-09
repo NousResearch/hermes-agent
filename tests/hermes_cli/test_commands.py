@@ -302,6 +302,24 @@ class TestGatewayConfigGate:
         mapping = slack_subcommand_map()
         assert "verbose" in mapping
 
+    def test_implement_is_hidden_from_gateway_surfaces_when_disabled(self, tmp_path, monkeypatch):
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text("kanban:\n  implement_command: false\n")
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        assert "`/implement" not in "\n".join(gateway_help_lines())
+        assert "implement" not in {name for name, _desc in telegram_bot_commands()}
+        assert "implement" not in {name for name, _desc, _hint in slack_native_slashes()}
+
+    def test_implement_is_visible_on_gateway_surfaces_when_enabled(self, tmp_path, monkeypatch):
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text("kanban:\n  implement_command: true\n")
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        assert "`/implement" in "\n".join(gateway_help_lines())
+        assert "implement" in {name for name, _desc in telegram_bot_commands()}
+        assert "implement" in {name for name, _desc, _hint in slack_native_slashes()}
+
 
 # ---------------------------------------------------------------------------
 # Autocomplete (SlashCommandCompleter)

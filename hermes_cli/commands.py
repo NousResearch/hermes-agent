@@ -259,6 +259,7 @@ COMMAND_REGISTRY: list[CommandDef] = [
                busy_policy="dispatch", desktop="advanced"),
     CommandDef("implement", "Start implementation for an eligible Kanban task",
                "Tools & Skills", args_hint="<task|reference> [--board <board>] [--profile <profile>]",
+               cli_only=True,
                gateway_config_gate="kanban.implement_command", busy_policy="dispatch", desktop="advanced"),
     CommandDef("reload", "Reload .env variables into the running session", "Tools & Skills",
                cli_only=True, desktop="terminal"),

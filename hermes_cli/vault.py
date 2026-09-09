@@ -135,16 +135,12 @@ def _cmd_list(args) -> None:
 
 def _cmd_sources(args) -> None:
     """Show/enable/disable the external password managers (`vault.<name>.enabled`)."""
-    import shutil
-
-    from agent.secret_sources.onepassword import find_op
     from agent.vault_backends import enabled_backends
-    from agent.vault_backends.bitwarden import BitwardenLoginBackend
-    from agent.vault_backends.onepassword import OnePasswordLoginBackend
+    from agent.vault_backends.base import external_backend_classes, is_installed
     from hermes_cli.config import load_config, save_config
 
     c = _console()
-    classes = {cls.name: cls for cls in (OnePasswordLoginBackend, BitwardenLoginBackend)}
+    classes = {cls.name: cls for cls in external_backend_classes()}
     if args.enable or args.disable:
         name = args.enable or args.disable
         if name not in classes:
@@ -159,10 +155,9 @@ def _cmd_sources(args) -> None:
             c.print("[dim]Run `bw login` once in a terminal first; Hermes only ever unlocks, never logs in.[/]")
         return
     enabled = {b.name for b in enabled_backends()}
-    installed = {"onepassword": find_op() is not None, "bitwarden": shutil.which("bw") is not None}
     for name, cls in classes.items():
         status = "[green]on[/]" if name in enabled else "[dim]off[/]"
-        cli = "" if installed[name] else "  [yellow](CLI not found)[/]"
+        cli = "" if is_installed(name) else "  [yellow](CLI not found)[/]"
         c.print(f"  {cls.display_name:<10} {status}{cli}")
     c.print("[dim]Toggle with `hermes vault sources --enable onepassword` / `--disable bitwarden`.[/]")
 

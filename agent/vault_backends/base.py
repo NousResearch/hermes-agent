@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import subprocess
 from abc import ABC, abstractmethod
+from pathlib import Path
 from typing import Dict, List, Optional, Sequence
 
 from agent.vault_store import VaultItemMeta
@@ -67,15 +68,32 @@ def _cfg() -> Dict:
     return cfg if isinstance(cfg, dict) else {}
 
 
+def external_backend_classes():
+    from agent.vault_backends.bitwarden import BitwardenLoginBackend
+    from agent.vault_backends.onepassword import OnePasswordLoginBackend
+    return (OnePasswordLoginBackend, BitwardenLoginBackend)
+
+
+def is_installed(name: str) -> bool:
+    """Is the manager CLI reachable — honouring a configured ``binary_path`` over PATH."""
+    import shutil
+    section = _cfg().get(name) or {}
+    explicit = str(section.get("binary_path") or "") if isinstance(section, dict) else ""
+    if explicit:
+        return Path(explicit).is_file()
+    if name == "onepassword":
+        from agent.secret_sources.onepassword import find_op
+        return find_op() is not None
+    return shutil.which("bw") is not None
+
+
 def enabled_backends() -> List[LoginBackend]:
     """Local first (always on), then each enabled external manager, in config order."""
-    from agent.vault_backends.bitwarden import BitwardenLoginBackend
     from agent.vault_backends.local import LocalLoginBackend
-    from agent.vault_backends.onepassword import OnePasswordLoginBackend
 
     cfg = _cfg()
     out: List[LoginBackend] = [LocalLoginBackend()]
-    for cls in (OnePasswordLoginBackend, BitwardenLoginBackend):
+    for cls in external_backend_classes():
         section = cfg.get(cls.name) or {}
         if isinstance(section, dict) and section.get("enabled"):
             out.append(cls(section))

@@ -53,21 +53,17 @@ _EXTERNAL_SOURCES = ("onepassword", "bitwarden")
 @method("vault.sources")
 def _(rid, params: dict) -> dict:
     """Status of every login source: {name, display_name, enabled, needs_unlock, unlocked, installed}."""
-    import shutil
-
     from agent.vault_backends import enabled_backends
-    from agent.vault_backends.bitwarden import BitwardenLoginBackend
-    from agent.vault_backends.onepassword import OnePasswordLoginBackend
-    from agent.secret_sources.onepassword import find_op
+    from agent.vault_backends.base import external_backend_classes, is_installed
 
     enabled = {b.name: b for b in enabled_backends()}
     rows = [{"name": "local", "display_name": "Hermes vault", "enabled": True, "needs_unlock": False,
              "unlocked": True, "installed": True}]
-    for cls, installed in ((OnePasswordLoginBackend, find_op() is not None),
-                           (BitwardenLoginBackend, shutil.which("bw") is not None)):
+    for cls in external_backend_classes():
         live = enabled.get(cls.name)
         rows.append({"name": cls.name, "display_name": cls.display_name, "enabled": live is not None,
-                     "needs_unlock": True, "unlocked": bool(live and live.is_unlocked()), "installed": installed})
+                     "needs_unlock": True, "unlocked": bool(live and live.is_unlocked()),
+                     "installed": is_installed(cls.name)})
     return _ok(rid, {"sources": rows})
 
 

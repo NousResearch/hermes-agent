@@ -102,6 +102,64 @@ class TestLocalBackend:
 
 
     @pytest.mark.asyncio
+    async def test_relative_path_anchors_on_task_cwd_not_process_cwd(self, tmp_path, monkeypatch):
+        """A relative path resolves against the TASK's terminal cwd, like the file
+        tools — not the agent process cwd. A model that wrote 'out.png' into its
+        workspace must be able to vision_analyze('out.png') from a process whose
+        own cwd is somewhere else entirely."""
+        isrc = _reload(monkeypatch, tmp_path / "hermes")
+        monkeypatch.setenv("TERMINAL_ENV", "local")
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        (workspace / "out.png").write_bytes(PNG)
+        elsewhere = tmp_path / "elsewhere"
+        elsewhere.mkdir()
+        monkeypatch.chdir(elsewhere)
+        monkeypatch.setenv("TERMINAL_CWD", str(workspace))
+        res = await isrc.resolve_image_source("out.png", isrc.ResolveContext())
+        assert res.data == PNG
+        assert res.origin == "file"
+
+
+    @pytest.mark.asyncio
+    async def test_relative_path_anchors_on_task_cwd_for_a_non_default_task(self, tmp_path, monkeypatch):
+        """The anchor is the TASK's cwd, so a real session id (not the "default"
+        fallback) resolves the same way — the task id is threaded through, not dropped."""
+        isrc = _reload(monkeypatch, tmp_path / "hermes")
+        monkeypatch.setenv("TERMINAL_ENV", "local")
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        (workspace / "out.png").write_bytes(PNG)
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("TERMINAL_CWD", str(workspace))
+        res = await isrc.resolve_image_source(
+            "out.png", isrc.ResolveContext(task_id="session-42"))
+        assert res.data == PNG
+        assert res.origin == "file"
+
+
+    @pytest.mark.asyncio
+    async def test_tilde_expands_through_the_effective_profile_home(self, tmp_path, monkeypatch):
+        """INTENTIONAL behaviour change: "~" now expands like the file tools do,
+        through get_subprocess_home(). Under TERMINAL_HOME_MODE=profile that is the
+        profile home ({HERMES_HOME}/home), not the process HOME — so vision and
+        write_file agree on what "~/pic.png" means in a gateway/cron run (#48552)."""
+        home = tmp_path / "hermes"
+        profile_home = home / "home"
+        profile_home.mkdir(parents=True)
+        isrc = _reload(monkeypatch, home)
+        monkeypatch.setenv("TERMINAL_ENV", "local")
+        monkeypatch.setenv("TERMINAL_HOME_MODE", "profile")
+        process_home = tmp_path / "process_home"
+        process_home.mkdir()
+        monkeypatch.setenv("HOME", str(process_home))
+        (profile_home / "pic.png").write_bytes(PNG)
+        res = await isrc.resolve_image_source("~/pic.png", isrc.ResolveContext())
+        assert res.data == PNG
+        assert res.origin == "file"
+
+
+    @pytest.mark.asyncio
     async def test_svg_passes_through_for_rasterization(self, tmp_path, monkeypatch):
         """SVG has no raster magic bytes but is passed through with mime
         image/svg+xml so the vision call sites can rasterize it to PNG."""
@@ -221,6 +279,56 @@ class TestNonLocalBackendConfinement:
         with patch("tools.image_source._get_active_env", return_value=None):
             with pytest.raises(isrc.SourceNotFound):
                 await isrc.resolve_image_source(str(link), isrc.ResolveContext(task_id="t1"))
+
+
+class TestRemotePathFidelity:
+    """Under a non-local backend the read happens on the OTHER machine, so the path
+    handed to the sandbox must stay lexical: host symlinks and host cwd are not the
+    remote's, and rewriting them silently reads a different file (or none)."""
+
+    @staticmethod
+    def _capture_exec_read(isrc, src, task_id="t1"):
+        captured = {}
+
+        def fake_execute(cmd, **kw):
+            captured["cmd"] = cmd
+            return {"returncode": 0, "output": base64.b64encode(PNG).decode()}
+
+        async def run():
+            with patch("tools.image_source._get_active_env",
+                       return_value=SimpleNamespace(execute=fake_execute)):
+                await isrc.resolve_image_source(src, isrc.ResolveContext(task_id=task_id))
+            return captured["cmd"]
+
+        return run()
+
+    @pytest.mark.asyncio
+    async def test_ssh_absolute_path_is_not_rewritten_by_a_host_symlink(self, tmp_path, monkeypatch):
+        """A host symlink (/var/run -> /run) must not rewrite a path destined for the
+        remote host, whose filesystem layout is its own."""
+        isrc = _reload(monkeypatch, tmp_path / "hermes")
+        monkeypatch.setenv("TERMINAL_ENV", "ssh")
+        target = tmp_path / "run"
+        target.mkdir()
+        link = tmp_path / "var-run"
+        try:
+            link.symlink_to(target, target_is_directory=True)
+        except (OSError, NotImplementedError):
+            pytest.skip("symlinks unsupported")
+        cmd = await self._capture_exec_read(isrc, f"{link}/a.png")
+        assert f"{link}/a.png" in cmd
+        assert f"{target}/a.png" not in cmd
+
+    @pytest.mark.asyncio
+    async def test_ssh_relative_path_anchors_on_the_remote_cwd(self, tmp_path, monkeypatch):
+        """A relative path is anchored on the task's terminal cwd — a path on the
+        REMOTE machine, which need not exist on the host."""
+        isrc = _reload(monkeypatch, tmp_path / "hermes")
+        monkeypatch.setenv("TERMINAL_ENV", "ssh")
+        monkeypatch.setenv("TERMINAL_CWD", "/srv/remote-workspace")
+        monkeypatch.chdir(tmp_path)
+        cmd = await self._capture_exec_read(isrc, "out.png")
+        assert "/srv/remote-workspace/out.png" in cmd
 
 
 class TestExecReadSafety:

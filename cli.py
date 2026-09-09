@@ -51,7 +51,10 @@ from agent.pet import render as pet_render
 
 from prompt_toolkit.patch_stdout import patch_stdout
 from prompt_toolkit.application import Application
-from prompt_toolkit.enums import EditingMode
+try:
+    from prompt_toolkit.enums import EditingMode
+except ImportError:  # partial prompt_toolkit stubs in tests
+    EditingMode = None
 from prompt_toolkit import print_formatted_text as _pt_print
 from prompt_toolkit.formatted_text import ANSI as _PT_ANSI
 try:
@@ -3759,13 +3762,14 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
             extra_kw["output"] = _cpr_disabled_output
         if _STEADY_CURSOR is not None:
             extra_kw["cursor"] = _STEADY_CURSOR
+        if EditingMode is not None:
+            # Vi editing mode when display.vim_mode is on (toggled at runtime by /vim).
+            # EMACS is prompt_toolkit's own default, so non-opted-in behaviour is unchanged.
+            extra_kw["editing_mode"] = EditingMode.VI if self._vim_mode else EditingMode.EMACS
         return Application(
             layout=layout,
             key_bindings=kb,
             style=style,
-            # Vi editing mode when display.vim_mode is on (toggled at runtime by /vim).
-            # EMACS is prompt_toolkit's own default, so non-opted-in behaviour is unchanged.
-            editing_mode=EditingMode.VI if self._vim_mode else EditingMode.EMACS,
             full_screen=False,
             mouse_support=False,
             # 0 (default) avoids fighting terminal auto-scroll in non-fullscreen mode.

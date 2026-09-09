@@ -257,6 +257,65 @@ def test_live_session_payload_replays_pending_clarify(server):
     assert "pending_clarify" not in other
 
 
+def test_clear_pending_releases_clarify_interrupt_as_timeout(server):
+    """session.interrupt on a blocked clarify must surface as a timeout ("user
+    walked away"), not as an empty cancel-all the agent re-prompts forever."""
+    from tools.clarify_tool import TIMEOUT_RESPONSE
+
+    ev = threading.Event()
+    with server._prompt_lock:
+        server._pending["rid-q"] = ("runtime-session", ev)
+        server._pending_prompt_payloads["rid-q"] = ("clarify.request", {"question": "?"})
+
+    try:
+        server._clear_pending("runtime-session")
+    finally:
+        with server._prompt_lock:
+            server._pending.pop("rid-q", None)
+            server._pending_prompt_payloads.pop("rid-q", None)
+
+    assert ev.is_set()
+    assert server._answers.pop("rid-q", None) == TIMEOUT_RESPONSE
+
+
+def test_clear_pending_keeps_empty_answer_for_non_clarify_prompts(server):
+    """Other blocking prompts (secret/sudo/approval) keep the historical
+    empty-answer release contract on interrupt."""
+    ev = threading.Event()
+    with server._prompt_lock:
+        server._pending["rid-s"] = ("runtime-session", ev)
+        server._pending_prompt_payloads["rid-s"] = ("secret.request", {"env_var": "X"})
+
+    try:
+        server._clear_pending("runtime-session")
+    finally:
+        with server._prompt_lock:
+            server._pending.pop("rid-s", None)
+            server._pending_prompt_payloads.pop("rid-s", None)
+
+    assert ev.is_set()
+    assert server._answers.pop("rid-s", None) == ""
+
+
+def test_clear_pending_scoped_to_owning_session(server):
+    """session.interrupt must not collaterally cancel prompts owned by other
+    sessions sharing the same tui_gateway process."""
+    ev_other = threading.Event()
+    with server._prompt_lock:
+        server._pending["rid-o"] = ("other-session", ev_other)
+        server._pending_prompt_payloads["rid-o"] = ("clarify.request", {"question": "?"})
+
+    try:
+        server._clear_pending("runtime-session")
+    finally:
+        with server._prompt_lock:
+            server._pending.pop("rid-o", None)
+            server._pending_prompt_payloads.pop("rid-o", None)
+
+    assert not ev_other.is_set()
+    assert "rid-o" not in server._answers
+
+
 def test_disable_flush_env_var_actually_wires_to_module_constant(monkeypatch):
     """End-to-end: setting `HERMES_TUI_GATEWAY_NO_FLUSH=1` and importing
     `tui_gateway.transport` fresh actually flips `_DISABLE_FLUSH` true.

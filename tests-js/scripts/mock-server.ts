@@ -33,10 +33,10 @@ export const MOCK_REPLY = 'Hello from the mock inference server! The full boot c
 export interface MockServerOptions {
   /** Pause the matching stream after its first token for session-switch E2E coverage. */
   holdFirstStreamForPrompt?: string
-/** Pause the first completion whose request JSON contains this text. */
-holdFirstCompletionContaining?: string
-/** Absolute sandbox path written by the verify-on-stop scripted tool call. */
-verificationWritePath?: string
+  /** Pause the first completion whose request JSON contains this text. */
+  holdFirstCompletionContaining?: string
+  /** Absolute sandbox path written by the verify-on-stop scripted tool call. */
+  verificationWritePath?: string
 /**
  * When a goal-judge aux call carries this marker in its goal text, return a
  * deterministic DONE verdict. Lets criteria-driven Goal completion be proven
@@ -58,6 +58,9 @@ export interface MockServer {
   port: number
   url: string
   receivedPrompts: string[]
+  /** User-prompt text of every goal-judge aux call (see `isGoalJudgeCall`). Lets
+   *  tests assert the judge actually received a committed completion criterion. */
+  receivedJudgeEvaluations: string[]
   waitForHeldStream: () => Promise<void>
   waitForHeldCompletion: () => Promise<void>
   releaseHeldStream: () => void
@@ -413,6 +416,8 @@ function includesBlockingClarifyTrigger(value: unknown): boolean {
 export function startMockServer(options: MockServerOptions = {}): Promise<MockServer> {
   return new Promise((resolve, reject) => {
     const receivedPrompts: string[] = []
+    // User-prompt text of every goal-judge aux call that reached this mock.
+    const receivedJudgeEvaluations: string[] = []
     let resolveHeldStreamStarted: (() => void) | null = null
     let releaseHeldStream: (() => void) | null = null
     let heldCompletionCount = 0
@@ -522,6 +527,11 @@ export function startMockServer(options: MockServerOptions = {}): Promise<MockSe
               && typeof message?.content === 'string'
               && message.content.includes('You are a strict judge evaluating whether')
           )
+          // Surface the judge's user prompt so tests can prove the judge saw a
+          // committed completion criterion before any DONE verdict it returned.
+          if (isGoalJudgeCall && typeof lastUserMessage?.content === 'string') {
+            receivedJudgeEvaluations.push(lastUserMessage.content)
+          }
           const isJudgeDone = isGoalJudgeCall
             && Boolean(options.goalJudgeDoneForPrompt)
             && JSON.stringify(parsed).includes(options.goalJudgeDoneForPrompt!)
@@ -737,6 +747,7 @@ export function startMockServer(options: MockServerOptions = {}): Promise<MockSe
         port,
         url,
         receivedPrompts,
+        receivedJudgeEvaluations,
         waitForHeldStream: () => heldStreamStarted,
         waitForHeldCompletion: () => heldStreamStarted,
         releaseHeldStream: () => releaseHeldStream?.(),

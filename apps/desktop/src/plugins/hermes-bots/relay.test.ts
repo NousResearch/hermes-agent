@@ -29,6 +29,8 @@ import type { ProfileRoute } from './types'
 const { clearBotAttentionMock, hostMock, noteBotAttentionMock, UnboundedCache } = vi.hoisted(() => ({
   clearBotAttentionMock: vi.fn(),
   hostMock: {
+    connections: vi.fn(),
+    ensureAgent: vi.fn(),
     onEvent: vi.fn(),
     profileRoutes: vi.fn(),
     requestProfile: vi.fn(),
@@ -128,6 +130,8 @@ async function pushAndSettle(times = 1) {
 beforeEach(() => {
   vi.useFakeTimers()
   vi.clearAllMocks()
+  hostMock.connections = vi.fn(async () => [{ id: 'a' }, { id: 'b' }])
+  hostMock.ensureAgent = vi.fn(async () => undefined)
   hostMock.onEvent = vi.fn(() => vi.fn())
   hostMock.profileRoutes = vi.fn(async () => [route('a'), route('b')])
   hostMock.requestProfile = vi.fn(async () => ({}))
@@ -349,6 +353,7 @@ describe('relay-route socket retention (#93594)', () => {
     expect(pins).toHaveLength(2)
 
     hostMock.profileRoutes = vi.fn(async () => [route('a')])
+    hostMock.connections = vi.fn(async () => [{ id: 'a' }])
     await pushAndSettle()
 
     expect(pins.every(pin => pin.released)).toBe(true)
@@ -458,6 +463,7 @@ describe('the roster loop pushes the OTHER connections’ agents', () => {
 
   it('stays quiet with a single connection — there is no peer to relay to', async () => {
     hostMock.profileRoutes = vi.fn(async () => [route('a')])
+    hostMock.connections = vi.fn(async () => [{ id: 'a' }])
 
     const calls = respondWith(() => ({}))
     const { startBotRelay, stopBotRelay } = await loadRelay()
@@ -507,6 +513,42 @@ describe('the drain loop wires drain → deliver → reply', () => {
     })
     // A delivered background DM is this bot's "good turn".
     expect(clearBotAttentionMock).toHaveBeenCalledWith('b::ops')
+
+    stopBotRelay()
+  })
+
+  it('reactivates a recovered registered gateway before reporting it disconnected', async () => {
+    hostMock.profileRoutes = vi.fn(async () => [route('a')])
+    hostMock.ensureAgent = vi.fn(async () => {
+      hostMock.profileRoutes = vi.fn(async () => [route('a'), route('b')])
+    })
+
+    const calls = respondWith(call => {
+      if (call.method === 'bot_relay.outbox.drain') {
+        return { envelopes: call.connectionId === 'a' ? [envelope] : [] }
+      }
+
+      if (call.method === 'bot_relay.deliver') {
+        return { reply: 'reconnected' }
+      }
+
+      return {}
+    })
+
+    const { startBotRelay, stopBotRelay } = await loadRelay()
+
+    startBotRelay()
+    await pushAndSettle()
+
+    expect(hostMock.ensureAgent).toHaveBeenCalledWith('b', 'ops')
+    expect(calls.find(call => call.method === 'bot_relay.deliver')).toMatchObject({
+      connectionId: 'b',
+      params: { message: 'status?', profile: 'ops' }
+    })
+    expect(calls.find(call => call.method === 'bot_relay.reply')?.params).toMatchObject({
+      id: 'env-1',
+      reply: 'reconnected'
+    })
 
     stopBotRelay()
   })

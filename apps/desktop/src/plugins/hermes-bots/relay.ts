@@ -330,17 +330,31 @@ async function drainRelayOutboxes() {
   relay.drainBusy = true
 
   try {
-    const connections = await relayConnections()
+    let connections = await relayConnections()
 
-    // Retention follows the relay-eligible set: with fewer than two
-    // connections there is nothing to relay, so nothing stays pinned.
-    syncRelayRetention(connections.length >= 2 ? connections : [])
+    let registeredConnectionCount = connections.length
 
-    if (connections.length < 2) {
+    if (connections.length < 2 && typeof host.connections === 'function') {
+      try {
+        const registered = await host.connections()
+
+        registeredConnectionCount = Array.isArray(registered) ? registered.length : connections.length
+      } catch {
+        // The live route count remains the conservative fallback.
+      }
+    }
+
+    // Retention follows the relay-ELIGIBLE set: when only one gateway is
+    // registered there is nothing to relay, so nothing stays pinned. A
+    // temporarily unreachable registered peer still leaves the sender pinned
+    // so its queued envelope can activate the peer after recovery.
+    syncRelayRetention(registeredConnectionCount >= 2 ? connections : [])
+
+    if (registeredConnectionCount < 2) {
       return
     }
 
-    const byId = new Map(connections.map(connection => [connection.id, connection]))
+    let byId = new Map(connections.map(connection => [connection.id, connection]))
 
     for (const sender of connections) {
       let envelopes: RelayEnvelope[] = []
@@ -363,7 +377,9 @@ async function drainRelayOutboxes() {
         }
 
         const envelopeId = String(envelope?.id || '')
-        const target = byId.get(String(envelope?.target_connection || ''))
+        const targetConnectionId = String(envelope?.target_connection || '').trim()
+        const targetProfile = String(envelope?.target_profile || '').trim()
+        let target = byId.get(targetConnectionId)
 
         const postReply = async (payload: { error?: string; reason?: string; reply?: string }) => {
           try {
@@ -378,6 +394,21 @@ async function drainRelayOutboxes() {
 
         if (!envelopeId) {
           continue
+        }
+
+        // A registered remote gateway can recover after the last fleet
+        // enumeration. Activate the exact requested agent once and refresh
+        // routes before declaring the machine disconnected.
+        if (!target && targetConnectionId && targetProfile && typeof host.ensureAgent === 'function') {
+          try {
+            await host.ensureAgent(targetConnectionId, targetProfile)
+            connections = await relayConnections()
+            syncRelayRetention(connections)
+            byId = new Map(connections.map(connection => [connection.id, connection]))
+            target = byId.get(targetConnectionId)
+          } catch {
+            // Preserve the existing explicit disconnected reply below.
+          }
         }
 
         if (!target) {

@@ -9,10 +9,10 @@ performs retire + drain + late-handler-arm under ``self._lock`` and returns
 an in-flight frame synchronously (same contract as an ack that arrives
 before the timeout).
 
-The race-window case is covered deterministically by unit-testing the atomic
-helper (a queued frame is drained and returned, never lost), plus a
-multi-phase integration sweep asserting the frame is consumed exactly once
-at every delivery phase.
+The race-window case is covered deterministically: unit tests exercise the
+atomic helper directly, and the interleaving tests pin terminal delivery to
+each phase of the timeout→handoff sequence via hooks (send time / top of
+retire / after the arm) — no wall-clock phase selection.
 """
 
 import queue
@@ -69,68 +69,147 @@ class TestRetirePendingAndArmLate:
         assert len(fired) == 1, "armed late handler must fire exactly once"
 
 
-class TestExactlyOnceAcrossPhases:
-    """At every delivery phase the frame is consumed exactly once."""
+class TestDeterministicHandoffInterleaving:
+    """#101824 acceptance proof, ordered by construction instead of wall clock.
 
-    @pytest.mark.parametrize("deliver_after_secs", [0.01, 0.25])
-    def test_ack_delivered_at_any_phase_is_consumed_once(self, deliver_after_secs):
-        sup, sent = _supervisor()
-        fired: list = []
-        result: list = []
+    A hook on the handoff (and one on ``_send_frame``) pins terminal delivery
+    to each phase of the timeout→retire→drain→arm sequence, for both
+    ``control.ack`` and the generic ``error`` terminal frame:
 
-        def _run_control():
+    * before the waiter blocks (delivery at send time) → settles inline;
+    * at the top of the retire, same thread (delivery wins the window) → the
+      handoff drains the queued frame and settles synchronously;
+    * after the arm (delivery blocked on the lock until the handoff finished)
+      → the late handler fires exactly once.
+    """
+
+    @staticmethod
+    def _terminal(frame_kind: str, request_id: str) -> dict:
+        if frame_kind == "control.ack":
+            return _ack(request_id)
+        assert frame_kind in ("control.error", "error"), frame_kind
+        return {"type": frame_kind, "request_id": request_id, "message": "boom"}
+
+    @staticmethod
+    def _run_control(sup: HostSupervisor, request_id: str, outcome: list, fired: list,
+                     timeout: float) -> threading.Thread:
+        def _run():
             try:
-                result.append(
+                outcome.append(
                     sup.control(
                         "sid",
                         route_name="session.compress",
-                        payload={"command": "/compress"},
+                        payload={"command": "/compress", "request_id": request_id},
                         wait=True,
-                        timeout=0.1,
+                        timeout=timeout,
                         on_late_ack=fired.append,
                     )
                 )
             except queue.Empty:
-                result.append("timeout")
+                outcome.append("timeout")
 
-        worker = threading.Thread(target=_run_control)
+        worker = threading.Thread(target=_run)
         worker.start()
-        # Give the control call a moment to register the pending route, then
-        # deliver at the chosen phase (before / after the 0.1s timeout).
-        import time as _time
+        return worker
 
-        _time.sleep(deliver_after_secs)
-        request_id = sent[0]["request_id"]
-        sup._handle_host_frame(_ack(request_id))
-        worker.join(timeout=5)
-        assert not worker.is_alive()
-
-        consumed = (result == [_ack(request_id)]) + len(fired)
-        assert consumed == 1, (
-            "the terminal frame must be consumed exactly once across the "
-            "timeout→late-handler handoff (#101824)"
-        )
+    @staticmethod
+    def _assert_route_maps_clean(sup: HostSupervisor, request_id: str) -> None:
         with sup._lock:
             assert request_id not in sup._pending_controls
         assert request_id not in sup._late_control_handlers
 
-    def test_error_frame_handoff_matches_ack_semantics(self):
+    @pytest.mark.parametrize("frame_kind", ["control.ack", "error"])
+    def test_frame_before_the_wait_settles_inline(self, frame_kind):
         sup, sent = _supervisor()
+        request_id = f"r-early-{frame_kind}"
+        frame = self._terminal(frame_kind, request_id)
+        fired: list = []
+
+        def _send_then_deliver(outgoing):
+            sent.append(outgoing)
+            sup._deliver_control_frame(request_id, frame)
+
+        sup._send_frame = _send_then_deliver
+        outcome: list = []
+        self._run_control(sup, request_id, outcome, fired, timeout=5.0).join(timeout=5)
+
+        assert outcome == [frame], "a frame delivered at send time settles inline, no late handler"
+        assert fired == []
+        self._assert_route_maps_clean(sup, request_id)
+
+    @pytest.mark.parametrize("frame_kind", ["control.ack", "error"])
+    def test_delivery_wins_the_window_settles_via_drain(self, frame_kind):
+        sup, _sent = _supervisor()
+        request_id = f"r-window-{frame_kind}"
+        frame = self._terminal(frame_kind, request_id)
+        fired: list = []
+        real_retire = sup._retire_pending_and_arm_late
+
+        def hooked_retire(rid, handler):
+            # Same thread as the waiter and still inside control()'s
+            # ``with self._lock`` (the RLock re-enters): inject the frame at
+            # the top of the window, before the route is retired. Delivery
+            # must land in the still-pending queue and the handoff below
+            # drains it for synchronous settlement.
+            sup._deliver_control_frame(rid, frame)
+            return real_retire(rid, handler)
+
+        sup._retire_pending_and_arm_late = hooked_retire
+        outcome: list = []
+        self._run_control(sup, request_id, outcome, fired, timeout=0.05).join(timeout=5)
+
+        assert outcome == [frame], "delivery winning the window drains through the handoff"
+        assert fired == [], "no late handler when the frame settled inline"
+        self._assert_route_maps_clean(sup, request_id)
+
+    @pytest.mark.parametrize("frame_kind", ["control.ack", "error"])
+    def test_delivery_after_the_arm_routes_to_late_handler(self, frame_kind):
+        sup, _sent = _supervisor()
+        request_id = f"r-late-{frame_kind}"
+        frame = self._terminal(frame_kind, request_id)
+        fired: list = []
+        window_reached = threading.Event()
+        real_retire = sup._retire_pending_and_arm_late
+
+        def hooked_retire(rid, handler):
+            # The waiter holds self._lock from before this point until the
+            # handoff completes, so a delivery issued after this event can
+            # only acquire the lock once the route is retired — the arm wins
+            # the window.
+            window_reached.set()
+            return real_retire(rid, handler)
+
+        sup._retire_pending_and_arm_late = hooked_retire
+        outcome: list = []
+        worker = self._run_control(sup, request_id, outcome, fired, timeout=0.05)
+        assert window_reached.wait(timeout=5), "waiter never reached the timeout window"
+        sup._deliver_control_frame(request_id, frame)
+        worker.join(timeout=5)
+
+        assert outcome == ["timeout"], "the waiter gave up; settlement is the late handler's job"
+        assert fired == [frame], "armed late handler must fire exactly once with the terminal frame"
+        self._assert_route_maps_clean(sup, request_id)
+
+    @pytest.mark.parametrize("frame_kind", ["control.ack", "control.error", "error"])
+    def test_host_frame_entry_routes_terminal_frames_once(self, frame_kind):
+        sup, _sent = _supervisor()
+        request_id = f"r-entry-{frame_kind}"
         fired: list = []
         with pytest.raises(queue.Empty):
             sup.control(
                 "sid",
                 route_name="session.compress",
+                payload={"command": "/compress", "request_id": request_id},
                 wait=True,
                 timeout=0.05,
                 on_late_ack=fired.append,
             )
-        request_id = sent[0]["request_id"]
-        sup._handle_host_frame(
-            {"type": "control.error", "request_id": request_id, "message": "boom"}
-        )
+        sup._handle_host_frame(self._terminal(frame_kind, request_id))
+
         assert len(fired) == 1
-        assert fired[0]["type"] == "control.error"
+        assert fired[0]["type"] == frame_kind
+        assert fired[0]["request_id"] == request_id
+        self._assert_route_maps_clean(sup, request_id)
 
 
 class TestDeliveryUnderLock:

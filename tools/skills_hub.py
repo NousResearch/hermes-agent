@@ -629,6 +629,7 @@ GITHUB_TAP_PROVIDERS = {
     "voltagent/awesome-agent-skills": "VoltAgent",
     "garrytan/gstack": "gstack",
     "minimax-ai/cli": "MiniMax",
+    "vectorspacelab/arex-skill": "AREX",
 }
 
 
@@ -686,6 +687,12 @@ class GitHubSource(SkillSource):
         # https://github.com/NVIDIA/skills/tree/main/skills
         {"repo": "NVIDIA/skills", "path": "skills/"},
         {"repo": "garrytan/gstack", "path": ""},
+        {
+            "repo": "VectorSpaceLab/AREX-Skill",
+            "path": "skills/repositories/repo-skills/",
+            "index": "skills/repositories/repo-skills-router/references/index/repositories.jsonl",
+            "index_path_prefix": "repo-skills/",
+        },
     ]
 
     def __init__(self, auth: GitHubAuth, extra_taps: Optional[List[Dict]] = None):
@@ -728,9 +735,18 @@ class GitHubSource(SkillSource):
 
         for tap in self.taps:
             try:
-                skills = self._list_skills_in_repo(tap["repo"], tap.get("path", ""))
+                skills = self._list_skills_in_repo(
+                    tap["repo"],
+                    tap.get("path", ""),
+                    index_path=tap.get("index"),
+                    index_path_prefix=tap.get("index_path_prefix"),
+                )
                 for skill in skills:
-                    searchable = f"{skill.name} {skill.description} {' '.join(skill.tags)}".lower()
+                    searchable = (
+                        f"{skill.name} {skill.description} {skill.identifier} "
+                        f"{' '.join(skill.tags)} "
+                        f"{' '.join(str(v) for v in (skill.extra or {}).values())}"
+                    ).lower()
                     if query_lower in searchable:
                         results.append(skill)
             except Exception as e:
@@ -916,12 +932,27 @@ class GitHubSource(SkillSource):
 
     # -- Internal helpers --
 
-    def _list_skills_in_repo(self, repo: str, path: str) -> List[SkillMeta]:
+    def _list_skills_in_repo(
+        self,
+        repo: str,
+        path: str,
+        *,
+        index_path: Optional[str] = None,
+        index_path_prefix: Optional[str] = None,
+    ) -> List[SkillMeta]:
         """List skill directories in a GitHub repo path, using cached index."""
-        cache_key = f"{repo}_{path}".replace("/", "_").replace(" ", "_")
+        cache_key = f"{repo}_{path}_{index_path or ''}".replace("/", "_").replace(" ", "_")
         cached = self._read_cache(cache_key)
         if cached is not None:
             return [SkillMeta(**s) for s in cached]
+
+        if index_path:
+            skills = self._list_skills_from_sidecar(
+                repo, path, index_path, index_path_prefix=index_path_prefix
+            )
+            if skills:
+                self._write_cache(cache_key, [self._meta_to_dict(s) for s in skills])
+                return skills
 
         url = f"https://api.github.com/repos/{repo}/contents/{path.rstrip('/')}"
         resp = self._github_get(url)
@@ -955,6 +986,121 @@ class GitHubSource(SkillSource):
         # Cache the results
         self._write_cache(cache_key, [self._meta_to_dict(s) for s in skills])
         return skills
+
+    def _list_skills_from_sidecar(
+        self,
+        repo: str,
+        path: str,
+        index_path: str,
+        *,
+        index_path_prefix: Optional[str] = None,
+    ) -> List[SkillMeta]:
+        """Build skill metadata from a repo-provided JSON/JSONL index sidecar."""
+        content = self._fetch_file_content(repo, index_path)
+        if not content:
+            return []
+        entries = self._parse_skill_index_sidecar(content)
+        if not entries:
+            return []
+
+        skills: List[SkillMeta] = []
+        provider = github_provider_for(repo)
+        base_path = path.strip("/")
+        prefix = (index_path_prefix or "").strip("/")
+        for entry in entries:
+            meta = self._meta_from_index_entry(
+                repo, base_path, entry, provider=provider, index_path_prefix=prefix
+            )
+            if meta is not None:
+                skills.append(meta)
+        return skills
+
+    @staticmethod
+    def _parse_skill_index_sidecar(content: str) -> List[Dict[str, Any]]:
+        """Parse a JSON/JSONL skill index sidecar into entry dictionaries."""
+        stripped = content.strip()
+        if not stripped:
+            return []
+        if stripped.startswith(("[", "{")):
+            try:
+                data = json.loads(stripped)
+            except (json.JSONDecodeError, TypeError):
+                data = None
+            if isinstance(data, dict):
+                data = data.get("skills") or data.get("repositories") or data.get("items")
+            if isinstance(data, list):
+                return [item for item in data if isinstance(item, dict)]
+
+        entries: List[Dict[str, Any]] = []
+        try:
+            for line in stripped.splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                item = json.loads(line)
+                if isinstance(item, dict):
+                    entries.append(item)
+        except (json.JSONDecodeError, TypeError):
+            return []
+        return entries
+
+    def _meta_from_index_entry(
+        self,
+        repo: str,
+        base_path: str,
+        entry: Dict[str, Any],
+        *,
+        provider: Optional[str],
+        index_path_prefix: str,
+    ) -> Optional[SkillMeta]:
+        """Convert one sidecar entry to SkillMeta, rejecting unsafe paths."""
+        raw_path = entry.get("path") or entry.get("skill_path") or entry.get("target_skill_root")
+        if not isinstance(raw_path, str) or not raw_path.strip():
+            return None
+        try:
+            rel_path = _normalize_bundle_path(
+                raw_path.strip(), field_name="skill index path", allow_nested=True
+            )
+        except ValueError:
+            return None
+
+        if index_path_prefix and (
+            rel_path == index_path_prefix or rel_path.startswith(f"{index_path_prefix}/")
+        ):
+            rel_path = rel_path[len(index_path_prefix):].lstrip("/")
+
+        if base_path:
+            if rel_path == base_path or rel_path.startswith(f"{base_path}/"):
+                skill_path = rel_path
+            else:
+                skill_path = f"{base_path}/{rel_path}"
+        else:
+            skill_path = rel_path
+
+        name = entry.get("name") or entry.get("skill_id") or entry.get("id")
+        if not isinstance(name, str) or not name.strip():
+            name = skill_path.rstrip("/").rsplit("/", 1)[-1]
+        description = entry.get("description")
+        tags = entry.get("tags")
+        extra: Dict[str, Any] = {}
+        if provider:
+            extra["provider"] = provider
+        for key in ("repo_id", "source_url", "source_commit", "aliases"):
+            value = entry.get(key)
+            if value:
+                extra[key] = value
+
+        return SkillMeta(
+            name=name.strip(),
+            description=str(description) if description is not None else "",
+            source="github",
+            identifier=f"{repo}/{skill_path}",
+            trust_level=self.trust_level_for(f"{repo}/{skill_path}"),
+            repo=repo,
+            path=skill_path,
+            tags=[str(t) for t in tags] if isinstance(tags, list) else [],
+            extra=extra,
+        )
 
     # -- Repo tree cache (avoids redundant API calls) --
 

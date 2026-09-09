@@ -11,6 +11,7 @@ import pytest
 from tools.skills_hub import (
     GitHubAuth,
     GitHubSource,
+    github_provider_for,
     LobeHubSource,
     SkillsShSource,
     UrlSource,
@@ -112,6 +113,102 @@ class TestSkillsShGroupings:
 
         assert len(skills) == 1
         assert skills[0].extra["category"] == "Decision Optimization"
+
+
+# ---------------------------------------------------------------------------
+# GitHubSource large-tap index sidecars
+# ---------------------------------------------------------------------------
+
+
+class TestGitHubIndexSidecar:
+    def _source(self) -> GitHubSource:
+        auth = MagicMock(spec=GitHubAuth)
+        auth.get_headers.return_value = {}
+        return GitHubSource(auth=auth)
+
+    def test_list_skills_uses_jsonl_sidecar_without_per_directory_inspect(self) -> None:
+        src = self._source()
+        sidecar = "\n".join([
+            json.dumps({
+                "skill_id": "accelerate",
+                "target_skill_root": "repo-skills/accelerate",
+                "repo_id": "huggingface/accelerate",
+                "description": "Routes Accelerate distributed training workflows.",
+                "aliases": ["hf-accelerate"],
+            }),
+            json.dumps({
+                "skill_id": "vllm",
+                "target_skill_root": "repo-skills/vllm",
+                "description": "Routes vLLM serving workflows.",
+            }),
+        ])
+
+        with patch.object(src, "_read_cache", return_value=None), \
+             patch.object(src, "_write_cache") as write_cache, \
+             patch.object(src, "_fetch_file_content", return_value=sidecar), \
+             patch.object(src, "inspect") as inspect:
+            skills = src._list_skills_in_repo(
+                "VectorSpaceLab/AREX-Skill",
+                "skills/repositories/repo-skills/",
+                index_path="skills/repositories/repo-skills-router/references/index/repositories.jsonl",
+                index_path_prefix="repo-skills/",
+            )
+
+        inspect.assert_not_called()
+        assert [skill.identifier for skill in skills] == [
+            "VectorSpaceLab/AREX-Skill/skills/repositories/repo-skills/accelerate",
+            "VectorSpaceLab/AREX-Skill/skills/repositories/repo-skills/vllm",
+        ]
+        assert skills[0].name == "accelerate"
+        assert skills[0].description == "Routes Accelerate distributed training workflows."
+        assert skills[0].extra["provider"] == "AREX"
+        assert skills[0].extra["repo_id"] == "huggingface/accelerate"
+        assert skills[0].extra["aliases"] == ["hf-accelerate"]
+        write_cache.assert_called_once()
+
+    def test_list_skills_falls_back_when_sidecar_is_missing_or_malformed(self) -> None:
+        src = self._source()
+        meta = SkillMeta(
+            name="fallback",
+            description="d",
+            source="github",
+            identifier="owner/repo/skills/fallback",
+            trust_level="community",
+        )
+        resp = MagicMock()
+        resp.status_code = 200
+        resp.json.return_value = [{"type": "dir", "name": "fallback"}]
+
+        with patch.object(src, "_read_cache", return_value=None), \
+             patch.object(src, "_write_cache"), \
+             patch.object(src, "_fetch_file_content", return_value="not json"), \
+             patch.object(src, "_get_skillsh_groupings", return_value=None), \
+             patch.object(src, "inspect", return_value=meta), \
+             patch.object(src, "_github_get", return_value=resp):
+            skills = src._list_skills_in_repo(
+                "owner/repo", "skills", index_path="references/index.jsonl"
+            )
+
+        assert skills == [meta]
+
+    def test_default_arex_tap_declares_index_sidecar_and_provider(self) -> None:
+        arex_taps = [
+            tap for tap in GitHubSource.DEFAULT_TAPS
+            if tap["repo"].lower() == "vectorspacelab/arex-skill"
+        ]
+
+        assert arex_taps == [
+            {
+                "repo": "VectorSpaceLab/AREX-Skill",
+                "path": "skills/repositories/repo-skills/",
+                "index": (
+                    "skills/repositories/repo-skills-router/"
+                    "references/index/repositories.jsonl"
+                ),
+                "index_path_prefix": "repo-skills/",
+            }
+        ]
+        assert github_provider_for("VectorSpaceLab/AREX-Skill") == "AREX"
 
 # ---------------------------------------------------------------------------
 # GitHubSource.trust_level_for

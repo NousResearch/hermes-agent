@@ -183,7 +183,15 @@ class WSTransport:
                     return
                 payload = _sanitize_ws_text(line)
                 try:
-                    await self._ws.send_text(payload)
+                    await asyncio.wait_for(self._ws.send_text(payload), timeout=_WS_WRITE_TIMEOUT_S)
+                except asyncio.TimeoutError as exc:
+                    # A stalled send_text (socket backpressure) must not hold the writer lock forever.
+                    # Unlike the loop-stall case in write(), this means the socket itself is unresponsive:
+                    # latch closed so queued batches bail and reconnect recovery can start. See #106369.
+                    self._closed = True
+                    _log.warning("ws send timed out peer=%s timeout=%ss error_type=%s error=%s",
+                                 self._peer, _WS_WRITE_TIMEOUT_S, type(exc).__name__, exc)
+                    return
                 except UnicodeEncodeError as exc:
                     # A single illegal UTF-8 frame (lone surrogate) must not tear down the socket.
                     _log.warning("ws send skipped invalid utf-8 frame peer=%s error=%s", self._peer, exc)

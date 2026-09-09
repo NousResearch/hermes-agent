@@ -1236,7 +1236,7 @@ _MODEL_OVERRIDE_FIELDS_SCHEMA = {
 }
 _EXTRA_CONTAINER_SCHEMA = {
     **{key: {} for key in _PLATFORM_CONFIG_ROOT_KEYS},
-    "custom_providers": [{"extra_body": {}, "extra_headers": {}}],
+    "custom_providers": [{"models": [], "extra_body": {}, "extra_headers": {}}],
     "mcp_servers": {
         "*": {
             "args": [],

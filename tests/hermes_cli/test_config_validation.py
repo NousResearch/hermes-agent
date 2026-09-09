@@ -174,6 +174,11 @@ class TestStringifiedContainers:
             ({"custom_providers": [{
                 "name": "local",
                 "base_url": "http://localhost:8000/v1",
+                "models": '["qwen"]',
+             }]}, "custom_providers[0].models", "custom_providers.0.models", "list"),
+            ({"custom_providers": [{
+                "name": "local",
+                "base_url": "http://localhost:8000/v1",
                 "extra_body": "{temperature: 0}",
              }]}, "custom_providers[0].extra_body", "custom_providers.0.extra_body", "mapping"),
             ({"custom_providers": [{

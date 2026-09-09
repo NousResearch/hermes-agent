@@ -95,31 +95,94 @@ def test_git_failure_fails_open(repo, monkeypatch):
     assert kt._dir_workspace_uncommitted(str(repo)) is None
 
 
-# --- the gate ---------------------------------------------------------------
+# --- the gate, now a PLUGIN -------------------------------------------------
+# Retired from core 2026-09-09 (manifest gate-core-retire-20260909). The control
+# lives in the kanban-completion-gate plugin on upstream's pre_tool_call hook;
+# these tests follow it there so the regression rig still covers it.
+
+import importlib.util as _ilu
+from pathlib import Path as _P
+
+
+def _gate():
+    home = os.environ.get("HERMES_HOME") or os.path.expanduser("~/.hermes")
+    p = _P(home) / "plugins" / "kanban-completion-gate" / "__init__.py"
+    if not p.exists():
+        pytest.skip(f"kanban-completion-gate not installed at {p}")
+    spec = _ilu.spec_from_file_location("_kcg_under_test", p)
+    m = _ilu.module_from_spec(spec)
+    spec.loader.exec_module(m)
+    m._REFUSALS.clear()
+    return m
+
+
+def _fake_api(monkeypatch, m, kind, path):
+    class _Task:
+        workspace_kind = kind
+        workspace_path = str(path)
+
+    monkeypatch.setattr(m, "_kanban_api",
+                        lambda: (lambda *a, **k: _FakeConn(),
+                                 lambda conn, tid: _Task()))
+
+
+def _call(m, tid, tool="kanban_complete"):
+    return m.on_pre_tool_call(tool_name=tool, args={"task_id": tid}, task_id=tid)
+
 
 def test_orchestrator_path_is_exempt(repo, monkeypatch):
     """No HERMES_KANBAN_TASK => CLI/orchestrator completion, never gated."""
     (repo / "src.py").write_text("edited\n")
+    m = _gate()
     monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
-    assert kt._complete_uncommitted_work_rejection("t_whatever") is None
+    assert _call(m, "t_whatever") is None
 
 
 def test_gate_only_applies_to_dir_workspaces(repo, monkeypatch):
     """A worktree card has its own branch; a scratch card has no repo."""
     (repo / "src.py").write_text("edited\n")
+    m = _gate()
     monkeypatch.setenv("HERMES_KANBAN_TASK", "t_x")
+    _fake_api(monkeypatch, m, "worktree", repo)
+    assert _call(m, "t_x") is None
 
-    class _Task:
-        workspace_kind = "worktree"
-        workspace_path = str(repo)
 
-    class _KB:
-        @staticmethod
-        def get_task(conn, tid):
-            return _Task()
+def test_dirty_dir_workspace_is_blocked(repo, monkeypatch):
+    (repo / "src.py").write_text("edited\n")
+    m = _gate()
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "t_x")
+    _fake_api(monkeypatch, m, "dir", repo)
+    out = _call(m, "t_x")
+    assert out is not None and out["action"] == "block"
+    assert "src.py" in out["message"]
 
-    monkeypatch.setattr(kt, "_connect", lambda *a, **k: (_KB(), _FakeConn()))
-    assert kt._complete_uncommitted_work_rejection("t_x") is None
+
+def test_clean_dir_workspace_is_allowed(repo, monkeypatch):
+    m = _gate()
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "t_x")
+    _fake_api(monkeypatch, m, "dir", repo)
+    assert _call(m, "t_x") is None
+
+
+def test_repeat_refusal_escalates(repo, monkeypatch):
+    """The second refusal in one run points at kanban_block, not another retry."""
+    (repo / "src.py").write_text("edited\n")
+    m = _gate()
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "t_x")
+    _fake_api(monkeypatch, m, "dir", repo)
+    first = _call(m, "t_x")
+    second = _call(m, "t_x")
+    assert first["action"] == "block" and second["action"] == "block"
+    assert "Do NOT keep retrying" not in first["message"]
+    assert "Do NOT keep retrying" in second["message"]
+
+
+def test_other_tools_pass_through(repo, monkeypatch):
+    (repo / "src.py").write_text("edited\n")
+    m = _gate()
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "t_x")
+    _fake_api(monkeypatch, m, "dir", repo)
+    assert _call(m, "t_x", tool="kanban_comment") is None
 
 
 class _FakeConn:

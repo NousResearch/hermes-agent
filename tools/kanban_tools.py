@@ -319,7 +319,6 @@ def _consecutive_no_evidence_blocks(conn, task_id: str) -> int:
     return count
 
 
-_UNCOMMITTED_MARKER = "completion_blocked_uncommitted_work"
 
 
 def _dir_workspace_uncommitted(path: str) -> Optional[list[str]]:
@@ -390,98 +389,6 @@ def _complete_ci_gate_rejection(task_id: str) -> Optional[str]:
         "the work was lost. If the check cannot go green for a reason outside this card, call "
         "kanban_block and say which. Your task is still in-flight; nothing was changed."
     )
-def _complete_uncommitted_work_rejection(task_id: str) -> Optional[str]:
-    """Refuse ``kanban_complete`` on a ``dir`` card with uncommitted source.
-
-    **2026-09-05, from the 2026-09-04 work-loss incident.** Cards `t_d354546b`,
-    `t_f6325bc3`, `t_fe5cb6f5` and `t_1fbada04` were built, verified live by
-    Rodge, marked ``done`` — and the commit exists in no branch and no reflog.
-    All four were ``workspace_kind='dir'`` pointing at the SHARED BackupBrain
-    working tree, so the edits were never committed and the next card clobbered
-    them. 146 of the board's 147 ``dir`` cards share that exposure.
-
-    The charter's rule 3 ("done requires a commit") was written as prose. This
-    is the enforcement: a ``dir`` card cannot report done while tracked edits
-    sit uncommitted in its workspace.
-
-    Deliberately NARROW and fail-open:
-      * worker completions only (orchestrator / CLI pass straight through);
-      * ``dir`` workspaces only — a ``worktree`` card has its own branch, and a
-        ``scratch`` card has no repo to lose;
-      * tracked changes only, never untracked scratch;
-      * any uncertainty (no git, not a repo, timeout) allows the completion.
-
-    Never crashes the run. The work is real and uncommitted — closing the run
-    is exactly how it gets lost — so a repeat refusal points the worker at
-    ``kanban_block`` instead, which is a terminal call the escalator now routes.
-    """
-    if os.environ.get("HERMES_KANBAN_TASK") != task_id:
-        return None  # orchestrator / CLI path.
-    kb, conn = _connect()
-    try:
-        task = kb.get_task(conn, task_id)
-        if task is None or (task.workspace_kind or "") != "dir":
-            return None
-        dirty = _dir_workspace_uncommitted(task.workspace_path or "")
-        if not dirty:
-            return None
-        run_id = _worker_run_id(task_id)
-        with kb.write_txn(conn):
-            kb._append_event(
-                conn, task_id, _UNCOMMITTED_MARKER,
-                {"violation_class": "uncommitted_dir_workspace",
-                 "files": dirty[:20], "count": len(dirty)},
-                run_id=run_id,
-            )
-        repeat = _consecutive_uncommitted_blocks(conn, task_id) > 1
-    finally:
-        conn.close()
-
-    shown = "\n".join(f"  - {p}" for p in dirty[:15])
-    more = f"\n  ...and {len(dirty) - 15} more" if len(dirty) > 15 else ""
-    if not repeat:
-        return tool_error(
-            "kanban_complete rejected: this card uses a `dir` workspace and has "
-            f"{len(dirty)} TRACKED file(s) modified but NOT COMMITTED:\n"
-            f"{shown}{more}\n\n"
-            "A `dir` workspace is a SHARED working tree with no branch of its "
-            "own. On 2026-09-04 four cards were built, reviewed and marked done "
-            "exactly like this, and the work was clobbered by the next card — "
-            "it exists in no branch and no reflog. Commit your work before "
-            "reporting done:\n"
-            "  git -C <workspace> add -A && git -C <workspace> commit -m '<what you did>'\n"
-            "then call kanban_complete again with the commit SHA in your handoff. "
-            "Your task is still in-flight; nothing was changed."
-        )
-    return tool_error(
-        "kanban_complete rejected again: tracked edits are still uncommitted in "
-        f"this `dir` workspace ({len(dirty)} file(s)). Do NOT keep retrying the "
-        "completion — the run closing with this work uncommitted is precisely "
-        "how it gets lost. If you cannot commit (no branch, wrong base, "
-        "conflicting tree, missing identity), call kanban_block with the reason "
-        "and the file list so it routes to someone who can. Blocking is safe; "
-        "completing is not."
-    )
-
-
-def _consecutive_uncommitted_blocks(conn, task_id: str) -> int:
-    """How many uncommitted-work refusals in a row on this card."""
-    count = 0
-    try:
-        rows = conn.execute(
-            "SELECT kind FROM task_events WHERE task_id = ? ORDER BY id DESC LIMIT 40",
-            (task_id,),
-        ).fetchall()
-    except Exception:
-        return 1
-    for row in rows:
-        if (row[0] if not isinstance(row, dict) else row["kind"]) == _UNCOMMITTED_MARKER:
-            count += 1
-        elif count:
-            break
-    return count
-
-
 def _complete_tool_evidence_rejection(task_id: str) -> Optional[str]:
     """Tool-evidence gate for ``kanban_complete``.
 
@@ -2039,13 +1946,11 @@ def _handle_complete(args: dict, **kw) -> str:
     evidence_rejection = _complete_tool_evidence_rejection(tid)
     if evidence_rejection is not None:
         return evidence_rejection
-    # Uncommitted-work gate: a `dir` card cannot report done while TRACKED
-    # source edits sit uncommitted in its shared working tree. This is the
-    # enforcement of charter rule 3 ("done requires a commit") after the
-    # 2026-09-04 loss of B1/B2/B3. Fails open on anything uncertain.
-    uncommitted_rejection = _complete_uncommitted_work_rejection(tid)
-    if uncommitted_rejection is not None:
-        return uncommitted_rejection
+    # Uncommitted-work gate: RETIRED FROM CORE 2026-09-09 (manifest
+    # gate-core-retire-20260909). Charter rule 3 ("done requires a commit") is now
+    # enforced by the kanban-completion-gate PLUGIN on upstream's pre_tool_call
+    # hook, which runs before this tool body is reached. See
+    # ~/.hermes/plugins/kanban-completion-gate/ and UPSTREAM-MERGE-PLAN §6d/§7c.
 
     # CI gate: for a tenant that declares `ci_gate`, done requires a GREEN CHECK
     # RUN on the PR's head SHA — not a local test run in the card's own worktree.

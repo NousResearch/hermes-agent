@@ -31,15 +31,74 @@ describe('quick-entry submit ack relay', () => {
     expect(relay.pendingCount()).toBe(0)
   })
 
-  it('resolves an unacknowledged submit as a timeout and cleans it up', async () => {
+  it('resolves an unacknowledged submit as an unknown, non-retryable timeout and keeps it reconcilable', async () => {
     vi.useFakeTimers()
     const relay = createQuickEntrySubmitRelay({ onSuccess: vi.fn(), timeoutMs: 15000 })
     const pending = relay.begin(vi.fn())
 
     await vi.advanceTimersByTimeAsync(15000)
 
-    await expect(pending).resolves.toMatchObject({ code: 'timeout', ok: false })
+    await expect(pending).resolves.toMatchObject({ code: 'timeout', ok: false, retryable: false })
     expect(relay.pendingCount()).toBe(0)
+    expect(relay.reconcilableCount()).toBe(1)
+    vi.useRealTimers()
+  })
+
+  it('reconciles a late success through onLateResult without hiding the window', async () => {
+    vi.useFakeTimers()
+    const onSuccess = vi.fn()
+    const onLateResult = vi.fn()
+    const relay = createQuickEntrySubmitRelay({ onLateResult, onSuccess, timeoutMs: 15000 })
+    let correlationId = ''
+    const pending = relay.begin(id => {
+      correlationId = id
+    })
+
+    await vi.advanceTimersByTimeAsync(15000)
+    await pending
+    relay.acknowledge(correlationId, { ok: true })
+
+    expect(onLateResult).toHaveBeenCalledTimes(1)
+    expect(onLateResult).toHaveBeenCalledWith(correlationId, { ok: true })
+    expect(onSuccess).not.toHaveBeenCalled()
+    expect(relay.reconcilableCount()).toBe(0)
+    vi.useRealTimers()
+  })
+
+  it('reconciles a late failure through onLateResult', async () => {
+    vi.useFakeTimers()
+    const onLateResult = vi.fn()
+    const relay = createQuickEntrySubmitRelay({ onLateResult, onSuccess: vi.fn(), timeoutMs: 15000 })
+    let correlationId = ''
+    const pending = relay.begin(id => {
+      correlationId = id
+    })
+
+    await vi.advanceTimersByTimeAsync(15000)
+    await pending
+    relay.acknowledge(correlationId, { code: 'submit-failed', ok: false })
+
+    expect(onLateResult).toHaveBeenCalledTimes(1)
+    expect(relay.reconcilableCount()).toBe(0)
+    vi.useRealTimers()
+  })
+
+  it('ignores a duplicate late ack', async () => {
+    vi.useFakeTimers()
+    const onLateResult = vi.fn()
+    const relay = createQuickEntrySubmitRelay({ onLateResult, onSuccess: vi.fn(), timeoutMs: 15000 })
+    let correlationId = ''
+    const pending = relay.begin(id => {
+      correlationId = id
+    })
+
+    await vi.advanceTimersByTimeAsync(15000)
+    await pending
+    relay.acknowledge(correlationId, { ok: true })
+    relay.acknowledge(correlationId, { ok: true })
+
+    expect(onLateResult).toHaveBeenCalledTimes(1)
+    expect(relay.reconcilableCount()).toBe(0)
     vi.useRealTimers()
   })
 

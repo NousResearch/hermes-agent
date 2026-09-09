@@ -37,9 +37,14 @@ export interface QuickEntrySubmitRelay {
   begin: (forward: (correlationId: string) => void) => Promise<QuickEntrySubmitRelayResult>
   acknowledge: (correlationId: string, result: QuickEntrySubmitRelayResult) => void
   pendingCount: () => number
+  /** Correlations whose outcome is UNKNOWN: the relay timed out but the backend
+   *  may still have accepted the prompt. Kept so a late ack reconciles instead
+   *  of being silently dropped. */
+  reconcilableCount: () => number
 }
 
 export function createQuickEntrySubmitRelay(options: {
+  onLateResult?: (correlationId: string, result: QuickEntrySubmitRelayResult) => void
   onSuccess: () => void
   timeoutMs?: number
 }): QuickEntrySubmitRelay {
@@ -47,12 +52,23 @@ export function createQuickEntrySubmitRelay(options: {
     string,
     { resolve: (result: QuickEntrySubmitRelayResult) => void; timer: NodeJS.Timeout }
   >()
+  // Timed-out correlations. Delivery is UNCONFIRMED, so a late ack must
+  // reconcile; a correlation is never resolved twice.
+  const reconcilable = new Set<string>()
   let sequence = 0
 
   return {
     acknowledge(correlationId, result) {
       const request = pending.get(correlationId)
+
       if (!request) {
+        // A late ack for a timed-out submit: the outcome is now known. Do NOT
+        // hide the window here — the user may already be typing again. The
+        // renderer reconciles the unknown outcome itself.
+        if (reconcilable.delete(correlationId)) {
+          options.onLateResult?.(correlationId, result)
+        }
+
         return
       }
 
@@ -69,11 +85,14 @@ export function createQuickEntrySubmitRelay(options: {
       return new Promise(resolve => {
         const timer = setTimeout(() => {
           pending.delete(correlationId)
+          // UNKNOWN, not failed: the prompt may already be accepted, so this
+          // must never invite a retry. Keep the correlation for late acks.
+          reconcilable.add(correlationId)
           resolve({
             code: 'timeout',
-            message: 'Hermes did not confirm the prompt in time.',
+            message: 'Hermes has not confirmed the prompt yet — it may still be delivered.',
             ok: false,
-            retryable: true
+            retryable: false
           })
         }, options.timeoutMs ?? 15_000)
         pending.set(correlationId, { resolve, timer })
@@ -82,6 +101,9 @@ export function createQuickEntrySubmitRelay(options: {
     },
     pendingCount() {
       return pending.size
+    },
+    reconcilableCount() {
+      return reconcilable.size
     }
   }
 }

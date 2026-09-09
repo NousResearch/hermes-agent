@@ -17972,6 +17972,14 @@ ipcMain.handle('hermes:quick-entry:settings:set', async (_event, patch) => {
 // payload is `{ target, text }` — target routing (current chat / a picked
 // session / new) is the renderer's job too.
 const quickEntrySubmitRelay = createQuickEntrySubmitRelay({
+  // A late ack for a timed-out submit proves the outcome. Forward it to the
+  // capture window so it can reconcile the unknown state instead of the user
+  // resending a prompt that may already be delivered.
+  onLateResult: (correlationId, result) => {
+    if (quickEntryWindow && !quickEntryWindow.isDestroyed()) {
+      quickEntryWindow.webContents.send('hermes:quick-entry:late-result', { correlationId, result })
+    }
+  },
   onSuccess: () => {
     hideQuickEntryWindow()
     if (process.platform === 'darwin') {

@@ -52,7 +52,7 @@ esac
 if [ "$os" = win32 ]; then
   # PROCESSOR_ARCHITECTURE lies under an emulated shell (x64 msys on a
   # WoA box reports AMD64); the registry carries the machine's truth.
-  winarch="$(reg.exe query 'HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment' /v PROCESSOR_ARCHITECTURE 2>/dev/null | tr -d '\r' | awk '/PROCESSOR_ARCHITECTURE/ {print $NF}')"
+  winarch="$(MSYS2_ARG_CONV_EXCL='*' reg.exe query 'HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment' /v PROCESSOR_ARCHITECTURE 2>/dev/null | tr -d '\r' | awk '/PROCESSOR_ARCHITECTURE/ {print $NF}')"
   case "${winarch:-${PROCESSOR_ARCHITECTURE:-}}" in
     ARM64) arch=arm64 ;;
     *) arch=x64 ;;
@@ -69,19 +69,20 @@ target="$os-$arch"
 # lock.json is machine-written (sorted keys, 2-space indent): read the uv
 # pin's version + this target's url/sha256 with awk — no python yet.
 pin() { # $1 = field (url | sha256)
-  awk -v target="$target" -v field="$1" '
+  awk -F '"' -v target="$target" -v field="$1" '
     /^    "uv": \{/ { in_uv = 1 }
-    in_uv && $0 ~ "^        \"" target "\": \\{" { in_t = 1 }
-    in_t && $0 ~ "^          \"" field "\":" {
-      gsub(/.*: "|,?$/, ""); print; exit
-    }' "$lock"
+    in_uv && /^    }/ { exit }
+    in_uv && /^        "/ { in_t = ($2 == target) }
+    in_t && $2 == field { print $4; exit }' "$lock"
 }
-uv_version="$(awk '
+uv_version="$(awk -F '"' '
   /^    "uv": \{/ { in_uv = 1 }
-  in_uv && /^      "version":/ { gsub(/.*: "|,?$/, ""); print; exit }' "$lock")"
-py_version="$(awk '
+  in_uv && /^    }/ { exit }
+  in_uv && $2 == "version" { print $4; exit }' "$lock")"
+py_version="$(awk -F '"' '
   /^    "python": \{/ { in_py = 1 }
-  in_py && /^      "version":/ { gsub(/.*: "|"$|",$/, ""); print; exit }' "$lock" \
+  in_py && /^    }/ { exit }
+  in_py && $2 == "version" { print $4; exit }' "$lock" \
   | cut -d+ -f1 | cut -d. -f1,2)"
 [ -n "$uv_version" ] || { echo -e "${RED}✗${NC} no uv pin in pm/lock.json" >&2; exit 1; }
 

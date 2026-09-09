@@ -32,6 +32,11 @@ export function useContextBreakdown({ busy, enabled, requestGateway, sessionId }
     // Mid-turn the transcript changes on every delta and the gateway already
     // streams measured usage, so an estimate would be both stale and wasteful.
     if (!enabled || !sessionId || busy) {
+      // A turn invalidates the idle snapshot. Do not let it reappear between
+      // busy=false and the next RPC response (or survive a failed refresh).
+      setFetched(null)
+      setLoading(false)
+
       return
     }
 

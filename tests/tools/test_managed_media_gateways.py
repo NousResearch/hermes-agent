@@ -93,7 +93,7 @@ def _install_fake_fal_client(captured):
                 "cancel_url": "http://127.0.0.1:3009/requests/req-123/cancel",
             }
 
-    def _maybe_retry_request(client, method, url, json=None, timeout=None, headers=None):
+    def _capture_request(client, method, url, json=None, timeout=None, headers=None):
         captured["submit_via"] = "managed_client"
         captured["http_client"] = client
         captured["method"] = method
@@ -102,6 +102,13 @@ def _install_fake_fal_client(captured):
         captured["timeout"] = timeout
         captured["headers"] = headers
         return FakeResponse()
+
+    def _maybe_retry_request(client, method, url, json=None, timeout=None, headers=None):
+        return _capture_request(client, method, url, json, timeout, headers)
+
+    class FakeHttpClient:
+        def request(self, method, url, json=None, timeout=None, headers=None):
+            return _capture_request(self, method, url, json, timeout, headers)
 
     class SyncRequestHandle:
         def __init__(self, request_id, response_url, status_url, cancel_url, client):
@@ -117,7 +124,7 @@ def _install_fake_fal_client(captured):
             captured["client_key"] = key
             captured["client_timeout"] = default_timeout
             self.default_timeout = default_timeout
-            self._client = object()
+            self._client = FakeHttpClient()
 
     fal_client_module = types.SimpleNamespace(
         submit=submit,

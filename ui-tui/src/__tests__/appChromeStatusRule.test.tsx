@@ -108,11 +108,14 @@ describe('StatusRule session title', () => {
   it('marks only estimated context occupancy at every visible width', () => {
     for (const cols of [80, 120, 200]) {
       for (const estimated of [true, false]) {
-        const text = textContent(StatusRule({
-          ...baseProps, cols,
-          statusBarFields: new Set(['context_detail']),
-          usage: { ...baseProps.usage, context_estimated: estimated }
-        }))
+        const text = textContent(
+          StatusRule({
+            ...baseProps,
+            cols,
+            statusBarFields: new Set(['context_detail']),
+            usage: { ...baseProps.usage, context_estimated: estimated }
+          })
+        )
 
         const context = text.match(/(~?\d+(?:\.\d+)?k(?:\/\d+k| tok))/)?.[1]
 

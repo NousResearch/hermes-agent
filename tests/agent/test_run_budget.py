@@ -285,6 +285,23 @@ def test_wrapup_not_injected_without_turn_clock():
     assert _maybe_inject_run_budget_wrapup(agent, messages) is False
 
 
+def test_wrapup_skips_already_persisted_tool_row():
+    """An already-flushed tool row is append-only; mutating it would diverge the
+    replayed transcript from the live wire bytes and break the prompt cache (same
+    contract as _maybe_inject_iteration_budget_warning)."""
+    from agent.context_compressor import _DB_PERSISTED_MARKER
+    from agent.conversation_loop import _maybe_inject_run_budget_wrapup
+
+    agent = _StubAgent(budget=900, started=time.time() - 800)
+    messages = _tool_messages()
+    messages[-1][_DB_PERSISTED_MARKER] = True
+    snapshot = [dict(m) for m in messages]
+
+    assert _maybe_inject_run_budget_wrapup(agent, messages) is False
+    assert agent._run_budget_wrapup_injected is False
+    assert messages == snapshot
+
+
 def test_wrapup_multimodal_tool_content():
     """Content-blocks tool results get a text block appended, not clobbered."""
     from agent.conversation_loop import (
@@ -302,6 +319,32 @@ def test_wrapup_multimodal_tool_content():
     blocks = messages[-1]["content"]
     assert blocks[0] == {"type": "text", "text": "block"}
     assert blocks[-1] == {"type": "text", "text": RUN_BUDGET_WRAPUP_NOTICE}
+
+
+# ── pre-flush wiring (the notice must reach durable bytes) ─────────────────
+
+
+def test_wrapup_lands_in_the_persisted_row_via_pre_flush_hook(monkeypatch, tmp_path):
+    """The wrap-up notice must be injected BEFORE the tool row is flushed, or it
+    never reaches SQLite: prepare_iteration's own call always runs on an
+    already-persisted row (the previous iteration's flush already ran)."""
+    from hermes_state import SessionDB
+    from agent.tool_executor import _flush_session_db_after_tool_progress
+    from agent.conversation_loop import RUN_BUDGET_WRAPUP_NOTICE
+
+    session_db = SessionDB(db_path=tmp_path / "proof.db")
+    try:
+        agent = _make_agent(tmp_path, monkeypatch, session_db=session_db, run_budget_seconds=900)
+        agent._run_budget_started_at = time.time() - 800  # 89% elapsed
+        messages = _tool_messages()
+
+        assert _flush_session_db_after_tool_progress(agent, messages, stage="checkpoint")
+
+        persisted = session_db.get_messages(agent.session_id)
+        assert any(RUN_BUDGET_WRAPUP_NOTICE in str(row["content"]) for row in persisted)
+        assert agent._run_budget_wrapup_injected is True
+    finally:
+        session_db.close()
 
 
 # ── turn clock stamping ────────────────────────────────────────────────────

@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { ClientSessionState } from '@/app/types'
 import type { ChatMessage } from '@/lib/chat-messages'
@@ -62,6 +62,26 @@ describe('SessionStateCache', () => {
     owners.set('stored-d', 'runtime-d')
     cache.prune()
     expect(owners.get('stored-a')).toBe('runtime-new-owner')
+  })
+
+  it('does not remeasure unchanged warm transcripts on repeated stream flushes', () => {
+    const stringify = vi.spyOn(JSON, 'stringify')
+
+    const cache = new SessionStateCache(
+      { isReferenced: () => false, onEvict: () => undefined },
+      { maxBytes: Number.POSITIVE_INFINITY, maxCount: 24 }
+    )
+
+    for (let index = 0; index < 24; index += 1) {
+      cache.set(`runtime-${index}`, settled(`stored-${index}`, 'x'.repeat(4096)))
+    }
+
+    for (let flush = 0; flush < 10; flush += 1) {
+      cache.prune()
+    }
+
+    expect(stringify).toHaveBeenCalledTimes(24)
+    stringify.mockRestore()
   })
 
   it('uses transcript bytes as well as count', () => {

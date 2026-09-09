@@ -1,0 +1,14 @@
+name: hermes-telegram-business
+repo: https://github.com/NousResearch/hermes-telegram-business
+sha: e905f3bc5eeaa5a9dab9bc5155601b3ebec75757
+description: 'Observe-with-approval Telegram Business Mode (secretary bot): every drafted customer reply
+  needs owner approval before it is sent.'
+maintainer: NousResearch
+tier: official
+docs_url: https://github.com/NousResearch/hermes-telegram-business
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

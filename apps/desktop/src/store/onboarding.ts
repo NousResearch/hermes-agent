@@ -344,6 +344,7 @@ async function completeWithModelConfirm(
   if (generation !== flowGeneration) {
     return
   }
+
   const defaults = await fetchProviderDefaultModel(preferredSlugs, ctx.profile)
 
   if (generation !== flowGeneration) {
@@ -369,11 +370,13 @@ async function completeWithModelConfirm(
       if (generation !== flowGeneration) {
         return
       }
+
       notifyGatewayTools(res.gateway_tools)
     } catch (error) {
       if (generation !== flowGeneration) {
         return
       }
+
       onFail(error instanceof Error ? error.message : 'Hermes could not save the selected model.')
 
       return
@@ -433,11 +436,13 @@ async function refreshProviders() {
       if (generation !== flowGeneration) {
         return
       }
+
       patch({ mode: providers.length > 0 ? 'oauth' : 'apikey', providers })
     } catch {
       if (generation !== flowGeneration) {
         return
       }
+
       patch({ mode: 'apikey', providers: [] })
     } finally {
       if (generation === flowGeneration) {
@@ -725,6 +730,7 @@ export async function startProviderOAuth(provider: OAuthProvider, ctx: Onboardin
     if (generation !== flowGeneration) {
       return
     }
+
     setFlow({ status: 'error', provider, message: `Could not start sign-in: ${errMessage(error)}` })
   }
 }
@@ -756,6 +762,7 @@ async function pollSession(provider: OAuthProvider, start: DeviceStart, ctx: Onb
     if (generation !== flowGeneration) {
       return
     }
+
     clearPoll()
     setFlow({ status: 'error', provider, start, message: `Polling failed: ${errMessage(error)}` })
   }
@@ -805,6 +812,7 @@ export async function submitOnboardingCode(ctx: OnboardingContext) {
     if (generation !== flowGeneration) {
       return
     }
+
     setFlow({ status: 'error', provider, start, message: errMessage(error) })
   }
 }
@@ -925,6 +933,7 @@ export async function saveOnboardingApiKey(
     if (generation !== flowGeneration) {
       return { ok: false }
     }
+
     // For API-key flows we don't have a definitive provider id (the
     // user picked which API key they're entering, but the corresponding
     // backend slug — e.g. OPENROUTER_API_KEY → "openrouter" — is the
@@ -1008,6 +1017,7 @@ export async function saveOnboardingLocalEndpoint(baseUrl: string, apiKey: strin
     if (generation !== flowGeneration) {
       return { ok: false }
     }
+
     await ctx.requestGateway('reload.env').catch(() => undefined)
 
     if (generation !== flowGeneration) {
@@ -1064,6 +1074,7 @@ export async function setOnboardingModel(model: string) {
     if (generation !== flowGeneration) {
       return
     }
+
     const current = $desktopOnboarding.get().flow
 
     if (current.status === 'confirming_model') {
@@ -1073,6 +1084,7 @@ export async function setOnboardingModel(model: string) {
     if (generation !== flowGeneration) {
       return
     }
+
     notifyError(error, 'Could not change model')
     const current = $desktopOnboarding.get().flow
 

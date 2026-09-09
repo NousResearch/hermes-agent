@@ -35,7 +35,6 @@ data/
 # Bundled community plugin index seed (shipped as package data) — the bare
 # `data/` pattern above would otherwise swallow it.
 !hermes_cli/data/
-!hermes_cli/data/plugin_index.json
 .pytest_cache/
 test_durations.json
 .pytest-cache/
@@ -134,6 +133,11 @@ website/static/api/skills-index.json
 # every build).
 website/static/api/skills.json
 website/static/api/skills-meta.json
+# plugins.json + plugins-meta.json are build artifacts emitted by
+# website/scripts/extract-plugins.py during prebuild (Plugin Catalog page).
+website/static/api/plugins.json
+website/static/api/plugin-catalog.json
+website/static/api/plugins-meta.json
 # automation-blueprints-index.json is a build artifact emitted by
 # website/scripts/extract-automation-blueprints.py during prebuild.
 website/static/api/automation-blueprints-index.json

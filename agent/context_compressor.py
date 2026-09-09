@@ -25,6 +25,7 @@ from agent.context_engine import ContextEngine, sanitize_memory_context
 from agent.context_compressor_summary import SummaryDispatchMixin
 from agent.error_classifier import FailoverReason, classify_api_error
 from agent.micro_compaction import MicroCompactionMixin
+from agent.prompt_builder import STEER_DISPLAY_KIND
 from agent.model_metadata import (
     MINIMUM_CONTEXT_LENGTH, get_model_context_length, estimate_messages_tokens_rough, estimate_tokens_rough,
     strip_opaque_replay_items,
@@ -1456,7 +1457,25 @@ def _sum_clarify(name, args, content, content_len, line_count):
     # min_prune_chars guard and skips the >=200-char dedup.
     max_summary_chars = _PRUNE_MIN_CHARS - 1
     truncation_marker = "...[truncated]"
-    response = _json_dict(content).get("user_response")
+    parsed = _json_dict(content)
+    response = parsed.get("user_response")
+    # Batch clarify (``questions=[...]``) nests each answer inside ``responses[].user_response``
+    # rather than the top level; without this every batch answer was lost and the summarizer only
+    # saw "asked user a question" (#106077).
+    if response is None:
+        batch_responses = parsed.get("responses")
+        if isinstance(batch_responses, list) and batch_responses:
+            collected = []
+            for entry in batch_responses:
+                if not isinstance(entry, dict):
+                    continue
+                single = entry.get("user_response")
+                # multi_select emits a list of strings; flatten it so the summary keeps every choice.
+                if isinstance(single, str) and single:
+                    collected.append(single)
+                elif isinstance(single, list) and all(isinstance(s, str) and s for s in single):
+                    collected.extend(single)
+            response = collected if collected else None
     is_answer_shaped = (isinstance(response, str) and bool(response)) or (
         isinstance(response, list) and bool(response) and all(isinstance(s, str) and s for s in response)
     )
@@ -3644,7 +3663,9 @@ Write only the summary body. Do not include any preamble or prefix."""
             return False
         # display_kind rows (internal notifications, hidden scaffolding) are not human input
         # and must not anchor the tail or seed auto-focus. Mirrors is_user_originated_turn.
-        if message.get("display_kind") or cls._is_context_summary_message(message):
+        # A /steer row is typed for the renderer and the alternation repair, but it IS human input.
+        display_kind = message.get("display_kind")
+        if (display_kind and display_kind != STEER_DISPLAY_KIND) or cls._is_context_summary_message(message):
             return False
         return not cls._is_blank_user_turn(message)
 
@@ -4777,10 +4798,10 @@ def split_user_originated_turn(message: Any) -> tuple[Optional[Dict[str, Any]], 
         candidate = None if display_kind and display_kind != "hidden" else ContextCompressor._strip_context_summary_handoff_message(message)
         if candidate is None:
             return handoff, None
-    elif message.get("display_kind"):
+    elif message.get("display_kind") and message.get("display_kind") != STEER_DISPLAY_KIND:
         return None, None
     else:
-        candidate = message.copy()
+        candidate = message.copy()  # includes a typed /steer row: full user authority
 
     for key in (
         COMPRESSED_SUMMARY_METADATA_KEY, COMPRESSED_SUMMARY_HAS_USER_TURN_KEY, MICRO_COMPACT_MARKER_KEY,

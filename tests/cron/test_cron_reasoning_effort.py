@@ -97,8 +97,8 @@ class TestJobStoreReasoningEffort:
         assert load_jobs()[0]["reasoning_effort"] == "high"
 
     def test_effort_change_does_not_trigger_snapshot_recompute(self, tmp_cron_dir):
-        """Effort is NOT a drift-guard axis (#44585 guard unchanged): updating
-        it alone must not touch provider_snapshot/model_snapshot."""
+        """Effort is NOT an inference-snapshot axis: updating it alone must not
+        touch provider_snapshot/model_snapshot."""
         job = _create()
         before = (job.get("provider_snapshot"), job.get("model_snapshot"))
         updated = update_job(job["id"], {"reasoning_effort": "low"})

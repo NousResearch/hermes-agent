@@ -387,6 +387,7 @@ class CLITuiMixin:
             *self._get_extra_tui_widgets(),
             getattr(self, "_pet_widget", None),
             getattr(self, "_stash_panel_widget", None),
+            getattr(self, "_subagent_dock_widget", None),
             status_bar,
             input_rule_top,
             image_bar,
@@ -401,6 +402,9 @@ class CLITuiMixin:
             if not self._app:
                 time.sleep(0.1)
                 continue
+            monitor = getattr(self, "_subagent_monitor", None)
+            if monitor is not None:
+                monitor.tick()
             if self._command_running:
                 self._invalidate(min_interval=0.1)
                 time.sleep(0.1)
@@ -1452,8 +1456,9 @@ class CLITuiMixin:
             event.app.invalidate()
             return True
         if self._secret_state:
-            self._submit_secret_response(buf.text)
+            value = buf.text
             buf.reset()
+            self._submit_secret_response(value)
             event.app.invalidate()
             return True
         if self._approval_state:
@@ -1853,6 +1858,12 @@ class CLITuiMixin:
         kb.add(Keys.BracketedPaste, eager=True)(self._tui_handle_paste)
         kb.add('c-v')(self._tui_handle_ctrl_v)
         kb.add('escape', 'v')(self._tui_handle_alt_v)
+        from hermes_cli.cli_subagent_monitor import modal_prompt_active, open_monitor, toggle_dock
+        for key in ('c-t', 'f6'):
+            kb.add(key, filter=Condition(lambda: not modal_prompt_active(self)))(
+                lambda event: open_monitor(self))
+        kb.add('f7', filter=Condition(lambda: not modal_prompt_active(self)))(
+            lambda event: toggle_dock(self))
         return kb
 
     def _tui_bind_editor_and_stash(self, kb) -> None:
@@ -2000,6 +2011,8 @@ class CLITuiMixin:
     def _tui_build_layout(self, kb):
         """Build the TUI widgets, Layout and Style; registers wrapper keybindings on ``kb``."""
         cli_ref = self
+        from hermes_cli.cli_subagent_monitor import install_dock
+        install_dock(self)
         input_area = self._tui_build_input_area()
         spinner_widget = Window(
             content=FormattedTextControl(self._tui_spinner_text),

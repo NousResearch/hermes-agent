@@ -14,6 +14,7 @@ from hermes_cli.web_deps import LateState, late
 from hermes_cli.web_server_config import (
     _AUX_TASK_SLOTS, _apply_model_assignment_sync, _dashboard_code_skew_guard,
 )
+from agent.model_metadata import is_local_endpoint
 from starlette.concurrency import run_in_threadpool
 from hermes_cli.web_models import ModelAssignment, MoaConfigPayload, MoaModelSlot
 from hermes_cli.web_routers._common import http_failure
@@ -206,9 +207,12 @@ def get_auxiliary_models(profile: Optional[str] = None):
         tasks = []
         for slot in _AUX_TASK_SLOTS:
             slot_cfg = aux_cfg.get(slot, {}) if isinstance(aux_cfg.get(slot), dict) else {}
+            base_url = str(slot_cfg.get("base_url", "") or "")
             tasks.append({
                 "task": slot, "provider": str(slot_cfg.get("provider", "auto") or "auto"),
-                "model": str(slot_cfg.get("model", "") or ""), "base_url": str(slot_cfg.get("base_url", "") or ""),
+                "model": str(slot_cfg.get("model", "") or ""), "base_url": base_url,
+                # Lets the UI tell a free local/LAN pin from a forgotten paid-provider pin.
+                "local_endpoint": is_local_endpoint(base_url),
             })
 
         model, provider = _main_model_fields(cfg.get("model", {}))

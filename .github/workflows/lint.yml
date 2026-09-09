@@ -190,13 +190,25 @@ jobs:
       # decomposition opened with 1,703 such drops that reviewers had to find by hand.
       # Advisory: it never fails the job. The checkout above is depth-1, so deepen both sides until
       # a merge-base exists (the script refuses to report a clean diff without one, by design).
+      # Diff the PR head ref, not the checked-out refs/pull/N/merge commit: that synthetic commit
+      # is recomputed server-side whenever main moves, and once it is unreachable no amount of
+      # deepening ever reaches its parents (run 34285107265: 4 fetches, 4m15s, "no merge-base").
       - name: Public-surface diff vs base (advisory)
         if: github.event_name == 'pull_request'
         continue-on-error: true
+        # Bound the advisory step so a long deepen/fetch (e.g. a distant or missing
+        # merge-base) can't consume the blocking job's 5-minute budget and cancel it.
+        # continue-on-error already keeps a step *failure* off the job; a step-level
+        # timeout keeps a step *overrun* off the job-level timeout the same way.
+        # Sizing: a --deepen=200 fetch took ~56s and a --deepen=1000 ~67s on the runner, and
+        # main gains ~170 commits/day, so a day-old branch legitimately needs both (~2 min).
+        timeout-minutes: 3
+        env:
+          PR_HEAD: "+refs/pull/${{ github.event.pull_request.number }}/head:refs/remotes/origin/pr-head"
         run: |
-          git fetch --no-tags --deepen=200 origin "${{ github.base_ref }}" HEAD
+          git fetch --no-tags --deepen=200 origin "${{ github.base_ref }}" "$PR_HEAD"
           for i in 1 2 3; do
-            git merge-base "origin/${{ github.base_ref }}" HEAD >/dev/null 2>&1 && break
-            git fetch --no-tags --deepen=1000 origin "${{ github.base_ref }}" HEAD
+            git merge-base "origin/${{ github.base_ref }}" origin/pr-head >/dev/null 2>&1 && break
+            git fetch --no-tags --deepen=1000 origin "${{ github.base_ref }}" "$PR_HEAD"
           done
-          python scripts/ci/check_public_surface.py --base "origin/${{ github.base_ref }}" --head HEAD
+          python scripts/ci/check_public_surface.py --base "origin/${{ github.base_ref }}" --head origin/pr-head

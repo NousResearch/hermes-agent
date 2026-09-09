@@ -483,7 +483,32 @@ belongs to (so concurrent or nested fan-outs stay distinguishable); free-text fi
 redaction before leaving the process. Per-tool child events
 (`subagent.tool`, progress ticks) are intentionally **not** forwarded — they
 are high-volume UI noise; use the per-child live transcript files for
-play-by-play.
+play-by-play. These events are available while the parent stream is open; a
+late detached completion does not reopen a finished run's SSE stream or change
+its terminal status.
+
+#### Detached results and session history
+
+Background delegation requires a continuation that reads server-side session
+history: an explicit `X-Hermes-Session-Id` on Chat Completions, a native
+`/api/sessions/{id}/chat` request, or a Runs request using session history.
+Header-less Chat Completions, Responses chains, and Runs requests with
+`previous_response_id` or caller-supplied history instead execute delegation
+synchronously, returning the result in the original turn. Merely deriving a
+session ID from request content does not enable detached delivery.
+
+For resumable requests, the completion is persisted once per delegation unit.
+It is available through `GET /api/sessions/{id}/messages` and in the next real
+client turn's session history. Retries do not insert the same result again;
+interim task-failure notices have separate identities. Delivery waits while a
+client turn owns the session lease and follows compression continuations.
+Chat Completions echoes the explicit session ID you supplied in both JSON and
+streaming responses; keep sending that ID even after compression.
+
+A completion **never starts an unsolicited model turn** or bypasses a pending
+human confirmation. The client owns the next turn. Clients that continue using
+their own history snapshots should use synchronous delegation rather than
+expecting a server-side delivery row to be merged into those snapshots.
 
 Unconsumed event buffers expire after five minutes so a detached client cannot
 grow memory indefinitely. This expires transport state only: a run that is

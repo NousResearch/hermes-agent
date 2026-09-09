@@ -876,8 +876,21 @@ class SessionSessionsMixin:
         return True
 
     def set_session_pinned(self, session_id: str, pinned: bool) -> bool:
-        """Pin/unpin a session and its compression lineage (pins are exempt from the auto_archive sweep)."""
-        return self._set_lineage_column("pinned", session_id, int(pinned))
+        """Pin/unpin a session and its compression lineage (pins are exempt from the auto_archive sweep).
+        Pinning also clears ``hidden``: a pin means "keep this visible", and a hidden+pinned row is
+        otherwise absent from both the default listing and the pinned back-fill (see #106171).
+        Exempt the canonical Bot Chat (hidden + exact registry title): the desktop contract keeps it
+        hidden and reachable only through the bot row, and unhiding it would also disable the
+        rename guard in ``_set_session_title`` that protects its identity (see review on #106180)."""
+        result = self._set_lineage_column("pinned", session_id, int(pinned))
+        if pinned:
+            row = self.get_session(session_id)
+            is_canonical_bot_chat = bool(row) and bool(row.get("hidden")) and (
+                (row.get("title") or "") == self.CANONICAL_BOT_CHAT_TITLE
+            )
+            if not is_canonical_bot_chat:
+                self._set_lineage_column("hidden", session_id, 0)
+        return result
 
     def set_session_hidden(self, session_id: str, hidden: bool) -> bool:
         """Hide/unhide a session and its compression lineage from the default listing; still resumable."""
@@ -967,6 +980,11 @@ class SessionSessionsMixin:
             ):
                 if key in tip_row:
                     merged[key] = tip_row[key]
+            if merged.get("title") is None:
+                # The title is carried root->tip AFTER the publish transaction; a rotation cut off in
+                # between leaves it on the ended root, and exact-title lookups (`hermes peer dm` ->
+                # canonical "Bot Chat") must still see the lineage under its name (#106165).
+                merged["title"] = s.get("title")
             merged["_lineage_root_id"] = s["id"]
             merged["_lineage_ids"] = chain
             projected.append(merged)
@@ -1089,7 +1107,7 @@ class SessionSessionsMixin:
                 tip.id,
                 tip.source,
                 tip.model,
-                tip.title,
+                COALESCE(tip.title, s.title) AS title,
                 s.started_at AS started_at,
                 tip.ended_at,
                 tip.end_reason,

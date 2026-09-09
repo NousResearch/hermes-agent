@@ -498,7 +498,7 @@ def delegate_task(
 
 # ── OpenAI function-calling schema ──────────────────────────────────────────
 
-def _build_top_level_description() -> str:
+def _build_top_level_description(*, independent_completions=None) -> str:
     """delegate_task description: ONLY guidance stated nowhere else in the schema
     (limits live in the 'tasks' parameter description, rebuilt per get_definitions())."""
     try:
@@ -515,15 +515,22 @@ def _build_top_level_description() -> str:
         )
     else:
         restrictions_rule = "- Children cannot call delegate_task, clarify, memory, or cronjob.\n"
-    return _DESCRIPTION_HEAD + restrictions_rule + _DESCRIPTION_TAIL
+    from tools.delegate_tool_config import _get_independent_completions
+
+    if independent_completions is None:
+        independent_completions = _get_independent_completions()
+    delivery = (
+        "each ungrouped task / `group` returns on its own"
+        if independent_completions else "one message per call"
+    )
+    return _DESCRIPTION_HEAD.format(delivery=delivery) + restrictions_rule + _DESCRIPTION_TAIL
 
 _DESCRIPTION_HEAD = (
     "Spawn subagents in isolated contexts; each gets its own conversation, terminal session, and toolset, and only its "
     "final summary returns to you. Pass every task in `tasks` — one entry spawns one subagent, several run in parallel "
     "(limit in the tasks description).\n\n"
     "Runs in the background: dispatch returns immediately with live transcript paths, and the call's results re-enter "
-    "the conversation as a new message when its subagents finish (one message per call by default; with "
-    "delegation.independent_completions each ungrouped task / `group` returns on its own). Results are delivered only "
+    "the conversation as a new message when its subagents finish ({delivery}). Results are delivered only "
     "BETWEEN your turns: finish whatever does not depend on them, then give a one-line status and END YOUR TURN. Never "
     "wait or poll on transcripts, artifact files, or CI for a child. "
     "While children run, `action` (list/steer/stop) controls them live — steer when a transcript shows a "
@@ -564,12 +571,24 @@ def _build_tasks_param_description() -> str:
 def _build_dynamic_schema_overrides() -> dict:
     """Per-call schema overrides (ToolEntry.dynamic_schema_overrides): every
     get_definitions() pass rewrites the descriptions to the user's actual limits."""
+    from tools.delegate_tool_config import _get_independent_completions
+
+    independent_completions = _get_independent_completions()
     overrides_params = {**DELEGATE_TASK_SCHEMA["parameters"]}
     # Copy properties so the static schema dict is never mutated.
     overrides_params["properties"] = {k: dict(v) for k, v in DELEGATE_TASK_SCHEMA["parameters"]["properties"].items()}
     overrides_params["properties"]["tasks"]["description"] = _build_tasks_param_description()
 
-    return {"description": _build_top_level_description(), "parameters": overrides_params}
+    if not independent_completions:
+        tasks = overrides_params["properties"]["tasks"]
+        tasks["items"] = {**tasks["items"], "properties": {
+            k: v for k, v in tasks["items"]["properties"].items() if k != "group"
+        }}
+
+    return {
+        "description": _build_top_level_description(independent_completions=independent_completions),
+        "parameters": overrides_params,
+    }
 
 def _p(type_: str, description: str, **extra) -> dict:
     return {"type": type_, **extra, "description": description}

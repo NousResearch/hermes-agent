@@ -5837,3 +5837,50 @@ describe('usePromptActions reloadFromMessage failed-submit rollback (#95745)', (
     expect(latest?.awaitingResponse).toBe(false)
   })
 })
+
+describe('usePromptActions live-owner refusal (#106217)', () => {
+  afterEach(() => {
+    cleanup()
+    clearNotifications()
+  })
+
+  it('stamps the 4090 SESSION_NOT_OWNED refusal as a non-retryable gateway error surface', async () => {
+    // Another surface (TUI) holds the lease: the gateway refuses prompt.submit
+    // with the machine reason in error.data. The inline error bubble must
+    // carry that as a structured descriptor so the card can drop Retry and
+    // offer "Start new session" without sniffing the English prose.
+    let latest: Record<string, unknown> | undefined
+
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'prompt.submit') {
+        throw new JsonRpcGatewayError(
+          'Session 20260909_095312_6b93f5 already has a live owner (tui, pid 32977, lease age 22m).',
+          { code: 4090, data: { reason: 'SESSION_NOT_OWNED' } }
+        )
+      }
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness
+        onReady={h => (handle = h)}
+        onSeedState={next => {
+          latest = next
+        }}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+      />
+    )
+
+    expect(await handle!.submitText('continue here')).toBe(false)
+
+    const bubble = (latest?.messages as { error?: string; errorSurface?: Record<string, unknown> }[]).at(-1)
+
+    expect(bubble?.error).toMatch(/already has a live owner/)
+    expect(bubble?.errorSurface).toEqual({ layer: 'gateway', code: 'SESSION_NOT_OWNED', retryable: false })
+    // Not a stale-runtime symptom: no resume/re-mint attempt hides the refusal.
+    expect(requestGateway.mock.calls.map(c => c[0])).toEqual(['prompt.submit'])
+  })
+})

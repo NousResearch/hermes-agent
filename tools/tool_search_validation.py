@@ -6,9 +6,10 @@ import copy
 import json
 import logging
 import re
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from tools.registry import tool_error
+from tools.tool_search_catalog import BRIDGE_TOOL_NAMES
 
 logger = logging.getLogger("tools.tool_search")
 
@@ -133,3 +134,46 @@ def validate_deferred_call_args(name: str, args: Dict[str, Any]) -> Optional[str
     except Exception:  # pragma: no cover — never block dispatch on validator bugs
         logger.debug("validate_deferred_call_args failed for %s", name, exc_info=True)
         return None
+
+
+def normalize_tool_call_entries(args: Dict[str, Any]) -> Tuple[List[Dict[str, Any]], Optional[str]]:
+    """Normalize ``tool_call`` arguments into a ``calls[]`` list of entries.
+
+    Accepts the advertised batch shape ``{"calls": [{"name", "arguments"}, ...]}``
+    and, tolerantly, the legacy single shape ``{"name": ..., "arguments": ...}``
+    (a single call is a batch of one). Each entry's ``arguments`` is coerced to
+    a dict (JSON strings parsed, ``None`` → ``{}``). Returns ``(entries, None)``
+    or ``([], error_message)``.
+    """
+    raw_calls = args.get("calls")
+    if raw_calls is None:
+        # Legacy single shape.
+        if not str(args.get("name") or "").strip():
+            return [], "tool_call requires 'calls' (an array of {name, arguments})"
+        raw_calls = [{"name": args.get("name"), "arguments": args.get("arguments")}]
+    if isinstance(raw_calls, dict):
+        raw_calls = [raw_calls]
+    if not isinstance(raw_calls, list) or not raw_calls:
+        return [], "tool_call 'calls' must be a non-empty array of {name, arguments}"
+
+    entries: List[Dict[str, Any]] = []
+    for position, raw in enumerate(raw_calls):
+        if not isinstance(raw, dict):
+            return [], f"tool_call calls[{position}] must be an object with 'name' and 'arguments'"
+        name = str(raw.get("name") or "").strip()
+        if not name:
+            return [], f"tool_call calls[{position}] requires a 'name'"
+        if name in BRIDGE_TOOL_NAMES:
+            return [], f"tool_call cannot invoke '{name}' (it is itself a bridge tool)"
+        raw_args = raw.get("arguments")
+        if raw_args is None:
+            raw_args = {}
+        if isinstance(raw_args, str):
+            try:
+                raw_args = json.loads(raw_args)
+            except json.JSONDecodeError as e:
+                return [], f"tool_call calls[{position}].arguments is not valid JSON: {e}"
+        if not isinstance(raw_args, dict):
+            return [], f"tool_call calls[{position}].arguments must be an object"
+        entries.append({"name": name, "arguments": raw_args})
+    return entries, None

@@ -154,7 +154,11 @@ function renderEnteredProjectWithLiveWorktree() {
     <EnteredProjectContent
       project={project({ repos: [{ groups: [group()], id: '/repo', label: 'Repo', path: '/repo', sessionCount: 0 }] })}
       renderRows={() => null}
-      repoWorktrees={{ '/repo': [{ branch: 'feature', detached: false, isMain: false, locked: false, path: '/repo/.worktrees/feature' }] }}
+      repoWorktrees={{
+        '/repo': [
+          { branch: 'feature', detached: false, isMain: false, locked: false, path: '/repo/.worktrees/feature' }
+        ]
+      }}
     />
   )
 }
@@ -445,7 +449,6 @@ describe('flat-list date-divider new-session drag source', () => {
     expect(startNewSessionDrag).not.toHaveBeenCalled()
   })
 })
-
 
 describe('explicit worktree dismissal', () => {
   it('resurfaces removed worktrees on discovery but not a subsequent explicit hide', async () => {

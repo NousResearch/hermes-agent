@@ -83,6 +83,7 @@ describe('refreshOnboarding', () => {
   it('keeps onboarding work in its initiating lifetime and profile', async () => {
     const { startManualOnboarding, startProviderOAuth, saveOnboardingApiKey, closeManualOnboarding } =
       await import('./onboarding')
+
     const requests: { path: string; profile?: string }[] = []
     let release!: () => void
     let delayKey = true

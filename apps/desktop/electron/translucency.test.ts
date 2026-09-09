@@ -603,9 +603,7 @@ describe('what an update actually changes natively', () => {
   })
 
   it('leaves a window alone when glass is selected but off', () => {
-    // The light default carries one point of fade. Someone who dragged the
-    // tint to zero asked for an opaque window, and that point must not follow
-    // them there — off has to mean exactly 1, not 0.9999.
+    // A saved fade must not follow the tint to zero: off means opaque.
     expect(windowOpacityFor({ ...glass(0), fade: 1 })).toBe(1)
     expect(windowOpacityFor({ ...glass(0), fade: 40 })).toBe(1)
   })
@@ -615,12 +613,7 @@ describe('what an update actually changes natively', () => {
   })
 })
 
-/**
- * The shipped defaults, per platform. These are the numbers a fresh profile
- * gets before anyone opens Settings, so they are the ones most people will
- * ever see — and they differ by platform because the lever means different
- * things behind macOS vibrancy and Windows acrylic.
- */
+/** Fresh profiles share the sidebar treatment, with native frost per platform. */
 describe('the defaults a fresh profile lands on', () => {
   const mac = (appearance: 'dark' | 'light') => defaultTranslucencyValues(appearance, false)
   const win = (appearance: 'dark' | 'light') => defaultTranslucencyValues(appearance, true)
@@ -641,21 +634,16 @@ describe('the defaults a fresh profile lands on', () => {
     expect(defaultTranslucencyState('dark', false, false).mode).toBe('clear')
   })
 
-  it('tints light more heavily than dark, on both platforms', () => {
-    // A dark field already separates from what is behind it; a bright one
-    // needs real thinning before the desktop reads as a layer underneath.
-    expect(mac('light').intensity).toBeGreaterThan(mac('dark').intensity)
-    expect(win('light').intensity).toBeGreaterThan(win('dark').intensity)
+  it('keeps tint consistent across appearances and platforms', () => {
+    for (const values of [mac('light'), mac('dark'), win('light'), win('dark')]) {
+      expect(values.intensity).toBe(mac('light').intensity)
+    }
   })
 
-  it('asks far less of Windows, which composites its own tint in DWM', () => {
-    expect(win('light').intensity).toBeLessThan(mac('light').intensity)
-    expect(win('dark').intensity).toBeLessThan(mac('dark').intensity)
-  })
-
-  it('never fades a Windows window — setOpacity dims the composited backdrop', () => {
-    expect(win('light').fade).toBe(0)
-    expect(win('dark').fade).toBe(0)
+  it('keeps the content column opaque at the native level', () => {
+    for (const values of [mac('light'), mac('dark'), win('light'), win('dark')]) {
+      expect(windowOpacityFor({ ...values, mode: 'glass' })).toBe(1)
+    }
   })
 
   it('defaults each platform onto a frost that platform can actually render', () => {
@@ -665,9 +653,9 @@ describe('the defaults a fresh profile lands on', () => {
     }
   })
 
-  it('opens the whole window, not just the sidebar rail', () => {
+  it('uses the normalized scope default for every appearance and platform', () => {
     for (const values of [mac('light'), mac('dark'), win('light'), win('dark')]) {
-      expect(values.scope).toBe('window')
+      expect(values.scope).toBe(normalizeScope(undefined))
     }
   })
 })
@@ -680,9 +668,14 @@ describe('the defaults a fresh profile lands on', () => {
 describe('resolving the book for the painted appearance', () => {
   const empty = normalizeBook(null, true)
 
-  it('falls all the way through to the platform default', () => {
-    expect(resolveTranslucency(empty, 'dark', false).intensity).toBe(defaultTranslucencyValues('dark', false).intensity)
-    expect(resolveTranslucency(empty, 'dark', true).intensity).toBe(defaultTranslucencyValues('dark', true).intensity)
+  it('agrees with the native first-window defaults in either appearance', () => {
+    for (const appearance of ['light', 'dark'] as const) {
+      for (const isWindows of [false, true]) {
+        expect(resolveTranslucency(empty, appearance, isWindows)).toEqual(
+          defaultTranslucencyState(appearance, true, isWindows)
+        )
+      }
+    }
   })
 
   it('scopes an edit to the appearance it was made in', () => {
@@ -692,14 +685,17 @@ describe('resolving the book for the painted appearance', () => {
     expect(resolveTranslucency(book, 'dark', false).intensity).toBe(defaultTranslucencyValues('dark', false).intensity)
   })
 
-  it('carries a v1 state into BOTH appearances via base', () => {
-    // Someone who tuned a window before appearances were split keeps exactly
-    // what was on screen, in either appearance, until they edit one of them.
-    const migrated = normalizeBook({ intensity: 40, mode: 'glass' }, true)
+  it('preserves a saved whole-window treatment in both appearances', () => {
+    const saved = { intensity: 40, scope: 'window', mode: 'glass' } as const
+    const migrated = normalizeBook(saved, true)
 
-    expect(migrated.base.intensity).toBe(40)
-    expect(resolveTranslucency(migrated, 'light', false).intensity).toBe(40)
-    expect(resolveTranslucency(migrated, 'dark', false).intensity).toBe(40)
+    expect(migrated.base).toEqual({ intensity: saved.intensity, scope: saved.scope })
+
+    for (const appearance of ['light', 'dark'] as const) {
+      for (const isWindows of [false, true]) {
+        expect(resolveTranslucency(migrated, appearance, isWindows)).toMatchObject(saved)
+      }
+    }
   })
 
   it('lets an appearance override base without disturbing the other', () => {

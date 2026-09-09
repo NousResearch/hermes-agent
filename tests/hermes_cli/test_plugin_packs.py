@@ -182,37 +182,39 @@ def test_load_pack_missing_file_errors():
 
 
 # ---------------------------------------------------------------------------
-# Resolution (bare index names) — index mocked, no network
+# Resolution (bare catalog names) — catalog mocked, no network
 # ---------------------------------------------------------------------------
 
-def test_resolve_pack_plugins_uses_community_index_for_bare_names():
+def _fake_catalog_entry(name):
+    from hermes_cli.plugin_catalog import CatalogCapabilities, PluginCatalogEntry
+    return PluginCatalogEntry(
+        name=name, repo="https://github.com/idx-owner/idx-repo", sha=SHA_B, description="d", maintainer="idx-owner",
+        capabilities=CatalogCapabilities(provides_tools=["tools"]))
+
+
+def test_resolve_pack_plugins_uses_catalog_for_bare_names():
     pack = parse_pack(_pack_yaml())
-    fake_entry = SimpleNamespace(
-        install_identifier="idx-owner/idx-repo", capabilities=["tools"]
-    )
+    bare_name = pack.plugins[1].name
+    fake_entry = _fake_catalog_entry(bare_name)
     with mock.patch(
-        "hermes_cli.plugin_index.load_index", return_value=([fake_entry], "seed")
-    ), mock.patch(
-        "hermes_cli.plugin_index.resolve_name",
-        return_value=(fake_entry, [fake_entry]),
+        "hermes_cli.plugin_catalog.load_catalog_live",
+        return_value=[fake_entry],
     ):
         resolved = resolve_pack_plugins(pack)
 
-    assert resolved[0].identifier == "owner/tts-plugin"  # repo entries skip the index
-    assert resolved[1].identifier == "idx-owner/idx-repo"
+    assert resolved[0].identifier == "owner/tts-plugin"  # repo entries skip the catalog
+    assert resolved[1].identifier == "https://github.com/idx-owner/idx-repo"
     assert resolved[1].index_capabilities == ["tools"]
 
 
-def test_resolve_pack_plugins_carries_index_miss_as_error():
+def test_resolve_pack_plugins_carries_catalog_miss_as_error():
     pack = parse_pack(
         yaml.safe_dump(
             {"name": "p", "plugins": [{"name": "ghost", "ref": SHA_A}]}
         )
     )
     with mock.patch(
-        "hermes_cli.plugin_index.load_index", return_value=([], "seed")
-    ), mock.patch(
-        "hermes_cli.plugin_index.resolve_name", return_value=(None, [])
+        "hermes_cli.plugin_catalog.load_catalog_live", return_value=[]
     ):
         resolved = resolve_pack_plugins(pack)
     assert resolved[0].identifier is None

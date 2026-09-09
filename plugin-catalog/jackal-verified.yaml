@@ -1,0 +1,55 @@
+name: jackal-verified
+repo: https://github.com/AnubisQuantumCipher/hermes-jackal-verified
+sha: dab507a521406a69d308025bed380401eff967b9
+description: 'Typed adapter for the reproducible JACKAL v1.7.3 release: 41 catalog-derived verification
+  tools (exact, numerical, Lean-checked bounded lanes, claim replay).'
+maintainer: AnubisQuantumCipher
+tier: community
+docs_url: https://github.com/AnubisQuantumCipher/hermes-jackal-verified
+platforms: []
+capabilities:
+  provides_tools:
+  - jackal_alg_cmp
+  - jackal_alg_sign
+  - jackal_anubis_check_program
+  - jackal_anubis_verify_program
+  - jackal_anubis_verify_program_receipt
+  - jackal_atan_rat_bound
+  - jackal_canon
+  - jackal_claim
+  - jackal_claim_cites_test
+  - jackal_cos_rat_bound
+  - jackal_crt
+  - jackal_decision_rank
+  - jackal_decision_rank_v2
+  - jackal_diff
+  - jackal_divides
+  - jackal_evaluate
+  - jackal_exact
+  - jackal_exp_rat_bound
+  - jackal_gaussian_integral
+  - jackal_integrate
+  - jackal_integrate_adaptive
+  - jackal_integrate_bound
+  - jackal_integrate_bound_cert
+  - jackal_ln_rat_bound
+  - jackal_mod_inv
+  - jackal_mod_pow
+  - jackal_poly_canon
+  - jackal_poly_eq
+  - jackal_poly_gcd
+  - jackal_prime_cert
+  - jackal_range_bound
+  - jackal_ratfunc_canon
+  - jackal_roots_isolate
+  - jackal_sin_rat_bound
+  - jackal_solve
+  - jackal_sqrt_rat_bound
+  - jackal_tanh_rat_bound
+  - jackal_test_exists
+  - jackal_verify_bundle
+  - jackal_verify_receipt
+  - jackal_xgcd
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

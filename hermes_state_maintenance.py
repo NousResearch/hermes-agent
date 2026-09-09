@@ -336,7 +336,12 @@ class SessionMaintenanceMixin:
         """VACUUM to reclaim space after large deletes (SQLite never shrinks on its own).
         Takes an exclusive lock — callers must ensure no other writers are active.  FTS5
         segments are merged first (:meth:`optimize_fts`) so their pages are reclaimed too;
-        returns the number of FTS indexes optimized (0 on merge failure / no FTS)."""
+        returns the number of FTS indexes optimized (0 on merge failure / no FTS). A quarantined
+        handle (corrupt image, replaced file, lost WAL generation) raises before any rewrite: a
+        VACUUM reads every page and commits the result back, turning contained damage into an
+        amplified one (#105670). Same guard ``_execute_write`` applies to every write."""
+        self._raise_if_db_corrupt()
+        self._raise_if_db_replaced()
         optimized = 0
         try:
             optimized = self.optimize_fts()  # manages its own lock

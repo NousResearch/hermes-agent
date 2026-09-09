@@ -862,6 +862,7 @@ export interface DesktopConnectionConfigInput {
   // For a 'cloud' connection: the selected Hermes Cloud org (slug or id) to
   // persist so Settings can reopen into it. Ignored for remote/local modes.
   cloudOrg?: string
+  cloudName?: string
   sshHost?: string
   sshUser?: string
   sshPort?: number | null

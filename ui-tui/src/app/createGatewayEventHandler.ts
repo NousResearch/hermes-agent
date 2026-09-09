@@ -784,6 +784,14 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
       case 'session.info': {
         const info = ev.payload
 
+        // A replayed snapshot can be the only terminal signal after reconnect.
+        // Missing running on older gateways must not clear a live turn.
+        if (info.running === false) {
+          turnController.clearStatusTimer()
+          turnController.idle()
+          setStatus('ready')
+        }
+
         patchUiState(state => ({
           ...state,
           info,

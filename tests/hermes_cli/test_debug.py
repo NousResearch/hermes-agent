@@ -632,6 +632,14 @@ class TestDeletePaste:
         assert req.method == "DELETE"
         assert "paste.rs/abc123" in req.full_url
 
+    def test_dpaste_url_error_explains_no_delete(self):
+        """dpaste.com pastes have no owner token, so the user must be told the
+        paste cannot be deleted and will expire on its own (#106164)."""
+        from hermes_cli.debug import delete_paste
+
+        with pytest.raises(ValueError, match="cannot be deleted.*expire on their own"):
+            delete_paste("https://dpaste.com/ABC123")
+
 
 class TestScheduleAutoDelete:
     """``_schedule_auto_delete`` used to spawn a detached Python subprocess
@@ -814,6 +822,29 @@ class TestShareIncludesAutoDelete:
         assert "PUBLIC paste service" in out
         assert "NOT redacted" in out
 
+    def test_share_output_warns_on_dpaste_fallback(self, hermes_home, capsys):
+        """With dpaste.com URLs the output must not promise 6-hour auto-delete
+        or a working `hermes debug delete` (#106164)."""
+        from hermes_cli.debug import run_debug_share
+
+        args = MagicMock()
+        args.lines = 50
+        args.expire = 1
+        args.local = False
+        args.nous = False
+
+        with patch("hermes_cli.dump.run_dump"), \
+             patch("hermes_cli.debug.upload_to_pastebin",
+                    return_value="https://dpaste.com/TEST"), \
+             patch("hermes_cli.debug._schedule_auto_delete"):
+            run_debug_share(args)
+
+        out = capsys.readouterr().out
+        assert "fell back to dpaste.com" in out
+        assert "CANNOT be deleted" in out
+        assert "To delete now" not in out
+        assert "paste.rs pastes will auto-delete in 6 hours" in out
+
 
 # ---------------------------------------------------------------------------
 # build_debug_share — structured core used by the dashboard endpoint
@@ -873,7 +904,6 @@ class TestBuildDebugShare:
         assert "Report" in result.urls
         assert len(result.failures) == 1
         assert "paste service hiccup" in result.failures[0]
-
 
 
 # ---------------------------------------------------------------------------

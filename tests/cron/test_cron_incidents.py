@@ -42,7 +42,7 @@ def _job(**overrides):
 
 def _tick_failing(job, tmp_path, deliveries, error="boom unrelated"):
     """Run one run_one_job tick whose agent raises ``error`` (the failure
-    path that composes the per-run failure ping). Mirrors the drift-alert-once
+    path that composes the per-run failure ping). Mirrors the preflight alert-once
     harness so the incident gating is exercised through the real scheduler."""
     fake_db = MagicMock()
 

@@ -853,11 +853,16 @@ class CLIModalMixin:
         self._invalidate()
 
     def _secret_capture_callback(self, var_name: str, prompt: str, metadata=None) -> dict:
-        return prompt_for_secret(self, var_name, prompt, metadata)
+        self._capture_modal_input_snapshot()
+        try:
+            return prompt_for_secret(self, var_name, prompt, metadata)
+        finally:
+            self._restore_modal_input_snapshot()
+            self._paint_now()
 
     def _capture_modal_input_snapshot(self) -> None:
         """Temporarily clear the input buffer and save the user's in-progress draft."""
-        if self._modal_input_snapshot is not None or not getattr(self, "_app", None):
+        if getattr(self, "_modal_input_snapshot", None) is not None or not getattr(self, "_app", None):
             return
         try:
             buf = self._app.current_buffer
@@ -868,7 +873,7 @@ class CLIModalMixin:
 
     def _restore_modal_input_snapshot(self) -> None:
         """Restore any draft text that was present before a modal prompt opened."""
-        snapshot = self._modal_input_snapshot
+        snapshot = getattr(self, "_modal_input_snapshot", None)
         self._modal_input_snapshot = None
         if not snapshot or not getattr(self, "_app", None):
             return

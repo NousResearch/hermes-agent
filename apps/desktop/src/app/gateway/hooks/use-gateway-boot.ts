@@ -1,4 +1,9 @@
-import { isGatewayReauthRequired, JsonRpcGatewayError, resolveGatewayWsUrl } from '@hermes/shared'
+import {
+  isGatewayReauthRequired,
+  isGatewayWebSocketUrl,
+  JsonRpcGatewayError,
+  resolveGatewayWsUrl
+} from '@hermes/shared'
 import { useEffect, useRef } from 'react'
 
 import { shouldApplyPostBootProgressError } from '@/components/boot-failure-reauth'
@@ -108,15 +113,14 @@ const RECONNECT_ESCALATE_AFTER_MS = 300_000
 // only a STREAK of unanswered pings rebuilds the transport.
 const GATEWAY_LIVENESS_PROBE_TIMEOUT_MS = 5_000
 
-// Bounded self-heal for a failed REMOTE boot (#82679): when the primary boot
-// fails on a transient remote fault (dropped SSH/HTTP registered connection,
-// mint timeout — main tags those `retryable` on the boot progress), the
-// renderer re-attempts the whole boot with the same full-jitter backoff the
-// post-boot reconnect loop uses, up to this many attempts. Retries are
-// bounded and end in the real recovery affordance (the boot-failure overlay
-// with Retry / Settings), never an infinite spinner. Local failures and
-// confirmed reauth rejections never enter this loop — a missing capability
-// differs from a transient failure.
+// Bounded self-heal for a failed REMOTE boot (#82679): main classifies every
+// fault it can see (via getBootProgress().retryable); the renderer adds the one
+// it cannot — a valid remote WebSocket dial that fails before becoming usable.
+// The renderer re-attempts the whole boot with the same full-jitter backoff the
+// post-boot reconnect loop uses, up to this many attempts. Retries are bounded
+// and end in the real recovery affordance (the boot-failure overlay with
+// Retry / Settings), never an infinite spinner. Local failures and confirmed
+// reauth rejections never enter this loop.
 const BOOT_RETRY_MAX_ATTEMPTS = 5
 // Base delay for boot retries. Deliberately slower than the socket reconnect
 // loop's 300ms: each attempt may rebuild an SSH master + remote dashboard.
@@ -1017,6 +1021,11 @@ export function useGatewayBoot({
     })
 
     async function boot() {
+      // Where this boot attempt got to — a historical fact, not a late read of
+      // gateway.connectionState. A socket can close after a successful dial;
+      // later initialization errors must not be reclassified as boot dials.
+      let stage: 'resolving' | 'minting' | 'dialing' | 'connected' = 'resolving'
+
       try {
         // A profile-pinned helper window (the HUD) dials its target profile's
         // backend directly — ensureBackend spawns/reuses it from the pool.
@@ -1034,6 +1043,8 @@ export function useGatewayBoot({
         if (cancelled) {
           return
         }
+
+        stage = 'minting'
 
         setDesktopBootStep({
           phase: 'renderer.gateway.connect',
@@ -1059,17 +1070,24 @@ export function useGatewayBoot({
         // Mint a fresh WS URL right before connecting. For OAuth gateways the
         // ticket is single-use with a short TTL, so the ticket baked into
         // conn.wsUrl is stale; resolveGatewayWsUrl() re-mints it rather than
-        // connecting with a dead ticket. Auth rejection asks for sign-in;
-        // connectivity failures remain retryable. Bounded like the reconnect
-        // path (#93454) so a wedged mint fails into boot retry instead of
-        // hanging "Starting Hermes…" forever.
+        // connecting with a dead ticket. Auth rejection asks for sign-in. This
+        // await is bounded like the reconnect path (#93454) so a wedged mint
+        // reaches the recovery affordance instead of hanging "Starting Hermes…".
         const wsUrl = await withTimeout(
           resolveGatewayWsUrl(desktop, conn),
           RECONNECT_ATTEMPT_TIMEOUT_MS,
           'Timed out minting the gateway WebSocket URL'
         )
 
+        // Only a valid WebSocket dial against a remote descriptor counts as a
+        // transient renderer-side failure; URL and capability failures stay
+        // terminal at their own boundaries.
+        if (conn.mode === 'remote' && isGatewayWebSocketUrl(wsUrl)) {
+          stage = 'dialing'
+        }
+
         await gateway.connect(wsUrl)
+        stage = 'connected'
 
         if (cancelled) {
           return
@@ -1116,15 +1134,16 @@ export function useGatewayBoot({
         if (!cancelled) {
           const message = err instanceof Error ? err.message : String(err)
 
-          // Transient remote failure (dropped SSH/HTTP registered connection,
-          // mint timeout): self-heal with bounded, jittered retries instead of
-          // parking on "Desktop boot failed" until the user re-enters the same
-          // connection details (#82679). Main already cleared the failed cached
-          // descriptor, so the next getConnection() rebuilds the connection —
-          // exactly what manual re-entry forced. Exhausted retries, local
-          // failures, and confirmed reauth rejections end in the real recovery
-          // affordance (the boot-failure overlay), never an infinite spinner.
-          if (bootRetryAttempt < BOOT_RETRY_MAX_ATTEMPTS && (await bootFailureIsRetryable()) && !cancelled) {
+          // Main's classification (#82679) still decides every failure it can
+          // see. The one it cannot see is the renderer-owned WebSocket dial:
+          // after a renderer reload main serves its cached descriptor with a
+          // stale `backend.ready / retryable:false` snapshot, so a remote dial
+          // that never became usable is retryable on its own. Anything after a
+          // successful dial keeps the terminal recovery surface.
+          const canRetry = bootRetryAttempt < BOOT_RETRY_MAX_ATTEMPTS
+          const retryable = canRetry && (stage === 'dialing' || (await bootFailureIsRetryable()))
+
+          if (retryable && !cancelled) {
             const delay = reconnectBackoffDelayMs(bootRetryAttempt, { baseDelayMs: BOOT_RETRY_BASE_DELAY_MS })
             bootRetryAttempt += 1
             resumeDesktopBootForRetry(translateNow('boot.steps.retryingRemoteBackend'))

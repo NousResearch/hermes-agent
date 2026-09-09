@@ -179,10 +179,15 @@ function findToolPartIndex(
     }
   }
 
-  const pendingIndices = parts
-    .map((part, index) => ({ part, index }))
-    .filter(({ part }) => part.type === 'tool-call' && part.toolName === name && part.result === undefined)
-    .map(({ index }) => index)
+  const pendingIndices: number[] = []
+
+  for (let index = 0; index < parts.length; index += 1) {
+    const part = parts[index]
+
+    if (part.type === 'tool-call' && part.toolName === name && part.result === undefined) {
+      pendingIndices.push(index)
+    }
+  }
 
   if (pendingIndices.length === 0) {
     return -1
@@ -279,11 +284,17 @@ function toolResult(
 }
 
 function completeOpenStreamParts(parts: ChatMessagePart[], completedAt: number): ChatMessagePart[] {
-  return parts.map(part =>
-    (part.type === 'text' || part.type === 'reasoning') && part.completedAt === undefined
-      ? ({ ...part, completedAt } as ChatMessagePart)
-      : part
-  )
+  const next = parts.slice()
+
+  for (let index = 0; index < next.length; index += 1) {
+    const part = next[index]
+
+    if ((part.type === 'text' || part.type === 'reasoning') && part.completedAt === undefined) {
+      next[index] = { ...part, completedAt } as ChatMessagePart
+    }
+  }
+
+  return next
 }
 
 export function upsertToolPart(
@@ -325,10 +336,10 @@ export function upsertToolPart(
   } satisfies ChatMessagePart
 
   if (index === -1) {
-    return [...next, base]
+    next.push(base)
+  } else {
+    next[index] = { ...next[index], ...base }
   }
-
-  next[index] = { ...next[index], ...base }
 
   return next
 }

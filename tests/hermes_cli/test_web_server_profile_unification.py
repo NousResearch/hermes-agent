@@ -281,7 +281,6 @@ class TestProfileScopedModel:
         assert resp.status_code == 200
         assert resp.json()["cron_model_impact"] == {
             "available": True,
-            "guard_enabled": True,
             "affected_count": 1,
             "truncated": False,
             "jobs": [

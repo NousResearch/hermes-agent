@@ -7,7 +7,7 @@ import logging
 import re
 from contextlib import nullcontext
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from agent.context_compressor import (
     COMPRESSED_SUMMARY_METADATA_KEY,
@@ -72,6 +72,19 @@ def _override_replaces_content(msg: Dict, content: Any, override: Any) -> bool:
         and not msg.get(COMPRESSED_SUMMARY_METADATA_KEY)
         and (not isinstance(content, list) or isinstance(override, list))
     )
+
+
+def durable_user_row_content(agent, msg: Dict, content: Any, api_content: Any) -> Tuple[Any, Any]:
+    """``(content, api_content)`` as the current turn's user row is written: the persist override is the
+    clean transcript, the live content is what the wire sent — so when they differ and nothing else was
+    injected, the live bytes ARE the sidecar. Shared by the flush and the turn-start stamp so the stamp
+    matches the row the flush wrote."""
+    override = getattr(agent, "_persist_user_message_override", None)
+    if _override_replaces_content(msg, content, override):
+        if api_content is None and isinstance(content, str) and content != override:
+            api_content = content
+        content = override
+    return content, api_content
 
 
 def _summary_display_kind(msg: Dict) -> Any:
@@ -143,12 +156,7 @@ def _db_flush_row(agent, msg: Dict, is_current_turn_user: bool) -> Dict[str, Any
     api_content = msg.get("api_content") if isinstance(msg.get("api_content"), str) else None
     timestamp = msg.get("timestamp")
     if is_current_turn_user and role == "user":
-        override = getattr(agent, "_persist_user_message_override", None)
-        if _override_replaces_content(msg, content, override):
-            # Live content is what the wire sent, the override is the clean transcript; keep the sent bytes.
-            if api_content is None and isinstance(content, str) and content != override:
-                api_content = content
-            content = override
+        content, api_content = durable_user_row_content(agent, msg, content, api_content)
         ov_timestamp = getattr(agent, "_persist_user_message_timestamp", None)
         timestamp = timestamp if ov_timestamp is None else ov_timestamp
     if api_content == content:

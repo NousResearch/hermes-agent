@@ -311,9 +311,18 @@ class SessionCompressionMixin:
             cursor = conn.execute(
                 "UPDATE sessions SET compression_failure_cooldown_until = ?, "
                 "compression_failure_error = ? WHERE id = ?", (deadline, error, session_id))
-            if cursor.rowcount != 1:
-                raise RuntimeError(f"compression cooldown rollback session missing: {session_id}")
-        self._execute_write(_do)
+            # rowcount == 0 means the session row was retired/expired mid-attempt: there is no
+            # cooldown left to restore. Tolerate it as a no-op (log + return) instead of crashing
+            # the turn dispatcher - consistent with the early-return when the cooldown row is
+            # absent at the top of this function (#106271). The UPDATE targets the session PK so
+            # rowcount is 0 or 1; any other count is impossible for a primary-key match.
+            return cursor.rowcount == 1
+        if not self._execute_write(_do):
+            logger.warning(
+                "compression cooldown rollback: session missing mid-attempt (retired?), no-op: %s",
+                session_id,
+            )
+            return
         actual = self.get_compression_failure_cooldown_row(session_id)
         expected = _cooldown_row(True, deadline, error)
         if actual != expected:

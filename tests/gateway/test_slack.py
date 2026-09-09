@@ -3807,6 +3807,10 @@ class TestProgressMessageThread:
             "message_id must equal the event ts so _run_agent can use it as "
             "the fallback thread anchor for progress messages"
         )
+        assert source.message_id == "1234567890.000001", (
+            "source.message_id must carry the authenticated triggering Slack ts "
+            "into session-bound tools"
+        )
 
         # Verify that the Slack send() method correctly threads a message
         # when metadata contains thread_id equal to the original ts

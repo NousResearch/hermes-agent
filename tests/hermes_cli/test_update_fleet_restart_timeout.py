@@ -108,6 +108,28 @@ class TestFleetRestartTimeoutIsolation:
 
         assert seen == ["hermes-serve", "hermes-serve-work", "hermes-gateway"]
 
+    def test_hermes_dashboard_units_are_not_in_the_fleet_loop(self):
+        # Managed dashboard restart is `_finish_dashboard_update_cleanup` /
+        # `_restart_managed_dashboard_service`. Putting `hermes-dashboard*`
+        # here double-restarts a Serve-only install's sibling (#83595).
+        seen: list[str] = []
+
+        _for_each_systemd_gateway_unit(
+            "\n".join(
+                [
+                    "ssh.service loaded active running",
+                    "hermes-dashboard.service loaded active running",
+                    "hermes-dashboard-work.service loaded active running",
+                    "hermes-gateway.service loaded active running",
+                    "",
+                ]
+            ),
+            process_unit=seen.append,
+            on_unit_timeout=lambda *_: pytest.fail("unexpected timeout"),
+        )
+
+        assert seen == ["hermes-gateway"]
+
     def test_hermes_server_near_prefix_is_rejected(self):
         # Review on #83595: a bare ``startswith("hermes-serve")`` gate also
         # accepts the unrelated ``hermes-server.service``. Only the exact
@@ -151,6 +173,10 @@ class TestGracefulSigusr1Eligibility:
         assert not _service_unit_supports_graceful_sigusr1_restart("hermes-serve")
         assert not _service_unit_supports_graceful_sigusr1_restart(
             "hermes-serve-work"
+        )
+        assert not _service_unit_supports_graceful_sigusr1_restart("hermes-dashboard")
+        assert not _service_unit_supports_graceful_sigusr1_restart(
+            "hermes-dashboard-work"
         )
 
     def test_process_errors_other_than_timeout_still_propagate(self):

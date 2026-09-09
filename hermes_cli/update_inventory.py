@@ -82,6 +82,7 @@ _MECHANISM_DESCRIPTIONS = {
 }
 
 _SERVE_KINDS = ("serve", "dashboard")
+_LEDGER_SUPERVISED = frozenset({"systemd", "launchd", "service", "windows-service"})
 
 
 def _restart_mechanism(supervisor: str, profile: str) -> str:
@@ -166,11 +167,17 @@ def _supervisor_classifier() -> Callable[[int], str]:
     return lambda pid: _detect_supervisor_for_pid(pid, service_pids, windows_service_pids)
 
 
-def _collect_gateway_runtimes(plan: UpdatePlan, profile_homes: list, seen: set[int]) -> None:
+def _collect_gateway_runtimes(
+    plan: UpdatePlan,
+    profile_homes: list,
+    seen: set[int],
+    supervisor: Callable[[int], str] | None = None,
+) -> None:
     """Per-profile gateways: control-socket identity first (declared by the process itself, including
     supervisor provenance — no argv/PID inference), ``gateway_state.json`` fallback, then PID-file
     mapped gateways no status record covers."""
-    supervisor = _supervisor_classifier()
+    if supervisor is None:
+        supervisor = _supervisor_classifier()
     with _probe("Gateway-state inventory"):
         from gateway.status import _pid_exists, read_runtime_status
         from hermes_cli.update_receipt import _socket_identity
@@ -204,11 +211,67 @@ def _collect_gateway_runtimes(plan: UpdatePlan, profile_homes: list, seen: set[i
                 plan.runtimes.append(_runtime("gateway", proc.profile, proc.pid, supervisor(proc.pid)))
 
 
-def _collect_ledger_runtimes(plan: UpdatePlan, seen: set[int]) -> None:
+def _is_hermes_serve_or_dashboard_unit(unit: object) -> bool:
+    """Exact base unit or hyphenated profile family for serve/dashboard.
+
+    ``startswith("hermes-serve")`` would also accept ``hermes-server.service`` (#83595).
+    """
+    name = str(unit).removesuffix(".service").rsplit("/", 1)[-1]
+    return (
+        name == "hermes-serve" or name.startswith("hermes-serve-")
+        or name == "hermes-dashboard" or name.startswith("hermes-dashboard-")
+    )
+
+
+def _systemd_unit_for_pid(pid: int) -> str | None:
+    """Linux cgroup service name for *pid*, or None off Linux / unreadable / not a ``.service``."""
+    try:
+        from hermes_cli.main_dashboard import _get_systemd_service_for_pid
+
+        return _get_systemd_service_for_pid(pid)
+    except Exception:
+        return None
+
+
+def _pid_is_unit_backed_serve_or_dashboard(pid: int) -> bool:
+    """True when *pid*'s cgroup names a ``hermes-serve*`` / ``hermes-dashboard*`` unit."""
+    unit = _systemd_unit_for_pid(pid)
+    return bool(unit and _is_hermes_serve_or_dashboard_unit(unit))
+
+
+def _ledger_serve_supervisor(
+    entry: dict, *, spawner_dead: bool | None, classify_pid: Callable[[int], str] | None = None,
+) -> str:
+    """Live Desktop parent, else the same PID classifier gateways use, else cgroup unit, else manual-serve.
+
+    ``_get_service_pids`` is gateway-unit only, so a handwritten ``hermes-dashboard.service`` is
+    absent from that set; cgroup recovers it. Classifying those as ``manual-serve`` selects
+    ``respawn-argv`` (stop-before-swap), which ``Restart=always`` beats with the old process.
+    """
+    if spawner_dead is False:
+        return "desktop"
+    pid = entry.get("pid")
+    if not isinstance(pid, int):
+        return "manual-serve"
+    if classify_pid is not None:
+        detected = classify_pid(pid)
+        if detected in _LEDGER_SUPERVISED:
+            return detected
+    if _pid_is_unit_backed_serve_or_dashboard(pid):
+        return "systemd"
+    return "manual-serve"
+
+
+def _collect_ledger_runtimes(
+    plan: UpdatePlan, seen: set[int], classify_pid: Callable[[int], str] | None = None,
+) -> None:
     """Serve/dashboard backends from the spawn ledger — runtimes the gateway collectors can never see
     (a manual `hermes serve --host <ip>` for a remote Desktop, a long-lived `hermes dashboard`).
     ledger_entries() live-verifies (pid, create_time) so PID reuse never fabricates a row. Desktop-
-    supervised backends (spawner still alive) restart via the Desktop's own respawn, not ours."""
+    supervised backends (spawner still alive) restart via the Desktop's own respawn, not ours.
+    Unit-backed backends restart via ``systemctl`` after the swap — not stop-before-swap."""
+    if classify_pid is None:
+        classify_pid = _supervisor_classifier()
     with _probe("Serve/dashboard ledger inventory"):
         from hermes_cli.process_identity import ledger_entries, spawner_is_dead
 
@@ -221,7 +284,9 @@ def _collect_ledger_runtimes(plan: UpdatePlan, seen: set[int]) -> None:
             # survivor probe comparing PIDs alone calls a NEW serve that reused the number a survivor.
             plan.runtimes.append(_runtime(
                 str(purpose), str(entry.get("profile") or "default"), pid,
-                "desktop" if spawner_is_dead(entry) is False else "manual-serve",
+                _ledger_serve_supervisor(
+                    entry, spawner_dead=spawner_is_dead(entry), classify_pid=classify_pid,
+                ),
                 detail={
                     "argv": entry.get("argv") or "", "host": entry.get("host") or "",
                     "port": entry.get("port"), "create_time": entry.get("create_time"),
@@ -249,8 +314,9 @@ def collect_runtime_inventory() -> UpdatePlan:
         profile_homes = _profile_homes()
         plan.profiles = [name for name, _ in profile_homes]
     seen: set[int] = set()
-    _collect_gateway_runtimes(plan, profile_homes, seen)
-    _collect_ledger_runtimes(plan, seen)
+    supervisor = _supervisor_classifier()
+    _collect_gateway_runtimes(plan, profile_homes, seen, supervisor)
+    _collect_ledger_runtimes(plan, seen, supervisor)
     return plan
 
 

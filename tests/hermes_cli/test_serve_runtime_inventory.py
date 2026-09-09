@@ -87,6 +87,7 @@ def test_inventory_includes_manual_serve_from_ledger(monkeypatch):
         spawner_is_dead=lambda e: None,  # no spawner recorded → manual
     )
     monkeypatch.setitem(sys.modules, "hermes_cli.process_identity", fake_pi)
+    monkeypatch.setattr(update_inventory, "_systemd_unit_for_pid", lambda pid: None)
     plan = update_inventory.collect_runtime_inventory()
     serves = [r for r in plan.runtimes if r.kind == "serve"]
     assert serves, "manual serve must appear in the inventory"
@@ -98,6 +99,56 @@ def test_inventory_includes_manual_serve_from_ledger(monkeypatch):
     assert row.detail["port"] == 9119
 
 
+def test_inventory_classifies_systemd_dashboard_from_cgroup(monkeypatch):
+    """A handwritten hermes-dashboard.service has no HERMES_SPAWN; cgroup is the supervisor."""
+    entry = _ledger_entry(purpose="dashboard", host="127.0.0.1", port=9119)
+    fake_pi = SimpleNamespace(
+        ledger_entries=lambda **k: [entry],
+        spawner_is_dead=lambda e: None,
+    )
+    monkeypatch.setitem(sys.modules, "hermes_cli.process_identity", fake_pi)
+    monkeypatch.setattr(
+        update_inventory, "_systemd_unit_for_pid", lambda pid: "hermes-dashboard.service"
+    )
+    plan = update_inventory.collect_runtime_inventory()
+    rows = [r for r in plan.runtimes if r.kind == "dashboard"]
+    assert rows, "systemd dashboard must appear in the inventory"
+    row = rows[0]
+    assert row.pid == 4321
+    assert row.supervisor == "systemd"
+    assert row.restart_via == "systemd"
+    assert "stop before" not in update_inventory.describe_restart_mechanism(
+        row.restart_via, row.profile
+    )
+
+
+def test_inventory_classifies_ledger_pid_in_service_pids_as_systemd(monkeypatch):
+    """Same detector as gateways: a ledger PID in service_pids is systemd, not manual-serve."""
+    entry = _ledger_entry(purpose="dashboard", pid=4321, host="127.0.0.1", port=9119)
+    fake_pi = SimpleNamespace(
+        ledger_entries=lambda **k: [entry],
+        spawner_is_dead=lambda e: None,
+    )
+    monkeypatch.setitem(sys.modules, "hermes_cli.process_identity", fake_pi)
+    monkeypatch.setattr(update_inventory, "_systemd_unit_for_pid", lambda pid: None)
+    monkeypatch.setattr(
+        "hermes_cli.gateway._get_service_pids", lambda all_profiles=False: {4321}
+    )
+    monkeypatch.setattr("hermes_cli.gateway.supports_systemd_services", lambda: True)
+    plan = update_inventory.collect_runtime_inventory()
+    rows = [r for r in plan.runtimes if r.kind == "dashboard"]
+    assert rows and rows[0].supervisor == "systemd"
+    assert rows[0].restart_via == "systemd"
+
+
+def test_hermes_server_unit_is_not_serve_or_dashboard():
+    assert update_inventory._is_hermes_serve_or_dashboard_unit("hermes-dashboard.service")
+    assert update_inventory._is_hermes_serve_or_dashboard_unit("hermes-dashboard-work.service")
+    assert update_inventory._is_hermes_serve_or_dashboard_unit("hermes-serve.service")
+    assert not update_inventory._is_hermes_serve_or_dashboard_unit("hermes-server.service")
+    assert not update_inventory._is_hermes_serve_or_dashboard_unit("ssh.service")
+
+
 def test_inventory_classifies_desktop_owned_serve(monkeypatch):
     entry = _ledger_entry(spawner_pid=999, spawner_create=1.0)
     fake_pi = SimpleNamespace(
@@ -105,6 +156,7 @@ def test_inventory_classifies_desktop_owned_serve(monkeypatch):
         spawner_is_dead=lambda e: False,  # Electron parent alive
     )
     monkeypatch.setitem(sys.modules, "hermes_cli.process_identity", fake_pi)
+    monkeypatch.setattr(update_inventory, "_systemd_unit_for_pid", lambda pid: None)
     plan = update_inventory.collect_runtime_inventory()
     serves = [r for r in plan.runtimes if r.kind == "serve"]
     assert serves and serves[0].supervisor == "desktop"
@@ -126,19 +178,31 @@ def test_ledger_manual_serve_holders_filters_correctly(monkeypatch):
     desktop_owned = _ledger_entry(pid=200, spawner_pid=999, spawner_create=1.0)
     gateway = _ledger_entry(pid=300, purpose="gateway")
     not_a_holder = _ledger_entry(pid=400)
+    systemd_dashboard = _ledger_entry(pid=500, purpose="dashboard")
 
     fake_pi = SimpleNamespace(
-        ledger_entries=lambda **k: [manual, desktop_owned, gateway, not_a_holder],
+        ledger_entries=lambda **k: [manual, desktop_owned, gateway, not_a_holder, systemd_dashboard],
         spawner_is_dead=lambda e: False if e["pid"] == 200 else None,
     )
     monkeypatch.setitem(sys.modules, "hermes_cli.process_identity", fake_pi)
-    holders = [(100, "python.exe", "..."), (200, "python.exe", "..."), (300, "python.exe", "...")]
+    monkeypatch.setattr(
+        update_inventory,
+        "_systemd_unit_for_pid",
+        lambda pid: "hermes-dashboard.service" if pid == 500 else None,
+    )
+    holders = [
+        (100, "python.exe", "..."),
+        (200, "python.exe", "..."),
+        (300, "python.exe", "..."),
+        (500, "python.exe", "..."),
+    ]
 
     result = update_cmd._ledger_manual_serve_holders(holders)
     pids = [e["pid"] for e in result]
     assert pids == [100], (
         "only the manual serve holder qualifies: desktop-owned keeps the "
-        "refusal, gateways belong to the pause machinery, non-holders skipped"
+        "refusal, gateways belong to the pause machinery, systemd dashboard "
+        "must not be stop-before-swap, non-holders skipped"
     )
 
 
@@ -242,6 +306,7 @@ def test_inventory_records_the_serve_process_incarnation(monkeypatch):
         spawner_is_dead=lambda e: None,
     )
     monkeypatch.setitem(sys.modules, "hermes_cli.process_identity", fake_pi)
+    monkeypatch.setattr(update_inventory, "_systemd_unit_for_pid", lambda pid: None)
     plan = update_inventory.collect_runtime_inventory()
     serves = [r for r in plan.runtimes if r.kind == "serve"]
     assert serves and serves[0].detail["create_time"] == 1712345678.5

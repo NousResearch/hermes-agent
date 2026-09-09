@@ -363,16 +363,23 @@ def _ledger_manual_serve_holders(matches: list[tuple[int, str, str]]) -> list[di
 
     Positive identity only: self-registered purpose serve/dashboard, live (pid, create_time), recorded spawner
     NOT alive (a Desktop-owned backend keeps its live Electron spawner and must keep the refusal — the app would
-    respawn what we kill). Full entries let the relauncher rebuild from host/port/profile, not argv."""
+    respawn what we kill). systemd unit-backed PIDs are excluded: ``Restart=always`` beats stop-before-swap.
+    Full entries let the relauncher rebuild from host/port/profile, not argv."""
     try:
         from hermes_cli.process_identity import ledger_entries, spawner_is_dead
     except Exception:
         return []
+    try:
+        from hermes_cli.update_inventory import _pid_is_unit_backed_serve_or_dashboard
+    except Exception:
+        def _pid_is_unit_backed_serve_or_dashboard(pid: int) -> bool:
+            return False
     holder_pids = {int(pid) for pid, _name, _cmd in matches}
     return [
         entry for entry in ledger_entries()
         if entry.get("purpose") in _BACKEND_PURPOSES and isinstance(entry.get("pid"), int) and entry["pid"] in holder_pids
         and spawner_is_dead(entry) is not False  # False = live Desktop supervisor owns it; keep refusing
+        and not _pid_is_unit_backed_serve_or_dashboard(entry["pid"])
     ]
 
 

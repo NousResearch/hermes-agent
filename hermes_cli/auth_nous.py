@@ -1266,9 +1266,10 @@ def _nous_device_code_login(
     on_verification: Optional[Callable[[str, str], None]] = None) -> Dict[str, Any]:
     """Run the Nous device-code flow and return full OAuth state without persisting."""
     from hermes_cli.auth import (
-        PROVIDER_REGISTRY, _coerce_ttl_seconds, _is_remote_session, _optional_base_url,
-        _poll_for_token, _print_device_code_instructions, _request_device_code,
-        _tls_state_from_verify, format_auth_error, refresh_nous_oauth_from_state)
+        PROVIDER_REGISTRY, _can_open_graphical_browser, _coerce_ttl_seconds,
+        _is_remote_session, _optional_base_url, _poll_for_token,
+        _print_device_code_instructions, _request_device_code, _tls_state_from_verify,
+        format_auth_error, refresh_nous_oauth_from_state)
     pconfig = PROVIDER_REGISTRY["nous"]
     portal_base_url = (
         portal_base_url or os.getenv("HERMES_PORTAL_BASE_URL") or os.getenv("NOUS_PORTAL_BASE_URL")
@@ -1279,7 +1280,9 @@ def _nous_device_code_login(
     client_id = client_id or pconfig.client_id
     scope = scope or pconfig.scope
     verify: bool | str = False if insecure else (ca_bundle if ca_bundle else True)
-    if _is_remote_session():
+    use_separate_device = open_browser and (
+        _is_remote_session() or not _can_open_graphical_browser())
+    if use_separate_device:
         open_browser = False
     print(f"Starting Hermes login via {pconfig.name}...")
     print(f"Portal: {portal_base_url}")
@@ -1296,6 +1299,9 @@ def _nous_device_code_login(
         interval = int(device_data["interval"])
         _print_device_code_instructions(
             verification_url, user_code, open_browser=open_browser, failure_dash="—")
+        if use_separate_device:
+            print("  Open this URL on a separate device (phone or laptop).")
+            print("  The verification page may block requests from server IPs.")
         # Out-of-band consumer (e.g. the TUI gateway, whose stdout is a JSON-RPC pipe): fired AFTER
         # the print/browser block and BEFORE polling so it can render the link while we wait.
         if on_verification is not None:

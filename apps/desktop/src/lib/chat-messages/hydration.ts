@@ -37,23 +37,24 @@ const DISCORD_TRIGGERING_NOTE_RE =
  * reaches Desktop. Raw Responses sidecars are used only for final-answer fallback;
  * phase=analysis and raw phase=commentary are never promoted to assistant text.
  */
-function codexMessageItemText(message: SessionMessage): { commentary: string[]; reply: string } {
-  let items = message.codex_message_items
+function parseJsonItems(items: unknown): unknown {
+  if (typeof items !== 'string') {
+    return items
+  }
 
+  try {
+    return JSON.parse(items)
+  } catch {
+    return undefined
+  }
+}
+
+function codexMessageItemText(message: SessionMessage): { commentary: string[]; reply: string } {
+  const items = parseJsonItems(message.codex_message_items)
   const commentary = Array.isArray(message.display_commentary)
     ? message.display_commentary.filter((part): part is string => typeof part === 'string' && Boolean(part.trim()))
     : []
-
   const replies: string[] = []
-
-  // REST carries SQLite JSON text; RPC history carries the decoded list.
-  if (typeof items === 'string') {
-    try {
-      items = JSON.parse(items)
-    } catch {
-      return { commentary, reply: '' }
-    }
-  }
 
   if (!Array.isArray(items)) {
     return { commentary, reply: '' }
@@ -492,6 +493,18 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
       role: displayRole,
       parts,
       ...(message.role === 'assistant' && durableComplete !== undefined ? { durableComplete } : {}),
+      ...(message.role === 'assistant'
+        ? {
+            reasoning: message.reasoning,
+            reasoning_content: message.reasoning_content,
+            reasoning_details: message.reasoning_details,
+            _reasoning_route: message._reasoning_route,
+            anthropic_content_blocks: parseJsonItems(message.anthropic_content_blocks),
+            bedrock_content_blocks: parseJsonItems(message.bedrock_content_blocks),
+            codex_reasoning_items: parseJsonItems(message.codex_reasoning_items),
+            codex_message_items: parseJsonItems(message.codex_message_items)
+          }
+        : {}),
       ...(message.display_kind === 'async_delegation_complete' || message.display_kind === 'process_complete'
         ? { asyncResult: asyncResultBody(displayContentForMessage(message.role, message.content || content)) }
         : {}),

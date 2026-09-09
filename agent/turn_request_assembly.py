@@ -13,7 +13,10 @@ from dataclasses import dataclass
 import logging
 from typing import Any
 
-from agent.message_sanitization import _sanitize_messages_surrogates
+from agent.message_sanitization import (
+    _sanitize_messages_surrogates,
+    strip_non_assistant_reasoning_replay_fields,
+)
 from agent.usage_anchor import anchored_context_tokens
 from agent.prompt_caching import build_prompt_cache_plan, effective_cache_ttl
 from agent.turn_context import build_api_messages
@@ -154,14 +157,9 @@ def assemble_api_request(
         if api_msg.get("role") == "assistant":
             agent._copy_reasoning_content_for_api(api_msg, api_msg)
             continue
-        # Structured reasoning and its provenance are assistant-only.
-        # A context engine must not be able to place them on another role
-        # and bypass the assistant validation path.
-        api_msg.pop("_reasoning_route", None)
-        api_msg.pop("reasoning", None)
-        api_msg.pop("reasoning_content", None)
-        api_msg.pop("reasoning_details", None)
-        api_msg.pop("anthropic_content_blocks", None)
+        # A context engine must not be able to put assistant-only replay state
+        # on another role and bypass the assistant provenance validation path.
+        strip_non_assistant_reasoning_replay_fields(api_msg)
 
     # Runs unconditionally (not gated on context_compressor) so orphaned tool
     # results from session loading or manual message edits are always caught.

@@ -45,4 +45,17 @@ describe('async report hydration', () => {
     ).toBeUndefined()
     expect(hydrate('').metadata.custom.asyncResult).toBeUndefined()
   })
+
+  it('restores the result body and process kind for persisted process completions', () => {
+    const [message] = toChatMessages([
+      {
+        role: 'user',
+        content: report,
+        display_kind: 'process_complete'
+      }
+    ])
+
+    expect(message.asyncResult).toBe(report)
+    expect(message.asyncResultKind).toBe('process')
+  })
 })

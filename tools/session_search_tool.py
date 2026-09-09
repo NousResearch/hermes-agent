@@ -339,32 +339,6 @@ def _resolve_profile_db(profile: str):
     return SessionDB(db_path=profiles_mod.get_profile_dir(canon) / "state.db", read_only=True)
 
 
-def _locate_session_db(session_id: str):
-    """Scan every profile's ``state.db`` -> ``(db, profile_name)`` or ``(None, None)``.
-    Ids are globally unique, so the first hit is authoritative."""
-    from pathlib import Path
-    try:
-        from hermes_cli import profiles as profiles_mod
-        from hermes_state import SessionDB
-    except Exception:
-        return None, None
-    targets = [("default", profiles_mod.get_profile_dir("default"))] + _quiet(
-        lambda: [(info.name, info.path) for info in profiles_mod.list_profiles()], [],
-        "list_profiles failed during session locate")
-    seen: set = set()
-    for name, home in targets:
-        db_path = Path(home) / "state.db"
-        if str(db_path) in seen or not db_path.exists():
-            continue
-        seen.add(str(db_path))
-        pdb = _quiet(lambda: SessionDB(db_path=db_path, read_only=True), None, "open %s failed", db_path)
-        if pdb and _get_session_meta(pdb, session_id):
-            return pdb, name
-        if pdb:
-            pdb.close()
-    return None, None
-
-
 def _read_session(db, session_id: str, head: int = 20, tail: int = 10, link_profile: str = None) -> str:
     """Read shape: whole session, or ``head`` + ``tail`` messages with a scroll pointer."""
     meta = _get_session_meta(db, session_id)
@@ -384,18 +358,10 @@ def _read_session(db, session_id: str, head: int = 20, tail: int = 10, link_prof
 
 
 def _read_with_profile_fallback(db, sid: str, profile: Optional[str]) -> str:
-    """Read shape; on a miss, report which profile owns the id but never auto-read it —
-    another profile's transcript is only served when the caller names that profile."""
-    result = _read_session(db, sid, link_profile=profile)
-    if json.loads(result).get("success"):
-        return result
-    located, owner = _locate_session_db(sid)
-    if located is None:
-        return result
-    located.close()
-    return tool_error(
-        f"session_id '{sid}' lives in profile '{owner}'. Reading another profile's "
-        f"session requires naming the profile: re-run with profile='{owner}'.", success=False)
+    """Read shape; a bare id never scans other profiles' databases and a miss never
+    names an owner — another profile's transcript is only served when the caller
+    names that profile."""
+    return _read_session(db, sid, link_profile=profile)
 
 
 def _list_recent_sessions(db, limit: int, current_session_id: str = None, link_profile: str = None) -> str:

@@ -523,11 +523,10 @@ class TestCrossProfileRead:
         monkeypatch.setattr(profiles_mod, "profile_exists", lambda n: exists)
         monkeypatch.setattr(profiles_mod, "get_profile_dir", lambda n: home)
 
-    def test_bare_id_locates_across_profiles(self, db, tmp_path, monkeypatch):
+    def test_bare_id_miss_is_generic_no_owner_oracle(self, db, tmp_path, monkeypatch):
         # The real-world failure: model dropped the owning profile and passed a
-        # bare id. The tool must find WHERE it lives, but serving another
-        # profile's transcript unbidden is a cross-profile leak (#106761) —
-        # fail closed and ask for the profile by name.
+        # bare id. Fail closed with a generic miss — no cross-profile scan and
+        # no owner oracle; naming the profile is the authorized read path (#106761).
         other_home = tmp_path / "asdf_home"
         other_home.mkdir()
         other = SessionDB(other_home / "state.db")
@@ -535,21 +534,18 @@ class TestCrossProfileRead:
         other.append_message("s_far", role="user", content="hi")
         other._conn.commit()
 
-        from collections import namedtuple
         from hermes_cli import profiles as profiles_mod
-        Info = namedtuple("Info", "name path")
         monkeypatch.setattr(profiles_mod, "get_profile_dir",
                             lambda n: other_home if n == "asdf" else tmp_path / "default_home")
-        monkeypatch.setattr(profiles_mod, "list_profiles", lambda: [Info("asdf", other_home)])
         monkeypatch.setattr(profiles_mod, "normalize_profile_name", lambda n: n)
         monkeypatch.setattr(profiles_mod, "validate_profile_name", lambda n: None)
         monkeypatch.setattr(profiles_mod, "profile_exists", lambda n: n == "asdf")
 
-        # `db` (current profile) lacks s_far; no profile passed → locate it, but
-        # the response must point at the owning profile, not carry its messages.
+        # `db` (current profile) lacks s_far; no profile passed → generic miss.
+        # The error must not reveal which (if any) profile owns the id.
         result = json.loads(session_search(session_id="s_far", db=db))
         assert result["success"] is False
-        assert "profile='asdf'" in result["error"]
+        assert "asdf" not in result["error"]
         assert "messages" not in result
 
         # The named re-run is the authorized path and must still read it.

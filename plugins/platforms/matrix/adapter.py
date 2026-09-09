@@ -219,8 +219,8 @@ class _MatrixHtmlSanitizer(HTMLParser):
     """Allowlist sanitizer for Matrix-compatible formatted HTML."""
 
     _ALLOWED_TAGS = {
-        "a", "b", "blockquote", "br", "code", "del", "em", "h1", "h2", "h3", "h4", "h5", "h6", "hr", "i", "li", "ol",
-        "p", "pre", "s", "strike", "strong", "table", "tbody", "td", "th", "thead", "tr", "ul"}
+        "a", "b", "blockquote", "br", "code", "del", "div", "em", "h1", "h2", "h3", "h4", "h5", "h6", "hr", "i", "li", "ol",
+        "p", "pre", "s", "span", "strike", "strong", "table", "tbody", "td", "th", "thead", "tr", "ul"}
     _VOID_TAGS = {"br", "hr"}
 
     def __init__(self) -> None:
@@ -248,6 +248,10 @@ class _MatrixHtmlSanitizer(HTMLParser):
                     safe.append(f' href="{_html_escape(href, quote=True)}"')
             elif tag == "code" and attr == "class" and re.fullmatch(r"language-[A-Za-z0-9_+.-]{1,64}", raw_value):
                 safe.append(f' class="{_html_escape(raw_value, quote=True)}"')
+            elif tag in ("span", "div") and attr == "data-mx-maths":
+                # Element's LaTeX rendering queries [data-mx-maths] at display time
+                # (feature_latex_maths lab). Preserve TeX for KaTeX/typesetting (#106458).
+                safe.append(f' data-mx-maths="{_html_escape(raw_value, quote=True)}"')
         return "".join(safe)
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
@@ -589,6 +593,68 @@ def _sanitize_matrix_html(html: str) -> str:
         return sanitizer.get_html()
     except Exception:
         return _html_escape(html or "")
+
+
+def _matrix_inject_math_html(html: str) -> str:
+    """Convert LaTeX delimiters in HTML text nodes to Element-compatible data-mx-maths markup.
+
+    Element Desktop with feature_latex_maths renders only ``[data-mx-maths]`` elements at
+    display time — plain ``$...$``/``$$...$$`` in formatted_body is never parsed (#106458).
+    We emit ``<span data-mx-maths="TeX">TeX</span>`` for inline and
+    ``<div data-mx-maths="TeX">TeX</div>`` for display so the KaTeX pass can typeset it.
+
+    The conversion runs on HTML after Markdown→HTML but before sanitization, so the
+    sanitizer's allowlist preserves the attribute. Text inside ``<code>``/``<pre>`` is
+    left untouched. Escaped dollars (\\$) are left literal.
+    """
+    if not html or "$" not in html:
+        return html
+    # Split into tags vs text so we only transform text nodes and respect code/pre.
+    parts = re.split(r"(<[^>]*>)", html)
+    in_code = False
+    out: list[str] = []
+    # Placeholders for escaped dollars: protect \$ before math regexes
+    for part in parts:
+        if not part:
+            continue
+        if part.startswith("<"):
+            m = re.match(r"</?\s*([a-zA-Z0-9]+)", part)
+            if m:
+                tag = m.group(1).lower()
+                if tag in ("code", "pre"):
+                    if part.startswith("</"):
+                        in_code = False
+                    else:
+                        in_code = True
+            out.append(part)
+        else:
+            if in_code:
+                out.append(part)
+                continue
+            # Protect \$ -> placeholder
+            protected = part.replace("\\$", "\x00ESCAPED_DOLLAR\x00")
+            # Display math $$...$$ first (non-greedy, multiline)
+            def _repl_display(mm: re.Match[str]) -> str:
+                tex = (mm.group(1) or "").strip()
+                if not tex:
+                    return mm.group(0)
+                esc_attr = _html_escape(tex, quote=True)
+                inner = _html_escape(tex)
+                return f'<div data-mx-maths="{esc_attr}">{inner}</div>'
+            def _repl_inline(mm: re.Match[str]) -> str:
+                tex = (mm.group(1) or "").strip()
+                if not tex:
+                    return mm.group(0)
+                esc_attr = _html_escape(tex, quote=True)
+                inner = _html_escape(tex)
+                return f'<span data-mx-maths="{esc_attr}">{inner}</span>'
+            # Display: $$ TeX $$
+            protected = re.sub(r"\$\$(.+?)\$\$", _repl_display, protected, flags=re.DOTALL)
+            # Inline: $ TeX $ but not $$, not escaped, and not a price like $5 (opening $ not followed by digit)
+            protected = re.sub(r"(?<!\$)\$(?![\$\d])(.+?)(?<!\\)\$(?!\$)", _repl_inline, protected, flags=re.DOTALL)
+            protected = protected.replace("\x00ESCAPED_DOLLAR\x00", "$")
+            out.append(protected)
+    return "".join(out)
 
 
 def _redact_url_for_log(url: str) -> str:
@@ -2761,8 +2827,9 @@ class MatrixAdapter(BasePlatformAdapter):
             md.reset()
             if html.count("<p>") == 1:
                 html = html.replace("<p>", "").replace("</p>", "")
+            html = _matrix_inject_math_html(html)
             return _sanitize_matrix_html(html)
-        return _sanitize_matrix_html(self._markdown_to_html_fallback(text))
+        return _sanitize_matrix_html(_matrix_inject_math_html(self._markdown_to_html_fallback(text)))
 
     @staticmethod
     def _sanitize_link_url(url: str) -> str:

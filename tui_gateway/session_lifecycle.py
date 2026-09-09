@@ -216,8 +216,16 @@ def _finalize_session(session: dict | None, end_reason: str = "tui_close") -> No
     # ``conversation_history``: ``session["history"]`` and ``_session_messages`` alias the SAME list after a turn, so
     # the flush would treat every message as durable and skip it — data loss when finalize is the sole persist path.
     if hasattr(agent, "_persist_session") and (snapshot := getattr(agent, "_session_messages", None)):
-        with contextlib.suppress(Exception):
+        try:
             agent._persist_session(snapshot)
+        except Exception:
+            # This is the sole persist path after a WS disconnect/restart and
+            # _persist_session has no handling of its own, so a silent drop here
+            # loses the unflushed turn with no way to diagnose it. The sibling
+            # reaper path (session_reaper.py) already logs its failure.
+            logger.warning(
+                "Final session persist failed during finalize; unflushed turn may be lost",
+                exc_info=True)
     # interrupted=True so crash-recovery plugins can flush state (mirrors cli.py atexit).
     if agent is not None:
         with contextlib.suppress(Exception):

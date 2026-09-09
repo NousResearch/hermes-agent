@@ -498,7 +498,7 @@ class CLISessionMixin:
         """Start a fresh session with a new session ID and cleared agent state."""
         from cli import (
             CLI_CONFIG, _parse_reasoning_config, _parse_service_tier_config,
-            _sync_process_session_id, datetime)
+            _sync_process_session_id, datetime, logger)
         old_session_id = self.session_id
         _boundary_snapshot = None
         if self.agent:
@@ -560,7 +560,7 @@ class CLISessionMixin:
                 self.agent._invalidate_system_prompt()
 
             if self._session_db:
-                with contextlib.suppress(Exception):
+                try:
                     self.agent._session_db_created = False
                     self._session_db.create_session(
                         session_id=self.session_id,
@@ -570,6 +570,13 @@ class CLISessionMixin:
                             "max_iterations": self.max_turns, "reasoning_config": self.reasoning_config,
                         })
                     self.agent._session_db_created = True
+                except Exception as e:
+                    # Transient failure (e.g. SQLite lock). _session_db_created stays
+                    # False so the next flush retries via _ensure_db_session(); log so a
+                    # persistently missing row is diagnosable instead of silent.
+                    logger.warning(
+                        "Session DB row creation failed on /new (will retry next turn): %s", e
+                    )
                 if title:
                     title = _apply_new_session_title(self, title)
             # Tell memory providers the session_id rotated (reset=True flushes per-session

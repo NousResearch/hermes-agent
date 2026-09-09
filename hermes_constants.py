@@ -4,6 +4,7 @@ Import-safe, stdlib-only — importable from anywhere without circular-import ri
 """
 
 import contextlib
+import json
 import os
 import re
 import shutil
@@ -384,6 +385,62 @@ def _version_probe_ok(path: str) -> bool:
     """True when ``<path> --version`` exits 0 under the Hermes-managed Node PATH."""
     result = _run_version_probe([path, "--version"], env=with_hermes_node_path())
     return result is not None and result.returncode == 0
+
+
+_ENGINES_NODE_CLAUSE_RE = re.compile(r"(\^|>=)?\s*(\d+)\.\d+\.\d+")
+
+
+def _parse_engines_node_clauses(package_json_path: Path | None = None) -> list[tuple[str, int]]:
+    """``[(operator, major), ...]`` from package.json's ``engines.node`` (e.g.
+    ``"^22.22.0 || ^24.11.0 || >=26.0.0"`` -> ``[("^", 22), ("^", 24), (">=", 26)]``).
+
+    ``operator`` is ``"^"`` (exact-major pin) or ``">="`` (major and any greater). Falls back to a
+    single ``(">=", 20)`` floor when package.json is missing/unreadable or the field is absent —
+    mirrors the ``>=12.0.0`` npm fallback in ``_nb_npm_range()`` (node-bootstrap.sh).
+    """
+    path = package_json_path or (Path(__file__).resolve().parent / "package.json")
+    try:
+        range_str = json.loads(path.read_text(encoding="utf-8")).get("engines", {}).get("node", "")
+    except (OSError, ValueError, AttributeError):
+        range_str = ""
+    if not isinstance(range_str, str):
+        range_str = ""
+    clauses: list[tuple[str, int]] = []
+    for chunk in range_str.split("||"):
+        match = _ENGINES_NODE_CLAUSE_RE.search(chunk.strip())
+        if match:
+            clauses.append((match.group(1) or "^", int(match.group(2))))
+    return clauses or [(">=", 20)]
+
+
+def engines_node_minimum_major(package_json_path: Path | None = None) -> int:
+    """Lowest major any ``engines.node`` clause allows — the floor automatic heal repairs up to."""
+    return min(major for _, major in _parse_engines_node_clauses(package_json_path))
+
+
+def engines_node_allows_major(major: int, package_json_path: Path | None = None) -> bool:
+    """True when *major* satisfies at least one ``engines.node`` clause.
+
+    A ``"^"`` clause pins its exact major; a ``">="`` clause allows its major and any greater one.
+    A major sitting numerically between two ``"^"``-pinned majors satisfies neither and is refused
+    (e.g. 23 and 25 are not allowed by ``"^22.22.0 || ^24.11.0 || >=26.0.0"``).
+    """
+    for op, clause_major in _parse_engines_node_clauses(package_json_path):
+        if op == "^" and major == clause_major:
+            return True
+        if op == ">=" and major >= clause_major:
+            return True
+    return False
+
+
+def engines_node_default_upgrade_major(package_json_path: Path | None = None) -> int:
+    """Newest major ``engines.node`` explicitly names — the default ``--upgrade-node`` target.
+
+    An open ``">=N"`` clause is represented here by ``N`` itself: a still-newer major that would
+    also satisfy that clause is only reachable by naming it explicitly to
+    ``--upgrade-node=MAJOR`` (validated via :func:`engines_node_allows_major`), not by this default.
+    """
+    return max(major for _, major in _parse_engines_node_clauses(package_json_path))
 
 
 _HERMES_NODE_TARGET_MAJOR = int(os.environ.get("HERMES_NODE_TARGET_MAJOR", "22"))

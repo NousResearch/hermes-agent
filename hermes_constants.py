@@ -556,20 +556,23 @@ def _fetch_url(url: str, timeout: int) -> bytes | None:
         return None
 
 
-def _stage_windows_node_zip(home: Path, node_arch: str) -> Path | None:
+def _stage_windows_node_zip(home: Path, node_arch: str, target_major: int | None = None) -> Path | None:
     """Download the target-major portable Node zip into a sibling ``node.new-*`` dir.
 
-    A sibling makes the later swap a same-volume rename. ``None`` on any failure.
+    A sibling makes the later swap a same-volume rename. ``None`` on any failure. ``target_major``
+    defaults to ``_HERMES_NODE_TARGET_MAJOR`` (the engines.node-derived floor); an explicit caller
+    (``hermes doctor --upgrade-node``) overrides it for a one-off, different-major install.
     """
     import tempfile
     import uuid
     import zipfile
 
-    index_url = f"https://nodejs.org/dist/latest-v{_HERMES_NODE_TARGET_MAJOR}.x/"
+    target_major = _HERMES_NODE_TARGET_MAJOR if target_major is None else target_major
+    index_url = f"https://nodejs.org/dist/latest-v{target_major}.x/"
     index_bytes = _fetch_url(index_url, 60)
     if index_bytes is None:
         return None
-    pattern = rf"node-v{_HERMES_NODE_TARGET_MAJOR}\.\d+\.\d+-win-{node_arch}\.zip"
+    pattern = rf"node-v{target_major}\.\d+\.\d+-win-{node_arch}\.zip"
     match = re.search(pattern, index_bytes.decode("utf-8", errors="replace"))
     if not match:
         return None
@@ -590,7 +593,7 @@ def _stage_windows_node_zip(home: Path, node_arch: str) -> Path | None:
             if extracted is None or not extracted.is_dir():
                 return None
             shutil.move(str(extracted), str(staged))
-    except OSError:
+    except (OSError, zipfile.BadZipFile):
         return None
     return staged
 
@@ -628,13 +631,15 @@ def _swap_node_tree(target: Path, staged: Path) -> bool | None:
     return True
 
 
-def _heal_managed_node_windows(home: Path | None = None) -> bool | None:
+def _heal_managed_node_windows(home: Path | None = None, target_major: int | None = None) -> bool | None:
     """Redownload the portable Node zip into ``%HERMES_HOME%\\node`` on Windows.
 
     ``True`` on success, ``False`` on genuine failure (offline, bad archive), ``None`` when the
     tree is in use and the heal is deferred — callers must not record the once-per-process attempt
     for ``None``. Staging-first (extract to ``node.new-*``, rename live aside, rename staged in) so
     an interrupted heal cannot gut the install; a refused rename *is* the in-use signal.
+    ``target_major`` defaults to ``_HERMES_NODE_TARGET_MAJOR``; pass an explicit value to install a
+    specific major (``hermes doctor --upgrade-node``).
 
     The replacement is staging-first: the new tree is fully downloaded and extracted to a sibling
     ``node.new-*`` directory, then the live tree is renamed aside (``node.old-*``) and the staged tree
@@ -664,7 +669,7 @@ def _heal_managed_node_windows(home: Path | None = None) -> bool | None:
                 shutil.rmtree(stale, ignore_errors=True)
         except OSError:
             continue
-    staged = _stage_windows_node_zip(home, node_arch)
+    staged = _stage_windows_node_zip(home, node_arch, target_major)
     if staged is None:
         return False
     return _swap_node_tree(target, staged) and node_tool_runnable(str(target / "node.exe"))

@@ -619,6 +619,37 @@ def cli_bindings(ctx: Any) -> tuple[Any, Any]:
     return partial(setup_cli, ctx), partial(handle_cli_with_context, ctx)
 
 
+def _reconcile_resolving_feedback_actions(
+    ledger: FeedbackLedger, github: GitHubClient
+) -> int:
+    """Finish feedback writes admitted before a transient GitHub failure."""
+    pending_reader = getattr(ledger, "resolving_feedback_actions", None)
+    if not callable(pending_reader):
+        return 0
+    completed = 0
+    for receipt, resolved_head_sha in pending_reader():
+        try:
+            current = github.get_pull_request(receipt.repository, receipt.pr_number)
+            if current.head_sha.casefold() != resolved_head_sha.casefold():
+                continue
+            if receipt.feedback_kind == "review_comment":
+                github.resolve_review_thread_for_comment(
+                    receipt.repository,
+                    receipt.pr_number,
+                    receipt.feedback_id,
+                    expected_head_sha=resolved_head_sha,
+                )
+            ledger.mark_feedback_actioned(
+                receipt,
+                resolved_head_sha=resolved_head_sha,
+                actioned_at=datetime.now(UTC),
+            )
+        except (GitHubClientError, LedgerStateError, ValueError):
+            continue
+        completed += 1
+    return completed
+
+
 def _scan(ctx: Any) -> int:
     try:
         policy = _load_policy_from_context(ctx)
@@ -634,6 +665,7 @@ def _scan(ctx: Any) -> int:
         repair_payload: dict[str, object] | None = None
         maintenance_payload: dict[str, object] | None = None
         try:
+            _reconcile_resolving_feedback_actions(ledger, GitHubClient())
             try:
                 PooledLocalGitRepository(
                     ledger, ledger.path.parent / "worktree-pool"

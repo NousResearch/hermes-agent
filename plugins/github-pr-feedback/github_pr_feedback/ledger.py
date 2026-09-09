@@ -805,6 +805,36 @@ class FeedbackLedger:
             )
         return tuple(bindings)
 
+    def resolving_feedback_actions(
+        self,
+    ) -> tuple[tuple[FeedbackReceipt, str], ...]:
+        """Return external feedback actions interrupted after durable admission.
+
+        The ``resolving`` state is intentionally a retry queue: a scan must be
+        able to finish a GitHub write that succeeded only partially, even when
+        the PR no longer presents the original repair trigger.
+        """
+        rows = self._connection.execute(
+            "SELECT repository, pr_number, feedback_kind, feedback_id, head_sha, "
+            "actioned_head_sha FROM feedback_receipts "
+            "WHERE status = 'completed' AND action_status = 'resolving' "
+            "ORDER BY actioned_at, repository, pr_number"
+        )
+        return tuple(
+            (
+                FeedbackReceipt(
+                    str(repository),
+                    int(pr_number),
+                    str(feedback_kind),
+                    str(feedback_id),
+                    str(head_sha),
+                ),
+                str(actioned_head_sha),
+            )
+            for repository, pr_number, feedback_kind, feedback_id, head_sha, actioned_head_sha in rows
+            if isinstance(actioned_head_sha, str) and len(actioned_head_sha) == 40
+        )
+
     def exact_pending_task_binding(
         self, receipt: FeedbackReceipt
     ) -> PendingTaskBinding | None:

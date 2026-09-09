@@ -1012,6 +1012,7 @@ def test_feedback_action_uses_a_retryable_resolving_transition(tmp_path: Path) -
         item.key,
     ).fetchone()
     assert row == ("resolving", resolved_head)
+    assert ledger.resolving_feedback_actions() == ((item, resolved_head),)
 
     ledger.mark_feedback_actioned(
         item, resolved_head_sha=resolved_head, actioned_at=started_at

@@ -1367,7 +1367,7 @@ DEFAULT_CONFIG = {
         "portal_url": "https://portal.nousresearch.com",
         "request_timeout": 30,
         "notifications": {
-            "delivery_mode": "fixed",  # Opt-in: agent advice in one active private session.
+            "delivery_mode": "agent",  # Use fixed to opt out of agent-written advice.
             "decisions": "immediate",
             "installed_updates": "immediate",
             "new_skills": "daily",

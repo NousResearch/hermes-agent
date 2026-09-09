@@ -379,10 +379,11 @@ class TestTelegramApprovalCallback:
 
     @pytest.mark.asyncio
     async def test_wisdom_candidate_notification_is_exact_session_and_non_consuming(
-        self, tmp_path
+        self, tmp_path, monkeypatch
     ):
         from hermes_wisdom.store import WisdomStore
 
+        monkeypatch.setattr("hermes_wisdom.mediation.delivery_mode", lambda: "fixed")
         store = WisdomStore(tmp_path / "wisdom")
         store.installation_identity()
         store.verify_installation_identity("org-1")

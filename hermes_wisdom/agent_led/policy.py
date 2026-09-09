@@ -129,7 +129,7 @@ def _local_config_block() -> Mapping[str, Any]:
 
 
 def load_policy(*, client: Any = None, local: Mapping[str, Any] | None = None) -> AgentLedPolicy:
-    """Read the member-scoped policy only after explicit rollout opt-in."""
+    """Read the member-scoped policy when agent delivery has not been disabled."""
     policy = AgentLedPolicy()
     local_block = local if local is not None else _local_config_block()
     policy = _apply(policy, local_block, source="local_config")

@@ -25,7 +25,7 @@ def delivery_mode(config: dict[str, Any] | None = None) -> str:
         from .service import _config
 
         config = _config()
-    value = (config.get("notifications") or {}).get("delivery_mode", "fixed")
+    value = (config.get("notifications") or {}).get("delivery_mode", "agent")
     return value if value in {"fixed", "agent"} else "fixed"
 
 

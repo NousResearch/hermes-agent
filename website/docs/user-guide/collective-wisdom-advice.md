@@ -2,26 +2,29 @@
 title: Collective Wisdom advice
 ---
 
-Collective Wisdom can let your active Hermes conversation explain how a team
+Collective Wisdom lets your active Hermes conversation explain how a team
 skill fits your setup before asking you to install, update, or share it.
-This is an opt-in, local-profile delivery mode. Fixed notifications remain
-the default.
+Agent-written summaries are the default once Collective Wisdom is enabled.
+Fixed notifications are available as a local-profile opt-out.
 
-## Enable agent-mediated delivery
+## Choose notification copy
 
 First sign into your team and complete the existing `hermes wisdom setup`
-disclosure. Then set this in that profile's configuration:
+disclosure. Profiles without a delivery-mode setting use agent-written advice.
+To opt out, set this in that profile's configuration:
 
 ```yaml
 wisdom:
   notifications:
-    delivery_mode: agent
+    delivery_mode: fixed
 ```
 
 Keep the profile's other Wisdom settings. Restart its messaging gateway and
-open a new local session after updating Hermes. Set `delivery_mode: fixed`
-to return to fixed notifications. This setting does not enable sharing,
-change organization policy, or change your installed skills' update policies.
+open a new local session after updating Hermes. Set `delivery_mode: agent`
+to return to agent-written advice. Existing saved `fixed` settings are preserved
+on update; change that value explicitly to use the new default. This setting
+does not enable sharing, change organization policy, or change your installed
+skills' update policies.
 
 ## Advice and consent
 
@@ -73,5 +76,6 @@ setup/recovery and review commands for operations that still need attention.
 Assessment ownership remains local to the profile. Delivery reservations and
 notification preferences are coordinated through the Gateway, without syncing
 private candidate names, usage, or advice. This is not a general-purpose mailbox.
-The opt-in weekly review uses existing real skill usage; it does not change the
-deterministic qualification thresholds.
+The weekly agent review uses existing real skill usage and organization policy;
+fixed delivery does not run this review. Changing notification copy does not
+change the organization's qualification thresholds.

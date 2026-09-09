@@ -367,6 +367,7 @@ def test_prepared_save_and_candidate_actions_remain_profile_scoped(monkeypatch) 
 def test_candidate_event_feed_is_scoped_to_undelivered_desktop_events(
     monkeypatch,
 ) -> None:
+    monkeypatch.setattr("hermes_wisdom.mediation.delivery_mode", lambda: "fixed")
     calls = []
 
     class Service:

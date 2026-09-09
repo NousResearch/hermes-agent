@@ -783,6 +783,7 @@ def _qualified_candidate_event(
 def test_candidate_notice_projection_is_stable_across_surfaces_and_uses_verified_org_name(
     monkeypatch, tmp_path: Path
 ):
+    monkeypatch.setattr("hermes_wisdom.mediation.delivery_mode", lambda: "fixed")
     store = WisdomStore(tmp_path / "state")
     store.installation_identity()
     store.verify_installation_identity("org-1")
@@ -834,7 +835,8 @@ def test_candidate_notice_projection_is_stable_across_surfaces_and_uses_verified
     )
 
 
-def test_defer_candidate_prompt_hides_only_the_selected_surface(tmp_path: Path):
+def test_defer_candidate_prompt_hides_only_the_selected_surface(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr("hermes_wisdom.mediation.delivery_mode", lambda: "fixed")
     store = WisdomStore(tmp_path / "state")
     store.installation_identity()
     store.verify_installation_identity("org-1")

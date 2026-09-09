@@ -164,7 +164,9 @@ def _manager(monkeypatch, tmp_path: Path, *, client: Client):
         "guard": {"allowed": True, "findings": [], "reason": None},
         "skill_evaluator": {"status": "disabled", "findings": []},
     }
-    return WisdomConsumption(store=store, client=client, scan=scan, config={}), target
+    # These transport tests cover the explicit fixed-copy opt-out.
+    config = {"notifications": {"delivery_mode": "fixed"}}
+    return WisdomConsumption(store=store, client=client, scan=scan, config=config), target
 
 
 def _telegram_home(monkeypatch, chat_id: str) -> None:
@@ -793,7 +795,7 @@ def test_notifications_resolve_org_skill_names_filter_noise_and_deep_link(
     manager, _target = _manager(monkeypatch, tmp_path, client=client)
     manager.config = {
         "portal_url": "http://127.0.0.1:3111",
-        "notifications": {"new_skills": "immediate"},
+        "notifications": {"new_skills": "immediate", "delivery_mode": "fixed"},
     }
     client.feed_pages = [
         Feed.model_validate({
@@ -986,7 +988,7 @@ def test_off_cadence_suppresses_local_and_telegram_delivery(
 ):
     client = Client(_files(2))
     manager, _target = _manager(monkeypatch, tmp_path, client=client)
-    manager.config = {"notifications": {"installed_updates": "off"}}
+    manager.config["notifications"]["installed_updates"] = "off"
     client.feed_pages = [
         Feed.model_validate({
             "events": [

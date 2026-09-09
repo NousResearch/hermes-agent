@@ -496,11 +496,9 @@ def test_assessment_rejects_incomplete_or_tool_requests(
 
 
 def test_context_and_rollout_are_bounded():
-    assert (
-        delivery_mode({})
-        == delivery_mode({"notifications": {"delivery_mode": "typo"}})
-        == "fixed"
-    )
+    assert delivery_mode({}) == "agent"
+    assert delivery_mode({"notifications": {"delivery_mode": "fixed"}}) == "fixed"
+    assert delivery_mode({"notifications": {"delivery_mode": "typo"}}) == "fixed"
     assert delivery_mode({"notifications": {"delivery_mode": "agent"}}) == "agent"
     assert conversation_context([
         {"role": "system", "content": "private"},

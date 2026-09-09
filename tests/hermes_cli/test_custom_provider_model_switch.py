@@ -41,7 +41,7 @@ class TestCustomProviderModelSwitch:
         import yaml
         from agent.credential_pool import load_pool
         from hermes_cli.auth import read_credential_pool, write_credential_pool
-        from hermes_cli.main import _model_flow_custom
+        from hermes_cli.model_setup_flows import _model_flow_custom
 
         config_path = config_home / "config.yaml"
         config_path.write_text(
@@ -87,7 +87,7 @@ class TestCustomProviderModelSwitch:
             },
         ), \
              patch("hermes_cli.secret_prompt.masked_secret_prompt", return_value="sk-new"), \
-             patch("hermes_cli.main._prompt_custom_api_mode_selection", return_value=""), \
+             patch("hermes_cli.main_provider_setup._prompt_custom_api_mode_selection", return_value=""), \
              patch(
                  "builtins.input",
                  side_effect=[
@@ -122,7 +122,7 @@ class TestCustomProviderModelSwitch:
     def test_env_template_api_key_is_preserved_in_model_config(self, config_home, monkeypatch):
         """Selecting an env-backed custom provider must not inline the secret."""
         import yaml
-        from hermes_cli.main import _model_flow_named_custom
+        from hermes_cli.model_setup_flows import _model_flow_named_custom
 
         config_path = config_home / "config.yaml"
         config_path.write_text(
@@ -154,6 +154,7 @@ class TestCustomProviderModelSwitch:
         mock_fetch.assert_called_once_with(
             "sk-live-example-provider",
             "https://api.example-provider.test/v1",
+            headers=None,
             timeout=8.0,
         )
         config = yaml.safe_load(config_path.read_text()) or {}
@@ -164,7 +165,7 @@ class TestCustomProviderModelSwitch:
     def test_key_env_custom_provider_persists_reference_not_secret(self, config_home, monkeypatch):
         """key_env custom providers should also avoid writing plaintext keys."""
         import yaml
-        from hermes_cli.main import _model_flow_named_custom
+        from hermes_cli.model_setup_flows import _model_flow_named_custom
 
         config_path = config_home / "config.yaml"
         config_path.write_text(
@@ -279,7 +280,7 @@ class TestCustomProviderModelSwitch:
         ``api_key`` belongs on disk.
         """
         import yaml
-        from hermes_cli.main import _model_flow_named_custom
+        from hermes_cli.model_setup_flows import _model_flow_named_custom
 
         config_path = config_home / "config.yaml"
         config_path.write_text(
@@ -393,7 +394,7 @@ class TestCustomProviderModelSwitch:
         template must keep it untouched. Only entries that never declared
         an ``api_key`` should skip the write."""
         import yaml
-        from hermes_cli.main import _model_flow_named_custom
+        from hermes_cli.model_setup_flows import _model_flow_named_custom
 
         config_path = config_home / "config.yaml"
         config_path.write_text(
@@ -445,10 +446,32 @@ class TestCustomProviderDiscoverModels:
     instead of the endpoint's full live catalog."""
 
 
+    def test_discover_false_with_only_singular_model_skips_probe(self, config_home):
+        """An active singular model is not an implicit discovery catalog."""
+        from hermes_cli.model_setup_flows import _model_flow_named_custom
+
+        provider_info = {
+            "name": "Headered Ollama",
+            "base_url": "http://127.0.0.1:11434",
+            "api_key": "no-key-required",
+            "discover_models": False,
+            "model": "qwen3:8b",
+        }
+
+        with patch("hermes_cli.models.fetch_api_models") as mock_fetch, \
+             patch("hermes_cli.models_local.fetch_ollama_local_models") as mock_ollama, \
+             patch("hermes_cli.curses_ui.curses_radiolist", side_effect=ImportError), \
+             patch("builtins.input", return_value="1"), \
+             patch("builtins.print"):
+            _model_flow_named_custom({}, provider_info)
+
+        mock_fetch.assert_not_called()
+        mock_ollama.assert_not_called()
+
     def test_discover_false_saves_choice_from_configured_list(self, config_home):
         """User picks the 2nd configured model; it persists, list-driven."""
         import yaml
-        from hermes_cli.main import _model_flow_named_custom
+        from hermes_cli.model_setup_flows import _model_flow_named_custom
 
         provider_info = {
             "name": "Baidu Coding",
@@ -476,7 +499,7 @@ class TestCustomProviderDiscoverModels:
         """When discovery is on but the probe returns nothing, fall back to the
         configured models: list instead of forcing manual entry."""
         import yaml
-        from hermes_cli.main import _model_flow_named_custom
+        from hermes_cli.model_setup_flows import _model_flow_named_custom
 
         provider_info = {
             "name": "My Gateway",
@@ -499,7 +522,7 @@ class TestCustomProviderDiscoverModels:
 
     def test_discover_false_string_is_normalised(self, config_home):
         """String 'false' (hand-edited configs) disables discovery too."""
-        from hermes_cli.main import _model_flow_named_custom
+        from hermes_cli.model_setup_flows import _model_flow_named_custom
 
         provider_info = {
             "name": "Baidu Coding",

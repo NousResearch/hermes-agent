@@ -351,31 +351,31 @@ class TestPrintMigrationReport:
 
 class TestDetectOpenclawProcesses:
     def test_returns_match_when_pgrep_finds_openclaw(self):
-        with patch.object(claw_mod, "sys") as mock_sys:
-            mock_sys.platform = "linux"
-            with patch.object(claw_mod, "subprocess") as mock_subprocess:
-                # systemd check misses, pgrep finds openclaw
-                mock_subprocess.run.side_effect = [
-                    MagicMock(returncode=1, stdout=""),  # systemctl
-                    MagicMock(returncode=0, stdout="1234\n"),  # pgrep
-                ]
-                mock_subprocess.TimeoutExpired = subprocess.TimeoutExpired
-                result = claw_mod._detect_openclaw_processes()
-                assert len(result) == 1
-                assert "1234" in result[0]
+        with patch.object(claw_mod, "subprocess") as mock_subprocess:
+            # systemd check misses, pgrep finds openclaw
+            mock_subprocess.run.side_effect = [
+                MagicMock(returncode=1, stdout=""),  # systemctl
+                MagicMock(returncode=0, stdout="1234\n"),  # pgrep
+            ]
+            mock_subprocess.TimeoutExpired = subprocess.TimeoutExpired
+            result = claw_mod._detect_openclaw_processes()
+            assert len(result) == 1
+            assert "1234" in result[0]
 
 
+    @pytest.mark.windows_only
     def test_returns_empty_on_windows_when_nothing_found(self):
-        with patch.object(claw_mod, "sys") as mock_sys:
-            mock_sys.platform = "win32"
-            with patch.object(claw_mod, "subprocess") as mock_subprocess:
-                mock_subprocess.run.side_effect = [
-                    MagicMock(returncode=0, stdout=""),
-                    MagicMock(returncode=0, stdout=""),
-                    MagicMock(returncode=0, stdout=""),
-                ]
-                result = claw_mod._detect_openclaw_processes()
-                assert result == []
+        """Faking win32 picked the tasklist/powershell branch on a host that has
+        neither; only a real Windows host resolves those executables.
+
+        ``return_value`` rather than a ``side_effect`` list: the branch's call
+        count is not the assertion, and pinning it breaks whenever the host
+        shells out once more than the dev box did.
+        """
+        with patch.object(claw_mod, "subprocess") as mock_subprocess:
+            mock_subprocess.run.return_value = MagicMock(returncode=0, stdout="")
+            result = claw_mod._detect_openclaw_processes()
+            assert result == []
 
 
 class TestWarnIfOpenclawRunning:

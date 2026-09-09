@@ -14,6 +14,7 @@ function hud() {
   shell.setAttribute('data-hud-shell', '')
 
   const bar = document.createElement('input')
+  bar.setAttribute('data-slot', 'composer-rich-input')
 
   const overlay = document.createElement('div')
   overlay.setAttribute('role', 'dialog')
@@ -45,10 +46,23 @@ describe('hudIgnoresMouse', () => {
     expect(hudIgnoresMouse(shell, overlay, null, true)).toBe(false)
   })
 
-  it('does not pin the window just because the composer holds the caret', () => {
+  it('keeps the native HUD window solid while the composer holds the caret', () => {
     const { bar, mount, shell } = hud()
 
-    expect(hudIgnoresMouse(shell, mount, bar, true)).toBe(true)
+    // On Windows, making the native window click-through while its editor owns
+    // focus can immediately hand the mouse activation back to the app below.
+    // The caret then flashes, focus leaves, and the transcript collapses before
+    // the user can read it.
+    expect(hudIgnoresMouse(shell, mount, bar, true)).toBe(false)
+  })
+
+  it('keeps the native HUD window solid while focus is inside the composer editor', () => {
+    const { bar, mount, shell } = hud()
+    const editable = document.createElement('span')
+    editable.contentEditable = 'true'
+    bar.append(editable)
+
+    expect(hudIgnoresMouse(shell, mount, editable, true)).toBe(false)
   })
 
   it('pins the window while a portalled overlay holds focus, so an outside click can dismiss it', () => {
@@ -67,5 +81,17 @@ describe('hudIgnoresMouse', () => {
     const { mount, shell } = hud()
 
     expect(hudIgnoresMouse(shell, mount, document.body, true)).toBe(true)
+  })
+
+  it('stays solid while a gesture owns the window, even once the hit test goes empty', () => {
+    const { mount, shell } = hud()
+    const handle = document.createElement('div')
+    handle.setAttribute('data-hud-grabbing', '')
+    shell.append(handle)
+
+    // The corner resize grows the window out from under the cursor, so the hit
+    // test reports the scaffolding — handing the mouse away mid-gesture.
+    expect(hudIgnoresMouse(shell, mount, null, true)).toBe(false)
+    expect(hudIgnoresMouse(shell, null, null, true)).toBe(false)
   })
 })

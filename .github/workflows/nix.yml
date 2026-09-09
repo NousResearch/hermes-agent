@@ -1,0 +1,119 @@
+name: Nix flake check
+
+# Builds every output of the flake: the package, the devShell, and the 21
+# checks under nix/checks.nix — module evaluation, option parity, .env
+# assembly, service argv, and the rest.
+#
+# This workflow owns its triggers and ci.yml does not call it, for the reason
+# docker.yml gives: a reusable-workflow call holds the caller run in progress
+# for the full build, and GitHub refuses `gh run rerun` on a run that is still
+# in progress. One slow advisory job in the CI lane blocks every rerun of the
+# fast required jobs beside it. A separate run reruns and cancels on its own.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+# PR runs collapse to the newest commit. A push to main is never cancelled:
+# each one saves the store cache that later PRs restore from, so cancelling a
+# merge would leave the next PR to build from nothing.
+concurrency:
+  group: nix-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  # A `paths:` filter cannot gate this workflow correctly. The flake packages
+  # the product, and nine of the checks then run the built binary, so a change
+  # to hermes_cli/ alone can fail `nix flake check` without touching one file
+  # under nix/. The `nix` lane therefore follows python_prod as well as the
+  # flake inputs. On push the classifier fails open and every lane is true.
+  detect:
+    name: Detect affected areas
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      nix: ${{ steps.classify.outputs.nix }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Detect affected areas
+        id: classify
+        uses: ./.github/actions/detect-changes
+        with:
+          github-token: ${{ github.token }}
+
+  flake-check:
+    name: nix flake check
+    needs: [detect]
+    if: needs.detect.outputs.nix == 'true'
+    # The build compiles the package and its whole dependency closure, so this
+    # takes minutes and not seconds when the cache misses. `nix flake check`
+    # builds 21 checks, and --max-jobs defaults to the core count. It uses the
+    # wider runner with no more configuration.
+    runs-on: ubuntu-latest-32-core
+    timeout-minutes: 60
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@630ae543ea3a38a9a4166f03376c02c50f408342 # v31.11.0
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+            # A store path that does not substitute is a cache miss and not a
+            # build failure. Build it here instead.
+            fallback = true
+            # Each source archive is fetched one time in a run, and not one
+            # time for each evaluation.
+            tarball-ttl = 3600
+
+      # Restores /nix/store from the GitHub Actions cache. The store holds the
+      # whole dependency closure, so a hit turns a build of several minutes
+      # into a short evaluation.
+      #
+      # The Magic Nix Cache is not an option here. Its free tier ended in
+      # February 2025 with the GitHub cache API that it was built on. This
+      # action uses the current API and needs no account and no secret.
+      - name: Restore and save the Nix store
+        uses: nix-community/cache-nix-action@7df957e333c1e5da7721f60227dbba6d06080569 # v7
+        with:
+          # The closure changes when the flake inputs change or when the
+          # dependencies of the project change. The key hashes both, so an
+          # edit to the source alone keeps the hit.
+          primary-key: nix-${{ runner.os }}-${{ hashFiles('flake.lock', 'nix/**', 'pyproject.toml', 'uv.lock') }}
+          # On a miss, restore the newest store for this runner. Most of the
+          # closure — Python, node, each transitive library — survives a bump
+          # of the lockfile, so an old store still removes most of the work.
+          restore-prefixes-first-match: nix-${{ runner.os }}-
+
+          # Save from main only. A cache that a PR writes is visible to that
+          # PR alone and never to another branch, so a save there spends the
+          # 10 GB quota of the repository and helps no later run. A PR still
+          # restores: it reads the cache that the merge to main wrote. This is
+          # the same rule that docker.yml applies to `cache-to`.
+          save: ${{ github.event_name != 'pull_request' }}
+
+          # Collect garbage before the save, so the store stays inside the
+          # 10 GB quota of the repository. Without a limit the store grows at
+          # each merge until GitHub removes the entry, and the next PR then
+          # gets nothing. This number is the size of the store and not the
+          # size of the compressed archive.
+          gc-max-store-size-linux: 5G
+
+          # Delete the caches that this key replaces. GitHub removes caches by
+          # least recent use across the whole repository, so a Nix store that
+          # is never purged pushes out the caches of the other workflows.
+          purge: true
+          purge-prefixes: nix-${{ runner.os }}-
+          purge-created: 0
+          purge-primary-key: never
+
+      - name: nix flake check
+        # --print-build-logs: a check that fails then prints the assertion
+        # that failed, and not only the derivation that failed to build.
+        run: nix flake check --print-build-logs

@@ -8,7 +8,7 @@ platforms: [linux, macos, windows]
 metadata:
   hermes:
     tags: [video, kanban, multi-agent, orchestration, production-pipeline]
-    related_skills: [ascii-video, manim-video, p5js, comfyui, touchdesigner-mcp, blender-mcp, pixel-art, ascii-art, songwriting-and-ai-music, heartmula, songsee, youtube-content, claude-design, excalidraw, architecture-diagram, concept-diagrams, baoyu-comic, baoyu-infographic, humanizer, gif-search, meme-generation]
+    related_skills: [ascii-video, manim-video, p5js, comfyui, touchdesigner-mcp, pixel-art, ascii-art, songwriting-and-ai-music, heartmula, songsee, youtube-content, claude-design, excalidraw, architecture-diagram, concept-diagrams, baoyu-comic, baoyu-infographic, humanizer, gif-search, meme-generation]
     credits: |
       The single-project workspace layout, profile-config patching pattern,
       SOUL.md-per-profile model, TEAM.md task-graph convention, and
@@ -33,7 +33,7 @@ This skill does **not** render anything itself. It is a meta-pipeline that:
 
 The actual rendering happens inside the kanban once it's running, via whichever
 existing skills + tools fit the scenes — `ascii-video`, `manim-video`, `p5js`,
-`comfyui`, `touchdesigner-mcp`, `blender-mcp`, `songwriting-and-ai-music`,
+`comfyui`, `touchdesigner-mcp`, `songwriting-and-ai-music`,
 `heartmula`, external APIs, or plain Python with PIL + ffmpeg.
 
 ## When NOT to use this skill

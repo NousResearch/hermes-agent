@@ -85,6 +85,58 @@ test('resolveLoginStrategy picks native only when advertised and not forced', ()
   assert.equal(resolveLoginStrategy(gated, { forceEmbedded: true }), 'embedded')
 })
 
+// --- provider-aware strategy ---
+
+test('resolveLoginStrategy returns embedded when every provider supports password', () => {
+  const statusBody = { auth_required: true, auth_flows: ['cookie', 'native_pkce'] }
+  const providers = [{ name: 'basic', supportsPassword: true }]
+
+  assert.equal(resolveLoginStrategy(statusBody, { providers }), 'embedded')
+})
+
+test('resolveLoginStrategy returns embedded for all-password even without native_pkce in auth_flows', () => {
+  const statusBody = { auth_required: true, auth_flows: ['cookie'] }
+  const providers = [{ name: 'basic', supportsPassword: true }]
+
+  assert.equal(resolveLoginStrategy(statusBody, { providers }), 'embedded')
+})
+
+test('resolveLoginStrategy returns native for native_pkce gateway with non-password provider', () => {
+  const statusBody = { auth_required: true, auth_flows: ['cookie', 'native_pkce'] }
+  const providers = [{ name: 'nous', displayName: 'Nous Research', supportsPassword: false }]
+
+  assert.equal(resolveLoginStrategy(statusBody, { providers }), 'native')
+})
+
+test('resolveLoginStrategy returns native for a mixed provider deployment', () => {
+  const statusBody = { auth_required: true, auth_flows: ['cookie', 'native_pkce'] }
+
+  const providers = [
+    { name: 'basic', supportsPassword: true },
+    { name: 'nous', supportsPassword: false }
+  ]
+
+  assert.equal(resolveLoginStrategy(statusBody, { providers }), 'native')
+})
+
+test('resolveLoginStrategy preserves existing behavior when providers are empty or missing', () => {
+  const gated = { auth_required: true, auth_flows: ['cookie', 'native_pkce'] }
+  const legacy = { auth_required: true, auth_flows: ['cookie'] }
+
+  assert.equal(resolveLoginStrategy(gated, {}), 'native')
+  assert.equal(resolveLoginStrategy(gated, { providers: [] }), 'native')
+  assert.equal(resolveLoginStrategy(legacy, {}), 'embedded')
+  assert.equal(resolveLoginStrategy(legacy, { providers: [] }), 'embedded')
+})
+
+test('resolveLoginStrategy ignores providers with no name', () => {
+  const statusBody = { auth_required: true, auth_flows: ['cookie', 'native_pkce'] }
+  const providers = [{ supportsPassword: true }]
+
+  // The unnamed provider is filtered out — still falls through to auth_flows.
+  assert.equal(resolveLoginStrategy(statusBody, { providers }), 'native')
+})
+
 // --- URL building ---
 
 test('buildNativeAuthorizeUrl encodes params and honours a path prefix', () => {

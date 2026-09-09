@@ -1,0 +1,68 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-08-12T00:00:00Z",
+  "plugins": [
+    {
+      "name": "hermes-media-studio",
+      "description": "Media Studio — generative media workspace plugin for Hermes Desktop (fal + Krea, durable job queue, library).",
+      "author": "NousResearch",
+      "tags": ["media", "image-gen", "video-gen", "dashboard", "desktop"],
+      "repo": "NousResearch/hermes-media-studio",
+      "ref": "e8d59971d2b7901405b39dac7b03bdd616272d0d",
+      "homepage": "https://github.com/NousResearch/hermes-media-studio",
+      "capabilities": ["tools", "dashboard"],
+      "api_version": 1,
+      "added_at": "2026-08-12"
+    },
+    {
+      "name": "hermes-telegram-business",
+      "description": "Observe-with-approval Telegram Business Mode (secretary bot) plugin — every drafted reply requires owner approval before it reaches the customer.",
+      "author": "NousResearch",
+      "tags": ["telegram", "gateway", "approvals", "messaging"],
+      "repo": "NousResearch/hermes-telegram-business",
+      "ref": "e905f3bc5eeaa5a9dab9bc5155601b3ebec75757",
+      "homepage": "https://github.com/NousResearch/hermes-telegram-business",
+      "capabilities": ["platform"],
+      "api_version": 1,
+      "added_at": "2026-08-12"
+    },
+    {
+      "name": "plugin-llm-example",
+      "description": "Reference plugin showing host-owned structured LLM access via ctx.llm.complete_structured(). Registers a /receipt-extract slash command.",
+      "author": "NousResearch",
+      "tags": ["example", "llm", "reference", "slash-command"],
+      "repo": "NousResearch/hermes-example-plugins",
+      "subdir": "plugin-llm-example",
+      "ref": "38fe0fb53eff98d477f807432e965429e665ca33",
+      "homepage": "https://github.com/NousResearch/hermes-example-plugins/tree/main/plugin-llm-example",
+      "capabilities": ["commands", "llm"],
+      "api_version": 1,
+      "added_at": "2026-08-12"
+    },
+    {
+      "name": "plugin-llm-async-example",
+      "description": "Reference plugin demonstrating async host-owned LLM access from plugin code — the asyncio counterpart to plugin-llm-example.",
+      "author": "NousResearch",
+      "tags": ["example", "llm", "async", "reference"],
+      "repo": "NousResearch/hermes-example-plugins",
+      "subdir": "plugin-llm-async-example",
+      "ref": "38fe0fb53eff98d477f807432e965429e665ca33",
+      "homepage": "https://github.com/NousResearch/hermes-example-plugins/tree/main/plugin-llm-async-example",
+      "capabilities": ["commands", "llm"],
+      "api_version": 1,
+      "added_at": "2026-08-12"
+    },
+    {
+      "name": "hermes-plugin-chrome-profiles",
+      "description": "Switch Hermes browser tools between Chrome profiles via CDP.",
+      "author": "anpicasso",
+      "tags": ["browser", "chrome", "cdp", "tools"],
+      "repo": "anpicasso/hermes-plugin-chrome-profiles",
+      "ref": "5b9c3257b464c0f926d4355149a8aed9c8f307b4",
+      "homepage": "https://github.com/anpicasso/hermes-plugin-chrome-profiles",
+      "capabilities": ["tools"],
+      "api_version": 1,
+      "added_at": "2026-08-12"
+    }
+  ]
+}

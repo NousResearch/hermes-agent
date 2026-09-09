@@ -11,6 +11,7 @@ import { type PointerEvent as ReactPointerEvent, useCallback, useRef, useState }
 import { Button } from '@/components/ui/button'
 import { useI18n } from '@/i18n'
 import { formatCombo } from '@/lib/keybinds/combo'
+import { startPointerDrag } from '@/lib/pointer-drag'
 import { $bindings, bindingsFor } from '@/store/keybinds'
 
 import { $layoutEditMode } from '../../edit-mode'
@@ -61,13 +62,7 @@ export function TreeEditBar() {
       setPos(next)
     }
 
-    const onUp = () => {
-      window.removeEventListener('pointermove', onMove, true)
-      window.removeEventListener('pointerup', onUp, true)
-    }
-
-    window.addEventListener('pointermove', onMove, true)
-    window.addEventListener('pointerup', onUp, true)
+    startPointerDrag(onMove)
   }, [])
 
   if (!editMode) {

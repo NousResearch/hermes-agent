@@ -18,9 +18,9 @@ def _mock_response(*, usage: dict, content: str = "done"):
 
 def _make_agent(session_db, *, platform: str):
     with (
-        patch("run_agent.get_tool_definitions", return_value=[]),
-        patch("run_agent.check_toolset_requirements", return_value={}),
-        patch("run_agent.OpenAI"),
+        patch("model_tools.get_tool_definitions", return_value=[]),
+        patch("model_tools.check_toolset_requirements", return_value={}),
+        patch("agent.process_bootstrap.OpenAI"),
     ):
         agent = AIAgent(
             api_key="test-key",
@@ -69,6 +69,9 @@ def test_session_search_lazily_opens_db_when_entrypoint_did_not_pass_one(monkeyp
     hermes_state = ModuleType("hermes_state")
     hermes_state.SessionDB = FakeSessionDB
     monkeypatch.setitem(sys.modules, "hermes_state", hermes_state)
+    hermes_state_registry = ModuleType("hermes_state_registry")
+    hermes_state_registry.acquire = lambda db_path=None: sentinel_db
+    monkeypatch.setitem(sys.modules, "hermes_state_registry", hermes_state_registry)
 
     session_search_mod = ModuleType("tools.session_search_tool")
 
@@ -80,9 +83,49 @@ def test_session_search_lazily_opens_db_when_entrypoint_did_not_pass_one(monkeyp
     monkeypatch.setitem(sys.modules, "tools.session_search_tool", session_search_mod)
 
     agent = _make_agent(None, platform="acp")
-    result = json.loads(agent._invoke_tool("session_search", {"query": "Hermes"}, "task-id"))
+    result = json.loads(agent._invoke_tool(
+        "session_search",
+        {"query": "Hermes", "detail": "full"},
+        "task-id",
+    ))
 
     assert result["success"] is True
     assert captured["db"] is sentinel_db
     assert captured["query"] == "Hermes"
+    assert captured["detail"] == "full"
     assert agent._session_db is sentinel_db
+
+
+def test_sequential_session_search_forwards_detail(monkeypatch):
+    session_db = MagicMock()
+    captured = {}
+
+    session_search_mod = ModuleType("tools.session_search_tool")
+
+    def fake_session_search(**kwargs):
+        captured.update(kwargs)
+        return json.dumps({"success": True, "results": []})
+
+    session_search_mod.session_search = fake_session_search
+    monkeypatch.setitem(sys.modules, "tools.session_search_tool", session_search_mod)
+
+    agent = _make_agent(session_db, platform="acp")
+    tool_call = SimpleNamespace(
+        id="search-1",
+        function=SimpleNamespace(
+            name="session_search",
+            arguments=json.dumps({"query": "Hermes", "detail": "full"}),
+        ),
+    )
+    assistant_message = SimpleNamespace(tool_calls=[tool_call])
+    messages = []
+
+    agent._execute_tool_calls_sequential(
+        assistant_message,
+        messages,
+        "task-id",
+    )
+
+    assert captured["db"] is session_db
+    assert captured["query"] == "Hermes"
+    assert captured["detail"] == "full"

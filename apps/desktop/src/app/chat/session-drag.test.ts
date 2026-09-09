@@ -110,4 +110,19 @@ describe('session drop targeting across stacked tabs', () => {
     expect(requestComposerInsertRefs).not.toHaveBeenCalled()
     expect(openSessionTile).not.toHaveBeenCalled()
   })
+
+  // Standing side chrome hosts no main tile, so a session has nowhere to land
+  // there. That refusal is load-bearing twice over: the sidebar row runs the
+  // reorder off the SAME press, so the deny is what leaves the list to it,
+  // and ZoneDropOverlay keys off the same test to stay dark over those zones
+  // instead of outlining a drop that would only be refused.
+  it('commits nothing over the sidebar, leaving the region to the reorder', () => {
+    mountStackedTabs()
+    $layoutTree.set(group(['sessions'], { id: 'g1' }))
+
+    dragTo(document.getElementById('row')!, 120, 400)
+
+    expect(requestComposerInsertRefs).not.toHaveBeenCalled()
+    expect(openSessionTile).not.toHaveBeenCalled()
+  })
 })

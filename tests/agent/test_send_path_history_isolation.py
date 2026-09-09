@@ -172,12 +172,20 @@ class TestSendPathBuildIsWiredToTheClone:
         import ast
         import inspect
 
-        source = inspect.getsource(cl)
-        tree = ast.parse(source)
+        import agent.turn_context as tc
+        import agent.turn_request_assembly as ra
+
+        # The history build lives in turn_context.build_api_messages; the
+        # prefill insert in turn_request_assembly.assemble_api_request. Scan all homes.
+        nodes = [
+            node
+            for mod in (cl, tc, ra)
+            for node in ast.walk(ast.parse(inspect.getsource(mod)))
+        ]
 
         clone_calls = []
         shallow_copies = []
-        for node in ast.walk(tree):
+        for node in nodes:
             if isinstance(node, ast.Call):
                 fn = node.func
                 if isinstance(fn, ast.Name) and fn.id == "_clone_message_for_send":

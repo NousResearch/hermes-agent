@@ -646,32 +646,44 @@ class TestDeliveryBoundaryDedup:
 
 
 class TestRunPyWiresRealDedupGate:
-    """The DUPLICATE-RISK branch in gateway/run.py must execute the *same*
-    importable decision this test suite exercises, not an inline re-implementation.
+    """The DUPLICATE-RISK branch must execute the *same* importable decision
+    this suite exercises, not an inline re-implementation.
 
-    run.py is a ~32k-line script (not importable as a module), so rather than
-    re-implementing its branch here (which review flagged: a typo in the real
-    run.py branch would ship green under a mirror-only test), we parse the
-    actual run.py source and assert the gate body imports and calls
-    ``should_suppress_duplicate_final_send`` with the stream consumer and the
-    final text. This binds the live call site to the tested helper.
+    The gateway turn body is a very large script rather than a tidy importable
+    unit, so instead of mirroring its branch here (a mirror-only test ships
+    green over a typo in the real branch) we parse the actual source and assert
+    the gate calls ``should_suppress_duplicate_final_send`` with the stream
+    consumer and the final text.
+
+    2026-09-10: the branch moved from ``gateway/run.py`` to
+    ``gateway/run_turn.py`` in the upstream decomposition, and the call was
+    re-expressed from ``_sc_has_final = bool(...)`` to a direct ``if ...:``.
+    This test asserted the OLD file and the OLD spelling, so it was pinning a
+    shape rather than a behaviour — exactly the failure mode it was written to
+    prevent, pointed the other way. It now searches both candidate homes and
+    asserts the CALL, not the assignment.
     """
 
     def test_duplicate_risk_gate_calls_the_imported_helper(self):
-        run_py_path = Path(__file__).resolve().parents[2] / "gateway" / "run.py"
-        assert run_py_path.exists(), run_py_path
-        src = run_py_path.read_text(encoding="utf-8")
-
-        # The gate branch must import the shared helper.
-        assert "from gateway.stream_consumer import (" in src
-        # The import must name the exact decision function (not a local/renamed
-        # duplicate that could silently diverge from what the tests exercise).
-        assert "should_suppress_duplicate_final_send," in src
-        # The gate must call it with the stream consumer and the final text.
-        assert (
-            "_sc_has_final = bool(should_suppress_duplicate_final_send(_sc, _final))"
-            in src
+        root = Path(__file__).resolve().parents[2] / "gateway"
+        candidates = [root / "run_turn.py", root / "run.py"]
+        hits = []
+        for path in candidates:
+            if not path.exists():
+                continue
+            src = path.read_text(encoding="utf-8")
+            # Valid Python, whichever file carries the gate.
+            compile(src, str(path), "exec")
+            if "should_suppress_duplicate_final_send" not in src:
+                continue
+            # The helper must be imported from the shared module, not redefined
+            # locally where it could silently diverge from what is tested here.
+            assert "from gateway.stream_consumer import" in src, path
+            # ...and actually CALLED with the stream consumer and the final text.
+            # Spelling-agnostic: an `if`, an assignment, or anything else.
+            assert "should_suppress_duplicate_final_send(_sc, _final)" in src, path
+            hits.append(path.name)
+        assert hits, (
+            "the duplicate-final-send gate is in neither gateway/run_turn.py nor "
+            "gateway/run.py — the WeCom double-reply guard is not wired anywhere"
         )
-
-        # Compile check: the file must remain valid Python after the edits.
-        compile(src, run_py_path, "exec")

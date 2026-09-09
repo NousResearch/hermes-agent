@@ -10,7 +10,7 @@ import json
 import pytest
 
 from agent.tool_dispatch_helpers import _peel_bridge_call
-from tools.tool_gateway.bridge import connector_describe, dispatch_calls
+from tools.tool_gateway.bridge import connector_describe
 from tools.tool_search import (
     CONNECTOR_BATCH_SENTINEL,
     ToolSearchConfig,
@@ -416,155 +416,90 @@ def test_peel_keeps_mixed_and_local_batches_as_sequential_barrier():
 
 
 # ---------------------------------------------------------------------------
-# dispatch_calls: per-entry gates
+# run_remote through production dispatch: vendor-slug restoration, the
+# one-pass literal fallback, and the gateway request body
+#
+# tool_call batches re-enter core dispatch once per connector entry, so each
+# entry reaches run_remote alone. The gateway is swapped at the bridge's
+# client factory, the same seam the real client is created through.
 # ---------------------------------------------------------------------------
 
 
-def test_pre_dispatch_block_denies_one_remote_entry_and_siblings_run():
-    class FakeClient:
-        def execute(self, planned):
-            assert [p.name for p in planned] == ["connectors__slack__POST_MESSAGE"]
-            return [{"data": "posted", "error": None}]
+def _connectors_on(monkeypatch, client_factory):
+    from tools.registry import invalidate_check_fn_cache
+    from tools.tool_gateway import bridge, config
 
-    out = json.loads(
-        dispatch_calls(
-            [
-                {"name": "connectors__gmail__SEND_EMAIL", "arguments": {}},
-                {"name": "connectors__slack__POST_MESSAGE", "arguments": {}},
-            ],
-            local_dispatch=lambda n, a: (True, "{}"),
-            pre_dispatch=lambda name, args: (
-                ("blocked by policy", None) if "gmail" in name else (None, None)
-            ),
-            availability=lambda: True,
-            client_factory=lambda: FakeClient(),
-        )
-    )
-    assert out["results"][0]["error"]["code"] == "USER_DENIED"
-    assert out["results"][1]["response"] == "posted"
-    assert out["success_count"] == 1 and out["error_count"] == 1
+    monkeypatch.setattr(config, "connectors_available", lambda: True)
+    monkeypatch.setattr(bridge, "connectors_available", lambda: True)
+    monkeypatch.setattr(bridge, "_default_client_factory", client_factory)
+    invalidate_check_fn_cache()
 
 
-# ---------------------------------------------------------------------------
-# dispatch_calls: vendor-slug restoration and one-pass literal fallback
-# ---------------------------------------------------------------------------
+def _tool_call(calls):
+    import model_tools
+
+    return json.loads(model_tools.handle_function_call(
+        "tool_call", {"calls": calls}, enabled_toolsets=["connections"], session_id="bridge-session",
+        skip_pre_tool_call_hook=True, skip_tool_request_middleware=True,
+        skip_tool_execution_middleware=True))
 
 
-def test_execute_falls_back_once_for_literal_slug_without_touching_siblings():
+def test_execute_falls_back_once_for_literal_slug_without_touching_siblings(monkeypatch):
     class FakeClient:
         def __init__(self):
             self.calls = []
 
         def execute(self, planned):
-            self.calls.append(tuple(planned))
-            if len(self.calls) == 1:
-                return [
-                    {"data": "sent", "error": None},
-                    {
-                        "data": None,
-                        "error": {"code": "TOOL_NOT_FOUND", "message": "missing"},
-                    },
-                    {
-                        "data": None,
-                        "error": {"code": "TOOL_NOT_ALLOWED", "message": "blocked"},
-                    },
-                ]
-            return [{"data": "literal result", "error": None}]
+            self.calls.append([plan.tool for plan in planned])
+            (plan,) = planned
+            if plan.tool == "GRANOLA_FETCH_NOTES":
+                return [{"data": None, "error": {"code": "TOOL_NOT_FOUND", "message": "missing"}}]
+            if plan.tool == "SLACK_POST_MESSAGE":
+                return [{"data": None, "error": {"code": "TOOL_NOT_ALLOWED", "message": "blocked"}}]
+            return [{"data": f"ran {plan.tool}", "error": None}]
 
     client = FakeClient()
-    out = json.loads(
-        dispatch_calls(
-            [
-                {"name": "connectors__gmail__SEND_EMAIL", "arguments": {}},
-                {"name": "connectors__granola__FETCH_NOTES", "arguments": {}},
-                {"name": "connectors__slack__POST_MESSAGE", "arguments": {}},
-            ],
-            local_dispatch=lambda n, a: (True, "{}"),
-            availability=lambda: True,
-            client_factory=lambda: client,
-        )
-    )
+    _connectors_on(monkeypatch, lambda: client)
+    out = _tool_call([
+        {"name": "connectors__gmail__SEND_EMAIL", "arguments": {}},
+        {"name": "connectors__granola__FETCH_NOTES", "arguments": {}},
+        {"name": "connectors__slack__POST_MESSAGE", "arguments": {}},
+    ])
 
-    assert [[plan.tool for plan in call] for call in client.calls] == [
-        ["GMAIL_SEND_EMAIL", "GRANOLA_FETCH_NOTES", "SLACK_POST_MESSAGE"],
-        ["FETCH_NOTES"],
-    ]
-    assert out["results"][0]["response"] == "sent"
+    # Every entry crosses the wire under its restored vendor slug. Only the
+    # confirmed TOOL_NOT_FOUND miss is retried, once, under the literal slug;
+    # the success and the TOOL_NOT_ALLOWED sibling are never re-sent.
+    assert client.calls == [
+        ["GMAIL_SEND_EMAIL"], ["GRANOLA_FETCH_NOTES"], ["FETCH_NOTES"], ["SLACK_POST_MESSAGE"]]
+    assert out["results"][0]["response"] == "ran GMAIL_SEND_EMAIL"
     assert out["results"][1] == {
-        "index": 1,
-        "name": "connectors__granola__FETCH_NOTES",
-        "response": "literal result",
-    }
+        "index": 1, "name": "connectors__granola__FETCH_NOTES", "response": "ran FETCH_NOTES"}
     assert out["results"][2]["error"]["code"] == "TOOL_NOT_ALLOWED"
+    assert out["success_count"] == 2 and out["error_count"] == 1
 
 
-def test_execute_does_not_fallback_when_primary_candidate_succeeds():
+@pytest.mark.parametrize("fail_at", ["GRANOLA_FETCH_NOTES", "FETCH_NOTES"])
+def test_execute_transport_failure_degrades_only_the_failing_entry(monkeypatch, fail_at):
     class FakeClient:
-        def __init__(self):
-            self.calls = []
-
         def execute(self, planned):
-            self.calls.append(tuple(planned))
-            return [{"data": "sent", "error": None}]
+            (plan,) = planned
+            if plan.tool == fail_at:
+                raise RuntimeError("transport failed")
+            if plan.tool == "GRANOLA_FETCH_NOTES":
+                return [{"data": None, "error": {"code": "TOOL_NOT_FOUND", "message": "missing"}}]
+            return [{"data": "sibling", "error": None}]
 
-    client = FakeClient()
-    out = json.loads(
-        dispatch_calls(
-            [{"name": "connectors__gmail__SEND_EMAIL", "arguments": {}}],
-            local_dispatch=lambda n, a: (True, "{}"),
-            availability=lambda: True,
-            client_factory=lambda: client,
-        )
-    )
+    _connectors_on(monkeypatch, FakeClient)
+    out = _tool_call([
+        {"name": "connectors__gmail__SEND_EMAIL", "arguments": {}},
+        {"name": "connectors__granola__FETCH_NOTES", "arguments": {}},
+    ])
 
-    assert len(client.calls) == 1
-    assert client.calls[0][0].tool == "GMAIL_SEND_EMAIL"
-    assert out["results"][0]["response"] == "sent"
-
-
-def test_execute_fallback_failure_degrades_only_the_retried_entry():
-    class FakeClient:
-        def __init__(self):
-            self.call_count = 0
-
-        def execute(self, planned):
-            self.call_count += 1
-            if self.call_count == 1:
-                return [
-                    {"data": "sibling", "error": None},
-                    {
-                        "data": None,
-                        "error": {"code": "TOOL_NOT_FOUND", "message": "missing"},
-                    },
-                ]
-            raise RuntimeError("fallback transport failed")
-
-    client = FakeClient()
-    out = json.loads(
-        dispatch_calls(
-            [
-                {"name": "connectors__gmail__SEND_EMAIL", "arguments": {}},
-                {"name": "connectors__granola__FETCH_NOTES", "arguments": {}},
-            ],
-            local_dispatch=lambda n, a: (True, "{}"),
-            availability=lambda: True,
-            client_factory=lambda: client,
-        )
-    )
-
-    assert client.call_count == 2
+    # Whether the primary send or the literal retry blows up, only that entry
+    # degrades to PROVIDER_ERROR; the sibling keeps its result.
     assert out["results"][0]["response"] == "sibling"
     assert out["results"][1]["error"]["code"] == "PROVIDER_ERROR"
-
-
-# ---------------------------------------------------------------------------
-# pre_dispatch argument rewrites (policy sanitization/redaction) reach the WIRE
-#
-# A pre_tool_call `modify` directive is a policy rewrite; the single-entry
-# deferred path applies it before dispatch. These assert on the outgoing
-# gateway request body, not on bridge internals: a rewrite that stops at the
-# PlannedCall and never reaches the transport is exactly the bug.
-# ---------------------------------------------------------------------------
+    assert out["success_count"] == 1 and out["error_count"] == 1
 
 
 class _FakeResponse:
@@ -615,186 +550,24 @@ def _sent_tools(transport):
     return transport.requests[0]["json"]["tools"]
 
 
-def test_pre_dispatch_rewrite_reaches_the_gateway_request_body():
+def test_hook_rewrite_and_restored_vendor_slug_reach_the_gateway_request_body(monkeypatch):
+    import hermes_cli.plugins as plugins
+
     transport = _RecordingTransport()
+    _connectors_on(monkeypatch, _recording_client_factory(transport))
+    # A pre_tool_call redaction pass: the secret must never leave the process.
+    monkeypatch.setattr(plugins, "_dispatch_pre_tool_call_hooks",
+                        lambda name, args, **kw: (None, {**args, "body": "[REDACTED]"}))
 
-    def gate(name, args):
-        # A redaction pass: the secret never leaves the process.
-        return None, {**args, "body": "[REDACTED]"}
+    out = _tool_call([{"name": "connectors__gmail__SEND_EMAIL",
+                       "arguments": {"to": "x@example.com", "body": "sk-secret"}}])
 
-    out = json.loads(
-        dispatch_calls(
-            [{"name": "connectors__gmail__SEND_EMAIL",
-              "arguments": {"to": "x@example.com", "body": "sk-live-secret"}}],
-            local_dispatch=lambda n, a: (True, "{}"),
-            pre_dispatch=gate,
-            availability=lambda: True,
-            client_factory=_recording_client_factory(transport),
-        )
-    )
     assert _sent_tools(transport) == [
-        {
-            "connector": "gmail",
-            "tool": "GMAIL_SEND_EMAIL",
-            "arguments": {"to": "x@example.com", "body": "[REDACTED]"},
-        }
+        {"connector": "gmail", "tool": "GMAIL_SEND_EMAIL",
+         "arguments": {"to": "x@example.com", "body": "[REDACTED]"}},
     ]
-    assert "sk-live-secret" not in json.dumps(transport.requests[0]["json"])
-    assert out["results"][0]["response"] == "ok"  # correlation survives the rebuild
-
-
-def test_pre_dispatch_rewrite_does_not_leak_to_sibling_entries():
-    transport = _RecordingTransport()
-
-    def gate(name, args):
-        if "slack" in name:
-            return None, {**args, "channel": "#safe"}
-        return None, None  # explicit "no change" for the sibling
-
-    out = json.loads(
-        dispatch_calls(
-            [
-                {"name": "connectors__gmail__SEND_EMAIL", "arguments": {"to": "keep-me"}},
-                {"name": "connectors__slack__POST_MESSAGE", "arguments": {"channel": "#raw"}},
-            ],
-            local_dispatch=lambda n, a: (True, "{}"),
-            pre_dispatch=gate,
-            availability=lambda: True,
-            client_factory=_recording_client_factory(transport),
-        )
-    )
-    assert _sent_tools(transport) == [
-        {"connector": "gmail", "tool": "GMAIL_SEND_EMAIL", "arguments": {"to": "keep-me"}},
-        {"connector": "slack", "tool": "SLACK_POST_MESSAGE", "arguments": {"channel": "#safe"}},
-    ]
-    assert [e["response"] for e in out["results"]] == ["ok", "ok"]
-
-
-def test_pre_dispatch_block_keeps_the_entry_off_the_wire_entirely():
-    transport = _RecordingTransport()
-
-    out = json.loads(
-        dispatch_calls(
-            [
-                {"name": "connectors__gmail__SEND_EMAIL", "arguments": {"to": "blocked"}},
-                {"name": "connectors__slack__POST_MESSAGE", "arguments": {"channel": "#ok"}},
-            ],
-            local_dispatch=lambda n, a: (True, "{}"),
-            # A block wins even when the same pass also produced a rewrite.
-            pre_dispatch=lambda name, args: (
-                ("blocked by policy", {"to": "rewritten"}) if "gmail" in name else (None, None)
-            ),
-            availability=lambda: True,
-            client_factory=_recording_client_factory(transport),
-        )
-    )
-    assert _sent_tools(transport) == [
-        {"connector": "slack", "tool": "SLACK_POST_MESSAGE", "arguments": {"channel": "#ok"}}
-    ]
-    assert out["results"][0]["error"]["code"] == "USER_DENIED"
-    assert out["results"][0]["error"]["message"] == "blocked by policy"
-    assert out["results"][1]["response"] == "ok"
-
-
-def test_pre_dispatch_rewrite_to_empty_dict_is_a_rewrite_not_a_no_op():
-    # "No change" is None; an empty dict is a deliberate strip-all rewrite.
-    transport = _RecordingTransport()
-
-    dispatch_calls(
-        [{"name": "connectors__gmail__SEND_EMAIL", "arguments": {"to": "x"}}],
-        local_dispatch=lambda n, a: (True, "{}"),
-        pre_dispatch=lambda name, args: (None, {}),
-        availability=lambda: True,
-        client_factory=_recording_client_factory(transport),
-    )
-    assert _sent_tools(transport) == [
-        {"connector": "gmail", "tool": "GMAIL_SEND_EMAIL", "arguments": {}}
-    ]
-
-
-def test_pre_dispatch_exception_sends_the_original_arguments():
-    transport = _RecordingTransport()
-
-    def exploding_gate(name, args):
-        raise RuntimeError("hook blew up")
-
-    dispatch_calls(
-        [{"name": "connectors__gmail__SEND_EMAIL", "arguments": {"to": "x"}}],
-        local_dispatch=lambda n, a: (True, "{}"),
-        pre_dispatch=exploding_gate,
-        availability=lambda: True,
-        client_factory=_recording_client_factory(transport),
-    )
-    assert _sent_tools(transport) == [
-        {"connector": "gmail", "tool": "GMAIL_SEND_EMAIL", "arguments": {"to": "x"}}
-    ]
-
-
-def test_local_tool_error_results_are_counted_as_errors():
-    def local_dispatch(name, arguments):
-        # ok=False: the dispatcher declares its own refusal.
-        return False, json.dumps(
-            {"error": f"'{name}' is not available in this session."}
-        )
-
-    out = json.loads(
-        dispatch_calls(
-            [
-                {"name": "denied_tool", "arguments": {}},
-                {"name": "another_denied", "arguments": {}},
-            ],
-            local_dispatch=local_dispatch,
-        )
-    )
-    assert all(e["error"]["code"] == "TOOL_ERROR" for e in out["results"])
-    assert all("not available" in e["error"]["message"] for e in out["results"])
-    assert out["error_count"] == 2 and out["success_count"] == 0
-
-
-def test_local_refusal_extras_survive_into_the_error_slot():
-    # tool_error takes arbitrary extras; an allow-list of ("parameters",
-    # "hint") silently dropped everything else, so the model never saw them.
-    def local_dispatch(name, arguments):
-        return False, json.dumps(
-            {
-                "error": "upstream said no",
-                "code": 404,
-                "parameters": {"title": "string"},
-                "hint": "pass a title",
-                "retry_after": 30,
-            }
-        )
-
-    out = json.loads(
-        dispatch_calls([{"name": "denied_tool", "arguments": {}}], local_dispatch=local_dispatch)
-    )
-    slot = out["results"][0]["error"]
-    assert slot["code"] == 404  # caller-supplied code is NOT overwritten
-    assert slot["message"] == "upstream said no"
-    assert slot["parameters"] == {"title": "string"}
-    assert slot["hint"] == "pass a title"
-    assert slot["retry_after"] == 30  # the key an allow-list would have eaten
-
-
-def test_successful_result_carrying_an_error_field_is_not_misclassified():
-    # A legitimate result may report per-item errors under "error". Sniffing
-    # for that key filed the whole call as a failure and threw the payload away.
-    def local_dispatch(name, arguments):
-        return True, json.dumps(
-            {"error": "2 of 5 rows rejected", "rows": [1, 2, 3], "written": 3}
-        )
-
-    out = json.loads(
-        dispatch_calls([{"name": "bulk_write", "arguments": {}}], local_dispatch=local_dispatch)
-    )
-    entry = out["results"][0]
-    assert "error" not in entry
-    assert entry["response"] == {
-        "error": "2 of 5 rows rejected",
-        "rows": [1, 2, 3],
-        "written": 3,
-    }
-    assert out["success_count"] == 1 and out["error_count"] == 0
+    assert "sk-secret" not in json.dumps(transport.requests[0]["json"])
+    assert out["results"][0]["response"] == "ok"  # correlation survives the rewrite
 
 
 # ---------------------------------------------------------------------------

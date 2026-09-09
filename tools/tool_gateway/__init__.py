@@ -27,7 +27,7 @@ Layering rules (enforced by review, not imports — keep them true):
   entries never reach it.
 
 Core reaches this package through ``model_tools_connectors.py``, which
-dispatches one gateway request per connector entry via ``bridge._run_remote``
+dispatches one gateway request per connector entry via ``bridge.run_remote``
 and re-enters core dispatch for each entry so per-tool policy fires against
 the composed ``connectors__`` name.
 """

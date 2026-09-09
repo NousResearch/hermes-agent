@@ -102,11 +102,13 @@ export {
 } from './translucency'
 export {
   buildHermesWebSocketUrl,
+  GATEWAY_SESSION_TOKEN_REJECTED_MESSAGE,
   type GatewayAuthMode,
   GatewayReauthRequiredError,
   type GatewayWsConnection,
   type GatewayWsUrlResult,
   type HermesWebSocketUrlOptions,
+  isGatewayHandshakeAuthFailure,
   isGatewayReauthRequired,
   resolveGatewayWsUrl,
   type ResolveGatewayWsUrlDeps,

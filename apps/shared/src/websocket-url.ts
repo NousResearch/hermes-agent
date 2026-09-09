@@ -20,6 +20,9 @@ export type GatewayWsUrlResult =
   | { ok: true; wsUrl: string }
   | { error: string; needsOauthLogin?: boolean; ok: false }
 
+export const GATEWAY_SESSION_TOKEN_REJECTED_MESSAGE =
+  "This connection's session token was rejected. Open Settings -> Gateway and paste a new session token."
+
 export class GatewayReauthRequiredError extends Error {
   readonly needsOauthLogin = true
 
@@ -34,6 +37,37 @@ export function isGatewayReauthRequired(error: unknown): error is GatewayReauthR
     error instanceof GatewayReauthRequiredError ||
     (typeof error === 'object' && error !== null && (error as { needsOauthLogin?: unknown }).needsOauthLogin === true)
   )
+}
+
+/** Token/ticket handshake refused (HTTP 401/403 or gateway close 4401). */
+const GATEWAY_AUTH_FAILURE_RE =
+  /\b(401|403|4401)\b|unauthorized|session token was rejected|needs oauth login/i
+
+export function isGatewayHandshakeAuthFailure(error: unknown): boolean {
+  if (isGatewayReauthRequired(error)) {
+    return true
+  }
+
+  if (error && typeof error === 'object') {
+    const record = error as { error?: unknown; needsSessionToken?: unknown; statusCode?: unknown }
+    if (record.needsSessionToken === true) {
+      return true
+    }
+
+    const status = Number(record.statusCode)
+
+    if (status === 401 || status === 403 || status === 4401) {
+      return true
+    }
+
+    if (typeof record.error === 'string' && GATEWAY_AUTH_FAILURE_RE.test(record.error)) {
+      return true
+    }
+  }
+
+  const text = error instanceof Error ? error.message : String(error ?? '')
+
+  return GATEWAY_AUTH_FAILURE_RE.test(text)
 }
 
 export async function resolveGatewayWsUrl(deps: ResolveGatewayWsUrlDeps, conn: GatewayWsConnection): Promise<string> {
@@ -79,14 +113,32 @@ export async function resolveGatewayWsUrl(deps: ResolveGatewayWsUrlDeps, conn: G
   }
 
   if (mint) {
-    const fresh = await mint(profile).catch(() => null)
+    try {
+      const fresh = await mint(profile)
 
-    if (typeof fresh === 'string') {
-      return fresh
-    }
+      if (typeof fresh === 'string') {
+        return fresh
+      }
 
-    if (fresh?.ok) {
-      return fresh.wsUrl
+      if (fresh?.ok) {
+        return fresh.wsUrl
+      }
+
+      if (fresh && isGatewayHandshakeAuthFailure(fresh)) {
+        throw new GatewayReauthRequiredError(GATEWAY_SESSION_TOKEN_REJECTED_MESSAGE, {
+          cause: new Error(fresh.error)
+        })
+      }
+    } catch (error) {
+      if (isGatewayReauthRequired(error)) {
+        throw error
+      }
+
+      if (isGatewayHandshakeAuthFailure(error)) {
+        throw new GatewayReauthRequiredError(GATEWAY_SESSION_TOKEN_REJECTED_MESSAGE, {
+          cause: error instanceof Error ? error : undefined
+        })
+      }
     }
   }
 

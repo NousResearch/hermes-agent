@@ -10,6 +10,7 @@ module-level functions taking ``cli`` and siblings are called as ``HermesCLI.<na
 
 from __future__ import annotations
 
+import contextlib
 import copy
 import sys
 import threading
@@ -419,15 +420,39 @@ class CLIModelSwitchMixin:
         else:
             self._console_print(f"[dim]{_escape(msg)}[/dim]")
 
+    def _model_picker_fallback_note(self, current_model: str, current_provider: str) -> str:
+        """One line naming the live model when a fallback has displaced the chosen one.
+
+        ``current_model`` is the CONFIGURED model (``cli.model``), which fallback activation
+        never rewrites, while the status bar shows the LIVE one (``agent.model``). With a
+        primary that fails every turn the two disagree permanently and neither surface said
+        why, so the picker claimed a model that was answering nothing.
+        """
+        agent = getattr(self, "agent", None)
+        # _provider_fallback_active, not _fallback_activated: the latter is also set by
+        # `/model --once` restoration as plumbing, so it would report a deliberate
+        # one-turn switch as a fallback.
+        if agent is None or not getattr(agent, "_provider_fallback_active", False):
+            return ""
+        live_model = str(getattr(agent, "model", "") or "")
+        live_provider = str(getattr(agent, "provider", "") or "")
+        if not live_model or (live_model, live_provider) == (current_model, current_provider):
+            return ""
+        return f"⚠ fallback active — answering on {live_model} via {live_provider}"
+
     def _open_model_picker(self, providers: list, current_model: str, current_provider: str, user_provs=None, custom_provs=None) -> None:
         """Open prompt_toolkit-native /model picker modal."""
         self._capture_modal_input_snapshot()
+        fallback_note = ""
+        with contextlib.suppress(Exception):
+            fallback_note = self._model_picker_fallback_note(current_model, current_provider)
         self._model_picker_state = {
             "stage": "provider",
             "providers": providers,
             "selected": next((i for i, p in enumerate(providers) if p.get("is_current")), 0),
             "current_model": current_model,
             "current_provider": current_provider,
+            "fallback_note": fallback_note,
             "user_provs": user_provs,
             "custom_provs": custom_provs,
             "filter": ""}

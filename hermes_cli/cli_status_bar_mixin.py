@@ -7,6 +7,7 @@ inside each method (``from cli import ...``) — never at module load time (impo
 
 from __future__ import annotations
 
+import contextlib
 import errno
 import shutil
 import threading
@@ -184,6 +185,21 @@ class CLIStatusBarMixin:
             model_short = model_short[:-5]
         if len(model_short) > 26:
             model_short = f"{model_short[:23]}..."
+        # A fallback hop is not the model the user picked, and the bar renders it
+        # identically — so a demotion reads as the bar lying about the model. Mark it.
+        # `⤵` says "dropped down to this"; /model spells the same state out in words.
+        # Keyed on _provider_fallback_active, NOT _fallback_activated: the latter is
+        # overloaded — `/model --once` restoration sets it as plumbing to force
+        # restore_primary_runtime() to run, which would mark a deliberate one-turn
+        # switch as a fallback. _provider_fallback_active is the provenance flag that
+        # only try_activate_fallback sets (chat_completion_helpers).
+        fallback_active = bool(getattr(agent, "_provider_fallback_active", False))
+        primary_model = ""
+        if fallback_active:
+            with contextlib.suppress(Exception):
+                primary_model = str(
+                    (getattr(agent, "_primary_runtime", None) or {}).get("model") or "")
+            model_short = f"{model_short} ⤵"
 
         prompt_start = getattr(self, "_prompt_start_time", None)
         turn_live = prompt_start is not None
@@ -191,6 +207,8 @@ class CLIStatusBarMixin:
         snapshot = {
             "model_name": model_name,
             "model_short": model_short,
+            "fallback_active": fallback_active,
+            "primary_model": primary_model,
             "duration": format_duration_compact(elapsed_seconds),
             "session_title": self._get_status_bar_session_title(),
             "prompt_elapsed": self._format_prompt_elapsed(

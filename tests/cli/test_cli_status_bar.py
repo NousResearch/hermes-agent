@@ -64,6 +64,68 @@ class TestCLIStatusBar:
         assert text.endswith(" weekly-digest ")
         assert cli_obj._status_bar_display_width(text) == 80
 
+    def test_snapshot_marks_a_fallback_hop(self):
+        """A demoted model must not render like the user's own pick.
+
+        The bar reads ``agent.model`` (live, follows fallback) while /model reads
+        ``cli.model`` (configured, never rewritten). Unmarked, a demotion to hop 1
+        looks exactly like the bar reporting the wrong model.
+        """
+        cli_obj = _make_cli(model="gpt-6-astra")
+        cli_obj.agent = SimpleNamespace(
+            model="deepseek-v4-flash",
+            provider="custom:litellm-direct",
+            _provider_fallback_active=True,
+            _primary_runtime={"model": "gpt-6-astra"},
+        )
+
+        snapshot = cli_obj._get_status_bar_snapshot()
+
+        assert snapshot["model_short"] == "deepseek-v4-flash ⤵"
+        assert snapshot["fallback_active"] is True
+        assert snapshot["primary_model"] == "gpt-6-astra"
+
+    def test_snapshot_leaves_a_normal_turn_unmarked(self):
+        cli_obj = _make_cli(model="gpt-6-astra")
+        cli_obj.agent = SimpleNamespace(
+            model="gpt-6-astra", provider="openai-codex", _provider_fallback_active=False,
+        )
+
+        snapshot = cli_obj._get_status_bar_snapshot()
+
+        assert snapshot["model_short"] == "gpt-6-astra"
+        assert snapshot["fallback_active"] is False
+        assert snapshot["primary_model"] == ""
+
+    def test_snapshot_marks_fallback_without_a_primary_snapshot(self):
+        """``_primary_runtime`` may be absent; the marker must still appear."""
+        cli_obj = _make_cli(model="gpt-6-astra")
+        cli_obj.agent = SimpleNamespace(
+            model="glm-5", provider="opencode-go", _provider_fallback_active=True,
+        )
+
+        snapshot = cli_obj._get_status_bar_snapshot()
+
+        assert snapshot["model_short"] == "glm-5 ⤵"
+        assert snapshot["primary_model"] == ""
+
+    def test_one_turn_model_switch_is_not_marked_as_a_fallback(self):
+        """`/model --once` restoration sets ``_fallback_activated`` as plumbing to force
+        ``restore_primary_runtime()`` to run (hermes_cli/cli_model_switch_mixin.py). A
+        deliberate one-turn switch is not a demotion, so the marker must key on the
+        ``_provider_fallback_active`` provenance flag instead."""
+        cli_obj = _make_cli(model="gpt-6-astra")
+        cli_obj.agent = SimpleNamespace(
+            model="glm-5", provider="opencode-go",
+            _fallback_activated=True,          # set by the --once restore path
+            _provider_fallback_active=False,   # no real fallback happened
+        )
+
+        snapshot = cli_obj._get_status_bar_snapshot()
+
+        assert snapshot["model_short"] == "glm-5"
+        assert snapshot["fallback_active"] is False
+
     def test_snapshot_refreshes_persisted_session_title(self):
         cli_obj = _make_cli()
         cli_obj.session_id = "session-1"

@@ -25,12 +25,12 @@ import type {
   Msg,
   PanelSection,
   SecretReq,
-  VaultUnlockReq,
   SectionVisibility,
   SessionInfo,
   SlashCatalog,
   SudoReq,
-  Usage
+  Usage,
+  VaultUnlockReq
 } from '../types.js'
 
 export interface StateSetter<T> {

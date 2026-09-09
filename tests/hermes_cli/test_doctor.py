@@ -1758,3 +1758,94 @@ def test_docker_daemon_probe_uses_version_not_info(monkeypatch):
     doctor_tools._check_docker_backend("docker", False, [])
 
     assert calls and calls[0][:2] == ["docker", "version"]
+
+
+def test_node_freshness_note_is_informational_not_an_issue(monkeypatch, capsys):
+    monkeypatch.setattr(doctor_tools, "_safe_which", lambda name: "/usr/bin/node" if name == "node" else None)
+    monkeypatch.setattr(doctor_tools, "_check_agent_browser", lambda should_fix: False)
+    monkeypatch.setattr(doctor_tools, "_check_lightpanda", lambda: None)
+    monkeypatch.setattr(doctor_tools, "_is_termux", lambda: False)
+    monkeypatch.setattr(doctor_tools, "_managed_node_major", lambda: 22)
+    monkeypatch.setattr(doctor_tools, "engines_node_allows_major", lambda major: major in (22, 24))
+    monkeypatch.setattr(doctor_tools, "engines_node_default_upgrade_major", lambda: 26)
+
+    result = doctor_tools._check_node_and_browser(False)
+
+    out = capsys.readouterr().out
+    assert "Node 26 is available" in out
+    assert result.issues == []  # informational only — must never count as a doctor issue
+
+
+def test_no_note_when_already_on_the_newest_allowed_major(monkeypatch, capsys):
+    monkeypatch.setattr(doctor_tools, "_safe_which", lambda name: "/usr/bin/node" if name == "node" else None)
+    monkeypatch.setattr(doctor_tools, "_check_agent_browser", lambda should_fix: False)
+    monkeypatch.setattr(doctor_tools, "_check_lightpanda", lambda: None)
+    monkeypatch.setattr(doctor_tools, "_is_termux", lambda: False)
+    monkeypatch.setattr(doctor_tools, "_managed_node_major", lambda: 26)
+    monkeypatch.setattr(doctor_tools, "engines_node_allows_major", lambda major: major in (22, 24, 26))
+    monkeypatch.setattr(doctor_tools, "engines_node_default_upgrade_major", lambda: 26)
+
+    doctor_tools._check_node_and_browser(False)
+    assert "is available" not in capsys.readouterr().out
+
+
+def test_no_note_when_managed_major_is_not_itself_engines_node_allowed(monkeypatch, capsys):
+    """A managed install sitting on a major engines.node doesn't allow at all (e.g. 23, a gap
+    between two caret-pinned majors) must never get a "Node N is available" note — that would
+    read as an endorsement of the current major as a valid baseline, when it isn't one. The
+    correctness floor for that case is the automatic heal, not this informational note."""
+    monkeypatch.setattr(doctor_tools, "_safe_which", lambda name: "/usr/bin/node" if name == "node" else None)
+    monkeypatch.setattr(doctor_tools, "_check_agent_browser", lambda should_fix: False)
+    monkeypatch.setattr(doctor_tools, "_check_lightpanda", lambda: None)
+    monkeypatch.setattr(doctor_tools, "_is_termux", lambda: False)
+    monkeypatch.setattr(doctor_tools, "_managed_node_major", lambda: 23)
+    monkeypatch.setattr(doctor_tools, "engines_node_allows_major", lambda major: major in (22, 24, 26))
+    monkeypatch.setattr(doctor_tools, "engines_node_default_upgrade_major", lambda: 26)
+
+    doctor_tools._check_node_and_browser(False)
+    assert "is available" not in capsys.readouterr().out
+
+
+def test_no_note_when_there_is_no_managed_node_at_all(monkeypatch, capsys):
+    """No managed install (`_managed_node_major` returns None, e.g. a fresh checkout that hasn't
+    bootstrapped yet) must not crash the check or print a nonsensical freshness note."""
+    monkeypatch.setattr(doctor_tools, "_safe_which", lambda name: None)
+    monkeypatch.setattr(doctor_tools, "_is_termux", lambda: False)
+    monkeypatch.setattr(doctor_tools, "_managed_node_major", lambda: None)
+    monkeypatch.setattr(doctor_tools, "engines_node_allows_major", lambda major: True)
+    monkeypatch.setattr(doctor_tools, "engines_node_default_upgrade_major", lambda: 26)
+
+    doctor_tools._check_node_and_browser(False)
+    assert "is available" not in capsys.readouterr().out
+
+
+def test_no_note_when_managed_major_exceeds_the_newest_named_major(monkeypatch, capsys):
+    """A managed install ahead of engines.node's newest named major (e.g. installed via the
+    unvalidated HERMES_NODE_TARGET_MAJOR override) must not trigger a note suggesting a
+    "downgrade" — the note only ever points forward."""
+    monkeypatch.setattr(doctor_tools, "_safe_which", lambda name: "/usr/bin/node" if name == "node" else None)
+    monkeypatch.setattr(doctor_tools, "_check_agent_browser", lambda should_fix: False)
+    monkeypatch.setattr(doctor_tools, "_check_lightpanda", lambda: None)
+    monkeypatch.setattr(doctor_tools, "_is_termux", lambda: False)
+    monkeypatch.setattr(doctor_tools, "_managed_node_major", lambda: 30)
+    monkeypatch.setattr(doctor_tools, "engines_node_allows_major", lambda major: major >= 26)
+    monkeypatch.setattr(doctor_tools, "engines_node_default_upgrade_major", lambda: 26)
+
+    doctor_tools._check_node_and_browser(False)
+    assert "is available" not in capsys.readouterr().out
+
+
+def test_note_appears_even_when_node_is_not_on_path(monkeypatch, capsys):
+    """The freshness note is about the Hermes-managed tree specifically, independent of whether
+    a `node` binary happens to be first on PATH — it must still fire down the "Node.js not found"
+    branch (e.g. an unlinked managed install, HERMES_NODE_SKIP_LINKS=1)."""
+    monkeypatch.setattr(doctor_tools, "_safe_which", lambda name: None)
+    monkeypatch.setattr(doctor_tools, "_is_termux", lambda: False)
+    monkeypatch.setattr(doctor_tools, "_managed_node_major", lambda: 22)
+    monkeypatch.setattr(doctor_tools, "engines_node_allows_major", lambda major: major in (22, 24, 26))
+    monkeypatch.setattr(doctor_tools, "engines_node_default_upgrade_major", lambda: 26)
+
+    doctor_tools._check_node_and_browser(False)
+    out = capsys.readouterr().out
+    assert "Node.js not found" in out
+    assert "Node 26 is available" in out

@@ -11,7 +11,9 @@ import sys
 from hermes_cli.doctor_platform import _system_package_install_cmd
 from hermes_cli.doctor_report import Finding, _fail_and_issue, check_bool, check_info, check_ok, check_warn, doctor_check
 from hermes_cli.vercel_auth import describe_vercel_auth
-from hermes_constants import agent_browser_runnable, is_termux as _is_termux
+from hermes_constants import (
+    agent_browser_runnable, engines_node_allows_major, engines_node_default_upgrade_major,
+    managed_node_major as _managed_node_major, is_termux as _is_termux)
 
 
 def _safe_which(cmd: str) -> str | None:
@@ -348,6 +350,14 @@ def _check_node_and_browser(should_fix: bool, f: Finding) -> None:
     else:
         check_warn("Node.js not found", "(optional, needed for browser tools)")
     _check_lightpanda()
+
+    managed_major = _managed_node_major()
+    if managed_major is not None and engines_node_allows_major(managed_major):
+        newest = engines_node_default_upgrade_major()
+        if managed_major < newest:
+            check_info(
+                f"Node {newest} is available for the Hermes-managed runtime (currently {managed_major}) "
+                "— run `hermes doctor --upgrade-node` to upgrade.")
 
 
 def _plural(n: int) -> str:

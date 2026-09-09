@@ -18,6 +18,7 @@ logger = logging.getLogger("hermes_state")
 _TITLE_CONTROL_RE = re.compile(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]')
 _TITLE_INVISIBLE_RE = re.compile(r'[\u200b-\u200f\u2028-\u202e\u2060-\u2069\ufeff\ufffc\ufff9-\ufffb]')
 _NUMBERED_TITLE_RE = re.compile(r'^(.*?) #(\d+)$')
+_TITLE_BARE_OSC_RE = re.compile(r'(?<!\w)\][0-9]+;[^\s\x07\x1b]*')
 
 
 class SessionTitlesMixin:
@@ -32,12 +33,23 @@ class SessionTitlesMixin:
 
     @staticmethod
     def sanitize_title(title: Optional[str]) -> Optional[str]:
-        """Strip control/zero-width/bidi chars (and lone surrogates sqlite3 cannot bind),
-        collapse whitespace, normalize empty to None. ValueError past MAX_TITLE_LENGTH."""
+        """Strip terminal escape sequences plus control/zero-width/bidi chars (and lone
+        surrogates sqlite3 cannot bind), collapse whitespace, normalize empty to None.
+        ValueError past MAX_TITLE_LENGTH."""
         from hermes_state import SessionDB
+        from tools.ansi_strip import strip_ansi
         if not title:
             return None
-        cleaned = _TITLE_INVISIBLE_RE.sub('', _TITLE_CONTROL_RE.sub('', _sanitize_surrogates(title)))
+        # Strip ANSI/terminal escape sequences first, while the ESC anchor (0x1b) is still
+        # present: strip_ansi() (full ECMA-48) removes whole sequences.
+        cleaned = strip_ansi(_sanitize_surrogates(title))
+        # Transports such as Telegram drop the ESC control byte in transit, leaving a bare
+        # OSC body like "]11;rgb:..." or "]0;title". strip_ansi is ESC-anchored and cannot
+        # see those, so strip the bare OSC residue too. Narrow on purpose: digits + ';'
+        # required, non-word lead, stops at whitespace, so ordinary text like "[Note]" or
+        # "array[0]" is left untouched.
+        cleaned = _TITLE_BARE_OSC_RE.sub('', cleaned)
+        cleaned = _TITLE_INVISIBLE_RE.sub('', _TITLE_CONTROL_RE.sub('', cleaned))
         cleaned = re.sub(r'\s+', ' ', cleaned).strip()
         if not cleaned:
             return None

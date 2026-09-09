@@ -173,6 +173,13 @@ def _resolve_concurrent_tool_timeout() -> float | None:
 def _flush_session_db_after_tool_progress(agent, messages: list, *, stage: str) -> bool:
     """Flush tool-call progress to the session DB before projecting it to any UI: tool side
     effects can kill/restart the process before turn-end persistence runs."""
+    from agent.conversation_loop import _maybe_inject_run_budget_wrapup
+    from agent.turn_iteration_prep import _maybe_inject_iteration_budget_warning
+
+    # Persist exactly the checkpoint text the next model call will see, before stamping
+    # this tool result as durable. Already-written rows must never be rewritten later.
+    _maybe_inject_run_budget_wrapup(agent, messages)
+    _maybe_inject_iteration_budget_warning(agent, messages)
     try:
         persisted = agent._flush_messages_to_session_db(messages) is not False
         if not persisted:
@@ -381,6 +388,10 @@ def _unwrap_tool_search_call(
             return function_name, function_args, None
         underlying, underlying_args, err = _ts.resolve_underlying_call(function_args)
         if err or not underlying:
+            return function_name, function_args, None
+        if underlying == _ts.CONNECTOR_BATCH_SENTINEL:
+            # Both executors retain the wrapper: scope/probe/hooks run per entry
+            # in the batch dispatcher, not against a synthetic registry name.
             return function_name, function_args, None
         if underlying not in _tool_search_scoped_names(agent):
             return function_name, function_args, (
@@ -769,6 +780,15 @@ def _resolve_sequential_tool_timeout() -> float | None:
     return resolve_timeout("tools.sequential_call", default=_resolve_concurrent_tool_timeout())
 
 
+# Tools whose call blocks on a long-running operation that supervises its own liveness: no generic
+# sequential deadline. ``delegate_task`` in a nested orchestrator blocks for the whole batch by design
+# (children carry heartbeats, the stale monitor, and ``delegation.child_timeout_seconds``); under the
+# 420 s deadline every real batch "timed out" while its children ran on as orphans, and the orchestrator
+# spent the following hours polling transcripts (measured: 332 timeouts, ~$4k of orchestrator turns in
+# one run).
+_SEQUENTIAL_DEADLINE_EXEMPT_TOOLS = frozenset({"delegate_task"})
+
+
 def _abandoned_sequential_result(agent, ref: _ToolCallRef, message: str, result_cls, **outcome) -> _ManagedToolResult:
     """Emit the terminal post_tool_call for a worker the sequential runner gave up on
     (timeout / interrupt) and wrap ``message`` in its marker ``result_cls``."""
@@ -815,7 +835,7 @@ def _run_sequential_tool_execution_middleware(
     """Run one sequential call on a worker thread under the concurrent executor's deadline.
     Interactive tools (``clarify``) own their wait via ``agent.clarify_timeout``; the
     generic deadline would report ``tool_timeout`` while the prompt is still live."""
-    timeout_s = _resolve_sequential_tool_timeout()
+    timeout_s = None if function_name in _SEQUENTIAL_DEADLINE_EXEMPT_TOOLS else _resolve_sequential_tool_timeout()
     ref = _ToolCallRef(function_name, function_args, effective_task_id, tool_call_id, middleware_trace)
     kwargs = dict(ref.middleware_kwargs(), execute=execute, scope_block=scope_block, display_index=display_index)
     if function_name in _NEVER_PARALLEL_TOOLS:

@@ -21,7 +21,17 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from hermes_cli import runtime_provider as rp
+from hermes_cli import providers as _providers
 from hermes_cli.providers import nous_api_mode
+
+
+@pytest.fixture(autouse=True)
+def _native_wire_selected(monkeypatch):
+    """These contracts describe the native wire, which is now opt-in (``nous.anthropic_wire:
+    native``; default ``chat`` since 2026-09-06, see ``nous_api_mode``). Select it here so the
+    wire keeps working for the flip-back; the default's own contract is in
+    ``test_nous_anthropic_wire_default.py``."""
+    monkeypatch.setattr(_providers, "_nous_anthropic_wire", lambda: "native")
 
 PORTAL_URL = "https://inference-api.nousresearch.com/v1"
 # Staging / preview hosts used via NOUS_INFERENCE_BASE_URL — not the prod

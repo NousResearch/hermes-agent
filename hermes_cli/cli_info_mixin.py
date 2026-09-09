@@ -133,7 +133,8 @@ class CLIInfoMixin:
                     try:
                         from model_tools import get_toolset_for_tool
                         tools = get_tool_definitions(
-                            enabled_toolsets=self.enabled_toolsets, quiet_mode=True)
+                            enabled_toolsets=self.enabled_toolsets,
+                            disabled_toolsets=self.disabled_toolsets, quiet_mode=True)
                         availability = compute_toolset_availability(self.enabled_toolsets)
                         tmap = _toolset_map(tools, availability, get_toolset_for_tool)
                         save_banner_snapshot(tools, self.enabled_toolsets, availability, tmap)
@@ -146,7 +147,8 @@ class CLIInfoMixin:
             else:
                 # Cold path: compute live, then persist the snapshot for the next launch.
                 from model_tools import get_toolset_for_tool
-                tools = get_tool_definitions(enabled_toolsets=self.enabled_toolsets, quiet_mode=True)
+                tools = get_tool_definitions(enabled_toolsets=self.enabled_toolsets,
+                                             disabled_toolsets=self.disabled_toolsets, quiet_mode=True)
                 availability = compute_toolset_availability(self.enabled_toolsets)
                 build_welcome_banner(tools=tools, availability=availability, **banner_kw)
                 try:
@@ -354,7 +356,8 @@ class CLIInfoMixin:
         from model_tools import get_toolset_for_tool
         # Pre-assembly list: /tools is a discovery surface, so it must show the full catalog
         # including tools deferred behind the tool_search bridge (users verify MCP installs here).
-        tools = get_tool_definitions(enabled_toolsets=self.enabled_toolsets, quiet_mode=True,
+        tools = get_tool_definitions(enabled_toolsets=self.enabled_toolsets,
+                                     disabled_toolsets=self.disabled_toolsets, quiet_mode=True,
                                      skip_tool_search_assembly=True)
         if not tools:
             print("(;_;) No tools available")
@@ -521,12 +524,7 @@ class CLIInfoMixin:
                     print(f"    ○ {name:<12} Not configured ({env_var})")
 
             print()
-            print("  Session Reset Policy:")
-            print("  " + "-" * 55)
-            policy = config.default_reset_policy
-            print(f"    Mode: {policy.mode}")
-            print(f"    Daily reset at: {policy.at_hour}:00")
-            print(f"    Idle timeout: {policy.idle_minutes} minutes")
+            print("  Conversations persist until /new or /reset.")
             print()
             print("  To start the gateway:")
             print("    python cli.py --gateway")
@@ -715,7 +713,9 @@ class CLIInfoMixin:
         print(f"  API calls:                 {calls:>10,}")
         print(f"  Session duration:          {elapsed:>10}")
         print(f"  {'─' * 40}")
-        print(f"  Current context:  {last_prompt:,} / {ctx_len:,} ({pct:.0f}%)")
+        from agent.context_breakdown import context_display_source
+        mark = "~" if context_display_source(compressor) != "provider_usage" else ""
+        print(f"  Current context:  {mark}{last_prompt:,} / {ctx_len:,} ({mark}{pct:.0f}%)")
         print(f"  Messages:         {len(self.conversation_history)}")
         print(f"  Compressions:     {compressor.compression_count}")
 

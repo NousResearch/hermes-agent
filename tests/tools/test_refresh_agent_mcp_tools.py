@@ -8,8 +8,11 @@ rely on (name-based diff, in-place mutation, agent-scoped filtering) rather than
 freezing any particular tool list.
 """
 
+import json
 import threading
 import types
+
+import pytest
 
 from tools import mcp_tool
 from tools import mcp_tool_agent as _mcp_agent
@@ -289,6 +292,35 @@ def test_preserve_prefix_appends_late_arrivals_at_the_tail(monkeypatch):
     ]
 
 
+def test_preserve_prefix_keeps_the_bridge_tools_byte_identical(monkeypatch):
+    """``tool_search``'s description is derived from the session at build time: the
+    deferred-tool count, the embedded listing, and whether ``manage_connections`` was
+    present. Every one of those inputs can move between turns (a late MCP server, a
+    ``check_fn`` flap on a portal blip), and a moved byte in the tool array re-prefills
+    the whole cached history. The refresh must leave the bridge entries exactly as
+    built; a search still reads the live catalog at dispatch."""
+    from tools.tool_search_catalog import BRIDGE_TOOL_NAMES
+
+    built = _tool("tool_search")
+    built["function"]["description"] = "Search 21 additional tools. connectors__ hint present."
+    agent = _agent(["read_file", "manage_connections"])
+    agent.tools.append(built)
+    agent.valid_tool_names.add("tool_search")
+    before = json.dumps(agent.tools, sort_keys=True)
+
+    fresh_bridge = _tool("tool_search")
+    fresh_bridge["function"]["description"] = "Search 33 additional tools."
+    # manage_connections flapped out (portal blip); a late server grew the count.
+    _serve(monkeypatch, [_tool("read_file"), fresh_bridge, _tool("mcp_late_tool")])
+    _registered(monkeypatch, ["read_file", "manage_connections", "mcp_late_tool", *BRIDGE_TOOL_NAMES])
+
+    added = _mcp_agent.refresh_agent_mcp_tools(agent, preserve_prefix=True)
+
+    assert added == {"mcp_late_tool"}
+    assert json.dumps(agent.tools[:3], sort_keys=True) == before
+    assert [t["function"]["name"] for t in agent.tools][-1] == "mcp_late_tool"
+
+
 # ---------------------------------------------------------------------------
 # tools[] freeze: eviction rebuild + the /reload-mcp re-probe hatch
 # ---------------------------------------------------------------------------
@@ -338,3 +370,114 @@ def test_reprobe_tool_availability_drops_cached_check_fn_verdicts(monkeypatch):
 
     assert registry_mod._check_fn_cached(probe) is True
     assert ("sentinel",) not in model_tools._tool_defs_cache
+
+
+# ---------------------------------------------------------------------------
+# Bot Mode dynamic capability: every snapshot rebuild re-runs its auth gate
+# ---------------------------------------------------------------------------
+
+
+class _BotModeDB:
+    def __init__(self, home, title):
+        self.db_path = str(home / "state.db")
+        self._title = title
+
+    def get_session_title(self, _session_id):
+        return self._title
+
+
+@pytest.fixture
+def managed_bot_home(tmp_path):
+    home = tmp_path / ".hermes"
+    profile = home / "profiles" / "researcher"
+    profile.mkdir(parents=True)
+    (profile / "profile.yaml").write_text(
+        "ui_meta:\n  hermes-bots:\n    shape: cloud\n",
+        encoding="utf-8",
+    )
+    return home
+
+
+def _bot_mode_agent(home, *, title="Bot Chat"):
+    agent = _agent(["read_file"])
+    agent._session_db = _BotModeDB(home, title)
+    agent.session_id = "session-1"
+    agent._session_title_hint = None
+    agent._bot_mode_protocol = True
+    return agent
+
+
+def _message_agent_schema_count(agent):
+    return sum(
+        t.get("function", {}).get("name") == "message_agent"
+        for t in agent.tools
+        if isinstance(t, dict)
+    )
+
+
+def _assert_tool_snapshot_coherent(agent):
+    names = {t["function"]["name"] for t in agent.tools}
+    assert agent.valid_tool_names == names
+
+
+@pytest.mark.parametrize("rebuild", ["compaction", "reload", "between_turns", "resume"])
+def test_authorized_message_agent_survives_every_snapshot_rebuild(
+    managed_bot_home, monkeypatch, rebuild
+):
+    """Compaction, live refreshes and eviction/resume all preserve the guarded tool."""
+    from tools.bot_mode_dm import ensure_message_agent_tool
+    from tools import registry as registry_mod
+
+    agent = _bot_mode_agent(managed_bot_home)
+    _serve(monkeypatch, [_tool("read_file")])
+    entry = types.SimpleNamespace(name="read_file", schema=_tool("read_file")["function"])
+    monkeypatch.setattr(registry_mod.registry, "get_all_entries", lambda: [entry], raising=False)
+    monkeypatch.setattr(
+        registry_mod.registry,
+        "get_entry",
+        lambda name, **_kw: entry if name == "read_file" else None,
+        raising=False,
+    )
+
+    assert ensure_message_agent_tool(agent) is True
+
+    def rebuild_snapshot():
+        if rebuild == "resume":
+            agent.tools = [_tool("read_file")]
+            agent.valid_tool_names = {"read_file"}
+            _mcp_agent.restore_agent_tool_prefix(agent, ["read_file", "message_agent"])
+        else:
+            _mcp_agent.refresh_agent_mcp_tools(
+                agent,
+                content_aware=rebuild == "compaction",
+                preserve_prefix=rebuild == "between_turns",
+            )
+
+    for _ in range(2):
+        rebuild_snapshot()
+        assert _message_agent_schema_count(agent) == 1
+        assert "message_agent" in agent.valid_tool_names
+        _assert_tool_snapshot_coherent(agent)
+
+
+@pytest.mark.parametrize(
+    ("title", "managed"),
+    [("Ordinary chat", True), ("Bot Chat", False)],
+)
+def test_snapshot_rebuild_never_grants_message_agent_to_unauthorized_sessions(
+    tmp_path, managed_bot_home, monkeypatch, title, managed
+):
+    """Ordinary and unmanaged chats remain fail-closed across repeated rebuilds."""
+    home = managed_bot_home if managed else tmp_path / "unmanaged"
+    home.mkdir(exist_ok=True)
+    agent = _bot_mode_agent(home, title=title)
+    # Even a stale/leaked dynamic capability is scrubbed unless the live gate re-authorizes it.
+    agent.tools.append(_tool("message_agent"))
+    agent.valid_tool_names.add("message_agent")
+    _serve(monkeypatch, [_tool("read_file")])
+
+    for _ in range(2):
+        _mcp_agent.refresh_agent_mcp_tools(agent, content_aware=True)
+        assert _message_agent_schema_count(agent) == 0
+        assert "message_agent" not in agent.valid_tool_names
+        _assert_tool_snapshot_coherent(agent)

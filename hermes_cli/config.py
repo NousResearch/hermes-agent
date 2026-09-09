@@ -49,35 +49,6 @@ class InvalidUserConfigError(RuntimeError):
     """Raised when a run that cannot repair config finds invalid user YAML."""
 
 
-def _backup_corrupt_config(config_path: Path) -> Optional[Path]:
-    """Copy an unparseable ``config.yaml`` to a timestamped ``.corrupt.*.bak``; None on skip/failure.
-    Symlinks are not followed (never clobber whatever a malicious symlink points at). A sibling
-    backup of the same size means this corruption was already snapshotted — skip to avoid churn.
-
-    Returns the backup path on success, else ``None``. See #21541.
-    """
-    try:
-        if config_path.is_symlink():
-            return None
-        st = config_path.stat()
-        if st.st_size == 0:
-            return None
-        ts = time.strftime("%Y%m%d-%H%M%S")
-        backup_path = config_path.with_name(f"{config_path.name}.corrupt.{ts}.bak")
-        for existing in config_path.parent.glob(f"{config_path.name}.corrupt.*.bak"):
-            try:
-                if existing.stat().st_size == st.st_size:
-                    return None
-            except OSError:
-                continue
-        if backup_path.exists():
-            return None
-        shutil.copy2(config_path, backup_path)
-        return backup_path
-    except Exception:
-        return None
-
-
 _PARSE_FAILURE_FALLBACK_MSG = {
     "last-known-good": (
         "Keeping the previously loaded config for this process — "
@@ -108,7 +79,8 @@ def _warn_config_parse_failure(
     if key in _CONFIG_PARSE_WARNED:
         return
     _CONFIG_PARSE_WARNED.add(key)
-    backup_path = _backup_corrupt_config(config_path)
+    from hermes_cli.config_backups import backup_config
+    backup_path = backup_config(config_path, "corrupt")
     msg = f"Failed to parse {config_path}: {exc}. " + _PARSE_FAILURE_FALLBACK_MSG.get(
         fallback, _PARSE_FAILURE_DEFAULTS_MSG)
     if backup_path is not None:
@@ -515,7 +487,8 @@ def require_parseable_user_config(*, ignore_user_config: bool = False) -> None:
             return
         parse_error = TypeError(f"top-level YAML value must be a mapping, got {type(data).__name__}")
 
-    backup_path = _backup_corrupt_config(config_path)
+    from hermes_cli.config_backups import backup_config
+    backup_path = backup_config(config_path, "corrupt")
     message = (
         f"Refusing non-interactive startup because {config_path} is invalid: "
         f"{parse_error}. Repair the file or pass --ignore-user-config to "
@@ -657,30 +630,8 @@ def ensure_hermes_home():
     assert_named_profile_home_live(home)
     if key in _HERMES_HOME_ENSURED and home.is_dir():
         return
-    if is_managed():
-        # Activation creates the dirs; verify, then seed SOUL.md. logs/curator may be unknown to
-        # the activation script (inside an already-secured logs/). umask(0o007) => SOUL.md is 0660.
-        old_umask = os.umask(0o007)
-        try:
-            if not home.is_dir():
-                raise RuntimeError(f"HERMES_HOME {home} does not exist.")
-            for subdir in ("cron", "sessions", "logs", "memories"):
-                if not (home / subdir).is_dir():
-                    raise RuntimeError(f"{home / subdir} does not exist.")
-            (home / "logs" / "curator").mkdir(parents=True, exist_ok=True)
-            _ensure_default_soul_md(home)
-        finally:
-            os.umask(old_umask)
-    else:
-        home.mkdir(parents=True, exist_ok=True)
-        _secure_dir(home)
-        for subdir in _HERMES_HOME_SUBDIRS:
-            d = home / subdir
-            d.mkdir(parents=True, exist_ok=True)
-            _secure_dir(d)
-        _ensure_default_soul_md(home)
-
-    _HERMES_HOME_ENSURED.add(key)
+    from hermes_cli.config_home import initialize_home
+    initialize_home(home, _HERMES_HOME_SUBDIRS, _HERMES_HOME_ENSURED)
 
 
 # ---- Config loading/saving ----
@@ -944,7 +895,8 @@ def _unset_nested(config, dotted_key: str) -> bool:
 _ENV_CONFIG_KEYS = frozenset({
     'OPENROUTER_API_KEY', 'OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'VOICE_TOOLS_OPENAI_KEY',
     'EXA_API_KEY', 'PARALLEL_API_KEY', 'FIRECRAWL_API_KEY', 'FIRECRAWL_API_URL',
-    'FIRECRAWL_GATEWAY_URL', 'TOOL_GATEWAY_DOMAIN', 'TOOL_GATEWAY_SCHEME',
+    'FIRECRAWL_GATEWAY_URL', 'TOOL_GATEWAY_URL', 'CONNECTOR_GATEWAY_URL',
+    'TOOL_GATEWAY_DOMAIN', 'TOOL_GATEWAY_SCHEME',
     'TOOL_GATEWAY_USER_TOKEN', 'TAVILY_API_KEY', 'PERPLEXITY_API_KEY', 'API_SERVER_KEY',
     'BROWSERBASE_API_KEY', 'BROWSERBASE_PROJECT_ID', 'BROWSER_USE_API_KEY',
     'FAL_KEY', 'TELEGRAM_BOT_TOKEN', 'DISCORD_BOT_TOKEN',
@@ -1084,7 +1036,7 @@ _EXTRA_KNOWN_ROOT_KEYS = {
     "known_builtin_toolsets",  # ditto — builtin toolsets a platform's checklist has offered
     "tool_gateway_declined_tools",  # per-tool Tool Gateway offer declines
     # Top-level forms read/bridged by gateway/config.py:
-    "session_reset", "group_sessions_per_user", "thread_sessions_per_user",
+    "group_sessions_per_user", "thread_sessions_per_user",
     "stt_echo_transcripts", "reset_triggers", "always_log_local", "filter_silence_narration",
     "multiplex_profiles", "profile_routes", "platforms", "require_mention",
     "unauthorized_dm_behavior", "signal",
@@ -1222,8 +1174,9 @@ def validate_config_structure(config: Optional[Dict[str, Any]] = None) -> List["
     if config is None:
         try:
             config = load_config()
-        except Exception:
-            return [ConfigIssue("error", "Could not load config.yaml", "Run 'hermes setup' to create a valid config")]
+        except Exception as exc:
+            from hermes_cli.config_home import config_load_issue
+            return [config_load_issue(exc)]
 
     issues: List[ConfigIssue] = []
     _validate_voice(config, issues)
@@ -1965,7 +1918,7 @@ def _refuse_overwrite(config_path: Path, reason: str, exc: Exception, fix: str) 
 
 
 _FIX_PERMS = "Fix the file permissions or move it aside first."
-_FIX_YAML = "Fix the file or restore from a .corrupt.*.bak backup first."
+_FIX_YAML = "Fix the file or restore a copy from backups/config/ first."
 
 
 def require_readable_config_before_write(config_path: Optional[Path] = None) -> Dict[str, Any]:
@@ -1998,7 +1951,7 @@ def require_readable_config_before_write(config_path: Optional[Path] = None) -> 
         _warn_config_parse_failure(config_path, exc, fallback="refuse-write")
         raise RuntimeError(
             f"Refusing to overwrite {config_path}: top-level YAML must be a mapping, got "
-            f"{type(loaded).__name__}. Fix the file or restore from a .corrupt.*.bak backup first."
+            f"{type(loaded).__name__}. Fix the file or restore a copy from backups/config/ first."
         ) from exc
     return loaded
 
@@ -2055,7 +2008,7 @@ TERMINAL_CONFIG_ENV_MAP = {
             "daytona_image", "vercel_runtime", "ssh_host", "ssh_user", "ssh_port", "ssh_key",
             "container_cpu", "container_memory", "container_disk", "container_persistent",
             "docker_volumes", "docker_env", "docker_mount_cwd_to_workspace", "docker_network",
-            "docker_extra_args", "docker_shm_size", "docker_run_as_host_user",
+            "docker_extra_args", "docker_shm_size", "docker_run_as_host_user", "docker_snap_compat",
             "docker_persist_across_processes", "docker_shared_container_key",
             "docker_orphan_reaper", "sandbox_dir", "persistent_shell")}}
 
@@ -2997,7 +2950,7 @@ def edit_config():
     subprocess.run([editor, str(config_path)])
 
 
-# ---- Cron model-drift guard helpers ----
+# ---- Cron model-drift helpers: which unpinned jobs stay on their creation snapshot ----
 
 _CRON_DRIFT_AXIS_BY_KEY = {
     "model": "model", "model.default": "model", "model.model": "model", "model.name": "model",
@@ -3005,7 +2958,7 @@ _CRON_DRIFT_AXIS_BY_KEY = {
 
 
 def _cron_model_drift_axis_for_config_key(key: str) -> Optional[str]:
-    """Return the cron drift guard axis affected by a config key, if any."""
+    """Return the cron inference axis affected by a config key, if any."""
     return _CRON_DRIFT_AXIS_BY_KEY.get(str(key or "").strip().lower())
 
 
@@ -3018,15 +2971,6 @@ def _cron_section(config: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
             return None
     cron_config = config.get("cron") if isinstance(config, dict) else None
     return cron_config if isinstance(cron_config, dict) else None
-
-
-def cron_model_drift_guard_enabled(config: Optional[Dict[str, Any]] = None) -> bool:
-    """Whether cron must fail closed on unpinned inference drift.
-    Only the literal YAML boolean ``false`` disables this spend-safety guard; missing, malformed,
-    or non-boolean values stay fail-closed. With *config* omitted the merged config is loaded so
-    CLI warnings honor the same user/managed setting as the scheduler."""
-    cron_config = _cron_section(config)
-    return cron_config is None or cron_config.get("model_drift_guard", True) is not False
 
 
 _CRON_MODEL_IMPACT_JOB_LIMIT = 50
@@ -3044,7 +2988,7 @@ def resolve_cron_model_drift_defaults(
     """Resolve the global ``(provider, model)`` cron compares against snapshots.
     Mirrors the scheduler's precedence: a truthy configured model wins over ``HERMES_MODEL``; the
     environment is only a fallback. Per-job and cron fleet defaults are handled by the caller
-    because they suppress a drift axis rather than changing the global assignment."""
+    because they cover an axis rather than changing the global assignment."""
     env = os.environ if environ is None else environ
     provider = ""
     model_config = config.get("model") if isinstance(config, dict) else None
@@ -3058,15 +3002,16 @@ def resolve_cron_model_drift_defaults(
 def cron_model_drift_axes(
     job: Any, *, current_provider: Any = "", current_model: Any = "", config: Any = None
 ) -> List[str]:
-    """Return the unpinned axes that the fail-closed cron guard would block."""
-    if not isinstance(job, dict) or not cron_model_drift_guard_enabled(config):
+    """Return the unpinned axes on which *job* will keep running on its creation snapshot rather
+    than the new global assignment (the scheduler treats the snapshot as the effective pin)."""
+    if not isinstance(job, dict):
         return []
 
     current = {
         "provider": _model_assignment_text(current_provider).lower(),
         "model": _model_assignment_text(current_model).lower()}
-    # A cron.model / cron.model_provider fleet default covers its axis: that axis no longer follows
-    # the global assignment at fire time, so the guard never engages and a warning would be false.
+    # A cron.model / cron.model_provider fleet default covers its axis: that axis never reads the
+    # snapshot at fire time, so reporting it would be false.
     fleet = _cron_section(config) or {}
     drifted: List[str] = []
     for axis, fleet_key in (("provider", "model_provider"), ("model", "model")):
@@ -3098,35 +3043,28 @@ def _cron_impact_job_name(value: Any, job_id: str) -> str:
     return f"Job {job_id}"[:_CRON_MODEL_IMPACT_NAME_LIMIT].rstrip()
 
 
-def _cron_model_impact_result(available: bool, guard_enabled: bool) -> Dict[str, Any]:
-    return {
-        "available": available,
-        "guard_enabled": guard_enabled,
-        "affected_count": 0,
-        "truncated": False,
-        "jobs": []}
+def _cron_model_impact_result(available: bool) -> Dict[str, Any]:
+    return {"available": available, "affected_count": 0, "truncated": False, "jobs": []}
 
 
 def build_cron_model_impact(
     *, current_provider: Any = "", current_model: Any = "", config: Any = None, jobs: Any = None
 ) -> Dict[str, Any]:
-    """Build a bounded, profile-local summary of jobs blocked by model drift.
-    Job-store inspection is best effort: the model assignment has already succeeded when Desktop
-    requests this, so an unreadable store is reported as unavailable rather than failing."""
-    guard_enabled = cron_model_drift_guard_enabled(config)
+    """Build a bounded, profile-local summary of unpinned jobs that stay on their creation snapshot
+    after a global model/provider change. Job-store inspection is best effort: the model assignment
+    has already succeeded when Desktop requests this, so an unreadable store is reported as
+    unavailable rather than failing."""
     if jobs is None:
         try:
             from cron.jobs import load_jobs
 
             jobs = load_jobs()
         except Exception:
-            return _cron_model_impact_result(False, guard_enabled)
+            return _cron_model_impact_result(False)
     if not isinstance(jobs, list):
-        return _cron_model_impact_result(False, guard_enabled)
+        return _cron_model_impact_result(False)
 
-    result = _cron_model_impact_result(True, guard_enabled)
-    if not guard_enabled:
-        return result
+    result = _cron_model_impact_result(True)
 
     from cron.jobs import is_job_runnable
 
@@ -3155,7 +3093,7 @@ def build_cron_model_impact(
 
 def warn_unpinned_cron_jobs_after_model_config_change(
     key: str, value: Any, config: Optional[Dict[str, Any]] = None) -> None:
-    """Warn when a global model/provider change will trip cron's drift guard."""
+    """Tell the operator which unpinned cron jobs a global model/provider change does NOT move."""
     axis = _cron_model_drift_axis_for_config_key(key)
     if axis is None:
         return
@@ -3170,13 +3108,12 @@ def warn_unpinned_cron_jobs_after_model_config_change(
     if affected <= 0:
         return
 
-    noun, verb = ("job", "has") if affected == 1 else ("jobs", "have")
+    noun, verb = ("job", "keeps") if affected == 1 else ("jobs", "keep")
     print(
-        f"⚠️  {affected} enabled unpinned cron {noun} {verb} stored "
-        f"{axis}_snapshot values that differ from the new global {axis}. "
-        "They will fail closed on their next run instead of silently using the changed "
-        "model/provider. Inspect with `hermes cron list`, then pin the intended values with "
-        "`hermes cron edit <job_id> --provider <provider> --model <model>`.")
+        f"ℹ️  {affected} unpinned cron {noun} {verb} running on the {axis} it was created under "
+        f"(its {axis}_snapshot), not the new global {axis}. To move it, pin it with "
+        "`hermes cron edit <job_id> --provider <provider> --model <model>` or set a fleet default "
+        "with `hermes config set cron.model <model>`.")
 
 
 def _default_value_for_key(dotted_key: str):
@@ -3201,7 +3138,7 @@ _SCHEMA_DEFINED_DICT_KEYS = frozenset({
     "email", "sms", "dingtalk",
     # MCP server template / dynamic auth dicts
     "sessions", "checkpoints",
-    # Plugin enable/disable lists + index_url override; absent from DEFAULT_CONFIG.
+    # Plugin enable/disable lists + per-plugin entries; absent from DEFAULT_CONFIG.
     "plugins"})
 
 # Top-level keys that can be ANY user-supplied name.

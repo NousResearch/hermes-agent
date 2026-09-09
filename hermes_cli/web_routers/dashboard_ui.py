@@ -170,12 +170,41 @@ def _plugin_action(result: dict, fallback_error: str, *, rescan: bool) -> dict:
     return result
 
 
+@router.get("/api/dashboard/plugins/catalog")
+async def get_plugins_catalog(request: Request):
+    """Curated plugin catalog merged with installed state (session protected)."""
+    _require_token(request)
+
+    def _run():
+        from hermes_cli.plugins_cmd import _discover_all_plugins, _get_disabled_set, _get_enabled_set
+        from hermes_cli.plugins_cmd_catalog import installed_catalog_state
+        from hermes_cli.web_server_dashboard import _plugin_runtime_status
+        enabled, disabled = _get_enabled_set(), _get_disabled_set()
+        installed = {}
+        for name, _v, _d, _s, dir_str, key in _discover_all_plugins():
+            aliases = {name, key} - {""}
+            info = {"dir": dir_str, "runtime_status": _plugin_runtime_status(aliases, enabled, disabled)}
+            installed.update({alias: info for alias in aliases})
+        return installed_catalog_state(installed)
+
+    try:
+        return await asyncio.to_thread(_run)
+    except Exception as exc:
+        _log.warning("plugins/catalog failed: %s", exc)
+        raise HTTPException(status_code=500, detail="Failed to build plugins catalog.") from exc
+
+
 @router.post("/api/dashboard/agent-plugins/install")
 async def post_agent_plugin_install(request: Request, body: _AgentPluginInstallBody):
     _require_token(request)
     from hermes_cli.plugins_cmd import dashboard_install_plugin
 
-    result = dashboard_install_plugin(body.identifier.strip(), force=body.force, enable=body.enable)
+    catalog_name = (body.catalog_name or "").strip()
+    identifier = body.identifier.strip()
+    if not identifier and not catalog_name:
+        raise HTTPException(status_code=400, detail="Provide an identifier or a catalog_name.")
+    result = dashboard_install_plugin(
+        identifier, force=body.force, enable=body.enable, catalog_name=catalog_name or None)
     result = _plugin_action(result, "Install failed.", rescan=True)
     # Strip internal paths from the response
     result.pop("after_install_path", None)

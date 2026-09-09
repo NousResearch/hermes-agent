@@ -238,6 +238,41 @@ class TestMarkdownStripPatch:
 # signal-streaming-patch: SUPPORTS_MESSAGE_EDITING and send() behavior
 # ===========================================================================
 
+class TestTableRealignment:
+    """GFM pipe tables are re-aligned to a fixed monospace width and wrapped in a
+    single MONOSPACE style range, per the Signal table-rendering feature request."""
+
+    @staticmethod
+    def _u16_slice(text: str, style: str) -> str:
+        start, length = (int(p) for p in style.split(":")[:2])
+        u16 = text.encode("utf-16-le")
+        return u16[start * 2 : (start + length) * 2].decode("utf-16-le")
+
+    def test_wide_char_table_becomes_one_aligned_monospace_block(self):
+        """Cells with CJK/emoji (2 display cells, 1-2 UTF-16 units) still produce pipes that line up
+        by display width, one MONOSPACE range covering exactly the block, and correct UTF-16 offsets
+        for styles after it."""
+        from wcwidth import wcswidth
+
+        text, styles = _m2s("| 名前 | Score |\n|---|---|\n| 東京 | 🚀 |\n| Bob | 1 |\n\n**tail**")
+        (mono,) = _find_style(styles, "MONOSPACE")
+        block = self._u16_slice(text, mono)
+        assert text == block + "\n\ntail"
+        rows = block.split("\n")
+        assert len(rows) == 4 and all(wcswidth(row) == wcswidth(rows[0]) for row in rows)
+        assert self._u16_slice(text, _find_style(styles, "BOLD")[0]) == "tail"
+
+    def test_fenced_pipe_table_is_code_and_later_code_range_survives_realignment(self):
+        """A pipe table inside ``` is code and must not be realigned or double-styled; a table's
+        padding changes its length, and a code block after it still maps to its own text."""
+        text, styles = _m2s("| Name | Age |\n|---|---|\n| Alice | 30 |\n\n```\n| a | b |\n|---|---|\n| 1 | 22 |\n```")
+        mono = _find_style(styles, "MONOSPACE")
+        assert len(mono) == 2
+        assert self._u16_slice(text, mono[0]) == "| Name  | Age |\n|-------|-----|\n| Alice | 30  |"
+        assert self._u16_slice(text, mono[1]) == "| a | b |\n|---|---|\n| 1 | 22 |"
+        assert "cost | value" == _m2s("cost | value\nnot a table")[0].split("\n")[0]
+
+
 class TestSignalStreamingPatch:
     """Tests for signal-streaming-patch: cursor suppression and edit support.
     

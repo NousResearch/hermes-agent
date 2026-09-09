@@ -140,6 +140,9 @@ def enqueue(
 ) -> dict:
     """Persist one idempotent delivery request before the worker waits."""
     with _transaction() as conn:
+        # Serialize the tombstone check and insert with retention in other
+        # processes, which can move a terminal delivery into the tombstone table.
+        conn.execute("BEGIN IMMEDIATE")
         tombstone = conn.execute(
             "SELECT terminal_status, finished_at FROM delivery_tombstones "
             "WHERE execution_id=?",

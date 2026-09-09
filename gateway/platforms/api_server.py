@@ -251,7 +251,7 @@ _REQUEST_OPTION_MISSING = object()
 # vocabulary clamping happens downstream in agent.reasoning_effort.
 _REASONING_EFFORTS = frozenset({"none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"})
 _RUNTIME_AGENT_OVERRIDE_KEYS = (
-    "api_key", "base_url", "provider", "api_mode", "command", "args", "credential_pool", "max_tokens")
+    "api_key", "base_url", "provider", "api_mode", "command", "args", "credential_pool")
 
 
 def _clean_request_string(value: Any) -> Optional[str]:
@@ -313,24 +313,11 @@ def _resolve_request_runtime_agent_kwargs(provider: str, target_model: Optional[
         runtime = resolve_runtime_provider(requested=provider, target_model=target_model)
     except Exception as exc:
         raise RuntimeError(format_runtime_provider_error(exc)) from exc
-    model_cfg = _get_model_config()
-    max_tokens = None
-    env_max_tokens = os.environ.get("HERMES_MAX_TOKENS")
-    if env_max_tokens:
-        with suppress(ValueError, TypeError):
-            max_tokens = int(env_max_tokens)
-    elif isinstance(model_cfg, dict):
-        cfg_max_tokens = model_cfg.get("max_tokens")
-        if isinstance(cfg_max_tokens, int):
-            max_tokens = cfg_max_tokens
-    if max_tokens is None:
-        runtime_max_tokens = runtime.get("max_output_tokens")
-        if isinstance(runtime_max_tokens, int) and runtime_max_tokens > 0:
-            max_tokens = runtime_max_tokens
+
     return {
         **{k: runtime.get(k) for k in ("api_key", "base_url", "provider", "api_mode", "command")},
         "args": list(runtime.get("args") or []),
-        "credential_pool": runtime.get("credential_pool"), "max_tokens": max_tokens}
+        "credential_pool": runtime.get("credential_pool")}
 
 
 def _request_agent_overrides(
@@ -771,7 +758,7 @@ class ResponseStore:
 
 _CORS_HEADERS = {
     "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
-    "Access-Control-Allow-Headers": "Authorization, Content-Type, Idempotency-Key"}
+    "Access-Control-Allow-Headers": "Authorization, Content-Type, Idempotency-Key, X-Hermes-Session-Id"}
 _SECURITY_HEADERS = {
     "Content-Security-Policy": "default-src 'none'; frame-ancestors 'none'",
     "Permissions-Policy": "camera=(), microphone=(), geolocation=()",
@@ -1637,14 +1624,14 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
     def _open_and_cache_session_db(self, home) -> Optional[Any]:
         """Cached SessionDB for ``home`` (shared by both ``_ensure_session_db*``). Never writes
         ``self._session_db`` (explicit override only), so no profile pins later requests."""
-        from hermes_state import SessionDB
+        from hermes_state_registry import acquire
         key = str(home)
         with self._session_db_cache_lock:
             if self._session_db_cache_closed:
                 return None
             db = self._session_dbs.get(key)
             if db is None:
-                db = SessionDB(db_path=home / "state.db")
+                db = acquire(home / "state.db")
                 self._session_dbs[key] = db
             return db
 
@@ -1659,7 +1646,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             if db is shared_db:
                 continue
             try:
-                db.close()
+                from hermes_state_registry import release_or_close
+                release_or_close(db)
             except Exception:
                 logger.debug("Failed to close API-server SessionDB", exc_info=True)
 
@@ -2885,8 +2873,10 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                     db.set_session_title, session_id, "" if body["title"] is None else str(body["title"]))
             except ValueError as exc:
                 return _error_response(str(exc), 400, code="invalid_title")
-        for flag, setter in (("pinned", db.set_session_pinned), ("archived", db.set_session_archived),
-                             ("hidden", db.set_session_hidden)):
+        # Pinned last: set_session_pinned clears hidden, so a pin in the same request
+        # wins over an explicit hidden (same order as the dashboard's _RENAME_FLAG_SETTERS).
+        for flag, setter in (("archived", db.set_session_archived), ("hidden", db.set_session_hidden),
+                             ("pinned", db.set_session_pinned)):
             if flag in body:
                 await asyncio.to_thread(setter, session_id, body[flag])
         if "unread" in body:
@@ -3034,7 +3024,11 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             gateway_session_key=gateway_session_key, route=route, session_model=session_model,
             requested_runtime=runtime_request.get("requested") or {},
             route_source=runtime_request.get("route_source") or "global",
-            confirmed_runtime_lock=lock_active, **agent_overrides)
+            confirmed_runtime_lock=lock_active,
+            # #98619: the client addresses this session by construction — the id is in the
+            # request path (/api/sessions/{session_id}/chat) — so a wake self-post lands where
+            # the client will read it. The audited native-session opt-in.
+            session_history_delivery="1", **agent_overrides)
         return {
             "gateway_session_key": gateway_session_key, "session_id": session_id, "body": body,
             "user_message": user_message, "runtime_request": runtime_request,
@@ -3359,6 +3353,9 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                 "prompt": prompt, "schedule": schedule, "name": name,
                 "deliver": body.get("deliver", "local"),
                 "origin": self._cron_origin_from_request(request)}
+            for key in ("paused", "paused_reason"):
+                if key in body:
+                    kwargs[key] = body[key]
             if skills:
                 kwargs["skills"] = skills
             if repeat is not None:
@@ -3366,6 +3363,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             return web.json_response({"job": _cron_create(**kwargs)})
         except _CronSchedulerRegistrationError as e:
             return web.json_response(e.to_dict(), status=424)
+        except ValueError as e:
+            return web.json_response({"error": str(e)}, status=400)
         except Exception as e:
             return self._cron_error_response(e)
 
@@ -3541,20 +3540,18 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
     @staticmethod
     def _bind_api_server_session(
         *, chat_id: str = "", session_key: str = "", session_id: str = "",
-        browser_control_principal: str = "", browser_control_transport_family: str = "") -> list:
-        """Bind session contextvars for an API-server agent run — the SINGLE chokepoint for every
-        agent-entry path. Hardwires ``platform="api_server"`` + ``async_delivery=False`` (HTTP
-        can never wake the agent after the turn) so no route reintroduces the silent no-op bug.
-        Returns reset tokens for ``clear_session_vars`` in a ``finally`` (request-scoped).
+        browser_control_principal: str = "", browser_control_transport_family: str = "",
+        session_history_delivery: str = "") -> list:
+        """Bind an API turn with push disabled and history delivery default-denied.
 
-        See #10760.
-        """
+        Only routes whose continuation reads SessionDB may pass "1". An omitted
+        declaration or fingerprint-derived identity keeps delegation synchronous."""
         from gateway.session_context import set_session_vars
         return set_session_vars(
             platform="api_server", chat_id=chat_id, session_key=session_key, session_id=session_id,
             browser_control_principal=browser_control_principal,
             browser_control_transport_family=browser_control_transport_family,
-            async_delivery=False, cron_session="")
+            async_delivery=False, cron_session="", session_history_delivery=session_history_delivery)
 
     def _turn_runtime_metadata(
         self, agent: Any, *, route: Optional[Dict[str, Any]], requested_runtime: Optional[Dict[str, Any]],
@@ -3628,11 +3625,15 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         requested_provider: Optional[str] = None, model_options: Optional[Dict[str, Any]] = None,
         route: Optional[Dict[str, Any]] = None, session_model: Optional[str] = None,
         requested_runtime: Optional[Dict[str, Any]] = None, route_source: str = "global",
-        confirmed_runtime_lock: bool = False, bind_declared_conversation: bool = False) -> tuple:
+        confirmed_runtime_lock: bool = False, bind_declared_conversation: bool = False,
+        session_history_delivery: str = "") -> tuple:
         """Create an agent and run one turn in a thread executor -> ``(result, usage)``.
         ``agent_ref[0]`` receives the agent so SSE writers can interrupt it; ``active_run_id``
         registers it in ``_active_run_agents``. Under a confirmed model lock the actual
-        provider/model must match or the turn fails; ``runtime`` metadata is attached."""
+        provider/model must match or the turn fails; ``runtime`` metadata is attached.
+        ``session_history_delivery`` declares #98619 session-id provenance and default-denies: only audited
+        producers whose client can address the id again pass "1" (see
+        ``_bind_api_server_session``)."""
         loop = asyncio.get_running_loop()
         # ContextVars do not follow run_in_executor threads: capture here, re-enter in _run().
         request_profile = _api_request_profile.get()
@@ -3646,7 +3647,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                     chat_id=session_id or "", session_key=gateway_session_key or session_id or "",
                     session_id=session_id or "",
                     browser_control_principal=request_browser_control_principal,
-                    browser_control_transport_family=request_browser_control_transport_family)
+                    browser_control_transport_family=request_browser_control_transport_family,
+                    session_history_delivery=session_history_delivery)
                 agent = None
                 try:
                     agent = self._create_agent(

@@ -43,6 +43,15 @@ settings via `save_config_value()` in `cli.py`. **Adding an alias** = add to `al
 surface updates automatically. Commands that mutate system-prompt state default to deferred
 invalidation with `--now` opt-in (root invariant).
 
+### Shared goal commands
+
+`hermes_cli/goal_command.py::dispatch_goal_command` owns `/goal` parsing and manager
+mutations. CLI, messaging gateway, TUI/Desktop/dashboard and Desktop goal controls
+all delegate there; adapters only resolve sessions, authorize gate creation, render
+results, and schedule kickoff/continuation prompts. Async callers preserve ContextVars
+when running dispatch off-loop (drafting uses profile-scoped auxiliary credentials).
+Do not add a surface-specific goal parser. ACP has no goal command or goal loop yet.
+
 ## Config system (`hermes_cli/config.py`)
 
 - **config.yaml option:** add to `DEFAULT_CONFIG`. Bump `_config_version` ONLY to actively

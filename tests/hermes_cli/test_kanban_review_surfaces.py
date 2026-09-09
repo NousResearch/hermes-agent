@@ -20,6 +20,8 @@ def review_worker(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> str:
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     monkeypatch.setenv("HERMES_PROFILE", "builder")
     monkeypatch.delenv("HERMES_DELEGATED_CHILD_CONTEXT", raising=False)
+    # kanban_request_review now rejects reviewers that are not installed profiles (#106163).
+    (home / "profiles" / "reviewer").mkdir(parents=True)
     kb._INITIALIZED_PATHS.clear()
     kb.init_db()
     with kbc.connect() as conn:
@@ -106,12 +108,17 @@ def test_review_tools_are_gated_and_visible_to_kanban_workers(
     assert "kanban_request_review" in names
     assert "kanban_request_changes" in names
 
-    from acp_adapter.tools import _POLISHED_TOOLS
     from agent.transports.hermes_tools_mcp_server import EXPOSED_TOOLS
 
-    assert "kanban_request_changes" in _POLISHED_TOOLS
     assert "kanban_request_changes" in EXPOSED_TOOLS
     assert "kanban_request_changes" in resolve_toolset("kanban")
+
+
+def test_review_changes_are_exposed_in_acp() -> None:
+    pytest.importorskip("acp", reason="ACP adapter requires the optional acp extra")
+    from acp_adapter.tools import _POLISHED_TOOLS
+
+    assert "kanban_request_changes" in _POLISHED_TOOLS
 
 
 def test_review_cli_round_trip_preserves_handoff(

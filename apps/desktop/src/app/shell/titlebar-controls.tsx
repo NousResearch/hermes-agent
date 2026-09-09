@@ -4,7 +4,10 @@ import { useLocation, useNavigate } from 'react-router'
 
 import { hudTargetSessionId } from '@/app/hud/handoff'
 import { toggleLayoutEditMode } from '@/components/pane-shell/edit-mode'
-import { resetLayoutTree } from '@/components/pane-shell/tree/store'
+import { isPaneActiveInLayoutGroup } from '@/components/pane-shell/tree/model'
+import { $narrowOverlayChrome } from '@/components/pane-shell/tree/renderer/narrow-overlay-state'
+import { $hiddenStripTabs, $layoutTree, $narrowViewport, resetLayoutTree } from '@/components/pane-shell/tree/store'
+import { $workspaceMode } from '@/components/pane-shell/workspace-scope'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Tip, TipKeybindLabel } from '@/components/ui/tooltip'
@@ -58,6 +61,25 @@ export interface TitlebarTool {
 
 export type TitlebarToolSide = 'left' | 'right'
 export type SetTitlebarToolGroup = (id: string, tools: readonly TitlebarTool[], side?: TitlebarToolSide) => void
+
+/** The unread count belongs only on a control proven to reveal Sessions.
+ *  Bots and Terminal can share the same sidebar group, so edge position and
+ *  visibility are not enough: Sessions must also own the active tab in the
+ *  Sessions workspace. */
+export function unreadBadgeForEdge(
+  edge: TitlebarToolSide,
+  panesFlipped: boolean,
+  edgeOpen: boolean,
+  unreadCount: number,
+  workspaceIsSessions: boolean,
+  sessionsPaneActive: boolean
+): number | undefined {
+  const sessionsEdge: TitlebarToolSide = panesFlipped ? 'right' : 'left'
+
+  return edge === sessionsEdge && !edgeOpen && workspaceIsSessions && sessionsPaneActive && unreadCount > 0
+    ? unreadCount
+    : undefined
+}
 
 interface TitlebarControlsProps extends ComponentProps<'div'> {
   leftTools?: readonly TitlebarTool[]
@@ -136,11 +158,15 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
   const modHeld = useModifierHeld()
   const hapticsMuted = useStore($hapticsMuted)
   const fileBrowserOpen = useStore($fileBrowserOpen)
+  const hiddenStripTabs = useStore($hiddenStripTabs)
+  const layoutTree = useStore($layoutTree)
+  const narrow = useStore($narrowViewport)
+  const narrowOverlay = useStore($narrowOverlayChrome)
   const panesFlipped = useStore($panesFlipped)
   const sidebarOpen = useStore($sidebarOpen)
   const unreadCount = useStore($unreadSessionCount)
-  const unreadBadge = unreadCount > 0 ? unreadCount : undefined
-  const unreadHint = unreadBadge ? ` · ${t.titlebar.unreadSessions(unreadBadge)}` : ''
+  const workspaceMode = useStore($workspaceMode)
+  const sessionsPaneActive = isPaneActiveInLayoutGroup(layoutTree, hiddenStripTabs, 'sessions')
 
   const toggleHaptics = () => {
     if (!hapticsMuted) {
@@ -161,16 +187,40 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
   // show/hide affordances.
   const leftEdge = { open: sidebarOpen, toggle: toggleSidebarOpen }
   const rightEdge = { open: fileBrowserOpen, toggle: toggleFileBrowserOpen }
-  const leftLabel = leftEdge.open ? t.titlebar.hideSidebar : t.titlebar.showSidebar
-  const rightLabel = rightEdge.open ? t.titlebar.hideRightSidebar : t.titlebar.showRightSidebar
+  // Narrow toggles use fixed reveal aliases (chat-sidebar / file-browser),
+  // independent of the wide tree's physical flip and docked-open flags.
+  const leftVisible = narrow ? narrowOverlay?.paneId === 'sessions' : leftEdge.open
+  const rightVisible = narrow ? narrowOverlay?.paneId === 'files' : rightEdge.open
+  const leftLabel = leftVisible ? t.titlebar.hideSidebar : t.titlebar.showSidebar
+  const rightLabel = rightVisible ? t.titlebar.hideRightSidebar : t.titlebar.showRightSidebar
+
+  const leftUnreadBadge = unreadBadgeForEdge(
+    'left',
+    narrow ? false : panesFlipped,
+    narrow ? !!narrowOverlay?.tabIds.includes('sessions') : leftEdge.open,
+    unreadCount,
+    workspaceMode === 'sessions',
+    sessionsPaneActive
+  )
+
+  const rightUnreadBadge = unreadBadgeForEdge(
+    'right',
+    narrow ? false : panesFlipped,
+    narrow ? !!narrowOverlay?.tabIds.includes('sessions') : rightEdge.open,
+    unreadCount,
+    workspaceMode === 'sessions',
+    sessionsPaneActive
+  )
+
+  const unreadHint = (count: number | undefined) => (count ? ` · ${t.titlebar.unreadSessions(count)}` : '')
 
   const leftToolbarTools: TitlebarTool[] = [
     {
       actionId: 'view.toggleSidebar',
-      badge: panesFlipped ? undefined : unreadBadge,
+      badge: leftUnreadBadge,
       icon: <TitlebarIcon name="layout-sidebar-left" />,
       id: 'sidebar',
-      label: `${leftLabel}${panesFlipped ? '' : unreadHint}`,
+      label: `${leftLabel}${unreadHint(leftUnreadBadge)}`,
       onSelect: () => {
         triggerHaptic('tap')
         leftEdge.toggle()
@@ -191,10 +241,10 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
 
   const rightSidebarTool: TitlebarTool = {
     actionId: 'view.toggleRightSidebar',
-    badge: panesFlipped ? unreadBadge : undefined,
+    badge: rightUnreadBadge,
     icon: <TitlebarIcon name="layout-sidebar-right" />,
     id: 'right-sidebar',
-    label: `${rightLabel}${panesFlipped ? unreadHint : ''}`,
+    label: `${rightLabel}${unreadHint(rightUnreadBadge)}`,
     onSelect: () => {
       triggerHaptic('tap')
       rightEdge.toggle()

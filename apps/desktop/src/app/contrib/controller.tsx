@@ -5,6 +5,7 @@ import type { CSSProperties, ReactElement, PointerEvent as ReactPointerEvent } f
 import { SessionDraftTitle } from '@/app/chat/session-draft-title'
 import { SessionStatusDot } from '@/app/chat/session-status-dot'
 import { PALETTE_AREA, type PaletteContribution, paletteToggle } from '@/app/command-palette/contrib'
+import { SessionsTabTitle } from '@/app/shell/sessions-tab-title'
 import { type StatusbarItem } from '@/app/shell/statusbar-controls'
 import { InlinePreviewDirective } from '@/components/assistant-ui/inline-preview-directive'
 import { IdleMount } from '@/components/idle-mount'
@@ -70,8 +71,10 @@ import {
   REVIEW_PANE_ID
 } from '@/store/review'
 import { $currentCwd, $selectedStoredSessionId, $sessions, $yoloActive, sessionMatchesStoredId } from '@/store/session'
+import { $unreadSessionCount } from '@/store/session-dot-state'
 import { watchSessionPins } from '@/store/session-pin-sync'
 import { $botChatScopes } from '@/store/session-states'
+import { requestOpenNextUnread } from '@/store/session-unread-navigation'
 import { watchUnreadWriteGuard } from '@/store/session-unread-remote'
 import { $statusbarVisible } from '@/store/statusbar-prefs'
 import { isBrowserWindow, isHudWindow } from '@/store/windows'
@@ -122,6 +125,14 @@ const renderWorkspacePane = () => <WiredPane part="chatRoutes" />
 // Boot-hidden panes mount behind display:none (instant-toggle contract) — defer
 // them to idle so they're off the first-paint path, warm before reveal.
 const idle = (node: ReactElement) => <IdleMount>{node}</IdleMount>
+
+/** Subscribes the unread count so the presentational SessionsTabTitle stays
+ *  pure (render tests drive it via props). Keep the hook in a real component:
+ *  pane-shell invokes `tabTitle()` as a callback, not as a component. */
+function SessionsPaneTabTitle() {
+  return <SessionsTabTitle onOpenNextUnread={requestOpenNextUnread} unread={useStore($unreadSessionCount)} />
+}
+
 // The main tab carries the same session context menu as tile tabs (targets
 // the loaded primary session; no menu on a fresh draft).
 const wrapWorkspaceTab = (tab: ReactElement) => <WorkspaceTabMenu>{tab}</WorkspaceTabMenu>
@@ -171,6 +182,7 @@ registry.registerMany([
       // Standing chrome: no close gestures at all — the tab is shown/hidden
       // (zone menu Show/Hide rows + the auto-registered ⌘K toggle below).
       hideOnly: true,
+      tabTitle: () => <SessionsPaneTabTitle />,
       width: `${SIDEBAR_DEFAULT_WIDTH}px`,
       minWidth: `${SIDEBAR_DEFAULT_WIDTH}px`,
       maxWidth: `${SIDEBAR_MAX_WIDTH}px`

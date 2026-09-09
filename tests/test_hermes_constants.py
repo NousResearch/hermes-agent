@@ -1,5 +1,6 @@
 """Tests for hermes_constants module."""
 
+import json
 import os
 from pathlib import Path
 from types import SimpleNamespace
@@ -1175,3 +1176,107 @@ class TestHealAttemptFlagSemantics:
         # The flag is set, so the once-per-process budget is spent.
         assert heal_hermes_managed_node() is False
         assert calls["n"] == 1
+
+
+def _write_engines_node(tmp_path, range_str):
+    (tmp_path / "package.json").write_text(
+        json.dumps({"engines": {"node": range_str}}), encoding="utf-8")
+    return tmp_path / "package.json"
+
+
+class TestEnginesNodeRange:
+    def test_minimum_major_is_lowest_clause(self, tmp_path):
+        p = _write_engines_node(tmp_path, "^22.22.0 || ^24.11.0 || >=26.0.0")
+        assert hermes_constants.engines_node_minimum_major(p) == 22
+
+    def test_default_upgrade_major_is_highest_named_clause(self, tmp_path):
+        p = _write_engines_node(tmp_path, "^22.22.0 || ^24.11.0 || >=26.0.0")
+        assert hermes_constants.engines_node_default_upgrade_major(p) == 26
+
+    def test_caret_clause_allows_only_its_exact_major(self, tmp_path):
+        p = _write_engines_node(tmp_path, "^22.22.0 || ^24.11.0 || >=26.0.0")
+        assert hermes_constants.engines_node_allows_major(22, p) is True
+        assert hermes_constants.engines_node_allows_major(24, p) is True
+        # 23 sits between two caret-pinned majors but satisfies neither clause — must be refused.
+        assert hermes_constants.engines_node_allows_major(23, p) is False
+        assert hermes_constants.engines_node_allows_major(25, p) is False
+
+    def test_open_ended_clause_allows_any_greater_major(self, tmp_path):
+        p = _write_engines_node(tmp_path, "^22.22.0 || ^24.11.0 || >=26.0.0")
+        assert hermes_constants.engines_node_allows_major(26, p) is True
+        assert hermes_constants.engines_node_allows_major(30, p) is True
+
+    def test_missing_package_json_falls_back_to_a_floor(self, tmp_path):
+        missing = tmp_path / "does-not-exist.json"
+        assert hermes_constants.engines_node_minimum_major(missing) == 20
+        assert hermes_constants.engines_node_allows_major(20, missing) is True
+
+
+class TestEnginesNodeRangeMalformedInput:
+    """Adversarial inputs beyond the happy-path/missing-file tests above: engines.node
+    values that are syntactically present but semantically wrong, and I/O edge cases."""
+
+    def test_non_string_engines_node_value_does_not_crash(self, tmp_path):
+        """A package.json where engines.node is JSON-valid but not a string (a number, a list, or
+        null — e.g. from a monorepo tool that rewrites the field, or hand-edited JSON) must fall
+        back to the safety floor, not raise an uncaught AttributeError. Today, ``range_str`` from
+        a non-string engines.node value escapes the try/except (the ``.split("||")`` call is
+        outside it) and crashes — and since ``_HERMES_NODE_TARGET_MAJOR`` calls
+        ``engines_node_minimum_major()`` at import time, this can crash importing
+        hermes_constants entirely for any checkout with a malformed engines.node field."""
+        for bad_value in (22, None, ["^22.0.0"], {"major": 22}, 22.5):
+            p = tmp_path / f"package-{type(bad_value).__name__}.json"
+            p.write_text(json.dumps({"engines": {"node": bad_value}}), encoding="utf-8")
+            assert hermes_constants.engines_node_minimum_major(p) == 20, bad_value
+            assert hermes_constants.engines_node_allows_major(20, p) is True, bad_value
+
+    def test_invalid_json_falls_back_to_floor(self, tmp_path):
+        p = tmp_path / "package.json"
+        p.write_text("{not valid json at all", encoding="utf-8")
+        assert hermes_constants.engines_node_minimum_major(p) == 20
+
+    def test_directory_given_as_package_json_path_falls_back_to_floor(self, tmp_path):
+        """A caller-supplied path that happens to be a directory (IsADirectoryError, a subclass of
+        OSError) must be swallowed by the same fallback as a missing file, not propagate."""
+        a_dir = tmp_path / "not-a-file"
+        a_dir.mkdir()
+        assert hermes_constants.engines_node_minimum_major(a_dir) == 20
+
+    def test_empty_engines_node_string_falls_back_to_floor(self, tmp_path):
+        p = _write_engines_node(tmp_path, "")
+        assert hermes_constants.engines_node_minimum_major(p) == 20
+        assert hermes_constants.engines_node_default_upgrade_major(p) == 20
+
+    def test_missing_engines_key_entirely_falls_back_to_floor(self, tmp_path):
+        p = tmp_path / "package.json"
+        p.write_text(json.dumps({"name": "hermes-agent"}), encoding="utf-8")
+        assert hermes_constants.engines_node_minimum_major(p) == 20
+
+    def test_missing_node_key_under_engines_falls_back_to_floor(self, tmp_path):
+        p = tmp_path / "package.json"
+        p.write_text(json.dumps({"engines": {"npm": ">=10.0.0"}}), encoding="utf-8")
+        assert hermes_constants.engines_node_minimum_major(p) == 20
+
+    def test_unparseable_clause_mixed_with_valid_ones_keeps_the_valid_clauses(self, tmp_path):
+        """A garbage clause alongside real ones (e.g. a hand-typo'd range during an edit) must not
+        wipe out the valid clauses and silently collapse to the fallback floor — that would be a
+        much larger, wrong-directioned jump than the intended failure mode of 'refuse this major'."""
+        p = _write_engines_node(tmp_path, "^22.22.0 || not-a-version || >=26.0.0")
+        assert hermes_constants.engines_node_minimum_major(p) == 22
+        assert hermes_constants.engines_node_default_upgrade_major(p) == 26
+        assert hermes_constants.engines_node_allows_major(23, p) is False
+
+    def test_extra_whitespace_around_clauses_still_parses(self, tmp_path):
+        p = _write_engines_node(tmp_path, "   ^22.22.0   ||    >=26.0.0   ")
+        assert hermes_constants.engines_node_minimum_major(p) == 22
+        assert hermes_constants.engines_node_default_upgrade_major(p) == 26
+
+    def test_bare_version_without_operator_is_treated_as_a_caret_pin(self, tmp_path):
+        """No leading ``^``/``>=`` (e.g. ``"22.22.0"``) currently falls back to the ``"^"``
+        (exact-major-pin) branch via ``match.group(1) or "^"``. This documents that an exact-pin
+        engines.node entry behaves like a caret range here — semantically debatable (npm treats a
+        bare version as an exact-version match, not exact-major), but pinned down so a change in
+        this behavior is a deliberate decision, not an accidental regression."""
+        p = _write_engines_node(tmp_path, "22.22.0")
+        assert hermes_constants.engines_node_allows_major(22, p) is True
+        assert hermes_constants.engines_node_allows_major(23, p) is False

@@ -4322,9 +4322,25 @@ def _assignee_is_known(assignee: Optional[str]) -> bool:
     """
     if not assignee:
         return True
-    from hermes_cli.profiles import profile_exists
-
-    return bool(profile_exists(assignee))
+    try:
+        from hermes_cli.profiles import list_profiles, profile_exists
+    except Exception:  # noqa: BLE001 — a guard must not become a crash surface
+        return True
+    try:
+        if profile_exists(assignee):
+            return True
+        # FAIL OPEN on an EMPTY registry. `profile_exists` answers "is there a
+        # directory for this name", so a root with no named profiles answers No
+        # to every assignee — and this guard would then park every card in
+        # triage. That is an environment fault (a bare or unreadable root),
+        # never evidence that the assignee is a phantom: the whole point of the
+        # check is to catch a name that is wrong RELATIVE to a real roster.
+        # 2026-09-10: found when upstream's new tests, which run against a
+        # scratch HERMES_HOME, had their cards silently parked.
+        named = [p for p in list_profiles() if not getattr(p, "is_default", False)]
+        return not named
+    except Exception:  # noqa: BLE001
+        return True
 
 
 def resolve_default_max_cost() -> Optional[float]:

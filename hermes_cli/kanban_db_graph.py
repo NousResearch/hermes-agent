@@ -336,6 +336,12 @@ def decompose_triage_task(
                         now,
                     ),
                 )
+            # Durable origin (session_id + subscriptions) travels with the
+            # child independently of dependency edges — upstream added this in
+            # _insert_decomposed_child, which the fleet's inline insert below
+            # does not go through, so it has to be called here or a decomposed
+            # child loses the originating session.
+            inherit_creator_origin(conn, new_id, task_id, created_at=now)
             _inherit_notify_subs(conn, new_id, (task_id,), created_at=now)
             child_ids.append(new_id)
 

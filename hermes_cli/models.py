@@ -2366,8 +2366,13 @@ def cached_fetch_api_models(
     if not normalized_url:  # nothing to key the cache on
         return None if cache_only else _live()
 
-    cache_key = f"custom:{normalized_url}"
     fp = _custom_endpoint_fingerprint(api_key, api_mode, headers)
+    # One slot per (endpoint, credential): several custom_providers entries can share a
+    # base_url with distinct keys (gateways issuing per-tenant keys). A URL-only key let the
+    # last probed credential shadow the others — the fingerprint check then failed for every
+    # other key, so GUI pickers (probe off, cache-only) saw an empty catalog and hid the
+    # providers entirely (#106184).
+    cache_key = f"custom:{normalized_url}:{fp}"
     cache = _load_provider_models_cache()
     entry = cache.get(cache_key)
     now = time.time()

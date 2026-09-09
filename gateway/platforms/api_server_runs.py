@@ -1084,8 +1084,14 @@ async def _handle_run_events(self, request: "web.Request", *, _api_server) -> "w
     except (TypeError, ValueError):
         last_seq = -1
     q, replay = stream.attach(last_seq)
-    response = web.StreamResponse(status=200, headers={
-        "Content-Type": "text/event-stream", "Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+    # The CORS middleware can't inject headers after prepare() flushes them, so resolve
+    # the origin's CORS headers up front (same pattern as the chat/responses SSE paths).
+    sse_headers = {
+        "Content-Type": "text/event-stream", "Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
+    origin = request.headers.get("Origin", "")
+    if origin:
+        sse_headers.update(self._cors_headers_for_origin(origin) or {})
+    response = web.StreamResponse(status=200, headers=sse_headers)
 
     async def _write(data: bytes) -> None:
         try:

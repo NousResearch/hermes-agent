@@ -183,7 +183,9 @@ def test_browser_build_uses_locked_closure_and_never_replaces_native_dist(
 
     assert result == tmp_path / "apps" / "desktop" / "dist-webapp"
     assert native_index.read_text(encoding="utf-8") == "native-electron"
-    assert install_calls[0][0:2] == ("/node/npm", tmp_path)
+    assert install_calls[0][0] == "/node/npm"
+    assert install_calls[0][1] != tmp_path
+    assert build_calls[0][1] == install_calls[0][1]
     install_args = install_calls[0][2]["extra_args"]
     assert "--ignore-scripts" in install_args
     assert "--no-save" in install_args

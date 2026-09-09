@@ -14,6 +14,7 @@ import os
 from pathlib import Path
 import secrets
 import shutil
+import tempfile
 import time
 
 from hermes_cli.main_desktop import _compute_desktop_content_hash
@@ -24,8 +25,8 @@ from hermes_cli.main_web_build import _run_npm_install_deterministic, _run_with_
 
 _DIST_NAME = "dist-webapp"
 _STAMP_NAME = "desktop-webapp-build-stamp.json"
-# Dashboard and Webapp both run root npm installs against the same workspace.
-# One shared lock is therefore the authority for every browser-UI build.
+# Serialize renderer publication with Dashboard builds in this checkout.
+# Webapp installs dependencies in a private copy; native node_modules stays intact.
 _LOCK_NAME = ".web_ui_build.lock"
 _LOCK_WAIT_SECONDS = 30 * 60
 
@@ -75,12 +76,7 @@ def _write_stamp(project_root: Path) -> None:
 
 
 def _workspace_install_args() -> tuple[str, ...]:
-    """Install the existing JS closure without running native lifecycle scripts.
-
-    ``npm ci`` prunes anything outside the selected workspace closure. Select
-    the complete declared workspace graph plus the root so launching Webapp
-    cannot silently remove another package's links before a later check/build.
-    """
+    """Install the locked workspace graph without native lifecycle scripts."""
     return (
         "--workspaces",
         "--include-workspace-root",
@@ -191,6 +187,46 @@ def _publish_dist(staging: Path, dist: Path) -> None:
                 pass
 
 
+@contextmanager
+def _private_build_workspace(project_root: Path):
+    """Copy renderer inputs so npm cannot prune the native installation."""
+    from pathspec import PathSpec
+
+    manifest = json.loads((project_root / "package.json").read_text(encoding="utf-8"))
+    ignore_file = project_root / ".gitignore"
+    spec = PathSpec.from_lines(
+        "gitignore", ignore_file.read_text(encoding="utf-8").splitlines() if ignore_file.is_file() else []
+    )
+
+    def ignore(directory, names):
+        parent = Path(directory)
+        return [name for name in names if name in {"node_modules", ".git"}
+                or spec.match_file((parent / name).relative_to(project_root).as_posix()
+                                   + ("/" if (parent / name).is_dir() else ""))]
+
+    with tempfile.TemporaryDirectory(prefix="hermes-webapp-build-") as temporary:
+        workspace = Path(temporary)
+        for name in ("package.json", "package-lock.json", ".npmrc"):
+            source = project_root / name
+            if source.is_file():
+                shutil.copy2(source, workspace / name)
+
+        # Keep the locked workspace graph intact without copying unrelated source
+        # trees. Only Desktop and its shared package are compiled by this build.
+        for pattern in manifest.get("workspaces", []):
+            for package in project_root.glob(pattern):
+                source = package / "package.json"
+                if source.is_file():
+                    target = workspace / source.relative_to(project_root)
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(source, target)
+        for relative in (Path("apps/desktop"), Path("apps/shared")):
+            source = project_root / relative
+            if source.is_dir():
+                shutil.copytree(source, workspace / relative, ignore=ignore, dirs_exist_ok=True)
+        yield workspace
+
+
 def _do_build(project_root: Path, *, force: bool) -> Path:
     dist = webapp_dist_dir(project_root)
     if not _build_needed(project_root, force=force):
@@ -212,42 +248,43 @@ def _do_build(project_root: Path, *, force: bool) -> Path:
     install_env = _npm_lifecycle_env(with_hermes_node_path())
     install_env["ELECTRON_SKIP_BINARY_DOWNLOAD"] = "1"
     install_env["npm_config_ignore_scripts"] = "true"
-    print("→ Installing the locked browser-renderer dependency closure...")
-    installed = _run_npm_install_deterministic(
-        npm,
-        project_root,
-        extra_args=_workspace_install_args(),
-        capture_output=False,
-        env=install_env,
-    )
-    if installed.returncode != 0:
-        raise WebappBuildError(
-            f"Browser-renderer dependency install failed (exit {installed.returncode})"
-        )
-
-    build_env = dict(install_env)
-    build_env.pop("npm_config_ignore_scripts", None)
-    print("→ Building the Hermes Desktop renderer for the browser...")
     staging = desktop_dir / f".dist-webapp-build-{os.getpid()}-{secrets.token_hex(4)}"
     try:
-        built = _run_with_idle_timeout(
-            [
+        with _private_build_workspace(project_root) as workspace:
+            print("→ Installing browser-renderer dependencies in a private workspace...")
+            installed = _run_npm_install_deterministic(
                 npm,
-                "run",
-                "--workspace",
-                "apps/desktop",
-                "build:webapp",
-                "--",
-                "--outDir",
-                str(staging),
-            ],
-            cwd=project_root,
-            env=build_env,
-        )
-        if built.returncode != 0 or not (staging / "index.html").is_file():
-            raise WebappBuildError(
-                f"Browser-hosted Desktop build failed (exit {built.returncode})"
+                workspace,
+                extra_args=_workspace_install_args(),
+                capture_output=False,
+                env=install_env,
             )
+            if installed.returncode != 0:
+                raise WebappBuildError(
+                    f"Browser-renderer dependency install failed (exit {installed.returncode})"
+                )
+
+            build_env = dict(install_env)
+            build_env.pop("npm_config_ignore_scripts", None)
+            print("→ Building the Hermes Desktop renderer for the browser...")
+            built = _run_with_idle_timeout(
+                [
+                    npm,
+                    "run",
+                    "--workspace",
+                    "apps/desktop",
+                    "build:webapp",
+                    "--",
+                    "--outDir",
+                    str(staging),
+                ],
+                cwd=workspace,
+                env=build_env,
+            )
+            if built.returncode != 0 or not (staging / "index.html").is_file():
+                raise WebappBuildError(
+                    f"Browser-hosted Desktop build failed (exit {built.returncode})"
+                )
         _publish_dist(staging, dist)
     finally:
         if staging.exists():

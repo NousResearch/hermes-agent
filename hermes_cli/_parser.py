@@ -188,7 +188,7 @@ def _build_chat_parser(subparsers) -> argparse.ArgumentParser:
     """
     chat_parser = subparsers.add_parser(
         "chat", help="Interactive chat with the agent",
-        description="Start an interactive chat session with Hermes Agent")
+        description="Start an interactive chat session with North Forge (on the Hermes Agent engine).")
     add, inherited, SUPPRESS = chat_parser.add_argument, _inherited_flag, argparse.SUPPRESS
     _query_group = chat_parser.add_mutually_exclusive_group()
     _query_group.add_argument("-q", "--query", help=(

@@ -222,25 +222,55 @@ def _load_uncached(rp: Path, root: Path | str | None) -> Provisioning:
                             error="provisioning.json signature does not match "
                                   "(record was modified after Setup Run)")
 
-    tier = str(rec.get("tier", "")).strip().lower()
-    if tier not in _VALID_TIERS:
+    # ---- signed-payload structure ------------------------------------------
+    # The signature only proves the bytes are unchanged since Setup Run — it says
+    # nothing about their SHAPE. A correctly-signed record whose `schema` is a
+    # string, whose `installed_editions` is a dict, etc. must resolve to
+    # STATE_TAMPERED, never raise. `load()` is total over arbitrary signed input
+    # (PC-2026-09-08-001): every branch below returns a Provisioning, and the
+    # outer `except` is a backstop so a shape we didn't anticipate still fails
+    # closed instead of escaping to "_nf_tier_gate returned None → enforcement off".
+    try:
+        schema = rec.get("schema")
+        # bool is an int subclass and `True == 1`; a JSON `true` is not a schema.
+        if isinstance(schema, bool) or not isinstance(schema, int) or schema != SCHEMA:
+            return Provisioning(state=STATE_TAMPERED, path=str(rp),
+                                error=f"unsupported provisioning schema {schema!r}")
+
+        tier = rec.get("tier")
+        if not isinstance(tier, str) or tier.strip().lower() not in _VALID_TIERS:
+            return Provisioning(state=STATE_TAMPERED, path=str(rp),
+                                error=f"unknown tier {tier!r}")
+        tier = tier.strip().lower()
+
+        pinned_raw = rec.get("pinned_edition", "")
+        if pinned_raw is None:
+            pinned_raw = ""
+        if not isinstance(pinned_raw, str):
+            return Provisioning(state=STATE_TAMPERED, path=str(rp),
+                                error=f"pinned_edition must be a string, not {type(pinned_raw).__name__}")
+        pin = normalize_edition(pinned_raw)
+
+        installed_raw = rec.get("installed_editions", [])
+        if installed_raw is None:
+            installed_raw = []
+        if not isinstance(installed_raw, list) or any(not isinstance(x, str) for x in installed_raw):
+            return Provisioning(state=STATE_TAMPERED, path=str(rp),
+                                error="installed_editions must be a list of strings")
+        installed = tuple(sorted({normalize_edition(x) for x in installed_raw if x.strip()}))
+
+        for _txt in ("provisioned_at", "provisioned_by", "note"):
+            _v = rec.get(_txt)
+            if _v is not None and not isinstance(_v, str):
+                return Provisioning(state=STATE_TAMPERED, path=str(rp),
+                                    error=f"{_txt} must be a string, not {type(_v).__name__}")
+    except Exception as exc:  # pragma: no cover - defensive: load() must be total
         return Provisioning(state=STATE_TAMPERED, path=str(rp),
-                            error=f"unknown tier {tier!r}")
-    if int(rec.get("schema", 0)) != SCHEMA:
-        return Provisioning(state=STATE_TAMPERED, path=str(rp),
-                            error=f"unsupported provisioning schema {rec.get('schema')!r}")
+                            error=f"provisioning.json failed validation ({exc!r})")
 
-    pin = normalize_edition(rec.get("pinned_edition"))
-    installed_raw = rec.get("installed_editions") or []
-    if not isinstance(installed_raw, list):
-        installed_raw = []
-    installed = tuple(sorted({normalize_edition(x) for x in installed_raw if str(x).strip()}))
-
-    if tier == TIER_BASIC and pin == "default" and not str(rec.get("pinned_edition", "")).strip():
-        # A Basic drive with no pin at all would confine the agent to the generic
-        # chassis, which is a valid deployment (a plain free-chassis drive). Allow it.
-        pass
-
+    # A Basic drive with no pin at all confines the agent to the generic chassis
+    # (`pin == "default"`), which is a valid deployment — a plain free-chassis
+    # drive. Nothing extra to enforce here.
     return Provisioning(state=STATE_ACTIVE, tier=tier, pinned_edition=pin,
                         installed_editions=installed, raw=rec, path=str(rp))
 

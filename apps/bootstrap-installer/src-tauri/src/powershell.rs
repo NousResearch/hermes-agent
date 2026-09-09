@@ -1,10 +1,10 @@
-//! Drives PowerShell (Windows) or bash (Unix) for install.ps1 / install.sh.
+//! Drives PowerShell for `bootstrap-north-forge.ps1`, with line-buffered
+//! stdout/stderr streaming + cancellation semantics.
 //!
-//! Port of `spawnPowerShell` from bootstrap-runner.ts, with the same
-//! line-buffered stdout/stderr streaming + cancellation semantics.
-//!
-//! On Windows we pass `-NoProfile -ExecutionPolicy Bypass -File <script>`.
-//! On Unix we shell out to `bash <script>` since install.sh expects bash.
+//! We pass `-NoProfile -ExecutionPolicy Bypass -File <script>`. The
+//! non-Windows `build_command` branch is kept only so the module still
+//! compiles on a dev's Mac/Linux for `cargo test`; North Forge's
+//! drive-native bootstrap is Windows-only.
 
 use anyhow::{Context, Result};
 use std::path::Path;
@@ -278,29 +278,22 @@ where
     })
 }
 
-/// Spawns install.ps1 / install.sh with the given args and streams output.
+/// Spawns `bootstrap-north-forge.ps1` with the given args and streams output.
 ///
-/// `hermes_home_override` propagates to the child as $HERMES_HOME so the
-/// install script writes to the same directory the installer is reading from.
+/// `cwd_override` sets the child's working directory (the checkout root); if
+/// it isn't a real directory we fall back to the script's own parent so the
+/// child never starts from a bad cwd.
 pub async fn run_script(
     script_path: &Path,
     args: &[String],
     sink: StreamSink,
-    hermes_home_override: Option<&str>,
+    cwd_override: Option<&Path>,
     cancel_rx: &mut Option<CancelRx>,
 ) -> Result<ScriptResult> {
     let mut cmd = build_command(script_path, args);
 
-    // The installer can be launched from a .app bundle that is later replaced
-    // during self-update. Pin child scripts to a stable directory so bash/zsh
-    // never starts from a deleted cwd and emits getcwd/job-working-directory
-    // errors at the end of an otherwise successful install.
-    if let Some(cwd) = stable_script_cwd(script_path, hermes_home_override) {
+    if let Some(cwd) = stable_script_cwd(script_path, cwd_override) {
         cmd.current_dir(cwd);
-    }
-
-    if let Some(home) = hermes_home_override {
-        cmd.env("HERMES_HOME", home);
     }
 
     cmd.stdin(Stdio::null())
@@ -344,12 +337,12 @@ pub async fn run_script(
         DRAIN_GRACE,
     )
     .await
-    .context("streaming install script output")?;
+    .context("streaming bootstrap script output")?;
 
     if outcome.abandoned {
         let note = format!(
-            "install script exited but a surviving descendant still holds its \
-             stdout/stderr; gave up on the last {}s of output (#90455)",
+            "bootstrap script exited but a surviving descendant still holds its \
+             stdout/stderr; gave up on the last {}s of output",
             DRAIN_GRACE.as_secs()
         );
         tracing::warn!("{note}");
@@ -366,9 +359,8 @@ pub async fn run_script(
     })
 }
 
-fn stable_script_cwd<'a>(script_path: &'a Path, hermes_home_override: Option<&'a str>) -> Option<&'a Path> {
-    if let Some(home) = hermes_home_override {
-        let path = Path::new(home);
+fn stable_script_cwd<'a>(script_path: &'a Path, cwd_override: Option<&'a Path>) -> Option<&'a Path> {
+    if let Some(path) = cwd_override {
         if path.is_dir() {
             return Some(path);
         }
@@ -387,9 +379,9 @@ async fn recv_cancel(rx: &mut Option<CancelRx>) {
 
 #[cfg(target_os = "windows")]
 fn build_command(script_path: &Path, args: &[String]) -> Command {
-    // We want PowerShell 5.1 / 7. install.ps1 uses 5.1-safe syntax everywhere.
-    // Prefer `powershell.exe` (5.1 baseline, present on every Windows since 7)
-    // over `pwsh.exe` (7+, may not be present). Resolve it by absolute path —
+    // bootstrap-north-forge.ps1 is written to the PowerShell 5.1 baseline.
+    // Prefer `powershell.exe` (5.1, present on every Windows since 7) over
+    // `pwsh.exe` (7+, may not be present). Resolve it by absolute path —
     // see `windows_powershell_exe`.
     let mut cmd = Command::new(windows_powershell_exe());
     cmd.arg("-NoProfile");
@@ -403,10 +395,10 @@ fn build_command(script_path: &Path, args: &[String]) -> Command {
 
 #[cfg(not(target_os = "windows"))]
 fn build_command(script_path: &Path, args: &[String]) -> Command {
-    // install.sh expects bash. /bin/bash is fine on macOS (Apple still
-    // ships an old 3.2 bash; install.sh is written to that baseline).
-    let mut cmd = Command::new("bash");
-    cmd.arg(script_path);
+    // North Forge's bootstrap is Windows-only; this branch exists purely so
+    // the crate still builds for `cargo test` on a dev's Mac/Linux.
+    let mut cmd = Command::new("pwsh");
+    cmd.arg("-NoProfile").arg("-File").arg(script_path);
     for a in args {
         cmd.arg(a);
     }
@@ -464,96 +456,17 @@ fn interpreter_label() -> String {
 
 #[cfg(not(target_os = "windows"))]
 fn interpreter_label() -> String {
-    "bash".to_string()
+    "pwsh".to_string()
 }
-
-/// Parses the LAST line of stdout that looks like a JSON object matching
-/// the install.ps1 stage-result contract: `{ok: bool, stage: string, ...}`.
-///
-/// Mirrors `parseStageResult` from bootstrap-runner.ts. install.ps1 may
-/// print info/banner lines before the result frame; we scan from the end.
-pub fn parse_stage_result(stdout: &str) -> Option<crate::events::StageResultPayload> {
-    for line in stdout.lines().rev() {
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-        if let Ok(value) = serde_json::from_str::<serde_json::Value>(trimmed) {
-            if value.get("ok").and_then(|v| v.as_bool()).is_some()
-                && value.get("stage").and_then(|v| v.as_str()).is_some()
-            {
-                if let Ok(parsed) =
-                    serde_json::from_value::<crate::events::StageResultPayload>(value)
-                {
-                    return Some(parsed);
-                }
-            }
-        }
-    }
-    None
-}
-
-/// Same logic but for the `-Manifest` payload (the LAST line with a `stages`
-/// array). Returns the parsed manifest.
-pub fn parse_manifest(stdout: &str) -> Option<crate::events::Manifest> {
-    for line in stdout.lines().rev() {
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-        if let Ok(value) = serde_json::from_str::<serde_json::Value>(trimmed) {
-            if value.get("stages").and_then(|v| v.as_array()).is_some() {
-                if let Ok(parsed) = serde_json::from_value::<crate::events::Manifest>(value) {
-                    return Some(parsed);
-                }
-            }
-        }
-    }
-    None
-}
-
-#[cfg(target_os = "windows")]
-use std::os::windows::process::CommandExt;
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn parse_stage_result_picks_last_json_line() {
-        let stdout = r#"
-[bootstrap] some info
-{"ok": false, "stage": "venv", "reason": "bad python"}
-{"ok": true, "stage": "venv"}
-final non-json banner
-"#;
-        let result = parse_stage_result(stdout).unwrap();
-        assert_eq!(result.stage, "venv");
-        assert!(result.ok);
-    }
-
-    #[test]
-    fn parse_manifest_finds_stages_array() {
-        let stdout = r#"
-info line
-{"stages": [{"name": "uv", "title": "uv", "category": "prereqs", "needs_user_input": false}], "protocol_version": 1}
-"#;
-        let m = parse_manifest(stdout).unwrap();
-        assert_eq!(m.stages.len(), 1);
-        assert_eq!(m.stages[0].name, "uv");
-        assert_eq!(m.protocol_version, Some(1));
-    }
-
-    #[test]
-    fn parse_returns_none_when_no_match() {
-        assert!(parse_stage_result("just banner\n").is_none());
-        assert!(parse_manifest("just banner\n").is_none());
-    }
-
-    #[test]
-    fn stable_script_cwd_prefers_existing_hermes_home() {
-        let script = Path::new("/tmp/install.sh");
-        let cwd = stable_script_cwd(script, Some("/"));
+    fn stable_script_cwd_prefers_existing_override() {
+        let script = Path::new("/tmp/scripts/bootstrap-north-forge.ps1");
+        let cwd = stable_script_cwd(script, Some(Path::new("/")));
         assert_eq!(cwd, Some(Path::new("/")));
     }
 

@@ -1,25 +1,14 @@
 """Claude OAuth DirectSDK — standalone Hermes model-provider registration."""
 from providers import register_provider
 from providers.base import ProviderProfile
+from .model_catalog import MODEL_METADATA, native_model
 
 
 class ClaudeOAuthDirectSDKProfile(ProviderProfile):
-    # Claude Code 2.1.263 baked first-party catalog. Alias resolution and
-    # entitlement remain native-owned; these are not account discovery results.
-    model_metadata = {
-        'sonnet': {'canonical_model': 'claude-sonnet-5', 'context_window': 1_000_000},
-        'opus': {'canonical_model': 'claude-opus-5', 'context_window': 1_000_000},
-        'haiku': {'canonical_model': 'claude-haiku-4-5', 'context_window': 200_000},
-    }
+    model_metadata = MODEL_METADATA
 
     def get_model_context_length(self, model):
-        # Native ML/NEn clamp even 1M catalog models to 200K without the
-        # matching entitlement. Do not infer an account's allowance from a name.
-        if model in self.model_metadata or any(
-            model == item['canonical_model'] for item in self.model_metadata.values()
-        ):
-            return 200_000
-        return None
+        return self.model_metadata.get(native_model(model), {}).get('context_window')
 
     def get_usage_cost(self, model, usage):
         from decimal import Decimal, InvalidOperation
@@ -66,7 +55,7 @@ profile = ClaudeOAuthDirectSDKProfile(
     process_command='claude',
     process_args=(),
     process_command_env_vars=('CLAUDE_OAUTH_DIRECTSDK_COMMAND',),
-    default_aux_model='sonnet',
-    fallback_models=('sonnet', 'opus', 'haiku'),
+    default_aux_model='claude-sonnet-5[1m]',
+    fallback_models=tuple(MODEL_METADATA),
 )
 register_provider(profile)

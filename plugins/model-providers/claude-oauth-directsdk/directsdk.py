@@ -20,8 +20,10 @@ from types import SimpleNamespace
 
 try:
     from .admission import Admission
+    from .model_catalog import native_model
 except ImportError:
     from admission import Admission
+    from model_catalog import native_model
 
 CARRIER = 'claude-oauth-directsdk.native_assistant'
 PREFIX = 'mcp__hermes__'
@@ -405,7 +407,7 @@ class Client:
                 (root / 'system.md').write_text(system, encoding='utf-8')
                 if 'max_tokens' in json.loads(body):
                     env['CLAUDE_CODE_MAX_OUTPUT_TOKENS'] = str(json.loads(body)['max_tokens'])
-                command = self.command + ['-p', '--model', kwargs['model'], '--input-format', 'stream-json', '--output-format', 'stream-json', '--verbose', '--include-partial-messages', '--tools', '', '--system-prompt-file', str(root / 'system.md'), '--settings', str(root / 'settings.json'), '--setting-sources', '', '--strict-mcp-config', '--disable-slash-commands', '--max-turns', '1', '--permission-mode', 'dontAsk', '--no-session-persistence', '--mcp-config', json.dumps(mcp)]
+                command = self.command + ['-p', '--model', native_model(kwargs['model']), '--input-format', 'stream-json', '--output-format', 'stream-json', '--verbose', '--include-partial-messages', '--tools', '', '--system-prompt-file', str(root / 'system.md'), '--settings', str(root / 'settings.json'), '--setting-sources', '', '--strict-mcp-config', '--disable-slash-commands', '--max-turns', '1', '--permission-mode', 'dontAsk', '--no-session-persistence', '--mcp-config', json.dumps(mcp)]
                 p = request.spawn(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, encoding='utf-8', cwd=tmp, env=env)
                 events = queue.Queue()
                 def read():

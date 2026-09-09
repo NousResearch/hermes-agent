@@ -76,9 +76,27 @@ Unknown parameters fail explicitly. Unsupported surfaces include assistant prefi
 
 ## Model metadata and accounting
 
-The qualified Claude Code **2.1.263** baked first-party catalog maps `sonnet` to `claude-sonnet-5` (1,000,000-token catalog window), `opus` to `claude-opus-5` (1,000,000), and `haiku` to `claude-haiku-4-5` (200,000). These are source-derived defaults, not a live account catalog: native alias overrides, remote catalog updates and entitlements can change the effective route. The provider does not query an HTTP `/models` endpoint or run an HTTP health check.
+The picker exposes these explicit native routes:
 
-The plugin declares a conservative **200,000-token preflight bound** for these aliases and canonical IDs. This is not a claim that Sonnet 5 has a 200K catalog window: native context resolution can clamp a 1M model to 200K when the corresponding entitlement is unavailable. Only raise `model.context_length` after qualifying the actual selected native route and allowance; requalify after CLI/alias changes. Unknown model IDs remain undeclared rather than receiving invented metadata.
+| Model | Native selection | Context |
+| --- | --- | --- |
+| Sonnet 5 | `claude-sonnet-5[1m]` | 1,000,000 |
+| Haiku 4.5 | `claude-haiku-4-5-20251001` | 200,000 |
+| Opus 5 | `claude-opus-5[1m]` | 1,000,000 |
+| Opus 4.8 | `claude-opus-4-8[1m]` | 1,000,000 |
+| Fable 5.1 | `claude-fable-5-1[1m]` | 1,000,000 |
+
+Short names `sonnet`, `haiku`, `opus` and `fable` resolve to the corresponding pinned routes above. Known 1M model IDs also receive the native `[1m]` suffix automatically; Haiku does not. Unknown model IDs pass through unchanged with no invented context metadata. An explicit Hermes `model.context_length` still overrides the host's window, including a smaller compaction budget.
+
+The local relay sets `ANTHROPIC_BASE_URL`, which makes Claude Code apply its gateway defaults. Its documented Sonnet 5 gateway default is 200K unless `[1m]` is selected; this was the cause of the earlier downgrade, not evidence of a general subscription limit. Both native argv and Hermes metadata now select the same window. See [Claude Code model configuration](https://code.claude.com/docs/en/model-config#sonnet-5-context-window).
+
+Native initialization can enumerate the current picker without a Messages request, but its returned list did not include Opus 4.8. The plugin therefore keeps the five requested version-pinned entries rather than silently dropping the older model or promoting every unknown future model to 1M. It does not spawn a model or query an HTTP `/models` endpoint when opening Hermes' picker. Existing installations may need **Refresh models** to discard the previous cached list.
+
+The follow-up probes used native **2.1.258**. The Sonnet 5 1M route accepted **902,783 actual input tokens** and returned the requested response, with native `contextWindow: 1000000` and exactly one upstream request. Native list-price equivalent was **$3.611238**. A subsequent short `sonnet` request verified automatic routing to `claude-sonnet-5[1m]`; a real `haiku` request resolved to Haiku 4.5 with a 200K window. Opus/Fable capacities are documented/native catalog capabilities, not an assertion of included access on every account. Native discovery labeled Opus 1M as drawing usage credits on the qualification account; these models were not invoked with paid credits for this follow-up.
+
+### Hermes compaction qualification
+
+A real multi-turn run with a **200K Hermes window** and `compression.threshold: 0.75` automatically compacted after a turn with 154,038 input tokens, at an approximately 168K next-request preflight estimate. The real summarizer completed, SQLite archived fifteen original rows and retained a summary, and the next ordinary request succeeded at 144,568 input tokens. Two additional model calls executed a real `read_file` and returned both the remembered project codename and the exact file value; that tool result was verified in SQLite. This final-routing run used eleven upstream requests total and **$1.221155** native list-price equivalent. Native autocompaction remained disabled: the summary and durable commit were owned by Hermes. The earlier native-200K control also passed; no compressor implementation change was needed.
 
 Token usage retains native uncached/cache-read/cache-write/output components. Completed responses also retain native `total_cost_usd` and `modelUsage`. When every reported model has `costBasis: list` and the total is finite and nonnegative, Hermes records that exact native amount as **estimated API list-price equivalent**, not an actual subscription invoice or extra-usage charge. It is never marked free/included or replaced with guessed alias prices. Missing or invalid final accounting remains unknown; interrupted requests must not be interpreted as free or zero-token service work. Hermes' iteration and runtime budgets remain host-owned; this provider does not add an account-level overage cap.
 

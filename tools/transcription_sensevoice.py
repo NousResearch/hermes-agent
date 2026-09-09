@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import shutil
 import subprocess
 import tempfile
@@ -30,7 +31,33 @@ def _configured_file(value: Any) -> Optional[Path]:
 def _sensevoice_binary(value: Any) -> Optional[str]:
     configured = value.strip() if isinstance(value, str) and value.strip() else _DEFAULT_BINARY
     path = Path(configured).expanduser()
-    return str(path) if path.is_file() else shutil.which(configured)
+    if path.is_file():
+        if os.name != "nt" and not os.access(path, os.X_OK):
+            return None
+        return str(path)
+    return shutil.which(configured)
+
+
+def _sensevoice_config_error(cfg: Any, *, model_name: Any = None) -> Optional[str]:
+    """Return why a SenseVoice config cannot run, without spawning the runtime."""
+    cfg = cfg if isinstance(cfg, dict) else {}
+    model = _configured_file(cfg.get("model") if model_name is None else model_name)
+    if model is None:
+        return "SenseVoice requires stt.sensevoice.model to point to a SenseVoiceSmall GGUF file"
+    if not model.is_file():
+        return f"SenseVoice GGUF model not found: {model}"
+    if not _sensevoice_binary(cfg.get("binary")):
+        return (
+            "SenseVoice runtime not found. Install llama-funasr-sensevoice or set "
+            "stt.sensevoice.binary to its path"
+        )
+    vad_model = _configured_file(cfg.get("vad_model"))
+    if vad_model is not None and not vad_model.is_file():
+        return f"SenseVoice VAD GGUF model not found: {vad_model}"
+    backend = str(cfg.get("backend") or "cpu").strip().lower()
+    if backend not in _SUPPORTED_BACKENDS:
+        return f"Unsupported SenseVoice backend {backend!r}; choose cpu, cuda, or vulkan"
+    return None
 
 
 def _transcribe_sensevoice(
@@ -46,23 +73,14 @@ def _transcribe_sensevoice(
         _log_prompt_unsupported("STT provider 'sensevoice'")
     cfg = (_load_stt_config().get("sensevoice") or {})
     model = _configured_file(model_name)
-    if model is None:
-        return _error_result(
-            "SenseVoice requires stt.sensevoice.model to point to a SenseVoiceSmall GGUF file")
-    if not model.is_file():
-        return _error_result(f"SenseVoice GGUF model not found: {model}")
+    config_error = _sensevoice_config_error(cfg, model_name=model_name)
+    if config_error:
+        return _error_result(config_error)
+    assert model is not None
     binary = _sensevoice_binary(cfg.get("binary"))
-    if not binary:
-        return _error_result(
-            "SenseVoice runtime not found. Install llama-funasr-sensevoice or set "
-            "stt.sensevoice.binary to its path")
+    assert binary is not None
     vad_model = _configured_file(cfg.get("vad_model"))
-    if vad_model is not None and not vad_model.is_file():
-        return _error_result(f"SenseVoice VAD GGUF model not found: {vad_model}")
     backend = str(cfg.get("backend") or "cpu").strip().lower()
-    if backend not in _SUPPORTED_BACKENDS:
-        return _error_result(
-            f"Unsupported SenseVoice backend {backend!r}; choose cpu, cuda, or vulkan")
 
     timeout = max(_config_number(cfg, "timeout_seconds", 300, int), 1)
     try:

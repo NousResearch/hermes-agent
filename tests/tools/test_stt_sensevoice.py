@@ -1,9 +1,13 @@
 """SenseVoiceSmall GGUF provider contracts."""
 
+import os
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import pytest
+
 from tools import transcription_tools
+from tools.transcription_sensevoice import _sensevoice_binary
 
 
 def test_sensevoice_dispatches_locally_with_configured_gguf(tmp_path, monkeypatch):
@@ -15,6 +19,7 @@ def test_sensevoice_dispatches_locally_with_configured_gguf(tmp_path, monkeypatc
     vad.write_bytes(b"GGUF")
     binary = tmp_path / "llama-funasr-sensevoice"
     binary.write_bytes(b"binary")
+    binary.chmod(0o755)
     captured = {}
 
     def fake_run(command, **kwargs):
@@ -62,3 +67,13 @@ def test_sensevoice_reports_missing_model_before_spawning(tmp_path, monkeypatch)
     assert result["success"] is False
     assert "stt.sensevoice.model" in result["error"]
     run.assert_not_called()
+
+
+@pytest.mark.linux_only
+def test_sensevoice_rejects_non_executable_explicit_binary(tmp_path):
+    binary = tmp_path / "llama-funasr-sensevoice"
+    binary.write_bytes(b"binary")
+    binary.chmod(0o644)
+
+    assert os.access(binary, os.X_OK) is False
+    assert _sensevoice_binary(str(binary)) is None

@@ -171,6 +171,12 @@ def provider_readiness_status(provider: dict, config: dict, *, features=None, is
     if provider.get("env_vars", []):
         return "ready" if _provider_env_ready(provider) else "needs_keys"
 
+    if provider.get("config_setup") == "sensevoice":
+        from tools.transcription_sensevoice import _sensevoice_config_error
+
+        stt_cfg = config.get("stt") if isinstance(config.get("stt"), dict) else {}
+        return "ready" if _sensevoice_config_error(stt_cfg.get("sensevoice")) is None else "needs_setup"
+
     managed_feature = provider.get("managed_nous_feature")
     if provider.get("requires_nous_auth") or managed_feature:
         if features is None:
@@ -648,6 +654,37 @@ def _configure_stt_model(stt_provider: str, config: dict) -> None:
     _print_success(f"  STT model set to: {chosen}")
 
 
+def _configure_sensevoice(config: dict) -> bool:
+    """Collect the non-secret local runtime settings required by SenseVoice."""
+    from hermes_cli.tools_config import _cfg_section, _prompt_choice
+    from tools.transcription_sensevoice import _DEFAULT_BINARY
+
+    existing = config.get("stt", {}).get("sensevoice", {})
+    existing = existing if isinstance(existing, dict) else {}
+    model = _prompt("  SenseVoiceSmall GGUF model path", str(existing.get("model") or ""))
+    if not model:
+        _print_warning("  SenseVoice not configured — a GGUF model path is required.")
+        return False
+    binary = _prompt("  SenseVoice runtime executable", str(existing.get("binary") or _DEFAULT_BINARY))
+    vad_model = _prompt("  FSMN-VAD GGUF model path (optional)", str(existing.get("vad_model") or ""))
+    backends = ["cpu", "cuda", "vulkan"]
+    current_backend = str(existing.get("backend") or "cpu").strip().lower()
+    backend = backends[_prompt_choice(
+        "  Select SenseVoice backend:", backends,
+        backends.index(current_backend) if current_backend in backends else 0,
+    )]
+    cfg = _cfg_section(_cfg_section(config, "stt"), "sensevoice")
+    cfg.update({"model": model, "binary": binary or _DEFAULT_BINARY, "backend": backend})
+    if vad_model:
+        cfg["vad_model"] = vad_model
+    else:
+        cfg.pop("vad_model", None)
+    return True
+
+
+_PROVIDER_CONFIGURATORS = {"sensevoice": _configure_sensevoice}
+
+
 # Provider-row marker key -> config section it selects into.
 _PROVIDER_MARKER_SECTIONS = {
     "tts_provider": "tts", "stt_provider": "stt", "browser_provider": "browser", "web_backend": "web",
@@ -890,6 +927,9 @@ def _configure_provider(provider: dict, config: dict, *, force_fresh: bool = Tru
     if not _nous_provider_gate(provider, config, managed_feature, force_fresh=force_fresh):
         return
 
+    config_setup = provider.get("config_setup")
+    if config_setup and not _PROVIDER_CONFIGURATORS[config_setup](config):
+        return
     _print_provider_selection(provider, managed_feature, reconfigure=reconfigure)
     # Shared with the GUI provider-select endpoint (apply_provider_selection): one source of truth for config writes.
     _write_provider_config(provider, config, managed_feature=managed_feature)
@@ -897,7 +937,10 @@ def _configure_provider(provider: dict, config: dict, *, force_fresh: bool = Tru
     if not env_vars:
         if provider.get("post_setup"):
             _run_post_setup(provider["post_setup"])
-        _print_success(f"  {provider['name']} - no configuration needed!")
+        if config_setup:
+            _print_success(f"  {provider['name']} configured!")
+        else:
+            _print_success(f"  {provider['name']} - no configuration needed!")
         if managed_feature:
             _print_info("  Requests for this tool will be billed to your Nous subscription.")
         _finish_provider_selection(provider, config, managed_feature)

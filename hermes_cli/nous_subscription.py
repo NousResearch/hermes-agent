@@ -267,11 +267,10 @@ def _local_stt_backend_available() -> bool:
 def _sensevoice_backend_available(stt_cfg: Dict[str, object]) -> bool:
     """True when the selected SenseVoice binary and GGUF model are usable."""
     try:
-        from tools.transcription_sensevoice import _configured_file, _sensevoice_binary
+        from tools.transcription_sensevoice import _sensevoice_config_error
 
         cfg = stt_cfg.get("sensevoice") or {}
-        model = _configured_file(cfg.get("model"))
-        return bool(_sensevoice_binary(cfg.get("binary")) and model and model.is_file())
+        return _sensevoice_config_error(cfg) is None
     except Exception:
         return False
 

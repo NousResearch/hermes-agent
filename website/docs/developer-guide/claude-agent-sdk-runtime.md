@@ -365,7 +365,54 @@ bounded inspection tools. It is scoped to that profile—not the Codex default
 surface—so the skill nudge can retain durable procedure knowledge without
 widening unrelated runtime capabilities.
 
-## 7. Agent cache interaction
+## 7. Session continuity, workspace binding and late stops
+
+The CLI's conversation lives in the child process, so continuity is a resume id
+Hermes stores on the Hermes session row and hands back on the next turn. Two
+things constrain when that id may be used, and one constrains what a `/stop`
+means near the end of a turn.
+
+**Resume ids are bound to the workspace that produced them.** The stored value
+is a versioned envelope — `hermes-sdk-resume-v1:` followed by canonical JSON
+carrying the producing turn's cwd and the id — written by
+`claude_sdk_runtime_continuity`. On the next turn the binding is re-validated
+against the live workspace: a mismatch is declined and a fresh session starts
+with the continuity digest, because resuming a session created somewhere else
+would import that workspace's context into this one. The workspace is sampled
+at turn start, from the session that actually produced the id, rather than at
+persist time — persisting happens after the turn, so a workspace that moved
+mid-turn would otherwise have matched itself and the check could never fail.
+
+**A cached agent whose workspace moved retires its live session.** The child
+CLI's cwd is fixed when it spawns, so a reused session is still bound to the old
+directory; it is closed and rebuilt in the current workspace. The probe is
+best-effort: if the workspace cannot be resolved at all (a deleted launch
+directory, a refusal terminal scope) the live session is kept rather than the
+turn being failed, since the resume binding declines a foreign session anyway.
+
+> **One-time behaviour change for existing installations.** Ids stored before
+> the envelope existed carry no record of where they were created, and the
+> session row's own cwd is mutable, so it cannot retroactively authorize them.
+> They are cleared rather than guessed: the first turn after this lands starts a
+> fresh SDK session with the digest, once per stored id. Agent-side transcript
+> and recall are unaffected — only the CLI-side conversation restarts.
+
+**A `/stop` racing the end of a turn is classified, not merged into failure.**
+Once the transport has accepted a terminal `ResultMessage` the answer is
+committed: a stop arriving after that point is consumed rather than allowed to
+downgrade a completed answer to "interrupted" and discard it. Before that point
+the stop wins, and it wins as an *interruption* rather than a failure — a turn
+with no terminal result, a terminal result carrying an error (max-turns, budget,
+HTTP or auth), and a session that raised during teardown all report
+`interrupted`, retire the live session, and consume the agent-level stop, so the
+gateway discards the abandoned turn's error text instead of delivering it and a
+one-shot run exits zero. Both halves of the agent stop are consumed together:
+the request flag and the hard-interrupt event that compaction reads as a live
+cancel.
+
+---
+
+## 8. Agent cache interaction
 
 The gateway caches one agent per session key. Every **eviction** path releases
 what it pops, but a plain cache **overwrite** originally released nothing,
@@ -385,7 +432,7 @@ exceptions, and falls back to an inline release when a thread cannot start
 
 ---
 
-## 8. Observability
+## 9. Observability
 
 > Both `_sweep_agent_cache_under_pressure` and `_evict_cached_agent`
 > (`gateway/run_agent_cache.py`) contain **zero `logger.` calls.** That is why the leaks above hid for so long, and why
@@ -407,7 +454,7 @@ evidence.
 
 | Symptom | First check |
 |---|---|
-| Idle `claude` subprocesses accumulating | Orphan reap (§4) and cache displacement (§7) |
+| Idle `claude` subprocesses accumulating | Orphan reap (§4) and cache displacement (§8) |
 | Context never compacts | `context_usage()` — threshold depends on the effective child window: 167,000 bare Opus, 967,000 for `[1m]`, or 267,000 with the intentional 300k clamp (§3) |
 | Compaction knob has no effect | It is probably inert (§3); confirm with `context_usage()` |
 | Notice never appeared | `compression.progress_notices`; then grep `compact_boundary` — a notice emitted at turn end is deleted by cleanup (§6) |
@@ -416,7 +463,7 @@ evidence.
 
 ---
 
-## 9. Testing
+## 10. Testing
 
 | File | Covers |
 |---|---|
@@ -433,8 +480,8 @@ evidence.
 | `tests/agent/test_claude_sdk_session_core.py` | Session lifecycle, options, hooks, billing guard |
 | `tests/agent/test_claude_sdk_streaming.py` | Stream ownership, delta relay, unsolicited delivery, dead-stream retire |
 | `tests/agent/test_claude_sdk_turn_lifetime.py` | Activity-aware turn budget, post-tool quiet watchdog, `_TurnWatch` semantics |
-| `tests/agent/test_claude_sdk_interrupt.py` | Interrupt routing, barge-in hand-off |
-| `tests/agent/test_claude_sdk_session_identity.py` | Hermes session-id plumbing, continuity/resume, agent close |
+| `tests/agent/test_claude_sdk_interrupt.py` | Interrupt routing, barge-in hand-off, both halves of the agent stop consumed |
+| `tests/agent/test_claude_sdk_session_identity.py` | Hermes session-id plumbing, continuity/resume, workspace-bound resume envelopes, agent close |
 | `tests/agent/test_claude_sdk_failover.py` | Fatal reasons, replay-safe provider failure outcomes |
 | `tests/agent/test_claude_sdk_system_prompt.py` | System-prompt append budget and blocks, aux-lane routing |
 | `tests/agent/test_claude_sdk_mcp_security.py` | Direct HTTP MCP security, hybrid registry diff, minimal MCP env, bounded MCP inspection |

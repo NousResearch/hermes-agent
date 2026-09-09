@@ -44,6 +44,7 @@ def test_metadata_failure_does_not_hide_existing_model_info():
     runner.config = SimpleNamespace(multiplex_profiles=False)
     source = SessionSource(platform=Platform.MATRIX, chat_id="room")
     with patch.object(runner, "_format_session_info", return_value="existing model block"), \
+         patch.object(runner, "_resolve_session_agent_runtime", return_value=("model", {})), \
          patch("hermes_cli.config.load_config_readonly", side_effect=RuntimeError("private detail")):
         info = runner._reset_notice_session_info(source)
     assert "existing model block" in info

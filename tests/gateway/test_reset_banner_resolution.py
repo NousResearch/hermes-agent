@@ -13,6 +13,8 @@ from gateway.session import SessionSource
 def test_new_defaults_follow_resolved_route(tmp_path, monkeypatch, channel):
     import yaml
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    # Unscoped gateway reads use the launch-time home, not later env changes.
+    monkeypatch.setattr("gateway.run._hermes_home", tmp_path)
     (tmp_path / "config.yaml").write_text(yaml.safe_dump({
         "model": {"default": "base", "context_length": 2000},
         "agent": {"reasoning_effort": "low", "service_tier": "fast",

@@ -2042,11 +2042,22 @@ class GatewayTurnMixin:
         probes), and the scope is entered here so contextvars behave in the worker thread."""
         with self._profile_scope_for_source(source):
             model = None
+            runtime = {}
             try:
                 model, runtime = self._resolve_session_agent_runtime(source=source, defaults_only=True)
-                info = self._format_session_info(model=model, runtime=runtime)
             except Exception:
-                info = self._format_session_info()
+                pass
+            model = model or None
+            # Never substitute the global route for a failed channel/provider route,
+            # or retry a failed context probe and lose the new session identifier.
+            info = "◆ Model: unknown\n◆ Provider: unknown\n◆ Context: unknown"
+            if model is not None:
+                try:
+                    info = self._format_session_info(model=model, runtime=runtime)
+                except Exception:
+                    info = (f"◆ Model: `{model}`\n"
+                            f"◆ Provider: {runtime.get('provider') or 'unknown'}\n"
+                            "◆ Context: unknown")
             try:
                 from gateway.session_banner import format_reset_settings
                 settings = format_reset_settings(self, model=model)

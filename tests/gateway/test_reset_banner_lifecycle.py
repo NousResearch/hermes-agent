@@ -12,8 +12,10 @@ from gateway.platforms.event import MessageEvent
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("existing", [False, True])
-async def test_reset_banner_is_new_session(tmp_path, monkeypatch, existing):
+@pytest.mark.parametrize("command", ["/new", "/reset"])
+async def test_reset_banner_is_new_session(tmp_path, monkeypatch, existing, command):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr("gateway.run._hermes_home", tmp_path)
     (tmp_path / "config.yaml").write_text("model:\n  default: test-model\n  context_length: 2000\nagent:\n  reasoning_effort: low\n  service_tier: fast\n")
     runner = GatewayRunner.__new__(GatewayRunner)
     runner.config = GatewayConfig()
@@ -38,7 +40,7 @@ async def test_reset_banner_is_new_session(tmp_path, monkeypatch, existing):
          patch("tools.async_delegation.interrupt_for_session"), \
          patch("gateway.slash_commands_session._reset_process_scoped_tool_state"), \
          patch("hermes_cli.tips.get_random_tip", return_value="Synthetic tip"):
-        reply = await runner._handle_reset_command(MessageEvent(text="/new", source=source, message_id="m"))
+        reply = await runner._handle_reset_command(MessageEvent(text=command, source=source, message_id="m"))
     text = str(reply)
     fresh = runner.session_store._entries[key]
     assert fresh.session_id in text
@@ -47,6 +49,9 @@ async def test_reset_banner_is_new_session(tmp_path, monkeypatch, existing):
         assert fresh.session_id != old.session_id
         assert old.session_id not in text
     assert "Main reasoning: low" in text
+    assert "Model: `test-model`" in text
+    assert runner._resolve_session_reasoning_config(session_key=key) == {"enabled": True, "effort": "low"}
+    assert runner._resolve_session_service_tier(session_key=key) == "priority"
     assert "Service tier (requested): priority" in text
     assert "old-model" not in text
     assert "Synthetic tip" in text

@@ -97,8 +97,8 @@ class TestJobStoreReasoningEffort:
         assert load_jobs()[0]["reasoning_effort"] == "high"
 
     def test_effort_change_does_not_trigger_snapshot_recompute(self, tmp_cron_dir):
-        """Effort is NOT a drift-guard axis (#44585 guard unchanged): updating
-        it alone must not touch provider_snapshot/model_snapshot."""
+        """Effort is NOT an inference-snapshot axis: updating it alone must not
+        touch provider_snapshot/model_snapshot."""
         job = _create()
         before = (job.get("provider_snapshot"), job.get("model_snapshot"))
         updated = update_job(job["id"], {"reasoning_effort": "low"})
@@ -194,7 +194,7 @@ class TestCronjobToolReasoningEffort:
     def _tool_handler(self):
         import tools.cronjob_tools as mod
 
-        return mod.registry._tools["cronjob"].handler
+        return mod.registry._tools["cronjob_manage"].handler
 
     def test_schema_does_not_expose_reasoning_effort(self):
         """Policy pin: the model-facing surface must NOT offer the

@@ -27,7 +27,6 @@ def _reset_signal_scheduler():
 
 from gateway.config import Platform
 from tools.send_message_tool import (
-    _parse_target_ref,
     _resolve_slack_user_target,
     _send_matrix_via_adapter,
     _send_signal,
@@ -35,6 +34,7 @@ from tools.send_message_tool import (
     _send_to_platform,
     send_message_tool,
 )
+from tools.send_message_targets import _parse_target_ref
 # Discord helpers moved to the plugin in #24325.  Import from the new path
 # and provide a thin ``_send_discord(token, ...)`` shim that mirrors the
 # pre-migration signature so the existing test bodies keep working.
@@ -1140,6 +1140,32 @@ class TestSendDiscordThreadId:
         call_kwargs = mock_session.post.call_args.kwargs
         assert call_kwargs["json"]["message"]["flags"] == 1 << 2
 
+    def test_disable_link_previews_sets_suppress_embeds_flag_on_forum_thread_media(self, tmp_path):
+        """Forum starter payloads with an attachment preserve the same opt-in flag."""
+        media = tmp_path / "report.txt"
+        media.write_text("report", encoding="utf-8")
+        mock_session, _ = self._build_mock(
+            200, response_data={"id": "thread1", "message": {"id": "msg1"}}
+        )
+        pconfig = SimpleNamespace(token="tok", extra={"disable_link_previews": True})
+        payloads = []
+
+        class FakeForm:
+            def add_field(self, name, value, **_kwargs):
+                if name == "payload_json":
+                    payloads.append(json.loads(value))
+
+        with patch("aiohttp.ClientSession", return_value=mock_session), patch(
+            "aiohttp.FormData", FakeForm
+        ), patch("gateway.channel_directory.lookup_channel_type", return_value="forum"):
+            asyncio.run(
+                _standalone_send(
+                    pconfig, "444555666", "forum starter", media_files=[(str(media), False)]
+                )
+            )
+
+        assert payloads[0]["message"]["flags"] == 1 << 2
+
     def test_success_response_json_read_is_bounded(self):
         """Standalone Discord sends parse success JSON through the bounded reader."""
         body = b'{"id":"bounded-json"}'
@@ -1774,50 +1800,6 @@ class TestSendViaAdapterStandaloneFallback:
 
         assert result == {"error": "Plugin standalone send failed: boom!"}
 
-# ---------------------------------------------------------------------------
-# _check_send_message — availability gating
-# ---------------------------------------------------------------------------
-
-class TestCheckSendMessage:
-    """The tool's check_fn governs whether the model sees ``send_message`` as
-    callable for a given session. The four passing conditions are:
-
-    1. ``HERMES_KANBAN_TASK`` is set (worker spawned by the kanban dispatcher
-       — parent gateway is by definition running, but the worker's
-       ``HERMES_HOME`` may be a profile dir without a ``gateway.pid``).
-    2. ``HERMES_SESSION_PLATFORM`` resolves to a non-empty, non-``local`` value
-       (the session is wired to a messaging platform like Telegram).
-    3. ``is_gateway_running()`` returns True (CLI / orchestrator profile with
-       a live gateway colocated under the same ``HERMES_HOME``).
-    4. None of the above → False, tool is hidden.
-    """
-
-    def test_kanban_task_env_grants_access(self, monkeypatch):
-        """Workers spawned by the dispatcher (HERMES_KANBAN_TASK set) must be
-        allowed regardless of session_platform / gateway-pid state."""
-        from tools.send_message_tool import _check_send_message
-
-        monkeypatch.setenv("HERMES_KANBAN_TASK", "t_abc12345")
-        monkeypatch.delenv("HERMES_SESSION_PLATFORM", raising=False)
-
-        with patch("gateway.session_context.get_session_env", return_value=""), \
-             patch("gateway.status.is_gateway_running", return_value=False):
-            assert _check_send_message() is True
-
-
-    def test_gateway_status_import_error_is_swallowed(self, monkeypatch):
-        """If gateway.status can't be imported (unusual deployment / partial
-        install), the check returns False rather than raising."""
-        from tools.send_message_tool import _check_send_message
-
-        monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
-
-        with patch("gateway.session_context.get_session_env", return_value=""), \
-             patch("gateway.status.is_gateway_running",
-                   side_effect=ImportError("simulated")):
-            assert _check_send_message() is False
-
-
 class TestSendTelegramThreadNotFoundRetry:
     """Tests for thread-not-found retry behaviour in _send_telegram (#27012)."""
 
@@ -1834,7 +1816,7 @@ class TestSendTelegramThreadNotFoundRetry:
 
         async def run_test():
             with patch(
-                "tools.send_message_tool._send_telegram_message_with_retry",
+                "tools.send_message_senders._send_telegram_message_with_retry",
                 fake_retry,
             ):
                 # _send_telegram imports Bot locally; we only need to mock

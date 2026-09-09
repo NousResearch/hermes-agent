@@ -25,13 +25,12 @@ import agent.secret_scope as secret_scope
 from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.run import GatewayRunner
 from gateway.platforms.base import (
-    MessageEvent,
-    MessageType,
     SendResult,
     SUPPORTED_VIDEO_TYPES,
     SendResult,
     is_host_excluded_by_no_proxy,
 )
+from gateway.platforms.event import MessageEvent, MessageType
 
 
 # ---------------------------------------------------------------------------
@@ -1179,6 +1178,30 @@ class TestStandaloneSendUserDmResolution:
         assert result["success"] is True
         assert session.post.call_count == 1
         assert "chat.postMessage" in session.post.call_args.args[0]
+
+    @pytest.mark.asyncio
+    async def test_channel_delivery_honors_unfurl_config(self):
+        _slack_mod._slack_dm_cache.clear()
+        post_resp = self._mock_resp({"ok": True, "ts": "123.456"})
+        session = self._mock_session(post_resp)
+        config = PlatformConfig(
+            enabled=True,
+            token="«redacted:xox…»",
+            extra={"unfurl_links": False, "unfurl_media": False},
+        )
+
+        with patch.object(_slack_mod.aiohttp, "ClientSession", return_value=session):
+            result = await _slack_mod._standalone_send(
+                config,
+                "C123",
+                "[Hermes](https://example.com/hermes)",
+            )
+
+        assert result["success"] is True
+        payload = session.post.call_args.kwargs["json"]
+        assert payload["text"] == "<https://example.com/hermes|Hermes>"
+        assert payload["unfurl_links"] is False
+        assert payload["unfurl_media"] is False
 
 
     @pytest.mark.asyncio
@@ -2879,7 +2902,8 @@ class TestReactions:
         assert "1234567890.000001" in adapter._reacting_message_ids
 
         # Simulate the base class calling on_processing_start
-        from gateway.platforms.base import MessageEvent, MessageType, SessionSource
+        from gateway.platforms.base import SessionSource
+        from gateway.platforms.event import MessageEvent, MessageType
         from gateway.config import Platform
 
         source = SessionSource(
@@ -2901,7 +2925,7 @@ class TestReactions:
         assert add_calls[0].kwargs["name"] == "eyes"
 
         # Simulate the base class calling on_processing_complete
-        from gateway.platforms.base import ProcessingOutcome
+        from gateway.platforms.event import ProcessingOutcome
 
         await adapter.on_processing_complete(msg_event, ProcessingOutcome.SUCCESS)
 
@@ -2963,9 +2987,16 @@ class TestThreadReplyHandling:
         self, adapter_with_session_store, mock_session_store
     ):
         """Thread replies without mention should be processed if there's an active session."""
-        # Simulate an active session for this thread
+        from gateway.session import SessionEntry
+
+        # Deserialize a legacy routing entry so lifecycle flags have real defaults.
         session_key = "agent:main:slack:group:T_TEAM:C123:123.000:U_USER"
-        mock_session_store._entries = {session_key: MagicMock()}
+        mock_session_store._entries = {session_key: SessionEntry.from_dict({
+            "session_key": session_key,
+            "session_id": "slack-thread-session",
+            "created_at": "2024-01-01T00:00:00",
+            "updated_at": "2024-01-01T00:00:00",
+        })}
 
         event = {
             "text": "Follow-up question",
@@ -3472,6 +3503,71 @@ class TestMessageSplitting:
         assert sent_text.startswith("> quoted text")
         assert "normal text" in sent_text
 
+
+    @pytest.mark.asyncio
+    async def test_send_passes_explicit_unfurl_options(self, adapter):
+        adapter.config.extra["unfurl_links"] = False
+        adapter.config.extra["unfurl_media"] = False
+        adapter._app.client.chat_postMessage = AsyncMock(return_value={"ts": "ts1"})
+
+        await adapter.send("C123", "https://example.com")
+
+        kwargs = adapter._app.client.chat_postMessage.call_args.kwargs
+        assert kwargs["unfurl_links"] is False
+        assert kwargs["unfurl_media"] is False
+
+    @pytest.mark.asyncio
+    async def test_send_preserves_default_unfurl_behavior(self, adapter):
+        adapter._app.client.chat_postMessage = AsyncMock(return_value={"ts": "ts1"})
+
+        await adapter.send("C123", "https://example.com")
+
+        kwargs = adapter._app.client.chat_postMessage.call_args.kwargs
+        assert "unfurl_links" not in kwargs
+        assert "unfurl_media" not in kwargs
+
+    @pytest.mark.asyncio
+    async def test_send_coerces_string_unfurl_options(self, adapter):
+        """`hermes config set` / Railway persist YAML booleans as strings.
+
+        Relay-plane parity: string "false"/"true" must coerce instead of
+        being silently dropped (which would leave previews on with no error).
+        """
+        adapter.config.extra["unfurl_links"] = "false"
+        adapter.config.extra["unfurl_media"] = "true"
+        adapter._app.client.chat_postMessage = AsyncMock(return_value={"ts": "ts1"})
+
+        await adapter.send("C123", "https://example.com")
+
+        kwargs = adapter._app.client.chat_postMessage.call_args.kwargs
+        assert kwargs["unfurl_links"] is False
+        assert kwargs["unfurl_media"] is True
+
+    @pytest.mark.asyncio
+    async def test_send_drops_junk_unfurl_values(self, adapter):
+        """Unrecognized values keep Slack's default rather than suppressing."""
+        adapter.config.extra["unfurl_links"] = "maybe"
+        adapter.config.extra["unfurl_media"] = 0
+        adapter._app.client.chat_postMessage = AsyncMock(return_value={"ts": "ts1"})
+
+        await adapter.send("C123", "https://example.com")
+
+        kwargs = adapter._app.client.chat_postMessage.call_args.kwargs
+        assert "unfurl_links" not in kwargs
+        assert "unfurl_media" not in kwargs
+
+    @pytest.mark.asyncio
+    async def test_send_passes_unfurl_options_to_every_chunk(self, adapter):
+        adapter.config.extra["unfurl_links"] = False
+        adapter.config.extra["unfurl_media"] = False
+        adapter._app.client.chat_postMessage = AsyncMock(return_value={"ts": "ts1"})
+
+        await adapter.send("C123", "https://example.com/" + "x" * 45000)
+
+        assert adapter._app.client.chat_postMessage.call_count >= 2
+        for call in adapter._app.client.chat_postMessage.call_args_list:
+            assert call.kwargs["unfurl_links"] is False
+            assert call.kwargs["unfurl_media"] is False
 
     @pytest.mark.asyncio
     async def test_send_does_not_double_escape_entities(self, adapter):
@@ -5053,6 +5149,45 @@ class TestNativeTaskCardProgress:
             "chat.stopStream",
         ]
         assert adapter._native_task_card_streams == {}
+
+    @pytest.mark.asyncio
+    async def test_append_payload_never_mixes_markdown_text_with_chunks(
+        self, adapter
+    ):
+        """#87743: chat.appendStream rejects a request carrying both
+        markdown_text and chunks (`cannot_provide_both_markdown_text_and_chunks`),
+        which made every native task-card update fail and silently downgraded
+        each turn to the plain-text fallback. The fallback_text must never be
+        attached to the chunks payload."""
+        client = adapter._app.client
+
+        async def api_call(method, *, json):
+            if method == "chat.startStream":
+                return {"ts": "stream-1"}
+            return {"ok": True}
+
+        client.api_call.side_effect = api_call
+
+        result = await adapter.send_native_task_card_progress(
+            "C1",
+            [{"id": "call-1", "title": "terminal", "status": "in_progress"}],
+            metadata={"thread_id": "thread-1"},
+            fallback_text="fallback progress text",
+        )
+
+        assert result.success is True
+        append_calls = [
+            call
+            for call in client.api_call.await_args_list
+            if call.args[0] == "chat.appendStream"
+        ]
+        assert append_calls, "expected an appendStream call"
+        payload = append_calls[0].kwargs["json"]
+        assert "chunks" in payload
+        assert "markdown_text" not in payload, (
+            "appendStream must not mix markdown_text with chunks — Slack "
+            "rejects the pair and the whole native card fails (#87743)"
+        )
 
 
 # ---------------------------------------------------------------------------

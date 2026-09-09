@@ -648,7 +648,7 @@ Hermes automatically registers installed skills as **native Discord Application 
 - Each skill becomes a Discord slash command (e.g., `/code-review`, `/ascii-art`)
 - Skills accept an optional `args` string parameter
 - Discord has a limit of 100 application commands per bot — if you have more skills than available slots, extra skills are skipped with a warning in the logs
-- Skills are registered during bot startup alongside built-in commands like `/model`, `/reset`, and `/background`
+- Skills are registered during bot startup alongside built-in commands like `/model`, `/reset`, and `/bg`
 
 No extra configuration is needed — any skill installed via `hermes skills install` is automatically registered as a Discord slash command on the next gateway restart.
 
@@ -668,7 +668,7 @@ Leaving this at `true` on the "primary" gateway keeps the normal behavior — gl
 
 ### Suppressing Link-Preview Embeds
 
-Discord auto-embeds a preview card for any URL in a plain-text message, with no built-in way to opt out — unlike Telegram's `disable_link_previews`. For naming parity, set `extra.disable_link_previews` to suppress these cards on the bot's own outgoing text (assistant replies, forum thread posts, and overflow-split continuations):
+Discord auto-embeds a preview card for any URL in a plain-text message, with no built-in way to opt out — unlike Telegram's `disable_link_previews`. For naming parity, set `extra.disable_link_previews` to suppress these cards on the bot's outgoing text (assistant replies, forum thread posts, overflow-split continuations, and standalone/cron deliveries):
 
 ```yaml
 gateway:

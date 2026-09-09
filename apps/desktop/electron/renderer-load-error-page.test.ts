@@ -70,6 +70,7 @@ test('error page renders without any details', () => {
 
 test('loadRendererLoadErrorPage loads a data: URL and swallows loadURL rejections', async () => {
   const loads: string[] = []
+
   const win = {
     loadURL: async (url: string) => {
       loads.push(url)

@@ -4,6 +4,7 @@ import json
 import sqlite3
 import pytest
 import time
+from types import SimpleNamespace
 from unittest.mock import patch, MagicMock
 
 from agent.context_compressor import (
@@ -252,7 +253,6 @@ class TestShouldCompress:
 class TestUpdateFromResponse:
     def test_updates_fields(self, compressor):
         compressor.awaiting_real_usage_after_compression = True
-        compressor.last_compression_rough_tokens = 90_000
         compressor.update_from_response({
             "prompt_tokens": 5000,
             "completion_tokens": 1000,
@@ -261,97 +261,39 @@ class TestUpdateFromResponse:
         assert compressor.last_prompt_tokens == 5000
         assert compressor.last_completion_tokens == 1000
         assert compressor.last_real_prompt_tokens == 5000
-        assert compressor.last_rough_tokens_when_real_prompt_fit == 90_000
         assert compressor.awaiting_real_usage_after_compression is False
 
     def test_missing_fields_default_zero(self, compressor):
         compressor.update_from_response({})
         assert compressor.last_prompt_tokens == 0
 
-    def test_pairs_noted_rough_estimate_with_fitting_real_usage(self, compressor):
-        """note_request_rough_estimate() + a fitting response must anchor the
-        defer baseline even when no compression ever ran — this is what gives
-        fresh sessions a (rough, real) pair before their first compaction."""
-        compressor.note_request_rough_estimate(120_000)
-        compressor.update_from_response({"prompt_tokens": 60_000})
-
-        assert compressor.last_real_prompt_tokens == 60_000
-        assert compressor.last_rough_tokens_when_real_prompt_fit == 120_000
-        # Consumed: a later usage-bearing response without a fresh note keeps
-        # the previous pair instead of re-pairing against a stale estimate.
-        assert compressor._pending_request_rough_tokens == 0
-
-    def test_post_compression_pairing_wins_over_noted_estimate(self, compressor):
-        """Right after a compaction the post-compression rough count is the
-        authoritative baseline (#36718); a stale pre-compression note must not
-        displace it."""
-        compressor.note_request_rough_estimate(120_000)
-        compressor.awaiting_real_usage_after_compression = True
-        compressor.last_compression_rough_tokens = 40_000
-        compressor.update_from_response({"prompt_tokens": 30_000})
-
-        assert compressor.last_rough_tokens_when_real_prompt_fit == 40_000
-
-    def test_usage_less_response_preserves_pending_note(self, compressor):
-        """Transports that report usage separately send usage-less responses
-        first; the pending pair must survive until real usage arrives."""
-        compressor.note_request_rough_estimate(120_000)
-        compressor.update_from_response({})
-
-        assert compressor._pending_request_rough_tokens == 120_000
-
-    def test_over_threshold_real_usage_clears_pending_note(self, compressor):
-        compressor.note_request_rough_estimate(120_000)
-        compressor.update_from_response({"prompt_tokens": 90_000})
-
-        assert compressor.last_rough_tokens_when_real_prompt_fit == 0
-        assert compressor._pending_request_rough_tokens == 0
 
 class TestPreflightDeferral:
+    """A whole-context rough estimate over threshold waits ONE request for real usage; callers
+    never consult this for usage-anchored figures."""
 
-    def test_defers_while_projected_real_usage_fits(self, compressor):
-        """Large rough growth alone must not trigger compaction: with real
-        usage at 50K and 10K of rough growth since that reading, projected
-        real usage is 60K — far under the 85K threshold. The old fixed 5%
-        growth tolerance compacted here at ~59% of the real window (CJK /
-        replay-blob overcount churn)."""
+    def test_rough_estimate_defers_until_provider_prices_it(self, compressor):
+        """Real usage far under threshold, rough estimate far over (CJK / replay-blob overcount):
+        the provider's next reading decides, not the estimate."""
+        compressor.context_length = 200_000
         compressor.threshold_tokens = 85_000
         compressor.last_real_prompt_tokens = 50_000
-        compressor.last_rough_tokens_when_real_prompt_fit = 90_000
-
         assert compressor.should_defer_preflight_to_real_usage(100_000) is True
+        assert compressor.should_defer_preflight_to_real_usage(80_000) is False
 
-    def test_does_not_defer_when_projected_real_usage_crosses_threshold(self, compressor):
-        """Projection = last real + rough growth. 80K real + 6K growth = 86K
-        >= 85K threshold: compression must run."""
+    def test_never_defers_when_real_usage_cannot_arrive_or_is_already_over(self, compressor):
+        """Only provider evidence ends deferral, not the magnitude of a rough estimate."""
+        compressor.context_length = 100_000
         compressor.threshold_tokens = 85_000
-        compressor.last_real_prompt_tokens = 80_000
-        compressor.last_rough_tokens_when_real_prompt_fit = 90_000
-
-        assert compressor.should_defer_preflight_to_real_usage(96_000) is False
-
-    def test_does_not_defer_without_a_baseline(self, compressor):
-        """No synchronized (rough, real) pair yet — fall back to trusting the
-        rough estimate (conservative: compress)."""
-        compressor.threshold_tokens = 85_000
+        compressor.last_real_prompt_tokens = 90_000
+        assert compressor.should_defer_preflight_to_real_usage(95_000) is False
         compressor.last_real_prompt_tokens = 50_000
-        compressor.last_rough_tokens_when_real_prompt_fit = 0
-        compressor.last_compression_rough_tokens = 0
-
-        assert compressor.should_defer_preflight_to_real_usage(100_000) is False
-
-    def test_defer_does_not_ratchet_baseline(self, compressor):
-        """The baseline is refreshed only by update_from_response() pairing.
-        Deferring must not advance it: without a fresh real reading, a
-        ratcheted baseline would shrink apparent growth and defer on stale
-        data."""
-        compressor.threshold_tokens = 85_000
-        compressor.last_real_prompt_tokens = 50_000
-        compressor.last_rough_tokens_when_real_prompt_fit = 90_000
-
-        assert compressor.should_defer_preflight_to_real_usage(100_000) is True
-        assert compressor.last_rough_tokens_when_real_prompt_fit == 90_000
-
+        for rough in (compressor.context_length, 150_000, 10_000_000):
+            assert compressor.should_defer_preflight_to_real_usage(rough) is True
+        compressor.note_usage_less_response()
+        assert compressor.should_defer_preflight_to_real_usage(95_000) is False
+        compressor.update_from_response({"prompt_tokens": 50_000})
+        assert compressor.should_defer_preflight_to_real_usage(95_000) is True
 
     def test_defers_immediately_after_compaction_with_stale_real_prompt(self, compressor):
         """#36718: right after a compaction, last_real_prompt_tokens still holds
@@ -359,13 +301,24 @@ class TestPreflightDeferral:
         must force deferral so preflight doesn't fire a SECOND compaction before
         real post-compaction usage arrives."""
         compressor.threshold_tokens = 85_000
-        # Stale pre-compression value — would hit the `>= threshold => False`
-        # short-circuit and defeat deferral without the flag guard.
         compressor.last_real_prompt_tokens = 120_000
         compressor.awaiting_real_usage_after_compression = True
         assert compressor.should_defer_preflight_to_real_usage(95_000) is True
 
+    def test_native_checkpoint_defers_until_provider_usage_reanchors(self, compressor):
+        """A newly captured native checkpoint is opaque ciphertext whose serialized size can add
+        more than a million rough tokens; the local compressor waits one request for real usage."""
+        compressor.threshold_tokens = 85_000
+        compressor.last_real_prompt_tokens = 60_000
+        compressor.last_compression_rough_tokens = 40_000
 
+        compressor.note_native_compaction_checkpoint()
+
+        assert compressor.awaiting_real_usage_after_compression is True
+        assert compressor.last_compression_rough_tokens == 0
+        assert compressor.should_defer_preflight_to_real_usage(1_300_000) is True
+        compressor.update_from_response({"prompt_tokens": 65_000})
+        assert compressor.awaiting_real_usage_after_compression is False
 
 
 class TestCompress:
@@ -419,6 +372,31 @@ class TestCompress:
         t = ContextCompressor._compute_threshold_tokens(MINIMUM_CONTEXT_LENGTH, 0.50)
         assert t < MINIMUM_CONTEXT_LENGTH
         assert t == 54400  # 85% of 64000
+
+    def test_threshold_floor_capped_at_85_percent_of_window(self):
+        """The MINIMUM_CONTEXT_LENGTH floor must not consume the window's
+        output headroom. At context_length == 65,536 (a common local-model
+        window) the floored threshold used to pass through at 64,000 — 97.7%
+        of the window, ~1.5K tokens of output room — so pre-API compaction
+        effectively could not fire. Providers that silently truncate
+        over-window prompts instead of rejecting them (e.g. ollama's
+        OpenAI-compatible endpoint) never delivered the reactive
+        context-overflow backstop either: a live session rode into the window
+        ceiling and each length-continuation retry re-sent a window-filling
+        prompt (observed 65,120 -> 65,273 prompt tokens against 65,536,
+        leaving 263 output tokens) until the turn died with "Response
+        remained truncated after 4 continuation attempts". The floor is now
+        capped at 85% of the effective input budget whenever it is the
+        binding term."""
+        t = ContextCompressor._compute_threshold_tokens(65_536, 0.50)
+        assert t == int(65_536 * 0.85)  # 55,705
+        # Any window where the floor lands above 85% is capped the same way.
+        assert ContextCompressor._compute_threshold_tokens(70_000, 0.50) == 59_500
+        # Floor binding but at/under the 85% cap: unchanged.
+        assert ContextCompressor._compute_threshold_tokens(100_000, 0.50) == 64_000
+        # An explicit threshold_percent above 85% is user intent, not the
+        # floor — it is not capped.
+        assert ContextCompressor._compute_threshold_tokens(372_000, 0.90) == 334_800
 
 
 
@@ -826,6 +804,19 @@ class TestAuthFailureAborts:
         err = RuntimeError(
             "Provider 'opencode-zen' is set in config.yaml but no API key was "
             "found. Set the OPENCODE-ZEN_API_KEY environment variable."
+        )
+        assert _is_summary_access_or_quota_error(err) is True
+
+    def test_unscoped_secret_read_is_terminal_access_failure(self):
+        # Multiplexed gateway: a credential read reached get_secret() from a
+        # worker thread without the profile scope. The summary model is
+        # unreachable until the spawn site is fixed — abort and preserve the
+        # session rather than truncating the middle window (#100849 bundle).
+        from agent.secret_scope import UnscopedSecretError
+
+        err = UnscopedSecretError(
+            "get_secret('SURPLUS_API_KEY') called with no profile secret scope "
+            "active while multiplexing is on."
         )
         assert _is_summary_access_or_quota_error(err) is True
 
@@ -2148,7 +2139,6 @@ class TestUpdateModelResetsCalibration:
         # Simulate a large-model session that proved a prompt fit.
         comp.last_prompt_tokens = 120_000
         comp.last_real_prompt_tokens = 120_000
-        comp.last_rough_tokens_when_real_prompt_fit = 130_000
         comp.last_compression_rough_tokens = 130_000
         comp.awaiting_real_usage_after_compression = True
         comp._ineffective_compression_count = 2
@@ -2157,25 +2147,23 @@ class TestUpdateModelResetsCalibration:
 
         assert comp.last_prompt_tokens == 0
         assert comp.last_real_prompt_tokens == 0
-        assert comp.last_rough_tokens_when_real_prompt_fit == 0
         assert comp.last_compression_rough_tokens == 0
         assert comp.awaiting_real_usage_after_compression is False
         assert comp._ineffective_compression_count == 0
 
-    def test_defer_no_longer_suppresses_after_switch(self):
-        """The exact #23767 failure: old model's 'it fit' must not defer
-        preflight on the new smaller model."""
+    def test_switch_waits_for_new_provider_evidence(self):
+        """A model switch clears old evidence; the new provider adjudicates pressure."""
         comp = self._comp()
         comp.last_real_prompt_tokens = 50_000
-        comp.last_rough_tokens_when_real_prompt_fit = 90_000
         # Before switch, a modest rough growth would defer.
         comp.threshold_tokens = 85_000
         assert comp.should_defer_preflight_to_real_usage(93_000) is True
 
-        # After switching to a 65K model, the stale state is gone, so a rough
-        # estimate over the new threshold is NOT deferred — preflight will run.
         comp.update_model("small-model", context_length=65_536)
-        assert comp.should_defer_preflight_to_real_usage(comp.threshold_tokens + 5_000) is False
+        assert comp.last_real_prompt_tokens == 0
+        assert comp.should_defer_preflight_to_real_usage(comp.context_length + 5_000) is True
+        comp.update_from_response({"prompt_tokens": comp.threshold_tokens + 1})
+        assert comp.should_defer_preflight_to_real_usage(comp.context_length + 5_000) is False
 
 
 
@@ -2425,36 +2413,39 @@ class TestLazyContextResolution:
 
 
 class TestPreflightSentinelGuard:
-    """Regression for #36718: the preflight token-display seed in
-    run_conversation must NOT overwrite the -1 sentinel that
-    compress_context() sets immediately after compression.
+    """Regression guards for the preflight token-display seed
+    (ContextCompressor.maybe_seed_preflight_display_tokens, called from
+    build_turn_context).
 
-    The old guard `_preflight_tokens > (last_prompt_tokens or 0)` evaluated
-    `(-1 or 0)` -> -1 (truthy), so any positive preflight estimate was > -1
-    and clobbered the sentinel with a schema-inflated rough count, re-firing
-    compression on the next turn. The fix treats any negative value as
-    "no real usage yet" and skips the seed.
+    Policy: seed ONLY from the 0 state ("no reading yet", #34282 — the seed
+    keeps the status bar live when a provider reports no usage). Any
+    non-zero value is preserved: the -1 post-compression sentinel (#36718 —
+    compress_context parks it while awaiting real usage, and the seed must
+    not clobber it) AND any positive real provider reading (#81481 — the
+    rough estimate intentionally over-counts CJK / reasoning replay, so it
+    must never overwrite a real measurement).
     """
-
-    def _seed(self, last_prompt_tokens, preflight_tokens):
-        # Mirror the exact guard in agent/conversation_loop.py run_conversation.
-        _last = last_prompt_tokens
-        if _last >= 0 and preflight_tokens > _last:
-            return preflight_tokens  # would overwrite
-        return last_prompt_tokens   # preserved
 
     def test_sentinel_preserved_after_compression(self, compressor):
         compressor.last_prompt_tokens = -1
         # A large schema-inflated preflight estimate must NOT overwrite -1.
-        result = self._seed(compressor.last_prompt_tokens, 250_000)
-        assert result == -1
+        compressor.maybe_seed_preflight_display_tokens(250_000)
+        assert compressor.last_prompt_tokens == -1
 
-    def test_real_value_still_revises_upward(self, compressor):
-        compressor.last_prompt_tokens = 10_000
-        result = self._seed(compressor.last_prompt_tokens, 50_000)
-        assert result == 50_000
+    def test_zero_state_still_seeded(self, compressor):
+        # 0 means "no reading yet" — the seed keeps the status bar live when
+        # providers report no usage.
+        compressor.last_prompt_tokens = 0
+        compressor.maybe_seed_preflight_display_tokens(50_000)
+        assert compressor.last_prompt_tokens == 50_000
 
-
+    def test_real_provider_reading_wins_over_rough_estimate(self, compressor):
+        # Regression for the 492K-vs-685K display jump: a real provider
+        # reading must never be replaced by the schema/reasoning-inflated
+        # rough preflight estimate (#81481 class inflation).
+        compressor.last_prompt_tokens = 492_000
+        compressor.maybe_seed_preflight_display_tokens(685_344)
+        assert compressor.last_prompt_tokens == 492_000
 
 class TestTurnPairPreservation:
     """Causal Coupling guard (#22523): compaction must never orphan a user turn.
@@ -3619,3 +3610,60 @@ class TestPreLlmFeasibilityCheck:
             feasibility_skip=compressor._last_feasibility_skip,
         )
         assert compressor._fallback_compression_streak == 1
+
+
+class TestSanitizeToolPairsWhitespace:
+    """_sanitize_tool_pairs must strip whitespace from tool_call_id before
+    comparing, matching the fix applied to agent_runtime_helpers.py in
+    commit fa3ab2ffd.  Without stripping, a valid tool result whose
+    tool_call_id has surrounding whitespace is misclassified as orphaned
+    and silently replaced with a [Result unavailable] stub.
+    """
+
+    def _make(self):
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            return ContextCompressor(model="test/model", quiet_mode=True,
+                                     protect_first_n=2, protect_last_n=2)
+
+    def _assistant(self, call_id):
+        return {
+            "role": "assistant", "content": "",
+            "tool_calls": [{"id": call_id, "type": "function",
+                             "function": {"name": "f", "arguments": "{}"}}],
+        }
+
+    def test_leading_whitespace_on_result_id_preserved(self):
+        c = self._make()
+        msgs = [
+            self._assistant("call_abc"),
+            {"role": "tool", "tool_call_id": " call_abc", "content": "ok"},
+        ]
+        out = c._sanitize_tool_pairs(msgs)
+        tool_msgs = [m for m in out if m.get("role") == "tool"]
+        assert len(tool_msgs) == 1
+        assert tool_msgs[0]["content"] == "ok", "valid result must not be treated as orphaned"
+
+    def test_trailing_whitespace_on_result_id_preserved(self):
+        c = self._make()
+        msgs = [
+            self._assistant("call_xyz"),
+            {"role": "tool", "tool_call_id": "call_xyz  ", "content": "data"},
+        ]
+        out = c._sanitize_tool_pairs(msgs)
+        tool_msgs = [m for m in out if m.get("role") == "tool"]
+        assert len(tool_msgs) == 1
+        assert tool_msgs[0]["content"] == "data"
+
+    def test_truly_orphaned_still_removed(self):
+        """Whitespace-trimmed ID that still has no match must be removed.
+        The assistant's call_real has no matching result, so a stub is
+        inserted in its place — the original orphaned entry must be gone."""
+        c = self._make()
+        msgs = [
+            self._assistant("call_real"),
+            {"role": "tool", "tool_call_id": " call_orphan ", "content": "stale"},
+        ]
+        out = c._sanitize_tool_pairs(msgs)
+        tool_call_ids = [m.get("tool_call_id") for m in out if m.get("role") == "tool"]
+        assert "call_orphan" not in tool_call_ids, "genuinely orphaned result must be removed"
+        assert " call_orphan " not in tool_call_ids, "original whitespace form must also be gone"

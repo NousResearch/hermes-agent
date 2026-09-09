@@ -21,6 +21,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from agent.conversation_loop import _restore_or_build_system_prompt
+from agent.surface_switch import _SURFACE_NAME_END, _SURFACE_SWITCH_NOTE_PREFIX, identity_line_value
 
 
 def _make_agent(session_db=None, prebuilt_prompt: str = "BUILT_PROMPT"):
@@ -38,6 +39,174 @@ def _make_agent(session_db=None, prebuilt_prompt: str = "BUILT_PROMPT"):
     agent._use_prompt_caching = False
     agent._build_system_prompt = MagicMock(return_value=prebuilt_prompt)
     return agent
+
+
+# ---------------------------------------------------------------------------
+# Surface switch (#104414)
+# ---------------------------------------------------------------------------
+
+
+class TestSurfaceSwitch:
+    """A desktop <-> TUI switch must not rebuild the system prompt.
+
+    The rebuild it used to trigger changed the first blocks of a 200K+ token request, so
+    the whole conversation re-prefilled at a ~1% cache hit. The stored bytes are now reused
+    and the new surface's guidance is delivered as a per-turn note behind the cached prefix.
+    """
+
+    @staticmethod
+    def _stored(platform: str) -> str:
+        return (
+            "SYSTEM PROMPT BODY\n\nConversation started: Monday, January 05, 2026\n"
+            "Model: test-model\nProvider: openrouter\n"
+            f"Platform: {platform}"
+        )
+
+    @staticmethod
+    def _announced(platform: str) -> list:
+        """A transcript whose newest surface note says the model is on ``platform``."""
+        return [
+            {"role": "user", "content": "hi",
+             "api_content": f"hi\n\n{_SURFACE_SWITCH_NOTE_PREFIX}{platform}{_SURFACE_NAME_END} superseded]"},
+            {"role": "assistant", "content": "hello"},
+        ]
+
+    @staticmethod
+    def _tool(name: str) -> dict:
+        return {"type": "function", "function": {"name": name, "parameters": {}}}
+
+    def _restore(self, *, stored: str, current: str, history=None, tool_names=None, tools=None):
+        db = MagicMock()
+        row = {"system_prompt": self._stored(stored)}
+        if tool_names is not None:
+            row["tool_names"] = tool_names
+        db.get_session.return_value = row
+        agent = _make_agent(session_db=db)
+        agent.platform = current
+        if tools is not None:
+            agent.tools = tools
+        agent._platform_hint_overrides = None
+        agent._surface_switch_note = ""
+        agent._gateway_turn_context_notes = ""
+        _restore_or_build_system_prompt(
+            agent, None, history if history is not None else [{"role": "user", "content": "hi"}]
+        )
+        return agent
+
+    def test_switch_reuses_the_stored_prompt(self):
+        agent = self._restore(stored="desktop", current="tui")
+        assert agent._cached_system_prompt == self._stored("desktop")
+        agent._build_system_prompt.assert_not_called()
+
+    def test_switch_stages_the_new_surface_guidance(self):
+        agent = self._restore(stored="desktop", current="tui")
+        note = agent._surface_switch_note
+        assert note.startswith(f"{_SURFACE_SWITCH_NOTE_PREFIX}tui{_SURFACE_NAME_END}")
+        # The correction carries the CURRENT surface's hint, so the model is not left
+        # following the desktop guidance still sitting in the reused prompt.
+        assert "terminal UI (TUI)" in note
+
+    def test_same_surface_stages_nothing(self):
+        assert self._restore(stored="cli", current="cli")._surface_switch_note == ""
+
+    def test_stored_prompt_platform_ignores_runtime_hint_decoys(self):
+        from agent.prompt_builder import RUNTIME_ENVIRONMENT_END, RUNTIME_ENVIRONMENT_HEADING
+
+        decoy = "Host: Example\nPlatform: tui\n"
+        stored = (
+            "SYSTEM PROMPT BODY\n\nConversation started: Monday, January 05, 2026\n"
+            "Model: test-model\nProvider: openrouter\nPlatform: desktop\n\n"
+            f"{RUNTIME_ENVIRONMENT_HEADING}\n\n{decoy}\n\n{RUNTIME_ENVIRONMENT_END}"
+        )
+        assert identity_line_value(stored, "Platform") == "desktop"
+
+        db = MagicMock()
+        db.get_session.return_value = {"system_prompt": stored}
+        agent = _make_agent(session_db=db)
+        agent.platform = "tui"
+        agent._platform_hint_overrides = None
+        agent._surface_switch_note = ""
+        agent._gateway_turn_context_notes = ""
+        _restore_or_build_system_prompt(agent, None, [{"role": "user", "content": "hi"}])
+        assert agent._surface_switch_note.startswith(f"{_SURFACE_SWITCH_NOTE_PREFIX}tui{_SURFACE_NAME_END}")
+
+    def test_not_restaged_once_the_transcript_carries_it(self):
+        # The note is stamped into the byte-stable api_content sidecar, and the gateway
+        # builds a fresh AIAgent per turn — without the dedup every turn would add a copy.
+        agent = self._restore(stored="desktop", current="tui", history=self._announced("tui"))
+        assert agent._surface_switch_note == ""
+
+    def test_returning_to_the_prompts_own_surface_is_announced(self):
+        """desktop -> tui -> desktop.
+
+        The trailer now agrees with the runtime, so comparing against the prompt alone would
+        stage nothing and leave the model acting on the stale "you are on tui" note.
+        """
+        agent = self._restore(stored="desktop", current="desktop", history=self._announced("tui"))
+        assert agent._surface_switch_note.startswith(f"{_SURFACE_SWITCH_NOTE_PREFIX}desktop{_SURFACE_NAME_END}")
+        # The prompt already describes this surface, so the note retires the stale one and
+        # points at the prompt instead of duplicating the whole hint.
+        assert "the interface section in the system prompt above" in agent._surface_switch_note
+
+    def test_rebuild_also_retires_a_stale_note(self):
+        # A rebuild for an unrelated reason (a model switch) refreshes the prompt but not the
+        # note already sitting in the transcript.
+        db = MagicMock()
+        db.get_session.return_value = {"system_prompt": self._stored("desktop")}
+        agent = _make_agent(session_db=db, prebuilt_prompt=self._stored("desktop"))
+        agent.model = "other-model"
+        agent.platform = "desktop"
+        agent._platform_hint_overrides = None
+        agent._surface_switch_note = ""
+
+        _restore_or_build_system_prompt(agent, None, self._announced("tui"))
+
+        agent._build_system_prompt.assert_called_once()
+        assert agent._surface_switch_note.startswith(f"{_SURFACE_SWITCH_NOTE_PREFIX}desktop{_SURFACE_NAME_END}")
+
+    def test_tool_prefix_stays_pinned_on_the_turn_that_announces_a_switch(self):
+        """tools[] is serialized ahead of the prompt this branch went out of its way to keep.
+
+        Rebuilding the array for the new surface would move token 0 and re-prefill the whole
+        request — the cost #104414 is about — on the very turn the fix exists to make cheap.
+        """
+        from unittest.mock import patch
+
+        with (
+            patch("tools.mcp_tool_agent.restore_agent_tool_prefix") as pin,
+            patch("tools.mcp_tool_agent.persist_agent_tool_names") as persist,
+        ):
+            self._restore(stored="desktop", current="tui", tool_names='["desktop_ui_tool"]')
+        pin.assert_called_once()
+        persist.assert_not_called()
+
+    def test_the_note_names_the_tools_the_pin_carried_forward(self):
+        """A pinned tool this surface did not build is inert here — say so.
+
+        Keeping it on the wire is what preserves the prefix, so the model has to learn from the
+        note that calling it only returns ``tool_error("desktop only")``.
+        """
+        from unittest.mock import patch
+
+        def _carry_desktop_tool(agent, saved_names):
+            agent.tools = [self._tool("read_file"), self._tool("focus_pane")]
+            return True
+
+        with patch("tools.mcp_tool_agent.restore_agent_tool_prefix", _carry_desktop_tool):
+            agent = self._restore(stored="desktop", current="tui", tool_names='["focus_pane"]',
+                                  tools=[self._tool("read_file")])
+        assert "focus_pane" in agent._surface_switch_note
+        assert "were not loaded for this interface" in agent._surface_switch_note
+        # Only the carried-over name: a tool this surface built is not inert.
+        assert "read_file" not in agent._surface_switch_note.split("were not loaded for this interface")[1]
+
+    def test_note_rides_the_user_message_channel_once(self):
+        from agent.turn_context import _merge_gateway_notes, consume_surface_switch_note
+
+        agent = self._restore(stored="desktop", current="tui")
+        staged = agent._surface_switch_note
+        assert _merge_gateway_notes(agent, [{"role": "user", "content": "hi"}], 0, "") == staged
+        assert consume_surface_switch_note(agent) == ""
 
 
 # ---------------------------------------------------------------------------
@@ -377,6 +546,74 @@ class TestReconstructStaticPrefixMemoization:
         assert build.call_count == 1
         assert agent._cached_system_prompt_static == stable
         assert getattr(agent, "_static_rebuild_failed_for", None) is None
+
+
+class TestPerResponseSessionWritePath:
+    """The write path under an embedding host's per-response session (#96570).
+
+    Hermes Studio group chat pre-creates the SQLite row and pre-persists the
+    user message BEFORE ``run_conversation()``, then runs one turn under a
+    session id it destroys afterwards. The row therefore starts with a null
+    system prompt and a non-empty history on its own genuine FIRST turn, which
+    is what trips the "stored system prompt is null" warning — the warning is
+    a first-turn artifact of that lifecycle, not evidence of a lost write.
+
+    This pins the write path against that exact lifecycle: the freshly built
+    prompt must land in the pre-created row within the same run.
+    """
+
+    def _agent(self, db, session_id):
+        agent = _make_agent(session_db=db, prebuilt_prompt="GROUP_PROMPT")
+        agent.session_id = session_id
+        return agent
+
+    def test_prepersisted_row_stores_the_freshly_built_prompt(self, tmp_path):
+        from hermes_state import SessionDB
+
+        session_id = "gc_run_room42_default_Worker_5f2c1ab9d4e34f7a8b0c6d1e2f3a4b5c"
+        with SessionDB(db_path=tmp_path / "state.db") as db:
+            # What the bridge does before the turn starts.
+            db.create_session(session_id, source="studio")
+            db.append_message(session_id=session_id, role="user", content="hi")
+
+            _restore_or_build_system_prompt(
+                self._agent(db, session_id),
+                None,
+                [{"role": "user", "content": "hi"}],
+            )
+
+            assert db.get_session(session_id)["system_prompt"] == "GROUP_PROMPT"
+
+    def test_warning_is_a_first_turn_artifact_not_a_lost_write(
+        self, tmp_path, caplog
+    ):
+        """Second turn of the SAME id restores — so nothing was dropped."""
+        from hermes_state import SessionDB
+
+        session_id = "gc_run_room42_default_Worker_9a7e3b1c05d24e6fb83a1c7d9e0f2a4b"
+        history = [{"role": "user", "content": "hi"}]
+        with SessionDB(db_path=tmp_path / "state.db") as db:
+            db.create_session(session_id, source="studio")
+            db.append_message(session_id=session_id, role="user", content="hi")
+
+            with caplog.at_level(
+                logging.WARNING, logger="agent.conversation_loop"
+            ):
+                _restore_or_build_system_prompt(
+                    self._agent(db, session_id), None, history
+                )
+            assert "is null" in caplog.text
+
+            caplog.clear()
+            second = self._agent(db, session_id)
+            with caplog.at_level(
+                logging.WARNING, logger="agent.conversation_loop"
+            ):
+                _restore_or_build_system_prompt(second, None, history)
+
+            assert second._cached_system_prompt == "GROUP_PROMPT"
+            second._build_system_prompt.assert_not_called()
+            assert "is null" not in caplog.text
 
 
 if __name__ == "__main__":

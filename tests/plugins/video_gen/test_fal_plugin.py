@@ -268,10 +268,34 @@ class TestFamilyKeyNormalization:
         assert _normalize_family_key("blackforestlabs/flux-3") == "flux-3"
 
     def test_capabilities_span_longest_family_duration(self):
-        """Provider caps must not understate Seedance 2.5's 30s ceiling."""
-        from plugins.video_gen.fal import FALVideoGenProvider
+        """capabilities() is active-MODEL-aware (#95681 diet): it reports
+        the resolved family's real window, so the schema doesn't overstate
+        short families or understate Seedance 2.5. The union fallback
+        (resolution failure) must still span the 30s ceiling."""
+        from unittest.mock import patch as _patch
 
-        caps = FALVideoGenProvider().capabilities()
+        import plugins.video_gen.fal as _fp
+        from plugins.video_gen.fal import FAL_FAMILIES, FALVideoGenProvider
+
+        # Active model resolved → that family's actual window.
+        meta = FAL_FAMILIES["seedance-2.5"]
+        with _patch.object(_fp, "_resolve_family",
+                           return_value=("seedance-2.5", meta)):
+            caps = FALVideoGenProvider().capabilities()
+        assert caps["max_duration"] >= 30
+        # A short family must NOT be inflated to the union ceiling.
+        short = FAL_FAMILIES["pixverse-v6"]
+        durs = short.get("durations")
+        hi = durs[1] if isinstance(durs, tuple) else max(durs)
+        with _patch.object(_fp, "_resolve_family",
+                           return_value=("pixverse-v6", short)):
+            caps = FALVideoGenProvider().capabilities()
+        assert caps["max_duration"] == hi
+
+        # Resolution failure → union fallback still spans the ceiling.
+        with _patch.object(_fp, "_resolve_family",
+                           side_effect=RuntimeError("no config")):
+            caps = FALVideoGenProvider().capabilities()
         assert caps["max_duration"] >= 30
         assert caps["min_duration"] <= 1
 

@@ -15,7 +15,7 @@ Watch product, flight, or listing prices; alert on target.
 | | |
 |---|---|
 | Source | Bundled (installed by default) |
-| Path | `skills/productivity/product-price-monitor` |
+| Path | `skills/productivity\product-price-monitor` |
 | Version | `0.1.0` |
 | Author | Ben Barclay (benbarclay), Hermes Agent |
 | License | MIT |

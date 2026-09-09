@@ -28,6 +28,10 @@ export default defineConfig({
   /* Test files live under e2e/ so they never collide with the vitest suite
    * under src/ or the node:test files under electron/. */
   testDir: './e2e',
+  /* ...except `*.unit.test.ts`, which covers the e2e HELPERS (no Electron, no
+   * app) and is owned by the vitest `electron` project. Without this the
+   * default testMatch would claim those files too and run them twice. */
+  testIgnore: '**/*.unit.test.ts',
   /* The desktop app can take a while to bootstrap on cold CI runners — 90 s
    * per test gives us headroom without masking real hangs. */
   timeout: 90_000,

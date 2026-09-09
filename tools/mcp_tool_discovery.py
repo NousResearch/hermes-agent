@@ -418,7 +418,14 @@ def discover_mcp_tools(allowed_mcp_names: Optional[List[str]] = None) -> List[st
         return []
     if allowed_mcp_names is not None:
         allowed_set = {str(n) for n in allowed_mcp_names}
-        filtered = {name: cfg for name, cfg in servers.items() if name in allowed_set}
+        # Portable Agent Plugin servers are namespaced ``{skill_namespace}__{server_id}``.
+        # ``hermes -z -t living-runtime`` must spawn that namespaced server, not only an
+        # exact key match (built-in toolset names still never match).
+        def _allowed(name: str) -> bool:
+            if name in allowed_set:
+                return True
+            return "__" in name and name.rsplit("__", 1)[-1] in allowed_set
+        filtered = {name: cfg for name, cfg in servers.items() if _allowed(name)}
         if len(filtered) != len(servers):
             logger.debug("MCP discovery filter: spawning %d/%d configured server(s) per --toolsets filter "
                          "(skipped: %s)", len(filtered), len(servers), ",".join(sorted(set(servers) - set(filtered))))

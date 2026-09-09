@@ -68,8 +68,32 @@ def _build_preloaded_skills_prompt(skills: object = None) -> str | None:
     return skills_prompt or None
 
 
+def _portable_mcp_server_names() -> set[str]:
+    """In-memory portable-plugin MCP names (not written to config.yaml). Empty on any error."""
+    try:
+        from hermes_cli.plugins import get_plugin_manager
+
+        return set(get_plugin_manager().get_portable_mcp_servers())
+    except Exception:
+        return set()
+
+
+def _resolve_mcp_toolset_name(name: str, mcp_names: set[str]) -> str | None:
+    """Exact MCP/portable name, or the unique portable ``ns__server`` whose suffix matches *name*."""
+    if name in mcp_names:
+        return name
+    matches = [full for full in mcp_names if "__" in full and full.rsplit("__", 1)[-1] == name]
+    return matches[0] if len(matches) == 1 else None
+
+
 def _configured_mcp_servers() -> tuple[set[str], set[str]]:
-    """``(enabled, disabled)`` MCP server names from config; both empty on any error."""
+    """``(enabled, disabled)`` MCP server names from config **plus portable plugins**.
+
+    Portable Agent Plugin servers live in PluginManager, not ``mcp_servers`` in
+    config.yaml. ``enabled_mcp_server_names()`` already unions them for the
+    platform_toolsets path; oneshot ``-t`` validation must do the same or
+    ``hermes -z -t <portable>`` exits 2 while a no-``-t`` oneshot admits.
+    """
     try:
         from hermes_cli.config import read_raw_config
         from hermes_cli.tools_config import _parse_enabled_flag
@@ -83,6 +107,7 @@ def _configured_mcp_servers() -> tuple[set[str], set[str]]:
                 continue
             target = enabled if _parse_enabled_flag(server_cfg.get("enabled", True), default=True) else disabled
             target.add(str(name))
+        enabled |= _portable_mcp_server_names() - disabled
         return enabled, disabled
     except Exception:
         return set(), set()
@@ -122,9 +147,17 @@ def _validate_explicit_toolsets(toolsets: object = None) -> tuple[list[str] | No
         return None, None
 
     mcp_names, mcp_disabled = _configured_mcp_servers() if unresolved else (set(), set())
-    mcp_valid = [name for name in unresolved if name in mcp_names]
+    mcp_valid: list[str] = []
+    still_unresolved: list[str] = []
+    for name in unresolved:
+        resolved = _resolve_mcp_toolset_name(name, mcp_names)
+        if resolved is not None:
+            mcp_valid.append(resolved)
+        else:
+            still_unresolved.append(name)
+    unresolved = still_unresolved
     disabled = [name for name in unresolved if name in mcp_disabled]
-    unknown = [name for name in unresolved if name not in mcp_names and name not in mcp_disabled]
+    unknown = [name for name in unresolved if name not in mcp_disabled]
     valid = built_in + mcp_valid
 
     if unknown:

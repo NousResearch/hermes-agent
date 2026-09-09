@@ -5551,11 +5551,29 @@ class TestNewEndpoints:
         def _fake_find_all_skills(*, skip_disabled=False):
             if skip_disabled:
                 return [
-                    {"name": "active-skill", "description": "active", "category": "demo"},
-                    {"name": "disabled-skill", "description": "disabled", "category": "demo"},
+                    {
+                        "name": "active-skill",
+                        "description": "active",
+                        "category": "demo",
+                        "_search_tags": ("active",),
+                        "_search_related_skills": ("other",),
+                    },
+                    {
+                        "name": "disabled-skill",
+                        "description": "disabled",
+                        "category": "demo",
+                        "_search_tags": ("disabled",),
+                        "_search_related_skills": (),
+                    },
                 ]
             return [
-                {"name": "active-skill", "description": "active", "category": "demo"},
+                {
+                    "name": "active-skill",
+                    "description": "active",
+                    "category": "demo",
+                    "_search_tags": ("active",),
+                    "_search_related_skills": ("other",),
+                },
             ]
 
         monkeypatch.setattr(skills_tool, "_find_all_skills", _fake_find_all_skills)

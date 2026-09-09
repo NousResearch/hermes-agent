@@ -762,14 +762,26 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
                 if isinstance(hermes_meta, dict):
                     tags.extend(_parse_tags(hermes_meta.get("tags", [])))
                 related = hermes_meta.get("related_skills", []) if isinstance(hermes_meta, dict) else []
+                if isinstance(related, str):
+                    related = [related]
+                elif not isinstance(related, (list, tuple)):
+                    related = []
+                search_related = []
+                for item in related:
+                    if item is None:
+                        continue
+                    item_text = str(item).strip()
+                    if item_text:
+                        search_related.append(item_text)
 
                 seen_names.add(name)
                 skills.append({
                     "name": name,
                     "description": description,
                     "category": category,
-                    "tags": tags,
-                    "related_skills": related,
+                    # Search-only metadata stays immutable inside the cache.
+                    "_search_tags": tuple(tags),
+                    "_search_related_skills": tuple(search_related),
                 })
 
             except (UnicodeDecodeError, PermissionError) as e:
@@ -784,9 +796,18 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
     # Store in cache keyed by the scan signature computed BEFORE the scan
     # (a write racing the scan changes the signature, so the next call
     # re-scans rather than serving the torn result past the TTL). Same
-    # shallow-copy contract as the hit path — the caller may mutate.
+    # Returned records are shallow copies; search metadata is immutable so
+    # shared nested values cannot be mutated through a returned record.
     _SKILLS_CACHE[cache_key] = (signature, now, skills)
     return [dict(s) for s in skills]
+
+
+_PUBLIC_SKILL_KEYS = ("name", "description", "category")
+
+
+def _public_skill_metadata(skill: Dict[str, Any]) -> Dict[str, Any]:
+    """Return the stable public metadata shape without search-only fields."""
+    return {key: skill.get(key) for key in _PUBLIC_SKILL_KEYS}
 
 
 def _sort_skills(skills: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -809,9 +830,9 @@ def _skill_search_blob(skill: Dict[str, Any]) -> str:
         skill.get("description") or "",
         skill.get("category") or "",
     ]
-    for key in ("tags", "related_skills"):
+    for key in ("_search_tags", "_search_related_skills"):
         value = skill.get(key)
-        if isinstance(value, list):
+        if isinstance(value, (list, tuple)):
             parts.extend(str(item) for item in value)
         elif value:
             parts.append(str(value))
@@ -950,15 +971,18 @@ def skills_list(
             {str(s.get("category")) for s in all_skills if s.get("category")}
         )
 
+        # Keep search metadata internal; preserve the established public shape.
+        public_skills = [_public_skill_metadata(skill) for skill in all_skills]
+
         return json.dumps(
             {
                 "success": True,
-                "skills": all_skills,
+                "skills": public_skills,
                 "categories": categories,
                 "count": len(all_skills),
                 "total_before_query": total_before_query if query else None,
                 "query": query or None,
-                "hint": "Use skill_view(name) to see full content, tags, and linked files. Use skills_list(query=...) to search the catalog when the system prompt only shows categories.",
+                "hint": "Use skill_view(name) to see full content, tags, and linked files. Use skills_list(query=...) to search the catalog when the system prompt lists skill names.",
             },
             ensure_ascii=False,
         )

@@ -1072,8 +1072,20 @@ class TestSkillsEndpoint:
     @pytest.mark.asyncio
     async def test_skills_returns_list_envelope(self, adapter):
         fake_skills = [
-            {"name": "github", "description": "GitHub workflow skill", "category": "github"},
-            {"name": "ascii-art", "description": "ASCII art generation", "category": "creative"},
+            {
+                "name": "github",
+                "description": "GitHub workflow skill",
+                "category": "github",
+                "_search_tags": ("git",),
+                "_search_related_skills": ("version-control",),
+            },
+            {
+                "name": "ascii-art",
+                "description": "ASCII art generation",
+                "category": "creative",
+                "_search_tags": ("image",),
+                "_search_related_skills": (),
+            },
         ]
         with patch(
             "tools.skills_tool._find_all_skills",
@@ -1088,7 +1100,7 @@ class TestSkillsEndpoint:
                 names = sorted(s["name"] for s in data["data"])
                 assert names == ["ascii-art", "github"]
                 for entry in data["data"]:
-                    assert set(entry.keys()) >= {"name", "description", "category"}
+                    assert set(entry.keys()) == {"name", "description", "category"}
 
     @pytest.mark.asyncio
     async def test_skills_handles_enumeration_failure(self, adapter):

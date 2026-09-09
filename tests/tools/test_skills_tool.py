@@ -446,6 +446,31 @@ class TestSkillsList:
         assert result["count"] == 2
         assert result["total_before_query"] is None
         assert result["query"] is None
+        assert all(
+            set(skill) == {"name", "description", "category"}
+            for skill in result["skills"]
+        )
+
+    def test_search_metadata_does_not_leak_through_cache(self, tmp_path):
+        """Cached search metadata must not be mutable through returned records."""
+        from tools import skills_tool
+
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            skills_tool._SKILLS_CACHE.clear()
+            _make_skill(
+                tmp_path,
+                "tagged-skill",
+                frontmatter_extra="tags: [stable-search]\n",
+            )
+            try:
+                first = skills_tool._find_all_skills()
+                assert isinstance(first[0]["_search_tags"], tuple)
+                first[0]["_search_tags"] += ("poison",)
+
+                second = skills_tool._find_all_skills()
+                assert "poison" not in second[0]["_search_tags"]
+            finally:
+                skills_tool._SKILLS_CACHE.clear()
 
 
 # ---------------------------------------------------------------------------

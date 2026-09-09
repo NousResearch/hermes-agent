@@ -99,6 +99,31 @@ def _restore_grown_window(model_id: str, profile: ModelProfile, budget: Hardware
     return decision
 
 
+def _degrade_mtp_if_grown_spills(
+        profile: ModelProfile, budget: HardwareBudget, decision: WindowDecision,
+        fixed_overhead: int) -> tuple[bool, int, int, WindowDecision]:
+    """If stacked logits spill at a restored window but lean fits, drop to lean.
+
+    Posture was chosen against the *initial* window; a grown override can invalidate
+    that stacked fit without invalidating lean. The restored window is not shrunk.
+    Returns (mtp_prefill, logits_bytes, overhead, decision).
+    """
+    stacked_logits = ub_logits_bytes(profile.n_vocab, mtp_capable=True, mtp_prefill=True)
+    stacked_overhead = fixed_overhead + stacked_logits
+    if not decision.spilled:
+        return True, stacked_logits, stacked_overhead, decision
+    lean_logits = ub_logits_bytes(profile.n_vocab, mtp_capable=True, mtp_prefill=False)
+    lean_overhead = fixed_overhead + lean_logits
+    kv = ctx_bytes(profile, decision.window)
+    lean_spill = max(0, profile.weights_bytes + kv + lean_overhead - budget.usable_vram_bytes)
+    if lean_spill > 0:
+        return True, stacked_logits, stacked_overhead, decision
+    return False, lean_logits, lean_overhead, WindowDecision(
+        window=decision.window, spill_bytes=0,
+        kv_on_gpu=kv <= budget.usable_vram_bytes,
+        reasons=[*decision.reasons, "mtp posture degraded to lean after grown window"])
+
+
 def _preset_for(gguf: Path, budget: HardwareBudget,
                 mtp_capable: set[str]) -> PresetEntry | None:
     """The launch decision for one staged model, or None when its header is unreadable."""
@@ -131,7 +156,11 @@ def _preset_for(gguf: Path, budget: HardwareBudget,
     decision = initial_window(profile, budget, overhead_bytes=overhead)
     if isinstance(decision, PhysicsRefusal):
         return PresetEntry(model_id=model_id, window=0, spilled=False, refusal=decision.message)
+    launch_window = decision.window
     decision = _restore_grown_window(model_id, profile, budget, decision, overhead)
+    if is_mtp and mtp_prefill and decision.window > launch_window:
+        mtp_prefill, logits_bytes, overhead, decision = _degrade_mtp_if_grown_spills(
+            profile, budget, decision, fixed_overhead)
 
     # The launch flags MUST match the pricing above (same entry/is_mtp/posture).
     keys = _args_to_keys(launch_args(

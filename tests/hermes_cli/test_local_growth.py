@@ -278,3 +278,101 @@ def test_sampling_ladder_file_beats_catalog_beats_nothing(hermes_home, tmp_path,
     off = ini["off-catalog-model"]
     assert "temp" not in off and "top-p" not in off, (
         "no file keys + no catalog entry = llama.cpp defaults, not ours")
+
+
+# ── MTP posture re-check after a grown-window restore (#106895 §3) ─────────
+#
+# Stacked MTP (mtp_prefill=True) prices ~1.16 GiB more logits than lean at a
+# Qwen-sized vocab. _choose_mtp_posture sees only the *initial* window; a
+# later override can push stacked into spill while lean still fits. These
+# numbers are pinned so that path is deterministic:
+#   16 GiB MoE weights, 32×4096 KV, vocab 151936, 24 GiB card
+#   initial both postures → 64K, stacked wins (same window)
+#   grown 72K: stacked need ≈ 24.98 GiB (spill), lean ≈ 23.82 GiB (fits)
+#   grown 144K: both spill (fail-open: keep stacked, honest spill)
+
+_MTP_GROWN_ID = "mtp-grown"
+_MTP_GROWN_WINDOW = 73728          # 72K — between the 64K and 96K rungs
+_MTP_BOTH_SPILL_WINDOW = 147456    # 144K ladder rung
+_MTP_VOCAB = 151936
+
+
+def _mtp_grown_profile():
+    from hermes_cli.local_runtime.estimator import LayerKind, ModelProfile
+
+    gib = 1 << 30
+    return ModelProfile(
+        name=_MTP_GROWN_ID, weights_bytes=16 * gib, embd_table_bytes=0,
+        n_ctx_train=262144, layers=[(LayerKind.FULL, 4096)] * 32,
+        moe=True, n_vocab=_MTP_VOCAB)
+
+
+def _mtp_grown_budget():
+    from hermes_cli.local_runtime.estimator import HardwareBudget
+
+    gib = 1 << 30
+    return HardwareBudget(usable_vram_bytes=24 * gib,
+                          total_device_bytes=24 * gib,
+                          ram_available_bytes=64 * gib)
+
+
+def _generate_mtp_grown(presets_mod, tmp_path, monkeypatch, *, override=None):
+    from hermes_cli.local_runtime.growth import save_window_override
+
+    mdir = tmp_path / "models"
+    _stage_fake_gguf(mdir, _MTP_GROWN_ID)
+    monkeypatch.setattr(presets_mod, "read_gguf_header", lambda p: _header_stub())
+    monkeypatch.setattr(presets_mod, "profile_from_gguf",
+                        lambda h: _mtp_grown_profile())
+    if override is not None:
+        save_window_override(_MTP_GROWN_ID, override)
+    return presets_mod.generate_presets(
+        mdir, _mtp_grown_budget(), tmp_path / "presets.ini",
+        mtp_capable={_MTP_GROWN_ID})[0]
+
+
+def test_mtp_degrades_to_lean_when_grown_window_would_spill(
+        hermes_home, tmp_path, monkeypatch):
+    """Grown window + stacked logits spill, same window + lean fits → lean.
+
+    CONTROL: the same card/model without an override still launches stacked
+    (zero-spill at the initial 64K window). The grown window itself is not
+    shrunk — only the posture changes.
+    """
+    import hermes_cli.local_runtime.presets as presets_mod
+
+    baseline = _generate_mtp_grown(presets_mod, tmp_path / "base", monkeypatch)
+    assert baseline.refusal is None
+    assert baseline.window == 65536
+    assert not baseline.spilled, "sanity: initial stacked window is zero-spill"
+    assert baseline.keys["batch-size"] == "4096"
+    assert baseline.keys["ubatch-size"] == "2048"
+    assert "override-tensor" not in baseline.keys
+    assert baseline.keys["spec-type"] == "draft-mtp"
+
+    grown = _generate_mtp_grown(
+        presets_mod, tmp_path / "grown", monkeypatch, override=_MTP_GROWN_WINDOW)
+    assert grown.window == _MTP_GROWN_WINDOW, "override must lift the window"
+    assert not grown.spilled, "lean posture must clear the grown window"
+    keys = grown.keys
+    assert "override-tensor" not in keys
+    assert "batch-size" not in keys, "lean MTP carries no stacked -b/-ub"
+    assert "ubatch-size" not in keys
+    assert keys["spec-type"] == "draft-mtp", "lean MTP keeps draft-mtp flags"
+
+
+def test_mtp_keeps_stacked_when_grown_window_still_spills_under_lean(
+        hermes_home, tmp_path, monkeypatch):
+    """Fail-open: if the grown window spills under BOTH postures, keep
+    stacked and report spill honestly — do not invent a shrink or a
+    false lean degrade."""
+    import hermes_cli.local_runtime.presets as presets_mod
+
+    entry = _generate_mtp_grown(
+        presets_mod, tmp_path, monkeypatch, override=_MTP_BOTH_SPILL_WINDOW)
+    assert entry.window == _MTP_BOTH_SPILL_WINDOW
+    assert entry.spilled, "spill must stay honest when lean cannot fit either"
+    assert "override-tensor" in entry.keys
+    assert entry.keys["batch-size"] == "4096"
+    assert entry.keys["ubatch-size"] == "2048"
+    assert entry.keys["spec-type"] == "draft-mtp"

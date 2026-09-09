@@ -1842,6 +1842,11 @@ class CLICommandsMixin:
             return
         print(run_review_slash_rendered(cmd))
 
+    def _handle_fix_review_command(self, cmd: str):
+        """Handle the feature-gated canonical /fix-review correction adapter."""
+        from hermes_cli.kanban_fix_review import run_fix_review_slash_rendered
+        print(run_fix_review_slash_rendered(cmd))
+
     def _handle_skills_command(self, cmd: str):
         """Handle /skills slash command — delegates to hermes_cli.skills_hub, after intercepting the
         write-approval review subcommands (pending/approve/reject/diff/mode)."""

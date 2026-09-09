@@ -1681,6 +1681,8 @@ DEFAULT_CONFIG = {
         "implement_command": False,
         # Canonical /review adapter. Disabled until explicitly enabled.
         "review_command": False,
+        # Canonical /fix-review correction adapter. Disabled until explicitly enabled.
+        "fix_review_command": False,
         # Auto-subscribe the originating gateway/TUI session to completion + block events when
         # kanban_create is called from a session with a persistent delivery channel. Disable for
         # profiles that prefer explicit kanban_notify-subscribe calls per task.

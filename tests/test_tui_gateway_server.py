@@ -17018,6 +17018,7 @@ def test_session_most_recent_handles_db_unavailable(monkeypatch):
 
 
 def test_verification_status_returns_recorded_evidence(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_VERIFY_ON_STOP", "1")  # ledger is inert when the guard is off
     profile_home = tmp_path / "profiles" / "verify"
     profile_home.mkdir(parents=True)
     monkeypatch.setattr(server, "_profile_home", lambda p: profile_home if p == "verify" else None)
@@ -17058,6 +17059,7 @@ def test_verification_status_returns_recorded_evidence(tmp_path, monkeypatch):
 
 
 def test_verification_status_outside_workspace_is_not_applicable(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_VERIFY_ON_STOP", "1")  # ledger is inert when the guard is off
     # A cwd with no project facts (outside any code workspace) must report
     # not_applicable. Force the "no facts" precondition rather than relying on
     # tmp_path's ancestors being pristine — a stray marker file in a shared

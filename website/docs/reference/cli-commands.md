@@ -950,6 +950,7 @@ Create a zip archive of your Hermes configuration, skills, sessions, and data. T
 | `-o`, `--output <path>` | Output path for the zip file (default: `~/hermes-backup-<timestamp>.zip`). |
 | `-q`, `--quick` | Quick snapshot: only critical state files (config.yaml, state.db, .env, auth, cron jobs). Much faster than a full backup. |
 | `-l`, `--label <name>` | Label for the snapshot (only used with `--quick`). |
+| `-k`, `--keep <N>` | After a full backup, delete older `hermes-backup-*.zip` files in the output directory beyond the newest N (default 3; `0` keeps everything). Custom-named zips are never touched. |
 
 The backup uses SQLite's `backup()` API for safe copying, so it works correctly even when Hermes is running (WAL-mode safe).
 
@@ -1461,9 +1462,9 @@ Unified plugin management — general plugins, memory providers, and context eng
 | Subcommand | Description |
 |------------|-------------|
 | *(none)* | Composite interactive UI — general plugin toggles + provider plugin configuration. |
-| `install <identifier> [--force] [--ref COMMIT_SHA]` | Install a plugin from a Git URL, `owner/repo`, or a bare index name. Bare names (no slash) are resolved through the community plugin index to `owner/repo` plus the index-pinned commit; ambiguous names list candidates and exit. `--ref` accepts only a full 40-character commit SHA, installs that exact immutable revision, and overrides any index pin. |
-| `search [term] [--json] [--capability CAP] [--refresh]` | Search the community plugin index (fuzzy match on name/description/tags; omit `term` to browse). Fetched from `plugins.index_url` (default: the NousResearch plugin index), cached under `~/.hermes/cache/` for 24h, falling back to the stale cache and then the bundled seed when offline. Indexed ≠ audited — inclusion is a metadata review only. |
-| `update <name>` | Pull latest changes for an unpinned installed plugin. Pinned plugins must be reinstalled with `--force --ref <new-commit>` to move. |
+| `install <identifier> [--force] [--ref COMMIT_SHA] [--allow-removed]` | Install a plugin from the Hermes plugin catalog (bare entry name), a Git URL, or `owner/repo` shorthand. Catalog names select the reviewed 40-hex commit SHA. Source, revision, and catalog membership share `plugins/.install-metadata.json`. An explicit different `--ref` selects a custom pin. `--allow-removed` (DANGEROUS) bypasses the removed-plugin blocklist. |
+| `search [term] [--json]` | Search the Hermes plugin catalog (matches entry names, descriptions, and declared tools; omit `term` to list everything). The catalog is curated in-repo (`plugin-catalog/`), refreshed from the live repo with a 6-hour cache, and falls back to the in-tree copy offline. Cataloged ≠ audited — admission reviews the entry, not the code. |
+| `update <name>` | Re-pin catalog installs to the reviewed catalog SHA, or update a custom Git install from its recorded source/feed. PM validates active-plugin dependencies before code publication. Explicit custom pins move only with `install --force --ref <new-commit>`. |
 | `remove <name>` (aliases: `rm`, `uninstall`) | Remove an installed plugin. |
 | `enable <name>` | Enable a disabled plugin. |
 | `disable <name>` | Disable a plugin without removing it. |

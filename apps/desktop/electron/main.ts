@@ -353,6 +353,7 @@ import {
 import { missingRendererAssets } from './renderer-bundle'
 import { loadRendererLoadErrorPage } from './renderer-load-error-page'
 import { attachRendererConsoleCapture, formatRendererBoundaryReport } from './renderer-log'
+import { fetchRosterSourceData } from './roster-source-fetch'
 import {
   classifyStoredSecret,
   readSecretStoragePolicy,
@@ -10286,6 +10287,7 @@ async function bootstrapSshConnectionInner(profile, sshConfig, reuseToken, sourc
     const lifecycle = platform.os === 'Windows' ? connectWindowsRemote : remoteLifecycle.connect
     result = await lifecycle({
       ssh,
+      platform,
       profile: resolveRemoteSshDashboardProfile(sshConfig.remoteProfile, profile),
       remoteHermesPath: sshConfig.remoteHermesPath || '',
       ownershipId: sshOwnershipKey(profile),
@@ -13821,13 +13823,12 @@ function spawnHudWindow(sessionId, profile) {
     minimizable: false,
     maximizable: false,
     fullscreenable: false,
-    // Same rationale as the pet overlay: on Windows/Linux keep the helper out
-    // of the taskbar/alt-tab list; on macOS use an NSPanel so the frameless
-    // window never becomes the app's cmd-tab anchor.
+    // Keep the interactive macOS HUD as an ordinary NSWindow. NSPanel defaults
+    // hidesOnDeactivate to true, which removes the HUD while the user works in
+    // another app; the floating/all-spaces setup below supplies overlay behavior.
     skipTaskbar: !IS_MAC,
     hasShadow: false,
     alwaysOnTop: true,
-    type: IS_MAC ? 'panel' : undefined,
     // Clips the vibrancy layer to the HUD's silhouette rather than a hard
     // rectangle — the frost stops where the window's corners do.
     roundedCorners: true,
@@ -15348,11 +15349,13 @@ async function enumerateRegistryAgentSources(registry = readDesktopConnectionsRe
             )
           )
 
-          const body: any = await getJsonForBackend(descriptor, '/api/profiles', { timeoutMs: 8_000 })
+          const { body, installId } = await fetchRosterSourceData(
+            () => getJsonForBackend(descriptor, '/api/profiles', { timeoutMs: 8_000 }),
+            () => probeConnectionInstallId(connection.id, descriptor)
+          )
 
-          // Cached with a TTL, so the 5s roster poll usually pays zero extra
-          // requests for the backend-identity probe.
-          const installId = await probeConnectionInstallId(connection.id, descriptor)
+          // The install-id probe is TTL-cached, so the 5s roster poll usually
+          // pays zero extra requests; on a miss it runs beside /api/profiles.
 
           const profiles = Array.isArray(body?.profiles)
             ? body.profiles.map(p => String(p?.name || '').trim()).filter(Boolean)

@@ -49,6 +49,7 @@ dependencies = [
   "rich==14.3.3",
   "tenacity==9.1.4",
   "pyyaml==6.0.3",
+  "tomli-w==1.2.0",  # Preserve relative dependency paths in staged plugin metadata.
   "ruamel.yaml==0.18.17",
   "requests==2.33.0",  # CVE-2026-25645
   "jinja2==3.1.6",

@@ -15,6 +15,8 @@ import json
 import os
 import stat
 import shutil
+import subprocess
+import sys
 import time
 
 import pytest
@@ -283,10 +285,10 @@ class TestFindCli:
         monkeypatch.setattr(bu_cli, "_base_subprocess_env", lambda: {"BROWSER_SETTING": "preserved"})
         monkeypatch.setattr(bu_cli, "_route_backend", lambda *args: None)
         seen = {}
-        def run(cmd, **kwargs):
-            seen.update(cmd=cmd, env=kwargs["env"], input=kwargs["input"])
+        def run(cmd, code, env, timeout):
+            seen.update(cmd=cmd, env=env, input=code)
             return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
-        monkeypatch.setattr(bu_cli.subprocess, "run", run)
+        monkeypatch.setattr(bu_cli, "_run_cli_killing_process_group", run)
         result = json.loads(bu_cli.browser_exec("print(1)"))
         assert result["success"] is True
         assert calls[-1] == ("uvx", True)
@@ -599,8 +601,9 @@ class TestOwnTabPreamble:
         else:
             monkeypatch.setattr(bt_cloud, "_get_cloud_provider", lambda: None)
         # fake CLI echoes stdin back so we can inspect what code was sent
-        cli = _fake_cli(tmp_path, "cat\n")
-        monkeypatch.setattr(bu_cli, "_find_cli", lambda: [cli])
+        monkeypatch.setattr(bu_cli, "_find_cli", lambda: ["test-browser-use"])
+        monkeypatch.setattr(bu_cli, "_run_cli_killing_process_group", lambda cmd, code, env, timeout:
+                            subprocess.CompletedProcess(cmd, 0, code, ""))
         return json.loads(bu_cli.browser_exec("print('payload')", session=session))
 
     @pytest.mark.platforms("linux")
@@ -1280,8 +1283,9 @@ class TestLightpandaPreamble:
         monkeypatch.setattr(
             bt_session, "_get_session_info", lambda key: {"cdp_url": "http://127.0.0.1:43111"}
         )
-        cli = _fake_cli(tmp_path, "cat\n")
-        monkeypatch.setattr(bu_cli, "_find_cli", lambda: [cli])
+        monkeypatch.setattr(bu_cli, "_find_cli", lambda: ["test-browser-use"])
+        monkeypatch.setattr(bu_cli, "_run_cli_killing_process_group", lambda cmd, code, env, timeout:
+                            subprocess.CompletedProcess(cmd, 0, code, ""))
         result = json.loads(bu_cli.browser_exec("print('payload')", session="r7k2"))
         assert result["success"] is True
         assert "_hermes_ensure_own_tab" not in result["output"]
@@ -1393,3 +1397,53 @@ class TestLightpandaStatusLine:
         out = self._status(monkeypatch, used=False, reason="cloud provider Browserbase is selected")
         assert "NOT in use" in out
         assert "Browserbase" in out
+
+
+class TestTimeoutProcessGroupKill:
+    """#106244: on timeout the whole CLI process group must die. A pipe-holding
+    grandchild (browser_harness daemon / Chrome helper) otherwise keeps communicate()
+    blocked forever, and the wedged call's activity heartbeat pins the session at
+    "now" in the sidebar indefinitely."""
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX process groups")
+    def test_timeout_kills_grandchild_and_returns_promptly(self, tmp_path, monkeypatch):
+        """A grandchild that outlives the direct child and holds the inherited stdout
+        pipe must not keep browser_exec blocked past the timeout (it wedged permanently
+        before the group kill)."""
+        monkeypatch.setattr("hermes_cli.config.read_raw_config", lambda: {})
+        pid_file = tmp_path / "grandchild.pid"
+        cli = _fake_cli(tmp_path, (
+            "cat > /dev/null\n"
+            "sleep 60 &\n"
+            "echo $! > \"" + str(pid_file) + "\"\n"
+            "sleep 60\n"
+        ))
+        monkeypatch.setattr(bu_cli, "_find_cli", lambda: [cli])
+
+        start = time.time()
+        result = json.loads(bu_cli.browser_exec("print(1)", timeout_s=bu_cli._MIN_TIMEOUT_S))
+        elapsed = time.time() - start
+
+        assert "timed out" in result["error"]
+        # Pre-fix, this hangs until the 60s sleeps expire — and forever with a daemon child.
+        assert elapsed < 30
+        # The pipe-holding grandchild died with the group instead of leaking.
+        pid = int(pid_file.read_text().strip())
+        time.sleep(0.5)
+        with pytest.raises(OSError):
+            os.kill(pid, 0)
+
+    def test_post_kill_drain_is_bounded(self, monkeypatch):
+        """If even the post-kill drain misses its deadline, give up instead of wedging."""
+
+        class _StuckProc:
+            pid = 424243
+            returncode = None
+
+            def communicate(self, input=None, timeout=None):
+                raise subprocess.TimeoutExpired("browser-use", timeout)
+
+        monkeypatch.setattr(bu_cli.subprocess, "Popen", lambda *a, **k: _StuckProc())
+        monkeypatch.setattr(bu_cli, "_kill_cli_process_group", lambda proc: None)
+        with pytest.raises(subprocess.TimeoutExpired):
+            bu_cli._run_cli_killing_process_group(["x"], "code", {}, 5)

@@ -70,15 +70,19 @@ def test_build_writes_core_pyproject_verbatim(layout):
         assert line in text
 
 
-def test_members_are_relative_paths_escaping_the_root(layout):
+def test_members_keep_their_source_with_the_generation(layout):
+    import tomllib
+
     _, _, plug_a, _ = layout
     root = ws.build_root([plug_a])
-    text = (root / "pyproject.toml").read_text(encoding="utf-8")
-    assert "[tool.uv.workspace]" in text
-    # member must be the relative path from the root to the plugin dir
-    expected = ws._member_rel(root, plug_a)
-    assert f'"{expected}"' in text
-    assert expected.startswith(".."), "member must escape the generated root"
+    document = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))
+    [relative] = document["tool"]["uv"]["workspace"]["members"]
+    copied = root / relative / "pyproject.toml"
+    assert copied.resolve().is_relative_to(root.resolve())
+    before = copied.read_bytes()
+    assert before == (plug_a / "pyproject.toml").read_bytes()
+    (plug_a / "pyproject.toml").write_bytes(b"changed after publication")
+    assert copied.read_bytes() == before
 
 
 def test_build_is_idempotent(layout):

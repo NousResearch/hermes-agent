@@ -41,6 +41,16 @@ _EXIT_REASON_EXPLANATIONS: Dict[str, str] = {
         "the request was interrupted mid-call before a reply was "
         "received. Send `continue` to retry."
     ),
+    "redirect_restart_limit_exceeded": (
+        "the request was cancelled by a new correction on every attempt, "
+        "so the turn stopped instead of retrying forever. Your last "
+        "correction is queued as the next message."
+    ),
+    "rebuilt_restart_limit_exceeded": (
+        "every provider in the fallback chain kept failing over, so the "
+        "turn stopped instead of retrying forever. Send `continue` or "
+        "switch provider."
+    ),
     "budget_exhausted": (
         "the per-turn iteration/cost budget was exhausted before a "
         "final answer. Send `continue` to keep going."

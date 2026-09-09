@@ -159,10 +159,6 @@ def _scan_plugin_tree(plugin_dir: Path, identifier: str, *, force: bool, scan_de
     return result
 
 
-# Highest ``manifest_version`` this installer understands; breaking schema changes bump it.
-_SUPPORTED_MANIFEST_VERSION = 1
-
-
 def _plugins_dir() -> Path:
     """Return the user plugins directory, creating it if needed."""
     plugins = get_hermes_home() / "plugins"
@@ -589,6 +585,11 @@ def _scrub_cloned_origin(repo: Path, git_exe: str, git_url: str) -> None:
 
 def _check_manifest_version(manifest: dict, plugin_name: str) -> None:
     """Reject manifests declaring a newer ``manifest_version`` than this installer supports."""
+    from hermes_cli.plugins_manifest import SUPPORTED_MANIFEST_VERSION, requires_hermes_error
+
+    reason = requires_hermes_error(manifest)
+    if reason:
+        raise PluginOperationError(f"Plugin '{plugin_name}' {reason}")
     mv = manifest.get("manifest_version")
     if mv is None:
         return
@@ -598,11 +599,11 @@ def _check_manifest_version(manifest: dict, plugin_name: str) -> None:
         raise PluginOperationError(
             f"Plugin '{plugin_name}' has invalid manifest_version '{mv}' (expected an integer).",
         ) from None
-    if mv_int > _SUPPORTED_MANIFEST_VERSION:
+    if mv_int > SUPPORTED_MANIFEST_VERSION:
         from hermes_cli.config import recommended_update_command
         raise PluginOperationError(
             f"Plugin '{plugin_name}' requires manifest_version {mv}, "
-            f"but this installer only supports up to {_SUPPORTED_MANIFEST_VERSION}. "
+            f"but this installer only supports up to {SUPPORTED_MANIFEST_VERSION}. "
             f"Run {recommended_update_command()} to update Hermes.",
         ) from None
 
@@ -629,10 +630,18 @@ def _clone_plugin_repo(tmp_clone: Path, git_url: str, revision: Optional[str]) -
 
 
 def _read_manifest_for_install(plugin_dir: Path) -> dict:
-    """Manifest of a freshly cloned tree. Unlike :func:`_read_manifest`, a broken portable
-    ``plugin.json`` is an install error (not a silent ``{}``) and its diagnostics are logged."""
-    if _native_manifest_file(plugin_dir) is not None or not _has_portable_manifest(plugin_dir):
-        return _read_manifest(plugin_dir)
+    """A candidate's unreadable or malformed manifest must stop publication."""
+    native = _native_manifest_file(plugin_dir)
+    if native is not None:
+        try:
+            manifest = _load_yaml_manifest(native)
+        except Exception as exc:
+            raise PluginOperationError(f"Could not read plugin manifest {native}: {exc}") from exc
+        if not isinstance(manifest, dict):
+            raise PluginOperationError(f"Plugin manifest must be a mapping: {native}")
+        return manifest
+    if not _has_portable_manifest(plugin_dir):
+        return {}
     try:
         from hermes_cli.agent_plugins import read_agent_plugin_manifest
         manifest, diagnostics = read_agent_plugin_manifest(plugin_dir)
@@ -643,33 +652,13 @@ def _read_manifest_for_install(plugin_dir: Path) -> dict:
     return manifest
 
 
-def _swap_in_plugin(tmp_target: Path, target: Path, backup: Path, old_metadata: dict, new_metadata: dict) -> None:
-    """Move the validated clone into place and persist metadata; on any failure restore the
-    previous tree (if one was replaced) and the previous metadata sidecar, then re-raise."""
-    replaced_existing = target.exists()
-    if replaced_existing:
-        os.replace(target, backup)
-    try:
-        os.replace(tmp_target, target)
-        _write_install_metadata(new_metadata)
-    except Exception:
-        if target.exists():
-            _rmtree_force(target)
-        if replaced_existing and backup.exists():
-            os.replace(backup, target)
-        if old_metadata:
-            _write_install_metadata(old_metadata)
-        else:
-            _install_metadata_path().unlink(missing_ok=True)
-        raise
-
-
 def _install_plugin_core(
     identifier: str,
     *,
     force: bool,
     ref: Optional[str] = None,
     scan_decision_cb=None,
+    catalog_entry=None,
 ) -> tuple[Path, dict, str]:
     """Clone a Git plugin and atomically record its source and exact revision."""
     requested_revision = _normalize_exact_revision(ref) if ref is not None else None
@@ -729,7 +718,15 @@ def _install_plugin_core(
                 new_metadata[plugin_name]["update_url"] = update_url.strip()
         except Exception:
             pass
-        _swap_in_plugin(tmp_target, target, Path(tmp) / "previous-plugin", old_metadata, new_metadata)
+        if catalog_entry is not None:
+            new_metadata[plugin_name]["catalog_name"] = catalog_entry.name
+            new_metadata[plugin_name]["catalog_tier"] = catalog_entry.tier
+        from hermes_cli.plugins_transaction import publish_plugin
+
+        try:
+            publish_plugin(tmp_target, target, old_metadata, new_metadata)
+        except Exception as exc:
+            raise PluginOperationError(f"Plugin '{plugin_name}' was not published: {exc}") from exc
 
     if not _looks_like_plugin_dir(target):
         logger.warning("%s has no plugin.yaml / __init__.py; may not be a valid plugin", plugin_name)
@@ -738,65 +735,40 @@ def _install_plugin_core(
     return target, installed_manifest, installed_manifest.get("name") or target.name
 
 
-def _looks_like_bare_index_name(identifier: str) -> bool:
-    """True for a bare plugin name (no slash, no URL scheme) — resolved via the community index."""
-    return "/" not in identifier and "\\" not in identifier and not identifier.startswith(_URL_SCHEMES)
-
-
-def _resolve_index_name(identifier: str, console) -> tuple[str, Optional[str]]:
-    """Resolve a bare plugin name to ``(install_identifier, pinned_ref)``; exit 1 when unknown or
-    ambiguous. The ref is only pinned when it is an exact 40-char SHA; tags are advisory output."""
-    from hermes_cli.plugin_index import SECURITY_FOOTER, load_index, resolve_name
-    entries, source = load_index()
-    entry, candidates = resolve_name(entries, identifier)
-    if entry is None:
-        if len(candidates) > 1:
-            console.print(
-                f"[red]Error:[/red] Plugin name '{identifier}' is ambiguous in the "
-                f"community index ({source}). Candidates:")
-            for c in candidates:
-                console.print(f"  {c.name}  →  {c.install_identifier}")
-            _fail(console, "Re-run with the exact name or the owner/repo identifier.")
-        _fail(console, (
-            f"[red]Error:[/red] Plugin '{identifier}' was not found in the "
-            f"community index ({source}). Use `hermes plugins search <term>` to "
-            "browse, or install directly with an owner/repo identifier."))
-
-    pinned_ref: Optional[str] = None
-    if entry.ref and _EXACT_COMMIT_RE.fullmatch(entry.ref):
-        pinned_ref = entry.ref.lower()
-    elif entry.ref:
-        console.print(
-            f"[dim]Index pins ref '{entry.ref}' (not an exact commit SHA); "
-            "installing the default branch head instead.[/dim]")
-    console.print(
-        f"[dim]Resolved '{entry.name}' via community index ({source}) → "
-        f"{entry.install_identifier}"
-        + (f" @ {pinned_ref[:12]}[/dim]" if pinned_ref else "[/dim]"))
-    console.print(f"[dim]{SECURITY_FOOTER}[/dim]")
-    return entry.install_identifier, pinned_ref
-
-
 def cmd_install(
     identifier: str,
     force: bool = False,
     enable: Optional[bool] = None,
     ref: Optional[str] = None,
+    allow_removed: bool = False,
 ) -> None:
-    """Install a plugin from a Git URL, owner/repo shorthand, or index name.
+    """Install a plugin from the curated catalog (bare name), a Git URL, or owner/repo shorthand.
 
-    Bare names resolve through the community index (an explicit ``--ref`` beats the index pin).
+    A catalog hit installs the reviewed pinned SHA and records catalog membership in the shared install
+    metadata. An explicit different ``--ref`` is a custom pin. URLs/shorthand are custom sources. Every
+    install is checked against the catalog kill list unless *allow_removed*.
     *enable* None prompts "Enable now? [y/N]"; True/False skip the prompt.
     """
+    from hermes_cli import plugins_cmd_catalog as catalog
     console = _console()
-    if _looks_like_bare_index_name(identifier):
-        identifier, index_ref = _resolve_index_name(identifier, console)
-        if ref is None:
-            ref = index_ref
+    entry = None
+    if catalog.looks_like_catalog_name(identifier):
+        entry = catalog.resolve_catalog_name(identifier, console)
+        identifier = entry.install_identifier
+        console.print(f"[bold]{entry.name}[/bold] [cyan]\\[{entry.tier}][/cyan] [dim]pinned @ {entry.sha[:8]}[/dim]")
+        console.print(catalog.entry_capability_summary(entry))
+    else:
+        console.print("[yellow]Warning:[/yellow] custom (unreviewed) source — not from the Hermes catalog.")
+    if allow_removed:
+        console.print(
+            "[bold red]WARNING:[/bold red] [red]--allow-removed set — skipping the catalog kill-list check. "
+            "This plugin may have been removed for security reasons.[/red]")
 
     try:
         git_url, _subdir = _resolve_git_url(identifier)
-    except ValueError as e:
+        if not allow_removed:
+            catalog.raise_if_removed(identifier, git_url, *((entry.name,) if entry else ()))
+    except (ValueError, PluginOperationError) as e:
         _fail(console, f"[red]Error:[/red] {e}")
     if git_url.startswith(("http://", "file://")):
         console.print(
@@ -814,8 +786,12 @@ def cmd_install(
         return _is_tty() and _ask_yes("  Install anyway? Only continue if you trust the source. [y/N]: ")
 
     try:
-        target, installed_manifest, installed_name = _install_plugin_core(
-            identifier, force=force, ref=ref, scan_decision_cb=_interactive_scan_decision)
+        if entry is not None:
+            target, installed_manifest, installed_name = catalog.install_catalog_entry(
+                entry, force=force, ref=ref, allow_removed=True, scan_decision_cb=_interactive_scan_decision)
+        else:
+            target, installed_manifest, installed_name = _install_plugin_core(
+                identifier, force=force, ref=ref, scan_decision_cb=_interactive_scan_decision)
     except PluginOperationError as e:
         _fail(console, f"[red]{'Blocked' if isinstance(e, PluginScanBlocked) else 'Error'}:[/red] {e}")
     if not _looks_like_plugin_dir(target):
@@ -900,23 +876,21 @@ def _pull_plugin_update(target: Path, pinned_msg, not_git_msg, before_pull=None)
         raise PluginOperationError(not_git_msg())
     if before_pull is not None:
         before_pull()
-    ok, output = _git_pull_plugin_dir(target)
-    if not ok:
-        raise PluginOperationError(output)
-    # Store the new HEAD in the plugin's install-metadata record (if it has one).
-    git_exe = _resolve_git_executable() if install_record else None
-    if git_exe:
-        install_record["revision"] = _git_head_revision(target, git_exe)
-        metadata[target.name] = install_record
-        _write_install_metadata(metadata)
-    return output
+    from hermes_cli.plugins_transaction import update_plugin
+
+    return update_plugin(target)
 
 
 def cmd_update(name: str, *, interactive: bool = True) -> None:
     """Update an installed plugin by pulling latest from its git remote."""
     from rich.markup import escape
+    from hermes_cli import plugins_cmd_catalog as catalog
     console = _console()
     target = _require_installed_plugin(name, _plugins_dir(), console)
+    sidecar = catalog.catalog_install_record(target)
+    if sidecar:  # catalog installs re-pin to the reviewed SHA — never `git pull`
+        catalog.cmd_update_catalog(name, target, sidecar, console)
+        return
     try:
         output = _pull_plugin_update(
             target,
@@ -928,30 +902,7 @@ def cmd_update(name: str, *, interactive: bool = True) -> None:
             before_pull=lambda: console.print(f"[dim]Updating {name}...[/dim]"))
     except PluginOperationError as exc:
         _fail(console, f"[red]Error:[/red] {exc}")
-    _rescan_after_update(target, name, console)
     _post_pull_housekeeping(target, console)
-
-    # Member-manifest plugins: the pull may have changed its pyproject
-    # pins — re-sync the union so new deps land (Task 5, plugin
-    # auto-update plan). The venv stamp now includes member pyproject
-    # CONTENT (Task 4), so a pins change forces the re-lock; a
-    # content-identical pull is a no-op stamp match. Failures surface
-    # the resolver's message (conflict = loud refusal, bisect +
-    # write-back ride the shipped sync path) but never fail the update
-    # itself — the plugin code is already updated.
-    if (target / "pyproject.toml").is_file():
-        try:
-            import pm
-            pm.sync_venv(explicit=True)
-        except Exception as exc:
-            console.print(
-                f"[yellow]⚠[/yellow] Dependency re-sync failed for "
-                f"{name}: {exc}"
-            )
-            console.print(
-                "[dim]The plugin code updated; run `hermes pm install` "
-                "to retry the dependency sync.[/dim]"
-            )
 
     # Update-time re-consent (#64228): if the new version declares
     # capabilities the granted set lacks, surface the diff and require
@@ -976,27 +927,6 @@ def cmd_update(name: str, *, interactive: bool = True) -> None:
         console.print(f"[green]✓[/green] Plugin [bold]{name}[/bold] updated.")
         console.print(f"[dim]{out}[/dim]")
 
-
-def _rescan_after_update(target: Path, name: str, console) -> None:
-    """Re-scan after ``git pull``: the tree is already mutated, so a dangerous verdict disables
-    the plugin rather than leaving it active."""
-    if not _scan_on_install_enabled():
-        return
-    from tools.plugin_guard import format_scan_report, scan_plugin, should_allow_plugin_install
-    scan_result = scan_plugin(target, source=name)
-    allowed, reason = should_allow_plugin_install(scan_result)
-    if allowed is True:
-        return
-    console.print()
-    console.print(f"[yellow]⚠ Security scan flagged the updated plugin:[/yellow] {reason}")
-    console.print(format_scan_report(scan_result))
-    if scan_result.verdict == "dangerous":
-        if name in _get_enabled_set() or name not in _get_disabled_set():
-            _set_plugin_enabled(name, enable=False)
-        console.print(
-            f"[red]Plugin '{name}' has been disabled.[/red] Review the "
-            f"findings, then re-enable with `hermes plugins enable {name}` "
-            f"if you trust them.")
 
 
 def _post_pull_housekeeping(target: Path, console) -> None:
@@ -1638,18 +1568,21 @@ def cmd_list(args: Any | None = None) -> None:
     enabled = _get_enabled_set()
     disabled = _get_disabled_set()
     entries = _filter_plugin_entries(entries, args, enabled, disabled)
+    from hermes_cli import plugins_cmd_catalog as catalog
+    # Source shows catalog provenance (``catalog:<tier>@<sha8>``); a kill-listed install is flagged.
     rows = [
-        (name, _plugin_status(name, enabled, disabled, key=key), str(version), description, source)
+        (name, _plugin_status(name, enabled, disabled, key=key), str(version), description,
+         catalog.catalog_annotation(_dir) or source, catalog.removed_annotation(name, _dir))
         for name, version, description, source, _dir, key in entries
     ]
 
     if getattr(args, "json", False):
-        keys = ("name", "status", "version", "description", "source")
+        keys = ("name", "status", "version", "description", "source", "removed")
         print(json.dumps([dict(zip(keys, row)) for row in rows], indent=2))
         return
 
     if getattr(args, "plain", False):
-        for name, status, version, _description, source in rows:
+        for name, status, version, _description, source, _removed in rows:
             print(f"{status:12} {source:8} {version:8} {name}")
         return
 
@@ -1667,18 +1600,24 @@ def cmd_list(args: Any | None = None) -> None:
         p.name: p.klass.value for p in plugins_provenance(_plugins_dir())
     }
 
-    for name, status_name, version, description, source in rows:
+    removed_lines = []
+    for name, status_name, version, description, source, removed in rows:
+        klass = prov_classes.get(name)
         status = _STATUS_MARKUP.get(status_name, "[yellow]not enabled[/yellow]")
+        if removed:
+            name = f"[red]{name} ✗[/red]"
+            removed_lines.append(f"[red]✗ {name}[/red] was removed from the plugin catalog: {removed}")
         table.add_row(name, status, version, description, source)
         # class line rides the Source column for user plugins
         if source in {"user", "git"}:
-            klass = prov_classes.get(name)
             if klass and klass != "git":
                 table.add_row(
                     "", "", "", f"[dim]provenance: {klass}[/dim]", ""
                 )
     console.print()
     console.print(table)
+    for line in removed_lines:
+        console.print(line)
     console.print()
     console.print("[dim]Compact view:[/dim] hermes plugins list --plain --no-bundled")
     console.print("[dim]Interactive toggle:[/dim] hermes plugins")
@@ -2039,16 +1978,36 @@ def _save_plugin_selection_fallback(plugin_keys, chosen, disabled) -> None:
         print("  config.yaml and the active environment are unchanged.")
 
 
-def dashboard_install_plugin(identifier: str, *, force: bool, enable: bool) -> dict[str, Any]:
-    """Non-interactive install for the web dashboard. Returns a JSON-serializable dict."""
+def dashboard_install_plugin(
+    identifier: str, *, force: bool, enable: bool, catalog_name: Optional[str] = None,
+) -> dict[str, Any]:
+    """Non-interactive install for the dashboard/TUI. *catalog_name* installs a curated entry at its
+    pinned SHA (identifier may be empty); every path enforces the kill list (no GUI bypass)."""
+    from hermes_cli import plugins_cmd_catalog as catalog
     warnings: list[str] = []
+    entry = None
+    if catalog_name:
+        entry = catalog.get_live_catalog_entry(catalog_name)
+        if entry is None:
+            return {"ok": False, "error": f"'{catalog_name}' is not in the Hermes plugin catalog."}
+        identifier = entry.install_identifier
+    else:
+        warnings.append("Custom (unreviewed) source — not from the Hermes catalog.")
     try:
-        if _resolve_git_url(identifier)[0].startswith(("http://", "file://")):
+        git_url = _resolve_git_url(identifier)[0]
+        if git_url.startswith(("http://", "file://")):
             warnings.append("Insecure URL scheme; prefer https:// or git@ for production installs.")
+        catalog.raise_if_removed(identifier, git_url, *((entry.name,) if entry else ()))
     except ValueError:
         pass
+    except PluginOperationError as exc:
+        return {"ok": False, "error": str(exc)}
     try:
-        target, installed_manifest, installed_name = _install_plugin_core(identifier, force=force)
+        if entry is not None:
+            target, installed_manifest, installed_name = catalog.install_catalog_entry(
+                entry, force=force, allow_removed=True)
+        else:
+            target, installed_manifest, installed_name = _install_plugin_core(identifier, force=force)
     except PluginScanBlocked as exc:
         fields = ("pattern_id", "severity", "category", "file", "line", "description")
         return {
@@ -2167,10 +2126,15 @@ def _user_installed_plugin_dir(name: str) -> Optional[Path]:
 
 def dashboard_update_user_plugin(name: str) -> dict[str, Any]:
     """``git pull`` inside ``~/.hermes/plugins/<name>``."""
+    from hermes_cli import plugins_cmd_catalog as catalog
     target = _user_installed_plugin_dir(name)
     if target is None:
         return {"ok": False, "error": f"Plugin '{name}' was not found under {_plugins_dir()}."}
+    sidecar = catalog.catalog_install_record(target)
     try:
+        if sidecar:
+            sha, changed = catalog.repin_catalog_plugin(target, sidecar)
+            return {"ok": True, "name": name, "sha": sha, "unchanged": not changed}
         msg = _pull_plugin_update(
             target,
             lambda rec: (
@@ -2322,42 +2286,14 @@ def cmd_plugin_doctor(target: str = ".", *, ci: bool = False) -> None:
         raise SystemExit(1)
 
 
-def cmd_search(
-    term: str = "",
-    *,
-    json_output: bool = False,
-    capability: Optional[str] = None,
-    refresh: bool = False,
-) -> None:
-    """Search the community plugin index (fuzzy on name/description/tags)."""
-    from hermes_cli.plugin_index import SECURITY_FOOTER, load_index, search_index
-    console = _console()
-    entries, source = load_index(refresh=refresh)
-    results = search_index(entries, term, capability=capability)
-    if json_output:
-        print(json.dumps(
-            {"source": source, "query": term, "results": [e.to_dict() for e in results], "note": SECURITY_FOOTER},
-            indent=2))
-        return
-
-    if not results:
-        console.print(f"[yellow]No plugins matched '{term}'[/yellow] [dim](index source: {source})[/dim]")
-        return
-
-    table = _table(
-        (("Name", "bold"), ("Description", None), ("Author", None), ("Tags", "dim")),
-        title=f"Community plugins ({len(results)} match{'es' if len(results) != 1 else ''})")
-    for e in results:
-        desc = e.description if len(e.description) <= 70 else e.description[:67] + "..."
-        table.add_row(e.name, desc, e.author, ", ".join(e.tags))
-    console.print(table)
-    console.print(f"[dim]Index source: {source}. Install: hermes plugins install <name>[/dim]")
-    console.print(f"[dim]{SECURITY_FOOTER}[/dim]")
-
-
 def _tri_state_flag(args, yes_attr: str, no_attr: str) -> Optional[bool]:
     """Map an argparse ``--x`` / ``--no-x`` pair to True / False / None (neither given)."""
     return True if getattr(args, yes_attr, False) else (False if getattr(args, no_attr, False) else None)
+
+
+def _catalog():
+    from hermes_cli import plugins_cmd_catalog
+    return plugins_cmd_catalog
 
 
 def _action_pack(args):
@@ -2407,12 +2343,12 @@ _PLUGIN_ACTIONS = {
         args.identifier,
         force=getattr(args, "force", False),
         enable=_tri_state_flag(args, "enable", "no_enable"),
-        ref=getattr(args, "ref", None)),
-    "search": lambda args: cmd_search(
-        getattr(args, "term", "") or "",
-        json_output=getattr(args, "json", False),
-        capability=getattr(args, "capability", None),
-        refresh=getattr(args, "refresh", False)),
+        ref=getattr(args, "ref", None),
+        allow_removed=getattr(args, "allow_removed", False)),
+    "search": lambda args: _catalog().cmd_search(
+        getattr(args, "term", "") or "", json_output=getattr(args, "json", False)),
+    "browse": lambda args: _catalog().cmd_search(""),
+    "validate": lambda args: _catalog().cmd_validate(args.path, as_json=getattr(args, "json", False)),
     "update": lambda args: cmd_update(args.name),
     "adopt": lambda args: cmd_adopt(args.name),
     "trust-update-url": lambda args: cmd_trust_update_url(args.name),
@@ -2432,7 +2368,7 @@ _PLUGIN_ACTIONS = {
     "compat": lambda args: cmd_compat(args),
     "pack": _action_pack,
     "show": lambda args: cmd_show(args.name),
-    "info": lambda args: cmd_show(args.name),
+    "info": lambda args: _catalog().cmd_info(args.name),
     None: lambda args: cmd_toggle(),
 }
 

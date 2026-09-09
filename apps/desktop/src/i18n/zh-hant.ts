@@ -1749,8 +1749,8 @@ export const zhHant = defineLocale({
     title: '排程工作',
     count: count => `${count} 個工作`,
     modelImpact: {
-      title: '排程工作需要檢查',
-      message: count => `在您檢查模型設定之前，${count} 個排程工作將被略過。`,
+      title: '排程工作將繼續使用原模型',
+      message: count => `${count} 個未固定的排程工作將繼續使用建立時的模型執行。固定它們或設定 cron.model 以遷移。`,
       detailMore: (names, remaining) => `${names}，以及另外 ${remaining} 個`,
       review: '檢查排程工作',
       saveFailed: 'Hermes 未儲存該模型變更。',
@@ -1988,6 +1988,7 @@ export const zhHant = defineLocale({
     projects: {
       sectionLabel: '專案',
       home: '主頁',
+      autoDiscovered: '自動探索',
       newButton: '新增專案',
       createTitle: '新增專案',
       createDesc: '為工作區命名並新增一個或多個資料夾。',
@@ -3018,6 +3019,7 @@ export const zhHant = defineLocale({
         streaming: '串流連線錯誤'
       },
       errorRetry: '重試',
+      errorStartNewSession: '開始新工作階段',
       errorSwitchProvider: '切換服務商',
       errorOpenLogs: '開啟日誌',
       errorOpenLogsFailed: '無法開啟日誌資料夾',

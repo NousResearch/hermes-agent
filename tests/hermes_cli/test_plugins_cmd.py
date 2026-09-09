@@ -399,29 +399,18 @@ class TestCmdInstall:
 class TestCmdUpdate:
     """Test the update command."""
 
-    @patch("hermes_cli.plugins_cmd._sanitize_plugin_name")
-    @patch("hermes_cli.plugins_cmd._plugins_dir")
-    @patch("hermes_cli.plugins_cmd.subprocess.run")
-    def test_update_git_pull_success(self, mock_run, mock_plugins_dir, mock_sanitize):
-        from hermes_cli.plugins_cmd import cmd_update
+    def test_update_uses_the_shared_transaction(self, tmp_path, monkeypatch):
+        from hermes_cli import plugins_cmd as pc, plugins_transaction
 
-        mock_plugins_dir_val = MagicMock()
-        mock_plugins_dir.return_value = mock_plugins_dir_val
-        mock_target = MagicMock()
-        mock_target.exists.return_value = True
-        mock_target.__truediv__ = lambda self, x: MagicMock(
-            exists=MagicMock(return_value=True)
-        )
-        mock_sanitize.return_value = mock_target
-
-        mock_run.side_effect = [
-            MagicMock(returncode=0, stdout="", stderr=""),        # status: clean
-            MagicMock(returncode=0, stdout="Updated", stderr=""),  # pull
-        ]
-
-        cmd_update("test-plugin")
-
-        assert mock_run.call_count == 2
+        home = tmp_path / "home"
+        target = home / "plugins" / "test-plugin"
+        (target / ".git").mkdir(parents=True)
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        seen = []
+        monkeypatch.setattr(plugins_transaction, "update_plugin", lambda path:
+                            seen.append(path) or "Already up to date")
+        pc.cmd_update("test-plugin")
+        assert seen == [target]
 
     @patch("hermes_cli.plugins_cmd._sanitize_plugin_name")
     @patch("hermes_cli.plugins_cmd._plugins_dir")
@@ -720,8 +709,10 @@ class TestSubdirInstallE2E:
         repo_root = tmp_path / "monorepo"
         self._make_repo_with_subdir_plugin(repo_root)
 
-        plugins_dir = tmp_path / "installed"
-        plugins_dir.mkdir()
+        home = tmp_path / "home"
+        plugins_dir = home / "plugins"
+        plugins_dir.mkdir(parents=True)
+        monkeypatch.setenv("HERMES_HOME", str(home))
         monkeypatch.setattr(pc, "_plugins_dir", lambda: plugins_dir)
 
         identifier = f"file://{repo_root}#my-plugin"
@@ -780,8 +771,10 @@ class TestSubdirInstallE2E:
         sp.run(["git", "init", "-q"], cwd=repo_root, check=True, env=env)
         sp.run(["git", "add", "-A"], cwd=repo_root, check=True, env=env)
         sp.run(["git", "commit", "-q", "-m", "init"], cwd=repo_root, check=True, env=env)
-        plugins_dir = tmp_path / "installed"
-        plugins_dir.mkdir()
+        home = tmp_path / "home"
+        plugins_dir = home / "plugins"
+        plugins_dir.mkdir(parents=True)
+        monkeypatch.setenv("HERMES_HOME", str(home))
         monkeypatch.setattr(pc, "_plugins_dir", lambda: plugins_dir)
 
         target, manifest, name = pc._install_plugin_core(

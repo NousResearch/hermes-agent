@@ -48,6 +48,7 @@ import { useEnterAnimation } from '@/lib/use-enter-animation'
 import { cn } from '@/lib/utils'
 import { playSpeechText, stopVoicePlayback } from '@/lib/voice-playback'
 import { notifyError } from '@/store/notifications'
+import { requestFreshSession } from '@/store/profile'
 import { requestSendDiagnostics } from '@/store/send-diagnostics'
 import { $connection, $currentModel } from '@/store/session'
 import { $voicePlayback } from '@/store/voice-playback'
@@ -514,6 +515,10 @@ const ErrorRecoveryActions: FC = () => {
   // says the failure is deterministic (retrying reproduces it).
   const retryable = !surface || surface.retryable
 
+  // Another surface holds this session's lease (#106217): Retry would hit the
+  // same refusal, so the way out is a fresh session on this surface.
+  const ownershipRefusal = surface?.code === 'SESSION_NOT_OWNED'
+
   // Switch Provider deep-links Settings → Models for the layers where the fix
   // is provider/endpoint/auth config, not a retry.
   const showSwitchProvider = surface != null && ['auth', 'billing', 'endpoint', 'provider'].includes(surface.layer)
@@ -548,8 +553,18 @@ const ErrorRecoveryActions: FC = () => {
     [errorText, model, surface]
   )
 
+  const startNewSession = useCallback(() => {
+    triggerHaptic('submit')
+    requestFreshSession()
+  }, [])
+
   return (
     <div className="flex flex-wrap items-center gap-1.5">
+      {ownershipRefusal && (
+        <button className="aui-error-action" onClick={startNewSession} type="button">
+          {copy.errorStartNewSession}
+        </button>
+      )}
       {retryable && (
         <ActionBarPrimitive.Reload asChild>
           <button className="aui-error-action" onClick={() => triggerHaptic('submit')} type="button">

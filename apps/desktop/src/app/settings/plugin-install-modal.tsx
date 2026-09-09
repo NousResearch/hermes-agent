@@ -32,6 +32,7 @@ import {
 } from '@/store/plugin-install-request'
 import { $activeGatewayProfile, $profileScope } from '@/store/profile'
 import { $connection } from '@/store/session'
+import { runGatewayRestart } from '@/store/system-actions'
 
 type ProbeResult = Awaited<ReturnType<NonNullable<NonNullable<Window['hermesDesktop']>['probePluginRepo']>>>
 
@@ -91,6 +92,8 @@ export function PluginInstallModal() {
       setPhase('probing')
       setProbe(null)
       setInstallError(null)
+      // Reviewed catalog picks streamline the ceremony: enable defaults ON
+      // (installing a reviewed entry to not use it is the rare case).
       setEnableAgent(payload.enable ?? true)
       setForceReinstall(payload.force ?? false)
 
@@ -151,7 +154,7 @@ export function PluginInstallModal() {
     }
   }, [request, resetState, runProbe])
 
-  const profileLabel = activeProfile || profileScope || 'default'
+  const profileLabel = request?.profile || activeProfile || profileScope || 'default'
 
   const agentTargetHint =
     connection?.mode === 'remote' ? m.agentTargetRemote(profileLabel) : m.agentTargetLocal(profileLabel)
@@ -183,22 +186,34 @@ export function PluginInstallModal() {
 
     const errors: string[] = []
     const successes: string[] = []
+    let agentInstalled = false
 
     try {
       if (installAgent && probe.agent) {
         const result = await installAgentPlugin(requestGateway, {
           identifier: request.repo,
           force: forceReinstall,
-          enable: enableAgent
+          enable: enableAgent,
+          catalogName: request.catalogName,
+          profile: request.profile
         })
 
         if (result.ok) {
           successes.push(m.agentSuccess(result.pluginName ?? request.repo))
+          agentInstalled = true
 
           if (result.missingEnv?.length) {
+            const firstVar = result.missingEnv[0]
+
             notify({
               kind: 'warning',
-              message: m.missingEnv(result.missingEnv.join(', '))
+              message: m.missingEnv(result.missingEnv.join(', ')),
+              // Deep-link straight to the credential card instead of leaving
+              // the user to hunt through Settings → Tools & Keys by hand.
+              action: {
+                label: m.missingEnvAction,
+                onClick: () => navigate(`/settings?tab=keys&key=${encodeURIComponent(firstVar)}`)
+              }
             })
           }
 
@@ -234,8 +249,19 @@ export function PluginInstallModal() {
           notify({ kind: 'success', message })
         }
 
+        // An enabled agent plugin only takes effect after a gateway restart —
+        // offer the restart right here instead of a dim hint to run later.
+        if (agentInstalled && enableAgent) {
+          notify({
+            kind: 'success',
+            message: m.restartToApply,
+            action: { label: m.restartNow, onClick: () => void runGatewayRestart() }
+          })
+        }
+
         closePluginInstallRequest()
-        navigate('/settings?tab=plugins')
+        // Catalog picks come from Capabilities → Plugins; land back there.
+        navigate(request.catalogName ? '/skills?tab=plugins' : '/settings?tab=plugins')
 
         return
       }
@@ -305,12 +331,21 @@ export function PluginInstallModal() {
               <div className="rounded-lg border border-(--ui-stroke-tertiary) bg-(--ui-bg-quinary) px-3 py-2 font-mono text-[length:var(--conversation-caption-font-size)] break-all text-foreground">
                 {request.repo}
               </div>
+              {request.catalogName && (
+                <p className="mt-1 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
+                  {m.catalogPinned(request.catalogName, request.sha?.slice(0, 8) ?? '')}
+                </p>
+              )}
             </div>
 
             <div className="space-y-3 rounded-lg border border-(--ui-stroke-tertiary) bg-(--ui-bg-quinary) px-3 py-2.5">
               <div className="space-y-2 text-[length:var(--conversation-caption-font-size)]">
-                <div className="font-medium text-foreground">{m.securityHeading}</div>
-                <p className="text-(--ui-text-secondary)">{m.securityIntro}</p>
+                <div className="font-medium text-foreground">
+                  {request.catalogName ? m.reviewedHeading : m.securityHeading}
+                </div>
+                <p className="text-(--ui-text-secondary)">
+                  {request.catalogName ? m.reviewedIntro : m.securityIntro}
+                </p>
               </div>
 
               {sourceLinks && (
@@ -414,12 +449,14 @@ export function PluginInstallModal() {
                   </label>
                 )}
 
-                <label className="flex items-center justify-between gap-3">
-                  <span className="text-[length:var(--conversation-caption-font-size)] text-foreground">
-                    {m.forceReinstall}
-                  </span>
-                  <Switch checked={forceReinstall} disabled={busy} onCheckedChange={setForceReinstall} />
-                </label>
+                {!request.catalogName && (
+                  <label className="flex items-center justify-between gap-3">
+                    <span className="text-[length:var(--conversation-caption-font-size)] text-foreground">
+                      {m.forceReinstall}
+                    </span>
+                    <Switch checked={forceReinstall} disabled={busy} onCheckedChange={setForceReinstall} />
+                  </label>
+                )}
               </div>
             )}
 

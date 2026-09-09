@@ -410,6 +410,8 @@ def verify_sqlite_integrity(
 
 # --- Backup ---
 
+_RUN_BACKUP_PREFIX = "hermes-backup-"
+
 
 # --- Import ---
 
@@ -596,10 +598,10 @@ def _run_backup_locked(args, hermes_root: Path) -> None:
             # If user gave a directory, put the zip inside it
             if out_path.is_dir():
                 stamp = datetime.now().strftime("%Y-%m-%d-%H%M%S")
-                out_path = out_path / f"hermes-backup-{stamp}.zip"
+                out_path = out_path / f"{_RUN_BACKUP_PREFIX}{stamp}.zip"
         else:
             stamp = datetime.now().strftime("%Y-%m-%d-%H%M%S")
-            out_path = Path.home() / f"hermes-backup-{stamp}.zip"
+            out_path = Path.home() / f"{_RUN_BACKUP_PREFIX}{stamp}.zip"
 
         # Ensure the suffix is .zip
         if out_path.suffix.lower() != ".zip":
@@ -768,6 +770,11 @@ def _run_backup_locked(args, hermes_root: Path) -> None:
 
     if not errors:
         print(f"\nRestore with: hermes import {out_path.name}")
+        keep = getattr(args, "keep", 0)
+        if keep and out_path.name.startswith(_RUN_BACKUP_PREFIX):
+            pruned = _prune_prefixed_zips(out_path.parent, _RUN_BACKUP_PREFIX, keep, "backup")
+            if pruned:
+                print(f"  Pruned {pruned} older {_RUN_BACKUP_PREFIX}*.zip (keeping {keep}).")
 
 
 # ---------------------------------------------------------------------------

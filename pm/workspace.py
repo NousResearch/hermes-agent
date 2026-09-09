@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib
 import os
 import subprocess
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Optional
 
@@ -16,6 +17,11 @@ from pm import paths
 from pm.package import InstallError
 
 WORKSPACE_DIRNAME = ".pm-workspace"
+_MEMBER_EXCLUDE = frozenset({".git", ".venv", "venv", "node_modules", "__pycache__"})
+
+
+def _member_ignored(directory, names):
+    return [name for name in names if name in _MEMBER_EXCLUDE or name.endswith(".egg-info")]
 
 
 class ResolutionConflict(InstallError):
@@ -56,29 +62,36 @@ def workspace_root() -> Path:
 
 
 def _member_rel(root: Path, plugin_dir: Path) -> str:
-    """Workspace member string: relative path from the root to the plugin
-    dir, always escaping the root (``../…``) — probed to resolve."""
+    """Use portable separators for a member inside the generated workspace."""
     return os.path.relpath(plugin_dir.resolve(), root.resolve()).replace("\\", "/")
 
 
-def members_stamp(plugin_dirs: list[Path]) -> str:
-    """Content hash of the member SET — order-independent, so venv stamps
-    compare the set of unioned plugins, not the discovery order.
+def member_sources(plugin_dirs) -> dict[Path, Path]:
+    """Map installed identities to build inputs, including staged plugin updates."""
+    rows = plugin_dirs.items() if isinstance(plugin_dirs, Mapping) else ((path, path) for path in plugin_dirs)
+    return {Path(identity).resolve(): Path(source).resolve() for identity, source in rows}
 
-    Includes each member's pyproject.toml CONTENT: a plugin update that
-    changes its pins must re-sync the union even when the member set is
-    unchanged (Task 4 of the plugin auto-update plan — path-only hashing
-    left pulled-plugin dep bumps invisible to expected_stamp)."""
-    resolved = sorted({p.resolve() for p in plugin_dirs})
+
+def members_stamp(plugin_dirs) -> str:
+    """Hash the member inputs copied into a generation, independent of staging paths."""
     h = hashlib.sha256()
-    for entry in resolved:
-        h.update(str(entry).encode("utf-8"))
+    for identity, entry in sorted(member_sources(plugin_dirs).items()):
+        h.update(str(identity).encode("utf-8"))
         h.update(b"\0")
         for name in ("pyproject.toml", "plugin.yaml"):
             source = entry / name
             if source.is_file():
                 h.update(source.read_bytes())
             h.update(b"\0")
+        if (entry / "pyproject.toml").is_file():
+            for directory, dirs, files in os.walk(entry):
+                dirs[:] = sorted(set(dirs) - set(_member_ignored(directory, dirs)))
+                for name in sorted(set(files) - set(_member_ignored(directory, files))):
+                    path = Path(directory) / name
+                    h.update(path.relative_to(entry).as_posix().encode())
+                    h.update(b"\0")
+                    h.update(os.readlink(path).encode() if path.is_symlink() else path.read_bytes())
+                    h.update(b"\0")
     return h.hexdigest()
 
 
@@ -144,8 +157,8 @@ def _generate_pyproject(plugin_dirs: list[Path], root: Optional[Path] = None) ->
     core_pyproject = paths.repo_root() / "pyproject.toml"
     core_text = core_pyproject.read_text(encoding="utf-8-sig")
 
-    members = [_member_rel(root, _workspace_member(Path(p), root))
-               for p in {str(Path(p).resolve()) for p in plugin_dirs}]
+    members = [_member_rel(root, _workspace_member(source, root, identity=identity))
+               for identity, source in member_sources(plugin_dirs).items()]
 
     lines = [core_text.rstrip("\n")]
     if members:
@@ -225,8 +238,8 @@ def _is_member_candidate(plugin_dir: Path) -> bool:
     return False
 
 
-def enabled_member_dirs(*, proposed_home=None, enabled=None, disabled=None) -> list[Path]:
-    """Dependency members from the same effective plugin selection on every path."""
+def enabled_plugin_dirs(*, proposed_home=None, enabled=None, disabled=None) -> list[Path]:
+    """Resolve the effective plugin selection without filtering dependency declarations."""
     from pm.plugins_state import _is_directory, enabled_plugins_ordered
 
     selection = enabled_plugins_ordered() if proposed_home is None else enabled_plugins_ordered(
@@ -241,9 +254,19 @@ def enabled_member_dirs(*, proposed_home=None, enabled=None, disabled=None) -> l
             plugin_dir = plugins_dir / relative
             if not _is_directory(plugin_dir):
                 plugin_dir = paths.repo_root() / "plugins" / relative
-            if _is_directory(plugin_dir) and _is_member_candidate(plugin_dir):
+            if _is_directory(plugin_dir):
                 members.append(plugin_dir)
     return list(dict.fromkeys(members))
+
+
+def enabled_member_dirs(*, proposed_home=None, enabled=None, disabled=None) -> list[Path]:
+    """Keep every selected member or refuse an incompatible selection."""
+    from hermes_cli.plugins_cmd import _check_manifest_version, _read_manifest_for_install
+
+    selected = enabled_plugin_dirs(proposed_home=proposed_home, enabled=enabled, disabled=disabled)
+    for path in selected:
+        _check_manifest_version(_read_manifest_for_install(path), path.name)
+    return [path for path in selected if _is_member_candidate(path)]
 
 
 def _legacy_requirements(plugin_dir: Path) -> list[str]:
@@ -264,19 +287,44 @@ def _legacy_requirements(plugin_dir: Path) -> list[str]:
     return list(dict.fromkeys(specs))
 
 
-def _workspace_member(plugin_dir: Path, root: Path) -> Path:
-    """Legacy dependency declarations become virtual members in staging only."""
+def _workspace_member(plugin_dir: Path, root: Path, *, identity: Path | None = None) -> Path:
+    """Keep workspace members with their generation, not a temporary install clone."""
     import json
+    import shutil
+    import tomllib
 
+    key = hashlib.sha256(str((identity or plugin_dir).resolve()).encode()).hexdigest()[:16]
     pyproject = plugin_dir / "pyproject.toml"
     if pyproject.is_file() and "GENERATED by pm" not in pyproject.read_text(encoding="utf-8-sig"):
-        return plugin_dir
+        member = root / "plugin-sources" / key
+        if member.exists():
+            shutil.rmtree(member)
+        shutil.copytree(plugin_dir, member, symlinks=True,
+                        ignore=_member_ignored)
+        document = tomllib.loads(pyproject.read_text(encoding="utf-8-sig"))
+        changed = False
+        for sources in document.get("tool", {}).get("uv", {}).get("sources", {}).values():
+            for spec in sources if isinstance(sources, list) else [sources]:
+                if not isinstance(spec, dict) or "path" not in spec:
+                    continue
+                relative = Path(spec["path"])
+                if relative.is_absolute():
+                    continue
+                resolved = (plugin_dir / relative).resolve()
+                if resolved.is_relative_to(plugin_dir.resolve()):
+                    continue  # The referenced tree was copied with this member.
+                spec["path"] = ((identity or plugin_dir) / relative).resolve().as_posix()
+                changed = True
+        if changed:
+            import tomli_w
+
+            (member / "pyproject.toml").write_text(tomli_w.dumps(document), encoding="utf-8")
+        return member
     specs = _legacy_requirements(plugin_dir)
-    identity = hashlib.sha256(str(plugin_dir.resolve()).encode()).hexdigest()[:16]
-    member = root / "plugin-deps" / identity
+    member = root / "plugin-deps" / key
     member.mkdir(parents=True, exist_ok=True)
     (member / "pyproject.toml").write_text(
-        f'[project]\nname = "hermes-plugin-{identity}"\nversion = "0.0.0"\n'
+        f'[project]\nname = "hermes-plugin-{key}"\nversion = "0.0.0"\n'
         'requires-python = ">=3.11"\n'
         f'dependencies = {json.dumps(specs)}\n[tool.uv]\npackage = false\n',
         encoding="utf-8",

@@ -91,6 +91,11 @@ def recover_publication(project: Path) -> None:
         return
     try:
         row = json.loads(data)
+        if row.get("kind") == "plugin":
+            from hermes_cli.plugins_transaction import recover_plugin_publication
+
+            recover_plugin_publication(project, row, journal)
+            return
         config = Path(row["config"])
         if config.name != "config.yaml" or not config.resolve().is_relative_to(dependency_home_root().resolve()):
             raise ValueError("config path is outside Hermes state")

@@ -113,6 +113,10 @@ def _classify_tree(_ops, repo_root: str, entry: Path, merge_cache, remote_heads)
     path = str(entry)
     if _KANBAN_RE.match(entry.name):
         return "keep", "kanban task tree (owned by kanban gc)", []
+    from agent.conversation_worktree import conversation_worktree_is_manager_owned
+
+    if conversation_worktree_is_manager_owned(entry) is not False:
+        return "keep", "manager-owned conversation worktree", []
     if _ops._worktree_lock_is_live(repo_root, path, timeout=5) == "live":
         return "keep", "in use by a running hermes session", []
     tracked_dirty, untracked = _dirty_split(path)

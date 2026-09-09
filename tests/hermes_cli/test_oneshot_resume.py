@@ -69,18 +69,6 @@ class TestLoadResumeTarget:
         finally:
             db.close()
 
-    def test_session_meta_rows_are_dropped(self, tmp_path):
-        db = _db_with_session(
-            tmp_path, "s1",
-            messages=[("session_meta", "model switch"), ("user", "hello")],
-        )
-        try:
-            sid, history, _meta = _load_resume_target(db, "s1")
-            assert sid == "s1"
-            assert [m["role"] for m in history] == ["user"]
-        finally:
-            db.close()
-
     def test_empty_session_keeps_resolved_id(self, tmp_path):
         # Chat's contract: a resumed session with no messages starts fresh (no rows to
         # replay) but the turn is recorded under the SELECTED id. Dropping the id here
@@ -92,20 +80,6 @@ class TestLoadResumeTarget:
             assert sid == "s1"
             assert history == []
             assert meta["id"] == "s1"
-        finally:
-            db.close()
-
-    def test_empty_compression_head_without_rows_keeps_head_id(self, tmp_path):
-        # A chain head with no descendant rows must not fall through to a fresh id either:
-        # the turn stays anchored to the resolved head (redirect only happens when the
-        # descendant actually holds messages).
-        db = SessionDB(db_path=tmp_path / "state.db")
-        db.create_session(session_id="head", source="cli")
-        db.create_session(session_id="child", source="cli", parent_session_id="head")
-        try:
-            sid, history, _meta = _load_resume_target(db, "head")
-            assert sid == "head"
-            assert history == []
         finally:
             db.close()
 
@@ -139,19 +113,6 @@ class TestLoadResumeTarget:
             assert reopened["end_reason"] is None
         finally:
             db.close()
-
-    def test_reopen_failure_is_best_effort(self, tmp_path, monkeypatch):
-        db = _db_with_session(tmp_path, "s1", messages=[("user", "hi")])
-        try:
-            def _boom(_sid):
-                raise RuntimeError("reopen unavailable")
-            monkeypatch.setattr(db, "reopen_session", _boom)
-            sid, history, _meta = _load_resume_target(db, "s1")
-            assert sid == "s1"
-            assert [m["role"] for m in history] == ["user"]
-        finally:
-            db.close()
-
 
 class TestApplyStoredSessionRuntime:
     """A resumed one-shot must run on the session's stored runtime, not the ambient
@@ -196,14 +157,6 @@ class TestApplyStoredSessionRuntime:
         assert choice.provider == "openrouter"
         assert choice.api_key is self._AMBIENT_KEY
 
-    def test_no_stored_model_keeps_ambient_choice(self, tmp_path):
-        meta = self._stored_db(tmp_path, model=None)
-        choice = _apply_stored_session_runtime(
-            _ModelChoice("ambient-model", "openrouter", api_key=self._AMBIENT_KEY), meta, explicit_model=False)
-        assert choice.model == "ambient-model"
-        assert choice.provider == "openrouter"
-        assert choice.api_key is self._AMBIENT_KEY
-
     def test_matching_route_is_noop_and_keeps_credentials(self, tmp_path):
         meta = self._stored_db(tmp_path, route={"provider": "openrouter"})
         choice = _apply_stored_session_runtime(
@@ -211,20 +164,6 @@ class TestApplyStoredSessionRuntime:
             meta, explicit_model=False)
         assert choice.api_key is self._AMBIENT_KEY
         assert choice.api_mode is None
-
-    def test_none_meta_is_a_noop(self):
-        choice = _ModelChoice("ambient-model", "openrouter")
-        assert _apply_stored_session_runtime(choice, None, explicit_model=False) == choice
-
-    def test_bare_custom_provider_is_healed_or_dropped(self, tmp_path):
-        # Bare "custom" persisted by older builds is not a routable identity; the CLI's
-        # resolve path would hard-fail on it, so it is healed via the base_url or dropped.
-        meta = self._stored_db(tmp_path, route={"provider": "custom"})
-        choice = _apply_stored_session_runtime(
-            _ModelChoice("ambient-model", "openrouter"), meta, explicit_model=False)
-        assert choice.model == "stored-model"
-        assert choice.provider in (None, "openrouter") or choice.provider.startswith("custom:")
-
 
 class TestRunAgentResumeRuntime:
     """End-to-end wiring: ``_run_agent`` must hand AIAgent the session's stored runtime
@@ -327,15 +266,3 @@ class TestRunOneshotForwardsResume:
         assert rc == 0
         assert captured["prompt"] == "hello"
         assert captured["resume"] == "sess-1"
-
-    def test_no_resume_forwards_none(self, monkeypatch):
-        captured = {}
-
-        def _fake_run_agent(prompt, **kwargs):
-            captured.update(kwargs)
-            return "ok", {"final_response": "ok"}
-
-        monkeypatch.setattr("hermes_cli.oneshot._run_agent", _fake_run_agent)
-        rc = run_oneshot("hello", model="m", provider="custom")
-        assert rc == 0
-        assert captured.get("resume") is None

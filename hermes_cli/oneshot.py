@@ -383,36 +383,25 @@ def _load_resume_target(session_db, resume: Optional[str]) -> tuple[Optional[str
 def _apply_stored_session_runtime(
     choice: _ModelChoice, session_meta: Optional[dict], *, explicit_model: bool,
 ) -> _ModelChoice:
-    """Run a resumed one-shot on the session's stored runtime, not the ambient config.
-
-    Same contract as the interactive ``_restore_session_model`` (cli_model_switch_mixin): no
-    stored model, or an explicit ``--model``, keeps the resolved ambient choice; otherwise the
-    stored model/provider/base_url/api_mode replace it (a resumed transcript must not be sent
-    to whatever the ambient config happens to point at). A changed provider drops the resolved
-    ``api_key`` — it belongs to the ambient/alias endpoint, and api_key is never persisted to
-    the session DB, so runtime resolution re-fetches credentials for the restored provider.
-    No-op when the stored route already matches the resolved one.
-    """
-    stored_model = str((session_meta or {}).get("model") or "").strip()
-    if not stored_model or explicit_model:
+    """Run a resumed one-shot on the session's stored runtime, not the ambient config — the same
+    contract as the interactive ``_restore_session_model``, via the shared ``stored_session_route``.
+    An explicit ``--model`` keeps the ambient choice. A changed provider drops the resolved
+    ``api_key``: it belongs to the ambient endpoint and is never persisted, so runtime resolution
+    re-fetches credentials for the restored provider."""
+    if explicit_model:
         return choice
-    from hermes_state import SessionDB as _SessionDB
-    from hermes_cli.cli_model_switch_mixin import _heal_bare_custom_provider
+    from hermes_cli.cli_model_switch_mixin import stored_session_route
 
-    stored_runtime = _SessionDB.session_gateway_runtime(session_meta)
-    stored_base_url = stored_runtime.get("base_url") or None
-    # Stricter than the TUI gateway's recovery — the CLI's resolve path hard-fails on bare "custom".
-    stored_provider = _heal_bare_custom_provider(
-        stored_runtime.get("provider") or None, base_url=stored_base_url, model=stored_model)
-    if stored_model == choice.model and (not stored_provider or stored_provider == choice.provider):
+    route = stored_session_route(session_meta, current_model=choice.model, current_provider=choice.provider)
+    if route is None:
         return choice
-    choice.model = stored_model
-    if stored_provider and stored_provider != choice.provider:
+    choice.model, stored_provider, stored_base_url, stored_api_mode, provider_changed = route
+    if provider_changed:
         choice.provider = stored_provider
         choice.base_url = stored_base_url
         choice.api_key = None
-    if stored_runtime.get("api_mode"):
-        choice.api_mode = str(stored_runtime["api_mode"])
+    if stored_api_mode:
+        choice.api_mode = str(stored_api_mode)
     return choice
 
 

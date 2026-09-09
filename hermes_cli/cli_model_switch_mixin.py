@@ -28,6 +28,25 @@ def _runtime_fields(cli) -> dict:
     return {key: getattr(cli, key, None) for key in _RUNTIME_FIELDS}
 
 
+def stored_session_route(session_meta, *, current_model, current_provider):
+    """The route a resumed session should run on, or ``None`` when the stored one is absent or
+    already current. Returns ``(model, provider, base_url, api_mode, provider_changed)``; the
+    canonical row reader is ``SessionDB.session_gateway_runtime`` (``model_config.gateway_runtime``,
+    else the TUI's top-level keys). Bare ``custom`` is healed because the CLI resolve path
+    hard-fails on it (the TUI gateway keeps it when a base_url exists)."""
+    stored_model = str((session_meta or {}).get("model") or "").strip()
+    if not stored_model:
+        return None
+    from hermes_state import SessionDB as _SessionDB
+    runtime = _SessionDB.session_gateway_runtime(session_meta)
+    base_url = runtime.get("base_url") or None
+    provider = _heal_bare_custom_provider(runtime.get("provider") or None, base_url=base_url, model=stored_model)
+    provider_changed = bool(provider) and provider != current_provider
+    if stored_model == current_model and not provider_changed:
+        return None
+    return stored_model, provider, base_url, (runtime.get("api_mode") or None), provider_changed
+
+
 def _heal_bare_custom_provider(provider, *, base_url, model):
     """Bare ``custom`` is a billing class, not a routable identity: persisting/restoring it makes a
     later resume hard-fail once the config default leaves the custom endpoint. Recover the durable
@@ -348,22 +367,12 @@ class CLIModelSwitchMixin:
         so the session still opens (the first turn surfaces the auth error).
         """
         from cli import logger
-        stored_model = (session_meta or {}).get("model")
-        if not stored_model or getattr(self, "_explicit_model_override", False):
+        if getattr(self, "_explicit_model_override", False):
             return
-        # Canonical row reader: model_config.gateway_runtime, else the TUI's top-level keys.
-        from hermes_state import SessionDB as _SessionDB
-        _stored_runtime = _SessionDB.session_gateway_runtime(session_meta)
-        stored_base_url = _stored_runtime.get("base_url") or None
-        stored_api_mode = _stored_runtime.get("api_mode") or None
-        # Stricter than the TUI gateway's recovery (which keeps bare "custom" when a
-        # base_url exists) — the CLI's resolve path would hard-fail on it.
-        stored_provider = _heal_bare_custom_provider(
-            _stored_runtime.get("provider") or None, base_url=stored_base_url, model=stored_model)
-        model_changed = stored_model != self.model
-        provider_changed = bool(stored_provider) and stored_provider != self.provider
-        if not model_changed and not provider_changed:
+        route = stored_session_route(session_meta, current_model=self.model, current_provider=self.provider)
+        if route is None:
             return
+        stored_model, stored_provider, stored_base_url, stored_api_mode, provider_changed = route
         self.model = stored_model
         if stored_provider:
             self.provider = stored_provider

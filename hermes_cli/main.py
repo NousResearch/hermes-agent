@@ -152,7 +152,7 @@ def _run_and_exit_oneshot(
             toolsets=toolsets,
             skills=skills,
             usage_file=usage_file,
-            resume=resume if isinstance(resume, str) and resume.strip() else None,
+            resume=resume,
         )
     except KeyboardInterrupt:
         rc = 130

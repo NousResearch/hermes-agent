@@ -14,6 +14,7 @@ import os
 import subprocess
 import time
 from contextlib import contextmanager
+from contextvars import ContextVar
 from typing import Any, Callable, Optional
 
 from agent.redact import redact_sensitive_text
@@ -31,6 +32,37 @@ logger = logging.getLogger(__name__)
 
 KANBAN_LIST_DEFAULT_LIMIT = 50
 KANBAN_LIST_MAX_LIMIT = 200
+
+
+# --- Review scope (gateway-woken interactive reviewer) ---
+# A ``review_requested`` wake claims a run for the woken interactive reviewer;
+# the gateway carries that (task_id, run_id) through the wake event and installs
+# it here so the reviewer's tools assert the exact claimed run rather than a
+# re-derived current run.
+
+_KANBAN_REVIEW_SCOPE: "ContextVar[Optional[dict]]" = ContextVar(
+    "kanban_review_scope", default=None
+)
+
+
+def install_kanban_review_scope(scope: Optional[dict]) -> None:
+    """Set ``{"task_id": ..., "run_id": ...}`` for the current task/turn.
+
+    The gateway's ``_process_message_background`` calls this once per woken
+    review turn; the value is scoped to that task's context and discarded when
+    the task ends, so concurrent sessions never see each other's scope.
+    """
+    _KANBAN_REVIEW_SCOPE.set(scope)
+
+
+@contextmanager
+def kanban_review_scope(task_id: str, run_id: Optional[int]):
+    """Context-manager form: scope the current task to a claimed review run."""
+    token = _KANBAN_REVIEW_SCOPE.set({"task_id": task_id, "run_id": run_id})
+    try:
+        yield
+    finally:
+        _KANBAN_REVIEW_SCOPE.reset(token)
 
 
 # --- Gating ---
@@ -127,10 +159,14 @@ def _reject_delegated_child_mutation(tool_name: str) -> None:
 
 
 def _default_task_id(arg: Optional[str]) -> Optional[str]:
-    """``task_id`` arg or the dispatcher's env var. A delegate child or an
-    in-process cron job must never inherit the worker's task id implicitly."""
+    """``task_id`` arg, the review scope, or the dispatcher's env var. A delegate
+    child or an in-process cron job must never inherit the worker's task id
+    implicitly."""
     if arg:
         return arg
+    scope = _KANBAN_REVIEW_SCOPE.get()
+    if scope and scope.get("task_id"):
+        return scope["task_id"]
     if _is_delegated_child_context() or not _is_dispatcher_owned_worker():
         return None
     return os.environ.get("HERMES_KANBAN_TASK") or None
@@ -143,7 +179,19 @@ def _require_task_id(args: dict) -> str:
 
 
 def _own_task_env(task_id: str, var: str) -> Optional[str]:
-    """``$var`` only when this worker is scoped to ``task_id``; else None."""
+    """``$var`` only when this worker is scoped to ``task_id``; else None.
+
+    Consults the review scope (installed by the gateway for a woken interactive
+    reviewer) before process env, so the reviewer asserts the exact claimed run
+    id rather than a re-derived current run.
+    """
+    scope = _KANBAN_REVIEW_SCOPE.get()
+    if scope and scope.get("task_id") == task_id:
+        if var == "HERMES_KANBAN_TASK":
+            return task_id
+        if var == "HERMES_KANBAN_RUN_ID":
+            rid = scope.get("run_id")
+            return str(rid) if rid is not None else None
     return os.environ.get(var) if os.environ.get("HERMES_KANBAN_TASK") == task_id else None
 
 

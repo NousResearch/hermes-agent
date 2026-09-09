@@ -814,17 +814,24 @@ def test_review_requested_claims_card_then_wakes_one_reviewer_who_completes_with
     finally:
         conn.close()
 
-    # The woken reviewer completes WITHOUT force: as an env-scoped session it
-    # resolves its own live run as expected_run_id — exactly like the
+    # The wake must thread the claimed review scope (task_id, run_id) into the
+    # woken reviewer's context — not rely on the monkeypatched HERMES_KANBAN_TASK
+    # that used to paper over the missing propagation (P1-1).
+    scope = adapter.handled[0].metadata.get("kanban_review_scope")
+    assert scope == {"task_id": tid, "run_id": claimed.current_run_id}, (
+        "the wake must carry the claimed review run into the reviewer's context"
+    )
+
+    # The woken reviewer completes WITHOUT force: it resolves the claimed run
+    # from the review scope (not a re-derived current run), exactly like the
     # gateway-woken interactive reviewer in the #19534 flow.
-    monkeypatch.delenv("HERMES_KANBAN_RUN_ID", raising=False)
-    monkeypatch.setenv("HERMES_KANBAN_TASK", tid)
+    from tools.kanban_tools import _resolve_expected_run_id, kanban_review_scope
+
     conn = kbc.connect()
     try:
-        from tools.kanban_tools import _resolve_expected_run_id
-
-        expected = _resolve_expected_run_id(kb, conn, tid)
-        assert expected is not None and expected == claimed.current_run_id
+        with kanban_review_scope(tid, claimed.current_run_id):
+            expected = _resolve_expected_run_id(kb, conn, tid)
+            assert expected is not None and expected == claimed.current_run_id
         assert kb.complete_task(
             conn, tid, summary="approved", expected_run_id=expected,
         )

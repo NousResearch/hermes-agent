@@ -82,6 +82,54 @@ def test_show_defaults_to_env_task_id(worker_env):
     assert "runs" in d
 
 
+def test_review_scope_supplies_task_and_run_id_and_beats_current_run(monkeypatch, tmp_path):
+    """The gateway review scope supplies the woken reviewer's task id and the
+    exact claimed run id, overriding a re-derived current run (P1-1)."""
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+    from tools import kanban_tools as kt
+
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("HERMES_PROFILE", "test-reviewer")
+    monkeypatch.delenv("HERMES_SESSION_ID", raising=False)
+    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    monkeypatch.delenv("HERMES_KANBAN_RUN_ID", raising=False)
+    from pathlib import Path as _Path
+    monkeypatch.setattr(_Path, "home", lambda: tmp_path)
+    kb._INITIALIZED_PATHS.clear()
+    kb.init_db()
+
+    conn = kbc.connect()
+    try:
+        tid = kb.create_task(conn, title="review-me", assignee="worker")
+        kb.claim_task(conn, tid)
+        run_id = kb.get_task(conn, tid).current_run_id
+        assert kb.request_review(conn, tid, summary="done", expected_run_id=run_id) is True
+        claimed = kb.claim_review_task(conn, tid, claimer="interactive-reviewer")
+        assert claimed is not None
+        current = claimed.current_run_id
+
+        # No scope, no env: the reviewer resolves neither task id nor run id —
+        # the exact gap this fix closes.
+        assert kt._default_task_id(None) is None
+        assert kt._resolve_expected_run_id(kb, conn, tid) is None
+
+        # The review scope supplies the task id AND the exact claimed run id.
+        with kt.kanban_review_scope(tid, current):
+            assert kt._default_task_id(None) == tid
+            assert kt._resolve_expected_run_id(kb, conn, tid) == current
+
+        # The claimed run wins over a (changed) current run: the reviewer asserts
+        # what it claimed, never a silently re-derived current run.
+        bogus = current + 100_000
+        with kt.kanban_review_scope(tid, bogus):
+            assert kt._resolve_expected_run_id(kb, conn, tid) == bogus
+    finally:
+        conn.close()
+
+
 def test_list_filters_tasks(monkeypatch, worker_env):
     """kanban_list gives orchestrators filtered board discovery."""
     monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)

@@ -51,16 +51,21 @@ async def admit_internal_event(adapter: Any, event: Any) -> None:
         raise WakeNotAccepted("internal wake not accepted by adapter")
 
 
-async def deliver_wake(adapter: Any, *, text: str, session_id: str = "", source: Any = None) -> None:
+async def deliver_wake(adapter: Any, *, text: str, session_id: str = "", source: Any = None,
+                       kanban_scope: Optional[dict] = None) -> None:
     """Deliver a wake turn to the session behind ``adapter``. ``session_id`` is the RAW session id
     (``X-Hermes-Session-Id`` / state.db key) — required for non-push adapters. ``source`` is the
-    ``SessionSource`` for the synthetic event — required for push-capable adapters. Raises on
+    ``SessionSource`` for the synthetic event — required for push-capable adapters. ``kanban_scope``
+    (``{"task_id": ..., "run_id": ...}``) is threaded into the woken reviewer's turn context so its
+    tools assert the claimed review run rather than a re-derived current run. Raises on
     failure so the caller can rewind/retry."""
     if adapter_supports_push(adapter):
         if source is None:
             raise ValueError("deliver_wake: push-capable adapter requires a SessionSource")
         from gateway.platforms.event import MessageEvent, MessageType
         synth_event = MessageEvent(text=text, message_type=MessageType.TEXT, source=source, internal=True)
+        if kanban_scope:
+            synth_event.metadata["kanban_review_scope"] = kanban_scope
         await admit_internal_event(adapter, synth_event)
         return
     if not session_id:

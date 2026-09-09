@@ -3924,6 +3924,14 @@ class BasePlatformAdapter(ABC):
 
     async def _process_message_background(self, event: MessageEvent, session_key: str) -> None:
         """Background task that actually processes the message."""
+        # Thread a claimed kanban review scope (task_id, run_id) from the wake event
+        # into this turn's tool context so the woken reviewer asserts the exact run it
+        # claimed rather than a re-derived current run. Scoped to this task's context
+        # and discarded when the turn task ends.
+        _scope = (event.metadata or {}).get("kanban_review_scope")
+        if isinstance(_scope, dict) and _scope.get("task_id"):
+            from tools.kanban_tools import install_kanban_review_scope
+            install_kanban_review_scope(_scope)
         delivery_attempted = delivery_succeeded = False  # feeds the processing-complete hook
 
         def _record_delivery(result):

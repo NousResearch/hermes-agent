@@ -4781,6 +4781,20 @@ def _looks_like_profile_conflict_from_cmdline(command: str, our_home) -> bool:
     return bool(home_value is not None and _norm(home_value) != _norm(str(our_home)))
 
 
+def _resolve_stderr_level(
+    requested: int, stream: Any, *, platform: str | None = None
+) -> int:
+    """Cap macOS non-TTY stderr without changing other logging paths."""
+    try:
+        is_tty = stream.isatty()
+    except Exception:
+        is_tty = False
+    effective_platform = sys.platform if platform is None else platform
+    if effective_platform == "darwin" and not is_tty:
+        return max(requested, logging.CRITICAL)
+    return requested
+
+
 def _clear_takeover_marker_quiet() -> None:
     """Best-effort: the marker is scoped to one target; a stale one would grief an unrelated shutdown."""
     try:
@@ -4913,10 +4927,17 @@ def _start_gateway_configure_logging(verbosity: Optional[int]) -> None:
 
     _best_effort(_security_audit, "Startup security audit failed (non-fatal): %s")
 
-    # Optional stderr handler from -v/-q: None (quiet) = none; 0 = WARNING; 1 = INFO; 2+ = DEBUG.
+    # Optional stderr handler — level driven by -v/-q flags on the CLI.
+    # verbosity=None (-q/--quiet): no stderr output
+    # verbosity=0    (default):    WARNING and above
+    # verbosity=1    (-v):         INFO and above
+    # verbosity=2+   (-vv/-vvv):   DEBUG
+    # On macOS non-TTY (launchd), cap at CRITICAL so routine WARNING/ERROR does
+    # not fill the unbounded StandardErrorPath (gateway.error.log).
     if verbosity is not None:
-        _stderr_level = {0: logging.WARNING, 1: logging.INFO}.get(verbosity, logging.DEBUG)
+        _requested_stderr_level = {0: logging.WARNING, 1: logging.INFO}.get(verbosity, logging.DEBUG)
         _stderr_handler = logging.StreamHandler(_safe_stderr())
+        _stderr_level = _resolve_stderr_level(_requested_stderr_level, _stderr_handler.stream)
         _stderr_handler.setLevel(_stderr_level)
         _stderr_handler.setFormatter(_gateway_stderr_formatter())
         root = logging.getLogger()

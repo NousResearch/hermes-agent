@@ -62,11 +62,18 @@ vi.mock('@/hermes', () => ({
   getActionStatus: (name: string, lines?: number) => getActionStatus(name, lines),
   startOAuthLogin: (providerId: string) => startOAuthLogin(providerId),
   pollOAuthSession: (providerId: string, sessionId: string) => pollOAuthSession(providerId, sessionId),
-  getHermesConfigRecord: () => getHermesConfigRecord(),
-  getHermesConfigSchema: () => getHermesConfigSchema(),
+  getHermesConfigRecord: (profile?: unknown) => getHermesConfigRecord(profile),
+  getHermesConfigSchema: (profile?: unknown) => getHermesConfigSchema(profile),
   saveHermesConfig: (config: unknown) => saveHermesConfig(config),
   saveHermesConfigRecord: (config: unknown, profile?: unknown) => saveHermesConfig(config, profile),
-  getElevenLabsVoices: () => getElevenLabsVoices(),
+  getElevenLabsVoices: (profile?: unknown) => getElevenLabsVoices(profile),
+  profileScopeKey: (scope?: string | { connectionId?: string; profile?: string }) => {
+    if (scope && typeof scope === 'object') {
+      return `${scope.connectionId ?? ''}::${scope.profile ?? 'default'}`
+    }
+
+    return scope ?? 'default'
+  },
   // @/store/profile (pulled in transitively via use-config-record's
   // normalizeProfileKey import) calls this at module-init; the full-replacement
   // mock must provide it or the module graph throws on load.
@@ -202,6 +209,7 @@ describe('ToolsetConfigPanel', () => {
   })
 
   it('renders every local SenseVoice setup field in the STT provider row', async () => {
+    const profile = { connectionId: 'homelab', profile: 'voice-bot' }
     getToolsetConfig.mockResolvedValue(
       config({
         name: 'stt',
@@ -221,6 +229,7 @@ describe('ToolsetConfigPanel', () => {
       })
     )
     getHermesConfigRecord.mockResolvedValue({
+      unrelated: { concurrent_setting: 'stale' },
       stt: {
         sensevoice: {
           binary: 'llama-funasr-sensevoice',
@@ -232,13 +241,47 @@ describe('ToolsetConfigPanel', () => {
       }
     })
 
-    render(<ToolsetConfigPanel onConfiguredChange={vi.fn()} toolset="stt" />)
+    render(<ToolsetConfigPanel onConfiguredChange={vi.fn()} profile={profile} toolset="stt" />)
 
     expect(await screen.findByDisplayValue('llama-funasr-sensevoice')).toBeTruthy()
     expect(screen.getByDisplayValue('sense-voice-small.gguf')).toBeTruthy()
     expect(screen.getByDisplayValue('fsmn-vad.gguf')).toBeTruthy()
     expect(screen.getByText('Cpu')).toBeTruthy()
     expect(screen.getByDisplayValue('120')).toBeTruthy()
+    expect(getHermesConfigRecord).toHaveBeenCalledWith(profile)
+    expect(getHermesConfigSchema).toHaveBeenCalledWith(profile)
+
+    fireEvent.change(screen.getByDisplayValue('sense-voice-small.gguf'), { target: { value: 'sense-voice-v2.gguf' } })
+    await waitFor(() => expect(saveHermesConfig).toHaveBeenCalled(), { timeout: 3000 })
+    expect(saveHermesConfig).toHaveBeenLastCalledWith(
+      { stt: { sensevoice: { model: 'sense-voice-v2.gguf' } } },
+      profile
+    )
+  })
+
+  it('scopes dynamic ElevenLabs voices to the selected connection and profile', async () => {
+    const profile = { connectionId: 'homelab', profile: 'voice-bot' }
+    getToolsetConfig.mockResolvedValue(
+      config({
+        providers: [
+          {
+            name: 'ElevenLabs',
+            badge: 'paid',
+            tag: 'Most natural voices',
+            env_vars: [],
+            post_setup: null,
+            requires_nous_auth: false,
+            is_active: false,
+            tts_provider: 'elevenlabs'
+          }
+        ]
+      })
+    )
+
+    render(<ToolsetConfigPanel onConfiguredChange={vi.fn()} profile={profile} toolset="tts" />)
+
+    await screen.findByText('ElevenLabs Voice')
+    expect(getElevenLabsVoices).toHaveBeenCalledWith(profile)
   })
 
   it('renders no inline voice fields for rows without tts_provider (older backend)', async () => {

@@ -217,10 +217,10 @@ export function setTtsLease(lease: string, active: boolean): Promise<AudioTtsLea
   })
 }
 
-export function getElevenLabsVoices(profile?: null | string): Promise<ElevenLabsVoicesResponse> {
-  return hermesApi<ElevenLabsVoicesResponse>({
+export function getElevenLabsVoices(profile?: ProfileScope): Promise<ElevenLabsVoicesResponse> {
+  return window.hermesDesktop.api<ElevenLabsVoicesResponse>({
     path: '/api/audio/elevenlabs/voices',
-    ...profileScoped(profile)
+    ...capabilityScoped(profile)
   })
 }
 

@@ -81,7 +81,7 @@ function prepareGroupRoundMember(context: GroupRoundMemberContext, member: Group
     if (!heldEntry.noted) {
       recordGroupActivity(context.group, {
         kind: 'held',
-        member: member.name,
+        member,
         thread
       })
     }
@@ -145,7 +145,7 @@ export async function runGroupRoundMember(
     const reason = String(error?.data?.reason || '').trim()
     recordGroupActivity(context.group, {
       kind: 'failed',
-      member: member.name,
+      member,
       thread,
       ...(reason
         ? {
@@ -190,7 +190,7 @@ export async function runGroupRoundMember(
   if (!shouldCommitMemberTurn(startEpoch, epochNow, newerUserEntryInThread)) {
     recordGroupActivity(context.group, {
       kind: 'cancelled',
-      member: member.name,
+      member,
       thread
     })
 
@@ -291,7 +291,7 @@ async function runGroupContinuationMember(
 
     recordGroupActivity(context.group, {
       kind: 'failed',
-      member: member.name,
+      member,
       thread
     })
     noteBotAttention(memberKey, error?.message || error)

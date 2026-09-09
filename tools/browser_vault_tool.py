@@ -8,8 +8,9 @@ tools):
 - ``browser_vault_list``  → handles + metadata (for logins this includes the
   identifier — it is NOT a secret; the agent types it itself). Passwords are
   never returned.
-- ``browser_vault_fill``  → server-side fill of ONLY the password field of
-  the CURRENT page's login form from a vault handle. The password is
+- ``browser_vault_fill``  → server-side fill of the CURRENT page from a vault
+  handle: the password field for logins, card fields for payment items (after
+  the user confirms), address fields for address items. The secret is
   resolved locally, the page origin must EXACTLY match the item's bound
   origin (pre-checked AND re-asserted synchronously inside the fill script),
   the field is chosen by the ported login-control classifier, injection runs
@@ -38,7 +39,9 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 def _check_vault_available() -> bool:
-    """Schema-gate: the tools appear only when the local vault has items or an external manager is enabled."""
+    """Schema-gate: the tools appear only when the local vault has items or an external manager is enabled.
+    Registered uncached: the answer is per profile (vault dir + config) and the registry's TTL cache is keyed
+    per profile only under multiplex; the probe is a local file stat, cheap enough to run every pass."""
     try:
         from agent.vault_backends import enabled_backends
         from agent.vault_store import get_vault_store
@@ -153,6 +156,29 @@ def _current_page_origin(task_id: str) -> Optional[str]:
         return None
 
 
+# Per kind: a JS probe that is truthy on a tab holding the form this kind fills.
+_TAB_PROBES = {
+    "login": "!!document.querySelector('input[type=password]')",
+    "payment": "!!document.querySelector('input[autocomplete^=cc-], [name*=card i], [placeholder*=card i], [name*=cvc i], [name*=cvv i]')",
+    "address": "!!document.querySelector('input[autocomplete^=address-], [autocomplete=postal-code], [name*=address i], [name*=zip i], [name*=postal i]')",
+}
+
+
+def _focus_bound_origin(task_id: str, origin: str, kind: str) -> Optional[str]:
+    """Point the supervisor's page session at the open tab on ``origin`` that holds a ``kind`` form
+    (browser_exec sessions open their own tabs, so the tab the supervisor attached to first is rarely the
+    login page). Returns the origin when a tab was focused, else None (caller falls back to the current page)."""
+    try:
+        from tools.browser_supervisor import SUPERVISOR_REGISTRY
+
+        supervisor = SUPERVISOR_REGISTRY.get(task_id)
+    except Exception:
+        supervisor = None
+    if supervisor is None:
+        return None
+    return origin if supervisor.focus_page(origin, accept=_TAB_PROBES.get(kind)).get("ok") else None
+
+
 # ---------------------------------------------------------------------------
 # Handlers
 # ---------------------------------------------------------------------------
@@ -179,7 +205,7 @@ def browser_vault_list() -> str:
             continue
         for meta in metas:
             entry = {"handle": meta.id, "backend": backend.name, "label": meta.label, "kind": meta.kind,
-                     "origin": meta.origin, "available": meta.kind == "login"}
+                     "origin": meta.origin, "available": meta.kind == "login" or bool(meta.origin)}
             if meta.identifier:
                 entry["identifier"] = meta.identifier
                 entry["identifier_type"] = meta.identifier_type
@@ -235,11 +261,13 @@ def browser_vault_fill(handle: str, task_id: Optional[str] = None) -> str:
         LoginControl,
         build_fill_js,
         build_inspection_js,
+        classify_checkout_control,
         classify_login_control,
+        select_checkout_fills,
         select_password_fill,
     )
     from agent.vault_backends import UnlockRequired, backend_for_handle
-    from agent.vault_store import scrub_secret_from_text
+    from agent.vault_store import ADDRESS_FIELDS, PAYMENT_FIELDS, scrub_secret_from_text
 
     effective_task_id = task_id or "default"
     backend = backend_for_handle(handle)
@@ -264,14 +292,16 @@ def browser_vault_fill(handle: str, task_id: Optional[str] = None) -> str:
                 ),
             }
         )
-    if meta.kind != "login":
-        return json.dumps(
-            {"success": False, "error": f"Vault item {handle!r} is kind={meta.kind!r}; only login items can be filled in Phase 1."}
-        )
+    if meta.kind != "login" and not meta.origin:
+        return json.dumps({"success": False, "error_type": "no_origin",
+                           "error": f"Vault item {handle!r} has no bound origin; {meta.kind} items are filled only on the site they were saved for."})
+    if meta.kind == "payment" and not _confirm_payment_fill(meta.label, str(meta.origin)):
+        return json.dumps({"success": False, "error_type": "payment_declined",
+                           "error": "The user did not confirm filling this payment card. Do not retry; ask them instead."})
 
     # ── Origin binding pre-check (cheap early exit; the authoritative check
     # runs synchronously inside the fill script itself) ──────────────────────
-    page_origin = _current_page_origin(effective_task_id)
+    page_origin = _focus_bound_origin(effective_task_id, str(meta.origin), meta.kind) or _current_page_origin(effective_task_id)
     if not page_origin:
         return json.dumps(
             {"success": False, "error": "Could not determine the current page origin. Navigate to the login page first."}
@@ -302,33 +332,39 @@ def browser_vault_fill(handle: str, task_id: Optional[str] = None) -> str:
     if not isinstance(raw_controls, list):
         return json.dumps({"success": False, "error": "Page input inspection returned no usable controls."})
 
+    classify = classify_login_control if meta.kind == "login" else classify_checkout_control
     classified: list[ClassifiedLoginControl] = []
     for raw in raw_controls:
         if not isinstance(raw, dict):
             continue
-        result = classify_login_control(LoginControl.from_dict(raw))
+        result = classify(LoginControl.from_dict(raw))
         if result is not None:
             classified.append(result)
     if not classified:
-        return json.dumps({"success": False, "error": "No login form fields were found on the current page."})
+        return json.dumps({"success": False, "error": f"No {meta.kind} form fields were found on the current page."})
 
     # ── Resolve secret and fill (secret never enters any logged string) ─────
     try:
-        password = backend.resolve_password(handle)
+        if meta.kind == "login":
+            secret = {"password": backend.resolve_password(handle)}
+            fills = select_password_fill(classified, secret["password"])
+        else:
+            secret = backend.resolve_secret(handle)
+            fills = select_checkout_fills(classified, secret, PAYMENT_FIELDS if meta.kind == "payment" else ADDRESS_FIELDS)
     except UnlockRequired:
         return json.dumps({"success": False, "error_type": "unlock_required",
                            "error": f"{backend.display_name} locked again; call browser_vault_unlock."})
-    secret = {"password": password}
-    fills = select_password_fill(classified, password)
     if not fills:
         return json.dumps(
-            {"success": False, "error": "No fillable password field matched (is there a password field on this page?)."}
+            {"success": False, "error": f"No fillable {meta.kind} field matched the saved item on this page."}
         )
 
     # Register the secret bytes with the model-egress redaction boundary
     # BEFORE they touch the page: any later browser_* result (including
     # browser_cdp Runtime.evaluate reads) that echoes them is scrubbed.
-    register_vault_redaction_value(password)
+    # Address values are not secrets but the card fields are: register every payment value.
+    for value in (secret.values() if meta.kind == "payment" else [secret.get("password", "")]):
+        register_vault_redaction_value(value)
 
     try:
         fill_result = _eval_js_secret(
@@ -364,15 +400,24 @@ def browser_vault_fill(handle: str, task_id: Optional[str] = None) -> str:
         )
     filled = parsed.get("filled", 0) if isinstance(parsed, dict) else 0
 
-    return json.dumps(
-        {
-            "success": bool(filled),
-            "filled_fields": int(filled),
-            "backend": backend.name,
-            "kind": meta.kind,
-            "origin": meta.origin,
-        }
-    )
+    out = {"success": bool(filled), "filled_fields": int(filled), "backend": backend.name,
+           "kind": meta.kind, "origin": meta.origin}
+    if meta.kind != "login":
+        out["fields"] = sorted(f["token"] for f in fills)  # which controls were targeted, never the values
+    return json.dumps(out)
+
+
+def _confirm_payment_fill(label: str, origin: str) -> bool:
+    """Human confirmation before a card is written into a page: a prompt injection that reaches a checkout
+    must not be able to spend. Routes through the approval surface of the active session (gateway button
+    round-trip or CLI panel); headless sessions cannot confirm and the fill is refused."""
+    from tools.approval_prompt import request_elicitation_consent
+
+    return request_elicitation_consent(
+        f"Fill payment card '{label}' on {origin}",
+        "The agent wants to enter your saved card details into this checkout page. The card number and "
+        "CVC never enter the conversation. Approve only if you intend to pay here.",
+        surface="vault-payment") == "accept"
 
 
 # ---------------------------------------------------------------------------
@@ -382,13 +427,13 @@ def browser_vault_fill(handle: str, task_id: Optional[str] = None) -> str:
 BROWSER_VAULT_LIST_SCHEMA = {
     "name": "browser_vault_list",
     "description": (
-        "List saved website logins as handles with metadata (label, backend, bound origin, and the "
-        "identifier + identifier_type so you can type the username yourself with fill_input). "
-        "Passwords are NEVER returned. Sources: the local Hermes vault plus any enabled password "
+        "List saved website logins, payment cards and addresses as handles with metadata (kind, label, "
+        "backend, bound origin; logins also carry identifier + identifier_type so you can type the username "
+        "yourself with the browser's input tool). Secret values are NEVER returned. Sources: the local Hermes vault plus any enabled password "
         "manager (1Password, Bitwarden). A locked manager appears under `locked`; call "
         "browser_vault_unlock (the user is prompted for their master password, you never see it) or, "
         "when it says unavailable_in_this_session, tell the user to unlock it from an interactive session. "
-        "Workflow: fill_input the identifier, then browser_vault_fill with the handle."
+        "Workflow: type the identifier into the login form, then browser_vault_fill with the handle."
     ),
     "input_schema": {"type": "object", "properties": {}, "required": []},
 }
@@ -411,12 +456,13 @@ BROWSER_VAULT_UNLOCK_SCHEMA = {
 BROWSER_VAULT_FILL_SCHEMA = {
     "name": "browser_vault_fill",
     "description": (
-        "Fill ONLY the password field of the CURRENT browser page's login form from a vault handle "
-        "(see browser_vault_list). Type the identifier/username yourself first with fill_input, then "
-        "call this. The password is resolved from the local vault or the password manager and injected "
-        "server-side; it never appears in the conversation. Refused unless the page origin exactly "
-        "matches the credential's bound origin (re-checked atomically at fill time). If the manager is "
-        "locked the user is prompted to unlock first."
+        "Fill the CURRENT browser page from a vault handle (see browser_vault_list): a login item fills ONLY "
+        "the password field (type the identifier/username yourself first with the browser's input tool); a "
+        "payment item fills card number/name/expiry/CVC after the user confirms in their UI; an address item "
+        "fills the address fields. Values are resolved server-side and never appear in the conversation. "
+        "Refused unless the page origin exactly matches the item's bound origin (re-checked atomically at "
+        "fill time). If a password manager is locked the user is prompted to unlock first. Never retry a "
+        "payment_declined result."
     ),
     "input_schema": {
         "type": "object",
@@ -445,7 +491,9 @@ def _handle_vault_fill(args: Dict[str, Any], **kwargs) -> str:
     )
 
 
-from tools.registry import registry  # noqa: E402
+from tools.registry import no_cache_check_fn, registry  # noqa: E402
+
+_check_vault_available = no_cache_check_fn(_check_vault_available)
 
 registry.register(
     name="browser_vault_list",

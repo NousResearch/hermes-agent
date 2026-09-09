@@ -330,16 +330,10 @@ export function VaultSettings() {
       return
     }
 
-    const needsOrigin = form.kind === 'login'
+    // Every kind is filled only on the origin it was saved for; a card without an origin is unfillable.
     const origin = form.origin.trim()
 
-    if (needsOrigin && !isValidOrigin(origin)) {
-      setFormError(v.originInvalid)
-
-      return
-    }
-
-    if (!needsOrigin && origin && !isValidOrigin(origin)) {
+    if (!isValidOrigin(origin)) {
       setFormError(v.originInvalid)
 
       return
@@ -584,17 +578,18 @@ export function VaultSettings() {
               </Field>
             </div>
 
+            <Field htmlFor="vault-origin" label={v.originField}>
+              <Input
+                id="vault-origin"
+                inputMode="url"
+                onChange={e => setForm(f => ({ ...f, origin: e.target.value }))}
+                placeholder={form.kind === 'login' ? v.originPlaceholder : v.originPlaceholderCheckout}
+                value={form.origin}
+              />
+            </Field>
+
             {form.kind === 'login' && (
               <>
-                <Field htmlFor="vault-origin" label={v.originField}>
-                  <Input
-                    id="vault-origin"
-                    inputMode="url"
-                    onChange={e => setForm(f => ({ ...f, origin: e.target.value }))}
-                    placeholder={v.originPlaceholder}
-                    value={form.origin}
-                  />
-                </Field>
                 <div className="grid items-start gap-4 sm:grid-cols-2">
                   <Field htmlFor="vault-id-type" label={v.identifierTypeField}>
                     <Select

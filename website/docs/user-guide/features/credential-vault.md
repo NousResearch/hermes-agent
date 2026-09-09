@@ -51,9 +51,29 @@ hermes vault list
 hermes vault rm vault_ab12cd34ef56
 ```
 
-Item kinds: `login`, `payment`, and `address` are all stored (`payment` and
-`address` payloads remain fully secret); Phase 1 browser fill supports
-`login` items only.
+Item kinds: `login` (the password is the secret; the identifier is visible
+metadata the agent types itself), `payment` (card number, cardholder, expiry,
+CVC, billing postal code) and `address`. Every kind is bound to the site
+origin it may be filled on.
+
+### Paying and filling addresses
+
+A `payment` or `address` item fills the matching checkout fields the same way
+a login fills the password: the agent calls `browser_vault_fill` with the
+handle, Hermes classifies the page's controls (`autocomplete` tokens first,
+then label/name heuristics: "Card number", "Expiry (MM/YY)", "CVC", "ZIP",
+country and state `<select>`s) and writes the values over the supervised CDP
+socket. The result names the targeted fields (`cc-number`, `cc-exp`, `cc-csc`,
+`address-line1`, …) but never a value; card values are registered with the
+redactor like passwords.
+
+**Every payment fill asks you first.** Before a card is written you get the
+same approval prompt as a dangerous command (button in Desktop/TUI/chat
+platforms, panel in the CLI). Declining returns `payment_declined` to the
+agent and writes nothing; headless sessions (cron, webhook, API) cannot
+confirm and are refused. This is the guard against a prompt injection that
+reaches a checkout page: it can ask, it cannot spend. Address fills need no
+confirmation (an address is not a spending instrument).
 
 ## Password managers (1Password, Bitwarden)
 
@@ -144,9 +164,20 @@ User: log into example.com and check my dashboard
 Agent: browser_navigate("https://example.com/login")
 Agent: browser_vault_list()          → {items: [{handle: "op:…", backend: "onepassword", label: "Example", identifier: "me@example.com", origin: "https://example.com"}]}
        (or, if 1Password is still locked: {items: [], locked: [{backend: "onepassword", unlock: "browser_vault_unlock"}]} → the agent calls browser_vault_unlock and you get a masked prompt)
-Agent: fill_input(<username field>, "me@example.com")
+Agent: <types "me@example.com" into the username field with the browser's input tool>
 Agent: browser_vault_fill("op:…")    → {"success": true, "filled_fields": 1, "backend": "onepassword", "kind": "login", "origin": "https://example.com"}
 Agent: browser_click(<submit>)
+```
+
+The same flow works on the default Browser Use backend (`browser_exec`): the
+supervisor attaches to the browser `browser_exec` drives, and the fill picks
+the open tab on the item's origin that actually holds the form, so the agent
+can keep several tabs open. On a checkout:
+
+```
+Agent: browser_vault_list()          → {items: [{handle: "vault_…", kind: "payment", label: "Visa", origin: "https://shop.example"}]}
+Agent: browser_vault_fill("vault_…") → you see "Fill payment card 'Visa' on https://shop.example — approve?"
+                                     → {"success": true, "filled_fields": 3, "kind": "payment", "fields": ["cc-csc", "cc-exp", "cc-number"]}
 ```
 
 ## Security properties
@@ -162,10 +193,15 @@ Agent: browser_click(<submit>)
   the supervised browser session's CDP WebSocket. If that session is not
   available, the fill refuses rather than falling back to a subprocess
   path that would place the password in argv.
-- **Redaction-backed egress boundary:** filled password bytes are
-  registered with the browser tool-result redactor for the life of the
-  process; every `browser_*` result (including raw `browser_cdp` output)
+- **Redaction-backed egress boundary:** filled password and card bytes are
+  registered with the browser tool-result redactor (per profile, most recent
+  64 values); every `browser_*` result (including raw `browser_cdp` output)
   is scrubbed against them.
+- **Payment needs a human:** a card is never written without an approval
+  prompt answered in the session; headless sessions cannot fill cards.
+- **Multi-process safe:** the local vault file is written under a
+  cross-process lock with `fsync`, so a Desktop gateway, a CLI `hermes vault
+  add` and a TUI worker cannot drop each other's items.
 - **No signup/OTP capture:** fields marked `autocomplete="new-password"`
   or `one-time-code`, and fields labeled *new/confirm/create/repeat
   password*, are never filled.

@@ -342,6 +342,7 @@ export const zhHant = defineLocale({
       labelRequired: '標籤為必填。',
       originField: '網站來源',
       originPlaceholder: 'https://github.com',
+      originPlaceholderCheckout: 'https://shop.example.com',
       originInvalid: '請輸入有效的 URL，例如 https://example.com。',
       identifierTypeField: '識別碼類型',
       identifierTypes: { email: '電子郵件', phone: '電話', username: '使用者名稱' },

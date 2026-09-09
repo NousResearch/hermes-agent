@@ -353,6 +353,7 @@ export const ja = defineLocale({
       labelRequired: 'ラベルは必須です。',
       originField: 'サイトのオリジン',
       originPlaceholder: 'https://github.com',
+      originPlaceholderCheckout: 'https://shop.example.com',
       originInvalid: 'https://example.com のような有効な URL を入力してください。',
       identifierTypeField: '識別子の種類',
       identifierTypes: { email: 'メール', phone: '電話番号', username: 'ユーザー名' },

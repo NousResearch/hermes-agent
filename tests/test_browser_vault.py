@@ -114,10 +114,18 @@ class TestVaultStore:
             )
 
     def test_all_kinds_supported(self, store):
-        store.add_item(kind="payment", label="Card", secret={"number": "4111"})
-        store.add_item(kind="address", label="Home", secret={"street": "1 Main St"})
+        store.add_item(kind="payment", label="Card", origin="https://shop.test", secret=_CARD)
+        store.add_item(kind="address", label="Home", secret=_ADDRESS)
         kinds = {m.kind for m in store.list_items()}
         assert kinds == {"payment", "address"}
+
+    def test_checkout_kinds_keep_only_canonical_fields(self, store):
+        """The fill maps canonical names → autocomplete tokens; a stray ad-hoc key would be stored (secret!)
+        yet unfillable, and a missing required field would make the item dead on every checkout."""
+        meta = store.add_item(kind="payment", label="Card", secret={**_CARD, "note": "personal"})
+        assert "note" not in store.resolve_secret(meta.id)
+        with pytest.raises(VaultError, match="cvc"):
+            store.add_item(kind="payment", label="Card", secret={k: v for k, v in _CARD.items() if k != "cvc"})
 
     def test_unknown_kind_rejected(self, store):
         with pytest.raises(VaultError):
@@ -145,6 +153,11 @@ class TestVaultStore:
 # ---------------------------------------------------------------------------
 # Classifier
 # ---------------------------------------------------------------------------
+
+_CARD = {"card_number": "4111111111111111", "cardholder_name": "A User", "exp_month": "7", "exp_year": "2029",
+         "cvc": "123", "billing_postal_code": "94110"}
+_ADDRESS = {"address_line1": "1 Main St", "city": "Springfield", "postal_code": "12345", "country": "US"}
+
 
 def _ctrl(**kw):
     base = dict(autocomplete="", form_index=0, index=0, label="", name="", type="text")
@@ -225,7 +238,8 @@ class TestClassifier:
         assert "vaultSecret" not in js
         assert "data-vault-secret" not in js
         assert "elements[f.index]" not in js
-        assert "input[data-hermes-vault-slot=" in js and "nonce + ':' + f.index" in js and 'el.type !== "password"' in js
+        assert "[data-hermes-vault-slot=" in js and "nonce + ':' + f.index" in js
+        assert 'f.token === "current-password" && el.type !== "password"' in js  # a password fill never lands in a text box
         assert js.index('removeAttribute("data-hermes-vault-slot")') > js.index("setter.set.call")
 
     def test_build_fill_js_asserts_origin_before_any_write(self):
@@ -457,17 +471,56 @@ class TestBrowserVaultTools:
             # user-level redaction preferences irrelevant (unconditional).
             assert canary not in redact_sensitive_text(f"page text: {canary}")
         finally:
-            with redact._VAULT_REDACTION_LOCK:
-                redact._VAULT_REDACTION_VALUES.discard(canary)
+            redact.clear_vault_redaction_values()
 
-    def test_fill_rejects_non_login_kind(self, store):
+    def test_payment_fill_requires_confirmation_then_fills_card_fields(self, store):
+        """A card is written only after the user confirms (a prompt injection reaching a checkout must not be
+        able to spend); the secret eval then targets the classified card controls and the result carries
+        the field tokens but never a value."""
         from tools import browser_vault_tool
+        from agent import redact
 
-        meta = store.add_item(kind="payment", label="Card", secret={"number": "4111"})
-        with patch("agent.vault_store.get_vault_store", return_value=store):
-            out = json.loads(browser_vault_tool.browser_vault_fill(meta.id))
-        assert out["success"] is False
-        assert "login" in out["error"]
+        meta = store.add_item(kind="payment", label="Visa", origin="https://shop.test", secret=_CARD)
+        controls = [
+            {"autocomplete": "cc-number", "index": 0, "type": "text"},
+            {"label": "Expiry (MM/YY)", "index": 1, "type": "text"},
+            {"label": "CVC", "index": 2, "type": "text"},
+            {"autocomplete": "email", "index": 3, "type": "email"},
+        ]
+
+        def fake_eval(task_id, expression):
+            if "location.href" in expression:
+                return {"success": True, "result": "https://shop.test/checkout"}
+            return {"success": True, "result": json.dumps(controls)}
+
+        secret_exprs = []
+
+        def fake_eval_secret(task_id, expression):
+            secret_exprs.append(expression)
+            return {"success": True, "result": json.dumps({"filled": 3})}
+
+        try:
+            with patch("agent.vault_store.get_vault_store", return_value=store), \
+                 patch.object(browser_vault_tool, "_eval_js", side_effect=fake_eval), \
+                 patch.object(browser_vault_tool, "_eval_js_secret", side_effect=fake_eval_secret), \
+                 patch("tools.approval_prompt.request_elicitation_consent", return_value="decline"):
+                declined = json.loads(browser_vault_tool.browser_vault_fill(meta.id))
+            assert declined["success"] is False and declined["error_type"] == "payment_declined"
+            assert secret_exprs == []
+
+            with patch("agent.vault_store.get_vault_store", return_value=store), \
+                 patch.object(browser_vault_tool, "_eval_js", side_effect=fake_eval), \
+                 patch.object(browser_vault_tool, "_eval_js_secret", side_effect=fake_eval_secret), \
+                 patch("tools.approval_prompt.request_elicitation_consent", return_value="accept"):
+                raw = browser_vault_tool.browser_vault_fill(meta.id)
+            out = json.loads(raw)
+            assert out["success"] is True and out["fields"] == ["cc-csc", "cc-exp", "cc-number"]
+            assert _CARD["card_number"] not in raw and _CARD["cvc"] not in raw
+            assert len(secret_exprs) == 1 and _CARD["card_number"] in secret_exprs[0] and "07/29" in secret_exprs[0]
+            assert '"index": 3' not in secret_exprs[0]  # the email box is never a card target
+            assert _CARD["card_number"] not in redact.redact_sensitive_text(f"dom says {_CARD['card_number']}")
+        finally:
+            redact.clear_vault_redaction_values()
 
 
 class TestVaultHardening:
@@ -483,8 +536,8 @@ class TestVaultHardening:
         home = tmp_path / "hermes_home"
         vault = home / "vault"
         vault.mkdir(parents=True)
-        (vault / "vault.key").write_text("k")
-        (vault / "vault.json.enc").write_text("blob")
+        (vault / "vault.key").write_text("k", encoding="utf-8")
+        (vault / "vault.json.enc").write_text("blob", encoding="utf-8")
         monkeypatch.setattr(fs, "_hermes_home_path", lambda: home)
 
         for target in (vault, vault / "vault.key", vault / "vault.json.enc"):
@@ -499,7 +552,7 @@ class TestVaultHardening:
         other = home / "vaults-notes"
         other.mkdir(parents=True)
         f = other / "notes.txt"
-        f.write_text("hi")
+        f.write_text("hi", encoding="utf-8")
         monkeypatch.setattr(fs, "_hermes_home_path", lambda: home)
         assert fs.get_read_block_error(str(f)) is None
 
@@ -520,3 +573,22 @@ class TestVaultHardening:
         store = VaultStore(base_dir=tmp_path / "vault")
         store._ensure_dir()
         assert called.call_count == 1
+
+
+class TestVaultSchemaCrossToolset:
+    def test_vault_schemas_name_the_input_tool_of_the_active_browser_stack(self):
+        """The vault tools sit in `browser`; the tool that types the identifier lives in `browser-use`
+        (`fill_input` inside browser_exec) or is browser_type. A static name would be a ghost on one stack,
+        so model_tools resolves it per session from the tools actually present."""
+        import model_tools
+        from tools.browser_vault_tool import BROWSER_VAULT_FILL_SCHEMA
+
+        assert "fill_input" not in BROWSER_VAULT_FILL_SCHEMA["description"]
+        base = model_tools._fn_def(dict(BROWSER_VAULT_FILL_SCHEMA))
+        with_exec = model_tools._apply_dynamic_schemas([base, model_tools._fn_def({"name": "browser_exec", "description": "x"}),
+                                                        model_tools._fn_def({"name": "terminal", "description": "x"})])
+        with_builtin = model_tools._apply_dynamic_schemas([base, model_tools._fn_def({"name": "browser_type", "description": "x"})])
+        desc_exec = with_exec[0]["function"]["description"]
+        desc_builtin = with_builtin[0]["function"]["description"]
+        assert "`fill_input` inside browser_exec" in desc_exec and "browser_type" not in desc_exec
+        assert "browser_type" in desc_builtin and "fill_input" not in desc_builtin

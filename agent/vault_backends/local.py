@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 from agent.vault_backends.base import LoginBackend
 from agent.vault_store import VaultItemMeta
@@ -28,3 +28,6 @@ class LocalLoginBackend(LoginBackend):
 
     def resolve_password(self, handle: str) -> str:
         return str(_store().resolve_secret(handle).get("password") or "")
+
+    def resolve_secret(self, handle: str) -> Dict[str, str]:
+        return {k: str(v) for k, v in _store().resolve_secret(handle).items()}

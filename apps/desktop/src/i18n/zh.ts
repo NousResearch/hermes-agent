@@ -448,6 +448,7 @@ export const zh: Translations = {
       labelRequired: '标签为必填项。',
       originField: '站点来源',
       originPlaceholder: 'https://github.com',
+      originPlaceholderCheckout: 'https://shop.example.com',
       originInvalid: '请输入有效的 URL，例如 https://example.com。',
       identifierTypeField: '标识符类型',
       identifierTypes: { email: '邮箱', phone: '电话', username: '用户名' },

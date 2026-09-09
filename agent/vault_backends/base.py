@@ -48,6 +48,11 @@ class LoginBackend(ABC):
     def resolve_password(self, handle: str) -> str:
         """Server-side only; raises ``UnlockRequired`` when locked."""
 
+    def resolve_secret(self, handle: str) -> Dict[str, str]:
+        """Full payload of a payment/address item (server-side only). External managers list only
+        logins, so the base returns the password-only shape."""
+        return {"password": self.resolve_password(handle)}
+
 
 def run_with_stdin_secret(argv: Sequence[str], *, env: Dict[str, str], secret: str, timeout: float,
                           label: str) -> subprocess.CompletedProcess:

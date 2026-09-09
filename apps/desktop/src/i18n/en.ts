@@ -532,6 +532,7 @@ export const en: Translations = {
       labelRequired: 'A label is required.',
       originField: 'Site origin',
       originPlaceholder: 'https://github.com',
+      originPlaceholderCheckout: 'https://shop.example.com',
       originInvalid: 'Enter a valid URL like https://example.com.',
       identifierTypeField: 'Identifier type',
       identifierTypes: { email: 'Email', phone: 'Phone', username: 'Username' },

@@ -407,6 +407,7 @@ export const ar = defineLocale({
       labelRequired: 'التسمية مطلوبة.',
       originField: 'أصل الموقع',
       originPlaceholder: 'https://github.com',
+      originPlaceholderCheckout: 'https://shop.example.com',
       originInvalid: 'أدخل عنوان URL صالحاً مثل https://example.com.',
       identifierTypeField: 'نوع المعرّف',
       identifierTypes: { email: 'البريد الإلكتروني', phone: 'الهاتف', username: 'اسم المستخدم' },

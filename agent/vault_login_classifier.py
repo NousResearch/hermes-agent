@@ -1,4 +1,4 @@
-"""Login-form control classifier for vault autofill.
+"""Login / checkout form control classifier for vault autofill.
 
 Python port (~170 LOC) of Merit-Systems/OpenInstinct's
 ``lib/manager/server/kernel-login-autofill.ts`` (MIT). Classifies visible
@@ -25,6 +25,27 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
 LOGIN_AUTOFILL_TOKENS = ("username", "email", "tel", "current-password")
+
+# Payment / address autocomplete tokens (WHATWG) the checkout fill targets. ``cc-exp`` (combined
+# MM/YY) is derived at fill time from exp_month + exp_year. Field-name/label heuristics below back
+# up sites that omit autocomplete attributes.
+PAYMENT_AUTOFILL_TOKENS = ("cc-number", "cc-name", "cc-exp", "cc-exp-month", "cc-exp-year", "cc-csc")
+ADDRESS_AUTOFILL_TOKENS = ("address-line1", "address-line2", "address-level2", "address-level1",
+                           "postal-code", "country-name", "country")
+_CHECKOUT_HEURISTICS = (
+    (re.compile(r"\b(?:card\s*number|cardnumber|ccnumber|cc\s*num|pan)\b"), "cc-number"),
+    (re.compile(r"\b(?:name\s*on\s*card|cardholder|cc\s*name|ccname)\b"), "cc-name"),
+    (re.compile(r"\b(?:cvc|cvv|csc|security\s*code|card\s*code)\b"), "cc-csc"),
+    (re.compile(r"\b(?:exp(?:iry|iration)?\s*month|exp\s*mm|ccmonth)\b"), "cc-exp-month"),
+    (re.compile(r"\b(?:exp(?:iry|iration)?\s*year|exp\s*yy(?:yy)?|ccyear)\b"), "cc-exp-year"),
+    (re.compile(r"\b(?:exp(?:iry|iration)?(?:\s*date)?|mm\s*yy|valid\s*thru)\b"), "cc-exp"),
+    (re.compile(r"\b(?:address\s*(?:line\s*)?2|apt|suite|unit)\b"), "address-line2"),
+    (re.compile(r"\b(?:address(?:\s*line\s*1)?|street)\b"), "address-line1"),
+    (re.compile(r"\b(?:city|town|locality)\b"), "address-level2"),
+    (re.compile(r"\b(?:state|province|region|county)\b"), "address-level1"),
+    (re.compile(r"\b(?:zip|postal|postcode)\b"), "postal-code"),
+    (re.compile(r"\b(?:country)\b"), "country-name"),
+)
 
 _EXCLUDED_AUTOCOMPLETE = {"new-password", "one-time-code"}
 
@@ -131,6 +152,44 @@ def select_password_fill(
     ]
 
 
+def classify_checkout_control(control: LoginControl) -> Optional[ClassifiedLoginControl]:
+    """Classify one control as a payment/address fill target (autocomplete token exact match 100,
+    label/name heuristic 70), or None. Password/email inputs are never checkout targets."""
+    tokens = [t for t in control.autocomplete.lower().split() if t]
+    for token in PAYMENT_AUTOFILL_TOKENS + ADDRESS_AUTOFILL_TOKENS:
+        if token in tokens:
+            return ClassifiedLoginControl(control, 100, "country-name" if token == "country" else token)
+    if control.type in ("password", "email"):
+        return None
+    searchable = _normalize_text(" ".join(part for part in (control.name, control.label) if part))
+    for pattern, token in _CHECKOUT_HEURISTICS:
+        if pattern.search(searchable):
+            return ClassifiedLoginControl(control, 70, token)
+    return None
+
+
+def select_checkout_fills(classified: List[ClassifiedLoginControl], secret: Dict[str, str],
+                          field_tokens: Dict[str, str]) -> List[Dict[str, Any]]:
+    """Map a payment/address secret payload onto the best control per autocomplete token.
+
+    ``field_tokens`` is ``PAYMENT_FIELDS`` / ``ADDRESS_FIELDS`` (agent/vault_store.py). A combined
+    ``cc-exp`` control gets ``MM/YY`` from exp_month + exp_year and then suppresses the separate
+    month/year fills. Returns ``[{"index", "token", "value"}]``: one control per token, highest
+    score then DOM order.
+    """
+    values: Dict[str, str] = {tok: secret[f] for f, tok in field_tokens.items() if secret.get(f)}
+    if "cc-exp-month" in values and "cc-exp-year" in values:
+        values["cc-exp"] = f"{values['cc-exp-month'].zfill(2)}/{values['cc-exp-year'][-2:]}"
+    fills: List[Dict[str, Any]] = []
+    for token, value in values.items():
+        candidates = sorted((c for c in classified if c.token == token), key=lambda c: (-c.score, c.control.index))
+        if candidates:
+            fills.append({"index": candidates[0].control.index, "token": token, "value": value})
+    if any(f["token"] == "cc-exp" for f in fills):
+        fills = [f for f in fills if f["token"] not in ("cc-exp-month", "cc-exp-year")]
+    return fills
+
+
 # JS expression evaluated in the page to inspect candidate input controls.
 # Ported from OpenInstinct's nativeLoginControlInspectionExpression.
 # Inspection stamps every input with ``<nonce>:<index>`` under a per-inspection attribute; the fill
@@ -145,7 +204,7 @@ def build_inspection_js(nonce: str) -> str:
 
 _LOGIN_CONTROL_INSPECTION_JS_TEMPLATE = """(() => {
   const nonce = __NONCE__;
-  const elements = Array.from(document.querySelectorAll("input"));
+  const elements = Array.from(document.querySelectorAll("input, select"));
   const forms = Array.from(document.forms);
   elements.forEach((element, index) => element.setAttribute("data-hermes-vault-slot", nonce + ":" + index));
   const out = elements.flatMap((element, index) => {
@@ -171,7 +230,7 @@ _LOGIN_CONTROL_INSPECTION_JS_TEMPLATE = """(() => {
         element.getAttribute("title") || "",
       ].join(" "),
       name: [element.name, element.id].join(" "),
-      type: element.type || "",
+      type: element.tagName === "SELECT" ? "select" : (element.type || ""),
     }];
   });
   return JSON.stringify(out);
@@ -179,44 +238,51 @@ _LOGIN_CONTROL_INSPECTION_JS_TEMPLATE = """(() => {
 
 
 def build_fill_js(fills: List[Dict[str, Any]], expected_origin: str, nonce: str = "") -> str:
-    """Build a JS expression that fills the selected inputs and reports
-    only a count. The returned expression never echoes the values back.
+    """Build a JS expression that fills the selected controls and reports only a count. The
+    returned expression never echoes the values back.
 
-    ``expected_origin`` is asserted against ``window.location.origin``
-    synchronously inside the SAME evaluated script, immediately before any
-    write. If the page navigated between inspection and fill (TOCTOU), the
-    script writes nothing and returns
-    ``{"refused": "origin_changed", "found": <actual origin>}`` — proof
-    scope equals mutation scope (#88706). No marker attribute is set on
-    filled controls: filled fields must not be deterministically
-    addressable by later model-driven DOM reads.
+    ``expected_origin`` is asserted against ``window.location.origin`` synchronously inside the SAME
+    evaluated script, immediately before any write. If the page navigated between inspection and fill
+    (TOCTOU), the script writes nothing and returns ``{"refused": "origin_changed", "found": <actual>}``:
+    proof scope equals mutation scope (#88706). Targets resolve by the ``<nonce>:<index>`` stamp of
+    THIS inspection; a ``current-password`` fill additionally requires ``type=password``; ``<select>``
+    controls (country, state, expiry month) match an option by value or visible text. No marker is
+    left on filled controls so later model-driven DOM reads cannot address them deterministically.
     """
     payload = json.dumps(
-        [{"index": f["index"], "value": f["value"]} for f in fills]
+        [{"index": f["index"], "token": f.get("token", "current-password"), "value": f["value"]} for f in fills]
     )
-    expected = json.dumps(expected_origin)
-    return (
-        "(() => {\n"
-        f"  const expectedOrigin = {expected};\n"
-        "  if (window.location.origin !== expectedOrigin) {\n"
-        "    return JSON.stringify({ refused: \"origin_changed\", found: window.location.origin });\n"
-        "  }\n"
-        f"  const fills = {payload};\n"
-        f"  const nonce = {json.dumps(nonce)};\n"
-        "  let filled = 0;\n"
-        "  for (const f of fills) {\n"
-        "    const el = document.querySelector('input[data-hermes-vault-slot=\"' + nonce + ':' + f.index + '\"]');\n"
-        "    if (!el || el.type !== \"password\") continue;\n"
-        "    try {\n"
-        "      el.focus();\n"
-        "      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, \"value\");\n"
-        "      if (setter && setter.set) { setter.set.call(el, f.value); } else { el.value = f.value; }\n"
-        "      el.dispatchEvent(new InputEvent(\"input\", { bubbles: true, inputType: \"insertText\" }));\n"
-        "      el.dispatchEvent(new Event(\"change\", { bubbles: true }));\n"
-        "      if (el.value.length > 0) filled += 1;\n"
-        "    } catch (e) { /* skip */ }\n"
-        "  }\n"
-        "  document.querySelectorAll(\"[data-hermes-vault-slot]\").forEach((n) => n.removeAttribute(\"data-hermes-vault-slot\"));\n"
-        "  return JSON.stringify({ filled });\n"
-        "})()"
-    )
+    return (_FILL_JS_TEMPLATE.replace("__EXPECTED_ORIGIN__", json.dumps(expected_origin))
+            .replace("__FILLS__", payload).replace("__NONCE__", json.dumps(nonce)))
+
+
+_FILL_JS_TEMPLATE = """(() => {
+  const expectedOrigin = __EXPECTED_ORIGIN__;
+  if (window.location.origin !== expectedOrigin) {
+    return JSON.stringify({ refused: "origin_changed", found: window.location.origin });
+  }
+  const fills = __FILLS__;
+  const nonce = __NONCE__;
+  let filled = 0;
+  const norm = (t) => String(t || "").trim().toLowerCase();
+  for (const f of fills) {
+    const el = document.querySelector('[data-hermes-vault-slot="' + nonce + ':' + f.index + '"]');
+    if (!el || (f.token === "current-password" && el.type !== "password")) continue;
+    try {
+      if (el.tagName === "SELECT") {
+        const want = norm(f.value);
+        const opt = Array.from(el.options).find((o) => [o.value, o.textContent].some((t) => norm(t) === want || norm(t) === want.replace(/^0/, "")));
+        if (opt) { el.value = opt.value; el.dispatchEvent(new Event("change", { bubbles: true })); filled += 1; }
+        continue;
+      }
+      el.focus();
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value");
+      if (setter && setter.set) { setter.set.call(el, f.value); } else { el.value = f.value; }
+      el.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertText" }));
+      el.dispatchEvent(new Event("change", { bubbles: true }));
+      if (el.value.length > 0) filled += 1;
+    } catch (e) { /* skip */ }
+  }
+  document.querySelectorAll("[data-hermes-vault-slot]").forEach((n) => n.removeAttribute("data-hermes-vault-slot"));
+  return JSON.stringify({ filled });
+})()"""

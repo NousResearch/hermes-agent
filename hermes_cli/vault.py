@@ -81,22 +81,24 @@ def _cmd_add(args) -> None:
                 kind="login", label=label, secret=secret, origin=origin
             )
         else:
-            c.print(
-                f"[dim]{kind} items are stored for future phases; browser fill "
-                "currently supports login items only.[/]"
-            )
+            from agent.vault_store import ADDRESS_FIELDS, PAYMENT_FIELDS, REQUIRED_FIELDS
+
+            fields = PAYMENT_FIELDS if kind == "payment" else ADDRESS_FIELDS
+            origin = ""
+            while not origin:
+                origin = input("Site origin the item may be filled on (e.g. https://shop.example.com): ").strip()
+            c.print(f"[dim]{kind} fields are filled only on that origin; card values are read hidden.[/]")
             secret = {}
-            c.print("Enter fields one per line as name=value; blank line to finish.")
-            c.print("[dim]Values are read hidden (not echoed).[/]")
-            while True:
-                field = input("Field name (blank to finish): ").strip()
-                if not field:
-                    break
-                secret[field] = getpass.getpass(f"{field} (hidden): ")
-            origin = input("Origin (optional, e.g. https://shop.example.com): ").strip() or None
-            meta = get_vault_store().add_item(
-                kind=kind, label=label, secret=secret, origin=origin
-            )
+            for field in fields:
+                required = field in REQUIRED_FIELDS[kind]
+                prompt = f"{field.replace('_', ' ')}{'' if required else ' (optional)'}: "
+                read = getpass.getpass if kind == "payment" else input
+                value = read(prompt).strip()
+                while required and not value:
+                    value = read(prompt).strip()
+                if value:
+                    secret[field] = value
+            meta = get_vault_store().add_item(kind=kind, label=label, secret=secret, origin=origin)
     except VaultError as exc:
         c.print(f"[red]Error:[/] {exc}")
         return

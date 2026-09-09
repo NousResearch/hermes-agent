@@ -12,8 +12,8 @@ import time
 from typing import Any, Dict, List, Optional, Tuple
 
 from hermes_state_common import (
-    _COMPRESSION_LOCK_ROW_SQL as _LOCK_ROW_SQL, _ENDED_ROW_SQL, _ended_by_compression, _sql_session_last_active,
-    is_automatic_end_reason)
+    _COMPRESSION_LOCK_ROW_SQL as _LOCK_ROW_SQL, _ENDED_ROW_SQL, _RESET_END_REASONS, _ended_by_compression,
+    _sql_session_last_active, is_automatic_end_reason)
 
 # Log-record parity with the origin module (caplog tests pin "hermes_state").
 logger = logging.getLogger("hermes_state")
@@ -69,6 +69,51 @@ def _claim_lease_row(conn, table: str, key_col: str, key: str, holder: str, now:
 
 class SessionCompressionMixin:
     """Compression lineage, cooldown/streak counters, locks and turn leases."""
+
+    def _compression_parent_obstacle(self, conn, parent_session_id: str, parent) -> Optional[str]:
+        """Why publishing a compression child of *parent* (a row with ``ended_at`` / ``end_reason``) must
+        fail closed, or None when the parent is live or its stamp is stale and may be cleared.
+
+        Single owner of the verdict for publish_compression_child() and the agent's pre-flush guard
+        (#106459). Only another path owning the lineage fails closed: a ``'compression'`` stamp names a
+        continuation, a reset reason is a deliberate conversation boundary, and an explicit close that
+        already has a continuation child was superseded. An automatic-cleanup stamp is stale by
+        construction (#88197), and so is an explicit close (``tui_close``, ``cli_close``,
+        ``webhook_complete``, ``new_session``, ...) with NO continuation child: the lease holder rotating
+        this parent is provably still the conversation's writer and nothing else claims it. Failing closed
+        there made every compression compute its result and discard it, forever."""
+        if parent is None or parent["ended_at"] is None:
+            return None
+        reason = parent["end_reason"]
+        if is_automatic_end_reason(reason):
+            return None
+        if reason == "compression":
+            return "closed by compression"
+        if reason in _RESET_END_REASONS:
+            return f"closed by a {reason} boundary"
+        child = conn.execute(
+            "SELECT 1 FROM sessions WHERE parent_session_id = ?"
+            + self._NON_CONTINUATION_CHILD_FILTER_SQL.format(alias="")
+            + " LIMIT 1",
+            (parent_session_id, parent_session_id, parent_session_id),
+        ).fetchone()
+        if child is not None:
+            return f"closed ({reason}) with a published continuation"
+        return None
+
+    def compression_parent_deliberately_ended(self, session_id: str) -> bool:
+        """Read-only twin of publish_compression_child()'s liveness verdict, for the agent's guard that
+        runs BEFORE the durable pre-publish flush: True only when publish would fail closed on
+        *session_id*'s end stamp. A missing row is not an obstacle (publish reports that itself)."""
+        if not session_id:
+            return False
+        # The public reader on purpose: an unreadable row raises to the guard, which fails open
+        # (tests/agent/test_compression_rotation_state.py pins that contract).
+        parent = self.get_session(session_id)
+        if not parent or parent.get("ended_at") is None:
+            return False
+        with self._read_ctx() as conn:
+            return self._compression_parent_obstacle(conn, session_id, parent) is not None
 
     def find_live_compression_child(self, parent_session_id: str) -> Optional[Dict[str, Any]]:
         """The unique live direct child of a compression-ended session, else None. A stale
@@ -222,12 +267,18 @@ class SessionCompressionMixin:
             if parent is None:
                 raise RuntimeError(f"Compression parent not found: {parent_session_id}")
             if parent["ended_at"] is not None:
-                # An AUTOMATIC end stamp (tui_shutdown, ws_disconnect, orphan reap, idle/LRU
-                # evict) is stale by construction — this lease holder is still continuing the
-                # conversation, and left alone it wedges rotation forever. Clear it; the closure
-                # UPDATE below re-stamps end_reason='compression'. Deliberate boundaries fail closed.
+                # A stale stamp — automatic cleanup (#88197) or an explicit close with no continuation
+                # (#106459) — is cleared here: this lease holder is still continuing the conversation,
+                # and left alone the stamp wedges rotation forever. The closure UPDATE below re-stamps
+                # end_reason='compression'. Lineage owned elsewhere fails closed (see the verdict).
+                obstacle = self._compression_parent_obstacle(conn, parent_session_id, parent)
+                if obstacle is not None:
+                    raise RuntimeError(f"Compression parent already ended: {parent_session_id} ({obstacle})")
                 if not is_automatic_end_reason(parent["end_reason"]):
-                    raise RuntimeError(f"Compression parent already ended: {parent_session_id}")
+                    logger.warning(
+                        "Compression parent %s carries a stale %r end stamp with no continuation; clearing "
+                        "it so the rotation held by the compression lease can publish (#106459)",
+                        parent_session_id, parent["end_reason"])
                 conn.execute(
                     "UPDATE sessions SET ended_at = NULL, end_reason = NULL WHERE id = ?",
                     (parent_session_id,))

@@ -94,7 +94,9 @@ class TestPublishHealsAutomaticStamp:
         assert child_row is not None
         assert child_row["parent_session_id"] == parent
 
-    @pytest.mark.parametrize("reason", ["compression", "session_reset", "tui_close"])
+    # ``tui_close`` with no continuation child is a stale stamp since #106459 and now publishes;
+    # the explicit-close cases live in test_106459_stale_explicit_close_stamp.py.
+    @pytest.mark.parametrize("reason", ["compression", "session_reset"])
     def test_deliberate_boundary_still_fails_closed(
         self, db: SessionDB, reason: str
     ) -> None:

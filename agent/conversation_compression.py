@@ -2884,8 +2884,17 @@ def _salvage_or_refuse_grown_transcript(
 
 
 def _parent_deliberately_ended(session_db: Any, session_id: str) -> bool:
-    """True when the parent row was ended by a non-automatic reason. Fails OPEN: an
-    unreadable row must not turn a cheap guard into a new way to lose compression."""
+    """True when publish_compression_child() would fail closed on the parent's end stamp, so the
+    durable pre-publish flush is skipped. The store owns the verdict (#106459): an explicit close with
+    no continuation is stale, not deliberate. Fails OPEN: an unreadable row must not turn a cheap
+    guard into a new way to lose compression."""
+    verdict = getattr(session_db, "compression_parent_deliberately_ended", None)
+    if callable(verdict):
+        try:
+            return bool(verdict(session_id))
+        except Exception:
+            return False
+    # Stores without the verdict (test stand-ins): taxonomy-only fallback.
     reader = getattr(session_db, "get_session", None)
     if not callable(reader):
         return False

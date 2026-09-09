@@ -540,11 +540,13 @@ def _repair_node_deps_on_current_checkout(
     return bool(print_completion(completion_message))
 
 
-def _update_node_dependencies() -> list[str]:
+def _update_node_dependencies(force: bool = False) -> list[str]:
     """Refresh Node deps for ui-tui and web. Returns labels whose npm install failed (empty on
     success) so the caller reports a partial update instead of ``Update complete!``.
 
-    See #30271.
+    ``force=True`` skips the npm-lockfile-unchanged early return — used after a managed Node
+    *runtime* upgrade, which changes no npm manifest but still needs node_modules rebuilt against
+    the new NODE_MODULE_VERSION ABI. See #30271, #106456.
     """
     from hermes_cli.update_cmd import _m
     if not (_m().PROJECT_ROOT / "package.json").exists():
@@ -587,7 +589,7 @@ def _update_node_dependencies() -> list[str]:
         from tools.browser_tool_install import warm_agent_browser_npx_cache
         warm_agent_browser_npx_cache()
 
-    if not _m()._npm_lockfile_changed(shared_hermes_root):
+    if not force and not _m()._npm_lockfile_changed(shared_hermes_root):
         logger.info("npm lockfile unchanged, skipping npm install")
         return []
 

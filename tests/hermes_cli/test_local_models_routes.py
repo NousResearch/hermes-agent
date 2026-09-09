@@ -22,7 +22,7 @@ def client(tmp_path, monkeypatch):
 
     test_client = TestClient(web_server.app)
     # Same auth pattern as the git-route tests: present the session token.
-    test_client.headers[web_server._SESSION_HEADER_NAME] = web_server._SESSION_TOKEN
+    test_client.headers[web_server._SESSION_HEADER_NAME] = web_server.app.state.session_token
     return test_client
 
 

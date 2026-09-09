@@ -138,7 +138,7 @@ def test_dashboard_oauth_gate_engages_on_non_loopback_bind(
        the login page can bootstrap) returns 200 with ``nous`` in the
        provider list — proves the bundled provider registered.
     2. ``/api/sessions`` (a gated route under both the legacy
-       ``_SESSION_TOKEN`` middleware and the OAuth gate) returns 401
+       session-token middleware and the OAuth gate) returns 401
        to an unauthenticated caller — proves the OAuth gate is actively
        intercepting browser traffic. We deliberately probe a gated route
        here rather than ``/api/status``: status sits in the shared

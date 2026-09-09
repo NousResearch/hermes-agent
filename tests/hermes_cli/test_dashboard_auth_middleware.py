@@ -85,7 +85,7 @@ def test_gated_status_is_public(gated_app):
     here surfaces every healthy agent as STARTING/down in the portal
     UI. The endpoint returns only version + gateway/auth-gate metadata
     (no user data, no session content), so it stays in the shared
-    ``PUBLIC_API_PATHS`` allowlist under both the legacy ``_SESSION_TOKEN``
+    ``PUBLIC_API_PATHS`` allowlist under both the legacy session-token
     gate and the OAuth gate.
 
     The body also reports the gate's shape (``auth_required``,
@@ -161,7 +161,7 @@ def _complete_stub_login(client) -> None:
 def test_gated_require_token_endpoint_accepts_cookie_session(gated_app):
     """Regression: ``_require_token`` endpoints must work under the OAuth gate.
 
-    In gated mode the legacy ``_SESSION_TOKEN`` is NOT injected into the SPA
+    In gated mode the legacy session-token is NOT injected into the SPA
     (it authenticates with the session cookie). Endpoints that call
     ``_require_token`` directly — plugin install/enable/disable,
     ``/api/dashboard/plugins/hub``, and others — used to re-check the absent

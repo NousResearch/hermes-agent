@@ -15,7 +15,8 @@ from fastapi.testclient import TestClient
 
 from hermes_cli.models import CANONICAL_PROVIDERS
 from hermes_cli.provider_catalog import provider_catalog
-from hermes_cli.web_server import _SESSION_TOKEN, app
+from hermes_cli.web_server import app
+_SESSION_TOKEN = app.state.session_token
 
 client = TestClient(app)
 HEADERS = {"X-Hermes-Session-Token": _SESSION_TOKEN}

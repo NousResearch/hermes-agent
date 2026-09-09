@@ -119,8 +119,8 @@ def get_dashboard_health():
     return _server().DASHBOARD_HEALTH
 
 def get_session_token() -> str:
-    """Current dashboard session token (``web_server._SESSION_TOKEN``)."""
-    return _server()._SESSION_TOKEN
+    """Current dashboard session token (``web_server.app.state.session_token``)."""
+    return _server().app.state.session_token
 
 def has_valid_session_token(request) -> bool:
     """Late-bound alias for ``web_server._has_valid_session_token``."""

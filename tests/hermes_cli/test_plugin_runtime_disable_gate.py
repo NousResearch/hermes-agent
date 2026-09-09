@@ -38,7 +38,8 @@ def test_client(monkeypatch, tmp_path):
     except ImportError:
         pytest.skip("fastapi/starlette not installed")
 
-    from hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
+    from hermes_cli.web_server import app, _SESSION_HEADER_NAME
+    _SESSION_TOKEN = app.state.session_token
 
     # Isolate HERMES_HOME so config reads go to our tmp.
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))

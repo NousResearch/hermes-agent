@@ -10,8 +10,8 @@ from hermes_cli import web_server
 def test_ssh_ownership_endpoint_requires_token_and_returns_exact_nonce(monkeypatch):
     token = "t" * 64
     nonce = "0123456789abcdef"
-    monkeypatch.setattr(web_server, "_SESSION_TOKEN", token)
-    monkeypatch.setattr(web_server, "_SSH_OWNER_NONCE", nonce)
+    monkeypatch.setattr(web_server.app.state, "session_token", token)
+    monkeypatch.setattr(web_server.app.state, "ssh_owner_nonce", nonce)
     web_server.app.state.auth_required = False
     client = TestClient(web_server.app)
 
@@ -31,9 +31,9 @@ def test_ssh_ownership_endpoint_requires_token_and_returns_exact_nonce(monkeypat
 
 def test_ssh_ownership_reports_replaced_runtime(tmp_path, monkeypatch):
     token = "t" * 64
-    monkeypatch.setattr(web_server, "_SESSION_TOKEN", token)
-    monkeypatch.setattr(web_server, "_SSH_OWNER_NONCE", "0123456789abcdef")
-    monkeypatch.setattr(web_server, "_SSH_RUNTIME_MARKER", None)
+    monkeypatch.setattr(web_server.app.state, "session_token", token)
+    monkeypatch.setattr(web_server.app.state, "ssh_owner_nonce", "0123456789abcdef")
+    monkeypatch.setattr(web_server.app.state, "ssh_runtime_marker", None)
     # A REAL purelib file whose recorded inode deliberately mismatches what
     # os.stat now reports — never patch os.stat globally here: web_server.os
     # is the os module itself, and swapping its stat() poisons every other
@@ -43,8 +43,7 @@ def test_ssh_ownership_reports_replaced_runtime(tmp_path, monkeypatch):
     purelib = tmp_path / "site-packages"
     purelib.mkdir()
     st = purelib.stat()
-    monkeypatch.setattr(
-        web_server, "_SSH_RUNTIME_PURELIB", (str(purelib), st.st_dev, st.st_ino + 1)
+    monkeypatch.setattr(web_server.app.state, "ssh_runtime_purelib", (str(purelib), st.st_dev, st.st_ino + 1)
     )
     client = TestClient(web_server.app)
 
@@ -137,8 +136,8 @@ def test_ssh_runtime_readonly_purelib_falls_back_to_stat(tmp_path, monkeypatch):
     try:
         web_server._apply_ssh_owner_nonce("0123456789abcdef")
         try:
-            assert web_server._SSH_RUNTIME_MARKER is None
-            assert web_server._SSH_RUNTIME_PURELIB is not None
+            assert web_server.app.state.ssh_runtime_marker is None
+            assert web_server.app.state.ssh_runtime_purelib is not None
             assert web_server._ssh_runtime_intact() is True
         finally:
             web_server._apply_ssh_owner_nonce(None)
@@ -148,8 +147,8 @@ def test_ssh_runtime_readonly_purelib_falls_back_to_stat(tmp_path, monkeypatch):
 
 def test_ssh_ownership_endpoint_is_absent_without_owner_nonce(monkeypatch):
     token = "t" * 64
-    monkeypatch.setattr(web_server, "_SESSION_TOKEN", token)
-    monkeypatch.setattr(web_server, "_SSH_OWNER_NONCE", None)
+    monkeypatch.setattr(web_server.app.state, "session_token", token)
+    monkeypatch.setattr(web_server.app.state, "ssh_owner_nonce", None)
     web_server.app.state.auth_required = False
     client = TestClient(web_server.app)
 

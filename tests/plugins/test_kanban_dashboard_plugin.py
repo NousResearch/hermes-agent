@@ -557,7 +557,6 @@ def test_ws_events_rejects_when_token_required(tmp_path, monkeypatch):
         return ws.query_params.get("token", "") == "secret-xyz"
 
     stub = types.SimpleNamespace(
-        _SESSION_TOKEN="secret-xyz",
         _ws_auth_ok=_fake_ws_auth_ok,
     )
     monkeypatch.setitem(sys.modules, "hermes_cli.web_server_chat", stub)

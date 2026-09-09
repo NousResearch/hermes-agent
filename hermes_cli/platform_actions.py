@@ -96,9 +96,9 @@ class PlatformActions:
     def _resolve_adapter(self, platform: str):
         """Return ``(adapter, error_dict)``; exactly one is non-None."""
         try:
-            from gateway.run import _gateway_runner_ref
+            from gateway import run as _gateway_run
 
-            runner = _gateway_runner_ref()
+            runner = _gateway_run._gateway_runner_ref()
         except Exception:
             runner = None
         if runner is None:

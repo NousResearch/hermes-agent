@@ -88,7 +88,7 @@ def _validate_extract_urls(urls: List[Any]):
     """Normalize model-supplied items and block URLs carrying secrets (percent-encoded forms are unquoted
     and checked too). Returns ``(normalized_urls, normalized_indices, invalid_urls, blocked_json)``;
     ``blocked_json`` is a whole-call refusal (exfiltration prevention) or None."""
-    from agent.redact import _PREFIX_RE
+    from agent import redact
     from urllib.parse import unquote
 
     normalized_urls, normalized_indices, invalid_urls = [], [], {}
@@ -98,7 +98,7 @@ def _validate_extract_urls(urls: List[Any]):
             invalid_urls[index] = _result_entry("", _INVALID_ITEM_ERROR.format(index))
             continue
         normalized_url = normalize_url_for_request(_url)
-        if any(_PREFIX_RE.search(c) for c in (_url, unquote(_url), normalized_url, unquote(normalized_url))):
+        if any(redact._PREFIX_RE.search(c) for c in (_url, unquote(_url), normalized_url, unquote(normalized_url))):
             return _refuse_all(
                 "Blocked: URL contains what appears to be an API key or token. "
                 "Secrets must not be sent in URLs."

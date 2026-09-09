@@ -50,7 +50,7 @@ def pty_client(monkeypatch, _isolate_hermes_home):
     ws.app.state.pty_active_session_files = {}
 
     client = TestClient(ws.app)
-    return ws, client, ws._SESSION_TOKEN
+    return ws, client, ws.app.state.session_token
 
 
 def _url(token: str, **params: str) -> str:

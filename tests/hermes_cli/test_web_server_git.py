@@ -14,7 +14,7 @@ def client():
     previous = getattr(web_server.app.state, "auth_required", None)
     web_server.app.state.auth_required = False
     test_client = TestClient(web_server.app)
-    test_client.headers[web_server._SESSION_HEADER_NAME] = web_server._SESSION_TOKEN
+    test_client.headers[web_server._SESSION_HEADER_NAME] = web_server.app.state.session_token
     try:
         yield test_client
     finally:

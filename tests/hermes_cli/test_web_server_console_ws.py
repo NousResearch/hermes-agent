@@ -40,7 +40,7 @@ def console_client(monkeypatch, _isolate_hermes_home):
 
 
 def _url(token: str | None = None, **params: str) -> str:
-    query = {"token": web_server._SESSION_TOKEN, **params}
+    query = {"token": web_server.app.state.session_token, **params}
     if token is not None:
         query["token"] = token
     return f"/api/console?{urlencode(query)}"

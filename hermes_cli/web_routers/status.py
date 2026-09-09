@@ -99,11 +99,11 @@ async def _status_active_sessions() -> int:
 
 @router.get("/api/ssh/ownership")
 async def get_ssh_ownership(request: Request):
-    from hermes_cli.web_server import _SSH_OWNER_NONCE
     _require_token(request)
-    if not _SSH_OWNER_NONCE:
+    nonce = request.app.state.ssh_owner_nonce
+    if not nonce:
         raise HTTPException(status_code=404, detail="SSH ownership is not active")
-    return {"ok": True, "sshOwnerNonce": _SSH_OWNER_NONCE, "protocolVersion": 1,
+    return {"ok": True, "sshOwnerNonce": nonce, "protocolVersion": 1,
             "runtimeIntact": _ssh_runtime_intact()}
 
 

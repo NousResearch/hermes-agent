@@ -31,7 +31,8 @@ import httpx
 import pytest
 from fastapi.testclient import TestClient
 
-from hermes_cli.web_server import _SESSION_TOKEN, app
+from hermes_cli.web_server import app
+_SESSION_TOKEN = app.state.session_token
 import hermes_cli.web_routers.oauth as _rt_oauth
 import hermes_cli.web_server_oauth as _web_server_oauth
 

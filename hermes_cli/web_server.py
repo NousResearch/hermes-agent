@@ -291,28 +291,26 @@ app.include_router(_memory_oauth_router)
 # Session token for sensitive endpoints. The desktop shell mints it via
 # HERMES_DASHBOARD_SESSION_TOKEN; otherwise fresh per server start. It dies with
 # the process and is injected into the SPA HTML so only the web UI can use it.
+#
+# On ``app.state`` (beside ``auth_required``/``bound_port``), not a module global:
+# start_server() rebinds it AFTER import (``--ssh-session-token-file``), and any
+# ``from web_server import _SESSION_TOKEN`` copy froze the pre-flag value —
+# Desktop-over-SSH 401'd on every call (#102930).
 def _resolve_session_token() -> str:
     return os.environ.get("HERMES_DASHBOARD_SESSION_TOKEN") or secrets.token_urlsafe(32)
 
 
-_SESSION_TOKEN = _resolve_session_token()
+app.state.session_token = _resolve_session_token()
 _SESSION_HEADER_NAME = "X-Hermes-Session-Token"
-_SSH_OWNER_NONCE: Optional[str] = None
-_SSH_RUNTIME_PURELIB: Optional[Tuple[str, int, int]] = None
-_SSH_RUNTIME_MARKER: Optional[str] = None
-
-
-def _apply_ssh_session_token(token: str) -> None:
-    global _SESSION_TOKEN
-    if token:
-        _SESSION_TOKEN = token
+app.state.ssh_owner_nonce = None
+app.state.ssh_runtime_purelib = None
+app.state.ssh_runtime_marker = None
 
 
 def _apply_ssh_owner_nonce(nonce: Optional[str]) -> None:
-    global _SSH_OWNER_NONCE, _SSH_RUNTIME_PURELIB, _SSH_RUNTIME_MARKER
-    _SSH_OWNER_NONCE = nonce
-    _SSH_RUNTIME_PURELIB = None
-    _SSH_RUNTIME_MARKER = None
+    app.state.ssh_owner_nonce = nonce
+    app.state.ssh_runtime_purelib = None
+    app.state.ssh_runtime_marker = None
     if nonce:
         try:
             purelib = sysconfig.get_paths()["purelib"]
@@ -326,24 +324,24 @@ def _apply_ssh_owner_nonce(nonce: Optional[str]) -> None:
             marker = os.path.join(purelib, f".hermes-ssh-runtime-{nonce}")
             with open(marker, "w", encoding="utf-8") as fh:
                 fh.write(f"pid={os.getpid()}\n")
-            _SSH_RUNTIME_MARKER = marker
+            app.state.ssh_runtime_marker = marker
         except OSError:
             pass  # read-only site-packages — fall back to the stat snapshot
         try:
             st = os.stat(purelib)
-            _SSH_RUNTIME_PURELIB = (purelib, st.st_dev, st.st_ino)
+            app.state.ssh_runtime_purelib = (purelib, st.st_dev, st.st_ino)
         except OSError:
             pass
 
 
 def _ssh_runtime_intact() -> bool:
-    if _SSH_RUNTIME_MARKER is not None:
-        return os.path.isfile(_SSH_RUNTIME_MARKER)
+    if app.state.ssh_runtime_marker is not None:
+        return os.path.isfile(app.state.ssh_runtime_marker)
     # Fallback (read-only site-packages): directory identity snapshot — weaker
     # (inode reuse) but catches cross-device moves and version-bump paths.
-    if _SSH_RUNTIME_PURELIB is None:
+    if app.state.ssh_runtime_purelib is None:
         return True
-    purelib, device, inode = _SSH_RUNTIME_PURELIB
+    purelib, device, inode = app.state.ssh_runtime_purelib
     try:
         st = os.stat(purelib)
     except OSError:
@@ -383,11 +381,12 @@ def _has_valid_session_token(request: Request) -> bool:
     ``Authorization`` (Caddy ``basic_auth``); the legacy Bearer path stays for
     older dashboard bundles.
     """
+    expected = request.app.state.session_token
     session_header = request.headers.get(_SESSION_HEADER_NAME, "")
-    if session_header and hmac.compare_digest(session_header.encode(), _SESSION_TOKEN.encode()):
+    if session_header and hmac.compare_digest(session_header.encode(), expected.encode()):
         return True
     auth = request.headers.get("authorization", "")
-    return hmac.compare_digest(auth.encode(), f"Bearer {_SESSION_TOKEN}".encode())
+    return hmac.compare_digest(auth.encode(), f"Bearer {expected}".encode())
 
 
 # Routes that may also authenticate via ``?token=`` (download links opened by
@@ -399,14 +398,14 @@ def _has_valid_query_token(request: Request, path: str) -> bool:
     if path not in _QUERY_TOKEN_API_PATHS:
         return False
     token = request.query_params.get("token", "")
-    return bool(token) and hmac.compare_digest(token.encode(), _SESSION_TOKEN.encode())
+    return bool(token) and hmac.compare_digest(token.encode(), request.app.state.session_token.encode())
 
 
 def _require_token(request: Request) -> None:
     """Authorize a sensitive endpoint, raising 401 if the caller isn't allowed.
 
     Loopback mode (``auth_required`` False): validate the SPA-injected
-    ``_SESSION_TOKEN``. Gated mode: the token is NOT injected (cookie auth), and
+    ``app.state.session_token``. Gated mode: the token is NOT injected (cookie auth), and
     ``gated_auth_middleware`` already 401'd anything without a verified
     ``request.state.session`` — requiring the absent token here would make every
     ``_require_token`` endpoint unreachable behind the gate, so defer to it.
@@ -735,7 +734,7 @@ async def _dashboard_selftest_once() -> None:
     try:
         # Loopback base_url so the Host-header middleware accepts the request.
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://127.0.0.1") as client:
-            resp = await client.get(_DASHBOARD_SELFTEST_ROUTE, headers={_SESSION_HEADER_NAME: _SESSION_TOKEN})
+            resp = await client.get(_DASHBOARD_SELFTEST_ROUTE, headers={_SESSION_HEADER_NAME: app.state.session_token})
         DASHBOARD_HEALTH.record_selftest(resp.status_code == 200, resp.status_code)
     except Exception:
         DASHBOARD_HEALTH.record_selftest(False, None)
@@ -1371,7 +1370,8 @@ def start_server(
     until the ready sentinel is written so its SDK import can't hold the GIL
     against the pre-bind path.
     """
-    _apply_ssh_session_token(ssh_session_token or "")
+    if ssh_session_token:
+        app.state.session_token = ssh_session_token
     _apply_ssh_owner_nonce(ssh_owner_nonce)
 
     # Dashboard-mode starts don't route through main.py's `serve` path, which

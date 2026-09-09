@@ -71,10 +71,10 @@ def _keyless_preference() -> tuple:
     :mod:`plugins.web.keyless_mcp` so resolution and dispatch agree on which
     vendor a fresh install starts at; the rest follow in ring order."""
     try:
-        from plugins.web.keyless_mcp import _KEYLESS_RING, _ring_cursor
+        from plugins.web import keyless_mcp
 
-        start = _ring_cursor % len(_KEYLESS_RING)
-        return tuple(_KEYLESS_RING[start:] + _KEYLESS_RING[:start])
+        start = keyless_mcp._ring_cursor % len(keyless_mcp._KEYLESS_RING)
+        return tuple(keyless_mcp._KEYLESS_RING[start:] + keyless_mcp._KEYLESS_RING[:start])
     except Exception as exc:  # noqa: BLE001 — ring optional in stripped envs
         logger.debug("keyless ring order unavailable: %s", exc)
     return _KEYLESS_PREFERENCE

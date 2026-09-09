@@ -228,10 +228,11 @@ def _ws_auth_reason(ws: "WebSocket") -> tuple[Optional[str], str]:
     Gated: ``?ticket=`` (browser-minted, single-use, 30s TTL) or ``?internal=``
     (process-lifetime, multi-use, only for server-spawned WS clients so the PTY
     child can reconnect; never injected into the SPA).  The legacy token is
-    rejected in gated mode: a leaked ``_SESSION_TOKEN`` must not grant access.
+    rejected in gated mode: a leaked session token must not grant access.
     """
-    from hermes_cli.web_server import _SESSION_TOKEN, app
-    auth_required = bool(getattr(app.state, "auth_required", False))
+    from hermes_cli.web_server import app
+    state = app.state
+    auth_required = bool(getattr(state, "auth_required", False))
     if auth_required:
         # Lazy import — keeps this function importable in test harnesses
         # that don't bring in the dashboard_auth layer.
@@ -285,7 +286,7 @@ def _ws_auth_reason(ws: "WebSocket") -> tuple[Optional[str], str]:
     token = ws.query_params.get("token", "")
     if not token:
         return "no_credential", "none"
-    if hmac.compare_digest(token.encode(), _SESSION_TOKEN.encode()):
+    if hmac.compare_digest(token.encode(), state.session_token.encode()):
         return None, "token"
     return "token_mismatch", "token"
 
@@ -403,7 +404,7 @@ def _server_internal_ws_url(path: str, **extra_qs) -> Optional[str]:
     browser ticket: the child reads the URL once and reuses it on every
     reconnect, and a 30s-TTL ticket can expire before a slow cold boot dials.
     """
-    from hermes_cli.web_server import _SESSION_TOKEN, app
+    from hermes_cli.web_server import app
     host = _resolve_client_ws_host()
     port = getattr(app.state, "bound_port", None)
     if not host or not port:
@@ -414,7 +415,7 @@ def _server_internal_ws_url(path: str, **extra_qs) -> Optional[str]:
 
         auth = {"internal": internal_ws_credential()}
     else:
-        auth = {"token": _SESSION_TOKEN}
+        auth = {"token": app.state.session_token}
     return f"ws://{netloc}{path}?{urllib.parse.urlencode({**auth, **extra_qs})}"
 
 

@@ -1,7 +1,7 @@
 """Auth-gate middleware for the dashboard.
 
 Engaged when ``app.state.auth_required is True``; a no-op otherwise (loopback
-mode is handled by the legacy ``_SESSION_TOKEN`` ``auth_middleware``). Allows
+mode is handled by the legacy session-token ``auth_middleware``). Allows
 the auth-bootstrap routes and static assets through unauthenticated; for
 everything else demands a bearer token or a valid session cookie and attaches
 the verified :class:`Session` to ``request.state.session``. HTML routes are

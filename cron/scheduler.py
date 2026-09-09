@@ -651,11 +651,11 @@ def _cron_interval_minutes(expr: str) -> Optional[float]:
         from cron.jobs import _ensure_croniter
 
         if _ensure_croniter():
-            from cron.jobs import croniter as _croniter
+            from cron import jobs as _cron_jobs
             from datetime import datetime
 
             base = datetime.now()
-            it = _croniter(expr, base)
+            it = _cron_jobs.croniter(expr, base)
             first = it.get_next(datetime)
             second = it.get_next(datetime)
             gap = (second - first).total_seconds() / 60.0

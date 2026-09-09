@@ -177,8 +177,8 @@ def _iter_live_gateway_adapters():
     """Yield adapters from the in-process GatewayRunner, if one is running."""
     runner = None
     with contextlib.suppress(Exception):
-        from gateway.run import _gateway_runner_ref
-        runner = _gateway_runner_ref()
+        from gateway import run as _gateway_run
+        runner = _gateway_run._gateway_runner_ref()
     if runner is None:
         return
     mappings = [getattr(runner, "adapters", None) or {}, *(getattr(runner, "_profile_adapters", None) or {}).values()]

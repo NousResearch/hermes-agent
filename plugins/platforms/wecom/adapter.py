@@ -756,8 +756,8 @@ async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_f
     """Reuse the live gateway adapter in-process, else connect ephemerally (WeCom allows ONE
     WebSocket per bot — a second connection kicks the first)."""
     try:
-        from gateway.run import _gateway_runner_ref
-        runner = _gateway_runner_ref()
+        from gateway import run as _gateway_run
+        runner = _gateway_run._gateway_runner_ref()
         adapter = runner.adapters.get(Platform.WECOM) if runner is not None else None
     except Exception:
         adapter = None

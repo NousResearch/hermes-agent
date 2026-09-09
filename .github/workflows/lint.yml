@@ -185,6 +185,10 @@ jobs:
       - name: Forbid in-tree use of plugin-compat pointers
         run: python scripts/check_compat_pointers.py
 
+      # A from-import copy never sees a later `global` rebind; one such copy 401'd Desktop-over-SSH (#102930).
+      - name: Forbid from-imports of globally rebound names
+        run: python scripts/check_rebound_globals.py
+
       # Advisory: dropped public names / methods / test defs vs the PR base, printed into the log.
       # A refactor that silently removes a public symbol breaks plugins that import it; the Sep 2026
       # decomposition opened with 1,703 such drops that reviewers had to find by hand.

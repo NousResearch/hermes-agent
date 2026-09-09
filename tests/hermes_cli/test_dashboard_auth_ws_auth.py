@@ -2,7 +2,7 @@
 
 The dashboard's WS endpoints (``/api/pty``, ``/api/console``, ``/api/ws``,
 ``/api/pub``, ``/api/events``) share an auth gate: ``_ws_auth_ok``. In
-loopback mode it accepts ``?token=<_SESSION_TOKEN>``; in gated mode it accepts
+loopback mode it accepts ``?token=<app.state.session_token>``; in gated mode it accepts
 a single-use ``?ticket=`` minted by ``POST /api/auth/ws-ticket``.
 
 These tests exercise the helper at the unit level (no actual WS upgrade)
@@ -205,7 +205,7 @@ class TestWsAuthOkLoopback:
     """Gate OFF — legacy token path."""
 
     def test_correct_token_accepted(self, loopback_app):
-        ws = _fake_ws(query={"token": web_server._SESSION_TOKEN})
+        ws = _fake_ws(query={"token": web_server.app.state.session_token})
         assert _web_server_chat._ws_auth_ok(ws) is True
 
 
@@ -264,8 +264,8 @@ class TestWsAuthOkGated:
     def test_legacy_token_rejected_in_gated_mode(self, gated_app):
         """Critical: gated mode must NOT honour the legacy token path
         even when someone has access to the in-process value of
-        _SESSION_TOKEN (e.g. a leaked log line)."""
-        ws = _fake_ws(query={"token": web_server._SESSION_TOKEN})
+        session token (e.g. a leaked log line)."""
+        ws = _fake_ws(query={"token": web_server.app.state.session_token})
         assert _web_server_chat._ws_auth_ok(ws) is False
 
     def test_rejection_audit_logs(self, gated_app, tmp_path, monkeypatch):
@@ -428,7 +428,7 @@ class TestSidecarUrl:
     def test_loopback_uses_session_token(self, loopback_app):
         url = _web_server_chat._build_sidecar_url("ch-1")
         assert url is not None
-        assert f"token={web_server._SESSION_TOKEN}" in url
+        assert f"token={web_server.app.state.session_token}" in url
         assert "ticket=" not in url
 
     def test_gated_uses_internal_credential(self, gated_app):

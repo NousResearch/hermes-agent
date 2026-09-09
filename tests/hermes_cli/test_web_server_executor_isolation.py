@@ -43,7 +43,7 @@ async def _request_with_wedged_default_executor(path: str, *, warm: bool = False
         async with httpx.AsyncClient(
             transport=warm_transport,
             base_url="http://testserver",
-            headers={web_server._SESSION_HEADER_NAME: web_server._SESSION_TOKEN},
+            headers={web_server._SESSION_HEADER_NAME: web_server.app.state.session_token},
         ) as client:
             warm_response = await client.get(path)
         assert warm_response.status_code == 200
@@ -61,7 +61,7 @@ async def _request_with_wedged_default_executor(path: str, *, warm: bool = False
         async with httpx.AsyncClient(
             transport=transport,
             base_url="http://testserver",
-            headers={web_server._SESSION_HEADER_NAME: web_server._SESSION_TOKEN},
+            headers={web_server._SESSION_HEADER_NAME: web_server.app.state.session_token},
         ) as client:
             return await asyncio.wait_for(client.get(path), timeout=2.0)
     finally:

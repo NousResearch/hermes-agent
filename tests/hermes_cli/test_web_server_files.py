@@ -17,7 +17,7 @@ def _client_with_app_state():
     web_server.app.state.bound_host = None
 
     client = TestClient(web_server.app)
-    client.headers[web_server._SESSION_HEADER_NAME] = web_server._SESSION_TOKEN
+    client.headers[web_server._SESSION_HEADER_NAME] = web_server.app.state.session_token
     return client, prev_auth_required, prev_bound_host
 
 
@@ -103,7 +103,7 @@ def test_download_authenticates_via_query_token(forced_files_client):
 
     ok = client.get(
         "/api/files/download",
-        params={"path": str(file_path), "token": web_server._SESSION_TOKEN},
+        params={"path": str(file_path), "token": web_server.app.state.session_token},
     )
     assert ok.status_code == 200
     assert ok.content == b"hello"
@@ -111,7 +111,7 @@ def test_download_authenticates_via_query_token(forced_files_client):
 
     playback = client.get(
         "/api/files/download",
-        params={"path": str(file_path), "token": web_server._SESSION_TOKEN},
+        params={"path": str(file_path), "token": web_server.app.state.session_token},
         headers={"Sec-Fetch-Dest": "video", "Range": "bytes=1-3"},
     )
     assert playback.status_code == 206
@@ -121,7 +121,7 @@ def test_download_authenticates_via_query_token(forced_files_client):
 
     rejected = client.get(
         "/api/files/download",
-        params={"path": str(active_content), "token": web_server._SESSION_TOKEN},
+        params={"path": str(active_content), "token": web_server.app.state.session_token},
         headers={"Sec-Fetch-Dest": "video"},
     )
     assert rejected.status_code == 415
@@ -214,7 +214,7 @@ def test_stream_requires_header_auth_and_supports_ranges(forced_files_client):
     del client.headers[web_server._SESSION_HEADER_NAME]
     assert client.get(
         "/api/files/stream",
-        params={"path": str(file_path), "token": web_server._SESSION_TOKEN},
+        params={"path": str(file_path), "token": web_server.app.state.session_token},
     ).status_code == 401
     assert client.get("/api/files/stream", params=params).status_code == 401
 
@@ -239,7 +239,7 @@ def test_query_token_does_not_authenticate_other_endpoints(forced_files_client):
     # unlock the rest of the API surface.
     leaked = client.get(
         "/api/files/read",
-        params={"path": str(file_path), "token": web_server._SESSION_TOKEN},
+        params={"path": str(file_path), "token": web_server.app.state.session_token},
     )
     assert leaked.status_code == 401
 

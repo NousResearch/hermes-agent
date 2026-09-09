@@ -147,7 +147,8 @@ class PluginLoaderMixin:
         the code is imported from; ``provides_tools`` is what asks for it. A platform that does not declare
         the field is untouched and stays fully deferred.
         """
-        from hermes_cli.plugins import PluginContext, _PLUGINS_DEBUG
+        from hermes_cli import plugins as _plugins
+        from hermes_cli.plugins import PluginContext
         if not manifest.provides_tools:
             return
         lookup_key = manifest_key(manifest)
@@ -213,7 +214,7 @@ class PluginLoaderMixin:
             logger.warning(
                 "Plugin '%s': client-tool pre-registration failed %s (%s).%s", lookup_key, scope, exc,
                 "" if complete else " The remainder will be missing from CLI/TUI sessions.",
-                exc_info=_PLUGINS_DEBUG,
+                exc_info=_plugins._PLUGINS_DEBUG,
             )
 
     def _warn_python_dependencies(self, manifest: PluginManifest) -> None:
@@ -268,7 +269,8 @@ class PluginLoaderMixin:
 
     def _load_plugin_scoped(self, manifest: PluginManifest) -> None:
         """Load one plugin with the manager's home bound as current."""
-        from hermes_cli.plugins import LoadedPlugin, PluginContext, _PLUGINS_DEBUG
+        from hermes_cli import plugins as _plugins
+        from hermes_cli.plugins import LoadedPlugin, PluginContext
         loaded = LoadedPlugin(manifest=manifest)
         plugin_key = manifest_key(manifest)
         logger.debug(
@@ -318,7 +320,7 @@ class PluginLoaderMixin:
             # register() may have subscribed before raising; a failed plugin must leave no callable reachable
             # from later event dispatch.
             self._remove_plugin_subscriptions(plugin_key)
-            logger.warning("Failed to load plugin '%s': %s", manifest.name, exc, exc_info=_PLUGINS_DEBUG)
+            logger.warning("Failed to load plugin '%s': %s", manifest.name, exc, exc_info=_plugins._PLUGINS_DEBUG)
         # The failure path swept this plugin's whole ledger (not just the registration_start slice), so
         # discovery-time pre-registrations are gone too.
         # There is no live tool left to credit — attribution and the registry agree at zero. Only the

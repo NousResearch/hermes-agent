@@ -34,7 +34,7 @@ def stream_client(monkeypatch, _isolate_hermes_home):
 
 
 def _url(token: str | None = None) -> str:
-    return f"/api/audio/speak-stream?{urlencode({'token': token or web_server._SESSION_TOKEN})}"
+    return f"/api/audio/speak-stream?{urlencode({'token': token or web_server.app.state.session_token})}"
 
 
 class _FakeStreamer:

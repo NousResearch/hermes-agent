@@ -10,7 +10,8 @@ import hermes_cli.web_server_profiles as _web_server_profiles
 def _client():
     from starlette.testclient import TestClient
 
-    from hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
+    from hermes_cli.web_server import app, _SESSION_HEADER_NAME
+    _SESSION_TOKEN = app.state.session_token
 
     client = TestClient(app)
     client.headers[_SESSION_HEADER_NAME] = _SESSION_TOKEN

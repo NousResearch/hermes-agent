@@ -62,7 +62,7 @@ def test_update_available_requires_enabled_and_installed(hermes_home, monkeypatc
 
     client = TestClient(web_server.app)
     # Same auth pattern as the other local-models route tests.
-    client.headers[web_server._SESSION_HEADER_NAME] = web_server._SESSION_TOKEN
+    client.headers[web_server._SESSION_HEADER_NAME] = web_server.app.state.session_token
 
     def status():
         r = client.get("/api/local-models/status")

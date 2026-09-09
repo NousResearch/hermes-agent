@@ -27,7 +27,8 @@ class TestGetConfigOffLoop:
             from starlette.testclient import TestClient
         except ImportError:
             pytest.skip("fastapi/starlette not installed")
-        from hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
+        from hermes_cli.web_server import app, _SESSION_HEADER_NAME
+        _SESSION_TOKEN = app.state.session_token
 
         client = TestClient(app)
         client.headers[_SESSION_HEADER_NAME] = _SESSION_TOKEN
@@ -89,7 +90,7 @@ class TestGetConfigOffLoop:
                     transport=transport, base_url="http://testserver"
                 ) as client:
                     client.headers[web_server._SESSION_HEADER_NAME] = (
-                        web_server._SESSION_TOKEN
+                        web_server.app.state.session_token
                     )
                     resp = await client.get("/api/config")
             finally:
@@ -164,7 +165,7 @@ class TestRouterOffLoop:
                     transport=transport, base_url="http://testserver"
                 ) as client:
                     client.headers[web_server._SESSION_HEADER_NAME] = (
-                        web_server._SESSION_TOKEN
+                        web_server.app.state.session_token
                     )
                     resp = await client.get("/api/skills")
             finally:
@@ -204,7 +205,7 @@ class TestConfigMutationLock:
         from hermes_cli.config import load_config
 
         client = TestClient(web_server.app)
-        client.headers[web_server._SESSION_HEADER_NAME] = web_server._SESSION_TOKEN
+        client.headers[web_server._SESSION_HEADER_NAME] = web_server.app.state.session_token
 
         # Race the two handlers' load→mutate→save spans. This is probabilistic,
         # not deterministically gated: the slow save_config below widens the
@@ -269,7 +270,7 @@ class TestConfigMutationLock:
         from hermes_cli.config import load_config
 
         client = TestClient(web_server.app)
-        client.headers[web_server._SESSION_HEADER_NAME] = web_server._SESSION_TOKEN
+        client.headers[web_server._SESSION_HEADER_NAME] = web_server.app.state.session_token
 
         results = []
 

@@ -202,14 +202,14 @@ class PluginLedgerMixin:
 
     def _dispose_registrations(self, registrations: List[PluginRegistration]) -> None:
         """Dispose registrations in reverse acquisition order, best effort."""
-        from hermes_cli.plugins import _PLUGINS_DEBUG
+        from hermes_cli import plugins as _plugins
         for registration in reversed(registrations):
             try:
                 registration.dispose()
             except Exception as exc:  # pragma: no cover - defensive cleanup
                 logger.warning(
                     "Failed to unload plugin registration %s/%s: %s", registration.plugin_key,
-                    registration.key, exc, exc_info=_PLUGINS_DEBUG,
+                    registration.key, exc, exc_info=_plugins._PLUGINS_DEBUG,
                 )
 
     @staticmethod

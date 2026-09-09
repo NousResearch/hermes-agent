@@ -30,7 +30,7 @@ from hermes_cli.update_cmd_windows import (  # noqa: F401
     _cold_start_windows_gateway_after_update, _desktop_owns_gateway_lifecycle,
     _detect_venv_python_processes, _format_venv_python_holders_message,
     _handoff_reapable_backend_pids, _hermes_holder_subcommand, _holder_value_flags,
-    _holder_value_flags_cache, _ledger_manual_serve_holders, _ledger_reapable_backend_pids,
+    _ledger_manual_serve_holders, _ledger_reapable_backend_pids,
     _leftover_pausable_gateway_pids, _looks_like_desktop_control_plane,
     _orphaned_desktop_backend_pids, _pause_windows_gateways_for_update,
     _refresh_bootstrap_cache_scripts, _refresh_windows_gateway_launchers,

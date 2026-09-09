@@ -42,7 +42,8 @@ def client(monkeypatch, profiles_on_disk):
         pytest.skip("fastapi/starlette not installed")
 
     import hermes_state
-    from hermes_cli.web_server import _SESSION_HEADER_NAME, _SESSION_TOKEN, app
+    from hermes_cli.web_server import _SESSION_HEADER_NAME, app
+    _SESSION_TOKEN = app.state.session_token
     from hermes_constants import get_hermes_home
 
     monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", get_hermes_home() / "state.db")

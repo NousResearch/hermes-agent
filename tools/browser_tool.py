@@ -589,9 +589,9 @@ def _secret_url_error(url: str) -> Optional[dict]:
     """Refuse URLs embedding an API key/token (raw and URL-decoded, catching ``%2D``
     tricks) — a prompt injection could otherwise exfiltrate secrets via the URL."""
     import urllib.parse
-    from agent.redact import _PREFIX_RE
+    from agent import redact
 
-    if _PREFIX_RE.search(url) or _PREFIX_RE.search(urllib.parse.unquote(url)):
+    if redact._PREFIX_RE.search(url) or redact._PREFIX_RE.search(urllib.parse.unquote(url)):
         return _err("Blocked: URL contains what appears to be an API key or token. Secrets must not be sent in URLs.")
     return None
 

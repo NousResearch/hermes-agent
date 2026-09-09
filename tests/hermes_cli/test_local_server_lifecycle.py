@@ -15,7 +15,7 @@ def client(tmp_path, monkeypatch):
     from hermes_cli import web_server
 
     test_client = TestClient(web_server.app)
-    token = getattr(web_server, "_SESSION_TOKEN", "")
+    token = web_server.app.state.session_token
     if token:
         test_client.headers["Authorization"] = f"Bearer {token}"
     return test_client

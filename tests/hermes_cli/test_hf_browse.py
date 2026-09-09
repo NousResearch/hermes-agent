@@ -28,7 +28,7 @@ def client(tmp_path, monkeypatch):
     from hermes_cli import web_server
 
     test_client = TestClient(web_server.app)
-    test_client.headers[web_server._SESSION_HEADER_NAME] = web_server._SESSION_TOKEN
+    test_client.headers[web_server._SESSION_HEADER_NAME] = web_server.app.state.session_token
     return test_client
 
 

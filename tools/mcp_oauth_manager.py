@@ -304,9 +304,10 @@ class MCPOAuthManager:
             logger.warning("MCP OAuth '%s': SDK auth module unavailable", server_name)
             return None
         from tools.mcp_dashboard_oauth import get_dashboard_oauth_flow  # lazy: circular at import time
-        from tools.mcp_oauth import _OAUTH_AVAILABLE, OAuthNonInteractiveError, _is_interactive
+        from tools import mcp_oauth as _mcp_oauth
+        from tools.mcp_oauth import OAuthNonInteractiveError, _is_interactive
         from tools.mcp_oauth_provider import build_provider_kwargs, prepare_oauth_config
-        if not _OAUTH_AVAILABLE:
+        if not _mcp_oauth._OAUTH_AVAILABLE:
             return None
         cfg, storage = prepare_oauth_config(server_name, entry.server_url, entry.oauth_config)
         if get_dashboard_oauth_flow() is None and not _is_interactive() and not storage.has_cached_tokens():

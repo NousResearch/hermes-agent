@@ -10,7 +10,7 @@ dashboard surface, mounted by `hermes_cli/web_server.py` (+ `web_server_*.py` si
 
 - `web/src/pages/ChatPage.tsx` mounts xterm.js `Terminal` with the WebGL renderer, `@xterm/addon-fit`
   (container-driven resize) and `@xterm/addon-unicode11` (wide-character widths).
-- `/api/pty?token=…` upgrades to a WebSocket; auth uses the same ephemeral `_SESSION_TOKEN` as REST,
+- `/api/pty?token=…` upgrades to a WebSocket; auth uses the same ephemeral `app.state.session_token` as REST,
   passed as a query param because browsers cannot set `Authorization` on a WS upgrade.
 - The server spawns exactly what `hermes --tui` would spawn, through `ptyprocess` (POSIX PTY — WSL
   works, native Windows does not).

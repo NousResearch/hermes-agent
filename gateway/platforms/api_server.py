@@ -1186,8 +1186,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
     def _gateway_is_draining() -> bool:
         """Whether the owning gateway currently refuses new agent turns."""
         try:
-            from gateway.run import _gateway_runner_ref
-            runner = _gateway_runner_ref()
+            from gateway import run as _gateway_run
+            runner = _gateway_run._gateway_runner_ref()
             return bool(runner and (getattr(runner, "_draining", False)
                                     or getattr(runner, "_external_drain_active", False)))
         except Exception:
@@ -1914,8 +1914,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         if not session_key:
             return None
         try:
-            from gateway.run import _gateway_runner_ref
-            runner = _gateway_runner_ref()
+            from gateway import run as _gateway_run
+            runner = _gateway_run._gateway_runner_ref()
             if runner is None:
                 return None
             try:
@@ -3471,8 +3471,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             runner = self.gateway_runner or request.app.get("gateway_runner")
             if runner is None:
                 with suppress(Exception):
-                    from gateway.run import _gateway_runner_ref
-                    runner = _gateway_runner_ref()
+                    from gateway import run as _gateway_run
+                    runner = _gateway_run._gateway_runner_ref()
             adapters = getattr(runner, "adapters", None) or None
 
             def _detach_fire(fire_fn, *fire_args) -> "web.Response":

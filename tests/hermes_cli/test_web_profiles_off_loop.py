@@ -64,9 +64,9 @@ def client(profile_dir):
     from hermes_cli import web_server
 
     with TestClient(web_server.app, raise_server_exceptions=False) as c:
-        # web_server resolves _SESSION_TOKEN once, at import, so read it back
+        # the token lives on app.state (may be replaced by start_server), so read it back
         # from the module rather than pinning a value from this file.
-        c.headers["Authorization"] = f"Bearer {web_server._SESSION_TOKEN}"
+        c.headers["Authorization"] = f"Bearer {web_server.app.state.session_token}"
         yield c
 
 

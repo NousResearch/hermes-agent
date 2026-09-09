@@ -26,7 +26,7 @@ def client(_isolate_hermes_home):
     from hermes_cli import web_server
 
     client = TestClient(web_server.app)
-    client.headers[web_server._SESSION_HEADER_NAME] = web_server._SESSION_TOKEN
+    client.headers[web_server._SESSION_HEADER_NAME] = web_server.app.state.session_token
     return client
 
 

@@ -294,8 +294,8 @@ def _live_adapter(platform, *, lookup_failed_warning=None):
     ``(runner, None)`` when the lookup fails — logged when a warning is given, never silently
     swallowed (a silent fall-through could recreate a reconnect storm)."""
     try:
-        from gateway.run import _gateway_runner_ref
-        runner = _gateway_runner_ref()
+        from gateway import run as _gateway_run
+        runner = _gateway_run._gateway_runner_ref()
     except Exception:
         runner = None
     if runner is None:

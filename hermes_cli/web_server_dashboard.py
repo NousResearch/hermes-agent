@@ -102,26 +102,25 @@ def mount_spa(application: FastAPI):
     with a missing dist per-request (404 JSON / ``check_dir=False``), so a long-lived
     ``--skip-build`` process recovers the moment a build appears on disk — no restart.
     """
-    from hermes_cli.web_server import WEB_DIST, _DASHBOARD_EMBEDDED_CHAT_ENABLED, app
-    from hermes_cli.web_deps import _server
+    from hermes_cli.web_server import WEB_DIST, _DASHBOARD_EMBEDDED_CHAT_ENABLED
 
     # `hermes serve` is the headless backend: it must NEVER serve the browser SPA, even if a
     # dist is lying around, so only the JSON-RPC/WS/API surface is reachable.
     if os.environ.get("HERMES_SERVE_HEADLESS") == "1":
 
         @application.get("/{full_path:path}")
-        async def no_frontend(full_path: str):
+        async def no_frontend(request: Request, full_path: str):
             # Desktop token handshake: the Electron shell boots by fetching `/` and reading
             # ``window.__HERMES_SESSION_TOKEN__`` for /api/ws auth. When headless 404'd every
             # path, a renderer whose spawn token no longer matched (e.g. after `hermes update`)
             # white-screened. Serve a token-only page at the exact root, but ONLY when the auth
             # gate is off: on a gated serve the token must never be readable without auth.
             # See #94227, #95575.
-            gated = bool(getattr(application.state, "auth_required", False))
-            if full_path == "" and not gated:
+            state = request.app.state
+            if full_path == "" and not getattr(state, "auth_required", False):
                 return HTMLResponse(
                     "<!doctype html><html><head><script>"
-                    f"window.__HERMES_SESSION_TOKEN__={json.dumps(_server()._SESSION_TOKEN)};"
+                    f"window.__HERMES_SESSION_TOKEN__={json.dumps(state.session_token)};"
                     "window.__HERMES_AUTH_REQUIRED__=false;"
                     f"</script></head><body>{_HEADLESS_MSG}</body></html>",
                     headers=_NO_STORE,
@@ -137,11 +136,12 @@ def mount_spa(application: FastAPI):
     # index.html is unreadable; the asset mounts use check_dir=False and 404 on missing files), so mounting
     # them unconditionally makes the dashboard recover the moment a build appears on disk — no restart
     # needed.
-    def _serve_index(prefix: str = ""):
-        """index.html with the session token + base-path injected.
+    def _serve_index(state, prefix: str = ""):
+        """index.html with the session token + base-path injected; ``state`` is the serving
+        app's ``app.state`` (read per request: the SSH token is applied after this mount).
 
-        When the OAuth auth gate is active (``app.state.auth_required``), the legacy
-        ``_SESSION_TOKEN`` is NOT injected — the SPA reads identity from ``/api/auth/me`` over
+        When the OAuth auth gate is active (``state.auth_required``), the session token is
+        NOT injected — the SPA reads identity from ``/api/auth/me`` over
         cookie auth; ``__HERMES_AUTH_REQUIRED__`` tells it which scheme to use for /api/pty
         and /api/ws (ticket vs token).
         """
@@ -151,8 +151,8 @@ def mount_spa(application: FastAPI):
             # Partial build / wiped dist / permissions: same JSON 404 as a fully-missing dist.
             return JSONResponse({"error": "Frontend not built. Run: cd web && npm run build"}, status_code=404)
         chat_js = "true" if _DASHBOARD_EMBEDDED_CHAT_ENABLED else "false"
-        gated = bool(getattr(app.state, "auth_required", False))
-        token_js = "" if gated else f'window.__HERMES_SESSION_TOKEN__="{_server()._SESSION_TOKEN}";'
+        gated = bool(getattr(state, "auth_required", False))
+        token_js = "" if gated else f'window.__HERMES_SESSION_TOKEN__="{state.session_token}";'
         bootstrap_script = (
             f"<script>{token_js}"
             f"window.__HERMES_DASHBOARD_EMBEDDED_CHAT__={chat_js};"
@@ -219,7 +219,7 @@ def mount_spa(application: FastAPI):
             and file_path.is_file()
         ):
             return FileResponse(file_path)
-        return _serve_index(prefix)
+        return _serve_index(request.app.state, prefix)
 
 
 # ---------------------------------------------------------------------------

@@ -25,7 +25,8 @@ def client():
         from starlette.testclient import TestClient
     except ImportError:
         pytest.skip("fastapi/starlette not installed")
-    from hermes_cli.web_server import _SESSION_HEADER_NAME, _SESSION_TOKEN, app
+    from hermes_cli.web_server import _SESSION_HEADER_NAME, app
+    _SESSION_TOKEN = app.state.session_token
 
     c = TestClient(app)
     c.headers[_SESSION_HEADER_NAME] = _SESSION_TOKEN

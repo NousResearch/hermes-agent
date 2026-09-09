@@ -82,8 +82,8 @@ def test_start_server_applies_process_local_ssh_bootstrap_state(monkeypatch):
         ssh_owner_nonce="0123456789abcdef",
     )
 
-    assert web_server._SESSION_TOKEN == "s" * 64
-    assert web_server._SSH_OWNER_NONCE == "0123456789abcdef"
+    assert web_server.app.state.session_token == "s" * 64
+    assert web_server.app.state.ssh_owner_nonce == "0123456789abcdef"
     assert captured["port"] == 0
 
 

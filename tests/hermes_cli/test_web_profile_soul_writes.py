@@ -34,11 +34,11 @@ def client(tmp_path, monkeypatch):
     from hermes_cli import web_server
 
     with TestClient(web_server.app, raise_server_exceptions=False) as c:
-        # web_server resolves _SESSION_TOKEN once, at import. Read it back from
+        # the token lives on app.state (may be replaced by start_server). Read it back from
         # the module instead of assuming the env var above won the race — any
         # test file that imports web_server earlier in the session fixes the
         # token before this fixture runs.
-        c.headers["Authorization"] = f"Bearer {web_server._SESSION_TOKEN}"
+        c.headers["Authorization"] = f"Bearer {web_server.app.state.session_token}"
         yield c
 
 

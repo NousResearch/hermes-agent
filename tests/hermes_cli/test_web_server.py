@@ -209,12 +209,12 @@ class TestSessionTokenInjection:
         import hermes_cli.web_server as ws
 
         original_app = ws.app
-        original_token = ws._SESSION_TOKEN
+        original_token = ws.app.state.session_token
         monkeypatch.setenv("HERMES_DASHBOARD_SESSION_TOKEN", "desktop-seeded-token")
         assert ws._resolve_session_token() == "desktop-seeded-token"
         # No module reload: the loaded app and its adopted token are untouched.
         assert ws.app is original_app
-        assert ws._SESSION_TOKEN == original_token
+        assert ws.app.state.session_token == original_token
 
     def test_falls_back_to_random_token(self, monkeypatch):
         import hermes_cli.web_server as ws
@@ -232,7 +232,7 @@ class TestSessionTokenInjection:
 
         original_app = ws.app
         original_header_name = ws._SESSION_HEADER_NAME
-        original_token = ws._SESSION_TOKEN
+        original_token = ws.app.state.session_token
         monkeypatch.setenv("HERMES_DASHBOARD_SESSION_TOKEN", "desktop-seeded-token")
         assert ws._resolve_session_token() == "desktop-seeded-token"
         monkeypatch.delenv("HERMES_DASHBOARD_SESSION_TOKEN", raising=False)
@@ -244,7 +244,7 @@ class TestSessionTokenInjection:
         assert client.get("/api/__session_token_probe").status_code == 404
         assert ws.app is original_app
         assert ws._SESSION_HEADER_NAME == original_header_name
-        assert ws._SESSION_TOKEN == original_token
+        assert ws.app.state.session_token == original_token
 
 
 # ---------------------------------------------------------------------------
@@ -265,7 +265,8 @@ class TestWebServerEndpoints:
 
         import hermes_state
         from hermes_constants import get_hermes_home
-        from hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
+        from hermes_cli.web_server import app, _SESSION_HEADER_NAME
+        _SESSION_TOKEN = app.state.session_token
 
         monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", get_hermes_home() / "state.db")
 
@@ -1486,7 +1487,8 @@ class TestWebServerEndpoints:
     def test_reveal_env_var(self, tmp_path):
         """POST /api/env/reveal should return the real unredacted value."""
         from hermes_cli.config import save_env_value
-        from hermes_cli.web_server import _SESSION_HEADER_NAME, _SESSION_TOKEN
+        from hermes_cli.web_server import _SESSION_HEADER_NAME, app
+        _SESSION_TOKEN = app.state.session_token
         save_env_value("TEST_REVEAL_KEY", "super-secret-value-12345")
         resp = self.client.post(
             "/api/env/reveal",
@@ -1504,7 +1506,8 @@ class TestWebServerEndpoints:
     def test_reveal_env_var_custom_session_header_ignores_proxy_authorization(self, tmp_path):
         """A valid dashboard session header should coexist with proxy auth."""
         from hermes_cli.config import save_env_value
-        from hermes_cli.web_server import _SESSION_HEADER_NAME, _SESSION_TOKEN
+        from hermes_cli.web_server import _SESSION_HEADER_NAME, app
+        _SESSION_TOKEN = app.state.session_token
 
         save_env_value("TEST_REVEAL_PROXY_AUTH", "secret-value")
         resp = self.client.post(
@@ -1522,7 +1525,8 @@ class TestWebServerEndpoints:
     def test_reveal_env_var_legacy_authorization_header_still_works(self, tmp_path):
         """Keep old dashboard bundles working while the new header rolls out."""
         from hermes_cli.config import save_env_value
-        from hermes_cli.web_server import _SESSION_TOKEN
+        from hermes_cli.web_server import app
+        _SESSION_TOKEN = app.state.session_token
 
         save_env_value("TEST_REVEAL_LEGACY_AUTH", "secret-value")
         resp = self.client.post(
@@ -2508,7 +2512,8 @@ class TestConfigRoundTrip:
             from starlette.testclient import TestClient
         except ImportError:
             pytest.skip("fastapi/starlette not installed")
-        from hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
+        from hermes_cli.web_server import app, _SESSION_HEADER_NAME
+        _SESSION_TOKEN = app.state.session_token
         self.client = TestClient(app)
         self.client.headers[_SESSION_HEADER_NAME] = _SESSION_TOKEN
 
@@ -2620,7 +2625,8 @@ class TestNewEndpoints:
 
         import hermes_state
         from hermes_constants import get_hermes_home
-        from hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
+        from hermes_cli.web_server import app, _SESSION_HEADER_NAME
+        _SESSION_TOKEN = app.state.session_token
 
         monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", get_hermes_home() / "state.db")
 
@@ -3415,7 +3421,8 @@ class TestStatusRemoteGateway:
         except ImportError:
             pytest.skip("fastapi/starlette not installed")
 
-        from hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
+        from hermes_cli.web_server import app, _SESSION_HEADER_NAME
+        _SESSION_TOKEN = app.state.session_token
         self.client = TestClient(app)
         self.client.headers[_SESSION_HEADER_NAME] = _SESSION_TOKEN
 
@@ -3503,7 +3510,8 @@ class TestStatusInstallId:
             pytest.skip("fastapi/starlette not installed")
 
         import hermes_cli.web_server as ws
-        from hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
+        from hermes_cli.web_server import app, _SESSION_HEADER_NAME
+        _SESSION_TOKEN = app.state.session_token
 
         # Fresh process cache per test: the cache is process-global by design
         # (stability), so tests must not observe a previous test's id.
@@ -3593,7 +3601,8 @@ class TestGatewayBusyReadout:
         except ImportError:
             pytest.skip("fastapi/starlette not installed")
 
-        from hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
+        from hermes_cli.web_server import app, _SESSION_HEADER_NAME
+        _SESSION_TOKEN = app.state.session_token
         self.client = TestClient(app)
         self.client.headers[_SESSION_HEADER_NAME] = _SESSION_TOKEN
 
@@ -3643,7 +3652,8 @@ class TestStatusMemoryBlock:
         except ImportError:
             pytest.skip("fastapi/starlette not installed")
 
-        from hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
+        from hermes_cli.web_server import app, _SESSION_HEADER_NAME
+        _SESSION_TOKEN = app.state.session_token
         self.client = TestClient(app)
         self.client.headers[_SESSION_HEADER_NAME] = _SESSION_TOKEN
 
@@ -3704,7 +3714,8 @@ class TestGatewayUpdatedAtContract:
         except ImportError:
             pytest.skip("fastapi/starlette not installed")
 
-        from hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
+        from hermes_cli.web_server import app, _SESSION_HEADER_NAME
+        _SESSION_TOKEN = app.state.session_token
         self.client = TestClient(app)
         self.client.headers[_SESSION_HEADER_NAME] = _SESSION_TOKEN
 
@@ -3929,6 +3940,7 @@ class TestThemeBootstrapCSS:
         )
         monkeypatch.setattr(ws, "WEB_DIST", dist)
         spa_app = FastAPI()
+        spa_app.state.session_token = ws.app.state.session_token
         _web_server_dashboard.mount_spa(spa_app)
         return TestClient(spa_app)
 
@@ -4020,7 +4032,8 @@ class TestDeleteSessionEndpoint:
 
         import hermes_state
         from hermes_constants import get_hermes_home
-        from hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
+        from hermes_cli.web_server import app, _SESSION_HEADER_NAME
+        _SESSION_TOKEN = app.state.session_token
 
         monkeypatch.setattr(
             hermes_state, "DEFAULT_DB_PATH", get_hermes_home() / "state.db"
@@ -4083,7 +4096,8 @@ class TestBulkDeleteSessionsEndpoint:
 
         import hermes_state
         from hermes_constants import get_hermes_home
-        from hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
+        from hermes_cli.web_server import app, _SESSION_HEADER_NAME
+        _SESSION_TOKEN = app.state.session_token
 
         monkeypatch.setattr(
             hermes_state, "DEFAULT_DB_PATH", get_hermes_home() / "state.db"
@@ -4170,7 +4184,8 @@ class TestDeleteEmptySessionsEndpoint:
 
         import hermes_state
         from hermes_constants import get_hermes_home
-        from hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
+        from hermes_cli.web_server import app, _SESSION_HEADER_NAME
+        _SESSION_TOKEN = app.state.session_token
 
         # Pin the SessionDB to the isolated HERMES_HOME so each test
         # starts with a clean state.db.
@@ -4287,7 +4302,8 @@ class TestPluginAPIAuth:
 
         import hermes_state
         from hermes_constants import get_hermes_home
-        from hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
+        from hermes_cli.web_server import app, _SESSION_HEADER_NAME
+        _SESSION_TOKEN = app.state.session_token
 
         monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", get_hermes_home() / "state.db")
 
@@ -4509,7 +4525,7 @@ class TestPtyWebSocket:
         self.ws_module = ws
         monkeypatch.setattr(ws, "_DASHBOARD_EMBEDDED_CHAT_ENABLED", True)
         ws.app.state.pty_active_session_files = {}
-        self.token = ws._SESSION_TOKEN
+        self.token = ws.app.state.session_token
         self.client = TestClient(ws.app)
 
     def _url(self, token: str | None = None, **params: str) -> str:
@@ -4817,7 +4833,8 @@ class TestValidateProviderCredential:
         except ImportError:
             pytest.skip("fastapi/starlette not installed")
 
-        from hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
+        from hermes_cli.web_server import app, _SESSION_HEADER_NAME
+        _SESSION_TOKEN = app.state.session_token
 
         self.client = TestClient(app)
         self.client.headers[_SESSION_HEADER_NAME] = _SESSION_TOKEN
@@ -5034,6 +5051,7 @@ class TestServeIndexMissingIndex:
         monkeypatch.setattr(ws, "WEB_DIST", dist)
         monkeypatch.delenv("HERMES_SERVE_HEADLESS", raising=False)
         spa_app = FastAPI()
+        spa_app.state.session_token = ws.app.state.session_token
         _web_server_dashboard.mount_spa(spa_app)
         return TestClient(spa_app), dist
 
@@ -5070,12 +5088,12 @@ class TestServeIndexMissingIndex:
     ):
         import hermes_cli.web_server as ws
 
-        monkeypatch.setattr(ws, "_SESSION_TOKEN", "before-mount")
+        monkeypatch.setattr(ws.app.state, "session_token", "before-mount")
         client, _dist = self._client_with_dist(
             tmp_path, monkeypatch, write_index=True
         )
 
-        ws._apply_ssh_session_token("after-mount")
+        client.app.state.session_token = "after-mount"  # what start_server() does post-mount
         resp = client.get("/chat")
 
         assert resp.status_code == 200
@@ -5103,6 +5121,7 @@ class TestHeadlessServeTokenPage:
         monkeypatch.setenv("HERMES_SERVE_HEADLESS", "1")
         spa_app = FastAPI()
         spa_app.state.auth_required = gated
+        spa_app.state.session_token = ws.app.state.session_token
         _web_server_dashboard.mount_spa(spa_app)
         return TestClient(spa_app), ws
 
@@ -5123,7 +5142,7 @@ class TestHeadlessServeTokenPage:
         assert match, resp.text
         import json as _json
 
-        assert _json.loads(match.group(1)) == ws._SESSION_TOKEN
+        assert _json.loads(match.group(1)) == ws.app.state.session_token
         assert "window.__HERMES_AUTH_REQUIRED__=false" in resp.text
 
     def test_root_uses_ssh_token_applied_after_spa_mount(self, monkeypatch):
@@ -5132,10 +5151,10 @@ class TestHeadlessServeTokenPage:
 
         import hermes_cli.web_server as ws
 
-        monkeypatch.setattr(ws, "_SESSION_TOKEN", "before-mount")
+        monkeypatch.setattr(ws.app.state, "session_token", "before-mount")
         client, ws = self._headless_client(monkeypatch, gated=False)
 
-        ws._apply_ssh_session_token("after-mount")
+        client.app.state.session_token = "after-mount"  # what start_server() does post-mount
         resp = client.get("/")
         match = re.search(
             r'window\.__HERMES_SESSION_TOKEN__\s*=\s*("(?:\\.|[^"\\])*")',
@@ -5150,7 +5169,7 @@ class TestHeadlessServeTokenPage:
         resp = client.get("/")
         assert resp.status_code == 404
         assert "web UI disabled" in resp.json()["error"]
-        assert ws._SESSION_TOKEN not in resp.text
+        assert ws.app.state.session_token not in resp.text
 
     def test_non_root_paths_stay_404_json(self, monkeypatch):
         client, ws = self._headless_client(monkeypatch, gated=False)
@@ -5158,7 +5177,7 @@ class TestHeadlessServeTokenPage:
             resp = client.get(route)
             assert resp.status_code == 404
             assert "web UI disabled" in resp.json()["error"]
-            assert ws._SESSION_TOKEN not in resp.text
+            assert ws.app.state.session_token not in resp.text
 
 
 class TestHashedAssetCacheHeaders:
@@ -5190,6 +5209,7 @@ class TestHashedAssetCacheHeaders:
         monkeypatch.setattr(ws, "WEB_DIST", dist)
         monkeypatch.delenv("HERMES_SERVE_HEADLESS", raising=False)
         spa_app = FastAPI()
+        spa_app.state.session_token = ws.app.state.session_token
         _web_server_dashboard.mount_spa(spa_app)
         return TestClient(spa_app)
 
@@ -5255,7 +5275,7 @@ class TestDashboardComponentHealth:
         monkeypatch.setattr(ws, "DASHBOARD_HEALTH", ws.DashboardHealth())
         self.ws = ws
         self.client = TestClient(ws.app, raise_server_exceptions=False)
-        self.client.headers[ws._SESSION_HEADER_NAME] = ws._SESSION_TOKEN
+        self.client.headers[ws._SESSION_HEADER_NAME] = ws.app.state.session_token
 
     # -- middleware -------------------------------------------------------
 
@@ -5319,7 +5339,8 @@ class TestSessionPatchUnread:
 
         import hermes_state
         from hermes_constants import get_hermes_home
-        from hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
+        from hermes_cli.web_server import app, _SESSION_HEADER_NAME
+        _SESSION_TOKEN = app.state.session_token
 
         monkeypatch.setattr(
             hermes_state, "DEFAULT_DB_PATH", get_hermes_home() / "state.db"
@@ -5396,6 +5417,7 @@ def test_mount_spa_dynamic_web_dist_recheck(tmp_path, monkeypatch):
     dist = tmp_path / "web_dist"
     monkeypatch.setattr(web_server, "WEB_DIST", dist)
 
+    app.state.session_token = web_server.app.state.session_token
     _web_server_dashboard.mount_spa(app)
     client = TestClient(app)
 

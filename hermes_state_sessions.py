@@ -967,6 +967,11 @@ class SessionSessionsMixin:
             ):
                 if key in tip_row:
                     merged[key] = tip_row[key]
+            if merged.get("title") is None:
+                # The title is carried root->tip AFTER the publish transaction; a rotation cut off in
+                # between leaves it on the ended root, and exact-title lookups (`hermes peer dm` ->
+                # canonical "Bot Chat") must still see the lineage under its name (#106165).
+                merged["title"] = s.get("title")
             merged["_lineage_root_id"] = s["id"]
             merged["_lineage_ids"] = chain
             projected.append(merged)
@@ -1089,7 +1094,7 @@ class SessionSessionsMixin:
                 tip.id,
                 tip.source,
                 tip.model,
-                tip.title,
+                COALESCE(tip.title, s.title) AS title,
                 s.started_at AS started_at,
                 tip.ended_at,
                 tip.end_reason,

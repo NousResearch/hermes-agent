@@ -1,0 +1,266 @@
+{
+  "schema_version": "1.0.0",
+  "title": "Task Completion Verification case-study ledger",
+  "observed_at": "2026-08-21T01:21:00Z",
+  "records": [
+    {
+      "schema_version": "1.0.0",
+      "contract_id": "webhook-task7-packet-attempt",
+      "observed_at": "2026-08-21T01:07:04Z",
+      "authoritative_system": "github",
+      "repository": "andrexibiza/hermes-agent",
+      "target": {
+        "kind": "branch_ref",
+        "url": "https://github.com/andrexibiza/hermes-agent/tree/campaign/webhook-effective-config",
+        "object_id": "refs/heads/campaign/webhook-effective-config"
+      },
+      "requested_predicate": "submitted",
+      "observed": {
+        "materialization": "local_only",
+        "integrity": "locally_verified",
+        "governance": "unreviewed",
+        "integration": "not_submitted",
+        "operation": "not_exercised",
+        "lineage": "blocked",
+        "version": "9c5d2cb4e3a2e17a114caee171eac53459700a94ae307d9fb671387142b92cf0"
+      },
+      "receipts": [
+        {
+          "kind": "local_hash",
+          "locator": "Task Completion Verification.txt#Task-7",
+          "observed_at": "2026-08-21T01:07:04Z",
+          "sha256": "9c5d2cb4e3a2e17a114caee171eac53459700a94ae307d9fb671387142b92cf0",
+          "status": "patch structurally parsed",
+          "binds_exact_object": false
+        },
+        {
+          "kind": "authorization_failure",
+          "locator": "Task Completion Verification.txt#GitHub-write-attempts",
+          "observed_at": "2026-08-21T01:07:04Z",
+          "status": "403 Resource not accessible by integration",
+          "binds_exact_object": false,
+          "detail": "Contents API, blob/tree construction, and direct tree creation all failed; no branch changed."
+        }
+      ],
+      "graph_edges": [
+        {
+          "type": "about",
+          "target": "https://github.com/NousResearch/hermes-agent/pull/85002",
+          "detail": "The local patch targeted this pull request but did not mutate it during the recorded execution."
+        }
+      ],
+      "blocked_by": {
+        "class": "authorization",
+        "owner": "GitHub App repository installation",
+        "receipt": "403 Resource not accessible by integration",
+        "detail": "Repository-level Contents:write authority was unavailable to the integration."
+      },
+      "notes": "This record proves prepared/local verification and a hard publication blocker. It does not prove target-state mutation."
+    },
+    {
+      "schema_version": "1.0.0",
+      "contract_id": "webhook-task10-packet-attempt",
+      "observed_at": "2026-08-21T01:07:04Z",
+      "authoritative_system": "github",
+      "repository": "andrexibiza/hermes-agent",
+      "target": {
+        "kind": "branch_ref",
+        "url": "https://github.com/andrexibiza/hermes-agent/tree/campaign/webhook-task10-fanout",
+        "object_id": "refs/heads/campaign/webhook-task10-fanout"
+      },
+      "requested_predicate": "submitted",
+      "observed": {
+        "materialization": "local_only",
+        "integrity": "locally_verified",
+        "governance": "unreviewed",
+        "integration": "not_submitted",
+        "operation": "not_exercised",
+        "lineage": "blocked",
+        "version": "62c158b8d1860edebe54002fc34e0cdc95b5b59743a3cd531f349929f6c135a5"
+      },
+      "receipts": [
+        {
+          "kind": "local_hash",
+          "locator": "Task Completion Verification.txt#Task-10",
+          "observed_at": "2026-08-21T01:07:04Z",
+          "sha256": "62c158b8d1860edebe54002fc34e0cdc95b5b59743a3cd531f349929f6c135a5",
+          "status": "patch structurally parsed",
+          "binds_exact_object": false
+        },
+        {
+          "kind": "authorization_failure",
+          "locator": "Task Completion Verification.txt#GitHub-write-attempts",
+          "observed_at": "2026-08-21T01:07:04Z",
+          "status": "403 Resource not accessible by integration",
+          "binds_exact_object": false,
+          "detail": "No branch changed and no public repository state was altered."
+        }
+      ],
+      "graph_edges": [
+        {
+          "type": "about",
+          "target": "https://github.com/NousResearch/hermes-agent/pull/85523",
+          "detail": "The local patch targeted this historical pull request at the recorded moment."
+        }
+      ],
+      "blocked_by": {
+        "class": "authorization",
+        "owner": "GitHub App repository installation",
+        "receipt": "403 Resource not accessible by integration",
+        "detail": "Repository-level Contents:write authority was unavailable to the integration."
+      },
+      "notes": "The later canonical successor does not retroactively turn this blocked write attempt into a successful mutation."
+    },
+    {
+      "schema_version": "1.0.0",
+      "contract_id": "webhook-task7-current-canonical-pr",
+      "observed_at": "2026-08-21T01:21:00Z",
+      "authoritative_system": "github",
+      "repository": "NousResearch/hermes-agent",
+      "target": {
+        "kind": "pull_request",
+        "number": 85002,
+        "url": "https://github.com/NousResearch/hermes-agent/pull/85002",
+        "object_id": 85002
+      },
+      "requested_predicate": "exact_object_verified",
+      "observed": {
+        "materialization": "target_present",
+        "integrity": "exact_object_verified",
+        "governance": "unreviewed",
+        "integration": "open",
+        "operation": "hermetic_verified",
+        "lineage": "active",
+        "version": "355b50a30c184f1c70df172e018dedd240bd7400"
+      },
+      "receipts": [
+        {
+          "kind": "pull_request",
+          "locator": "https://github.com/NousResearch/hermes-agent/pull/85002",
+          "observed_at": "2026-08-21T01:21:00Z",
+          "head_sha": "355b50a30c184f1c70df172e018dedd240bd7400",
+          "status": "open; non-draft",
+          "binds_exact_object": true
+        },
+        {
+          "kind": "ci_run",
+          "locator": "https://github.com/NousResearch/hermes-agent/actions/runs/32417178566",
+          "observed_at": "2026-08-21T01:21:00Z",
+          "head_sha": "355b50a30c184f1c70df172e018dedd240bd7400",
+          "status": "success",
+          "binds_exact_object": true,
+          "detail": "PR handoff also records exact-head Docker run 32417178112 and Nix run 32417178087 as successful."
+        }
+      ],
+      "graph_edges": [
+        {
+          "type": "part_of",
+          "target": "https://github.com/NousResearch/hermes-agent/issues/84834"
+        }
+      ],
+      "blocked_by": null,
+      "notes": "The object is exact-head verified and active. This record does not claim accepted, merged, released, or operationally verified."
+    },
+    {
+      "schema_version": "1.0.0",
+      "contract_id": "webhook-task10-historical-pr",
+      "observed_at": "2026-08-21T01:21:00Z",
+      "authoritative_system": "github",
+      "repository": "NousResearch/hermes-agent",
+      "target": {
+        "kind": "pull_request",
+        "number": 85523,
+        "url": "https://github.com/NousResearch/hermes-agent/pull/85523",
+        "object_id": 85523
+      },
+      "requested_predicate": "superseded",
+      "observed": {
+        "materialization": "target_present",
+        "integrity": "read_back",
+        "governance": "unreviewed",
+        "integration": "closed_unmerged",
+        "operation": "not_exercised",
+        "lineage": "superseded",
+        "version": "3dfdddc173c33439d9d216e1eda2edd16566df87"
+      },
+      "receipts": [
+        {
+          "kind": "pull_request",
+          "locator": "https://github.com/NousResearch/hermes-agent/pull/85523",
+          "observed_at": "2026-08-21T01:21:00Z",
+          "head_sha": "3dfdddc173c33439d9d216e1eda2edd16566df87",
+          "status": "closed; unmerged; superseded",
+          "binds_exact_object": true
+        }
+      ],
+      "graph_edges": [
+        {
+          "type": "superseded_by",
+          "target": "https://github.com/NousResearch/hermes-agent/pull/90236",
+          "detail": "#90236 is the canonical current-main Task 10 closure candidate."
+        },
+        {
+          "type": "credits",
+          "target": "https://github.com/andrexibiza",
+          "detail": "Historical implementation provenance remains attached to #85523."
+        }
+      ],
+      "blocked_by": null,
+      "notes": "Historical provenance is preserved; the object is not an active merge candidate."
+    },
+    {
+      "schema_version": "1.0.0",
+      "contract_id": "webhook-task10-current-main-closure",
+      "observed_at": "2026-08-21T01:21:00Z",
+      "authoritative_system": "github",
+      "repository": "NousResearch/hermes-agent",
+      "target": {
+        "kind": "pull_request",
+        "number": 90236,
+        "url": "https://github.com/NousResearch/hermes-agent/pull/90236",
+        "object_id": 90236
+      },
+      "requested_predicate": "exact_object_verified",
+      "observed": {
+        "materialization": "target_present",
+        "integrity": "exact_object_verified",
+        "governance": "unreviewed",
+        "integration": "open",
+        "operation": "hermetic_verified",
+        "lineage": "active",
+        "version": "416c5e48aefcccfe945f7d4118415a3b992e017a"
+      },
+      "receipts": [
+        {
+          "kind": "pull_request",
+          "locator": "https://github.com/NousResearch/hermes-agent/pull/90236",
+          "observed_at": "2026-08-21T01:21:00Z",
+          "head_sha": "416c5e48aefcccfe945f7d4118415a3b992e017a",
+          "status": "open; non-draft; mergeable",
+          "binds_exact_object": true
+        },
+        {
+          "kind": "ci_run",
+          "locator": "https://github.com/NousResearch/hermes-agent/actions/runs/32418257092",
+          "observed_at": "2026-08-21T01:21:00Z",
+          "head_sha": "416c5e48aefcccfe945f7d4118415a3b992e017a",
+          "status": "success",
+          "binds_exact_object": true,
+          "detail": "PR handoff also records exact-head Docker run 32418256106 and Nix run 32418256098 as successful."
+        }
+      ],
+      "graph_edges": [
+        {
+          "type": "supersedes",
+          "target": "https://github.com/NousResearch/hermes-agent/pull/85523"
+        },
+        {
+          "type": "part_of",
+          "target": "https://github.com/NousResearch/hermes-agent/issues/84834"
+        }
+      ],
+      "blocked_by": null,
+      "notes": "Canonical Task 10 closure candidate at the observed exact head. No accepted, merged, released, or operationally verified predicate is asserted."
+    }
+  ]
+}

@@ -196,7 +196,9 @@ def _codex_exchange_tokens(httpx, code_resp: Dict[str, Any]) -> Dict[str, str]:
     tokens = token_resp.json()
     if not tokens.get("access_token"):
         raise RuntimeError("token exchange did not return access_token")
-    return {"access_token": tokens.get("access_token", ""), "refresh_token": tokens.get("refresh_token", "")}
+    return {"access_token": tokens.get("access_token", ""),
+            "refresh_token": tokens.get("refresh_token", ""),
+            **({"id_token": tokens["id_token"]} if tokens.get("id_token") else {})}
 
 
 def _codex_full_login_worker(session_id: str) -> None:

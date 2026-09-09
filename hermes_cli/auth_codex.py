@@ -833,6 +833,7 @@ def _codex_device_code_login() -> Dict[str, Any]:
     return {
         "tokens": {
             "access_token": tokens.get("access_token", ""),
-            "refresh_token": tokens.get("refresh_token", "")},
+            "refresh_token": tokens.get("refresh_token", ""),
+            "id_token": tokens.get("id_token", "")},
         "base_url": _codex_base_url(), "last_refresh": _utc_now_z(), "auth_mode": "chatgpt",
         "source": "device-code"}

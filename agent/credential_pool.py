@@ -291,12 +291,16 @@ class PooledCredential:
         return self.base_url
 
 
-def label_from_token(token: str, fallback: str) -> str:
-    claims = _decode_jwt_claims(token)
-    for key in ("email", "preferred_username", "upn"):
-        value = claims.get(key)
-        if isinstance(value, str) and value.strip():
-            return value.strip()
+def label_from_token(token: str, fallback: str, *, id_token: str = "") -> str:
+    """Read display metadata only; these decoded claims never authorize an account."""
+    for candidate in (id_token, token):
+        claims = _decode_jwt_claims(candidate)
+        profile = claims.get("https://api.openai.com/profile")
+        for identity in (claims, profile if isinstance(profile, dict) else {}):
+            for key in ("email", "preferred_username", "upn"):
+                value = identity.get(key)
+                if isinstance(value, str) and value.strip():
+                    return value.strip()
     return fallback
 
 
@@ -2496,7 +2500,8 @@ def _seed_tokens_singleton(seed: _Seeder, auth_store: Dict[str, Any]) -> None:
         "refresh_token": tokens.get("refresh_token"),
         "base_url": base_url,
         "last_refresh": state.get("last_refresh"),
-        "label": custom_label or label_from_token(tokens.get("access_token", ""), "device_code"),
+        "label": custom_label or label_from_token(
+            tokens.get("access_token", ""), "device_code", id_token=tokens.get("id_token", "")),
     })
 
 

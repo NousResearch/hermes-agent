@@ -337,7 +337,7 @@ def _reconcile_repairs(conn, result: WatchdogTickResult) -> None:
         if repair is None:
             result.needs_operator.append(task_id)
             continue
-        if repair.status in {"done", "archived"}:
+        if repair.status == "done":
             if kb.unblock_task(conn, task_id):
                 _record_event(
                     conn,
@@ -346,6 +346,12 @@ def _reconcile_repairs(conn, result: WatchdogTickResult) -> None:
                     {"repair_task_id": repair_id, "repair_status": repair.status},
                 )
                 result.restarted.append(task_id)
+            continue
+        if repair.status == "archived":
+            # An archived repair is cancellation, not completion — cancelling an
+            # unsuccessful repair must not resume the unhealthy work it was
+            # meant to fix, so this still needs an operator's attention.
+            result.needs_operator.append(task_id)
             continue
         if repair.status not in {"blocked", "triage"}:
             continue

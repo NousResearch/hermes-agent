@@ -743,7 +743,7 @@ def resolve_progress_query(
             return ProgressQueryResult(
                 True,
                 append_vault_context(
-                    load_live_config(), response, board=board, root_task_ids=[value]
+                    load_live_config(), response, board=board, root_task_ids=[value.id]
                 ),
                 "resolved",
             )

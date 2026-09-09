@@ -4,6 +4,10 @@ from __future__ import annotations
 
 from typing import Any
 
+import pytest
+
+from gateway.hosted_room_peer import attachment_manifest_digest
+
 from gateway.hosted_room_driver import TaskIdentity
 from tui_gateway.hosted_room_driver import HostedRoomBinding, ROOM_SESSION_SOURCE
 from tui_gateway.hosted_room_peer_transport import (
@@ -66,6 +70,16 @@ class FakePeerClient:
         return {"status": "cancelled", "task_id": self.task_id}
 
 
+    def discard_attachments(self, **kwargs):
+        self.calls.append(("discard_attachments", kwargs))
+        return {"removed": 1}
+
+
+    def stage_attachments(self, **kwargs):
+        self.calls.append(("stage_attachments", kwargs))
+        return {"complete": True, "count": len(kwargs["attachments"])}
+
+
 class FailingPeerClient(FakePeerClient):
     def __init__(self, *, method, retryable=True, not_admitted=False):
         super().__init__()
@@ -73,7 +87,7 @@ class FailingPeerClient(FakePeerClient):
         self.error = PeerRunsHTTPError(
             f"{method} failed",
             retryable=retryable,
-            ambiguous=method == "dispatch" and not not_admitted,
+            ambiguous=method in {"dispatch", "stage_attachments"} and not not_admitted,
             not_admitted=not_admitted,
         )
 
@@ -92,6 +106,13 @@ class FailingPeerClient(FakePeerClient):
         if self.method == "status":
             raise self.error
         return super().status(**kwargs)
+
+
+    def stage_attachments(self, **kwargs):
+        if self.method == "stage_attachments":
+            self.calls.append(("stage_attachments", kwargs))
+            raise self.error
+        return super().stage_attachments(**kwargs)
 
 
 def _transport(client=None, *, source_event_seq=1):
@@ -333,3 +354,245 @@ def test_roomlink_reprobes_and_upgrades_back_to_primary_after_cooldown():
         create=True,
     )
     assert client.active_link.name == "direct"
+
+
+def test_roomlink_can_fail_over_ambiguous_attachment_staging_before_admission():
+    direct = FailingPeerClient(method="stage_attachments")
+    relay = FakePeerClient()
+    client = FailoverHostedRoomPeerClient([
+        RoomLinkCandidate("direct", "direct", "install-peer", direct),
+        RoomLinkCandidate("relay", "relay", "install-peer", relay),
+    ])
+    payload = [{"attachment_id": "att_1", "data": b"file"}]
+
+    result = client.stage_attachments(
+        dispatch={"task_id": "task-1", "execution_generation": 1},
+        attachments=payload,
+        grant="grant",
+    )
+
+    assert result["complete"] is True
+    assert direct.calls[0][0] == "stage_attachments"
+    assert relay.calls[0][0] == "stage_attachments"
+    assert client.active_link.name == "relay"
+
+
+@pytest.mark.parametrize(
+    ("failed_method", "not_admitted"),
+    [("stage_attachments", False), ("dispatch", True)],
+)
+def test_attachment_failure_before_run_admission_discards_exact_remote_attempt(
+    failed_method,
+    not_admitted,
+):
+    client = FailingPeerClient(
+        method=failed_method,
+        not_admitted=not_admitted,
+    )
+    task = TaskIdentity("room-1", "task-files", "thread-1", "turn-files")
+    transport = PeerHostedRoomTransport(
+        binding=BINDING,
+        route=ROUTE,
+        client=client,
+        source_event_seq=7,
+        task_id=task.task_id,
+        execution_generation=3,
+    )
+    transport.create(
+        profile="reviewer",
+        title="Group: room-1",
+        source=ROOM_SESSION_SOURCE,
+    )
+    transport.begin_attachment_staging(
+        profile="reviewer",
+        session_id="group-session",
+        source=ROOM_SESSION_SOURCE,
+        execution_generation=3,
+    )
+    transport.stage_attachment(
+        profile="reviewer",
+        session_id="group-session",
+        source=ROOM_SESSION_SOURCE,
+        execution_generation=3,
+        attachment={
+            "attachment_id": "att_11111111111111111111111111111111",
+            "kind": "file",
+            "name": "brief.txt",
+            "size": 5,
+            "mime": "text/plain",
+        },
+        data=b"brief",
+    )
+
+    with pytest.raises(PeerRunsHTTPError):
+        transport.submit(
+            profile="reviewer",
+            session_id="group-session",
+            prompt="Review the file.",
+            source=ROOM_SESSION_SOURCE,
+            task=task,
+            execution_generation=3,
+            on_terminal=lambda _receipt: None,
+        )
+
+    discarded = [
+        params for method, params in client.calls if method == "discard_attachments"
+    ]
+    assert discarded == [
+        {
+            "task_id": "task-files",
+            "execution_generation": 3,
+            "grant": "signed-room-grant",
+        }
+    ]
+
+
+def test_nonretryable_attachment_413_terminalizes_without_dispatch_or_requeue():
+    class RejectingPeer(FakePeerClient):
+        def stage_attachments(self, **kwargs):
+            self.calls.append(("stage_attachments", kwargs))
+            raise PeerRunsHTTPError(
+                "remote detail must not be durable",
+                status_code=413,
+                error_code="body_too_large",
+            )
+
+    client = RejectingPeer()
+    task = TaskIdentity("room-1", "task-too-large", "thread-1", "turn-files")
+    transport = PeerHostedRoomTransport(
+        binding=BINDING,
+        route=ROUTE,
+        client=client,
+        source_event_seq=7,
+        task_id=task.task_id,
+        execution_generation=3,
+    )
+    transport.create(
+        profile="reviewer",
+        title="Group: room-1",
+        source=ROOM_SESSION_SOURCE,
+    )
+    transport.begin_attachment_staging(
+        profile="reviewer",
+        session_id="group-session",
+        source=ROOM_SESSION_SOURCE,
+        execution_generation=3,
+    )
+    transport.stage_attachment(
+        profile="reviewer",
+        session_id="group-session",
+        source=ROOM_SESSION_SOURCE,
+        execution_generation=3,
+        attachment={
+            "attachment_id": "att_11111111111111111111111111111111",
+            "kind": "file",
+            "name": "brief.txt",
+            "size": 5,
+            "mime": "text/plain",
+        },
+        data=b"brief",
+    )
+    terminal = []
+
+    result = transport.submit(
+        profile="reviewer",
+        session_id="group-session",
+        prompt="Review the file.",
+        source=ROOM_SESSION_SOURCE,
+        task=task,
+        execution_generation=3,
+        on_terminal=terminal.append,
+    )
+
+    assert result == terminal[0]
+    assert result["status"] == "failed"
+    assert result["error"] == (
+        "A Group Chat file exceeded the peer gateway's upload limit."
+    )
+    methods = [method for method, _params in client.calls]
+    assert "dispatch" not in methods
+    assert methods.count("discard_attachments") == 1
+
+
+def test_peer_transport_pushes_digest_bound_bytes_before_run_admission():
+    client = FakePeerClient()
+    task = TaskIdentity("room-1", "task-files", "thread-1", "turn-files")
+    transport = PeerHostedRoomTransport(
+        binding=BINDING,
+        route=ROUTE,
+        client=client,
+        source_event_seq=7,
+        task_id=task.task_id,
+        execution_generation=3,
+    )
+    transport.create(
+        profile="reviewer",
+        title="Group: room-1",
+        source=ROOM_SESSION_SOURCE,
+    )
+    transport.begin_attachment_staging(
+        profile="reviewer",
+        session_id="group-session",
+        source=ROOM_SESSION_SOURCE,
+        execution_generation=3,
+    )
+    transport.stage_attachment(
+        profile="reviewer",
+        session_id="group-session",
+        source=ROOM_SESSION_SOURCE,
+        execution_generation=3,
+        attachment={
+            "attachment_id": "att_11111111111111111111111111111111",
+            "kind": "file",
+            "name": "brief.txt",
+            "size": 5,
+            "mime": "text/plain",
+        },
+        data=b"brief",
+    )
+
+    result = transport.submit(
+        profile="reviewer",
+        session_id="group-session",
+        prompt="Review the file.",
+        source=ROOM_SESSION_SOURCE,
+        task=task,
+        execution_generation=3,
+        on_terminal=lambda _receipt: None,
+    )
+
+    assert result["status"] == "accepted"
+    methods = [method for method, _params in client.calls]
+    assert methods.index("stage_attachments") < methods.index("dispatch")
+    staged = next(params for method, params in client.calls if method == "stage_attachments")
+    dispatched = next(params for method, params in client.calls if method == "dispatch")
+    assert staged["attachments"][0]["data"] == b"brief"
+    manifest = [
+        {
+            key: staged["attachments"][0][key]
+            for key in ("attachment_id", "kind", "name", "size", "mime", "sha256")
+        }
+    ]
+    assert dispatched["dispatch"]["attachment_manifest_digest"] == attachment_manifest_digest(manifest)
+    assert dispatched["dispatch"]["attachment_manifest_digest"] == staged["dispatch"]["attachment_manifest_digest"]
+    client.messages = [
+        {
+            "task_id": task.task_id,
+            "execution_generation": 3,
+            "status": "settled",
+            "content": "Done",
+        }
+    ]
+    transport.history(
+        profile="reviewer",
+        session_id="group-session",
+        source=ROOM_SESSION_SOURCE,
+    )
+    discarded = next(
+        params for method, params in client.calls if method == "discard_attachments"
+    )
+    assert discarded == {
+        "task_id": task.task_id,
+        "execution_generation": 3,
+        "grant": "signed-room-grant",
+    }

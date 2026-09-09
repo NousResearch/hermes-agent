@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from gateway.platforms import api_server
+from gateway.platforms import api_server_room_dispatch
 from gateway.platforms import api_server_room_grants
 from gateway.platforms import api_server_runs
 
@@ -169,6 +170,15 @@ def test_roomlink_and_run_route_tuples_are_shard_owned():
         ("GET", "/v1/room-members/capabilities"),
         ("POST", "/v1/room-members/grants/refresh"),
         ("POST", "/v1/room-members/grants/revoke"),
+        ("POST", "/v1/room-members/attachments"),
+        (
+            "PUT",
+            "/v1/room-members/attachments/{task_id}/{execution_generation}/{attachment_id}",
+        ),
+        (
+            "DELETE",
+            "/v1/room-members/attachments/{task_id}/{execution_generation}",
+        ),
     ]
     assert [(method, path) for method, path, _ in run_routes] == [
         ("POST", "/v1/runs"),
@@ -178,5 +188,16 @@ def test_roomlink_and_run_route_tuples_are_shard_owned():
         ("POST", "/v1/runs/{run_id}/steer"),
         ("POST", "/v1/runs/{run_id}/stop"),
     ]
-    assert all(handler.__self__ is adapter for _, _, handler in room_routes)
+    assert all(handler.__self__ is adapter for _, _, handler in room_routes[:4])
+    assert all(callable(handler) for _, _, handler in room_routes[4:])
     assert all(handler.__self__ is adapter for _, _, handler in run_routes)
+
+
+def test_room_dispatch_errors_never_expose_local_paths():
+    message, code = api_server_room_dispatch._public_dispatch_error(
+        RuntimeError("failed at /Users/private/.hermes/state.db")
+    )
+
+    assert message == "Room dispatch was rejected."
+    assert code == "invalid_room_dispatch"
+    assert "/Users/private" not in message

@@ -35,7 +35,7 @@ TASK_STATUSES = frozenset(get_args(TaskStatus))
 TERMINAL_STATUSES = frozenset({"settled", "failed", "cancelled"})
 
 _TASK_PAYLOAD_REQUIRED_FIELDS = frozenset({"target_profile", "prompt", "source_event_seq"})
-_TASK_PAYLOAD_OPTIONAL_FIELDS = frozenset({"target_member_id"})
+_TASK_PAYLOAD_OPTIONAL_FIELDS = frozenset({"target_member_id", "attachments", "input_context"})
 _LEASE_COLUMNS = frozenset({
     "room_id", "gateway_id", "authority_epoch", "process_generation", "lease_generation", "expires_at", "acquired_at",
     "updated_at", "released_at"})
@@ -152,12 +152,39 @@ def _task_payload(value: Any) -> tuple[dict[str, Any], str, str]:
     if missing:
         raise DriverValidationError(f"missing payload fields: {', '.join(sorted(missing))}")
     target_profile = _identifier(value["target_profile"], label="target_profile")
-    prompt = text(value["prompt"], error=DriverValidationError, label="prompt", max_bytes=MAX_PROMPT_BYTES, strip=False)
+    prompt = text(
+        value["prompt"],
+        error=DriverValidationError,
+        label="prompt",
+        max_bytes=MAX_PROMPT_BYTES,
+        strip=False,
+    )
     source_event_seq = _bounded_int(
-        value["source_event_seq"], message="source_event_seq must be a positive integer", low=1)
-    normalized = {"target_profile": target_profile, "prompt": prompt, "source_event_seq": source_event_seq}
+        value["source_event_seq"], message="source_event_seq must be a positive integer", low=1
+    )
+    normalized = {
+        "target_profile": target_profile,
+        "prompt": prompt,
+        "source_event_seq": source_event_seq,
+    }
+    if "input_context" in value:
+        from gateway.hosted_room_task_input import validate_task_input
+
+        try:
+            normalized["input_context"] = validate_task_input(value["input_context"])
+        except ValueError as exc:
+            raise DriverValidationError(str(exc)) from exc
     if "target_member_id" in value:
-        normalized["target_member_id"] = _identifier(value["target_member_id"], label="target_member_id")
+        normalized["target_member_id"] = _identifier(
+            value["target_member_id"], label="target_member_id"
+        )
+    if "attachments" in value:
+        from gateway.hosted_room_attachments import validate_task_manifest
+
+        attachments = validate_task_manifest(value["attachments"])
+        if not attachments:
+            raise DriverValidationError("attachments must not be empty when present")
+        normalized["attachments"] = attachments
     encoded = compact_json(normalized)
     return normalized, encoded, hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
@@ -868,3 +895,68 @@ from pathlib import Path  # noqa: F401,E402
 from contextlib import contextmanager  # noqa: F401,E402
 import re  # noqa: F401,E402
 # ---- END PLUGIN-COMPAT ----
+
+
+def defer_not_admitted_task(
+    db_path: DbPath,
+    attempt: TaskAttempt,
+    *,
+    reason: Any,
+    clock: Clock,
+) -> dict[str, Any]:
+    """Publish a proven pre-admission outage without blocking later members."""
+
+    reason = _identifier(reason, label="defer_reason")
+    result_json = _canonical_json({"reason": reason, "retryable": True})
+    now = _timestamp(clock)
+    with _transaction(db_path) as conn:
+        _require_active_lease(conn, attempt.lease, now=now)
+        row = _load_task(conn, attempt.identity)
+        if (
+            row["status"] == "deferred"
+            and int(row["execution_generation"]) == attempt.execution_generation
+            and int(row["cancel_generation"]) == attempt.cancel_generation
+            and row["result_json"] == result_json
+        ):
+            return _task_from_row(row, idempotent=True)
+        if (
+            row["status"] != "running"
+            or int(row["execution_generation"]) != attempt.execution_generation
+            or int(row["cancel_generation"]) != attempt.cancel_generation
+        ):
+            raise StaleTaskError("running task generation changed during deferral")
+        updated = conn.execute(
+            """UPDATE hosted_room_driver_tasks
+                  SET status='deferred', result_json=?, terminal_at=?, updated_at=?
+                WHERE room_id=? AND task_id=? AND status='running'
+                  AND execution_generation=? AND cancel_generation=?""",
+            (
+                result_json,
+                now,
+                now,
+                attempt.identity.room_id,
+                attempt.identity.task_id,
+                attempt.execution_generation,
+                attempt.cancel_generation,
+            ),
+        )
+        if updated.rowcount != 1:
+            raise StaleTaskError("running task changed during deferral")
+        return _task_from_row(_load_task(conn, attempt.identity))
+
+
+def get_task_for_turn(
+    db_path: DbPath,
+    identity: TaskIdentity,
+) -> dict[str, Any] | None:
+    """Read the immutable admission for a turn, including older payload versions."""
+    conn = _connect(db_path)
+    try:
+        row = conn.execute(
+            """SELECT * FROM hosted_room_driver_tasks
+               WHERE room_id=? AND thread_id=? AND turn_id=?""",
+            (identity.room_id, identity.thread_id, identity.turn_id),
+        ).fetchone()
+        return _task_from_row(row) if row is not None else None
+    finally:
+        conn.close()

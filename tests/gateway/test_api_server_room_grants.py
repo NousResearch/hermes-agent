@@ -177,6 +177,13 @@ def test_superseded_room_authority_cannot_reuse_its_grant(tmp_path, monkeypatch)
 @pytest.mark.asyncio
 async def test_capability_handler_uses_legacy_claims_monkeypatch(monkeypatch):
     from gateway import hosted_rooms
+    from gateway.platforms import api_server_room_attachments
+
+    monkeypatch.setattr(
+        api_server_room_attachments,
+        "roomlink_attachments_available",
+        lambda: True,
+    )
 
     adapter = api_server.APIServerAdapter.__new__(api_server.APIServerAdapter)
     request = object()
@@ -205,6 +212,7 @@ async def test_capability_handler_uses_legacy_claims_monkeypatch(monkeypatch):
     assert response.status == 200
     assert body["object"] == "hermes.room_member.capabilities"
     assert body["target_profile"] == "worker"
+    assert body["catalog"]["attachments"] is True
     adapter._room_grant_claims.assert_called_once_with(
         request,
         permission="status",

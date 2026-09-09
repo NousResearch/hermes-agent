@@ -373,6 +373,14 @@ class _CuaDriverSession:
         properties = schema.get("properties") if isinstance(schema, dict) else None
         return isinstance(properties, dict) and property_name in properties
 
+    def accepts_input(self, tool: str, property_name: str, capability: Optional[str] = None) -> bool:
+        """The driver takes *property_name* on *tool*: the live schema declares it, or the tool advertises
+        *capability*. The schema is the ground truth — current cua-driver (0.25.0) publishes no per-tool
+        capability lists on tools/list while `additionalProperties: false` still rejects undeclared args, so
+        a capability-only gate silently drops arguments the driver now requires (`snapshot_id_required`)."""
+        return self.supports_input_property(tool, property_name) or (
+            capability is not None and self.supports_capability(capability, tool=tool))
+
     @property
     def capabilities_discovered(self) -> bool:
         """tools/list populated the map; when False ``_has_tool`` is untrustworthy."""

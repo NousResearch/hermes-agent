@@ -2272,6 +2272,69 @@ class TestElementTokenAttachment:
         assert backend._snapshot_tokens == {1: "snap2:1", 2: "snap2:2"}
 
 
+class TestSchemaIsTheInputGate:
+    """Current cua-driver (0.25.0) publishes no per-tool `capabilities[]` on tools/list but keeps
+    `additionalProperties: false` AND refuses a bare `element_index` (`snapshot_id_required`).
+    The live input schema — not the capability vocabulary — decides what the wrapper may send.
+    Drives the REAL `_CuaDriverSession` gate against a tools/list of that shape.
+    """
+
+    def _backend_with_live_session(self, tool_schemas):
+        from tools.computer_use.cua_backend import CuaDriverBackend
+        from tools.computer_use.cua_backend_session import _AsyncBridge, _CuaDriverSession
+
+        session = _CuaDriverSession(_AsyncBridge())
+        session._capabilities = {name: set() for name in tool_schemas}  # tools listed, no vocabulary
+        session._tool_schemas = tool_schemas
+        calls = []
+
+        def call_tool(name, args, **_):
+            calls.append((name, dict(args)))
+            return {"data": "ok", "images": [], "image_mime_types": [], "structuredContent": None, "isError": False}
+
+        session.call_tool = call_tool
+        backend = CuaDriverBackend()
+        backend._session = session
+        backend._active_pid, backend._active_window_id = 111, 222
+        return backend, calls
+
+    def test_element_token_rides_along_when_only_the_schema_declares_it(self):
+        backend, calls = self._backend_with_live_session({
+            "click": {"additionalProperties": False,
+                      "properties": {"element_index": {}, "element_token": {}, "snapshot_id": {}}},
+        })
+        backend._snapshot_tokens = {5: "s0001:5"}
+        backend.click(element=5)
+        (name, args), = calls
+        assert name == "click" and args["element_index"] == 5
+        assert args["element_token"] == "s0001:5"
+
+    def test_element_token_withheld_when_neither_schema_nor_capability_accepts_it(self):
+        backend, calls = self._backend_with_live_session({
+            "click": {"additionalProperties": False, "properties": {"element_index": {}}},
+        })
+        backend._snapshot_tokens = {5: "s0001:5"}
+        backend.click(element=5)
+        (_, args), = calls
+        assert "element_token" not in args
+
+    def test_scroll_coordinates_follow_the_live_schema(self):
+        backend, calls = self._backend_with_live_session({
+            "scroll": {"additionalProperties": False,
+                       "properties": {"direction": {}, "amount": {}, "x": {}, "y": {}}},
+        })
+        backend.scroll(direction="down", x=50, y=60)
+        (_, args), = calls
+        assert (args["x"], args["y"]) == (50, 60)
+
+        backend, calls = self._backend_with_live_session({
+            "scroll": {"additionalProperties": False, "properties": {"direction": {}, "amount": {}}},
+        })
+        backend.scroll(direction="down", x=50, y=60)
+        (_, args), = calls
+        assert "x" not in args and "y" not in args
+
+
 class TestSessionLifecycle:
     """Surface gap (audit June 2026): Hermes never declared a cua-driver
     session, so the agent-cursor overlay was inert and per-run state

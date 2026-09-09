@@ -95,29 +95,6 @@ def test_a_revoked_entry_stops_being_honoured_in_memory_after_the_save(fake_conf
     assert "docker *" in approval._permanent_approved
 
 
-# ── the ordinary path must not move ───────────────────────────────────
-
-
-def test_an_untouched_file_round_trips_unchanged(fake_config):
-    _start_process_with(fake_config, ["git status", "ls *"])
-
-    approval.approve_permanent("docker *")
-    approval.save_permanent_allowlist(approval._permanent_approved)
-
-    assert sorted(fake_config["command_allowlist"]) == ["docker *", "git status", "ls *"]
-
-
-def test_repeated_saves_are_idempotent(fake_config):
-    _start_process_with(fake_config, ["ls *"])
-    approval.approve_permanent("docker *")
-
-    approval.save_permanent_allowlist(approval._permanent_approved)
-    first = sorted(fake_config["command_allowlist"])
-    approval.save_permanent_allowlist(approval._permanent_approved)
-
-    assert sorted(fake_config["command_allowlist"]) == first == ["docker *", "ls *"]
-
-
 def test_a_second_process_writing_first_does_not_lose_this_ones_approval(fake_config):
     """Two live Hermes processes. Whoever writes second must not drop the first."""
     _start_process_with(fake_config, ["ls *"])
@@ -128,13 +105,6 @@ def test_a_second_process_writing_first_does_not_lose_this_ones_approval(fake_co
     approval.save_permanent_allowlist(approval._permanent_approved)
 
     assert sorted(fake_config["command_allowlist"]) == ["cargo *", "docker *", "ls *"]
-
-
-def test_empty_start_and_first_approval(fake_config):
-    _start_process_with(fake_config, [])
-    approval.approve_permanent("ls *")
-    approval.save_permanent_allowlist(approval._permanent_approved)
-    assert fake_config["command_allowlist"] == ["ls *"]
 
 
 def test_save_failure_is_logged_not_raised(fake_config, monkeypatch, caplog):

@@ -175,24 +175,40 @@ def atomic_replace(tmp_path: Union[str, Path], target: Union[str, Path]) -> str:
 
 
 def _atomic_write(path: Path, write, *, prefix: str, encoding: str = "utf-8", mode: "int | None" = None, preserve_owner: bool = True) -> None:
-    """Temp file + fsync + :func:`atomic_replace`, then re-apply owner/mode.
+    """Temp file + fsync + :func:`atomic_replace`, preserving metadata atomically.
 
-    *write(f)* emits the payload into the open text handle. *mode* is fchmod'd onto the temp fd
-    BEFORE the replace so the target never transits through mkstemp's 0600 (fchmod is Unix-only;
-    the post-replace chmod is the sole path on Windows). The temp file is removed on any failure —
-    ``BaseException`` on purpose, so KeyboardInterrupt / SystemExit still clean up.
+    The temp stays at ``mkstemp``'s owner-only mode while content is incomplete.
+    Owner and mode are applied to its open descriptor after the payload is
+    complete but before fsync + replace; unsupported platforms fall back to
+    post-replace metadata restoration.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     original_owner = _preserve_file_owner(path) if preserve_owner else None
     fd, tmp_path = tempfile.mkstemp(dir=str(path.parent), prefix=prefix, suffix=".tmp")
+    owner_applied = mode_applied = False
     try:
         with os.fdopen(fd, "w", encoding=encoding) as f:
-            if mode is not None and hasattr(os, "fchmod"):
-                os.fchmod(f.fileno(), mode)
             write(f)
             f.flush()
+            if original_owner is not None and hasattr(os, "fchown"):
+                try:
+                    os.fchown(f.fileno(), original_owner[0], original_owner[1])
+                    owner_applied = True
+                except (OSError, NotImplementedError):
+                    pass
+            if mode is not None and hasattr(os, "fchmod"):
+                try:
+                    os.fchmod(f.fileno(), mode)
+                    mode_applied = True
+                except (OSError, NotImplementedError):
+                    pass
             os.fsync(f.fileno())
-        _restore_file_metadata(Path(atomic_replace(tmp_path, path)), original_owner, mode)  # symlink-preserving
+        real_path = Path(atomic_replace(tmp_path, path))
+        _restore_file_metadata(
+            real_path,
+            None if owner_applied else original_owner,
+            None if mode_applied else mode,
+        )
     except BaseException:
         with suppress(OSError):
             os.unlink(tmp_path)
@@ -206,15 +222,18 @@ def _mode_for_write(path: Path, create_mode: "int | None", preserve: bool = True
 
 
 def atomic_write_text(path: Union[str, Path], content: str, *, encoding: str = "utf-8", tmp_prefix: str = ".tmp_",
-                      preserve_mode: bool = False, create_mode: "int | None" = None) -> None:
+                      preserve_mode: bool = False, create_mode: "int | None" = None,
+                      preserve_owner: "bool | None" = None) -> None:
     """Write *content* to *path* via temp file + fsync + atomic rename.
 
     The target is never left partially written on crash/interrupt. Shared by every destructive
     file rewrite (memory store, skill manager, agent importer, ...).
     """
     path = Path(path)
+    if preserve_owner is None:
+        preserve_owner = preserve_mode
     _atomic_write(path, lambda f: f.write(content), prefix=tmp_prefix, encoding=encoding,
-                  mode=_mode_for_write(path, create_mode, preserve=preserve_mode), preserve_owner=preserve_mode)
+                  mode=_mode_for_write(path, create_mode, preserve=preserve_mode), preserve_owner=preserve_owner)
 
 
 def atomic_json_write(path: Union[str, Path], data: Any, *, indent: int = 2, mode: int | None = None, **dump_kwargs: Any) -> None:

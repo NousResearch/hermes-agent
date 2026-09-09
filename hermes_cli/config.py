@@ -9,10 +9,8 @@ import os
 import platform
 import re
 import shutil
-import stat
 import subprocess
 import sys
-import tempfile
 import threading
 import time
 import unicodedata
@@ -30,7 +28,7 @@ from hermes_cli.default_soul import DEFAULT_SOUL_MD, is_legacy_template_soul
 from hermes_cli.secret_prompt import masked_secret_prompt
 # Re-export from hermes_constants — canonical definition lives there.
 from hermes_constants import get_hermes_home, get_process_hermes_home  # noqa: F401
-from utils import atomic_replace, atomic_yaml_write, fast_safe_load
+from utils import atomic_write_text, atomic_yaml_write, fast_safe_load
 
 logger = logging.getLogger(__name__)
 
@@ -2441,34 +2439,19 @@ def _read_env_lines(env_path: Path) -> list:
 
 
 def _write_env_lines(env_path: Path, lines: list, *, preserve_mode: bool) -> None:
-    """Atomically replace ``.env`` (tmp file + fsync + rename).
-    ``preserve_mode`` keeps the original file mode (e.g. 0640 for Docker volume mounts) instead of
-    letting ``_secure_file`` tighten to 0600; a new file is always secured."""
-    original_mode = None
-    try:
-        original_mode = stat.S_IMODE(env_path.stat().st_mode) if preserve_mode else None
-    except OSError:
-        pass
-    fd, tmp_path = tempfile.mkstemp(dir=str(env_path.parent), suffix=".tmp", prefix=".env_")
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            f.writelines(lines)
-            f.flush()
-            os.fsync(f.fileno())
-        atomic_replace(tmp_path, env_path)
-    except BaseException:
-        try:
-            os.unlink(tmp_path)
-        except OSError:
-            pass
-        raise
-    if original_mode is not None:
-        try:
-            os.chmod(env_path, original_mode)
-        except OSError:
-            pass
-    else:
-        _secure_file(env_path)
+    """Atomically replace ``.env`` without changing an existing file's owner.
+
+    ``preserve_mode=False`` still preserves ownership during the swap, then
+    tightens permissions to 0600.  New files are always secured.
+    """
+    existed = env_path.exists()
+    atomic_write_text(
+        env_path,
+        "".join(lines),
+        preserve_mode=preserve_mode and existed,
+        preserve_owner=existed,
+        create_mode=0o600,
+    )
 
 
 def _check_non_ascii_credential(key: str, value: str) -> str:

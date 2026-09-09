@@ -1211,6 +1211,11 @@ DEFAULT_CONFIG = {
     "delegation": {
         "model": "",  # e.g. "google/gemini-3-flash-preview" (empty = inherit parent)
         "provider": "",  # e.g. "openrouter" (empty = inherit parent provider + credentials)
+        # Fallback chain for delegated children (same entry format as the top-level list).
+        # For an unpinned child, null = inherit the parent chain; [] = disable fallback.
+        # A child pinned by provider, endpoint, or model gets no fallback unless this
+        # setting declares one explicitly.
+        "fallback_providers": None,
         "base_url": "",  # direct OpenAI-compatible endpoint for subagents
         "api_key": "",  # key for delegation.base_url (falls back to OPENAI_API_KEY)
         # Wire protocol for delegation.base_url: "chat_completions" | "codex_responses" |
@@ -1623,13 +1628,10 @@ DEFAULT_CONFIG = {
         # platforms are configured. Failure -> last_status=blocked_config, ONE alert, no LLM call.
         # False = fail during the run instead.
         "preflight": True,
-        # Fail closed when an unpinned job's current global model/provider differs from its
-        # creation-time snapshot, so unattended jobs never silently inherit a paid default. False
-        # only when jobs should track changing global inference defaults.
-        "model_drift_guard": True,
         # Default model for cron jobs (WHAT model runs). Fire-time resolution: per-job pin >
-        # cron.model > model.default. When set, unpinned jobs follow it deliberately and the drift
-        # guard does not engage for the model axis. "" = fall through to model.default.
+        # cron.model > the job's creation-time snapshot > model.default. An unpinned job keeps
+        # running on the model it was created under when model.default later changes; cron.model
+        # is the way to move the whole fleet at once. "" = fall through.
         "model": "",
         # Inference provider paired with cron.model (NOT the scheduler provider below). "" = resolve
         # from global config.
@@ -1770,7 +1772,8 @@ DEFAULT_CONFIG = {
         # (sys.executable): max isolation, project deps/relative paths won't work. Env scrubbing
         # (*_API_KEY, *_TOKEN, *_SECRET, ...) and the tool whitelist apply in both modes.
         "mode": "project",
-        # Session kernels are always on locally (`kernel_mode` is ignored; remote backends run
+        # Session kernels are always on locally (`kernel_mode` is ignored) and remotely
+        # (tools/code_kernel_remote.py; a backend that cannot spawn a kernel fails open to
         # per-call). One kernel per (session owner, mode, interpreter, cwd, tool-set) keeps state
         # across calls and turns; subagents get their own. Kernels die with the session, after
         # kernel_idle_timeout idle seconds, or by LRU eviction past max_session_kernels. A
@@ -2334,7 +2337,7 @@ DEFAULT_CONFIG = {
         # Extra ports detection probes for an external llama-server (besides 8080).
         "detect_ports": [],
     },
-    "_config_version": 41,  # Config schema version - bump this when adding new required fields
+    "_config_version": 42,  # Config schema version - bump this when adding new required fields
 }
 
 

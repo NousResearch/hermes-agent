@@ -30,6 +30,7 @@ Behavioral settings live in `$HERMES_HOME/mem0.json` (set them via `hermes memor
 | `user_id` | `hermes-user` | User identifier on Mem0 |
 | `agent_id` | `hermes` | Agent identifier |
 | `rerank` | `false` | Rerank search results for relevance (platform mode only) |
+| `sync_max_chars` | `450` | Per-message character cap applied before each turn is sent for fact extraction (cut at the last sentence boundary). Default fits 512-token embedders; raise it (e.g. `6000`) for 8k-token embedders such as `text-embedding-3-small`, `jina-embeddings-v3`, `bge-m3` |
 
 The plugin has three connection modes:
 

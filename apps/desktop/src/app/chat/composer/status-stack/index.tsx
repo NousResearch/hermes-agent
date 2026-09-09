@@ -8,6 +8,7 @@ import type { SubmitTextOptions } from '@/app/session/hooks/use-prompt-actions/u
 import { BillingBanner } from '@/components/billing-banner'
 import { composerDockCard } from '@/components/chat/composer-dock'
 import { StatusSection } from '@/components/chat/status-section'
+import { usePaneVisible } from '@/components/pane-shell/pane-visibility'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { GlyphSpinner } from '@/components/ui/glyph-spinner'
@@ -34,6 +35,8 @@ import { PreviewStatusRow } from './preview-row'
 import { SessionControlSections } from './session-control'
 import { useSessionValue } from './session-control-utils'
 import { StatusItemRow } from './status-row'
+import { SubagentSection } from './subagent-section'
+import { useSubagentSnapshot } from './use-subagent-snapshot'
 
 // Slow safety-net poll for silent exits (processes without notify_on_complete
 // emit no event when they die). Only armed while a running row is on screen.
@@ -92,6 +95,7 @@ interface ComposerStatusStackProps {
 export function ComposerStatusStack({ onSubmit, queue, sessionId }: ComposerStatusStackProps) {
   const { t } = useI18n()
   const navigate = useNavigate()
+  useSubagentSnapshot(sessionId)
   // Subscribe to THIS session's slice only. Both maps churn on other
   // sessions' activity (subagent ticks, background polls, preview updates in
   // any tile); a whole-map `useStore` re-rendered every mounted stack — one
@@ -138,15 +142,26 @@ export function ComposerStatusStack({ onSubmit, queue, sessionId }: ComposerStat
   // dead `localhost:5174` chips stick around. On-disk file previews are kept.
   const visiblePreviews = previews.filter(item => hasRunningBackground || !isLocalhostPreview(item.target))
 
+  // Keep-alive keeps every ever-active tab mounted, so without this gate each
+  // background tile's safety-net poll fires every 5s — N sessions means N
+  // gateway round-trips plus shared-map churn forever. Hidden tabs skip the
+  // poll (event-driven refreshes in use-message-stream still land through the
+  // store) and resume it on reveal via `paneVisible` in the dep array.
+  const paneVisible = usePaneVisible()
+
   useEffect(() => {
-    if (!sessionId || !hasRunningBackground) {
+    if (!sessionId || !hasRunningBackground || !paneVisible) {
       return
     }
 
-    const timer = setInterval(() => void refreshBackgroundProcesses(sessionId), BACKGROUND_POLL_MS)
+    const timer = setInterval(() => {
+      if (document.visibilityState === 'visible') {
+        void refreshBackgroundProcesses(sessionId)
+      }
+    }, BACKGROUND_POLL_MS)
 
     return () => clearInterval(timer)
-  }, [hasRunningBackground, sessionId])
+  }, [hasRunningBackground, sessionId, paneVisible])
 
   const openAgents = () => navigate(AGENTS_ROUTE)
 
@@ -192,6 +207,12 @@ export function ComposerStatusStack({ onSubmit, queue, sessionId }: ComposerStat
   }
 
   for (const group of groups) {
+    if (group.type === 'subagent' && sessionId) {
+      sections.push({ key: group.type, node: <SubagentSection key={sessionId} sessionId={sessionId} /> })
+
+      continue
+    }
+
     sections.push({
       key: group.type,
       node: (
@@ -292,14 +313,19 @@ export function ComposerStatusStack({ onSubmit, queue, sessionId }: ComposerStat
             composerDockCard('top'),
             // Inset (mx-2) so the stack reads slightly narrower than the composer
             // surface below it — the original look.
-            'mx-2 overflow-hidden rounded-b-none border-b border-b-transparent pt-0.5',
-            'transition-opacity duration-200 ease-out',
-            scrolledUp ? 'opacity-30 group-hover/composer:opacity-100' : 'opacity-100'
+            'mx-2 overflow-hidden rounded-b-none border-b border-b-transparent pt-0.5'
           )}
         >
-          {sections.map(section => (
-            <div key={section.key}>{section.node}</div>
-          ))}
+          <div
+            className={cn(
+              'transition-opacity duration-200 ease-out',
+              scrolledUp ? 'opacity-30 group-hover/composer:opacity-100' : 'opacity-100'
+            )}
+          >
+            {sections.map(section => (
+              <div key={section.key}>{section.node}</div>
+            ))}
+          </div>
         </div>
       )}
     </div>

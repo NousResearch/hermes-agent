@@ -39,7 +39,8 @@ def _agent(max_iterations: int | None):
 
 async def _busy_ack(agent) -> str:
     import gateway.run as gr
-    from gateway.platforms.base import MessageEvent, MessageType, SessionSource, build_session_key
+    from gateway.platforms.base import SessionSource, build_session_key
+    from gateway.platforms.event import MessageEvent, MessageType
 
     gr._load_gateway_config = lambda: {"display": {"platforms": {"telegram": {"busy_ack_detail": True}}}}
     runner = object.__new__(gr.GatewayRunner)

@@ -38,6 +38,7 @@ from agent.conversation_compression import (
 from agent.conversation_loop import INTERRUPT_WAITING_FOR_MODEL_PREFIX
 from agent.interrupt_compat import request_hard_interrupt
 from agent.turn_context import compression_made_progress
+from agent.session_activity import ActivityProvenance
 from hermes_cli.config import _is_ssh_remote_tilde_cwd, cfg_get
 from hermes_cli.fallback_config import get_fallback_chain
 
@@ -729,6 +730,40 @@ def _approval_send_outcome(future, timeout: float) -> str:
         return "failed"
     if getattr(result, "success", False):
         return "sent"
+    # P5(b): a connector DECLINE is not a lane failure. The connector
+    # authorized the destination and refused it; re-sending the same content as
+    # plain text into that same chat is the exfiltration the egress guard
+    # exists to stop. `failed` is the cue to fall back, so a decline needs its
+    # own verdict — callers must surface it and send nothing further.
+    #
+    # CLASSIFY THE STRUCTURED RESPONSE, NOT THE ERROR STRING. The adapter
+    # preserves the connector's own dict in `raw_response`; rebuilding a dict
+    # from `error` alone loses two things review demonstrated:
+    #   * a decline carrying `code: egress_declined` and NO text renders as
+    #     "relay egress declined" — no marker colon — so the string check
+    #     missed it and the fallback fired into the refused chat;
+    #   * `ambiguous: True` (lost ack, mid-write drop) was flattened into a
+    #     DEFINITE failure, which re-sends a card that may well have posted.
+    # I fixed the text-marker path and tested only the text-marker path.
+    from gateway.relay.egress import declined_send
+
+    _raw = getattr(result, "raw_response", None)
+    if isinstance(_raw, dict) and _raw.get("ambiguous"):
+        # The frame may have been applied. Same physics as a scheduling
+        # timeout: possibly-delivered, so never re-send. Checked BEFORE the
+        # decline classification because an ambiguous result is a transport
+        # outcome, not an authorization one, and this lane has three verdicts
+        # rather than the boolean the shared helper answers.
+        logger.warning("Prompt send AMBIGUOUS (lost ack): %s", _raw.get("error"))
+        return "ambiguous"
+    if declined_send(result):
+        # Both shapes, one classifier: a structured body, or the uniform
+        # decline sentence from an older connector.
+        logger.warning(
+            "Prompt send DECLINED by connector egress guard: %s",
+            getattr(result, "error", None),
+        )
+        return "declined"
     logger.warning("Prompt send failed: %s", getattr(result, "error", None) or "unknown error")
     return "failed"
 
@@ -739,6 +774,18 @@ def _clarify_send_disposition(fut, *, session_key: str, clarify_mod) -> "str | N
     Only a DEFINITIVE failure tears down the registration; ``ambiguous`` (card may have posted) stays armed
     and proceeds to the bounded wait, whose response timeout covers a lost card."""
     outcome = _approval_send_outcome(fut, timeout=15)
+    if outcome == "declined":
+        # P5(b): a connector DECLINE is MORE definitive than a failure — the
+        # destination was authorized and refused, so the card cannot arrive and
+        # no late reply can resolve it. Without this branch `declined` fell
+        # through to the bounded wait and the agent blocked until
+        # clarify_timeout (indefinitely when that is configured non-positive).
+        logger.warning(
+            "Clarify prompt DECLINED by the connector's egress guard; "
+            "clearing registration"
+        )
+        clarify_mod.clear_session(session_key)
+        return "[clarify prompt could not be delivered: destination refused]"
     if outcome == "failed":
         # Undeliverable: clear the registration and return the sentinel so the agent falls back, not hangs.
         logger.warning("Clarify send failed definitively; clearing registration")
@@ -941,7 +988,7 @@ def _float_env(name: str, default: float) -> float:
 
 
 def _stamp_hygiene_compression_provenance(
-    agent: Any, desc: str, provenance: "ActivityProvenance", debug_label: str) -> None:
+    agent: Any, desc: str, provenance: ActivityProvenance, debug_label: str) -> None:
     """Best-effort activity provenance stamp for hygiene compression transitions."""
     try:
         agent._touch_activity(desc, provenance=provenance)
@@ -2062,10 +2109,9 @@ from gateway.run_goals import GatewayGoalsMixin
 from gateway.run_agent_cache import GatewayAgentCacheMixin
 from gateway.platforms.base import (
     BasePlatformAdapter,
-    MessageEvent,
-    MessageType,
     _reply_anchor_for_event,
 )
+from gateway.platforms.event import MessageEvent, MessageType
 from gateway.restart import (
     DEFAULT_GATEWAY_CRON_DRAIN_TIMEOUT,
     DEFAULT_GATEWAY_RESTART_AFTER_TURN_TIMEOUT,
@@ -4007,6 +4053,8 @@ class GatewayRunner(
                     metadata.setdefault("scope_id", str(team_id))
                 if user_id:
                     metadata.setdefault("user_id", str(user_id))
+        from gateway.session_context import source_route_metadata
+        metadata = source_route_metadata(source, metadata)
         # Routed profile for shared state.db namespaces: under profile_routes the transport adapter's
         # stamp is not the profile that wrote the binding (Telegram prune path needs it).
         # See #76423.
@@ -4088,6 +4136,7 @@ class GatewayRunner(
             user_id_alt=str(context.source.user_id_alt) if context.source.user_id_alt else "",
             user_name=str(context.source.user_name) if context.source.user_name else "",
             scope_id=str(getattr(context.source, "scope_id", "") or ""),
+            parent_chat_id=str(getattr(context.source, "parent_chat_id", "") or ""),
             session_key=context.session_key,
             message_id=str(context.source.message_id) if context.source.message_id else "",
             profile=getattr(context.source, "profile", "") or "",
@@ -4189,7 +4238,6 @@ class GatewayRunner(
         See #15654, #9051.
         """
         if interrupt_depth == 0:
-            from agent.session_activity import ActivityProvenance
             agent._last_activity_ts = time.time()
             agent._last_activity_desc = "starting new turn (cached)"
             agent._last_activity_provenance = ActivityProvenance.UNKNOWN

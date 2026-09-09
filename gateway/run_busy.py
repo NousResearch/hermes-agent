@@ -17,7 +17,8 @@ import time
 from agent.i18n import t
 from agent.session_activity import format_iteration_progress
 from gateway.config import Platform
-from gateway.platforms.base import EphemeralReply, MessageEvent, MessageType
+from gateway.platforms.base import EphemeralReply
+from gateway.platforms.event import MessageEvent, MessageType
 from gateway.session import SessionSource
 from typing import Any, Dict, Optional, Union
 
@@ -51,6 +52,7 @@ class GatewayBusySessionMixin:
             self._session_state(session_key).conversation.queued_events.append(queued_event)
         else:
             pending_slot[session_key] = queued_event
+        queued_event._gateway_accepted = True
 
     def _promote_queued_event(
         self, session_key: str, adapter: Any, pending_event: Optional["MessageEvent"]
@@ -309,6 +311,7 @@ class GatewayBusySessionMixin:
                 adapter._pending_messages, session_key, event,
                 merge_text=event.message_type == MessageType.TEXT,
             )
+            event._gateway_accepted = True
             return
 
         if self._queue_depth(session_key, adapter=adapter) >= self._BUSY_QUEUE_MAX_PENDING:
@@ -650,6 +653,15 @@ class GatewayBusySessionMixin:
             logger.debug("Failed to send busy-ack: %s", e)
 
     async def _handle_active_session_busy_message(self, event: MessageEvent, session_key: str) -> bool:
+        # Gateway wakes have no external user identity. Admit them before auth/drain/approval
+        # handling, without merging their text into an already queued human message.
+        if event.internal and event.allow_gateway_control:
+            adapter = self._adapter_for_source(event.source)
+            if adapter and session_key in getattr(adapter, "_pending_messages", {}):
+                self._queue_or_replace_pending_event(session_key, event)
+                return True
+            return False  # base adapter queues silently behind the active turn
+
         # Same authorization gate as the cold path, else unauthorized users in shared threads
         # inject messages into a session they don't own.
         from gateway.run import _AGENT_PENDING_SENTINEL
@@ -675,8 +687,6 @@ class GatewayBusySessionMixin:
         # steer; they surface as a NEW turn when idle. Plugin events carry untrusted payload text, so
         # queue them through the FIFO (security metadata kept apart).
         if getattr(event, "internal", False):
-            if event.allow_gateway_control:
-                return False
             self._queue_or_replace_pending_event(session_key, event)
             return True
         if (
@@ -1194,6 +1204,29 @@ class GatewayBusySessionMixin:
                 )
                 if button_result and getattr(button_result, "success", False):
                     return None  # buttons rendered — no redundant text ack
+                # P5(b): distinguish a connector egress DECLINE from a lane
+                # failure. On a decline the connector refused this destination,
+                # so returning `message` as the direct reply would deliver the
+                # very content it refused, as text, to the same chat. Suppress
+                # the fallback and tear down the registration — no card
+                # rendered, so a later reply must not be captured as an answer
+                # to an invisible prompt.
+                #
+                # Classify the STRUCTURED response (see _approval_send_outcome):
+                # a code-only decline has no marker colon in its rendered text,
+                # and an ambiguous result must not be treated as a definite
+                # refusal.
+                from gateway.relay.egress import declined_send
+
+                _confirm_err = getattr(button_result, "error", None)
+                if declined_send(button_result):
+                    logger.warning(
+                        "slash-confirm DECLINED by the connector's egress "
+                        "guard for %s on %s — suppressing the text fallback: %s",
+                        command, source.platform, _confirm_err,
+                    )
+                    _slash_confirm_mod.clear(session_key)
+                    return None
             except Exception as exc:
                 logger.debug("send_slash_confirm failed for %s on %s: %s", command, source.platform, exc)
         # Text fallback — the prompt message itself is the direct reply.

@@ -136,16 +136,20 @@ class CronScheduler(ABC):
 
     def fire_due(
         self, job_id: str, *, adapters: Any = None, loop: Any = None, force: bool = False,
+        manual: bool = False,
     ) -> bool:
         """Run one job NOW (inbound fire webhook entry). Store CAS claim (multi-machine
         at-most-once) then shared ``run_one_job``. True if THIS caller claimed and processed the
-        attempt (even if the job failed); False if the claim was lost or the job is gone."""
-        claimed_job = self.claim_fire(job_id, force=force)
+        attempt (even if the job failed); False if the claim was lost or the job is gone.
+        ``manual`` marks an off-tick run-now (dashboard trigger): the claim must not stamp
+        ``next_run_at`` as the occurrence, or that slot is skipped when it arrives. Webhook and
+        misfire fires run the slot that is due and keep the stamp."""
+        claimed_job = self.claim_fire(job_id, force=force, manual=manual)
         if claimed_job is None:
             return False
         return self.fire_claimed(claimed_job, adapters=adapters, loop=loop)
 
-    def claim_fire(self, job_id: str, *, force: bool = False) -> dict | None:
+    def claim_fire(self, job_id: str, *, force: bool = False, manual: bool = False) -> dict | None:
         """Durably claim one fire + create its audit attempt. Transports call this synchronously
         before acknowledging, then pass the exact snapshot to ``fire_claimed`` off-thread."""
         from cron.executions import create_execution, finish_execution, set_execution_occurrence
@@ -155,6 +159,8 @@ class CronScheduler(ABC):
         claim_kwargs = {"return_job": True}
         if force:
             claim_kwargs["force"] = True
+        if manual:
+            claim_kwargs["manual"] = True
         try:
             claimed_job = claim_job_for_fire(job_id, **claim_kwargs)
             if isinstance(claimed_job, dict):
@@ -189,6 +195,11 @@ class CronScheduler(ABC):
 
 def provider_supports_force_fire(provider: Any) -> bool:
     """Return whether a provider can safely receive ``fire_due(force=...)`` (signature-detected)."""
+    return provider_fire_due_accepts(provider, "force")
+
+
+def provider_fire_due_accepts(provider: Any, name: str) -> bool:
+    """Whether ``provider.fire_due`` takes keyword ``name`` (third-party providers may predate it)."""
     try:
         parameters = inspect.signature(provider.fire_due).parameters.values()
     except (TypeError, ValueError):
@@ -196,7 +207,7 @@ def provider_supports_force_fire(provider: Any) -> bool:
     return any(
         p.kind is inspect.Parameter.VAR_KEYWORD
         or (
-            p.name == "force"
+            p.name == name
             and p.kind in (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY)
         )
         for p in parameters

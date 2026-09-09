@@ -249,6 +249,11 @@ class SessionRecoveryMixin:
                 promote(session_id, reason)
             else:
                 db.end_session(session_id, reason)
+            # Stop the departed conversation's schedule in its owning profile, even when
+            # the in-memory watch still holds a pre-reset session id.
+            heartbeat_key = f"heartbeat:{session_id}"
+            if db.get_meta(heartbeat_key):
+                db.set_meta(heartbeat_key, "")
         except Exception as exc:
             log(exc)
 

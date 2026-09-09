@@ -341,6 +341,8 @@ def _cmd_assignees(args: argparse.Namespace) -> int:
 
 
 def _cmd_create(args: argparse.Namespace) -> int:
+    from agent.delegation_context import is_dispatcher_owned_worker_context
+
     try:
         ws_kind, ws_path = _parse_workspace_flag(args.workspace)
         branch_name = _parse_branch_flag(getattr(args, "branch", None))
@@ -371,6 +373,8 @@ def _cmd_create(args: argparse.Namespace) -> int:
             goal_max_turns=getattr(args, "goal_max_turns", None),
             completion_contract=getattr(args, "completion_contract", None),
             initial_status=getattr(args, "initial_status", "running"),
+            creator_task_id=(os.environ.get("HERMES_KANBAN_TASK")
+                             if is_dispatcher_owned_worker_context() else None),
         )
         task = kb.get_task(conn, task_id)
     if getattr(args, "json", False):
@@ -1009,13 +1013,13 @@ def _cmd_promote(args: argparse.Namespace) -> int:
     author = _profile_author()
     # Dedupe while preserving order; positional task_id always first.
     ids = list(dict.fromkeys(_bulk_ids(args)))
-    dry_run, force = bool(args.dry_run), bool(args.force)
+    dry_run = bool(args.dry_run)
 
     results: list[dict[str, object]] = []
     with kbc.connect_closing() as conn:
         for tid in ids:
-            ok, err = kb.promote_task(conn, tid, actor=author, reason=reason, force=force, dry_run=dry_run)
-            results.append({"task_id": tid, "promoted": ok, "dry_run": dry_run, "forced": force,
+            ok, err = kb.promote_task(conn, tid, actor=author, reason=reason, dry_run=dry_run)
+            results.append({"task_id": tid, "promoted": ok, "dry_run": dry_run,
                             "reason": reason, "error": err})
 
     failed = [r for r in results if not r["promoted"]]

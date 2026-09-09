@@ -3,6 +3,7 @@
 
 import contextlib
 import copy
+import hmac
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 import json
@@ -2189,7 +2190,12 @@ def _record_run_outcome(
         job["run_claim"] = None
 
 
-def _advance_after_run(job: Dict[str, Any], now: str) -> None:
+def _advance_after_run(
+    job: Dict[str, Any],
+    now: str,
+    *,
+    preserve_paused_next_run_at: Any = _MISSING,
+) -> None:
     """Bump ``repeat.completed`` and recompute ``next_run_at``; retire the record as a terminal
     completion when the repeat limit is reached or a one-shot has no further run."""
     # If no next run, decide whether this is terminal completion (one-shot) or a transient failure
@@ -2200,6 +2206,12 @@ def _advance_after_run(job: Dict[str, Any], now: str) -> None:
     # One-shot dispatch-limit guard (issue #38758): a finite one-shot claimed via claim_dispatch() but whose
     # tick died before mark_job_run could remove it will have completed >= times while still looking due
     # (last_run_at was never written, so the recovery helper re-armed it). Remove it instead of re-firing.
+    preserve_paused_recurring = (
+        preserve_paused_next_run_at is not _MISSING
+        and kind in {"cron", "interval"}
+        and job.get("enabled") is False
+        and job.get("state") == "paused"
+    )
     repeat = job.get("repeat")
     if repeat:
         times = repeat.get("times")
@@ -2210,11 +2222,15 @@ def _advance_after_run(job: Dict[str, Any], now: str) -> None:
         if not (kind == "once" and finite and completed > 0):
             completed += 1
             repeat["completed"] = completed
-        if finite and completed >= times:
+        if finite and completed >= times and not preserve_paused_recurring:
             # Limit reached: retain a terminal record instead of popping it, so the status just
             # written stays inspectable in `cronjob list`; the retention sweep prunes it later.
             _complete_job_record(job)
             return
+
+    if preserve_paused_recurring:
+        job["next_run_at"] = copy.deepcopy(preserve_paused_next_run_at)
+        return
 
     job["next_run_at"] = compute_next_run(job["schedule"], now)
     if job["next_run_at"] is not None:
@@ -2244,6 +2260,7 @@ def mark_job_run(
     status: Optional[str] = None,
     *,
     expected_fire_owner: Optional[str] = None,
+    require_unclaimed: bool = False,
 ) -> bool:
     """Mark a job as run: update last_run_at/last_status, bump completed, recompute next_run_at,
     and retire the record as a terminal completion when the repeat limit is reached.
@@ -2252,6 +2269,8 @@ def mark_job_run(
     ``last_status = "delivery_failed"`` (never "ok") while ``failure_streak`` is left alone. An
     explicit ``status`` (e.g. "blocked_config") overrides the derived value. False when the fence
     can't be taken, the job is missing, or ``expected_fire_owner`` no longer holds the fire claim.
+    ``require_unclaimed`` is the complementary fence for delayed recovery bookkeeping: it
+    refuses to mutate a job if any newer fire owner has claimed it.
     """
     def apply(jobs, _i, job):
         if expected_fire_owner is not None:
@@ -2261,9 +2280,25 @@ def mark_job_run(
                     "mark_job_run: job_id %s fire claim owner changed; discarding stale completion",
                     job_id)
                 return False
+        elif require_unclaimed and isinstance(job.get("fire_claim"), dict):
+            logger.warning(
+                "mark_job_run: job_id %s gained a fire claim; discarding stale unclaimed update",
+                job_id,
+            )
+            return False
+        fire_claim = job.get("fire_claim")
+        preserve_paused_next_run_at = _MISSING
+        if isinstance(fire_claim, dict) and "preserve_paused_next_run_at" in fire_claim:
+            preserve_paused_next_run_at = copy.deepcopy(
+                fire_claim["preserve_paused_next_run_at"]
+            )
         now = _hermes_now().isoformat()
         _record_run_outcome(job, success, error, delivery_error, status, now)
-        _advance_after_run(job, now)
+        _advance_after_run(
+            job,
+            now,
+            preserve_paused_next_run_at=preserve_paused_next_run_at,
+        )
         save_jobs(jobs)
         return True
 
@@ -2490,24 +2525,59 @@ def _machine_id() -> str:
     return f"{host}:{os.getpid()}"
 
 
+def release_fire_claim(job_id: str, *, expected_owner: str) -> bool:
+    """Release an unstarted fire claim without recording a run.
+
+    The owner fence prevents a failed dispatcher from clearing a replacement claim.
+    No schedule, repeat, or terminal-status field is changed.
+    """
+    owner = str(expected_owner or "").strip()
+    if not owner:
+        return False
+
+    def apply(jobs, _i, job):
+        claim = job.get("fire_claim")
+        if not isinstance(claim, dict):
+            return False
+        current_owner = str(claim.get("by") or "")
+        if not current_owner or not hmac.compare_digest(current_owner, owner):
+            return False
+        job["fire_claim"] = None
+        save_jobs(jobs)
+        return True
+
+    return _with_job(job_id, apply, False)
+
+
 def claim_job_for_fire(
-    job_id: str, *, claim_ttl_seconds: int = FIRE_CLAIM_TTL_SECONDS, force: bool = False, return_job: bool = False,
+    job_id: str, *, claim_ttl_seconds: int = FIRE_CLAIM_TTL_SECONDS, force: bool = False,
+    preserve_paused: bool = False, return_job: bool = False,
 ) -> Union[bool, Dict[str, Any]]:
     """Atomically claim a job for one external 'fire' (multi-machine at-most-once); True iff THIS
     caller won (``CronScheduler.fire_due``: exactly one of N replicas runs a job). Under the
-    fence + file lock: reject missing/terminal/paused jobs unless ``force`` (explicit manual
-    fire, which also resumes the job atomically; external callbacks must leave it false so a
-    stale callback cannot resurrect a paused job). Lose if a claim younger than
+    fence + file lock: reject missing/terminal/paused jobs unless ``force``. Forced fires activate
+    the job atomically by default; an explicit manual run may set ``preserve_paused`` to execute a
+    properly paused job once without enabling its future schedule. External callbacks leave both
+    flags false so a stale callback cannot resurrect a paused job. Lose if a claim younger than
     ``claim_ttl_seconds`` exists (the TTL lets another fire reclaim after a crash; mark_job_run
     clears the claim). Otherwise stamp ``fire_claim`` and, for recurring jobs, advance
     ``next_run_at`` so a stale re-delivery cannot re-fire."""
     def apply(jobs, _i, job):
         if is_terminal_job(job) and not _is_recoverable_error_job(job):
             return False
+        repeat = job.get("repeat") or {}
+        times = repeat.get("times")
+        completed = repeat.get("completed", 0)
+        if times is not None and times > 0 and completed >= times:
+            return False
         # Both enabled and pause markers must clear — a half-paused record must not claim. ``force``
-        # (Trigger-now on a paused job) bypasses the gate and atomically resumes the job below.
+        # bypasses that gate. ``preserve_paused`` is deliberately narrower: only a consistent
+        # disabled+paused record keeps its scheduling state during this one manual occurrence.
         if not force and not is_job_runnable(job):
             return False
+        keep_paused = (
+            force and preserve_paused and job.get("enabled") is False and job.get("state") == "paused"
+        )
         now = _hermes_now()
         if _claim_is_live(job.get("fire_claim"), now, claim_ttl_seconds):
             return False  # someone holds a fresh claim
@@ -2522,12 +2592,21 @@ def claim_job_for_fire(
                     job["next_run_at"] = nxt
                     save_jobs(jobs)
             return False
-        if force:
+        if force and not keep_paused:
             _activate_job_record(job)
         # Per-acquisition token: a process may legitimately reclaim its own stale lease, and the
         # previous runner must not heartbeat the new claim merely because hostname + PID match.
-        job["fire_claim"] = {"at": now.isoformat(), "by": f"{_machine_id()}:{uuid.uuid4().hex}"}
-        if job.get("schedule", {}).get("kind") in {"cron", "interval"}:
+        kind = job.get("schedule", {}).get("kind")
+        fire_claim: Dict[str, Any] = {
+            "at": now.isoformat(),
+            "by": f"{_machine_id()}:{uuid.uuid4().hex}",
+        }
+        if keep_paused and kind in {"cron", "interval"}:
+            fire_claim["preserve_paused_next_run_at"] = copy.deepcopy(
+                job.get("next_run_at")
+            )
+        job["fire_claim"] = fire_claim
+        if kind in {"cron", "interval"} and not keep_paused:
             nxt = compute_next_run(job["schedule"], now.isoformat())
             if nxt:
                 job["next_run_at"] = nxt

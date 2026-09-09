@@ -26,6 +26,84 @@ _JOB = {"id": "job-run-1", "name": "manual run", "prompt": "hi",
 
 
 class TestCronjobRunExecutesImmediately:
+    def test_abort_manual_run_releases_store_and_local_reservations(self):
+        from tools.cronjob_tools import _release_manual_run_reservation
+
+        claimed = {
+            "id": "job-abort",
+            "fire_claim": {"by": "owner-abort"},
+            "_manual_reservation_token": "local-owner-abort",
+        }
+        with patch("cron.jobs.release_fire_claim", return_value=True) as release_store, patch(
+            "cron.scheduler.release_running_job"
+        ) as release_local, patch(
+            "tools.cronjob_tools._notify_provider_jobs_changed_safe"
+        ) as notify:
+            _release_manual_run_reservation(claimed)
+
+        release_store.assert_called_once_with("job-abort", expected_owner="owner-abort")
+        release_local.assert_called_once_with(
+            "job-abort", expected_reservation_token="local-owner-abort"
+        )
+        notify.assert_called_once_with()
+
+    def test_delayed_old_abort_does_not_release_replacement_local_reservation(self):
+        from cron.scheduler import (
+            get_running_job_ids,
+            release_running_job,
+            try_register_running_job,
+        )
+        from tools.cronjob_tools import _release_manual_run_reservation
+
+        job_id = "job-delayed-old-abort"
+        old_claimed = {
+            "id": job_id,
+            "fire_claim": {"by": "store-owner-old"},
+            "_manual_reservation_token": "local-owner-old",
+        }
+        try:
+            assert try_register_running_job(job_id, reservation_token="local-owner-old")
+            assert release_running_job(
+                job_id, expected_reservation_token="local-owner-old"
+            )
+            assert try_register_running_job(job_id, reservation_token="local-owner-new")
+
+            with patch("cron.jobs.release_fire_claim", return_value=False):
+                _release_manual_run_reservation(old_claimed)
+
+            assert job_id in get_running_job_ids()
+        finally:
+            release_running_job(job_id, expected_reservation_token="local-owner-new")
+
+    def test_running_guard_rejects_before_store_claim(self):
+        from tools.cronjob_tools import _claim_for_manual_run
+
+        with patch("cron.scheduler.try_register_running_job", return_value=False), patch(
+            "tools.cronjob_tools.claim_job_for_fire"
+        ) as m_claim:
+            claimed, err = _claim_for_manual_run("job-run-1", "unit test")
+
+        assert claimed is None
+        assert err is not None
+        assert err["claimed"] is False
+        assert "already running" in err["error"]
+        m_claim.assert_not_called()
+
+    def test_claim_binds_same_unique_token_to_local_guard_and_claimed_snapshot(self):
+        from tools.cronjob_tools import _claim_for_manual_run
+
+        claimed_from_store = {**_JOB, "fire_claim": {"by": "store-owner"}}
+        with patch("cron.scheduler.try_register_running_job", return_value=True) as register, patch(
+            "tools.cronjob_tools.claim_job_for_fire", return_value=claimed_from_store
+        ):
+            claimed, err = _claim_for_manual_run("job-run-1", "unit test")
+
+        assert err is None
+        assert claimed is not None
+        token = claimed.get("_manual_reservation_token")
+        assert isinstance(token, str) and token
+        register.assert_called_once_with("job-run-1", reservation_token=token)
+
     def test_run_action_claims_and_fires_via_run_one_job(self):
         """action='run' must claim the job then fire it through run_one_job."""
         ran = {"job": "after-run", "last_status": "ok", "last_error": None}
@@ -39,7 +117,7 @@ class TestCronjobRunExecutesImmediately:
         assert out["success"] is True
         assert out["job"]["executed"] is True
         assert out["job"]["execution_success"] is True
-        m_claim.assert_called_once_with("job-run-1", return_job=True)
+        m_claim.assert_called_once_with("job-run-1", force=True, preserve_paused=True, return_job=True)
         m_run.assert_called_once_with(claimed, adapters=None, loop=None, extra_prompt=None)
 
     def test_run_reconciles_external_provider_after_claimed_execution(self):
@@ -74,7 +152,7 @@ class TestCronjobRunExecutesImmediately:
         claimed = {**_JOB, "fire_claim": {"by": "manual-owner"}}
         with patch("tools.cronjob_tools.resolve_job_ref", return_value=dict(_JOB)), \
              patch("tools.cronjob_tools.claim_job_for_fire", return_value=claimed), \
-             patch("cron.scheduler.run_one_job", side_effect=RuntimeError("boom")), \
+             patch("cron.scheduler.run_one_job", return_value=False), \
              patch("tools.cronjob_tools.mark_job_run"), \
              patch("tools.cronjob_tools.get_job", return_value=failed), \
              patch("tools.cronjob_tools._notify_provider_jobs_changed_safe") as m_notify:
@@ -93,7 +171,7 @@ class TestCronjobRunExecutesImmediately:
              patch("tools.cronjob_tools._notify_provider_jobs_changed_safe") as m_notify:
             out = json.loads(cronjob(action="run", job_id="job-run-1"))
 
-        assert out["success"] is True
+        assert out["success"] is False
         assert out["job"]["executed"] is False
         assert out["job"]["execution_success"] is False
         assert "execution_skipped" in out["job"]

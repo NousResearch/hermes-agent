@@ -1757,7 +1757,7 @@ def _forward_command(name: str, module: str, attr: str, *, forward_return: bool 
 
     Imports at CALL time so fast paths never pay for it and
     ``patch("<module>.<attr>")`` keeps intercepting. ``forward_return``
-    surfaces the return code to ``main()`` (only kanban/project propagate).
+    surfaces the return code to ``main()`` for commands whose handlers own exit status.
     """
 
     def _cmd(args):

@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 
+import { usePaneVisible } from '@/components/pane-shell/pane-visibility'
 import { useI18n } from '@/i18n'
 import { knownOwnerForSession, requestForOwnedSession } from '@/store/session-states'
 
@@ -13,6 +14,7 @@ interface Tail {
 
 export function SubagentTranscript({ sessionId, subagentId }: { sessionId: string; subagentId: string }) {
   const { t } = useI18n()
+  const paneVisible = usePaneVisible()
   const [tail, setTail] = useState<Tail | null>(null)
   useEffect(() => {
     let cancelled = false
@@ -49,13 +51,17 @@ export function SubagentTranscript({ sessionId, subagentId }: { sessionId: strin
     }
 
     void refresh()
-    const timer = window.setInterval(() => void refresh(), 2000)
+    // Keep-alive tiles stay mounted; only arm the 2s tail poll while the pane
+    // is the visible tab. Reveal re-arms via `paneVisible` in the dep array.
+    const timer = paneVisible ? window.setInterval(() => void refresh(), 2000) : undefined
 
     return () => {
       cancelled = true
-      window.clearInterval(timer)
+      if (timer !== undefined) {
+        window.clearInterval(timer)
+      }
     }
-  }, [sessionId, subagentId])
+  }, [sessionId, subagentId, paneVisible])
 
   return (
     <section className="mt-2 text-xs" data-slot="subagent-transcript">

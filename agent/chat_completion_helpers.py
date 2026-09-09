@@ -1444,14 +1444,27 @@ def _build_api_kwargs_for_mode(agent, api_messages: list, tools_for_api: list | 
     # in agent.request_overrides; auto/cold windows layer the fast override per request.
     request_overrides = effective_request_overrides(agent)
     if agent.api_mode == "anthropic_messages":
-        return _build_anthropic_kwargs(agent, api_messages, tools_for_api, reasoning_config, request_overrides)
-    if agent.api_mode == "bedrock_converse":
-        return _build_bedrock_kwargs(agent, api_messages, tools_for_api)
-    # Rotation-stable logical cache scope shared by every OpenAI-wire branch
-    # (memoized on the agent); anthropic/bedrock above don't use it.
-    cache_scope_id = _prompt_cache_scope_for_agent(agent)
-    builder = _build_codex_kwargs if agent.api_mode == "codex_responses" else _build_chat_completions_kwargs
-    return builder(agent, api_messages, tools_for_api, reasoning_config, request_overrides, cache_scope_id)
+        api_kwargs = _build_anthropic_kwargs(agent, api_messages, tools_for_api, reasoning_config, request_overrides)
+    elif agent.api_mode == "bedrock_converse":
+        api_kwargs = _build_bedrock_kwargs(agent, api_messages, tools_for_api)
+    else:
+        # Rotation-stable logical cache scope shared by every OpenAI-wire branch
+        # (memoized on the agent); anthropic/bedrock above don't use it.
+        cache_scope_id = _prompt_cache_scope_for_agent(agent)
+        builder = _build_codex_kwargs if agent.api_mode == "codex_responses" else _build_chat_completions_kwargs
+        api_kwargs = builder(agent, api_messages, tools_for_api, reasoning_config, request_overrides, cache_scope_id)
+    # Provider-owned capability boundary, applied last so it can strip anything
+    # request_overrides just added that the verified route/model can't accept.
+    from providers import get_provider_profile
+
+    provider_profile = get_provider_profile(agent.provider)
+    if provider_profile is not None:
+        api_kwargs = provider_profile.sanitize_request_kwargs(
+            api_kwargs, agent=agent,
+            supports_reasoning=agent._supports_reasoning_extra_body(),
+            base_url=getattr(agent, "base_url", None),
+        )
+    return api_kwargs
 
 
 def _model_dump_safe(obj):

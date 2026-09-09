@@ -215,6 +215,9 @@ class AIAgent(
 ):
     """AI Agent with tool calling capabilities."""
 
+    # Optional host-owned ceiling for retry/continuation output boosts.
+    _max_output_tokens_ceiling: int | None = None
+
     _TOOL_CALL_ARGUMENTS_CORRUPTION_MARKER = (
         "[hermes-agent: tool call arguments were corrupted in this session and "
         "have been dropped to keep the conversation alive. See issue #15236.]"

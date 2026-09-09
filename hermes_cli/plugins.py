@@ -651,11 +651,16 @@ class PluginContext:
     @_serialized_replacement
     def register_command(
         self, name: str, handler: Callable, description: str = "", args_hint: str = "",
-        argument_mode: str | None = None,
+        argument_mode: str | None = None, *, busy_policy: str | None = None,
     ) -> Optional[PluginRegistration]:
         """Register an in-session slash command (``/name``); handler ``fn(raw_args: str) -> str | None``
         (sync or async). ``args_hint`` (e.g. ``"<file>"``) lets adapters like Discord surface an argument
-        field; without it the command registers parameterless there but still accepts trailing text."""
+        field; without it the command registers parameterless there but still accepts trailing text.
+        Gateway handlers may declare an optional keyword ``context``; it is supplied only after
+        source/slash authorization. ``busy_policy="noninterrupting"`` opts into both busy guards;
+        its handler must not mutate or interrupt the parent conversation."""
+        if busy_policy not in {None, "reject", "noninterrupting"}:
+            raise ValueError("Plugin busy_policy must be None, reject or noninterrupting")
         clean = name.lower().strip().lstrip("/").replace(" ", "-")
         if not clean:
             logger.warning("Plugin '%s' tried to register a command with an empty name.", self.manifest.name)
@@ -669,12 +674,21 @@ class PluginContext:
         hint = (args_hint or "").strip()
         entry = {
             "handler": handler, "description": description or "Plugin command",
+            "busy_policy": busy_policy, "context": self,
             "plugin": self.manifest.name, "plugin_key": self.plugin_id, "args_hint": hint,
             "argument_mode": argument_mode if argument_mode in {"options", "text", "mixed"}
             else ("text" if hint else None),
         }
         return self._register_entry("command", clean, self._manager._plugin_commands, entry,
                                     "Plugin %s registered command: /%s", clean)
+
+    @property
+    def supports_side_runs(self) -> bool:
+        """Host implements authenticated command context and isolated gateway side runs.
+
+        A live transport is still required; use the invocation context's start_side_run.
+        """
+        return True
 
     def dispatch_tool(self, tool_name: str, args: dict, **kwargs) -> str:
         """Dispatch a tool call through the registry with the parent agent (when available)

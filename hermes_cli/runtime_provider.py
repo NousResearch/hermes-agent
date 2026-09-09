@@ -811,7 +811,8 @@ def _opencode_free_runtime(provider, requested_provider, model_cfg, target_model
 
 
 def resolve_runtime_provider(*, requested: Optional[str] = None, explicit_api_key: Optional[str] = None,
-                             explicit_base_url: Optional[str] = None, target_model: Optional[str] = None) -> Dict[str, Any]:
+                             explicit_base_url: Optional[str] = None, target_model: Optional[str] = None,
+                             strict: bool = False) -> Dict[str, Any]:
     """Resolve runtime provider credentials for agent execution. Ladder (order is behavior — each
     rung returns or raises, else falls to the next):
       1. disabled-provider guard (``providers.<name>.enabled: false``)
@@ -825,9 +826,15 @@ def resolve_runtime_provider(*, requested: Optional[str] = None, explicit_api_ke
       8. OpenRouter / bare-custom fallback
     target_model overrides model_cfg["default"] when computing provider-specific api_mode (e.g.
     OpenCode Zen/Go where different models route through different API surfaces)."""
+    if strict and (not requested or requested.strip().lower() in {"auto", "default"} or not target_model):
+        raise ValueError("Strict resolution requires explicit provider and model")
     requested_provider = resolve_requested_provider(requested)
     _raise_if_provider_disabled(requested_provider)
-    return next(r for r in _ladder_rungs(requested_provider, explicit_api_key, explicit_base_url, target_model) if r)
+    runtime = next(r for r in _ladder_rungs(requested_provider, explicit_api_key, explicit_base_url, target_model) if r)
+    if strict:
+        from hermes_cli.runtime_provider_strict import validate_explicit_runtime
+        validate_explicit_runtime(requested_provider, target_model, runtime)
+    return runtime
 
 
 def _ladder_rungs(requested_provider, explicit_api_key, explicit_base_url, target_model):

@@ -516,6 +516,16 @@ class GatewayInboundMixin:
             # interrupt_then_dispatch / reject). Unrecognized commands and plain text fall through.
             return True, await self._dispatch_busy_slash_command(event, _cmd_def_inner, _quick_key, source)
 
+        from hermes_cli.plugins import get_plugin_commands
+        entry = get_plugin_commands().get((_evt_cmd or "").replace("_", "-"))
+        if entry is not None and entry.get("busy_policy") is not None:
+            if entry.get("busy_policy") != "noninterrupting":
+                return True, "This plugin command is unavailable while the session is busy."
+            if self._draining:
+                return True, "Gateway is draining and cannot accept side runs."
+            from gateway.plugin_commands import dispatch_plugin_command
+            return await dispatch_plugin_command(self, event, source, _evt_cmd)
+
         # Telegram photo bursts arrive as near-simultaneous updates — never interrupt for a
         # photo-only follow-up; adapter-level batching absorbs them.
         if event.message_type == MessageType.PHOTO:
@@ -977,20 +987,9 @@ class GatewayInboundMixin:
                 return True, f"Quick command '/{command}' has no target defined.", command
             command = new_command  # Fall through to normal command dispatch below
 
-        # Plugin-registered slash commands. Underscores normalize to hyphens so Telegram's
-        # underscored autocomplete form matches plugin commands registered with hyphens.
-        if command:
-            try:
-                from hermes_cli.plugins import get_plugin_command_handler
-                plugin_handler = get_plugin_command_handler(command.replace("_", "-"))
-                if plugin_handler:
-                    result = plugin_handler(event.get_command_args().strip())
-                    if asyncio.iscoroutine(result):
-                        result = await result
-                    return True, str(result) if result else None, command
-            except Exception as e:
-                logger.warning("Plugin command dispatch failed: %s", e)
-        return False, None, command
+        from gateway.plugin_commands import dispatch_plugin_command
+        handled, result = await dispatch_plugin_command(self, event, source, command)
+        return handled, result, command
 
     def _hm_bundle_slash_rewrite(
         self, event: "MessageEvent", source: SessionSource, _quick_key: str, command: str
@@ -1122,6 +1121,13 @@ class GatewayInboundMixin:
         Only events that may control the gateway (``allow_gateway_control``) can answer them."""
         if not event.allow_gateway_control:
             return None
+        side_runs = getattr(self, "_plugin_side_runs", None)
+        if side_runs is not None:
+            reply = side_runs.approval_reply(event)
+            if reply is not None:
+                return reply
+        if event.get_command() in {"approve", "deny"} and event.get_command_args().strip().startswith("side:"):
+            return "Approval request has expired or is unavailable."
         _reply = self._hm_update_prompt_reply(event, _quick_key)
         if _reply is None:
             _reply = await self._hm_clarify_reply(event, source, _quick_key)

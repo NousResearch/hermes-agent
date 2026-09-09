@@ -1172,13 +1172,20 @@ def register(ctx):
 
 After registration, users can type `/mystatus` in any session. The command appears in autocomplete, `/help` output, and the Telegram bot menu.
 
-**Signature:** `ctx.register_command(name: str, handler: Callable, description: str = "", args_hint: str = "")`
+**Signature:** `ctx.register_command(name, handler, description="", args_hint="", argument_mode=None, *, busy_policy=None)`
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `name` | `str` | Command name without the leading slash (e.g. `"lcm"`, `"mystatus"`) |
 | `handler` | `Callable[[str], str \| None]` | Called with the raw argument string. May also be `async`. |
 | `description` | `str` | Shown in `/help`, autocomplete, and Telegram bot menu |
+
+Gateway handlers may declare `context=None` as a named optional parameter. It receives
+an authenticated invocation context after source and slash authorization. Legacy
+one-argument handlers remain supported. `busy_policy="noninterrupting"` opts into
+inline execution through both busy guards without interrupting the parent. See
+[Authenticated plugin side runs](./side-runs.md) for fresh saved conversations,
+explicit routing, ownership, cancellation, and approval semantics.
 
 **Key differences from `register_cli_command()`:**
 

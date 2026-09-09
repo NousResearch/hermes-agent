@@ -400,7 +400,7 @@ def is_interrupt_then_dispatch(command_name: str | None) -> bool:
     return cmd is not None and cmd.busy_policy == "interrupt_then_dispatch"
 
 
-def should_bypass_active_session(command_name: str | None) -> bool:
+def should_bypass_active_session(command_name: str | None, *, profile: str | None = None) -> bool:
     """True for any resolvable slash command: every recognized command is dispatched mid-run
     (Guard-2 handler or the "busy" catch-all), never queued — gateway.run's safety net discards
     command text reaching the pending queue, so a queued mid-run /model (or /reasoning, /voice,
@@ -411,7 +411,19 @@ def should_bypass_active_session(command_name: str | None) -> bool:
 
     See #10370, #4665, #5057, #6252.
     """
-    return resolve_command(command_name) is not None if command_name else False
+    if not command_name:
+        return False
+    if resolve_command(command_name) is not None:
+        return True
+    from hermes_cli.plugins import get_plugin_commands
+    from hermes_cli.plugins_loader import _plugin_home_scope
+    from hermes_cli.profiles import get_profile_dir
+    from contextlib import nullcontext
+    # Adapter Guard 1 runs before its profile-scoped message handler. This only classifies
+    # commands; authenticated dispatch still resolves the handler in the source's own profile.
+    with _plugin_home_scope(get_profile_dir(profile)) if profile else nullcontext():
+        entry = get_plugin_commands().get(command_name.replace("_", "-"))
+        return bool(entry and entry.get("busy_policy") in {"reject", "noninterrupting"})
 
 
 def _resolve_config_gates() -> set[str]:

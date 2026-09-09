@@ -314,6 +314,13 @@ class GatewaySessionCommandsMixin:
         Rows once stored only source + user_id, so the persisted chat/thread origin is compared too
         and legacy NULL rows fail closed.  The table has no user_id_alt column, so an alt-keyed
         (Signal/Feishu) caller is never proven by user_id alone (CWE-639)."""
+        from gateway.side_runs import owns_side_run
+        try:
+            side_owner = owns_side_run(source, row.get("model_config"))
+        except (ValueError, TypeError, AttributeError):
+            return False
+        if side_owner is not None:
+            return side_owner
         caller_src = source.platform.value if source.platform else None
         row_src = row.get("source")
         caller_uid = _sattr(source, "user_id")
@@ -348,6 +355,14 @@ class GatewaySessionCommandsMixin:
         """Whether *source* may resume session *target_id* (IDOR guard for every adapter).  The live
         origin decides when the target is active; otherwise the DB row must PROVE ownership or fail
         closed.  Admin ``--all`` bypasses."""
+        try:
+            row = await self._session_db.get_session(target_id) or {}
+            from gateway.side_runs import owns_side_run
+            side_owner = owns_side_run(source, row.get("model_config"))
+        except (ValueError, TypeError, AttributeError):
+            return False
+        if side_owner is not None:
+            return side_owner
         if allow_override and self._resume_caller_is_admin(source):
             return True
         # Only a real SessionSource origin decides; unresolvable/error falls through to DB scoping.
@@ -366,6 +381,13 @@ class GatewaySessionCommandsMixin:
     async def _resume_row_visible(self, source: SessionSource, row: dict, allow_all: bool) -> bool:
         """Whether a listing *row* belongs to the caller's origin (blocks cross-origin enumeration of
         ids/previews); Matrix is room-scoped, ``--all`` needs a configured admin everywhere."""
+        from gateway.side_runs import owns_side_run
+        try:
+            side_owner = owns_side_run(source, row.get("model_config"))
+        except (ValueError, TypeError, AttributeError):
+            return False
+        if side_owner is not None:
+            return side_owner
         if allow_all and self._resume_caller_is_admin(source):
             return True
         sid = str(row.get("id") or "")
@@ -867,6 +889,19 @@ class GatewaySessionCommandsMixin:
                                           allow_cross_room: bool) -> Optional[str]:
         """IDOR guard: a session id/title is a routing handle, not authority — bind /resume to the
         caller's own room (Matrix) or platform/user/chat (other adapters)."""
+        from gateway.side_runs import owns_side_run
+        try:
+            row = await self._session_db.get_session(target_id) or {}
+            side_owner = owns_side_run(source, row.get("model_config"))
+        except (ValueError, TypeError, AttributeError):
+            return t("gateway.resume.blocked_not_owner", name=name)
+        if side_owner is not None:
+            if not side_owner:
+                return t("gateway.resume.blocked_not_owner", name=name)
+            service = getattr(self, "_plugin_side_runs", None)
+            if service is not None and target_id in service.runs:
+                return "Wait for the side run to finish before resuming its session."
+            return None
         if source.platform == Platform.MATRIX:
             target_origin = self._gateway_session_origin_for_id(target_id)
             if self._same_matrix_room(source, target_origin) or allow_cross_room:
@@ -998,8 +1033,7 @@ class GatewaySessionCommandsMixin:
             search_query=search_query,
             # Search filters in SQL: over-fetch so origin-invisible matches don't consume the page.
             limit=50 if search_query else 10, exclude_sources=["tool"])
-        if not cross_origin:
-            rows = [row for row in rows if await self._resume_row_visible(source, row, allow_all=False)]
+        rows = [row for row in rows if await self._resume_row_visible(source, row, allow_all=cross_origin)]
         rows = rows[:10]
         if search_query:
             title = f"Sessions matching “{search_query}”"

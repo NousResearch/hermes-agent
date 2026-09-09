@@ -6,6 +6,7 @@ gate in :mod:`tools.approval`.
 """
 
 import contextvars
+from contextlib import contextmanager
 import logging
 import os
 from hermes_cli.config import cfg_get
@@ -225,8 +226,27 @@ def _get_approval_config() -> dict:
         return {}
 
 
+_require_manual_approval = contextvars.ContextVar("require_manual_approval", default=False)
+
+
+def manual_approval_required():
+    return _require_manual_approval.get()
+
+
+@contextmanager
+def require_manual_approval():
+    """Isolated host work never inherits process YOLO or an automatic guardian decision."""
+    token = _require_manual_approval.set(True)
+    try:
+        yield
+    finally:
+        _require_manual_approval.reset(token)
+
+
 def _get_approval_mode() -> str:
     """Return 'manual', 'smart', or 'off' (a hosted-room policy overrides config)."""
+    if manual_approval_required():
+        return "manual"
     try:
         from gateway.hosted_room_execution_policy import current_room_execution_policy
         if (room_policy := current_room_execution_policy()) is not None:

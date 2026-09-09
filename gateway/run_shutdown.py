@@ -272,6 +272,8 @@ class GatewayShutdownMixin:
         PERMANENT supervised watchers (_hermes_supervised_watcher, incl. the scale-to-zero watcher
         itself) are excluded, else this would be True forever and the gateway could never go dormant.
         """
+        if self._active_deferred_agent_worker_count():
+            return True
         if any(
             not t.done() and not getattr(t, "_hermes_supervised_watcher", False)
             for t in self._background_tasks
@@ -1551,6 +1553,8 @@ class GatewayShutdownMixin:
         ctx.started_at = time.monotonic()
         self._running = False
         self._clear_plugin_message_injector()
+        if (side_runs := getattr(self, "_plugin_side_runs", None)) is not None:
+            side_runs.shutdown()
         self._draining = True
         # getattr-guards: shutdown-path test doubles may lack the room worker / systemd watchdog.
         stop_room_worker = getattr(self, "_stop_hosted_room_worker", None)

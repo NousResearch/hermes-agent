@@ -1218,6 +1218,10 @@ agent:
 # Gateway Lifecycle
 # =============================================================================
 gateway:
+  # Capacity for authenticated plugin side runs; excess work is rejected, not queued.
+  # side_runs:
+  #   max_concurrent: 3  # 1–10
+
   # Post-interrupt grace for running agents during an unexpected SIGTERM.
   # Adapter, bridge, and database teardown starts after this many seconds even
   # if an agent has not unwound. Keep it below the service-manager stop budget.

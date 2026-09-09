@@ -1233,6 +1233,11 @@ def _consume_ephemeral_max_output(agent):
     ephemeral_out = getattr(agent, "_ephemeral_max_output_tokens", None)
     if ephemeral_out is not None:
         agent._ephemeral_max_output_tokens = None
+        # Host-owned bounded runs may recover from truncation, but must not
+        # silently enlarge their explicitly authorized per-request output limit.
+        ceiling = getattr(agent, "_max_output_tokens_ceiling", None)
+        if ceiling is not None:
+            ephemeral_out = min(ephemeral_out, ceiling)
     return ephemeral_out
 
 
@@ -1369,7 +1374,18 @@ def build_api_kwargs(agent, api_messages: list, tools_for_api: list | None = Non
     """
     from agent.opencode_affinity import merge_opencode_session_headers
 
+    # Capture the one-shot bound before the transport consumes it. Provider
+    # thinking transforms may enlarge even a clamped retry (or the first call).
+    from agent.output_ceiling import validate_output_ceiling
+    output_limit = getattr(agent, "_max_output_tokens_ceiling", None)
+    if output_limit is not None:
+        requested = getattr(agent, "_ephemeral_max_output_tokens", None)
+        if requested is None:
+            requested = agent.max_tokens
+        if requested is not None:
+            output_limit = min(output_limit, requested)
     kwargs = _build_api_kwargs_for_mode(agent, api_messages, tools_for_api)
+    validate_output_ceiling(agent, kwargs, output_limit)
     return merge_opencode_session_headers(
         kwargs,
         getattr(agent, "provider", None),

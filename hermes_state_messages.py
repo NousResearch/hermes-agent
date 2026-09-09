@@ -787,7 +787,8 @@ class SessionMessagesMixin:
                         (session_id, *chunk))})
                 return [selected[row_id] for row_id in selected_ids if row_id in selected]
             finally:
-                conn.execute("ROLLBACK")
+                if conn.in_transaction:
+                    conn.execute("ROLLBACK")
 
     def _row_to_message_dict(self, row, *, warn_context: str, summary_flag: bool) -> Dict[str, Any]:
         """``dict(row)`` with content/tool_calls/display_metadata decoded; *summary_flag* keeps

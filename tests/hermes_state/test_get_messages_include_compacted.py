@@ -269,6 +269,33 @@ class TestDisplayDedupe:
         assert not mutation.is_alive()
         assert [(row["active"], row["content"]) for row in page] == [(1, "visible-at-scan")]
 
+    def test_read_only_legacy_page_preserves_transaction_failure(self, tmp_path):
+        path = tmp_path / "read-only-legacy-error.db"
+        writer = SessionDB(path)
+        sid = "read-only-legacy-error"
+        writer.create_session(sid, source="desktop")
+        writer.append_message(sid, "assistant", "message")
+        writer._execute_write(lambda conn: conn.execute(
+            "UPDATE messages SET display_order = NULL, display_identity = NULL WHERE session_id = ?",
+            (sid,),
+        ))
+        writer.close()
+        reader = SessionDB(path, read_only=True)
+        connection = reader._conn
+        assert connection is not None
+
+        def fail_after_sqlite_aborts_transaction(key) -> bytes:
+            del key
+            connection.execute("ROLLBACK")
+            raise sqlite3.OperationalError("disk I/O error")
+
+        reader._display_identity = fail_after_sqlite_aborts_transaction
+        try:
+            with pytest.raises(sqlite3.OperationalError, match="disk I/O error"):
+                reader.get_messages(sid, include_compacted=True, latest=True, limit=1)
+        finally:
+            reader.close()
+
     def test_display_paging_and_append_work_is_bounded(self, db):
         """Page and identity-lookup work scale with the page, not the transcript: 10x rows
         must not cost 10x SQLite VM steps (the pre-index read deduped the whole session)."""

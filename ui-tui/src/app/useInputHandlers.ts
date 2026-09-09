@@ -365,8 +365,8 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
 
   const toggleSpeakAloud = () => {
     // No local speaking flag — the backend owns the single utterance, so ask
-    // it: stop when something plays, otherwise speak the last assistant reply
-    // of the live session. (Option+Esc can't serve here: macOS Speak Selection
+    // it: stop when something plays, otherwise speak. A highlight always wins
+    // over the whole reply. (Option+Esc can't serve here: macOS Speak Selection
     // reads AXSelectedText, which fullscreen terminal apps never expose.)
     gateway
       .rpc<SpeakStatusResponse>('speak.status', {})
@@ -385,13 +385,38 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
           return
         }
 
-        gateway.rpc<SpeakSayResponse>('speak.say', { arg: '', session_id: getUiState().sid }).then(r => {
-          if (r) {
-            actions.sys(
-              r.status === 'speaking' ? 'speaking… (Ctrl+S or /say stop to stop)' : 'nothing to speak — start a conversation first'
-            )
-          }
-        })
+        const speakLastReply = () => {
+          gateway.rpc<SpeakSayResponse>('speak.say', { arg: '', session_id: getUiState().sid }).then(r => {
+            if (r) {
+              actions.sys(
+                r.status === 'speaking' ? 'speaking… (Ctrl+S or /say stop to stop)' : 'nothing to speak — start a conversation first'
+              )
+            }
+          })
+        }
+
+        // Transcript highlight (same selection Cmd+C copies — reading it also
+        // lands it on the clipboard, said out loud in the status line).
+        if (terminal.hasSelection) {
+          terminal.selection.copySelection().then(
+            text => {
+              if (text) {
+                gateway.rpc<SpeakSayResponse>('speak.say', { text }).then(r => {
+                  if (r && r.status === 'speaking') {
+                    actions.sys(`speaking selection… (${text.length} chars, copied)`)
+                  }
+                })
+              } else {
+                speakLastReply()
+              }
+            },
+            () => speakLastReply()
+          )
+
+          return
+        }
+
+        speakLastReply()
       })
   }
 

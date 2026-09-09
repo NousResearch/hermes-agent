@@ -1470,12 +1470,29 @@ class GatewayTurnMixin:
             logger.debug("runtime_footer build failed: %s", _footer_err)
             return ""
 
-    async def _hmwa_post_turn_hooks(self, hook_ctx, agent_result, response):
+    async def _hmwa_post_turn_hooks(
+        self, hook_ctx, agent_result, response, *, adapter=None, session_key="", message_id=None, streaming=False,
+    ):
         """agent:end hook, process-watcher scheduling, and watch-notification drain."""
         await self.hooks.emit("agent:end", {
             **hook_ctx, "response": (response or "")[:500], "model": agent_result.get("model", ""),
             "provider": agent_result.get("provider", ""),
         })
+
+        if adapter is not None and session_key and hasattr(adapter, "register_post_delivery_callback"):
+            async def _post_delivery_observer():
+                receipt = getattr(adapter, "_post_delivery_receipts", {}).get(session_key)
+                if not streaming and not (receipt and receipt.success):
+                    return
+                await self.hooks.emit("agent:post_delivery", {
+                    "platform": hook_ctx["platform"], "user_id": hook_ctx["user_id"],
+                    "chat_id": hook_ctx["chat_id"], "thread_id": hook_ctx["thread_id"],
+                    "session_id": hook_ctx["session_id"],
+                    "message_id": (getattr(receipt, "message_id", None) if receipt else message_id),
+                    "response": response or "", "model": agent_result.get("model", ""),
+                    "provider": agent_result.get("provider", ""), "delivery_confirmed": True,
+                })
+            adapter.register_post_delivery_callback(session_key, _post_delivery_observer)
 
         # Pending process watchers (check_interval on background processes)
         try:
@@ -1998,7 +2015,11 @@ class GatewayTurnMixin:
             # Streaming already delivered the body: the footer goes out as a trailing send instead.
             if _footer_line and response and not agent_result.get("already_sent") and not _intentional_silence:
                 response = f"{response}\n\n{_footer_line}"
-            await self._hmwa_post_turn_hooks(hook_ctx, agent_result, response)
+            await self._hmwa_post_turn_hooks(
+                hook_ctx, agent_result, response, adapter=self._adapter_for_source(source), session_key=session_key,
+                message_id=str(event.message_id) if event.message_id else None,
+                streaming=bool(agent_result.get("already_sent")),
+            )
 
             agent_failed_early, hidden_reasoning_incomplete, is_context_overflow_failure = (
                 self._hmwa_classify_turn_failure(agent_result, history, session_entry)

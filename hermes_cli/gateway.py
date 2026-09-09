@@ -4,6 +4,7 @@ Handles: hermes gateway [run|start|stop|restart|status|install|uninstall|setup]
 """
 
 import asyncio
+import atexit
 import contextlib
 from hermes_cli.cli_output import line_input
 import json
@@ -6023,6 +6024,12 @@ def _cmd_uninstall(args):
 
 
 def _cmd_start(args):
+    # A desktop-close drain marker from a prior shutdown must not wedge this start: the
+    # gateway watcher that would honor it isn't running yet, and a stale marker would make
+    # the next `gateway stop --all --drain` believe a drain is already active.
+    with contextlib.suppress(Exception):
+        from gateway.drain_control import clear_drain_request
+        clear_drain_request(home=get_hermes_home())
     system = getattr(args, "system", False)
     start_all = getattr(args, "all", False)
     if not start_all and _dispatch_via_service_manager_if_s6("start"):
@@ -6051,6 +6058,15 @@ def _cmd_stop(args):
         return
     if not stop_all and _dispatch_via_service_manager_if_s6("stop"):
         return
+
+    if stop_all and getattr(args, "drain", False):
+        from hermes_cli.gateway_desktop_drain import desktop_profile_homes, drain_all_desktop_work
+        # wait_for_desktop_drain() has no deadline by design, so a killed/interrupted
+        # `gateway stop --drain` must not leave the marker behind wedging the next start.
+        from gateway.drain_control import clear_drain_request
+        homes = desktop_profile_homes()
+        atexit.register(lambda: [clear_drain_request(home=home) for home in homes])
+        drain_all_desktop_work()
 
     service_available = _stop_installed_service(system)
     if stop_all:

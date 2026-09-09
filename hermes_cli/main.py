@@ -1735,6 +1735,11 @@ def cmd_chat(args):
     except ValueError as e:
         print(f"Error: {e}")
         sys.exit(1)
+    except ImportError as e:
+        from hermes_constants import emit_partial_update_hint
+        if emit_partial_update_hint(e):
+            sys.exit(1)
+        raise
 
 
 def cmd_gateway(args):

@@ -367,7 +367,7 @@ class CLIModelSwitchMixin:
         so the session still opens (the first turn surfaces the auth error).
         """
         from cli import logger
-        if getattr(self, "_explicit_model_override", False):
+        if not (session_meta or {}).get("model") or getattr(self, "_explicit_model_override", False):
             return
         route = stored_session_route(session_meta, current_model=self.model, current_provider=self.provider)
         if route is None:

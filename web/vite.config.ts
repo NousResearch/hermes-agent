@@ -13,6 +13,9 @@ function compilerPreset() {
 }
 import tailwindcss from "@tailwindcss/vite";
 import path from "path";
+import { fileURLToPath } from "url";
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const BACKEND = process.env.HERMES_DASHBOARD_URL ?? "http://127.0.0.1:9119";
 
@@ -102,6 +105,10 @@ export default defineConfig({
   build: {
     outDir: "../hermes_cli/web_dist",
     emptyOutDir: true,
+    // Dashboard ships static assets only — no prod source maps.
+    sourcemap: false,
+    // Hermes doesn't surface per-chunk gzip numbers; skip the pass.
+    reportCompressedSize: false,
     // Shell stays a bit over Vite's 500 kB default after vendor splits;
     // page/xterm chunks load on demand. Keep a modest ceiling so a true
     // regression still warns.
@@ -111,6 +118,10 @@ export default defineConfig({
     // imports in App.tsx create the route boundaries; these groups keep
     // shared node_modules out of every page chunk.
     rolldownOptions: {
+      checks: {
+        // Hide [PLUGIN_TIMINGS] noise (CSS/Tailwind dominate; not a failure).
+        pluginTimings: false,
+      },
       output: {
         codeSplitting: {
           minSize: 20_000,

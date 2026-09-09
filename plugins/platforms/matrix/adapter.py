@@ -2033,10 +2033,11 @@ class MatrixAdapter(BasePlatformAdapter):
                 logger.debug(
                     "Matrix: ignoring message %s in %s — room not in MATRIX_ALLOWED_ROOMS whitelist", event_id, room_id)
                 return None
-            is_free_room = room_id in self._free_rooms
+            # Free-response rooms exempt ordinary conversation, never commands.
+            is_free_room = room_id in self._free_rooms and not body.startswith("/")
             in_bot_thread = bool(thread_id and (room_id, thread_id) in getattr(self, "_bot_reply_roots", {})) or reply_to_self
             if self._require_mention and not is_free_room and not in_bot_thread:
-                if not is_mentioned and not body.startswith("/"):
+                if not is_mentioned:
                     logger.debug(
                         "Matrix: ignoring message %s in %s — no @mention "
                         "(set MATRIX_REQUIRE_MENTION=false to disable)", event_id, room_id)
@@ -2049,7 +2050,8 @@ class MatrixAdapter(BasePlatformAdapter):
                     event_id, thread_id)
                 return None
         if is_mentioned and self._require_mention:
-            body = self._strip_mention(body)
+            command_body = self._strip_command_address(body, formatted_body)
+            body = command_body if command_body is not None else self._strip_mention(body)
         # Real thread roots are preserved above; synthetic roots (this event) follow policy: DM
         # @mention threads / DM auto-thread, or room auto-thread unless session_scope pins the room.
         if not thread_id:
@@ -2826,6 +2828,35 @@ class MatrixAdapter(BasePlatformAdapter):
     def _user_localpart(self) -> str:
         """``@bot:server`` -> ``bot``; empty when the user ID has no server part."""
         return self._user_id.split(":")[0].lstrip("@") if self._user_id and ":" in self._user_id else ""
+
+    def _strip_command_address(self, body: str, formatted_body: Optional[str]) -> Optional[str]:
+        """Remove a leading own HTML pill only when followed by a command.
+
+        Match its visible label against plaintext; never promote prose containing
+        a slash or reconstruct command arguments from potentially different HTML.
+        """
+        from html import unescape
+        command_pattern = r"\s*[:,]?\s+((?:/|!)[A-Za-z][\w-]*(?:\s.*)?)$"
+        for token in (self._user_id, "@" + self._user_localpart()):
+            if token and token != "@":
+                match = re.match(re.escape(token) + command_pattern, body.lstrip(),
+                                 flags=re.IGNORECASE | re.DOTALL)
+                if match:
+                    return match.group(1)
+        if not self._user_id or not formatted_body:
+            return None
+        pill = re.match(
+            r'''\s*(?:<p>)?<a\s+href=["']https://matrix\.to/\#/'''
+            + re.escape(self._user_id) + r'''["'][^>]*>(.*?)</a>''',
+            formatted_body, flags=re.IGNORECASE | re.DOTALL)
+        if not pill:
+            return None
+        label = unescape(re.sub(r"<[^>]*>", "", pill.group(1)))
+        if not label:
+            return None
+        match = re.match(re.escape(label) + r"\s*[:,]?\s+((?:/|!)[A-Za-z][\w-]*(?:\s.*)?)$",
+                         body.lstrip(), flags=re.DOTALL)
+        return match.group(1) if match else None
 
     def _strip_mention(self, body: str) -> str:
         """Strip explicit ``@user:server`` / ``@localpart`` tokens only — never bare localpart

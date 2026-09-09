@@ -19,6 +19,22 @@ class _GitHubRulesUnavailable(RuntimeError):
     """The rules endpoint could not be read (as opposed to no rules existing)."""
 
 
+def _rules_endpoint_has_no_required_checks(exc: subprocess.CalledProcessError) -> bool:
+    """Recognize GitHub's plan-gated rules response without masking auth errors.
+
+    GitHub returns HTTP 403 for private repositories whose plan cannot expose
+    the rules endpoint.  That is an auditable lack of rules data, not proof of
+    required checks; unlike a real permission failure, the response explicitly
+    identifies the unavailable feature (usually with an upgrade hint).
+    """
+    detail = " ".join(filter(None, (exc.stderr, exc.stdout))).lower()
+    return (
+        "upgrade to github pro" in detail
+        or "feature unavailable" in detail
+        or "branch protection rules are not available" in detail
+    )
+
+
 def validate_contract(value: str | None) -> str:
     if value is None or value == "local-only":
         return "local-only"
@@ -87,6 +103,11 @@ def collect_acceptance(contract: str, published_pr: str | None) -> dict:
             # not evidence that the repository has no required checks.
             stderr = (exc.stderr or "").lower()
             if "404" in stderr or "not found" in stderr:
+                rules = []
+            elif _rules_endpoint_has_no_required_checks(exc):
+                # The rules API is plan-gated for some private repositories.
+                # Treat only its explicit feature-unavailable response as a
+                # no-required-checks result; generic 403 remains infra.
                 rules = []
             else:
                 raise _GitHubRulesUnavailable from exc

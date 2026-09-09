@@ -120,6 +120,15 @@ _ENV_ASSIGN_LOWER_RE = re.compile(
     rf"(?<![a-z0-9_])([a-z0-9_]+(?:_|^)(?:key|pass|pw|token|secret|password|passwd|credential|auth)(?=[^a-z0-9_]|$))\s*=\s*(['\"]?)(\S+)\2",
     re.IGNORECASE,
 )
+# Inline credential assignments commonly arrive embedded in JSON/stringified
+# provider payloads, where a line-start anchor is unavailable. Keep this
+# deliberately narrow: only credential keywords are accepted, and the value
+# must be non-empty and end at a payload delimiter.
+_INLINE_SECRET_ASSIGN_RE = re.compile(
+    r"(?<![A-Za-z0-9_])(?:token|secret|password|passwd|credential|auth|api[_-]?key)"
+    r"\s*=\s*(?!<redacted(?:-[^>]+)?>)(?:'[^']*'|\"[^\"]*\"|[^\s,;]+)",
+    re.IGNORECASE,
+)
 
 # Lowercase / dotted config-file keys (``spring.datasource.password=x``,
 # line-start ``password=x``). Carve-outs vs prose/code/URLs: values stop at
@@ -512,6 +521,10 @@ def _redact_assignments(text: str) -> str:
             # handles the opt-in case). The uppercase regex above is all-caps-only, so it never matches URL
             # params; the lowercase one would (issue #77484).
             text = _ENV_ASSIGN_LOWER_RE.sub(_redact_env, text)
+            text = _INLINE_SECRET_ASSIGN_RE.sub(
+                lambda match: match.group(0).split("=", 1)[0] + "=***",
+                text,
+            )
         # The keyword pre-gate is exact and matters: _CFG_DOTTED_RE backtracks
         # quadratically on long unbroken [A-Za-z0-9_.\-] runs.
         # Lowercase/dotted config keys (issue #16413). Skip URLs entirely — web-URL query params are

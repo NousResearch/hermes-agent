@@ -2447,6 +2447,47 @@ def _typed_payload(
                 # executed call or relaxing validation for write-capable tools.
                 typed[key] = GeneratedContextSegment(redact_remote_unsafe_text(item))
                 continue
+            if (
+                protected_kanban_context
+                and key in {"content", "output"}
+                and isinstance(item, str)
+                    and (value.get("role") == "tool" or value.get("type") == "function_call_output")
+                    and not (
+                        content_free_violation_locations(item)
+                        or any(
+                            marker in item
+                            for marker in (
+                                "/Users/",
+                                "/home/",
+                                "/private/",
+                                "\\\\Users\\",
+                                "<private-path>",
+                                "<redacted>",
+                            )
+                        )
+                    )
+                    and not (
+                    is_recognized_tool_result
+                    or is_elided_kanban_tool_result
+                    or is_search_projection_tool_result
+                    or is_read_file_projection_tool_result
+                    or is_web_replay_tool_result
+                    or is_file_mutation_replay_result
+                    or is_scratch_read_file_tool_result
+                    or is_git_workspace_diagnostic_result
+                    or is_git_grep_projection_tool_result
+                    or is_rg_projection_tool_result
+                    or is_kanban_assignees_result
+                    or is_terminal_replay_result
+                )
+            ):
+                # A tool result without an exact preceding local tool-call
+                # binding has no provenance owner and must not cross a
+                # protected remote boundary.
+                typed[key] = UntrustedProvenanceSegment(
+                    sha256(item.encode("utf-8")).hexdigest()
+                )
+                continue
             typed_key = (
                 GeneratedContextKey(key)
                 if generated_context and redact_generated_context

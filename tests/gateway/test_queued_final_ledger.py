@@ -305,3 +305,33 @@ async def test_a_deeper_chain_keeps_the_innermost_inbound_id():
         response="resp", result={"interrupted": True, "messages": []}, stream_task=None)
 
     assert merged["queued_terminal_inbound_id"] == "6003"
+
+
+# ---------------------------------------------------------------------------
+# The adapter that sent the final owns its message id: the ephemeral delete goes there.
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_ephemeral_delete_targets_the_adapter_that_sent_the_final(tmp_path, monkeypatch):
+    """A reconnect between the send and the delete swaps the runner's live adapter; the delete
+    must still go to the transport that produced ``result.message_id``."""
+    from gateway.platforms.event import MessageEvent
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    sender = _telegram_adapter()
+    replacement = _telegram_adapter()
+    sender._schedule_ephemeral_delete = MagicMock()
+    replacement._schedule_ephemeral_delete = MagicMock()
+    live = {"adapter": sender}
+    sender.gateway_runner._adapter_for_source = MagicMock(side_effect=lambda _s: live["adapter"])
+
+    async def swap_then_send(*args, **kwargs):
+        live["adapter"] = replacement  # reconnect lands while the send is in flight
+        return SendResult(success=True, message_id="900")
+
+    sender.send = AsyncMock(side_effect=swap_then_send)
+    event = MessageEvent(text="hi", source=_source(), message_id=INBOUND_ID)
+    await sender._send_final_text(event, SESSION_KEY, TEXT, {}, False, 30, lambda _r: None)
+
+    sender._schedule_ephemeral_delete.assert_called_once_with(CHAT, "900", 30)
+    replacement._schedule_ephemeral_delete.assert_not_called()

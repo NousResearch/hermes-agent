@@ -140,6 +140,7 @@ class HeartbeatManager:
     def __init__(self, session_id: str):
         self.session_id = session_id
         self._state: Optional[HeartbeatState] = load_heartbeat(session_id)
+        self._last_claim: Optional[tuple[float, int]] = None  # (last_fired_at, fire_count) before the last due_prompt
 
     @property
     def state(self) -> Optional[HeartbeatState]:
@@ -206,10 +207,27 @@ class HeartbeatManager:
         s = self._state
         if s is None or not s.is_due(now):
             return None
+        self._last_claim = (s.last_fired_at, s.fire_count)
         s.last_fired_at = now if now is not None else time.time()
         s.fire_count += 1
         save_heartbeat(self.session_id, s)
         return s.render_prompt()
+
+    def abandon_fire(self) -> bool:
+        """Rewind the fire recorded by the last :meth:`due_prompt` whose turn never started, so the tick stays
+        due for the next poll instead of being silently consumed. Mirrors ``LoopManager.abandon_tick``. Skipped
+        (False) when the persisted state moved on — a pause/resume/clear that landed in between wins."""
+        claim, s = self._last_claim, self._state
+        if claim is None or s is None:
+            return False
+        current = load_heartbeat(self.session_id)
+        if current is None or current.status != "active" or (current.last_fired_at, current.fire_count) != (
+                s.last_fired_at, s.fire_count):
+            return False
+        s.last_fired_at, s.fire_count = claim
+        self._last_claim = None
+        save_heartbeat(self.session_id, s)
+        return True
 
 
 def migrate_heartbeat_to_session(old_session_id: str, new_session_id: str) -> bool:

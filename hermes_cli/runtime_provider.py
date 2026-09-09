@@ -404,7 +404,7 @@ def resolve_requested_provider(requested: Optional[str] = None) -> str:
 
 from hermes_cli.runtime_provider_custom import (  # noqa: E402,F401
     _apply_custom_provider_extras, _custom_provider_request_overrides, _filter_capabilities, _find_custom_identity,
-    _get_named_custom_provider, _lift_common_custom_fields, _lift_extra_headers, _lift_max_output_tokens,
+    _get_named_custom_provider, _lift_common_custom_fields, _lift_extra_headers,
     _lift_model_capabilities, _normalize_base_url_for_match, _normalize_custom_provider_name, _resolve_named_custom_runtime,
     _try_resolve_from_custom_pool, canonical_custom_identity, find_custom_provider_identity,
     find_custom_provider_identity_by_model, has_named_custom_provider, is_routable_provider,

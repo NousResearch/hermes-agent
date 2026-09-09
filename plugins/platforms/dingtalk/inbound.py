@@ -3,7 +3,7 @@
 import json
 from typing import Any, List, Optional, Tuple
 
-from gateway.platforms.base import MessageType
+from gateway.platforms.event import MessageType
 
 # DingTalk rich-text item type → runtime content type
 DINGTALK_TYPE_MAPPING = {"picture": "image", "voice": "audio"}

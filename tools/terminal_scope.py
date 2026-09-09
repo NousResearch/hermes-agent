@@ -93,7 +93,7 @@ def build_profile_terminal_scope(hermes_home: "Any") -> Dict[str, str]:
     ``config.yaml`` ``terminal:``. Total by construction, so a bound scope never widens back to
     ambient authority. Raises :class:`TerminalPolicyUnavailable` if a present file is unreadable.
     """
-    from hermes_cli.config import TERMINAL_CONFIG_ENV_MAP
+    from hermes_cli.config import TERMINAL_CONFIG_ENV_MAP, _terminal_env_value
     from hermes_cli.config_defaults import DEFAULT_CONFIG
 
     home = Path(hermes_home)
@@ -106,7 +106,10 @@ def build_profile_terminal_scope(hermes_home: "Any") -> Dict[str, str]:
                 continue
             env_var = TERMINAL_CONFIG_ENV_MAP.get(cfg_key)
             if env_var:
-                scope[env_var] = str(value)
+                # List/dict config values must be JSON (same contract as
+                # apply_terminal_config_to_env). str() yields Python repr, which
+                # json.loads in terminal_tool rejects.
+                scope[env_var] = _terminal_env_value(value)
 
     _apply({**_TOOL_LEVEL_DEFAULTS, **(DEFAULT_CONFIG.get("terminal") or {})})
     env_path = home / ".env"

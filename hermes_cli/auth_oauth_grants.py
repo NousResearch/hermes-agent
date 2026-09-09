@@ -56,7 +56,7 @@ def strip_cloned_single_use_oauth_grants(profile_dir: Path) -> Dict[str, Any]:
     "files": [...]}`` of what was stripped. Never raises: a clone must not fail because hygiene
     could not run — the caller logs the summary.
     """
-    from hermes_cli.auth import _save_auth_store
+    from hermes_cli.auth import _same_path, _save_auth_store
     stripped: Dict[str, Any] = {"pool": [], "providers": [], "files": []}
     profile_dir = Path(profile_dir)
     for name in SINGLE_USE_OAUTH_SINGLETON_FILES:
@@ -69,6 +69,19 @@ def strip_cloned_single_use_oauth_grants(profile_dir: Path) -> Dict[str, Any]:
             logger.debug("Could not remove cloned %s from %s", name, profile_dir, exc_info=True)
     auth_path = profile_dir / "auth.json"
     if not auth_path.is_file():
+        return stripped
+    # A profile auth.json that IS the shared root store (symlink / hardlink) is not a clone;
+    # stripping it would delete every profile's single-use grants. _is_same_auth_store swallows
+    # a samefile() OSError as "two stores", which here would fail OPEN — so resolve identity
+    # positively: same path, or samefile() says so; any error refuses.
+    try:
+        from hermes_constants import get_default_hermes_root
+        root_auth_path = get_default_hermes_root() / "auth.json"
+        if _same_path(auth_path, root_auth_path) or (
+            root_auth_path.exists() and auth_path.samefile(root_auth_path)
+        ):
+            return stripped
+    except Exception:
         return stripped
     try:
         store = json.loads(auth_path.read_text(encoding="utf-8-sig"))
@@ -174,9 +187,8 @@ def _find_root_counterpart(
     profile_row: Dict[str, Any], root_rows: List[Dict[str, Any]]) -> Optional[int]:
     """Index of the root OAuth row that shares a grant lineage with *profile_row*.
 
-    Fallback per the one-grant-at-root rule: same provider + same OAuth client — every Anthropic
-    ``hermes_pkce`` grant uses one client id and carries no claims, so two Anthropic OAuth rows
-    with no contrary identity are one lineage.
+    Only a copied row ID or shared token material establishes lineage. The same
+    account/client can issue multiple independent grants; identity is not proof.
     """
     from hermes_cli.auth import _nonempty_str
     candidates = [i for i, r in enumerate(root_rows) if _is_oauth_pool_payload(r)]
@@ -186,11 +198,6 @@ def _find_root_counterpart(
     for i in candidates:
         if pid and root_rows[i].get("id") == pid:
             return i
-    p_ident = _oauth_identity(profile_row)
-    for i in candidates:
-        r_ident = _oauth_identity(root_rows[i])
-        if p_ident and r_ident and p_ident == r_ident:
-            return i
     for key in ("refresh_token", "access_token"):
         p_val = profile_row.get(key)
         if not _nonempty_str(p_val):
@@ -198,14 +205,7 @@ def _find_root_counterpart(
         for i in candidates:
             if root_rows[i].get(key) == p_val:
                 return i
-    # Fallback: same provider + same client. Only a contradicting identity (both sides carry
-    # claims and they differ from every root row) blocks it.
-    if p_ident:
-        for i in candidates:
-            if not _oauth_identity(root_rows[i]):
-                return i
-        return None
-    return candidates[0]
+    return None
 
 
 def _adopt_oauth_material(target: Dict[str, Any], winner: Dict[str, Any]) -> Dict[str, Any]:
@@ -241,7 +241,7 @@ def heal_forked_single_use_oauth_grants(provider_id: str) -> Optional[Dict[str, 
     Forked copies are one credential with several owners: whichever profile rotated last holds the
     only live refresh token and every other copy (root included) is spent. Runs at profile
     ``load_pool()`` time for ``SINGLE_USE_REFRESH_POOL_PROVIDERS``: finds profile rows sharing
-    LINEAGE with a root row (same pool id, or same account identity / token material), keeps the
+    LINEAGE with a root row (same pool id or shared token material), keeps the
     freshest rotation, writes it into ROOT when root's is older, and strips the profile's copy so
     the profile borrows root from then on. Idempotent; never touches API-key rows; never deletes a
     row with no root counterpart (an independent ``hermes -p <p> auth add`` grant, or the only
@@ -259,8 +259,14 @@ def heal_forked_single_use_oauth_grants(provider_id: str) -> Optional[Dict[str, 
 
 
 def _heal_forked_provider_block(
-    profile_store: Dict[str, Any], root_store: Dict[str, Any], provider_id: str) -> Optional[bool]:
+    profile_store: Dict[str, Any], root_store: Dict[str, Any], provider_id: str,
+    lineage_proven: bool = False) -> Optional[bool]:
     """Consolidate a forked ``providers.<id>`` device-code block into root.
+
+    *lineage_proven* carries the pool-row verdict: a profile row that matched root by copied id
+    or shared tokens proves the fork even after both sides rotated past token equality. Root's
+    ``load_pool()`` re-seeds its ``device_code`` row FROM this block, so leaving root's block on
+    the spent pair would undo the pool-row heal on the next root load.
 
     Returns None when nothing matched, False when the profile copy was dropped (root already
     newest), True when the profile copy was fresher and was adopted into root.
@@ -277,8 +283,13 @@ def _heal_forked_provider_block(
         return {**tokens, "last_refresh": block.get("last_refresh")}
 
     p_flat, r_flat = _flat(p_block), _flat(r_block)
-    p_ident, r_ident = _oauth_identity(p_flat), _oauth_identity(r_flat)
-    if p_ident and r_ident and p_ident != r_ident:
+    # Provider blocks have no stable pool-row ID. Without a shared token pair
+    # component (or lineage proven by the pool rows), a common account is
+    # insufficient evidence of a copied grant.
+    if not lineage_proven and not any(
+        p_flat.get(key) and p_flat.get(key) == r_flat.get(key)
+        for key in ("access_token", "refresh_token")
+    ):
         return None
     adopted = _oauth_freshness(p_flat) > _oauth_freshness(r_flat)
     if adopted:
@@ -317,6 +328,7 @@ class _HealPass:
         self.summary: Dict[str, Any] = {
             "adopted": False, "stripped_ids": [], "files": [], "providers_block": False}
         self.profile_changed = self.root_changed = False
+        self.lineage_proven = False  # a profile pool row matched root by copied id / shared tokens
         self.p_pool, self.p_rows = _pool_rows(profile_store, provider_id)
         self.r_pool, self.r_rows = _pool_rows(root_store, provider_id)
         self.r_oauth = [r for r in self.r_rows if _is_oauth_pool_payload(r)]
@@ -345,6 +357,7 @@ class _HealPass:
                 continue
             match_idx = _find_root_counterpart(row, self.r_rows)
             if match_idx is not None:
+                self.lineage_proven = True
                 self._adopt_root_row(match_idx, row)
             # No root pool counterpart. Root's grant may live only in its .anthropic_oauth.json
             # (the ``hermes auth`` PKCE shape); a profile hermes_pkce-family row is its copy.
@@ -367,7 +380,7 @@ class _HealPass:
         if self.provider_id not in _DEVICE_CODE_BLOCK_PROVIDERS:
             return
         block_result = _heal_forked_provider_block(
-            self.profile_store, self.root_store, self.provider_id)
+            self.profile_store, self.root_store, self.provider_id, self.lineage_proven)
         if block_result is not None:
             self.profile_changed = self.summary["providers_block"] = True
             if block_result:

@@ -328,7 +328,12 @@ def is_native_compaction_rejection(error: Any, status_code: Any = None) -> bool:
 def has_compaction_checkpoint(items: Any) -> bool:
     """Does this ``codex_reasoning_items`` sidecar carry a compaction checkpoint? A checkpoint is
     cumulative context living in exactly one place: rewrite/discard the sidecar only after asking."""
-    return isinstance(items, list) and any(_is_compaction_item(item) for item in items)
+    return isinstance(items, list) and any(
+        _is_compaction_item(item)
+        and isinstance(item.get("encrypted_content"), str)
+        and bool(item["encrypted_content"].strip())
+        for item in items
+    )
 
 
 def merge_interim_reasoning_items(prior_items: Any, new_items: Any) -> List[Dict[str, Any]]:

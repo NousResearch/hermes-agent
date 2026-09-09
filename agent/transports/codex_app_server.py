@@ -63,9 +63,23 @@ class CodexAppServerClient:
             spawn_env["CODEX_HOME"] = codex_home
 
         cmd = [codex_bin, "app-server", *(extra_args or [])]
+        from agent.delegation_context import (
+            DELEGATED_CHILD_ENV_MARKER, KANBAN_ENV_KEYS,
+            delegated_child_subprocess_env, is_dispatcher_owned_worker_context,
+        )
+        # Native shell children remain unowned. Only Hermes' managed MCP tool
+        # endpoint acts for this worker; grant it scope via its existing per-server
+        # environment, never by granting the whole executor process ownership.
+        owned_task = os.environ.get("HERMES_KANBAN_TASK") and is_dispatcher_owned_worker_context()
+        if owned_task:
+            for key in (*KANBAN_ENV_KEYS, "HERMES_KANBAN_DB", "HERMES_KANBAN_BOARD"):
+                if key in os.environ:
+                    cmd += ["-c", f"mcp_servers.hermes-mcp.env.{key}={json.dumps(os.environ[key])}"]
+            cmd += ["-c", f'mcp_servers.hermes-mcp.env.{DELEGATED_CHILD_ENV_MARKER}=""']
+        spawn_env = delegated_child_subprocess_env(spawn_env)
         # Kanban workers must write handoff/status to the board DB outside the
         # workspace: keep the sandbox on, add the Kanban root as writable.
-        if spawn_env.get("HERMES_KANBAN_TASK"):
+        if owned_task:
             kanban_db = spawn_env.get("HERMES_KANBAN_DB")
             default_root = os.path.join(spawn_env.get("HERMES_HOME", os.path.expanduser("~/.hermes")), "kanban")
             kanban_root = os.path.dirname(kanban_db) if kanban_db else spawn_env.get("HERMES_KANBAN_ROOT", default_root)

@@ -635,10 +635,12 @@ class TestSegmentedDispatchIntegration:
         with patch("agent.tool_executor._budget_for_agent", return_value=budget):
             agent._execute_tool_calls(msg, messages, "task-1")
 
-        assert len(messages) == 1
+        assert len(messages) == 2
         _assert_budget_replaced(messages[0]["content"])
-        assert messages[0]["content"].count(STEER_MARKER_OPEN) == 1
-        assert "preserve malformed-call steer after budget enforcement" in messages[0]["content"]
+        assert STEER_MARKER_OPEN not in messages[0]["content"]   # tool row untouched
+        assert messages[1]["role"] == "user"                      # steer = new user msg
+        assert messages[1]["content"].count(STEER_MARKER_OPEN) == 1
+        assert "preserve malformed-call steer after budget enforcement" in messages[1]["content"]
 
 
 class TestPathCanonicalization:

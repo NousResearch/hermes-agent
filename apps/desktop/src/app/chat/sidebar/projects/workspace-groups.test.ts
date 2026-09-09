@@ -14,6 +14,7 @@ import {
   overlayLiveLanes,
   overlayLivePreviews,
   reconcileEnteredProjectSessions,
+  sessionMatchesProjectFilter,
   sessionProjectColor,
   type SidebarProjectTree,
   type SidebarSessionGroup,
@@ -1229,5 +1230,21 @@ describe('excludeProjectSessions', () => {
     const overlaid = overlayLiveLanes(filtered, [], new Set(['someone-else']))
 
     expect(overlaid.repos[0].groups.map(g => g.id)).toEqual(['wt'])
+  })
+})
+
+describe('project filter row rule (#97762)', () => {
+  const projects = [makeProject('p_app', ['/www/app'])]
+  const appRow = makeCwdSession('/www/app/src', { git_repo_root: '/www/app' })
+  const homeRow = makeCwdSession(null)
+
+  it('filtering to Home keeps the detached Home rows', () => {
+    expect(sessionMatchesProjectFilter(homeRow, [NO_PROJECT_ID], projects)).toBe(true)
+    expect(sessionMatchesProjectFilter(appRow, [NO_PROJECT_ID], projects)).toBe(false)
+  })
+
+  it('a live id still narrows', () => {
+    expect(sessionMatchesProjectFilter(appRow, ['p_app'], projects)).toBe(true)
+    expect(sessionMatchesProjectFilter(homeRow, ['p_app'], projects)).toBe(false)
   })
 })

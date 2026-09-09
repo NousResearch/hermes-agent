@@ -2,7 +2,7 @@
 
 The ledger records what is known about each attempt; it is not a retry queue. Interrupted attempts
 become ``unknown`` only after their exact owner process is proved gone. Terminal states are
-immutable. Also hosts the SQLite ledger helpers shared with ``cron.incidents`` / ``cron.notepad``.
+immutable.
 """
 
 from __future__ import annotations
@@ -14,8 +14,9 @@ import time
 import uuid
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Callable, Dict, Iterator, List, Optional
+from typing import Any, Dict, Iterator, List, Optional
 
+from cron.ledger import ledger_transaction, open_ledger, prepare_ledger
 from hermes_constants import get_hermes_home
 from hermes_time import now as _hermes_now
 
@@ -28,48 +29,6 @@ HANDOFF_ADOPTION_GRACE_SECONDS = 30.0
 _TERMINAL_STATES = ("completed", "failed", "unknown")
 _lock = threading.RLock()
 _PROCESS_ID = uuid.uuid4().hex
-
-
-# --- shared SQLite ledger plumbing --------------------------------------------------------------
-
-def open_ledger(path: Path) -> sqlite3.Connection:
-    """Open a profile-local ledger DB, creating its ``cron/`` dir with the store's permissions."""
-    from cron.jobs import _ensure_cron_dir
-
-    _ensure_cron_dir(path.parent)
-    return sqlite3.connect(path, timeout=5)
-
-
-def prepare_ledger(
-    conn: sqlite3.Connection, *, db_label: str, synchronous_full: bool = True
-) -> None:
-    """Row factory + busy timeout + WAL (with fallback) + optional ``synchronous=FULL``."""
-    from hermes_state_wal import apply_wal_with_fallback
-
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA busy_timeout=5000")
-    apply_wal_with_fallback(conn, db_label=db_label)
-    if synchronous_full:
-        conn.execute("PRAGMA synchronous=FULL")
-
-
-@contextmanager
-def ledger_transaction(
-    lock: threading.RLock,
-    connect: Callable[[], sqlite3.Connection],
-    initialize_schema: Callable[[sqlite3.Connection], None],
-) -> Iterator[sqlite3.Connection]:
-    """Open a connection, commit/rollback on exit, always close. ``sqlite3.Connection``'s own
-    context manager does NOT close (leaks WAL/SHM fds until GC); schema init runs inside the
-    ``try`` so a PRAGMA/DDL failure after ``connect()`` still closes."""
-    with lock:
-        conn = connect()
-        try:
-            initialize_schema(conn)
-            with conn:
-                yield conn
-        finally:
-            conn.close()
 
 
 # --- executions ledger --------------------------------------------------------------------------
@@ -114,6 +73,12 @@ def _initialize_schema(conn: sqlite3.Connection) -> None:
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_executions_status_claimed "
         "ON executions(status, claimed_at DESC, id DESC)"
+    )
+    add_column_if_missing(conn, "executions", "delivery_outcome", "delivery_outcome TEXT")
+    add_column_if_missing(conn, "executions", "scheduled_instant", "scheduled_instant TEXT")
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_executions_occurrence "
+        "ON executions(job_id, scheduled_instant) WHERE status='completed'"
     )
 
 
@@ -172,8 +137,12 @@ def _prune_unlocked(conn: sqlite3.Connection) -> None:
     )
 
 
-def create_execution(job_id: str, *, source: str) -> Dict[str, Any]:
+def create_execution(
+    job_id: str, *, source: str, scheduled_instant: Optional[str] = None,
+) -> Dict[str, Any]:
     """Persist a claimed attempt before executor/provider dispatch."""
+    from cron.occurrences import scheduled_instant as canonical_instant
+
     now = _hermes_now().isoformat()
     execution_id = uuid.uuid4().hex
     pid = os.getpid()
@@ -181,14 +150,28 @@ def create_execution(job_id: str, *, source: str) -> Dict[str, Any]:
         conn.execute(
             """INSERT INTO executions
                (id, job_id, source, process_id, pid, process_started_at,
-                status, claimed_at)
-               VALUES (?, ?, ?, ?, ?, ?, 'claimed', ?)""",
+                status, claimed_at, scheduled_instant)
+               VALUES (?, ?, ?, ?, ?, ?, 'claimed', ?, ?)""",
             (execution_id, str(job_id), str(source), _PROCESS_ID, pid,
-             _process_start_time(pid), now),
+             _process_start_time(pid), now, canonical_instant(scheduled_instant)),
         )
         record = _fetch(conn, execution_id)
     _emit_execution_state(record)
     return record  # type: ignore[return-value]
+
+
+def set_execution_occurrence(execution_id: str, instant: Optional[str]) -> None:
+    """Bind the store-claimed snapshot before a provider hands it to a worker."""
+    from cron.occurrences import scheduled_instant
+
+    with _transaction() as conn:
+        cur = conn.execute(
+            "UPDATE executions SET scheduled_instant=? WHERE id=? AND status='claimed' "
+            "AND handoff_pending=0 AND process_id=? AND pid=?",
+            (scheduled_instant(instant), execution_id, _PROCESS_ID, os.getpid()),
+        )
+        if cur.rowcount != 1:
+            raise RuntimeError("Cron occurrence could not be bound before dispatch")
 
 
 def mark_execution_handoff_pending(execution_id: str) -> Optional[Dict[str, Any]]:
@@ -265,10 +248,10 @@ def finish_execution(
         cur = conn.execute(
             """UPDATE executions
                SET status=?, finished_at=?, error=?, handoff_pending=0,
-                   handoff_started_at=NULL
+                   handoff_started_at=NULL, delivery_outcome=?
                WHERE id=? AND status IN ('claimed','running')
                  AND process_id=? AND pid=?""",
-            (status, now, detail, execution_id, _PROCESS_ID, os.getpid()),
+            (status, now, detail, delivery_outcome, execution_id, _PROCESS_ID, os.getpid()),
         )
         if cur.rowcount != 1:
             return None

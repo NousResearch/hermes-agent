@@ -142,12 +142,15 @@ def _write_config(cfg: dict, path: Path | None = None) -> None:
     path = path or _local_config_path()
     with _config_refresh_lock(path):
         _refuse_unparseable(path)
+        out = cfg
         if getattr(cfg, "path", None) == path:
-            cfg = _apply_edits(cfg.snapshot, cfg, _read_config_strict(path))
+            out = _apply_edits(cfg.snapshot, cfg, _read_config_strict(path))
         elif isinstance(cfg, _ReadConfig) and path.exists():
-            cfg = _apply_edits(cfg.snapshot, cfg, _overlay_local(cfg.snapshot, _read_config_strict(path)))
+            out = _apply_edits(cfg.snapshot, cfg, _overlay_local(cfg.snapshot, _read_config_strict(path)))
         path.parent.mkdir(parents=True, exist_ok=True)
-        atomic_json_write(path, cfg, mode=0o600)
+        atomic_json_write(path, out, mode=0o600)
+        if isinstance(cfg, _ReadConfig):  # a later write on the same object applies only edits made after this one
+            cfg.snapshot, cfg.path = copy.deepcopy(dict(cfg)), path
 
 
 def _label(host: str) -> str:

@@ -311,7 +311,9 @@ class MediationStore:
         ).fetchone():
             raise WisdomConflict("Wisdom assessment ownership changed")
 
-    def claim(self, org: str, session_key: str) -> list[dict[str, Any]]:
+    def claim(
+        self, org: str, session_key: str, *, requested_only: bool = False
+    ) -> list[dict[str, Any]]:
         """Elect one eligible session, then fence every row with a fresh token."""
         self._require_org(org)
         now = self.clock()
@@ -349,6 +351,7 @@ class MediationStore:
                 """SELECT * FROM wisdom_assessment WHERE organization_id=?
                 AND available_at<=? AND (state IN ('pending','ready','fallback')
                   OR (state='assessing' AND lease_until<=?))
+                AND (?=0 OR json_type(reference_json,'$.user_requested')='true')
                 AND ((state='ready' AND (owner_session=? OR
                   (origin_session IS NULL AND ?=? AND NOT EXISTS (
                     SELECT 1 FROM wisdom_agent_session owner WHERE owner.organization_id=wisdom_assessment.organization_id
@@ -359,6 +362,7 @@ class MediationStore:
                     org,
                     now,
                     now,
+                    requested_only,
                     session_key,
                     session_key,
                     recent,

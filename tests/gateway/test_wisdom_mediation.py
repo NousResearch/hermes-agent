@@ -15,6 +15,114 @@ from tui_gateway.wisdom_mediation import poll
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("surface", ["telegram", "slack", "local"])
+@pytest.mark.parametrize("requested", [False, True])
+async def test_fixed_copy_workers_deliver_only_requested_work(tmp_path, monkeypatch, surface, requested):
+    from gateway.wisdom_mediation import schedule
+    from hermes_wisdom.consent import ConsentActor
+    from hermes_wisdom.delivery import DeliveryReceipt
+    from hermes_wisdom.mediation import WisdomMediation
+    from hermes_wisdom.mediation_store import MediationStore
+    from hermes_wisdom.store import WisdomStore
+
+    store = WisdomStore(tmp_path / "wisdom")
+    store.activate_installation_identity("installation", "org")
+    actor = ConsentActor("session", surface, "local-user" if surface == "local" else "user",
+                         "local:session" if surface == "local" else "42")
+    now = [time.time() - 200]
+    queue = MediationStore(store, clock=lambda: now[0])
+    queue.register_session("org", session_key=actor.session_key, session_id=actor.session_key,
+                           platform=surface, actor_id=actor.actor_id, private=True, available=True,
+                           user_activity=True, address=actor.address)
+    queued = None
+    if requested:
+        queued = queue.enqueue("org", "requested-status", {"kind": "notice", "user_requested": True},
+                               origin_session=actor.session_key)
+        job = queue.claim("org", actor.session_key)[0]
+        assert queue.save_advice("org", queued, job["lease_token"], {
+            "title": "Requested setup status", "explanation": "Review setup progress.", "relevance": "digest",
+        })
+    unsolicited = queue.enqueue("org", "feed:unrequested", {"kind": "notice"})
+    now[0] = time.time()
+    queue.claim_refresh("org")
+    service = Mock(store=store)
+    service.client.identity = {"owner": "account-user"}
+    service.client.display_org_id = "org"
+    monkeypatch.setattr("hermes_wisdom.service.WisdomService", lambda: service)
+    monkeypatch.setattr("hermes_wisdom.service._config", lambda: {
+        "enabled": True, "notifications": {"delivery_mode": "fixed"},
+    })
+    monkeypatch.setattr("agent.auxiliary_client.call_llm", lambda **kw: pytest.fail("unsolicited model call in fixed mode"))
+    agent = SimpleNamespace(_session_messages=[], provider="test", model="test")
+    emissions = []
+    if surface == "local":
+        from tui_gateway import server
+        from tui_gateway.wisdom_mediation import note_activity
+
+        session = {"session_key": actor.session_key, "agent": agent, "history": [],
+                   "history_lock": threading.RLock(), "_wisdom_user_activity": time.time()}
+        monkeypatch.setattr(server, "_session_profile_runtime_scope", lambda _: nullcontext())
+        monkeypatch.setattr(server, "_transport_is_dead", lambda _: False)
+        monkeypatch.setattr(server, "_ensure_active_session_slot", lambda *args: None)
+        fixed_notice = Mock(return_value=(True, "Fixed team update"))
+        monkeypatch.setattr(server, "_collect_wisdom_activity_notice", fixed_notice)
+        drain = Mock()
+        monkeypatch.setattr(server, "_drain_queued_prompt", drain)
+
+        def emit(method, sid, payload):
+            emissions.append((method, payload))
+            return True
+
+        monkeypatch.setattr(server, "_emit", emit)
+        note_activity(session, profile_scope=lambda _: nullcontext())
+        server._sync_wisdom_activity_notice(actor.session_key, session)
+        assert session["_wisdom_activity_tracking"] is True
+        assert not session["running"]
+        assert session["history"] == []
+        fixed_notice.assert_called_once()
+        drain.assert_called_once()
+        advice = [payload for method, payload in emissions if payload.get("key") == "wisdom.advice"]
+        assert len(advice) == int(requested)
+    else:
+        adapter = SimpleNamespace(_active_sessions={}, _background_tasks=set())
+
+        async def scoped(fn, **kwargs):
+            return fn()
+
+        adapter._run_wisdom_profile_operation = scoped
+        adapter.send_wisdom_mediation = AsyncMock(return_value=DeliveryReceipt(
+            platform=surface, destination=actor.chat_id, message_id="19", acknowledgement="provider_accepted",
+        ))
+        gateway = SimpleNamespace(_agent_cache_lock=threading.Lock(), _agent_cache={actor.session_key: agent},
+                                  _is_user_authorized=lambda _: True, _session_key_for_source=lambda _: actor.session_key)
+
+        async def idle(key, tick):
+            adapter._active_sessions[key] = asyncio.Event()
+            try:
+                await tick()
+            finally:
+                gateway._wisdom_mediation_active_until[key] = 0
+                adapter._active_sessions.pop(key)
+
+        async def immediate_sleep(_):
+            pass
+
+        adapter.run_idle_activity = idle
+        monkeypatch.setattr("gateway.wisdom_mediation.asyncio.sleep", immediate_sleep)
+        source = SimpleNamespace(platform=surface, chat_type="dm", chat_id=actor.chat_id, user_id=actor.actor_id)
+        # False preserves the legacy fixed notification sender; requested work still runs.
+        assert not await schedule(gateway, adapter, source, actor.session_key, observe_only=True)
+        assert not await schedule(gateway, adapter, source, actor.session_key)
+        await next(iter(adapter._background_tasks))
+        assert adapter.send_wisdom_mediation.await_count == int(requested)
+    rows = {row["id"]: row for row in queue.assessments("org")}
+    assert rows[unsolicited]["state"] == "pending" and rows[unsolicited]["attempts"] == 0
+    assert queued is None or rows[queued]["state"] == "delivered"
+    activity = WisdomMediation(service).activity()
+    assert [row["id"] for row in activity["assessments"]] == ([queued] if requested else [])
+
+
+@pytest.mark.asyncio
 async def test_idle_boundary_does_not_overlap_busy_turn_and_releases_guard():
     adapter = SimpleNamespace(
         _active_sessions={"busy": asyncio.Event()}, _session_tasks={}

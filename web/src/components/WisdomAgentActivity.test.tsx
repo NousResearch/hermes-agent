@@ -7,8 +7,8 @@ const { read } = vi.hoisted(() => ({ read: vi.fn() }))
 vi.mock('@/lib/api', () => ({ api: { getWisdomMediation: read } }))
 afterEach(cleanup)
 
-it('shows shared advice and canonical warnings without an apply control', async () => {
-  read.mockResolvedValue({ mode: 'agent', assessments: [{ id: 'one', state: 'delivered', advice: {
+it.each(['agent', 'fixed'])('shows requested advice and canonical warnings without an apply control in %s mode', async mode => {
+  read.mockResolvedValue({ mode, assessments: [{ id: 'one', state: 'delivered', advice: {
     title: 'A useful skill', explanation: 'May overlap with your existing runbook.'
   } }], interactions: [{ id: 'control', assessment_id: 'one', state: 'pending', operation: 'update', facts: {
     slug: 'Runbook', version: 2, sensitive_expansion: ['Additional network access'],

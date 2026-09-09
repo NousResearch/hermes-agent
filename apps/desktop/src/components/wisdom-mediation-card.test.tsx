@@ -54,7 +54,8 @@ describe('WisdomMediationCard', () => {
   })
   afterEach(() => vi.useRealTimers())
 
-  it('shows advice and native controls without applying anything automatically', async () => {
+  it.each(['agent', 'fixed'])('shows requested advice and native controls in %s mode without automatic apply', async mode => {
+    read.mockResolvedValue({ ...activity, mode })
     render(<WisdomMediationCard sessionId="session" />)
     await screen.findByText('An updated runbook')
     expect(screen.getAllByRole('button').map(button => button.textContent)).toEqual([
@@ -69,7 +70,8 @@ describe('WisdomMediationCard', () => {
     await waitFor(() => expect(screen.queryByRole('button', { name: 'Update' })).toBeNull())
   })
 
-  it('keeps other surfaces passive', async () => {
+  it.each(['agent', 'fixed'])('keeps other surfaces passive in %s mode', async mode => {
+    read.mockResolvedValue({ ...activity, mode })
     render(<WisdomMediationCard passive sessionId="other" />)
     await screen.findByText('An updated runbook')
     expect(screen.queryByRole('button', { name: 'Update' })).toBeNull()

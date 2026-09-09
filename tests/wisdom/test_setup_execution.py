@@ -385,14 +385,22 @@ def test_execution_lock_survives_contention_and_releases_after_process_exit(setu
 
 
 @pytest.mark.parametrize("setup", [False], indirect=True)
+@pytest.mark.parametrize("copy_mode", ["agent", "fixed"])
 @pytest.mark.parametrize("case", ["complete", "defer", "changed", "secret", "missing_guide", "other_owner", "expired_lease", "new_control", "address_changed", "no_command"])
-def test_native_install_hands_off_owned_setup_without_implicit_execution(setup, monkeypatch, case):
+def test_native_install_hands_off_owned_setup_without_implicit_execution(setup, monkeypatch, case, copy_mode):
     from types import SimpleNamespace
     from hermes_wisdom.delivery import DeliveryReceipt
     from hermes_wisdom.mediation import WisdomMediation
     from tests.wisdom.test_consumption import Client
 
     service, actor, root = setup
+    service.client.identity = {"owner": "account-user"}
+    service.client.display_org_id = "org-1"
+    monkeypatch.setattr("hermes_wisdom.service._config", lambda: {
+        "enabled": True, "disclosure_acknowledged_at": "test",
+        "notifications": {"delivery_mode": copy_mode},
+    })
+    assert wisdom_tool.available()
     if case == "missing_guide":
         service.client.files = [row for row in service.client.files if row[0] != SETUP_PATH]
     files = service.client.files
@@ -446,6 +454,7 @@ def test_native_install_hands_off_owned_setup_without_implicit_execution(setup, 
     def deliver(items):
         selected = mediation.begin_delivery("org-1", items)
         assert selected == items
+        assert mediation.delivery_ready("org-1", selected)
         for item in items:
             job = item["assessment"]
             assert mediation.queue.complete_delivery("org-1", job["id"], job["lease_token"], receipt=DeliveryReceipt(
@@ -459,6 +468,10 @@ def test_native_install_hands_off_owned_setup_without_implicit_execution(setup, 
                                  assessor=lambda *args, **kwargs: pytest.fail("setup must not be assessed for relevance"))
 
     register()
+    unsolicited = None
+    if copy_mode == "fixed":
+        unsolicited = mediation.queue.enqueue("org-1", "feed:unrequested", {"kind": "notice"})
+        assert prepare() == []
     install = consent.request("org-1", {"kind": "skill", "skill_id": "skill-1", "version": 1}, actor,
                               title="Review installation", explanation="Install this test skill.")
     deliver(prepare())
@@ -473,7 +486,7 @@ def test_native_install_hands_off_owned_setup_without_implicit_execution(setup, 
     if case == "other_owner":
         other = replace(actor, session_key="other-session", actor_id="other")
         register(other)
-        assert mediation.queue.claim("org-1", other.session_key) == []
+        assert mediation.prepare("org-1", other, runtime=runtime, history=[]) == []
         return
     if case == "changed":
         target = Path(service.store.installation("skill-1")["target_path"])
@@ -487,6 +500,14 @@ def test_native_install_hands_off_owned_setup_without_implicit_execution(setup, 
         return
     prerequisite = first[0]["interaction"]
     assert prerequisite["facts"]["step"]["phase"] == "prerequisite"
+    activity = mediation.activity()
+    assert activity["mode"] == copy_mode
+    assert prerequisite["id"] in {item["id"] for item in activity["interactions"]}
+    assert first[0]["assessment"]["id"] in {item["id"] for item in activity["assessments"]}
+    if unsolicited:
+        assert unsolicited not in {item["id"] for item in activity["assessments"]}
+        untouched = next(item for item in mediation.queue.assessments("org-1") if item["id"] == unsolicited)
+        assert untouched["state"] == "pending" and untouched["attempts"] == 0
     deliver(first)
     if case == "defer":
         assert consent.resolve("org-1", prerequisite["id"], actor, "defer")["deferred"]
@@ -535,6 +556,8 @@ def test_native_install_hands_off_owned_setup_without_implicit_execution(setup, 
     assert prepare() == [] and len(model_calls) == 2
 
     update_client = Client(files, mode="MANUAL")
+    update_client.identity = service.client.identity
+    update_client.display_org_id = "org-1"
     update_client.version = version_detail
     update_client.skill = service.client.skill
     service._client = update_client

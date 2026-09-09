@@ -105,8 +105,9 @@ def test_exact_plan_is_private_and_repeated_consent_applies_once(consent):
         )
 
 
+@pytest.mark.parametrize("copy_mode", ["agent", "fixed"])
 def test_requested_consent_is_not_gated_as_an_unsolicited_recommendation(
-    consent, monkeypatch
+    consent, monkeypatch, copy_mode
 ):
     from tools import wisdom_tool
 
@@ -120,7 +121,10 @@ def test_requested_consent_is_not_gated_as_an_unsolicited_recommendation(
         "HERMES_SESSION_THREAD_ID": actor.thread_id,
         "HERMES_SESSION_SCOPE_ID": actor.scope_id,
     }
-    monkeypatch.setattr(wisdom_tool, "available", lambda: True)
+    monkeypatch.setattr("hermes_wisdom.service._config", lambda: {
+        "enabled": True, "notifications": {"delivery_mode": copy_mode},
+    })
+    assert wisdom_tool.available()
     monkeypatch.setattr(
         "gateway.session_context.get_session_env", lambda key: env.get(key, "")
     )
@@ -154,6 +158,31 @@ def test_requested_consent_is_not_gated_as_an_unsolicited_recommendation(
     assert repeated["interaction"]["id"] == result["interaction"]["id"]
     assert repeated["delivery"]["state"] == result["delivery"]["state"] == "queued"
     assert len(instance.queue.assessments("org")) == 2  # Original feed and one request.
+
+
+@pytest.mark.parametrize("requested", [False, True])
+@pytest.mark.parametrize("boundary", ["begin", "send"])
+def test_copy_mode_change_fences_proactive_delivery_not_requested_work(consent, monkeypatch, requested, boundary):
+    instance, actor, _, now = consent
+    queue = instance.queue
+    queue.retire("org", queue.assessments("org")[0])
+    identity = queue.enqueue("org", "setup-status", {"kind": "notice", "user_requested": requested},
+                             origin_session=actor.session_key)
+    job = queue.claim("org", actor.session_key)[0]
+    advice = {"title": "Review", "explanation": "Review this item.", "relevance": "digest"}
+    queue.save_advice("org", identity, job["lease_token"], advice)
+    item = {"assessment": job, "advice": advice, "interaction": None}
+    mode = ["fixed" if boundary == "begin" else "agent"]
+    monkeypatch.setattr("hermes_wisdom.mediation.delivery_mode", lambda: mode[0])
+    mediation = WisdomMediation(instance.service, clock=lambda: now[0])
+    selected = mediation.begin_delivery("org", [item])
+    if boundary == "begin" and not requested:
+        assert selected == []
+        return
+    assert selected == [item]
+    assert mediation.delivery_ready("org", selected)
+    mode[0] = "fixed"
+    assert mediation.delivery_ready("org", selected) is requested
 
 
 @pytest.fixture

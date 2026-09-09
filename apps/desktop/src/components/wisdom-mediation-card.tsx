@@ -135,7 +135,7 @@ export function WisdomMediationCard({
     }
   }
 
-  if (activity?.mode !== 'agent') {
+  if (!activity) {
     return null
   }
 

@@ -23,7 +23,7 @@ export function WisdomAgentActivity({ profile }: { profile?: string }) {
     const timer = window.setInterval(() => void refresh(), 30_000)
     return () => { active = false; window.clearInterval(timer) }
   }, [profile])
-  if (activity?.mode !== 'agent') return null
+  if (!activity) return null
   const entries = activity.assessments.filter(entry => entry.advice)
   if (!entries.length) return null
   return <section aria-label={t.skills.wisdom.title} className="border-y border-border py-3">

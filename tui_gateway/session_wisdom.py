@@ -84,13 +84,11 @@ def _sync_wisdom_activity_notice(sid: str, session: dict) -> None:
             from hermes_wisdom.mediation import delivery_mode
 
             mediated = delivery_mode() == "agent"
-            session["_wisdom_mediated"] = mediated
-        if mediated:
+            session["_wisdom_activity_tracking"] = True
+        if (session.get("_wisdom_user_activity") and not session.get("running")
+                and not _transport_is_dead(session.get("transport"))):
             from tui_gateway.wisdom_mediation import poll
 
-            if (not session.get("_wisdom_user_activity") or session.get("running")
-                    or _transport_is_dead(session.get("transport"))):
-                return
             if _ensure_active_session_slot(sid, session) is not None:
                 return
             try:
@@ -101,6 +99,7 @@ def _sync_wisdom_activity_notice(sid: str, session: dict) -> None:
                 # This is a real user prompt queued while the isolated read-only
                 # assessment held the turn guard, not a synthetic Wisdom wake.
                 _drain_queued_prompt("wisdom-queued-user", sid, session)
+        if mediated:
             return
     except Exception:
         logger.debug("Wisdom mediation poll failed", exc_info=True)

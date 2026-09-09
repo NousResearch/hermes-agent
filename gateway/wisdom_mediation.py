@@ -22,8 +22,6 @@ async def schedule(
     profile = getattr(source, "profile", None) or getattr(
         adapter, "_owner_profile", None
     )
-    if not profile and delivery_mode() == "fixed":
-        return False
     if not callable(getattr(adapter, "_run_wisdom_profile_operation", None)):
         return False
 
@@ -32,14 +30,13 @@ async def schedule(
             return await adapter._run_wisdom_profile_operation(fn, profile=profile)
         return await adapter._run_wisdom_profile_operation(fn)
 
-    if await scoped(delivery_mode) != "agent":
-        return False
+    mediated = await scoped(delivery_mode) == "agent"
     if platform not in {"telegram", "slack"}:
-        return True
+        return mediated
     if str(getattr(source, "chat_type", "")) not in {"dm", "private"}:
-        return True
+        return mediated
     if not getattr(source, "user_id", None) or not gateway._is_user_authorized(source):
-        return True
+        return mediated
     key = gateway._session_key_for_source(source)
     actor = ConsentActor(
         key,
@@ -68,9 +65,15 @@ async def schedule(
             address=actor.address,
         )
 
-    await scoped(register)
+    from hermes_wisdom.package import PackagePolicyError
+
+    try:
+        await scoped(register)
+    except PackagePolicyError:
+        # Fixed notification delivery still owns the unconfigured profile path.
+        return mediated
     if observe_only:
-        return True
+        return mediated
     tasks = getattr(gateway, "_wisdom_mediation_tasks", None)
     if tasks is None:
         tasks = gateway._wisdom_mediation_tasks = {}
@@ -79,7 +82,7 @@ async def schedule(
         deadlines = gateway._wisdom_mediation_active_until = {}
     deadlines[key] = time.monotonic() + ACTIVE_SECONDS
     if key in tasks and not tasks[key].done():
-        return True
+        return mediated
 
     async def tick():
         from tools.approval import get_pending_gateway_approval
@@ -202,8 +205,6 @@ async def schedule(
             # The post-delivery hook still owns its guard until it returns.
             await asyncio.sleep(1)
             while time.monotonic() < deadlines.get(key, 0):
-                if await scoped(delivery_mode) != "agent":
-                    return
                 if not gateway._is_user_authorized(source):
                     return
                 try:
@@ -226,4 +227,4 @@ async def schedule(
     tasks[key] = task
     adapter._background_tasks.add(task)
     task.add_done_callback(adapter._background_tasks.discard)
-    return True
+    return mediated

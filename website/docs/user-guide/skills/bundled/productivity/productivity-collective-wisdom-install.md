@@ -70,8 +70,10 @@ the existing setup flow; do not create credentials or silently enable sharing.
    names without reading or displaying credential values.
 5. Installing files does not authorize running setup or verification commands.
    Native Install/Update queues a setup handoff for the same private session.
-   In agent delivery mode, the idle-session worker reads the installed guide
-   and proposes one step at a time using that session's model. Passed steps
+   With an active session model, the idle-session worker reads the installed guide
+   and proposes one step at a time, including when fixed notification copy is
+   selected. Fixed copy disables unsolicited agent assessments, not requested
+   installation or setup. Passed steps
    queue the next review; Not now pauses the flow without repeating the card.
    Do not create a competing proposal when an existing setup control is pending.
    Propose each step through `present_wisdom_consent` with `kind: setup`, the

@@ -88,10 +88,13 @@ def test_group_legacy_controls_never_render_private_state(action):
     assert service.mock_calls == []
 
 
-def test_empty_or_fixed_inbox_keeps_current_review_navigation(monkeypatch):
+def test_empty_or_fixed_inbox_keeps_current_review_navigation(monkeypatch, tmp_path):
+    from hermes_wisdom.store import WisdomStore
+
     monkeypatch.setattr("hermes_wisdom.mediation.delivery_mode", lambda: "fixed")
-    service = Mock()
-    service.store.active_org_id.return_value = "org"
+    store = WisdomStore(tmp_path / "wisdom")
+    store.activate_installation_identity("installation", "org")
+    service = Mock(store=store)
     view = current_action_view(
         "wa:share:old",
         service,

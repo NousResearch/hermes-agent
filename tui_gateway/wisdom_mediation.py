@@ -12,13 +12,10 @@ from hermes_wisdom.mediation_view import advice_view
 
 
 def note_activity(session: dict, *, profile_scope) -> None:
-    from hermes_wisdom.mediation import delivery_mode
     from hermes_wisdom.store import WisdomStore
     from hermes_wisdom.mediation_store import MediationStore
 
     with profile_scope(session):
-        if delivery_mode() != "agent":
-            return
         store = WisdomStore()
         org = store.active_org_id()
         key = str(session.get("session_key") or "")

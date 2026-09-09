@@ -531,8 +531,9 @@ class WisdomMediation:
         jobs = [item["assessment"] for item in items]
         if delivery_mode() != "agent":
             for job in jobs:
-                self.queue.defer_for_preferences(org, job, 0)
-            return []
+                if job["reference"].get("user_requested") is not True:
+                    self.queue.defer_for_preferences(org, job, 0)
+            jobs = [job for job in jobs if job["reference"].get("user_requested") is True]
         eligible = {
             job["id"]
             for job in self._current_feed_jobs(org, self._eligible_jobs(org, jobs))
@@ -582,6 +583,11 @@ class WisdomMediation:
         from .setup_queue import setup_notice_current
 
         self.service.require_setup()
+        if delivery_mode() != "agent" and any(
+            item["assessment"]["reference"].get("user_requested") is not True
+            for item in items
+        ):
+            return False
         if not all(setup_notice_current(self.service.store, item["assessment"]["reference"]) for item in items):
             return False
         user = DeliveryOutbox(self.service, clock=self.queue.clock).identity(org)
@@ -669,7 +675,9 @@ class WisdomMediation:
     ) -> list[dict[str, Any]]:
         self.service.require_setup()
         self.flush_delivery(org)
-        claimed = self.queue.claim(org, actor.session_key)
+        claimed = self.queue.claim(
+            org, actor.session_key, requested_only=delivery_mode() != "agent"
+        )
         from .weekly_queue import process_weekly_review
         from .share_queue import process_share_package
         from .setup_queue import process_setup_handoff
@@ -795,10 +803,16 @@ class WisdomMediation:
 
     def activity(self) -> dict[str, Any]:
         org = self.service.store.active_org_id()
-        if delivery_mode() != "agent" or not org:
+        mode = delivery_mode()
+        if not org:
             return {"mode": "fixed", "assessments": [], "interactions": []}
+        assessments = [
+            row for row in self.queue.assessments(org)
+            if mode == "agent" or row["reference"].get("user_requested") is True
+        ]
+        visible_ids = {row["id"] for row in assessments}
         return {
-            "mode": "agent",
+            "mode": mode,
             "assessments": [
                 {
                     **{
@@ -822,10 +836,13 @@ class WisdomMediation:
                         )
                     },
                 }
-                for row in self.queue.assessments(org)[-100:]
+                for row in assessments[-100:]
                 if row["reference"]["kind"] != "weekly_review"
             ],
-            "interactions": self.consent.pending(org),
+            "interactions": [
+                item for item in self.consent.pending(org)
+                if mode == "agent" or item["assessment_id"] in visible_ids
+            ],
             "installed_setup": [
                 {
                     "kind": "installed",

@@ -67,6 +67,26 @@ def test_recent_busy_session_wins_over_idle_older_session(state):
     assert len(queue.claim("org", "newer")) == 1
 
 
+def test_requested_claim_skips_proactive_backlog_without_spending_attempts(state):
+    from hermes_wisdom.mediation_store import BATCH_SIZE
+
+    queue, _ = state
+    register(queue)
+    for index in range(BATCH_SIZE + 1):
+        queue.enqueue("org", f"feed:{index}", {"user_requested": "true"})
+    requested = queue.enqueue("org", "manual:1", {"user_requested": True}, origin_session="session")
+    claimed = queue.claim("org", "session", requested_only=True)
+    assert [item["id"] for item in claimed] == [requested]
+    assert all(item["attempts"] == 0 for item in queue.assessments("org") if item["id"] != requested)
+    # A second worker cannot bypass an in-flight requested job's lease.
+    assert queue.claim("org", "session") == []
+    assert queue.save_advice("org", requested, claimed[0]["lease_token"], {"title": "Requested review"})
+    assert queue.begin_delivery("org", requested, claimed[0]["lease_token"])
+    assert queue.complete_delivery("org", requested, claimed[0]["lease_token"], receipt=RECEIPT)
+    assert queue.claim("org", "session", requested_only=True) == []
+    assert len(queue.claim("org", "session")) == BATCH_SIZE
+
+
 def test_qualification_stays_with_origin_and_no_inactive_wake(state):
     queue, now = state
     register(queue, "origin")

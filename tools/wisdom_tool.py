@@ -30,10 +30,9 @@ class Presentation(Target):
 
 def available() -> bool:
     from hermes_wisdom.service import _config
-    from hermes_wisdom.mediation import delivery_mode
 
     config = _config()
-    return config.get("enabled") is True and delivery_mode(config) == "agent"
+    return config.get("enabled") is True
 
 
 def _reference(service, target: Target) -> dict:

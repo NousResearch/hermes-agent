@@ -754,7 +754,7 @@ def _run_prompt_submit(
     terminal_callback: Callable[[dict[str, Any]], None] | None = None) -> bool:
     if display_kind is None and not str(rid).startswith("__"):
         session["_wisdom_user_activity"] = time.time()
-        if session.get("_wisdom_mediated"):
+        if session.get("_wisdom_activity_tracking"):
             try:
                 from tui_gateway.wisdom_mediation import note_activity
 

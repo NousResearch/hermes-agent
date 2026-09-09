@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional, cast
 
 from gateway.config import Platform, _BUILTIN_PLATFORM_VALUES
-from gateway.platforms.base import _mark_notify_metadata
+from gateway.platforms.base import BasePlatformAdapter, _mark_notify_metadata
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.session import SessionEntry, SessionSource
 from gateway.run_shutdown import _log_suppressed, _notice_target_key, _send_error, _send_failed
@@ -381,32 +381,19 @@ class GatewayNotificationsMixin:
         event_message_id: Optional[str], session_key: Optional[str],
         inbound_message_id: Optional[str] = None,
     ):
-        """Send a queued-lane final under the delivery-ledger bracket the normal final send uses.
-
-        This lane used to call ``adapter.send`` bare and discard the result, so a final refused here
-        (flood control, a transport that had just died) left no ledger row and was gone for good.
-        Now the obligation is recorded before the send and finalized from the result, the same
-        record / send-with-retry / finalize sequence as ``_send_final_text``, so both lanes recover
-        the same way. The ledger id is keyed on the raw inbound message id, as the normal lane's is;
+        """Send a queued-lane final through the same ledger bracket as the normal final
+        (``send_final_ledgered``). This lane used to call ``adapter.send`` bare and discard the
+        result, so a final refused here (flood control, a transport that had just died) left no
+        ledger row and was gone for good. The ledger identity is the raw inbound message id;
         ``event_message_id`` is only the reply anchor, which is None wherever replies are not used
         (Telegram forum topics, Slack reaction handoffs) and so cannot identify the turn. Adapters
-        without the base contract and sends without a session key keep the plain send. Returns the
-        SendResult, or None when the adapter's send returned nothing."""
-        record = getattr(adapter, "_record_delivery_obligation", None)
-        finalize = getattr(adapter, "_finalize_delivery_obligation", None)
-        transport_for = getattr(adapter, "_final_delivery_adapter", None)
-        if session_key and callable(record) and callable(finalize) and callable(transport_for):
-            delivery_adapter = transport_for(source)
+        without the base contract and sends without a session key keep the plain send."""
+        if session_key and isinstance(adapter, BasePlatformAdapter):
             ledger_message_id = (
                 inbound_message_id if inbound_message_id is not None else event_message_id)
-            ledger_event = MessageEvent(text="", source=source, message_id=ledger_message_id)
-            obligation_id = await record(
-                ledger_event, session_key, text_content, delivery_adapter, False)
-            result = await delivery_adapter._send_with_retry(
-                chat_id=source.chat_id, content=text_content, reply_to=event_message_id,
-                metadata=_mark_notify_metadata(metadata))
-            if obligation_id is not None:
-                await finalize(obligation_id, result, ledger_event, delivery_adapter)
+            result = await adapter.send_final_ledgered(
+                MessageEvent(text="", source=source, message_id=ledger_message_id),
+                session_key, text_content, _mark_notify_metadata(metadata), reply_to=event_message_id)
         else:
             result = await adapter.send(source.chat_id, text_content, metadata=metadata)
         if not getattr(result, "success", False):

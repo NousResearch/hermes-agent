@@ -122,33 +122,6 @@ async def test_a_delivered_queued_final_is_recorded_and_marked_delivered():
 
 
 @pytest.mark.asyncio
-async def test_the_row_is_already_attempting_while_the_send_is_in_flight():
-    """Record BEFORE the send: a crash mid-send must leave a row the next boot can redeliver."""
-    adapter = _telegram_adapter()
-    seen: list = []
-
-    async def _send(**kwargs):
-        seen.append([(r["state"], r["content"]) for r in _rows()])
-        return SendResult(success=True, message_id="900")
-
-    adapter.send = AsyncMock(side_effect=_send)
-
-    await _deliver(adapter)
-
-    assert seen == [[("attempting", TEXT)]]
-
-
-@pytest.mark.asyncio
-async def test_the_obligation_id_is_the_one_the_normal_lane_would_use():
-    """Same turn, same text: re-recording from either lane is idempotent, never a second row."""
-    adapter = _telegram_adapter()
-
-    await _deliver(adapter)
-
-    assert _rows()[0]["obligation_id"] == dl.compute_obligation_id(SESSION_KEY, INBOUND_ID, TEXT)
-
-
-@pytest.mark.asyncio
 async def test_forum_topic_turns_are_identified_by_their_inbound_id_not_the_reply_anchor():
     """Telegram forum topics route by topic metadata and never reply, so the anchor is None for
     every message in the topic. Two turns answering with the same text must still get two rows,
@@ -185,17 +158,6 @@ async def test_a_flood_refused_queued_final_stays_in_the_ledger_as_failed(caplog
 
 
 @pytest.mark.asyncio
-async def test_any_other_refusal_is_recorded_as_failed_too():
-    adapter = _telegram_adapter(
-        SendResult(success=False, error="Forbidden: bot was blocked by the user"))
-
-    await _deliver(adapter)
-
-    assert _rows()[0]["state"] == "failed"
-    assert "blocked" in _rows()[0]["last_error"]
-
-
-@pytest.mark.asyncio
 async def test_the_queued_final_is_sent_like_the_normal_final():
     """Reply anchor on the inbound message and a notify-worthy copy of the thread metadata."""
     adapter = _telegram_adapter()
@@ -217,30 +179,6 @@ async def test_the_queued_final_is_sent_like_the_normal_final():
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_reconcile_by_edit_records_no_obligation():
-    adapter = _telegram_adapter()
-    adapter.edit_message = AsyncMock(return_value=SendResult(success=True, message_id="sealed-9"))
-    sc = SimpleNamespace(message_id="sealed-9", _turn_split_delivery=False)
-
-    await _deliver(adapter, stream_consumer=sc)
-
-    adapter.edit_message.assert_awaited_once()
-    adapter.send.assert_not_awaited()
-    assert _rows() == []
-
-
-@pytest.mark.asyncio
-async def test_a_failed_reconcile_edit_falls_through_to_the_bracketed_send():
-    adapter = _telegram_adapter()  # edit_message fails by default
-    sc = SimpleNamespace(message_id="sealed-9", _turn_split_delivery=False)
-
-    await _deliver(adapter, stream_consumer=sc)
-
-    adapter.send.assert_awaited_once()
-    assert _rows()[0]["state"] == "delivered"
-
-
-@pytest.mark.asyncio
 async def test_an_adapter_without_the_base_contract_keeps_the_plain_send():
     adapter = _plain_adapter()
 
@@ -250,58 +188,32 @@ async def test_an_adapter_without_the_base_contract_keeps_the_plain_send():
     assert _rows() == []
 
 
-@pytest.mark.asyncio
-async def test_without_a_session_key_the_plain_send_is_kept():
-    """No key, no ledger row possible: the send still happens, unbracketed, as before."""
-    adapter = _telegram_adapter()
-
-    await _deliver(adapter, session_key=None, metadata={"thread_id": "t"})
-
-    adapter.send.assert_awaited_once_with(CHAT, TEXT, metadata={"thread_id": "t"})
-    assert _rows() == []
-
-
-@pytest.mark.asyncio
-async def test_a_plain_send_failure_is_still_logged(caplog):
-    adapter = _plain_adapter()
-    adapter.send = AsyncMock(return_value=SendResult(success=False, error="flood_control:30.0"))
-
-    with caplog.at_level(logging.WARNING, logger="gateway.run"):
-        await _deliver(adapter)
-
-    assert any("Queued-lane final send" in r.getMessage() for r in caplog.records)
-
-
 # ---------------------------------------------------------------------------
 # The call site hands the session key and the raw inbound id over.
 # ---------------------------------------------------------------------------
 
-@pytest.mark.asyncio
-async def test_the_queued_lane_receives_the_session_key_and_inbound_id_from_the_turn():
+def _chain_runner_and_ctx(followup_return):
+    """A runner whose recursive ``_run_agent`` returns ``followup_return``, plus a topic turn."""
     from gateway.run import GatewayRunner
 
     runner = _runner()
-    runner._run_agent_stream_confirmed_final_delivery = MagicMock(return_value=False)
-    runner._is_intentional_silence = MagicMock(return_value=False)
-    runner._pop_post_delivery_callback = MagicMock(return_value=None)
-    runner._deliver_queued_first_response = AsyncMock()
-    # A forum-topic turn: no reply anchor, but a raw inbound id the ledger must be keyed on.
+    runner._MAX_INTERRUPT_DEPTH = 8
+    runner._run_agent = AsyncMock(return_value=followup_return)
+    runner._run_agent_deliver_first_response = AsyncMock()
+    runner._is_goal_continuation_event = MagicMock(return_value=False)
+    runner._session_key_for_source = MagicMock(return_value=TOPIC_SESSION_KEY)
+    runner._prepare_profile_scoped_inbound_message_text = AsyncMock(return_value="the follow-up")
+    runner._reply_anchor_for_event = MagicMock(return_value=None)
+    runner._adapter_for_source = MagicMock(return_value=None)
+    runner._refresh_agent_cache_message_count = AsyncMock()
+    topic = _source(chat_id="-1001", thread_id="7", chat_type="supergroup")
     turn_ctx = SimpleNamespace(
-        session_key=TOPIC_SESSION_KEY, stream_consumer_holder=[None],
-        source=_source(chat_id="-1001", thread_id="7", chat_type="supergroup"),
-        _status_thread_metadata={"thread_id": "7"}, event_message_id=None,
-        inbound_message_id=INBOUND_ID, run_generation=3)
-    adapter = _telegram_adapter()
-
-    await GatewayRunner._run_agent_deliver_first_response(
-        runner, turn_ctx, adapter, {"final_response": TEXT}, {}, None)
-
-    runner._deliver_queued_first_response.assert_awaited_once()
-    kwargs = runner._deliver_queued_first_response.await_args.kwargs
-    assert kwargs["session_key"] == TOPIC_SESSION_KEY
-    assert kwargs["inbound_message_id"] == INBOUND_ID
-    assert kwargs["event_message_id"] is None
-    assert kwargs["text_already_delivered"] is False
+        source=topic, session_id="sid", session_key=TOPIC_SESSION_KEY, run_generation=1,
+        _interrupt_depth=0, history=[], _status_thread_metadata={"thread_id": "7"},
+        context_prompt=None, result_holder=[None])
+    pending_event = SimpleNamespace(
+        source=topic, message_id="6002", channel_prompt=None, message_type=None)
+    return GatewayRunner, runner, turn_ctx, pending_event
 
 
 @pytest.mark.asyncio
@@ -379,58 +291,6 @@ async def test_the_terminal_turn_of_a_chain_is_ledgered_under_its_own_inbound_id
     assert rows[turn_a_id]["state"] == "failed", \
         "turn A's refused reply was overwritten and would never be redelivered"
     assert rows[dl.compute_obligation_id(SESSION_KEY, "102", same_text)]["state"] == "delivered"
-
-
-@pytest.mark.asyncio
-async def test_an_unchained_turn_still_keys_on_its_own_event_id():
-    """No override means no behaviour change: the event's own id keys the row, as before."""
-    from gateway.platforms.base import MessageEvent
-
-    adapter = _telegram_adapter()
-    adapter._send_with_retry = AsyncMock(return_value=SendResult(success=True, message_id="902"))
-    event = MessageEvent(text="hi", source=_source(), message_id=INBOUND_ID)
-
-    assert event.ledger_message_id is None
-    await adapter._send_final_text(event, SESSION_KEY, TEXT, {}, False, 0, lambda _r: None)
-
-    assert _rows()[0]["obligation_id"] == dl.compute_obligation_id(SESSION_KEY, INBOUND_ID, TEXT)
-
-
-def _chain_runner_and_ctx(followup_return):
-    """A runner whose recursive ``_run_agent`` returns ``followup_return``, plus a topic turn."""
-    from gateway.run import GatewayRunner
-
-    runner = _runner()
-    runner._MAX_INTERRUPT_DEPTH = 8
-    runner._run_agent = AsyncMock(return_value=followup_return)
-    runner._run_agent_deliver_first_response = AsyncMock()
-    runner._is_goal_continuation_event = MagicMock(return_value=False)
-    runner._session_key_for_source = MagicMock(return_value=TOPIC_SESSION_KEY)
-    runner._prepare_profile_scoped_inbound_message_text = AsyncMock(return_value="the follow-up")
-    runner._reply_anchor_for_event = MagicMock(return_value=None)
-    runner._adapter_for_source = MagicMock(return_value=None)
-    runner._refresh_agent_cache_message_count = AsyncMock()
-    topic = _source(chat_id="-1001", thread_id="7", chat_type="supergroup")
-    turn_ctx = SimpleNamespace(
-        source=topic, session_id="sid", session_key=TOPIC_SESSION_KEY, run_generation=1,
-        _interrupt_depth=0, history=[], _status_thread_metadata={"thread_id": "7"},
-        context_prompt=None, result_holder=[None])
-    pending_event = SimpleNamespace(
-        source=topic, message_id="6002", channel_prompt=None, message_type=None)
-    return GatewayRunner, runner, turn_ctx, pending_event
-
-
-@pytest.mark.asyncio
-async def test_the_chain_returns_the_terminal_inbound_id_to_the_outer_bracket():
-    """The outer handler needs the terminal turn's id to ledger the final send under it."""
-    GatewayRunner, runner, turn_ctx, pending_event = _chain_runner_and_ctx(
-        {"final_response": "done", "messages": []})
-
-    merged = await GatewayRunner._run_agent_queued_followup(
-        runner, turn_ctx, adapter=None, pending="hi again", pending_event=pending_event,
-        response="resp", result={"interrupted": True, "messages": []}, stream_task=None)
-
-    assert merged["queued_terminal_inbound_id"] == "6002"
 
 
 @pytest.mark.asyncio

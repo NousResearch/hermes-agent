@@ -186,3 +186,23 @@ def test_third_party_imports_print_an_install_hint(name):
                 f"{name}: scripts/{script.name} guards {module!r} but prints no "
                 "install hint"
             )
+
+
+@pytest.mark.parametrize("name", OFFICE_SKILLS)
+def test_lazy_install_runs_before_the_guarded_import(name):
+    """`ensure_ready()` must precede the guarded import it exists to satisfy.
+
+    The guard exits(2) on a missing library, so an `ensure_ready()` call placed
+    after it never runs on the install it was meant to repair.
+    """
+    for script in sorted((_skill_dir(name) / "scripts").glob("*.py")):
+        content = script.read_text(encoding="utf-8")
+        if "ensure_ready()" not in content:
+            continue
+        hint = content.find("python3 -m pip install")
+        if hint == -1:
+            continue
+        assert content.index("ensure_ready()") < hint, (
+            f"{name}: scripts/{script.name} calls ensure_ready() after its "
+            "guarded import, so the lazy install can never run"
+        )

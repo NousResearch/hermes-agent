@@ -26,6 +26,12 @@ import json
 import sys
 from copy import deepcopy
 
+try:  # install this skill's libraries on first use
+    from _deps import ensure_ready
+    ensure_ready()
+except ImportError:  # not running inside a Hermes install
+    pass
+
 try:
     from lxml import etree
     from docx import Document
@@ -35,12 +41,6 @@ except ImportError:
     sys.exit(2)
 
 from docx_common import iter_part_roots
-
-try:  # install this skill's libraries on first use
-    from _deps import ensure_ready
-    ensure_ready()
-except ImportError:  # not running inside a Hermes install
-    pass
 
 W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 COMMENTS_CT = ("application/vnd.openxmlformats-officedocument"

@@ -3,8 +3,9 @@ import * as path from 'node:path'
 
 import { _electron, type ElectronApplication, expect, type Page } from '@playwright/test'
 
-import { buildAppEnv, createSandbox, PACKAGED_BINARY_PATH, type Sandbox, writeEnvFile, writeMockProviderConfig } from './fixtures'
 import { type MockServer, type MockServerOptions, startMockServer } from '../../../tests-js/scripts/mock-server'
+
+import { buildAppEnv, createSandbox, PACKAGED_BINARY_PATH, type Sandbox, writeEnvFile, writeMockProviderConfig } from './fixtures'
 
 // Durable packaged E2E helpers for automation-packaged.spec.ts.
 //

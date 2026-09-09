@@ -71,6 +71,21 @@ def read_incarnation_marker(path: Path | str) -> str | None:
     return _validate_incarnation(value, marker)
 
 
+def read_profile_deletion_incarnation(profile_home: Path | str) -> str | None:
+    """Read a deletion token, accepting only the two historical tokenless fences.
+
+    A tokenless fence authorizes deletion retry, never incarnation backfill or
+    resource admission. Other invalid contents remain corruption errors.
+    """
+    marker = profile_deletion_marker_path(Path(profile_home))
+    if marker is None:
+        raise ValueError(f"Not a named profile home: {profile_home}")
+    value = marker.read_text(encoding="utf-8")
+    if value in ("", "deleted\n"):
+        return None
+    return _validate_incarnation(value, marker)
+
+
 def read_profile_incarnation(profile_home: Path | str) -> str | None:
     """Read a named profile's persisted incarnation, or None if not initialized."""
     home = Path(profile_home)

@@ -215,6 +215,32 @@ def acquire(db_path: Optional[Path] = None, expected_profile_incarnation: Option
     except OSError:
         path = raw_path
 
+    # Warm readers do not need to take the process-wide mutation lease. The
+    # existing tracked connection already prevents deletion of its generation.
+    _assert_expected_profile_incarnation(path, expected_profile_incarnation)
+    with _lock:
+        generation = _generations.get(path)
+        if generation is not None:
+            current = _stat_db_file_identity(path)
+            if current is None or generation.identity is None or current == generation.identity:
+                # The pre-lock check may refer to a generation drained and
+                # replaced while this caller waited. This check takes no lease.
+                _assert_expected_profile_incarnation(path, expected_profile_incarnation)
+                generation.refcount += 1
+                return generation.db
+
+    from hermes_cli.profile_incarnation import profile_incarnation_lease
+
+    # Acquire BEFORE publishing _opening or taking a path lifecycle mutex:
+    # gateway callers can already hold this lease when they enter the registry.
+    # Teardown does not acquire the profile lease, so waiting for its barrier
+    # here cannot invert that order. Default/custom homes remain lock-free.
+    with profile_incarnation_lease(path.parent, expected_profile_incarnation):
+        return _acquire_at_path(path, expected_profile_incarnation)
+
+
+def _acquire_at_path(path: Path, expected_profile_incarnation: Optional[str]) -> "SessionDB":
+    """Cold acquisition with named-profile lifecycle authority already held."""
     # A shared generation may predate this caller, so constructor-time checks
     # alone are insufficient: validate every incarnation-scoped acquisition
     # before an existing handle can be lent. If no generation exists (or it is

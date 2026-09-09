@@ -19,7 +19,7 @@ from typing import Dict, List, Optional, Tuple
 from agent.skill_utils import is_excluded_skill_path
 from hermes_cli.archive_safe import archive_root_dirs, make_targz, normalize_archive_parts, safe_extract_targz
 from hermes_cli.profile_incarnation import (
-    PROFILE_INCARNATION_FILENAME, ensure_profile_incarnation, read_incarnation_marker,
+    PROFILE_INCARNATION_FILENAME, ensure_profile_incarnation, read_profile_deletion_incarnation,
     read_profile_incarnation, write_fresh_profile_incarnation)
 from hermes_cli.profile_lifecycle import (
     begin_profile_retirement,
@@ -1270,13 +1270,15 @@ def _delete_profile_confirmed(
     # while an active turn settles. Its marker was minted before that first
     # tombstone, so a retry reads it rather than trying to backfill through a
     # deletion fence.
+    had_tombstone = profile_home_is_tombstoned(profile_dir)
     profile_incarnation = read_profile_incarnation(profile_dir)
-    if profile_incarnation is None and profile_home_is_tombstoned(profile_dir):
-        profile_incarnation = read_incarnation_marker(
-            profile_deletion_marker(profile_dir)
-        )
     if profile_incarnation is None:
-        profile_incarnation = ensure_profile_incarnation(profile_dir)
+        if had_tombstone:
+            # Legacy fences have no token. Keep them in place and retry the
+            # deletion without ever publishing an incarnation behind a fence.
+            profile_incarnation = read_profile_deletion_incarnation(profile_dir)
+        else:
+            profile_incarnation = ensure_profile_incarnation(profile_dir)
     gw_running = _check_gateway_running(profile_dir)
     wrapper_path = _get_wrapper_dir() / canon
     has_wrapper = wrapper_path.exists()
@@ -1315,6 +1317,7 @@ def _delete_profile_confirmed(
         profile_incarnation,
         subject=f"Profile '{canon}'",
         retry_action="deletion",
+        rollback_on_failure=not had_tombstone,
     )
 
     # 3. Remove wrapper script

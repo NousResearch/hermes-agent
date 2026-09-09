@@ -447,16 +447,19 @@ def verify_profile_resources_released(
     *,
     subject: str,
     retry_action: str,
+    rollback_on_failure: bool = True,
 ) -> None:
-    """Prove local/external holders drained or roll retirement back."""
+    """Prove holders drained, optionally rolling back this attempt's fence."""
     if not wait_for_profile_state_db_release(profile_dir):
-        rollback_profile_retirement(profile_dir, profile_incarnation)
+        if rollback_on_failure:
+            rollback_profile_retirement(profile_dir, profile_incarnation)
         raise RuntimeError(
             f"{subject} is still in use by this Hermes process; retry {retry_action}."
         )
     external_holders = wait_for_external_profile_file_release(profile_dir)
     if external_holders:
-        rollback_profile_retirement(profile_dir, profile_incarnation)
+        if rollback_on_failure:
+            rollback_profile_retirement(profile_dir, profile_incarnation)
         raise RuntimeError(
             f"{subject} is still in use by external process(es) "
             f"{', '.join(str(pid) for pid in external_holders)}; retry {retry_action}."

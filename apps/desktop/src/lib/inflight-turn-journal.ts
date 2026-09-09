@@ -842,8 +842,11 @@ function mergeRuntimeTurn(
 
   const structureCommitted = tail.every(message => message.parts.every(part => {
     if (part.type === 'tool-call') {
+      // A flushed invocation does not prove that its result was persisted.
+      // The bounded journal retains result presence even when it omits payloads.
       return part.toolCallId !== undefined && committedParts.some(candidate =>
-        candidate.type === 'tool-call' && candidate.toolCallId === part.toolCallId)
+        candidate.type === 'tool-call' && candidate.toolCallId === part.toolCallId &&
+        (part.result === undefined || candidate.result !== undefined))
     }
 
     return part.type !== 'reasoning' || committedParts.some(candidate =>

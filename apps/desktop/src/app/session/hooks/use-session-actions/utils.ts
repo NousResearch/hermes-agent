@@ -995,7 +995,12 @@ export function appendLiveSessionProjection(messages: ChatMessage[], projection:
     liveAssistantOfCurrentTurn &&
     hasStructuralParts(liveAssistantOfCurrentTurn) &&
     (isLiveTailRow(liveAssistantOfCurrentTurn) ||
-      (runtimeInflight && belongsToCurrentTurn(liveAssistantOfCurrentTurn)))
+      (runtimeInflight && belongsToCurrentTurn(liveAssistantOfCurrentTurn) &&
+        // A flushed tool-only scaffold precedes the new answer; it is not a
+        // cached live reply. Reasoning-bearing rows still suppress flat dumps
+        // even before answer text exists (#76444).
+        (liveAssistantOfCurrentTurn.parts.some(part => part.type === 'reasoning') ||
+          chatMessageText(liveAssistantOfCurrentTurn).trim().length > 0)))
   )
 
   const wantsAssistantRow = Boolean(

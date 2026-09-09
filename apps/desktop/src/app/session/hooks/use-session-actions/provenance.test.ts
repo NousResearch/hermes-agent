@@ -142,6 +142,30 @@ describe('backend message provenance', () => {
     expect(withText(restored, 'partial answer')).toHaveLength(1)
   })
 
+  it('keeps a new streamed answer after a persisted tool scaffold on a hidden runtime turn', () => {
+    const rows = toChatMessages([
+      { role: 'user', content: 'human task', timestamp: 1 },
+      { role: 'assistant', content: 'old answer', timestamp: 2 },
+      { role: 'user', content: 'continue runtime', display_kind: 'hidden', user_originated: false, timestamp: 10.1 },
+      {
+        role: 'assistant', content: '', timestamp: 11,
+        tool_calls: [{ id: 'tc', type: 'function', function: { name: 'terminal', arguments: '{}' } }]
+      },
+      { role: 'tool', content: 'tool output', tool_call_id: 'tc', name: 'terminal', timestamp: 12 }
+    ])
+
+    const live = snapshot('continue runtime', false)
+    live.inflight = { ...live.inflight, display_kind: 'hidden', assistant: 'Here is the new streamed answer' }
+
+    const restored = appendLiveSessionProjection(rows, live)
+    expect(withText(restored, 'Here is the new streamed answer')).toHaveLength(1)
+    expect(restored.at(-1)).toMatchObject({ pending: true, runtimeTurnStartedAt: 10 })
+    expect(restored.flatMap(message => message.parts).filter(part => part.type === 'tool-call')).toMatchObject([
+      { toolCallId: 'tc', result: 'tool output' }
+    ])
+    expect(withText(restored, 'continue runtime')).toHaveLength(0)
+  })
+
   it('reuses a hydrated structured answer when its runtime wake is hidden', () => {
     const rows = toChatMessages([{
       role: 'assistant', content: 'partial answer', reasoning: 'planning', timestamp: 11

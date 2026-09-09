@@ -452,6 +452,29 @@ describe('persistInFlightTurnState', () => {
   })
 })
 
+describe('runtime journal result coverage', () => {
+  it('retains a tool result until the persisted call also has a result', () => {
+    const anchor = assistant('anchor', 'old answer', { rowId: 1, timestamp: 2 })
+    const result = 'UNSAVED TOOL OUTPUT'
+    const call = { type: 'tool-call' as const, toolName: 'terminal', toolCallId: 'tc', args: {} }
+
+    const journal = [anchor, assistant('assistant-stream-runtime', '', {
+      runtimeTurnStartedAt: 10, pending: true, parts: [{ ...call, result }]
+    })]
+
+    const storedCall = assistant('stored-call', '', { timestamp: 11, parts: [call] })
+
+    const recovered = mergeInFlightMessages([anchor, storedCall], journal, { keepPending: false })
+    expect(recovered.caughtUp).toBe(false)
+    expect(recovered.messages.flatMap(message => message.parts)).toContainEqual({ ...call, result })
+
+    const completed = [anchor, { ...storedCall, parts: [{ ...call, result }] }]
+    const caughtUp = mergeInFlightMessages(completed, journal, { keepPending: false })
+    expect(caughtUp.caughtUp).toBe(true)
+    expect(caughtUp.messages).toBe(completed)
+  })
+})
+
 describe('legacy journal migration', () => {
   it('migrates the bounded v1 aggregate once and recovers its sessions', () => {
     const first = {

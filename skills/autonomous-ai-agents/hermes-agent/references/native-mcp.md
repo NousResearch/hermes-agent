@@ -328,10 +328,11 @@ mcp_servers:
       max_rpm: 10             # max requests per minute
       allowed_models: []      # model whitelist (empty = all)
       max_tool_rounds: 5      # tool loop limit (0 = disable)
+      expose_client_tools: false # advertise extended sampling.tools capability
       log_level: "info"       # audit verbosity
 ```
 
-Servers can also include `tools` in sampling requests for multi-turn tool-augmented workflows. The `max_tool_rounds` config prevents infinite tool loops. Per-server audit metrics (requests, errors, tokens, tool use count) are tracked via `get_mcp_status()`.
+Servers can also include `tools` in sampling requests for multi-turn tool-augmented workflows. The `max_tool_rounds` config prevents infinite tool loops. Hermes does not advertise the extended `sampling.tools` client capability unless `expose_client_tools: true` is set, because some strict MCP servers reject unknown sampling sub-capabilities during initialization. Most servers only need normal sampling; enable `expose_client_tools` only for servers that explicitly support sampling tool callbacks. Per-server audit metrics (requests, errors, tokens, tool use count) are tracked via `get_mcp_status()`.
 
 Disable sampling for untrusted servers with `sampling: { enabled: false }`.
 

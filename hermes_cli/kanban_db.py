@@ -1476,7 +1476,8 @@ def list_tasks(
     tenant: Optional[str] = None, session_id: Optional[str] = None, include_archived: bool = False,
     limit: Optional[int] = None, order_by: Optional[str] = None,
     workflow_template_id: Optional[str] = None, current_step_key: Optional[str] = None,
-    block_recurrences_lt: Optional[int] = None,
+    block_recurrences_lt: Optional[int] = None, project_id: Optional[str] = None,
+    title: Optional[str] = None, title_contains: Optional[str] = None,
 ) -> list[Task]:
     if status is not None and status not in VALID_STATUSES:
         raise ValueError(f"status must be one of {sorted(VALID_STATUSES)}")
@@ -1485,11 +1486,18 @@ def list_tasks(
     for col, val in (
         ("assignee", _canonical_assignee(assignee)), ("status", status), ("tenant", tenant),
         ("session_id", session_id), ("workflow_template_id", workflow_template_id),
-        ("current_step_key", current_step_key),
+        ("current_step_key", current_step_key), ("project_id", project_id),
     ):
         if val is not None:
             query += f" AND {col} = ?"
             params.append(val)
+    if title is not None:
+        query += " AND title = ? COLLATE NOCASE"
+        params.append(str(title))
+    if title_contains is not None:
+        escaped = str(title_contains).replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        query += " AND title LIKE ? ESCAPE '\\' COLLATE NOCASE"
+        params.append(f"%{escaped}%")
     if not include_archived and status != "archived":
         query += " AND status != 'archived'"
     if block_recurrences_lt is not None:
@@ -1506,6 +1514,24 @@ def list_tasks(
         query += f" LIMIT {int(limit)}"
     rows = conn.execute(query, params).fetchall()
     return [Task.from_row(r) for r in rows]
+
+
+def count_tasks_by_status(
+    conn: sqlite3.Connection, *, project_id: Optional[str] = None,
+    include_archived: bool = False,
+) -> dict[str, int]:
+    """Return status counts without materializing every matching task."""
+    clauses = [] if include_archived else ["status != 'archived'"]
+    params: list[Any] = []
+    if project_id is not None:
+        clauses.append("project_id = ?")
+        params.append(project_id)
+    where = " WHERE " + " AND ".join(clauses) if clauses else ""
+    rows = conn.execute(
+        "SELECT status, COUNT(*) AS count FROM tasks" + where + " GROUP BY status",
+        params,
+    ).fetchall()
+    return {str(row["status"]): int(row["count"]) for row in rows}
 
 
 def assign_task(conn: sqlite3.Connection, task_id: str, profile: Optional[str]) -> bool:
@@ -1839,6 +1865,38 @@ def delete_attachment(conn: sqlite3.Connection, attachment_id: int) -> Optional[
 
 def list_events(conn: sqlite3.Connection, task_id: str) -> list[Event]:
     return [Event.from_row(r) for r in _task_rows(conn, "task_events", task_id, "created_at ASC, id ASC")]
+
+
+def find_latest_event(
+    conn: sqlite3.Connection, task_id: str, *, kinds: Optional[Iterable[str]] = None,
+    exclude_kinds: Optional[Iterable[str]] = None,
+) -> Optional[Event]:
+    """Return the newest matching event without materializing task history."""
+    clauses = ["task_id = ?"]
+    params: list[Any] = [task_id]
+    included = sorted({str(kind) for kind in kinds or () if kind})
+    excluded = sorted({str(kind) for kind in exclude_kinds or () if kind})
+    if included:
+        clauses.append("kind IN (" + ",".join("?" for _ in included) + ")")
+        params.extend(included)
+    if excluded:
+        clauses.append("kind NOT IN (" + ",".join("?" for _ in excluded) + ")")
+        params.extend(excluded)
+    row = conn.execute(
+        "SELECT * FROM task_events WHERE " + " AND ".join(clauses)
+        + " ORDER BY created_at DESC, id DESC LIMIT 1",
+        params,
+    ).fetchone()
+    return Event.from_row(row) if row else None
+
+
+def count_events(conn: sqlite3.Connection, task_id: str, *, kind: str) -> int:
+    """Count one event kind without loading event payloads."""
+    row = conn.execute(
+        "SELECT COUNT(*) AS count FROM task_events WHERE task_id = ? AND kind = ?",
+        (task_id, kind),
+    ).fetchone()
+    return int(row["count"] if row else 0)
 
 
 def _insert_comment(

@@ -615,6 +615,7 @@ Config knobs (all under `kanban:` in `~/.hermes/config.yaml`):
 | `default_assignee` | `""` | Where a child task lands when the LLM picks an unknown profile. Empty = fall back to active default. |
 | `auto_subscribe_on_create` | `true` | When `kanban_create` runs inside a persistent gateway/TUI session, terminal events resume that originating agent with a synthetic status turn. Set to `false` for passive completion or to require explicit `kanban_notify-subscribe` calls. Independent of `auto_decompose`. |
 | `done_sub_retention_days` | `30` | Notify subscriptions survive `done` (reopen-safe) and are removed on `archived`. The notifier GC purges subscriptions whose task has been `done` or `blocked` with no new events for this many days, bounding sub-table growth on boards that never archive. `0` disables the sweep. |
+| `project_status_command` | `false` | Exposes the read-only `/project-status <task|project> [--board <board>]` command on messaging gateways. Ambiguous references fail closed; this command never claims or changes a task. |
 
 And the two auxiliary LLM slots:
 
@@ -714,6 +715,21 @@ To disable without removing: add `dashboard.plugins.kanban.enabled: false` to `c
 ### Scope boundary
 
 The GUI is deliberately thin. Everything the plugin does is reachable from the CLI; the plugin just makes it comfortable for humans. Auto-assignment, budgets, governance gates, and org-chart views remain user-space — a router profile, another plugin, or a reuse of `tools/approval.py` — exactly as listed in the out-of-scope section of the design spec.
+
+### Read-only project status
+
+The first Phase-C command is disabled by default. Enable it with
+`hermes config set kanban.project_status_command true`, then use:
+
+```text
+/project-status <task|project> [--board <board>]
+```
+
+Resolution prefers an exact task ID, then an explicit board, then an unambiguous task or project
+reference. Ambiguity returns candidate IDs and performs no action. The result reports Kanban,
+run, review, dependency, workspace, branch, and recorded PR facts without starting a worker.
+Kanban `done`, PR state, merge state, deployment state, and production state remain separate;
+the command never infers that a completed task is deployed or live.
 
 ## CLI command reference
 

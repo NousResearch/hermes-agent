@@ -1817,6 +1817,18 @@ class CLICommandsMixin:
         if output:
             print(output)
 
+    def _handle_project_status_command(self, cmd: str):
+        """Handle the feature-gated, read-only Phase-C status adapter."""
+        from hermes_cli.kanban_status import (
+            project_status_command_enabled,
+            run_project_status_slash,
+        )
+
+        if not project_status_command_enabled():
+            print("Project status is not enabled (kanban.project_status_command).")
+            return
+        print(run_project_status_slash(cmd))
+
     def _handle_skills_command(self, cmd: str):
         """Handle /skills slash command — delegates to hermes_cli.skills_hub, after intercepting the
         write-approval review subcommands (pending/approve/reject/diff/mode)."""

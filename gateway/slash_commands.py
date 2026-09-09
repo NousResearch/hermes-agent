@@ -368,6 +368,21 @@ class GatewaySlashCommandsMixin(
             output = output[:3800] + "\n" + t("gateway.kanban.truncated_suffix")
         return output or t("gateway.kanban.no_output")
 
+    async def _handle_project_status_command(self, event: MessageEvent) -> str:
+        """Handle the feature-gated, read-only Phase-C status adapter."""
+        from hermes_cli.kanban_status import (
+            project_status_command_enabled,
+            run_project_status_slash,
+        )
+
+        if not project_status_command_enabled():
+            return "Project status is not enabled (kanban.project_status_command)."
+        try:
+            return await asyncio.to_thread(run_project_status_slash, event.get_command_args())
+        except Exception as exc:  # pragma: no cover - defensive boundary
+            logger.warning("project-status read failed: %s", exc)
+            return "Project status is unavailable. No action taken."
+
     async def _kanban_auto_subscribe(self, event: MessageEvent, task_id: str, requested_board) -> bool:
         """Subscribe the event's chat to *task_id* notifications (notify+wake). False when the
         source has no platform/chat to route back to."""

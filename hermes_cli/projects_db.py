@@ -263,9 +263,36 @@ def create_project(
     return pid
 
 
-def list_projects(conn: sqlite3.Connection, *, include_archived: bool = False) -> List[Project]:
-    sql = "SELECT * FROM projects" + ("" if include_archived else " WHERE archived = 0") + " ORDER BY created_at ASC"
-    return [_load_project(conn, r) for r in conn.execute(sql).fetchall()]
+def list_projects(
+    conn: sqlite3.Connection, *, include_archived: bool = False,
+    name: Optional[str] = None, name_contains: Optional[str] = None,
+    reference_contains: Optional[str] = None, board_slug: Optional[str] = None,
+    limit: Optional[int] = None,
+) -> List[Project]:
+    clauses = [] if include_archived else ["archived = 0"]
+    params: list = []
+    if name is not None:
+        clauses.append("name = ? COLLATE NOCASE")
+        params.append(str(name))
+    if name_contains is not None:
+        escaped = str(name_contains).replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        clauses.append("name LIKE ? ESCAPE '\\' COLLATE NOCASE")
+        params.append(f"%{escaped}%")
+    if reference_contains is not None:
+        escaped = str(reference_contains).replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        clauses.append(
+            "(name LIKE ? ESCAPE '\\' COLLATE NOCASE "
+            "OR slug LIKE ? ESCAPE '\\' COLLATE NOCASE)"
+        )
+        params.extend((f"%{escaped}%", f"%{escaped}%"))
+    if board_slug is not None:
+        clauses.append("board_slug = ?")
+        params.append(normalize_slug(board_slug))
+    where = " WHERE " + " AND ".join(clauses) if clauses else ""
+    sql = "SELECT * FROM projects" + where + " ORDER BY created_at ASC"
+    if limit:
+        sql += f" LIMIT {int(limit)}"
+    return [_load_project(conn, r) for r in conn.execute(sql, params).fetchall()]
 
 
 def get_project(conn: sqlite3.Connection, id_or_slug: str) -> Optional[Project]:

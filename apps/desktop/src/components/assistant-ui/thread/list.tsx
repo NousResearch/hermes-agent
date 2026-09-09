@@ -956,6 +956,69 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
     }
   }, [anchorBeforePrepend, expandWindow, hiddenCount, olderAvailable, paneBudget])
 
+  // Auto-pagination on scroll near top: branched sessions immediately saturate
+  // the render budget, and a long conversation pages behind "Show earlier".
+  // Users expect wheel/trackpad scrolling up to transparently reveal earlier
+  // history (#106350) — without this, the viewport stops at scrollTop 0 with
+  // hidden turns unreachable except by explicit button click. Trigger the same
+  // showEarlier path when the user scrolls within the top threshold, coalesced
+  // per frame and gated on settled load so it doesn't fight the session-switch
+  // restore loop.
+  const showEarlierRef = useRef(showEarlier)
+  showEarlierRef.current = showEarlier
+
+  useEffect(() => {
+    const el = scrollRef.current
+
+    if (!el) {
+      return
+    }
+
+    let ticking = false
+    let cooldown = false
+    const TOP_THRESHOLD_PX = 200
+
+    const tryLoadEarlier = () => {
+      if (cooldown || !loadSettledRef.current) {
+        return
+      }
+
+      if (el.scrollTop > TOP_THRESHOLD_PX) {
+        return
+      }
+
+      const action = resolveShowEarlierAction(hiddenCount, olderAvailable)
+
+      if (!action) {
+        return
+      }
+
+      cooldown = true
+      showEarlierRef.current()
+
+      window.setTimeout(() => {
+        cooldown = false
+      }, 250)
+    }
+
+    const onScroll = () => {
+      if (ticking) {
+        return
+      }
+
+      ticking = true
+
+      requestAnimationFrame(() => {
+        ticking = false
+        tryLoadEarlier()
+      })
+    }
+
+    el.addEventListener('scroll', onScroll, { passive: true })
+
+    return () => el.removeEventListener('scroll', onScroll)
+  }, [hiddenCount, olderAvailable, scrollRef])
+
   useLayoutEffect(() => {
     const el = scrollRef.current
     const restoreFromBottom = restoreFromBottomRef.current

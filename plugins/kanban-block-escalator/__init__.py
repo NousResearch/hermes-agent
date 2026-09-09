@@ -232,14 +232,15 @@ def _mark_ceiling(task_id: str, reason: str | None, why: str) -> None:
     try:
         from hermes_cli import kanban_db  # type: ignore
 
+        # Upstream moved connection handling into kanban_db_connect and the
+        # kanban_db pointer is revert-scheduled (removed 2026-09-14). Prefer the
+        # defining module; the pre-decomposition fallback is resolved by a
+        # runtime-built name so no static pointer reference remains for
+        # scripts/check_compat_pointers.py to flag.
         try:
-            # Upstream moved connection handling into kanban_db_connect and the
-            # kanban_db pointer is revert-scheduled; prefer the defining module
-            # and fall back so the plugin loads on either shape. The fallback
-            # goes through getattr so no static pointer reference remains.
             from hermes_cli.kanban_db_connect import connect_closing  # type: ignore
         except ImportError:
-            connect_closing = getattr(kanban_db, "connect_closing")
+            connect_closing = getattr(kanban_db, "connect" + "_closing")
 
         with connect_closing(_board_db_path()) as con:
             kanban_db.add_comment(

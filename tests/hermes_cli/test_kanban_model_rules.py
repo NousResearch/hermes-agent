@@ -16,6 +16,8 @@ import sys
 import tempfile
 
 import pytest
+from hermes_cli import kanban_db_connect as kbc
+from hermes_cli import kanban_db_dispatch as kbd
 
 
 @pytest.fixture()
@@ -75,14 +77,14 @@ def test_resolver_returns_none_when_no_rule_fires(isolated_kanban_home):
 
 def test_apply_mutates_only_in_memory_task(isolated_kanban_home):
     kb, _home = isolated_kanban_home
-    with kb.connect_closing() as conn:
+    with kbc.connect_closing() as conn:
         tid = kb.create_task(conn, title="Inventory scan", assignee="worker")
         task = kb.get_task(conn, tid)
     fired = kb.apply_model_rule(task, rules=_default_rules())
     assert fired is not None
     assert task.model_override == "deepseek/deepseek-v4-flash-0731"
     # The DB row is untouched — routing is spawn-scoped only.
-    with kb.connect_closing() as conn:
+    with kbc.connect_closing() as conn:
         row = kb.get_task(conn, tid)
     assert row.model_override is None
     assert row.provider_override is None
@@ -90,7 +92,7 @@ def test_apply_mutates_only_in_memory_task(isolated_kanban_home):
 
 def test_apply_respects_explicit_override(isolated_kanban_home):
     kb, _home = isolated_kanban_home
-    with kb.connect_closing() as conn:
+    with kbc.connect_closing() as conn:
         tid = kb.create_task(
             conn, title="route audit", assignee="worker",
             model_override="glm-5", provider_override="openrouter",
@@ -105,7 +107,7 @@ def test_apply_respects_explicit_override(isolated_kanban_home):
 
 def test_apply_sets_provider_from_rule(isolated_kanban_home):
     kb, _home = isolated_kanban_home
-    with kb.connect_closing() as conn:
+    with kbc.connect_closing() as conn:
         tid = kb.create_task(conn, title="classify threats", assignee="worker")
         task = kb.get_task(conn, tid)
     rules = [{"match": "classif", "model": "m2", "provider": "nous"}]
@@ -140,18 +142,18 @@ def test_all_malformed_rules_yield_none_not_a_crash(isolated_kanban_home):
 
 def test_dispatch_applies_rule_and_emits_event(isolated_kanban_home):
     kb, _home = isolated_kanban_home
-    with kb.connect_closing() as conn:
+    with kbc.connect_closing() as conn:
         kb.create_board(slug="default", name="Test")
         tid = kb.create_task(
             conn, title="BackupBrain: route audit ...", assignee="default",
         )
-    with kb.connect_closing() as conn:
-        res = kb.dispatch_once(
+    with kbc.connect_closing() as conn:
+        res = kbd.dispatch_once(
             conn, spawn_fn=_fake_spawn, dry_run=False,
             model_rules=_default_rules(),
         )
     assert any(s[0] == tid for s in res.spawned)
-    with kb.connect_closing() as conn:
+    with kbc.connect_closing() as conn:
         evs = list(conn.execute(
             "SELECT kind, payload FROM task_events "
             "WHERE task_id=? AND kind='model_rule_applied'",

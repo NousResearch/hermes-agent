@@ -151,7 +151,7 @@ def decompose_triage_task(
             "SELECT id, status, tenant, workspace_kind, workspace_path "
             "FROM tasks WHERE id = ?", (task_id,),
         ).fetchone()
-        if root_row is None or root_row["status"] != "triage":
+        if root_row is None:
             return None
         if root_row["status"] not in ("triage", "blocked"):
             # triage = fresh fan-out; blocked = resume fan-out (an operator

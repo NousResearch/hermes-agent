@@ -16,6 +16,7 @@ import pytest
 from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_db_connect as kbc
 from hermes_cli import kanban_decompose as decomp
+from hermes_cli import kanban_db_graph as kbg
 
 
 @pytest.fixture
@@ -351,7 +352,7 @@ def test_auto_decompose_decision_child_does_not_auto_promote_on_recompute(kanban
     """AC2: recompute_ready never promotes a triage card to ready."""
     with kbc.connect() as conn:
         tid = kb.create_task(conn, title="parallel decision fan", triage=True)
-        child_ids = kb.decompose_triage_task(
+        child_ids = kbg.decompose_triage_task(
             conn, tid,
             root_assignee="orch",
             children=[
@@ -377,7 +378,7 @@ def test_auto_decompose_non_decision_child_still_promotes(kanban_home):
     """AC5: a non-decision auto-decomposer child keeps current behavior (ready)."""
     with kbc.connect() as conn:
         tid = kb.create_task(conn, title="feature build", triage=True)
-        child_ids = kb.decompose_triage_task(
+        child_ids = kbg.decompose_triage_task(
             conn, tid,
             root_assignee="orch",
             children=[
@@ -398,7 +399,7 @@ def test_list_triage_ids_excludes_auto_decomposer_created(kanban_home):
     with kbc.connect() as conn:
         user_triage = kb.create_task(conn, title="user dropped", triage=True, assignee="someone")
         park_root = kb.create_task(conn, title="park me", triage=True)
-        decision = kb.decompose_triage_task(
+        decision = kbg.decompose_triage_task(
             conn, park_root,
             root_assignee="orch",
             children=[{"title": "Approve the API", "assignee": "jobsy", "triage": True}],

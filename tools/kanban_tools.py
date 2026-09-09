@@ -1335,8 +1335,12 @@ def _complete_tool_evidence_rejection(task_id: str) -> Optional[str]:
             )
         # Repeat: count it as a failed completion so the failure budget sees
         # it. The run is closed as a crash and the card returns to its source
-        # phase for re-dispatch.
-        kb._record_task_failure(
+        # phase for re-dispatch. Failure accounting moved to the dispatch
+        # module in the Sep-2026 decomposition; local import matches this
+        # module's prevailing style and avoids an import cycle.
+        from hermes_cli import kanban_db_dispatch as kbd
+
+        kbd._record_task_failure(
             conn, task_id,
             error=("fabricated completion: kanban_complete called again with "
                    "zero non-kanban tool calls in the run (no evidence of "

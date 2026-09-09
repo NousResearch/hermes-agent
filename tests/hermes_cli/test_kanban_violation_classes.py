@@ -53,10 +53,10 @@ def _dead_worker(conn, task_id, pid, *, runtime):
         (pid, started_at, task_id),
     )
     conn.commit()
-    kb._record_worker_exit(pid, 0 << 8)
-    _recent = kb._recent_worker_exits.get(int(pid))
+    kbd._record_worker_exit(pid, 0 << 8)
+    _recent = kbd._recent_worker_exits.get(int(pid))
     raw = _recent[0] if _recent else (0 << 8)
-    kb._recent_worker_exits[int(pid)] = (raw, float(started_at + runtime))
+    kbd._recent_worker_exits[int(pid)] = (raw, float(started_at + runtime))
     return started_at
 
 
@@ -91,7 +91,7 @@ def _trigger(isolated_home, monkeypatch, *, log_text):
         run = kb.latest_run(conn, tid)
         task = kb.get_task(conn, tid)
         circuit = kb._circuit_status(conn).get("state")
-        streak = kb._protocol_violation_streak(conn, tid)
+        streak = kbd._protocol_violation_streak(conn, tid)
     return tid, crashed, run, task, circuit, streak
 
 

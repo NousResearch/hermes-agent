@@ -55,8 +55,7 @@ Output a single JSON object with this exact shape:
         "title": "<concrete task title, imperative voice, <= 80 chars>",
         "body":  "<detailed spec for the worker on this child task>",
         "assignee": "<profile name from the roster, or null for default>",
-        "parents": [<int>, ...],
-        "hold": false
+        "parents": [<int>, ...]
       },
       ...
     ]
@@ -75,12 +74,6 @@ Rules:
     and the system will route to the default_assignee.
   - Each child task body is what a fresh worker will read with no other
     context — be specific about goal, approach, and acceptance criteria.
-  - Set "hold": true on the FINAL terminal child whose completion ships to
-    production / releases to a human (deploy, release, rollout, go-live). The
-    system creates it as a hard operator_hold — it will NOT dispatch until an
-    owner unblocks it after review. This is mandatory for deploy-shaped tasks:
-    a deploy card without a real hold can auto-run past an owner approval gate
-    and is a serious safety hole. When in doubt, hold.
 
 When the task is genuinely a single unit of work (no useful decomposition),
 return:
@@ -115,75 +108,6 @@ Default assignee (used when no profile fits a task): {default_assignee}
 
 _FENCE_RE = re.compile(r"^```(?:json)?\s*|\s*```$", re.MULTILINE)
 
-# Titles whose completion would constitute an unsigned product/PM decision.
-# The auto-decomposer routes children whose title matches this to ``triage``
-# (never ``ready``), so a ghost PM-run cannot self-complete them and lock a
-# decision the owner never signed.
-#
-# The verbs are chosen so only deliberately decision-shaped phrasings match, not
-# incidental uses inside implementation titles. Bare ``\b`` word boundaries are
-# NOT sufficient — ``\b lock \b`` matches the standalone word "lock", so title
-# like "Lock the report row rendering" and "Sign off on the backend" would be
-# misclassified. Ambiguous verbs that appear routinely in implementation titles
-# are therefore dropped outright (lock, sign off, redefine) or gated on a
-# decision-shaped noun context: "approve" matches only before a design/plan/
-# approach/... noun, and "amend" only before a document (PRD/plan/spec/design).
-# Unambiguous decision verbs that only ever read as a decision when used bare
-# (decide, ratify) and the verb phrase "spec the" match directly.
-_DECISION_TITLE_RE = re.compile(
-    r"\bdecide\b"
-    r"|\bapprove\s+(?:the|an?|this)\s+"
-    r"(?:(?:[a-z0-9-]+\s+)?"
-    r"(?:design|plan|approach|choice|spec|decision|model|schema|architecture|"
-    r"strategy|option|direction|source|interface)\b)"
-    r"|\bspec\s+the\b"
-    r"|\bratify\b"
-    r"|\bamend\s+the\s+(?:prd|plan|spec|design(?:\s+doc)?|roadmap|requirements)\b",
-    re.IGNORECASE,
-)
-
-# Exactly-matched author that stamps auto-decompose children (see
-# kanban_db.decompose_triage_task's ``created_by``). Used both to (a) route
-# decision-shaped children to triage and (b) exclude auto-decomposer-created
-# triage from re-decomposition on later ticks.
-AUTO_DECOMPOSER_AUTHOR = "auto-decomposer"
-
-
-def _is_decision_shaped(title: str) -> bool:
-    """True when a child title reads as a product decision, not a task."""
-    if not title:
-        return False
-    return bool(_DECISION_TITLE_RE.search(title))
-
-
-# Terminal children that, if they auto-promote, ship code to production or
-# release to a human without an owner sign-off. Their titles read as deploy /
-# release / rollout / ship-to-prod. The auto-decomposer holds these at
-# creation (`operator_hold`) so they can never slip a deployment past an
-# approval gate (2026-09-04 GlobalAside: the deploy card had a prose "HELD"
-# but no DB hold, so it auto-promoted the moment its verify parent completed).
-_DEPLOY_TITLE_RE = re.compile(
-    r"\bdeploy(?:ment)?\b"
-    r"|\brelease\b"
-    r"|\brollout\b"
-    r"|\bship-to?-prod(?:uction)?\b"
-    r"|\bgo live\b"
-    r"|\bput .* into production\b",
-    re.IGNORECASE,
-)
-
-
-def _is_deploy_shaped(title: str) -> bool:
-    """True when a child title names a deploy/release/rollout to production.
-
-    Used to force a real ``operator_hold`` on auto-decomposed deploy children
-    (see ``decompose_task``), so a deployment gate is machine-enforced rather
-    than advisory prose.
-    """
-    if not title:
-        return False
-    return bool(_DEPLOY_TITLE_RE.search(title))
-
 
 @dataclass
 class DecomposeOutcome:
@@ -195,80 +119,8 @@ class DecomposeOutcome:
     fanout: bool = False
     child_ids: list[str] | None = None
     new_title: Optional[str] = None
+    # FLEET: --dry-run computes the graph and returns it here, writing nothing.
     dry_run_plan: Optional[list[dict]] = None
-
-
-def _truncate(text: str, limit: int) -> str:
-    if len(text) <= limit:
-        return text
-    return text[: limit - 1] + "…"
-
-# Outcomes that are "decisive" about whether a card is currently inside an
-# active review cycle. ``review_requested`` = card handed to a reviewer;
-# ``changes_requested`` = reviewer sent it back for rework. ``completed`` is
-# the state that CLOSES a review cycle (the card reached done). ``blocked`` /
-# ``crashed`` / ``timed_out`` mid-fix are NOT decisive — they say nothing about
-# which lane the card is in, so they are ignored when deciding whether a card
-# is mid-review.
-_REVIEW_CYCLE_OUTCOMES = frozenset({"review_requested", "changes_requested"})
-_REVIEW_CYCLE_TERMINAL = frozenset({"review_requested", "changes_requested", "completed"})
-
-
-def _has_active_review_cycle(task_id: str) -> bool:
-    """Return True when a task is inside a review cycle and must be resumed,
-    never decomposed.
-
-    Guard 1 of the auto-decomposer fix (t_c52b9bc3): a healthy card in the
-    review loop whose fix run ended ``blocked`` must NOT be split into
-    children. Look at the NEWEST decisive run outcome — a ``changes_requested``
-    (or ``review_requested``) that has not since been closed by a
-    ``completed`` means the card is mid-review. A trailing ``blocked`` run does
-    not clear it (the blocked fix-round is the very case we want to resume, not
-    fan out).
-
-    Also covers the obvious fast path: the card's current status is
-    ``review``/``changes_requested``.
-    """
-    try:
-        with kbc.connect_closing() as conn:
-            task = kb.get_task(conn, task_id)
-            if task is None:
-                return False
-            if task.status in ("review", "changes_requested"):
-                return True
-            row = conn.execute(
-                "SELECT outcome FROM task_runs "
-                "WHERE task_id = ? AND outcome IS NOT NULL "
-                "ORDER BY id DESC LIMIT 500",
-                (task_id,),
-            ).fetchall()
-    except Exception:
-        logger.warning(
-            "decompose: could not check review cycle for %s (assuming none)", task_id,
-        )
-        return False
-    decisive = [r["outcome"] for r in row if r["outcome"] in _REVIEW_CYCLE_TERMINAL]
-    if not decisive:
-        return False
-    return decisive[0] in _REVIEW_CYCLE_OUTCOMES
-
-
-def _extract_json_blob(raw: str) -> Optional[dict]:
-    if not raw:
-        return None
-    stripped = _FENCE_RE.sub("", raw.strip())
-    first = stripped.find("{")
-    last = stripped.rfind("}")
-    if first == -1 or last == -1 or last <= first:
-        return None
-    candidate = stripped[first : last + 1]
-    try:
-        val = json.loads(candidate)
-    except (ValueError, json.JSONDecodeError):
-        return None
-    if not isinstance(val, dict):
-        return None
-    return val
 
 
 def _profile_author() -> str:
@@ -340,6 +192,131 @@ def _normalize_assignee_choice(assignee: object, *, default_assignee: str, valid
     return chosen if chosen in valid_names else default_assignee
 
 
+# ===========================================================================
+# FLEET ADDITIONS (WeRoll) — decision/deploy shaping and the review-cycle
+# guard. No upstream equivalent.
+# ===========================================================================
+# Titles whose completion would constitute an unsigned product/PM decision.
+# The auto-decomposer routes children whose title matches this to ``triage``
+# (never ``ready``), so a ghost PM-run cannot self-complete them and lock a
+# decision the owner never signed.
+#
+# The verbs are chosen so only deliberately decision-shaped phrasings match, not
+# incidental uses inside implementation titles. Bare ``\b`` word boundaries are
+# NOT sufficient — ``\b lock \b`` matches the standalone word "lock", so title
+# like "Lock the report row rendering" and "Sign off on the backend" would be
+# misclassified. Ambiguous verbs that appear routinely in implementation titles
+# are therefore dropped outright (lock, sign off, redefine) or gated on a
+# decision-shaped noun context: "approve" matches only before a design/plan/
+# approach/... noun, and "amend" only before a document (PRD/plan/spec/design).
+# Unambiguous decision verbs that only ever read as a decision when used bare
+# (decide, ratify) and the verb phrase "spec the" match directly.
+_DECISION_TITLE_RE = re.compile(
+    r"\bdecide\b"
+    r"|\bapprove\s+(?:the|an?|this)\s+"
+    r"(?:(?:[a-z0-9-]+\s+)?"
+    r"(?:design|plan|approach|choice|spec|decision|model|schema|architecture|"
+    r"strategy|option|direction|source|interface)\b)"
+    r"|\bspec\s+the\b"
+    r"|\bratify\b"
+    r"|\bamend\s+the\s+(?:prd|plan|spec|design(?:\s+doc)?|roadmap|requirements)\b",
+    re.IGNORECASE,
+)
+
+# Exactly-matched author that stamps auto-decompose children (see
+# kanban_db.decompose_triage_task's ``created_by``). Used both to (a) route
+# decision-shaped children to triage and (b) exclude auto-decomposer-created
+# triage from re-decomposition on later ticks.
+AUTO_DECOMPOSER_AUTHOR = "auto-decomposer"
+
+# Terminal children that, if they auto-promote, ship code to production or
+# release to a human without an owner sign-off. Their titles read as deploy /
+# release / rollout / ship-to-prod. The auto-decomposer holds these at
+# creation (`operator_hold`) so they can never slip a deployment past an
+# approval gate (2026-09-04 GlobalAside: the deploy card had a prose "HELD"
+# but no DB hold, so it auto-promoted the moment its verify parent completed).
+_DEPLOY_TITLE_RE = re.compile(
+    r"\bdeploy(?:ment)?\b"
+    r"|\brelease\b"
+    r"|\brollout\b"
+    r"|\bship-to?-prod(?:uction)?\b"
+    r"|\bgo live\b"
+    r"|\bput .* into production\b",
+    re.IGNORECASE,
+)
+
+
+def _is_decision_shaped(title: str) -> bool:
+    """True when a child title reads as a product decision, not a task."""
+    if not title:
+        return False
+    return bool(_DECISION_TITLE_RE.search(title))
+
+
+def _is_deploy_shaped(title: str) -> bool:
+    """True when a child title names a deploy/release/rollout to production.
+
+    Used to force a real ``operator_hold`` on auto-decomposed deploy children
+    (see ``decompose_task``), so a deployment gate is machine-enforced rather
+    than advisory prose.
+    """
+    if not title:
+        return False
+    return bool(_DEPLOY_TITLE_RE.search(title))
+
+
+# Outcomes that are "decisive" about whether a card is currently inside an
+# active review cycle. ``review_requested`` = card handed to a reviewer;
+# ``changes_requested`` = reviewer sent it back for rework. ``completed`` is
+# the state that CLOSES a review cycle (the card reached done). ``blocked`` /
+# ``crashed`` / ``timed_out`` mid-fix are NOT decisive — they say nothing about
+# which lane the card is in, so they are ignored when deciding whether a card
+# is mid-review.
+_REVIEW_CYCLE_OUTCOMES = frozenset({"review_requested", "changes_requested"})
+
+
+_REVIEW_CYCLE_TERMINAL = frozenset({"review_requested", "changes_requested", "completed"})
+
+
+def _has_active_review_cycle(task_id: str) -> bool:
+    """Return True when a task is inside a review cycle and must be resumed,
+    never decomposed.
+
+    Guard 1 of the auto-decomposer fix (t_c52b9bc3): a healthy card in the
+    review loop whose fix run ended ``blocked`` must NOT be split into
+    children. Look at the NEWEST decisive run outcome — a ``changes_requested``
+    (or ``review_requested``) that has not since been closed by a
+    ``completed`` means the card is mid-review. A trailing ``blocked`` run does
+    not clear it (the blocked fix-round is the very case we want to resume, not
+    fan out).
+
+    Also covers the obvious fast path: the card's current status is
+    ``review``/``changes_requested``.
+    """
+    try:
+        with kbc.connect_closing() as conn:
+            task = kb.get_task(conn, task_id)
+            if task is None:
+                return False
+            if task.status in ("review", "changes_requested"):
+                return True
+            row = conn.execute(
+                "SELECT outcome FROM task_runs "
+                "WHERE task_id = ? AND outcome IS NOT NULL "
+                "ORDER BY id DESC LIMIT 500",
+                (task_id,),
+            ).fetchall()
+    except Exception:
+        logger.warning(
+            "decompose: could not check review cycle for %s (assuming none)", task_id,
+        )
+        return False
+    decisive = [r["outcome"] for r in row if r["outcome"] in _REVIEW_CYCLE_TERMINAL]
+    if not decisive:
+        return False
+    return decisive[0] in _REVIEW_CYCLE_OUTCOMES
+
+
 @dataclass
 class _Routing:
     """Config-derived routing context for one decomposition."""
@@ -364,7 +341,8 @@ def _load_routing() -> _Routing:
     )
 
 
-def _apply_single(task: kb.Task, parsed: dict, routing: _Routing, author: str) -> DecomposeOutcome:
+def _apply_single(task: kb.Task, parsed: dict, routing: _Routing, author: str,
+                  *, dry_run: bool = False) -> DecomposeOutcome:
     """``fanout=false``: single-task spec promotion (same effect as specify)."""
     title_val, body_val = _title_body(parsed)
     assignee_val = None
@@ -374,6 +352,12 @@ def _apply_single(task: kb.Task, parsed: dict, routing: _Routing, author: str) -
         )
     if title_val is None and body_val is None:
         return DecomposeOutcome(task.id, False, "decomposer returned fanout=false with no title/body")
+    if dry_run:
+        return DecomposeOutcome(
+            task.id, True, "dry-run: single task (no fanout) — nothing written",
+            fanout=False, new_title=title_val,
+            dry_run_plan=[{"title": title_val, "body": body_val, "assignee": assignee_val}],
+        )
     with kbc.connect_closing() as conn:
         ok = kb.specify_triage_task(
             conn, task.id, title=title_val, body=body_val, assignee=assignee_val, author=author,
@@ -383,7 +367,8 @@ def _apply_single(task: kb.Task, parsed: dict, routing: _Routing, author: str) -
     return DecomposeOutcome(task.id, True, "single task (no fanout)", fanout=False, new_title=title_val)
 
 
-def _clean_children(task_id: str, raw_tasks: list, routing: _Routing) -> tuple[list[dict], str]:
+def _clean_children(task_id: str, raw_tasks: list, routing: _Routing,
+                    *, is_auto: bool = False) -> tuple[list[dict], str]:
     """Validate/normalise the LLM's ``tasks`` list; ``(children, "")`` or ``([], reason)``.
     Unknown assignees route to the default; never assignee=None."""
     children: list[dict] = []
@@ -407,23 +392,52 @@ def _clean_children(task_id: str, raw_tasks: list, routing: _Routing) -> tuple[l
         parents = entry.get("parents") or []
         if not isinstance(parents, list):
             parents = []
+        # FLEET: a decision-shaped child of an AUTO run parks in ``triage``
+        # (never ``ready``) so a ghost PM run cannot self-complete it and lock a
+        # decision the owner never signed. A manual run is already
+        # owner-committed and keeps today's behaviour.
+        #
+        # Deploy/terminal children are the mirror case: anything whose
+        # completion ships to production must be operator-HELD at creation. A
+        # prose "HELD pending approval" in the body is not a gate —
+        # recompute_ready auto-promotes such a card the moment its parent
+        # completes (the 2026-09-04 GlobalAside incident). Over-holding is safe;
+        # under-holding is the bug being closed.
+        hold_flag = bool(entry.get("hold"))
+        if is_auto and _is_deploy_shaped(title):
+            hold_flag = True
         children.append({
             "title": title.strip()[:200],
             "body": body.strip() if isinstance(body, str) else "",
             "assignee": chosen,
             # Drop non-int, out-of-range and self parent indices.
             "parents": [p for p in parents if isinstance(p, int) and 0 <= p < len(raw_tasks) and p != idx],
+            "triage": is_auto and _is_decision_shaped(title),
+            "hold": hold_flag,
         })
     return children, ""
 
 
-def _apply_fanout(task_id: str, parsed: dict, routing: _Routing, author: str) -> DecomposeOutcome:
+def _apply_fanout(task_id: str, parsed: dict, routing: _Routing, author: str,
+                  *, dry_run: bool = False) -> DecomposeOutcome:
     raw_tasks = parsed.get("tasks") or []
     if not isinstance(raw_tasks, list) or not raw_tasks:
         return DecomposeOutcome(task_id, False, "decomposer returned fanout=true with empty tasks list")
-    children, reason = _clean_children(task_id, raw_tasks, routing)
+    children, reason = _clean_children(
+        task_id, raw_tasks, routing, is_auto=(author == AUTO_DECOMPOSER_AUTHOR),
+    )
     if reason:
         return DecomposeOutcome(task_id, False, reason)
+    if dry_run:
+        return DecomposeOutcome(
+            task_id, True,
+            f"dry-run: would fan out into {len(children)} children — nothing written",
+            fanout=True, child_ids=None,
+            dry_run_plan=[
+                {k: c[k] for k in ("title", "body", "assignee", "parents", "triage", "hold")}
+                for c in children
+            ],
+        )
     try:
         with kbc.connect_closing() as conn:
             child_ids = decompose_triage_task(
@@ -458,22 +472,21 @@ def decompose_task(
     as ``ok=False``."""
     task, reason = _load_triage_task(task_id)
     if task is None:
-        return DecomposeOutcome(task_id, False, reason)
-    if task.status not in ("triage", "blocked"):
-        return DecomposeOutcome(
-            task_id, False, f"task is not in triage/blocked (status={task.status!r})"
-        )
-    # Guard 1 (auto-decomposer fix, t_c52b9bc3): NO SPLIT MID-REVIEW. A card in
-    # an active review cycle (status review/changes_requested, OR its newest
-    # decisive run outcome is review_requested/changes_requested with no
-    # intervening completion) must be RESUMED in the same card + worktree, not
-    # fanned out. A blocked fix-round is a resume trigger, never a fan-out
-    # trigger. Refusing here (rather than in the tick) makes the guard hold for
-    # both the auto-decompose tick and the manual `kanban decompose <id>` CLI.
+        # FLEET: a BLOCKED root is a resume fan-out — an operator splitting a
+        # stuck card into children. ``_load_triage_task`` only admits ``triage``,
+        # so re-read and accept that one extra status here.
+        with kbc.connect_closing() as conn:
+            task = kb.get_task(conn, task_id)
+        if task is None or task.status != "blocked":
+            return DecomposeOutcome(task_id, False, reason)
+    # FLEET guard (t_c52b9bc3): NO SPLIT MID-REVIEW. A card in an active review
+    # cycle must be RESUMED in the same card and worktree, not fanned out — a
+    # blocked fix-round is a resume trigger, never a fan-out trigger. Refusing
+    # here rather than in the dispatcher tick makes the guard hold for the
+    # manual `kanban decompose <id>` path too.
     if _has_active_review_cycle(task_id):
         return DecomposeOutcome(
-            task_id,
-            False,
+            task_id, False,
             "task is in an active review cycle; resuming in same card + "
             "worktree, refusing to split (blocked fix-round is a resume, not a "
             "fan-out trigger)",
@@ -497,202 +510,42 @@ def decompose_task(
         return DecomposeOutcome(task_id, False, "LLM returned malformed JSON")
 
     audit_author = author or _profile_author()
-
-    if not fanout:
-        # Fall back to single-task spec promotion (same effect as specify).
-        new_title = parsed.get("title")
-        new_body = parsed.get("body")
-        title_val = new_title.strip() if isinstance(new_title, str) and new_title.strip() else None
-        body_val = new_body if isinstance(new_body, str) and new_body.strip() else None
-        assignee_val = None
-        if not task.assignee:
-            assignee_val = _normalize_assignee_choice(
-                parsed.get("assignee"),
-                default_assignee=default_assignee,
-                valid_names=valid_names,
-            )
-        if title_val is None and body_val is None:
-            return DecomposeOutcome(
-                task_id, False, "decomposer returned fanout=false with no title/body",
-            )
-        if dry_run:
-            return DecomposeOutcome(
-                task_id, True, "dry-run: single task (no fanout) — nothing written",
-                fanout=False, new_title=title_val,
-                dry_run_plan=[{
-                    "title": title_val,
-                    "body": body_val,
-                    "assignee": assignee_val,
-                }],
-            )
-        with kbc.connect_closing() as conn:
-            ok = kb.specify_triage_task(
-                conn,
-                task_id,
-                title=title_val,
-                body=body_val,
-                assignee=assignee_val,
-                author=audit_author,
-            )
-        if not ok:
-            return DecomposeOutcome(
-                task_id, False, "task moved out of triage before promotion",
-            )
-        return DecomposeOutcome(
-            task_id, True, "single task (no fanout)",
-            fanout=False, new_title=title_val,
-        )
-
-    raw_tasks = parsed.get("tasks") or []
-    if not isinstance(raw_tasks, list) or not raw_tasks:
-        return DecomposeOutcome(
-            task_id, False, "decomposer returned fanout=true with empty tasks list",
-        )
-
-    # Rewrite invalid assignees to the default fallback. Never leave a
-    # task with assignee=None — the user explicitly does not want that.
-    children: list[dict] = []
-    for idx, entry in enumerate(raw_tasks):
-        if not isinstance(entry, dict):
-            return DecomposeOutcome(
-                task_id, False, f"tasks[{idx}] is not an object",
-            )
-        title = entry.get("title")
-        if not isinstance(title, str) or not title.strip():
-            return DecomposeOutcome(
-                task_id, False, f"tasks[{idx}].title is missing or empty",
-            )
-        body = entry.get("body")
-        if not isinstance(body, str):
-            body = ""
-        assignee = entry.get("assignee")
-        chosen = _normalize_assignee_choice(
-            assignee,
-            default_assignee=default_assignee,
-            valid_names=valid_names,
-        )
-        if (
-            isinstance(assignee, str)
-            and assignee.strip()
-            and assignee.strip() not in valid_names
-        ):
-            logger.info(
-                "decompose: task %s child %d picked unknown assignee %r — "
-                "routing to default_assignee %r",
-                task_id, idx, assignee, default_assignee,
-            )
-        parents = entry.get("parents") or []
-        if not isinstance(parents, list):
-            parents = []
-        # Clean parent indices: drop non-int and out-of-range.
-        clean_parents = [p for p in parents if isinstance(p, int) and 0 <= p < len(raw_tasks) and p != idx]
-        is_auto = (audit_author == AUTO_DECOMPOSER_AUTHOR)
-        # Decision-shaped children park in triage for the PM. Deploy/terminal
-        # children — anything whose completion ships to production or releases
-        # to a human — are the opposite: they MUST be operator-held at creation,
-        # never dispatched toward `done` until an owner unblocks them. A prose
-        # "HELD pending approval" in the body is NOT a gate (recompute_ready
-        # auto-promotes it the moment its parent completes — the 2026-09-04
-        # GlobalAside incident). So any auto-decomposed child whose title is
-        # deploy/release/rollout-shaped (or explicitly flagged `hold`) is
-        # created as a real DB operator_hold block. Over-holding is safe (it
-        # just waits for an unblock); under-holding is the bug we are closing.
-        hold_flag = bool(entry.get("hold"))
-        if is_auto and _is_deploy_shaped(title):
-            hold_flag = True
-        children.append({
-            "title": title.strip()[:200],
-            "body": body.strip(),
-            "assignee": chosen,
-            "parents": clean_parents,
-            # AC1: an auto-decomposer-spawned child whose title is a product
-            # decision must land in ``triage`` (never ``ready``) so a ghost PM
-            # run cannot self-complete it. Manually-specified (non auto) runs
-            # keep current behavior: they are already owner-committed.
-            "triage": is_auto and _is_decision_shaped(title),
-            # Terminal/deploy child -> hard operator_hold so it can never
-            # auto-promote past an owner approval gate.
-            "hold": hold_flag,
-        })
-
-    if dry_run:
-        plan = [
-            {
-                "title": c["title"],
-                "body": c["body"],
-                "assignee": c["assignee"],
-                "parents": c["parents"],
-                "triage": c["triage"],
-                "hold": c["hold"],
-            }
-            for c in children
-        ]
-        return DecomposeOutcome(
-            task_id, True,
-            f"dry-run: would fan out into {len(children)} children — nothing written",
-            fanout=True, child_ids=None,
-            dry_run_plan=plan,
-        )
-
-    try:
-        with kbc.connect_closing() as conn:
-            child_ids = kb.decompose_triage_task(
-                conn,
-                task_id,
-                root_assignee=orchestrator,
-                children=children,
-                author=audit_author,
-                auto_promote=auto_promote,
-            )
-    except ValueError as exc:
-        return DecomposeOutcome(task_id, False, f"DB rejected graph: {exc}")
-    except Exception as exc:
-        logger.exception("decompose: DB error on task %s", task_id)
-        return DecomposeOutcome(task_id, False, f"DB error: {type(exc).__name__}")
-
-    if child_ids is None:
-        return DecomposeOutcome(
-            task_id, False, "task moved out of triage before decomposition",
-        )
-
-    return DecomposeOutcome(
-        task_id, True, f"decomposed into {len(child_ids)} children",
-        fanout=True, child_ids=child_ids,
-    )
+    if not parsed.get("fanout"):
+        return _apply_single(task, parsed, routing, audit_author, dry_run=dry_run)
+    return _apply_fanout(task_id, parsed, routing, audit_author, dry_run=dry_run)
 
 
 def list_triage_ids(*, tenant: Optional[str] = None) -> list[str]:
     """Return task ids currently in the triage column.
 
-    Excludes cards that the auto-decomposer itself created in ``triage``
-    (i.e. the decision-shaped children it demoted so the PM can accept
-    them). Without this exclusion the dispatcher's auto-decompose tick
-    would re-decompose those parked decisions on the next tick, defeating
-    the AC1/AC2 gate. Genuine user-dropped triage (``created_by`` a real
-    profile/user) is still returned and decomposed as normal.
+    FLEET: excludes cards the auto-decomposer itself parked in ``triage`` (the
+    decision-shaped children it demoted for the PM). Without the exclusion the
+    dispatcher's tick would re-decompose those parked decisions next tick,
+    defeating the AC1 gate. Also excludes a card the loop breaker routed to
+    triage (same-kind re-block at the recurrence limit): that is parked for a
+    HUMAN, and auto-decomposing it would hand the escalation ceiling to the
+    decomposer model. Genuine user-dropped triage is still returned.
     """
     with kbc.connect_closing() as conn:
-        rows = kb.list_tasks(
-            conn,
-            status="triage",
-            tenant=tenant,
-            limit=1000,
-        )
+        rows = kb.list_tasks(conn, status="triage", tenant=tenant, limit=1000)
     return [
         row.id for row in rows
         if (row.created_by or "") != AUTO_DECOMPOSER_AUTHOR
-        # "decomposer" is a legacy fallback author, never produced by the live
-        # dispatcher: decompose_triage_task stamps it ("decompose_triage_task"
-        # in kanban_db.py:7452 via `author or "decomposer"`) only when no author
-        # is supplied. Filter it like the auto-decomposer author so such triage
-        # can still be re-decomposed instead of being silently stranded.
+        # "decomposer" is the legacy fallback author decompose_triage_task
+        # stamps when no author is supplied; filter it the same way rather than
+        # stranding such a card forever.
         and (row.created_by or "") != "decomposer"
-        # 2026-09-03 (charter §6): a card that block_task routed to triage as a
-        # LOOP BREAKER (same-kind re-block, block_recurrences >= limit) is parked
-        # for a HUMAN decision. Auto-decomposing it would hand the escalation
-        # ceiling to the decomposer model and re-run the card without Richie.
         and not (
             (row.block_kind or "") != ""
             and int(row.block_recurrences or 0) >= kb.BLOCK_RECURRENCE_LIMIT
         )
     ]
+
+
+# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
+# Names external plugins imported from this module before the Sep 2026 decomposition.
+# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
+# The whole block is removed by reverting the commit that added it.
+import json  # noqa: F401,E402
+import os  # noqa: F401,E402
+# ---- END PLUGIN-COMPAT ----

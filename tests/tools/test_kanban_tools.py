@@ -13,6 +13,7 @@ import os
 from concurrent.futures import ThreadPoolExecutor
 
 import pytest
+from hermes_cli import kanban_db_connect as kbc  # module-level: fleet tests use it outside the local-import helpers
 
 
 # ---------------------------------------------------------------------------

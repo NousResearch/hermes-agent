@@ -111,13 +111,13 @@ def test_fast_clean_exit_with_provider_error_trips_breaker(
         started_at = _claim_dead_worker(conn, tid, pid)
         # Reap registry: (raw_status, reaped_at). Runtime = reaped_at - started_at.
         runtime = 1 if fast_window else 60
-        _kb._record_worker_exit(
+        kbd._record_worker_exit(
             pid, _exited_status(0),
         )
         # Point the freshly-recorded entry's reaped_at at started_at+runtime.
-        _recent = _kb._recent_worker_exits.get(int(pid))
+        _recent = kbd._recent_worker_exits.get(int(pid))
         raw = _recent[0] if _recent else _exited_status(0)
-        _kb._recent_worker_exits[int(pid)] = (
+        kbd._recent_worker_exits[int(pid)] = (
             raw, float(started_at + runtime),
         )
         _write_outage_log(
@@ -163,10 +163,10 @@ def test_fast_clean_exit_without_provider_error_does_not_trip(
         tid = kb.create_task(conn, title="noerr", assignee="a")
         pid = 50001
         started_at = _claim_dead_worker(conn, tid, pid)
-        _kb._record_worker_exit(pid, _exited_status(0))
-        _recent = _kb._recent_worker_exits.get(int(pid))
+        kbd._record_worker_exit(pid, _exited_status(0))
+        _recent = kbd._recent_worker_exits.get(int(pid))
         raw = _recent[0] if _recent else _exited_status(0)
-        _kb._recent_worker_exits[int(pid)] = (raw, float(started_at + 1))
+        kbd._recent_worker_exits[int(pid)] = (raw, float(started_at + 1))
         # No log file at all — detection requires a grounded log signal.
         (circuit_home / "kanban" / "logs").mkdir(parents=True, exist_ok=True)
 
@@ -228,10 +228,10 @@ def test_trip_queues_exactly_one_alert(circuit_home, monkeypatch):
 
     def _simulate_outage(tid, pid):
         started_at = _claim_dead_worker(conn, tid, pid)
-        _kb._record_worker_exit(pid, _exited_status(0))
-        _recent = _kb._recent_worker_exits.get(int(pid))
+        kbd._record_worker_exit(pid, _exited_status(0))
+        _recent = kbd._recent_worker_exits.get(int(pid))
         raw = _recent[0] if _recent else _exited_status(0)
-        _kb._recent_worker_exits[int(pid)] = (raw, float(started_at + 1))
+        kbd._recent_worker_exits[int(pid)] = (raw, float(started_at + 1))
         _write_outage_log(
             circuit_home, tid,
             provider_error=(

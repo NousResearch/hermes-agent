@@ -120,7 +120,7 @@ def test_dirty_worktree_preserved_and_wip_committed(repo: Path) -> None:
     wt = _make_worktree(repo, "t_hhhh8888")
     (wt / "wip.txt").write_text("uncommitted\n", encoding="utf-8")
     (wt / "wip2.txt").write_text("more\n", encoding="utf-8")
-    kb._cleanup_worktree_workspace("t_hhhh8888", str(wt))
+    kbw._cleanup_worktree_workspace("t_hhhh8888", str(wt))
 
     # Diff preserved on disk AND committed onto the task branch.
     assert wt.is_dir()

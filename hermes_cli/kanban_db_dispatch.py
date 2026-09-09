@@ -828,7 +828,22 @@ def _classify_fleet_clean_exit(
              "violation_class": "workspace_error"},
             workspace_error=True,
         )
-    return None
+    # ``no_checkpoint`` — the genuine case: the model finished but never
+    # checkpointed. Same bounded retry as upstream, but carrying the machine
+    # field so the three clean-exit classes stop being conflated on the board.
+    return _DeadWorker(
+        "clean_exit", code,
+        _PROTOCOL_VIOLATION_ERROR
+        + " (violation_class=no_checkpoint: no provider or workspace error in "
+          "the log; the model finished but never checkpointed)",
+        "protocol_violation",
+        {"pid": pid, "claimer": claimer, "exit_code": code,
+         "violation_class": "no_checkpoint",
+         # Durable marker for _protocol_violation_streak: _end_run copies this
+         # payload into the run metadata.
+         "protocol_violation": True},
+        protocol_violation=True,
+    )
 
 
 def _classify_dead_worker(

@@ -11,6 +11,8 @@ import pytest
 from hermes_cli import kanban_db as kb
 from hermes_cli.kanban_db_graph import decompose_triage_task
 from hermes_cli import kanban_db_connect as kbc
+from hermes_cli import kanban_db_graph as kbg
+from hermes_cli import kanban_db_workspace as kbw
 
 
 @pytest.fixture
@@ -62,7 +64,7 @@ def test_decompose_blocked_resume_fanout_children_claimable(kanban_home):
         {"title": "child C", "assignee": "default", "parents": []},
     ]
     with kbc.connect() as conn:
-        child_ids = kb.decompose_triage_task(
+        child_ids = kbg.decompose_triage_task(
             conn,
             tid,
             root_assignee="orchestrator",
@@ -112,7 +114,7 @@ def test_decompose_all_triage_parked_children_is_pm_recoverable(kanban_home):
         {"title": "decision B", "assignee": "engineer", "triage": True, "parents": []},
     ]
     with kbc.connect() as conn:
-        child_ids = kb.decompose_triage_task(
+        child_ids = kbg.decompose_triage_task(
             conn,
             tid,
             root_assignee="orchestrator",
@@ -257,7 +259,7 @@ def test_decompose_unknown_assignee_child_parked_in_triage(kanban_home):
         {"title": "parallel real", "assignee": "default", "parents": []},
     ]
     with kbc.connect() as conn:
-        child_ids = kb.decompose_triage_task(
+        child_ids = kbg.decompose_triage_task(
             conn,
             tid,
             root_assignee="orchestrator",
@@ -281,7 +283,7 @@ def test_decompose_unknown_assignee_child_parked_in_triage(kanban_home):
 
 def _make_worktree(repo, task_id, branch=None):
     target = repo / ".worktrees" / task_id
-    kb._ensure_git_worktree(repo, target, branch or f"wt/{task_id}")
+    kbw._ensure_git_worktree(repo, target, branch or f"wt/{task_id}")
     return target
 
 
@@ -327,7 +329,7 @@ def test_decompose_impl_child_inherits_dirty_parent_worktree(kanban_home, tmp_pa
         {"title": "decision", "assignee": "researcher", "parents": [], "triage": True},
     ]
     with kbc.connect() as conn:
-        child_ids = kb.decompose_triage_task(
+        child_ids = kbg.decompose_triage_task(
             conn, tid, root_assignee="orchestrator", children=children,
             author="decomposer", auto_promote=False,
         )
@@ -360,7 +362,7 @@ def test_decompose_blocked_resume_preserves_root_assignee(kanban_home):
         {"title": "child B", "assignee": "engineer", "parents": []},
     ]
     with kbc.connect() as conn:
-        child_ids = kb.decompose_triage_task(
+        child_ids = kbg.decompose_triage_task(
             conn, tid, root_assignee="switch", children=children,
             author="decomposer",
         )
@@ -382,7 +384,7 @@ def test_decompose_fresh_triage_still_sets_root_assignee(kanban_home):
         tid = kb.create_task(conn, title="fresh idea", triage=True)
     children = [{"title": "research", "assignee": "researcher", "parents": []}]
     with kbc.connect() as conn:
-        child_ids = kb.decompose_triage_task(
+        child_ids = kbg.decompose_triage_task(
             conn, tid, root_assignee="orchestrator", children=children,
             author="decomposer",
         )
@@ -417,7 +419,7 @@ def test_decompose_hold_child_is_operator_hold_and_never_autopromotes(kanban_hom
          "parents": [0], "hold": True},
     ]
     with kbc.connect() as conn:
-        child_ids = kb.decompose_triage_task(
+        child_ids = kbg.decompose_triage_task(
             conn, tid, root_assignee="orchestrator", children=children,
             author="decomposer",
         )
@@ -462,7 +464,7 @@ def test_decompose_hold_child_emits_blocked_event(kanban_home):
     children = [{"title": "Release build", "assignee": "researcher",
                  "parents": [], "hold": True}]
     with kbc.connect() as conn:
-        child_ids = kb.decompose_triage_task(
+        child_ids = kbg.decompose_triage_task(
             conn, tid, root_assignee="orchestrator", children=children,
             author="decomposer",
         )
@@ -486,7 +488,7 @@ def test_decompose_hold_false_child_not_blocked(kanban_home):
         children = [{"title": "code", "assignee": "researcher",
                      "parents": [], "hold": hold_flag}]
         with kbc.connect() as conn:
-            child_ids = kb.decompose_triage_task(
+            child_ids = kbg.decompose_triage_task(
                 conn, _tid, root_assignee="orch", children=children,
                 author="decomposer",
             )

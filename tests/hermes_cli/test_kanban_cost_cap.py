@@ -21,6 +21,7 @@ import pytest
 
 from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_db_connect as kbc
+from hermes_cli import kanban_db_dispatch as kbd
 
 
 @pytest.fixture
@@ -42,7 +43,7 @@ def _host_claimer() -> str:
 def _claim_running(conn, task_id):
     claimed = kb.claim_task(conn, task_id, claimer=_host_claimer())
     assert claimed is not None, "task should be claimable (ready)"
-    kb._set_worker_pid(conn, task_id, 77777)
+    kbd._set_worker_pid(conn, task_id, 77777)
     return claimed
 
 

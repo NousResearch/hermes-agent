@@ -19,6 +19,7 @@ from contextlib import ExitStack
 from pathlib import Path
 
 from agent.file_safety import get_read_block_error
+from agent.source_provenance_tools import issue_active_read_provenance
 from tools.binary_extensions import has_binary_extension
 from tools.file_operations import (
     ShellFileOperations, normalize_read_pagination, normalize_search_pagination)
@@ -26,7 +27,8 @@ from tools.file_operations_common import DEFAULT_READ_LIMIT
 from tools import file_state
 from agent.redact import redact_sensitive_text
 from tools.file_tools_paths import (
-    _expand_tilde, _path_resolution_warning, _resolve_base_dir, _resolve_path_for_task)
+    _expand_tilde, _path_resolution_warning, _resolve_base_dir, _resolve_path_for_task,
+    _uses_container_paths)
 from tools.file_tools_write_guards import (
     _READ_DEDUP_STATUS_MESSAGE, _check_approval_required_write, _check_binary_document_write,
     _check_cross_profile_path, _check_protected_instruction_write, _check_sensitive_path,
@@ -611,7 +613,8 @@ def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, 
             except OSError:
                 pass  # stat failed — fall through to full read
 
-        result = _get_file_ops(task_id).read_file(path, offset, limit)
+        file_ops = _get_file_ops(task_id)
+        result = file_ops.read_file(path, offset, limit)
         result_dict = result.to_dict()
 
         # Cache a not-found result for retries. Deliberately NO early return:
@@ -629,6 +632,7 @@ def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, 
             result.content = _apply_char_budget(
                 result_dict, result.content or "", offset,
                 result_dict.get("total_lines", "unknown"), max_chars)
+        content_before_redaction = result.content or ""
         if result.content:
             result.content = redact_sensitive_text(result.content, file_read=True)
             result_dict["content"] = result.content
@@ -654,6 +658,16 @@ def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, 
                 f"You have read this exact file region {count} times consecutively. "
                 "The content has not changed since your last read. Use the information you already have. "
                 "If you are stuck in a loop, stop reading and proceed with writing or responding.")
+        if result.content == content_before_redaction:
+            issue_active_read_provenance(
+                resolved=_resolved,
+                source_path=_source_path,
+                offset=offset,
+                limit=limit,
+                returned_content=result.content,
+                result_dict=result_dict,
+                file_ops=file_ops,
+            )
         return json.dumps(result_dict, ensure_ascii=False)
     except Exception as e:
         return tool_error(str(e))

@@ -723,7 +723,10 @@ def _dispatch_nonstreaming_api_request(agent, api_kwargs: dict, *, make_client):
         # Request-local client so the stale/interrupt watchdog aborts sockets
         # from the stranger thread while the worker owns the SDK close (#67142).
         request_client = make_client("anthropic_messages_request", kind="anthropic_messages")
-        return agent._anthropic_messages_create(api_kwargs, client=request_client)
+        return _dispatch_provider_request(
+            agent, api_kwargs,
+            lambda authorized: agent._anthropic_messages_create(authorized, client=request_client),
+        )
     if agent.api_mode == "bedrock_converse":
         return _bedrock_converse_call(api_kwargs, stream=False)
     if agent.provider == "moa":
@@ -735,8 +738,15 @@ def _dispatch_nonstreaming_api_request(agent, api_kwargs: dict, *, make_client):
         _completions = getattr(getattr(agent.client, "chat", None), "completions", None)
         if not callable(getattr(_completions, "prepare", None)):
             api_kwargs.pop("_moa_prepared_request", None)
-        return agent.client.chat.completions.create(**api_kwargs)
-    return make_client("chat_completion_request").chat.completions.create(**api_kwargs)
+        return _dispatch_provider_request(
+            agent, api_kwargs,
+            lambda authorized: agent.client.chat.completions.create(**authorized),
+        )
+    request_client = make_client("chat_completion_request")
+    return _dispatch_provider_request(
+        agent, api_kwargs,
+        lambda authorized: request_client.chat.completions.create(**authorized),
+    )
 
 
 def should_use_direct_api_call(agent) -> bool:

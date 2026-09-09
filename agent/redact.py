@@ -276,7 +276,7 @@ _JSON_FIELD_RE = re.compile(rf'("{_JSON_KEY_NAMES}")\s*:\s*"([^"]+)"', re.IGNORE
 # name and scheme word preserved. The credential class excludes quotes: pulling
 # a closing quote into the mask turns value corruption into SYNTAX corruption
 # (unterminated quote → shell EOF / SyntaxError).
-_AUTH_HEADER_RE = re.compile(r"((?:Proxy-)?Authorization:\s*)([A-Za-z][\w.+-]*\s+)?([^\s\"']+)", re.IGNORECASE)
+_AUTH_HEADER_RE = re.compile(r"((?:Proxy-)?Authorization:[ \t]*)([A-Za-z][\w.+-]*[ \t]+)?([^\s\"']+)", re.IGNORECASE)
 
 # API-key style headers (single opaque value, no scheme word): non-vendor-prefix
 # values would otherwise leak when a curl command is echoed into tool output.
@@ -601,7 +601,23 @@ def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = F
         text = _redact_assignments(text)
 
     if "uthorization" in text or "UTHORIZATION" in text:  # cheapest gate over every casing
-        text = _AUTH_HEADER_RE.sub(lambda m: m.group(1) + (m.group(2) or "") + _mask_token(m.group(3)), text)
+        # Value-aware gate (issue #96607 pattern): a short non-opaque scalar after
+        # ``authorization:*** — ``true``/``false``/``yes`` in config/YAML — is a
+        # legitimate value, not a credential; the bare-word credential class is
+        # only trusted when the value has credential shape. A scheme word
+        # (Bearer/Basic/...) is a strong "this is a real header" signal, so any
+        # scheme'd value masks unconditionally. Real header tokens
+        # (vendor-prefix, base64, ≥12 mixed-class) still match; prefix-matched
+        # vendor tokens are already handled by the prefix pass above
+        # (ordering matters: the prefix pass runs before this one).
+        def _auth_sub(m):
+            credential = m.group(3)
+            masked = (
+                m.group(2) is not None  # scheme word present → real header
+                or _looks_like_opaque_credential(credential))
+            return m.group(1) + (m.group(2) or "") + (
+                _mask_token(credential) if masked else credential)
+        text = _AUTH_HEADER_RE.sub(_auth_sub, text)
 
     if ":" in text:
         text = _SECRET_HEADER_RE.sub(lambda m: m.group(1) + _mask_token(m.group(2)), text)

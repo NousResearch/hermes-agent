@@ -294,6 +294,58 @@ class TestAuthHeaders:
         text = "the authorization model is fully open"
         assert redact_sensitive_text(text) == text
 
+    def test_authorization_yaml_key_not_redacted_across_lines(self):
+        # Regression: the Authorization-header regex's `\s` matched the newline
+        # after a short YAML boolean, so `authorization: true\n  additional_creators_allowed: false`
+        # was redacted as a "credential", destroying two legitimate config lines
+        # (observed corrupting a delivered context bundle). The header pass must
+        # stay line-scoped.
+        text = (
+            "  bootstrap_requires_operator_authorization: true\n"
+            "  additional_creators_allowed: false\n"
+        )
+        assert redact_sensitive_text(text) == text
+
+    def test_authorization_multiline_block_preserved(self):
+        # Same bug class in a larger block: nothing on the following line may be
+        # swallowed, and no newline may be deleted (mask_token strips control chars).
+        text = (
+            "creation:\n"
+            "  bootstrap_requires_operator_authorization: true\n"
+            "  delegation_of_creation_authority_allowed: false\n"
+            "authority:\n"
+            "  architect:\n"
+            "    - prepare target-sphere knowledge directories\n"
+        )
+        assert redact_sensitive_text(text) == text
+
+    def test_auth_header_with_scheme_word_masks_short_values(self):
+        # Gate-interaction contract: a scheme word (Bearer/Basic/...) marks a real
+        # header, so even a short single-class value masks unconditionally — the
+        # value-shape gate applies only to BARE values (YAML booleans etc.).
+        for text in (
+            "Authorization: Basic YWJjOnB3",   # 10-char base64 creds
+            "authorization: Bearer abc123",    # 6-char mixed
+            "Authorization: bearer deadbeef",  # 8-char hex nonce
+        ):
+            result = redact_sensitive_text(text)
+            assert "YWJjOnB3" not in result, text
+            assert "abc123" not in result, text
+            assert "deadbeef" not in result, text
+
+    def test_auth_header_vendor_prefixed_short_token_masked(self):
+        # The value gate's bare-word safety relies on the prefix pass masking
+        # vendor-prefixed tokens (ordering: prefix pass runs before this one).
+        text = "Authorization: token ghp_abc"
+        result = redact_sensitive_text(text)
+        assert "ghp_abc" not in result, result
+
+    def test_authorization_crlf_payload_preserved(self):
+        # [ \t] deliberately excludes \r — a CRLF YAML boolean must pass through
+        # unchanged (no key on the next line swallowed).
+        text = "bootstrap_requires_operator_authorization: true\r\n  additional_creators_allowed: false\r\n"
+        assert redact_sensitive_text(text) == text
+
     def test_token_flush_against_double_quote_preserves_quote(self):
         # Regression for #43083: a token sitting flush against a closing
         # double quote must NOT pull that quote into the mask. Greedy \S+

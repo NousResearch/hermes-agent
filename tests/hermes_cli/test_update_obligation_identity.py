@@ -57,7 +57,9 @@ def test_every_owed_identity_requires_current_evidence(monkeypatch, bad):
     directory = home / "logs" / "update_receipts"
     directory.mkdir(parents=True)
     if bad == "marker":
-        (home / "fleet_restart_pending").write_text("expected_sha=new\n")
+        # No expected_sha: cannot verify live fleet, so the marker still
+        # fail-opens even when successors would cover the receipt (#106682).
+        (home / "fleet_restart_pending").write_text("started=1\npid=1\n")
     owed = {"kind": "gateway", "profile": "beta", "code_sha": "old"}
     if bad == "wrong-kind":
         owed["kind"] = "serve"

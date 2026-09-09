@@ -176,10 +176,41 @@ def test_marker_round_trip_under_hermes_home():
 
 
 def test_pending_needed_when_marker_exists():
+    # No expected_sha: cannot verify live fleet, so fail-open (marker existence ⇒ pending).
     update_cmd._write_fleet_restart_pending_marker()
     assert update_cmd._pending_fleet_restart_needed() is True
     update_cmd._clear_fleet_restart_pending_marker()
     assert update_cmd._pending_fleet_restart_needed() is False
+
+
+def test_marker_with_expected_sha_cleared_when_live_fleet_matches(monkeypatch):
+    update_cmd._write_fleet_restart_pending_marker(expected_sha="AAA")
+    monkeypatch.setattr(
+        "hermes_cli.update_receipt.collect_fleet_versions",
+        lambda **k: [{"profile": "default", "code_sha": "AAA", "state": "current"}],
+    )
+    assert update_cmd._pending_fleet_restart_needed() is False
+    assert not update_cmd._fleet_restart_pending_marker_path().exists()
+
+
+def test_marker_still_pending_when_live_fleet_sha_mismatches(monkeypatch):
+    update_cmd._write_fleet_restart_pending_marker(expected_sha="AAA")
+    monkeypatch.setattr(
+        "hermes_cli.update_receipt.collect_fleet_versions",
+        lambda **k: [{"profile": "default", "code_sha": "BBB", "state": "current"}],
+    )
+    assert update_cmd._pending_fleet_restart_needed() is True
+    assert update_cmd._fleet_restart_pending_marker_path().is_file()
+
+
+def test_marker_fail_open_when_no_live_fleet(monkeypatch):
+    update_cmd._write_fleet_restart_pending_marker(expected_sha="AAA")
+    monkeypatch.setattr(
+        "hermes_cli.update_receipt.collect_fleet_versions",
+        lambda **k: [],
+    )
+    assert update_cmd._pending_fleet_restart_needed() is True
+    assert update_cmd._fleet_restart_pending_marker_path().is_file()
 
 
 def test_pending_needed_when_unfinished_receipt_runtime_sha_skews(monkeypatch):

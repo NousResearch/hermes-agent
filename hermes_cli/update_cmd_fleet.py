@@ -183,14 +183,73 @@ def _live_fleet_covers_receipt(expected_sha: str | None) -> bool:
         return False
 
 
+def _marker_expected_sha(text: str) -> str | None:
+    """Parse ``expected_sha=`` from a ``fleet_restart_pending`` body.
+
+    Missing or empty values cannot be verified and must fail open.
+    """
+    for line in text.splitlines():
+        if line.startswith("expected_sha="):
+            value = line.split("=", 1)[1].strip()
+            return value or None
+    return None
+
+
+def _live_fleet_covers_marker_sha(expected_sha: str) -> bool:
+    """True when every live gateway row vouches for *expected_sha*.
+
+    Fail open (False) when the probe is empty, raises, or any live row cannot
+    vouch — empty ``code_sha``, SHA mismatch, or an explicitly stale row.
+    A receipt is not required; live ``code_sha`` is the discharge evidence.
+    """
+    if not expected_sha:
+        return False
+    from hermes_cli.update_receipt import collect_fleet_versions
+
+    try:
+        fleet = collect_fleet_versions()
+    except Exception as exc:
+        logger.debug("Could not probe live fleet for pending marker: %s", exc)
+        return False
+    if not fleet:
+        return False
+    vouched = False
+    for row in fleet:
+        if not isinstance(row, dict):
+            return False
+        code_sha = row.get("code_sha")
+        if not code_sha:
+            return False
+        if str(code_sha) != str(expected_sha):
+            return False
+        if row.get("state") == "stale":
+            return False
+        vouched = True
+    return vouched
+
+
 def _pending_fleet_restart_needed() -> bool:
     """Reconcile old restart obligations against current, identity-matched gateways."""
     from hermes_cli.update_cmd import _current_checkout_sha
 
-    # The marker has no runtime inventory and may belong to a newer, killed update
-    # than latest.json. An older receipt cannot discharge that unknown obligation.
+    # Marker may belong to a newer, killed update than latest.json. An older
+    # receipt cannot discharge that unknown obligation — but a live fleet
+    # already running expected_sha can (#106682).
     with suppress(OSError):
-        if _fleet_restart_pending_marker_path().is_file():
+        path = _fleet_restart_pending_marker_path()
+        if path.is_file():
+            try:
+                body = path.read_text(encoding="utf-8")
+            except OSError:
+                return True
+            expected = _marker_expected_sha(body)
+            if expected and _live_fleet_covers_marker_sha(expected):
+                logger.info(
+                    "Retiring fleet_restart_pending: live gateways match expected_sha=%s",
+                    expected,
+                )
+                _clear_fleet_restart_pending_marker()
+                return False
             return True
     if not _receipt_reports_stale_runtime():
         return False

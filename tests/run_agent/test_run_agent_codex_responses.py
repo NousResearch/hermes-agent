@@ -1232,6 +1232,94 @@ def test_codex_final_preflight_bounds_middleware_cache_key(monkeypatch):
     assert len(captured["prompt_cache_key"]) <= 64
 
 
+@pytest.mark.parametrize("middleware_kind", ["request", "execution"])
+def test_codex_middleware_model_rewrite_drops_stale_reasoning_and_stamps_response(
+    monkeypatch, middleware_kind,
+):
+    agent = _build_agent(monkeypatch)
+    setattr(agent, "_disable_streaming", True)
+    captured = {}
+
+    def _rewritten(request):
+        assert any(item.get("type") == "reasoning" for item in request["input"])
+        replacement = dict(request)
+        replacement["model"] = "gpt-5.6-sol"
+        return replacement
+
+    if middleware_kind == "request":
+        def _request_middleware(request, **_context):
+            return SimpleNamespace(
+                payload=_rewritten(request),
+                original_payload=request,
+                changed=True,
+                trace=[],
+            )
+
+        monkeypatch.setattr(
+            "hermes_cli.middleware.apply_llm_request_middleware",
+            _request_middleware,
+        )
+    else:
+        def _execution_middleware(request, next_call, **_context):
+            replacement = _rewritten(request)
+            request["model"] = replacement["model"]
+            return next_call(request)
+
+        monkeypatch.setattr(
+            "hermes_cli.middleware.run_llm_execution_middleware",
+            _execution_middleware,
+        )
+
+    def _capture_api_call(api_kwargs):
+        captured.update(api_kwargs)
+        return SimpleNamespace(
+            output=[
+                SimpleNamespace(
+                    type="reasoning",
+                    id="rs_new_model",
+                    encrypted_content="new-model-blob",
+                    summary=[],
+                ),
+                SimpleNamespace(
+                    type="message",
+                    content=[SimpleNamespace(type="output_text", text="OK")],
+                ),
+            ],
+            usage=SimpleNamespace(input_tokens=5, output_tokens=3, total_tokens=8),
+            status="completed",
+            model="gpt-5.6-sol",
+        )
+
+    monkeypatch.setattr(agent, "_interruptible_api_call", _capture_api_call)
+    history = [
+        {"role": "user", "content": "Earlier question"},
+        {
+            "role": "assistant",
+            "content": "Earlier answer",
+            "codex_reasoning_items": [{
+                "type": "reasoning",
+                "encrypted_content": "old-model-blob",
+                "_issuer_kind": "codex_backend",
+                "_issuer_model": "gpt-5-codex",
+            }],
+        },
+    ]
+
+    result = agent.run_conversation("Next question", conversation_history=history)
+
+    assert result["completed"] is True
+    assert captured["model"] == "gpt-5.6-sol"
+    assert not any(item.get("type") in {"reasoning", "compaction"} for item in captured["input"])
+    assert result["messages"][-1]["codex_reasoning_items"] == [{
+        "type": "reasoning",
+        "encrypted_content": "new-model-blob",
+        "_issuer_kind": "codex_backend",
+        "_issuer_model": "gpt-5.6-sol",
+        "id": "rs_new_model",
+        "summary": [],
+    }]
+
+
 def test_run_conversation_codex_empty_output_with_output_text(monkeypatch):
     """Regression: empty response.output + valid output_text should succeed,
     not trigger retry/fallback. The validation stage must defer to

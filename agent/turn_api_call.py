@@ -36,8 +36,32 @@ class ApiCallVerdict:
 
     action: str
     response: Any
+    response_issuer_model: Any
     thinking_spinner: Any
     interrupted: Any
+
+
+def _codex_request_for_dispatch(request: Any, built_model: Any) -> tuple[Any, Any]:
+    """Bind encrypted replay and response provenance to the final middleware model."""
+    from agent.codex_responses_adapter import _wire_model_identity
+
+    dispatched_model = _wire_model_identity(
+        request.get("model") if isinstance(request, dict) else None
+    )
+    if dispatched_model == _wire_model_identity(built_model) or not isinstance(request, dict):
+        return request, dispatched_model
+    input_items = request.get("input")
+    if not isinstance(input_items, list):
+        return request, dispatched_model
+    request = dict(request)
+    request["input"] = [
+        item for item in input_items
+        if not (
+            isinstance(item, dict)
+            and item.get("type") in {"reasoning", "compaction"}
+        )
+    ]
+    return request, dispatched_model
 
 
 def _should_stream(agent: Any) -> bool:
@@ -66,10 +90,24 @@ def perform_api_call(
 ) -> ApiCallVerdict:
     """Issue the request (see ``_should_stream`` for the streaming decision)."""
     response = None
+    response_issuer_model = None
+    built_issuer_model = None
+    if agent.api_mode == "codex_responses":
+        from agent.codex_responses_adapter import _wire_model_identity
+
+        built_issuer_model = _wire_model_identity(
+            _original_api_kwargs.get("model")
+            if isinstance(_original_api_kwargs, dict)
+            else None
+        )
+        response_issuer_model = _wire_model_identity(
+            api_kwargs.get("model") if isinstance(api_kwargs, dict) else None
+        )
 
     def _verdict(action: str) -> ApiCallVerdict:
         return ApiCallVerdict(
-            action=action, response=response, thinking_spinner=thinking_spinner,
+            action=action, response=response, response_issuer_model=response_issuer_model,
+            thinking_spinner=thinking_spinner,
             interrupted=interrupted,
         )
 
@@ -80,7 +118,11 @@ def perform_api_call(
     _use_streaming = _should_stream(agent)
 
     def _perform_api_call(next_api_kwargs):
+        nonlocal response_issuer_model
         if agent.api_mode == "codex_responses":
+            next_api_kwargs, response_issuer_model = _codex_request_for_dispatch(
+                next_api_kwargs, built_issuer_model,
+            )
             next_api_kwargs = agent._get_transport().preflight_kwargs(
                 next_api_kwargs, allow_stream=False, is_github_responses=agent._is_copilot_url(),
                 sanitize_harmony_tokens=agent._is_codex_backend(),

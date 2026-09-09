@@ -8,6 +8,8 @@ const registeredSubmitHandler = vi.hoisted(() => ({
   current: null as ((payload: { correlationId: string; target: string; text: string }) => void) | null
 }))
 
+type SubmitTextForBridge = Parameters<typeof useQuickEntryBridge>[0]['submitText']
+
 vi.mock('@/store/quick-entry', async importOriginal => {
   const actual = await importOriginal<typeof import('@/store/quick-entry')>()
 
@@ -34,7 +36,12 @@ describe('quickEntrySubmitAck', () => {
     })
   })
 
-  it('acknowledges only an accepted prompt as success', () => {
+  it('names the accepted identity on an accepted ack', () => {
+    expect(quickEntrySubmitAck(true, { runtimeSessionId: 'rt-1', storedSessionId: 'st-1' })).toEqual({
+      ok: true,
+      runtimeSessionId: 'rt-1',
+      sessionId: 'st-1'
+    })
     expect(quickEntrySubmitAck(true)).toEqual({ ok: true })
   })
 })
@@ -50,10 +57,10 @@ describe('useQuickEntryBridge', () => {
     vi.clearAllMocks()
   })
 
-  async function renderBridge() {
+  async function renderBridge(submitText: SubmitTextForBridge = () => true) {
     function Harness() {
       useQuickEntryBridge({
-        submitText: () => true,
+        submitText,
         submitTextToNewSession: async () => ({
           runtimeSessionId: 'runtime-new',
           sessionId: 'stored-new'
@@ -72,6 +79,117 @@ describe('useQuickEntryBridge', () => {
 
     return { container, submit: registeredSubmitHandler.current! }
   }
+
+  it('acknowledges a current-chat submit with the identity the pipeline accepted', async () => {
+    const correlationId = 'current-submit-correlation'
+    const ackSubmit = vi.fn()
+    window.hermesDesktop = {
+      quickEntry: {
+        ackSubmit,
+        pushState: vi.fn()
+      }
+    } as unknown as typeof window.hermesDesktop
+
+    const submitText = vi.fn(async (text: string, options?: Parameters<SubmitTextForBridge>[1]) => {
+      options?.onAccepted?.({ runtimeSessionId: 'rt-current-1', storedSessionId: 'st-current-1' })
+      expect(text).toBe('Send to current chat')
+      return true
+    })
+    const { container, submit } = await renderBridge(submitText)
+
+    await act(async () => {
+      await submit({ correlationId, target: 'current', text: 'Send to current chat' })
+    })
+
+    expect(ackSubmit).toHaveBeenCalledTimes(1)
+    expect(ackSubmit).toHaveBeenCalledWith(correlationId, {
+      ok: true,
+      runtimeSessionId: 'rt-current-1',
+      sessionId: 'st-current-1'
+    })
+
+    container.remove()
+  })
+
+  it('acknowledges a current-chat submit with no identity without inventing one', async () => {
+    const correlationId = 'current-submit-no-identity'
+    const ackSubmit = vi.fn()
+    window.hermesDesktop = {
+      quickEntry: {
+        ackSubmit,
+        pushState: vi.fn()
+      }
+    } as unknown as typeof window.hermesDesktop
+
+    const { container, submit } = await renderBridge(vi.fn(async () => true))
+
+    await act(async () => {
+      await submit({ correlationId, target: 'current', text: 'No identity path' })
+    })
+
+    expect(ackSubmit).toHaveBeenCalledTimes(1)
+    expect(ackSubmit).toHaveBeenCalledWith(correlationId, { ok: true })
+
+    container.remove()
+  })
+
+  it('keeps a rejected current-chat submit retryable', async () => {
+    const correlationId = 'current-submit-rejected'
+    const ackSubmit = vi.fn()
+    window.hermesDesktop = {
+      quickEntry: {
+        ackSubmit,
+        pushState: vi.fn()
+      }
+    } as unknown as typeof window.hermesDesktop
+
+    const { container, submit } = await renderBridge(vi.fn(async () => false))
+
+    await act(async () => {
+      await submit({ correlationId, target: 'current', text: 'Rejected prompt' })
+    })
+
+    expect(ackSubmit).toHaveBeenCalledTimes(1)
+    expect(ackSubmit).toHaveBeenCalledWith(correlationId, {
+      code: 'submit-rejected',
+      message: 'The prompt was not accepted.',
+      ok: false,
+      retryable: true
+    })
+
+    container.remove()
+  })
+
+  it('reports a failed current-chat submit as retryable', async () => {
+    const correlationId = 'current-submit-failed'
+    const ackSubmit = vi.fn()
+    window.hermesDesktop = {
+      quickEntry: {
+        ackSubmit,
+        pushState: vi.fn()
+      }
+    } as unknown as typeof window.hermesDesktop
+
+    const { container, submit } = await renderBridge(
+      vi.fn(async () => {
+        throw new Error('gateway down')
+      })
+    )
+
+    await act(async () => {
+      await submit({ correlationId, target: 'current', text: 'Failed prompt' })
+    })
+
+    expect(ackSubmit).toHaveBeenCalledTimes(1)
+    expect(ackSubmit).toHaveBeenCalledWith(correlationId, {
+      code: 'submit-failed',
+      message: 'gateway down',
+      ok: false,
+      retryable: true
+    })
+
+    container.remove()
+  })
 
   it('acknowledges an accepted selected-session submit with exact identity', async () => {
     const correlationId = 'selected-submit-correlation'

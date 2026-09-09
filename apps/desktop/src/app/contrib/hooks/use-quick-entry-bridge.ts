@@ -13,8 +13,17 @@ import { sessionTileDelegate } from '@/store/session-states'
 import { isAuxiliaryWindow } from '@/store/windows'
 
 interface QuickEntryBridgeParams {
-  submitText: (text: string) => Promise<boolean> | boolean
+  submitText: (
+    text: string,
+    options?: { onAccepted?: (identity: QuickEntryAcceptedIdentity) => void }
+  ) => Promise<boolean> | boolean
   submitTextToNewSession: (text: string) => Promise<{ runtimeSessionId: string; sessionId: string }>
+}
+
+/** Exact session identity that accepted a prompt (runtime + durable stored id). */
+interface QuickEntryAcceptedIdentity {
+  runtimeSessionId: string
+  storedSessionId: null | string
 }
 
 // The picker is a capture aid, not a session browser — a handful of recent
@@ -26,15 +35,25 @@ const QUICK_ENTRY_SESSION_OPTIONS = 5
  * without throwing (for example, while the target is busy). That is a failed
  * delivery, not an acknowledgement of success.
  */
-export function quickEntrySubmitAck(submitted: boolean): QuickEntrySubmitResult {
-  return submitted
-    ? { ok: true }
-    : {
-        code: 'submit-rejected',
-        message: 'The prompt was not accepted.',
-        ok: false,
-        retryable: true
-      }
+export function quickEntrySubmitAck(
+  submitted: boolean,
+  identity?: null | QuickEntryAcceptedIdentity
+): QuickEntrySubmitResult {
+  if (!submitted) {
+    return {
+      code: 'submit-rejected',
+      message: 'The prompt was not accepted.',
+      ok: false,
+      retryable: true
+    }
+  }
+
+  // An accepted prompt names the session that accepted it. A submit that
+  // resolved true without an identity callback (slash commands, which never
+  // reach prompt.submit) still acknowledges, but claims no backend session.
+  return identity
+    ? { ok: true, runtimeSessionId: identity.runtimeSessionId, sessionId: identity.storedSessionId }
+    : { ok: true }
 }
 
 function sessionOptions(): QuickEntrySessionOption[] {
@@ -147,9 +166,15 @@ export function useQuickEntryBridge({
         return
       }
 
+      let acceptedIdentity: null | QuickEntryAcceptedIdentity = null
+
       try {
-        const submitted = await submitTextRef.current(text)
-        ack(quickEntrySubmitAck(submitted))
+        const submitted = await submitTextRef.current(text, {
+          onAccepted: identity => {
+            acceptedIdentity = identity
+          }
+        })
+        ack(quickEntrySubmitAck(submitted, acceptedIdentity))
       } catch (error) {
         ack({ code: 'submit-failed', message: error instanceof Error ? error.message : String(error), ok: false, retryable: true })
       }

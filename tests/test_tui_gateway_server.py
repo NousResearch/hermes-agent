@@ -9639,6 +9639,41 @@ def test_config_set_model_global_persists(monkeypatch):
     assert saved_values["model.base_url"] == "https://api.anthropic.com"
 
 
+def test_config_set_model_without_live_session_cannot_persist_implicitly(monkeypatch):
+    calls = []
+
+    def _fake_apply(sid, session, raw, **kwargs):
+        calls.append((sid, session, raw, kwargs))
+        return {"value": "new/model", "warning": "", "scope": "global"}
+
+    monkeypatch.setattr(server, "_apply_model_switch", _fake_apply)
+
+    resp = server.handle_request(
+        {
+            "id": "1",
+            "method": "config.set",
+            "params": {"key": "model", "value": "new/model --provider openai-codex"},
+        }
+    )
+
+    assert resp["error"]["code"] == 4001
+    assert "live session" in resp["error"]["message"]
+    assert "Settings" in resp["error"]["message"]
+    assert calls == []
+
+    explicit = server.handle_request(
+        {
+            "id": "2",
+            "method": "config.set",
+            "params": {"key": "model", "value": "new/model --provider openai-codex --global"},
+        }
+    )
+
+    assert explicit["error"]["code"] == 4001
+    assert "live session" in explicit["error"]["message"]
+    assert calls == []
+
+
 def test_config_set_model_explicit_provider_skips_broken_default_init(monkeypatch):
     seen = {"build": 0, "wait": 0, "requested": []}
     session = _session()
@@ -10314,6 +10349,27 @@ def test_config_set_model_once_requires_live_session(monkeypatch):
 
     assert resp["error"]["code"] == 5001
     assert "/model --once requires a live session" in resp["error"]["message"]
+
+
+def test_config_set_model_sessionless_once_global_keeps_canonical_conflict_error(monkeypatch):
+    monkeypatch.setattr(
+        "hermes_cli.model_switch.switch_model",
+        lambda **_: (_ for _ in ()).throw(AssertionError("switch should not run")),
+    )
+
+    resp = server.handle_request(
+        {
+            "id": "1",
+            "method": "config.set",
+            "params": {
+                "key": "model",
+                "value": "claude-sonnet-4.6 --provider anthropic --once --global",
+            },
+        }
+    )
+
+    assert resp["error"]["code"] == 5001
+    assert resp["error"]["message"] == "/model --once cannot be combined with --global"
 
 
 def test_config_set_model_session_switch_clears_pending_once_restore(monkeypatch):

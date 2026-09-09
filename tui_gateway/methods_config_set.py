@@ -108,11 +108,11 @@ def _set_model(rid, params, key, value, session):
     """Live/deferred model switch; see _apply_model_switch and _apply_pending_model_switch."""
     if not value:
         return _err(rid, 4002, "model value required")
+    from hermes_cli.model_switch import parse_model_switch_args
     confirmed = bool(params.get("confirm_expensive_model", False))
+    parsed_flags = parse_model_switch_args(value)
     if session:
-        from hermes_cli.model_switch import parse_model_switch_args
         sid = params.get("session_id", "")
-        parsed_flags = parse_model_switch_args(value)
         if session.get("running"):
             return _stash_pending_model_switch(rid, key, value, session, confirmed, parsed_flags)
         explicit_provider = parsed_flags.explicit_provider
@@ -140,7 +140,21 @@ def _set_model(rid, params, key, value, session):
             with _session_profile_runtime_scope(session):
                 _persist_live_session_runtime(session)
     else:
-        result = _apply_model_switch("", {"agent": None}, value, confirm_expensive_model=confirmed)
+        # ``config.set model`` is a live-session surface. Older Desktop clients
+        # sent a fresh-draft pick before ``session.create`` (no session_id), and
+        # the legacy fallback silently persisted it as the profile default.
+        # Refuse stale draft requests even when an older client hardcoded
+        # ``--global``. Deliberate defaults use Settings -> Models (/api/model/set),
+        # while /model --global always belongs to a live session.
+        if parsed_flags.is_once and parsed_flags.is_global:
+            raise ValueError(parsed_flags.error_messages()[0])
+        if parsed_flags.is_once:
+            raise ValueError("/model --once requires a live session")
+        return _err(
+            rid,
+            4001,
+            "model switch requires a live session; use Settings -> Models to update the profile default",
+        )
     return _kv(rid, key, result["value"], warning=result["warning"],
                confirm_required=result.get("confirm_required", False),
                confirm_message=result.get("confirm_message", ""), scope=result.get("scope", "session"))

@@ -721,10 +721,21 @@ class Task:
         g = lambda col, default=None: _row_get(row, col, default)  # noqa: E731
         parsed = _json_or(g("skills"))
         skills_value = [str(s) for s in parsed if s] if isinstance(parsed, list) else None
+        # The live schema stores several epoch columns as TEXT, so coerce them to
+        # int on read. Required columns use int(); optional ones fall back to None
+        # via _opt_int() when the stored value is NULL.
+        int_cols = {
+            "created_at": int(g("created_at")),
+            "started_at": _opt_int(g("started_at")),
+            "completed_at": _opt_int(g("completed_at")),
+            "claim_expires": _opt_int(g("claim_expires")),
+            "last_heartbeat_at": _opt_int(g("last_heartbeat_at")),
+        }
         return cls(
-            **{col: row[col] for col in _TASK_REQUIRED_COLUMNS},
-            **{col: g(col) for col in _TASK_OPTIONAL_COLUMNS},
+            **{col: row[col] for col in _TASK_REQUIRED_COLUMNS if col not in int_cols},
+            **{col: g(col) for col in _TASK_OPTIONAL_COLUMNS if col not in int_cols},
             **{col: g(col) or None for col in _TASK_EMPTY_IS_NULL_COLUMNS},
+            **int_cols,
             # Pre-migration fallbacks (spawn_failures / last_spawn_error) are only
             # reachable on a DB never opened since the rename migration landed.
             consecutive_failures=g("consecutive_failures", g("spawn_failures", 0)),
@@ -802,7 +813,7 @@ class Comment:
     def from_row(cls, r: sqlite3.Row) -> "Comment":
         return cls(
             id=r["id"], task_id=r["task_id"], author=r["author"],
-            body=r["body"], created_at=r["created_at"],
+            body=r["body"], created_at=int(r["created_at"]),
         )
 
 
@@ -824,7 +835,7 @@ class Attachment:
         return cls(
             id=r["id"], task_id=r["task_id"], filename=r["filename"],
             stored_path=r["stored_path"], content_type=r["content_type"],
-            size=r["size"] or 0, uploaded_by=r["uploaded_by"], created_at=r["created_at"],
+            size=int(r["size"]) if r["size"] is not None else 0, uploaded_by=r["uploaded_by"], created_at=int(r["created_at"]),
         )
 
 
@@ -842,7 +853,7 @@ class Event:
         run_id = _row_get(row, "run_id")
         return cls(
             id=row["id"], task_id=row["task_id"], kind=row["kind"],
-            payload=_json_or(row["payload"]), created_at=row["created_at"], run_id=_opt_int(run_id),
+            payload=_json_or(row["payload"]), created_at=int(row["created_at"]), run_id=_opt_int(run_id),
         )
 
 

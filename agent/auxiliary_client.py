@@ -2118,6 +2118,24 @@ def _resolve_codex_credential_and_base() -> Tuple[Optional[str], str]:
             # Same route rule as the chat path (row URL, else ``model.base_url``); never empty.
             from hermes_cli.auth_codex import _codex_pool_route_base_url
             return token, _codex_pool_route_base_url(_pool_runtime_base_url(entry))
+        # Pool entries in cooldown (regular quota exhausted) still carry the SAME credential
+        # that serves Luna Reserve (gpt-reserve) — the reserve is a separate metered model on
+        # the same OAuth account, so a cooldown on the regular allowance must not block it.
+        # DEAD entries (revoked/re-authed) are skipped: their tokens are unusable.
+        try:
+            from agent.credential_pool import STATUS_DEAD, load_pool
+            pool = load_pool("openai-codex")
+            for e in pool.entries():
+                if getattr(e, "last_status", None) == STATUS_DEAD:
+                    continue
+                reserve_token = _pool_runtime_api_key(e)
+                if reserve_token:
+                    if override:
+                        return reserve_token, override
+                    from hermes_cli.auth_codex import _codex_pool_route_base_url
+                    return reserve_token, _codex_pool_route_base_url(_pool_runtime_base_url(e))
+        except Exception as exc:
+            logger.debug("Could not read Codex pool entries for reserve fallback: %s", exc)
     # No usable pool token: auth.json only (re-selecting could pair another row's key with the default).
     return _read_codex_singleton_token(), override or _CODEX_AUX_BASE_URL
 

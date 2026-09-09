@@ -2443,11 +2443,8 @@ def _relay_sync_completion(
     from agent.auxiliary_wire import prepare_chat_messages
 
     kwargs = prepare_chat_messages(client, kwargs)
-    # The progress hook is installed per task, so every attempt for that
-    # task must go through _create_with_progress — including auxiliary
-    # retries and provider fallbacks. Defaulting at this seam covers every
-    # call site that predates the hook or forgets to thread create= through
-    # (18 of 24 today); call sites that pass their own create= keep it.
+    # The progress hook is installed per TASK, so every attempt (retries, recovery rungs, fallbacks)
+    # must stream through _create_with_progress or the compression watchdog sees silence (#98466).
     callback = create or (lambda request: _create_with_progress(client, request))
     route = _relay_auxiliary_metadata(provider=provider, api_mode=api_mode)
     # Isolate only the provider callback so the owning thread can unwind its lease/DB
@@ -2470,7 +2467,8 @@ async def _relay_async_completion(
     from agent.auxiliary_wire import prepare_chat_messages
 
     kwargs = prepare_chat_messages(client, kwargs)
-    callback = create or (lambda request: client.chat.completions.create(**request))
+    # Async twin of the seam default above (#98466).
+    callback = create or (lambda request: _acreate_with_progress(client, request))
     route = _relay_auxiliary_metadata(provider=provider, api_mode=api_mode)
     if route is None:
         return await callback(kwargs)
@@ -6496,6 +6494,37 @@ async def _acreate_with_stream(client: Any, kwargs: Dict[str, Any], task: Option
     return await _aggregate_chat_stream_async(chunks, model=model, total_ceiling=total_ceiling)
 
 
+def _async_client_streams_internally(client: Any) -> bool:
+    """Async twin of :func:`_client_streams_internally` (the async adapters are separate classes)."""
+    return isinstance(client, (AsyncCodexAuxiliaryClient, AsyncAnthropicAuxiliaryClient, AsyncBedrockAuxiliaryClient))
+
+
+async def _acreate_with_progress(
+    client: Any, kwargs: Dict[str, Any], task: Optional[str] = None, *, force_stream: bool = False
+) -> Any:
+    """Async :func:`_create_with_progress`: stream + re-aggregate (ticking the hook per substantive
+    chunk) when a progress hook is active or the provider is stream-only; plain create otherwise."""
+    _notify_aux_dispatch()
+    _notify_aux_progress()
+    if (not _aux_progress_active() and not force_stream) or _async_client_streams_internally(client):
+        response = await client.chat.completions.create(**kwargs)
+        if not _async_client_streams_internally(client):
+            _notify_aux_provider_response()
+        return response
+    try:
+        return await _acreate_with_stream(client, kwargs, task)
+    except Exception as exc:
+        if (force_stream or _is_transient_transport_error(exc) or _is_auth_error(exc)
+                or _is_payment_error(exc) or _is_rate_limit_error(exc)):
+            raise
+        logger.debug("Auxiliary %s: streamed async request failed (%s); retrying non-streaming",
+                     task or "call", exc)
+        _notify_aux_dispatch()
+        response = await client.chat.completions.create(**kwargs)
+        _notify_aux_provider_response()
+        return response
+
+
 # Shared request head + recovery ladder for call_llm / async_call_llm: the entry points differ
 # only in how a request is awaited, so route resolution and the ordered recovery ladder are
 # written once. The ladder is a generator yielding ``_LadderStep`` requests and receiving the
@@ -7342,15 +7371,10 @@ async def _async_call_llm_impl(
     try:
         # Retry ONCE on the same provider for a transient blip before fallback (see call_llm()).
         # (PR #16587)
-        _force_stream_async = (
-            _provider_requires_stream(request_provider, req.base_info or req.resolved_base_url)
-            and not isinstance(client, (
-                AsyncCodexAuxiliaryClient, AsyncAnthropicAuxiliaryClient, AsyncBedrockAuxiliaryClient)))
+        _force_stream_async = _provider_requires_stream(request_provider, req.base_info or req.resolved_base_url)
 
         async def _acreate(_kwargs: Dict[str, Any]) -> Any:
-            if _force_stream_async:
-                return await _acreate_with_stream(client, _kwargs, task)
-            return await client.chat.completions.create(**_kwargs)
+            return await _acreate_with_progress(client, _kwargs, task, force_stream=_force_stream_async)
 
         async def _primary(**validate_kw: Any) -> Any:
             return _validate_llm_response(

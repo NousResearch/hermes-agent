@@ -121,9 +121,22 @@ def _apply_edits(base: dict, edited: dict, current: dict) -> dict:
     return out
 
 
+def _overlay_local(seed: dict, local: dict) -> dict:
+    """Return ``seed`` with ``local``'s root keys and ``hosts.<h>.<k>`` keys on top. The local file wins,
+    so a grant or rotation it already holds is what the command's edits land on."""
+    out = copy.deepcopy(seed)
+    for key, value in local.items():
+        if key != "hosts":
+            out[key] = copy.deepcopy(value)
+    for host, block in (local.get("hosts") or {}).items():
+        out.setdefault("hosts", {}).setdefault(host, {}).update(copy.deepcopy(block))
+    return out
+
+
 def _write_config(cfg: dict, path: Path | None = None) -> None:
     """Persist ``cfg`` under the token refresh's cross-process lock. The object _read_config() returned
-    for this path has only its edits applied onto a fresh read of disk; a plain dict is written whole."""
+    has only its edits applied onto a fresh read of disk; a plain dict is written whole. A read that
+    resolved to a seed file (~/.honcho or a profile) is written whole only while ``path`` does not exist."""
     from plugins.memory.honcho.oauth import _config_refresh_lock, _read_config_strict
     from utils import atomic_json_write
     path = path or _local_config_path()
@@ -131,6 +144,8 @@ def _write_config(cfg: dict, path: Path | None = None) -> None:
         _refuse_unparseable(path)
         if getattr(cfg, "path", None) == path:
             cfg = _apply_edits(cfg.snapshot, cfg, _read_config_strict(path))
+        elif isinstance(cfg, _ReadConfig) and path.exists():
+            cfg = _apply_edits(cfg.snapshot, cfg, _overlay_local(cfg.snapshot, _read_config_strict(path)))
         path.parent.mkdir(parents=True, exist_ok=True)
         atomic_json_write(path, cfg, mode=0o600)
 

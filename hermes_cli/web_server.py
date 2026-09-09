@@ -187,9 +187,7 @@ async def _lifespan(app: "FastAPI"):
     )
     hosted_room_start_thread.start()
 
-    # Desktop-spawned backends (HERMES_DESKTOP=1) fire cron jobs themselves,
-    # since the app has no gateway running the scheduler. Server `hermes
-    # dashboard` is unaffected — it relies on its own gateway.
+    # Gateway lifecycle ownership remains exclusive to Electron-spawned backends.
     cron_stop: "threading.Event | None" = None
     cron_thread: "threading.Thread | None" = None
     if os.getenv("HERMES_DESKTOP") == "1":
@@ -205,6 +203,10 @@ async def _lifespan(app: "FastAPI"):
         except Exception:
             _log.exception("Desktop startup: orphan gateway reap failed")
 
+    # Standalone Webapp, like Desktop, has no gateway to run its scheduled jobs.
+    # Reuse the profile-aware ticker without adopting Electron's gateway cleanup.
+    # Plain dashboard deployments still rely on their existing gateway.
+    if os.getenv("HERMES_DESKTOP") == "1" or getattr(app.state, "ui_surface", None) == "webapp":
         cron_stop = threading.Event()
         cron_thread = threading.Thread(
             target=_start_desktop_cron_ticker,

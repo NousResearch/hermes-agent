@@ -42,7 +42,7 @@ export function ProfileProvider({ children }: { children: ReactNode }) {
   // Initial value comes from the URL (deep link / refresh / unified-launch
   // preselect); afterwards state leads and the URL follows.
   const [profile, setProfileState] = useState(
-    () => searchParams.get("profile") ?? "",
+    () => searchParams.get("profile") ?? window.__HERMES_INITIAL_PROFILE__ ?? "",
   );
 
   // Mirror into the api module synchronously on every render where it

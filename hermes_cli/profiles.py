@@ -13,7 +13,7 @@ import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, Iterator, List, Optional, Tuple
 
 from agent.skill_utils import is_excluded_skill_path
 from hermes_cli.archive_safe import archive_root_dirs, make_targz, normalize_archive_parts, safe_extract_targz
@@ -395,16 +395,17 @@ def find_alias_for_profile(profile_name: str) -> Optional[str]:
 _WRAPPER_READ_LIMIT = 8192
 
 
-def build_alias_map() -> dict[str, str]:
-    """Single-pass reverse map ``{canonical_profile -> alias_name}``.
+def iter_wrapper_aliases() -> Iterator[Tuple[str, str]]:
+    """Yield ``(alias_name, canonical_profile)`` for every wrapper on disk.
 
-    Scans the wrapper dir ONCE, reading only a head slice of each candidate and skipping
-    binaries. A custom alias (file name != profile) wins over the profile-named wrapper;
-    deterministic via sorted iteration."""
+    Scans the wrapper dir ONCE and reads only a small head slice of each
+    candidate, skipping binaries. Entries are yielded in sorted order.
+    Every matching wrapper is yielded, including several pointing at the
+    same profile. Callers wanting one alias per profile use build_alias_map.
+    """
     wrapper_dir = _get_wrapper_dir()
-    result: dict[str, str] = {}
     if not wrapper_dir.is_dir():
-        return result
+        return
     is_windows = sys.platform == "win32"
     prefix = "hermes -p "
     for entry in sorted(wrapper_dir.iterdir()):
@@ -428,8 +429,19 @@ def build_alias_map() -> dict[str, str]:
         canon = rest.split(None, 1)[0].strip() if rest.strip() else ""
         if not canon:
             continue
-        canon = normalize_profile_name(canon)
-        alias = entry.stem if is_windows else entry.name
+        yield (entry.stem if is_windows else entry.name), normalize_profile_name(canon)
+
+
+def build_alias_map() -> dict[str, str]:
+    """Single-pass reverse map ``{canonical_profile -> alias_name}``.
+
+    Built on iter_wrapper_aliases, so it inherits the bounded read. A custom
+    alias wins over the profile-named wrapper, matching find_alias_for_profile.
+    This map holds one alias per profile; use iter_wrapper_aliases for every
+    wrapper, including multiple aliases of the same missing profile.
+    """
+    result: dict[str, str] = {}
+    for alias, canon in iter_wrapper_aliases():
         if alias == canon:
             result.setdefault(canon, alias)  # never overwrite a custom alias already found
         else:

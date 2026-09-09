@@ -365,10 +365,26 @@ def _check_memory_provider(should_fix: bool, f: Finding) -> None:
         check_warn(f"{label} check failed", str(_e))
 
 
+def _find_orphan_profile_aliases() -> list[tuple[str, str]]:
+    """Return ``(alias, profile)`` pairs whose target profile is missing.
+
+    Iterates wrappers rather than the profile-keyed alias map so that every
+    stranded wrapper is reported. Removing a profile that had a custom alias
+    leaves two files behind, and naming only one of them hides the other
+    until the user runs Doctor again.
+    """
+    from hermes_cli.profiles import iter_wrapper_aliases, profile_exists
+
+    return sorted(
+        (alias, profile)
+        for alias, profile in iter_wrapper_aliases()
+        if not profile_exists(profile)
+    )
+
+
 @doctor_check("")  # best-effort: profile enumeration must never break doctor
 def _check_profiles(should_fix: bool, f: Finding) -> None:
-    from hermes_cli.profiles import list_profiles, _get_wrapper_dir, profile_exists
-    import re as _re
+    from hermes_cli.profiles import list_profiles, _get_wrapper_dir
     named_profiles = [p for p in list_profiles() if not p.is_default]
     if not named_profiles:
         return
@@ -381,12 +397,6 @@ def _check_profiles(should_fix: bool, f: Finding) -> None:
             (not (p.path / "config.yaml").exists(), "⚠ missing config"), (not (p.path / ".env").exists(), "no .env"),
             (not (wrapper_dir / p.name).exists(), "no alias")) if cond]
         check_ok(f"  {p.name}: {', '.join(parts) if parts else 'configured'}")
-    # Orphan wrappers
-    if wrapper_dir.is_dir():
-        for wrapper in wrapper_dir.iterdir():
-            if not wrapper.is_file():
-                continue
-            with warn_on_error(""):
-                _m = _re.search(r"hermes -p (\S+)", wrapper.read_text(encoding="utf-8"))
-                if _m and not profile_exists(_m.group(1)):
-                    check_warn(f"Orphan alias: {wrapper.name} → profile '{_m.group(1)}' no longer exists")
+    # Use the bounded scanner shared with profile listing, reporting every wrapper.
+    for alias, profile in _find_orphan_profile_aliases():
+        check_warn(f"Orphan alias: {alias} → profile '{profile}' no longer exists")

@@ -125,7 +125,7 @@ gateway:
         public_route: true
 ```
 
-Configure `A2A_PEER_TOKENS` (preferred) or `A2A_BEARER_TOKEN` as usual. The public endpoint is:
+Configure `A2A_PEER_TOKENS` with a distinct credential for each caller. The public endpoint is:
 
 ```text
 https://<dashboard-host>/a2a/.well-known/agent-card.json
@@ -133,9 +133,9 @@ https://<dashboard-host>/a2a/                         # SendMessage POST
 ```
 
 The Agent Card GET remains public, as required by A2A discovery. Every task POST is authenticated
-by the A2A listener's bearer token; the browser dashboard OAuth session is neither required nor
-forwarded. The bridge targets only `127.0.0.1` and is disabled unless both `public_route: true`
-and an A2A token are configured, so `A2A_HOST` may remain at its safe loopback default. Leave
+by the A2A listener's per-peer bearer token; the browser dashboard OAuth session is neither required
+nor forwarded. The bridge targets only `127.0.0.1` and is disabled unless both `public_route: true`
+and `A2A_PEER_TOKENS` are configured, so `A2A_HOST` may remain at its safe loopback default. Leave
 `A2A_PUBLIC_URL` unset to have forwarded host, scheme, and path-prefix metadata make the card
 advertise the `/a2a/` HTTPS URL automatically. An explicit `A2A_PUBLIC_URL` takes precedence and
 must include the mounted route, for example `https://<dashboard-host>/a2a`.

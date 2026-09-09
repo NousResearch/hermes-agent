@@ -1,15 +1,18 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
 from fastapi.testclient import TestClient
+from starlette.requests import Request
 
 from hermes_cli import web_server
 from hermes_cli.web_routers import service_proxy
 from plugins.platforms.a2a.adapter import A2ARequestHandler
+from plugins.platforms.a2a.security import A2ASecurityContext
 
 
 class _EchoHandler(BaseHTTPRequestHandler):
@@ -48,6 +51,42 @@ def echo_server():
     thread.start()
     try:
         yield server.server_port
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+
+@pytest.fixture
+def a2a_identity_server():
+    identities: list[str] = []
+
+    class _RecordingRateLimiter:
+        def allow(self, identity: str) -> bool:
+            identities.append(identity)
+            return False
+
+    class _Adapter:
+        _security_context = A2ASecurityContext(
+            bearer_token="",
+            peer_tokens=(("nova-token", "nova"), ("cairn-token", "cairn")),
+            trusted_peers=frozenset(),
+            allow_all_users=False,
+            requested_host="127.0.0.1",
+            push_secret="",
+        )
+        _rate_limiter = _RecordingRateLimiter()
+
+        @staticmethod
+        def _route_for_request(path, params):
+            return {}
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), A2ARequestHandler)
+    server.adapter = _Adapter()
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield server.server_port, identities
     finally:
         server.shutdown()
         server.server_close()
@@ -118,6 +157,19 @@ def test_a2a_public_route_requires_its_own_service_credential(
     assert response.json() == {"error": "service route is not enabled"}
 
 
+def test_a2a_public_route_rejects_shared_bearer_without_peer_tokens(
+    public_dashboard, echo_server, monkeypatch
+):
+    monkeypatch.setattr(service_proxy, "load_config", lambda: _route_config("a2a", echo_server))
+    monkeypatch.setenv("A2A_BEARER_TOKEN", "shared-token")
+    monkeypatch.delenv("A2A_PEER_TOKENS", raising=False)
+
+    response = public_dashboard.get("/a2a/.well-known/agent-card.json")
+
+    assert response.status_code == 404
+    assert response.json() == {"error": "service route is not enabled"}
+
+
 def test_a2a_route_preserves_service_auth_and_advertised_prefix(
     public_dashboard, echo_server, monkeypatch
 ):
@@ -140,6 +192,92 @@ def test_a2a_route_preserves_service_auth_and_advertised_prefix(
     assert payload["forwarded_prefix"] == "/a2a"
     assert json.loads(payload["body"]) == {"jsonrpc": "2.0"}
     assert "set-cookie" not in response.headers
+
+
+def test_a2a_proxy_rejects_declared_oversize_without_reading_unauthenticated_body(monkeypatch):
+    receive_calls = 0
+
+    async def receive():
+        nonlocal receive_calls
+        receive_calls += 1
+        raise AssertionError("oversized declared body must not be read")
+
+    request = Request({
+        "type": "http",
+        "method": "POST",
+        "path": "/a2a/",
+        "query_string": b"",
+        "headers": [(b"content-length", str(service_proxy._A2A_MAX_BODY_BYTES + 1).encode())],
+        "scheme": "https",
+        "server": ("agent.example.com", 443),
+        "client": ("203.0.113.10", 1234),
+    }, receive)
+    monkeypatch.setattr(
+        service_proxy,
+        "_service_route",
+        lambda service: service_proxy._ServiceRoute(service, "/a2a", 9900),
+    )
+
+    response = asyncio.run(service_proxy._proxy(request, "a2a", ""))
+
+    assert response.status_code == 413
+    assert receive_calls == 0
+
+
+def test_a2a_proxy_stops_chunked_invalid_auth_body_at_overflow_sentinel(monkeypatch):
+    limit = service_proxy._A2A_MAX_BODY_BYTES
+    events = iter([
+        {"type": "http.request", "body": b"x" * limit, "more_body": True},
+        {"type": "http.request", "body": b"y", "more_body": True},
+        {"type": "http.request", "body": b"must-not-be-read", "more_body": False},
+    ])
+    receive_calls = 0
+
+    async def receive():
+        nonlocal receive_calls
+        receive_calls += 1
+        return next(events)
+
+    request = Request({
+        "type": "http",
+        "method": "POST",
+        "path": "/a2a/",
+        "query_string": b"",
+        "headers": [
+            (b"authorization", b"Bearer invalid"),
+            (b"transfer-encoding", b"chunked"),
+        ],
+        "scheme": "https",
+        "server": ("agent.example.com", 443),
+        "client": ("203.0.113.11", 1234),
+    }, receive)
+    monkeypatch.setattr(
+        service_proxy,
+        "_service_route",
+        lambda service: service_proxy._ServiceRoute(service, "/a2a", 9900),
+    )
+
+    response = asyncio.run(service_proxy._proxy(request, "a2a", ""))
+
+    assert response.status_code == 413
+    assert receive_calls == 2
+
+
+def test_a2a_public_route_preserves_two_peer_identities(
+    public_dashboard, a2a_identity_server, monkeypatch
+):
+    port, identities = a2a_identity_server
+    monkeypatch.setattr(service_proxy, "load_config", lambda: _route_config("a2a", port))
+    monkeypatch.setenv("A2A_PEER_TOKENS", "nova:nova-token,cairn:cairn-token")
+    monkeypatch.delenv("A2A_BEARER_TOKEN", raising=False)
+    request = {"jsonrpc": "2.0", "id": "identity", "method": "SendMessage", "params": {}}
+
+    nova = public_dashboard.post("/a2a/", headers={"Authorization": "Bearer nova-token"}, json=request)
+    cairn = public_dashboard.post("/a2a/", headers={"Authorization": "Bearer cairn-token"}, json=request)
+
+    assert nova.status_code == 429
+    assert cairn.status_code == 429
+    assert identities == ["nova", "cairn"]
 
 
 def test_api_route_strips_dashboard_credentials_and_keeps_api_key(

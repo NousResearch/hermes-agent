@@ -78,10 +78,7 @@ def _service_route(name: str) -> _ServiceRoute | None:
     extra = block.get("extra") if isinstance(block.get("extra"), dict) else {}
     if block.get("enabled") is not True or extra.get("public_route") is not True:
         return None
-    if name == "a2a" and not (
-        os.environ.get("A2A_BEARER_TOKEN", "").strip()
-        or os.environ.get("A2A_PEER_TOKENS", "").strip()
-    ):
+    if name == "a2a" and not os.environ.get("A2A_PEER_TOKENS", "").strip():
         return None
     raw_port = os.environ.get(port_env, "").strip() or extra.get("port", default_port)
     try:
@@ -121,6 +118,25 @@ async def _stream_upstream(
         await client.aclose()
 
 
+async def _bounded_a2a_body(request: Request) -> bytes | None:
+    """Read no more than the A2A limit plus one overflow sentinel byte."""
+    declared_length = request.headers.get("content-length")
+    if declared_length is not None:
+        try:
+            if int(declared_length) > _A2A_MAX_BODY_BYTES:
+                return None
+        except ValueError:
+            pass
+
+    body = bytearray()
+    async for chunk in request.stream():
+        remaining = _A2A_MAX_BODY_BYTES + 1 - len(body)
+        body.extend(chunk[:remaining])
+        if len(body) > _A2A_MAX_BODY_BYTES or len(chunk) > remaining:
+            return None
+    return bytes(body)
+
+
 async def _proxy(request: Request, service: str, path: str) -> StreamingResponse | JSONResponse:
     route = _service_route(service)
     if route is None:
@@ -129,21 +145,21 @@ async def _proxy(request: Request, service: str, path: str) -> StreamingResponse
     suffix = f"/{path}" if path else "/"
     query = request.url.query
     upstream_url = f"http://127.0.0.1:{route.port}{suffix}" + (f"?{query}" if query else "")
+    if service == "a2a":
+        body = await _bounded_a2a_body(request)
+        if body is None:
+            return JSONResponse({"error": "request body too large"}, status_code=413)
+        content: bytes | AsyncIterator[bytes] = body
+    elif request.method in {"GET", "HEAD", "OPTIONS"}:
+        content = b""
+    else:
+        content = request.stream()
+
     client = httpx.AsyncClient(
         trust_env=False,
         timeout=httpx.Timeout(connect=5.0, read=None, write=30.0, pool=5.0),
     )
     try:
-        if service == "a2a":
-            body = await request.body()
-            if len(body) > _A2A_MAX_BODY_BYTES:
-                await client.aclose()
-                return JSONResponse({"error": "request body too large"}, status_code=413)
-            content: bytes | AsyncIterator[bytes] = body
-        elif request.method in {"GET", "HEAD", "OPTIONS"}:
-            content = b""
-        else:
-            content = request.stream()
         upstream_request = client.build_request(
             request.method,
             upstream_url,

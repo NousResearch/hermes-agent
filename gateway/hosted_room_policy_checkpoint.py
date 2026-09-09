@@ -264,7 +264,9 @@ class HostedRoomPolicyCheckpoint:
             ORDER BY seq LIMIT ?""", (room_id, discussion_id, seq, MAX_ACTIVE_POLICY_EVENTS)).fetchall()
         events = [_event_from_room_row(row) for row in rows]
         activities = [item for item in events if item["kind"] == "room.activity"]
-        if not activities or any(item["payload"]["status"] == "bounded" for item in activities):
+        if not any(item["payload"].get("reason_code") == "silent_round" for item in activities) or any(
+            item["payload"]["status"] == "bounded" for item in activities
+        ):
             return None
         if len(rows) >= MAX_ACTIVE_POLICY_EVENTS:
             raise RuntimeError("retried room policy projection exceeded its bound")
@@ -433,7 +435,7 @@ class HostedRoomPolicyCheckpoint:
                 f"SELECT {_ROOM_EVENT_COLUMNS} FROM hosted_room_events WHERE room_id=? AND seq=?",
                 (room_id, source_event_seq)).fetchone()
             if row is None or row["kind"] != "message.user":
-                return []
+                return published
             source = _event_from_room_row(row)
             projection = self._discussion_events(
                 conn, room_id=room_id, thread_id=_text(source["payload"], "thread_id"),
@@ -441,7 +443,7 @@ class HostedRoomPolicyCheckpoint:
                 bound_error="task policy projection exceeded its bound")
             # The source can age out of BOTH bounded projections while a
             # deferred task remains retryable. Its frozen prompt lives in the task.
-            by_seq = {event["seq"]: event for event in (*published, *projection)}
+            by_seq = {event["seq"]: event for event in (*projection, *published)}
             by_seq[source_event_seq] = source
             return [by_seq[seq] for seq in sorted(by_seq)]
 

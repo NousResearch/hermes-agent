@@ -25,7 +25,7 @@ def append(db, event_id, kind, payload, actor_kind="user"):
         actor={"kind": actor_kind, "id": "home"}, authority_gateway_id="home", authority_epoch=1, payload=payload)
 
 
-def legacy_cache(db):
+def legacy_cache(db, cache_version):
     room = rooms.create_room(db, room_id="upgrade-room", name="Upgrade", authority_gateway_id="home",
         members=[{"member_id": profile, "profile": profile, "handle": profile} for profile in PROFILES])
     append(db, "source", "message.user", {"text": "@writer Prepare the plan.", "thread_id": "thread"})
@@ -43,11 +43,12 @@ def legacy_cache(db):
     checkpoint = HostedRoomPolicyCheckpoint(db)
     before = checkpoint.snapshot(room_id="upgrade-room", latest_seq=log(db)[-1]["seq"])
     late = rooms.append_event(db, **completed.events[-1].append_kwargs("upgrade-room"))
-    # Field version 3 consumed a late receipt without indexing it once newer
+    # Versions 2/3 consumed a late receipt without indexing it once newer
     # input prevented reopening the old discussion. Reproduce its persisted state.
     with sqlite3.connect(db) as conn:
         conn.execute("UPDATE hosted_room_policy_cursors SET through_seq=? WHERE room_id='upgrade-room'", (late["seq"],))
-        conn.execute("UPDATE hosted_room_policy_transcript_state SET schema_version=3 WHERE room_id='upgrade-room'")
+        conn.execute("UPDATE hosted_room_policy_transcript_state SET schema_version=? WHERE room_id='upgrade-room'",
+                     (cache_version,))
     assert not checkpoint.publication_exists(room_id="upgrade-room", task_id=original.identity.task_id,
                                              status="settled", execution_generation=2)
     planned = discussion.plan_next_task(room, before.events, local_profiles=PROFILES,
@@ -56,9 +57,10 @@ def legacy_cache(db):
     return room, original, planned
 
 
-def test_version_three_rebuilds_late_receipts_and_context_without_changing_history(tmp_path):
+@pytest.mark.parametrize("cache_version", [2, 3])
+def test_old_cache_rebuilds_late_receipts_and_context_without_changing_history(tmp_path, cache_version):
     db = tmp_path / "state.db"
-    room, original, old_plan = legacy_cache(db)
+    room, original, old_plan = legacy_cache(db, cache_version)
     history = log(db)
     checkpoint = HostedRoomPolicyCheckpoint(db)
     updated = checkpoint.snapshot(room_id="upgrade-room", latest_seq=history[-1]["seq"])
@@ -73,10 +75,11 @@ def test_version_three_rebuilds_late_receipts_and_context_without_changing_histo
 
 
 @pytest.mark.parametrize("status", ["queued", "running", "indeterminate"])
-def test_upgrade_preserves_an_already_admitted_frozen_turn(tmp_path, monkeypatch, status):
+@pytest.mark.parametrize("cache_version", [2, 3])
+def test_upgrade_preserves_an_already_admitted_frozen_turn(tmp_path, monkeypatch, status, cache_version):
     monkeypatch.setattr(rooms, "local_authority_gateway_id", lambda: "home")
     db = tmp_path / "state.db"
-    _, _, old_plan = legacy_cache(db)
+    _, _, old_plan = legacy_cache(db, cache_version)
     clock = [time.time()]
     admitted = driver.admit_task(db, old_plan.identity, payload=old_plan.payload, clock=lambda: clock[0])
     if status != "queued":

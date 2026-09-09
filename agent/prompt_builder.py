@@ -465,15 +465,39 @@ OPENAI_MODEL_EXECUTION_GUIDANCE = (
 )
 
 
+# Each <mandatory_tool_use>/<act_dont_ask> line above named against the tool(s) it tells the model to reach
+# for. A line is dropped when none of its named tools are in the session's valid_tool_names, so a toolset
+# without terminal/execute_code/etc. isn't told to use them (#106506).
+_EXECUTION_GUIDANCE_LINE_TOOLS = {
+    "- Arithmetic, math, calculations → use terminal or execute_code\n": {"terminal", "execute_code"},
+    "- Hashes, encodings, checksums → use terminal (e.g. sha256sum, base64)\n": {"terminal"},
+    "- Current time, date, timezone → use terminal (e.g. date)\n": {"terminal"},
+    "- System state: OS, CPU, memory, disk, ports, processes → use terminal\n": {"terminal"},
+    "- File contents, sizes, line counts → use read_file, search_files, or terminal\n": {
+        "read_file",
+        "search_files",
+        "terminal",
+    },
+    "- Git history, branches, diffs → use terminal\n": {"terminal"},
+    "- Current facts (weather, news, versions) → use web_search\n": {"web_search"},
+    "- 'What time is it?' → run `date` (don't guess)\n": {"terminal"},
+}
+
+
 def execution_guidance_text(valid_tool_names=None) -> str:
     """OPENAI_MODEL_EXECUTION_GUIDANCE for the session's toolset (cache-safe: the toolset is fixed per session).
 
-    Without web tools (e.g. Blank Slate) the ``web_search`` mentions would dangle, so they are dropped/adjusted.
+    Lines that tell the model to reach for a tool absent from the session's toolset would dangle, so they are
+    dropped/adjusted.
     """
     text = OPENAI_MODEL_EXECUTION_GUIDANCE
-    if valid_tool_names is not None and "web_search" not in valid_tool_names:
-        text = text.replace("- Current facts (weather, news, versions) → use web_search\n", "")
-        text = text.replace("(search_files, web_search, read_file, etc.)", "(search_files, read_file, etc.)")
+    if valid_tool_names is not None:
+        valid_tool_names = set(valid_tool_names)
+        for line, tools in _EXECUTION_GUIDANCE_LINE_TOOLS.items():
+            if not tools & valid_tool_names:
+                text = text.replace(line, "")
+        if "web_search" not in valid_tool_names:
+            text = text.replace("(search_files, web_search, read_file, etc.)", "(search_files, read_file, etc.)")
     return text
 
 

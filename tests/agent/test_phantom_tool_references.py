@@ -51,6 +51,25 @@ class TestExecutionGuidanceText:
         assert "<missing_context>" in text
         assert "(search_files, read_file, etc.)" in text
 
+    def test_shell_and_file_lines_dropped_on_lean_toolset(self):
+        # #106506: a profile with none of terminal/execute_code/read_file/search_files must not be told to
+        # reach for any of them.
+        from agent.prompt_builder import execution_guidance_text
+        text = execution_guidance_text({"memory", "web_search"})
+        mandatory_block = text.split("<mandatory_tool_use>")[1].split("</mandatory_tool_use>")[0]
+        assert "terminal" not in mandatory_block
+        assert "execute_code" not in mandatory_block
+        assert "read_file" not in mandatory_block
+        assert "search_files" not in mandatory_block
+        # Web tools are present, so their line survives.
+        assert "use web_search" in mandatory_block
+        act_block = text.split("<act_dont_ask>")[1].split("</act_dont_ask>")[0]
+        assert "run `date`" not in act_block
+        # Surrounding structure and unrelated tags survive.
+        assert "<mandatory_tool_use>" in text
+        assert "<act_dont_ask>" in text
+        assert "<missing_context>" in text
+
 
 class TestCodingBriefTodoGating:
     def _brief(self, valid_tool_names):

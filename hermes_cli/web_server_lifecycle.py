@@ -75,7 +75,10 @@ def _process_start_marker(pid: int) -> str:
     marker = result.stdout.strip()
     if result.returncode == 0 and marker:
         return f"ps:{marker}"
-    if result.returncode != 0 and (not marker or "no such process" in result.stderr.lower() or "not found" in result.stderr.lower()):
+    stderr_lower = result.stderr.lower()
+    if (result.returncode == 1 and not marker) or any(
+        msg in stderr_lower for msg in ("no such process", "not found")
+    ):
         raise ProcessLookupError(pid)
     raise OSError(f"ps could not inspect PID {pid}: {result.stderr.strip()}")
 

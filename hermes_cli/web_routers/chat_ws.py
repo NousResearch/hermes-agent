@@ -6,7 +6,6 @@ reached through the late-binding seam (cycle-safe).
 """
 
 import asyncio
-import functools
 import json
 import logging
 import re
@@ -16,6 +15,7 @@ from typing import Any, Dict, Optional
 from fastapi import APIRouter, FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 
 from hermes_cli.pty_session import RegistryFull
+from hermes_cli.console_execution import ConsoleExecution, bind_console_execution
 from hermes_cli.web_deps import LateState, late
 from hermes_cli.web_server_chat import (
     _build_sidecar_url, _close_stalled_pty_input, _get_console_executor, _legacy_pump, _ws_auth_ok,
@@ -157,10 +157,17 @@ _CONSOLE_COMMAND_TIMEOUT_SECONDS = 60.0
 _CONSOLE_OUTPUT_LIMIT = 50000
 
 
-def _execute_console_line(engine: Any, line: str, *, confirmed: bool, profile: Optional[str]) -> Any:
+def _execute_console_line(
+    engine: Any,
+    line: str,
+    *,
+    confirmed: bool,
+    profile: Optional[str],
+    execution: ConsoleExecution | None = None,
+) -> Any:
     # _profile_scope swaps process-global skill module paths; keep it inside
     # the worker thread and never hold it across awaits.
-    with _profile_scope(profile):
+    with _profile_scope(profile), bind_console_execution(execution):
         return engine.execute(line, confirmed=confirmed)
 
 
@@ -276,35 +283,53 @@ async def console_ws(ws: WebSocket) -> None:
     await out.prompt(type="ready", profile=profile or "current")
 
     active_task: asyncio.Task | None = None
+    active_execution: ConsoleExecution | None = None
     pending_confirmation: Optional[str] = None
     command_generation = 0
 
     async def run_command(line: str, *, confirmed: bool, command_id: int) -> None:
-        nonlocal active_task, pending_confirmation, command_generation
+        nonlocal active_task, active_execution, pending_confirmation, command_generation
+        execution = active_execution
+        if execution is None:
+            execution = ConsoleExecution(command_id)
+            active_execution = execution
         try:
-            loop = asyncio.get_running_loop()
+            future = _get_console_executor().submit(
+                _execute_console_line,
+                engine,
+                line,
+                confirmed=confirmed,
+                profile=profile,
+                execution=execution,
+            )
+            execution.bind_future(future)
             result = await asyncio.wait_for(
-                loop.run_in_executor(
-                    _get_console_executor(),
-                    functools.partial(_execute_console_line, engine, line, confirmed=confirmed, profile=profile),
-                ),
+                asyncio.shield(asyncio.wrap_future(future)),
                 timeout=_CONSOLE_COMMAND_TIMEOUT_SECONDS,
             )
         except asyncio.CancelledError:
+            if execution.cancelled:
+                await execution.wait()
+                return
             raise
         except asyncio.TimeoutError:
+            execution.cancel("timed out")
+            await execution.wait()
             if command_id == command_generation:
                 pending_confirmation = None
                 await out.error_then_complete(
                     "Command timed out. Hermes Console returned to the prompt.", line, command_id, "timeout",
                 )
         except Exception as exc:
+            if execution.cancelled:
+                await execution.wait()
+                return
             if command_id == command_generation:
                 pending_confirmation = None
                 _log.exception("console command failed")
                 await out.error_then_complete(str(exc) or exc.__class__.__name__, line, command_id, "error")
         else:
-            if command_id != command_generation:
+            if execution.cancelled or command_id != command_generation:
                 return
             pending_confirmation = result.command if result.status == "confirm_required" else None
             await out.send_result(result, command_id=command_id)
@@ -313,10 +338,12 @@ async def console_ws(ws: WebSocket) -> None:
         finally:
             if command_id == command_generation:
                 active_task = None
+                active_execution = None
 
     def start_command(line: str, *, confirmed: bool = False) -> None:
-        nonlocal active_task, command_generation
+        nonlocal active_task, active_execution, command_generation
         command_generation += 1
+        active_execution = ConsoleExecution(command_generation)
         active_task = asyncio.create_task(run_command(line, confirmed=confirmed, command_id=command_generation))
 
     try:
@@ -342,9 +369,16 @@ async def console_ws(ws: WebSocket) -> None:
 
             if frame_type == "cancel":
                 if active_task and not active_task.done():
+                    execution = active_execution
                     command_generation += 1
-                    active_task.cancel()
+                    if execution is not None:
+                        execution.cancel("cancelled")
+                    try:
+                        await active_task
+                    except asyncio.CancelledError:
+                        pass
                     active_task = None
+                    active_execution = None
                     pending_confirmation = None
                     await out.prompt(type="complete", status="cancelled")
                 elif pending_confirmation:
@@ -389,10 +423,11 @@ async def console_ws(ws: WebSocket) -> None:
         pass
     finally:
         if active_task and not active_task.done():
-            active_task.cancel()
+            if active_execution is not None:
+                active_execution.cancel("disconnected")
             try:
                 await active_task
-            except (asyncio.CancelledError, Exception):
+            except asyncio.CancelledError:
                 pass
 
 

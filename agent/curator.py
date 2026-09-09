@@ -1022,6 +1022,7 @@ def _run_llm_review(prompt: str) -> Dict[str, Any]:
     rp, model_name, provider, request_overrides = _resolve_review_provider()
     result_meta["model"], result_meta["provider"] = model_name, provider or ""
     review_agent = None
+    execution = None
     try:
         agent_kwargs: Dict[str, Any] = {}
         acp_command = rp.get("command")
@@ -1047,6 +1048,14 @@ def _run_llm_review(prompt: str) -> Dict[str, Any]:
         # write guards (external/bundled/hub) fire; turn_context binds this onto
         # the write-origin ContextVar at turn start.
         review_agent._memory_write_origin = "background_review"
+        try:
+            from hermes_cli.console_execution import current_console_execution
+
+            execution = current_console_execution()
+        except ImportError:
+            execution = None
+        if execution is not None:
+            execution.bind_agent(review_agent)
         # Silence the fork's tool-call chatter (CLI synchronous foreground runs).
         with open(os.devnull, "w", encoding="utf-8") as devnull, \
              contextlib.redirect_stdout(devnull), contextlib.redirect_stderr(devnull):
@@ -1065,6 +1074,8 @@ def _run_llm_review(prompt: str) -> Dict[str, Any]:
         result_meta["error"] = result_meta["summary"] = f"error: {e}"
     finally:
         if review_agent is not None:
+            if execution is not None:
+                execution.unbind_agent(review_agent)
             with contextlib.suppress(Exception):
                 review_agent.close()
     return result_meta

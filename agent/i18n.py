@@ -11,6 +11,8 @@ import logging
 import os
 import threading
 from functools import lru_cache
+from contextlib import contextmanager
+from contextvars import ContextVar
 from pathlib import Path
 from typing import Any
 
@@ -48,6 +50,8 @@ _LANGUAGE_ALIASES: dict[str, str] = {
     "arabic": "ar", "العربية": "ar",
     "ar-sa": "ar", "ar-eg": "ar", "ar-ae": "ar", "ar-ma": "ar", "ar-dz": "ar",
 }
+
+_language_scope: ContextVar[str | None] = ContextVar("hermes_language_scope", default=None)
 
 _catalog_cache: dict[str, dict[str, str]] = {}
 _catalog_lock = threading.Lock()
@@ -118,9 +122,8 @@ def _flatten_into(node: Any, prefix: str, out: dict[str, str]) -> None:
         out[prefix] = node
 
 
-@lru_cache(maxsize=1)
-def _config_language_cached() -> str | None:
-    """``display.language`` from config.yaml, read once per process (``t()`` is a hot path)."""
+def get_config_language() -> str | None:
+    """Read display.language from the current profile without the process cache."""
     try:
         from hermes_cli.config import load_config_readonly
         lang = (load_config_readonly().get("display") or {}).get("language")
@@ -128,6 +131,21 @@ def _config_language_cached() -> str | None:
     except Exception as exc:
         logger.debug("Could not read display.language from config: %s", exc)
         return None
+
+
+@lru_cache(maxsize=1)
+def _config_language_cached() -> str | None:
+    return get_config_language()
+
+
+@contextmanager
+def profile_language_scope():
+    """Read the routed home's language once; a missing value never inherits another profile."""
+    token = _language_scope.set(get_config_language() or DEFAULT_LANGUAGE)
+    try:
+        yield
+    finally:
+        _language_scope.reset(token)
 
 
 def reset_language_cache() -> None:
@@ -140,7 +158,7 @@ def reset_language_cache() -> None:
 def get_language() -> str:
     """Resolve the active language using env > config > default order."""
     env_lang = os.environ.get("HERMES_LANGUAGE")
-    return _normalize_lang(env_lang) if env_lang else _config_language_cached() or DEFAULT_LANGUAGE
+    return _normalize_lang(env_lang) if env_lang else _language_scope.get() or _config_language_cached() or DEFAULT_LANGUAGE
 
 
 def t(key: str, lang: str | None = None, **format_kwargs: Any) -> str:

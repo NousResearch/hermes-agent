@@ -20,6 +20,15 @@ approval:
   blocklist_message: "Dieser Befehl steht auf der unbedingten Sperrliste und kann nicht genehmigt werden."
 
 gateway:
+  session_info:
+    model:                 "◆ Modell: `{model}`"
+    provider:              "◆ Anbieter: {provider}"
+    context:               "◆ Kontext: {context} Tokens ({source})"
+    endpoint:              "◆ Endpunkt: {endpoint}"
+    ctx_source_config:     "config"
+    ctx_source_default:    "Standard — zum Überschreiben model.context_length in der Config setzen"
+    ctx_source_detected:   "erkannt"
+    stopped_notice: "◐ Session reset after being stopped. Conversation history cleared.\nUse /resume to browse and restore a previous session.\n"
   approval_expired: "⚠️ Genehmigung abgelaufen (Agent wartet nicht mehr). Bitten Sie den Agenten, es erneut zu versuchen."
   draining:         "⏳ Warte auf {count} aktive(n) Agent(en) vor dem Neustart..."
   goal_cleared:     "✓ Ziel gelöscht."

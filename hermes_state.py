@@ -47,7 +47,8 @@ from hermes_state_schema import SessionSchemaMixin
 import hermes_state_holders as _state_holders
 from hermes_state_dbfile import (
     _canonical_sqlite_path, _connect_tracked_db, _read_sqlite_application_id, _stat_sqlite_sidecar_identity,
-    _watched_sqlite_sidecar_paths, is_zeroed_state_db, quarantine_cross_process_lock, quarantine_zeroed_state_db,
+    _watched_sqlite_sidecar_paths, has_invalid_sqlite_header_preopen, is_zeroed_state_db, quarantine_cross_process_lock,
+    quarantine_invalid_state_db,
     refuse_deleted_wal_generation,
 )
 from hermes_state_messages import SessionMessagesMixin
@@ -495,17 +496,17 @@ class SessionDB(
         try:
             # Serialize zero-byte check, quarantine, connect and schema commit so concurrent
             # openers don't race the absent-path -> schema-commit window.
-            if not self.db_path.exists() or is_zeroed_state_db(self.db_path):
+            if not self.db_path.exists() or has_invalid_sqlite_header_preopen(self.db_path):
                 with quarantine_cross_process_lock(self.db_path) as lock_acquired:
                     if not lock_acquired:
                         logger.warning(
                             "startup quarantine lock for %s not acquired within 5s; proceeding",
                             self.db_path,
                         )
-                    self._handle_quarantine_if_zeroed(already_locked=lock_acquired)
+                    self._handle_quarantine_if_invalid(already_locked=lock_acquired)
                     self._connect_and_init_with_lock_patience()
             else:
-                self._handle_quarantine_if_zeroed(already_locked=False)
+                self._handle_quarantine_if_invalid(already_locked=False)
                 self._connect_and_init_with_lock_patience()
         except sqlite3.DatabaseError as exc:
             # A malformed schema fails on the very first statement (before _init_schema), so the
@@ -565,18 +566,18 @@ class SessionDB(
         conn.row_factory = sqlite3.Row
         return conn
 
-    def _handle_quarantine_if_zeroed(self, already_locked: bool = False) -> None:
+    def _handle_quarantine_if_invalid(self, already_locked: bool = False) -> None:
         """Quarantine a zero-byte/headerless state.db so a fresh one can open; if quarantine failed,
         raise the clear message instead of opening the zeroed file."""
-        if not (self.db_path.exists() and is_zeroed_state_db(self.db_path)):
+        if not (self.db_path.exists() and has_invalid_sqlite_header_preopen(self.db_path)):
             return
         try:
             zsize = self.db_path.stat().st_size
         except OSError:
             zsize = -1
-        qpath = quarantine_zeroed_state_db(self.db_path, already_locked=already_locked)
+        qpath = quarantine_invalid_state_db(self.db_path, already_locked=already_locked)
         msg = (
-            f"state.db looks ZEROED ({zsize} bytes, no SQLite header). "
+            f"state.db has no SQLite header ({zsize} bytes). "
             f"Preserved at {qpath or '(quarantine failed — file left in place)'}. "
             f"Restore from {self.db_path.parent / 'state-snapshots'} via `hermes snapshot list` / "
             f"`hermes snapshot restore <id>` if available. "
@@ -584,7 +585,7 @@ class SessionDB(
         )
         logger.error(msg)
         _set_last_init_error(msg)
-        if qpath is None and self.db_path.exists() and is_zeroed_state_db(self.db_path):
+        if qpath is None and self.db_path.exists() and has_invalid_sqlite_header_preopen(self.db_path):
             raise sqlite3.DatabaseError(msg)
 
     def _open_writer_conn(self) -> sqlite3.Connection:

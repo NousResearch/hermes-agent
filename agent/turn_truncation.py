@@ -52,6 +52,20 @@ _CEILING_NO_TEXT = (
     "continuation attempt — its reasoning consumed the entire budget each time.\n\nTo fix this:\n"
     "→ Lower reasoning effort: `/reasoning low` or `/reasoning none`\n→ Or raise max_tokens for this model"
 )
+_WINDOW_EXHAUSTED = (
+    "📏 Context window exhausted — the prompt left no room for generation "
+    "(continuation retries only grow it). Stopping instead of looping.",
+    "⚠️ **Context Window Exhausted**\n\nThe conversation already filled the context window, so "
+    "`finish_reason='length'` here means *no room to generate* — not a long answer that needs "
+    "stitching. Each continuation retry appends the partial fragment + a nudge, making the prompt "
+    "*longer* and the next attempt *worse*, until the window is consumed entirely.\n\nTo fix this:\n"
+    "→ Compress or shorten the conversation (e.g. `/compress`, start a new session, or trim old turns)\n"
+    "→ Raise `model.context_length` (and for Ollama `model.ollama_num_ctx`) to the real window size\n"
+    "→ Lower `model.max_tokens` if it is set above what the window can hold",
+    "Context window exhausted: prompt_tokens + max_tokens >= context_length, so "
+    "finish_reason='length' reflects window overflow, not output truncation. "
+    "Continuation would only grow the prompt.",
+)
 
 
 def normalize_response_for_agent(agent: Any, response: Any) -> Any:
@@ -150,6 +164,46 @@ def _abort_reason(agent: Any, content: Any, has_tool_calls: bool) -> Optional[tu
     visible = agent._strip_think_blocks(content) if isinstance(content, str) else content
     if visible and is_repetition_dominated(visible):
         return _REPETITION_DOMINATED
+    return None
+
+
+def _window_exhausted_abort(agent: Any, response: Any) -> Optional[tuple]:
+    """``(vprint, user response, error)`` when the prompt already consumed the context
+    window beyond the output cap: ``finish_reason='length'`` then means *no room to
+    generate*, not *a long answer that needs stitching*. Continuing appends the partial
+    fragment + a nudge — strictly more prompt — so each retry is worse (the death spiral
+    in #106120, observed live on Ollama /v1). Abort instead of looping.
+
+    Discriminator: ``prompt_tokens + max_tokens >= context_length`` — the output cap is
+    unreachable because the prompt alone leaves less than ``max_tokens`` of room, so the
+    partial fragment from one attempt already consumes what is left. Skipped when the
+    provider omits usage and no prior real count is known (best-effort, never false-aborts).
+    """
+    compressor = getattr(agent, "context_compressor", None)
+    context_length = int(getattr(compressor, "context_length", 0) or 0) if compressor else 0
+    max_tokens = int(getattr(agent, "max_tokens", 0) or 0)
+    if not (context_length and max_tokens):
+        return None
+    prompt_tokens = 0
+    usage = getattr(response, "usage", None)
+    if usage:
+        try:
+            from agent.usage_pricing import normalize_usage
+            prompt_tokens = int(normalize_usage(
+                usage, provider=agent.provider, api_mode=agent.api_mode
+            ).prompt_tokens or 0)
+        except Exception:
+            prompt_tokens = 0
+    # last_real_prompt_tokens is folded from response.usage one phase later
+    # (turn_usage.record_response_usage), so at this point it still holds the prior
+    # call's count. Use it only when this response carries no usage (silent-clip
+    # providers like Ollama /v1 sometimes omit it).
+    if not prompt_tokens and compressor is not None:
+        prompt_tokens = int(getattr(compressor, "last_real_prompt_tokens", 0) or 0)
+    if not prompt_tokens:
+        return None
+    if prompt_tokens + max_tokens >= context_length:
+        return _WINDOW_EXHAUSTED
     return None
 
 
@@ -340,6 +394,11 @@ def recover_from_truncation(
         cf = _content_filter_fallback(st, _retry)
         if cf is not None:
             return cf
+        window_abort = _window_exhausted_abort(agent, response)
+        if window_abort is not None:
+            _wline, _wuser, _werror = window_abort
+            agent._vprint(f"{agent.log_prefix}{_wline}", force=True)
+            return st.end_turn(_wuser, _werror)
         if _trunc_msg is not None:
             if not _trunc_has_tool_calls:
                 return _continue_text(st, _retry, _trunc_msg)

@@ -551,6 +551,8 @@ class _GateSpec:
     redact_cli: bool          # CLI prompt + hooks see the redacted copy
     pending_keys: bool        # pending fallback: redacted ``pending_approval`` shape with
                               # pattern_keys (True) vs raw ``approval_required`` (False)
+    fail_closed_no_responder: bool  # no-callback branch fails closed (terminal ``no_responder``
+                              # block) instead of queuing a pending record nobody can answer
     # Message templates. ``{breaker}`` = the denial circuit-breaker addendum,
     # read only where a template shows it (reading it logs when tripped).
     notify_failed: str
@@ -574,6 +576,7 @@ _STOP_ACTION = (
 
 _COMMAND_GATE = _GateSpec(
     noun="command", transport=True, user_approved=True, redact_cli=False, pending_keys=True,
+    fail_closed_no_responder=False,
     notify_failed="BLOCKED: Failed to send approval request to user. Do NOT retry.",
     gateway_refused="BLOCKED: Command {reason}.{reason_addendum}" + _STOP_COMMAND
                     + "{timeout_addendum}{breaker}",
@@ -589,6 +592,7 @@ _COMMAND_GATE = _GateSpec(
 )
 _EXECUTE_CODE_GATE = _GateSpec(
     noun="code", transport=True, user_approved=True, redact_cli=True, pending_keys=True,
+    fail_closed_no_responder=True,
     notify_failed="BLOCKED: Failed to send execute_code approval request to user. Do NOT retry.",
     gateway_refused=(
         "BLOCKED: execute_code script {reason}.{reason_addendum} The user has "
@@ -610,6 +614,7 @@ _EXECUTE_CODE_GATE = _GateSpec(
 # no user_approved marker (parity with the historical gate).
 _ACTION_GATE = _GateSpec(
     noun="action", transport=False, user_approved=False, redact_cli=False, pending_keys=False,
+    fail_closed_no_responder=False,
     notify_failed="BLOCKED: Failed to send approval request to user. Do NOT retry.",
     gateway_refused="BLOCKED: Action {reason}.{reason_addendum}" + _STOP_ACTION
                     + "{timeout_addendum}",
@@ -659,7 +664,7 @@ def _smart_gate(spec: _GateSpec, command: str, description: str, pattern_key: st
 def _human_decision(spec: _GateSpec, *, command: str, description: str,
                     pattern_key: str, pattern_keys: list[str], warnings: list[tuple],
                     session_key: str, approval_callback, is_cli: bool, is_gateway: bool,
-                    is_ask: bool, smart: bool = False,
+                    is_ask: bool, fail_closed_no_responder: bool = False, smart: bool = False,
                     permanent_capable: bool = True, pending_body=None) -> dict:
     """Ask a human (after the optional guardian-LLM step) and turn the answer into the gate result.
 
@@ -668,6 +673,9 @@ def _human_decision(spec: _GateSpec, *, command: str, description: str,
     allowlisted (pure-tirith prompts); a smart-DENY owner override reduces every surface to
     once/deny and persists nothing. ``pending_body`` is a thunk, built only once a human is
     actually asked, so a smart APPROVE never pays for redacting a large script.
+    ``fail_closed_no_responder`` opts this call into the no-callback branch's terminal block
+    on top of the gate's spec knob (per-caller: the dangerous-command gate uses it, the other
+    action-gate callers keep the pending fallback).
     """
     from agent.redact import redact_sensitive_text
 
@@ -757,6 +765,27 @@ def _human_decision(spec: _GateSpec, *, command: str, description: str,
         if not _should_fall_through_to_cli_approval(
             is_cli=is_cli, approval_callback=approval_callback, notify_cb=notify_cb,
         ):
+            if spec.fail_closed_no_responder or fail_closed_no_responder:
+                # No responder can ever consume or resolve this request: no gateway notifier is
+                # registered and the CLI panel cannot be painted. Fail closed immediately instead
+                # of queuing a pending record (approval._pending) nobody can answer — a headless
+                # escalation used to park the task forever (the stale-claim wedge in #87183,
+                # root-caused in #87488). No _pending entry is written.
+                response_command = redact_sensitive_text(command) if spec.redact_cli else command
+                blocked = _denied(
+                    (
+                        f"BLOCKED: {description}, but no user or approval responder is available. "
+                        "The user has NOT consented to this action. Do NOT retry it, do NOT "
+                        "rephrase it, and do NOT attempt the same outcome via a different path."
+                    ),
+                    pattern_key=pattern_key, description=description, outcome="no_responder",
+                    command=response_command if spec.pending_keys else None,
+                )
+                if smart_denied:
+                    # Smart-DENY owner override never persists; mirror that on the terminal
+                    # block so callers see the same flags _pending_result used to carry.
+                    blocked.update(smart_denied=True, allow_permanent=False)
+                return blocked
             if not spec.pending_keys:
                 display_command, display_description = command, description
             return _pending_result(
@@ -802,6 +831,7 @@ def _run_approval_gate(
     advice: str = "Find an alternative approach that avoids this action.",
     cron_deny_message: str = "", single_query_deny_message: str = "", unattended_deny_message: str = "",
     autoapprove_log_prefix: str, fail_closed_when_no_human: bool = False, no_human_block_message: str = "",
+    fail_closed_no_responder: bool = False,
 ) -> dict:
     """Shared human-approval gate for a flagged action (tool call or write): decision core for
     :func:`request_tool_approval` and the file-tool write gates.
@@ -810,8 +840,11 @@ def _run_approval_gate(
     prompt → persistence. Input-shape checks (hardline, allowlist, pattern detection) are the
     caller's job. ``fail_closed_when_no_human``: a non-interactive, non-gateway, non-cron
     context BLOCKS instead of auto-approving, so a plugin-flagged action never runs ungated.
-    Unattended deny text is ``ctx.block_message(subject, noun, advice)`` unless the caller passes
-    an explicit ``*_deny_message`` (the file-tool write gates word their own).
+    ``fail_closed_no_responder``: the gateway no-notifier fallback inside the human-decision
+    engine ALSO fails closed instead of queuing an unanswerable pending — the companion layer
+    for callers (the dangerous-command gate) that must never park in the dark. Unattended deny
+    text is ``ctx.block_message(subject, noun, advice)`` unless the caller passes an explicit
+    ``*_deny_message`` (the file-tool write guards word their own).
     """
     # Hardline blocks are the caller's job BEFORE this gate, so yolo here only skips the recoverable approval layer.
     if _yolo_active():
@@ -862,6 +895,7 @@ def _run_approval_gate(
         _ACTION_GATE, command=display_target, description=description, pattern_key=pattern_key,
         pattern_keys=[pattern_key], warnings=[(pattern_key, None, False)], session_key=session_key,
         approval_callback=approval_callback, is_cli=is_cli, is_gateway=is_gateway, is_ask=is_ask,
+        fail_closed_no_responder=fail_closed_no_responder,
     )
 
 
@@ -924,6 +958,18 @@ def check_dangerous_command(command: str, env_type: str,
         subject=f"Command flagged as dangerous ({description})", noun="dangerous commands",
         advice="Find an alternative approach that avoids this command.",
         autoapprove_log_prefix="AUTO-APPROVED dangerous command in non-interactive non-gateway context",
+        # No responder can approve this in a fully headless context (no interactive
+        # user, no gateway notifier, and not governed by an unattended mode): fail
+        # closed instead of auto-approving a dangerous command (#87488).
+        fail_closed_when_no_human=True,
+        no_human_block_message=(
+            "BLOCKED: Command flagged as dangerous, but no user or approval responder "
+            "is available. The user has NOT consented to this action. Do NOT retry it, "
+            "do NOT rephrase it, and do NOT attempt the same outcome via a different path."
+        ),
+        # And in the interactive-but-unanswerable layer (gateway/ask registered, no
+        # notifier, no CLI panel): same terminal block rather than a pending record.
+        fail_closed_no_responder=True,
     )
 
 

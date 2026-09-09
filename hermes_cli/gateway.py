@@ -1385,7 +1385,7 @@ def _s6_gateway_snapshot(gateway_pids: tuple[int, ...]) -> GatewayRuntimeSnapsho
     from hermes_cli.service_manager import detect_service_manager, get_service_manager
     if detect_service_manager() != "s6":
         return None
-    service_name = f"gateway-{_profile_suffix() or 'default'}"
+    service_name = f"gateway-{_current_profile_name()}"
     mgr = get_service_manager()
     service_installed = service_running = False
     try:
@@ -1964,6 +1964,14 @@ def _profile_suffix() -> str:
         return ""
     name = _profile_name_from_home(home, get_default_hermes_root().resolve())
     return name or hashlib.sha256(str(home).encode()).hexdigest()[:8]
+
+
+def _current_profile_name() -> str:
+    """Profile id relative to the profile ROOT: ``default`` for the root itself (Docker's ``/opt/data``
+    included), ``<name>`` for ``<root>/profiles/<name>``, else the service hash. s6 slots and the
+    multiplexer ask which PROFILE this is; ``_profile_suffix()`` answers which HOST SERVICE this is."""
+    from hermes_constants import profile_name_for_home
+    return profile_name_for_home(get_hermes_home()) or _profile_suffix()
 
 
 def _profile_arg(hermes_home: str | None = None, default_root: str | Path | None = None) -> str:
@@ -4282,7 +4290,7 @@ def named_profile_served_by_running_multiplexer(profile_name: str | None = None)
     See #97120.
     """
     try:
-        suffix = profile_name if profile_name is not None else _profile_suffix()
+        suffix = profile_name if profile_name is not None else _current_profile_name()
     except Exception:
         return False
     if not suffix or suffix == "default":
@@ -4339,7 +4347,7 @@ def _guard_named_profile_under_multiplexer(force: bool = False) -> None:
     if force:
         return
     try:
-        suffix = _profile_suffix()
+        suffix = _current_profile_name()
     except Exception:
         return
     if not named_profile_served_by_running_multiplexer():
@@ -5688,8 +5696,7 @@ def _dispatch_via_service_manager_if_s6(action: str, profile: str | None = None)
     if detect_service_manager() != "s6":
         return False
     if profile is None:
-        # _profile_suffix() is "" for the default root; the default gateway is gateway-default.
-        profile = _profile_suffix() or "default"
+        profile = _current_profile_name()  # root home (Docker /opt/data included) is gateway-default
     mgr = get_service_manager()
     if action not in ("start", "stop", "restart"):
         return False

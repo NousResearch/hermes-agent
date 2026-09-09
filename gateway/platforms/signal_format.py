@@ -5,6 +5,13 @@ from __future__ import annotations
 
 import re
 
+from agent.markdown_tables import is_table_divider, realign_markdown_tables
+
+# Signal has no fixed-width client area; this budgets for a phone screen in the app's
+# monospace face. Tables wider than this fall back to realign_markdown_tables()'s
+# vertical Key: value rendering rather than soft-wrapping mid-cell.
+_TABLE_WIDTH = 40
+
 _CODE_BLOCK_RE = re.compile(r"```[a-zA-Z0-9_+-]*\n?(.*?)```", re.DOTALL)
 _HEADING_RE = re.compile(r"^#{1,6}\s+", re.MULTILINE)
 _INLINE_PATTERNS = [
@@ -29,6 +36,32 @@ def _normalize_bullet_markers(source: str) -> str:
                    for idx, part in enumerate(parts))
 
 
+def _realign_tables(text: str, styles: list[tuple[int, int, str]]) -> str:
+    """Detect GFM table blocks and re-align each to a fixed monospace width, recording a
+    MONOSPACE style range over the rendered block. Runs after code-block extraction, so no
+    fenced regions remain to skip."""
+    if "|" not in text:
+        return text
+    lines = text.split("\n")
+    result_lines: list[str] = []
+    i, n = 0, len(lines)
+    while i < n:
+        line = lines[i]
+        if "|" in line and i + 1 < n and is_table_divider(lines[i + 1]):
+            j = i + 2
+            while j < n and "|" in lines[j] and lines[j].strip():
+                j += 1
+            rendered = realign_markdown_tables("\n".join(lines[i:j]), _TABLE_WIDTH)
+            block_start = sum(len(rl) + 1 for rl in result_lines)
+            styles.append((block_start, len(rendered), "MONOSPACE"))
+            result_lines.extend(rendered.split("\n"))
+            i = j
+            continue
+        result_lines.append(line)
+        i += 1
+    return "\n".join(result_lines)
+
+
 def markdown_to_signal(text: str) -> tuple[str, list[str]]:
     """Convert markdown to plain text + Signal textStyles list. Signal uses ``bodyRanges`` (signal-cli
     ``textStyle`` / ``textStyles`` params) as ``start:length:STYLE`` with positions in UTF-16 code units.
@@ -39,6 +72,7 @@ def markdown_to_signal(text: str) -> tuple[str, list[str]]:
         inner = match.group(1).rstrip("\n")
         styles.append((match.start(), len(inner), "MONOSPACE"))
         text = text[: match.start()] + inner + text[match.end() :]
+    text = _realign_tables(text, styles)
     new_text, last_end = "", 0
     for match in _HEADING_RE.finditer(text):
         new_text += text[last_end : match.start()]

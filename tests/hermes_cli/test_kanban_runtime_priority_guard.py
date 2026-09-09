@@ -10,6 +10,7 @@ import pytest
 from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_db_connect as kbc
 from hermes_cli import kanban_db_dispatch as kbd
+from hermes_cli import kanban_runtime_priority as krp
 
 
 def _guard(
@@ -41,9 +42,9 @@ def isolated_kanban_home(tmp_path, monkeypatch):
 def test_exact_runtime_snapshot_lowers_configured_performance_cap(tmp_path):
     root = tmp_path / "private-project"
     root.mkdir()
-    scan = kb.ProcessScan(
+    scan = krp.ProcessScan(
         snapshots=(
-            kb.ProcessSnapshot(
+            krp.ProcessSnapshot(
                 pid=41,
                 argv=("python3", "main.py"),
                 cwd=str(root),
@@ -70,7 +71,7 @@ def test_guard_has_explicit_normal_performance_lane_when_runtime_is_absent(tmp_p
         kbd.resolve_max_in_progress(
             None,
             priority_runtime_guard=_guard(root),
-            process_scan=kb.ProcessScan(snapshots=(), complete=True),
+            process_scan=krp.ProcessScan(snapshots=(), complete=True),
         )
         == 8
     )
@@ -78,9 +79,9 @@ def test_guard_has_explicit_normal_performance_lane_when_runtime_is_absent(tmp_p
 def test_absolute_entrypoint_under_exact_root_matches(tmp_path):
     root = tmp_path / "private-project"
     root.mkdir()
-    scan = kb.ProcessScan(
+    scan = krp.ProcessScan(
         snapshots=(
-            kb.ProcessSnapshot(
+            krp.ProcessSnapshot(
                 pid=42,
                 argv=("/usr/bin/python3", str(root / "main.py")),
                 cwd="/tmp",
@@ -89,7 +90,7 @@ def test_absolute_entrypoint_under_exact_root_matches(tmp_path):
         complete=True,
     )
 
-    assert kb.priority_runtime_state(_guard(root), process_scan=scan) == "active"
+    assert krp.priority_runtime_state(_guard(root), process_scan=scan) == "active"
 
 
 def test_unrelated_main_py_does_not_lower_cap(tmp_path):
@@ -97,24 +98,24 @@ def test_unrelated_main_py_does_not_lower_cap(tmp_path):
     unrelated_root = tmp_path / "unrelated"
     guarded_root.mkdir()
     unrelated_root.mkdir()
-    scan = kb.ProcessScan(
+    scan = krp.ProcessScan(
         snapshots=(
-            kb.ProcessSnapshot(
+            krp.ProcessSnapshot(
                 pid=43,
                 argv=("python3", "main.py"),
                 cwd=str(unrelated_root),
             ),
-            kb.ProcessSnapshot(
+            krp.ProcessSnapshot(
                 pid=44,
                 argv=("python3", "-c", "run main.py"),
                 cwd=str(guarded_root),
             ),
-            kb.ProcessSnapshot(
+            krp.ProcessSnapshot(
                 pid=46,
                 argv=("python3", "-m", "main.py"),
                 cwd=str(guarded_root),
             ),
-            kb.ProcessSnapshot(
+            krp.ProcessSnapshot(
                 pid=47,
                 argv=("echo", "main.py"),
                 cwd=str(guarded_root),
@@ -137,9 +138,9 @@ def test_descendant_main_py_is_not_the_configured_root_entrypoint(tmp_path):
     root = tmp_path / "private-project"
     nested = root / "other"
     nested.mkdir(parents=True)
-    scan = kb.ProcessScan(
+    scan = krp.ProcessScan(
         snapshots=(
-            kb.ProcessSnapshot(
+            krp.ProcessSnapshot(
                 pid=45,
                 argv=("python3", "main.py"),
                 cwd=str(nested),
@@ -148,7 +149,7 @@ def test_descendant_main_py_is_not_the_configured_root_entrypoint(tmp_path):
         complete=True,
     )
 
-    assert kb.priority_runtime_state(_guard(root), process_scan=scan) == "inactive"
+    assert krp.priority_runtime_state(_guard(root), process_scan=scan) == "inactive"
 
 
 def test_verified_linked_worktree_runtime_lowers_cap_when_enabled(tmp_path):
@@ -176,9 +177,9 @@ def test_verified_linked_worktree_runtime_lowers_cap_when_enabled(tmp_path):
         ["git", "-C", str(root), "worktree", "add", "--quiet", "-b", "linked", str(linked)],
         check=True,
     )
-    scan = kb.ProcessScan(
+    scan = krp.ProcessScan(
         snapshots=(
-            kb.ProcessSnapshot(
+            krp.ProcessSnapshot(
                 pid=48,
                 argv=("python3", str(linked / "main.py")),
                 cwd=str(linked),
@@ -202,9 +203,9 @@ def test_unrelated_repository_runtime_is_not_a_linked_worktree_match(tmp_path):
     unrelated = tmp_path / "unrelated"
     subprocess.run(["git", "init", "--quiet", str(guarded)], check=True)
     subprocess.run(["git", "init", "--quiet", str(unrelated)], check=True)
-    scan = kb.ProcessScan(
+    scan = krp.ProcessScan(
         snapshots=(
-            kb.ProcessSnapshot(
+            krp.ProcessSnapshot(
                 pid=49,
                 argv=("python3", str(unrelated / "main.py")),
                 cwd=str(unrelated),
@@ -214,7 +215,7 @@ def test_unrelated_repository_runtime_is_not_a_linked_worktree_match(tmp_path):
     )
 
     assert (
-        kb.priority_runtime_state(
+        krp.priority_runtime_state(
             _guard(guarded, include_linked_worktrees=True),
             process_scan=scan,
         )
@@ -230,20 +231,20 @@ def test_incomplete_process_scan_fails_safe_to_protected_cap(tmp_path):
         kbd.resolve_max_in_progress(
             8,
             priority_runtime_guard=_guard(root),
-            process_scan=kb.ProcessScan(snapshots=(), complete=False),
+            process_scan=krp.ProcessScan(snapshots=(), complete=False),
         )
         == 3
     )
 
 
 def test_unreadable_login_process_cannot_hide_python_runtime():
-    assert kb._process_name_can_hide_python_runtime("login") is False
-    assert kb._process_name_can_hide_python_runtime("zsh") is False
-    assert kb._process_name_can_hide_python_runtime("python3.11") is True
+    assert krp._process_name_can_hide_python_runtime("login") is False
+    assert krp._process_name_can_hide_python_runtime("zsh") is False
+    assert krp._process_name_can_hide_python_runtime("python3.11") is True
 
 
 def test_disabled_or_unconfigured_guard_preserves_normal_cap(tmp_path):
-    scan = kb.ProcessScan(snapshots=(), complete=False)
+    scan = krp.ProcessScan(snapshots=(), complete=False)
 
     assert (
         kbd.resolve_max_in_progress(
@@ -271,7 +272,7 @@ def test_protected_cap_never_raises_a_lower_operator_cap(tmp_path):
         kbd.resolve_max_in_progress(
             1,
             priority_runtime_guard=_guard(root, protected_cap=2),
-            process_scan=kb.ProcessScan(snapshots=(), complete=False),
+            process_scan=krp.ProcessScan(snapshots=(), complete=False),
         )
         == 1
     )

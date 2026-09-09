@@ -260,7 +260,33 @@ def _kill_fn(signal_fn) -> Optional[Callable[[int, int], None]]:
     """``signal_fn`` test hook, else ``os.kill`` when the platform has one."""
     if signal_fn is not None:
         return signal_fn
-    return os.kill if hasattr(os, "kill") else None
+    return _worker_tree_signal if hasattr(os, "kill") else None
+
+
+def _worker_tree_signal(pid: int, sig: int) -> None:
+    """Signal a dispatcher-owned worker process group when ownership is provable."""
+    if (
+        os.name != "nt"
+        and hasattr(os, "killpg")
+        and hasattr(os, "getpgid")
+        and hasattr(os, "getpgrp")
+    ):
+        try:
+            pgid = os.getpgid(int(pid))
+            if pgid == int(pid) and pgid != os.getpgrp():
+                os.killpg(pgid, sig)
+                return
+        except ProcessLookupError:
+            # The leader may have exited while its process group remains.
+            # The recorded worker PID is the group ID for start_new_session.
+            try:
+                os.killpg(int(pid), sig)
+                return
+            except (ProcessLookupError, PermissionError, OSError):
+                pass
+        except (PermissionError, OSError):
+            pass
+    os.kill(int(pid), sig)
 
 
 def _poll_worker_exit(pid: int) -> bool:
@@ -414,7 +440,12 @@ def heartbeat_worker(
     return True
 
 
-def enforce_max_runtime(conn: sqlite3.Connection, *, signal_fn=None) -> list[str]:
+def enforce_max_runtime(
+    conn: sqlite3.Connection,
+    *,
+    signal_fn=None,
+    default_max_runtime_seconds: Optional[int] = None,
+) -> list[str]:
     """Terminate workers whose per-task ``max_runtime_seconds`` has elapsed.
 
     SIGTERM, short grace, then SIGKILL. Emits ``timed_out`` and restores the
@@ -426,15 +457,20 @@ def enforce_max_runtime(conn: sqlite3.Connection, *, signal_fn=None) -> list[str
     now = int(time.time())
     host_prefix = _kb._host_prefix()
 
+    try:
+        runtime_default = int(default_max_runtime_seconds) if default_max_runtime_seconds is not None else None
+    except (TypeError, ValueError):
+        runtime_default = None
     rows = conn.execute(
         "SELECT t.id, t.worker_pid, "
         "       COALESCE(r.started_at, t.started_at) AS active_started_at, "
-        "       t.max_runtime_seconds, t.claim_lock "
+        "       COALESCE(t.max_runtime_seconds, ?) AS max_runtime_seconds, t.claim_lock "
         "FROM tasks t "
         "LEFT JOIN task_runs r ON r.id = t.current_run_id "
-        "WHERE t.status = 'running' AND t.max_runtime_seconds IS NOT NULL "
+        "WHERE t.status = 'running' AND (t.max_runtime_seconds IS NOT NULL OR ? IS NOT NULL) "
         "  AND COALESCE(r.started_at, t.started_at) IS NOT NULL "
         "  AND t.worker_pid IS NOT NULL"
+        , (runtime_default, runtime_default)
     ).fetchall()
     for row in rows:
         lock = row["claim_lock"] or ""
@@ -898,8 +934,9 @@ def _account_crashes(conn: sqlite3.Connection, crash_details: list) -> list[str]
             if trow is None:
                 continue  # task deleted mid-loop
             task_override = _kb._row_get(trow, "max_retries")
-            violation_limit = (
-                int(task_override) if task_override is not None else _PROTOCOL_VIOLATION_FAILURE_LIMIT
+            violation_limit = max(
+                2,
+                int(task_override) if task_override is not None else _PROTOCOL_VIOLATION_FAILURE_LIMIT,
             )
             if streak < violation_limit:
                 # Below budget: already back at ``ready`` with the error stamped.
@@ -1316,14 +1353,41 @@ def derive_default_max_in_progress(sample: Optional[Mapping[str, Any]] = None) -
     return max(DERIVED_MAX_IN_PROGRESS_FLOOR, min(workers, DERIVED_MAX_IN_PROGRESS_CEILING))
 
 
-def resolve_max_in_progress(configured: Optional[int]) -> Optional[int]:
-    """Effective global concurrency cap: explicit config wins, else the
-    memory-derived default. All config-parsing callers route through this so
-    both paths agree.
-    """
+def resolve_max_in_progress(
+    configured: Optional[int],
+    *,
+    priority_runtime_guard: Optional[Mapping[str, Any]] = None,
+    process_scan: Any = None,
+) -> Optional[int]:
+    """Resolve the normal cap and an optional fail-closed priority-runtime cap."""
     if configured is not None:
-        return configured
-    return derive_default_max_in_progress()
+        resolved = configured
+    else:
+        resolved = derive_default_max_in_progress()
+    if priority_runtime_guard is None:
+        return resolved
+    from hermes_cli.kanban_runtime_priority import (
+        configured_priority_runtime_guard,
+        priority_runtime_state,
+    )
+    guard = priority_runtime_guard or configured_priority_runtime_guard()
+    if configured is None:
+        try:
+            normal_cap = int(guard.get("normal_max_in_progress"))
+        except (TypeError, ValueError, AttributeError):
+            normal_cap = 0
+        if normal_cap > 0:
+            resolved = normal_cap if resolved is None else min(resolved, normal_cap)
+    state = priority_runtime_state(guard, process_scan=process_scan)
+    if state not in {"active", "unknown"}:
+        return resolved
+    try:
+        protected = int(guard.get("max_in_progress", 3))
+    except (TypeError, ValueError, AttributeError):
+        protected = 3
+    if protected < 1:
+        protected = 3
+    return protected if resolved is None else min(resolved, protected)
 
 
 def configured_max_in_progress() -> Optional[int]:
@@ -1432,6 +1496,7 @@ def dispatch_once(
     board: Optional[str] = None,
     default_assignee: Optional[str] = None,
     max_in_progress_per_profile: Optional[int] = None,
+    max_in_progress_by_profile: Optional[Mapping[str, int]] = None,
     reconcile_orphans: bool = True,
 ) -> DispatchResult:
     """Run one dispatcher tick under the board's single-writer lock.
@@ -1455,6 +1520,7 @@ def dispatch_once(
             board=board,
             default_assignee=default_assignee,
             max_in_progress_per_profile=max_in_progress_per_profile,
+            max_in_progress_by_profile=max_in_progress_by_profile,
             reconcile_orphans=reconcile_orphans,
         )
 
@@ -1503,7 +1569,7 @@ def _dispatch_lane_task(
     board: Optional[str],
     failure_limit: int,
     spawn_fn,
-    per_profile_cap: Optional[int],
+    per_profile_cap: Any,
     per_profile_running: dict[str, int],
 ) -> bool:
     """Guard, claim, resolve the workspace and spawn one ready/review row.
@@ -1523,7 +1589,12 @@ def _dispatch_lane_task(
     # must not be overwhelmed by a fan-out even with global headroom.
     if per_profile_cap is not None:
         current = per_profile_running.get(assignee, 0)
-        if current >= per_profile_cap:
+        cap = (
+            per_profile_cap.get(assignee)
+            if isinstance(per_profile_cap, Mapping)
+            else per_profile_cap
+        )
+        if isinstance(cap, int) and cap > 0 and current >= cap:
             result.skipped_per_profile_capped.append((task_id, assignee, current))
             return False
     guard_reason = check_respawn_guard(conn, task_id, lane=lane)
@@ -1764,6 +1835,7 @@ def _dispatch_once_locked(
     board: Optional[str] = None,
     default_assignee: Optional[str] = None,
     max_in_progress_per_profile: Optional[int] = None,
+    max_in_progress_by_profile: Optional[Mapping[str, int]] = None,
     reconcile_orphans: bool = True,
 ) -> DispatchResult:
     """One dispatcher tick: reclaim stale/crashed running tasks, promote
@@ -1795,13 +1867,13 @@ def _dispatch_once_locked(
         ready_budget = max(spawn_budget - 1, 0)
     # Per-profile cap. Deferred tasks go to skipped_per_profile_capped, not
     # skipped_unassigned — "busy, retry later" differs from "needs routing".
-    per_profile_cap = max_in_progress_per_profile if (
+    per_profile_cap = max_in_progress_by_profile or max_in_progress_per_profile if (
         # Per-profile concurrency cap (#21582): when set, track how many workers each assignee already has
         # in flight, and refuse to spawn when this would push that assignee past the cap. Prevents fan-out
         # workloads from melting a single profile's local model / API quota / browser pool while leaving
         # other profiles idle.
-        isinstance(max_in_progress_per_profile, int)
-        and max_in_progress_per_profile > 0
+        isinstance(max_in_progress_by_profile, Mapping)
+        or (isinstance(max_in_progress_per_profile, int) and max_in_progress_per_profile > 0)
     ) else None
     per_profile_running: dict[str, int] = {}
     if per_profile_cap is not None:

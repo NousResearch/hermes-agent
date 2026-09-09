@@ -28,6 +28,7 @@ from hermes_cli import kanban_db_connect as kbc
 from hermes_cli import profiles as profiles_mod
 from hermes_cli.kanban_specify import (
     _call_aux, _extract_json_blob, _load_triage_task, _task_prompt_fields, _title_body,
+    _truncate,
 )
 from hermes_cli.kanban_specify import _profile_author as _specify_author
 
@@ -271,6 +272,8 @@ def _clean_children(task_id: str, raw_tasks: list, routing: _Routing) -> tuple[l
         if not isinstance(title, str) or not title.strip():
             return [], f"tasks[{idx}].title is missing or empty"
         body = entry.get("body")
+        if isinstance(body, str) and _PLACEHOLDER_CHILD_SCOPE_RE.search(body):
+            return [], f"tasks[{idx}].body has placeholder target scope"
         assignee = entry.get("assignee")
         chosen = _normalize_assignee_choice(
             assignee, default_assignee=routing.default_assignee, valid_names=routing.valid_names,
@@ -301,8 +304,16 @@ def _apply_fanout(task_id: str, parsed: dict, routing: _Routing, author: str) ->
     children, reason = _clean_children(task_id, raw_tasks, routing)
     if reason:
         return DecomposeOutcome(task_id, False, reason)
+    root_handoffs = _root_handoff_context(task_id)
     try:
         with kbc.connect_closing() as conn:
+            root = kb.get_task(conn, task_id)
+            if root is None:
+                return DecomposeOutcome(task_id, False, "task already decomposed or moved out of triage")
+            children = [
+                {**child, "body": _make_child_body(root, child["body"], root_handoffs=root_handoffs)}
+                for child in children
+            ]
             child_ids = decompose_triage_task(
                 conn,
                 task_id,
@@ -392,11 +403,23 @@ def decompose_task(
     if task is None:
         return DecomposeOutcome(task_id, False, reason)
 
+    if kb.is_atomic_pr_automation_task(
+        body=task.body, idempotency_key=task.idempotency_key,
+    ):
+        return DecomposeOutcome(
+            task_id, False, "atomic PR automation tasks must remain indivisible",
+        )
+    if kb.is_governed_research_intake(idempotency_key=task.idempotency_key):
+        return DecomposeOutcome(
+            task_id, False, "governed research intake must retain its specialist owner",
+        )
+
     routing = _load_routing()
     raw, reason = _call_aux(
         "decompose", task_id, aux_task="kanban_decomposer", system=_SYSTEM_PROMPT,
         user=_USER_TEMPLATE.format(
             **_task_prompt_fields(task),
+            handoffs=_root_handoff_context(task.id),
             roster=_format_roster(routing.roster),
             default_assignee=routing.default_assignee,
         ),

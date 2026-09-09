@@ -8,7 +8,9 @@ late-bound via ``_kb`` (import-cycle breaking) so monkeypatching
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -345,6 +347,8 @@ def claim_unseen_events_for_sub(
     chat_id: str,
     thread_id: Optional[str] = None,
     kinds: Optional[Iterable[str]] = None,
+    claim_owner: Optional[str] = None,
+    claim_lease_seconds: int = 300,
 ) -> tuple[int, int, list[Event]]:
     """Atomically claim unseen events for one subscription.
 
@@ -355,17 +359,46 @@ def claim_unseen_events_for_sub(
     events, then leave the cursor or call :func:`rewind_notify_cursor` on
     delivery failure.
     """
+    owner = (claim_owner or f"pid:{os.getpid()}:thread:{threading.get_ident()}").strip()
+    if not owner:
+        raise ValueError("notification claim owner must be non-empty")
+    try:
+        lease_seconds = max(1, min(int(claim_lease_seconds), 3600))
+    except (TypeError, ValueError):
+        lease_seconds = 300
+    now = int(time.time())
     with _kb.write_txn(conn):
-        old_cursor = _notify_cursor(conn, task_id, platform, chat_id, thread_id)
-        if old_cursor is None:
+        row = conn.execute(
+            "SELECT last_event_id, notify_claim_owner, notify_claimed_at, notify_claimed_cursor "
+            "FROM kanban_notify_subs WHERE task_id = ? AND platform = ? AND chat_id = ? AND thread_id = ?",
+            (task_id, platform, chat_id, thread_id or ""),
+        ).fetchone()
+        if row is None:
             return 0, 0, []
+        old_cursor = int(row["last_event_id"])
+        existing_owner = row["notify_claim_owner"]
+        claimed_at = row["notify_claimed_at"]
+        claimed_cursor = row["notify_claimed_cursor"]
+        claim_active = (
+            isinstance(existing_owner, str) and bool(existing_owner)
+            and isinstance(claimed_at, int) and now - claimed_at < lease_seconds
+        )
+        if claim_active and existing_owner != owner:
+            return old_cursor, old_cursor, []
         new_cursor, events = unseen_events_for_sub(
             conn, task_id=task_id, platform=platform, chat_id=chat_id,
             thread_id=thread_id, kinds=kinds,
         )
         if not events:
             return old_cursor, old_cursor, []
-        _cas_cursor(conn, _sub_key(task_id, platform, chat_id, thread_id), new_cursor, old_cursor)
+        conn.execute(
+            "UPDATE kanban_notify_subs SET notify_claim_owner = ?, notify_claimed_at = ?, "
+            "notify_claimed_cursor = ? WHERE task_id = ? AND platform = ? AND chat_id = ? "
+            "AND thread_id = ? AND last_event_id = ? AND (notify_claimed_at IS NULL "
+            "OR notify_claimed_at <= ? OR notify_claim_owner = ?)",
+            (owner, now, int(new_cursor), task_id, platform, chat_id, thread_id or "",
+             old_cursor, now - lease_seconds, owner),
+        )
         return old_cursor, new_cursor, events
 
 
@@ -385,12 +418,22 @@ def advance_notify_cursor(
     chat_id: str,
     thread_id: Optional[str] = None,
     new_cursor: int,
+    claim_owner: Optional[str] = None,
 ) -> None:
     with _kb.write_txn(conn):
-        conn.execute(
-            "UPDATE kanban_notify_subs SET last_event_id = ? " + _SUB_KEY_WHERE,
-            (int(new_cursor), *_sub_key(task_id, platform, chat_id, thread_id)),
+        params: list[Any] = [int(new_cursor), *_sub_key(task_id, platform, chat_id, thread_id), int(new_cursor)]
+        owner_clause = ""
+        if claim_owner is not None:
+            owner_clause = " AND notify_claim_owner = ?"
+            params.append(claim_owner)
+        cur = conn.execute(
+            "UPDATE kanban_notify_subs SET last_event_id = ?, notify_claim_owner = NULL, "
+            "notify_claimed_at = NULL, notify_claimed_cursor = NULL " + _SUB_KEY_WHERE +
+            " AND notify_claimed_cursor = ?" + owner_clause,
+            params,
         )
+        if cur.rowcount != 1:
+            raise RuntimeError("notification claim is no longer held")
 
 
 def record_notify_ping(
@@ -415,12 +458,23 @@ def rewind_notify_cursor(
     thread_id: Optional[str] = None,
     claimed_cursor: int,
     old_cursor: int,
+    claim_owner: Optional[str] = None,
 ) -> bool:
     """Undo a claim when delivery fails. The CAS guard only rewinds if no later
     notifier advanced the row, so retries never clobber newer progress.
     """
     with _kb.write_txn(conn):
-        cur = _cas_cursor(conn, _sub_key(task_id, platform, chat_id, thread_id), old_cursor, claimed_cursor)
+        owner_clause = ""
+        params: list[Any] = [old_cursor, *_sub_key(task_id, platform, chat_id, thread_id), claimed_cursor]
+        if claim_owner is not None:
+            owner_clause = " AND notify_claim_owner = ?"
+            params.append(claim_owner)
+        cur = conn.execute(
+            "UPDATE kanban_notify_subs SET last_event_id = ?, notify_claim_owner = NULL, "
+            "notify_claimed_at = NULL, notify_claimed_cursor = NULL " + _SUB_KEY_WHERE +
+            " AND notify_claimed_cursor = ?" + owner_clause,
+            params,
+        )
     return cur.rowcount > 0
 
 

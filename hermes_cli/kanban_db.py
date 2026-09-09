@@ -1231,6 +1231,9 @@ CREATE TABLE IF NOT EXISTS kanban_notify_subs (
     created_at    INTEGER NOT NULL,
     last_event_id INTEGER NOT NULL DEFAULT 0,
     last_ping_event_id INTEGER NOT NULL DEFAULT 0,
+    notify_claim_owner TEXT,
+    notify_claimed_at INTEGER,
+    notify_claimed_cursor INTEGER,
     PRIMARY KEY (task_id, platform, chat_id, thread_id)
 );
 
@@ -4033,6 +4036,13 @@ def _ctx_header(lines: list[str], task: Task) -> None:
         lines.append("## Body")
         lines.append(_ctx_cap(task.body, _CTX_MAX_BODY_BYTES))
         lines.append("")
+    lines.append("## Completion contract")
+    lines.append(
+        "Before your worker exits, call kanban_complete with a factual result, "
+        "or call kanban_block only for a concrete unresolved prerequisite. "
+        "never exit with only conversational text."
+    )
+    lines.append("")
 
 
 def _ctx_attachments(lines: list[str], attachments: list[Attachment]) -> None:

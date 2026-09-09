@@ -341,7 +341,7 @@ def test_worker_tree_signal_uses_owned_process_group(monkeypatch):
     monkeypatch.setattr(kb.os, "killpg", lambda pgid, sig: calls.append(("group", pgid, sig)))
     monkeypatch.setattr(kb.os, "kill", lambda pid, sig: calls.append(("pid", pid, sig)))
 
-    kb._worker_tree_signal(222, 15)
+    kbd._worker_tree_signal(222, 15)
 
     assert calls == [("group", 222, 15)]
 
@@ -358,7 +358,7 @@ def test_worker_tree_signal_signals_orphaned_group_when_leader_dead(monkeypatch)
     monkeypatch.setattr(kb.os, "killpg", lambda pgid, sig: calls.append(("group", pgid, sig)))
     monkeypatch.setattr(kb.os, "kill", lambda pid, sig: calls.append(("pid", pid, sig)))
 
-    kb._worker_tree_signal(222, 15)
+    kbd._worker_tree_signal(222, 15)
 
     assert calls == [("group", 222, 15)]
 
@@ -371,7 +371,7 @@ def test_worker_tree_signal_never_targets_own_process_group(monkeypatch):
     monkeypatch.setattr(kb.os, "killpg", lambda pgid, sig: calls.append(("group", pgid, sig)))
     monkeypatch.setattr(kb.os, "kill", lambda pid, sig: calls.append(("pid", pid, sig)))
 
-    kb._worker_tree_signal(222, 15)
+    kbd._worker_tree_signal(222, 15)
 
     assert calls == [("pid", 222, 15)]
 
@@ -383,9 +383,8 @@ def test_max_runtime_terminates_overrun_worker(kanban_home):
         killed.append((pid, sig))
 
     # We bypass _pid_alive by stubbing it so the grace-poll exits fast.
-    import hermes_cli.kanban_db as _kb
-    original_alive = _kb._pid_alive
-    _kb._pid_alive = lambda pid: False  # pretend SIGTERM worked immediately
+    original_alive = kbd._pid_alive
+    kbd._pid_alive = lambda pid: False  # pretend SIGTERM worked immediately
 
     try:
         conn = kbc.connect()
@@ -428,7 +427,7 @@ def test_max_runtime_terminates_overrun_worker(kanban_home):
         finally:
             conn.close()
     finally:
-        _kb._pid_alive = original_alive
+        kbd._pid_alive = original_alive
 
 
 def test_max_runtime_uses_dispatch_default_when_task_has_no_override(kanban_home):
@@ -438,16 +437,15 @@ def test_max_runtime_uses_dispatch_default_when_task_has_no_override(kanban_home
     def _signal_fn(pid, sig):
         killed.append((pid, sig))
 
-    import hermes_cli.kanban_db as _kb
-    original_alive = _kb._pid_alive
-    _kb._pid_alive = lambda pid: False
+    original_alive = kbd._pid_alive
+    kbd._pid_alive = lambda pid: False
 
     try:
         conn = kbc.connect()
         try:
             tid = kb.create_task(conn, title="uncapped job", assignee="worker")
             kb.claim_task(conn, tid)
-            kb._set_worker_pid(conn, tid, os.getpid())
+            kbd._set_worker_pid(conn, tid, os.getpid())
             old_started = int(time.time()) - 30
             with kb.write_txn(conn):
                 conn.execute(
@@ -471,7 +469,7 @@ def test_max_runtime_uses_dispatch_default_when_task_has_no_override(kanban_home
         finally:
             conn.close()
     finally:
-        _kb._pid_alive = original_alive
+        kbd._pid_alive = original_alive
 
 
 
@@ -826,7 +824,7 @@ def test_pid_alive_detects_zombie(kanban_home):
     )
     pid = proc.pid
     try:
-        assert kb._pid_alive(pid) is True  # live non-zombie
+        assert kbd._pid_alive(pid) is True  # live non-zombie
         os.kill(pid, 9)
         time.sleep(0.3)
         # Verify /proc reports zombie state so the test is actually
@@ -837,7 +835,7 @@ def test_pid_alive_detects_zombie(kanban_home):
             )
         assert "Z" in state_line, f"expected zombie, got {state_line!r}"
         # And _pid_alive must see through it.
-        assert kb._pid_alive(pid) is False
+        assert kbd._pid_alive(pid) is False
     finally:
         try:
             proc.wait(timeout=1)
@@ -1459,12 +1457,12 @@ def _drive_worker_exit(conn, tid, fake_pid, raw_status):
     assert claimed is not None, "task was not claimable for the next attempt"
     _kbd._set_worker_pid(conn, tid, fake_pid)
     _kbd._record_worker_exit(fake_pid, raw_status)
-    original_alive = _kb._pid_alive
-    _kb._pid_alive = lambda p: False
+    original_alive = _kbd._pid_alive
+    _kbd._pid_alive = lambda p: False
     try:
         return _kbd.detect_crashed_workers(conn)
     finally:
-        _kb._pid_alive = original_alive
+        _kbd._pid_alive = original_alive
 
 
 def _drive_protocol_violation(conn, tid, fake_pid):

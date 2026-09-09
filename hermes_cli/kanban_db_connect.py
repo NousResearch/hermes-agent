@@ -836,6 +836,9 @@ _NOTIFY_SUB_COLUMNS = (
     # (which prefers ``user_id_alt``). NULL is inert.
     ("user_id_alt", "user_id_alt TEXT"),
     ("delivery_metadata", "delivery_metadata TEXT"),
+    ("notify_claim_owner", "notify_claim_owner TEXT"),
+    ("notify_claimed_at", "notify_claimed_at INTEGER"),
+    ("notify_claimed_cursor", "notify_claimed_cursor INTEGER"),
 )
 
 
@@ -1029,6 +1032,8 @@ _REBUILD_SPECS = {
         " delivery_metadata TEXT, created_at INTEGER NOT NULL,"
         " last_event_id INTEGER NOT NULL DEFAULT 0,"
         " last_ping_event_id INTEGER NOT NULL DEFAULT 0,"
+        " notify_claim_owner TEXT, notify_claimed_at INTEGER,"
+        " notify_claimed_cursor INTEGER,"
         " PRIMARY KEY (task_id, platform, chat_id, thread_id))",
         ("CREATE INDEX idx_notify_task ON kanban_notify_subs(task_id)",),
     ),

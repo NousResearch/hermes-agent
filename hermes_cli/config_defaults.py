@@ -1106,6 +1106,8 @@ DEFAULT_CONFIG = {
             # Raw PCM rate for streaming playback. OpenAI emits 24 kHz; a compatible endpoint that
             # reports its rate (X-Audio-Sample-Rate header) overrides this automatically.
             "pcm_sample_rate": 24000,
+            # "forward" sends speed to the endpoint; "local" uses ffmpeg atempo instead.
+            "speed_mode": "forward",
         },
         "gemini": {
             "model": "gemini-2.5-flash-preview-tts",

@@ -66,6 +66,7 @@ export function EditProfileDialog({ bot, open, onClose }: EditProfileDialogProps
   const [color, setColor] = useState<null | string>(appearance.color)
   const [image, setImage] = useState<null | string>(appearance.image ?? null)
   const [title, setTitle] = useState(meta?.title || '')
+  const [circle, setCircle] = useState(meta?.circle || '')
   const [description, setDescription] = useState(bot?.description || '')
   const [busy, setBusy] = useState(false)
   const [advanced, setAdvanced] = useState(false)
@@ -83,6 +84,7 @@ export function EditProfileDialog({ bot, open, onClose }: EditProfileDialogProps
       setColor(appearance.color)
       setImage(appearance.image ?? null)
       setTitle(meta?.title || '')
+      setCircle(meta?.circle || '')
       setDescription(bot.description || '')
       setBusy(false)
       setAdvanced(false)
@@ -108,6 +110,7 @@ export function EditProfileDialog({ bot, open, onClose }: EditProfileDialogProps
       image,
       imageKind: image ? 'photo' : 'shape',
       title: title.trim(),
+      circle: circle.trim().toLowerCase().slice(0, 64),
       custom: true
     })
 
@@ -219,6 +222,15 @@ export function EditProfileDialog({ bot, open, onClose }: EditProfileDialogProps
               onChange={event => setTitle(event.target.value)}
               placeholder={displayName(bot, null)}
               value={title}
+            />
+          )}
+          {labeled(
+            b.roster.circle,
+            <Input
+              maxLength={64}
+              onChange={event => setCircle(event.target.value)}
+              placeholder={b.roster.circleHint}
+              value={circle}
             />
           )}
           {labeled(

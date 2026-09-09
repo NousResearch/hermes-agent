@@ -78,6 +78,10 @@ export interface BotMeta {
    *  the relay publisher (relay.ts), so it crosses the wire in profile.yaml like every other
    *  bot setting. */
   private?: boolean
+  /** Mesh circle: this bot sees and can message only bots in the same circle, locally and
+   *  across the relay. Empty/unset = the shared default circle (today's behaviour). Ordering:
+   *  force_private > private (a circle of one) > circle > shared. Trimmed, max 64 chars. */
+  circle?: string
   shape?: string
   title?: string
   /** Creation timestamp in ms. Deliberately not copied when duplicating a bot. */

@@ -289,6 +289,8 @@ ui_meta:
 
 A Bot sees, and can message, only Bots in its own circle — on this machine and across the Desktop relay. Bots with no circle form the shared default circle, so an install that never sets one behaves exactly as before. Circle names are case-insensitive (`Work` and `work` are the same circle), trimmed, and capped at 64 characters; anything that is not a plain name (an empty value, a number, a list) counts as the shared circle rather than isolating the Bot.
 
+In the desktop, **Edit profile** has a **Circle** field for this; whatever you type is stored lower-cased, and the roster shows each Bot's circle beside its name.
+
 From strongest to weakest: `bots.force_private` beats `private`, which beats `circle`, which beats the shared default. A private Bot inside a circle is a circle of one.
 
 Circles govern what Bots do on their own. They do not stop **you** from putting Bots from different circles into one [group chat](#groups-and-group-chats) — that room is the deliberate, human-arranged bridge between circles.

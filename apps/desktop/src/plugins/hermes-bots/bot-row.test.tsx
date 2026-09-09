@@ -241,3 +241,51 @@ describe('the menu toggles mesh visibility (private/public)', () => {
     expect(params).toMatchObject({ name: 'backend-lucky', ui_meta: { 'hermes-bots': { private: false } } })
   })
 })
+
+describe('the row shows the bot\'s circle beside its handle', () => {
+  const bot = { connectionId: 'local', name: 'lucky', route: { connectionId: 'local', mode: 'local', profile: 'lucky' } } as RosterRow
+
+  it('renders "· <circle>" when a circle is set and the handle is shown', async () => {
+    const { $botMeta, botMetaKey } = await import('./data')
+    $botMeta.set({ ...$botMeta.get(), [botMetaKey(bot)]: { circle: 'hobby' } })
+
+    render(<BotRow bot={bot} onDelete={noop} onEdit={noop} onGroup={noop} onNewSection={noop} showHandle />)
+
+    expect(screen.getByText('hobby')).toBeTruthy()
+    expect(document.querySelector('[data-slot="bot-circle"]')?.textContent).toBe('hobby')
+  })
+
+  it('renders no circle tag when the circle is unset (the shared circle is the quiet default)', async () => {
+    const { $botMeta, botMetaKey } = await import('./data')
+    $botMeta.set({ ...$botMeta.get(), [botMetaKey(bot)]: {} })
+
+    render(<BotRow bot={bot} onDelete={noop} onEdit={noop} onGroup={noop} onNewSection={noop} showHandle />)
+
+    expect(document.querySelector('[data-slot="bot-circle"]')).toBeNull()
+  })
+
+  it('shows the circle even when the handle is not needed for disambiguation', async () => {
+    // showHandle is only on when two bots share a title. The circle is a membership fact and
+    // must not ride on that: a bot whose title equals its handle still shows its circle, and
+    // the details row opens for it even without a handle or a session preview.
+    const { $botMeta, botMetaKey } = await import('./data')
+    $botMeta.set({ ...$botMeta.get(), [botMetaKey(bot)]: { circle: 'hobby' } })
+
+    render(<BotRow bot={bot} onDelete={noop} onEdit={noop} onGroup={noop} onNewSection={noop} />)
+
+    expect(document.querySelector('[data-slot="bot-circle"]')?.textContent).toBe('hobby')
+  })
+
+  it('displays a hand-edited circle in the same case the mesh matches it in', async () => {
+    // The dialog lower-cases on save and the gateway lower-cases on read, so a value that
+    // arrived any other way (hand-edited profile.yaml, an older client's sync) must not render
+    // as a different-looking circle from the one it actually belongs to.
+    const { $botMeta, botMetaKey } = await import('./data')
+    $botMeta.set({ ...$botMeta.get(), [botMetaKey(bot)]: { circle: '  Work  ' } })
+
+    render(<BotRow bot={bot} onDelete={noop} onEdit={noop} onGroup={noop} onNewSection={noop} />)
+
+    expect(document.querySelector('[data-slot="bot-circle"]')?.textContent).toBe('work')
+  })
+})
+

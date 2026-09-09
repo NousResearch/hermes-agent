@@ -472,6 +472,42 @@ describe('the roster loop pushes the OTHER connections’ agents', () => {
     stopBotRelay()
   })
 
+  it('publishes each bot\'s circle, trimmed, lower-cased and capped, and "" when unset', async () => {
+    // The gateway filters remote rows by the READER's circle, so the publisher must carry
+    // the field faithfully: a trimmed, lower-cased name (circle names are case-insensitive),
+    // a 64-char cap, and "" for the shared circle.
+    const calls = respondWith(call => {
+      if (call.method === 'profiles.list') {
+        return call.connectionId === 'a'
+          ? { profiles: [{ name: 'default' }] }
+          : {
+              profiles: [
+                { name: 'plain' },
+                { name: 'lucky', ui_meta: { 'hermes-bots': { circle: '  Hobby  ' } } },
+                { name: 'longname', ui_meta: { 'hermes-bots': { circle: 'x'.repeat(100) } } }
+              ]
+            }
+      }
+
+      return {}
+    })
+
+    const { startBotRelay, stopBotRelay } = await loadRelay()
+
+    startBotRelay()
+    await vi.advanceTimersByTimeAsync(0)
+
+    const toA = calls.find(call => call.method === 'bot_relay.roster.sync' && call.connectionId === 'a')!
+    const rows = (toA.params as { agents: { handle: string; circle: string }[] }).agents
+    const circleOf = (handle: string) => rows.find(row => row.handle === handle)?.circle
+
+    expect(circleOf('plain')).toBe('')
+    expect(circleOf('lucky')).toBe('hobby')
+    expect(circleOf('longname')).toHaveLength(64)
+
+    stopBotRelay()
+  })
+
   it('never conflates a transient fetch failure with an empty connection', async () => {
     // A live machine whose profiles.list blips must not be pushed as absent:
     // the gateway-side liveness check reads "absent from a fresh roster" as

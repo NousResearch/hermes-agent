@@ -55,6 +55,8 @@ type BotsMessages = {
     hiddenFromRoster: string
     pinned: string
     makePrivate: string
+    circle: string
+    circleHint: string
     makePublic: string
     madePrivate: string
     madePublic: string
@@ -290,6 +292,8 @@ const en: BotsMessages = {
     hiddenFromRoster: 'Hidden from the roster',
     pinned: 'Pinned',
     makePrivate: 'Make private',
+    circle: 'Circle',
+    circleHint: 'Who this bot shares the mesh with. Blank = the shared circle; agents only see and message their own circle.',
     makePublic: 'Make public',
     madePrivate: 'is now private — other agents can no longer see or message it',
     madePublic: 'is public again — other agents can see and message it',
@@ -512,6 +516,8 @@ const ja: BotsMessages = {
     hiddenFromRoster: '名簿から非表示',
     pinned: 'ピン留め',
     makePrivate: '非公開にする',
+    circle: 'サークル',
+    circleHint: 'このボットがメッシュを共有する相手。空欄＝共有サークル。エージェントは同じサークル内だけを見て、メッセージを送れます。',
     makePublic: '公開にする',
     madePrivate: 'は非公開になりました — 他のエージェントからは見えず、メッセージも届きません',
     madePublic: 'は公開に戻りました — 他のエージェントから見え、メッセージを送れます',
@@ -733,6 +739,8 @@ const zh: BotsMessages = {
     hiddenFromRoster: '已从名单中隐藏',
     pinned: '已置顶',
     makePrivate: '设为私有',
+    circle: '圈子',
+    circleHint: '此机器人共享网格的范围。留空＝共享圈子；智能体只能看到并联系自己圈子内的成员。',
     makePublic: '设为公开',
     madePrivate: '已设为私有 — 其他智能体无法再看到或联系它',
     madePublic: '已恢复公开 — 其他智能体可以看到并联系它',
@@ -950,6 +958,8 @@ const zhHant: BotsMessages = {
     hiddenFromRoster: '已從名單中隱藏',
     pinned: '已釘選',
     makePrivate: '設為私有',
+    circle: '圈子',
+    circleHint: '此機器人共享網格的範圍。留空＝共享圈子；代理只能看到並聯繫自己圈子內的成員。',
     makePublic: '設為公開',
     madePrivate: '已設為私有 — 其他代理無法再看到或聯繫它',
     madePublic: '已恢復公開 — 其他代理可以看到並聯繫它',

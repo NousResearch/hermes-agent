@@ -1,4 +1,4 @@
-"""Tests for skills/social-media/reddit-reading/scripts/reddit.py — backend selection and throttle handling."""
+"""Tests for optional-skills/social-media/reddit-reading/scripts/reddit.py — backend selection and throttle handling."""
 
 import io
 import sys
@@ -8,7 +8,7 @@ from unittest import mock
 
 import pytest
 
-SCRIPTS_DIR = Path(__file__).resolve().parents[2] / "skills" / "social-media" / "reddit-reading" / "scripts"
+SCRIPTS_DIR = Path(__file__).resolve().parents[2] / "optional-skills" / "social-media" / "reddit-reading" / "scripts"
 sys.path.insert(0, str(SCRIPTS_DIR))
 
 import reddit  # noqa: E402

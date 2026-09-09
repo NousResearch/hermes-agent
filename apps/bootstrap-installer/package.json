@@ -1,8 +1,8 @@
 {
-  "name": "@hermes/bootstrap-installer",
+  "name": "@north-forge/setup",
   "private": true,
-  "version": "0.0.1",
-  "description": "Hermes Setup — signed installer that drives scripts/install.ps1 with a polished native UI.",
+  "version": "0.1.0",
+  "description": "North Forge Setup — branded Tauri GUI that runs scripts/bootstrap-north-forge.ps1 for a checkout already on the drive.",
   "type": "module",
   "scripts": {
     "dev": "vite --host 127.0.0.1 --port 5175",

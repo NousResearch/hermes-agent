@@ -33,6 +33,12 @@ SKILL_SOURCES = [
 # We leave these alone (they get first-class sidebar treatment separately).
 HAND_WRITTEN = {"google-workspace.md"}
 
+GENERATED_PAGE_MARKER = (
+    "{/* This page is auto-generated from the skill's SKILL.md by "
+    "website/scripts/generate-skill-docs.py. Edit the source SKILL.md, "
+    "not this page. */}"
+)
+
 
 _FENCE_RE = re.compile(r"^(?P<indent>\s*)(?P<fence>```+|~~~+)", re.MULTILINE)
 
@@ -429,7 +435,7 @@ def render_skill_page(
         f'description: "{fm_desc}"\n'
         "---\n"
         "\n"
-        "{/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}\n"
+        f"{GENERATED_PAGE_MARKER}\n"
         "\n"
         f"# {display_name}\n"
         "\n"
@@ -447,6 +453,28 @@ def render_skill_page(
         "\n"
         f"{body_clean}\n"
     )
+
+
+def prune_stale_generated_pages(expected_paths: set[Path]) -> list[Path]:
+    """Delete generated skill pages whose source SKILL.md no longer exists.
+
+    Only files below the generated ``bundled`` / ``optional`` trees carrying
+    this generator's exact marker are eligible. Hand-written documentation is
+    never removed, even if it sits beside generated pages.
+    """
+    removed: list[Path] = []
+    for source_kind, _source_dir in SKILL_SOURCES:
+        source_pages = SKILLS_PAGES / source_kind
+        if not source_pages.exists():
+            continue
+        for path in sorted(source_pages.rglob("*.md")):
+            if path in expected_paths:
+                continue
+            if GENERATED_PAGE_MARKER not in path.read_text(encoding="utf-8"):
+                continue
+            path.unlink()
+            removed.append(path)
+    return removed
 
 
 def discover_skills() -> list[tuple[dict[str, Any], dict[str, Any]]]:
@@ -743,6 +771,14 @@ def main():
         # Prefer bundled over optional if a name collision exists
         if name not in skill_index or meta["source_kind"] == "bundled":
             skill_index[name] = meta
+
+    # Remove generated pages whose source skill was deleted. Without this,
+    # the generator only adds/updates pages and removed bundled skills remain
+    # published indefinitely (#71856).
+    expected_pages = {page_output_path(meta) for meta, _parsed in entries}
+    removed = prune_stale_generated_pages(expected_pages)
+    if removed:
+        print(f"Removed {len(removed)} stale generated skill page(s)")
 
     # Write per-skill pages
     written = 0

@@ -1338,7 +1338,24 @@ def stop() -> None:
 
     pid = get_running_pid()
     stop_pids = _collect_gateway_stop_pids(pid)
-    drained = pid is not None and _drain_gateway_pid(pid, _windows_stop_drain_timeout())
+
+    # A provably-dead event loop can never read the planned-stop marker, so draining it is a
+    # guaranteed burn of the full window (#106359: a proxy failure exhausted the TCP port space,
+    # the loop froze, the heartbeat stopped, background threads kept logging, and every stop paid
+    # the ~30s wait before the hard kill). Windows has no SIGTERM — escalate straight to the
+    # bounded force kill. A merely busy gateway (fresh heartbeat / tick witness) never takes this
+    # path and keeps its full drain window. Mirrors the systemd/launchd/fleet liveness gates.
+    drained = False
+    if pid is not None:
+        from hermes_cli.gateway import GATEWAY_LOOP_WEDGED, probe_gateway_loop_liveness
+
+        if probe_gateway_loop_liveness(pid) == GATEWAY_LOOP_WEDGED:
+            print(
+                f"⚠ Gateway PID {pid} event loop is unresponsive — skipping the drain "
+                "wait and forcing a bounded stop..."
+            )
+        else:
+            drained = _drain_gateway_pid(pid, _windows_stop_drain_timeout())
 
     stopped_any = drained
     if is_task_registered():

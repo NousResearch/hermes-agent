@@ -62,7 +62,7 @@ def _unlink_sidecars(db_path: Path) -> None:
 
 @pytest.mark.linux_only  # deleted-WAL write halt uses Linux unlink semantics
 def test_close_after_halt_runs_no_checkpoint(tmp_path, force_wal):
-    """A writer halted by DeletedWalGenerationError must not checkpoint (periodic or close) nor run FTS repair."""
+    """A writer halted by DeletedWalGenerationError must not checkpoint (periodic, VACUUM or close) nor run FTS repair."""
     path = tmp_path / "state.db"
     db = _make_db(path, "s", "before")
     _require_wal(db)
@@ -72,11 +72,13 @@ def test_close_after_halt_runs_no_checkpoint(tmp_path, force_wal):
         db.append_message("s", role="user", content="after-unlink")
     assert db._db_wal_generation_lost is True
 
-    # Neither the periodic checkpoint, the stale-FTS retry, nor close() may touch the file now.
+    # Neither the periodic checkpoint, the stale-FTS retry, VACUUM, nor close() may touch the file now.
     with patch.object(db._conn, "execute", wraps=db._conn.execute) as mock_execute:
         db._try_wal_checkpoint()
         db._fts_stale = True
         assert db.retry_deferred_fts_recovery() is False
+        assert db.vacuum() == 0
+        assert not [c for c in mock_execute.call_args_list if "vacuum" in str(c).lower()], "VACUUM ran on a quarantined handle"
         db.close()
         # No checkpoint call should have been made.
         checkpoint_calls = [

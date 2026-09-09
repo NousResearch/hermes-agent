@@ -245,7 +245,9 @@ def _select_new_servers(servers: Dict[str, dict]) -> Dict[str, dict]:
         stale_cached = [_core._servers[k] for k in servers
                         if k in _core._servers and getattr(_core._servers[k], "session", None) is None]
         _core._server_connecting.update(new_servers)
+        current_scope = _core._mcp_registry_scope()
         for srv_name in new_servers:
+            _core._server_scope_keys[srv_name] = current_scope
             _core._server_connect_errors.pop(srv_name, None)
         # Track which servers opt-in to parallel tool calls (idempotent).
         for srv_name, srv_cfg in servers.items():
@@ -453,16 +455,24 @@ def is_mcp_tool_parallel_safe(tool_name: str) -> bool:
         return bool(server_name and server_name in _core._parallel_safe_servers)
 
 
-def get_mcp_status() -> List[dict]:
+def get_mcp_status(configured: Optional[Dict[str, dict]] = None, *, include_runtime: bool = True) -> List[dict]:
     """Per-server status dicts for banner/TUI: name, transport, tools, connected, disabled,
-    status (connected / disabled / connecting / failed / configured) and error for failed."""
-    configured = _config._load_mcp_config()
+    status (connected / disabled / connecting / failed / configured) and error for failed.
+    Reads cached runtime state only; never connects."""
+    configured = _config._load_mcp_config() if configured is None else dict(configured)
     if not configured:
         return []
+    current_scope = _core._mcp_registry_scope()
     with _core._lock:
-        active_servers = dict(_core._servers)
-        connecting = set(_core._server_connecting)
-        connect_errors = dict(_core._server_connect_errors)
+        def visible(name: str) -> bool:
+            # Runtime state belongs to the profile that adopted it; under a multiplexer only that
+            # profile's view may show it, and ``include_runtime=False`` hides the launch profile's
+            # servers from a status read scoped to a different profile.
+            return include_runtime and _core._server_scope_keys.get(name, None) == current_scope
+
+        active_servers = {n: s for n, s in _core._servers.items() if visible(n)}
+        connecting = {n for n in _core._server_connecting if visible(n)}
+        connect_errors = {n: e for n, e in _core._server_connect_errors.items() if visible(n)}
 
     result: List[dict] = []
     for name, cfg in configured.items():

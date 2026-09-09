@@ -892,7 +892,8 @@ def log_api_error_attempt(
 
     if agent._is_openrouter_url() and "support tool use" in error_msg:
         _blines(agent, f"   💡 No OpenRouter providers for {_model} support tool calling with your current settings.")
-        if agent.providers_allowed:
+        from agent.chat_completion_helpers import _provider_preferences_for_agent
+        if _provider_preferences_for_agent(agent).get("only"):
             _blines(
                 agent,
                 "      Your provider_routing.only restriction is filtering out tool-capable providers.",
@@ -973,30 +974,44 @@ def compute_error_backoff(
     agent: Any, api_error: Exception, *, retry_count: int, max_retries: int, is_rate_limited: bool,
     is_zai_coding_overload: bool, base_url: Any, model: Any,
 ) -> float:
-    """Pick the wait before the next API retry and announce it. Retry-After wins for rate
-    limits (capped at 600s: Anthropic Tier 1 buckets reset in ~171s, so a 120s cap re-tripped
-    the limit); otherwise jittered backoff, replaced by the adaptive policy for 429s / Z.AI
-    overloads. Normal retries are buffered; long Z.AI Coding waits surface immediately."""
+    """Pick the wait before the next API retry and announce it. Retry-After wins for
+    rate limits and any other retryable error (capped at 600s: Anthropic Tier 1 buckets
+    reset in ~171s, so a 120s cap re-tripped the limit); otherwise jittered backoff,
+    replaced by the adaptive policy for 429s / Z.AI overloads. Normal retries are
+    buffered; long Z.AI Coding waits surface immediately."""
     # Imported lazily so tests that patch ``agent.retry_utils.jittered_backoff`` /
     # ``adaptive_rate_limit_backoff`` (incl. the run_agent conftest fast-backoff fixture) intercept.
-    from agent.retry_utils import adaptive_rate_limit_backoff, jittered_backoff
+    from agent.retry_utils import adaptive_rate_limit_backoff, jittered_backoff, parse_retry_after_seconds
 
-    _retry_after = None
-    _resp_headers = getattr(getattr(api_error, "response", None), "headers", None) if is_rate_limited else None
-    if _resp_headers and hasattr(_resp_headers, "get"):
-        _ra_raw = _resp_headers.get("retry-after") or _resp_headers.get("Retry-After")
-        if _ra_raw:
-            try:
-                # Cap at 10 minutes. Anthropic Tier 1 input-token buckets reset in ~171s, so a 120s cap
-                # caused us to retry before the actual reset window and re-trip the limit. 600s covers all
-                # realistic provider reset windows while still rejecting pathological values. (#26293)
-                _retry_after = min(float(_ra_raw), 600)
-            except (TypeError, ValueError):
-                pass
-    wait_time = _retry_after if _retry_after else jittered_backoff(retry_count, base_delay=2.0, max_delay=60.0)
+    # Respect Retry-After on every retryable provider error, not just 429s. Retryable
+    # 5xx responses (e.g. Cloudflare 520/524) also carry the header or a structured
+    # ``retry_after`` problem-detail body field; ignoring either turns an origin
+    # outage into a retry storm.
+    _retry_after = parse_retry_after_seconds(
+        getattr(getattr(api_error, "response", None), "headers", None)
+    )
+    if _retry_after is None:
+        _error_body = getattr(api_error, "body", None)
+        if isinstance(_error_body, dict):
+            # Some providers nest it as error.retry_after (the same unwrap
+            # extract_api_error_context uses), others put it at the top level.
+            _nested = _error_body.get("error")
+            _payload = _nested if isinstance(_nested, dict) else _error_body
+            _retry_after = parse_retry_after_seconds(_payload.get("retry_after"))
+    if _retry_after is not None:
+        # Cap at 10 minutes. Anthropic Tier 1 input-token buckets reset in ~171s, so a 120s cap
+        # caused us to retry before the actual reset window and re-trip the limit. 600s covers all
+        # realistic provider reset windows while still rejecting pathological values. (#26293)
+        _retry_after = min(_retry_after, 600)
+        if _retry_after <= 0:
+            # A zero/expired cooldown (retry-after: 0, or an HTTP-date in the
+            # past, which the parser clamps to 0.0) carries no usable wait —
+            # treat it as absent so we never hot-loop the provider.
+            _retry_after = None
+    wait_time = _retry_after if _retry_after is not None else jittered_backoff(retry_count, base_delay=2.0, max_delay=60.0)
     _backoff_policy = None
     _adaptive = is_rate_limited or is_zai_coding_overload
-    if _adaptive and not _retry_after:
+    if _adaptive and _retry_after is None:
         wait_time, _backoff_policy = adaptive_rate_limit_backoff(
             retry_count, base_url=str(base_url), model=model, error=api_error, default_wait=wait_time,
         )
@@ -1009,7 +1024,16 @@ def compute_error_backoff(
         else:
             agent._buffer_status(_rate_limit_status)
     else:
-        agent._buffer_status(f"⏳ Retrying in {wait_time:.1f}s (attempt {retry_count}/{max_retries})...")
+        _retry_status = (
+            f"⏳ Retrying in {wait_time:.1f}s (attempt {retry_count}/{max_retries})..."
+        )
+        if _retry_after is not None and _retry_after > 60:
+            # A 5xx Retry-After can now reach the 600s cap; buffering that wait
+            # would leave the user silent for minutes, so surface long provider
+            # cooldowns immediately (mirrors the zai_coding_overload_long path).
+            agent._emit_status(_retry_status)
+        else:
+            agent._buffer_status(_retry_status)
     logger.warning(
         "Retrying API call in %ss (attempt %s/%s) %s policy=%s error=%s",
         wait_time, retry_count, max_retries, agent._client_log_context(),

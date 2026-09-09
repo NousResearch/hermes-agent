@@ -9,6 +9,8 @@ A :class:`Transport` forwards a JSON-serialisable dict to its peer, so one dispa
 
 from __future__ import annotations
 
+from collections import deque
+from dataclasses import dataclass, field
 import contextlib
 import contextvars
 import errno
@@ -31,7 +33,6 @@ logger = logging.getLogger(__name__)
 # while the gateway still emits) flush can block long enough to starve the worker pool. Python text stdout is
 # fully buffered on a pipe, so this ONLY makes sense with ``-u``/``PYTHONUNBUFFERED=1``; otherwise the TUI hangs.
 _DISABLE_FLUSH = (os.environ.get("HERMES_TUI_GATEWAY_NO_FLUSH", "") or "").strip().lower() in {"1", "true", "yes", "on"}
-
 
 @runtime_checkable
 class Transport(Protocol):
@@ -113,6 +114,141 @@ class StdioTransport:
 
     def close(self) -> None:
         return None
+
+
+@dataclass(eq=False)
+class _FanoutPeer:
+    transport: Transport
+    pending: deque = field(default_factory=deque)
+    pending_bytes: int = 0
+    writing: bool = False
+    attached: bool = True
+    generation: int = 0
+
+
+class FanoutTransport:
+    """Ordered, bounded session-event mailboxes; RPC replies remain request-local.
+
+    One slow socket must not stop the emitting turn or any healthy subscriber.
+    Each peer has at most one daemon writer and a bounded backlog. On overflow
+    it loses its subscription (history/replay is the recovery path), not other
+    sessions sharing its socket. A write already in the OS cannot be revoked.
+    """
+
+    _MAX_PENDING_FRAMES = 256
+    _MAX_PENDING_BYTES = 4 * 1024 * 1024
+
+    def __init__(self, *transports: Transport) -> None:
+        self._lock = threading.Lock()
+        self._peers: list[_FanoutPeer] = []
+        for transport in transports:
+            self.attach(transport)
+
+    def attach(self, transport: Transport) -> bool:
+        if transport is None or transport is self:
+            return False
+        with self._lock:
+            for peer in self._peers:
+                if peer.transport is transport:
+                    if peer.attached:
+                        return False
+                    # Reuse the in-flight writer: reconnect cannot spawn more
+                    # threads or overtake a write already inside this socket.
+                    peer.attached = True
+                    peer.generation += 1
+                    return True
+            self._peers.append(_FanoutPeer(transport))
+            return True
+
+    def _remove(self, peer: _FanoutPeer) -> None:
+        # Membership lock held; identity fences a stale writer from removing
+        # a later attachment of the same transport.
+        peer.attached = False
+        peer.pending.clear()
+        peer.pending_bytes = 0
+        if not peer.writing and peer in self._peers:
+            self._peers.remove(peer)
+
+    def detach(self, transport: Transport) -> bool:
+        with self._lock:
+            for peer in self._peers:
+                if peer.attached and peer.transport is transport:
+                    self._remove(peer)
+                    return True
+        return False
+
+    def contains(self, transport: Transport) -> bool:
+        with self._lock:
+            return any(peer.attached and peer.transport is transport for peer in self._peers)
+
+    def transports(self) -> list[Transport]:
+        with self._lock:
+            return [peer.transport for peer in self._peers if peer.attached]
+
+    def has_transports(self, *, excluding: Transport | None = None) -> bool:
+        return any(peer is not excluding for peer in self.transports())
+
+    def _drain(self, peer: _FanoutPeer) -> None:
+        while True:
+            with self._lock:
+                if not peer.attached or not peer.pending:
+                    peer.writing = False
+                    if not peer.attached:
+                        self._remove(peer)
+                    return
+                generation = peer.generation
+                frame, size = peer.pending.popleft()
+                peer.pending_bytes -= size
+            try:
+                from tui_gateway.ws import WSTransport
+                if isinstance(peer.transport, WSTransport):
+                    # write() acknowledges buffered tokens/timeouts, not socket
+                    # progress. Await the real send so WS cannot move an
+                    # unbounded backlog underneath this bounded mailbox.
+                    from agent.async_utils import safe_schedule_threadsafe
+                    future = safe_schedule_threadsafe(
+                        peer.transport.write_async(frame), peer.transport._loop)
+                    ok = future is not None and future.result()
+                else:
+                    ok = peer.transport.write(frame)
+            except Exception:
+                logger.debug("fanout write failed; pruning peer", exc_info=True)
+                ok = False
+            if not ok:
+                with self._lock:
+                    if peer.generation != generation:
+                        continue
+                    peer.writing = False
+                    self._remove(peer)
+                return
+
+    def write(self, obj: dict) -> bool:
+        # Freeze the queued frame so a caller cannot mutate it after admission.
+        encoded = json.dumps(obj, ensure_ascii=False)
+        size = len(encoded.encode("utf-8", errors="surrogatepass"))
+        frame = json.loads(encoded)
+        with self._lock:
+            for peer in list(self._peers):
+                if not peer.attached:
+                    continue
+                if (len(peer.pending) >= self._MAX_PENDING_FRAMES
+                        or peer.pending_bytes + size > self._MAX_PENDING_BYTES):
+                    logger.warning("fanout subscriber backlog full; detaching peer")
+                    self._remove(peer)
+                    continue
+                peer.pending.append((frame, size))
+                peer.pending_bytes += size
+                if not peer.writing:
+                    peer.writing = True
+                    threading.Thread(target=self._drain, args=(peer,),
+                                     name="tui-fanout", daemon=True).start()
+            return any(peer.attached for peer in self._peers)
+
+    def close(self) -> None:
+        """Detach without closing sockets owned by the connection handlers."""
+        with self._lock:
+            for peer in list(self._peers):
+                self._remove(peer)
 
 
 class TeeTransport:

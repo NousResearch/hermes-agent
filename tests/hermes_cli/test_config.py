@@ -1022,6 +1022,27 @@ class TestCustomProviderCompatibility:
         run_migrations(current_ver, results, quiet=True)
         return results
 
+    def test_v11_upgrade_moves_custom_providers_into_providers(self, tmp_path):
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(
+            yaml.safe_dump(
+                {
+                    "_config_version": 11,
+                    "model": {"default": "openai/gpt-5.4", "provider": "openrouter"},
+                    "custom_providers": [
+                        {
+                            "name": "OpenAI Direct",
+                            "base_url": "https://api.openai.com/v1",
+                            "api_key": "test-key",
+                            "api_mode": "codex_responses",
+                            "model": "gpt-5-mini",
+                        }
+                    ],
+                    "fallback_providers": [{"provider": "openai-direct", "model": "gpt-5-mini"}],
+                }
+            ),
+            encoding="utf-8",
+        )
 
         with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
             self._run_ladder(11)

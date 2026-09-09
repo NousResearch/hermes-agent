@@ -60,6 +60,24 @@ def test_get_nous_subscription_features_recognizes_direct_exa_backend(monkeypatc
     assert features.web.current_provider == "exa"
 
 
+def test_get_nous_subscription_features_does_not_advertise_removed_perplexity_web_backend(monkeypatch):
+    monkeypatch.setattr(ns, "get_env_value", lambda name: "pplx-key" if name == "PERPLEXITY_API_KEY" else "")
+    monkeypatch.setattr(
+        ns, "get_nous_portal_account_info", lambda: _account(logged_in=False)
+    )
+    monkeypatch.setattr(ns, "_toolset_enabled", lambda config, key: key == "web")
+    monkeypatch.setattr(ns, "_has_agent_browser", lambda: False)
+    monkeypatch.setattr(ns, "resolve_openai_audio_api_key", lambda: "")
+    monkeypatch.setattr(ns, "has_direct_modal_credentials", lambda: False)
+
+    features = ns.get_nous_subscription_features({"web": {"backend": "perplexity"}})
+
+    assert features.web.available is False
+    assert features.web.active is False
+    assert features.web.current_provider == "perplexity"
+    assert features.web.explicit_configured is True
+
+
 def test_get_nous_subscription_features_recognizes_keyless_tavily_backend(monkeypatch):
     """Selecting Tavily in setup/tools counts as available with no API key.
 

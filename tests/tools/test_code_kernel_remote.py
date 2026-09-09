@@ -18,6 +18,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
 from tools.code_kernel_remote import (
     _REMOTE_KERNELS,
+    _REGISTRY,
     RemoteKernel,
     execute_in_remote_kernel,
     shutdown_all_remote_kernels,
@@ -74,10 +75,11 @@ def _cell(status="ok", stdout="", execution_count=1, **kw):
     return payload
 
 
-def _run(env, code="print(1)", *, task="t1", reset=False, timeout=10):
+def _run(env, code="print(1)", *, task="t1", reset=False, timeout=10,
+         tools=frozenset({"read_file"})):
     return execute_in_remote_kernel(
         code, env=env, env_type="ssh", task_env_id=task,
-        sandbox_tools=frozenset({"read_file"}), timeout=timeout,
+        sandbox_tools=tools, timeout=timeout,
         max_tool_calls=5, reset=reset,
     )
 
@@ -176,6 +178,19 @@ class TestDeathDetection(RemoteKernelBase):
 
 
 class TestOwnershipIsolation(RemoteKernelBase):
+    def test_changed_tool_set_spawns_kernel_with_fresh_stubs(self):
+        env = ScriptedEnv(_spawn_ok_handlers([_cell(), _cell()]))
+        _run(env, tools=frozenset({"read_file"}))
+        _run(env, tools=frozenset({"web_search"}))
+
+        self.assertEqual(len(_REMOTE_KERNELS), 2)
+        self.assertEqual(sum(1 for c in env.commands if "nohup" in c), 2)
+        keyed_tool_sets = {key[-1] for key in _REMOTE_KERNELS}
+        self.assertEqual(
+            keyed_tool_sets,
+            {("read_file",), ("web_search",)},
+        )
+
     def test_delegated_children_get_their_own_remote_kernels(self):
         """Same invariant as local (#94647 review fix): the child context
         qualifier must key a DIFFERENT remote kernel."""
@@ -264,7 +279,11 @@ class TestIdleReapAndCapEviction(RemoteKernelBase):
         with patch("tools.code_kernel._lifecycle_limits", return_value=(1, 1800)):
             worker = threading.Thread(target=_run, args=(busy_env,), kwargs={"task": "busy"})
             worker.start()
-            while not any(k.attached for k in _REMOTE_KERNELS.values()):
+            while True:
+                with _REGISTRY.lock:
+                    busy_attached = any(k.attached for k in _REMOTE_KERNELS.values())
+                if busy_attached:
+                    break
                 pass
             env = ScriptedEnv(_spawn_ok_handlers([_cell()]))
             _run(env, task="settled")

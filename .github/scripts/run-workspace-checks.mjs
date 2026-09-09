@@ -15,8 +15,10 @@
 //
 // This also runs on a laptop: `node .github/scripts/run-workspace-checks.mjs`.
 // `--concurrency N` sets the limit. `--list` prints the units and exits.
+// `--shard I/N` selects a deterministic round-robin subset for CI matrix jobs.
 
-import { execFileSync, spawn } from 'node:child_process'
+import { spawn } from 'node:child_process'
+import { globSync, readFileSync } from 'node:fs'
 import { availableParallelism } from 'node:os'
 
 const IS_CI = Boolean(process.env.GITHUB_ACTIONS)
@@ -24,12 +26,19 @@ const NPM = process.platform === 'win32' ? 'npm.cmd' : 'npm'
 
 /** @returns {{pkg: string, script: string}[]} */
 function discoverUnits() {
-  const raw = execFileSync(NPM, ['query', '.workspace'], {
-    encoding: 'utf-8',
-    shell: process.platform === 'win32',
-  })
+  const root = JSON.parse(readFileSync(new URL('../../package.json', import.meta.url), 'utf8'))
+  const workspaceGlobs = Array.isArray(root.workspaces) ? root.workspaces : []
   /** @type {{location: string, scripts?: Record<string,string>}[]} */
-  const pkgs = JSON.parse(raw)
+  const pkgs = workspaceGlobs.flatMap((pattern) => {
+    if (pattern.startsWith('!')) return []
+    const packagePattern = pattern.endsWith('/')
+      ? `${pattern}package.json`
+      : `${pattern}/package.json`
+    return globSync(packagePattern, { nodir: true }).map((path) => ({
+      ...JSON.parse(readFileSync(path, 'utf8')),
+      location: path.replace(/\/package\.json$/, ''),
+    }))
+  })
 
   /** @type {{pkg: string, script: string}[]} */
   const units = []
@@ -76,7 +85,20 @@ function runUnit(unit) {
 
 async function main() {
   const argv = process.argv.slice(2)
-  const units = discoverUnits()
+  let units = discoverUnits()
+
+  const shardIdx = argv.indexOf('--shard')
+  if (shardIdx !== -1) {
+    const raw = argv[shardIdx + 1]
+    const match = /^(\d+)\/(\d+)$/.exec(raw ?? '')
+    const shard = match ? Number(match[1]) : 0
+    const shardCount = match ? Number(match[2]) : 0
+    if (!match || shard < 1 || shard > shardCount) {
+      console.error(`::error::--shard must be I/N with 1 <= I <= N, got ${raw ?? '(missing)'}`)
+      process.exit(2)
+    }
+    units = units.filter((_, index) => index % shardCount === shard - 1)
+  }
 
   if (units.length === 0) {
     console.error(

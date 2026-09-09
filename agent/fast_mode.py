@@ -10,6 +10,7 @@ kwargs only while the window is open; only per-request params (``service_tier`` 
 
 from __future__ import annotations
 
+import math
 import time
 from typing import Any
 
@@ -31,6 +32,8 @@ def begin_turn(agent: Any, conversation_history: Any) -> None:
     try:
         window = float(getattr(agent, "fast_auto_seconds", DEFAULT_WINDOW_SECONDS))
     except (TypeError, ValueError):
+        window = DEFAULT_WINDOW_SECONDS
+    if not math.isfinite(window):
         window = DEFAULT_WINDOW_SECONDS
     agent._fast_until = time.monotonic() + max(window, 0.0)
 

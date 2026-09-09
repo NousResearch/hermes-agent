@@ -110,6 +110,10 @@ class HonchoMemoryProvider(DialecticMixin, MemoryProvider):
         self._sync_thread: Optional[threading.Thread] = None
         self._memwrite_thread: Optional[threading.Thread] = None
         self._recall_mode = "hybrid"  # "context", "tools", or "hybrid"
+        self._recall_sync = False
+        self._recall_generation = object()
+        self._recall_sync_thread: Optional[threading.Thread] = None
+        self._recall_sync_lock = threading.Lock()
         # Base context cache — refreshed on context_cadence, not frozen.
         self._base_context_cache: Optional[str] = None
         self._base_context_lock = threading.Lock()
@@ -182,6 +186,7 @@ class HonchoMemoryProvider(DialecticMixin, MemoryProvider):
 
     def initialize(self, session_id: str, **kwargs) -> None:
         """Configure recall settings and start (or defer) Honcho session creation."""
+        self._recall_generation = object()
         try:
             agent_context, platform = kwargs.get("agent_context", ""), kwargs.get("platform", "cli")
             if agent_context in {"cron", "flush"} or platform == "cron":
@@ -200,6 +205,7 @@ class HonchoMemoryProvider(DialecticMixin, MemoryProvider):
 
             self._config = cfg
             self._recall_mode = cfg.recall_mode
+            self._recall_sync = getattr(cfg, "recall_sync", False)
             logger.debug("Honcho recall_mode: %s", self._recall_mode)
             for name in ("injection_frequency", "context_cadence", "dialectic_cadence",
                          "dialectic_depth_levels", "reasoning_heuristic"):
@@ -267,19 +273,25 @@ class HonchoMemoryProvider(DialecticMixin, MemoryProvider):
             self._init_auth_notice_emitted = False
         return True
 
-    def _start_session_init_background(self, *, wait_timeout: float = 0.0) -> None:
+    def _start_session_init_background(self, *, wait_timeout: float = 0.0, blocking: bool = True) -> None:
         """Start session initialization in a daemon thread so a slow/down Honcho can't
         block agent construction or first prompt assembly. ``wait_timeout`` lets fast
         (mock) initializations finish before returning."""
         if not self._can_start_init():
             return
-        with self._init_lock:
-            if not self._can_start_init() or (self._init_thread and self._init_thread.is_alive()):
-                return
-            self._init_thread = spawn_context_thread(lambda: self._run_session_init("background"), name="honcho-session-init")
-            self._init_thread.start()
-            if wait_timeout > 0:
-                self._init_thread.join(timeout=wait_timeout)
+        if not blocking and not self._init_lock.acquire(blocking=False):
+            return
+        try:
+            with self._init_lock if blocking else contextlib.nullcontext():
+                if not self._can_start_init() or (self._init_thread and self._init_thread.is_alive()):
+                    return
+                self._init_thread = spawn_context_thread(lambda: self._run_session_init("background"), name="honcho-session-init")
+                self._init_thread.start()
+                if wait_timeout > 0:
+                    self._init_thread.join(timeout=wait_timeout)
+        finally:
+            if not blocking:
+                self._init_lock.release()
 
     def _ensure_session(self) -> bool:
         """Lazily initialize the Honcho session (tools-only mode). True when the manager is ready."""
@@ -322,7 +334,7 @@ class HonchoMemoryProvider(DialecticMixin, MemoryProvider):
 
         # Generic dialectic prewarm is incompatible with latest-message query rewriting,
         # which needs the first substantive user message.
-        if self._recall_mode in {"context", "hybrid"}:
+        if self._recall_mode in {"context", "hybrid"} and not self._recall_sync:
             if self._query_rewriter is None or not self._query_rewrite_enabled:
                 self._spawn_dialectic(_PREWARM_QUERY, thread_name="honcho-prewarm-dialectic", fired_at=0,
                                       log_label="dialectic prewarm", use_query_rewrite=False)
@@ -439,6 +451,12 @@ class HonchoMemoryProvider(DialecticMixin, MemoryProvider):
         if self._cron_skipped or self._recall_mode == "tools":
             return ""
 
+        if self._recall_sync:
+            from plugins.memory.honcho.recall_sync import prefetch_sync
+            notice = self._pop_auth_notice()
+            result = prefetch_sync(self, query)
+            return "\n\n".join(part for part in (notice, result) if part)
+
         first_turn_base_deadline = (time.monotonic() + self._first_turn_wait(self._FIRST_TURN_BASE_TIMEOUT)
                                     if self._turn_count <= 1 else None)
 
@@ -497,7 +515,7 @@ class HonchoMemoryProvider(DialecticMixin, MemoryProvider):
     def queue_prefetch(self, query: str, *, session_id: str = "") -> None:
         """Fire background prefetch threads for the upcoming turn.
         Context and dialectic refreshes have independent cadence controls."""
-        if self._cron_skipped or self._recall_mode == "tools":
+        if self._cron_skipped or self._recall_mode == "tools" or self._recall_sync:
             return
         if not self._session_ready() or not query:
             self._start_session_init_background()
@@ -534,7 +552,12 @@ class HonchoMemoryProvider(DialecticMixin, MemoryProvider):
 
     def on_turn_start(self, turn_number: int, message: str, **kwargs) -> None:
         """Track turn count for cadence and injection_frequency logic."""
+        self._recall_generation = object()
         self._turn_count = turn_number
+
+    def on_session_switch(self, new_session_id: str, **kwargs) -> None:
+        """Discard in-flight recall even when the configured backend session is pinned."""
+        self._recall_generation = object()
 
     # ----- Writes -----
 
@@ -783,6 +806,7 @@ class HonchoMemoryProvider(DialecticMixin, MemoryProvider):
             return tool_error(f"Honcho {tool_name} failed: {e}")
 
     def shutdown(self) -> None:
+        self._recall_generation = object()
         for t in (self._prefetch_thread, self._sync_thread, self._memwrite_thread):
             if t and t.is_alive():
                 t.join(timeout=5.0)

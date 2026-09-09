@@ -183,3 +183,60 @@ def test_tui_and_cron_boundaries_bind_and_reset(tmp_path):
     with install_and_reset_profile_terminal_scope(home):  # cron fire helper
         assert terminal_env("TERMINAL_ENV") == "local"
     assert get_terminal_scope() is None
+
+
+def test_config_list_and_dict_values_are_json_not_repr(tmp_path):
+    """config.yaml list/dict terminal keys must be JSON so terminal_tool's
+    json.loads path succeeds. str() produces Python repr and drops the tool."""
+    from tools.terminal_scope import build_profile_terminal_scope
+
+    home = _profile(
+        tmp_path,
+        "docker-lists",
+        "\n".join(
+            [
+                "terminal:",
+                "  backend: docker",
+                "  docker_forward_env:",
+                "    - EMAIL_HOME_ADDRESS",
+                "  docker_volumes:",
+                "    - /tmp/a:/data",
+                "  docker_env:",
+                "    FOO: bar",
+                "  docker_extra_args:",
+                "    - --network=host",
+                "",
+            ]
+        ),
+    )
+    scope = build_profile_terminal_scope(home)
+    assert json.loads(scope["TERMINAL_DOCKER_FORWARD_ENV"]) == ["EMAIL_HOME_ADDRESS"]
+    assert json.loads(scope["TERMINAL_DOCKER_VOLUMES"]) == ["/tmp/a:/data"]
+    assert json.loads(scope["TERMINAL_DOCKER_ENV"]) == {"FOO": "bar"}
+    assert json.loads(scope["TERMINAL_DOCKER_EXTRA_ARGS"]) == ["--network=host"]
+
+    import gateway.run as gw
+    import tools.terminal_tool as tt
+
+    with gw._profile_runtime_scope(home):
+        cfg = tt._get_env_config()
+        assert cfg["docker_forward_env"] == ["EMAIL_HOME_ADDRESS"]
+        assert cfg["docker_volumes"] == ["/tmp/a:/data"]
+        assert cfg["docker_env"] == {"FOO": "bar"}
+        assert cfg["docker_extra_args"] == ["--network=host"]
+
+
+def test_dotenv_json_strings_stay_json_strings(tmp_path):
+    """The .env path already stores JSON text; str() must keep that payload."""
+    from tools.terminal_scope import build_profile_terminal_scope
+
+    home = _profile(
+        tmp_path,
+        "dotenv-json",
+        "terminal:\n  backend: docker\n",
+        'TERMINAL_DOCKER_FORWARD_ENV=["EMAIL_HOME_ADDRESS"]\n'
+        'TERMINAL_DOCKER_VOLUMES=["/tmp/a:/data"]\n',
+    )
+    scope = build_profile_terminal_scope(home)
+    assert json.loads(scope["TERMINAL_DOCKER_FORWARD_ENV"]) == ["EMAIL_HOME_ADDRESS"]
+    assert json.loads(scope["TERMINAL_DOCKER_VOLUMES"]) == ["/tmp/a:/data"]

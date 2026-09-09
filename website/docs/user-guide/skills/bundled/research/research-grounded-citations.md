@@ -15,13 +15,13 @@ Ground answers and documents in cited, verifiable sources.
 | | |
 |---|---|
 | Source | Bundled (installed by default) |
-| Path | `skills/research\grounded-citations` |
-| Version | `1.1.0` |
+| Path | `skills/research/grounded-citations` |
+| Version | `1.2.0` |
 | Author | Hermes Agent + Teknium |
 | License | MIT |
 | Platforms | linux, macos, windows |
 | Tags | `Research`, `Citations`, `Grounding`, `Sources`, `Web`, `Reports` |
-| Related skills | [`arxiv`](/docs/user-guide/skills/bundled/research/research-arxiv), [`arxiv`](/docs/user-guide/skills/bundled/research/research-arxiv), `ocr-and-documents` |
+| Related skills | [`arxiv`](/docs/user-guide/skills/bundled/research/research-arxiv), [`pdf`](/docs/user-guide/skills/bundled/productivity/productivity-pdf), [`reddit-reading`](/docs/user-guide/skills/bundled/social-media/social-media-reddit-reading), [`rss-feeds`](/docs/user-guide/skills/bundled/research/research-rss-feeds), [`youtube-content`](/docs/user-guide/skills/bundled/media/media-youtube-content) |
 
 ## Reference: full SKILL.md
 
@@ -142,6 +142,27 @@ unknown ids, on a Sources block that disagrees with the ledger, or (with
 sources, cite inline, end with the rendered `Sources:` list. For a short answer
 you may render the block from `sources.py render --only <ids>` instead of
 writing to a file.
+
+## Multi-Platform Sweeps
+
+"What are people saying about X" / "research X across the web" is not one
+`web_search`. Fan out across source types, collect in parallel, then synthesise
+with every claim attributed to the platform it came from:
+
+| Source type | Route | What it adds |
+|---|---|---|
+| Open web | `web_search` → `web_extract` | official docs, articles, announcements |
+| Community discussion | `reddit-reading` (`search`, `thread`) | real user experience, complaints, workarounds |
+| Blogs / releases / changelogs | `rss-feeds` (`read`, `discover`) | dated primary posts, version history |
+| Video | `youtube-content` | walkthroughs, demos, talks |
+| Code | `terminal` with `gh search repos` / `gh search issues` | implementations, open bugs |
+| X/Twitter | `xurl` (needs API access) | announcements, developer chatter |
+
+Register every URL from every route in the ledger as it arrives (step ②). Keep
+opinion and measurement apart: a Reddit thread is evidence that users *report*
+something, not that it is true; pair it with a primary source or label it as
+sentiment. Report per-platform coverage gaps ("Reddit search returned nothing
+newer than March") rather than silently narrowing to what worked.
 
 ## Fact-Checking Mode
 

@@ -170,10 +170,13 @@ class TestStepCallback:
         }
         mock_send.assert_called_once()
 
-    def test_todo_completion_emits_native_plan_update_after_tool_completion(self, mock_conn, event_loop_fixture):
+    @pytest.mark.parametrize("tool_name", ["todo", "todo_list"])
+    def test_todo_completion_emits_native_plan_update_after_tool_completion(
+        self, mock_conn, event_loop_fixture, tool_name
+    ):
         from collections import deque
 
-        tool_call_ids = {"todo": deque(["tc-todo"])}
+        tool_call_ids = {tool_name: deque(["tc-todo"])}
         loop = event_loop_fixture
         cb = make_step_cb(mock_conn, "session-1", loop, tool_call_ids, {})
         todo_result = (
@@ -185,7 +188,7 @@ class TestStepCallback:
         )
 
         with patch("acp_adapter.events._send_update") as mock_send:
-            cb(1, [{"name": "todo", "result": todo_result}])
+            cb(1, [{"name": tool_name, "result": todo_result}])
 
         updates = [call.args[3] for call in mock_send.call_args_list]
         assert [getattr(update, "session_update", None) for update in updates] == [

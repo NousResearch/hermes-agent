@@ -425,7 +425,7 @@ def _relaunch_stopped_serves(token: dict) -> None:
 
 def _is_backend_argv(argv_low: str) -> bool:
     """Whether a lower-cased argv is a Desktop backend (``hermes_cli.main`` running ``serve``/``dashboard``)."""
-    return "hermes_cli.main" in argv_low and (" serve" in argv_low or " dashboard" in argv_low)
+    return "hermes_cli.main" in argv_low and _hermes_holder_subcommand(argv_low) in _BACKEND_PURPOSES
 
 
 def _live_argv_low(psutil, pid, cmdline: str) -> str | None:

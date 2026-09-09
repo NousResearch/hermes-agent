@@ -168,7 +168,7 @@ def make_step_cb(
                 tc_id, tool_name, result=str(result) if result is not None else None,
                 function_args=function_args or meta.get("args"), snapshot=meta.get("snapshot"),
             ))
-            if tool_name == "todo" and (plan_update := _build_plan_update_from_todo_result(result)) is not None:
+            if tool_name in {"todo", "todo_list"} and (plan_update := _build_plan_update_from_todo_result(result)) is not None:
                 _send_update(conn, session_id, loop, plan_update)
             if not queue:
                 tool_call_ids.pop(tool_name, None)

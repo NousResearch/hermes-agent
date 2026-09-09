@@ -518,6 +518,30 @@ def _migrate_to_39(results: Dict[str, Any], quiet: bool) -> None:
             "Video Generation (Nous Subscription or FAL).")
 
 
+def _migrate_to_41(results: Dict[str, Any], quiet: bool) -> None:
+    # 40 → 41: drop the plugin-era "## Messaging other agents" append from every SOUL.md. The
+    # server injects the live Bot Mode section in Bot Chat sessions; the frozen SOUL copy taxed
+    # every other session (~600 tok) and shadowed the live roster in Bot Chat itself.
+    from hermes_constants import get_hermes_home
+    from tools.bot_mode_probe import _PROTOCOL_HEADING, _hermes_root, _roster, strip_legacy_protocol
+
+    cleaned: List[str] = []
+    for name, profile_dir in _roster(_hermes_root(get_hermes_home())):
+        soul = profile_dir / "SOUL.md"
+        try:
+            text = soul.read_text(encoding="utf-8") if soul.is_file() else ""
+            if _PROTOCOL_HEADING in text:
+                soul.write_text(strip_legacy_protocol(text), encoding="utf-8")
+                cleaned.append(name)
+        except OSError:
+            continue
+    if cleaned:
+        results["config_added"].append(f"removed legacy Bot Mode section from SOUL.md ({', '.join(cleaned)})")
+        if not quiet:
+            print(f"  ✓ Removed the plugin-era 'Messaging other agents' section from SOUL.md "
+                  f"({', '.join(cleaned)}) — Bot Chat sessions now get the live roster instead.")
+
+
 #: Registry of (target_version, step), strictly ascending; simple default-flip steps are
 #: declared inline via _rewrite_stale_default / _rewrite_key partials. Later steps observe
 #: earlier steps' writes via read_raw_config() (filesystem state). v12 is the support floor:
@@ -602,6 +626,7 @@ MIGRATIONS: Tuple[Tuple[int, Callable[[Dict[str, Any], bool], None]], ...] = (
         added="model_catalog.ttl_hours 1 → ttl_minutes 20 (default)",
         message="  ✓ Model catalog now refreshes every 20 minutes (model_catalog.ttl_minutes)",
         extra_guard=lambda raw: "ttl_minutes" not in raw)),
+    (41, _migrate_to_41),
 )
 
 

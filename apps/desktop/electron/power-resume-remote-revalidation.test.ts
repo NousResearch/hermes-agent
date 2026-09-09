@@ -289,7 +289,7 @@ describe('main.ts wiring for #93910', () => {
     const body = mainSource.slice(fnStart, fnStart + 1_200)
 
     expect(body).toContain('parseBackendScopeKey(')
-    expect(body).toContain('backendDialClaims.run(')
+    expect(body).toContain('runClaimedBackendDial(')
     expect(body).toContain('ensureRegistryBackend(')
   })
 })

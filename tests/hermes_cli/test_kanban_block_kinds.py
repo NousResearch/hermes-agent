@@ -134,6 +134,13 @@ def test_intent_review_needs_input_triage_stays_human_gated(kanban_home: Path) -
         assert task.status == "triage"
 
 
+def test_live_home_preserves_external_assignee_lane(kanban_home: Path) -> None:
+    (kanban_home / "profiles").mkdir()
+    with kbc.connect_closing() as conn:
+        task_id = kb.create_task(conn, title="Review worker", assignee="worker")
+        assert kb.get_task(conn, task_id).assignee == "worker"
+
+
 # ---------------------------------------------------------------------------
 # Dependency routing
 # ---------------------------------------------------------------------------

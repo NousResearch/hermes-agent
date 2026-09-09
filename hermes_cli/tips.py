@@ -254,7 +254,7 @@ TIPS = [
     "The terminal tool annotates common exit codes: grep returning 1 = 'No matches found (not an error)'.",
     "Failed foreground terminal commands auto-retry up to 3 times with exponential backoff (2s, 4s, 8s).",
     "Bare sudo commands are auto-rewritten to pipe SUDO_PASSWORD from .env — no interactive prompt needed.",
-    "execute_code has built-in helpers: json_parse() for tolerant parsing, shell_quote(), and retry() with backoff.",
+    "execute_code helpers require explicit imports: from hermes_tools import json_parse, shell_quote, retry.",
     "execute_code's 7 sandbox tools (web_search, terminal, read/write/search/patch) use RPC — never enter context.",
     "Reading the same file region 3+ times triggers a warning. At 4+, it's hard-blocked to prevent loops.",
     "write_file and patch detect if a file was externally modified since the last read and warn about staleness.",
@@ -337,7 +337,7 @@ TIPS = [
     "hermes curator pin <skill> hard-fences a skill against both auto-archival and the agent's skill_manage tool.",
     'hermes curator rollback restores skills from a pre-run snapshot — backups live under skills/.curator_backups/.',
     # --- Credential Pools & Routing ---
-    'hermes auth reset <provider> clears all cooldowns and exhaustion flags on a credential pool.',
+    'hermes auth reset <provider> [target] clears cooldowns and exhaustion flags on a whole credential pool, or on one credential by index, id, or label.',
     'credential_pool_strategies.<provider>: round_robin cycles keys evenly instead of the fill_first default.',
     'use_gateway: true per-tool routes web, image, tts, or browser through your Nous subscription — no extra keys.',
     'provider_routing.data_collection: deny excludes data-storing providers on OpenRouter.',

@@ -1,0 +1,1257 @@
+{
+  "version": 2,
+  "source": { "sha256": "248e8d40946b08b9f74f4b2ddd0ba17e4f17fd054260189972164c5d6ca70590" },
+  "assetVersion": "2.0.0",
+  "characterAssets": {
+    "fleetIdentityFloor": 128,
+    "leaders": [
+      { "id": "owl", "species": "owl", "silhouetteId": "owl-silhouette-v1", "visualId": "owl-leader-v1" },
+      { "id": "fox", "species": "fox", "silhouetteId": "fox-silhouette-v1", "visualId": "fox-leader-v1" },
+      { "id": "badger", "species": "badger", "silhouetteId": "badger-silhouette-v1", "visualId": "badger-leader-v1" },
+      { "id": "otter", "species": "otter", "silhouetteId": "otter-silhouette-v1", "visualId": "otter-leader-v1" },
+      { "id": "bird", "species": "bird", "silhouetteId": "bird-silhouette-v1", "visualId": "bird-leader-v1" },
+      { "id": "stag", "species": "stag", "silhouetteId": "stag-silhouette-v1", "visualId": "stag-leader-v1" }
+    ],
+    "workerVocabulary": {
+      "bodies": ["compact", "standard"],
+      "heads": ["orb", "visor"],
+      "silhouetteAccessories": [
+        "acceptance-gate",
+        "archive-satchel",
+        "artist-palette",
+        "ci-wrench",
+        "intake-beacon",
+        "content-quill",
+        "incident-siren",
+        "runtime-console",
+        "performance-meter",
+        "editorial-pen",
+        "engineering-hammer",
+        "federation-standard",
+        "knowledge-lantern",
+        "memory-vault",
+        "operations-baton",
+        "merge-rail",
+        "research-scope",
+        "review-lens",
+        "upstream-antenna"
+      ],
+      "palettes": ["rust-bone", "violet-cyan"],
+      "emblems": [
+        "acceptance-check",
+        "archive-box",
+        "arts-star",
+        "ci-loop",
+        "community-door",
+        "content-page",
+        "control-shield",
+        "core-gear",
+        "data-pulse",
+        "editorial-mark",
+        "engineering-bridge",
+        "federation-orbit",
+        "knowledge-book",
+        "memory-crystal",
+        "operations-route",
+        "pr-merge",
+        "research-flask",
+        "review-eye",
+        "upstream-arrow"
+      ]
+    },
+    "groupKits": [
+      {
+        "group": "Acceptance & Release",
+        "kitId": "acceptance-release",
+        "signature": {
+          "body": "standard",
+          "head": "orb",
+          "silhouetteAccessory": "acceptance-gate",
+          "palette": "rust-bone",
+          "emblem": "acceptance-check"
+        }
+      },
+      {
+        "group": "Archive and Acquisition",
+        "kitId": "archive-acquisition",
+        "signature": {
+          "body": "compact",
+          "head": "visor",
+          "silhouetteAccessory": "archive-satchel",
+          "palette": "violet-cyan",
+          "emblem": "archive-box"
+        }
+      },
+      {
+        "group": "Arts Studio",
+        "kitId": "arts-studio",
+        "signature": {
+          "body": "standard",
+          "head": "orb",
+          "silhouetteAccessory": "artist-palette",
+          "palette": "rust-bone",
+          "emblem": "arts-star"
+        }
+      },
+      {
+        "group": "CI Repair Triage",
+        "kitId": "ci-repair-triage",
+        "signature": {
+          "body": "compact",
+          "head": "visor",
+          "silhouetteAccessory": "ci-wrench",
+          "palette": "violet-cyan",
+          "emblem": "ci-loop"
+        }
+      },
+      {
+        "group": "Community Intake",
+        "kitId": "community-intake",
+        "signature": {
+          "body": "standard",
+          "head": "orb",
+          "silhouetteAccessory": "intake-beacon",
+          "palette": "rust-bone",
+          "emblem": "community-door"
+        }
+      },
+      {
+        "group": "Content Studio",
+        "kitId": "content-studio",
+        "signature": {
+          "body": "compact",
+          "head": "visor",
+          "silhouetteAccessory": "content-quill",
+          "palette": "violet-cyan",
+          "emblem": "content-page"
+        }
+      },
+      {
+        "group": "Control Plane Incidents",
+        "kitId": "control-plane-incidents",
+        "signature": {
+          "body": "standard",
+          "head": "orb",
+          "silhouetteAccessory": "incident-siren",
+          "palette": "rust-bone",
+          "emblem": "control-shield"
+        }
+      },
+      {
+        "group": "Core Runtime & UX Repairs",
+        "kitId": "core-runtime-ux-repairs",
+        "signature": {
+          "body": "compact",
+          "head": "visor",
+          "silhouetteAccessory": "runtime-console",
+          "palette": "violet-cyan",
+          "emblem": "core-gear"
+        }
+      },
+      {
+        "group": "Data & Performance Repairs",
+        "kitId": "data-performance-repairs",
+        "signature": {
+          "body": "standard",
+          "head": "orb",
+          "silhouetteAccessory": "performance-meter",
+          "palette": "rust-bone",
+          "emblem": "data-pulse"
+        }
+      },
+      {
+        "group": "Editorial Desk",
+        "kitId": "editorial-desk",
+        "signature": {
+          "body": "compact",
+          "head": "visor",
+          "silhouetteAccessory": "editorial-pen",
+          "palette": "violet-cyan",
+          "emblem": "editorial-mark"
+        }
+      },
+      {
+        "group": "Engineering Guild",
+        "kitId": "engineering-guild",
+        "signature": {
+          "body": "standard",
+          "head": "orb",
+          "silhouetteAccessory": "engineering-hammer",
+          "palette": "rust-bone",
+          "emblem": "engineering-bridge"
+        }
+      },
+      {
+        "group": "Federation Council",
+        "kitId": "federation-council",
+        "signature": {
+          "body": "compact",
+          "head": "visor",
+          "silhouetteAccessory": "federation-standard",
+          "palette": "violet-cyan",
+          "emblem": "federation-orbit"
+        }
+      },
+      {
+        "group": "Knowledge Commons",
+        "kitId": "knowledge-commons",
+        "signature": {
+          "body": "standard",
+          "head": "orb",
+          "silhouetteAccessory": "knowledge-lantern",
+          "palette": "rust-bone",
+          "emblem": "knowledge-book"
+        }
+      },
+      {
+        "group": "Memory Stewardship",
+        "kitId": "memory-stewardship",
+        "signature": {
+          "body": "compact",
+          "head": "visor",
+          "silhouetteAccessory": "memory-vault",
+          "palette": "violet-cyan",
+          "emblem": "memory-crystal"
+        }
+      },
+      {
+        "group": "Operations and Release",
+        "kitId": "operations-release",
+        "signature": {
+          "body": "standard",
+          "head": "orb",
+          "silhouetteAccessory": "operations-baton",
+          "palette": "rust-bone",
+          "emblem": "operations-route"
+        }
+      },
+      {
+        "group": "PR Merge Train",
+        "kitId": "pr-merge-train",
+        "signature": {
+          "body": "compact",
+          "head": "visor",
+          "silhouetteAccessory": "merge-rail",
+          "palette": "violet-cyan",
+          "emblem": "pr-merge"
+        }
+      },
+      {
+        "group": "Research Lab",
+        "kitId": "research-lab",
+        "signature": {
+          "body": "standard",
+          "head": "orb",
+          "silhouetteAccessory": "research-scope",
+          "palette": "rust-bone",
+          "emblem": "research-flask"
+        }
+      },
+      {
+        "group": "Research Review Board",
+        "kitId": "research-review-board",
+        "signature": {
+          "body": "compact",
+          "head": "visor",
+          "silhouetteAccessory": "review-lens",
+          "palette": "violet-cyan",
+          "emblem": "review-eye"
+        }
+      },
+      {
+        "group": "Upstream Hermes Maintenance",
+        "kitId": "upstream-hermes-maintenance",
+        "signature": {
+          "body": "standard",
+          "head": "orb",
+          "silhouetteAccessory": "upstream-antenna",
+          "palette": "rust-bone",
+          "emblem": "upstream-arrow"
+        }
+      }
+    ],
+    "sharedResourceStrategy": {
+      "rig": "worker:shared-rig",
+      "gpuBuffers": "shared",
+      "animationClips": "shared",
+      "materials": "shared",
+      "textureAtlas": "textures/approved-palette.png",
+      "perProfile": { "skeletons": 0, "meshes": 0, "materials": 0, "textures": 0 }
+    },
+    "physicalVariantRoots": {
+      "activationScale": {
+        "worker:body-variant:compact": [1, 1, 1],
+        "worker:body-variant:standard": [1, 1, 1],
+        "worker:head-variant:orb": [1, 1, 1],
+        "worker:head-variant:visor": [1, 1, 1],
+        "worker:palette:rust-bone": [1, 1, 1],
+        "worker:palette:violet-cyan": [1, 1, 1],
+        "worker:group-kit:acceptance-release": [1, 1, 1],
+        "worker:group-kit:archive-acquisition": [1, 1, 1],
+        "worker:group-kit:arts-studio": [1, 1, 1],
+        "worker:group-kit:ci-repair-triage": [1, 1, 1],
+        "worker:group-kit:community-intake": [1, 1, 1],
+        "worker:group-kit:content-studio": [1, 1, 1],
+        "worker:group-kit:control-plane-incidents": [1, 1, 1],
+        "worker:group-kit:core-runtime-ux-repairs": [1, 1, 1],
+        "worker:group-kit:data-performance-repairs": [1, 1, 1],
+        "worker:group-kit:editorial-desk": [1, 1, 1],
+        "worker:group-kit:engineering-guild": [1, 1, 1],
+        "worker:group-kit:federation-council": [1, 1, 1],
+        "worker:group-kit:knowledge-commons": [1, 1, 1],
+        "worker:group-kit:memory-stewardship": [1, 1, 1],
+        "worker:group-kit:operations-release": [1, 1, 1],
+        "worker:group-kit:pr-merge-train": [1, 1, 1],
+        "worker:group-kit:research-lab": [1, 1, 1],
+        "worker:group-kit:research-review-board": [1, 1, 1],
+        "worker:group-kit:upstream-hermes-maintenance": [1, 1, 1]
+      },
+      "body": { "compact": "worker:body-variant:compact", "standard": "worker:body-variant:standard" },
+      "head": { "orb": "worker:head-variant:orb", "visor": "worker:head-variant:visor" },
+      "palette": { "rust-bone": "worker:palette:rust-bone", "violet-cyan": "worker:palette:violet-cyan" },
+      "groupKit": {
+        "emblemSuffix": "emblem",
+        "identityAccentSuffix": "identity-accent",
+        "silhouetteSuffix": "silhouette"
+      }
+    },
+    "lodRepresentations": [
+      { "id": "near", "animated": true, "representation": "full" },
+      { "id": "mid", "animated": false, "representation": "reduced" },
+      { "id": "far", "animated": false, "representation": "static-or-aggregate" }
+    ],
+    "runtimeIntegration": "pending-task-11d-b"
+  },
+  "materials": [
+    { "id": "lunar-rust", "palette": "lunar-rust", "maxTextures": 1 },
+    { "id": "charcoal-structure", "palette": "charcoal-structure", "maxTextures": 1 },
+    { "id": "bone-metal", "palette": "bone-metal", "maxTextures": 1 },
+    { "id": "signal-emissive", "palette": "cyan-signal", "maxTextures": 1 },
+    { "id": "archive-emissive", "palette": "violet-archive", "maxTextures": 1 },
+    { "id": "sunset-orange", "palette": "sunset-orange", "maxTextures": 1 },
+    { "id": "garden-green", "palette": "garden-green", "maxTextures": 1 },
+    { "id": "triage-amber", "palette": "triage-amber", "maxTextures": 1 }
+  ],
+  "models": [
+    {
+      "id": "terrain",
+      "uri": "models/terrain.glb",
+      "maxTriangles": 90000,
+      "maxDrawCalls": 14,
+      "maxMaterials": 5,
+      "maxTextures": 4,
+      "maxGpuMiB": 20,
+      "requiredNodes": ["terrain:root", "terrain:lod:near", "terrain:lod:far", "terrain:walkways"],
+      "requiredClips": [],
+      "lods": [
+        { "distance": 0, "node": "terrain:lod:near" },
+        { "distance": 96, "node": "terrain:lod:far" }
+      ],
+      "transform": { "position": [0, 0, 0], "rotation": [0, 0, 0], "scale": [1, 1, 1] },
+      "pivot": [0, 0, 0],
+      "bounds": { "min": [-180, -8, -177], "max": [180, 18, 183] },
+      "anchors": { "foot": [0, 0, 0], "camera": [0, 8, 0] },
+      "cameraAnchor": [0, 8, 0],
+      "occlusionGroup": "terrain",
+      "collision": { "kind": "mesh", "navigationArea": "walkable" },
+      "materialSlots": ["lunar-rust", "charcoal-structure", "bone-metal", "garden-green", "signal-emissive"],
+      "statistics": {
+        "accessorBytes": 3332808,
+        "animationClips": [],
+        "drawCalls": 14,
+        "materials": 5,
+        "meshes": 14,
+        "nodes": 39,
+        "gpuBytes": 3447745,
+        "textures": 1,
+        "triangles": 41772,
+        "gpuMiB": 3.288,
+        "budget": { "maxDrawCalls": 14, "maxGpuMiB": 20, "maxMaterials": 5, "maxTextures": 4, "maxTriangles": 90000 },
+        "bytes": 3460936,
+        "extent": [360, 12.425, 360],
+        "sha256": "f5c3a927cbee9c2a68424ab072000b28fad8a4d606efbfb8828af3a977a25437"
+      }
+    },
+    {
+      "id": "library",
+      "uri": "models/library.glb",
+      "maxTriangles": 28000,
+      "maxDrawCalls": 8,
+      "maxMaterials": 4,
+      "maxTextures": 3,
+      "maxGpuMiB": 10,
+      "requiredNodes": [
+        "library:root",
+        "library:lod:near",
+        "library:lod:far",
+        "library:roof",
+        "library:entrance",
+        "library:camera"
+      ],
+      "requiredClips": ["lights-idle"],
+      "lods": [
+        { "distance": 0, "node": "library:lod:near" },
+        { "distance": 112, "node": "library:lod:far" }
+      ],
+      "transform": { "position": [-14.97, 4, -22.54], "rotation": [0, 0.5136, 0], "scale": [1, 1, 1] },
+      "pivot": [0, 0, 0],
+      "bounds": { "min": [-12, 0, -10], "max": [12, 16, 10] },
+      "anchors": { "foot": [0, 0, 0], "interaction": [0, 5, 0], "camera": [0, 8, 14], "dialogue": [-2, 1, 2] },
+      "cameraAnchor": [0, 8, 14],
+      "occlusionGroup": "library-roof",
+      "collision": { "kind": "box", "navigationArea": "library" },
+      "materialSlots": ["charcoal-structure", "bone-metal", "archive-emissive"],
+      "statistics": {
+        "accessorBytes": 548346,
+        "animationClips": ["lights-idle"],
+        "drawCalls": 6,
+        "materials": 4,
+        "meshes": 6,
+        "nodes": 32,
+        "gpuBytes": 700050,
+        "textures": 1,
+        "triangles": 14437,
+        "gpuMiB": 0.6676,
+        "budget": { "maxDrawCalls": 8, "maxGpuMiB": 10, "maxMaterials": 4, "maxTextures": 3, "maxTriangles": 28000 },
+        "bytes": 707736,
+        "extent": [16.7884, 18.1826, 14.5275],
+        "sha256": "e1f4b7bb10d63081eac3a6bd9c843398eacac93a83286c31a80538883516c4d7"
+      }
+    },
+    {
+      "id": "research-lab",
+      "uri": "models/research-lab.glb",
+      "maxTriangles": 32000,
+      "maxDrawCalls": 9,
+      "maxMaterials": 5,
+      "maxTextures": 4,
+      "maxGpuMiB": 12,
+      "requiredNodes": [
+        "research-lab:root",
+        "research-lab:lod:near",
+        "research-lab:lod:far",
+        "research-lab:roof",
+        "research-lab:entrance",
+        "research-lab:camera",
+        "research-lab:telescope"
+      ],
+      "requiredClips": ["lights-idle", "telescope-scan"],
+      "lods": [
+        { "distance": 0, "node": "research-lab:lod:near" },
+        { "distance": 112, "node": "research-lab:lod:far" }
+      ],
+      "transform": { "position": [-29.24, 5, -47.3], "rotation": [0, 0.5181, 0], "scale": [1, 1, 1] },
+      "pivot": [0, 0, 0],
+      "bounds": { "min": [-14, 0, -12], "max": [14, 17, 12] },
+      "anchors": { "foot": [0, 0, 0], "interaction": [0, 5, 0], "camera": [0, 9, 15], "dialogue": [2, 1, 0] },
+      "cameraAnchor": [0, 9, 15],
+      "occlusionGroup": "research-roof",
+      "collision": { "kind": "box", "navigationArea": "research" },
+      "materialSlots": ["charcoal-structure", "bone-metal", "signal-emissive"],
+      "statistics": {
+        "accessorBytes": 440412,
+        "animationClips": ["lights-idle", "telescope-scan", "workbench-cycle"],
+        "drawCalls": 8,
+        "materials": 5,
+        "meshes": 8,
+        "nodes": 41,
+        "gpuBytes": 440412,
+        "textures": 0,
+        "triangles": 9934,
+        "gpuMiB": 0.42,
+        "budget": { "maxDrawCalls": 9, "maxGpuMiB": 12, "maxMaterials": 5, "maxTextures": 4, "maxTriangles": 32000 },
+        "bytes": 581388,
+        "extent": [21.4805, 23.734, 17.39],
+        "sha256": "e3146a030068d14c9d1105c814c33c5f69b427d018d8ff38d67b3a6ea59cb105"
+      }
+    },
+    {
+      "id": "depot",
+      "uri": "models/depot.glb",
+      "maxTriangles": 24000,
+      "maxDrawCalls": 7,
+      "maxMaterials": 4,
+      "maxTextures": 3,
+      "maxGpuMiB": 9,
+      "requiredNodes": [
+        "depot:root",
+        "depot:lod:near",
+        "depot:lod:far",
+        "depot:roof",
+        "depot:entrance",
+        "depot:camera"
+      ],
+      "requiredClips": ["lights-idle"],
+      "lods": [
+        { "distance": 0, "node": "depot:lod:near" },
+        { "distance": 112, "node": "depot:lod:far" }
+      ],
+      "transform": { "position": [-8.44, 2, 23.2], "rotation": [0, 2.7274, 0], "scale": [1, 1, 1] },
+      "pivot": [0, 0, 0],
+      "bounds": { "min": [-12, 0, -10], "max": [12, 14, 10] },
+      "anchors": { "foot": [0, 0, 0], "interaction": [0, 4, 0], "camera": [0, 7, 13], "dialogue": [-1, 1, 2] },
+      "cameraAnchor": [0, 7, 13],
+      "occlusionGroup": "depot-roof",
+      "collision": { "kind": "box", "navigationArea": "depot" },
+      "materialSlots": ["charcoal-structure", "bone-metal", "signal-emissive"],
+      "statistics": {
+        "accessorBytes": 323460,
+        "animationClips": ["lights-idle", "workbench-cycle"],
+        "drawCalls": 6,
+        "materials": 4,
+        "meshes": 6,
+        "nodes": 35,
+        "gpuBytes": 323460,
+        "textures": 0,
+        "triangles": 7390,
+        "gpuMiB": 0.3085,
+        "budget": { "maxDrawCalls": 7, "maxGpuMiB": 9, "maxMaterials": 4, "maxTextures": 3, "maxTriangles": 24000 },
+        "bytes": 426860,
+        "extent": [17.074, 18.6756, 13.5275],
+        "sha256": "3898f65339f19f7b078eed5c4864fa18919f797b43e56c90292e8146199ef744"
+      }
+    },
+    {
+      "id": "review-office",
+      "uri": "models/review-office.glb",
+      "maxTriangles": 26000,
+      "maxDrawCalls": 8,
+      "maxMaterials": 4,
+      "maxTextures": 3,
+      "maxGpuMiB": 10,
+      "requiredNodes": [
+        "review-office:root",
+        "review-office:lod:near",
+        "review-office:lod:far",
+        "review-office:roof",
+        "review-office:portal",
+        "review-office:camera"
+      ],
+      "requiredClips": ["portal-idle", "lights-idle"],
+      "lods": [
+        { "distance": 0, "node": "review-office:lod:near" },
+        { "distance": 112, "node": "review-office:lod:far" }
+      ],
+      "transform": { "position": [-32.79, 3, 28.51], "rotation": [0, 2.2127, 0], "scale": [1, 1, 1] },
+      "pivot": [0, 0, 0],
+      "bounds": { "min": [-13, 0, -10], "max": [13, 15, 10] },
+      "anchors": { "foot": [0, 0, 0], "interaction": [0, 4, 0], "camera": [0, 8, 14], "dialogue": [0, 1, 1] },
+      "cameraAnchor": [0, 8, 14],
+      "occlusionGroup": "review-roof",
+      "collision": { "kind": "box", "navigationArea": "review" },
+      "materialSlots": ["charcoal-structure", "bone-metal", "archive-emissive"],
+      "statistics": {
+        "accessorBytes": 388404,
+        "animationClips": ["lights-idle", "portal-idle"],
+        "drawCalls": 7,
+        "materials": 4,
+        "meshes": 7,
+        "nodes": 36,
+        "gpuBytes": 388404,
+        "textures": 0,
+        "triangles": 9766,
+        "gpuMiB": 0.3704,
+        "budget": { "maxDrawCalls": 8, "maxGpuMiB": 10, "maxMaterials": 4, "maxTextures": 3, "maxTriangles": 26000 },
+        "bytes": 510220,
+        "extent": [17.2596, 17.078, 16.5],
+        "sha256": "d8a887e1120c17b6fe9731f61c5356f5d3c202e29b9a475fdb1c265d4474e1a8"
+      }
+    },
+    {
+      "id": "triage",
+      "uri": "models/triage.glb",
+      "maxTriangles": 12000,
+      "maxDrawCalls": 5,
+      "maxMaterials": 3,
+      "maxTextures": 2,
+      "maxGpuMiB": 5,
+      "requiredNodes": ["triage:root", "triage:lod:near", "triage:lod:far", "triage:door", "triage:camera"],
+      "requiredClips": ["door-open", "lights-idle"],
+      "lods": [
+        { "distance": 0, "node": "triage:lod:near" },
+        { "distance": 112, "node": "triage:lod:far" }
+      ],
+      "transform": { "position": [20.49, 1, 3.48], "rotation": [0, -1.5454, 0], "scale": [1, 1, 1] },
+      "pivot": [0, 0, 0],
+      "bounds": { "min": [-7, 0, -6], "max": [7, 9, 6] },
+      "anchors": { "foot": [0, 0, 0], "interaction": [0, 3, 0], "camera": [0, 6, 10] },
+      "cameraAnchor": [0, 6, 10],
+      "occlusionGroup": "triage-shell",
+      "collision": { "kind": "box", "navigationArea": "triage" },
+      "materialSlots": ["lunar-rust", "bone-metal"],
+      "statistics": {
+        "accessorBytes": 67236,
+        "animationClips": ["door-open", "lights-idle", "triage-station-idle"],
+        "drawCalls": 5,
+        "materials": 3,
+        "meshes": 5,
+        "nodes": 21,
+        "gpuBytes": 67236,
+        "textures": 0,
+        "triangles": 1732,
+        "gpuMiB": 0.0641,
+        "budget": { "maxDrawCalls": 5, "maxGpuMiB": 5, "maxMaterials": 3, "maxTextures": 2, "maxTriangles": 12000 },
+        "bytes": 94204,
+        "extent": [9.86, 9.8575, 8.2259],
+        "sha256": "0c4d0efeff01ebfac7bb0f90b53eaad75eb87bf47812c00317a43cf56ae7abd2"
+      }
+    },
+    {
+      "id": "garden",
+      "uri": "models/garden.glb",
+      "maxTriangles": 18000,
+      "maxDrawCalls": 6,
+      "maxMaterials": 4,
+      "maxTextures": 3,
+      "maxGpuMiB": 7,
+      "requiredNodes": ["garden:root", "garden:lod:near", "garden:lod:far", "garden:camera"],
+      "requiredClips": ["garden-idle"],
+      "lods": [
+        { "distance": 0, "node": "garden:lod:near" },
+        { "distance": 112, "node": "garden:lod:far" }
+      ],
+      "transform": { "position": [20.11, 0, 26.5], "rotation": [0, -2.4122, 0], "scale": [1, 1, 1] },
+      "pivot": [0, 0, 0],
+      "bounds": { "min": [-14, 0, -12], "max": [14, 5, 12] },
+      "anchors": { "foot": [0, 0, 0], "interaction": [0, 1, 0], "camera": [0, 6, 15] },
+      "cameraAnchor": [0, 6, 15],
+      "occlusionGroup": "garden",
+      "collision": { "kind": "mesh", "navigationArea": "garden" },
+      "materialSlots": ["lunar-rust", "signal-emissive"],
+      "statistics": {
+        "accessorBytes": 131532,
+        "animationClips": ["garden-idle"],
+        "drawCalls": 6,
+        "materials": 4,
+        "meshes": 6,
+        "nodes": 15,
+        "gpuBytes": 131532,
+        "textures": 0,
+        "triangles": 3508,
+        "gpuMiB": 0.1254,
+        "budget": { "maxDrawCalls": 6, "maxGpuMiB": 7, "maxMaterials": 4, "maxTextures": 3, "maxTriangles": 18000 },
+        "bytes": 175936,
+        "extent": [19, 4.9107, 19],
+        "sha256": "760b6d0f8d47bf688b295566ca816d4b7d9e7c4fbec0adceefac012ae9e53c0f"
+      }
+    },
+    {
+      "id": "council",
+      "uri": "models/council.glb",
+      "maxTriangles": 22000,
+      "maxDrawCalls": 7,
+      "maxMaterials": 4,
+      "maxTextures": 3,
+      "maxGpuMiB": 8,
+      "requiredNodes": ["council:root", "council:lod:near", "council:lod:far", "council:roof", "council:camera"],
+      "requiredClips": ["lights-idle"],
+      "lods": [
+        { "distance": 0, "node": "council:lod:near" },
+        { "distance": 112, "node": "council:lod:far" }
+      ],
+      "transform": { "position": [14.13, 1, -21.84], "rotation": [0, -0.5004, 0], "scale": [1, 1, 1] },
+      "pivot": [0, 0, 0],
+      "bounds": { "min": [-11, 0, -9], "max": [11, 14, 9] },
+      "anchors": { "foot": [0, 0, 0], "interaction": [0, 4, 0], "camera": [0, 7, 13], "dialogue": [0, 1, 1] },
+      "cameraAnchor": [0, 7, 13],
+      "occlusionGroup": "council-roof",
+      "collision": { "kind": "box", "navigationArea": "council" },
+      "materialSlots": ["charcoal-structure", "bone-metal", "archive-emissive"],
+      "statistics": {
+        "accessorBytes": 413748,
+        "animationClips": ["lights-idle"],
+        "drawCalls": 6,
+        "materials": 4,
+        "meshes": 6,
+        "nodes": 35,
+        "gpuBytes": 413748,
+        "textures": 0,
+        "triangles": 10452,
+        "gpuMiB": 0.3946,
+        "budget": { "maxDrawCalls": 7, "maxGpuMiB": 8, "maxMaterials": 4, "maxTextures": 3, "maxTriangles": 22000 },
+        "bytes": 540976,
+        "extent": [20.4432, 18.2729, 15.1033],
+        "sha256": "47f2496b8863733fc52619213f8f7c4170d4cace88420fca5c0bc1a450d6f408"
+      }
+    },
+    {
+      "id": "arts-studio",
+      "uri": "models/arts-studio.glb",
+      "maxTriangles": 26000,
+      "maxDrawCalls": 8,
+      "maxMaterials": 6,
+      "maxTextures": 3,
+      "maxGpuMiB": 10,
+      "requiredNodes": [
+        "arts-studio:root",
+        "arts-studio:lod:near",
+        "arts-studio:lod:far",
+        "arts-studio:roof",
+        "arts-studio:entrance",
+        "arts-studio:camera",
+        "arts-studio:gallery",
+        "arts-studio:easels",
+        "arts-studio:palette",
+        "arts-studio:city-identity",
+        "arts-studio:leader-anchor"
+      ],
+      "requiredClips": ["lights-idle"],
+      "lods": [
+        { "distance": 0, "node": "arts-studio:lod:near" },
+        { "distance": 112, "node": "arts-studio:lod:far" }
+      ],
+      "transform": { "position": [1.65, 2, -47.3], "rotation": [0, -0.0322, 0], "scale": [1, 1, 1] },
+      "pivot": [0, 0, 0],
+      "bounds": { "min": [-12, 0, -10], "max": [12, 15, 10] },
+      "anchors": { "foot": [0, 0, 0], "interaction": [0, 4, 0], "camera": [0, 7, 14], "dialogue": [-2, 1, 1] },
+      "cameraAnchor": [0, 7, 14],
+      "occlusionGroup": "arts-studio-roof",
+      "collision": { "kind": "box", "navigationArea": "arts" },
+      "materialSlots": [
+        "charcoal-structure",
+        "bone-metal",
+        "lunar-rust",
+        "archive-emissive",
+        "sunset-orange",
+        "garden-green"
+      ],
+      "statistics": {
+        "accessorBytes": 367620,
+        "animationClips": ["lights-idle"],
+        "drawCalls": 8,
+        "materials": 6,
+        "meshes": 8,
+        "nodes": 39,
+        "gpuBytes": 367620,
+        "textures": 0,
+        "triangles": 9186,
+        "gpuMiB": 0.3506,
+        "budget": { "maxDrawCalls": 8, "maxGpuMiB": 10, "maxMaterials": 6, "maxTextures": 3, "maxTriangles": 26000 },
+        "bytes": 484736,
+        "extent": [15, 17.8025, 11.8031],
+        "sha256": "f1ee9102aa5c680b0c4c95823d5fa158e0e77d6a73ba4c3901e87576adc7f6b8"
+      }
+    },
+    {
+      "id": "engineering-workshop",
+      "uri": "models/engineering-workshop.glb",
+      "maxTriangles": 28000,
+      "maxDrawCalls": 8,
+      "maxMaterials": 5,
+      "maxTextures": 3,
+      "maxGpuMiB": 10,
+      "requiredNodes": [
+        "engineering-workshop:root",
+        "engineering-workshop:lod:near",
+        "engineering-workshop:lod:far",
+        "engineering-workshop:roof",
+        "engineering-workshop:entrance",
+        "engineering-workshop:camera",
+        "engineering-workshop:workbenches",
+        "engineering-workshop:gantry",
+        "engineering-workshop:gear",
+        "engineering-workshop:city-identity",
+        "engineering-workshop:leader-anchor"
+      ],
+      "requiredClips": ["workbench-cycle", "gantry-idle"],
+      "lods": [
+        { "distance": 0, "node": "engineering-workshop:lod:near" },
+        { "distance": 112, "node": "engineering-workshop:lod:far" }
+      ],
+      "transform": { "position": [-49.5, 2, 10.86], "rotation": [0, 1.7085, 0], "scale": [1, 1, 1] },
+      "pivot": [0, 0, 0],
+      "bounds": { "min": [-13, 0, -11], "max": [13, 16, 11] },
+      "anchors": { "foot": [0, 0, 0], "interaction": [0, 4, 0], "camera": [0, 8, 15], "dialogue": [2, 1, 1] },
+      "cameraAnchor": [0, 8, 15],
+      "occlusionGroup": "engineering-workshop-roof",
+      "collision": { "kind": "box", "navigationArea": "engineering" },
+      "materialSlots": ["charcoal-structure", "bone-metal", "lunar-rust", "signal-emissive"],
+      "statistics": {
+        "accessorBytes": 431844,
+        "animationClips": ["gantry-idle", "workbench-cycle"],
+        "drawCalls": 6,
+        "materials": 4,
+        "meshes": 6,
+        "nodes": 36,
+        "gpuBytes": 431844,
+        "textures": 0,
+        "triangles": 9536,
+        "gpuMiB": 0.4118,
+        "budget": { "maxDrawCalls": 8, "maxGpuMiB": 10, "maxMaterials": 5, "maxTextures": 3, "maxTriangles": 28000 },
+        "bytes": 568072,
+        "extent": [16.5, 18.3574, 13.3031],
+        "sha256": "4f47eaf2068b74b388528afae63853804d7acd9ee92ae144a1fe4950146523aa"
+      }
+    },
+    {
+      "id": "release-gatehouse",
+      "uri": "models/release-gatehouse.glb",
+      "maxTriangles": 24000,
+      "maxDrawCalls": 8,
+      "maxMaterials": 5,
+      "maxTextures": 3,
+      "maxGpuMiB": 9,
+      "requiredNodes": [
+        "release-gatehouse:root",
+        "release-gatehouse:lod:near",
+        "release-gatehouse:lod:far",
+        "release-gatehouse:roof",
+        "release-gatehouse:entrance",
+        "release-gatehouse:camera",
+        "release-gatehouse:release-gate",
+        "release-gatehouse:beacon",
+        "release-gatehouse:city-identity",
+        "release-gatehouse:leader-anchor"
+      ],
+      "requiredClips": ["gatehouse-beacon", "gatehouse-gate"],
+      "lods": [
+        { "distance": 0, "node": "release-gatehouse:lod:near" },
+        { "distance": 112, "node": "release-gatehouse:lod:far" }
+      ],
+      "transform": { "position": [-23.88, 2, 2.26], "rotation": [0, 1.4981, 0], "scale": [1, 1, 1] },
+      "pivot": [0, 0, 0],
+      "bounds": { "min": [-11, 0, -9], "max": [11, 15, 9] },
+      "anchors": { "foot": [0, 0, 0], "interaction": [0, 4, 0], "camera": [0, 7, 13], "dialogue": [0, 1, 1] },
+      "cameraAnchor": [0, 7, 13],
+      "occlusionGroup": "release-gatehouse-roof",
+      "collision": { "kind": "box", "navigationArea": "release" },
+      "materialSlots": ["charcoal-structure", "bone-metal", "lunar-rust", "triage-amber", "garden-green"],
+      "statistics": {
+        "accessorBytes": 377484,
+        "animationClips": ["gatehouse-beacon", "gatehouse-gate"],
+        "drawCalls": 7,
+        "materials": 5,
+        "meshes": 7,
+        "nodes": 36,
+        "gpuBytes": 377484,
+        "textures": 0,
+        "triangles": 8936,
+        "gpuMiB": 0.36,
+        "budget": { "maxDrawCalls": 8, "maxGpuMiB": 9, "maxMaterials": 5, "maxTextures": 3, "maxTriangles": 24000 },
+        "bytes": 497812,
+        "extent": [13.5, 16.5952, 10.8031],
+        "sha256": "5e9e028ec9786bb15735f72200d44969e84deb3a953d73cd5e77b552b860286e"
+      }
+    },
+    {
+      "id": "archive",
+      "uri": "models/archive.glb",
+      "maxTriangles": 26000,
+      "maxDrawCalls": 8,
+      "maxMaterials": 5,
+      "maxTextures": 3,
+      "maxGpuMiB": 10,
+      "requiredNodes": [
+        "archive:root",
+        "archive:lod:near",
+        "archive:lod:far",
+        "archive:roof",
+        "archive:entrance",
+        "archive:camera",
+        "archive:stacks",
+        "archive:vault",
+        "archive:city-identity",
+        "archive:leader-anchor"
+      ],
+      "requiredClips": ["archive-seal-idle"],
+      "lods": [
+        { "distance": 0, "node": "archive:lod:near" },
+        { "distance": 112, "node": "archive:lod:far" }
+      ],
+      "transform": { "position": [28.93, 2, -44.95], "rotation": [0, -0.5338, 0], "scale": [1, 1, 1] },
+      "pivot": [0, 0, 0],
+      "bounds": { "min": [-12, 0, -10], "max": [12, 15, 10] },
+      "anchors": { "foot": [0, 0, 0], "interaction": [0, 4, 0], "camera": [0, 7, 14], "dialogue": [-2, 1, 1] },
+      "cameraAnchor": [0, 7, 14],
+      "occlusionGroup": "archive-roof",
+      "collision": { "kind": "box", "navigationArea": "archive" },
+      "materialSlots": ["charcoal-structure", "bone-metal", "lunar-rust", "archive-emissive"],
+      "statistics": {
+        "accessorBytes": 416280,
+        "animationClips": ["archive-seal-idle"],
+        "drawCalls": 6,
+        "materials": 4,
+        "meshes": 6,
+        "nodes": 35,
+        "gpuBytes": 416280,
+        "textures": 0,
+        "triangles": 9160,
+        "gpuMiB": 0.397,
+        "budget": { "maxDrawCalls": 8, "maxGpuMiB": 10, "maxMaterials": 5, "maxTextures": 3, "maxTriangles": 26000 },
+        "bytes": 546760,
+        "extent": [14.5, 18.2186, 12.3031],
+        "sha256": "b1b0d9da2dbfe81309bec9c58284946bdfd03c6f3ea9f78108f02a18ebe5e9bb"
+      }
+    },
+    {
+      "id": "bus",
+      "uri": "models/bus.glb",
+      "maxTriangles": 9000,
+      "maxDrawCalls": 4,
+      "maxMaterials": 3,
+      "maxTextures": 2,
+      "maxGpuMiB": 4,
+      "requiredNodes": ["bus:root", "bus:lod:near", "bus:lod:far", "bus:camera"],
+      "requiredClips": ["idle", "arrive", "depart"],
+      "lods": [
+        { "distance": 0, "node": "bus:lod:near" },
+        { "distance": 112, "node": "bus:lod:far" }
+      ],
+      "transform": { "position": [0, 2, 0], "rotation": [0, 0, 0], "scale": [1, 1, 1] },
+      "pivot": [0, 0, 0],
+      "bounds": { "min": [-5, 0, -3], "max": [5, 4, 3] },
+      "anchors": { "foot": [0, 0, 0], "interaction": [0, 2, 0], "camera": [0, 5, 9] },
+      "cameraAnchor": [0, 5, 9],
+      "occlusionGroup": "vehicles",
+      "collision": { "kind": "box", "navigationArea": "transit" },
+      "materialSlots": ["lunar-rust", "bone-metal", "signal-emissive"],
+      "statistics": {
+        "accessorBytes": 14436,
+        "animationClips": ["arrive", "depart", "idle"],
+        "drawCalls": 4,
+        "materials": 3,
+        "meshes": 4,
+        "nodes": 11,
+        "gpuBytes": 14436,
+        "textures": 0,
+        "triangles": 264,
+        "gpuMiB": 0.0138,
+        "budget": { "maxDrawCalls": 4, "maxGpuMiB": 4, "maxMaterials": 3, "maxTextures": 2, "maxTriangles": 9000 },
+        "bytes": 24812,
+        "extent": [6.8, 2.615, 2.92],
+        "sha256": "c102630ce88d7718a1e5b56ec4a4776df1aece41d0547855d9282a9ca065a860"
+      }
+    },
+    {
+      "id": "leaders",
+      "uri": "models/leaders.glb",
+      "maxTriangles": 36000,
+      "maxDrawCalls": 140,
+      "maxMaterials": 6,
+      "maxTextures": 4,
+      "maxGpuMiB": 14,
+      "requiredNodes": [
+        "leaders:root",
+        "leader:owl",
+        "leader:fox",
+        "leader:badger",
+        "leader:otter",
+        "leader:bird",
+        "leader:stag",
+        "leaders:lod:near",
+        "leaders:lod:mid",
+        "leaders:lod:far"
+      ],
+      "requiredClips": ["idle", "listening", "talking", "thinking", "acknowledging", "unavailable"],
+      "lods": [
+        { "distance": 0, "node": "leaders:lod:near" },
+        { "distance": 18, "node": "leaders:lod:mid" },
+        { "distance": 34, "node": "leaders:lod:far" }
+      ],
+      "transform": { "position": [0, 0, 0], "rotation": [0, 0, 0], "scale": [1, 1, 1] },
+      "pivot": [0, 0, 0],
+      "bounds": { "min": [-44, 0, -34], "max": [44, 14, 38] },
+      "anchors": { "foot": [0, 0, 0], "attachment": [0, 1, 0], "camera": [0, 4, 8], "dialogue": [0, 1, 1] },
+      "cameraAnchor": [0, 4, 8],
+      "occlusionGroup": "leaders",
+      "collision": { "kind": "capsule", "navigationArea": "walkable" },
+      "materialSlots": ["bone-metal", "archive-emissive", "signal-emissive"],
+      "statistics": {
+        "accessorBytes": 456732,
+        "animationClips": [
+          "acknowledge",
+          "acknowledging",
+          "idle",
+          "leader:badger:acknowledging",
+          "leader:badger:idle",
+          "leader:badger:listening",
+          "leader:badger:talking",
+          "leader:badger:thinking",
+          "leader:badger:unavailable",
+          "leader:bird:acknowledging",
+          "leader:bird:idle",
+          "leader:bird:listening",
+          "leader:bird:talking",
+          "leader:bird:thinking",
+          "leader:bird:unavailable",
+          "leader:fox:acknowledging",
+          "leader:fox:idle",
+          "leader:fox:listening",
+          "leader:fox:talking",
+          "leader:fox:thinking",
+          "leader:fox:unavailable",
+          "leader:otter:acknowledging",
+          "leader:otter:idle",
+          "leader:otter:listening",
+          "leader:otter:talking",
+          "leader:otter:thinking",
+          "leader:otter:unavailable",
+          "leader:owl:acknowledging",
+          "leader:owl:idle",
+          "leader:owl:listening",
+          "leader:owl:talking",
+          "leader:owl:thinking",
+          "leader:owl:unavailable",
+          "leader:stag:acknowledging",
+          "leader:stag:idle",
+          "leader:stag:listening",
+          "leader:stag:talking",
+          "leader:stag:thinking",
+          "leader:stag:unavailable",
+          "listen",
+          "listening",
+          "talk",
+          "talking",
+          "think",
+          "thinking",
+          "unavailable"
+        ],
+        "drawCalls": 138,
+        "materials": 5,
+        "meshes": 138,
+        "nodes": 177,
+        "gpuBytes": 456732,
+        "textures": 0,
+        "triangles": 16630,
+        "gpuMiB": 0.4356,
+        "budget": { "maxDrawCalls": 140, "maxGpuMiB": 14, "maxMaterials": 6, "maxTextures": 4, "maxTriangles": 36000 },
+        "bytes": 797916,
+        "extent": [67.5303, 10.4988, 55.6619],
+        "sha256": "9c166f04951687d99e150c76f7937b2cba4b2055c9a55feef0cc41302d5c6d36"
+      }
+    },
+    {
+      "id": "workers",
+      "uri": "models/workers.glb",
+      "maxTriangles": 18000,
+      "maxDrawCalls": 40,
+      "maxMaterials": 4,
+      "maxTextures": 3,
+      "maxGpuMiB": 8,
+      "requiredNodes": [
+        "workers:root",
+        "worker:body",
+        "worker:head",
+        "workers:lod:near",
+        "workers:lod:mid",
+        "workers:lod:far",
+        "worker:attachment",
+        "worker:head:helmet-cap",
+        "worker:head:face-panel",
+        "worker:body:color-panel",
+        "worker:limb:left-arm:forearm",
+        "worker:limb:right-arm:forearm",
+        "worker:limb:left-leg:boot",
+        "worker:limb:right-leg:boot",
+        "worker:group-kits",
+        "worker:group-kit:acceptance-release",
+        "worker:group-kit:archive-acquisition",
+        "worker:group-kit:arts-studio",
+        "worker:group-kit:ci-repair-triage",
+        "worker:group-kit:community-intake",
+        "worker:group-kit:content-studio",
+        "worker:group-kit:control-plane-incidents",
+        "worker:group-kit:core-runtime-ux-repairs",
+        "worker:group-kit:data-performance-repairs",
+        "worker:group-kit:editorial-desk",
+        "worker:group-kit:engineering-guild",
+        "worker:group-kit:federation-council",
+        "worker:group-kit:knowledge-commons",
+        "worker:group-kit:memory-stewardship",
+        "worker:group-kit:operations-release",
+        "worker:group-kit:pr-merge-train",
+        "worker:group-kit:research-lab",
+        "worker:group-kit:research-review-board",
+        "worker:group-kit:upstream-hermes-maintenance"
+      ],
+      "requiredClips": [
+        "idle",
+        "walk",
+        "talk",
+        "listen",
+        "work",
+        "tool-use",
+        "carry",
+        "handoff",
+        "queue",
+        "wait",
+        "blocked",
+        "failed",
+        "review",
+        "triage",
+        "heartbeat",
+        "rest",
+        "done"
+      ],
+      "lods": [
+        { "distance": 0, "node": "workers:lod:near" },
+        { "distance": 14, "node": "workers:lod:mid" },
+        { "distance": 28, "node": "workers:lod:far" }
+      ],
+      "transform": { "position": [0, 0, 0], "rotation": [0, 0, 0], "scale": [1, 1, 1] },
+      "pivot": [0, 0, 0],
+      "bounds": { "min": [-2, 0, -2], "max": [2, 3, 2] },
+      "anchors": { "foot": [0, 0, 0], "attachment": [0, 1, 0], "camera": [0, 2, 5] },
+      "cameraAnchor": [0, 2, 5],
+      "occlusionGroup": "workers",
+      "collision": { "kind": "capsule", "navigationArea": "walkable" },
+      "instancing": {
+        "eligible": true,
+        "variants": ["orbital", "archivist", "builder", "artist", "dispatcher", "verifier", "courier"]
+      },
+      "materialSlots": ["bone-metal", "charcoal-structure", "signal-emissive", "lunar-rust"],
+      "statistics": {
+        "accessorBytes": 475304,
+        "animationClips": [
+          "blocked",
+          "carry",
+          "done",
+          "failed",
+          "handoff",
+          "heartbeat",
+          "idle",
+          "listen",
+          "queue",
+          "rest",
+          "review",
+          "talk",
+          "tool-use",
+          "triage",
+          "wait",
+          "walk",
+          "work"
+        ],
+        "drawCalls": 40,
+        "materials": 4,
+        "meshes": 40,
+        "nodes": 193,
+        "gpuBytes": 475304,
+        "textures": 0,
+        "triangles": 13400,
+        "gpuMiB": 0.4533,
+        "budget": { "maxDrawCalls": 40, "maxGpuMiB": 8, "maxMaterials": 4, "maxTextures": 3, "maxTriangles": 18000 },
+        "bytes": 754788,
+        "extent": [2.6677, 4.6635, 2.016],
+        "sha256": "d3646a9b6bd77e59b0b11b256a5821d5c5e57369c38e7dc064bef08c4fba9c3d"
+      }
+    }
+  ],
+  "camera": {
+    "overview": {
+      "id": "approved-overview",
+      "alpha": -0.78,
+      "beta": 1.02,
+      "radius": 78,
+      "target": [0, 5, 4],
+      "minBeta": 0.72,
+      "maxBeta": 1.3,
+      "minRadius": 18,
+      "maxRadius": 120
+    },
+    "bounds": { "min": [-60, -12, -60], "max": [60, 36, 60] },
+    "followOffset": [0, 5, -8]
+  },
+  "navigation": {
+    "meshUri": "models/navigation.glb",
+    "areas": [
+      "walkable",
+      "library",
+      "research",
+      "depot",
+      "review",
+      "triage",
+      "garden",
+      "council",
+      "transit",
+      "arts",
+      "engineering",
+      "release",
+      "archive"
+    ],
+    "links": [
+      { "from": [-28, 0, -18], "to": [0, 0, -1], "bidirectional": true },
+      { "from": [25, 0, -22], "to": [0, 0, -1], "bidirectional": true },
+      { "from": [-31, 0, 12], "to": [-8, 0, 34], "bidirectional": true },
+      { "from": [33, 0, 10], "to": [4, 0, 25], "bidirectional": true },
+      { "from": [4, 0, 25], "to": [-8, 0, 34], "bidirectional": true },
+      { "from": [27, 0, 31], "to": [4, 0, 25], "bidirectional": true },
+      { "from": [16, 0, 30], "to": [4, 0, 25], "bidirectional": true },
+      { "from": [30, 0, 30], "to": [27, 0, 31], "bidirectional": true },
+      { "from": [-32, 0, 34], "to": [-8, 0, 34], "bidirectional": true },
+      { "from": [-29, 0, -1], "to": [-28, 0, -18], "bidirectional": true },
+      { "from": [-29, 0, -1], "to": [-31, 0, 12], "bidirectional": true },
+      { "from": [-29, 0, 30], "to": [-8, 0, 34], "bidirectional": true },
+      { "from": [-29, 0, 30], "to": [0, 0, 12], "bidirectional": true },
+      { "from": [0, 0, 12], "to": [4, 0, 25], "bidirectional": true },
+      { "from": [38, 0, 18], "to": [27, 0, 31], "bidirectional": true },
+      { "from": [38, 0, 18], "to": [33, 0, 10], "bidirectional": true }
+    ]
+  },
+  "destinations": {
+    "bus": [0, 0, 0],
+    "project": [18, 0, 38],
+    "depot": [-8.44, 0, 23.2],
+    "review": [-32.79, 0, 28.51],
+    "triage": [20.49, 0, 3.48],
+    "garden": [20.11, 0, 26.5],
+    "council": [14.13, 0, -21.84],
+    "arts-studio": [1.65, 0, -47.3],
+    "engineering-workshop": [-49.5, 0, 10.86],
+    "release-gatehouse": [-23.88, 0, 2.26],
+    "archive": [28.93, 0, -44.95],
+    "unavailable": [0, 0, 0]
+  },
+  "projectSlots": [
+    {
+      "id": "compound-inner-1",
+      "position": [16, 0, 38],
+      "bounds": { "min": [8, 0, 30], "max": [24, 12, 46] },
+      "navigationLink": { "from": [16, 0, 30], "to": [4, 0, 25], "bidirectional": true }
+    },
+    {
+      "id": "compound-inner-2",
+      "position": [38, 0, 30],
+      "bounds": { "min": [30, 0, 22], "max": [46, 12, 38] },
+      "navigationLink": { "from": [30, 0, 30], "to": [27, 0, 31], "bidirectional": true }
+    },
+    {
+      "id": "compound-outer-1",
+      "position": [-42, 0, 34],
+      "bounds": { "min": [-52, 0, 24], "max": [-32, 12, 44] },
+      "navigationLink": { "from": [-32, 0, 34], "to": [-8, 0, 34], "bidirectional": true }
+    }
+  ],
+  "qualityBudgets": {
+    "balancedOverview": { "drawCalls": 180, "visibleTriangles": 1500000, "gpuMiB": 256 },
+    "balancedWorkerFocus": { "drawCalls": 220, "visibleTriangles": 2000000, "gpuMiB": 256 }
+  },
+  "textures": [
+    {
+      "bytes": 101,
+      "sha256": "3dfe253a23ed391feb8502d8f60f2f0644b1c1863e78f4524bf90e67b955e366",
+      "source": "generated-approved-palette",
+      "uri": "textures/approved-palette.png"
+    }
+  ],
+  "generatedAssetPack": {
+    "builder": "babylonjs-null-engine",
+    "engineVersion": "9.21.2",
+    "navigation": {
+      "accessorBytes": 70272,
+      "animationClips": [],
+      "drawCalls": 1,
+      "materials": 1,
+      "meshes": 1,
+      "nodes": 14,
+      "gpuBytes": 70272,
+      "textures": 0,
+      "triangles": 1440,
+      "gpuMiB": 0.067,
+      "budget": { "maxDrawCalls": 4, "maxGpuMiB": 4, "maxMaterials": 1, "maxTextures": 0, "maxTriangles": 12000 },
+      "bytes": 93388,
+      "extent": [91.43, 1.2, 88.81],
+      "sha256": "d37342f87841601f0b95d074651c01bd79d1bdc3d541e0c3a8ce7695d412c18c"
+    },
+    "sourceSha256": "248e8d40946b08b9f74f4b2ddd0ba17e4f17fd054260189972164c5d6ca70590"
+  }
+}

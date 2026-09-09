@@ -85,7 +85,7 @@ cache break — keep it the only one. Full detail:
   `agent/model_metadata.py` holds context lengths and capabilities.
 - **Auxiliary (side-LLM) work** — curator, vision, embedding, title generation, session_search,
   compression — resolves through `agent/auxiliary_client.py::_resolve_auto_route`; each task can pin
-  its own `provider/model/base_url/max_tokens/reasoning_effort` under `auxiliary:` in config.yaml.
+  its own `provider/model/base_url/reasoning_effort` under `auxiliary:` in config.yaml.
 - Fallback models and credential pools are resolution-chain code: E2E them with real imports
   against a temp `HERMES_HOME`, not mocks (root rubric).
 

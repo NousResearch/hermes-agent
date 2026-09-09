@@ -226,7 +226,14 @@ jobs:
       actions: read
       contents: read
       security-events: write
+    # PR scans use the artifact/review-status path below. Direct main pushes
+    # are scanned by osv-scanner.yml's push trigger so they can publish SARIF.
+    if: github.event_name == 'pull_request'
     uses: ./.github/workflows/osv-scanner.yml
+    with:
+      # A literal false avoids re-evaluation across nested reusable-workflow
+      # boundaries, which previously recreated the Advanced Security warning.
+      upload-sarif: false
 
   # ─────────────────────────────────────────────────────────────────────
   # Gate: runs after everything. ``if: always()`` ensures it reports a

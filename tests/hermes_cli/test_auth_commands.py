@@ -294,6 +294,45 @@ def test_auth_list_includes_non_registry_configured_provider(
     assert "private-groq (1 credentials):" in capsys.readouterr().out
 
 
+def test_auth_list_shows_entry_id_and_priority(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "providers": {},
+            "credential_pool": {
+                "openrouter": [
+                    {
+                        "id": "ab12cd",
+                        "label": "primary",
+                        "auth_type": "api_key",
+                        "priority": 0,
+                        "source": "manual",
+                        "access_token": "secret-1",
+                    },
+                    {
+                        "id": "ef56gh",
+                        "label": "backup",
+                        "auth_type": "api_key",
+                        "priority": 1,
+                        "source": "manual",
+                        "access_token": "secret-2",
+                    },
+                ]
+            },
+        },
+    )
+
+    from hermes_cli.auth_commands import auth_list_command
+
+    auth_list_command(type("Args", (), {"provider": "openrouter"})())
+
+    out = capsys.readouterr().out
+    assert "id=ab12cd priority=0" in out
+    assert "id=ef56gh priority=1" in out
+
+
 def test_interactive_auth_add_accepts_non_registry_configured_provider(
     tmp_path, monkeypatch
 ):

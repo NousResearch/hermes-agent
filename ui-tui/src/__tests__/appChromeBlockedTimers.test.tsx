@@ -306,6 +306,7 @@ describe('status-chrome timers under an occluding overlay', () => {
     resetOverlayState()
     await flush()
 
+    await vi.waitFor(() => expect(rule.output()).toContain('6m 0s'), { timeout: 1_000 })
     const resumed = rule.output()
 
     // Caught up to real elapsed time, not stuck on the pre-overlay values.

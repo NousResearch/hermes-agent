@@ -897,6 +897,7 @@ class Task:
     # VALID_BLOCK_KINDS or None (legacy); kept across unblock so a same-kind re-block reads as a loop.
     block_kind: Optional[str] = None
     block_recurrences: int = 0               # unblock-loop counter, see BLOCK_RECURRENCE_LIMIT
+    completion_contract: Optional[str] = None
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> "Task":
@@ -926,7 +927,7 @@ _TASK_REQUIRED_COLUMNS = (
 _TASK_OPTIONAL_COLUMNS = (
     "branch_name", "project_id", "tenant", "result", "idempotency_key", "worker_pid",
     "max_runtime_seconds", "last_heartbeat_at", "current_run_id", "workflow_template_id",
-    "current_step_key", "max_retries", "session_id",
+    "current_step_key", "max_retries", "session_id", "completion_contract",
 )
 # Text columns where "" is stored/read as "not set".
 _TASK_EMPTY_IS_NULL_COLUMNS = (
@@ -1215,6 +1216,7 @@ CREATE TABLE IF NOT EXISTS kanban_notify_subs (
     notify_claim_owner TEXT,
     notify_claimed_at INTEGER,
     notify_claimed_cursor INTEGER,
+    last_ping_event_id INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (task_id, platform, chat_id, thread_id)
 );
 
@@ -1328,6 +1330,8 @@ def create_task(
     goal_mode: bool = False, goal_max_turns: Optional[int] = None, initial_status: str = "running",
     session_id: Optional[str] = None, board: Optional[str] = None, project_id: Optional[str] = None,
     project_source_task_id: Optional[str] = None,
+    creator_task_id: Optional[str] = None,
+    completion_contract: Optional[str] = None,
 ) -> str:
     """Create a task (optionally under ``parents``); returns its id.
 
@@ -1337,12 +1341,21 @@ def create_task(
     instead of a duplicate. ``max_runtime_seconds``: cap before the dispatcher
     SIGTERMs and re-queues. ``model_override``/``provider_override`` pin the
     worker model (provider requires model); ``reasoning_effort`` is independent.
+    ``creator_task_id``: inherit durable session/subscriptions independently of
+    dependency edges; an explicit ``session_id`` still wins.
     ``project_source_task_id``: cross-profile fallback when ``project_id`` is not
     in the active profile's projects.db — see ``kanban_project_link.resolve_project_link``.
     """
+    from hermes_cli.kanban_db_graph import initial_task_state, inherit_creator_origin
+    from hermes_cli.kanban_pr_acceptance import validate_contract
+
+    completion_contract = validate_contract(completion_contract)
     model_override, provider_override = _validate_model_override(model_override, provider_override)
     reasoning_effort = normalize_reasoning_effort(reasoning_effort)
     assignee = _canonical_assignee(assignee)
+    # Keep creation permissive: external control-plane lanes intentionally use
+    # non-profile assignees and claim work through ``claim_task``. The dispatcher
+    # performs the profile-existence check only on the local spawn path.
     if not title or not title.strip():
         raise ValueError("title is required")
     _validate_pr_task_assignee_authority(
@@ -1407,7 +1420,7 @@ def create_task(
             # allow_nested: graph builders compose create_task under one outer
             # commit so the dispatcher never sees a half-built graph.
             with write_txn(conn, allow_nested=True):
-                task_status = _initial_task_status(conn, parents, initial_status, triage)
+                task_status, tenant = initial_task_state(conn, parents, initial_status, triage, tenant)
                 # Project worktree: fresh dir under the repo + deterministic
                 # branch, instead of the random ``wt/<id>`` worker fallback.
                 if project_obj is not None and workspace_kind == "worktree":
@@ -1425,8 +1438,8 @@ def create_task(
                         max_runtime_seconds,
                         skills, max_retries, model_override, provider_override,
                         reasoning_effort,
-                        goal_mode, goal_max_turns, session_id
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        goal_mode, goal_max_turns, session_id, completion_contract
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         task_id, title.strip(), body, assignee, task_status, priority,
@@ -1435,7 +1448,7 @@ def create_task(
                         _opt_int(max_runtime_seconds),
                         json.dumps(skills_list) if skills_list is not None else None,
                         _opt_int(max_retries), model_override, provider_override, reasoning_effort,
-                        1 if goal_mode else 0, _opt_int(goal_max_turns), session_id,
+                        1 if goal_mode else 0, _opt_int(goal_max_turns), session_id, completion_contract,
                     ),
                 )
                 for pid in parents:
@@ -1448,6 +1461,7 @@ def create_task(
                         "assignee": assignee,
                         "status": task_status,
                         "parents": list(parents),
+                        "creator_task_id": creator_task_id,
                         "tenant": tenant,
                         "workspace_kind": workspace_kind,
                         "workspace_path": workspace_path,
@@ -1465,6 +1479,7 @@ def create_task(
                         "source_status": "created",
                     })
                 # ACK-edge: the originating channel hears a child BLOCK, not just the fan-in.
+                inherit_creator_origin(conn, task_id, creator_task_id, created_at=now)
                 _inherit_notify_subs(conn, task_id, parents, created_at=now)
             return task_id
         except sqlite3.IntegrityError:
@@ -1475,30 +1490,6 @@ def create_task(
 
 def _board_meta_for(board: Optional[str]) -> dict:
     return read_board_metadata(board if board else get_current_board())
-
-
-def _initial_task_status(
-    conn: sqlite3.Connection, parents: tuple[str, ...], initial_status: str, triage: bool,
-) -> str:
-    """Status for a new task: ``blocked``/``triage`` when parked by the caller,
-    else ``ready`` unless a parent is not yet ``done`` (-> ``todo``). Parent ids
-    are validated in every mode (even triage) so link rows never dangle."""
-    if parents:
-        missing = _missing_task_ids(conn, parents)
-        if missing:
-            raise ValueError(f"unknown parent task(s): {', '.join(missing)}")
-    if initial_status == "blocked":
-        return "blocked"
-    if triage:
-        return "triage"
-    if parents:
-        rows = conn.execute(
-            "SELECT status FROM tasks WHERE id IN "
-            "(" + ",".join("?" * len(parents)) + ")", parents,
-        ).fetchall()
-        if any(r["status"] != "done" for r in rows):
-            return "todo"
-    return "ready"
 
 
 def _project_branch_name(project_obj: Any, task_id: str, title: Optional[str]) -> Optional[str]:
@@ -2942,6 +2933,7 @@ def complete_task(
     if not _parents_satisfied(conn, task_id):
         return False
     from hermes_cli.kanban_completion_policy import enforce_completion_policies
+    from hermes_cli.kanban_pr_acceptance_store import prepare_acceptance, record_acceptance
 
     task = get_task(conn, task_id)
     if task is None:
@@ -2956,10 +2948,15 @@ def complete_task(
         conn, task_id, metadata, summary=summary, result=result,
     )
     handoff_summary = summary if summary is not None else result
+    acceptance = prepare_acceptance(conn, task_id, expected_run_id, metadata)
+    if acceptance is False:
+        return False
     with write_txn(conn):
         # Hard invariant even for human review approval: a parent may have
         # reopened while this task waited.
         if not _parents_satisfied(conn, task_id):
+            return False
+        if acceptance is not None and not record_acceptance(conn, task_id, acceptance):
             return False
         prior_status = _task_status(conn, task_id)
         from hermes_cli.kanban_review_recognition import recipient_before_completion, record_approval
@@ -4534,12 +4531,13 @@ def task_age(task: Task) -> dict:
 # --- Retention + garbage collection ---
 
 def gc_events(conn: sqlite3.Connection, *, older_than_seconds: int = 30 * 24 * 3600) -> int:
-    """Retain unacknowledged notifications even after terminal-task retention expires."""
+    """Prune old done/archived events, retaining decomposition identity and
+    unacknowledged notifications until they no longer need to survive."""
     cutoff = int(time.time()) - int(older_than_seconds)
     with write_txn(conn):
         cur = conn.execute(
-            "DELETE FROM task_events AS e WHERE e.created_at < ? AND e.task_id IN "
-            "(SELECT id FROM tasks WHERE status IN ('done', 'archived')) "
+            "DELETE FROM task_events AS e WHERE e.created_at < ? AND e.kind != 'decomposed' "
+            "AND e.task_id IN (SELECT id FROM tasks WHERE status IN ('done', 'archived')) "
             "AND NOT EXISTS (SELECT 1 FROM kanban_notify_subs AS s "
             "WHERE s.task_id = e.task_id AND COALESCE(s.last_event_id, 0) < e.id)",
             (cutoff,),

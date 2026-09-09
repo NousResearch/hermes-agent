@@ -1179,6 +1179,8 @@ agent:
 
 `verify_on_stop` accepts `true` (on everywhere), `false` (off — the default), or `"auto"` (legacy surface-aware behavior: on for interactive coding surfaces — CLI, TUI, desktop — and programmatic callers; off for messaging surfaces like Telegram/Discord where the verification narrative reads as chat noise). Off is the default everywhere: fresh installs ship `false` and the config migration turned it off on existing installs, so enabling it is an explicit opt-in. The `HERMES_VERIFY_ON_STOP` env var overrides the config value when set.
 
+The evidence that feeds this guard (which test/lint/build commands ran, which files were edited since) lives in `~/.hermes/verification_evidence.db`. That ledger is only written or created while the guard is enabled; with `verify_on_stop: false` nothing is recorded and an existing file can be deleted freely.
+
 For a user/plugin policy gate at the same point — keep the agent going with your own checks — see the [`pre_verify` hook](/user-guide/features/hooks#pre_verify).
 
 ## Standing Goals (`/goal`)

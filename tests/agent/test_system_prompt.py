@@ -175,7 +175,7 @@ def test_guarded_prompt_replaces_verbose_coaching_and_compacts_skills():
     )
     with (
         patch("agent.coding_context.guarded_prompt_enabled", return_value=True),
-        patch("run_agent.build_skills_system_prompt", return_value="SKILLS") as skills,
+        patch("agent.prompt_builder.build_skills_system_prompt", return_value="SKILLS") as skills,
     ):
         stable = _stable_prompt(agent)
 
@@ -214,7 +214,7 @@ def test_remote_kanban_worker_forces_compact_path_neutral_prompt(monkeypatch):
     )
     with (
         patch("agent.coding_context.guarded_prompt_enabled", return_value=False),
-        patch("run_agent.build_skills_system_prompt", return_value="SKILLS") as skills,
+        patch("agent.prompt_builder.build_skills_system_prompt", return_value="SKILLS") as skills,
         patch("agent.system_prompt._frozen_plugin_prompt_sections") as plugins,
     ):
         parts = _prompt_parts(agent)

@@ -83,8 +83,10 @@ def normalize_voice_record_key_for_prompt_toolkit(raw: Any) -> str:
     if len(key_token) == 1:
         reserved = (normalized_mod == "c-" or sys.platform == "darwin") and key_token in _VOICE_RESERVED_CHARS
         return _DEFAULT_PT_KEY if reserved else f"{normalized_mod}{key_token}"
-    # Multi-char token must be a known named key; ``ctrl+spcae`` must not pass through as
-    # ``c-spcae`` (prompt_toolkit would reject it).
+    # Multi-char token must be a known named key. A misspelled one (e.g. the typo
+    # ``ctrl+spcae``) must fall back to the default, not pass through as ``c-spcae``
+    # (which prompt_toolkit would reject) — the fallback that test_voice_wrapper's
+    # ``format_voice_record_key_for_status("ctrl+spcae")`` case pins.
     named = _VOICE_NAMED_KEYS.get(key_token)
     return f"{normalized_mod}{named}" if named else _DEFAULT_PT_KEY
 

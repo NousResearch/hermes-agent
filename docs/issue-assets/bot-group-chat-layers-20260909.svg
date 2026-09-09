@@ -1,0 +1,76 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="1740" viewBox="0 0 1200 1740" role="img" aria-labelledby="title desc">
+<title id="title">Bot Group Chats: seven layers, two Layer 7 carriers</title>
+<desc id="desc">Field integration above seven source layers. Layer 7 separates passive history and unfinished-work preservation in PR 104601 from draft guarded recovery and participant emergency Stop in PR 105079. Activation and independent Stop review remain open. Layers 1 to 3 are on main.</desc>
+<rect x="0" y="0" width="1200" height="1740" rx="0" fill="#f5f8f9" stroke="none"/>
+<text x="60" y="80" font-family="DejaVu Sans,sans-serif" font-size="42" font-weight="700" text-anchor="start" fill="#242e36">Bot Group Chats, beyond Desktop</text>
+<text x="60" y="124" font-family="DejaVu Sans,sans-serif" font-size="23" font-weight="400" text-anchor="start" fill="#58646e">Shared work. Real files. Pick up from another device.</text>
+<rect x="60" y="164" width="1080" height="108" rx="16" fill="#26373e" stroke="none"/>
+<text x="88" y="209" font-family="DejaVu Sans,sans-serif" font-size="30" font-weight="700" text-anchor="start" fill="#ffffff">Try the integration build · #98307</text>
+<text x="88" y="246" font-family="DejaVu Sans,sans-serif" font-size="21" font-weight="400" text-anchor="start" fill="#dce8e5">Layers 1–6 and passive preservation. Guarded recovery remains draft.</text>
+<g fill="none" stroke="#cad9df" stroke-width="3" stroke-linejoin="round"><path d="M600 586V612H320V638M600 612H880V638M320 828V856H880V828M600 856V884M600 1038V1080M600 1234V1276M600 1430V1472"/></g>
+<rect x="120" y="323" width="960" height="268" rx="16" fill="#e8edf0" stroke="none"/>
+<rect x="120" y="318" width="960" height="268" rx="16" fill="#ffffff" stroke="#dbe4e7"/>
+<circle cx="163" cy="361" r="23" fill="#e9f1f6"/>
+<text x="163" y="369" font-family="DejaVu Sans,sans-serif" font-size="24" font-weight="700" text-anchor="middle" fill="#356c87">7</text>
+<text x="204" y="370" font-family="DejaVu Sans,sans-serif" font-size="28" font-weight="700" text-anchor="start" fill="#242e36">Recovery after host loss</text>
+<text x="204" y="407" font-family="DejaVu Sans,sans-serif" font-size="19" font-weight="400" text-anchor="start" fill="#58646e">Preserve the group first. Continue only through guarded recovery.</text>
+<rect x="150" y="428" width="900" height="50" rx="9" fill="#edf5ef" stroke="none"/>
+<text x="172" y="460" font-family="DejaVu Sans,sans-serif" font-size="22" font-weight="700" text-anchor="start" fill="#356b59">#104601 · History + unfinished-work evidence</text>
+<text x="986" y="460" font-family="DejaVu Sans,sans-serif" font-size="16" font-weight="400" text-anchor="middle" fill="#356b59">Under review</text>
+<rect x="150" y="489" width="900" height="50" rx="9" fill="#edf3f8" stroke="none"/>
+<text x="172" y="521" font-family="DejaVu Sans,sans-serif" font-size="22" font-weight="700" text-anchor="start" fill="#346c8b">#105079 · Guarded recovery + emergency Stop</text>
+<text x="1003" y="521" font-family="DejaVu Sans,sans-serif" font-size="17" font-weight="700" text-anchor="middle" fill="#346c8b">Draft</text>
+<text x="204" y="566" font-family="DejaVu Sans,sans-serif" font-size="19" font-weight="400" text-anchor="start" fill="#58646e">Recovery activation and Stop review gates remain open.</text>
+<rect x="60" y="643" width="520" height="190" rx="16" fill="#e8edf0" stroke="none"/>
+<rect x="60" y="638" width="520" height="190" rx="16" fill="#ffffff" stroke="#dbe4e7"/>
+<circle cx="96" cy="680" r="23" fill="#f1ecf6"/>
+<text x="96" y="688" font-family="DejaVu Sans,sans-serif" font-size="24" font-weight="700" text-anchor="middle" fill="#75638e">5</text>
+<text x="134" y="689" font-family="DejaVu Sans,sans-serif" font-size="22" font-weight="700" text-anchor="start" fill="#242e36">Files and Bot-to-Bot handoff</text>
+<text x="90" y="731" font-family="DejaVu Sans,sans-serif" font-size="20" font-weight="400" text-anchor="start" fill="#58646e">Share, find, and retrieve files.</text>
+<text x="90" y="770" font-family="DejaVu Sans,sans-serif" font-size="18" font-weight="400" text-anchor="start" fill="#356b59">Gateway #98072 · Handoff #99159</text>
+<text x="90" y="800" font-family="DejaVu Sans,sans-serif" font-size="17" font-weight="400" text-anchor="start" fill="#356b59">Desktop #104199 · Classic #104198</text>
+<rect x="620" y="643" width="520" height="190" rx="16" fill="#e8edf0" stroke="none"/>
+<rect x="620" y="638" width="520" height="190" rx="16" fill="#ffffff" stroke="#dbe4e7"/>
+<circle cx="656" cy="680" r="23" fill="#e9f1f6"/>
+<text x="656" y="688" font-family="DejaVu Sans,sans-serif" font-size="24" font-weight="700" text-anchor="middle" fill="#356c87">6</text>
+<text x="694" y="689" font-family="DejaVu Sans,sans-serif" font-size="22" font-weight="700" text-anchor="start" fill="#242e36">Control from messaging</text>
+<text x="650" y="731" font-family="DejaVu Sans,sans-serif" font-size="20" font-weight="400" text-anchor="start" fill="#58646e">Send, approve, Stop, or get files.</text>
+<text x="650" y="770" font-family="DejaVu Sans,sans-serif" font-size="18" font-weight="400" text-anchor="start" fill="#356b59">#98073 · Messaging command core</text>
+<text x="650" y="800" font-family="DejaVu Sans,sans-serif" font-size="17" font-weight="400" text-anchor="start" fill="#356b59">Native UI and Files consumer in #98307</text>
+<rect x="120" y="889" width="960" height="154" rx="16" fill="#e8edf0" stroke="none"/>
+<rect x="120" y="884" width="960" height="154" rx="16" fill="#ffffff" stroke="#dbe4e7"/>
+<circle cx="163" cy="928" r="23" fill="#e9f1f6"/>
+<text x="163" y="936" font-family="DejaVu Sans,sans-serif" font-size="24" font-weight="700" text-anchor="middle" fill="#356c87">4</text>
+<text x="204" y="937" font-family="DejaVu Sans,sans-serif" font-size="26" font-weight="700" text-anchor="start" fill="#242e36">Automatic Desktop continuity</text>
+<text x="151" y="983" font-family="DejaVu Sans,sans-serif" font-size="19" font-weight="400" text-anchor="start" fill="#58646e">Create a group normally. Hermes shows when Desktop is still needed.</text>
+<text x="151" y="1016" font-family="DejaVu Sans,sans-serif" font-size="18" font-weight="400" text-anchor="start" fill="#356b59">#97846 · Desktop-only; maintainer review deferred</text>
+<rect x="120" y="1085" width="960" height="154" rx="16" fill="#e8edf0" stroke="none"/>
+<rect x="120" y="1080" width="960" height="154" rx="16" fill="#ffffff" stroke="#dbe4e7"/>
+<circle cx="163" cy="1124" r="23" fill="#eaf4ed"/>
+<text x="163" y="1132" font-family="DejaVu Sans,sans-serif" font-size="24" font-weight="700" text-anchor="middle" fill="#356b59">3</text>
+<text x="204" y="1133" font-family="DejaVu Sans,sans-serif" font-size="26" font-weight="700" text-anchor="start" fill="#242e36">Work across gateways</text>
+<text x="151" y="1179" font-family="DejaVu Sans,sans-serif" font-size="19" font-weight="400" text-anchor="start" fill="#58646e">Bots on different hosts exchange tasks and replies without a Desktop relay.</text>
+<text x="151" y="1212" font-family="DejaVu Sans,sans-serif" font-size="18" font-weight="400" text-anchor="start" fill="#356b59">#99244 · Route recovery: #100016</text>
+<rect x="946" y="1102" width="107" height="31" rx="15" fill="#eaf4ed" stroke="none"/>
+<text x="999" y="1123" font-family="DejaVu Sans,sans-serif" font-size="16" font-weight="700" text-anchor="middle" fill="#356b59">On main</text>
+<rect x="120" y="1281" width="960" height="154" rx="16" fill="#e8edf0" stroke="none"/>
+<rect x="120" y="1276" width="960" height="154" rx="16" fill="#ffffff" stroke="#dbe4e7"/>
+<circle cx="163" cy="1320" r="23" fill="#eaf4ed"/>
+<text x="163" y="1328" font-family="DejaVu Sans,sans-serif" font-size="24" font-weight="700" text-anchor="middle" fill="#356b59">2</text>
+<text x="204" y="1329" font-family="DejaVu Sans,sans-serif" font-size="26" font-weight="700" text-anchor="start" fill="#242e36">Work on one gateway</text>
+<text x="151" y="1375" font-family="DejaVu Sans,sans-serif" font-size="19" font-weight="400" text-anchor="start" fill="#58646e">Bots sharing a host keep working there after Desktop closes.</text>
+<text x="151" y="1408" font-family="DejaVu Sans,sans-serif" font-size="18" font-weight="400" text-anchor="start" fill="#356b59">#99099</text>
+<rect x="946" y="1298" width="107" height="31" rx="15" fill="#eaf4ed" stroke="none"/>
+<text x="999" y="1319" font-family="DejaVu Sans,sans-serif" font-size="16" font-weight="700" text-anchor="middle" fill="#356b59">On main</text>
+<rect x="120" y="1477" width="960" height="154" rx="16" fill="#e8edf0" stroke="none"/>
+<rect x="120" y="1472" width="960" height="154" rx="16" fill="#ffffff" stroke="#dbe4e7"/>
+<circle cx="163" cy="1516" r="23" fill="#eaf4ed"/>
+<text x="163" y="1524" font-family="DejaVu Sans,sans-serif" font-size="24" font-weight="700" text-anchor="middle" fill="#356b59">1</text>
+<text x="204" y="1525" font-family="DejaVu Sans,sans-serif" font-size="26" font-weight="700" text-anchor="start" fill="#242e36">Shared history and safe recovery</text>
+<text x="151" y="1571" font-family="DejaVu Sans,sans-serif" font-size="19" font-weight="400" text-anchor="start" fill="#58646e">One ordered conversation, replayed safely when clients return.</text>
+<text x="151" y="1604" font-family="DejaVu Sans,sans-serif" font-size="18" font-weight="400" text-anchor="start" fill="#356b59">#99007 + #99047 · Passive-replica safety: #99107</text>
+<rect x="946" y="1494" width="107" height="31" rx="15" fill="#eaf4ed" stroke="none"/>
+<text x="999" y="1515" font-family="DejaVu Sans,sans-serif" font-size="16" font-weight="700" text-anchor="middle" fill="#356b59">On main</text>
+<text x="60" y="1676" font-family="DejaVu Sans,sans-serif" font-size="20" font-weight="700" text-anchor="start" fill="#344a52">Today, the coordinating host must stay online. Automatic takeover is not enabled.</text>
+<text x="60" y="1711" font-family="DejaVu Sans,sans-serif" font-size="18" font-weight="400" text-anchor="start" fill="#58646e">#97681 links source PRs and exact evidence. Matching-revision native acceptance remains gated.</text>
+</svg>

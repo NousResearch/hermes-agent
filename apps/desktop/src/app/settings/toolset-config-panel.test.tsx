@@ -921,90 +921,94 @@ describe('ToolsetConfigPanel', () => {
     })
   })
 
-  describe('Codex STT OAuth activation', () => {
-    it('authenticates before persisting the STT provider selection', async () => {
-      const { dismissNotification, notify } = await import('@/store/notifications')
-      const writeText = vi.fn().mockResolvedValue(undefined)
-      Object.defineProperty(navigator, 'clipboard', {
-        configurable: true,
-        value: { writeText }
-      })
-
-      getToolsetConfig.mockResolvedValue(
-        config({
-          name: 'stt',
-          active_provider: null,
-          providers: [
-            {
-              name: 'OpenAI Codex OAuth',
-              badge: 'subscription',
-              tag: 'ChatGPT/Codex dictation',
-              env_vars: [],
-              post_setup: null,
-              auth_provider: 'openai-codex',
-              requires_nous_auth: false,
-              is_active: false,
-              status: 'needs_auth'
-            }
-          ]
+  describe('Codex OAuth activation', () => {
+    it.each(['stt', 'tts'] as const)(
+      'authenticates before persisting the %s provider selection',
+      async toolset => {
+        const { dismissNotification, notify } = await import('@/store/notifications')
+        const writeText = vi.fn().mockResolvedValue(undefined)
+        Object.defineProperty(navigator, 'clipboard', {
+          configurable: true,
+          value: { writeText }
         })
-      )
-      startOAuthLogin.mockResolvedValue({
-        flow: 'device_code',
-        session_id: 'codex-session',
-        user_code: 'CODEX-1234',
-        verification_url: 'https://auth.openai.com/device',
-        poll_interval: 5,
-        expires_in: 600
-      })
-      pollOAuthSession.mockResolvedValue({
-        session_id: 'codex-session',
-        status: 'approved'
-      })
-      selectToolsetProvider.mockResolvedValue({
-        ok: true,
-        name: 'stt',
-        provider: 'OpenAI Codex OAuth'
-      })
-      const openSpy = vi.spyOn(window, 'open').mockReturnValue(null)
 
-      try {
-        const { ToolsetConfigPanel } = await import('./toolset-config-panel')
-        render(<ToolsetConfigPanel onConfiguredChange={vi.fn()} toolset="stt" />)
-
-        await screen.findByRole('button', { name: /OpenAI Codex OAuth/ })
-        fireEvent.click(await screen.findByRole('button', { name: /Use this backend/ }))
-
-        await waitFor(() => expect(startOAuthLogin).toHaveBeenCalledWith('openai-codex', null, false))
-        await waitFor(() =>
-          expect(notify).toHaveBeenCalledWith(
-            expect.objectContaining({
-              title: 'OpenAI Codex authorization code',
-              message: 'CODEX-1234',
-              action: expect.objectContaining({ label: 'Copy code' })
-            })
-          )
+        getToolsetConfig.mockResolvedValue(
+          config({
+            name: toolset,
+            active_provider: null,
+            providers: [
+              {
+                name: 'OpenAI Codex OAuth',
+                badge: 'subscription',
+                tag: toolset === 'stt' ? 'ChatGPT/Codex dictation' : 'ChatGPT read-aloud',
+                env_vars: [],
+                post_setup: null,
+                auth_provider: 'openai-codex',
+                requires_nous_auth: false,
+                is_active: false,
+                status: 'needs_auth'
+              }
+            ]
+          })
         )
-
-        const codeNotice = vi
-          .mocked(notify)
-          .mock.calls.map(call => call[0])
-          .find(call => call.title === 'OpenAI Codex authorization code')
-
-        codeNotice?.action?.onClick()
-        expect(writeText).toHaveBeenCalledWith('CODEX-1234')
-        expect(selectToolsetProvider).not.toHaveBeenCalled()
-        await waitFor(() => expect(pollOAuthSession).toHaveBeenCalledWith('openai-codex', 'codex-session', null), {
-          timeout: 8000
+        startOAuthLogin.mockResolvedValue({
+          flow: 'device_code',
+          session_id: 'codex-session',
+          user_code: 'CODEX-1234',
+          verification_url: 'https://auth.openai.com/device',
+          poll_interval: 5,
+          expires_in: 600
         })
-        await waitFor(() => expect(selectToolsetProvider).toHaveBeenCalledWith('stt', 'OpenAI Codex OAuth'), {
-          timeout: 8000
+        pollOAuthSession.mockResolvedValue({
+          session_id: 'codex-session',
+          status: 'approved'
         })
-        expect(dismissNotification).toHaveBeenCalledWith(expect.stringMatching(/^notification-/))
-      } finally {
-        openSpy.mockRestore()
-      }
-    }, 20000)
+        selectToolsetProvider.mockResolvedValue({
+          ok: true,
+          name: toolset,
+          provider: 'OpenAI Codex OAuth'
+        })
+        const openSpy = vi.spyOn(window, 'open').mockReturnValue(null)
+
+        try {
+          const { ToolsetConfigPanel } = await import('./toolset-config-panel')
+          render(<ToolsetConfigPanel onConfiguredChange={vi.fn()} toolset={toolset} />)
+
+          await screen.findByRole('button', { name: /OpenAI Codex OAuth/ })
+          fireEvent.click(await screen.findByRole('button', { name: /Use this backend/ }))
+
+          await waitFor(() => expect(startOAuthLogin).toHaveBeenCalledWith('openai-codex', null, false))
+          await waitFor(() =>
+            expect(notify).toHaveBeenCalledWith(
+              expect.objectContaining({
+                title: 'OpenAI Codex authorization code',
+                message: 'CODEX-1234',
+                action: expect.objectContaining({ label: 'Copy code' })
+              })
+            )
+          )
+
+          const codeNotice = vi
+            .mocked(notify)
+            .mock.calls.map(call => call[0])
+            .find(call => call.title === 'OpenAI Codex authorization code')
+
+          codeNotice?.action?.onClick()
+          expect(writeText).toHaveBeenCalledWith('CODEX-1234')
+          expect(selectToolsetProvider).not.toHaveBeenCalled()
+          await waitFor(() => expect(pollOAuthSession).toHaveBeenCalledWith('openai-codex', 'codex-session', null), {
+            timeout: 8000
+          })
+          await waitFor(() => expect(selectToolsetProvider).toHaveBeenCalledWith(toolset, 'OpenAI Codex OAuth'), {
+            timeout: 8000
+          })
+          expect(dismissNotification).toHaveBeenCalledWith(expect.stringMatching(/^notification-/))
+        } finally {
+          openSpy.mockRestore()
+        }
+      },
+      20000
+    )
 
     it('cancels an unfinished OAuth session when the panel unmounts', async () => {
       const { dismissNotification } = await import('@/store/notifications')

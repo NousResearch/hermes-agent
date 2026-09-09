@@ -128,3 +128,34 @@ def test_issue_to_pr_not_a_router():
     steps = re.findall(r"^### \d+\..*?(?=^### \d+\.|^## |\Z)", body, re.MULTILINE | re.DOTALL)
     routing = [s for s in steps if re.match(r"^### \d+\.[^\n]*\n+Load `", s)]
     assert len(routing) == 0, "steps must not open by delegating to another skill"
+
+
+def test_no_stale_split_skill_helper_paths():
+    """The consolidated skill must not reference the removed split layout.
+
+    The pre-consolidation layout (${HERMES_HOME}/skills/github/github-auth/...)
+    no longer exists after the six github-* skills merged; any reference to it
+    resolves to nothing on a clean profile.
+    """
+    for p in sorted(SKILL_DIR.rglob("*")):
+        if p.is_file() and p.suffix in (".md", ".sh"):
+            content = p.read_text(encoding="utf-8")
+            for marker in ("skills/github/", "github-auth/"):
+                assert marker not in content, (
+                    f"stale split-skill path {marker!r} survived in {p}"
+                )
+
+
+def test_referenced_helper_scripts_exist():
+    """Every scripts/<name> helper a bundled file names must ship beside it."""
+    scanned = [
+        SKILL_PATH,
+        *sorted((SKILL_DIR / "references").glob("*.md")),
+        SKILL_DIR / "scripts" / "gh-env.sh",
+    ]
+    for p in scanned:
+        content = p.read_text(encoding="utf-8")
+        for name in sorted(set(re.findall(r"scripts/([A-Za-z0-9_.-]+)", content))):
+            assert (SKILL_DIR / "scripts" / name).is_file(), (
+                f"{p.name} references helper scripts/{name} that does not exist"
+            )

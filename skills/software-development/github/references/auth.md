@@ -47,33 +47,55 @@ Tell the user to go to: **https://github.com/settings/tokens**
 - Set expiration (90 days is a good default)
 - Copy the token — it won't be shown again
 
-**Step 2: Configure git to store the token**
+**Step 2: Configure git to hold the token**
+
+Prefer the OS keychain-backed helper — the token lands in the system
+credential store instead of a plaintext file:
 
 ```bash
-# Set up the credential helper to cache credentials
-# "store" saves to ~/.git-credentials in plaintext (simple, persistent)
-git config --global credential.helper store
+# macOS
+git config --global credential.helper osxkeychain
+# Linux (GNOME; requires libsecret)
+git config --global credential.helper libsecret
+# Windows (ships with Git for Windows)
+git config --global credential.helper manager
+```
 
-# Now do a test operation that triggers auth — git will prompt for credentials
-# Username: <their-github-username>
-# Password: <paste the personal access token, NOT their GitHub password>
+If no keychain is available, the in-memory cache keeps the token out of
+disk-backed state for the session:
+
+```bash
+# Cache in memory for 8 hours (28800 seconds); nothing is written to disk
+git config --global credential.helper 'cache --timeout=28800'
+```
+
+**Last resort — plaintext store:** `store` saves the token unencrypted to
+`~/.git-credentials`, readable by anything with the user's file access. Use
+it only when the user explicitly accepts that trade-off (e.g. a throwaway
+container):
+
+```bash
+git config --global credential.helper store
+```
+
+Whichever helper is set, prime it with one test operation — git prompts for
+credentials once (Username: their GitHub username, Password: the personal
+access token, NOT their GitHub password):
+
+```bash
 git ls-remote https://github.com/<their-username>/<any-repo>.git
 ```
 
 After entering credentials once, they're saved and reused for all future operations.
 
-**Alternative: cache helper (credentials expire from memory)**
+**Avoid tokens in remote URLs.** `https://<username>:<token>@github.com/...`
+copies the token into `.git/config`, `git remote -v` output, shell history,
+and every tool that reads the remote URL. Use the credential helper or a
+`GITHUB_TOKEN` env var instead. If a token-bearing URL is already configured,
+scrub it:
 
 ```bash
-# Cache in memory for 8 hours (28800 seconds) instead of saving to disk
-git config --global credential.helper 'cache --timeout=28800'
-```
-
-**Alternative: set the token directly in the remote URL (per-repo)**
-
-```bash
-# Embed token in the remote URL (avoids credential prompts entirely)
-git remote set-url origin https://<username>:<token>@github.com/<owner>/<repo>.git
+git remote set-url origin https://github.com/<owner>/<repo>.git
 ```
 
 **Step 3: Configure git identity**
@@ -108,8 +130,10 @@ ls -la ~/.ssh/id_*.pub 2>/dev/null || echo "No SSH keys found"
 **Step 2: Generate a key if needed**
 
 ```bash
-# Generate an ed25519 key (modern, secure, fast)
-ssh-keygen -t ed25519 -C "their-email@example.com" -f ~/.ssh/id_ed25519 -N ""
+# Generate an ed25519 key (modern, secure, fast). Let ssh-keygen prompt for
+# a passphrase interactively — a passphrase-less key is single-factor access
+# to the account. Only pass -N "" if the user explicitly opts in knowing that.
+ssh-keygen -t ed25519 -C "their-email@example.com" -f ~/.ssh/id_ed25519
 
 # Display the public key for them to add to GitHub
 cat ~/.ssh/id_ed25519.pub
@@ -259,11 +283,11 @@ curl -s -H "Authorization: token $GITHUB_TOKEN" \
 
 ### Extracting the Token from Git Credentials
 
-If git credentials are already configured (via credential.helper store), the token can be extracted:
+If git credentials are already configured (via a configured credential helper), the token can be extracted:
 
 ```bash
 # Read from git credential store
-uv run python "${HERMES_HOME:-$HOME/.hermes}/skills/github/github-auth/scripts/git-credential-token.py"
+uv run python "${HERMES_HOME:-$HOME/.hermes}/skills/software-development/github/scripts/git-credential-token.py"
 ```
 
 ### Helper: Detect Auth Method
@@ -280,7 +304,7 @@ elif _hermes_env="${HERMES_HOME:-$HOME/.hermes}/.env"; [ -f "$_hermes_env" ] && 
   export GITHUB_TOKEN=$(grep "^GITHUB_TOKEN=" "$_hermes_env" | head -1 | cut -d= -f2 | tr -d '\n\r')
   echo "AUTH_METHOD=curl"
 elif grep -q "github.com" ~/.git-credentials 2>/dev/null; then
-  export GITHUB_TOKEN=$(uv run python "${HERMES_HOME:-$HOME/.hermes}/skills/github/github-auth/scripts/git-credential-token.py")
+  export GITHUB_TOKEN=$(uv run python "${HERMES_HOME:-$HOME/.hermes}/skills/software-development/github/scripts/git-credential-token.py")
   echo "AUTH_METHOD=curl"
 else
   echo "AUTH_METHOD=none"
@@ -298,6 +322,6 @@ fi
 | `remote: Permission to X denied` | Token may lack `repo` scope — regenerate with correct scopes |
 | `fatal: Authentication failed` | Cached credentials may be stale — run `git credential reject` then re-authenticate |
 | `ssh: connect to host github.com port 22: Connection refused` | Try SSH over HTTPS port: add `Host github.com` with `Port 443` and `Hostname ssh.github.com` to `~/.ssh/config` |
-| Credentials not persisting | Check `git config --global credential.helper` — must be `store` or `cache` |
+| Credentials not persisting | Check `git config --global credential.helper` — should be a keychain helper (`osxkeychain`/`libsecret`/`manager`) or `cache` |
 | Multiple GitHub accounts | Use SSH with different keys per host alias in `~/.ssh/config`, or per-repo credential URLs |
 | `gh: command not found` + no sudo | Use git-only Method 1 above — no installation needed |

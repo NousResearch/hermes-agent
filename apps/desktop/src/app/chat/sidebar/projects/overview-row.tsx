@@ -1,6 +1,7 @@
 import type * as React from 'react'
 import { useRef } from 'react'
 
+import { type NewSessionSplitHandler, startNewSessionDrag } from '@/app/chat/new-session-drag'
 import { Codicon } from '@/components/ui/codicon'
 import type { SessionInfo } from '@/hermes'
 import { useI18n } from '@/i18n'
@@ -64,6 +65,9 @@ interface ProjectOverviewRowProps {
   project: SidebarProjectTree
   onEnter?: (id: string) => void
   onNewSession?: (path: null | string) => void
+  /** Drag the project's "+" onto a chat zone: create a new session pinned to
+   *  this project's cwd, placed exactly where it's dropped. */
+  onNewSessionSplit?: NewSessionSplitHandler
   renderRows?: (sessions: SessionInfo[]) => React.ReactNode
   activeProjectId?: null | string
   previewSessions?: SessionInfo[]
@@ -78,6 +82,7 @@ export function ProjectOverviewRow({
   project,
   onEnter,
   onNewSession,
+  onNewSessionSplit,
   renderRows,
   activeProjectId,
   previewSessions,
@@ -120,11 +125,36 @@ export function ProjectOverviewRow({
               for. */}
           {!project.isNoProject && <ProjectMenu anchorRef={rowRef} isActive={isActive} project={project} />}
           {onNewSession && (
-            <WorkspaceAddButton label={s.newSessionIn(project.label)} onClick={() => onNewSession(project.path)} />
+            <WorkspaceAddButton
+              label={s.newSessionIn(project.label)}
+              onClick={() => onNewSession(project.path)}
+              onPointerDown={
+                onNewSessionSplit
+                  ? event => {
+                      // Drag the "+" onto a chat zone: create the session
+                      // pinned to this project's cwd, exactly where it's
+                      // dropped. A sub-threshold release falls through to the
+                      // onClick above (ordinary new session in main).
+                      startNewSessionDrag(
+                        placement => {
+                          onNewSessionSplit(placement.dir, {
+                            anchor: placement.anchor,
+                            before: placement.before,
+                            cwd: project.path
+                          })
+                        },
+                        event,
+                        { cwd: project.path, label: s.newSessionIn(project.label) }
+                      )
+                    }
+                  : undefined
+              }
+            />
           )}
         </>
       }
       className={cn(dragging && 'cursor-grabbing bg-(--ui-sidebar-surface-background)')}
+      data-glass-opaque={dragging ? '' : undefined}
       label={
         <SidebarRowLink
           aria-label={s.projects.enter(project.label)}
@@ -158,7 +188,11 @@ export function ProjectOverviewRow({
   )
 
   return (
-    <div className={cn(dragging && 'relative z-10')} ref={ref} style={style}>
+    // Tag each project sibling with its id so a custom skin can target one
+    // project in the overview — the parallel to the entered-project wrapper's
+    // `data-sessions-project` (index.tsx), which only fires once you've drilled
+    // in. Here it's present on every row of the list.
+    <div className={cn(dragging && 'relative z-10')} data-sessions-project={project.id} ref={ref} style={style}>
       {/* Home has no per-project actions, so it gets no right-click menu. */}
       {project.isNoProject ? (
         shell

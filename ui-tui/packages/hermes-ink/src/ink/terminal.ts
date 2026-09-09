@@ -67,16 +67,26 @@ export function isProgressReportingAvailable(): boolean {
  * Checks if the terminal supports DEC mode 2026 (synchronized output).
  * When supported, BSU/ESU sequences prevent visible flicker during redraws.
  */
-export function isSynchronizedOutputSupported(): boolean {
+export function isSynchronizedOutputSupported(env: NodeJS.ProcessEnv = process.env): boolean {
   // tmux parses and proxies every byte but doesn't implement DEC 2026.
   // BSU/ESU pass through to the outer terminal but tmux has already
   // broken atomicity by chunking. Skip to save 16 bytes/frame + parser work.
-  if (process.env.TMUX) {
+  if (env.TMUX) {
     return false
   }
 
-  const termProgram = process.env.TERM_PROGRAM
-  const term = process.env.TERM
+  // Zellij is the same class of hazard as tmux: it sits between us and the
+  // outer terminal, parsing/proxying (and chunking) the stream, so we can't
+  // trust the outer terminal's DEC 2026 support advertised via TERM_PROGRAM
+  // (e.g. WezTerm). Trusting it wraps frames in BSU/ESU that Zellij has
+  // already broken atomicity on, repeating old frames into scrollback.
+  // Zellij sets ZELLIJ to the session index (e.g. "0"), so guard on presence.
+  if (env.ZELLIJ) {
+    return false
+  }
+
+  const termProgram = env.TERM_PROGRAM
+  const term = env.TERM
 
   // Modern terminals with known DEC 2026 support
   if (
@@ -92,7 +102,7 @@ export function isSynchronizedOutputSupported(): boolean {
   }
 
   // kitty sets TERM=xterm-kitty or KITTY_WINDOW_ID
-  if (term?.includes('kitty') || process.env.KITTY_WINDOW_ID) {
+  if (term?.includes('kitty') || env.KITTY_WINDOW_ID) {
     return true
   }
 
@@ -112,17 +122,17 @@ export function isSynchronizedOutputSupported(): boolean {
   }
 
   // Zed uses the alacritty_terminal crate which supports DEC 2026
-  if (process.env.ZED_TERM) {
+  if (env.ZED_TERM) {
     return true
   }
 
   // Windows Terminal
-  if (process.env.WT_SESSION) {
+  if (env.WT_SESSION) {
     return true
   }
 
   // VTE-based terminals (GNOME Terminal, Tilix, etc.) since VTE 0.68
-  const vteVersion = process.env.VTE_VERSION
+  const vteVersion = env.VTE_VERSION
 
   if (vteVersion) {
     const version = parseInt(vteVersion, 10)
@@ -314,6 +324,16 @@ const EXTENDED_KEYS_TERMINALS = ['iTerm.app', 'kitty', 'WezTerm', 'ghostty', 'tm
  *  (Kitty keyboard protocol + xterm modifyOtherKeys). */
 export function supportsExtendedKeys(): boolean {
   return EXTENDED_KEYS_TERMINALS.includes(env.terminal ?? '')
+}
+
+/** True when the Kitty keyboard protocol push (CSI >1u) must be skipped for
+ *  this terminal even though extended keys are supported. Ghostty's Kitty
+ *  disambiguate-mode implementation strips the Alt modifier from Backspace —
+ *  Option+Backspace arrives as bare \x7f instead of CSI-u \x1b[127;3u —
+ *  breaking backward-kill-word. Ghostty implements modifyOtherKeys correctly,
+ *  so it gets only that push (mirrors cli.py's Ghostty exception). */
+export function skipKittyKeyboardProtocol(): boolean {
+  return env.terminal === 'ghostty'
 }
 
 /** True if the terminal scrolls the viewport when it receives cursor-up

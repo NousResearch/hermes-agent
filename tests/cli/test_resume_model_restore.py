@@ -147,9 +147,10 @@ def test_persist_model_switch_writes_model_and_both_route_shapes():
     # ...and top-level for the TUI gateway's _stored_session_runtime_overrides.
     assert patch["provider"] == "custom:opencode-zen"
     assert patch["base_url"] == "https://oz/v1"
-    assert "api_mode" not in patch["gateway_runtime"]  # empty values dropped
-    # Absent top-level values are explicit None so the merge DELETES stale
-    # keys from a previous switch (merge only deletes on None).
+    # Both shapes use or-None so stale keys are deleted (not merely omitted)
+    # in BOTH gateway_runtime and top-level — the asymmetry that caused the
+    # original stale-key bug.
+    assert patch["gateway_runtime"]["api_mode"] is None
     assert patch["api_mode"] is None
 
 
@@ -183,8 +184,16 @@ def test_persist_model_switch_clears_stale_route_keys(tmp_path, monkeypatch):
 
     meta = db.get_session("stale1")
     config = json.loads(meta["model_config"])
+    # Top-level keys: stale values deleted.
     assert config["provider"] == "openrouter"
     assert "api_mode" not in config, config  # stale anthropic_messages deleted
+    # Nested gateway_runtime: stale values replaced with None (the merge
+    # replaces the entire gateway_runtime dict, not deep-merging its keys).
+    # The reader's `or None` / `if v` filtering treats None the same as
+    # absent, so stale values are effectively erased.
+    gw = config.get("gateway_runtime", {})
+    assert gw.get("provider") == "openrouter"
+    assert gw.get("api_mode") is None  # stale anthropic_messages erased
     runtime = SessionDB.session_gateway_runtime(meta)
     assert runtime["provider"] == "openrouter"
     assert "api_mode" not in runtime
@@ -235,7 +244,7 @@ def test_persist_model_switch_heals_bare_custom(monkeypatch):
     written.clear()
     stub._persist_model_switch_to_session(_BareResult())
     assert written["patch"]["provider"] is None
-    assert "provider" not in written["patch"]["gateway_runtime"]
+    assert written["patch"]["gateway_runtime"]["provider"] is None
 
 
 def test_restore_session_model_heals_bare_custom_stored_rows(monkeypatch):
@@ -269,3 +278,90 @@ def test_round_trip_persist_then_restore(tmp_path, monkeypatch):
     assert restored.model == "deepseek-v4-flash-free"
     assert restored.provider == "custom:opencode-zen"
     assert restored.base_url == "https://oz/v1"
+
+
+# ── update_session_model provider persistence (#79536) ──────────────
+
+
+def test_update_session_model_persists_provider(tmp_path, monkeypatch):
+    """update_session_model writes $.model + $.provider into model_config."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.create_session(session_id="s1", source="cli", model="m0")
+    db.update_session_model("s1", "claude-x", provider="custom:feather")
+    meta = db.get_session("s1")
+    assert meta["model"] == "claude-x"
+    config = json.loads(meta["model_config"])
+    assert config["model"] == "claude-x"
+    assert config["provider"] == "custom:feather"
+
+
+def test_update_session_model_without_provider_preserves_existing(tmp_path, monkeypatch):
+    """Without provider, existing $.provider is left untouched."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.create_session(session_id="s2", source="cli", model="m0")
+    db.update_session_model("s2", "claude-x", provider="custom:feather")
+    db.update_session_model("s2", "gpt-5.4")  # no provider
+    meta = db.get_session("s2")
+    config = json.loads(meta["model_config"])
+    assert config["model"] == "gpt-5.4"
+    assert config["provider"] == "custom:feather"  # preserved
+
+
+def test_update_session_model_null_model_config_with_provider(tmp_path, monkeypatch):
+    """Provider persistence works when model_config starts as NULL."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.create_session(session_id="s3", source="cli", model="m0")
+    # model_config is NULL at creation — update_session_model must create it
+    db.update_session_model("s3", "claude-x", provider="minimax")
+    meta = db.get_session("s3")
+    config = json.loads(meta["model_config"])
+    assert config["model"] == "claude-x"
+    assert config["provider"] == "minimax"
+
+
+# ── session_gateway_runtime billing_provider fallback (#85721) ─────
+
+
+def test_session_gateway_runtime_falls_back_to_billing_provider():
+    """Sessions that never ran /model have only billing_provider."""
+    meta = {
+        "model": "glm-4.7",
+        "model_config": None,
+        "billing_provider": "minimax",
+    }
+    runtime = SessionDB.session_gateway_runtime(meta)
+    assert runtime == {"provider": "minimax"}
+
+
+def test_session_gateway_runtime_billing_provider_bare_bucket_ignored():
+    """Bare billing buckets (auto/custom) are not routable — skip them."""
+    for bare in ("auto", "custom"):
+        meta = {
+            "model": "m",
+            "model_config": None,
+            "billing_provider": bare,
+        }
+        assert SessionDB.session_gateway_runtime(meta) == {}
+
+
+def test_session_gateway_runtime_explicit_provider_wins_over_billing():
+    """Explicit model_config provider takes precedence over billing_provider."""
+    meta = _row(model_config={"provider": "nous"})
+    meta["billing_provider"] = "minimax"
+    runtime = SessionDB.session_gateway_runtime(meta)
+    assert runtime == {"provider": "nous"}
+
+
+def test_restore_session_model_restores_billing_provider_fallback():
+    """End-to-end: _restore_session_model uses billing_provider fallback."""
+    stub = _make_stub()
+    stub._restore_session_model({
+        "model": "glm-4.7",
+        "model_config": None,
+        "billing_provider": "minimax",
+    })
+    assert stub.model == "glm-4.7"
+    assert stub.provider == "minimax"

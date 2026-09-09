@@ -17,7 +17,12 @@ function asRecord(payload: unknown): Record<string, unknown> {
  * Without this, ``explicitSid || activeSessionId`` reattributes live deltas to
  * the newly focused chat.
  */
-const UNSCOPED_STREAM_EVENT_TYPES = new Set([
+/** Unscoped stream events that must stay pinned to the session that received
+ * ``message.start`` after the user switches chats mid-turn (#47709 / #48281).
+ * Without this, ``explicitSid || activeSessionId`` reattributes live deltas to
+ * the newly focused chat. Exported so the event handler can tell which events
+ * are pin-eligible when deciding whether an unpinned straggler is legitimate. */
+export const UNSCOPED_STREAM_EVENT_TYPES = new Set([
   'approval.request',
   'browser.progress',
   'clarify.request',
@@ -67,7 +72,42 @@ export interface GatewayEventSessionRouteInput {
 export interface GatewayEventSessionRoute {
   drop: boolean
   nextUnscopedStreamSessionId: null | string
+  /** True when the event was attributed via the pinned stream session rather
+   *  than the active-session fallback. The caller uses this to drop late
+   *  stragglers: an unpinned stream event landing on a session that has no
+   *  live turn belongs to a turn that already ended elsewhere. */
+  pinned: boolean
   sessionId: null | string
+}
+
+/** Which session (if any) to re-pull `approval.pending` for after `eventType`.
+ *
+ *  `gateway.ready` and `session.info` are the two rehydration points. An
+ *  UNSCOPED `session.info` (the approvals-loop / broadcast fan-out, no
+ *  `session_id` on the frame) reaches here attributed to the active session by
+ *  the routing fallback; when `isGone(activeSessionId)` — the gateway already
+ *  answered 4001 for that runtime — replaying would only re-send the dead id
+ *  on every fan-out tick (#100639), so return null. A frame that names the
+ *  session explicitly is the runtime speaking for itself and is never gone. */
+export function approvalReplaySessionId(
+  eventType: string | undefined,
+  activeSessionId: null | string,
+  routedSessionId: null | string,
+  options?: { explicit?: boolean; isGone?: (sessionId: string) => boolean }
+): null | string {
+  let target: null | string = null
+
+  if (eventType === 'gateway.ready') {
+    target = activeSessionId
+  } else if (eventType === 'session.info') {
+    target = routedSessionId
+  }
+
+  if (target && !options?.explicit && options?.isGone?.(target)) {
+    return null
+  }
+
+  return target
 }
 
 /**
@@ -92,6 +132,7 @@ export function resolveGatewayEventSessionId({
     return {
       drop: false,
       nextUnscopedStreamSessionId,
+      pinned: true,
       sessionId: explicitSessionId
     }
   }
@@ -100,6 +141,7 @@ export function resolveGatewayEventSessionId({
     return {
       drop: true,
       nextUnscopedStreamSessionId: unscopedStreamSessionId,
+      pinned: false,
       sessionId: null
     }
   }
@@ -124,6 +166,7 @@ export function resolveGatewayEventSessionId({
   return {
     drop: false,
     nextUnscopedStreamSessionId,
+    pinned: streamEvent && eventType !== 'message.start' && Boolean(unscopedStreamSessionId),
     sessionId
   }
 }

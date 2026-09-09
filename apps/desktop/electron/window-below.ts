@@ -12,6 +12,12 @@
 // permission; we pass titles through only when that permission is ALREADY
 // granted and never trigger the prompt for it.
 
+import fs from 'node:fs'
+import path from 'node:path'
+import { pathToFileURL } from 'node:url'
+
+import { app } from 'electron'
+
 import { readHyprlandWindows } from './hyprland'
 
 export interface EnumeratedWindow {
@@ -51,10 +57,18 @@ export interface WindowBelowUnavailable {
  * A session with both `WAYLAND_DISPLAY` and `DISPLAY` is Wayland running
  * XWayland, where `xprop` can still answer — so it is treated as X11 and gets
  * the tooling advice rather than being told to change session type.
+ *
+ * macOS and Windows have no environmental fork like that, so their note is
+ * whatever the enumerator actually said. That `detail` is the whole point: a
+ * bare "could not enumerate windows on this system" is what a real report came
+ * back with (macOS 26, packaged app), and neither the tool result nor the
+ * desktop log said whether the module failed to load, the helper failed to
+ * spawn, or the OS answered with nothing — three failures with three different
+ * fixes, all collapsed into one sentence.
  */
-export function enumerationFailureNote(platform: string, env: NodeJS.ProcessEnv): string {
+export function enumerationFailureNote(platform: string, env: NodeJS.ProcessEnv, detail?: string): string {
   if (platform !== 'linux') {
-    return 'Could not enumerate windows on this system.'
+    return detail ? `Could not enumerate windows: ${detail}` : 'Could not enumerate windows on this system.'
   }
 
   // Hyprland is asked over its own IPC, so reaching here means the socket
@@ -122,39 +136,97 @@ type GetWindowsModule = {
   >
 }
 
-let getWindowsModule: Promise<GetWindowsModule> | null = null
+/** Enumeration couldn't run at all, and why. Distinct from an empty list,
+ *  which is a real answer meaning "nothing else is on screen". */
+export interface EnumerationFailure {
+  reason: string
+}
 
-const loadGetWindows = (): Promise<GetWindowsModule> => {
-  getWindowsModule ??= import('get-windows')
+export const enumerationFailed = <T>(result: EnumerationFailure | T): result is EnumerationFailure =>
+  typeof result === 'object' && result !== null && 'reason' in result
+
+const describeError = (error: unknown): string =>
+  error instanceof Error ? error.message : String(error ?? 'unknown error')
+
+let getWindowsModule: Promise<GetWindowsModule | EnumerationFailure> | null = null
+
+const loadGetWindows = (): Promise<GetWindowsModule | EnumerationFailure> => {
+  // get-windows is an optionalDependency: `npm ci` can skip it when its native
+  // install fails, including Linux and Windows ARM64 where 9.3.0 has no
+  // prebuilt. A missing module is therefore a normal state on those targets,
+  // so the lazy import resolves to null instead of rejecting; enumeration then
+  // degrades to the failure note instead of an uncaught error.
+  //
+  // The STAGED copy is tried first, and it is not a dev-only nicety.
+  // `import('get-windows')` resolves out of node_modules, whose lib/windows.js
+  // locates its binding through `preGyp.find()` — by HOST platform. When the
+  // tree was installed on a different OS than Electron is running on (a
+  // WSL-hosted dev run driving a win32 Electron is the everyday case here),
+  // pre-gyp picks the host's slot, ignores the win32 binding sitting beside it,
+  // and upstream's fail-soft path hands back no-op stubs. Enumeration then
+  // reports "unavailable" on a machine that answers perfectly well, which is
+  // what silently disabled both read_window_below and the HUD's game overlay.
+  // scripts/stage-native-deps.mjs writes a staged lib/windows.js that requires
+  // the binding directly, so it is the more reliable of the two everywhere.
+  getWindowsModule ??= (async () => {
+    const staged = path.join(app.getAppPath(), 'dist', 'node_modules', 'get-windows', 'index.js')
+    let stagedError = 'not staged in this build'
+
+    if (fs.existsSync(staged)) {
+      try {
+        return (await import(pathToFileURL(staged).href)) as GetWindowsModule
+      } catch (error) {
+        stagedError = describeError(error)
+      }
+    }
+
+    try {
+      return (await import('get-windows')) as GetWindowsModule
+    } catch (error) {
+      return {
+        reason:
+          'the get-windows module could not be loaded ' +
+          `(staged copy: ${stagedError}; node_modules copy: ${describeError(error)})`
+      }
+    }
+  })()
 
   return getWindowsModule
 }
 
 /**
- * Enumerate windows and serialize the one underneath `selfBounds`.
+ * Every window `get-windows` can see, front-to-back, or why it could not look.
  *
  * `titlesAvailable` is the macOS Screen Recording grant (pass true on other
- * platforms, where titles are free). When enumeration itself is unavailable
- * (Wayland, missing xprop, addon load failure) this answers with the reason
- * rather than nothing, so the agent can tell the user what to fix instead of
- * reporting a blank failure.
+ * platforms, where titles are free). The three ways this can fail — the module
+ * not loading, the enumerator throwing, the enumerator answering with
+ * something that isn't a list — each say so, because they have three different
+ * fixes and the caller has no other way to tell them apart.
  */
-async function enumerateViaGetWindows(titlesAvailable: boolean): Promise<EnumeratedWindow[] | null> {
+async function enumerateViaGetWindows(titlesAvailable: boolean): Promise<EnumeratedWindow[] | EnumerationFailure> {
+  const getWindows = await loadGetWindows()
+
+  if (enumerationFailed(getWindows)) {
+    return getWindows
+  }
+
   let raw
 
   try {
-    const { openWindows } = await loadGetWindows()
-    raw = await openWindows(
+    raw = await getWindows.openWindows(
       process.platform === 'darwin'
         ? { accessibilityPermission: false, screenRecordingPermission: titlesAvailable }
         : undefined
     )
-  } catch {
-    return null
+  } catch (error) {
+    // On macOS this is the helper binary failing to spawn — a missing or
+    // non-executable `main`, or the OS refusing to run it — which is invisible
+    // from the outside and used to surface as the generic note.
+    return { reason: `the window enumerator failed: ${describeError(error)}` }
   }
 
   if (!Array.isArray(raw)) {
-    return null
+    return { reason: 'the window enumerator returned no window list' }
   }
 
   // get-windows documents openWindows() as front-to-back, and macOS/Windows
@@ -178,19 +250,32 @@ async function enumerateViaGetWindows(titlesAvailable: boolean): Promise<Enumera
   }))
 }
 
+/**
+ * Front-to-back window enumeration, or why the platform could not answer.
+ *
+ * Hyprland first, and only ever on Hyprland — its own IPC sees native Wayland
+ * windows, which the X11 enumerator cannot, and it answers null everywhere
+ * else so the established path stays the default. Shared by the
+ * read_window_below tool and the HUD's game-overlay watch, so the two can
+ * never disagree about what the screen looks like.
+ */
+export async function enumerateWindowsFrontToBack(
+  selfPid: number,
+  titlesAvailable: boolean
+): Promise<EnumeratedWindow[] | EnumerationFailure> {
+  return (await readHyprlandWindows(selfPid)) ?? (await enumerateViaGetWindows(titlesAvailable))
+}
+
 export async function readWindowBelow(
   selfPid: number,
   selfBounds: EnumeratedWindow['bounds'],
   titlesAvailable: boolean
 ): Promise<WindowBelowResult | WindowBelowUnavailable> {
-  // Hyprland first, and only ever on Hyprland — its own IPC sees native Wayland
-  // windows, which the X11 enumerator below cannot, and it answers null
-  // everywhere else so the established path stays the default.
-  const windows = (await readHyprlandWindows(selfPid)) ?? (await enumerateViaGetWindows(titlesAvailable))
+  const windows = await enumerateWindowsFrontToBack(selfPid, titlesAvailable)
 
-  if (!windows) {
+  if (enumerationFailed(windows)) {
     return {
-      error: enumerationFailureNote(process.platform, process.env),
+      error: enumerationFailureNote(process.platform, process.env, windows.reason),
       platform: process.platform
     }
   }

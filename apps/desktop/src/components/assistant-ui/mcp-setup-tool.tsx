@@ -4,6 +4,7 @@ import { type ToolCallMessagePartProps, useAuiState } from '@assistant-ui/react'
 import { useStore } from '@nanostores/react'
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
+import { capabilityScoped } from '@/api/client'
 import { useSessionView } from '@/app/chat/session-view'
 import { ToolFallback } from '@/components/assistant-ui/tool/fallback'
 import { WIDGET_SHELL_CLASS } from '@/components/chat/widget-shell'
@@ -12,11 +13,8 @@ import { Codicon } from '@/components/ui/codicon'
 import { Input } from '@/components/ui/input'
 import {
   addMcpServer,
-  authMcpServer,
-  cancelMcpOAuthFlow,
   getActionStatus,
   getMcpCatalog,
-  getMcpOAuthFlow,
   installMcpCatalogEntry,
   type McpCatalogEntry,
   removeMcpServer,
@@ -250,6 +248,7 @@ function McpSetupPending({ args }: ToolCallMessagePartProps) {
 
   const approve = useCallback(async () => {
     cancelRef.current = false
+    const oauthScope = capabilityScoped()
     setWorking(true)
 
     // Poll-boundary abort for the background-install loop; the OAuth flows
@@ -274,11 +273,8 @@ function McpSetupPending({ args }: ToolCallMessagePartProps) {
       if (action === 'authorize') {
         const flow = await completeMcpDesktopOAuth({
           serverName: server,
-          start: authMcpServer,
-          status: getMcpOAuthFlow,
-          cancelled: () => cancelRef.current,
-          cancel: cancelMcpOAuthFlow,
-          openExternal: url => window.hermesDesktop.openExternal(url)
+          profile: oauthScope,
+          cancelled: () => cancelRef.current
         })
 
         triggerHaptic('submit')
@@ -314,21 +310,18 @@ function McpSetupPending({ args }: ToolCallMessagePartProps) {
         // flow dies after the config write (cancel, closed OAuth tab), roll
         // the write back — decline means "no server", not an unauthorized
         // entry squatting in mcp_servers (authoritative-write rule).
-        await addMcpServer({ name: known.name, url: known.url })
+        await addMcpServer({ name: known.name, url: known.url }, oauthScope)
 
         let flow
 
         try {
           flow = await completeMcpDesktopOAuth({
             serverName: known.name,
-            start: authMcpServer,
-            status: getMcpOAuthFlow,
-            cancelled: () => cancelRef.current,
-            cancel: cancelMcpOAuthFlow,
-            openExternal: url => window.hermesDesktop.openExternal(url)
+            profile: oauthScope,
+            cancelled: () => cancelRef.current
           })
         } catch (error) {
-          await removeMcpServer(known.name).catch(() => {
+          await removeMcpServer(known.name, oauthScope).catch(() => {
             // Rollback is best-effort; the primary error/cancel wins.
           })
           throw error
@@ -401,10 +394,10 @@ function McpSetupPending({ args }: ToolCallMessagePartProps) {
 
   // What connecting actually means — the endpoint that will be contacted.
   // VS Code's trust dialog links the config it's about to trust; same idea.
-  // Directory servers know their URL statically; catalog entries state their
-  // provenance (the reviewed manifest carries the transport).
+  // Catalog entries carry their transport URL in the API response; the
+  // static directory remains a fallback rung for older backends.
   const known = directoryEntry(server)
-  const sourceLine = action === 'install' ? (known?.url ?? copy.catalogSource) : null
+  const sourceLine = action === 'install' ? (entry?.url ?? known?.url ?? copy.catalogSource) : null
   const brand = brandFor(server)
 
   const trailingIcon = brand ? (

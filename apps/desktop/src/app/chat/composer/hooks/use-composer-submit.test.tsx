@@ -1,6 +1,8 @@
 import { act, cleanup, renderHook, waitFor } from '@testing-library/react'
+import { type Dispatch, type PropsWithChildren, type SetStateAction, useLayoutEffect, useState } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import { PaneVisibleContext } from '@/components/pane-shell/pane-visibility'
 import { $clarifyRequests } from '@/store/clarify'
 import type { ComposerAttachment } from '@/store/composer'
 import { $gateway } from '@/store/gateway'
@@ -12,23 +14,41 @@ import {
   setSudoRequest
 } from '@/store/prompts'
 
+import { type ComposerTarget, requestComposerSubmit } from '../focus'
+import { ComposerScopeProvider, ComposerSurfaceProvider, MAIN_COMPOSER_SCOPE } from '../scope'
+
 import { useComposerSubmit } from './use-composer-submit'
 
 interface SubmitHarnessOptions {
   attachments?: ComposerAttachment[]
   busy?: boolean
   compacting?: boolean
+  inputDisabled?: boolean
+  scopeTarget?: ComposerTarget
+  sessionKey?: string | null
+  submitOnHide?: boolean
+  surfaceId?: string | null
   text?: string
+  visible?: boolean
 }
+
+let surfaceSequence = 0
 
 function renderSubmitHook({
   attachments = [],
   busy = false,
   compacting = false,
-  text = ''
+  inputDisabled = false,
+  scopeTarget = 'main',
+  sessionKey = 'stored-session',
+  submitOnHide = false,
+  surfaceId,
+  text = '',
+  visible = true
 }: SubmitHarnessOptions = {}) {
+  const resolvedSurfaceId = surfaceId === undefined ? `test-surface-${++surfaceSequence}` : surfaceId
   const draftRef = { current: text }
-  const editor = document.createElement('div')
+  const editor = window.document.createElement('div')
   editor.dataset.slot = 'composer-rich-input'
   editor.textContent = text
   const editorRef = { current: editor }
@@ -36,42 +56,213 @@ function renderSubmitHook({
   const onSteer = vi.fn(async () => true)
   const onSubmit = vi.fn(async () => true)
   const queueCurrentDraft = vi.fn(() => true)
+  let updatePaneVisible: Dispatch<SetStateAction<boolean>> | undefined
 
   const clearDraft = vi.fn(() => {
     draftRef.current = ''
     editorRef.current!.textContent = ''
   })
 
-  const hook = renderHook(() =>
-    useComposerSubmit({
-      activeQueueSessionKey: 'stored-session',
-      activeQueueSessionKeyRef: { current: 'stored-session' },
-      attachments,
-      busy,
-      compacting,
-      clearDraft,
-      disabled: false,
-      draftRef,
-      drainNextQueued: vi.fn(async () => false),
-      editorRef,
-      exitQueuedEdit: vi.fn(() => false),
-      focusInput: vi.fn(),
-      inputDisabled: false,
-      loadIntoComposer: vi.fn(),
-      onCancel,
-      onSteer,
-      onSubmit,
-      queueCurrentDraft,
-      queueEdit: null,
-      queuedPrompts: [],
-      sessionId: 'runtime-session',
-      setComposerText: vi.fn(),
-      stashAt: vi.fn()
-    })
+  const Wrapper = ({ children }: PropsWithChildren) => {
+    const [paneVisible, setPaneVisible] = useState(visible)
+    updatePaneVisible = setPaneVisible
+
+    useLayoutEffect(() => {
+      if (submitOnHide && !paneVisible) {
+        requestComposerSubmit('ship while hiding', { target: scopeTarget })
+      }
+    }, [paneVisible])
+
+    return (
+      <ComposerScopeProvider value={{ ...MAIN_COMPOSER_SCOPE, target: scopeTarget }}>
+        <ComposerSurfaceProvider value={resolvedSurfaceId}>
+          <PaneVisibleContext.Provider value={paneVisible}>
+            <div
+              data-composer-surface-id={resolvedSurfaceId ?? undefined}
+              data-composer-target={scopeTarget}
+              data-pane-hidden={paneVisible ? undefined : ''}
+            >
+              {children}
+            </div>
+          </PaneVisibleContext.Provider>
+        </ComposerSurfaceProvider>
+      </ComposerScopeProvider>
+    )
+  }
+
+  const hook = renderHook(
+    () =>
+      useComposerSubmit({
+        activeQueueSessionKey: sessionKey,
+        activeQueueSessionKeyRef: { current: sessionKey },
+        attachments,
+        busy,
+        compacting,
+        clearDraft,
+        disabled: false,
+        draftRef,
+        drainNextQueued: vi.fn(async () => false),
+        editorRef,
+        exitQueuedEdit: vi.fn(() => false),
+        focusInput: vi.fn(),
+        inputDisabled,
+        loadIntoComposer: vi.fn(),
+        onCancel,
+        onSteer,
+        onSubmit,
+        queueCurrentDraft,
+        queueEdit: null,
+        queuedPrompts: [],
+        sessionId: 'runtime-session',
+        setComposerText: vi.fn(),
+        stashAt: vi.fn()
+      }),
+    { wrapper: Wrapper }
   )
 
-  return { clearDraft, hook, onCancel, onSteer, onSubmit, queueCurrentDraft }
+  return {
+    clearDraft,
+    hook,
+    onCancel,
+    onSteer,
+    onSubmit,
+    queueCurrentDraft,
+    composerSurfaceId: resolvedSurfaceId,
+    setPaneVisible(nextVisible: boolean) {
+      if (!updatePaneVisible) {
+        throw new Error('Pane visibility setter was not initialized')
+      }
+
+      updatePaneVisible(nextVisible)
+    }
+  }
 }
+
+describe('useComposerSubmit external request routing', () => {
+  afterEach(() => {
+    cleanup()
+    vi.restoreAllMocks()
+  })
+
+  it('does not fan out a main ship across keep-alives or other projects', async () => {
+    const visibleMain = renderSubmitHook({ sessionKey: 'session-a' })
+    const hiddenMain = renderSubmitHook({ sessionKey: 'session-b', visible: false })
+    const visibleTile = renderSubmitHook({ scopeTarget: 'tile:project-b', sessionKey: 'tile-session' })
+
+    const hiddenTile = renderSubmitHook({
+      scopeTarget: 'tile:project-c',
+      sessionKey: 'other-tile',
+      visible: false
+    })
+
+    expect(requestComposerSubmit('ship this branch', { target: 'main' })).toBe(true)
+
+    await waitFor(() =>
+      expect(visibleMain.onSubmit).toHaveBeenCalledWith('ship this branch', {
+        composerScope: 'session-a'
+      })
+    )
+    expect(visibleMain.onSubmit).toHaveBeenCalledTimes(1)
+    expect(hiddenMain.onSubmit).not.toHaveBeenCalled()
+    expect(visibleTile.onSubmit).not.toHaveBeenCalled()
+    expect(hiddenTile.onSubmit).not.toHaveBeenCalled()
+  })
+
+  it('routes a tile-targeted submit to that tile only', async () => {
+    const main = renderSubmitHook({ sessionKey: 'main-session' })
+    const tile = renderSubmitHook({ scopeTarget: 'tile:project-b', sessionKey: 'tile-session' })
+
+    expect(requestComposerSubmit('ship project B', { target: 'tile:project-b' })).toBe(true)
+
+    await waitFor(() =>
+      expect(tile.onSubmit).toHaveBeenCalledWith('ship project B', {
+        composerScope: 'tile-session'
+      })
+    )
+    expect(main.onSubmit).not.toHaveBeenCalled()
+  })
+
+  it('uses the captured surface id when two visible composers share a target', async () => {
+    const first = renderSubmitHook({ sessionKey: 'session-first' })
+    const second = renderSubmitHook({ sessionKey: 'session-second' })
+
+    requestComposerSubmit('ship exactly one session', { surfaceId: second.composerSurfaceId, target: 'main' })
+
+    await waitFor(() =>
+      expect(second.onSubmit).toHaveBeenCalledWith('ship exactly one session', {
+        composerScope: 'session-second'
+      })
+    )
+    expect(first.onSubmit).not.toHaveBeenCalled()
+  })
+
+  it('submits to the session visible at click time even when the same click switches tabs', async () => {
+    const hiddenA = renderSubmitHook({ sessionKey: 'session-a', visible: false })
+    const visibleB = renderSubmitHook({ sessionKey: 'session-b' })
+
+    act(() => {
+      requestComposerSubmit('ship session B', { target: 'main' })
+      visibleB.setPaneVisible(false)
+      hiddenA.setPaneVisible(true)
+    })
+
+    await waitFor(() =>
+      expect(visibleB.onSubmit).toHaveBeenCalledWith('ship session B', {
+        composerScope: 'session-b'
+      })
+    )
+    expect(hiddenA.onSubmit).not.toHaveBeenCalled()
+  })
+
+  it('does not fan out when visible composers do not have queue session keys yet', async () => {
+    const firstNewSession = renderSubmitHook({ sessionKey: null })
+    const secondNewSession = renderSubmitHook({ sessionKey: null })
+
+    act(() => {
+      requestComposerSubmit('ship the visible new session', { target: 'main' })
+    })
+
+    await waitFor(() => expect(firstNewSession.onSubmit).toHaveBeenCalledTimes(1))
+    expect(secondNewSession.onSubmit).not.toHaveBeenCalled()
+  })
+
+  it('fails closed when the visible composer has no surface identity', () => {
+    const unidentified = renderSubmitHook({ surfaceId: null })
+
+    expect(requestComposerSubmit('do not broadcast this', { target: 'main' })).toBe(false)
+    expect(unidentified.onSubmit).not.toHaveBeenCalled()
+  })
+
+  it('fails closed when a pinned origin surface is no longer visible', () => {
+    const hidden = renderSubmitHook({ sessionKey: 'hidden-origin', visible: false })
+    const visible = renderSubmitHook({ sessionKey: 'other-visible' })
+
+    expect(
+      requestComposerSubmit('do not send to a stale origin', {
+        surfaceId: hidden.composerSurfaceId,
+        target: 'main'
+      })
+    ).toBe(false)
+    expect(hidden.onSubmit).not.toHaveBeenCalled()
+    expect(visible.onSubmit).not.toHaveBeenCalled()
+  })
+
+  it('does not submit through a composer whose pane is hidden during the request', () => {
+    const main = renderSubmitHook({ submitOnHide: true })
+
+    act(() => main.setPaneVisible(false))
+
+    expect(main.onSubmit).not.toHaveBeenCalled()
+  })
+
+  it('does not submit through a disabled composer', () => {
+    const disabled = renderSubmitHook({ inputDisabled: true })
+
+    requestComposerSubmit('do not send this', { target: 'main' })
+
+    expect(disabled.onSubmit).not.toHaveBeenCalled()
+  })
+})
 
 describe('useComposerSubmit busy-turn routing', () => {
   afterEach(() => {
@@ -79,7 +270,7 @@ describe('useComposerSubmit busy-turn routing', () => {
     vi.restoreAllMocks()
   })
 
-  it('steers a plain-text follow-up instead of queueing or stopping', async () => {
+  it('treats a payload mid-turn as send (steer), not stop', async () => {
     const { hook, onCancel, onSteer, onSubmit, queueCurrentDraft } = renderSubmitHook({
       busy: true,
       text: 'change course'
@@ -199,7 +390,13 @@ describe('useComposerSubmit with a clarify parked on the session', () => {
 
   const parkClarify = (sessionId: string) => {
     $clarifyRequests.set({
-      [sessionId]: { requestId: `req-${sessionId}`, question: 'which one?', choices: ['a', 'b'], sessionId }
+      [sessionId]: {
+        requestId: `req-${sessionId}`,
+        question: 'which one?',
+        choices: ['a', 'b'],
+        multiSelect: false,
+        sessionId
+      }
     })
     $gateway.set({ request: gatewayRequest } as unknown as ReturnType<typeof $gateway.get>)
   }

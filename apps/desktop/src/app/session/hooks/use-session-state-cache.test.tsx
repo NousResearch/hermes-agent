@@ -21,6 +21,13 @@ import {
   setCurrentServiceTier,
   setTurnStartedAt
 } from '@/store/session'
+import {
+  $sessionStates,
+  clearAllSessionStates,
+  reconcileBusyStatesOnReconnect,
+  type SessionTileDelegate,
+  setSessionTileDelegate
+} from '@/store/session-states'
 
 import { useSessionStateCache } from './use-session-state-cache'
 
@@ -377,6 +384,10 @@ function assistantError(id: string, error: string): ChatMessage {
   return { id, role: 'assistant', parts: [], error, pending: false }
 }
 
+function transcriptForCache(id: string): ChatMessage[] {
+  return [userMessage(`${id}-user`, id), assistantText(`${id}-assistant`, `reply ${id}`)]
+}
+
 interface ViewHarnessProps {
   activeSessionId: string | null
   onReady: (cache: Cache) => void
@@ -405,6 +416,7 @@ describe('useSessionStateCache — cross-thread error isolation', () => {
   afterEach(() => {
     cleanup()
     $messages.set([])
+    $sessionStates.set({})
   })
 
   it('does not leak a failed turn into another thread on switch', () => {
@@ -475,6 +487,27 @@ describe('useSessionStateCache — cross-thread error isolation', () => {
     expect($messages.get().some(message => message.error === 'OpenRouter 403')).toBe(true)
   })
 
+  it('evicts the oldest warm transcript with its reverse ownership while retaining lightweight state', () => {
+    let cache!: Cache
+    render(<Harness activeSessionId={null} onReady={value => (cache = value)} selectedStoredSessionId={null} />)
+
+    act(() => {
+      for (let index = 0; index < 25; index += 1) {
+        cache.updateSessionState(
+          `runtime-${index}`,
+          state => ({ ...state, messages: transcriptForCache(`message-${index}`) }),
+          `stored-${index}`
+        )
+      }
+    })
+
+    expect(cache.sessionStateByRuntimeIdRef.current.has('runtime-0')).toBe(false)
+    expect(cache.runtimeIdByStoredSessionIdRef.current.has('stored-0')).toBe(false)
+    expect($sessionStates.get()['runtime-0']).toMatchObject({ storedSessionId: 'stored-0', busy: false })
+    expect($sessionStates.get()['runtime-0']?.messages).toEqual([])
+    expect(cache.getRuntimeIdForStoredSession('stored-24')).toBe('runtime-24')
+  })
+
   it('only returns a runtime whose cached state owns the requested stored session', () => {
     let cache!: Cache
     render(<Harness activeSessionId={null} onReady={value => (cache = value)} selectedStoredSessionId={null} />)
@@ -491,5 +524,169 @@ describe('useSessionStateCache — cross-thread error isolation', () => {
     // check must reject it instead of allowing a submit into stored-B.
     cache.runtimeIdByStoredSessionIdRef.current.set('stored-A', 'runtime-B')
     expect(cache.getRuntimeIdForStoredSession('stored-A')).toBeNull()
+  })
+
+  describe('reconnect-orphaned transcripts (#95189)', () => {
+    // Unique per-test runtime/stored ids: earlier describes in this file leave
+    // states in $sessionStates, and a recycled id would let this test's
+    // authority probe read THEIR stale flags instead of its own.
+    const bg = 'orphan-bg-runtime'
+    const fg = 'orphan-fg-runtime'
+    const bgStored = 'orphan-bg-stored'
+    const fgStored = 'orphan-fg-stored'
+
+    beforeEach(() => {
+      $sessionStates.set({})
+      setActiveSessionId(null)
+    })
+
+    afterEach(() => {
+      $sessionStates.set({})
+      setActiveSessionId(null)
+    })
+
+    it('releases a busy transcript once reconciliation settles the authoritative record', () => {
+      let cache!: Cache
+
+      render(<Harness activeSessionId={fg} onReady={value => (cache = value)} selectedStoredSessionId={fgStored} />)
+
+      act(() => {
+        // A mid-turn session carries a growing transcript: without messages
+        // there would be nothing warm to release.
+        cache.updateSessionState(
+          bg,
+          state => ({
+            ...state,
+            busy: true,
+            messages: [
+              { id: `${bg}-user`, role: 'user', parts: [{ type: 'text', text: 'hello' }] },
+              { id: `${bg}-assistant`, role: 'assistant', parts: [{ type: 'text', text: 'partial reply' }] }
+            ]
+          }),
+          bgStored
+        )
+      })
+
+      expect($sessionStates.get()[bg]?.busy).toBe(true)
+      expect(cache.sessionStateByRuntimeIdRef.current.has(bg)).toBe(true)
+
+      act(() => {
+        // The minting socket died mid-turn; reconnect reconciliation
+        // (reconcileBusyStatesOnReconnect) downgrades the authoritative
+        // record, and the respawned backend re-mints runtime ids so no event
+        // will ever settle this snapshot's own busy flag again.
+        const states = $sessionStates.get()
+
+        $sessionStates.set({
+          ...states,
+          [bg]: { ...states[bg]!, busy: false, awaitingResponse: false }
+        })
+      })
+
+      // Production caches are bounded by the class defaults (24 sessions /
+      // 32MB), and prune only drains once that budget is exceeded. Simulate
+      // the reconnect churn of #95189: a stream of settled sessions pushes
+      // the cache past its cap, and the orphaned entry — oldest touched,
+      // finally warm-eligible now that the authoritative record settled —
+      // must be the first thing drained, ownership included.
+      const liveBusy = `${bg}-still-working`
+
+      act(() => {
+        cache.updateSessionState(
+          liveBusy,
+          state => ({
+            ...state,
+            busy: true,
+            messages: [{ id: `${liveBusy}-u`, role: 'user', parts: [{ type: 'text', text: 'long turn' }] }]
+          }),
+          `${liveBusy}-stored`
+        )
+      })
+
+      for (let i = 0; i < 24; i += 1) {
+        act(() => {
+          cache.updateSessionState(
+            `${bg}-churn-${i}`,
+            state => ({
+              ...state,
+              messages: [{ id: `churn-${i}`, role: 'user', parts: [{ type: 'text', text: `done ${i}` }] }]
+            }),
+            `${bg}-churn-${i}-stored`
+          )
+        })
+      }
+
+      expect(cache.sessionStateByRuntimeIdRef.current.has(bg)).toBe(false)
+      expect(cache.runtimeIdByStoredSessionIdRef.current.has(bgStored)).toBe(false)
+      // A genuinely running turn is never a casualty of the drain.
+      expect(cache.sessionStateByRuntimeIdRef.current.has(liveBusy)).toBe(true)
+    })
+
+    it('keeps a live background turn cached while its authoritative record is busy', () => {
+      let cache!: Cache
+
+      render(<Harness activeSessionId={fg} onReady={value => (cache = value)} selectedStoredSessionId={fgStored} />)
+
+      act(() => {
+        cache.updateSessionState(bg, state => ({ ...state, busy: true }), bgStored)
+      })
+
+      act(() => {
+        cache.updateSessionState(fg, state => ({ ...state, model: 'test/model' }))
+      })
+
+      expect(cache.sessionStateByRuntimeIdRef.current.has(bg)).toBe(true)
+      expect(cache.runtimeIdByStoredSessionIdRef.current.get(bgStored)).toBe(bg)
+    })
+  })
+})
+
+// #93059: reconnect used to downgrade the $sessionStates mirror only, leaving
+// this cache (which warm resume ORs over `running: false`) still busy.
+describe('useSessionStateCache — reconnect busy reconcile (#93059)', () => {
+  // Only retireBusyClaim is reachable from the store.
+  const asDelegate = (partial: Partial<SessionTileDelegate>) => partial as SessionTileDelegate
+
+  // Stands in for "no wiring mounted": every claim is a miss, nothing written.
+  const inertDelegate = asDelegate({ retireBusyClaim: () => false })
+
+  afterEach(() => {
+    cleanup()
+    setSessionTileDelegate(inertDelegate)
+    clearAllSessionStates()
+    setActiveSessionId(null)
+  })
+
+  it('retires the wiring cache entry, not just the store mirror', () => {
+    let cache!: Cache
+
+    setActiveSessionId('runtime-1')
+    render(
+      <Harness activeSessionId="runtime-1" onReady={value => (cache = value)} selectedStoredSessionId="stored-1" />
+    )
+
+    // The wiring layer's own retireBusyClaim, over the REAL updateSessionState.
+    setSessionTileDelegate(
+      asDelegate({
+        retireBusyClaim: runtimeId => {
+          cache.updateSessionState(runtimeId, state => ({ ...state, awaitingResponse: false, busy: false }))
+
+          return true
+        }
+      })
+    )
+
+    act(() => {
+      cache.updateSessionState('runtime-1', state => ({ ...state, awaitingResponse: true, busy: true }), 'stored-1')
+    })
+
+    expect(cache.sessionStateByRuntimeIdRef.current.get('runtime-1')?.busy).toBe(true)
+
+    // Backend respawned: no terminal busy:false can arrive for this runtime.
+    act(() => reconcileBusyStatesOnReconnect())
+
+    expect(cache.sessionStateByRuntimeIdRef.current.get('runtime-1')?.busy).toBe(false)
+    expect(cache.sessionStateByRuntimeIdRef.current.get('runtime-1')?.awaitingResponse).toBe(false)
+    expect($sessionStates.get()['runtime-1']?.busy).toBe(false)
   })
 })

@@ -1,13 +1,15 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { $workspaceIsPage } from '@/app/routes'
+import { $activeTreeGroup, $hoveredTreeGroup } from '@/components/pane-shell/tree/store'
 import { $switcherOpen, closeSwitcher } from '@/store/session-switcher'
 
 import {
   composerFocusBlockedBySurface,
   composerFocusKeysAllowed,
   isActivateOnEnterTarget,
-  typeToFocusChar
+  typeToFocusChar,
+  visibleClarifyCard
 } from './composer-focus-keys'
 
 function keydown(init: KeyboardEventInit & { target?: EventTarget }): KeyboardEvent {
@@ -121,9 +123,28 @@ describe('typeToFocusChar', () => {
 })
 
 describe('composerFocusKeysAllowed', () => {
+  // The clarify resolver reads the zone ladder, so these have to start neutral.
+  const resetZones = () => {
+    $activeTreeGroup.set(null)
+    $hoveredTreeGroup.set(null)
+  }
+
+  /** A live clarify card inside its own split zone, both on screen. */
+  function cardInZone(zone: string): HTMLElement {
+    const group = document.createElement('div')
+    group.setAttribute('data-tree-group', zone)
+    const card = document.createElement('div')
+    card.setAttribute('data-clarify-choices', '2')
+    group.append(card)
+    document.body.append(group)
+
+    return card
+  }
+
   beforeEach(() => {
     $workspaceIsPage.set(false)
     closeSwitcher()
+    resetZones()
     document.body.replaceChildren()
     vi.spyOn(document, 'activeElement', 'get').mockReturnValue(document.body)
   })
@@ -131,6 +152,7 @@ describe('composerFocusKeysAllowed', () => {
   afterEach(() => {
     $workspaceIsPage.set(false)
     closeSwitcher()
+    resetZones()
     document.body.replaceChildren()
     vi.restoreAllMocks()
   })
@@ -199,5 +221,48 @@ describe('composerFocusKeysAllowed', () => {
 
     expect(composerFocusKeysAllowed(keydown({ key: 'a', target: document.body }), 'type')).toBe(true)
     expect(composerFocusKeysAllowed(keydown({ key: 'Enter', target: document.body }), 'enter')).toBe(true)
+  })
+
+  it('picks the focused zone when a split shows two visible cards', () => {
+    const cardA = cardInZone('zone-a')
+    const cardB = cardInZone('zone-b')
+
+    // Document order would pin this to zone-a forever, so zone-b's card could
+    // never take its own shortcut. Both directions are asserted for that reason.
+    $activeTreeGroup.set('zone-b')
+    expect(visibleClarifyCard()).toBe(cardB)
+
+    $activeTreeGroup.set('zone-a')
+    expect(visibleClarifyCard()).toBe(cardA)
+  })
+
+  it('lets the hovered zone override the focused one', () => {
+    const cardA = cardInZone('zone-a')
+    const cardB = cardInZone('zone-b')
+
+    $activeTreeGroup.set('zone-a')
+    expect(visibleClarifyCard()).toBe(cardA)
+
+    // Hover-first, like every tab verb: pointing at the other pane arms its card
+    // without clicking into it.
+    $hoveredTreeGroup.set('zone-b')
+    expect(visibleClarifyCard()).toBe(cardB)
+  })
+
+  it('steps down the ladder instead of answering nothing', () => {
+    const cardA = cardInZone('zone-a')
+    const cardB = cardInZone('zone-b')
+
+    // Pointer parked on a zone with no pending question — fall through to the
+    // focused zone rather than returning null.
+    $hoveredTreeGroup.set('zone-empty')
+    $activeTreeGroup.set('zone-b')
+    expect(visibleClarifyCard()).toBe(cardB)
+
+    // Neither rung resolves ⇒ document order, deliberately. Returning null here
+    // would leave Enter doing nothing at all.
+    resetZones()
+    expect(visibleClarifyCard()).toBe(cardA)
+    expect(composerFocusKeysAllowed(keydown({ key: 'Enter', target: document.body }), 'enter')).toBe(false)
   })
 })

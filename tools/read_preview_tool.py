@@ -1,55 +1,33 @@
 #!/usr/bin/env python3
 """Read the in-app browser / preview pane in the Hermes desktop GUI.
 
-The preview's content lives in the desktop renderer (a sandboxed ``<webview>``
-for URL tabs), so this tool round-trips through the gateway's blocking-prompt
-bridge — the same one ``read_terminal`` uses: tui_gateway emits
-``preview.read.request``, the renderer serializes the active preview tab and
-answers with ``preview.read.respond``. This module is just schema + a thin
-dispatcher over the platform-injected callback.
-
-Lives in the ``desktop_ui`` toolset, which the GUI gateway enables only for
-desktop-sourced sessions.
+The preview's content lives in the renderer (a sandboxed ``<webview>``), so this
+round-trips through the gateway's blocking-prompt bridge like ``read_terminal``
+(``preview.read.request`` -> ``preview.read.respond``). Registered as action=read of
+`desktop_preview`; the agent dispatches here with the injected callback.
 """
 
-import json
 from typing import Callable, Optional
 
-from tools.registry import registry, tool_error
+from tools.read_terminal_tool import read_pane
 
 
 def read_preview_tool(
-    start: Optional[int] = None,
-    count: Optional[int] = None,
-    callback: Optional[Callable] = None,
+    start: Optional[int] = None, count: Optional[int] = None, callback: Optional[Callable] = None
 ) -> str:
     """Return the active preview tab's contents (+ metadata) as a JSON string."""
-    if callback is None:
-        return tool_error("read_preview is only available in the Hermes desktop app.")
+    return read_pane(callback, (("start", start, 0), ("count", count, 1)), (
+        "read_preview is only available in the Hermes desktop app.",
+        "start and count must be integers.",
+        "Failed to read the preview pane: ",
+        "No preview tab is open, or the read timed out."))
 
-    try:
-        window = {
-            key: max(floor, int(val))
-            for key, val, floor in (("start", start, 0), ("count", count, 1))
-            if val is not None
-        }
-    except (TypeError, ValueError):
-        return tool_error("start and count must be integers.")
 
-    try:
-        raw = callback(**window)
-    except Exception as exc:
-        return tool_error(f"Failed to read the preview pane: {exc}")
-
-    if not raw:
-        return tool_error("No preview tab is open, or the read timed out.")
-
-    # Desktop answers with a JSON object; pass it through, else wrap the raw text.
-    try:
-        return json.dumps(json.loads(raw), ensure_ascii=False)
-    except (TypeError, ValueError):
-        return json.dumps({"text": str(raw)}, ensure_ascii=False)
-
+# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
+# Names external plugins imported from this module before the Sep 2026 decomposition.
+# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
+# The whole block is removed by reverting the commit that added it.
+import json  # noqa: F401,E402
 
 READ_PREVIEW_SCHEMA = {
     "name": "read_preview",
@@ -63,7 +41,7 @@ READ_PREVIEW_SCHEMA = {
         "per read); a file tab answers identity only (read the file with "
         "read_file); an artifact tab points back at the conversation. Use after "
         "open_preview, or whenever the user refers to what's on screen in the "
-        "browser ('what does this page say?')."
+        "browser ('what does this page say?'). To close the pane, use close_preview."
     ),
     "parameters": {
         "type": "object",
@@ -81,14 +59,18 @@ READ_PREVIEW_SCHEMA = {
 }
 
 
-registry.register(
-    name="read_preview",
-    toolset="desktop_ui",
-    schema=READ_PREVIEW_SCHEMA,
-    handler=lambda args, **kw: read_preview_tool(
-        start=args.get("start"),
-        count=args.get("count"),
-        callback=kw.get("callback"),
-    ),
-    emoji="🔍",
-)
+_PLUGIN_COMPAT_LAZY = {
+    'registry': ('tools.registry', 'registry'),
+    'tool_error': ('tools.registry', 'tool_error'),
+}
+
+
+def __getattr__(name):  # PEP 562 — lazy so no import cycles
+    target = _PLUGIN_COMPAT_LAZY.get(name)
+    if target is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    import importlib
+    from hermes_cli.plugin_compat import warn_once
+    warn_once(__name__, name, *target)
+    return getattr(importlib.import_module(target[0]), target[1])
+# ---- END PLUGIN-COMPAT ----

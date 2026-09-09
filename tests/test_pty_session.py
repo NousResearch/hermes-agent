@@ -26,9 +26,10 @@ def test_ringbuffer_drops_oldest_over_capacity():
 class FakeBridge:
     """Implements the bridge contract PtySession depends on."""
 
-    def __init__(self, chunks):
+    def __init__(self, chunks, *, write_result=True):
         self._chunks = list(chunks)   # bytes; b"" = idle tick; None = EOF
         self.written = bytearray()
+        self.write_result = write_result
         self.closed = False
         self.resized = None
 
@@ -37,8 +38,10 @@ class FakeBridge:
             return b""                # idle
         return self._chunks.pop(0)
 
-    def write(self, data):
-        self.written.extend(data)
+    async def write(self, data):
+        if self.write_result:
+            self.written.extend(data)
+        return self.write_result
 
     def resize(self, cols, rows):
         self.resized = (cols, rows)
@@ -76,6 +79,137 @@ async def test_attach_replays_buffer_then_streams_live():
     await s.close()
 
 
+@pytest.mark.asyncio
+async def test_reattach_can_force_complete_tui_redraw_after_replay():
+    """A fresh terminal cannot reconstruct a differential ANSI tail alone."""
+    from hermes_cli.pty_session import PtySession
+
+    bridge = FakeBridge([b"partial differential frame", b""])
+    s = PtySession("k", bridge, buffer_cap=1024, read_timeout=0.01)
+    await s.start()
+    await asyncio.sleep(0.05)
+
+    ws = FakeWS()
+    assert await s.attach(ws, force_redraw=True) is True
+
+    replay = b"".join(p for kind, p in ws.sent if kind == "bytes")
+    assert replay == b"partial differential frame"
+    assert bytes(bridge.written) == b"\x0c"
+    await s.close()
+
+
+@pytest.mark.asyncio
+async def test_failed_redraw_marks_session_dead_for_replacement():
+    from hermes_cli.pty_session import PtySession
+
+    bridge = FakeBridge([b""], write_result=False)
+    s = PtySession("k", bridge, buffer_cap=1024, read_timeout=0.01)
+    await s.start()
+    ws = FakeWS()
+
+    assert await s.attach(ws, force_redraw=True) is False
+    assert s.alive is False
+    await s.close()
+
+
+@pytest.mark.asyncio
+async def test_session_serializes_input_across_socket_tasks():
+    from hermes_cli.pty_session import PtySession
+
+    class OrderedBridge(FakeBridge):
+        def __init__(self):
+            super().__init__([b""])
+            self.first_started = asyncio.Event()
+            self.release_first = asyncio.Event()
+
+        async def write(self, data):
+            if not self.written:
+                self.first_started.set()
+                await self.release_first.wait()
+            self.written.extend(data)
+            return True
+
+    bridge = OrderedBridge()
+    s = PtySession("k", bridge, buffer_cap=1024, read_timeout=0.01)
+    await s.start()
+    ws = FakeWS()
+    await s.attach(ws)
+
+    first = asyncio.create_task(s.write(ws, b"first"))
+    await bridge.first_started.wait()
+    second = asyncio.create_task(s.write(ws, b"second"))
+    await asyncio.sleep(0)
+    assert bytes(bridge.written) == b""
+
+    bridge.release_first.set()
+    assert await first is True
+    assert await second is True
+    assert bytes(bridge.written) == b"firstsecond"
+    await s.close()
+
+
+@pytest.mark.asyncio
+async def test_superseded_failed_write_does_not_kill_replacement_session():
+    from hermes_cli.pty_session import PtySession
+
+    class SupersededBridge(FakeBridge):
+        def __init__(self):
+            super().__init__([b""])
+            self.old_write_started = asyncio.Event()
+            self.release_old_write = asyncio.Event()
+            self.calls = 0
+
+        async def write(self, data):
+            self.calls += 1
+            if self.calls == 1:
+                self.old_write_started.set()
+                await self.release_old_write.wait()
+                return False
+            self.written.extend(data)
+            return True
+
+    bridge = SupersededBridge()
+    s = PtySession("k", bridge, buffer_cap=1024, read_timeout=0.01)
+    await s.start()
+    old_ws = FakeWS()
+    new_ws = FakeWS()
+    await s.attach(old_ws)
+
+    old_write = asyncio.create_task(s.write(old_ws, b"old input"))
+    await bridge.old_write_started.wait()
+    new_attach = asyncio.create_task(s.attach(new_ws, force_redraw=True))
+    for _ in range(10):
+        if s._ws is new_ws:
+            break
+        await asyncio.sleep(0)
+    assert s._ws is new_ws
+
+    bridge.release_old_write.set()
+    assert await old_write is False
+    assert await new_attach is True
+    assert s.alive is True
+    assert await s.write(new_ws, b"new input") is True
+    assert bytes(bridge.written) == b"\x0cnew input"
+    await s.close()
+
+
+@pytest.mark.asyncio
+async def test_detach_keeps_draining_into_buffer():
+    from hermes_cli.pty_session import PtySession
+    bridge = FakeBridge([b"one", b"", b"two"])
+    s = PtySession("k", bridge, buffer_cap=1024, read_timeout=0.01)
+    await s.start()
+    ws = FakeWS()
+    await s.attach(ws)
+    s.detach(ws)
+    assert s.attached is False
+    assert s.last_detached_at is not None
+    await asyncio.sleep(0.05)                      # "two" drains while detached
+    ws2 = FakeWS()
+    await s.attach(ws2)
+    replay = b"".join(p for kind, p in ws2.sent if kind == "bytes")
+    assert replay == b"onetwo"
+    await s.close()
 
 
 @pytest.mark.asyncio

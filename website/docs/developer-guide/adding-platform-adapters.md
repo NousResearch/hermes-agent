@@ -61,13 +61,40 @@ optional_env:
     password: false
 ```
 
+#### Outbound client tools: `provides_tools`
+
+`kind: platform` plugins are **deferred**: the adapter module (and its SDK
+imports) only load when a gateway, cron, or `send_message` path first asks the
+platform registry for the platform. If your plugin also ships outbound *client
+tools* the agent should be able to call from any session (the bundled `a2a`
+plugin's `a2a_call` / `a2a_discover` etc.), put them in a dedicated `tools.py`
+with a `register_tools(ctx)` function and declare them in the manifest:
+
+```yaml
+provides_tools:
+  - my_platform_call
+  - my_platform_list
+```
+
+With `provides_tools` declared, Hermes imports only `tools.py` during plugin
+discovery and registers the client tools in every process — CLI and TUI
+included — while the adapter stays deferred. Keep the package `__init__.py`
+import-light and pull the adapter in from inside `register()` so the eager
+import stays cheap. Without the field, nothing changes: the whole plugin stays
+deferred.
+
+Users enable the toolset per platform like any other, e.g.
+`hermes tools enable my_platform --platform cli`, or by listing the toolset
+key under `platform_toolsets` in `config.yaml`. Plugin platform names are
+also valid `--platform` targets, so an inbound session on your platform can
+be granted its own outbound tools.
+
 ### adapter.py
 
 ```python
 import os
-from gateway.platforms.base import (
-    BasePlatformAdapter, SendResult, MessageEvent, MessageType,
-)
+from gateway.platforms.base import BasePlatformAdapter, SendResult
+from gateway.platforms.event import MessageEvent, MessageType
 from gateway.config import Platform, PlatformConfig
 
 
@@ -185,7 +212,7 @@ When you call `ctx.register_platform()`, the following integration points are ha
 
 | Integration point | How it works |
 |---|---|
-| Gateway adapter creation | Registry checked before built-in if/elif chain |
+| Gateway adapter creation | Registry checked before the built-in `_BUILTIN_ADAPTERS` table |
 | Config parsing | `Platform._missing_()` accepts any platform name |
 | Connected platform validation | Registry `validate_config()` called |
 | User authorization | `allowed_users_env` / `allow_all_env` checked |
@@ -546,9 +573,8 @@ Create `plugins/platforms/newplat/adapter.py`:
 
 ```python
 from gateway.config import Platform, PlatformConfig
-from gateway.platforms.base import (
-    BasePlatformAdapter, MessageEvent, MessageType, SendResult,
-)
+from gateway.platforms.base import BasePlatformAdapter, SendResult
+from gateway.platforms.event import MessageEvent, MessageType
 
 def check_newplat_requirements() -> bool:
     """Return True if dependencies are available."""
@@ -605,21 +631,21 @@ Three touchpoints:
 2. **`load_gateway_config()`** — Add token env map entry: `Platform.NEWPLAT: "NEWPLAT_TOKEN"`
 3. **`_apply_env_overrides()`** — Map all `NEWPLAT_*` env vars to config
 
-### 4. Gateway Runner (`gateway/run.py`)
+### 4. Gateway Runner (`gateway/run.py` + `gateway/run_*.py` siblings)
 
 Six touchpoints:
 
-1. **`_create_adapter()`** — Add an `elif platform == Platform.NEWPLAT:` branch
+1. **`_BUILTIN_ADAPTERS` table** (`gateway/run.py`) — Add a `Platform.NEWPLAT: (module, class, check_fn, error_msg)` entry; `_instantiate_adapter()` (`gateway/run_adapters.py`) consults the plugin registry, then this table — there is no `elif` chain to extend. The `_create_adapter()` wrapper binds every successful adapter to its gateway runner.
 2. **`_is_user_authorized()` allowed_users map** — `Platform.NEWPLAT: "NEWPLAT_ALLOWED_USERS"`
 3. **`_is_user_authorized()` allow_all map** — `Platform.NEWPLAT: "NEWPLAT_ALLOW_ALL_USERS"`
-4. **Early env check `_any_allowlist` tuple** — Add `"NEWPLAT_ALLOWED_USERS"`
-5. **Early env check `_allow_all` tuple** — Add `"NEWPLAT_ALLOW_ALL_USERS"`
+4. **Startup access-policy check** (`gateway/run_startup.py`) — Add `"NEWPLAT"` to `_ALLOWLIST_ENV_PLATFORMS` (derives both `NEWPLAT_ALLOWED_USERS` and `NEWPLAT_ALLOW_ALL_USERS`)
+5. **Startup `_BUILTIN_ALLOW_ALL_VARS`** (`gateway/run_startup.py`) — derived from the same `_ALLOWLIST_ENV_PLATFORMS` tuple; nothing extra to add
 6. **`_UPDATE_ALLOWED_PLATFORMS` frozenset** — Add `Platform.NEWPLAT`
 
 ### 5. Cross-Platform Delivery
 
 1. **`gateway/platforms/webhook.py`** — Add `"newplat"` to the delivery type tuple
-2. **`cron/scheduler.py`** — Add to `_KNOWN_DELIVERY_PLATFORMS` frozenset and `_deliver_result()` platform map
+2. **`cron/scheduler_delivery.py`** — Add to `_KNOWN_DELIVERY_PLATFORMS` frozenset and `_deliver_result()` platform map
 
 ### 6. CLI Integration
 

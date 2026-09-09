@@ -2873,8 +2873,11 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                     db.set_session_title, session_id, "" if body["title"] is None else str(body["title"]))
             except ValueError as exc:
                 return _error_response(str(exc), 400, code="invalid_title")
-        for flag, setter in (("pinned", db.set_session_pinned), ("archived", db.set_session_archived),
-                             ("hidden", db.set_session_hidden)):
+        # Pinned applies last: pinning clears hidden, so a pin in the same
+        # request always wins over an explicit hidden (same order as the
+        # dashboard's _RENAME_FLAG_SETTERS).
+        for flag, setter in (("archived", db.set_session_archived), ("hidden", db.set_session_hidden),
+                             ("pinned", db.set_session_pinned)):
             if flag in body:
                 await asyncio.to_thread(setter, session_id, body[flag])
         if "unread" in body:

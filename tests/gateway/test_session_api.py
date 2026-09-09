@@ -872,6 +872,33 @@ async def test_patch_session_persists_pinned_and_archived(adapter, session_db):
 
 
 @pytest.mark.asyncio
+async def test_patch_session_pin_clears_hidden_and_wins(adapter, session_db):
+    """Pinning a hidden session over PATCH unhides it; a pin in the same
+    request wins over an explicit hidden (matches the dashboard order)."""
+    session_id = session_db.create_session("pin-hidden-session", "api_server")
+    app = _create_session_app(adapter)
+
+    async with TestClient(TestServer(app)) as cli:
+        resp = await cli.patch(f"/api/sessions/{session_id}", json={"hidden": True})
+        assert resp.status == 200, await resp.text()
+
+        resp = await cli.patch(f"/api/sessions/{session_id}", json={"pinned": True})
+        assert resp.status == 200, await resp.text()
+        assert (await resp.json())["session"]["pinned"] is True
+        row = session_db.get_session(session_id)
+        assert bool(row["pinned"]) is True
+        assert bool(row["hidden"]) is False
+
+        resp = await cli.patch(
+            f"/api/sessions/{session_id}", json={"pinned": True, "hidden": True}
+        )
+        assert resp.status == 200, await resp.text()
+        row = session_db.get_session(session_id)
+        assert bool(row["pinned"]) is True
+        assert bool(row["hidden"]) is False
+
+
+@pytest.mark.asyncio
 async def test_patch_session_rejects_non_boolean_pinned(adapter, session_db):
     session_id = session_db.create_session("pin-type-session", "api_server")
     app = _create_session_app(adapter)

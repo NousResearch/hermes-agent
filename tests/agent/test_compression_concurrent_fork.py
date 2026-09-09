@@ -167,6 +167,105 @@ def test_compression_activity_heartbeat_touches_agent_during_long_compress(tmp_p
     assert db.get_compression_lock_holder(session_id) is None
 
 
+def test_compression_activity_heartbeat_emits_client_status_events(tmp_path: Path) -> None:
+    """The heartbeat must re-emit the compacting status, not just DB touches.
+
+    Remote transports (e.g. the Android relay app) run idle-progress turn
+    watchdogs that ``session.interrupt`` a turn after ~180s with no gateway
+    events. Compression is silent on the event stream, so without periodic
+    status heartbeats a long compression is killed mid-flight and retriggers
+    forever on sessions near the context ceiling.
+    """
+    from agent.conversation_compression import (
+        COMPACTION_HEARTBEAT_STATUS,
+        is_compaction_progress_status,
+    )
+
+    db = SessionDB(db_path=tmp_path / "state.db")
+    session_id = "HEARTBEAT_STATUS_TEST"
+    db.create_session(session_id, source="test")
+
+    agent = _build_agent_with_db(db, session_id)
+    agent._compression_activity_heartbeat_interval = 0.1
+    touch_calls: list[str] = []
+    agent._touch_activity = lambda desc, **_kw: touch_calls.append(desc)
+    status_events: list[tuple[str, str]] = []
+    setattr(
+        agent,
+        "status_callback",
+        lambda event, message: status_events.append((event, message)),
+    )
+
+    def _slow_compress(*_a, **_kw):
+        _wait_for_touch(touch_calls, "context compression in progress")
+        return [
+            {"role": "user", "content": "[CONTEXT COMPACTION] summary"},
+            {"role": "user", "content": "tail"},
+        ]
+
+    agent.context_compressor.compress.side_effect = _slow_compress
+    messages = [{"role": "user", "content": f"m{i}"} for i in range(20)]
+
+    agent._compress_context(messages, "sys", approx_tokens=120_000)
+
+    heartbeats = [e for e in status_events if e[1] == COMPACTION_HEARTBEAT_STATUS]
+    assert heartbeats, "no heartbeat status reached the client"
+    # Same "lifecycle" key as the other compaction statuses so the TUI gateway
+    # re-tags it to kind="compacting" and Telegram edits one bubble in place.
+    assert {event for event, _ in heartbeats} == {"lifecycle"}
+    assert is_compaction_progress_status(COMPACTION_HEARTBEAT_STATUS)
+    # Exactly one routine start line precedes the first heartbeat; the
+    # heartbeat no longer re-emits a start of its own (adapters without
+    # send_or_update_status would otherwise post two messages).
+    assert status_events[0][1] != COMPACTION_HEARTBEAT_STATUS
+    # Every heartbeat is a periodic tick: none may precede the first
+    # "in progress" DB touch, which is what start() would have produced.
+    first_tick_touch = touch_calls.index("context compression in progress")
+    assert first_tick_touch >= 1  # "started" touch came first
+    assert len(heartbeats) <= touch_calls.count("context compression in progress")
+
+
+def test_compression_heartbeat_is_silent_for_quiet_context_engines(tmp_path: Path) -> None:
+    """A context engine that suppresses the routine start status opens no
+    visible compaction phase; the heartbeat must not open one either (there
+    would be no terminal edge to close it)."""
+    from agent.conversation_compression import COMPACTION_HEARTBEAT_STATUS
+
+    db = SessionDB(db_path=tmp_path / "state.db")
+    session_id = "HEARTBEAT_QUIET_TEST"
+    db.create_session(session_id, source="test")
+
+    agent = _build_agent_with_db(db, session_id)
+    agent._compression_activity_heartbeat_interval = 0.1
+    touch_calls: list[str] = []
+    agent._touch_activity = lambda desc, **_kw: touch_calls.append(desc)
+    status_events: list[tuple[str, str]] = []
+    setattr(
+        agent,
+        "status_callback",
+        lambda event, message: status_events.append((event, message)),
+    )
+
+    def _slow_compress(*_a, **_kw):
+        _wait_for_touch(touch_calls, "context compression in progress")
+        return [
+            {"role": "user", "content": "[CONTEXT COMPACTION] summary"},
+            {"role": "user", "content": "tail"},
+        ]
+
+    agent.context_compressor.compress.side_effect = _slow_compress
+    messages = [{"role": "user", "content": f"m{i}"} for i in range(20)]
+
+    with patch(
+        "agent.conversation_compression.automatic_compaction_status_message",
+        return_value="",
+    ):
+        agent._compress_context(messages, "sys", approx_tokens=120_000)
+
+    assert all(m != COMPACTION_HEARTBEAT_STATUS for _, m in status_events)
+    assert "context compression in progress" in touch_calls  # DB touches still ran
+
+
 def test_lock_contender_preserves_terminal_compaction_lifecycle(tmp_path: Path) -> None:
     """A lock loser still closes the structured compaction lifecycle.
 
@@ -818,6 +917,27 @@ def test_commit_fence_waits_for_an_active_commit() -> None:
 
     assert not waiter.is_alive()
     assert result["cancelled"] is False
+
+
+def test_total_deadline_cancellation_retains_lock_until_worker_cleanup() -> None:
+    """A total-ceiling timeout must exclude retries while its worker is alive."""
+    from agent.conversation_compression import CompressionCommitFence
+
+    released = threading.Event()
+    fence = CompressionCommitFence(total_ceiling_seconds=1.0)
+    fence.register_cancelled_lock_release(released.set)
+    fence.retain_compression_lock_until_worker_done()
+
+    now = time.monotonic()
+    with patch(
+        "agent.conversation_compression.time.monotonic",
+        return_value=now + 2.0,
+    ):
+        assert fence.is_cancelled
+        assert fence.try_cancel_before_commit() is True
+    fence.release_cancelled_compression_lock()
+
+    assert not released.is_set()
 
 
 def test_delayed_contender_adopts_unique_rotated_child(tmp_path: Path) -> None:
@@ -2206,3 +2326,35 @@ def test_exact_cooldown_restore_api_propagates_sqlite_write_failure(
                 "error": "must propagate",
             },
         )
+
+
+def test_failed_split_arms_failure_cooldown(tmp_path: Path) -> None:
+    """Regression #97948 symptom B: a failed split/archive must arm the
+    compression failure cooldown so the next automatic turn cannot
+    immediately re-run the identical doomed compression."""
+    from agent.conversation_compression import _SPLIT_FAILURE_COOLDOWN_SECONDS
+
+    db = SessionDB(db_path=tmp_path / "state.db")
+    session_id = "SPLIT_FAIL_COOLDOWN_TEST"
+    db.create_session(session_id, source="test")
+    agent = _build_agent_with_db(db, session_id)
+    setattr(agent, "compression_in_place", True)
+    db.archive_and_compact = MagicMock(side_effect=RuntimeError("archive boom"))
+    messages = [{"role": "user", "content": f"m{i}"} for i in range(20)]
+
+    agent._compress_context(
+        messages,
+        "sys",
+        approx_tokens=120_000,
+        force=True,
+    )
+
+    cooldown_calls = (
+        agent.context_compressor._record_compression_failure_cooldown.call_args_list
+    )
+    assert len(cooldown_calls) == 1, (
+        "split failure must arm the failure cooldown (#97948 symptom B)"
+    )
+    seconds, error = cooldown_calls[0].args
+    assert seconds == _SPLIT_FAILURE_COOLDOWN_SECONDS
+    assert "session_split_failed" in str(error)

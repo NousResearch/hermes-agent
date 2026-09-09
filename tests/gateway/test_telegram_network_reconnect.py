@@ -327,6 +327,66 @@ async def test_reconnect_stop_deadline_does_not_wait_for_cancel_cleanup(monkeypa
 
 
 @pytest.mark.asyncio
+async def test_reconnect_drain_survives_cancellation_resistant_close(monkeypatch):
+    """A cancellation-resistant polling-pool close must not wedge the ladder.
+
+    Distinct from ``test_reconnect_continues_if_drain_hangs``: that test's
+    ``_hang`` is cancellable, so the pre-existing ``asyncio.wait_for`` bound
+    also releases. httpcore's pool close runs under ``AsyncShieldCancellation``
+    (#58236/#63309) — a close that shields its cleanup keeps ``wait_for``
+    pending forever even after the timeout fires, wedging the tracked
+    ``_polling_error_task`` and every escalation gate behind it. The drain
+    must use the wall-clock deadline helper (abandon, not cancel-await),
+    same primitive as the general-pool drain (#98094).
+    """
+    adapter = _make_adapter()
+    adapter._polling_network_error_count = 1
+
+    mock_app, mock_polling_req = _make_mock_app()
+    release_close = asyncio.Event()
+    close_cancelled = asyncio.Event()
+
+    async def _shielded_close():
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            close_cancelled.set()
+            # Cancellation-resistant cleanup: swallows the cancel and waits.
+            await release_close.wait()
+            raise
+
+    mock_polling_req.shutdown = AsyncMock(side_effect=_shielded_close)
+    mock_polling_req.initialize = AsyncMock()
+    adapter._app = mock_app
+
+    monkeypatch.setattr(tg_adapter, "_DRAIN_TIMEOUT", 0.05, raising=False)
+    with patch("asyncio.sleep", new_callable=AsyncMock):
+        recovery = asyncio.create_task(
+            adapter._handle_polling_network_error(Exception("Timed out"))
+        )
+        done, _ = await asyncio.wait({recovery}, timeout=2)
+
+    try:
+        assert recovery in done, (
+            "reconnect remained blocked waiting for cancellation-shielded "
+            "polling-pool shutdown() cleanup"
+        )
+        assert close_cancelled.is_set(), "drain must have cancelled the close"
+        # Ladder still advanced: polling pool rebuilt and polling restarted.
+        mock_polling_req.initialize.assert_awaited_once()
+        mock_app.updater.start_polling.assert_awaited_once()
+        assert adapter._polling_error_task is None or adapter._polling_error_task.done()
+        # Settle the generation verifier like the sibling tests do, so it does
+        # not outlive this test pending on its 60s progress deadline.
+        await _complete_current_polling_generation(adapter)
+    finally:
+        release_close.set()
+        if not recovery.done():
+            recovery.cancel()
+        await asyncio.gather(recovery, return_exceptions=True)
+
+
+@pytest.mark.asyncio
 async def test_heartbeat_force_escalates_wedged_recovery_task(monkeypatch):
     """#66377: the heartbeat is an independent, cause-agnostic watchdog.
 
@@ -790,3 +850,234 @@ async def test_disconnect_advances_past_cancellation_swallowing_lifecycle(monkey
 
     release.set()
     await asyncio.wait({wedged}, timeout=0.2)
+
+
+# ---------------------------------------------------------------------------
+# Exception-graph walker + pool/connect classifier contracts (PR #98094
+# follow-up): the two classifiers previously had no direct tests at all.
+# ---------------------------------------------------------------------------
+class TestIterExceptionGraph:
+    def test_flat_single(self):
+        err = ValueError("boom")
+        assert list(tg_adapter._iter_exception_graph(err)) == [err]
+
+    def test_walks_cause_chain(self):
+        root = ValueError("root")
+        mid = RuntimeError("mid")
+        mid.__cause__ = root
+        top = Exception("top")
+        top.__cause__ = mid
+        seen = list(tg_adapter._iter_exception_graph(top))
+        assert top in seen and mid in seen and root in seen
+
+    def test_walks_context_chain(self):
+        root = ValueError("during handling")
+        top = RuntimeError("top")
+        top.__context__ = root
+        seen = list(tg_adapter._iter_exception_graph(top))
+        assert top in seen and root in seen
+
+    def test_cycle_guard(self):
+        a = ValueError("a")
+        b = RuntimeError("b")
+        a.__cause__ = b
+        b.__cause__ = a  # cycle
+        seen = list(tg_adapter._iter_exception_graph(a))
+        assert seen.count(a) == 1 and seen.count(b) == 1  # terminates, no dupes
+
+    def test_diamond_no_duplicates(self):
+        root = ValueError("root")
+        left = RuntimeError("left"); left.__cause__ = root
+        right = TypeError("right"); right.__cause__ = root
+        top = Exception("top"); top.__cause__ = left; top.__context__ = right
+        seen = list(tg_adapter._iter_exception_graph(top))
+        assert seen.count(root) == 1
+
+
+class TestPoolTimeoutClassifier:
+    def test_ptb_pool_timeout_message(self):
+        err = Exception(
+            "Pool timeout: All connections in the connection pool are occupied. "
+            "Request was *not* sent to Telegram."
+        )
+        assert TelegramAdapter._looks_like_pool_timeout(err) is True
+
+    def test_wrapped_httpx_pooltimeout_class(self):
+        try:
+            raise ConnectionError("inner")
+        except ConnectionError as inner:
+            err = Exception("Timed out")
+            err.__context__ = inner
+            assert TelegramAdapter._looks_like_pool_timeout(err) is False
+
+    def test_httpx_pooltimeout_class_name(self):
+        class FakePoolTimeout(Exception):
+            pass
+        err = Exception("Timed out")
+        err.__cause__ = FakePoolTimeout("x")
+        assert TelegramAdapter._looks_like_pool_timeout(err) is True
+
+    def test_generic_timeout_negative(self):
+        assert TelegramAdapter._looks_like_pool_timeout(Exception("Timed out")) is False
+        assert TelegramAdapter._looks_like_pool_timeout(Exception("Bad Gateway")) is False
+
+    def test_occupied_connection_pool_substring(self):
+        # Both substrings present -> match even without "pool timeout" phrasing.
+        assert TelegramAdapter._looks_like_pool_timeout(
+            Exception("All connections in the connection pool are occupied")
+        ) is True
+        # "occupied" alone (no "connection pool") must not match.
+        assert TelegramAdapter._looks_like_pool_timeout(
+            Exception("seat was occupied")
+        ) is False
+        # "connection pool" alone (no "occupied") must not match.
+        assert TelegramAdapter._looks_like_pool_timeout(
+            Exception("connection pool sizing")
+        ) is False
+
+
+class TestConnectTimeoutClassifier:
+    def test_class_name_match(self):
+        class FakeConnectTimeout(Exception):
+            pass
+        assert TelegramAdapter._looks_like_connect_timeout(FakeConnectTimeout("x")) is True
+
+    def test_message_match(self):
+        assert TelegramAdapter._looks_like_connect_timeout(
+            Exception("connect timeout")
+        ) is True
+        assert TelegramAdapter._looks_like_connect_timeout(
+            Exception("connect timed out")
+        ) is True
+
+    def test_wrapped_in_cause(self):
+        class FakeConnectTimeout(Exception):
+            pass
+        err = Exception("Timed out")
+        err.__cause__ = FakeConnectTimeout("x")
+        assert TelegramAdapter._looks_like_connect_timeout(err) is True
+
+    def test_generic_negative(self):
+        assert TelegramAdapter._looks_like_connect_timeout(Exception("Timed out")) is False
+
+
+@pytest.mark.asyncio
+async def test_drain_rebuilds_http_client_when_shutdown_hangs(monkeypatch):
+    """Hung aclose() must not leave initialize() as a no-op (#87057).
+
+    PTB's HTTPXRequest.initialize() only rebuilds when client.is_closed.
+    If shutdown() is abandoned on a CLOSE-WAIT socket, that flag stays
+    false and start_polling would reuse the dead getUpdates connection.
+    Drain must swap in a fresh client so the reconnect ladder is live.
+    """
+    adapter = _make_adapter()
+
+    class _FakeClient:
+        def __init__(self):
+            self.is_closed = False
+
+        async def aclose(self):
+            await asyncio.Event().wait()
+
+    class _FakePollingReq:
+        def __init__(self):
+            self._client = _FakeClient()
+            self.built = []
+
+        def _build_client(self):
+            client = _FakeClient()
+            self.built.append(client)
+            return client
+
+        async def shutdown(self):
+            await asyncio.Event().wait()
+
+        async def initialize(self):
+            if self._client.is_closed:
+                self._client = self._build_client()
+
+    polling_req = _FakePollingReq()
+    original = polling_req._client
+    mock_app = MagicMock()
+    mock_app.bot._request = (polling_req, MagicMock())
+    adapter._app = mock_app
+
+    monkeypatch.setattr(tg_adapter, "_DRAIN_TIMEOUT", 0.05)
+    await asyncio.wait_for(adapter._drain_polling_connections(), timeout=2.0)
+
+    assert polling_req.built, "drain must rebuild the HTTP client after hung aclose"
+    assert polling_req._client is not original
+    assert polling_req._client is polling_req.built[-1]
+
+
+@pytest.mark.asyncio
+async def test_drain_rebuild_does_not_block_loop_or_leak_cleanup_task(monkeypatch):
+    """The orphaned aclose() must be bounded and must not pin the event loop.
+
+    The stale client can absorb cancellation inside httpcore's shielded
+    scopes; the detached cleanup uses the wall-clock thread deadline so a
+    wedged close is abandoned instead of accumulating one leaked background
+    task per reconnect attempt (#87057 / #87265 review).
+    """
+    adapter = _make_adapter()
+
+    class _Client:
+        is_closed = False
+
+        async def aclose(self):
+            # Simulate httpcore cleanup that absorbs cancellation for a while.
+            # The detached cleanup must not stay registered forever.
+            for _ in range(20):
+                try:
+                    await asyncio.sleep(0.01)
+                except asyncio.CancelledError:
+                    continue
+
+    class _PollingRequest:
+        def __init__(self):
+            self._client = _Client()
+            self.rebuilt = []
+
+        def _build_client(self):
+            client = _Client()
+            self.rebuilt.append(client)
+            return client
+
+        async def shutdown(self):
+            await asyncio.Event().wait()
+
+        async def initialize(self):
+            # Mirrors PTB: initialize() does nothing while is_closed is false.
+            if self._client.is_closed:
+                self._client = self._build_client()
+
+    request = _PollingRequest()
+    original_client = request._client
+    app = MagicMock()
+    app.bot._request = (request, MagicMock())
+    adapter._app = app
+    monkeypatch.setattr(tg_adapter, "_DRAIN_TIMEOUT", 0.02)
+
+    ticks = 0
+
+    async def _ticker():
+        nonlocal ticks
+        while True:
+            ticks += 1
+            await asyncio.sleep(0.005)
+
+    ticker = asyncio.create_task(_ticker())
+    await adapter._drain_polling_connections()
+    ticker.cancel()
+    await asyncio.gather(ticker, return_exceptions=True)
+
+    assert request.rebuilt, "stale polling client must be replaced"
+    assert request._client is request.rebuilt[-1]
+    assert request._client is not original_client
+    assert ticks >= 2, "a wedged close must not block the asyncio event loop"
+
+    await asyncio.sleep(0.35)
+    assert not adapter._background_tasks, (
+        "stale-client cleanup must finish or abandon its own wedged close "
+        "without accumulating a background task"
+    )

@@ -41,6 +41,8 @@ interface DesktopIntegrationsParams {
   navigate: (to: string, options?: { replace?: boolean }) => void
   profileReady: boolean
   refreshSessions: () => Promise<unknown> | unknown
+  /** `display.resume_last_session`; `undefined` while the config record is still loading. */
+  resumeLastSession: boolean | undefined
   resumeExhaustedSessionId: null | string
   routedSessionId: null | string
   runtimeIdByStoredSessionId: { readonly current: Map<string, string> }
@@ -60,6 +62,7 @@ export function useDesktopIntegrations({
   navigate,
   profileReady,
   refreshSessions,
+  resumeLastSession,
   resumeExhaustedSessionId,
   routedSessionId,
   runtimeIdByStoredSessionId,
@@ -73,7 +76,12 @@ export function useDesktopIntegrations({
     // Background MCP health: HTTP/SSE servers only (never spawns stdio),
     // notifies on transitions into needs-auth/error with a Sign in action.
     startMcpHealthChecker()
-    const unsubscribe = window.hermesDesktop?.onOpenUpdatesRequested?.(() => openUpdatesWindow())
+    // The native "Check for Updates…" menu item lives in the app menu next to
+    // "About Hermes" — it is the OS-standard affordance for updating THIS app,
+    // so it always opens the client overlay. Inheriting the connection-mode
+    // default pointed a Mac at its remote Linux backend and left the app itself
+    // silently stale (#70266).
+    const unsubscribe = window.hermesDesktop?.onOpenUpdatesRequested?.(() => openUpdatesWindow('client'))
 
     return () => {
       unsubscribe?.()
@@ -105,6 +113,20 @@ export function useDesktopIntegrations({
       // Only cold-start navigation at the default route is replaceable; a deep
       // link or hidden-then-shown window keeps its explicit destination.
       if (locationPathname === NEW_CHAT_ROUTE) {
+        // display.resume_last_session (#60812): hold the latch until the config
+        // record answers, then either restore below or stay on the fresh chat.
+        // Remembered ids keep being written either way, so flipping the switch
+        // back on resumes from the very next launch.
+        if (resumeLastSession === undefined) {
+          return
+        }
+
+        if (!resumeLastSession) {
+          restoredRef.current = true
+
+          return
+        }
+
         const route = getRememberedRoute(activeProfile)
         const routeSession = route ? routeSessionId(route) : null
         const last = getRememberedSessionId(activeProfile)
@@ -163,7 +185,7 @@ export function useDesktopIntegrations({
     } else if (!routedSessionId && !isOverlayView(appViewForPath(locationPathname))) {
       setRememberedRoute(locationPathname, activeProfile)
     }
-  }, [activeProfile, locationPathname, navigate, profileReady, routedSessionId, sessions])
+  }, [activeProfile, locationPathname, navigate, profileReady, resumeLastSession, routedSessionId, sessions])
 
   useEffect(() => {
     if (!profileReady || !resumeExhaustedSessionId) {

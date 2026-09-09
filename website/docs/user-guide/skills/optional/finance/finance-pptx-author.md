@@ -15,7 +15,7 @@ Build PowerPoint decks headless with python-pptx.
 | | |
 |---|---|
 | Source | Optional — install with `hermes skills install official/finance/pptx-author` |
-| Path | `optional-skills/finance/pptx-author` |
+| Path | `optional-skills/finance\pptx-author` |
 | Version | `1.0.0` |
 | Author | Anthropic (adapted by Nous Research) |
 | License | Apache-2.0 |

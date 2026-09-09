@@ -19,6 +19,7 @@ from tools.skill_manager_tool import (
     _delete_skill,
     _write_file,
     _remove_file,
+    _find_skill,
     skill_manage,
 )
 from agent.skill_utils import (
@@ -199,6 +200,38 @@ class TestEditSkill:
         content = (tmp_path / "my-skill" / "SKILL.md").read_text()
         assert "Updated description" in content
 
+
+    def test_edit_existing_skill_by_categorized_path(self, tmp_path):
+        """Categorized names (``category/skill``) must resolve in skill_manage.
+
+        skill_view's ambiguity hint explicitly tells the caller to use the
+        full categorized path (``category/skill-name``), and skills_list
+        reports skills with their category. But ``_find_skill`` only matched
+        the bare directory name, so every skill_manage call that followed
+        that hint failed with "not found in active profile" — the agent then
+        retried repeatedly, burning LLM round trips (top recurring audit
+        finding). Resolution parity with skill_view is the fix.
+        """
+        with _skill_dir(tmp_path):
+            _create_skill("my-skill", VALID_SKILL_CONTENT, category="software-development")
+            result = _edit_skill("software-development/my-skill", VALID_SKILL_CONTENT_2)
+        assert result["success"] is True, result.get("error")
+        content = (tmp_path / "software-development" / "my-skill" / "SKILL.md").read_text()
+        assert "Updated description" in content
+
+    def test_find_skill_accepts_categorized_path(self, tmp_path):
+        with _skill_dir(tmp_path):
+            _create_skill("my-skill", VALID_SKILL_CONTENT, category="mlops")
+            found = _find_skill("mlops/my-skill")
+        assert found is not None
+        assert found["path"] == tmp_path / "mlops" / "my-skill"
+
+    def test_find_skill_bare_name_still_resolves_nested_skill(self, tmp_path):
+        with _skill_dir(tmp_path):
+            _create_skill("my-skill", VALID_SKILL_CONTENT, category="mlops")
+            found = _find_skill("my-skill")
+        assert found is not None
+        assert found["path"] == tmp_path / "mlops" / "my-skill"
 
     def test_edit_invalid_content_rejected(self, tmp_path):
         with _skill_dir(tmp_path):
@@ -802,7 +835,7 @@ class TestBackgroundOwnershipPolicyConsistency:
 
     @staticmethod
     def _bg_patch(tmp_path, name, old, new):
-        from tools.skill_manager_tool import mark_background_review_skill_read
+        from tools.skill_manager_guards import mark_background_review_skill_read
         from tools.skill_provenance import (
             BACKGROUND_REVIEW,
             reset_current_write_origin,
@@ -1075,7 +1108,7 @@ class TestCuratorConsolidationDeleteGuard:
     ):
         """A view in one tool worker authorizes a patch in the next worker."""
         from tools.skills_tool import skill_view
-        from tools.skill_manager_tool import _reset_background_review_read_marks
+        from tools.skill_manager_guards import _reset_background_review_read_marks
 
         _reset_background_review_read_marks()
         with _curator_pass(tmp_path, monkeypatch=monkeypatch):
@@ -1100,7 +1133,7 @@ class TestCuratorConsolidationDeleteGuard:
     ):
         """Copied tool contexts share only their own review's read marks."""
         from tools.skills_tool import skill_view
-        from tools.skill_manager_tool import _reset_background_review_read_marks
+        from tools.skill_manager_guards import _reset_background_review_read_marks
 
         _reset_background_review_read_marks()
         with _curator_pass(tmp_path, monkeypatch=monkeypatch):
@@ -1128,7 +1161,7 @@ class TestCuratorConsolidationDeleteGuard:
 
     def test_background_review_support_file_overwrite_requires_that_file_read(self, tmp_path, monkeypatch):
         from tools.skills_tool import skill_view
-        from tools.skill_manager_tool import _reset_background_review_read_marks
+        from tools.skill_manager_guards import _reset_background_review_read_marks
 
         _reset_background_review_read_marks()
         with _curator_pass(tmp_path, monkeypatch=monkeypatch):

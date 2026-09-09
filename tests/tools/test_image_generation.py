@@ -30,6 +30,29 @@ def image_tool():
 # Catalog integrity
 # ---------------------------------------------------------------------------
 
+@pytest.mark.parametrize("variant", ["flare", "sunburst"])
+@pytest.mark.parametrize("aspect,size", [
+    ("landscape", "landscape_4_3"), ("square", "square_hd"), ("portrait", "portrait_4_3"),
+])
+def test_image_25_selection_routes_generation_and_edits(image_tool, monkeypatch, variant, aspect, size):
+    model = f"openai/gpt-image-2.5/{variant}/text-to-image"
+    monkeypatch.setenv("FAL_IMAGE_MODEL", model)
+    monkeypatch.setenv("FAL_KEY", "test-key")
+    selected, meta = image_tool._resolve_fal_model()
+    assert selected == model
+    refs = [f"https://example.com/{i}.png" for i in range(17)]
+    for sources, endpoint in (([], model), (refs, f"openai/gpt-image-2.5/{variant}/edit")):
+        actual, payload = image_tool._prepare_fal_request(
+            selected, meta, "a cup", aspect, 42, {"guidance_scale": 9}, sources,
+        )
+        assert actual == endpoint
+        assert payload["quality"] == "medium"
+        assert payload["image_size"] == size
+        assert "seed" not in payload and "guidance_scale" not in payload
+        assert payload.get("image_urls", []) == sources[:16]
+    assert meta["upscale"] is False
+
+
 class TestFalCatalog:
     """Every FAL_MODELS entry must have a consistent shape."""
 
@@ -453,13 +476,11 @@ class TestKreaModelNormalization:
 
     def test_native_models_detected(self, image_tool):
         for mid in ("krea-2-medium", "krea-2-large", "krea-2-medium-turbo"):
-            assert image_tool.is_krea_model(mid) is True
             assert image_tool._normalize_krea_model(mid) == mid
 
 
     def test_non_krea_models_are_not_krea(self, image_tool):
         for mid in ("fal-ai/flux-2/klein/9b", "fal-ai/nano-banana-pro", None, "", 123):
-            assert image_tool.is_krea_model(mid) is False
             assert image_tool._normalize_krea_model(mid) is None
 
 

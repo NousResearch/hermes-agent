@@ -15,13 +15,13 @@ Parallel 4-agent cleanup of recent code changes.
 | | |
 |---|---|
 | Source | Bundled (installed by default) |
-| Path | `skills/software-development/simplify-code` |
+| Path | `skills/software-development\simplify-code` |
 | Version | `1.1.0` |
 | Author | Hermes Agent (inspired by Claude Code /simplify) |
 | License | MIT |
 | Platforms | linux, macos, windows |
 | Tags | `code-review`, `cleanup`, `refactor`, `delegation`, `subagent`, `parallel`, `simplify` |
-| Related skills | [`requesting-code-review`](/docs/user-guide/skills/bundled/software-development/software-development-requesting-code-review), [`test-driven-development`](/docs/user-guide/skills/bundled/software-development/software-development-test-driven-development), `plan` (now the built-in `/plan` command) |
+| Related skills | [`requesting-code-review`](/docs/user-guide/skills/bundled/software-development/software-development-requesting-code-review), [`test-driven-development`](/docs/user-guide/skills/bundled/software-development/software-development-test-driven-development) |
 
 ## Reference: full SKILL.md
 

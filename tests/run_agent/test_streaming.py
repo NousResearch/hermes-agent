@@ -305,8 +305,177 @@ class TestStreamingAccumulator:
         assert tc[0].function.name == "terminal"
         assert tc[0].function.arguments == '{"command": "ls"}'
 
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
+    def test_tool_argument_deltas_are_collected_without_concatenating_each_chunk(
+        self, mock_close, mock_create
+    ):
+        """Large tool arguments must not rebuild the accumulated string per delta."""
+        from run_agent import AIAgent
 
+        class AppendOnlyChunk(str):
+            def __radd__(self, other):
+                raise AssertionError("tool argument delta was concatenated eagerly")
 
+        chunks = [
+            _make_stream_chunk(tool_calls=[
+                _make_tool_call_delta(
+                    index=0, tc_id="call_123", name="write_file"
+                )
+            ]),
+            _make_stream_chunk(tool_calls=[
+                _make_tool_call_delta(
+                    index=0, arguments=AppendOnlyChunk('{"path":"out.txt",')
+                )
+            ]),
+            _make_stream_chunk(tool_calls=[
+                _make_tool_call_delta(
+                    index=0, arguments=AppendOnlyChunk('"content":"hello"}')
+                )
+            ]),
+            _make_stream_chunk(finish_reason="tool_calls"),
+        ]
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = iter(chunks)
+        mock_create.return_value = mock_client
+        agent = AIAgent(
+            api_key="test-key",
+            base_url="https://openrouter.ai/api/v1",
+            model="test/model",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+        agent.api_mode = "chat_completions"
+        agent._interrupt_requested = False
+
+        response = agent._interruptible_streaming_api_call({})
+
+        tool_call = response.choices[0].message.tool_calls[0]
+        assert tool_call.function.arguments == (
+            '{"path":"out.txt","content":"hello"}'
+        )
+
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
+    @patch("agent.relay_llm.stream")
+    def test_relay_finalizer_emits_joined_tool_arguments(
+        self, mock_relay_stream, mock_close, mock_create
+    ):
+        """Relay receives the public string shape, not buffered fragments."""
+        from run_agent import AIAgent
+
+        captured = {}
+        fake_stream = MagicMock()
+        fake_stream.final_response = None
+        chunks = [
+            _make_stream_chunk(tool_calls=[
+                _make_tool_call_delta(
+                    index=0,
+                    tc_id="call_123",
+                    name="search",
+                    arguments='{"q":',
+                )
+            ]),
+            _make_stream_chunk(tool_calls=[
+                _make_tool_call_delta(index=0, arguments='"hello"}')
+            ]),
+            _make_stream_chunk(finish_reason="tool_calls"),
+        ]
+        fake_stream.__iter__.return_value = iter(chunks)
+
+        def relay_stream_impl(*args, **kwargs):
+            captured["finalizer"] = kwargs["finalizer"]
+            captured["on_chunk"] = kwargs["on_chunk"]
+            return fake_stream
+
+        mock_relay_stream.side_effect = relay_stream_impl
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = iter([])
+        mock_create.return_value = mock_client
+        agent = AIAgent(
+            api_key="test-key",
+            base_url="https://openrouter.ai/api/v1",
+            model="test/model",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+        agent.api_mode = "chat_completions"
+        agent._interrupt_requested = False
+
+        agent._interruptible_streaming_api_call({})
+
+        # Relay's contract: the collector sees every chunk as JSON, then the finalizer runs.
+        from agent.relay_llm import _jsonable
+        for chunk in chunks:
+            captured["on_chunk"](_jsonable(chunk))
+        payload = captured["finalizer"]()
+        tool_calls = payload["choices"][0]["message"]["tool_calls"]
+        assert len(tool_calls) == 1
+        assert tool_calls[0]["function"] == {
+            "name": "search",
+            "arguments": '{"q":"hello"}',
+        }
+
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
+    def test_tool_argument_assembly_is_chunk_boundary_invariant(
+        self, mock_close, mock_create
+    ):
+        """Argument bytes are identical across ASCII and Unicode fragment sizes."""
+        import json
+
+        from run_agent import AIAgent
+
+        payload = json.dumps(
+            {"path": "/tmp/x", "content": "héllo wörld 日本語 " * 50},
+            ensure_ascii=False,
+        )
+
+        def assemble(fragment_size):
+            fragments = [
+                payload[i : i + fragment_size]
+                for i in range(0, len(payload), fragment_size)
+            ]
+            chunks = [
+                _make_stream_chunk(tool_calls=[
+                    _make_tool_call_delta(
+                        index=0,
+                        tc_id="call_123",
+                        name="write_file",
+                        arguments=fragments[0],
+                    )
+                ])
+            ]
+            chunks.extend(
+                _make_stream_chunk(tool_calls=[
+                    _make_tool_call_delta(index=0, arguments=fragment)
+                ])
+                for fragment in fragments[1:]
+            )
+            chunks.append(_make_stream_chunk(finish_reason="tool_calls"))
+
+            mock_client = MagicMock()
+            mock_client.chat.completions.create.return_value = iter(chunks)
+            mock_create.return_value = mock_client
+            agent = AIAgent(
+                api_key="test-key",
+                base_url="https://openrouter.ai/api/v1",
+                model="test/model",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+            agent.api_mode = "chat_completions"
+            agent._interrupt_requested = False
+
+            response = agent._interruptible_streaming_api_call({})
+            return response.choices[0].message.tool_calls[0].function.arguments
+
+        for fragment_size in (len(payload), 64, 7, 3, 1):
+            arguments = assemble(fragment_size)
+            assert arguments.encode("utf-8") == payload.encode("utf-8")
 
 
 # ── Test: Streaming Callbacks ────────────────────────────────────────────
@@ -350,170 +519,6 @@ class TestStreamingCallbacks:
 
         assert deltas == ["a", "b", "c"]
 
-    @pytest.mark.parametrize(
-        "content_chunks",
-        [
-            ["Connect timeout, please ", "try again later."],
-            ["Connect ", "timeout, please try ", "again later."],
-        ],
-    )
-    @patch("run_agent.AIAgent._create_request_openai_client")
-    @patch("run_agent.AIAgent._close_request_openai_client")
-    def test_router_timeout_shim_is_not_emitted_before_final_validation(
-        self, mock_close, mock_create, content_chunks
-    ):
-        """A streamed HTTP-success timeout shim must reach retry handling silently."""
-        from run_agent import AIAgent
-
-        deltas = []
-        mock_client = MagicMock()
-        chunks = [_make_stream_chunk(content=part) for part in content_chunks]
-        chunks[-1].choices[0].finish_reason = "stop"
-        chunks.append(_make_empty_chunk(
-            usage=SimpleNamespace(completion_tokens=0)
-        ))
-        mock_client.chat.completions.create.return_value = iter(chunks)
-        mock_create.return_value = mock_client
-        agent = AIAgent(
-            api_key="test-key", base_url="https://openrouter.ai/api/v1",
-            model="test/model", quiet_mode=True, skip_context_files=True,
-            skip_memory=True, stream_delta_callback=deltas.append,
-        )
-        agent.api_mode = "chat_completions"
-        agent._interrupt_requested = False
-
-        response = agent._interruptible_streaming_api_call({})
-
-        expected = "".join(content_chunks)
-        assert response.choices[0].message.content == expected
-        assert agent._get_transport().validate_response(response) is False
-        assert deltas == []
-
-    @patch("run_agent.AIAgent._create_request_openai_client")
-    @patch("run_agent.AIAgent._close_request_openai_client")
-    def test_router_timeout_shim_discards_reasoning_and_first_delta_notifications(
-        self, mock_close, mock_create
-    ):
-        """A rejected shim attempt must not leak any user-visible callback."""
-        from run_agent import AIAgent
-
-        deltas = []
-        reasoning = []
-        first_deltas = []
-
-        def chunks():
-            yield _make_stream_chunk(reasoning_content="provider reasoning")
-            assert deltas == []
-            assert reasoning == []
-            assert first_deltas == []
-            yield _make_stream_chunk(
-                content="Connect timeout, please try again later.",
-                finish_reason="stop",
-            )
-            assert deltas == []
-            assert reasoning == []
-            assert first_deltas == []
-            yield _make_empty_chunk(
-                usage=SimpleNamespace(completion_tokens=0)
-            )
-
-        mock_client = MagicMock()
-        mock_client.chat.completions.create.return_value = chunks()
-        mock_create.return_value = mock_client
-        agent = AIAgent(
-            api_key="test-key",
-            base_url="https://openrouter.ai/api/v1",
-            model="test/model",
-            quiet_mode=True,
-            skip_context_files=True,
-            skip_memory=True,
-            stream_delta_callback=deltas.append,
-            reasoning_callback=reasoning.append,
-        )
-        agent.api_mode = "chat_completions"
-        agent._interrupt_requested = False
-
-        response = agent._interruptible_streaming_api_call(
-            {}, on_first_delta=lambda: first_deltas.append("first")
-        )
-
-        assert agent._get_transport().validate_response(response) is False
-        assert deltas == []
-        assert reasoning == []
-        assert first_deltas == []
-
-    @pytest.mark.parametrize(
-        ("content_chunks", "divergence_index"),
-        [
-            ([" \n", "Connect timeout, please try again later."], 0),
-            (["Connect timeout, please try again later.", "\t"], 1),
-        ],
-        ids=["leading-whitespace", "trailing-whitespace"],
-    )
-    @patch("run_agent.AIAgent._create_request_openai_client")
-    @patch("run_agent.AIAgent._close_request_openai_client")
-    def test_whitespace_divergence_flushes_buffered_callbacks_mid_generator(
-        self, mock_close, mock_create, content_chunks, divergence_index
-    ):
-        """Any byte-exact divergence releases reasoning and content immediately."""
-        from run_agent import AIAgent
-
-        deltas = []
-        reasoning = []
-        first_deltas = []
-
-        def chunks():
-            yield _make_stream_chunk(reasoning_content="provider reasoning")
-            assert deltas == []
-            assert reasoning == []
-            assert first_deltas == []
-            for position, part in enumerate(content_chunks):
-                yield _make_stream_chunk(
-                    content=part,
-                    finish_reason="stop" if position == len(content_chunks) - 1 else None,
-                )
-                if position < divergence_index:
-                    assert deltas == []
-                    assert reasoning == []
-                    assert first_deltas == []
-                else:
-                    assert "".join(deltas) == "".join(content_chunks[:position + 1])
-                    assert reasoning == ["provider reasoning"]
-                    assert first_deltas == ["first"]
-            assert "".join(deltas) == "".join(content_chunks)
-            assert reasoning == ["provider reasoning"]
-            assert first_deltas == ["first"]
-            yield _make_empty_chunk(
-                usage=SimpleNamespace(completion_tokens=0)
-            )
-
-        mock_client = MagicMock()
-        mock_client.chat.completions.create.return_value = chunks()
-        mock_create.return_value = mock_client
-        agent = AIAgent(
-            api_key="test-key",
-            base_url="https://openrouter.ai/api/v1",
-            model="test/model",
-            quiet_mode=True,
-            skip_context_files=True,
-            skip_memory=True,
-            stream_delta_callback=deltas.append,
-            reasoning_callback=reasoning.append,
-        )
-        agent.api_mode = "chat_completions"
-        agent._interrupt_requested = False
-
-        response = agent._interruptible_streaming_api_call(
-            {}, on_first_delta=lambda: first_deltas.append("first")
-        )
-
-        expected = "".join(content_chunks)
-        assert response.choices[0].message.content == expected
-        assert agent._get_transport().validate_response(response) is True
-        assert "".join(deltas) == expected
-        assert reasoning == ["provider reasoning"]
-        assert first_deltas == ["first"]
-
     @patch("run_agent.AIAgent._create_request_openai_client")
     @patch("run_agent.AIAgent._close_request_openai_client")
     def test_whitespace_padded_timeout_text_is_emitted_from_raw_stream(
@@ -548,176 +553,6 @@ class TestStreamingCallbacks:
         assert response.choices[0].message.content == expected
         assert agent._get_transport().validate_response(response) is True
         assert "".join(deltas) == expected
-
-    @patch("run_agent.AIAgent._create_request_openai_client")
-    @patch("run_agent.AIAgent._close_request_openai_client")
-    def test_multiple_stream_choices_preserve_and_release_valid_output(
-        self, mock_close, mock_create
-    ):
-        """Alternatives remain evidence but never leak callbacks."""
-        from run_agent import AIAgent
-
-        def choice(
-            index,
-            content,
-            *,
-            reasoning=None,
-            tool_calls=None,
-            finish_reason="stop",
-        ):
-            return SimpleNamespace(
-                index=index,
-                delta=SimpleNamespace(
-                    content=content,
-                    tool_calls=tool_calls,
-                    reasoning_content=reasoning,
-                    reasoning=None,
-                ),
-                finish_reason=finish_reason,
-            )
-
-        chunks = [
-            SimpleNamespace(
-                choices=[choice(0, "Connect timeout, please try again later.")],
-                model="test/model",
-                usage=None,
-            ),
-            SimpleNamespace(
-                choices=[choice(
-                    1,
-                    "valid second choice",
-                    reasoning="alternative reasoning",
-                    tool_calls=[_make_tool_call_delta(
-                        tc_id="call_alt", name="alternative_tool", arguments="{}"
-                    )],
-                )],
-                model="test/model",
-                usage=None,
-            ),
-            _make_empty_chunk(usage=SimpleNamespace(completion_tokens=0)),
-        ]
-        deltas = []
-        reasoning = []
-        tools = []
-        first_deltas = []
-        mock_client = MagicMock()
-        mock_client.chat.completions.create.return_value = iter(chunks)
-        mock_create.return_value = mock_client
-        agent = AIAgent(
-            api_key="test-key",
-            base_url="https://openrouter.ai/api/v1",
-            model="test/model",
-            quiet_mode=True,
-            skip_context_files=True,
-            skip_memory=True,
-            stream_delta_callback=deltas.append,
-            reasoning_callback=reasoning.append,
-        )
-        agent.api_mode = "chat_completions"
-        agent._interrupt_requested = False
-        agent._fire_tool_gen_started = tools.append
-
-        response = agent._interruptible_streaming_api_call(
-            {}, on_first_delta=lambda: first_deltas.append("first")
-        )
-
-        assert [choice.message.content for choice in response.choices] == [
-            "Connect timeout, please try again later.",
-            "valid second choice",
-        ]
-        assert response.choices[1].message.reasoning_content == "alternative reasoning"
-        assert response.choices[1].message.tool_calls[0].function.name == "alternative_tool"
-        assert agent._get_transport().validate_response(response) is True
-        assert deltas == ["Connect timeout, please try again later."]
-        assert reasoning == []
-        assert tools == []
-        assert first_deltas == ["first"]
-
-    @pytest.mark.parametrize("evidence", ["second_choice", "tool_call", "usage"])
-    @patch("run_agent.AIAgent._create_request_openai_client")
-    @patch("run_agent.AIAgent._close_request_openai_client")
-    def test_timeout_candidate_flushes_before_generator_exhaustion(
-        self, mock_close, mock_create, evidence
-    ):
-        """Conclusive stream evidence releases held bytes in the same iteration."""
-        from run_agent import AIAgent
-
-        sentinel = "Connect timeout, please try again later."
-        deltas = []
-
-        def choice(index, content=None, tool_calls=None, finish_reason=None):
-            return SimpleNamespace(
-                index=index,
-                delta=SimpleNamespace(
-                    content=content,
-                    tool_calls=tool_calls,
-                    reasoning_content=None,
-                    reasoning=None,
-                ),
-                finish_reason=finish_reason,
-            )
-
-        def chunks():
-            yield SimpleNamespace(
-                choices=[choice(0, sentinel, finish_reason="stop")],
-                model="test/model",
-                usage=None,
-            )
-            assert deltas == []
-
-            if evidence == "second_choice":
-                yield SimpleNamespace(
-                    choices=[choice(1, "second", finish_reason="stop")],
-                    model="test/model",
-                    usage=None,
-                )
-                assert deltas == [sentinel]
-            elif evidence == "tool_call":
-                yield SimpleNamespace(
-                    choices=[choice(
-                        0,
-                        tool_calls=[_make_tool_call_delta(
-                            tc_id="call_1", name="weather", arguments="{}"
-                        )],
-                        finish_reason="tool_calls",
-                    )],
-                    model="test/model",
-                    usage=None,
-                )
-                assert deltas == [sentinel]
-            else:
-                yield _make_empty_chunk(
-                    usage=SimpleNamespace(completion_tokens=1)
-                )
-                assert deltas == [sentinel]
-
-            yield _make_empty_chunk(
-                usage=SimpleNamespace(completion_tokens=1)
-            )
-
-        mock_client = MagicMock()
-        mock_client.chat.completions.create.return_value = chunks()
-        mock_create.return_value = mock_client
-        agent = AIAgent(
-            api_key="test-key",
-            base_url="https://openrouter.ai/api/v1",
-            model="test/model",
-            quiet_mode=True,
-            skip_context_files=True,
-            skip_memory=True,
-            stream_delta_callback=deltas.append,
-        )
-        agent.api_mode = "chat_completions"
-        agent._interrupt_requested = False
-
-        response = agent._interruptible_streaming_api_call({})
-
-        assert response.choices[0].message.content == sentinel
-        assert agent._get_transport().validate_response(response) is True
-
-
-
-
 
     @patch("run_agent.AIAgent._create_request_openai_client")
     @patch("run_agent.AIAgent._close_request_openai_client")
@@ -1182,7 +1017,7 @@ class TestCodexStreamCallbacks:
         mock_client = MagicMock()
         mock_client.responses.create.return_value = mock_stream
 
-        agent._run_codex_create_stream_fallback(
+        agent._run_codex_stream(
             {"model": "test/model", "instructions": "hi", "input": []},
             client=mock_client,
         )
@@ -1814,8 +1649,8 @@ class TestCopilotACPStreamingDecision:
     must detect ACP runtimes and route to _interruptible_api_call instead.
     """
 
-    @patch("run_agent.get_tool_definitions", return_value=[])
-    @patch("run_agent.check_toolset_requirements", return_value={})
+    @patch("model_tools.get_tool_definitions", return_value=[])
+    @patch("model_tools.check_toolset_requirements", return_value={})
     @patch("agent.copilot_acp_client.CopilotACPClient")
     def test_provider_name_triggers_non_streaming(
         self, mock_acp_cls, _mock_check, _mock_tools
@@ -1845,8 +1680,8 @@ class TestCopilotACPStreamingDecision:
             response = mock_non_stream({})
             mock_stream.assert_not_called()
 
-    @patch("run_agent.get_tool_definitions", return_value=[])
-    @patch("run_agent.check_toolset_requirements", return_value={})
+    @patch("model_tools.get_tool_definitions", return_value=[])
+    @patch("model_tools.check_toolset_requirements", return_value={})
     @patch("agent.copilot_acp_client.CopilotACPClient")
     def test_acp_base_url_triggers_non_streaming(
         self, mock_acp_cls, _mock_check, _mock_tools

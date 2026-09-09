@@ -13,6 +13,8 @@ import {
   NO_PROJECT_ID,
   overlayLiveLanes,
   overlayLivePreviews,
+  reconcileEnteredProjectSessions,
+  sessionMatchesProjectFilter,
   sessionProjectColor,
   type SidebarProjectTree,
   type SidebarSessionGroup,
@@ -613,6 +615,59 @@ describe('sessionProjectColor', () => {
 })
 
 describe('overlayLiveLanes', () => {
+  it('keeps an overview preview visible when the hydrated drill-in is stale', () => {
+    const staleHistory = makeCwdSession('/www/app', {
+      id: 'stale-history',
+      git_branch: 'main',
+      last_active: 10
+    })
+
+    const currentPreview = makeCwdSession('/www/app', {
+      id: 'current-preview',
+      git_branch: 'main',
+      last_active: 20
+    })
+
+    const project = projectNode({
+      id: '/www/app',
+      isAuto: true,
+      previewSessions: [currentPreview],
+      repos: [
+        {
+          id: '/www/app',
+          label: 'app',
+          path: '/www/app',
+          sessionCount: 1,
+          groups: [
+            lane({
+              id: '/www/app::branch::main',
+              label: 'main',
+              isMain: true,
+              path: '/www/app',
+              sessions: [staleHistory]
+            })
+          ]
+        }
+      ]
+    })
+
+    const overlaySessions = reconcileEnteredProjectSessions([], project.previewSessions)
+    const overlaid = overlayLiveLanes(project, overlaySessions)
+
+    expect(overlaid.repos[0].groups[0].sessions.map(session => session.id)).toEqual([
+      'current-preview',
+      'stale-history'
+    ])
+  })
+
+  it('keeps the live row when it is also present in the overview preview', () => {
+    const live = makeCwdSession('/www/app', { id: 'same', title: 'live title' })
+    const preview = makeCwdSession('/www/app', { id: 'same', title: 'preview title' })
+    const reconciled = reconcileEnteredProjectSessions([live], [preview])
+
+    expect(reconciled).toEqual([live])
+  })
+
   it('injects a live session into the matching main lane instantly', () => {
     const project = projectNode({
       id: '/www/app',
@@ -1175,5 +1230,21 @@ describe('excludeProjectSessions', () => {
     const overlaid = overlayLiveLanes(filtered, [], new Set(['someone-else']))
 
     expect(overlaid.repos[0].groups.map(g => g.id)).toEqual(['wt'])
+  })
+})
+
+describe('project filter row rule (#97762)', () => {
+  const projects = [makeProject('p_app', ['/www/app'])]
+  const appRow = makeCwdSession('/www/app/src', { git_repo_root: '/www/app' })
+  const homeRow = makeCwdSession(null)
+
+  it('filtering to Home keeps the detached Home rows', () => {
+    expect(sessionMatchesProjectFilter(homeRow, [NO_PROJECT_ID], projects)).toBe(true)
+    expect(sessionMatchesProjectFilter(appRow, [NO_PROJECT_ID], projects)).toBe(false)
+  })
+
+  it('a live id still narrows', () => {
+    expect(sessionMatchesProjectFilter(appRow, ['p_app'], projects)).toBe(true)
+    expect(sessionMatchesProjectFilter(homeRow, ['p_app'], projects)).toBe(false)
   })
 })

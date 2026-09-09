@@ -22,4 +22,11 @@ def build_doctor_parser(subparsers, *, cmd_doctor: Callable) -> None:
         help="Acknowledge a security advisory by ID and exit. After ack, the "
             "advisory will no longer trigger startup banners. Run `hermes "
             "doctor` first to see active advisories and their IDs.")
+    doctor_parser.add_argument(
+        "--upgrade-node", nargs="?", const="<newest>", default=None, metavar="MAJOR",
+        help="Upgrade the Hermes-managed Node.js runtime. Bare flag targets the newest major "
+            "this checkout's package.json engines.node allows; pass a MAJOR (e.g. "
+            "--upgrade-node=24) to target a specific one — refused if engines.node doesn't allow "
+            "it. Rebuilds node_modules/web afterward. Exits without changes if no such upgrade "
+            "path is possible.")
     doctor_parser.set_defaults(func=cmd_doctor)

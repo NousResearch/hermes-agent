@@ -907,6 +907,39 @@ class TestWriteConfigMergesOntoDisk:
         assert out["apiKey"] == "hch-at-new" and out["oauth"] == {"refreshToken": "hch-rt-new"}
         assert out["peerName"] == "alice" and out["recallMode"] == "tools"
 
+    _SEED = {"dialecticCadence": 3, "hosts": {"hermes": {"peerName": "alice"}}}
+
+    def _seeded(self, monkeypatch, tmp_path):
+        seed, local = tmp_path / "seed.json", tmp_path / "honcho.json"
+        seed.write_text(json.dumps(self._SEED))
+        return _point_cli_at(monkeypatch, local, _config_path=lambda: seed, _host_key=lambda: "hermes"), local
+
+    def test_a_read_seeded_from_another_file_applies_only_its_edits_onto_the_local_file(self, monkeypatch, tmp_path):
+        import plugins.memory.honcho.oauth as oauth
+        honcho_cli, local = self._seeded(monkeypatch, tmp_path)
+        cfg = honcho_cli._read_config()
+        grant = {"access_token": "hch-at-login", "refresh_token": "hch-rt-login", "expires_in": 3600}
+        cred = oauth.install_grant(local, "hermes", grant, client_id="c", token_endpoint="e", apply_config=False)
+        honcho_cli._apply_grant_to_host(cfg, cfg["hosts"]["hermes"], cred)
+        rotated = oauth.OAuthCredential.from_token_response(
+            {"access_token": "hch-at-new", "refresh_token": "hch-rt-new", "expires_in": 3600},
+            now=0.0, client_id="c", token_endpoint="e")
+        oauth._persist_credential(local, "hermes", rotated)
+        cfg["hosts"]["hermes"]["recallMode"] = "tools"
+        honcho_cli._write_config(cfg)
+        out = json.loads(local.read_text())
+        assert out["hosts"]["hermes"]["apiKey"] == "hch-at-new"
+        assert out["hosts"]["hermes"]["oauth"]["refreshToken"] == "hch-rt-new"
+        assert out["hosts"]["hermes"]["recallMode"] == "tools" and out["hosts"]["hermes"]["peerName"] == "alice"
+        assert out["dialecticCadence"] == 3
+
+    def test_a_read_seeded_from_another_file_is_written_whole_while_no_local_file_exists(self, monkeypatch, tmp_path):
+        honcho_cli, local = self._seeded(monkeypatch, tmp_path)
+        cfg = honcho_cli._read_config()
+        cfg["hosts"]["hermes"]["recallMode"] = "tools"
+        honcho_cli._write_config(cfg)
+        assert json.loads(local.read_text()) == {"dialecticCadence": 3, "hosts": {"hermes": {"peerName": "alice", "recallMode": "tools"}}}
+
     @pytest.mark.parametrize("build", [lambda cli: {"hosts": {"other": {"apiKey": "o"}}}, lambda cli: dict(cli._read_config())],
                              ids=["never read", "rebuilt from the read"])
     def test_a_plain_dict_is_written_whole(self, monkeypatch, tmp_path, build):

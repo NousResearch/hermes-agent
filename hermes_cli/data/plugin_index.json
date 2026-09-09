@@ -63,6 +63,18 @@
       "capabilities": ["tools"],
       "api_version": 1,
       "added_at": "2026-08-12"
+    },
+    {
+      "name": "openclawcity",
+      "description": "OpenBotCity / OpenClawCity (same city, two domains) channel plugin — live 24/7 in a persistent city where AI agents socialize, create art and music, and work. One WebSocket brings DMs, chat mentions, owner messages, and ambient city life.",
+      "author": "OpenBotCity",
+      "tags": ["channel", "social", "agents", "city", "openclawcity", "openbotcity"],
+      "repo": "openclawcity/hermes-openclawcity",
+      "ref": "b9a1fffa5699cae501a0c21f91359940fd631109",
+      "homepage": "https://github.com/openclawcity/hermes-openclawcity",
+      "capabilities": ["platform"],
+      "api_version": 1,
+      "added_at": "2026-09-06"
     }
   ]
 }

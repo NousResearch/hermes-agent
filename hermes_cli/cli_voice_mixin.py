@@ -310,7 +310,7 @@ class CLIVoiceMixin:
             # provider request limits and long-form chunking.
             try:
                 from tools.tts_text_normalize import prepare_spoken_text
-                tts_text = prepare_spoken_text(text, max_chars=None)
+                tts_text = prepare_spoken_text(text, max_chars=None, preserve_paragraphs=True)
             except Exception:
                 # Legacy fallback pipeline — keep voice replies best-effort.
                 tts_text = re.sub(r'```[\s\S]*?```', ' ', text)   # fenced code blocks

@@ -7,7 +7,7 @@ import {
 import { useEffect, useRef } from 'react'
 
 import { shouldApplyPostBootProgressError } from '@/components/boot-failure-reauth'
-import type { HermesConnection } from '@/global'
+import type { DesktopBootProgress, HermesConnection } from '@/global'
 import { HermesGateway } from '@/hermes'
 import { translateNow } from '@/i18n'
 import { desktopDefaultCwd } from '@/lib/desktop-fs'
@@ -64,6 +64,7 @@ import {
   $activeSessionId,
   $connection,
   $currentCwd,
+  $gatewayState,
   $selectedStoredSessionId,
   $sessions,
   ensureDefaultWorkspaceCwd,
@@ -243,6 +244,21 @@ export function useGatewayBoot({
     // tick — a stale OAuth ticket fails every attempt and would otherwise stack
     // identical error toasts (and their haptics). Reset on the next clean open.
     let reauthNotified = false
+    // ponytail: only postboot primary auth belongs here; cold-start errors stay global.
+    let primaryReauthError: string | null = null
+
+    const syncPrimaryReauthError = () => {
+      if (!bootCompleted || !primaryReauthError) {
+        return
+      }
+
+      if (isActivePrimary()) {
+        failDesktopBoot(primaryReauthError)
+      } else if (activeGateway()?.connectionState === 'open' && $desktopBoot.get().error === primaryReauthError) {
+        completeDesktopBoot()
+      }
+    }
+
     // Raised once the reconnect loop has been failing for
     // RECONNECT_ESCALATE_AFTER_MS so we fire a single non-blocking toast.
     // Reset on a clean open or a manual/wake-driven reconnect.
@@ -407,10 +423,13 @@ export function useGatewayBoot({
         // through to the backoff in the finally block below — they must NOT
         // take the full-screen "couldn't start" path (locks reading/drafting).
         if (!cancelled && isGatewayReauthRequired(err) && !reauthNotified) {
-          reauthNotified = true
-          const message = err instanceof Error ? err.message : String(err)
-          failDesktopBoot(message)
-          notifyError(err, translateNow('boot.errors.gatewaySignInRequired'))
+          primaryReauthError = err instanceof Error ? err.message : String(err)
+          syncPrimaryReauthError()
+
+          if (isActivePrimary()) {
+            reauthNotified = true
+            notifyError(err, translateNow('boot.errors.gatewaySignInRequired'))
+          }
         }
       } finally {
         reconnecting = false
@@ -604,6 +623,7 @@ export function useGatewayBoot({
         reconnectFailingSince = null
         escalated = false
         reauthNotified = false
+        primaryReauthError = null
 
         gateway.close()
         // The primary mode is changing, but registered v2 sources remain
@@ -709,7 +729,11 @@ export function useGatewayBoot({
       }
     }
 
-    const offBootProgress = desktop.onBootProgress(payload => {
+    const onBootProgress = (payload: DesktopBootProgress) => {
+      if (cancelled) {
+        return
+      }
+
       // Soft switch / post-boot startHermes re-emits progress — ignore so the
       // cold-boot CONNECTING overlay stays down. Post-boot errors are gated:
       // only confirmed reauth takes the full-screen recovery surface. Transient
@@ -717,18 +741,26 @@ export function useGatewayBoot({
       // (otherwise a 1–3 min blip bricks reading/drafting behind "couldn't start").
       if ($gatewaySwitching.get() || bootCompleted) {
         if (payload.error && shouldApplyPostBootProgressError(payload.error)) {
-          applyDesktopBootProgress(payload)
+          primaryReauthError = payload.error
+
+          if (bootCompleted) {
+            syncPrimaryReauthError()
+          } else {
+            applyDesktopBootProgress(payload)
+          }
         }
 
         return
       }
 
       applyDesktopBootProgress(payload)
-    })
+    }
+
+    const offBootProgress = desktop.onBootProgress(onBootProgress)
 
     void desktop
       .getBootProgress()
-      .then(snapshot => applyDesktopBootProgress(snapshot))
+      .then(onBootProgress)
       .catch(() => undefined)
 
     setDesktopBootStep({
@@ -820,6 +852,9 @@ export function useGatewayBoot({
       }
     })
 
+    const offActiveGatewayReauth = $gateway.listen(syncPrimaryReauthError)
+    const offActiveStateReauth = $gatewayState.listen(syncPrimaryReauthError)
+
     const offState = gateway.onState(st => {
       // Mirror to the composer only while the primary is the active profile —
       // a background secondary reconnect mustn't flip the foreground state.
@@ -829,6 +864,7 @@ export function useGatewayBoot({
         reconnectAttempt = 0
         reconnectFailingSince = null
         reauthNotified = false
+        primaryReauthError = null
         escalated = false
         livenessProbeFailures = 0
         clearReconnectTimer()
@@ -1224,6 +1260,8 @@ export function useGatewayBoot({
       offConnectionApplied?.()
       offConnectionsChanged?.()
       offGatewayReconnect()
+      offActiveGatewayReauth()
+      offActiveStateReauth()
       offState()
       offEvent()
       offExit()

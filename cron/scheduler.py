@@ -2819,9 +2819,20 @@ def _finish_completed_run(d: _RunDelivery, fire_owner: Optional[str], execution_
         mark_kwargs["status"] = "blocked_config"
     marked = mark_job_run(job["id"], d.success, d.error, **mark_kwargs)
     if not marked:
-        error = "Cron terminal metadata write failed: mark_job_run did not persist jobs.json"
-        finish_execution(execution_id, success=False, error=error)
-        logger.error("Job %s terminal metadata was not persisted; failing closed", job["id"])
+        # Preserve the fire-claim CAS contract: a fenced completion that no
+        # longer owns its claim must be recorded as ownership loss, not as a
+        # generic metadata failure.  Unfenced runs use the C2 fail-closed
+        # metadata error so a ledger success can never outlive jobs.json.
+        if fire_owner is not None:
+            finish_execution(
+                execution_id,
+                success=False,
+                error="Fire claim ownership lost before terminal completion.",
+            )
+        else:
+            error = "Cron terminal metadata write failed: mark_job_run did not persist jobs.json"
+            finish_execution(execution_id, success=False, error=error)
+            logger.error("Job %s terminal metadata was not persisted; failing closed", job["id"])
         return True
     delivery_outcome = _classify_delivery_outcome(
         delivery_error=d.delivery_error,

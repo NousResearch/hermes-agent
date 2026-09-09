@@ -63,6 +63,12 @@ def _general(audit_reason: str) -> SpecialistRouteDecision:
     return SpecialistRouteDecision(kind=RouteKind.GENERAL, audit_reason=audit_reason)
 
 
+_NEGATION_RE = re.compile(
+    r"\b(?:do\s*not|don'?t|never|stop|avoid|shouldn'?t|should\s*not|won'?t|will\s*not|"
+    r"no\s+need\s+to|please\s+don'?t|didn'?t|hasn'?t|has\s*not|isn'?t)\b"
+)
+
+
 def classify_explicit_burndown_patch_request(request: str) -> Optional[SpecialistRouteDecision]:
     """Route the one unambiguous exception-burndown instruction without an LLM.
 
@@ -76,11 +82,13 @@ def classify_explicit_burndown_patch_request(request: str) -> Optional[Specialis
     if not isinstance(request, str):
         return None
     normalized = " ".join(request.casefold().split())
-    if (
-        "exception" not in normalized
-        or "burndown" not in normalized
-        or re.search(r"\bpatch(?:es|ed|ing)?\b", normalized) is None
-    ):
+    patch_match = re.search(r"\bpatch(?:es|ed|ing)?\b", normalized)
+    if "exception" not in normalized or "burndown" not in normalized or patch_match is None:
+        return None
+    # A question or a negation preceding the patch verb ("Do not patch...",
+    # "Why hasn't this been patched?") is not an affirmative work request;
+    # leave it to the classifier or normal chat instead of misfiring here.
+    if normalized.endswith("?") or _NEGATION_RE.search(normalized[: patch_match.start()]):
         return None
     return SpecialistRouteDecision(
         kind=RouteKind.SPECIALIST,

@@ -4448,7 +4448,30 @@ class TestSessionPinAndStaleArchive:
         assert db.set_session_pinned("s1", False) is True
         assert self._pinned(db, "s1") == 0
 
+    def test_pinning_a_hidden_session_makes_it_listable(self, db):
+        """A bot-tile session is born hidden (#106171). Pinning it must clear ``hidden``, or the
+        session is pinned-but-invisible: absent from both the default listing and the back-fill."""
+        db.create_session(session_id="s1", source="cli")
+        db.append_message(session_id="s1", role="user", content="hi")
+        db.set_session_hidden("s1", True)
 
+        db.set_session_pinned("s1", True)
+
+        assert db.get_session("s1")["hidden"] == 0
+        listed_ids = [s["id"] for s in db.list_sessions_rich(min_message_count=1)]
+        assert "s1" in listed_ids
+
+    def test_pinning_the_canonical_bot_chat_leaves_it_hidden(self, db):
+        """The canonical Bot Chat (hidden + exact registry title) is desktop-owned and must stay
+        hidden even when pinned, or it leaks into the Sessions sidebar and loses its rename guard
+        (review on #106180). Unlike an ordinary hidden session, pinning must not clear ``hidden``."""
+        db.create_session(session_id="bot1", source="desktop")
+        db.set_session_title("bot1", db.CANONICAL_BOT_CHAT_TITLE)
+        db.set_session_hidden("bot1", True)
+
+        db.set_session_pinned("bot1", True)
+
+        assert db.get_session("bot1")["hidden"] == 1
 
     # ── pinned back-fill past the page window ─────────────────────────────
     def test_pinned_session_survives_the_limit_window(self, db):

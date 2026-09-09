@@ -352,6 +352,24 @@ def _sdk_omit_sentinel(sdk) -> Optional[Any]:
     return Omit()
 
 
+def _header_stripping_http_client(kwargs: Dict[str, Any], header: str):
+    """An ``httpx.Client`` that deletes ``header`` from every outgoing request. Copy-safe
+    fallback for :func:`_new_sdk_client` when the SDK's ``Omit`` sentinel is unavailable: the
+    SDK copies ``http_client`` into every ``with_options()``/``copy()`` clone (see its
+    ``copy()``), so the strip applies to the original client and all copies, with no dependency
+    on the SDK's header-omission internals. Mirrors the custom-client pattern already used by
+    :func:`_build_anthropic_client_with_bearer_hook`."""
+    import httpx
+    target = header.lower()
+
+    def _strip(request: "httpx.Request") -> None:
+        # httpx headers are case-insensitive; pop by any casing the SDK wrote.
+        for name in [k for k in request.headers if k.lower() == target]:
+            del request.headers[name]
+
+    return httpx.Client(timeout=kwargs.get("timeout"), event_hooks={"request": [_strip]})
+
+
 def _new_sdk_client(sdk, kwargs: Dict[str, Any], headers: Dict[str, str]):
     """``sdk.Anthropic(**kwargs)`` with ``headers`` attached. Bearer-only construction leaves
     ``api_key`` unset, so the SDK fills it from ANTHROPIC_API_KEY (loaded from ~/.hermes/.env) and
@@ -359,7 +377,7 @@ def _new_sdk_client(sdk, kwargs: Dict[str, Any], headers: Dict[str, str]):
     request; clear it whenever we intentionally authenticated via auth_token. Api-key-only
     construction has the mirror problem: the SDK fills ``auth_token`` from ANTHROPIC_AUTH_TOKEN in
     the environment and ships that Bearer credential to third-party Anthropic-compatible endpoints
-    alongside x-api-key — clear it whenever we intentionally authenticated via api_key."""
+    alongside x-api-key — suppress it whenever we intentionally authenticated via api_key."""
     if headers:
         kwargs["default_headers"] = headers
     if "api_key" in kwargs and "auth_token" not in kwargs:
@@ -372,6 +390,12 @@ def _new_sdk_client(sdk, kwargs: Dict[str, Any], headers: Dict[str, str]):
             merged = dict(kwargs.get("default_headers") or {})
             merged["Authorization"] = omit
             kwargs["default_headers"] = merged
+        elif "http_client" not in kwargs:
+            # Omit unavailable (old/exotic SDK): do NOT fall through to a client that leaks the
+            # env-derived Bearer. Fail closed onto a copy-safe request hook that strips
+            # Authorization on the wire — http_client propagates through with_options()/copy(),
+            # so the original client and every copy are covered.
+            kwargs["http_client"] = _header_stripping_http_client(kwargs, "Authorization")
     client = sdk.Anthropic(**kwargs)
     if "auth_token" in kwargs and "api_key" not in kwargs:
         client.api_key = None

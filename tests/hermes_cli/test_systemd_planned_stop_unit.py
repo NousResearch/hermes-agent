@@ -26,7 +26,7 @@ def test_system_unit_marks_direct_systemd_stop_as_planned(monkeypatch):
     monkeypatch.setattr(
         gateway_cli,
         "_system_service_identity",
-        lambda run_as_user=None: ("alice", "alice", "/home/alice"),
+        lambda run_as_user=None: ("alice", "alice", "/home/alice", 1000),
     )
 
     _assert_planned_stop_hook(

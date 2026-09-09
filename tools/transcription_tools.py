@@ -9,7 +9,10 @@ the dispatcher and the cached local model + idle-unload state; backends live in
 ``transcription_{common,audio,local,cloud,command}``.
 """
 
+import difflib
 import logging
+import re
+import unicodedata
 import os
 import shutil
 import threading
@@ -432,7 +435,7 @@ def _transcribe_prepared_audio(
             file_path = trimmed
             trim_cleanup_dir = os.path.dirname(trimmed)
     try:
-        return _dispatch_stt_provider(file_path, provider, stt_config, model, source)
+        return _transcribe_with_prompt_echo_guard(file_path, provider, stt_config, model, source)
     finally:
         if trim_cleanup_dir:
             shutil.rmtree(trim_cleanup_dir, ignore_errors=True)
@@ -461,10 +464,68 @@ def _builtin_model_name(provider: str, stt_config: Dict[str, Any], model: Option
     return (cfg.get(key) or default) if empty_is_missing else cfg.get(key, default)
 
 
-def _dispatch_stt_provider(
+# Whisper conditions on ``prompt`` as if it were transcript text that came
+# immediately before the audio, so a low confidence decode (long pauses, quiet
+# or far from mic speech) can simply continue or repeat the prompt and return
+# THAT as the transcript. It arrives as an ordinary 200 OK, so nothing
+# downstream can tell it from real speech and the hallucinated text reaches the
+# agent as if the speaker had said it. Matching is on content because the echo
+# usually comes back lightly corrupted ("Tthe", "Fenwwick").
+_STT_PROMPT_ECHO_RATIO = 0.55
+# Under this length a transcript cannot be told apart from a genuine brief
+# reply that happens to use the vocabulary the prompt supplied.
+_STT_PROMPT_ECHO_MIN_CHARS = 25
+
+
+def _normalize_for_prompt_echo(text: str) -> str:
+    """Fold to letters and digits of any script: lowercase, accent stripped, single spaced.
+
+    Script agnostic deliberately. Keeping only ``[a-z0-9]`` would reduce a CJK
+    transcript and a CJK prompt to two empty strings, which reads as "not an
+    echo" and would silently disable the guard for every non-Latin script.
+    Note that _STT_PROMPT_ECHO_MIN_CHARS counts characters, so a dense script
+    needs a longer utterance to clear the floor. That errs toward not flagging,
+    which is the safe direction.
+    """
+    folded = unicodedata.normalize("NFKD", (text or "").lower())
+    kept = [c if c.isalnum() else " "
+            for c in folded if not unicodedata.combining(c)]
+    return re.sub(r"\s+", " ", "".join(kept)).strip()
+
+
+def _is_stt_prompt_echo(transcript: Optional[str], prompt: Optional[str]) -> bool:
+    """True when a transcript is really its own biasing prompt echoed back.
+
+    Two shapes are caught: the whole prompt reproduced (similarity ratio), and
+    a decode that continued the prompt for a long verbatim run before
+    diverging (longest common block, scaled to the transcript so a short
+    genuine answer that merely shares a name is never flagged).
+    """
+    if not transcript or not prompt:
+        return False
+
+    spoken = _normalize_for_prompt_echo(transcript)
+    biased = _normalize_for_prompt_echo(prompt)
+    if not biased or len(spoken) < _STT_PROMPT_ECHO_MIN_CHARS:
+        return False
+
+    matcher = difflib.SequenceMatcher(None, spoken, biased)
+    if matcher.ratio() >= _STT_PROMPT_ECHO_RATIO:
+        return True
+    longest = matcher.find_longest_match(0, len(spoken), 0, len(biased))
+    return longest.size >= max(40, int(0.6 * len(spoken)))
+
+
+def _transcribe_with_prompt_echo_guard(
     file_path: str, provider: str, stt_config: Dict[str, Any], model: Optional[str] = None,
     source: Optional[str] = None) -> Dict[str, Any]:
-    """Route *file_path* to the handler for *provider* (built-in > command > plugin)."""
+    """Resolve the transcription prompt, then dispatch behind the echo guard.
+
+    The prompt is resolved once, here, so the retry reuses the same model and
+    language and re-fires no hooks: the only difference is that the prompt is
+    withheld. An unbiased decode cannot echo a prompt it was never given, so
+    it either recovers the real words or fails honestly.
+    """
     # Static ``stt.prompt`` is the base; hook results mutate on top (last hook to set a field wins).
     prompt = stt_config.get("prompt")
     prompt = prompt if isinstance(prompt, str) and prompt.strip() else None
@@ -474,6 +535,36 @@ def _dispatch_stt_provider(
         language=_get_stt_section(stt_config, provider).get("language"), prompt=prompt, source=source,
     )
     prompt = _enforce_prompt_length_limit(prompt, provider)
+    result = _dispatch_stt_provider(
+        file_path, provider, stt_config, model, language, prompt,
+    )
+    if not prompt or not _is_stt_prompt_echo(result.get("transcript"), prompt):
+        return result
+
+    logger.warning(
+        "STT provider '%s' returned its own prompt as the transcript for %s "
+        "(%d chars); retrying once without prompt biasing",
+        provider, Path(file_path).name, len(result.get("transcript") or ""),
+    )
+    retry = _dispatch_stt_provider(
+        file_path, provider, stt_config, model, language, None,
+    )
+    if _is_stt_prompt_echo(retry.get("transcript"), prompt):
+        # Two echoes means neither decode is trustworthy. Returning the echo
+        # would hand the agent a hallucinated turn, which is the actual harm.
+        logger.warning(
+            "STT prompt echo persisted without biasing for %s; discarding the "
+            "transcript rather than handing the agent a hallucinated turn",
+            Path(file_path).name,
+        )
+        retry["transcript"] = ""
+    return retry
+
+
+def _dispatch_stt_provider(
+    file_path: str, provider: str, stt_config: Dict[str, Any], model: Optional[str] = None,
+    language: Optional[str] = None, prompt: Optional[str] = None) -> Dict[str, Any]:
+    """Route *file_path* to the handler for *provider* (built-in > command > plugin)."""
     if provider in BUILTIN_STT_PROVIDERS:
         # Looked up in this module at call time so tests may patch ``_transcribe_*``.
         handler = globals()[f"_transcribe_{provider}"]

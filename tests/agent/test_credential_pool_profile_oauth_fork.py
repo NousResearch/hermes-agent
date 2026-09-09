@@ -425,6 +425,47 @@ def test_heal_never_deletes_the_only_surviving_copy(fleet):
     assert "anthropic" not in (json.loads((fleet["root"] / "auth.json").read_text())["credential_pool"])
 
 
+@pytest.mark.parametrize("shape", ["pool", "provider"])
+@pytest.mark.parametrize("claims", [True, False])
+def test_heal_preserves_independent_grants_for_same_account(fleet, shape, claims):
+    """An account can have independent device logins; identity is not lineage."""
+    import base64
+    from hermes_cli.auth import heal_forked_single_use_oauth_grants
+
+    def pair(tag):
+        payload = base64.urlsafe_b64encode(json.dumps({
+            "sub": "same-account", "exp": int(time.time()) + 3600, "jti": tag,
+        }).encode()).decode().rstrip("=")
+        return {"access_token": "h." + payload + ".s" if claims else tag,
+                "refresh_token": "independent-" + tag}
+
+    def store(tag):
+        tokens = pair(tag)
+        if shape == "provider":
+            return {"version": 1, "providers": {"openai-codex": {"tokens": tokens}}}
+        return {"version": 1, "providers": {}, "credential_pool": {"openai-codex": [{
+            "id": tag, "auth_type": "oauth", "source": "manual:device_code", **tokens,
+        }]}}
+
+    root = fleet["root"] / "auth.json"
+    kid = _profile(fleet, "independent")
+    kid.mkdir(parents=True, exist_ok=True)
+    profile = kid / "auth.json"
+    root.write_text(json.dumps(store("root-grant")))
+    profile.write_text(json.dumps(store("profile-grant")))
+    before = (root.read_bytes(), profile.read_bytes())
+    fleet["use"](kid)
+    assert heal_forked_single_use_oauth_grants("openai-codex") is None
+    assert (root.read_bytes(), profile.read_bytes()) == before
+    if claims:
+        from agent.credential_pool import load_pool
+        for _ in range(3):
+            selected = load_pool("openai-codex").select()
+            assert selected is not None
+            assert selected.refresh_token == "independent-profile-grant"
+        assert root.read_bytes() == before[0]
+
+
 def test_heal_leaves_a_different_account_alone(fleet):
     """A profile row whose JWT identity names ANOTHER account is not root's grant."""
     import base64

@@ -761,6 +761,10 @@ def test_running_setter_canary():
         ("session_auto_continue.py", "kickoff"),  # nested body of the above; same gate + re-check
         ("session_auto_continue.py", "_drain_queued_prompt"),   # inline → _run_prompt_submit; compute → _lease_admission_check
         ("session_notifications.py", "_notif_claim_turn"),      # all submits go through _run_prompt_submit
+        ("session_notifications.py", "_poll_bot_live_delivery_once"),  # upstream bot-delivery admission (2026-09-08 main):
+        # gated under history_lock — idle-boundary check, live unreleased lease check, then triple identity-pin
+        # (owner lease_id == session lease, live_session_id == sid, session_id == session key) before running=True;
+        # each envelope is claimed against that pinned lease. Deliberate canary extension per the lease merge.
     }
     for filename in (
         "methods_prompt.py", "prompt_turn.py", "session_auto_continue.py",

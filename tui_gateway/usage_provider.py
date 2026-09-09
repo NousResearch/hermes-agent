@@ -60,12 +60,21 @@ def _usage_provider_lines(session: dict) -> tuple[list[str], list[str]]:
             from agent.account_usage import fetch_account_usage, render_account_usage_lines
 
             def fetch():
+                from agent.secret_scope import (
+                    build_profile_secret_scope, reset_secret_scope, set_secret_scope,
+                )
+                from hermes_constants import get_hermes_home
+
                 token = None
+                secret_token = None
                 try:
                     if session.get("profile_home"):
                         token = set_hermes_home_override(Path(session["profile_home"]))
+                    secret_token = set_secret_scope(build_profile_secret_scope(get_hermes_home()))
                     return fetch_account_usage(provider, base_url=base_url or None, api_key=api_key)
                 finally:
+                    if secret_token is not None:
+                        reset_secret_scope(secret_token)
                     if token is not None:
                         reset_hermes_home_override(token)
 

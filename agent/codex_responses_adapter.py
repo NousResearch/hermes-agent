@@ -570,14 +570,16 @@ def _native_responses_replay_items(
         return None
     route = classify_responses_route(agent)._asdict()
     from agent.native_compaction import native_compaction_context_management
-    if not native_compaction_context_management(agent, **route):
+    from agent.fast_mode import effective_request_overrides
+    effective_model = effective_request_overrides(agent).get("model", getattr(agent, "model", None))
+    if not native_compaction_context_management(agent, **route, model=effective_model):
         return None
     try:
         items = _chat_messages_to_responses_input(
             messages, is_xai_responses=route["is_xai_responses"], is_github_responses=route["is_github_responses"],
             replay_encrypted_reasoning=bool(getattr(agent, "_codex_reasoning_replay_enabled", True)),
             current_issuer_kind=_classify_responses_issuer(base_url=getattr(agent, "base_url", None), **route),
-            current_issuer_model=_wire_model_identity(getattr(agent, "model", None)),
+            current_issuer_model=_wire_model_identity(effective_model),
             native_compaction_eligible=True,
         )
     except Exception:

@@ -23,7 +23,10 @@ from hermes_cli import kanban_diagnostics as kd
 
 
 @pytest.fixture
-def conn(tmp_path: Path):
+def conn(tmp_path: Path, monkeypatch):
+    # Tests pass synthetic reviewer handles (e.g. "reviewer"); treat every name
+    # as a live profile so request_review's reviewer-existence guard is a no-op.
+    monkeypatch.setattr("hermes_cli.profiles.profile_exists", lambda name: True)
     db = kbc.connect(tmp_path / "kanban.db")
     try:
         yield db

@@ -24,6 +24,9 @@ def kanban_home(tmp_path, monkeypatch):
     # test silently drops files because ``tmp_path`` isn't inside the
     # default ``MEDIA_DELIVERY_SAFE_ROOTS`` cache dirs.
     monkeypatch.setenv("HERMES_MEDIA_ALLOW_DIRS", str(tmp_path))
+    # Tests pass synthetic reviewer handles (e.g. "reviewer"); treat every name
+    # as a live profile so request_review's reviewer-existence guard is a no-op.
+    monkeypatch.setattr("hermes_cli.profiles.profile_exists", lambda name: True)
     kb.init_db()
     return home
 

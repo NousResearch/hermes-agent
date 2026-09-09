@@ -38,6 +38,10 @@ def kanban_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    # Tests pass synthetic reviewer handles (e.g. "reviewer"); treat every name as
+    # a live profile so request_review's reviewer-existence guard is a no-op
+    # unless a test re-monkeypatches to opt back into real validation.
+    monkeypatch.setattr("hermes_cli.profiles.profile_exists", lambda name: True)
     kb.init_db()
     return home
 
@@ -115,6 +119,69 @@ def test_request_review_transitions_running_to_review(kanban_home: Path) -> None
         # No block / triage events were emitted.
         assert _events(conn, tid, kind="blocked") == []
         assert _events(conn, tid, kind="block_loop_detected") == []
+
+
+# ---------------------------------------------------------------------------
+# Reviewer-existence guard: request_review rejects an unknown reviewer profile
+# ---------------------------------------------------------------------------
+
+
+def test_request_review_rejects_unknown_reviewer(kanban_home: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """request_review must reject a reviewer profile that does not exist, so a
+    typo'd value (e.g. the literal string ``"reviewer"``) cannot silently park
+    the task in ``review`` with an assignee nobody can dispatch."""
+    import hermes_cli.profiles as profmod
+
+    # Only the virtual ``default`` profile is considered live here.
+    monkeypatch.setattr(profmod, "profile_exists", lambda name: name == "default")
+
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="impl a feature", assignee="worker")
+        kb.claim_task(conn, tid)
+        run_id = kb.get_task(conn, tid).current_run_id
+        assert run_id is not None
+
+        ok, reason = kb.request_review(
+            conn, tid, summary="done", reviewer="zz-no-such-profile",
+            expected_run_id=run_id, with_reason=True,
+        )
+        assert ok is False
+        assert reason is not None and "unknown reviewer profile" in reason
+        assert '"zz-no-such-profile"' in reason
+
+        # The task is untouched: still running under the same claim + assignee.
+        row = _row(conn, tid)
+        assert row["status"] == "running"
+        assert row["current_run_id"] == run_id
+        assert (conn.execute("SELECT assignee FROM tasks WHERE id=?", (tid,)).fetchone())[0] == "worker"
+        # No review_requested event was emitted.
+        assert _events(conn, tid, kind="review_requested") == []
+
+
+def test_request_review_accepts_known_reviewer(kanban_home: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """request_review honours a reviewer profile that exists (the virtual
+    ``default`` profile always exists) and records it as the task assignee."""
+    import hermes_cli.profiles as profmod
+
+    monkeypatch.setattr(profmod, "profile_exists", lambda name: name == "default")
+
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="impl a feature", assignee="worker")
+        kb.claim_task(conn, tid)
+        run_id = kb.get_task(conn, tid).current_run_id
+
+        ok = kb.request_review(
+            conn, tid, summary="Implementation complete",
+            reviewer="default", expected_run_id=run_id,
+        )
+        assert ok is True
+
+        row = _row(conn, tid)
+        assert row["status"] == "review"
+        assignee = conn.execute("SELECT assignee FROM tasks WHERE id=?", (tid,)).fetchone()[0]
+        assert assignee == "default"
+        rr = _events(conn, tid, kind="review_requested")
+        assert len(rr) == 1 and rr[0][1]["reviewer"] == "default"
 
 
 # ---------------------------------------------------------------------------

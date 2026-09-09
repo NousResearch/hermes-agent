@@ -51,6 +51,9 @@ def kanban_home(tmp_path, monkeypatch):
     home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    # Tests pass synthetic reviewer/assignee handles (e.g. "reviewer"); treat
+    # every name as a live profile so request_review's reviewer guard is a no-op.
+    monkeypatch.setattr("hermes_cli.profiles.profile_exists", lambda name: True)
     kb.init_db()
     return home
 

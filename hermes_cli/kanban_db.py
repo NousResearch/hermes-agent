@@ -3040,6 +3040,10 @@ def request_review(
                     "malformed); pass reviewer= explicitly",
                 )
         reviewer = _canonical_assignee(reviewer)
+        if reviewer is not None:
+            from hermes_cli.profiles import profile_exists
+            if not profile_exists(reviewer):
+                return _ret(False, f'unknown reviewer profile "{reviewer}"')
         assignee_sql = ", assignee = ?" if reviewer is not None else ""
         run_guard = "" if expected_run_id is None else " AND current_run_id = ?"
         params: tuple[Any, ...] = (

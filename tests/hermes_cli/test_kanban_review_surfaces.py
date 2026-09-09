@@ -37,6 +37,9 @@ def test_review_tools_redact_handoff_and_route_changes(
 ) -> None:
     from tools import kanban_tools as tools
 
+    # Treat every assignee/reviewer name as a live profile (synthetic handles).
+    monkeypatch.setattr("hermes_cli.profiles.profile_exists", lambda name: True)
+
     secret = "ghp_" + "A" * 40
     requested = json.loads(
         tools._handle_request_review({
@@ -127,6 +130,8 @@ def test_review_cli_round_trip_preserves_handoff(
     home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    # Treat every assignee/reviewer name as a live profile (synthetic handles).
+    monkeypatch.setattr("hermes_cli.profiles.profile_exists", lambda name: True)
     kb._INITIALIZED_PATHS.clear()
     kb.init_db()
 

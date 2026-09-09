@@ -419,6 +419,19 @@ class TestCodexBuildKwargs:
         assistant_text = [item for item in kw["input"] if item.get("role") == "assistant"]
         assert len(assistant_text) == 2
 
+    @pytest.mark.parametrize("base_url", [
+        "https://placeholder.openai.azure.com/openai/v1",
+        "https://placeholder.services.ai.azure.com/api/projects/placeholder/openai/v1",
+    ])
+    def test_azure_host_without_provider_replays_only_newest_reasoning(self, transport, base_url):
+        """Both Azure hosts are detected without ``provider``; the rejection is not gateway-specific."""
+        kw = transport.build_kwargs(
+            model="gpt-6-astra", messages=self._two_turn_messages(), tools=[], base_url=base_url,
+            replay_encrypted_reasoning=True,
+        )
+        reasoning = [item for item in kw["input"] if item.get("type") == "reasoning"]
+        assert [item["encrypted_content"] for item in reasoning] == ["sealed-2"]
+
     def test_default_responses_new_turn_replays_all_reasoning(self, transport):
         """Non-Azure Responses endpoints keep cross-turn reasoning replay."""
         kw = transport.build_kwargs(

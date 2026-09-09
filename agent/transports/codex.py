@@ -405,6 +405,17 @@ def _is_post_tool_replay(messages: Optional[list[dict[str, Any]]]) -> bool:
     return False
 
 
+def _is_azure_responses(params: dict[str, Any]) -> bool:
+    """True for any Azure-hosted Responses endpoint: the ``azure-foundry`` provider, a resource-level
+    ``*.openai.azure.com`` host, or the project-scoped ``*.services.ai.azure.com`` gateway."""
+    from utils import base_url_host_matches
+
+    if str(params.get("provider") or "").strip().lower() == "azure-foundry":
+        return True
+    base_url = str(params.get("base_url") or "")
+    return base_url_host_matches(base_url, "openai.azure.com") or base_url_host_matches(base_url, "services.ai.azure.com")
+
+
 def _newest_reasoning_only(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Copy of ``messages`` keeping ``codex_reasoning_items`` only on the newest assistant row that has any.
     Foundry rejects a request that replays encrypted reasoning from more than one prior response (HTTP 400
@@ -554,12 +565,13 @@ class ResponsesApiTransport(ProviderTransport):
         is_github_responses = params.get("is_github_responses") is True
         is_codex_backend = params.get("is_codex_backend") is True
         is_xai_responses = params.get("is_xai_responses") is True
-        is_azure_foundry = _is_azure_foundry_responses(params)
         # Foundry 400s on encrypted-reasoning replay only in the post-tool follow-up turn.
         replay_encrypted_reasoning = bool(params.get("replay_encrypted_reasoning", True)) and not (
-            is_azure_foundry and _is_post_tool_replay(payload_messages)
+            _is_azure_foundry_responses(params) and _is_post_tool_replay(payload_messages)
         )
-        if is_azure_foundry and replay_encrypted_reasoning:
+        # Own predicate: #101243 may narrow _is_azure_foundry_responses to the project gateway, and the
+        # multi-item rejection happens on resource-level hosts too.
+        if replay_encrypted_reasoning and _is_azure_responses(params):
             payload_messages = _newest_reasoning_only(payload_messages)
         # One predicate decides whether context_management goes out AND whether the converter may replay a checkpoint.
         context_management = params.get("context_management")

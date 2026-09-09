@@ -92,7 +92,7 @@ class TestNormalizeTavilySearchResults:
     """Test search result normalization."""
 
     def test_basic_normalization(self):
-        from tools.web_tools import _normalize_tavily_search_results
+        from plugins.web.tavily.provider import _normalize_tavily_search_results
         raw = {
             "results": [
                 {"title": "Python Docs", "url": "https://docs.python.org", "content": "Official docs", "score": 0.9},
@@ -111,7 +111,7 @@ class TestNormalizeTavilySearchResults:
 
 
     def test_missing_fields(self):
-        from tools.web_tools import _normalize_tavily_search_results
+        from plugins.web.tavily.provider import _normalize_tavily_search_results
         result = _normalize_tavily_search_results({"results": [{}]})
         web = result["data"]["web"]
         assert web[0]["title"] == ""
@@ -125,7 +125,7 @@ class TestNormalizeTavilyDocuments:
     """Test extract document normalization."""
 
     def test_basic_document(self):
-        from tools.web_tools import _normalize_tavily_documents
+        from plugins.web.tavily.provider import _normalize_tavily_documents
         raw = {
             "results": [{
                 "url": "https://example.com",
@@ -143,7 +143,7 @@ class TestNormalizeTavilyDocuments:
 
 
     def test_fallback_url(self):
-        from tools.web_tools import _normalize_tavily_documents
+        from plugins.web.tavily.provider import _normalize_tavily_documents
         raw = {"results": [{"content": "data"}]}
         docs = _normalize_tavily_documents(raw, fallback_url="https://fallback.com")
         assert docs[0]["url"] == "https://fallback.com"

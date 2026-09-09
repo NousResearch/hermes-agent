@@ -15,6 +15,7 @@ from pathlib import Path
 import pytest
 
 from hermes_cli import kanban_db as kb
+from hermes_cli import kanban_db_connect as kbc
 from hermes_cli import kanban_diagnostics as kd
 
 
@@ -138,7 +139,7 @@ def test_engine_works_on_sqlite_row_objects(kanban_home):
     as well as dataclass Task / plain dict. The API layer passes Row
     objects directly.
     """
-    conn = kb.connect()
+    conn = kbc.connect()
     try:
         parent = kb.create_task(conn, title="p", assignee="w")
         real = kb.create_task(conn, title="r", assignee="x", created_by="w")

@@ -838,7 +838,7 @@ class TestBackgroundOwnershipPolicyConsistency:
 
     @staticmethod
     def _bg_patch(tmp_path, name, old, new):
-        from tools.skill_manager_tool import mark_background_review_skill_read
+        from tools.skill_manager_guards import mark_background_review_skill_read
         from tools.skill_provenance import (
             BACKGROUND_REVIEW,
             reset_current_write_origin,
@@ -1111,7 +1111,7 @@ class TestCuratorConsolidationDeleteGuard:
     ):
         """A view in one tool worker authorizes a patch in the next worker."""
         from tools.skills_tool import skill_view
-        from tools.skill_manager_tool import _reset_background_review_read_marks
+        from tools.skill_manager_guards import _reset_background_review_read_marks
 
         _reset_background_review_read_marks()
         with _curator_pass(tmp_path, monkeypatch=monkeypatch):
@@ -1136,7 +1136,7 @@ class TestCuratorConsolidationDeleteGuard:
     ):
         """Copied tool contexts share only their own review's read marks."""
         from tools.skills_tool import skill_view
-        from tools.skill_manager_tool import _reset_background_review_read_marks
+        from tools.skill_manager_guards import _reset_background_review_read_marks
 
         _reset_background_review_read_marks()
         with _curator_pass(tmp_path, monkeypatch=monkeypatch):
@@ -1164,7 +1164,7 @@ class TestCuratorConsolidationDeleteGuard:
 
     def test_background_review_support_file_overwrite_requires_that_file_read(self, tmp_path, monkeypatch):
         from tools.skills_tool import skill_view
-        from tools.skill_manager_tool import _reset_background_review_read_marks
+        from tools.skill_manager_guards import _reset_background_review_read_marks
 
         _reset_background_review_read_marks()
         with _curator_pass(tmp_path, monkeypatch=monkeypatch):

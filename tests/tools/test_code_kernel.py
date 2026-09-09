@@ -40,13 +40,7 @@ def _force_local_terminal(monkeypatch):
     monkeypatch.setenv("TERMINAL_ENV", "local")
 
 
-from tools.code_execution_tool import (
-    DEFAULT_KERNEL_MODE,
-    KERNEL_MODES,
-    _get_kernel_mode,
-    build_execute_code_schema,
-    execute_code,
-)
+from tools.code_execution_tool import build_execute_code_schema, execute_code
 from tools.code_kernel import _KERNELS, shutdown_all_kernels
 
 
@@ -68,24 +62,6 @@ def _fresh_kernel_registry():
 
 def _run(code, **kwargs):
     return json.loads(execute_code(code, task_id="kernel-test", **kwargs))
-
-
-class TestKernelModeResolution(unittest.TestCase):
-    """kernel_mode is retired: session kernels are always on for local runs.
-
-    _get_kernel_mode() survives only as a compat shim; a leftover
-    kernel_mode key in user config (any value) must be ignored."""
-
-    def test_session_is_always_on(self):
-        self.assertEqual(DEFAULT_KERNEL_MODE, "session")
-        with patch("tools.code_execution_tool._load_config", return_value={}):
-            self.assertEqual(_get_kernel_mode(), "session")
-
-    def test_leftover_config_key_is_ignored(self):
-        for stale in ("per-call", "forever", "", None):
-            with patch("tools.code_execution_tool._load_config",
-                       return_value={"kernel_mode": stale}):
-                self.assertEqual(_get_kernel_mode(), "session")
 
 
 class TestSessionStatePersistence(unittest.TestCase):
@@ -240,7 +216,7 @@ class TestKernelOwnershipAndLifecycle(unittest.TestCase):
     """
 
     def _run_as(self, session_key, code, task_id, **kwargs):
-        from tools.approval import reset_current_session_key, set_current_session_key
+        from tools.approval_context import reset_current_session_key, set_current_session_key
 
         token = set_current_session_key(session_key)
         try:

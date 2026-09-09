@@ -138,8 +138,6 @@ class TestTelegramAlias:
         assert mgr.get_platform_handler_factories("telegram") == [
             (factory, "test_plugin")
         ]
-        # Legacy accessor still works.
-        assert mgr.get_telegram_handler_factories() == [(factory, "test_plugin")]
 
     def test_alias_non_callable_raises(self):
         _, ctx = _make_ctx()

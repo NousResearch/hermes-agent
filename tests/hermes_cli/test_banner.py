@@ -6,7 +6,7 @@ from rich.console import Console
 
 import hermes_cli.banner as banner
 import model_tools
-import tools.mcp_tool
+import tools.mcp_tool_discovery
 
 
 def test_cprint_falls_back_to_plain_print_when_prompt_toolkit_has_no_console(capsys):
@@ -32,6 +32,7 @@ def test_build_welcome_banner_title_falls_back_when_no_tag():
     import hermes_cli.banner as _banner
     import model_tools as _mt
     import tools.mcp_tool as _mcp
+    from tools import mcp_tool_discovery as _mcp_discovery
 
     _banner._latest_release_cache = None
     buf = io.StringIO()
@@ -39,7 +40,7 @@ def test_build_welcome_banner_title_falls_back_when_no_tag():
         _patch.object(_mt, "check_tool_availability", return_value=(["web"], [])),
         _patch.object(_banner, "get_available_skills", return_value={}),
         _patch.object(_banner, "get_update_result", return_value=None),
-        _patch.object(_mcp, "get_mcp_status", return_value=[]),
+        _patch.object(_mcp_discovery, "get_mcp_status", return_value=[]),
         _patch.object(_banner, "get_latest_release_tag", return_value=None),
     ):
         console = Console(file=buf, force_terminal=True, color_system="truecolor", width=160)
@@ -68,7 +69,7 @@ def test_build_welcome_banner_non_moa_unchanged(tmp_path, monkeypatch):
         patch.object(model_tools, "check_tool_availability", return_value=([], [])),
         patch.object(banner, "get_available_skills", return_value={}),
         patch.object(banner, "get_update_result", return_value=None),
-        patch.object(tools.mcp_tool, "get_mcp_status", return_value=[]),
+        patch.object(tools.mcp_tool_discovery, "get_mcp_status", return_value=[]),
     ):
         console = Console(record=True, force_terminal=False, color_system=None, width=160)
         banner.build_welcome_banner(

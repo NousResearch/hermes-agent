@@ -37,7 +37,7 @@ _PNG_B64 = (
 
 class TestIngestWindows:
     def test_skips_window_with_null_pid(self):
-        from tools.computer_use.cua_backend import _ingest_windows
+        from tools.computer_use.cua_backend_parse import _ingest_windows
 
         raw = [
             {"app_name": "Desktop", "pid": None, "window_id": 1, "z_index": 0},
@@ -52,7 +52,7 @@ class TestIngestWindows:
 
 
     def test_preserves_fields_capture_relies_on(self):
-        from tools.computer_use.cua_backend import _ingest_windows
+        from tools.computer_use.cua_backend_parse import _ingest_windows
 
         out = _ingest_windows([
             {

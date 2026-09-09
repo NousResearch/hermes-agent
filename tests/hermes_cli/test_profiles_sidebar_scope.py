@@ -15,30 +15,13 @@ import pytest
 
 
 @pytest.fixture(autouse=True)
-def _cold_sidebar_singleflight_caches():
-    """Force a cold single-flight cache around every test in this file.
-
-    Both sidebar endpoints are wrapped in ``_sidebar_singleflight_cache``
-    (5s TTL). Each test builds a fresh tmp profile set, so a warm entry from
-    a previous test — same default query params, different disk state — would
-    answer with another test's payload. Clearing before and after keeps every
-    request cold without disabling the caching the endpoints rely on.
-    """
+def _uncached_sidebar_endpoints(monkeypatch):
+    """Both sidebar endpoints sit behind ``_sidebar_singleflight_cache`` (5s TTL). Every
+    test here builds a fresh tmp profile set under the same default query params, so a warm
+    entry would answer with another test's payload. TTL 0 makes each request cold."""
     from hermes_cli.web_routers import profiles as profiles_routes
 
-    endpoints = (
-        profiles_routes.get_profiles_sessions_sidebar,
-        profiles_routes.get_profiles_projects_tree,
-    )
-    for endpoint in endpoints:
-        clear = getattr(endpoint, "cache_clear", None)
-        if clear is not None:
-            clear()
-    yield
-    for endpoint in endpoints:
-        clear = getattr(endpoint, "cache_clear", None)
-        if clear is not None:
-            clear()
+    monkeypatch.setattr(profiles_routes, "_SIDEBAR_CACHE_TTL_SECONDS", 0.0)
 
 
 @pytest.fixture

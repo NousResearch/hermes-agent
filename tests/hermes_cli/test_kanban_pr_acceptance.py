@@ -256,6 +256,41 @@ def test_plan_gated_rules_endpoint_falls_back_to_no_required_checks(monkeypatch)
     assert receipt["merge_sha"] == "b" * 40
 
 
+@pytest.mark.parametrize(
+    ("message", "is_no_rules"),
+    [("HTTP 404: Branch not protected", True),
+     ("HTTP 404: Not Found", False),
+     ("HTTP 404: Repository not found", False)],
+)
+def test_rules_404_requires_explicit_unprotected_branch_response(message, is_no_rules):
+    error = acceptance.subprocess.CalledProcessError(1, "gh", stderr=message)
+    assert acceptance._rules_endpoint_reports_unprotected_branch(error) is is_no_rules
+
+
+def test_inaccessible_rules_404_cannot_false_success(monkeypatch):
+    sha = "a" * 40
+    responses = iter([
+        {"data": {"repository": {"pullRequest": {
+            "headRefOid": sha, "baseRefName": "main", "state": "MERGED",
+            "baseRef": {"branchProtectionRule": {"requiredStatusChecks": []}},
+        }}}},
+        {"head": {"sha": sha}, "base": {"ref": "main"},
+         "state": "closed", "merged": True, "merge_commit_sha": "b" * 40},
+    ])
+
+    def inaccessible(*args, **kwargs):
+        if "rules/branches" in args[0]:
+            raise acceptance.subprocess.CalledProcessError(
+                1, "gh", stderr="HTTP 404: Repository not found")
+        return next(responses)
+
+    monkeypatch.setattr(acceptance, "_api", inaccessible)
+    receipt = acceptance.collect_acceptance(
+        "acme/repo", "https://github.com/acme/repo/pull/7")
+    assert receipt["ok"] is False
+    assert receipt["classification"] == "infra"
+
+
 @pytest.mark.parametrize("mismatch", ["head", "base"])
 def test_no_required_checks_rejects_head_or_base_race(monkeypatch, mismatch):
     sha = "a" * 40

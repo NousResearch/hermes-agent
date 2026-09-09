@@ -35,6 +35,18 @@ def _rules_endpoint_has_no_required_checks(exc: subprocess.CalledProcessError) -
     )
 
 
+def _rules_endpoint_reports_unprotected_branch(exc: subprocess.CalledProcessError) -> bool:
+    """Recognize the rules API's explicit no-rules 404 response.
+
+    A generic 404 is deliberately not enough: GitHub also uses it when a
+    repository or branch is inaccessible.  The rules endpoint documents
+    ``Branch not protected`` as the no-protection response, so only that
+    explicit message may be treated as an empty policy result.
+    """
+    detail = " ".join(filter(None, (exc.stderr, exc.stdout))).lower()
+    return "branch not protected" in detail
+
+
 def validate_contract(value: str | None) -> str:
     if value is None or value == "local-only":
         return "local-only"
@@ -98,11 +110,10 @@ def collect_acceptance(contract: str, published_pr: str | None) -> dict:
         try:
             rules = _api(f"repos/{repo}/rules/branches/{quote(branch, safe='')}?per_page=100", paginate=True)
         except subprocess.CalledProcessError as exc:
-            # A branch with no active rules commonly returns 404. That is a
-            # valid, auditable policy result; 401/403 and other failures are
-            # not evidence that the repository has no required checks.
-            stderr = (exc.stderr or "").lower()
-            if "404" in stderr or "not found" in stderr:
+            # Only GitHub's explicit no-protection response is evidence of an
+            # empty policy.  Generic 404s can mean an inaccessible repository
+            # or branch and must remain infrastructure failures.
+            if _rules_endpoint_reports_unprotected_branch(exc):
                 rules = []
             elif _rules_endpoint_has_no_required_checks(exc):
                 # The rules API is plan-gated for some private repositories.

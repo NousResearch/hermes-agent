@@ -110,8 +110,8 @@ export class JsonRpcGatewayClient {
   private lastInboundAt = 0
   /** Last observed event seq per session_id — drives lossless reconnect replay. */
   private lastSeenSeq = new Map<string, number>()
-  /** Set while a post-reconnect replay fetch is in flight (dedup guard). */
-  private replayInFlight = false
+  /** Catch-up result for the current socket; failed replay is not readiness. */
+  private replayCompletion: Promise<boolean> = Promise.resolve(true)
   /**
    * While a replay fetch is in flight, live seq'd frames for the sessions
    * being replayed are parked here instead of dispatching immediately.
@@ -232,12 +232,11 @@ export class JsonRpcGatewayClient {
 
         settled = true
         cleanup()
+        // Establish the barrier before notifying eager open-state consumers.
+        // connect() still means transport-open; turn submitters await replay.
+        this.replayCompletion = this.fetchReplay(socket)
         this.setState('open')
         resolve()
-        // Lossless resume: drain events emitted while we were disconnected.
-        // Fire-and-forget so connect() latency is unaffected; only runs when
-        // we actually observed seq'd events before the drop.
-        void this.fetchReplay()
       }
 
       const onError = () => {
@@ -519,6 +518,18 @@ export class JsonRpcGatewayClient {
     return Object.fromEntries(this.lastSeenSeq)
   }
 
+  /** Wait for this socket's catch-up, not merely its open handshake. A failed
+   * or superseded replay cannot authorize a new turn ahead of old idle frames. */
+  async waitForReplay(): Promise<void> {
+    const socket = this.socket
+    const replay = this.replayCompletion
+    const complete = await replay
+
+    if (!complete || !socket || this.socket !== socket || this.state !== 'open' || this.replayCompletion !== replay) {
+      throw new Error('Gateway replay is not ready; reconnect before submitting a new turn')
+    }
+  }
+
   /**
    * After a reconnect, ask the gateway to replay every event newer than our
    * per-session watermarks. Replayed frames go through the SAME dispatchEvent
@@ -526,12 +537,13 @@ export class JsonRpcGatewayClient {
    * non-increasing seqs and downstream stores key on event identity.
    * Best-effort: failures are swallowed (the next reconnect retries).
    */
-  private async fetchReplay(): Promise<void> {
-    if (this.replayInFlight || this.lastSeenSeq.size === 0) {
-      return
+  private async fetchReplay(socket: WebSocketLike): Promise<boolean> {
+    if (this.lastSeenSeq.size === 0) {
+      this.replayHold = null
+
+      return true
     }
 
-    this.replayInFlight = true
     // Park live frames for the sessions we're about to replay so a frame
     // racing the replay response can't dispatch ahead of (or duplicate) the
     // gap events. Sessions without watermarks are unaffected.
@@ -557,8 +569,20 @@ export class JsonRpcGatewayClient {
         )
       )
 
+      if (this.socket !== socket || this.replayHold !== hold) {
+        return false
+      }
+
+      let complete = true
+
       for (const result of results) {
+        if (this.socket !== socket || this.replayHold !== hold) {
+          return false
+        }
+
         if (result.status !== 'fulfilled' || !Array.isArray(result.value?.events)) {
+          complete = false
+
           continue
         }
 
@@ -569,6 +593,7 @@ export class JsonRpcGatewayClient {
           // and this replay window — are meaningless. Drop them and start
           // fresh under the new epoch.
           this.adoptReplayEpoch(epoch)
+          complete = false
 
           continue
         }
@@ -577,7 +602,15 @@ export class JsonRpcGatewayClient {
           this.replayEpoch = epoch
         }
 
+        if ((result.value as { truncated?: boolean }).truncated) {
+          complete = false
+        }
+
         for (const event of result.value.events) {
+          if (this.socket !== socket || this.replayHold !== hold) {
+            return false
+          }
+
           if (!event?.type) {
             continue
           }
@@ -585,11 +618,16 @@ export class JsonRpcGatewayClient {
           this.dispatchIfNewer(event as GatewayEvent)
         }
       }
+
+      return complete
     } catch {
-      // Replay is an optimization over lossy-reconnect; never surface errors.
+      // Passive replay remains best effort, but a timeout is not readiness for
+      // a new turn. A later reconnect retries; never infer idle from a clock.
+      return false
     } finally {
-      this.flushReplayHold()
-      this.replayInFlight = false
+      if (this.socket === socket && this.replayHold === hold) {
+        this.flushReplayHold(socket)
+      }
     }
   }
 
@@ -632,7 +670,7 @@ export class JsonRpcGatewayClient {
   }
 
   /** Release frames parked during a replay fetch, seq-gated against dupes. */
-  private flushReplayHold(): void {
+  private flushReplayHold(socket: WebSocketLike): void {
     const hold = this.replayHold
     this.replayHold = null
 
@@ -642,6 +680,10 @@ export class JsonRpcGatewayClient {
 
     for (const parked of hold.values()) {
       for (const event of parked) {
+        if (this.socket !== socket) {
+          return
+        }
+
         this.dispatchIfNewer(event)
       }
     }

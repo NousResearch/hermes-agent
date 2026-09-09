@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { ClientSessionState } from '@/app/types'
 import { createClientSessionState } from '@/lib/chat-runtime'
+import { reconcileBusyStatesOnReconnect } from '@/store/session-states-reconnect'
 
 import {
   $activeSessionId,
@@ -17,7 +18,6 @@ import {
   $workingSessionIds,
   clearAllSessionStates,
   publishSessionState,
-  reconcileBusyStatesOnReconnect,
   recordSessionEventScope,
   SESSION_WATCHDOG_TIMEOUT_MS,
   type SessionTileDelegate,

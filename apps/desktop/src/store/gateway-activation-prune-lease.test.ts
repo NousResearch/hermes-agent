@@ -165,8 +165,10 @@ describe('activation lease vs. the live-work pruner (#89622)', () => {
       releaseConnect = resolve
     })
 
-    // Dial starts and never settles (wedged bridge call).
-    void ensureGatewayForProfile('bot')
+    // Explicit disposal now rejects the pending activation instead of letting
+    // an obsolete descriptor dial after its owner was evicted. Observe it.
+    const switching = ensureGatewayForProfile('bot')
+    const disposed = expect(switching).rejects.toThrow('Secondary gateway was disposed')
     await flushUntilSecondaryRegistered()
     expect(secondaryGateways).toHaveLength(1)
 
@@ -181,5 +183,6 @@ describe('activation lease vs. the live-work pruner (#89622)', () => {
     expect(secondaryGateways[0].close).toHaveBeenCalled()
 
     releaseConnect()
+    await disposed
   })
 })

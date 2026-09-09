@@ -49,35 +49,6 @@ class InvalidUserConfigError(RuntimeError):
     """Raised when a run that cannot repair config finds invalid user YAML."""
 
 
-def _backup_corrupt_config(config_path: Path) -> Optional[Path]:
-    """Copy an unparseable ``config.yaml`` to a timestamped ``.corrupt.*.bak``; None on skip/failure.
-    Symlinks are not followed (never clobber whatever a malicious symlink points at). A sibling
-    backup of the same size means this corruption was already snapshotted — skip to avoid churn.
-
-    Returns the backup path on success, else ``None``. See #21541.
-    """
-    try:
-        if config_path.is_symlink():
-            return None
-        st = config_path.stat()
-        if st.st_size == 0:
-            return None
-        ts = time.strftime("%Y%m%d-%H%M%S")
-        backup_path = config_path.with_name(f"{config_path.name}.corrupt.{ts}.bak")
-        for existing in config_path.parent.glob(f"{config_path.name}.corrupt.*.bak"):
-            try:
-                if existing.stat().st_size == st.st_size:
-                    return None
-            except OSError:
-                continue
-        if backup_path.exists():
-            return None
-        shutil.copy2(config_path, backup_path)
-        return backup_path
-    except Exception:
-        return None
-
-
 _PARSE_FAILURE_FALLBACK_MSG = {
     "last-known-good": (
         "Keeping the previously loaded config for this process — "
@@ -108,7 +79,8 @@ def _warn_config_parse_failure(
     if key in _CONFIG_PARSE_WARNED:
         return
     _CONFIG_PARSE_WARNED.add(key)
-    backup_path = _backup_corrupt_config(config_path)
+    from hermes_cli.config_backups import backup_config
+    backup_path = backup_config(config_path, "corrupt")
     msg = f"Failed to parse {config_path}: {exc}. " + _PARSE_FAILURE_FALLBACK_MSG.get(
         fallback, _PARSE_FAILURE_DEFAULTS_MSG)
     if backup_path is not None:
@@ -515,7 +487,8 @@ def require_parseable_user_config(*, ignore_user_config: bool = False) -> None:
             return
         parse_error = TypeError(f"top-level YAML value must be a mapping, got {type(data).__name__}")
 
-    backup_path = _backup_corrupt_config(config_path)
+    from hermes_cli.config_backups import backup_config
+    backup_path = backup_config(config_path, "corrupt")
     message = (
         f"Refusing non-interactive startup because {config_path} is invalid: "
         f"{parse_error}. Repair the file or pass --ignore-user-config to "
@@ -1944,7 +1917,7 @@ def _refuse_overwrite(config_path: Path, reason: str, exc: Exception, fix: str) 
 
 
 _FIX_PERMS = "Fix the file permissions or move it aside first."
-_FIX_YAML = "Fix the file or restore from a .corrupt.*.bak backup first."
+_FIX_YAML = "Fix the file or restore a copy from backups/config/ first."
 
 
 def require_readable_config_before_write(config_path: Optional[Path] = None) -> Dict[str, Any]:
@@ -1977,7 +1950,7 @@ def require_readable_config_before_write(config_path: Optional[Path] = None) -> 
         _warn_config_parse_failure(config_path, exc, fallback="refuse-write")
         raise RuntimeError(
             f"Refusing to overwrite {config_path}: top-level YAML must be a mapping, got "
-            f"{type(loaded).__name__}. Fix the file or restore from a .corrupt.*.bak backup first."
+            f"{type(loaded).__name__}. Fix the file or restore a copy from backups/config/ first."
         ) from exc
     return loaded
 

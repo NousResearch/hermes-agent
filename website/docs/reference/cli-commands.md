@@ -950,6 +950,7 @@ Create a zip archive of your Hermes configuration, skills, sessions, and data. T
 | `-o`, `--output <path>` | Output path for the zip file (default: `~/hermes-backup-<timestamp>.zip`). |
 | `-q`, `--quick` | Quick snapshot: only critical state files (config.yaml, state.db, .env, auth, cron jobs). Much faster than a full backup. |
 | `-l`, `--label <name>` | Label for the snapshot (only used with `--quick`). |
+| `-k`, `--keep <N>` | After a full backup, delete older `hermes-backup-*.zip` files in the output directory beyond the newest N (default 3; `0` keeps everything). Custom-named zips are never touched. |
 
 The backup uses SQLite's `backup()` API for safe copying, so it works correctly even when Hermes is running (WAL-mode safe).
 

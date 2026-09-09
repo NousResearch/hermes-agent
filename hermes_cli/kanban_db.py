@@ -2202,7 +2202,7 @@ def _claim_and_open_run(
 
 def claim_task(
     conn: sqlite3.Connection, task_id: str, *, ttl_seconds: Optional[int] = None,
-    claimer: Optional[str] = None,
+    claimer: Optional[str] = None, on_claim_fn=None,
 ) -> Optional[Task]:
     """Atomically transition ``ready -> running``.
 
@@ -2231,13 +2231,15 @@ def claim_task(
         if run_id is None:
             return None
         claimed = get_task(conn, task_id)
+        if claimed is not None and on_claim_fn is not None:
+            on_claim_fn(conn, claimed)
     _fire_task_hook("kanban_task_claimed", claimed, task_id, run_id)
     return claimed
 
 
 def claim_review_task(
     conn: sqlite3.Connection, task_id: str, *, ttl_seconds: Optional[int] = None,
-    claimer: Optional[str] = None,
+    claimer: Optional[str] = None, on_claim_fn=None,
 ) -> Optional[Task]:
     """Atomic ``review -> running`` (None when lost). Parents are re-checked
     (one may have reopened meanwhile) and a NEW run tracks the reviewer
@@ -2262,7 +2264,10 @@ def claim_review_task(
         )
         if run_id is None:
             return None
-        return get_task(conn, task_id)
+        claimed = get_task(conn, task_id)
+        if claimed is not None and on_claim_fn is not None:
+            on_claim_fn(conn, claimed)
+        return claimed
 
 
 def _retry_status_for_run(

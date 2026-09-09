@@ -383,6 +383,15 @@ class GatewaySlashCommandsMixin(
             logger.warning("project-status read failed: %s", exc)
             return "Project status is unavailable. No action taken."
 
+    async def _handle_implement_command(self, event: MessageEvent) -> str:
+        """Handle the feature-gated canonical /implement adapter."""
+        from hermes_cli.kanban_implement import run_implement_slash_rendered
+        try:
+            return await asyncio.to_thread(run_implement_slash_rendered, event.get_command_args())
+        except Exception as exc:  # pragma: no cover - defensive boundary
+            logger.warning("implement dispatch failed: %s", exc)
+            return "Implement is unavailable. No action taken."
+
     async def _kanban_auto_subscribe(self, event: MessageEvent, task_id: str, requested_board) -> bool:
         """Subscribe the event's chat to *task_id* notifications (notify+wake). False when the
         source has no platform/chat to route back to."""

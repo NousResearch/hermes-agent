@@ -1430,6 +1430,8 @@ def dispatch_once(
     default_assignee: Optional[str] = None,
     max_in_progress_per_profile: Optional[int] = None,
     reconcile_orphans: bool = True,
+    task_id: Optional[str] = None,
+    before_spawn_fn=None,
 ) -> DispatchResult:
     """Run one dispatcher tick under the board's single-writer lock.
 
@@ -1453,6 +1455,8 @@ def dispatch_once(
             default_assignee=default_assignee,
             max_in_progress_per_profile=max_in_progress_per_profile,
             reconcile_orphans=reconcile_orphans,
+            task_id=task_id,
+            before_spawn_fn=before_spawn_fn,
         )
 
     try:
@@ -1509,6 +1513,7 @@ def _dispatch_lane_task(
     spawn_fn,
     per_profile_cap: Optional[int],
     per_profile_running: dict[str, int],
+    before_spawn_fn=None,
 ) -> bool:
     """Guard, claim, resolve the workspace and spawn one ready/review row.
     Returns True when a spawn slot was consumed (real or ``dry_run``); every
@@ -1556,7 +1561,12 @@ def _dispatch_lane_task(
         _count_spawn(assignee)
         return True
     claim = _kb.claim_review_task if lane == "review" else _kb.claim_task
-    claimed = claim(conn, task_id, ttl_seconds=ttl_seconds)
+    on_claim_fn = None
+    if before_spawn_fn is not None:
+        on_claim_fn = lambda claim_conn, claimed: before_spawn_fn(
+            claim_conn, claimed, board=board, lane=lane, workspace=None,
+        )
+    claimed = claim(conn, task_id, ttl_seconds=ttl_seconds, on_claim_fn=on_claim_fn)
     if claimed is None:
         return False
     try:
@@ -1731,6 +1741,16 @@ def _lane_rows(conn: sqlite3.Connection, status: str) -> list[sqlite3.Row]:
     ).fetchall()
 
 
+def _lane_rows_for_task(conn: sqlite3.Connection, status: str, task_id: Optional[str]) -> list[sqlite3.Row]:
+    if task_id is None:
+        return _lane_rows(conn, status)
+    return conn.execute(
+        "SELECT id, assignee FROM tasks "
+        f"WHERE id = ? AND status = '{status}' AND claim_lock IS NULL",
+        (task_id,),
+    ).fetchall()
+
+
 def _any_spawnable_review(review_rows: list[sqlite3.Row]) -> bool:
     """Mirrors the review loop's own gate so human-pulled control-plane lanes
     don't tax ready throughput; assumes spawnable when profiles are unimportable."""
@@ -1775,6 +1795,8 @@ def _dispatch_once_locked(
     default_assignee: Optional[str] = None,
     max_in_progress_per_profile: Optional[int] = None,
     reconcile_orphans: bool = True,
+    task_id: Optional[str] = None,
+    before_spawn_fn=None,
 ) -> DispatchResult:
     """One dispatcher tick: reclaim stale/crashed running tasks, promote
     todo -> ready, then atomically claim each spawnable ready/review row and
@@ -1792,10 +1814,10 @@ def _dispatch_once_locked(
     if not may_spawn:
         return result
 
-    ready_rows = _lane_rows(conn, "ready")
+    ready_rows = _lane_rows_for_task(conn, "ready", task_id)
     # Review rows are enumerated up front so the budget split can see whether
     # review work exists at all.
-    review_rows = _lane_rows(conn, "review") if review_dispatch_enabled() else []
+    review_rows = _lane_rows_for_task(conn, "review", task_id) if review_dispatch_enabled() else []
     # Review-lane reservation: the ready loop runs first and would otherwise
     # consume the ENTIRE shared budget, starving reviews under a sustained ready
     # backlog. When spawnable review work exists and there is any budget, hold
@@ -1825,6 +1847,7 @@ def _dispatch_once_locked(
         dry_run=dry_run, ttl_seconds=ttl_seconds, board=board,
         failure_limit=failure_limit, spawn_fn=spawn_fn,
         per_profile_cap=per_profile_cap, per_profile_running=per_profile_running,
+        before_spawn_fn=before_spawn_fn,
     )
     default_assignee = _resolve_default_assignee(default_assignee)
     spawned = 0

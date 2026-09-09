@@ -1677,6 +1677,8 @@ DEFAULT_CONFIG = {
         # Expose the Phase-C read-only /project-status command. Disabled by default so existing
         # gateway command registration and production behavior remain unchanged during rollout.
         "project_status_command": False,
+        # Canonical /implement adapter. Disabled until the rollout is explicitly enabled.
+        "implement_command": False,
         # Auto-subscribe the originating gateway/TUI session to completion + block events when
         # kanban_create is called from a session with a persistent delivery channel. Disable for
         # profiles that prefer explicit kanban_notify-subscribe calls per task.

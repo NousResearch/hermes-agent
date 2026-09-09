@@ -145,7 +145,7 @@ def persist_run_routing_decision(
         raise ValueError("routing decision must use phase-c-v1")
     if decision.get("task_id") != task_id or decision.get("run_id") != int(run_id):
         return False
-    with write_txn(conn):
+    with write_txn(conn, allow_nested=True):
         row = conn.execute(
             "SELECT metadata FROM task_runs WHERE id = ? AND task_id = ? AND ended_at IS NULL",
             (int(run_id), task_id),

@@ -256,6 +256,20 @@ hermes kanban create "nightly ops review" \
     --json
 ```
 
+### Canonical `/implement` adapter
+
+`/implement <task|reference>` is a thin, default-disabled adapter for the
+deterministic task resolver and the existing Kanban dispatcher. Enable it only
+with `kanban.implement_command: true` in local configuration; no shipped
+profile or live configuration enables this gate. The adapter resolves the task,
+checks eligibility and dependencies, records the phase-c-v1 routing decision,
+then hands the task to the normal ready-to-running dispatcher path. Repeating
+the command for an active task returns the existing run instead of creating a
+second run or worker. The default implementation lane is `rozmilo-codex` with
+`rozmilo-claude` as the independent reviewer; `--profile rozmilo-claude`
+selects the opposite pair. Resolution, routing, and preflight failures do not
+mutate task lifecycle state.
+
 ### Bulk CLI verbs
 
 All the lifecycle verbs accept multiple ids so you can clean up a batch

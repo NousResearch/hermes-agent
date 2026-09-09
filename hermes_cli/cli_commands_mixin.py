@@ -1829,6 +1829,11 @@ class CLICommandsMixin:
             return
         print(run_project_status_slash(cmd))
 
+    def _handle_implement_command(self, cmd: str):
+        """Handle the feature-gated canonical /implement adapter."""
+        from hermes_cli.kanban_implement import run_implement_slash_rendered
+        print(run_implement_slash_rendered(cmd))
+
     def _handle_skills_command(self, cmd: str):
         """Handle /skills slash command — delegates to hermes_cli.skills_hub, after intercepting the
         write-approval review subcommands (pending/approve/reject/diff/mode)."""

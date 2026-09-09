@@ -42,8 +42,17 @@ def format_reset_settings(runner, model="") -> str:
     profile = profile_name_for_home(get_hermes_home()) or "unknown"
     reasoning = runner._load_reasoning_config(model) if model is not None else None
     tier = runner._load_service_tier() or "default (normal)"
-    delegation_model = delegation.get("model")
-    model_label = f"{delegation_model} (configured)" if delegation_model else "inherited from main"
+    # Match delegation's blank-value handling without invoking its credential
+    # resolver. A provider override may supply its own model (including saved
+    # custom-provider defaults), so absence of delegation.model isn't inheritance.
+    delegation_model = str(delegation.get("model") or "").strip()
+    delegation_provider = str(delegation.get("provider") or "").strip()
+    if delegation_model:
+        model_label = f"{delegation_model} (configured)"
+    elif delegation_provider:
+        model_label = "unknown (provider override)"
+    else:
+        model_label = "inherited from main"
     raw_effort = delegation.get("reasoning_effort")
     parsed = parse_reasoning_effort(raw_effort)
     effort = "inherited from main"

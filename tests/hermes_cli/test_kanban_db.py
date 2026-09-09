@@ -1642,6 +1642,43 @@ def test_write_txn_check_reads_correct_header_fields(tmp_path):
 
 
 
+def test_recommended_workspace_kind_git_repo(kanban_home, tmp_path):
+    repo = tmp_path / "proj"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-b", "main", str(repo)], check=True, capture_output=True)
+    kb.write_board_metadata(None, default_workdir=str(repo))
+    kind, path = kb.recommended_workspace_kind_for_board()
+    assert kind == "worktree"
+    assert Path(path).resolve() == repo.resolve()
+
+
+def test_recommended_workspace_kind_plain_dir(kanban_home, tmp_path):
+    d = tmp_path / "plain"
+    d.mkdir()
+    kb.write_board_metadata(None, default_workdir=str(d))
+    kind, path = kb.recommended_workspace_kind_for_board()
+    assert kind == "dir"
+    assert Path(path).resolve() == d.resolve()
+
+
+def test_recommended_workspace_kind_no_default(kanban_home):
+    assert kb.recommended_workspace_kind_for_board() == ("scratch", None)
+
+
+def test_create_task_scratch_without_workspace_ignores_board_default_workdir(kanban_home, tmp_path):
+    d = tmp_path / "src"
+    d.mkdir()
+    kb.write_board_metadata(None, default_workdir=str(d))
+    conn = kbc.connect()
+    try:
+        tid = kb.create_task(conn, title="scratch", workspace_kind="scratch")
+        task = kb.get_task(conn, tid)
+        assert task.workspace_kind == "scratch"
+        assert task.workspace_path is None
+    finally:
+        conn.close()
+
+
 def test_bare_connect_does_not_close_on_context_exit(tmp_path):
     """Document the leak that connect_closing exists to prevent.
 

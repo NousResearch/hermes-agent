@@ -63,7 +63,7 @@ def _run_state_kwargs(args: argparse.Namespace, cmd: str) -> tuple[Optional[dict
     return ({} if st is None else {"state_type": st, "state_name": sn}), 0
 
 
-def _parse_workspace_flag(value: str) -> tuple[str, Optional[str]]:
+def _parse_workspace_flag(value: Optional[str]) -> tuple[str, Optional[str]]:
     """``--workspace`` -> ``(kind, path|None)``: ``scratch``, ``worktree``, ``worktree:<p>``, ``dir:<p>``."""
     if not value:
         return ("scratch", None)
@@ -344,7 +344,10 @@ def _cmd_create(args: argparse.Namespace) -> int:
     from agent.delegation_context import is_dispatcher_owned_worker_context
 
     try:
-        ws_kind, ws_path = _parse_workspace_flag(args.workspace)
+        if getattr(args, "workspace", None) is None:
+            ws_kind, ws_path = kb.recommended_workspace_kind_for_board()
+        else:
+            ws_kind, ws_path = _parse_workspace_flag(args.workspace)
         branch_name = _parse_branch_flag(getattr(args, "branch", None))
     except argparse.ArgumentTypeError as exc:
         return _err(f"kanban: {exc}", 2)

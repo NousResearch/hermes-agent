@@ -557,6 +557,29 @@ def read_board_metadata(board: Optional[str] = None) -> dict:
     return meta
 
 
+def recommended_workspace_kind_for_board(board: Optional[str] = None) -> tuple[str, Optional[str]]:
+    """Recommend ``(workspace_kind, workspace_path)`` from board ``default_workdir``.
+
+    Mirrors the dashboard create-dialog default so CLI / tool creates inherit
+    the same non-scratch kind (#69787). Scratch never gets a real path
+    (#28818 / #30917).
+    """
+    from hermes_cli.kanban_db_workspace import _git_toplevel
+
+    workdir = str(read_board_metadata(board).get("default_workdir") or "").strip()
+    if not workdir:
+        return ("scratch", None)
+    try:
+        path = Path(workdir).expanduser()
+        if not path.exists() or not path.is_dir():
+            return ("scratch", None)
+        path = path.resolve()
+        kind = "worktree" if _git_toplevel(path) else "dir"
+        return (kind, str(path))
+    except (OSError, ValueError):
+        return ("scratch", None)
+
+
 def write_board_metadata(
     board: Optional[str], *, name: Optional[str] = None, description: Optional[str] = None,
     icon: Optional[str] = None, color: Optional[str] = None, archived: Optional[bool] = None,

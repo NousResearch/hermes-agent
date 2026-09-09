@@ -1161,3 +1161,23 @@ def test_attach_url_happy_path_public_host(worker_env, default_url_guard, monkey
         assert Path(atts[0].stored_path).read_bytes() == payload
     finally:
         conn.close()
+
+
+def test_kanban_create_inherits_board_default_when_no_parent_project(monkeypatch, tmp_path):
+    from pathlib import Path as _Path
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    monkeypatch.setattr(_Path, "home", lambda: tmp_path)
+    d = tmp_path / "plain"
+    d.mkdir()
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+    from tools import kanban_tools as kt
+    kb._INITIALIZED_PATHS.clear()
+    kb.init_db()
+    kb.write_board_metadata(None, default_workdir=str(d))
+    out = json.loads(kt._handle_create({"title": "from tool", "assignee": "w"}))
+    assert out.get("ok") is True, out
+    assert out.get("workspace_kind") == "dir"

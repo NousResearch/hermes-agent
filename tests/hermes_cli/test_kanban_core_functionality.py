@@ -1416,3 +1416,46 @@ def test_notify_sub_starts_caught_up_on_active_task(kanban_home):
         conn.close()
 
 
+def test_cli_create_inherits_board_default_workdir_kind(kanban_home, tmp_path):
+    repo = tmp_path / "proj"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-b", "main", str(repo)], check=True, capture_output=True)
+    kb.write_board_metadata(None, default_workdir=str(repo))
+    from hermes_cli import kanban as kcli
+    ns = argparse.Namespace(title="cli inherit", body=None, assignee=None, workspace=None,
+                            branch=None, project=None, tenant=None, priority=0, parent=[],
+                            triage=False, idempotency_key=None, max_runtime=None, skills=None,
+                            max_retries=None, model_override=None, provider_override=None,
+                            goal_mode=False, goal_max_turns=None, initial_status="running",
+                            created_by=None, json=False)
+    assert kcli._cmd_create(ns) == 0
+    conn = kbc.connect()
+    try:
+        task = kb.list_tasks(conn)[0]
+        assert task.workspace_kind == "worktree"
+        assert Path(task.workspace_path).resolve() == repo.resolve()
+    finally:
+        conn.close()
+
+
+def test_cli_create_explicit_scratch_skips_board_default(kanban_home, tmp_path):
+    d = tmp_path / "src"
+    d.mkdir()
+    kb.write_board_metadata(None, default_workdir=str(d))
+    from hermes_cli import kanban as kcli
+    ns = argparse.Namespace(title="explicit scratch", body=None, assignee=None, workspace="scratch",
+                            branch=None, project=None, tenant=None, priority=0, parent=[],
+                            triage=False, idempotency_key=None, max_runtime=None, skills=None,
+                            max_retries=None, model_override=None, provider_override=None,
+                            goal_mode=False, goal_max_turns=None, initial_status="running",
+                            created_by=None, json=False)
+    assert kcli._cmd_create(ns) == 0
+    conn = kbc.connect()
+    try:
+        task = kb.list_tasks(conn)[0]
+        assert task.workspace_kind == "scratch"
+        assert not task.workspace_path
+    finally:
+        conn.close()
+
+

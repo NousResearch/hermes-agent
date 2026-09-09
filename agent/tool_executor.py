@@ -560,6 +560,11 @@ def _set_worker_activity_callback(agent) -> None:
 
 # Must stay far below the gateway turn-inactivity timeout (default 1800s) so a silent tool never looks idle.
 _TOOL_ACTIVITY_HEARTBEAT_INTERVAL_S = 30.0
+# Hard ceiling for mid-call stamps (#106244). Matches the default gateway inactivity budget /
+# browser_exec max timeout so a healthy long tool stays covered, but a wedged call whose own
+# timeout never surfaces (e.g. subprocess pipe drain stuck after TimeoutExpired) cannot keep
+# refreshing SessionDB ``last_activity_at`` (and the in-memory watchdog clock) forever.
+_TOOL_ACTIVITY_HEARTBEAT_MAX_DURATION_S = 1800.0
 
 
 def _run_tool_activity_heartbeat(
@@ -567,12 +572,23 @@ def _run_tool_activity_heartbeat(
     stop_event: threading.Event,
     label: str,
     interval: float = _TOOL_ACTIVITY_HEARTBEAT_INTERVAL_S,
+    max_duration: float = _TOOL_ACTIVITY_HEARTBEAT_MAX_DURATION_S,
 ) -> None:
     """Daemon thread stamping ``agent._touch_activity`` every ``interval`` seconds until
     ``stop_event`` is set, so the gateway inactivity watchdog never abandons a turn whose
-    tool runs silently. Wedged tools stay bounded by the tool layer's own timeouts."""
+    tool runs silently.
+
+    Stamps also stop once ``max_duration`` elapses even if ``fn()`` is still wedged: tool-layer
+    timeouts are supposed to bound the call, but some paths (pipe-held grandchildren after a
+    killed CLI child) never return, and an unbounded heartbeat would pin desktop sidebar
+    recency at "now" indefinitely (#106244). After the ceiling, both the DB projection and the
+    in-memory activity clock freeze so the inactivity watchdog can eventually reclaim the turn.
+    """
+    deadline = time.monotonic() + max(0.0, float(max_duration))
     try:
         while not stop_event.wait(interval):
+            if time.monotonic() >= deadline:
+                break
             agent._touch_activity(label)
     except Exception:
         pass  # a heartbeat must never break the agent loop
@@ -585,10 +601,14 @@ def _run_with_activity_heartbeat(agent, function_name: str, fn):
         # Keep the gateway turn-inactivity watchdog from abandoning a turn whose tool call runs silently for
         # longer than the inactivity timeout (#84491): stamp activity periodically while the tool is in
         # flight, not just at start/completion. Both the sequential and the concurrent paths funnel through
-        # here, so a single heartbeat covers every tool.
+        # here, so a single heartbeat covers every tool. Duration is capped (#106244) so a wedged tool
+        # cannot keep SessionDB ``last_activity_at`` fresh forever.
         target=_run_tool_activity_heartbeat,
         args=(agent, stop, f"tool running: {function_name}"),
-        kwargs={"interval": _TOOL_ACTIVITY_HEARTBEAT_INTERVAL_S},
+        kwargs={
+            "interval": _TOOL_ACTIVITY_HEARTBEAT_INTERVAL_S,
+            "max_duration": _TOOL_ACTIVITY_HEARTBEAT_MAX_DURATION_S,
+        },
         daemon=True,
         name=f"tool-activity-hb-{function_name[:24]}",
     )

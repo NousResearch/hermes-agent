@@ -230,6 +230,52 @@ def test_heartbeat_stops_when_execute_raises(monkeypatch):
     assert len(touches) == n, "heartbeat thread kept running after execute() raised"
 
 
+def test_wedged_tool_heartbeat_stops_after_max_duration(monkeypatch):
+    """A call that never returns must not stamp activity forever (#106244).
+
+    ``browser_exec`` can wedge past its own TimeoutExpired (grandchild holds
+    stdout pipes), so the tool-layer timeout never surfaces and ``fn()`` never
+    returns. Without a wall-clock ceiling the heartbeat would keep refreshing
+    SessionDB ``last_activity_at`` and pin desktop sidebar rows at "now".
+    """
+    import agent.tool_executor as te
+
+    monkeypatch.setattr(te, "_TOOL_ACTIVITY_HEARTBEAT_INTERVAL_S", 0.05)
+    monkeypatch.setattr(te, "_TOOL_ACTIVITY_HEARTBEAT_MAX_DURATION_S", 0.18)
+
+    agent = _make_agent(monkeypatch)
+    touches: list = []
+    agent._touch_activity = lambda desc: touches.append((time.time(), desc))
+
+    release = threading.Event()
+
+    def _wedged():
+        release.wait(timeout=2.0)
+        return {"ok": True}
+
+    result_box: list = []
+
+    def _runner():
+        result_box.append(te._run_with_activity_heartbeat(agent, "browser_exec", _wedged))
+
+    worker = threading.Thread(target=_runner, daemon=True)
+    worker.start()
+
+    # Past the ceiling: several intervals should have fired, then stopped.
+    time.sleep(0.45)
+    n = len(touches)
+    assert n >= 2, f"expected mid-call heartbeats before ceiling, got {n}"
+    assert all(desc == "tool running: browser_exec" for _, desc in touches)
+    time.sleep(0.25)
+    assert len(touches) == n, (
+        f"heartbeat kept stamping after max_duration (grew {n} -> {len(touches)})"
+    )
+
+    release.set()
+    worker.join(timeout=2.0)
+    assert result_box == [{"ok": True}]
+
+
 def test_concurrent_tool_call_heartbeat(monkeypatch):
     """Concurrent execution also stamps activity via the shared chokepoint."""
     import agent.tool_executor as te

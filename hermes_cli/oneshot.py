@@ -396,9 +396,13 @@ def _apply_stored_session_runtime(
     if route is None:
         return choice
     choice.model, stored_provider, stored_base_url, stored_api_mode, provider_changed = route
-    if provider_changed:
+    # Same application order as _restore_session_model: a stored provider carries its base_url
+    # even when it matches the ambient provider (a custom endpoint whose config URL moved).
+    if stored_provider:
         choice.provider = stored_provider
-        choice.base_url = stored_base_url
+        if stored_base_url:
+            choice.base_url = stored_base_url
+    if provider_changed:
         choice.api_key = None
     if stored_api_mode:
         choice.api_mode = str(stored_api_mode)
@@ -427,38 +431,39 @@ def _run_agent(
     # replace the ambient config (see _apply_stored_session_runtime) and the ended row must
     # be reopened before the agent can stamp a new lifecycle boundary.
     session_db = _create_session_db_for_oneshot()
-    resume_sid, conversation_history, resume_meta = _load_resume_target(session_db, resume)
-    choice = _apply_stored_session_runtime(choice, resume_meta, explicit_model=bool((model or "").strip()))
-    runtime = resolve_runtime_provider(
-        requested=choice.provider,
-        target_model=choice.model or None,
-        explicit_base_url=choice.base_url,
-        explicit_api_key=choice.api_key,
-    )
-    if choice.api_mode:
-        runtime["api_mode"] = choice.api_mode
-
-    # sorted() gives stable ordering for config-derived sets; explicit values preserve user order.
-    toolsets_list = _normalize_toolsets(toolsets)
-    if toolsets_list is None and use_config_toolsets:
-        toolsets_list = sorted(_get_platform_tools(cfg, "cli"))
-
-    # Oneshot builds AIAgent directly, bypassing cli.py's MCP background discovery and
-    # _init_agent's wait, so the construction-time tool snapshot would miss late MCP servers.
-    # Idempotent start + bounded wait with the single-query bound (there is no later turn).
-    # Ensure MCP tools are discovered before building the agent. This helper starts discovery if needed
-    # (idempotent) and bounded-waits with the larger single-query bound (default 15s) because there is only
-    # ONE turn and no between-turns late-binding refresh (#38448).
-    from hermes_cli.mcp_startup import ensure_mcp_discovery_before_agent_build
-
-    ensure_mcp_discovery_before_agent_build(logger=logging.getLogger(__name__), single_query=True)
-
-    skills_prompt = _build_preloaded_skills_prompt(skills)
-
-    # The try spans agent construction (not just ``chat``) so the store is always closed, even when
-    # ``AIAgent(...)`` raises — the one-shot exit path hard-exits via os._exit and skips finalizers.
+    # The try spans everything from store creation through ``chat`` so the store is always
+    # closed: resume resolution, provider resolution and ``AIAgent(...)`` can all raise, and the
+    # one-shot exit path hard-exits via os._exit and skips finalizers.
     agent = None
     try:
+        resume_sid, conversation_history, resume_meta = _load_resume_target(session_db, resume)
+        choice = _apply_stored_session_runtime(choice, resume_meta, explicit_model=bool((model or "").strip()))
+        runtime = resolve_runtime_provider(
+            requested=choice.provider,
+            target_model=choice.model or None,
+            explicit_base_url=choice.base_url,
+            explicit_api_key=choice.api_key,
+        )
+        if choice.api_mode:
+            runtime["api_mode"] = choice.api_mode
+
+        # sorted() gives stable ordering for config-derived sets; explicit values preserve user order.
+        toolsets_list = _normalize_toolsets(toolsets)
+        if toolsets_list is None and use_config_toolsets:
+            toolsets_list = sorted(_get_platform_tools(cfg, "cli"))
+
+        # Oneshot builds AIAgent directly, bypassing cli.py's MCP background discovery and
+        # _init_agent's wait, so the construction-time tool snapshot would miss late MCP servers.
+        # Idempotent start + bounded wait with the single-query bound (there is no later turn).
+        # Ensure MCP tools are discovered before building the agent. This helper starts discovery if needed
+        # (idempotent) and bounded-waits with the larger single-query bound (default 15s) because there is only
+        # ONE turn and no between-turns late-binding refresh (#38448).
+        from hermes_cli.mcp_startup import ensure_mcp_discovery_before_agent_build
+
+        ensure_mcp_discovery_before_agent_build(logger=logging.getLogger(__name__), single_query=True)
+
+        skills_prompt = _build_preloaded_skills_prompt(skills)
+
         agent = AIAgent(
             api_key=runtime.get("api_key"),
             base_url=runtime.get("base_url"),

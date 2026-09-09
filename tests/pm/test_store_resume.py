@@ -82,7 +82,9 @@ def test_store_fetch_resumes_interrupted_download(tmp_path, dl_server, monkeypat
     assert (partials / f"{key}.ranges").is_file()
 
     first = list(_Handler.ranges_seen)
-    assert len(first) == 1, f"expected a single-range first fetch, saw {first}"
+    assert first[0][1] == 0
+    assert len(first) > 1, "the persistent outage must exhaust automatic retries"
+    assert all(start == _Handler.abort_after for _, start, _ in first[1:])
 
     # Second fetch, server intact: must resume from the durable prefix.
     _Handler.abort_after = None

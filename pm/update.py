@@ -32,6 +32,7 @@ import urllib.request
 from dataclasses import dataclass, field
 from typing import Optional
 
+from pm.network import retry_network
 from pm.registry import get_package
 
 # ---------------------------------------------------------------------------
@@ -189,10 +190,13 @@ def _index_headers(url: str) -> dict:
 def _get_json(url: str) -> dict | list:
     from hermes_cli.urllib_security import open_credentialed_url
 
-    with open_credentialed_url(
-        urllib.request.Request(url, headers=_index_headers(url)), timeout=60
-    ) as resp:
-        return json.load(resp)
+    def request():
+        with open_credentialed_url(
+            urllib.request.Request(url, headers=_index_headers(url)), timeout=60
+        ) as resp:
+            return json.load(resp)
+
+    return retry_network(request)
 
 
 def _get_text(url: str, headers: Optional[dict] = None) -> str:
@@ -201,10 +205,14 @@ def _get_text(url: str, headers: Optional[dict] = None) -> str:
     hdrs = _index_headers(url)
     if headers:
         hdrs.update(headers)
-    with open_credentialed_url(
-        urllib.request.Request(url, headers=hdrs), timeout=60
-    ) as resp:
-        return resp.read().decode("utf-8", "replace")
+
+    def request():
+        with open_credentialed_url(
+            urllib.request.Request(url, headers=hdrs), timeout=60
+        ) as resp:
+            return resp.read().decode("utf-8", "replace")
+
+    return retry_network(request)
 
 
 # ── llama.app installer bucket (ggml-org/install.sh) ──────────────────────

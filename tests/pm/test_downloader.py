@@ -205,29 +205,16 @@ def test_redirect_to_non_https_refused():
 
 def test_pause_leaves_partials_intact(dl_server, tmp_path):
     _Handler.payloads["/p"] = _payload(32 << 20)
-    _Handler.slow_per_chunk = 0.01
     dest = tmp_path / "p.bin"
     partials = tmp_path / "partials"
     dl = Download([Source(_url(dl_server, "/p"), dest)],
                   partials_dir=partials)
-    result: dict = {}
+    def pause_after_bytes(done, total, ranges):
+        if done > 0:
+            dl.pause()
 
-    def run_it():
-        try:
-            dl.run()
-            result["ok"] = True
-        except DownloadPaused:
-            result["paused"] = True
-
-    thread = threading.Thread(target=run_it)
-    thread.start()
-    for _ in range(200):
-        if partials.exists() and any(partials.iterdir()):
-            break
-        time.sleep(0.05)
-    dl.pause()
-    thread.join(timeout=15)
-    assert result.get("paused")
+    with pytest.raises(DownloadPaused):
+        dl.run(progress=pause_after_bytes)
     assert not dest.exists()
     names = {p.name for p in partials.iterdir()}
     assert any(n.endswith(".part") for n in names)
@@ -361,32 +348,16 @@ def test_pause_mid_plan_resumes_to_completion(dl_server, tmp_path):
     _Handler.payloads["/b"] = p_b
     da, db = tmp_path / "a.bin", tmp_path / "b.bin"
     partials = tmp_path / "partials"
-    _Handler.slow_per_chunk = 0.01
-
     dl = Download([Source(_url(dl_server, "/a"), da, _sha(p_a)),
                    Source(_url(dl_server, "/b"), db, _sha(p_b))],
                   partials_dir=partials)
-    result: dict = {}
 
-    def run_it():
-        try:
-            dl.run()
-            result["ok"] = True
-        except DownloadPaused:
-            result["paused"] = True
-        except Exception as exc:  # noqa: BLE001
-            result["err"] = exc
+    def pause_second_source(done, total, ranges):
+        if ranges.get(str(db)):
+            dl.pause()
 
-    thread = threading.Thread(target=run_it)
-    thread.start()
-    for _ in range(400):
-        if da.exists():
-            break
-        time.sleep(0.05)
-    assert da.exists(), "source 1 never completed"
-    dl.pause()
-    thread.join(timeout=20)
-    assert result.get("paused"), result.get("err")
+    with pytest.raises(DownloadPaused):
+        dl.run(progress=pause_second_source)
     assert da.read_bytes() == p_a  # source 1 moved despite the pause
     assert not db.exists()
     names = {p.name for p in partials.iterdir()}

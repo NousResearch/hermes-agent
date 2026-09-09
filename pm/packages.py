@@ -1050,12 +1050,17 @@ def _github_release_digests(repo: str, tag: str) -> dict[str, str]:
     token = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
     if token:
         headers["Authorization"] = f"Bearer {token}"
-    try:
+    from pm.network import retry_network
+
+    def request():
         with urllib.request.urlopen(
             urllib.request.Request(url, headers=headers),
             timeout=120,
         ) as resp:
-            release = json.load(resp)
+            return json.load(resp)
+
+    try:
+        release = retry_network(request)
     except Exception:
         return {}
     digests = {}

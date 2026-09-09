@@ -171,16 +171,15 @@ def test_stage_only_repin_same_version_rebuilds(tmp_path, sandbox, monkeypatch):
 
 
 @pytest.mark.parametrize("error_name", ["HashError", "DownloadPaused"])
-def test_permanent_or_paused_download_is_not_retried(monkeypatch, tmp_path, error_name):
+def test_permanent_or_paused_download_is_not_retried(error_name):
     from pm import downloader
+    from pm.network import retry_network
 
-    class FailingStore:
-        def fetch(self, *args, **kwargs):
-            raise getattr(downloader, error_name)("stop")
+    def fail():
+        raise getattr(downloader, error_name)("stop")
 
-    monkeypatch.setattr("time.sleep", lambda _: pytest.fail("permanent failure was retried"))
     with pytest.raises(getattr(downloader, error_name)):
-        ensure_mod._fetch_with_retry(FailingStore(), "https://example.test/tool", "digest", tmp_path)
+        retry_network(fail, wait=lambda _: pytest.fail("permanent failure was retried"))
 
 
 @pytest.mark.parametrize("failure", ["fetch", "publish"])
@@ -199,7 +198,7 @@ def test_repin_failure_preserves_previous_staged_entry(sandbox, monkeypatch, fai
         raise InstallError("stage-test", "injected staging failure")
 
     if failure == "fetch":
-        monkeypatch.setattr(ensure_mod, "_fetch_with_retry", fail)
+        monkeypatch.setattr(sandbox, "fetch", fail)
     else:
         monkeypatch.setattr(sandbox, "publish", fail)
     with pytest.raises(InstallError, match="injected staging failure"):

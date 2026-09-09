@@ -19,7 +19,7 @@ import pytest
 class RangeHandler(BaseHTTPRequestHandler):
     payloads: dict = {}
     ranges_seen: list = []           # (path, start, end) from real Range requests
-    abort_after: int | None = None   # close the connection after this many bytes
+    abort_after: int | None = None   # refuse bytes beyond this payload offset
     slow_per_chunk: float = 0.0      # sleep per served piece (pause tests)
     no_range: bool = False           # ignore Range, serve 200 full body
     etags: bool = True
@@ -81,12 +81,15 @@ class RangeHandler(BaseHTTPRequestHandler):
             self.end_headers()
             served = 0
             while served < len(body):
-                if self.abort_after is not None and served >= self.abort_after:
+                if self.abort_after is not None and start + served >= self.abort_after:
                     self.connection.close()
                     return
                 if self.slow_per_chunk:
                     time.sleep(self.slow_per_chunk)
-                piece = body[served:served + self.chunk]
+                end = served + self.chunk
+                if self.abort_after is not None:
+                    end = min(end, self.abort_after - start)
+                piece = body[served:end]
                 self.wfile.write(piece)
                 self.wfile.flush()
                 served += len(piece)

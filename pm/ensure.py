@@ -328,33 +328,6 @@ def _install(
             package.migrate(previous["version"], version)
 
 
-def _fetch_with_retry(store, url: str, sha256: str, scratch, progress=None, attempts: int = 5):
-    """store.fetch with a bounded retry: release-asset CDNs (TUR's pool
-    302s to GitHub's) throw transient 404/403 windows at their edges --
-    observed live, the identical request green minutes later. The digest
-    still proves the bytes; a retry cannot smuggle anything past the pin.
-    """
-    import time
-    from pm.downloader import DownloadPaused, HashError
-
-    last: Exception | None = None
-    for attempt in range(attempts):
-        try:
-            return store.fetch(url, sha256, scratch, progress=progress)
-        except (HashError, DownloadPaused):
-            raise
-        except Exception as exc:  # noqa: BLE001 -- transient fetch failures retain bounded retries
-            last = exc
-            if attempt + 1 < attempts:
-                wait = 30 * (attempt + 1)
-                logging.getLogger(__name__).warning(
-                    "fetch failed (attempt %d/%d) for %s: %s; retrying in %ds",
-                    attempt + 1, attempts, url, exc, wait,
-                )
-                time.sleep(wait)
-    raise last
-
-
 def stage_only(name: str, target: str, progress=None) -> "Path":
     """Cross-target staging: publish the pinned (package, version, target)
     entry into the store and return its path. No facts are written and no
@@ -406,8 +379,8 @@ def stage_only(name: str, target: str, progress=None) -> "Path":
         with store.scratch() as scratch:
             staged = scratch / "tree"
             for index, artifact in enumerate(artifacts):
-                archive = _fetch_with_retry(
-                    store, artifact["url"], artifact["sha256"], scratch,
+                archive = store.fetch(
+                    artifact["url"], artifact["sha256"], scratch,
                     progress=_artifact_progress(progress, index, len(artifacts)),
                 )
                 if index == 0:

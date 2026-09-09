@@ -22,6 +22,7 @@ the destination path to half-open [start, end) runs. ``done_bytes`` is the sum;
 from __future__ import annotations
 
 import hashlib
+import http.client
 import json
 import re
 import shutil
@@ -32,6 +33,8 @@ import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Optional, Sequence
+
+from pm.network import is_transient, retry_network
 
 # GitHub's release-asset CDN (release-assets.githubusercontent.com, which
 # TUR's pool 302s to) 403s unknown tool UAs from CI runner IP ranges --
@@ -159,6 +162,8 @@ def _existing_dest_ok(source: "Source") -> bool:
     """
     if not source.dest.exists():
         return False
+    if not source.dest.is_file():
+        raise IsADirectoryError(f"download destination is not a file: {source.dest}")
     if not source.sha256:
         return True
     try:
@@ -276,10 +281,22 @@ class Download:
                     def tick(written: _Ranges) -> None:
                         report(key, written)
 
-                    if remote.total and remote.ranged and (source.sha256 or remote.etag):
-                        size = self._fetch_ranged(source, remote, tick)
-                    else:
-                        size = self._fetch_single(source, remote, tick)
+                    def fetch() -> int:
+                        self._check_pause()
+                        if remote.total and remote.ranged and (source.sha256 or remote.etag):
+                            return self._fetch_ranged(source, remote, tick)
+                        return self._fetch_single(source, remote, tick)
+
+                    configured_connections = self.connections
+                    try:
+                        size = retry_network(fetch, wait=self._wait_retry)
+                    except http.client.IncompleteRead as exc:
+                        raise DownloadError(f"download incomplete: {exc}") from exc
+                    finally:
+                        self.connections = configured_connections
+                    partial_key = self._key(source.url)
+                    self._finalize(source, self.partials_dir / f"{partial_key}.part",
+                                   self.partials_dir / f"{partial_key}.ranges")
                 totals[key] = size
                 unknown.discard(key)
                 report(key, [(0, size)])
@@ -291,27 +308,36 @@ class Download:
         if self._paused.is_set():
             raise DownloadPaused("download paused")
 
-    @staticmethod
-    def _probe(url: str) -> _Remote:
-        req = urllib.request.Request(url, headers={**_UA, "Range": "bytes=0-0"})
-        try:
+    def _wait_retry(self, delay: float) -> None:
+        if self._paused.wait(delay):
+            raise DownloadPaused("download paused during retry backoff")
+
+    def _probe(self, url: str) -> _Remote:
+        def request():
+            self._check_pause()
+            req = urllib.request.Request(url, headers={**_UA, "Range": "bytes=0-0"})
             with _OPENER.open(req, timeout=60) as response:
                 etag = _strong_etag(response)
                 if response.status == 206:
                     total = _validate_range(response, 0, 1)
-                    if len(response.read(2)) != 1:
+                    body = response.read(2)
+                    if not body:
+                        raise http.client.IncompleteRead(b"", 1)
+                    if len(body) != 1:
                         raise _RangeError("range probe returned the wrong byte count")
                     return _Remote(total, True, etag)
                 if response.status != 200:
                     raise DownloadError(f"unexpected download probe status: {response.status}")
                 return _Remote(int(response.headers.get("Content-Length") or 0), False, etag)
+        try:
+            return retry_network(request, wait=self._wait_retry)
         except urllib.error.HTTPError as exc:
             if exc.code in (401, 403):
                 raise DownloadError("the host refused the download; check source access and URL") from exc
             raise
         except DownloadError:
             raise
-        except (OSError, ValueError):
+        except ValueError:
             return _Remote(0, False)
 
     def _key(self, url: str) -> str:
@@ -361,10 +387,9 @@ class Download:
         covered = self._load_sidecar(side, part, remote, source.sha256)
         with part.open("r+b" if covered else "w+b") as stream:
             stream.truncate(remote.total)
-        gap_count = len(_missing(remote.total, covered)) if covered else (remote.total + _CHUNK - 1) // _CHUNK
-        connections = max(1, min(self.connections, gap_count))
-        attempts = (connections, 1) if connections > 1 else (1,)
-        for connections in attempts:
+        while True:
+            gap_count = len(_missing(remote.total, covered)) if covered else (remote.total + _CHUNK - 1) // _CHUNK
+            connections = max(1, min(self.connections, gap_count))
             covered, errors = self._ranged_attempt(source, remote, part, covered, connections, tick)
             protocol_error = next((error for error in errors if isinstance(error, _RangeError)), None)
             if protocol_error is not None:
@@ -375,18 +400,20 @@ class Download:
             if self._paused.is_set():
                 raise DownloadPaused(source.url)
             if errors:
-                if connections == 1:
-                    raise errors[0]
-                logging.getLogger(__name__).warning(
-                    "parallel range fetch failed for %s; retrying with one connection", source.url,
-                )
-                continue
+                if self.connections > 1 and all(
+                    isinstance(error, urllib.error.HTTPError) and error.code in (403, 404)
+                    for error in errors
+                ):
+                    logging.getLogger(__name__).warning(
+                        "parallel range fetch refused for %s; retrying with one connection", source.url,
+                    )
+                    self.connections = 1
+                    continue
+                raise next((error for error in errors if not is_transient(error)), errors[0])
             written = sum(end - start for start, end in covered)
             if written != remote.total:
-                raise DownloadError(f"download incomplete ({written} of {remote.total} bytes)")
-            self._finalize(source, part, side)
+                raise http.client.IncompleteRead(b"", remote.total - written)
             return written
-        raise DownloadError("ranged download exhausted its retry")
 
     def _ranged_attempt(self, source: Source, remote: _Remote, part: Path,
                         covered: _Ranges, connections: int, tick) -> tuple[_Ranges, list[Exception]]:
@@ -421,7 +448,7 @@ class Download:
                             return
                         chunk = response.read(min(_CHUNK, end - position))
                         if not chunk:
-                            raise DownloadError("range body ended before its declared bounds")
+                            raise http.client.IncompleteRead(b"", end - position)
                         stream.write(chunk)
                         position += len(chunk)
                         with lock:
@@ -430,6 +457,8 @@ class Download:
                     if response.read(1):
                         raise _RangeError("range body exceeds its declared bounds")
             except Exception as exc:
+                if isinstance(exc, urllib.error.HTTPError):
+                    exc.close()
                 with lock:
                     errors.append(exc)
                 stop.set()
@@ -469,6 +498,8 @@ class Download:
                     tick(list(covered))
                 if self._paused.is_set():
                     raise DownloadPaused(source.url)
+                if position < (declared or remote.total):
+                    raise http.client.IncompleteRead(b"", (declared or remote.total) - position)
                 if (declared and position != declared) or (remote.total and position != remote.total):
                     raise DownloadError(f"download incomplete ({position} bytes, expected {declared or remote.total})")
         except BaseException:
@@ -476,7 +507,6 @@ class Download:
                 self._write_sidecar(side, part, covered, remote, source.sha256)
             raise
         self._write_sidecar(side, part, covered, remote, source.sha256)
-        self._finalize(source, part, side)
         return position
 
     def _finalize(self, source: Source, part: Path, side: Path) -> None:

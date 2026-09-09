@@ -330,6 +330,24 @@ The complete desktop builder also builds the JavaScript surfaces, generates
 launchers, and invokes native packaging. Maintainers can read
 [Building the Desktop Installers](https://github.com/NousResearch/hermes-agent/blob/main/apps/desktop/BUILDING.md).
 
+## Network retries
+
+PM retries transient HTTP failures during tool downloads, artifact hashing and
+version lookups. Each probe or transfer gets at most four attempts. Backoff
+waits are 1, 2 and 4 seconds. A `Retry-After` header can extend a wait, up to
+30 seconds. Each retry reports its cause, delay and next attempt in the log.
+
+Retryable HTTP statuses are 408, 429, 500, 502, 503 and 504. Connection resets,
+timeouts, temporary DNS failures and interrupted response bodies also retry.
+Ranged downloads retain completed bytes. Servers without range support require
+a fresh stream. Pause interrupts backoff and preserves the partial download.
+
+PM does not retry bad hashes, certificate failures, local filesystem errors or
+other permanent failures. A successful probe followed by a range GET 403 or 404
+retains the CDN fallback: one serial attempt at the missing ranges. Extraction,
+verification and publication are not repeated. Python and npm package requests
+remain under uv and npm's own retry policies.
+
 ## Diagnostics
 
 - **Missing or outdated tool:** read `hermes pm doctor`, then use an explicit PM install on a writable installation.

@@ -115,17 +115,27 @@ def sha256_file(path: Path) -> str:
 def hash_url(url: str) -> str:
     """sha256 of a url's content, streamed. `pm lock` uses this to pin."""
     import hashlib
+    import http.client
     import urllib.request
 
     from pm.downloader import _OPENER
+    from pm.network import retry_network
 
-    digest = hashlib.sha256()
-    with _OPENER.open(
-        urllib.request.Request(url, headers=_UA), timeout=600
-    ) as resp:
-        for block in iter(lambda: resp.read(1024 * 1024), b""):
-            digest.update(block)
-    return digest.hexdigest()
+    def request():
+        digest = hashlib.sha256()
+        size = 0
+        with _OPENER.open(
+            urllib.request.Request(url, headers=_UA), timeout=600
+        ) as resp:
+            declared = int(resp.headers.get("Content-Length") or 0)
+            for block in iter(lambda: resp.read(1024 * 1024), b""):
+                digest.update(block)
+                size += len(block)
+            if size < declared:
+                raise http.client.IncompleteRead(b"", declared - size)
+        return digest.hexdigest()
+
+    return retry_network(request)
 
 
 def extract(archive: Path, dest: Path) -> None:

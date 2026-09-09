@@ -3248,6 +3248,23 @@ class _StreamingCall(StreamingWaitMonitor):
         error = self.result["error"]
         _partial_text = (getattr(self.agent, "_current_streamed_assistant_text", "") or "").strip() or None
         _partial_names = list(self.result.get("partial_tool_names") or [])
+        # Context-overflow / compression-exhaustion: the stream died because the
+        # prompt already filled the window. Appending the recovered fragment would
+        # make the next turn's prompt strictly larger than the one that just failed
+        # (each retry fails earlier — the death spiral in #106260). Drop the fragment
+        # so only the continuation nudge is added (the loop's empty-stub guard skips
+        # appending an empty stub); retries then run against a same-size prompt instead
+        # of a growing one, letting the existing ceiling-exit / window-exhausted paths
+        # fire instead of spiraling.
+        _ctx_overflow_dropped = 0
+        with contextlib.suppress(Exception):
+            from agent.error_classifier import classify_api_error, FailoverReason
+            if classify_api_error(
+                error, provider=str(getattr(self.agent, "provider", "") or ""),
+                model=str(getattr(self.agent, "model", "") or ""),
+            ).reason == FailoverReason.context_overflow:
+                _ctx_overflow_dropped = len(_partial_text or "")
+                _partial_text = None
         if _partial_names:
             # User-visible warning so the user and model both know what was attempted.
             _name_str = ", ".join(_partial_names[:3])
@@ -3260,6 +3277,11 @@ class _StreamingCall(StreamingWaitMonitor):
             logger.warning(
                 "Partial stream dropped tool call(s) %s after %s chars of text; surfaced warning to user: %s",
                 _partial_names, len(_partial_text or ""), error)
+        elif _ctx_overflow_dropped:
+            logger.warning(
+                "Partial stream died on context overflow; dropping %s chars of recovered content so the "
+                "next turn's prompt is not larger than the one that just failed (avoids the death spiral): %s",
+                _ctx_overflow_dropped, error)
         else:
             logger.warning(
                 "Partial stream delivered before error; returning length-truncated stub with %s chars of "

@@ -383,6 +383,75 @@ class TestCodexBuildKwargs:
         assert "function_call_output" in item_types
         assert kw.get("include") == ["reasoning.encrypted_content"]
 
+    @classmethod
+    def _two_turn_messages(cls):
+        """Two answered turns, each assistant row sealed by its own response, then a fresh user message."""
+        return [
+            {"role": "user", "content": "first"},
+            {
+                "role": "assistant",
+                "content": "one",
+                "codex_reasoning_items": [{"type": "reasoning", "encrypted_content": "sealed-1", "summary": []}],
+            },
+            {"role": "user", "content": "second"},
+            {
+                "role": "assistant",
+                "content": "two",
+                "codex_reasoning_items": [{"type": "reasoning", "encrypted_content": "sealed-2", "summary": []}],
+            },
+            {"role": "user", "content": "third"},
+        ]
+
+    def test_azure_foundry_new_turn_replays_only_newest_reasoning(self, transport):
+        """Two sealed prior responses on the wire is the 400 "Conflicting authenticated
+        continuation identities" shape (#105369); one is accepted."""
+        kw = transport.build_kwargs(
+            model="gpt-6-astra",
+            messages=self._two_turn_messages(),
+            tools=[],
+            provider="azure-foundry",
+            base_url="https://placeholder.openai.azure.com/openai/v1",
+            replay_encrypted_reasoning=True,
+        )
+        reasoning = [item for item in kw["input"] if item.get("type") == "reasoning"]
+        assert [item["encrypted_content"] for item in reasoning] == ["sealed-2"]
+        assert kw.get("include") == ["reasoning.encrypted_content"]
+        assistant_text = [item for item in kw["input"] if item.get("role") == "assistant"]
+        assert len(assistant_text) == 2
+
+    def test_default_responses_new_turn_replays_all_reasoning(self, transport):
+        """Non-Azure Responses endpoints keep cross-turn reasoning replay."""
+        kw = transport.build_kwargs(
+            model="gpt-5.4", messages=self._two_turn_messages(), tools=[], replay_encrypted_reasoning=True,
+        )
+        reasoning = [item for item in kw["input"] if item.get("type") == "reasoning"]
+        assert [item["encrypted_content"] for item in reasoning] == ["sealed-1", "sealed-2"]
+
+    def test_azure_foundry_newest_reasoning_pruning_leaves_canonical_messages_untouched(self, transport):
+        messages = self._two_turn_messages()
+        transport.build_kwargs(
+            model="gpt-6-astra", messages=messages, tools=[], provider="azure-foundry",
+            base_url="https://placeholder.openai.azure.com/openai/v1", replay_encrypted_reasoning=True,
+        )
+        assert messages[1]["codex_reasoning_items"][0]["encrypted_content"] == "sealed-1"
+        assert messages[3]["codex_reasoning_items"][0]["encrypted_content"] == "sealed-2"
+
+    def test_newest_reasoning_only_keeps_compaction_checkpoints(self):
+        from agent.transports.codex import _newest_reasoning_only
+
+        checkpoint = {"type": "compaction", "encrypted_content": "ckpt", "summary": []}
+        messages = [
+            {"role": "user", "content": "first"},
+            {"role": "assistant", "content": "one", "codex_reasoning_items": [checkpoint, self._reasoning_item()]},
+            {"role": "user", "content": "second"},
+            {"role": "assistant", "content": "two", "codex_reasoning_items": [self._reasoning_item()]},
+            {"role": "user", "content": "third"},
+        ]
+        pruned = _newest_reasoning_only(messages)
+        assert pruned[1]["codex_reasoning_items"] == [checkpoint]
+        assert pruned[3]["codex_reasoning_items"] == [self._reasoning_item()]
+        assert len(messages[1]["codex_reasoning_items"]) == 2
+
     def test_azure_foundry_post_tool_replay_suppresses_reasoning_items(self, transport):
         """The rejected payload shape drops reasoning, keeps tool continuity."""
         kw = transport.build_kwargs(

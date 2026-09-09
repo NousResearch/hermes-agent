@@ -405,6 +405,28 @@ def _is_post_tool_replay(messages: Optional[list[dict[str, Any]]]) -> bool:
     return False
 
 
+def _newest_reasoning_only(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Copy of ``messages`` keeping ``codex_reasoning_items`` only on the newest assistant row that has any.
+    Foundry rejects a request that replays encrypted reasoning from more than one prior response (HTTP 400
+    "Conflicting authenticated continuation identities", #105369). ``compaction`` checkpoints stay everywhere."""
+    out: list[dict[str, Any]] = []
+    newest_kept = False
+    for msg in reversed(messages):
+        items = msg.get("codex_reasoning_items") if isinstance(msg, dict) and msg.get("role") == "assistant" else None
+        if isinstance(items, list) and any(isinstance(i, dict) and i.get("type") != "compaction" for i in items):
+            if newest_kept:
+                checkpoints = [i for i in items if isinstance(i, dict) and i.get("type") == "compaction"]
+                msg = dict(msg)
+                if checkpoints:
+                    msg["codex_reasoning_items"] = checkpoints
+                else:
+                    msg.pop("codex_reasoning_items")
+            newest_kept = True
+        out.append(msg)
+    out.reverse()
+    return out
+
+
 def _native_compaction_active(context_management: Any) -> bool:
     """True only when the caller's eligibility gate produced a non-empty payload.
 
@@ -532,10 +554,13 @@ class ResponsesApiTransport(ProviderTransport):
         is_github_responses = params.get("is_github_responses") is True
         is_codex_backend = params.get("is_codex_backend") is True
         is_xai_responses = params.get("is_xai_responses") is True
+        is_azure_foundry = _is_azure_foundry_responses(params)
         # Foundry 400s on encrypted-reasoning replay only in the post-tool follow-up turn.
         replay_encrypted_reasoning = bool(params.get("replay_encrypted_reasoning", True)) and not (
-            _is_azure_foundry_responses(params) and _is_post_tool_replay(payload_messages)
+            is_azure_foundry and _is_post_tool_replay(payload_messages)
         )
+        if is_azure_foundry and replay_encrypted_reasoning:
+            payload_messages = _newest_reasoning_only(payload_messages)
         # One predicate decides whether context_management goes out AND whether the converter may replay a checkpoint.
         context_management = params.get("context_management")
         native_compaction_active = _native_compaction_active(context_management)

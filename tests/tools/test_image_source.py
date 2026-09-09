@@ -422,15 +422,15 @@ class TestHeicDetection:
     'not a recognized image' (the pre-fix behavior for iPhone photos)."""
 
     def test_heic_brand_detected(self):
-        from tools.vision_tools import _detect_image_mime_type_from_bytes
+        from tools.vision_tools_image_prep import _detect_image_mime_type_from_bytes
         assert _detect_image_mime_type_from_bytes(HEIC_HEADER) == "image/heic"
 
     def test_generic_mif1_brand_detected_as_heic(self):
-        from tools.vision_tools import _detect_image_mime_type_from_bytes
+        from tools.vision_tools_image_prep import _detect_image_mime_type_from_bytes
         assert _detect_image_mime_type_from_bytes(MIF1_HEADER) == "image/heic"
 
     def test_avif_brand_detected(self):
-        from tools.vision_tools import _detect_image_mime_type_from_bytes
+        from tools.vision_tools_image_prep import _detect_image_mime_type_from_bytes
         assert _detect_image_mime_type_from_bytes(AVIF_HEADER) == "image/avif"
 
     def test_mif1_major_with_avif_compatible_brand_is_avif(self):
@@ -438,26 +438,26 @@ class TestHeicDetection:
         compatible brands is AV1-coded and must be reported as AVIF. Sniffing
         only the major brand labeled every mif1 file HEIC, which routes an AVIF
         to the HEVC error text and mis-reports the format to the caller."""
-        from tools.vision_tools import _detect_image_mime_type_from_bytes
+        from tools.vision_tools_image_prep import _detect_image_mime_type_from_bytes
         assert _detect_image_mime_type_from_bytes(
             MIF1_MAJOR_AVIF_COMPATIBLE) == "image/avif"
 
     def test_mif1_major_with_av01_compatible_brand_is_avif(self):
         """Same as above for the 'av01' codec brand, deeper in the list."""
-        from tools.vision_tools import _detect_image_mime_type_from_bytes
+        from tools.vision_tools_image_prep import _detect_image_mime_type_from_bytes
         assert _detect_image_mime_type_from_bytes(
             MIF1_MAJOR_AV01_COMPATIBLE) == "image/avif"
 
     def test_mif1_major_with_heic_compatible_stays_heic(self):
         """The compatible-brand scan must not over-trigger: a genuine HEVC-coded
         HEIF (mif1 major, heic compatible, no AV1 brand) is still HEIC."""
-        from tools.vision_tools import _detect_image_mime_type_from_bytes
+        from tools.vision_tools_image_prep import _detect_image_mime_type_from_bytes
         assert _detect_image_mime_type_from_bytes(MIF1_HEADER) == "image/heic"
 
     def test_brand_scan_does_not_read_past_the_ftyp_box(self):
         """The scan is bounded by the declared ftyp box size, so an 'avif' token
         sitting in a FOLLOWING box must not upgrade a HEIC to AVIF."""
-        from tools.vision_tools import _detect_image_mime_type_from_bytes
+        from tools.vision_tools_image_prep import _detect_image_mime_type_from_bytes
         # ftyp box is exactly 0x18 bytes (major mif1 + one compatible 'heic');
         # the next box then contains the literal bytes 'avif'.
         hdr = (
@@ -478,7 +478,7 @@ class TestHeicDetection:
         enforce. Every malformed size must still report HEIC.
         """
         import struct
-        from tools.vision_tools import _detect_image_mime_type_from_bytes
+        from tools.vision_tools_image_prep import _detect_image_mime_type_from_bytes
         hdr = (
             struct.pack(">I", declared_size)
             + b"ftyp" + b"mif1" + b"\x00" * 4 + b"heic"
@@ -494,7 +494,7 @@ class TestHeicDetection:
         an attack: clamp to the available bytes rather than failing closed, so a
         genuine AVIF whose ftyp box is larger than 64 bytes is still detected."""
         import struct
-        from tools.vision_tools import _detect_image_mime_type_from_bytes
+        from tools.vision_tools_image_prep import _detect_image_mime_type_from_bytes
         hdr = (
             struct.pack(">I", 9999)
             + b"ftyp" + b"mif1" + b"\x00" * 4 + b"mif1avif"
@@ -505,7 +505,7 @@ class TestHeicDetection:
         """A size that is not a multiple of 4 must not misalign the brand loop
         into reading a partial brand."""
         import struct
-        from tools.vision_tools import _detect_image_mime_type_from_bytes
+        from tools.vision_tools_image_prep import _detect_image_mime_type_from_bytes
         for size in (17, 18, 19, 21, 22, 23):
             hdr = (
                 struct.pack(">I", size)
@@ -518,7 +518,7 @@ class TestHeicDetection:
 
     def test_truncated_ftyp_header_does_not_crash(self):
         """A short/garbage read must return a value, not raise."""
-        from tools.vision_tools import _detect_image_mime_type_from_bytes
+        from tools.vision_tools_image_prep import _detect_image_mime_type_from_bytes
         assert _detect_image_mime_type_from_bytes(b"\x00\x00\x00\x18ftyp") is None
         # Bogus (huge) declared box size must fall back to the sniffed window.
         assert _detect_image_mime_type_from_bytes(
@@ -527,7 +527,7 @@ class TestHeicDetection:
     def test_ftyp_with_unknown_brand_not_misdetected(self):
         """An ISO-BMFF ftyp box that isn't an image brand (e.g. mp4) stays
         unrecognized — we must not claim every ftyp container is an image."""
-        from tools.vision_tools import _detect_image_mime_type_from_bytes
+        from tools.vision_tools_image_prep import _detect_image_mime_type_from_bytes
         mp4 = b"\x00\x00\x00\x18ftypmp42\x00\x00\x00\x00mp42isom" + b"\x00" * 32
         assert _detect_image_mime_type_from_bytes(mp4) is None
 
@@ -538,7 +538,7 @@ class TestHeicDetection:
         pillow_heif = pytest.importorskip("pillow_heif")
         pillow_heif.register_heif_opener()
         from PIL import Image
-        from tools import vision_tools as vt
+        from tools import vision_tools_image_prep as vt
         isrc = _reload(monkeypatch, tmp_path / "hermes")
         monkeypatch.setenv("TERMINAL_ENV", "local")
 
@@ -558,7 +558,7 @@ class TestHeicDetection:
         """With pillow-heif unavailable, a HEIC image gets an actionable error
         (install pillow-heif) rather than a generic conversion failure — the
         same soft-dependency posture as SVG-without-rasterizer."""
-        from tools import vision_tools as vt
+        from tools import vision_tools_image_prep as vt
         _reload(monkeypatch, tmp_path / "hermes")
         heic = tmp_path / "photo.heic"
         heic.write_bytes(HEIC_HEADER)
@@ -590,7 +590,7 @@ class TestHeicDetection:
         from PIL import Image, features
         if not features.check("avif"):
             pytest.skip("this Pillow build has no native AVIF codec")
-        from tools import vision_tools as vt
+        from tools import vision_tools_image_prep as vt
         _reload(monkeypatch, tmp_path / "hermes")
 
         avif = tmp_path / "photo.avif"
@@ -616,7 +616,7 @@ class TestHeicDetection:
         """When an AVIF genuinely cannot be decoded, the guidance must mention
         the AV1/Pillow path — not blame pillow-heif alone, which frequently
         ships without any AV1 codec."""
-        from tools import vision_tools as vt
+        from tools import vision_tools_image_prep as vt
         _reload(monkeypatch, tmp_path / "hermes")
         # Valid AVIF brand, but the payload is not decodable by anything.
         broken = tmp_path / "broken.avif"

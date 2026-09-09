@@ -523,7 +523,8 @@ class WebhookAdapter(BasePlatformAdapter):
             return _json_error("Cannot parse body", 400)
         headers = request.headers
         event_type = (headers.get("X-GitHub-Event", "") or headers.get("X-GitLab-Event", "")
-                      or payload.get("event_type", "") or payload.get("type", "") or "unknown")
+                      or payload.get("event_type", "") or payload.get("type", "")
+                      or payload.get("event", "") or "unknown")
         allowed_events = route_config.get("events", [])
         if allowed_events and event_type not in allowed_events:
             logger.debug("[webhook] Ignoring event %s for route %s (allowed: %s)", event_type, route_name,

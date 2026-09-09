@@ -1111,3 +1111,20 @@ def test_route_profile_validation_fails_closed():
         assert WebhookAdapter._route_allows_profile(
             {"profile": malformed}, "worker"
         ) is False
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('payload, headers, expected', [
+    ({'event': 'task.success'}, {}, 'task.success'),
+    ({'event': 'task.success', 'type': 'typed'}, {}, 'typed'),
+    ({'event': 'task.success', 'type': 'typed', 'event_type': 'explicit'}, {}, 'explicit'),
+    ({'event': 'task.success', 'type': 'typed'}, {'X-GitHub-Event': 'push'}, 'push'),
+    ({'event': 'task.success', 'type': 'typed'}, {'X-GitLab-Event': 'Push Hook'}, 'Push Hook'),
+])
+async def test_generic_event_fallback_preserves_existing_precedence(payload, headers, expected):
+    adapter = _make_adapter(routes={'generic': {
+        'secret': _INSECURE_NO_AUTH, 'events': [expected], 'prompt': 'event={event}',
+    }})
+    adapter.handle_message = AsyncMock()
+    async with TestClient(TestServer(_create_app(adapter))) as cli:
+        response = await cli.post('/webhooks/generic', json=payload, headers=headers)
+        assert response.status == 202

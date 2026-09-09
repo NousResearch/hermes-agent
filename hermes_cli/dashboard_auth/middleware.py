@@ -38,7 +38,16 @@ _GATE_PUBLIC_PREFIXES: tuple[str, ...] = (
     "/auth/login", "/auth/callback", "/auth/native/authorize", "/auth/native/token",
     "/auth/native/refresh", "/auth/password-login", "/auth/logout", "/login",
     "/api/auth/providers", "/api/mcp/oauth/callback/",
-    "/assets/", "/favicon.ico", "/ds-assets/", "/fonts/", "/fonts-terminal/")
+    "/assets/", "/favicon.ico", "/ds-assets/", "/fonts/", "/fonts-terminal/",
+    # PWA install surface. The browser fetches the manifest with credentials
+    # OMITTED unless the <link> opts in, and evaluates it before any login has
+    # happened, so a gated manifest is read as the login HTML and the install
+    # prompt never appears. The service worker and its offline notice have the
+    # same problem from the other side: a redirect to /login registers as a
+    # MIME-type failure. None of these carry secrets — they are branding and
+    # caching rules, and the login page they would redirect to is public
+    # already — so they join the static-asset bypass above.
+    "/manifest.webmanifest", "/icons/", "/sw.js", "/offline.html")
 
 
 def _path_is_public(path: str) -> bool:

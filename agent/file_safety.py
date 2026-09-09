@@ -458,7 +458,7 @@ def classify_sandbox_mirror_target(path: str) -> Optional[dict]:
     )
     if inner_idx is None:
         return None
-    inner = str(Path(*parts[inner_idx + 1:])) if inner_idx + 1 < len(parts) else ""
+    inner = Path(*parts[inner_idx + 1:]).as_posix() if inner_idx + 1 < len(parts) else ""
     return _mirror_info(target, Path(*parts[: inner_idx + 1]), inner)
 
 

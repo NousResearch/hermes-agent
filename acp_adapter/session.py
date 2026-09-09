@@ -6,7 +6,7 @@ survive process restarts and appear in ``session_search``; ``load_session`` /
 """
 from __future__ import annotations
 
-from hermes_constants import get_hermes_home, translate_cwd_for_wsl_backend, windows_path_to_wsl
+from hermes_constants import get_hermes_home, is_wsl, translate_cwd_for_wsl_backend, windows_path_to_wsl
 
 import copy
 import json
@@ -40,11 +40,15 @@ def _normalize_cwd_for_compare(cwd: str | None) -> str:
     # ACP history filters match the same workspace across Windows and WSL.
     from hermes_constants import windows_path_to_wsl
 
-    translated = windows_path_to_wsl(expanded)
-    if translated is not None:
-        expanded = translated
-    elif re.match(r"^/mnt/[A-Za-z]/", expanded):
-        expanded = f"/mnt/{expanded[5].lower()}/{expanded[7:]}"
+    # Windows drive paths use the WSL mount spelling only when the backend actually runs in WSL.
+    # On native Windows, converting ``C:\\...`` to ``/mnt/c/...`` makes ``realpath`` look below
+    # ``C:\\mnt`` instead of resolving the editor workspace and its symlink aliases.
+    if is_wsl():
+        translated = windows_path_to_wsl(expanded)
+        if translated is not None:
+            expanded = translated
+        elif re.match(r"^/mnt/[A-Za-z]/", expanded):
+            expanded = f"/mnt/{expanded[5].lower()}/{expanded[7:]}"
 
     # realpath resolves symlink aliases (macOS ``/var`` vs ``/private/var``, ``/tmp`` vs
     # ``/private/tmp``) that otherwise drop a workspace's own sessions; it is lexical

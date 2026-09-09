@@ -14,6 +14,13 @@ except ImportError:
 from gateway.platforms.api_server_room_grants import _json_error
 
 
+def _reserved_room_run_fields(body: Any) -> set[str]:
+    if not isinstance(body, dict):
+        return set()
+    return {key for key in body if isinstance(key, str)
+            and (key == "hosted_room_dispatch" or key.startswith("_room_"))}
+
+
 async def _ensure_hosted_member_session(self, dispatch: Any) -> str:
     """Create or verify the target's canonical hidden group session. The ``Group: <room_id>``
     namespace is reused on purpose (Desktop-assisted -> hosted keeps one transcript); a
@@ -49,14 +56,7 @@ async def _ensure_hosted_member_session(self, dispatch: Any) -> str:
 
 
 def _room_dispatch_error(exc: Exception, *, _openai_error) -> "web.Response":
-    message, code = str(exc), "invalid_room_dispatch"
-    lowered = message.lower()
-    if "execution policy" in lowered or "remote room execution requires" in lowered:
-        message = "Room execution policy changed; reauthorization is required."
-        code = "room_execution_policy_changed"
-    elif "capability catalog changed" in lowered:
-        message = "Room capability catalog changed; reauthorization is required."
-        code = "room_capability_catalog_changed"
+    message, code = _public_dispatch_error(exc)
     return _json_error(_openai_error, message, code=code, status=403)
 
 
@@ -65,6 +65,11 @@ async def _normalize_room_dispatch(
     """Validate and normalize a scoped RoomLink dispatch request."""
     _openai_error, room_token = _api_server._openai_error, self._room_grant_token(request)
     if not room_token:
+        if _reserved_room_run_fields(body):
+            return body, _json_error(
+                _openai_error, "Room dispatch fields require HermesRoom authorization.",
+                code="invalid_room_dispatch", status=400,
+            )
         return body, None
     if not isinstance(body, dict) or set(body) - {"input", "hosted_room_dispatch"}:
         return body, _json_error(
@@ -74,10 +79,11 @@ async def _normalize_room_dispatch(
         from gateway import hosted_rooms
         from gateway.hosted_room_peer import GatewayRoomCatalog, HostedMemberDispatch, verify_room_grant
         from gateway.hosted_room_execution_policy import RoomExecutionPolicy
-        from gateway.platforms.api_server_room_grants import _local_room_catalog
+        from gateway.platforms.api_server_room_grants import _effective_room_profile, _local_room_catalog
         dispatch = HostedMemberDispatch.from_mapping(body.get("hosted_room_dispatch"))
-        verify_room_grant(self._room_grant_secret(), room_token, dispatch, permission="dispatch")
-        active_profile = _api_server._api_request_profile.get() or "default"
+        grant_claims = verify_room_grant(self._room_grant_secret(), room_token, dispatch, permission="dispatch")
+        artifact_publication = {"artifact.ack", "artifact.read"} <= set(grant_claims.get("permissions") or ())
+        active_profile = _effective_room_profile(_api_server._api_request_profile)
         local_install = hosted_rooms.local_authority_gateway_id()
         if dispatch.target_profile != active_profile or dispatch.target_install_id != local_install:
             raise ValueError("room dispatch target does not match this profile")
@@ -94,11 +100,31 @@ async def _normalize_room_dispatch(
         if request.headers.get("Idempotency-Key", "").strip() != expected_key:
             raise ValueError("room dispatch idempotency key is invalid")
         session_id = await self._ensure_hosted_member_session(dispatch)
-        return {
+        normalized = {
             "input": dispatch.prompt,
             "session_id": session_id,
             "hosted_room_dispatch": dispatch.as_mapping(),
             "_room_execution_policy": policy.as_mapping(),
-        }, None
+            "_room_artifact_publication": artifact_publication,
+        }
+        from gateway.platforms.api_server_room_attachments import _validate_dispatch_attachments
+        return await _validate_dispatch_attachments(normalized, _openai_error=_openai_error)
     except Exception as exc:
         return body, _room_dispatch_error(exc, _openai_error=_openai_error)
+
+
+def _public_dispatch_error(exc: Exception) -> tuple[str, str]:
+    """Map untrusted dispatch failures to a bounded public contract."""
+
+    lowered = str(exc).lower()
+    if "execution policy" in lowered or "remote room execution requires" in lowered:
+        return (
+            "Room execution policy changed; reauthorization is required.",
+            "room_execution_policy_changed",
+        )
+    if "capability catalog changed" in lowered:
+        return (
+            "Room capability catalog changed; reauthorization is required.",
+            "room_capability_catalog_changed",
+        )
+    return "Room dispatch was rejected.", "invalid_room_dispatch"

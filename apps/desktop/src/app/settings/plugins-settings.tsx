@@ -110,12 +110,10 @@ async function repairAgentHalf(record: PluginRecord, packageName: string) {
   try {
     const pluginDir = record.file?.replace(/[\\/]desktop[\\/]plugin\.js$/, '')
 
-    const raw = pluginDir
-      ? await window.hermesDesktop?.readFileText?.(`${pluginDir}/.hermes-catalog.json`)
-      : null
+    const raw = pluginDir ? await window.hermesDesktop?.readFileText?.(`${pluginDir}/.hermes-catalog.json`) : null
 
     if (raw) {
-      const sidecar = JSON.parse(typeof raw === 'string' ? raw : (raw as { content?: string }).content ?? '') as {
+      const sidecar = JSON.parse(typeof raw === 'string' ? raw : ((raw as { content?: string }).content ?? '')) as {
         catalog_name?: string
         repo?: string
         sha?: string
@@ -268,9 +266,7 @@ export function PluginsSettings() {
 
               return (
                 <PluginRow
-                  agentHalfMissing={
-                    packageName !== null && agentStatus === 'ready' && !agentNames.has(packageName)
-                  }
+                  agentHalfMissing={packageName !== null && agentStatus === 'ready' && !agentNames.has(packageName)}
                   key={record.id}
                   record={record}
                 />

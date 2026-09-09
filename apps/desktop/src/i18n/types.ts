@@ -3112,6 +3112,15 @@ export interface Translations {
       /** Escape hatch when Retry would only reproduce SESSION_NOT_OWNED (#106217). */
       errorStartNewSession: string
       errorSwitchProvider: string
+      errorRetryLater: string
+      errorRetryLaterMenu: string
+      errorRetryIn1h: string
+      errorRetryIn3h: string
+      errorRetryIn6h: string
+      errorRetryAt: string
+      errorRetryAtInvalid: string
+      errorRetryScheduled: (when: string) => string
+      errorRetryCancelScheduled: string
       errorOpenLogs: string
       errorOpenLogsFailed: string
       errorOpenDesktopLogs: string

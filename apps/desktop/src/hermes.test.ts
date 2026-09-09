@@ -625,6 +625,25 @@ describe('Hermes REST helpers', () => {
     })
   })
 
+  it('stops complete transcript pagination after cancellation', async () => {
+    const controller = new AbortController()
+
+    api.mockImplementationOnce(async () => {
+      controller.abort()
+
+      return {
+        messages: Array.from({ length: 500 }, (_, id) => ({ id })),
+        session_id: 'session-1',
+        pagination: { limit: 500, offset: 0, order: 'oldest', returned: 500 }
+      }
+    })
+
+    await expect(
+      getAllSessionMessages('session-1', 'xiaoxuxu', { signal: controller.signal })
+    ).rejects.toMatchObject({ name: 'AbortError' })
+    expect(api).toHaveBeenCalledOnce()
+  })
+
   it('stops complete transcript loads before Desktop memory becomes unbounded', async () => {
     api.mockResolvedValueOnce({
       messages: [{ id: 1, content: 'large transcript page' }],

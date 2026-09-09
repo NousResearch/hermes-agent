@@ -210,10 +210,11 @@ class GatewaySlashPolicyMixin:
         in ``_handle_message`` so admin/user gating can't be bypassed by
         an in-flight agent.
 
-        Backward-compat semantics live in
-        :func:`gateway.slash_access.policy_for_source` — when the operator
-        hasn't set ``allow_admin_from`` for the scope, the policy returns
-        ``enabled=False`` and this method always returns None.
+        Backward-compat policy semantics live in
+        :func:`gateway.slash_access.policy_for_source`: an unconfigured
+        ``allow_admin_from`` disables policy restrictions, but does not bypass
+        the identity or serving-profile checks below. Commands outside
+        ``IDENTITY_FREE_FLOOR_COMMANDS`` still require an identifiable sender.
         """
         from gateway.slash_access import (
             IDENTITY_FREE_FLOOR_COMMANDS,

@@ -30,10 +30,14 @@ When Tool Search activates for a turn, the model sees three new tools in
 place of the deferred ones:
 
 ```
-tool_search(queries, limit?)   — search the deferred-tool catalog (one or more queries)
-tool_describe(names)           — load the full schemas for one or more tools
-tool_call(name, arguments)     — invoke a deferred tool
+tool_search(queries, limit?)   search the deferred-tool catalog (one or more queries)
+tool_describe(names)           load the full schemas for one or more tools
+tool_call(calls)               invoke deferred tools; `calls` is an array of {name, arguments}
 ```
+
+`calls` takes one entry per invocation; a single local call is an array of
+one. Only `connectors__` names may be batched together; mixed and
+multi-local batches are rejected.
 
 A typical interaction looks like:
 
@@ -49,7 +53,8 @@ Model: tool_search(["create a github issue", "send a slack message"])
 Model: tool_describe(["mcp_github_create_issue", "mcp_slack_post_message"])
   → { tools: { mcp_github_create_issue: { parameters: { ... } },
                mcp_slack_post_message: { parameters: { ... } } } }
-Model: tool_call("mcp_github_create_issue", { title: "...", body: "..." })
+Model: tool_call({ calls: [{ name: "mcp_github_create_issue",
+                             arguments: { title: "...", body: "..." } }] })
   → { ok: true, issue_number: 42 }
 ```
 
@@ -142,9 +147,11 @@ caps the group as a whole and a connector tool that answers the query is
 never pushed out by local tools that share one word with it. The gateway
 call is bounded at 30 seconds; a slow or dark gateway degrades to local
 results only. `tool_describe` fetches connector schemas from the gateway,
-and `tool_call`
-sends every connector entry in a batch as one gateway request. Results
-splice back into the batch's original order with recomputed counts.
+and `tool_call` sends each connector entry in a batch as its own gateway
+request, in input order (a tool name the gateway does not know under its
+conventional slug is retried once under the literal slug, so an entry can
+cost two requests). Results splice back into the batch's original order
+with recomputed counts.
 
 ```yaml
 tools:
@@ -165,9 +172,11 @@ for the user to finish it; disconnecting an account is done by the user in
 the Portal.
 
 `tool_call` accepts a batch: `calls` is an array of `{name, arguments}`
-entries (a single call is an array of one). A batch of connector entries is
-dispatched as one gateway request; local deferred tools stay one entry per
-`tool_call`. Approvals settle per entry before dispatch.
+entries (a single call is an array of one). Each connector entry in a batch
+is dispatched as its own gateway request, one after another; local deferred
+tools stay one entry per `tool_call`. Approvals settle per entry before
+dispatch, and a `/stop` between entries leaves the unstarted ones unsent
+(their slots report `INTERRUPTED`).
 
 ## When NOT to use it
 

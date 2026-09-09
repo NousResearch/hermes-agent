@@ -13,10 +13,13 @@ names; a block pre-fills that entry's ``USER_DENIED`` slot and its siblings
 still run, and an argument REWRITE from that same pass travels to the wire).
 The bridge itself only partitions, gates, dispatches, splices.
 
-Dispatch shape (V1, decided 2026-08-25): local entries run via the injected
-``local_dispatch``; ALL connector entries travel as ONE gateway execute
-request. Split dispatch while approvals pend is a tracked follow-up, not
-this code.
+Dispatch shape today: ``model_tools_connectors.dispatch_connector_batch``
+re-enters core dispatch once per connector entry, so each entry reaches this
+module alone and travels as its own gateway execute request (plus at most one
+literal-slug retry, see :func:`_run_remote`). Local entries run via the
+injected ``local_dispatch``. The earlier V1 plan of ONE execute request for
+the whole connector batch was dropped so that policy, approvals and the
+interrupt check all fire per entry.
 
 Silent degradation (D32): on the availability path (:func:`connector_search_hits`)
 every failure returns ``{}`` — signed out, config off, or a dark gateway must

@@ -179,6 +179,30 @@ def _telegram_home(monkeypatch, chat_id: str) -> None:
     monkeypatch.setattr("gateway.config.load_gateway_config", lambda: config)
 
 
+@pytest.mark.parametrize("mode", ["MANUAL", "AUTO_WITH_NOTICE"])
+def test_local_edits_error_explains_how_to_preserve_and_update(
+    monkeypatch, tmp_path: Path, mode
+):
+    client = Client(_files(2), mode=mode)
+    manager, target = _manager(monkeypatch, tmp_path, client=client)
+    (target / "SKILL.md").write_text("# locally changed\n", encoding="utf-8")
+    plan = manager.update_plan("skill-1")
+
+    with pytest.raises(PackagePolicyError) as error:
+        manager.update_apply(plan["receipt"])
+
+    assert "Update stopped to protect your changes" in str(error.value)
+    assert "--preserve-modified" in str(error.value)
+    assert "separate local skill" in str(error.value)
+    assert (target / "SKILL.md").read_text() == "# locally changed\n"
+    assert manager.store.installation("skill-1")["version"] == 1
+    assert client.recorded == []
+
+    result = manager.update_apply(plan["receipt"], preserve_modified=True)
+    assert (Path(result["preserved_fork"]) / "SKILL.md").read_text() == "# locally changed\n"
+    assert (target / "SKILL.md").read_text() == "# Managed v2\n"
+
+
 def test_required_update_preserves_modified_bytes_before_converging(
     monkeypatch, tmp_path: Path
 ):

@@ -268,18 +268,18 @@ def test_parse_supports_quoted_search_and_cli_aliases():
     )
 
 
-def test_candidates_uses_the_stable_first_notice_projection():
+def test_candidates_lists_skill_details_without_onboarding_announcement():
     service = _Service()
 
     view = WisdomCommandController().execute("candidates", service, _context())
 
-    assert "Your organisation (Nous Research) has enabled Collective Wisdom" in (
-        view.items[0].detail
+    assert view.items[0].detail == (
+        "Transfer incident context between responders.\n"
+        "Why suggested: high usage"
     )
-    assert "Congratulations! Hermes detected a skill" in view.items[0].detail
-    assert "Why suggested: high usage" in view.items[0].detail
     assert view.items[0].title == "Incident Handoff"
-    assert "Transfer incident context between responders." in view.items[0].detail
+    assert view.items[0].actions[0].label == "Create private draft"
+    assert view.items[0].actions[0].arguments == {"skill_name": "incident-handoff"}
 
 
 def test_skill_preview_keeps_install_as_the_trailing_action():

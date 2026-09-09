@@ -907,7 +907,9 @@ class WisdomConsumption:
         mode = str(plan["update_mode"])
         if modified_now and mode != "REQUIRED" and not preserve_modified:
             raise PackagePolicyError(
-                "managed files changed locally; preserve an unmanaged fork before updating"
+                "This skill has local edits. Update stopped to protect your changes. "
+                "Run again with --preserve-modified to save your edited copy as a "
+                "separate local skill and install the team's update."
             )
         if automatic and not plan["auto_allowed"]:
             raise PackagePolicyError(

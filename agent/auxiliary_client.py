@@ -6524,6 +6524,7 @@ class _ChatStreamAccumulator:
         self._host_deadline = host_deadline
         self.content_parts: List[str] = []
         self.reasoning_parts: List[str] = []
+        self.reasoning_details: List[Any] = []
         self.tool_calls_acc: Dict[int, Dict[str, Any]] = {}
         self.finish_reason = self.usage = None
         self.resp_id = ""
@@ -6624,6 +6625,7 @@ class _ChatStreamAccumulator:
         message = SimpleNamespace(
             role="assistant", content="".join(self.content_parts), tool_calls=tool_calls,
             reasoning="".join(self.reasoning_parts) or None,
+            reasoning_details=self.reasoning_details or None,
         )
         choice = SimpleNamespace(index=0, message=message, finish_reason=self.finish_reason or "stop")
         return SimpleNamespace(id=self.resp_id, model=self.resp_model, object="chat.completion",
@@ -7382,21 +7384,6 @@ def _call_llm_impl(
                         transient_err,
                     )
                     raise
-            # Compression is on the critical preflight path: a user cannot
-            # continue or resume an oversized session until it compacts. A
-            # same-provider retry on a timeout means another full ``timeout``-
-            # long wall-clock block before the except-chain below can fall
-            # back — doubling the user-visible stall (issue #54465). Skip the
-            # same-provider retry for compression on a full-budget timeout and
-            # fall straight through to provider/model fallback; fast blips (a
-            # streaming-close or a 5xx) still retry, since those are cheap.
-            if task == "compression" and _is_timeout_error(transient_err):
-                logger.info(
-                    "Auxiliary compression: timeout on the critical path; "
-                    "skipping same-provider retry and falling back: %s",
-                    transient_err,
-                )
-                raise
             _max_transient_retries = _transient_retry_count()
             _last_transient = transient_err
             for _attempt in range(1, _max_transient_retries + 1):
@@ -7477,7 +7464,7 @@ def extract_content_or_reasoning(response, *, max_reasoning_chars: int | None = 
     # Content is empty or reasoning-only — try structured reasoning fields
     reasoning_parts: list[str] = []
     for field in ("reasoning", "reasoning_content"):
-        val = getattr(msg, field, None)
+        val = _message_field(msg, field)
         if val and isinstance(val, str) and val.strip() and val not in reasoning_parts:
             reasoning_parts.append(val.strip())
     details = _message_field(msg, "reasoning_details")

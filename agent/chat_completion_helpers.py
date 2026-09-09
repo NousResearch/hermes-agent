@@ -2121,8 +2121,29 @@ def _iteration_summary_chat_kwargs(agent, api_messages: list) -> dict:
     is_lmstudio = provider_name == "lmstudio" and agent._supports_reasoning_extra_body()
     lm_reasoning_effort = agent._resolve_lmstudio_summary_reasoning_effort() if is_lmstudio else None
 
+    # Resolved once and reused below for both the reasoning-extras hook (capability-gated
+    # omission, e.g. a Nous model that 400s on a disabled reasoning config) and build_extra_body.
+    provider_profile = None
+    with contextlib.suppress(Exception):
+        from providers import get_provider_profile
+        provider_profile = get_provider_profile(agent.provider)
+
     extra_body = {}
-    if not is_lmstudio and agent._supports_reasoning_extra_body():
+    top_level_from_profile = {}
+    handles_reasoning = False
+    if provider_profile is not None:
+        _supports_reasoning = agent._supports_reasoning_extra_body()
+        reasoning_extra, top_level_from_profile = provider_profile.build_api_kwargs_extras(
+            reasoning_config=agent.reasoning_config, supports_reasoning=_supports_reasoning,
+            model=agent.model, base_url=agent.base_url,
+        )
+        extra_body.update(reasoning_extra or {})
+        # owns_reasoning_policy(), not "the hook was overridden": an unrelated profile
+        # override (e.g. one that only sets a top-level field) must not implicitly
+        # suppress the generic reasoning fallback below (providers.base.ProviderProfile
+        # docstring).
+        handles_reasoning = bool(provider_profile.owns_reasoning_policy(supports_reasoning=_supports_reasoning))
+    if not handles_reasoning and not is_lmstudio and agent._supports_reasoning_extra_body():
         extra_body["reasoning"] = agent.reasoning_config if agent.reasoning_config is not None else {"enabled": True, "effort": "medium"}
     if "nousresearch" in agent._base_url_lower:
         from agent.portal_tags import nous_portal_tags
@@ -2135,14 +2156,14 @@ def _iteration_summary_chat_kwargs(agent, api_messages: list) -> dict:
         summary_kwargs.update(agent._max_tokens_param(agent.max_tokens))
     if lm_reasoning_effort is not None:
         summary_kwargs["reasoning_effort"] = lm_reasoning_effort
+    if top_level_from_profile:
+        summary_kwargs.update(top_level_from_profile)
 
     # Merge the profile's canonical body even when routing is unset (e.g. required Portal tags).
     provider_preferences = _provider_preferences_for_agent(agent)
     profile_extra_body = {}
-    with contextlib.suppress(Exception):
-        from providers import get_provider_profile
-        provider_profile = get_provider_profile(agent.provider)
-        if provider_profile is not None:
+    if provider_profile is not None:
+        with contextlib.suppress(Exception):
             profile_extra_body = provider_profile.build_extra_body(
                 session_id=getattr(agent, "session_id", None), provider_preferences=provider_preferences or None,
                 model=agent.model, base_url=agent.base_url, reasoning_config=agent.reasoning_config)

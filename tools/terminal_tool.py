@@ -784,6 +784,10 @@ def _resolve_command_cwd(
             return os.path.abspath(os.path.expanduser(worker_cwd))
         return workdir
     recorded = get_session_cwd(session_key)
+    from agent.runtime_cwd import resolve_kanban_worker_cwd
+    worker_cwd = resolve_kanban_worker_cwd(recorded)
+    if worker_cwd is not None:
+        return worker_cwd
     if recorded and _is_container_backend(env_type) and _is_unusable_container_cwd(recorded):
         logger.info(
             "Ignoring recorded session cwd %r for %s backend "
@@ -943,6 +947,10 @@ def _plan_execution(
     image = _select_image(env_type, overrides, config)
 
     cwd = overrides.get("cwd") or get_session_cwd(task_id) or config["cwd"]
+    from agent.runtime_cwd import resolve_kanban_worker_cwd
+    worker_cwd = resolve_kanban_worker_cwd(cwd)
+    if worker_cwd is not None:
+        cwd = worker_cwd
     host_cwd = _resolve_task_host_cwd(config, task_id)
     # config["cwd"] was sanitized for container backends in _get_env_config
     # but an override / session record is raw: a host path would reach

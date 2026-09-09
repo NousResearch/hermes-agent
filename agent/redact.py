@@ -9,6 +9,7 @@ import os
 import re
 import shlex
 import threading
+from collections.abc import Collection
 from urllib.parse import unquote_plus
 
 # Shared with agent/file_safety's read-block list so the two defenses can't
@@ -354,6 +355,25 @@ _CONTROL_CHARS_RE = re.compile(r"[\x00-\x1f\x7f\u200b-\u200f\u2028-\u202f\u2060\
 _TOKEN_BODY_CHARS = frozenset("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-.")
 
 
+# CLI sensitive long-form flags. Space-form matches `--flag VALUE`; equals-form
+# matches `--flag=VALUE`. Both anchored to flag start (lookbehind protects
+# against `x--password`) and require either space/tab (space form) or `=` (equals
+# form) immediately after the keyword, which prevents suffix collisions with
+# `--passwordStore`, `--tokenize`, `--secretary`, etc.
+_CLI_SENSITIVE_SPACE_VALUE_RE = re.compile(
+    r"(?<![A-Za-z0-9_\-])"
+    r"(--(?:password|passwd|secret|token|api[-_]key|client-secret))"
+    r"([ \t]+)",
+    re.IGNORECASE,
+)
+_CLI_SENSITIVE_EQUALS_VALUE_RE = re.compile(
+    r"(?<![A-Za-z0-9_\-])"
+    r"(--(?:password|passwd|secret|token|api[-_]key|client-secret))"
+    r"(=)",
+    re.IGNORECASE,
+)
+
+
 def _compile_prefix_matcher(patterns: list) -> "re.Pattern[str]":
     return re.compile(r"(?<![A-Za-z0-9_-])(" + "|".join(patterns) + r")(?![A-Za-z0-9_-])")
 
@@ -400,6 +420,113 @@ def _mask_control_split_tokens(text: str, mask_fn) -> str:
 # mask_secret strips EVERY control char (incl. \n/\t, C1, DEL, zero-width) so a
 # masked secret never emits multiline or invisible bytes into display output.
 _DISPLAY_CONTROL_RE = re.compile(r"[\x00-\x1f\x7f\x80-\x9f\u200b-\u200f\u202a-\u202e\u2060-\u2064]")
+
+
+def _count_preceding_backslashes(text: str, index: int) -> int:
+    """Count consecutive backslashes immediately before ``index``."""
+    count = 0
+    cursor = index - 1
+    while cursor >= 0 and text[cursor] == "\\":
+        count += 1
+        cursor -= 1
+    return count
+
+
+def _find_unescaped_closing_quote(text: str, start: int, quote: str) -> int | None:
+    """Find a same-type closing quote, respecting shell-style backslash parity."""
+    cursor = start
+    while cursor < len(text):
+        char = text[cursor]
+        if char in "\r\n":
+            return None
+        if char == quote and _count_preceding_backslashes(text, cursor) % 2 == 0:
+            return cursor
+        cursor += 1
+    return None
+
+
+def _redact_cli_sensitive_value_match(
+    text: str,
+    match: "re.Match[str]",
+    *,
+    skip_next_flag: bool,
+) -> tuple[str, int]:
+    """Return replacement text and original end offset for one CLI flag value."""
+    value_start = match.end()
+    if value_start >= len(text) or text[value_start] in "\r\n":
+        return match.group(0), match.end()
+
+    flag_and_separator = f"{match.group(1)}{match.group(2)}"
+    quote = text[value_start]
+    if quote in {"'", '"'}:
+        value_content_start = value_start + 1
+        closing_quote = _find_unescaped_closing_quote(text, value_content_start, quote)
+        if closing_quote is None:
+            value_end = value_content_start
+            while value_end < len(text) and text[value_end] not in "\r\n":
+                value_end += 1
+            # Unterminated quoted CLI secrets are redacted through EOL so an
+            # escaped quote cannot expose the sensitive suffix that follows it.
+            return f"{flag_and_separator}{quote}***", value_end
+        if closing_quote == value_content_start:
+            return text[match.start():closing_quote + 1], closing_quote + 1
+        return f"{flag_and_separator}{quote}***{quote}", closing_quote + 1
+
+    if skip_next_flag and text.startswith("--", value_start):
+        return match.group(0), match.end()
+
+    value_end = value_start
+    while value_end < len(text) and text[value_end] not in "\r\n\t ' \"":
+        value_end += 1
+    if value_end == value_start:
+        return match.group(0), match.end()
+    return f"{flag_and_separator}***", value_end
+
+
+def _redact_cli_sensitive_value_matches(
+    text: str,
+    pattern: "re.Pattern[str]",
+    *,
+    skip_next_flag: bool,
+) -> str:
+    """Redact CLI sensitive values matched by a flag/separator pattern."""
+    chunks: list[str] = []
+    last_end = 0
+    changed = False
+    for match in pattern.finditer(text):
+        if match.start() < last_end:
+            continue
+        replacement, value_end = _redact_cli_sensitive_value_match(
+            text,
+            match,
+            skip_next_flag=skip_next_flag,
+        )
+        chunks.append(text[last_end:match.start()])
+        chunks.append(replacement)
+        last_end = value_end
+        changed = changed or replacement != text[match.start():value_end]
+    if not chunks:
+        return text
+    chunks.append(text[last_end:])
+    redacted = "".join(chunks)
+    return redacted if changed else text
+
+
+def _redact_cli_sensitive_space_values(text: str) -> str:
+    """Redact values passed with sensitive CLI flags."""
+    if "--" not in text:
+        return text
+
+    text = _redact_cli_sensitive_value_matches(
+        text,
+        _CLI_SENSITIVE_SPACE_VALUE_RE,
+        skip_next_flag=True,
+    )
+    return _redact_cli_sensitive_value_matches(
+        text,
+        _CLI_SENSITIVE_EQUALS_VALUE_RE,
+        skip_next_flag=False,
+    )
 
 
 def mask_secret(value: str, *, head: int = 4, tail: int = 4, floor: int = 12,
@@ -555,8 +682,251 @@ def _redact_phone(m):
     return phone[:keep] + "****" + phone[-keep:]
 
 
+def _normalize_sensitive_key(key: str) -> str:
+    """Canonicalize a caller-supplied exact sensitive key name."""
+    return key.strip().casefold().replace("-", "_")
+
+
+def _normalize_extra_sensitive_keys(
+    extra_sensitive_keys: Collection[str] | None,
+) -> frozenset[str]:
+    """Validate and normalize per-call exact sensitive keys.
+
+    Empty strings are ignored after ``strip()`` so an accidental blank entry
+    cannot create an empty-key pattern. ``str`` and ``bytes`` are rejected as
+    the top-level collection because they almost always mean the caller passed
+    one key directly instead of an iterable of keys.
+    """
+    if extra_sensitive_keys is None:
+        return frozenset()
+    if isinstance(extra_sensitive_keys, (str, bytes)):
+        raise TypeError("extra_sensitive_keys must be a collection of strings, not a string")
+    normalized: set[str] = set()
+    for key in extra_sensitive_keys:
+        if not isinstance(key, str):
+            raise TypeError("extra_sensitive_keys entries must be strings")
+        normalized_key = _normalize_sensitive_key(key)
+        if normalized_key:
+            normalized.add(normalized_key)
+    return frozenset(normalized)
+
+
+def _extra_sensitive_key_pattern(extra_sensitive_keys: frozenset[str]) -> str:
+    """Build a bounded regex alternation for exact per-call keys.
+
+    Each normalized key is split on ``_`` and rejoined with ``[-_]`` so callers
+    may pass either separator and the regex matches both forms (``api-key`` and
+    ``api_key``). ``re.escape`` neutralizes regex metacharacters in each part.
+    """
+    variants = []
+    for key in sorted(extra_sensitive_keys, key=len, reverse=True):
+        parts = key.split("_")
+        variants.append(r"[-_]".join(re.escape(part) for part in parts))
+    return "(?:" + "|".join(variants) + ")"
+
+
+def _redact_extra_sensitive_key_values(text: str, extra_sensitive_keys: frozenset[str]) -> str:
+    """Redact KEY=value / JSON / YAML values for explicit per-call keys.
+
+    Operates only when ``extra_sensitive_keys`` is non-empty. Produces a stable
+    ``***`` sentinel so a second invocation is byte-identical to the first.
+    Idempotent against the existing structured redaction pipeline.
+    """
+    if not extra_sensitive_keys or not text:
+        return text
+
+    key_pat = _extra_sensitive_key_pattern(extra_sensitive_keys)
+
+    def _mask_value(value: str) -> str:
+        # Explicitly selected values are fully replaced. The stable sentinel
+        # makes a second pass byte-identical to the first.
+        return "***" if value else value
+
+    def _line_end(source: str, start: int) -> int:
+        end = start
+        while end < len(source) and source[end] not in "\r\n":
+            end += 1
+        return end
+
+    def _yaml_single_quote_end(source: str, start: int) -> int | None:
+        cursor = start
+        while cursor < len(source):
+            char = source[cursor]
+            if char in "\r\n":
+                return None
+            if char == "'":
+                if cursor + 1 < len(source) and source[cursor + 1] == "'":
+                    cursor += 2
+                    continue
+                return cursor
+            cursor += 1
+        return None
+
+    def _rewrite_matches(source: str, pattern: "re.Pattern[str]", replacer) -> str:
+        chunks: list[str] = []
+        last_end = 0
+        for match in pattern.finditer(source):
+            if match.start() < last_end:
+                continue
+            replacement = replacer(source, match)
+            if replacement is None:
+                continue
+            replacement_text, value_end = replacement
+            if replacement_text == source[match.start():value_end]:
+                continue
+            chunks.append(source[last_end:match.start()])
+            chunks.append(replacement_text)
+            last_end = value_end
+        if not chunks:
+            return source
+        chunks.append(source[last_end:])
+        return "".join(chunks)
+
+    if "=" in text:
+        assign_re = re.compile(
+            rf"(^[ \t]*(?:export[ \t]+)?|(?<![A-Za-z0-9_.\-]))"
+            rf"({key_pat})([ \t]*=[ \t]*)",
+            re.IGNORECASE | re.MULTILINE,
+        )
+
+        def _redact_assignment(source: str, match: "re.Match[str]") -> tuple[str, int] | None:
+            # Defense-in-depth: ensure the matched key (post-normalization) is
+            # actually in the caller-supplied set. The alternation pattern
+            # already constrains to the set, but a malformed variant (e.g. an
+            # underscored fragment that happened to match the alternation)
+            # could slip through.
+            matched_key = _normalize_sensitive_key(match.group(2))
+            if matched_key not in extra_sensitive_keys:
+                return None
+
+            value_start = match.end()
+            if value_start >= len(source) or source[value_start] in "&\r\n":
+                return None
+
+            prefix = f"{match.group(1)}{match.group(2)}{match.group(3)}"
+            quote = source[value_start]
+            if quote in {"'", '"'}:
+                content_start = value_start + 1
+                closing_quote = _find_unescaped_closing_quote(source, content_start, quote)
+                if closing_quote is None:
+                    value_end = _line_end(source, content_start)
+                    value = source[content_start:value_end]
+                    if not value:
+                        return None
+                    return f"{prefix}{quote}{_mask_value(value)}", value_end
+                value = source[content_start:closing_quote]
+                if not value:
+                    return None
+                return (
+                    f"{prefix}{quote}{_mask_value(value)}{quote}",
+                    closing_quote + 1,
+                )
+
+            # Unquoted ENV-style extra keys are redacted through the physical
+            # line boundary. A raw ``&`` is not a safe delimiter here: treating
+            # it as a form-body separator leaks a sensitive suffix. Conservative
+            # same-line over-redaction is intentional; never cross CR/LF.
+            value_end = value_start
+            while value_end < len(source) and source[value_end] not in "\r\n":
+                value_end += 1
+            value = source[value_start:value_end]
+            if not value:
+                return None
+            return f"{prefix}{_mask_value(value)}", value_end
+
+        text = _rewrite_matches(text, assign_re, _redact_assignment)
+
+    if ":" in text:
+        json_re = re.compile(
+            rf'("({key_pat})"[ \t]*:[ \t]*")',
+            re.IGNORECASE,
+        )
+        yaml_re = re.compile(
+            rf"^([ \t]*)({key_pat})(:[ \t]*)",
+            re.IGNORECASE | re.MULTILINE,
+        )
+
+        def _redact_json(source: str, match: "re.Match[str]") -> tuple[str, int] | None:
+            matched_key = _normalize_sensitive_key(match.group(2))
+            if matched_key not in extra_sensitive_keys:
+                return None
+            value_start = match.end()
+            closing_quote = _find_unescaped_closing_quote(source, value_start, '"')
+            if closing_quote is None:
+                value_end = _line_end(source, value_start)
+                value = source[value_start:value_end]
+                if not value:
+                    return None
+                return f"{match.group(1)}{_mask_value(value)}", value_end
+            value = source[value_start:closing_quote]
+            if not value:
+                return None
+            return (
+                f'{match.group(1)}{_mask_value(value)}"',
+                closing_quote + 1,
+            )
+
+        def _redact_yaml(source: str, match: "re.Match[str]") -> tuple[str, int] | None:
+            matched_key = _normalize_sensitive_key(match.group(2))
+            if matched_key not in extra_sensitive_keys:
+                return None
+
+            prefix = f"{match.group(1)}{match.group(2)}{match.group(3)}"
+            value_start = match.end()
+            if value_start >= len(source) or source[value_start] in "\r\n":
+                return None
+
+            quote = source[value_start]
+            if quote in {"'", '"'}:
+                content_start = value_start + 1
+                if quote == "'":
+                    closing_quote = _yaml_single_quote_end(source, content_start)
+                else:
+                    closing_quote = _find_unescaped_closing_quote(
+                        source,
+                        content_start,
+                        quote,
+                    )
+                if closing_quote is None:
+                    value_end = _line_end(source, content_start)
+                    value = source[content_start:value_end]
+                    if not value:
+                        return None
+                    return f"{prefix}{quote}{_mask_value(value)}", value_end
+                value = source[content_start:closing_quote]
+                if not value:
+                    return None
+                return (
+                    f"{prefix}{quote}{_mask_value(value)}{quote}",
+                    closing_quote + 1,
+                )
+
+            # Unquoted YAML: consume through EOL, stripping an optional
+            # trailing ` #comment`. This addresses Teknium's review finding
+            # on the predecessor PR (unquoted multi-word values half-redacted).
+            line_end = _line_end(source, value_start)
+            value_end = line_end
+            for cursor in range(value_start, line_end):
+                if source[cursor] != "#" or source[cursor - 1] not in " \t":
+                    continue
+                value_end = cursor
+                while value_end > value_start and source[value_end - 1] in " \t":
+                    value_end -= 1
+                break
+            value = source[value_start:value_end]
+            if not value:
+                return None
+            return f"{prefix}{_mask_value(value)}", value_end
+
+        text = _rewrite_matches(text, json_re, _redact_json)
+        text = _rewrite_matches(text, yaml_re, _redact_yaml)
+
+    return text
+
+
 def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = False,
-                          file_read: bool = False, redact_url_credentials: bool = False) -> str:
+                          file_read: bool = False, redact_url_credentials: bool = False,
+                          extra_sensitive_keys: Collection[str] | None = None) -> str:
     """Apply all redaction patterns to a block of text.
 
     Safe on any string. Enabled by default (``security.redact_secrets: false``
@@ -572,6 +942,15 @@ def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = F
     sentinel (``«redacted:ghp_…»``) instead of a head/tail mask an agent could
     write back into config.yaml as a dead credential.
 
+    ``extra_sensitive_keys`` adds caller-supplied exact key names to the
+    KEY=value / JSON / YAML redaction passes. Keys are stripped, casefolded,
+    and hyphens are normalized to underscores (``session-id`` ==
+    ``session_id``). Empty / whitespace-only entries are ignored. This
+    parameter is keyword-only, defaults to ``None`` (no extension), and does
+    not mutate any global sensitive-key set or persist between calls.
+    Passing a single ``str`` or ``bytes`` as the top-level collection, or a
+    collection containing a non-string entry, raises ``TypeError``.
+
     Every regex sits behind a cheap substring gate that its pattern requires,
     so the gates are never false-negative.
 
@@ -586,6 +965,19 @@ def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = F
     if not text or not (force or _REDACT_ENABLED):
         return text
     code_file = code_file or file_read
+
+    # Per-call extra sensitive keys (caller-supplied). Runs before the existing
+    # pipeline so opted-in keys mask their values even when main's value-shape
+    # gate would otherwise pass them through.
+    normalized_extra_sensitive_keys = _normalize_extra_sensitive_keys(extra_sensitive_keys)
+    if normalized_extra_sensitive_keys:
+        text = _redact_extra_sensitive_key_values(text, normalized_extra_sensitive_keys)
+
+    # Global CLI flag-value redaction. Cheap pre-gate on ``--`` preserves
+    # performance discipline; the regex itself is anchored so suffix-flag
+    # collisions (``--passwordStore``, ``--tokenize``) cannot match.
+    if "--" in text:
+        text = _redact_cli_sensitive_space_values(text)
 
     # Control/zero-width chars can split a token body so _PREFIX_RE alone misses it.
     if _has_known_prefix_substring(text):

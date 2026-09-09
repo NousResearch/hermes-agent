@@ -82,6 +82,49 @@ def test_restart_spec_normalizes_legacy_pythonw_argv(tmp_path):
     assert env["VIRTUAL_ENV"] == str(tmp_path / "venv")
 
 
+@pytest.mark.windows_only
+def test_restart_spec_rebinds_uv_base_interpreter_to_install_venv(
+    tmp_path, monkeypatch
+):
+    """A uv venv's ``Scripts\\python.exe`` is a trampoline, so the *running* gateway — and the
+    argv snapshot ``_capture_gateway_argv`` hands to the post-update replay — is its
+    base-interpreter child. Replayed verbatim that interpreter has no ``pyvenv.cfg`` above it,
+    loses the venv, and dies on the first third-party import
+    (``ModuleNotFoundError: No module named 'yaml'`` in gateway-stdio.log), which the updater
+    then reports as a failed gateway restart. The respawn must come back on the install venv's
+    console python instead.
+
+    ``windows_only``: the rewrite only runs on Windows (off Windows the spec returns its argv
+    untouched), and the venv layout under test is the Windows ``Scripts/`` one.
+    """
+    project = tmp_path / "project"
+    base_home = tmp_path / "uv" / "python" / "cpython-3.11-windows-x86_64-none"
+    scripts = project / "venv" / "Scripts"
+    scripts.mkdir(parents=True)
+    base_home.mkdir(parents=True)
+    console = scripts / "python.exe"
+    base = base_home / "python.exe"
+    console.write_text("", encoding="utf-8")
+    base.write_text("", encoding="utf-8")
+    (project / "venv" / "pyvenv.cfg").write_text(
+        f"home = {base_home}\nimplementation = CPython\n", encoding="utf-8"
+    )
+
+    import hermes_cli.gateway as gateway
+
+    monkeypatch.setattr(gateway, "PROJECT_ROOT", project)
+
+    argv = [str(base), "-m", "hermes_cli.main", "gateway", "run"]
+    with mock.patch.object(
+        gateway_windows, "_stable_gateway_working_dir", return_value=str(tmp_path)
+    ), mock.patch("hermes_cli.config.get_hermes_home", return_value=str(tmp_path)):
+        new_argv, cwd, env = gateway_windows.windowless_gateway_restart_spec(list(argv))
+
+    assert new_argv[0] == str(console)
+    assert new_argv[1:] == argv[1:]
+    assert env["VIRTUAL_ENV"] == str(project / "venv")
+
+
 # ---------------------------------------------------------------------------
 # _refresh_windows_gateway_launchers: hermes update regenerates launchers
 # ---------------------------------------------------------------------------

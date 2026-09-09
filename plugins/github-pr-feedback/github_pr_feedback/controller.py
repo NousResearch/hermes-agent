@@ -2757,7 +2757,7 @@ def _local_ci_task(
         f"{_governed_command_prefix(control_home)} audit-pr --repository "
         f"{shlex.quote(receipt.repository)} "
         f"--pr-number {receipt.pr_number} --head-sha {shlex.quote(receipt.head_sha)} "
-        f"--worktree {shlex.quote(str(prepared.path))}. The deterministic command runs the "
+        f"--worktree {shlex.quote(str(prepared.path))} --fresh. The deterministic command runs the "
         "repository-owned CI governance check, scripts/run_hygiene_lane.py, "
         "scripts/run_static_lane.py with STATIC_BASE_REF set to the canonical PR base SHA, every "
         "required tests/manifests/test_lanes.toml lane through scripts/run_test_lane.py, and locked "

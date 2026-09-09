@@ -3622,7 +3622,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
     def _finish_turn_result(
         self, agent: Any, result: Any, session_id: Optional[str], *, route, requested_runtime, route_source,
         confirmed_runtime_lock: bool) -> tuple:
-        """Attach usage, effective session id, ``_compressed`` and runtime metadata to a finished turn."""
+        """Attach transcript, usage, session, compression and runtime metadata."""
         usage = {"input_tokens": getattr(agent, "session_prompt_tokens", 0) or 0,
                  "output_tokens": getattr(agent, "session_completion_tokens", 0) or 0,
                  "total_tokens": getattr(agent, "session_total_tokens", 0) or 0}
@@ -3631,6 +3631,13 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         _eff_sid = getattr(agent, "session_id", session_id)
         if isinstance(_eff_sid, str) and _eff_sid:
             result["session_id"] = _eff_sid
+        if isinstance(result, dict) and isinstance(result.get("messages"), list):
+            from gateway.response_turn_boundary import FULL_TRANSCRIPT_MODE
+
+            result["_transcript_mode"] = FULL_TRANSCRIPT_MODE
+            result["_current_turn_user_idx"] = getattr(
+                agent, "_persist_user_message_idx", None
+            )
         # _compressed tells _build_response_conversation_history to store the compacted
         # transcript as-is (rotation changes session_id; in-place compaction sets a flag).
         _session_rotated = isinstance(_eff_sid, str) and isinstance(session_id, str) and _eff_sid != session_id

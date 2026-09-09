@@ -10,6 +10,11 @@ fail-open engine failure, and the "no historical need -> no search" default.
 All T3/T4 sources are injected via seams (``_memory_store_loader`` /
 ``_session_search_fn``) so every scenario is deterministic and hermetic; one
 integration test drives the real ``load_on_disk_store`` path with a temp memory dir.
+
+Ownership: select-context passes ``current_session_id`` into ``session_search`` so the
+current session/lineage is excluded, but that is NOT a cross-user ownership boundary.
+In shared-profile deployments there is no user-level isolation here; T4-side ownership
+is UNCERTAIN by design and T4 remains off by default.
 """
 
 from __future__ import annotations
@@ -483,6 +488,49 @@ def test_retrieval_amplification_blocked_at_one_search_per_request():
     assert len(calls) == 1
 
 
+def test_t4_passes_current_session_id_to_search_but_does_not_claim_ownership():
+    """T4 delegates current-session exclusion to ``session_search`` via the session id.
+    This is NOT cross-user ownership: shared-profile deployments have no user-level
+    boundary here, so T4-side ownership remains UNCERTAIN and must not be claimed."""
+    req = [_msg("system", content="S"), _msg("user", content="CURRENT what did we do earlier about refunds")]
+    fn, calls = _recording_search(_discovery_payload("earlier refunds policy notes"))
+    e = _engine(history_retrieval_enabled=True, _session_search_fn=fn)
+    e.on_session_start(session_id="own-session-42", context_length=262144)
+    out = e.select_context(req, budget_tokens=262144)
+    assert out is not None
+    assert _T4_LABEL in _join(out)
+    assert len(calls) == 1
+    assert calls[0].get("current_session_id") == "own-session-42"
+    assert calls[0].get("limit") == 3
+    assert calls[0].get("detail") == "adaptive"
+
+
+def test_supplements_never_carry_tool_or_authority_fields():
+    req = [
+        _msg("system", content="S"),
+        _msg("user", content="CURRENT what did we do earlier about refunds"),
+    ]
+    store = _fake_store(memory_entries=["refund decision"])
+    e = _engine(
+        store=store,
+        history_retrieval_enabled=True,
+        _session_search_fn=lambda **k: _discovery_payload("earlier refunds history detail"),
+    )
+    out = e.select_context(req, budget_tokens=262144)
+    assert out is not None
+    supplements = [m for m in out if _T3_LABEL in str(m.get("content")) or _T4_LABEL in str(m.get("content"))]
+    assert supplements
+    for m in supplements:
+        # Evidence-only: role=user and the content marker, nothing that can act or decide.
+        assert set(m) <= {"role", "content"}
+        assert m.get("role") == "user"
+        assert not m.get("tool_calls") and not m.get("tool_call_id") and not m.get("name")
+        assert _AUTHORITY_NOTE in str(m.get("content"))
+    # No injected supplement can carry an approval/action/authority envelope.
+    for m in out:
+        assert not {"approve", "action", "authorize", "authority"} & set(m)
+
+
 def test_tool_payload_bloat_does_not_inflate_selection():
     req = [_msg("system", content="S")]
     for r in range(4):
@@ -565,6 +613,34 @@ def test_t3_before_t4_before_current_when_room_for_both():
     assert "the refund policy was updated for merchants" in _join(out)
 
 
+def test_t3_and_t4_together_stay_within_hard_budget():
+    req = [
+        _msg("system", content="S"),
+        _msg("user", content="CURRENT what did we do earlier about the refund policy"),
+    ]
+    store = _fake_store(memory_entries=["refund decision from memory", "repeat merchant note"])
+    e = _engine(
+        store=store,
+        context_length=65536,
+        history_retrieval_enabled=True,
+        _session_search_fn=lambda **k: _discovery_payload(
+            "the refund policy was updated for merchants " + "R" * 60000,
+            "another refund fact " + "F" * 60000,
+        ),
+    )
+    out = e.select_context(req, budget_tokens=65536)
+    assert out is not None
+    joined = _join(out)
+    assert _T3_LABEL in joined
+    assert _T4_LABEL in joined
+    from plugins.context_engine.ci import _serialized_estimate
+
+    hard = e._hard_budget_for(65536)
+    assert estimate_messages_tokens_rough(out) <= hard
+    assert _serialized_estimate(out) <= hard
+    assert out[-1] is req[-1]
+
+
 # ---- context engine failure fails open ----------------------------------------------
 def test_context_engine_failure_fails_open():
     class _Exploding(ContextIntelligenceEngine):
@@ -621,6 +697,35 @@ def test_second_stage_serialized_reduction_drops_supplements(monkeypatch):
     assert kept >= 1, "reduction must keep as many supplements as fit"
     assert kept <= 2, "reduction must drop the supplements that overflow the serialized budget"
     assert out[-1] is req[-1]
+
+
+def test_drop_out_fallback_returns_bounded_base_never_unbounded(monkeypatch):
+    """When the second-stage reduction cannot fit even the base selection under the
+    serialized estimate, CI must return the already-bounded base — never the original
+    unbounded transcript."""
+    from plugins.context_engine import ci as ci_mod
+
+    req = [
+        _msg("system", content="S"),
+        _msg("user", content="CURRENT what did we do earlier about refunds"),
+    ]
+    store = _fake_store(memory_entries=["refund note"])
+    # Simulate a provider whose serialization always overflows the hard budget: every
+    # supplement must be dropped and the engine must fall back to the bounded base.
+    monkeypatch.setattr(ci_mod, "_serialized_estimate", lambda messages: 10**12)
+    e = _engine(
+        store=store,
+        context_length=262144,
+        history_retrieval_enabled=True,
+        _session_search_fn=lambda **k: _discovery_payload("refund history fact"),
+    )
+    out = e.select_context(req, budget_tokens=262144)
+    assert out is not None
+    joined = _join(out)
+    assert _T3_LABEL not in joined
+    assert _T4_LABEL not in joined
+    assert out[-1] is req[-1]
+    assert estimate_messages_tokens_rough(out) <= e._hard_budget_for(262144)
 
 
 # ---- realistic loader path (real on-disk MemoryStore) -------------------------------
@@ -709,6 +814,49 @@ def test_status_reports_intelligence_flags():
 
 
 # ---- host pipeline integration ------------------------------------------------------
+# ANCOS Stage-1 (CI-only) readiness regression: proving the config->engine wiring that
+# selects the ci plugin, that compressor stays the default, and that selecting ci does
+# NOT enable memory or T4 and does not alter provider/9Router wiring.
+def test_stage1_ci_config_selects_engine_and_defaults():
+    from agent.agent_init import _select_context_engine
+
+    sel = _select_context_engine({"context": {"engine": "ci"}})
+    assert sel is not None
+    assert sel.name == "ci"
+    # Selecting ci must NOT enable T4 by default.
+    assert sel.history_retrieval_enabled is False
+    # Selecting ci must NOT surface memory/T4 on a fresh selection: no provider wiring is
+    # touched (engine carries no provider) and the engine starts with zero injections.
+    assert not hasattr(sel, "provider")
+    assert sel._ci_injection_count == 0
+
+
+def test_stage1_compressor_remains_default():
+    from agent.agent_init import _select_context_engine
+
+    # Explicit compressor, and the absence of a context.engine key, both stay built-in.
+    assert _select_context_engine({"context": {"engine": "compressor"}}) is None
+    assert _select_context_engine({"context": {}}) is None
+    assert _select_context_engine({}) is None
+
+
+def test_stage1_selecting_ci_does_not_enable_memory_or_t4_with_disabled_flags(monkeypatch):
+    """With the host's memory flags explicitly OFF (Stage-1 config), selecting ci must
+    inject neither memory nor history even on a recall-intent prompt."""
+    from tools import memory_tool
+
+    monkeypatch.setattr(memory_tool, "get_builtin_memory_store_flags", lambda *a, **k: (False, False))
+    e = load_context_engine("ci")
+    e.update_model("test/ci", 262144)
+    e._memory_store_loader = None  # exercise the real loader path
+    req = [_msg("system", content="S"), _msg("user", content="what did we decide earlier?")]
+    out = e.select_context(req, budget_tokens=262144)
+    assert out is req
+    joined = _join(out)
+    assert _T3_LABEL not in joined
+    assert _T4_LABEL not in joined
+
+
 def test_host_pipeline_integration_ci_engine():
     from types import SimpleNamespace
 

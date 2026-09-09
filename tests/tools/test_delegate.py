@@ -89,6 +89,10 @@ class TestDelegateRequirements(unittest.TestCase):
         self.assertNotIn("acp_command", props["tasks"]["items"]["properties"])
         self.assertNotIn("acp_args", props["tasks"]["items"]["properties"])
         self.assertNotIn("maxItems", props["tasks"])  # removed — limit is now runtime-configurable
+        stop_help = props["action"]["description"].lower()
+        self.assertIn("cancel", stop_help)
+        self.assertIn("not guaranteed", stop_help)
+        self.assertIn("steer", stop_help)
 
     def test_top_level_description_compact_and_complete(self):
         """The top-level description must stay compact while keeping every
@@ -103,6 +107,9 @@ class TestDelegateRequirements(unittest.TestCase):
         for keyword in (
             "background",          # async semantics
             "wait or poll",        # no-poll rule
+            "completion result",   # interrupted children may have no summary
+            "destructive cancellation",  # stop can cut the in-flight tool
+            "no usable summary",  # stop does not promise salvageable output
             "execute_code",        # mechanical-work routing
             "cronjob",             # durable-work routing
             "/stop",               # non-durability warning
@@ -890,6 +897,21 @@ class TestDelegateFailedChildStatus(unittest.TestCase):
         self.assertEqual(entry["status"], "interrupted")
         self.assertEqual(entry["exit_reason"], "interrupted")
         self.assertFalse(entry["truncated"])
+
+    def test_interrupted_without_final_text_has_no_usable_summary(self):
+        """An interrupt can arrive before the child produces assistant text."""
+        entry = self._delegate_single(
+            {
+                "final_response": None,
+                "completed": False,
+                "interrupted": True,
+                "api_calls": 1,
+                "messages": [],
+            }
+        )
+        self.assertEqual(entry["status"], "interrupted")
+        self.assertEqual(entry["exit_reason"], "interrupted")
+        self.assertEqual(entry["summary"], "")
 
 
 class TestSubagentCostRollup(unittest.TestCase):

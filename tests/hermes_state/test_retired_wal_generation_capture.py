@@ -208,6 +208,42 @@ def test_close_refuses_to_settle_without_a_capture(tmp_path, force_wal, monkeypa
 
 
 @not_windows
+def test_failed_capture_still_pins_the_handle_and_surfaces_through_the_registry(tmp_path, force_wal, monkeypatch, caplog):
+    """Production closes go through hermes_state_registry.release_or_close, which swallows close()
+    errors. A failed capture must still (a) log above DEBUG and (b) on runtimes without setconfig take
+    the retention pin, so an interpreter exit before the retry cannot checkpoint the stale frames."""
+    from hermes_state_registry import release_or_close
+
+    path = tmp_path / "state.db"
+    db = _make_db(path, "gw-0", "seed")
+    _require_wal(db)
+    _wal_only_sentinel(db, "gw-0")
+    _lose_sidecars(path, rename=False)
+    pins = []
+    if db._retire_connection is not None:
+        monkeypatch.setattr(db, "_retire_connection", pins.append)
+
+    def refuse(*args, **kwargs):
+        raise RetiredGenerationCaptureError("no space left on device")
+
+    monkeypatch.setattr(hermes_state, "capture_retired_wal_generation", refuse)
+    with caplog.at_level("ERROR"):
+        release_or_close(db)  # must not raise
+    assert db._conn is not None
+    assert "no space left on device" in caplog.text
+    if db._retire_connection is not None:  # no setconfig: the pin must already be taken
+        assert pins == [db._conn]
+        monkeypatch.undo()
+        monkeypatch.setattr(db, "_retire_connection", pins.append)
+        db.close()  # retry succeeds and must not pin a second time
+        assert pins == [pins[0]]
+    else:
+        monkeypatch.undo()
+        db.close()
+    assert db._conn is None and db._retired_generation_capture is not None
+
+
+@not_windows
 def test_capture_selects_the_recorded_inode_not_the_pathname(tmp_path, force_wal):
     """A second deleted WAL under the same pathname belongs to another owner: it must be neither
     captured as ours nor touched."""

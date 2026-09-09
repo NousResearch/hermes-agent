@@ -191,6 +191,10 @@ _CATEGORY_MERGE: Dict[str, str] = {
     # `runtime.nofile_soft_limit` (#78873) is the only schema-surfaced runtime field — fold it into the
     # agent tab rather than spawning a one-field orphan category.
     "runtime": "agent",
+    # `bots.force_private` is the only schema-surfaced bots field; it is the install-wide half of
+    # Bot Mode mesh visibility, so it belongs on the agent tab beside `bot_mode` rather than as a
+    # one-field orphan category.
+    "bots": "agent",
     "session": "general",
     "nous": "agent",
 }

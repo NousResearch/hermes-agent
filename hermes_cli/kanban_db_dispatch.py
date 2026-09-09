@@ -1135,7 +1135,9 @@ def check_respawn_guard(
     (quota/auth pattern; the breaker still trips eventually), then for the
     ready lane only ``"recent_success"`` (completed run within the window, unless
     a re-queue event arrived after it — a deliberate re-run) and ``"active_pr"``
-    (PR URL in a recent comment; re-spawning risks a duplicate PR). The review
+    (PR URL in a recent comment; re-spawning risks a duplicate PR, unless the
+    latest ended run is the reviewer's ``changes_requested`` verdict — an
+    explicit re-queue of the SAME implementer onto the SAME PR). The review
     lane skips the last two: they are the *inputs* to a review handoff. Stale /
     dead claim locks are NOT a guard reason — the reclaim passes own those.
     """
@@ -1154,7 +1156,10 @@ def check_respawn_guard(
     latest_run = conn.execute(
         "SELECT outcome, ended_at FROM task_runs "
         "WHERE task_id = ? AND ended_at IS NOT NULL "
-        "ORDER BY ended_at DESC LIMIT 1",
+        # ``id DESC`` tiebreak: the review handoff run and the reviewer's
+        # verdict routinely end within the same unix second, and without it
+        # the older run non-deterministically shadows the newer outcome.
+        "ORDER BY ended_at DESC, id DESC LIMIT 1",
         (task_id,),
     ).fetchone()
     if latest_run is not None and latest_run["outcome"] == "rate_limited":
@@ -1204,6 +1209,13 @@ def check_respawn_guard(
             return "recent_success"
 
     # 4. GitHub PR URL in a recent comment — prior worker already opened a PR.
+    #    Exception (mirrors rule 3's re-queue bypass): when the latest ended run
+    #    is the reviewer's ``changes_requested`` verdict, the task was handed
+    #    back to the SAME implementer to push more commits to the SAME PR — the
+    #    PR existing is the expected state, not evidence of duplicate work.
+    if latest_run is not None and latest_run["outcome"] == "changes_requested":
+        return None
+
     pr_cutoff = now - _RESPAWN_GUARD_PR_WINDOW
     for c in conn.execute(
         "SELECT body FROM task_comments WHERE task_id = ? AND created_at >= ?",

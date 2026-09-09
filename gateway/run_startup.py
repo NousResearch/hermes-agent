@@ -379,16 +379,36 @@ class GatewayStartupMixin:
             if adapter is None:
                 continue
             content = row["content"]
+            attachment_manifest = row.get("attachment_manifest") or {}
             if row.get("needs_marker"):
                 content = row.get("marker", RECOVERED_MARKER) + content
             metadata = {"thread_id": row["thread_id"]} if row.get("thread_id") else None
-            try:
-                result = await adapter.send(chat_id=row["chat_id"], content=content, metadata=metadata)
-            except Exception as send_err:
-                logger.warning("obligation %s: redelivery send raised: %s", row["obligation_id"], send_err)
-                result = None
+            result = None
+            text_succeeded = not content
+            if content:
+                try:
+                    result = await adapter.send(
+                        chat_id=row["chat_id"], content=content, metadata=metadata)
+                    text_succeeded = bool(getattr(result, "success", False))
+                except Exception as send_err:
+                    logger.warning(
+                        "obligation %s: redelivery send raised: %s",
+                        row["obligation_id"], send_err)
+            attachments_succeeded = True
+            if not row.get("attachment_manifest_valid", True):
+                attachments_succeeded = False
+            elif attachment_manifest:
+                try:
+                    attachments_succeeded = await adapter._deliver_attachment_manifest(
+                        row["chat_id"], attachment_manifest, metadata)
+                except Exception as attachment_err:
+                    attachments_succeeded = False
+                    logger.warning(
+                        "obligation %s: attachment redelivery raised: %s",
+                        row["obligation_id"], attachment_err)
+            complete = text_succeeded and attachments_succeeded
             with _log_suppressed(logging.DEBUG, "delivery ledger update failed", exc_info=True):
-                if result is not None and getattr(result, "success", False):
+                if complete:
                     await asyncio.to_thread(mark_delivered, row["obligation_id"])
                     redelivered += 1
                     logger.info(
@@ -396,8 +416,11 @@ class GatewayStartupMixin:
                         row["platform"], row["chat_id"], row["obligation_id"], row["attempts"],
                     )
                 else:
+                    error = str(getattr(result, "error", "") or "")
+                    if not attachments_succeeded:
+                        error = "attachment delivery failed"
                     await asyncio.to_thread(
-                        mark_failed, row["obligation_id"], str(getattr(result, "error", "") or "send failed")
+                        mark_failed, row["obligation_id"], error or "send failed"
                     )
         # Whatever is still waiting on a flood penalty (adopted at boot, skipped as not yet due, refused
         # again just now) gets a timer, so no flood-refused reply waits for the next restart.

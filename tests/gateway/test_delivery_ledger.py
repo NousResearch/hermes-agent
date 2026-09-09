@@ -38,6 +38,7 @@ def _record(oid="ob-1", session_key="agent:main:slack:channel:C1", **kw):
         chat_id=kw.get("chat_id", "C1"),
         thread_id=kw.get("thread_id", "171.001"),
         content=kw.get("content", "the final answer"),
+        attachment_manifest=kw.get("attachment_manifest"),
         adapter_profile=kw.get("adapter_profile"),
     )
 
@@ -124,6 +125,7 @@ class TestSchemaMigration:
             conn.close()
 
         assert "adapter_profile" in columns
+        assert "attachment_manifest" in columns
 
 
 class TestStateMachine:
@@ -141,6 +143,10 @@ class TestObligationId:
         assert a != dl.compute_obligation_id("sk1:threadB", "msg1", "hello")
         assert a != dl.compute_obligation_id("sk1", "msg2", "hello")
         assert a != dl.compute_obligation_id("sk1", "msg1", "other")
+        assert a != dl.compute_obligation_id(
+            "sk1", "msg1", "hello",
+            attachment_manifest={"images": [["https://example.test/chart.png", "chart"]]},
+        )
         assert len(a) == 24
 
 
@@ -393,6 +399,29 @@ class TestGatewayRedeliverySweep:
         runner._async_session_store.clear_resume_pending.assert_awaited_once_with(
             "agent:main:slack:channel:C1"
         )
+
+    @pytest.mark.parametrize("content", ["the final answer", ""])
+    @pytest.mark.asyncio
+    async def test_complete_attachment_obligation_redelivers(self, content):
+        manifest = {
+            "images": [["https://example.test/chart.png", "chart"]],
+            "media_files": [["C:/media/photo.png", False]],
+            "local_files": [],
+            "force_document_attachments": False,
+        }
+        _record(content=content, attachment_manifest=manifest)
+        _orphan("ob-1")
+        adapter = self._adapter()
+        adapter._deliver_attachment_manifest = AsyncMock(return_value=True)
+        runner = self._runner(adapter)
+
+        assert await runner._redeliver_pending_obligations() == 1
+
+        assert adapter.send.await_count == bool(content)
+        adapter._deliver_attachment_manifest.assert_awaited_once_with(
+            "C1", manifest, {"thread_id": "171.001"}
+        )
+        assert _row("ob-1")["state"] == "delivered"
 
     @pytest.mark.asyncio
     async def test_startup_redelivery_uses_persisted_transport_owner(self):

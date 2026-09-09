@@ -196,6 +196,35 @@ class TestDisplayDedupe:
         )
         assert [row[0] for row in duplicate_orders] == [first_row_id, first_row_id]
 
+    def test_read_only_legacy_latest_page_does_not_retain_transcript_payloads(self, tmp_path):
+        path = tmp_path / "read-only-legacy.db"
+        writer = SessionDB(path)
+        sid = "read-only-legacy"
+        payload_size = 2_000_000
+        writer.create_session(sid, source="desktop")
+        writer.append_messages_batch(
+            sid,
+            [{"role": "assistant", "content": chr(65 + index) * payload_size}
+             for index in range(12)],
+        )
+        writer._execute_write(lambda conn: conn.execute(
+            "UPDATE messages SET display_order = NULL, display_identity = NULL WHERE session_id = ?",
+            (sid,),
+        ))
+        writer.close()
+
+        reader = SessionDB(path, read_only=True)
+        tracemalloc.start()
+        try:
+            page = reader.get_messages(sid, include_compacted=True, latest=True, limit=1)
+            _, peak = tracemalloc.get_traced_memory()
+        finally:
+            tracemalloc.stop()
+            reader.close()
+
+        assert page[0]["content"] == "L" * payload_size
+        assert peak < payload_size * 5
+
     def test_display_paging_and_append_work_is_bounded(self, db):
         """Page and identity-lookup work scale with the page, not the transcript: 10x rows
         must not cost 10x SQLite VM steps (the pre-index read deduped the whole session)."""

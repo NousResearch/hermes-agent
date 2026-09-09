@@ -2491,13 +2491,15 @@ def _machine_id() -> str:
 
 
 def claim_job_for_fire(
-    job_id: str, *, claim_ttl_seconds: int = FIRE_CLAIM_TTL_SECONDS, force: bool = False, return_job: bool = False,
+    job_id: str, *, claim_ttl_seconds: int = FIRE_CLAIM_TTL_SECONDS, force: bool = False,
+    manual: bool = False, return_job: bool = False,
 ) -> Union[bool, Dict[str, Any]]:
     """Atomically claim a job for one external 'fire' (multi-machine at-most-once); True iff THIS
     caller won (``CronScheduler.fire_due``: exactly one of N replicas runs a job). Under the
     fence + file lock: reject missing/terminal/paused jobs unless ``force`` (explicit manual
     fire, which also resumes the job atomically; external callbacks must leave it false so a
-    stale callback cannot resurrect a paused job). Lose if a claim younger than
+    stale callback cannot resurrect a paused job). ``manual`` = off-tick run-now without the
+    resume: no occurrence stamp, so the still-pending ``next_run_at`` slot is not skipped. Lose if a claim younger than
     ``claim_ttl_seconds`` exists (the TTL lets another fire reclaim after a crash; mark_job_run
     clears the claim). Otherwise stamp ``fire_claim`` and, for recurring jobs, advance
     ``next_run_at`` so a stale re-delivery cannot re-fire."""
@@ -2513,8 +2515,11 @@ def claim_job_for_fire(
             return False  # someone holds a fresh claim
         from cron.occurrences import completed_occurrence, scheduled_instant
 
-        manual = force or job.get("manual_run_at") == job.get("next_run_at")
-        instant = None if manual else scheduled_instant(job.get("next_run_at"))
+        # ``manual`` (an off-tick run-now) must NOT stamp an occurrence identity: outside a
+        # scheduler tick ``next_run_at`` is the NEXT occurrence, not the one being run, so
+        # stamping it would make completed_occurrence() skip that slot when it arrives.
+        manual_fire = force or manual or job.get("manual_run_at") == job.get("next_run_at")
+        instant = None if manual_fire else scheduled_instant(job.get("next_run_at"))
         if instant and completed_occurrence(job, instant):
             if job.get("schedule", {}).get("kind") in {"cron", "interval"}:
                 nxt = compute_next_run(job["schedule"], now.isoformat())

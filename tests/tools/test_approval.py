@@ -102,6 +102,21 @@ class TestDetectDangerousRm:
                     None,
                 )
 
+    @pytest.mark.windows_only
+    def test_verification_cleanup_exempt_when_temp_dir_is_a_windows_path(self):
+        """#95456: on Windows the exemption can never fire, so Hermes prompts for its own scratch file.
+
+        Under git-bash the model writes the MSYS form of the path (that is what the shell resolves),
+        while ``tempfile.gettempdir()`` returns the native form. ``os.path.join`` then builds a
+        backslash path that never equals the operand, so the ``rm`` falls through to
+        "delete in root path" and blocks on an approval prompt for a file Hermes itself just created.
+        """
+        native_temp = "C:" + chr(92) + "Temp"
+        msys_operand = "/c/Temp/hermes-verify-example.py"
+
+        with mock_patch("tempfile.gettempdir", return_value=native_temp):
+            assert detect_dangerous_command(f"rm -f {msys_operand}") == (False, None, None)
+
     def test_symlinked_temp_dir_only_exempts_canonical_target(self, tmp_path):
         real_temp = tmp_path / "real-temp"
         real_temp.mkdir()

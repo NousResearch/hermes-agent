@@ -12,6 +12,8 @@ import shlex
 import tempfile
 import unicodedata
 
+from hermes_cli._subprocess_compat import split_command_line
+
 logger = logging.getLogger("tools.approval")
 
 # Sensitive write targets, matched via ~ / $HOME / $HERMES_HOME spellings. The resolved absolute
@@ -1360,22 +1362,60 @@ def _command_detection_variants(command: str):
                 yield variant
 
 
+def _normalize_msys_path(operand: str) -> str:
+    """Map a git-bash ``/c/Users/...`` operand back to its native ``C:/Users/...`` form.
+
+    Under git-bash the model writes MSYS paths because that is what the shell resolves, while
+    ``tempfile.gettempdir()`` reports the native path. Without this the two can never compare
+    equal and the temp-file exemption is dead code on Windows (#95456).
+    """
+    if os.sep != chr(92):
+        return operand
+    # Only a whole single-letter SEGMENT is a drive: "/c/Users/..." is C:, "/tmp/..." is not T:.
+    match = re.fullmatch(r"/([A-Za-z])(/.*)", operand)
+    if match is None:
+        return operand
+    return match.group(1).upper() + ":" + (match.group(2) or "/")
+
+
+def _same_path(left: str, right: str) -> bool:
+    """Compare two paths for equality without resolving symlinks or folding "..".
+
+    Windows accepts both separators and is case-insensitive, and git-bash spells the same file
+    with "/" where ``os.path.join`` uses "\\"; a raw string compare would call those different.
+    """
+    def _key(value: str) -> str:
+        if os.sep == "/":
+            return value
+        # splitdrive first: a drive-less "/tmp/x" and "C:\tmp\x" name the same file on the
+        # current drive, and os.path.realpath spells temp_dir with the drive while the operand
+        # as typed has none.
+        _, rest = os.path.splitdrive(value.replace("/", os.sep))
+        return os.path.normcase(rest)
+
+    return _key(left) == _key(right)
+
+
 def _is_verification_artifact_cleanup(command: str) -> bool:
     """Return whether *command* only removes one Hermes ad-hoc temp script."""
     try:
-        argv = shlex.split(command, posix=True)
+        argv = split_command_line(command)
     except ValueError:
         return False
     if len(argv) != 3 or argv[0] != "rm" or argv[1] != "-f":
         return False
-    operand = argv[2]
+    operand = _normalize_msys_path(argv[2])
     temp_dir = os.path.realpath(tempfile.gettempdir())
     basename = os.path.basename(operand)
+    # Compare the operand literally -- deliberately NOT resolved -- so a traversal such as
+    # "/tmp/nested/../hermes-verify-x.py" stays rejected. _same_path only unifies the
+    # separator and case that Windows and git-bash spell differently; it folds nothing.
     return (
-        operand == os.path.join(temp_dir, basename)
-        and os.path.dirname(os.path.realpath(operand)) == temp_dir
+        _same_path(operand, os.path.join(temp_dir, basename))
+        and _same_path(os.path.dirname(os.path.realpath(operand)), temp_dir)
         and re.fullmatch(r"hermes-(?:verify|ad-hoc)-[A-Za-z0-9_.-]+", basename) is not None
     )
+
 
 
 def _is_shell_token_spliced_gateway_lifecycle(command: str) -> bool:

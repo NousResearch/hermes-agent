@@ -9,6 +9,9 @@ export interface ConfigFieldSchema {
    *  value to ''. Matches the existing <Select> EMPTY_SELECT_VALUE pattern. */
   clearable?: boolean
   type?: 'boolean' | 'list' | 'number' | 'select' | 'string' | 'text'
+  min?: number
+  max?: number
+  step?: number
 }
 
 export interface ConfigSchemaResponse {

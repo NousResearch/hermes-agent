@@ -1,4 +1,4 @@
-"""Request-scoped, host-owned Claude Code transport. No credential handling."""
+"""Request-scoped Claude Code transport with host-owned HTTP admission."""
 from __future__ import annotations
 
 import asyncio
@@ -17,6 +17,11 @@ import threading
 import time
 import weakref
 from types import SimpleNamespace
+
+try:
+    from .admission import Admission
+except ImportError:
+    from admission import Admission
 
 CARRIER = 'claude-oauth-directsdk.native_assistant'
 PREFIX = 'mcp__hermes__'
@@ -215,10 +220,13 @@ class Request:
         self.client, self.process = client, None
         self.stream = None
         self.cancelled = threading.Event()
+        self.admission = None
         self.lock = threading.Lock()
 
     def cancel(self):
         self.cancelled.set()
+        if self.admission is not None:
+            self.admission.abort()
         with self.lock:
             if self.process is not None:
                 try:
@@ -368,6 +376,10 @@ class Client:
         p = None
         reader = None
         try:
+            timeout = kwargs.get('timeout', self.timeout)
+            timeout = getattr(timeout, 'read', timeout)
+            if not isinstance(timeout, (int, float)) or timeout <= 0:
+                raise ValueError('timeout must be positive seconds')
             with tempfile.TemporaryDirectory(prefix='claude-directsdk-') as tmp:
                 root = Path(tmp)
                 (root / 'tools.json').write_text(json.dumps(manifest), encoding='utf-8')
@@ -385,6 +397,8 @@ class Client:
                 env.update(ENABLE_TOOL_SEARCH='false', CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC='1', CLAUDE_CODE_MAX_RETRIES='0', DISABLE_AUTO_COMPACT='1', DISABLE_COMPACT='1')
                 # Hermes owns budgets; native's replayed reminder invalidates cached history.
                 env['CLAUDE_CODE_TOTAL_TOKENS_REMINDER'] = 'off'
+                request.admission = Admission(env.get('ANTHROPIC_BASE_URL', 'https://api.anthropic.com'), timeout)
+                env['ANTHROPIC_BASE_URL'] = request.admission.url
                 # Native settings apply env inside the process, avoiding execve's
                 # per-argument/environment-string limit for full Hermes schemas.
                 (root / 'settings.json').write_text(json.dumps({'env': {'CLAUDE_CODE_EXTRA_BODY': body}}), encoding='utf-8')
@@ -407,10 +421,6 @@ class Client:
                         events.put(None)
                 reader = threading.Thread(target=read, daemon=True)
                 reader.start()
-                timeout = kwargs.get('timeout', self.timeout)
-                timeout = getattr(timeout, 'read', timeout)
-                if not isinstance(timeout, (int, float)) or timeout <= 0:
-                    raise ValueError('timeout must be positive seconds')
                 deadline = time.monotonic() + timeout
                 def receive():
                     nonlocal deadline
@@ -445,6 +455,7 @@ class Client:
                                 break
                 p.stdin.close()
                 assistants, results, stopped, emitted = [], [], False, ''
+                native_error = None
                 while True:
                     event = receive()
                     if event is None:
@@ -453,8 +464,9 @@ class Client:
                     if kind == 'assistant':
                         if event.get('error') or event.get('message', {}).get('error'):
                             detail = '\n'.join(b.get('text', '') for b in event.get('message', {}).get('content', []) if b.get('type') == 'text')
-                            raise RuntimeError('Native API error: ' + detail)
-                        assistants.append(event['message'])
+                            native_error = detail
+                        else:
+                            assistants.append(event['message'])
                     elif kind == 'result':
                         results.append(event)
                     elif kind == 'stream_event':
@@ -471,6 +483,15 @@ class Client:
                 reader.join(timeout=1)
                 if request.cancelled.is_set():
                     raise RuntimeError('Claude request cancelled')
+                admission = request.admission
+                if admission.used:
+                    if admission.status != 200 or not admission.capture.complete:
+                        raise RuntimeError('Incomplete upstream response' + (': ' + native_error if native_error else ''))
+                    assistants = [admission.capture.message]
+                    stopped = True
+                native_failure_handled = admission.denied or (admission.used and assistants[0].get('stop_reason') == 'refusal')
+                if native_error and not native_failure_handled:
+                    raise RuntimeError('Native API error: ' + native_error)
                 if len(results) != 1 or not assistants or not stopped:
                     raise RuntimeError('Incomplete native response: assistant, message_stop and one result required')
                 final = results[0]
@@ -483,9 +504,9 @@ class Client:
                             raise RuntimeError('Native returned a tool outside the current host inventory')
                         calls.append({'id': block['id'], 'type': 'function', 'function': {'name': name[len(PREFIX):], 'arguments': json.dumps(block['input'], separators=(',', ':'), allow_nan=False)}})
                 boundary = bool(calls) and final.get('subtype') == 'error_max_turns' and p.returncode == 1
-                if not boundary and (p.returncode != 0 or final.get('is_error') or final.get('subtype') != 'success'):
+                if not boundary and not native_failure_handled and (p.returncode != 0 or final.get('is_error') or final.get('subtype') != 'success'):
                     raise RuntimeError('Native request failed: ' + str(final.get('subtype')))
-                usage = final.get('usage')
+                usage = assistants[0]['usage'] if admission.used else final.get('usage')
                 if not isinstance(usage, dict) or not all(isinstance(usage.get(k), (int, float)) for k in ('input_tokens', 'output_tokens')):
                     raise RuntimeError('Native result missing complete token usage')
                 text = ''.join(b.get('text', '') for b in blocks if b.get('type') == 'text')
@@ -502,13 +523,16 @@ class Client:
                 normalized_usage = {'prompt_tokens': inp, 'completion_tokens': usage['output_tokens'], 'total_tokens': inp + usage['output_tokens'], 'prompt_tokens_details': {'cached_tokens': usage.get('cache_read_input_tokens', 0)}, 'cache_creation_input_tokens': usage.get('cache_creation_input_tokens', 0), 'native_usage': usage,
                                     'completion_tokens_details': {'reasoning_tokens': usage.get('output_tokens_details', {}).get('thinking_tokens', 0)},
                                     'native_cost': {'total_cost_usd': final.get('total_cost_usd'), 'modelUsage': final.get('modelUsage')}}
-                finish = 'tool_calls' if calls else ('length' if any(a.get('stop_reason') == 'max_tokens' for a in assistants) else 'stop')
+                normalized_usage['native_admission'] = {'upstream_requests': int(admission.used), 'blocked_requests': admission.denied, 'request_id': admission.request_id}
+                finish = 'tool_calls' if calls else ('length' if any(a.get('stop_reason') in ('max_tokens', 'model_context_window_exceeded') for a in assistants) else 'stop')
                 response = obj({'id': assistants[-1].get('id', 'claude-native'), 'model': kwargs['model'], 'object': 'chat.completion', 'choices': [{'index': 0, 'finish_reason': finish, 'message': message}], 'usage': normalized_usage})
                 chunk = self._chunk(kwargs['model'], {'content': None, 'tool_calls': [dict(tc, index=i) for i, tc in enumerate(calls)] or None, 'reasoning_details': [carrier]}, finish, normalized_usage)
                 chunk._response = response
                 yield chunk
         finally:
             request.cancel()
+            if request.admission is not None:
+                request.admission.close()
             if p is not None:
                 p.wait(timeout=5)
                 if reader is not None:

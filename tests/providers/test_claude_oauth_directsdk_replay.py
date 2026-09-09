@@ -10,6 +10,7 @@ from types import SimpleNamespace
 import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / 'plugins/model-providers/claude-oauth-directsdk'))
 SPEC = importlib.util.spec_from_file_location("directsdk_replay", ROOT / "plugins/model-providers/claude-oauth-directsdk/directsdk.py")
 native = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(native)

@@ -14,6 +14,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 import threading
 
@@ -100,6 +101,7 @@ class Peer(BaseHTTPRequestHandler):
 
 def run(binary, model):
     root = Path(__file__).resolve().parents[1]
+    sys.path.insert(0, str(root / 'plugins/model-providers/claude-oauth-directsdk'))
     spec = importlib.util.spec_from_file_location(
         "cache_directsdk", root / "plugins/model-providers/claude-oauth-directsdk/directsdk.py")
     native = importlib.util.module_from_spec(spec)

@@ -4,7 +4,9 @@ Experimental bundled Hermes provider: `claude-oauth-directsdk`, displayed as **C
 
 ## Status
 
-**Blocked for strict Hermes loop/budget ownership.** In native 2.1.263, output-limit recovery can issue additional model requests inside one Hermes call even with HTTP retries disabled and `--max-turns 1`. The loopback qualification observed one normal request, two after a single output-limit response, and four when every response hit the limit. The larger live task also contained two native generations in one Hermes call. No recovery-off switch was found in the inspected native branch. A higher output budget reduces incidence but does not enforce ownership; this requires a supported native boundary before claiming full parity.
+**Single-request admission is implemented and live-qualified.** Native 2.1.263 can attempt extra generations despite `--max-turns 1` and disabled HTTP retries. A request-scoped loopback relay now forwards only the first Messages request and rejects subsequent attempts locally. Hermes receives the first completed upstream response, its actual usage and native stop reason; blocked native recovery does not turn a completed response into an exception. Truncated/incomplete streams and upstream HTTP errors remain failures.
+
+The integrated subscription-backed review completed seven Hermes calls with exactly seven upstream requests, twelve Hermes tool executions and twelve durable tool results. Context grew from 138,498 to 165,697 tokens; follow-up cache reads averaged 97.13%. Native accounting reported $0.8793728 in list-price equivalent, not a verified subscription charge. An earlier attempt began at 187K but exceeded the current native route's 200K bound after tools; that incomplete attempt is not counted as a successful review.
 
 A real subscription-backed Hermes task built and tested a CSV auditor. Separate live qualifications exercised streaming tool rounds, restart/resume, host-side denial, authentic steering, cancellation during generation, and a real CLI subagent completion. This is a review build, not a full-parity or production-readiness claim. See the remaining limitations below.
 
@@ -44,7 +46,9 @@ Auxiliary/fallback routing remains owned by Hermes. Configure those routes expli
 
 Each `chat.completions.create` starts a fresh process in a private temporary directory. Native tools, skills and setting sources are disabled. MCP advertises only the current Hermes tool inventory, has inert callbacks, and is denied execution by native `dontAsk`. Full descriptions and schemas are supplied through tools plus validated generation fields in `CLAUDE_CODE_EXTRA_BODY`, applied from a private native settings file; the system prompt uses a private file too. This avoids the OS per-argument/environment-string limit. Authentication and identity fields are never replaced.
 
-Canonical history is replayed in order. Historical user frames use `shouldQuery:false`, each with a zero-turn acknowledgment; the final user/tool-result frame queries. There is no parked native session or native approval wait, and the adapter adds no synthetic continue prompt. Native output recovery is the exception described above. The native token-budget reminder is disabled because Hermes owns budgets and replay reconstructs that reminder across the cache boundary. Other native annotations remain present, so the wire prompt is not byte-identical Hermes-only context.
+Canonical history is replayed in order. Historical user frames use `shouldQuery:false`, each with a zero-turn acknowledgment; the final user/tool-result frame queries. There is no parked native session or native approval wait, and the adapter adds no synthetic continue prompt. The local admission relay prevents native recovery from issuing another upstream request. The native token-budget reminder is disabled because Hermes owns budgets and replay reconstructs that reminder across the cache boundary. Other native annotations remain present, so the wire prompt is not byte-identical Hermes-only context.
+
+The relay binds an ephemeral loopback port with a random per-request route. Native authorization headers pass through memory directly to the upstream; headers are not logged or persisted. The upstream request body and native identity headers are preserved, while HTTP transfer encoding is normalized. The relay captures streamed text, signed thinking, tool arguments, usage and stop reason before native recovery can replace them. Cancellation shuts down the active upstream connection and the native process; request teardown removes the listener. No external relay service or bundled vendor executable is required.
 
 ### Long-context caching qualification
 
@@ -54,7 +58,7 @@ Disabling the native reminder restored stable prefixes without adding cache mark
 
 Text streams incrementally. A complete tool batch is published only after assistant completion, `message_stop`, final usage and native exit. Hermes then applies its own hooks, approvals, tools and persistence. Tool names map through `mcp__hermes__`; original names must be unique ASCII alphanumeric/underscore/hyphen identifiers of at most 50 characters.
 
-`--max-turns 1` is a logical native step, not a guarantee of one HTTP request under native retries. `error_max_turns` is accepted only with a complete tool batch, usage and exit code 1. Native `num_turns` may be 2 at that boundary. Other failures remain failures.
+`--max-turns 1` is a logical native step; the relay supplies the HTTP admission boundary. `error_max_turns` is accepted with a complete tool batch, usage and exit code 1. Native `num_turns` may be 2 at that boundary. A completed first response also survives a locally denied recovery attempt or native refusal rendering; Hermes receives the actual refusal, not the CLI's synthetic error text. Other failures remain failures.
 
 A versioned `reasoning_details` envelope retains ordered native assistant messages and signed thinking. Unchanged projections preserve native blocks, including harmless surrounding-whitespace normalization. Transformed assistant text/tool projections replay canonical text and tool-use blocks instead of stale signed thinking; foreign provider reasoning carriers are ignored. Edited-assistant replay passed against the real service. Native autocompaction is disabled so Hermes retains compaction ownership; this does not establish parity for every history transformation or cross-model signed replay.
 
@@ -82,9 +86,11 @@ Token usage retains native uncached/cache-read/cache-write/output components. Co
 
 ```sh
 scripts/run_tests.sh tests/providers/
+python evals/directsdk_admission.py /path/to/claude
+python evals/directsdk_cache_wire.py /path/to/claude
 ```
 
-Transport invariant tests cover signed replay and harmless normalization, transformed projections, final tool batches/usage, async use, lazy failure, invalid parameters, conflicting auth, and active/paused/unstarted stream cleanup. A separate real-native loopback qualification passed parallel tools, full long descriptions/schemas, signed ordering, host-only results, exact usage, incremental streaming and native exit checks. Its responses are synthetic protocol fixtures, not paid-model evidence.
+Transport invariant tests cover signed replay and harmless normalization, transformed projections, final tool batches/usage, async use, lazy failure, invalid parameters, conflicting auth, and active/paused/unstarted stream cleanup. The admission regression fails on the previous implementation (two upstream requests) and passes with one request, preserving first-response usage including zero values. Its cancellation control verifies upstream socket closure. A real-native ten-case loopback qualification covers normal text, tools, output/context limits, thinking-only recovery, refusal, HTTP errors, disconnects and cancellation, with one upstream request per call. Its responses are synthetic protocol fixtures, not paid-model evidence.
 
 Real bundled-provider discovery is covered separately against a temporary `HERMES_HOME`, including constructing the bundled client without spawning native or accessing auth. A fresh subscription-backed AIAgent loop completed two API calls with host `read_file` execution and SQLite persistence; separate service requests accepted edited-assistant replay. Native loopback qualification also accepted 182K of tool schemas plus a 176K system prompt through file-backed settings. Loopback responses remain fixtures, not paid-model evidence.
 

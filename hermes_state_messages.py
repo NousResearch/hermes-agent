@@ -11,6 +11,14 @@ from typing import Any, Dict, List, Optional, Tuple
 from agent.context_compressor import _DB_PERSISTED_MARKER as _DB_PERSISTED_MARKER_KEY, split_user_originated_turn
 from agent.memory_manager import sanitize_context
 from agent.message_sanitization import _sanitize_surrogates
+
+# Shared JSON encoder for transcript write paths. Byte-identical to json.dumps
+# defaults (ensure_ascii=True, default separators) — verified — so this only
+# skips the per-call JSONEncoder construction and its method-cache warmup on
+# hot write paths; the bytes stored in state.db are unchanged. ensure_ascii is
+# load-bearing: it escapes lone surrogates so the string is bindable to sqlite
+# TEXT (see _encode_content's comment).
+_JSON_ENCODER = json.JSONEncoder(ensure_ascii=True)
 from hermes_state_common import (
     _COMPRESSION_LOCK_ROW_SQL, _ENDED_ROW_SQL, _RESET_END_REASONS, _RESET_END_REASONS_SQL, _ended_by_compression,
     _legacy_reset_child_sql, _placeholders)
@@ -120,7 +128,7 @@ class SessionMessagesMixin:
         if content is None or isinstance(content, (bytes, int, float)):
             return content
         try:
-            return cls._CONTENT_JSON_PREFIX + json.dumps(content)  # ensure_ascii escapes surrogates: bindable
+            return cls._CONTENT_JSON_PREFIX + _JSON_ENCODER.encode(content)  # ensure_ascii escapes surrogates: bindable
         except (TypeError, ValueError):
             return _sanitize_surrogates(str(content))
 
@@ -148,7 +156,7 @@ class SessionMessagesMixin:
         elif not isinstance(display_metadata, dict):
             logger.warning("Ignoring unexpected display metadata type on write: %s", type(display_metadata).__name__)
             return None
-        return json.dumps(display_metadata)
+        return _JSON_ENCODER.encode(display_metadata)
 
     @staticmethod
     def _decode_display_metadata(raw: Any) -> Optional[Dict[str, Any]]:
@@ -172,7 +180,7 @@ class SessionMessagesMixin:
         """Serialize a structured reasoning field for its TEXT column. Strings are stored as-is: round-trips
         (get_messages -> replace_messages) hand back raw TEXT; re-dumping would double-encode it and
         reasoning-replay consumers (``isinstance(..., list)``) would drop it."""
-        return None if not value else (value if isinstance(value, str) else json.dumps(value))
+        return None if not value else (value if isinstance(value, str) else _JSON_ENCODER.encode(value))
 
     def _check_transcript_write_guards(self, conn, session_id: str, compression_lock_holder: Optional[str],
         turn_lease_holder: Optional[str] = None, turn_lease_ttl_seconds: float = 300.0,
@@ -239,7 +247,7 @@ class SessionMessagesMixin:
         _str_or_none = lambda v: _scrub_surrogates(v) if isinstance(v, str) else None  # noqa: E731
         _reasoning = lambda key: msg.get(key) if keep_reasoning else None  # noqa: E731
         return (session_id, role, self._encode_content(msg.get("content")), msg.get("tool_call_id"),
-            json.dumps(tool_calls) if tool_calls else None, _scrub_surrogates(msg.get("tool_name")),
+            _JSON_ENCODER.encode(tool_calls) if tool_calls else None, _scrub_surrogates(msg.get("tool_name")),
             msg.get("effect_disposition"), message_timestamp, msg.get("token_count"), msg.get("finish_reason"),
             _scrub_surrogates(_reasoning("reasoning")), _scrub_surrogates(_reasoning("reasoning_content")),
             *(self._reasoning_json_text(_reasoning(k))

@@ -23,7 +23,10 @@ from typing import Any, Dict, List, Optional
 
 from agent.redact import redact_sensitive_text
 from agent.claude_sdk_runtime_continuity import _persist_turn
-from agent.claude_sdk_runtime_fallback import _reconcile_turn_outcome
+from agent.claude_sdk_runtime_fallback import (
+    _consume_agent_interrupt,
+    _reconcile_turn_outcome,
+)
 from agent.claude_sdk_runtime_session import (
     _refresh_turn_visibility,
     _run_sdk_attempts,
@@ -113,7 +116,7 @@ def _reject_empty_turn(
     """The empty-message rejection (no session, no model call), or None to proceed."""
     if not (isinstance(user_input, str) and not user_input.strip()):
         return None
-    agent._interrupt_requested = False
+    _consume_agent_interrupt(agent)
     live_session = getattr(agent, "_claude_sdk_session", None)
     if live_session is not None:
         try:
@@ -154,7 +157,7 @@ def _refresh_approval_turn_context(agent) -> None:
 
 def _interrupted_before_start(agent, messages: List[Dict[str, Any]]) -> Dict[str, Any]:
     """Honour an interrupt that landed before this turn's session existed."""
-    agent._interrupt_requested = False
+    _consume_agent_interrupt(agent)
     live_session = getattr(agent, "_claude_sdk_session", None)
     if live_session is not None:
         # interrupt() also set the live session's event; consume it here

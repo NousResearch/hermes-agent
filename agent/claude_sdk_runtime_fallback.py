@@ -97,6 +97,35 @@ def _sdk_provider_failover_reason(agent, error: str, fatal_reason: Optional[str]
     )
 
 
+def _consume_agent_interrupt(agent) -> None:
+    """Consume BOTH halves of the agent-level stop.
+
+    Codex parity (``agent/codex_runtime.py``'s ``_consume_user_interrupt``):
+    ``_interrupt_requested`` is a plain flag, but ``_hard_interrupt_requested``
+    is an Event that ``agent/conversation_compression.py`` reads as a LIVE
+    cancel signal. The whole-turn runtimes return from
+    ``agent/conversation_loop.py`` before ``finalize_turn``, so nothing
+    downstream calls ``clear_interrupt`` for us — clearing only the flag leaves
+    the event set for the rest of the session.
+
+    The flag is assigned before delegating because a stopped turn must read as
+    consumed even for the ``__init__``-less agent doubles the tests build, whose
+    ``clear_interrupt`` is a mock that changes nothing.
+
+    Reported by CryptoKylan (#65982), who traced the leak to
+    ``conversation_loop``'s early return and declined to fold a shared-interrupt
+    change into his own commit.
+    """
+    agent._interrupt_requested = False
+    clear = getattr(agent, "clear_interrupt", None)
+    if not callable(clear):
+        return
+    try:
+        clear()
+    except Exception:
+        logger.debug("clear_interrupt failed on the SDK lane", exc_info=True)
+
+
 def _reconcile_turn_outcome(agent, state: _SdkTurnState) -> None:
     """Settle the turn's terminal/stop state, then decide provider fallback.
 
@@ -131,7 +160,7 @@ def _reconcile_turn_outcome(agent, state: _SdkTurnState) -> None:
             # The transport accepted a successful terminal ResultMessage
             # before this stop was observed. Consume both layers of the late
             # signal so neither effects nor the next turn are poisoned.
-            agent._interrupt_requested = False
+            _consume_agent_interrupt(agent)
             live_session = getattr(agent, "_claude_sdk_session", None)
             if live_session is not None:
                 try:
@@ -196,8 +225,8 @@ def _reconcile_turn_outcome(agent, state: _SdkTurnState) -> None:
 
     if getattr(turn, "interrupted", False):
         # The interrupt was honored by THIS turn — consume the agent-level
-        # flag so the next turn is not short-circuited by it.
-        agent._interrupt_requested = False
+        # stop so the next turn is not short-circuited by it.
+        _consume_agent_interrupt(agent)
         if agent._claude_sdk_session is not None:
             # The abandoned stream may still hold the interrupted turn's
             # ResultMessage; a REUSED client would serve it as the NEXT

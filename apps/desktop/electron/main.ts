@@ -169,7 +169,7 @@ import {
   uninstallArgsForMode
 } from './desktop-uninstall'
 import { describeDevCdpDecision, resolveDevCdpPort } from './dev-cdp'
-import { installEmbedReferer } from './embed-referer'
+import { installEmbedReferer, withEmbedReferer } from './embed-referer'
 import { createEventDeduper } from './event-dedupe'
 import {
   buildTerminalScript,
@@ -9260,7 +9260,15 @@ function installRemoteHeaderRules() {
 
   remoteHeaderRulesInstalled = true
   session.defaultSession.webRequest.onBeforeSendHeaders((details, callback) => {
-    applyRemoteRequestHeaders(details, callback, headersForRemoteRequest)
+    applyRemoteRequestHeaders(
+      details,
+      (result) => {
+        const requestHeaders = withEmbedReferer(details.url, result.requestHeaders ?? details.requestHeaders)
+
+        callback({ requestHeaders })
+      },
+      headersForRemoteRequest
+    )
   })
 }
 

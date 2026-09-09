@@ -948,3 +948,20 @@ def test_identity_freshness_does_not_depend_on_host_uptime(monkeypatch):
 
     adapter._note_bot_username("new_helper_bot")
     assert adapter._bot_identity_is_fresh() is True
+
+
+def test_addressed_commands_keep_their_argument_boundary():
+    async def check():
+        for thread_id in (None, 77):
+            adapter = _make_adapter(require_mention=True, observe_unmentioned_group_messages=True)
+            for command, args in (("reasoning", "high"), ("model", "provider/model --session"), ("new", "")):
+                text = f"/{command}@hermes_bot" + (f" {args}" if args else "")
+                msg = _group_message(text, thread_id=thread_id)
+                event = await adapter._build_triggered_event(
+                    msg, SimpleNamespace(update_id=42), MessageType.COMMAND
+                )
+                assert event.get_command() == command
+                assert event.get_command_args() == args
+                assert event.text == f"/{command}" + (f" {args}" if args else "")
+                assert event.user_id == "111"
+    asyncio.run(check())

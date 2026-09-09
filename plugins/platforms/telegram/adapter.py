@@ -5820,7 +5820,11 @@ class TelegramAdapter(BasePlatformAdapter):
         media cached, attribution applied."""
         from plugins.platforms.telegram.telegram_context import group_trigger_text
         event = self._build_message_event(msg, msg_type, update_id=update.update_id)
-        event.text = group_trigger_text(self, msg, event.text)
+        if msg_type == MessageType.COMMAND:
+            # Strip only the command's @bot suffix, not its argument separator.
+            event.text = re.sub(r"^(\s*/[^\s@]+)@[^\s]+", r"\1", event.text, count=1)
+        else:
+            event.text = group_trigger_text(self, msg, event.text)
         await self._cache_replied_media(msg, event)
         return self._apply_telegram_group_observe_attribution(event)
 

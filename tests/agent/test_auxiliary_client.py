@@ -1797,7 +1797,9 @@ class TestStaleFallbackCandidateSkip:
 
         assert result.choices[0].message.content == "openrouter-serves"
         assert mock_fb.call_count == 2
-        assert mock_fb.call_args_list[1].kwargs.get("reason") == "stale fallback credential"
+        # Re-selection reason is generic: the candidate can be unavailable from either a
+        # stale credential (quarantined) or a capacity/quota error (#106367).
+        assert mock_fb.call_args_list[1].kwargs.get("reason") == "fallback candidate unavailable"
         mock_mark.assert_called_once_with(
             "anthropic", base_url="https://api.anthropic.com",
         )
@@ -1829,6 +1831,118 @@ class TestStaleFallbackCandidateSkip:
                     task="compression",
                     messages=[{"role": "user", "content": "summarize"}],
                 )
+
+
+class TestFallbackCandidateCapacityWalk:
+    """A fallback candidate that itself fails with a fallback-eligible capacity/quota error
+    must not abort the walk: the candidate is marked unhealthy and the ordered chain
+    re-selects the next configured entry (#106367)."""
+
+    def _make_429(self, msg="Rate limit exceeded, try again in 60 seconds"):
+        exc = Exception(msg)
+        exc.status_code = 429
+        return exc
+
+    def test_second_hop_quota_error_advances_to_next_configured_entry(self, monkeypatch):
+        """Primary 429 → fallback[0] 429 → fallback[1] serves (issue matrix T3)."""
+        from agent.auxiliary_client import _is_provider_unhealthy
+
+        primary_client = MagicMock()
+        primary_client.chat.completions.create.side_effect = self._make_429()
+
+        lane_b = MagicMock()
+        lane_b.chat.completions.create.side_effect = self._make_429()
+        lane_c = MagicMock()
+        lane_c.chat.completions.create.return_value = _DummyResponse("third-lane-serves")
+
+        chain_walks = [
+            (lane_b, "lane-b-model", "fallback_chain[0](opencode-go)"),
+            (lane_c, "lane-c-model", "fallback_chain[1](goat-lane)"),
+        ]
+
+        with patch("agent.auxiliary_client._resolve_task_provider_model",
+                   return_value=("auto", None, None, None, None)), \
+             patch("agent.auxiliary_client._get_cached_client",
+                   return_value=(primary_client, "gpt-5.5")), \
+             patch("agent.auxiliary_client._try_configured_fallback_chain",
+                   side_effect=chain_walks) as mock_chain, \
+             patch("agent.auxiliary_client._try_main_fallback_chain",
+                   return_value=(None, None, "")), \
+             patch("agent.auxiliary_client._try_payment_fallback",
+                   return_value=(None, None, "")) as mock_payment:
+            result = call_llm(
+                task="compression",
+                messages=[{"role": "user", "content": "summarize"}],
+            )
+
+        assert result.choices[0].message.content == "third-lane-serves"
+        assert mock_chain.call_count == 2  # first selection + re-selection after lane B failed
+        assert lane_b.chat.completions.create.call_count == 1
+        assert lane_c.chat.completions.create.call_count == 1
+        assert _is_provider_unhealthy("opencode-go")  # failed lane hidden for later aux calls
+        mock_payment.assert_not_called()  # configured chain served; no discovery drift
+
+    def test_all_lanes_quota_error_exhausts_chain_and_raises_original(self, monkeypatch, caplog):
+        """Primary + every configured lane at capacity → controlled exhaustion, original
+        primary error re-raised (issue matrix T4)."""
+        primary_client = MagicMock()
+        primary_client.chat.completions.create.side_effect = self._make_429("primary quota hit")
+
+        lane_b = MagicMock()
+        lane_b.chat.completions.create.side_effect = self._make_429()
+        lane_c = MagicMock()
+        lane_c.chat.completions.create.side_effect = self._make_429()
+
+        chain_walks = [
+            (lane_b, "lane-b-model", "fallback_chain[0](opencode-go)"),
+            (lane_c, "lane-c-model", "fallback_chain[1](goat-lane)"),
+            (None, None, ""),
+        ]
+
+        with patch("agent.auxiliary_client._resolve_task_provider_model",
+                   return_value=("auto", None, None, None, None)), \
+             patch("agent.auxiliary_client._get_cached_client",
+                   return_value=(primary_client, "gpt-5.5")), \
+             patch("agent.auxiliary_client._try_configured_fallback_chain",
+                   side_effect=chain_walks) as mock_chain, \
+             patch("agent.auxiliary_client._try_main_fallback_chain",
+                   return_value=(None, None, "")), \
+             patch("agent.auxiliary_client._try_payment_fallback",
+                   return_value=(None, None, "")), \
+             caplog.at_level("WARNING", logger="agent.auxiliary_client"):
+            with pytest.raises(Exception, match="primary quota hit"):
+                call_llm(
+                    task="compression",
+                    messages=[{"role": "user", "content": "summarize"}],
+                )
+
+        assert mock_chain.call_count == 3  # lanes B and C each served once, then exhausted
+        assert lane_b.chat.completions.create.call_count == 1
+        assert lane_c.chat.completions.create.call_count == 1
+        assert any("all fallbacks exhausted" in r.message for r in caplog.records)
+
+    @pytest.mark.asyncio
+    async def test_async_candidate_quota_error_skips_instead_of_raising(self, monkeypatch):
+        """Async twin: a capacity error from the candidate returns None so the walk advances."""
+        from agent.auxiliary_client import _call_fallback_candidate_async, _is_provider_unhealthy
+
+        lane_b = MagicMock()
+        lane_b.base_url = "https://api.opencode-go.test/v1"
+        lane_b.chat.completions.create = AsyncMock(side_effect=self._make_429())
+        monkeypatch.setattr(
+            "agent.auxiliary_client._get_auxiliary_task_config", lambda task: {},
+        )
+
+        result = await _call_fallback_candidate_async(
+            lane_b, "lane-b-model", "fallback_chain[0](opencode-go)",
+            task="compression", messages=[{"role": "user", "content": "hi"}],
+            temperature=None, max_tokens=None, tools=None,
+            effective_timeout=5.0, effective_extra_body={}, reasoning_config=None,
+        )
+
+        assert result is None
+        assert lane_b.chat.completions.create.call_count == 1
+        assert _is_provider_unhealthy("opencode-go")
 
 
 class TestAuxiliaryFallbackLayering:

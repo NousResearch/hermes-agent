@@ -3674,6 +3674,18 @@ def _quarantine_fallback_candidate(
                    "credential (%s) — skipping to next fallback", task or "call", tag, fb_label, fb_err)
 
 
+def _skip_fallback_candidate_at_capacity(
+    task: Optional[str], fb_label: str, destination: "_FallbackDestination", fb_err: Exception, *,
+    tag: str = "",
+) -> None:
+    """A fallback candidate failed with a fallback-eligible capacity/quota error. Mark it unhealthy
+    (the same key the chain selectors skip on) so the ordered walk advances to the next configured
+    entry instead of aborting the whole auxiliary call (#106367)."""
+    _mark_provider_unhealthy(destination.provider or fb_label, base_url=destination.base_url)
+    logger.warning("Auxiliary %s%s: fallback candidate %s failed with a capacity/quota "
+                   "error (%s) — skipping to next fallback", task or "call", tag, fb_label, fb_err)
+
+
 def _plan_fallback_auth_retry(
     destination: _FallbackDestination,
     rebuild: Callable[[str, Any, Optional[str]], Tuple[_FallbackDestination, Dict[str, Any]]], *,
@@ -3730,6 +3742,9 @@ def _call_fallback_candidate_sync(
         return _send(fb_client, fb_kwargs, destination)
     except Exception as fb_err:
         if not _is_auth_error(fb_err):
+            if _is_fallback_eligible_error(fb_err):
+                _skip_fallback_candidate_at_capacity(task, fb_label, destination, fb_err)
+                return None
             raise
         fb_provider, retry = _plan_fallback_auth_retry(
             destination, rebuild, async_mode=False, failed_api_key=getattr(fb_client, "api_key", ""))
@@ -3740,6 +3755,9 @@ def _call_fallback_candidate_sync(
                 return _send(*retry)
             except Exception as retry_err:
                 if not _is_auth_error(retry_err):
+                    if _is_fallback_eligible_error(retry_err):
+                        _skip_fallback_candidate_at_capacity(task, fb_label, failed_destination, retry_err)
+                        return None
                     raise
         _quarantine_fallback_candidate(
             task, fb_label, fb_provider, fb_err, base_url=failed_destination.base_url,
@@ -3769,6 +3787,9 @@ async def _call_fallback_candidate_async(
         return await _send(fb_client, fb_kwargs, destination)
     except Exception as fb_err:
         if not _is_auth_error(fb_err):
+            if _is_fallback_eligible_error(fb_err):
+                _skip_fallback_candidate_at_capacity(task, fb_label, destination, fb_err, tag=" (async)")
+                return None
             raise
         fb_provider, retry = _plan_fallback_auth_retry(
             destination, rebuild, async_mode=True, failed_api_key=getattr(fb_client, "api_key", ""))
@@ -3779,6 +3800,10 @@ async def _call_fallback_candidate_async(
                 return await _send(*retry)
             except Exception as retry_err:
                 if not _is_auth_error(retry_err):
+                    if _is_fallback_eligible_error(retry_err):
+                        _skip_fallback_candidate_at_capacity(
+                            task, fb_label, failed_destination, retry_err, tag=" (async)")
+                        return None
                     raise
         _quarantine_fallback_candidate(
             task, fb_label, fb_provider, fb_err,
@@ -6648,6 +6673,13 @@ _FALLBACK_REASONS: Tuple[Tuple[Callable[[Exception], bool], str], ...] = (
 )
 
 
+def _is_fallback_eligible_error(exc: Exception) -> bool:
+    """Errors that let the fallback walk advance when raised by a fallback candidate:
+    the same classes that admitted the primary failure into the chain. Anything else
+    (e.g. a request-shape ValueError) still propagates unchanged (#106367)."""
+    return any(predicate(exc) for predicate, _label in _FALLBACK_REASONS)
+
+
 def _rung(step: "_LadderStep", accept: Callable[[Exception], bool]):
     """One ladder rung: perform ``step``; yields ``(response, None)`` on success,
     ``(None, exc)`` when ``accept(exc)`` lets the next rung handle it, else re-raises."""
@@ -6832,6 +6864,28 @@ def _ladder_credential_rungs(
     return None, first_err
 
 
+def _reselect_fallback_candidate(
+    route: "_LadderRoute", task: Optional[str], resolved_provider: str, is_auto: bool, *,
+    reason: str, failed_model: Optional[str], failure_scope: Any,
+) -> Tuple[Optional[Any], Optional[str], str]:
+    """Re-run the ordered fallback selectors after a candidate proved unavailable (stale
+    credential quarantined or capacity-exhausted): configured chain → main fallback chain
+    (auto tasks) → discovery chain. Entries marked unhealthy during the current walk are
+    skipped, so each call advances to the next configured entry (#106367)."""
+    fb_client, fb_model, fb_label = _try_configured_fallback_chain(
+        task, resolved_provider or "auto", reason=reason, failed_model=failed_model,
+        failed_base_url=route.base_info, failure_scope=failure_scope)
+    if fb_client is None and is_auto:
+        fb_client, fb_model, fb_label = _try_main_fallback_chain(
+            task, resolved_provider or "auto", reason=reason, failed_model=failed_model,
+            failed_base_url=route.base_info, failure_scope=failure_scope)
+    if fb_client is None:
+        fb_client, fb_model, fb_label = _try_payment_fallback(
+            resolved_provider, task, reason=reason, failed_base_url=route.base_info,
+            failure_scope=failure_scope)
+    return fb_client, fb_model, fb_label
+
+
 def _ladder_provider_fallback(first_err: Exception, route: _LadderRoute):
     """Last rung: other providers (per-task chain; then auto: main fallback chain + discovery
     chain, explicit: main-agent-model net). Returns the response or None.
@@ -6885,19 +6939,24 @@ def _ladder_provider_fallback(first_err: Exception, route: _LadderRoute):
             resolved_provider, task, reason=reason, failed_model=_chain_failed_model,
             failed_base_url=route.base_info, failure_scope=_chain_failure_scope)
     if fb_client is not None:
-        # Second pass: the candidate credential was stale and quarantined — walk the discovery
-        # chain once more (unhealthy entries are skipped).
-        for _pass in range(2):
+        # Later passes: the candidate proved unavailable (stale credential quarantined, or a
+        # capacity/quota error marked it unhealthy) — re-run the ordered selectors. Entries
+        # marked unhealthy during this walk are skipped, so each pass advances to the next
+        # configured entry instead of aborting the whole auxiliary call (#106367).
+        _attempted_labels = set()
+        for _pass in range(8):
             _record_route_info(route.route_info, _fallback_provider_from_label(fb_label), fb_model)
             fb_resp = yield _LadderStep("fallback", (fb_client, fb_model, fb_label))
             if fb_resp is not None:
                 return fb_resp
-            if _pass == 0:
-                fb_client, fb_model, fb_label = _try_payment_fallback(
-                    resolved_provider, task, reason="stale fallback credential",
-                    failed_base_url=route.base_info, failure_scope=_chain_failure_scope)
-                if fb_client is None:
-                    break
+            if fb_label in _attempted_labels:
+                break  # re-selection made no forward progress — stop
+            _attempted_labels.add(fb_label)
+            fb_client, fb_model, fb_label = _reselect_fallback_candidate(
+                route, task, resolved_provider, is_auto, reason="fallback candidate unavailable",
+                failed_model=_chain_failed_model, failure_scope=_chain_failure_scope)
+            if fb_client is None:
+                break
     # All fallback layers exhausted — one user-visible warning, then re-raise.
     logger.warning("Auxiliary %s%s: %s on %s and all fallbacks exhausted "
                    # All fallback layers exhausted — emit a single user-visible warning so the operator

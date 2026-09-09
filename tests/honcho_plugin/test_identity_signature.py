@@ -22,7 +22,7 @@ def honcho_json(tmp_path, monkeypatch):
 
 def test_signature_uses_neutral_keys(honcho_json):
     honcho_json(workspace="team", peerName="eri", aiPeer="hermes", pinUserPeer=True, runtimePeerPrefix="tg_",
-                userPeerAliases={"222": "bob", "111": "alice"}, sessionPeerPrefix=True)
+                userPeerAliases={"222": "bob", "111": "alice"}, sessionPeerPrefix=True, a2aSessions=False)
 
     sig = HonchoMemoryProvider().identity_signature()
 
@@ -34,6 +34,7 @@ def test_signature_uses_neutral_keys(honcho_json):
         "runtime_identity_prefix": "tg_",
         "user_identity_aliases": [("111", "alice"), ("222", "bob")],
         "session_prefixing": [True],
+        "a2a_sessions": False,
     }
     assert not any(k.startswith("honcho") for k in sig)
 
@@ -48,6 +49,7 @@ def test_signature_defaults_without_identity_keys(honcho_json):
     assert sig["runtime_identity_prefix"] == ""
     assert sig["user_identity_aliases"] == []
     assert sig["session_prefixing"] == [False]
+    assert sig["a2a_sessions"] is True
 
 
 def test_signature_tracks_edits_to_the_file(honcho_json):
@@ -70,6 +72,19 @@ def test_signature_changes_with_the_workspace(honcho_json):
 
     assert before != after
     assert (before["workspace"], after["workspace"]) == ("team", "personal")
+
+
+def test_signature_changes_with_a2a_sessions(honcho_json):
+    """sync_turn reads a2a_sessions from the config bound at init, so flipping it must miss the cache."""
+    provider = HonchoMemoryProvider()
+    honcho_json(peerName="eri", a2aSessions=True)
+    before = provider.identity_signature()
+
+    honcho_json(peerName="eri", a2aSessions=False)
+    after = provider.identity_signature()
+
+    assert before != after
+    assert (before["a2a_sessions"], after["a2a_sessions"]) == (True, False)
 
 
 def test_signature_is_memoized_on_an_unchanged_file(honcho_json, monkeypatch):

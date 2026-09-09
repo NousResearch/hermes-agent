@@ -1318,6 +1318,31 @@ class CLITuiMixin:
         if self._tui_enter_overlay(event):
             return
         buf = event.app.current_buffer
+        # --- @ context completion open: Enter selects, does NOT submit ---
+        # Mirrors the TUI's completionToApplyOnEnter: @file:/@folder: rows
+        # are working-file references picked one-at-a-time BEFORE sending,
+        # so Enter accepts the highlighted row and keeps the composer open
+        # — stacking several picks, then one bare Enter to send. Scoped to
+        # "@" rows only; slash-command completion keeps Enter=submit.
+        from hermes_cli.commands import at_completion_to_accept_on_enter
+        from prompt_toolkit.document import Document as _PTDocument
+
+        _pick = at_completion_to_accept_on_enter(buf)
+        if _pick is not None:
+            # Replicate apply_completion's replace-from-caret math but
+            # assign buffer.document directly: insert_text(fire_event=True)
+            # would re-fire complete_while_typing and pop the menu straight
+            # back open inside the just-selected folder, fighting the next
+            # "@" pick. A direct document swap inserts silently.
+            _before = buf.document.text_before_cursor
+            _cut = len(_before) + _pick.start_position
+            buf.complete_state = None
+            buf.document = _PTDocument(
+                buf.document.text[:_cut] + _pick.text + buf.document.text_after_cursor,
+                _cut + len(_pick.text),
+            )
+            event.app.invalidate()
+            return
         raw_text = buf.text
         if (
             self._tui_multiline_shortcuts

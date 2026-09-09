@@ -249,6 +249,11 @@ class HonchoSessionManager(SessionAuthMixin, SessionPeersMixin, SessionContextMi
 
     # ----- Writes -----
 
+    def _join_observation_flags(self, honcho_session_id: str) -> tuple[bool, bool]:
+        """(observe_me, observe_others) for an author peer joining ``honcho_session_id``."""
+        # Manager-wide today. #103889 stores the effective flags per session and plugs in here.
+        return self._user_observe_me, self._user_observe_others
+
     def _author_peer_for_session(self, honcho_session: Any, honcho_session_id: str, author_peer_id: str) -> Any:
         """The author's peer, joined to the session the first time it writes.
 
@@ -259,7 +264,8 @@ class HonchoSessionManager(SessionAuthMixin, SessionPeersMixin, SessionContextMi
                 return peer
         try:
             from honcho.session import SessionPeerConfig
-            config = SessionPeerConfig(observe_me=self._user_observe_me, observe_others=self._user_observe_others)
+            observe_me, observe_others = self._join_observation_flags(honcho_session_id)
+            config = SessionPeerConfig(observe_me=observe_me, observe_others=observe_others)
             honcho_session.add_peers([(peer, config)])
         except Exception as e:
             # The write still lands under the right peer. Only the membership (observe config) is missing.

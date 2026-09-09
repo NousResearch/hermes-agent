@@ -42,3 +42,47 @@ def test_hidden_excluded_by_default_included_on_request(db):
     assert db.get_session("secret")["hidden"] == 0
     unhidden_ids = {s["id"] for s in db.list_sessions_rich(min_message_count=1)}
     assert unhidden_ids == {"visible", "secret"}
+
+
+def test_pinning_clears_hidden(db):
+    """Pinning means "keep visible": pinning a hidden session unhides it (#106171)."""
+    db.create_session("botsession", source="cli")
+    assert db.set_session_hidden("botsession", True) is True
+
+    assert db.set_session_pinned("botsession", True) is True
+
+    row = db.get_session("botsession")
+    assert row["pinned"] == 1
+    assert row["hidden"] == 0
+
+
+def test_unpinning_leaves_hidden_alone(db):
+    """Unpinning restores no visibility: the hidden flag survives an unpin."""
+    db.create_session("s", source="cli")
+    assert db.set_session_pinned("s", True) is True
+    assert db.set_session_hidden("s", True) is True
+
+    assert db.set_session_pinned("s", False) is True
+
+    row = db.get_session("s")
+    assert row["pinned"] == 0
+    assert row["hidden"] == 1
+
+
+def test_pinned_backfill_lists_hidden_pinned_rows(db):
+    """The pinned back-fill ignores the hidden filter: a pinned-but-hidden row
+    (e.g. pinned before pinning cleared hidden) stays listable via
+    ``include_pinned`` while remaining out of the default listing (#106171)."""
+    db.create_session("legacy", source="cli")
+    db.create_session("plain_hidden", source="cli")
+    assert db.set_session_pinned("legacy", True) is True
+    assert db.set_session_hidden("legacy", True) is True
+    assert db.set_session_hidden("plain_hidden", True) is True
+
+    default_ids = {s["id"] for s in db.list_sessions_rich()}
+    assert "legacy" not in default_ids
+    assert "plain_hidden" not in default_ids
+
+    pinned_ids = {s["id"] for s in db.list_sessions_rich(include_pinned=True)}
+    assert "legacy" in pinned_ids
+    assert "plain_hidden" not in pinned_ids

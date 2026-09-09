@@ -876,8 +876,16 @@ class SessionSessionsMixin:
         return True
 
     def set_session_pinned(self, session_id: str, pinned: bool) -> bool:
-        """Pin/unpin a session and its compression lineage (pins are exempt from the auto_archive sweep)."""
-        return self._set_lineage_column("pinned", session_id, int(pinned))
+        """Pin/unpin a session and its compression lineage (pins are exempt from the auto_archive sweep).
+
+        Pinning also clears ``hidden`` across the lineage: a pin means "keep
+        visible", so a pinned session must never vanish from the sidebar
+        listing. Unpinning leaves ``hidden`` untouched.
+        """
+        ok = self._set_lineage_column("pinned", session_id, int(pinned))
+        if ok and pinned:
+            self._set_lineage_column("hidden", session_id, 0)
+        return ok
 
     def set_session_hidden(self, session_id: str, hidden: bool) -> bool:
         """Hide/unhide a session and its compression lineage from the default listing; still resumable."""
@@ -1175,15 +1183,17 @@ class SessionSessionsMixin:
     ) -> List[Dict[str, Any]]:
         """List sessions with preview and ``last_active`` in one query. ``order_by_last_active`` sorts
         by the chain TIP via a recursive CTE (the only path honouring ``id_query`` / ``search_query``);
-        ``include_pinned`` back-fills pins the page missed, still obeying the other filters."""
+        ``include_pinned`` back-fills pins the page missed, still obeying the other filters
+        (except ``hidden``: a pinned row is always listable)."""
         self.flush_token_counts()  # rows carry token/cost totals
         where_clauses, params = _session_filter_where(
             exclude_children=not include_children, source=source, sources=sources, session_key=session_key,
             exclude_sources=exclude_sources, cwd_prefix=cwd_prefix, min_message_count=min_message_count,
             archived_only=archived_only, include_archived=include_archived,
         )
+        hidden_clause = "s.hidden = 0"
         if not include_hidden:
-            where_clauses.append("s.hidden = 0")
+            where_clauses.append(hidden_clause)
         where_sql = _where_sql(where_clauses)
         base_where_params = list(params)  # pinned back-fill reuses the WHERE before LIMIT/OFFSET
         # Shared projection head of the three list queries (whitespace is part of the SQL text).
@@ -1248,7 +1258,12 @@ class SessionSessionsMixin:
         # projects to its tip like any other row.
         if include_pinned:
             seen_ids = {s["id"] for s in sessions}
-            pinned_where = f"{where_sql} AND s.pinned = 1" if where_sql else "WHERE s.pinned = 1"
+            # A pinned session is always listable: pinning means "keep visible"
+            # (set_session_pinned clears hidden on write), so the back-fill
+            # drops the hidden filter — healing rows pinned while hidden.
+            pinned_clauses = [c for c in where_clauses if c != hidden_clause]
+            pinned_sql = _where_sql(pinned_clauses)
+            pinned_where = f"{pinned_sql} AND s.pinned = 1" if pinned_sql else "WHERE s.pinned = 1"
             pinned_query = f"""
                 {select_head}COALESCE(
                         (SELECT MAX(m2.timestamp) FROM messages m2 WHERE m2.session_id = s.id),

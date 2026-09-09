@@ -209,10 +209,8 @@ def _systemd_run_user_scope_available() -> bool:
     the user D-Bus bus even with the binary on PATH (every spawn would fail with
     ``Failed to connect to user bus``), so a cheap probe is run and cached.
 
-    The probe payload is ``/bin/sh -c 'exit 0'`` rather than ``/bin/true``: NixOS has
-    no FHS ``/bin`` (only ``sh``), so an absolute ``/bin/true`` probe fails there for a
-    reason unrelated to scope availability and disables restart-safe cron dispatch on
-    every scheduled fire (#105365).``"""
+    Use ``/bin/sh -c 'exit 0'``: NixOS provides ``/bin/sh`` but not ``/bin/true``
+    (#105365), regardless of the gateway service's PATH."""
     global _SYSTEMD_SCOPE_AVAILABLE, _SYSTEMD_SCOPE_PROBED_AT
     verdict = _systemd_scope_cached()
     if verdict is not None:

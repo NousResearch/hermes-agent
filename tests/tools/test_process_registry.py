@@ -2430,33 +2430,29 @@ class TestSystemdCgroupIsolation:
         assert "XDG_RUNTIME_DIR" not in os.environ
         assert "DBUS_SESSION_BUS_ADDRESS" not in os.environ
 
-    def test_probe_uses_portable_payload_not_hardcoded_bin_true(
-        self, registry, monkeypatch
-    ):
-        """The probe payload must not hardcode ``/bin/true``: NixOS has no FHS
-        ``/bin`` (only ``sh``), so an absolute ``/bin/true`` probe fails there for
-        a reason unrelated to scope availability and disables restart-safe cron
-        dispatch on every scheduled fire (#105365). The payload is
-        ``/bin/sh -c 'exit 0'``, which exists on every Linux."""
+    @pytest.mark.linux_only
+    def test_probe_succeeds_without_bin_true(self, monkeypatch):
+        """An absent ``/bin/true`` must not make a usable scope fail its probe."""
         import tools.process_registry as pr
 
         monkeypatch.setattr(pr, "_SYSTEMD_SCOPE_AVAILABLE", None)
-        monkeypatch.setattr(pr, "_SYSTEMD_SCOPE_PROBED_AT", 0.0, raising=False)
-        probe_calls = []
+        monkeypatch.setattr(pr, "_SYSTEMD_SCOPE_PROBED_AT", 0.0)
+        real_run = subprocess.run
+        executed = []
 
-        def fake_run(*args, **kwargs):
-            probe_calls.append(args)
-            return subprocess.CompletedProcess(args=args[0], returncode=0)
+        def systemd_run_on_nixos_shaped_root(argv, **kwargs):
+            # Simulate NixOS's missing executable, but run the selected replacement.
+            payload = argv[argv.index("--") + 1 :]
+            if payload[0] == "/bin/true":
+                return subprocess.CompletedProcess(payload, 127, stderr=b"No such file or directory")
+            executed.append(payload)
+            return real_run(payload, **kwargs)
 
         monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/systemd-run")
-        monkeypatch.setattr("subprocess.run", fake_run)
+        monkeypatch.setattr("subprocess.run", systemd_run_on_nixos_shaped_root)
 
         assert pr._systemd_run_user_scope_available() is True
-        probe_argv = probe_calls[0][0]
-        sep_idx = probe_argv.index("--")
-        payload = probe_argv[sep_idx + 1 :]
-        assert "/bin/true" not in payload, probe_argv
-        assert payload[:3] == ["/bin/sh", "-c", "exit 0"], probe_argv
+        assert len(executed) == 1, "payload must really run (exit 0) on the host, not just be spelled right"
 
     @pytest.mark.linux_only
     def test_systemd_scope_first_probe_is_serialized(self, monkeypatch):

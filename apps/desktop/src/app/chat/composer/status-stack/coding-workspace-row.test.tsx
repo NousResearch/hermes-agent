@@ -26,12 +26,26 @@ async function bind(workspace: CodingWorkspaceBinding, mode: 'local' | 'remote' 
   setPrimaryGateway({ connectionState: 'open' } as never, 'coder')
   await ensureGatewayForProfile('coder')
   setPrimaryGatewayConnectionId(mode)
-  $sessionStates.set({ a: { storedSessionId: 'stored-a', codingWorkspace: workspace } as ClientSessionState })
+  $sessionStates.set({ a: { storedSessionId: 'stored-a', codingWorkspace: workspace, branch: workspace.branch || '' } as ClientSessionState })
   setSessionOwnerHint('stored-a', { connectionId: mode, profile: 'coder', mode })
   $connection.set({ connectionId: mode, profile: 'coder', mode } as never)
 }
 
 afterEach(() => { cleanup(); $sessionStates.set({}); _resetSessionOwnerHintsForTests(); $connection.set(null); vi.clearAllMocks() })
+
+it.each([
+  ['remote', 'followup', 'followup'],
+  ['remote', '', 'No branch'],
+  ['local', 'previous-observation', 'task/a']
+] as const)('reports live branch state rather than the creation receipt: %s / %s', async (mode, branch, label) => {
+  await bind(binding, mode)
+  $sessionStates.set({ a: { ...$sessionStates.get().a, branch } })
+  render(<CodingStatusRow repoPath="/WRONG" sessionId="a" />)
+  expect(screen.getByRole('button', { name: `repo · Worktree · ${label}` })).toBeTruthy()
+  expect($sessionStates.get().a.codingWorkspace).toEqual(binding)
+  expect(probe).toHaveBeenCalledWith(mode === 'local' ? binding.cwd : undefined)
+  expect(probe).not.toHaveBeenCalledWith('/WRONG')
+})
 
 it('starts another workspace through the exact owner new-chat flow, with selectors but no old binding edits', async () => {
   await bind(binding, 'remote')

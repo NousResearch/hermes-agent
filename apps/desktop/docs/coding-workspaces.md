@@ -18,7 +18,7 @@ Folder context remains reference material. **Use as project** is an explicit act
 
 ## After the first message
 
-The draft selectors give way to a compact summary in that same row above the input border: **project · checkout kind · branch**. Project folders have no branch label. The summary comes from the conversation's persisted workspace binding, so it remains available when reopening a chat or restarting Desktop.
+The draft selectors give way to a compact summary in that same row above the input border: **project · checkout kind · branch**. Project folders have no branch label. Project and checkout identity come from the conversation's persisted workspace binding, so they remain available when reopening a chat or restarting Desktop. The branch label uses current checkout status or the session's latest branch observation, never the binding's creation-time branch receipt.
 
 Click the summary for a single compact checkout path and the workspace actions. Long paths show their useful suffix instead of a home/cache prefix; hover and **Copy path** retain the exact full path, and **Open folder** uses that same unchanged path. There is no repeated summary heading. The draft and bound rows use the same shared status-row insets, leading slot and height, outside the input's draggable margin.
 
@@ -34,7 +34,7 @@ The badge follows the agent between linked worktrees of the same repository, ign
 
 The first-send transaction captures the draft, connection and profile before asynchronous work. It prepares a checkout, creates or recovers an idempotent session, and verifies the real execution directory before dispatching the prompt. A lost response must not create another checkout or session. Preparation/verification failures retain the draft and references.
 
-The durable session metadata records the workspace identity and a session-owned artifacts directory. Resuming the session restores and validates that binding. Missing checkouts or branch mismatches fail closed rather than silently falling back to the profile's generic CWD. Verification also runs at the turn-worker boundary. References promoted with the selected source project are resolved into the selected checkout before first-send attachment synchronization; unrelated references are not retargeted.
+The durable session metadata records the checkout/repository identity and a session-owned artifacts directory. The stored `binding.branch` is an immutable creation receipt, not a branch lock or live Git status. Switching branches, detaching HEAD, or rebasing within the same checkout does not block sending, change the binding, or rebuild the worker or workspace instructions. Resuming the session restores that same receipt. Missing checkouts, repository-root or session/terminal-CWD mismatches, and nonlocal terminal backends still fail closed rather than silently falling back to the profile's generic CWD. Verification runs at both the gateway and turn-worker boundaries. References promoted with the selected source project are resolved into the selected checkout before first-send attachment synchronization; unrelated references are not retargeted.
 
 Research and verification outputs have a managed session artifacts location separate from source changes. This is placement guidance and managed state, **not a filesystem sandbox**: an agent with unrestricted filesystem tools can still write an explicitly requested absolute path.
 

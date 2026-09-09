@@ -55,7 +55,7 @@ async function activateLegacy(mode: 'local' | 'remote') {
   expect($connection.get()).toMatchObject({ connectionId: 'local', profile: 'coder', mode })
   expect(activeGatewayConnectionId()).toBeNull()
   setSessions([{ id: 'stored-owner', profile: 'coder' }] as never)
-  $sessionStates.set({ runtime: { ...createClientSessionState('stored-owner'), codingWorkspace: binding } })
+  $sessionStates.set({ runtime: { ...createClientSessionState('stored-owner'), codingWorkspace: binding, branch: 'task/stored' } })
   expect(knownOwnerForSession('runtime')).toBe('coder')
 
   return { revealPath, repoStatus, getConnection, getConnectionFor }
@@ -135,7 +135,7 @@ it('ignores a late local descriptor after the surface changes to a remote owner'
   const view = render(<CodingStatusRow sessionId="runtime" />)
   await waitFor(() => expect(getConnectionFor).toHaveBeenCalledOnce())
   setSessionOwnerHint('stored-remote', { connectionId: 'remote', profile: 'coder', mode: 'remote' })
-  $sessionStates.set({ ...$sessionStates.get(), other: { ...createClientSessionState('stored-remote'), codingWorkspace: binding } })
+  $sessionStates.set({ ...$sessionStates.get(), other: { ...createClientSessionState('stored-remote'), codingWorkspace: binding, branch: 'task/stored' } })
   view.rerender(<CodingStatusRow sessionId="other" />)
   await act(async () => { finish({ connectionId: 'local', profile: 'coder', mode: 'local', port: 5152, token: 'test' }) })
   fireEvent.pointerDown(screen.getByRole('button', { name: 'repo · Worktree · task/stored' }), { button: 0, ctrlKey: false, pointerType: 'mouse' })

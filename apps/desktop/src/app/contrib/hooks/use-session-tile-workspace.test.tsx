@@ -66,14 +66,15 @@ it('hydrates the real tile cache and immutable summary from resume alone without
   })
 
   vi.mocked(requestGatewayForProfile).mockResolvedValueOnce({
-    session_id: 'tile-runtime', info: { coding_workspace: binding, model: 'tile-model' }, messages: []
+    session_id: 'tile-runtime', info: { coding_workspace: binding, model: 'tile-model', branch: 'followup' }, messages: []
   })
   // No session.info event is emitted, and no cache binding is seeded.
   await act(async () => { await sessionTileDelegate()!.resumeTile('stored-workspace') })
   expect($sessionStates.get()['tile-runtime'].codingWorkspace).toEqual(binding)
+  expect($sessionStates.get()['tile-runtime'].branch).toBe('followup')
   const onSwitchBranch = vi.fn()
   render(<CodingStatusRow onBranchOff={vi.fn()} onSwitchBranch={onSwitchBranch} sessionId="tile-runtime" />)
-  fireEvent.pointerDown(screen.getByRole('button', { name: 'repo · Worktree · task/tile' }), { button: 0, ctrlKey: false, pointerType: 'mouse' })
+  fireEvent.pointerDown(screen.getByRole('button', { name: 'repo · Worktree · followup' }), { button: 0, ctrlKey: false, pointerType: 'mouse' })
   await screen.findByRole('menuitem', { name: 'Copy path' })
   expect(document.querySelector('[data-slot="coding-workspace-path"]')?.textContent).toBe(binding.cwd)
   expect(screen.queryByRole('menuitem', { name: /Switch to|New branch/ })).toBeNull()
@@ -86,6 +87,7 @@ it('hydrates the real tile cache and immutable summary from resume alone without
     await act(async () => { await sessionTileDelegate()!.resumeTile('stored-workspace') })
     expect(result.current.sessionStateByRuntimeIdRef.current.get('tile-runtime')?.codingWorkspace).toEqual(expected)
     expect($sessionStates.get()['tile-runtime'].codingWorkspace).toEqual(expected)
+    expect($sessionStates.get()['tile-runtime'].branch).toBe('followup')
   }
 
   expect($activeSessionId.get()).toBe('foreground-runtime')

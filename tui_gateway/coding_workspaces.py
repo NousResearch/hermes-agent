@@ -1,6 +1,6 @@
 """Opt-in Projects checkout preparation. Git remains authoritative; never switch a checkout.
 
-The deterministic branch is the retry receipt, including after a lost RPC reply or restart.
+The prepared branch is an immutable creation receipt, not a live branch constraint.
 Only creation is serialized; inspection has no writes, including to the Projects registry.
 """
 from __future__ import annotations
@@ -92,7 +92,11 @@ def inspect_workspace(path: str) -> dict:
 
 
 def verify_session_workspace(session: dict, expected: str | None = None, *, probe: bool = False) -> dict | None:
-    """Fail closed at both gateway and compute-worker submit boundaries."""
+    """Bind checkout/repository/local terminal identity at gateway and worker submit.
+
+    Git branch switches, detached HEAD and rebases do not retarget the checkout.
+    Keep binding.branch as the creation receipt; never rewrite it from live Git.
+    """
     from tui_gateway import server
     binding = session.get("coding_workspace")
     if not binding:
@@ -106,7 +110,7 @@ def verify_session_workspace(session: dict, expected: str | None = None, *, prob
         raise ValueError("Session workspace changed; refusing prompt dispatch")
     if binding.get("repoRoot"):
         actual = inspect_workspace(cwd)
-        if actual["repoRoot"] != binding["repoRoot"] or actual["branch"] != binding.get("branch"):
+        if actual["repoRoot"] != binding["repoRoot"]:
             raise ValueError("Git workspace changed; refusing prompt dispatch")
     from hermes_constants import reset_hermes_home_override, set_hermes_home_override
     owner_home = session.get("profile_home")
@@ -188,6 +192,7 @@ def remap_workspace_reference_text(binding: dict | None, text: str, reference_cw
 
 
 def workspace_instructions(binding: dict | None) -> str:
+    """Keep conversation placement guidance independent of mutable Git state."""
     if not binding:
         return ""
     import json

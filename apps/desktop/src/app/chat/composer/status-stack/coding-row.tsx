@@ -80,6 +80,10 @@ export const CodingStatusRow = memo(function CodingStatusRow({
   const workspace = useStore(useMemo(() => computed($sessionStates, states =>
     sessionId ? states[sessionId]?.codingWorkspace : undefined), [sessionId]))
 
+  // The binding's branch is a creation receipt, not the checkout's current HEAD.
+  const workspaceBranch = useStore(useMemo(() => computed($sessionStates, states =>
+    sessionId && states[sessionId]?.codingWorkspace ? states[sessionId]?.branch : undefined), [sessionId]))
+
   // The linked worktree the AGENT settled in (created mid-chat, worked via
   // `workdir=`), reported by the backend when it is not the session's own
   // workspace. A user-chosen binding above always wins; this is a badge on a
@@ -193,7 +197,7 @@ export const CodingStatusRow = memo(function CodingStatusRow({
     return null
   }
 
-  const branchLabel = status?.detached ? s.detached : status?.branch || workspace?.branch || agentWorktree?.branch || s.noBranch
+  const branchLabel = status?.detached ? s.detached : status?.branch || workspaceBranch || agentWorktree?.branch || s.noBranch
   const projectPath = workspace?.repoRoot || workspace?.sourcePath || workspace?.cwd || ''
   const projectName = workspace?.projectName || projectPath.replace(/[\\/]+$/, '').split(/[\\/]/).pop() || projectPath
   const folderWorkspace = workspace && (!workspace.repoRoot || workspace.mode === 'folder')

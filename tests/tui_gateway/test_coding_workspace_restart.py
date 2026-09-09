@@ -6,6 +6,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 
 CREATE = r'''
 import json, os, sys
@@ -21,14 +23,40 @@ if 'coding_workspace' not in params:
     params['coding_workspace'] = response['result']
 result = server._methods['session.create'](2, params)
 assert 'error' not in result, result
-sys.__stdout__.write(json.dumps({'params': params, 'created': result['result'], 'pid': os.getpid()}) + '\n')
+from tui_gateway.coding_workspaces import workspace_instructions
+sid = result['result']['session_id']
+session = server._sessions[sid]
+verified = server._methods['session.workspace.verify'](3, {'session_id': sid, 'cwd': params['cwd']})
+assert 'error' not in verified, verified
+# Capture only the outbound worker transport; the gateway submit guard stays real.
+frames = []
+server._session_uses_compute_host = lambda *a: True
+def send(rid, sid, session, text, **kw):
+    frames.append(server._compute_host_turn_frame(rid, sid, session, text))
+    session['running'] = False
+    return server._ok(rid, {'status': 'streaming'})
+server._submit_prompt_to_compute_host = send
+submitted = server._methods['prompt.submit'](4, {'session_id': sid, 'text': 'continue in this checkout'})
+assert 'error' not in submitted, submitted
+assert len(frames) == 1
+binding = session['coding_workspace']
+assert frames[0]['coding_workspace'] == binding
+sys.__stdout__.write(json.dumps({
+    'params': params, 'created': result['result'], 'pid': os.getpid(),
+    'binding': binding, 'instructions': workspace_instructions(binding)}) + '\n')
 '''
 
 
-def test_lost_response_restart_reuses_receipt_with_profile_isolation(tmp_path):
+@pytest.mark.parametrize("git_change", [None, "branch", "detach"], ids=["folder", "branch", "detach"])
+def test_lost_response_restart_reuses_receipt_with_profile_isolation(tmp_path, git_change):
     home = tmp_path / "deployment"
     folder = tmp_path / "folder"
     folder.mkdir()
+    def git(*args):
+        return subprocess.check_output(["git", "-C", str(folder), *args], text=True).strip()
+    if git_change:
+        git("init", "-b", "main")
+        git("-c", "user.name=Test", "-c", "user.email=test@localhost", "commit", "--allow-empty", "-m", "base")
     for profile in ("alpha", "beta"):
         (home / "profiles" / profile).mkdir(parents=True)
     env = {**os.environ, "HOME": str(tmp_path), "HERMES_HOME": str(home)}
@@ -38,10 +66,19 @@ def test_lost_response_restart_reuses_receipt_with_profile_isolation(tmp_path):
         assert proc.returncode == 0, proc.stderr
         return json.loads(proc.stdout.splitlines()[-1])
     alpha = run({"profile": "alpha", "cwd": str(folder), "source": "desktop"})
+    if git_change == "branch":
+        git("checkout", "-b", "next-task")
+    elif git_change == "detach":
+        git("checkout", "--detach", "HEAD")
     # The first backend exited. Client never had to receive the original result:
     # prepared binding alone is sufficient to recover the exact durable session.
     recovered = run(alpha["params"])
     beta = run({"profile": "beta", "cwd": str(folder), "source": "desktop"})
+    assert recovered["binding"] == alpha["binding"]
+    assert recovered["instructions"] == alpha["instructions"]
+    assert recovered["params"] == alpha["params"]
+    if git_change:
+        assert recovered["binding"]["branch"] != (git("branch", "--show-current") or None)
     assert alpha["pid"] != recovered["pid"]
     assert alpha["created"]["stored_session_id"] == recovered["created"]["stored_session_id"]
     assert alpha["created"]["stored_session_id"] != beta["created"]["stored_session_id"]
@@ -52,6 +89,7 @@ def test_lost_response_restart_reuses_receipt_with_profile_isolation(tmp_path):
         assert len(rows) == 1 and rows[0][0] == result["created"]["stored_session_id"]
         assert rows[0][1] == str(folder)
         binding = json.loads(rows[0][2])["coding_workspace"]
+        assert binding == result["binding"]
         assert binding["requestId"] == "same-draft"
         artifacts = Path(binding["artifactsPath"])
         assert artifacts.is_relative_to(owned) and artifacts.is_dir()

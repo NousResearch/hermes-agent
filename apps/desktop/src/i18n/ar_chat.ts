@@ -315,6 +315,7 @@ export const arChat = {
       stageAll: 'إدراج الكل',
       viewAsTree: 'عرض كشجرة',
       viewAsList: 'عرض كقائمة',
+      viewAsSmart: 'عرض حسب الأهمية',
       revert: 'تراجع',
       revertAll: 'التراجع عن الكل',
       revertConfirm: 'هل تريد تجاهل التغييرات على هذا الملف واستعادته إلى الحالة المُودعة؟ لا يمكن التراجع عن هذا.',

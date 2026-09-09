@@ -4123,6 +4123,7 @@ export const frOverrides = {
       stageAll: 'Tout mettre en zone de préparation',
       viewAsTree: 'Voir en arbre',
       viewAsList: 'Voir en liste',
+      viewAsSmart: 'Voir par importance',
       revert: 'Rétablir',
       revertAll: 'Tout rétablir',
       revertConfirm:

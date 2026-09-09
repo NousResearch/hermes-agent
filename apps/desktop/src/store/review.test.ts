@@ -20,6 +20,7 @@ import {
   $reviewSelectedPath,
   $reviewShipBusy,
   $reviewShipInfo,
+  $reviewTreeMode,
   $reviewTurnBase,
   clearReviewSelection,
   closeReview,
@@ -37,6 +38,7 @@ import {
   selectReviewFile,
   stageReviewFile,
   toggleReview,
+  toggleReviewTreeMode,
   unstageReviewFile
 } from './review'
 import { $busy, $currentCwd } from './session'
@@ -359,6 +361,16 @@ describe('selectReviewFile', () => {
 })
 
 describe('view state', () => {
+  it('toggleReviewTreeMode cycles tree -> list -> smart -> tree', () => {
+    $reviewTreeMode.set('tree')
+    toggleReviewTreeMode()
+    expect($reviewTreeMode.get()).toBe('list')
+    toggleReviewTreeMode()
+    expect($reviewTreeMode.get()).toBe('smart')
+    toggleReviewTreeMode()
+    expect($reviewTreeMode.get()).toBe('tree')
+  })
+
   it('openReview opens the pane and kicks off a refresh', async () => {
     const review = stubReview()
     openReview()

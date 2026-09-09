@@ -2533,11 +2533,16 @@ class FeishuAdapter(BasePlatformAdapter):
             user_id_alt=sender_profile["user_id_alt"],
             is_bot=is_bot,
         )
+        # Standard mention metadata (mention refs carry the real open_id; skip @all and
+        # the bot itself) — consumed by /access and mention-based features.
+        mention_meta = [{"id": ref.open_id or "", "label": ref.name or ""}
+                        for ref in mentions if ref.open_id and not ref.is_self]
         normalized = MessageEvent(
             text=text, message_type=inbound_type, source=source, raw_message=data,
             message_id=message_id, media_urls=media_urls, media_types=media_types,
             reply_to_message_id=reply_to_message_id, reply_to_text=reply_to_text,
             channel_prompt=self._resolve_channel_prompt(chat_id, thread_id or None),
+            metadata={"mentions": mention_meta} if mention_meta else None,
             timestamp=datetime.now(),
         )
         await self._dispatch_inbound_event(normalized)

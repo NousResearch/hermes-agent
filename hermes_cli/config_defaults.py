@@ -1847,6 +1847,11 @@ DEFAULT_CONFIG = {
     # context_length are user settings at other layers and are consulted in the resolution chain order
     # documented in agent/model_metadata.py. 2. See #84482, #8731.
     "model_overrides": {},
+    # Per-provider/route HTTP proxy overrides for LLM API traffic: {provider-id OR
+    # base-url hostname: proxy URL}. The matching provider's requests ride the proxy
+    # (e.g. a local rotating-exit Tor HTTP proxy) while everything else stays direct;
+    # wins over HTTPS_PROXY env and ignores NO_PROXY. Malformed URLs fail fast.
+    "provider_proxies": {},
     # models.dev registry (context windows, capabilities, pricing, modalities): fetched on startup,
     # served from cache, refreshed by a background daemon with ETag conditional GET. Override `url`
     # to point at a mirror (e.g. behind a corporate proxy).

@@ -144,11 +144,23 @@ _WARNED_KEEPALIVE_IMPORT_SKEW = False
 
 
 def _openai_http_client_kwargs(base_url: Optional[str], *, async_mode: bool = False) -> Dict[str, Any]:
-    """Inject keepalive httpx client with env-only proxy (not macOS system proxy)."""
+    """Inject keepalive httpx client with env-only proxy (not macOS system proxy).
+
+    ``provider_proxies`` config entries match by base_url hostname here (auxiliary calls
+    carry no provider id at http-client build time; host keys cover them)."""
     try:
         from agent.process_bootstrap import build_keepalive_http_client
+        try:
+            from agent.provider_proxy import provider_proxy_override
+
+            route_proxy = provider_proxy_override(None, base_url)
+        except RuntimeError:
+            raise
+        except Exception:
+            route_proxy = None
         client = build_keepalive_http_client(
-            str(base_url or ""), async_mode=async_mode, verify=_resolve_aux_verify(base_url))
+            str(base_url or ""), async_mode=async_mode, verify=_resolve_aux_verify(base_url),
+            proxy=route_proxy)
     except (ImportError, AttributeError):
         # Version-skewed install (Desktop runtime lagging a git tree) lacks this helper:
         # degrade to the SDK default httpx client rather than kill the job; warn once.

@@ -12,7 +12,10 @@ class TestWhatsAppNativeFormatting:
     def test_invisible_unicode_prefixes_are_sanitized(self):
         adapter = _make_adapter()
 
-        assert adapter.format_message("\u2060\u202ftext") == " text"
+        # The invisible unicode must be removed (the point of the sanitizer).
+        # The residual leading space is then consumed as CommonMark paragraph
+        # indentation, so the final message is clean "text" — no stray space.
+        assert adapter.format_message("\u2060\u202ftext") == "text"
 
 
 @pytest.mark.asyncio

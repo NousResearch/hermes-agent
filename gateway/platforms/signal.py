@@ -485,6 +485,12 @@ class SignalAdapter(BasePlatformAdapter):
             with suppress(ValueError, OSError):
                 timestamp = datetime.fromtimestamp(ts_ms / 1000, tz=timezone.utc)
         # raw_message keeps sender + timestamp_ms so processing hooks can build sendReaction targets.
+        # Standard mention metadata (raw Signal mentions carry number/uuid before the
+        # text renders them out) — consumed by /access and mention-based features.
+        mention_meta = [{"id": str(m.get("number") or m.get("uuid") or ""),
+                         "label": str(m.get("name") or "")}
+                        for m in (data_message.get("mentions") or [])
+                        if m.get("number") or m.get("uuid")]
         event = MessageEvent(
             source=source, text=text or "", message_type=msg_type, media_urls=media_urls,
             media_types=media_types, timestamp=timestamp,
@@ -493,6 +499,7 @@ class SignalAdapter(BasePlatformAdapter):
             reply_to_author_id=reply_to_author,
             reply_to_author_name=quote_data.get("authorName") or quote_data.get("authorProfileName"),
             reply_to_is_own_message=self._quote_references_own_message(reply_to_id, reply_to_author),
+            metadata={"mentions": mention_meta} if mention_meta else None,
         )
         logger.debug("Signal: message from %s in %s: %s", redact_phone(sender), chat_id[:20], (text or "")[:50])
         await self.handle_message(event)

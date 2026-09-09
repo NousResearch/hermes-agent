@@ -262,6 +262,10 @@ def test_discovery_loaded_setup_module_exposes_post_setup(monkeypatch):
     from plugins.memory import load_memory_provider
 
     saved = {k: sys.modules.pop(k) for k in list(sys.modules) if k.startswith("plugins.memory.mem0")}
+    # Re-importing during the test rebinds parent-package attributes (plugins.memory.mem0,
+    # plugins.memory.mem0._backend, ...) to the fresh module objects; restoring sys.modules
+    # alone leaves those attributes pointing at the throwaway modules, so later tests that
+    # do ``from plugins.memory.mem0 import X`` get classes with new identities.
     try:
         provider = load_memory_provider("mem0", register_skills=False)
         assert provider is not None
@@ -271,3 +275,8 @@ def test_discovery_loaded_setup_module_exposes_post_setup(monkeypatch):
             if k.startswith("plugins.memory.mem0"):
                 del sys.modules[k]
         sys.modules.update(saved)
+        import plugins.memory as _pkg
+        for name, mod in saved.items():
+            top = name.split(".", 2)[2] if name.count(".") >= 2 else None
+            if top and "." not in top:
+                setattr(_pkg, top, mod)

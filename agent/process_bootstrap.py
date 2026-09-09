@@ -384,8 +384,14 @@ def close_shared_transports() -> int:
     return len(transports)
 
 
-def build_keepalive_http_client(base_url: str = "", *, async_mode: bool = False, verify: Any = True) -> Optional[Any]:
+def build_keepalive_http_client(
+    base_url: str = "", *, async_mode: bool = False, verify: Any = True, proxy: Optional[str] = None
+) -> Optional[Any]:
     """httpx client for OpenAI SDK calls with env-only proxy policy (None on failure).
+
+    ``proxy`` (from the ``provider_proxies`` config, resolved by the caller) wins over the
+    environment and is deliberately NOT subject to ``NO_PROXY`` — the explicit per-route
+    mapping already is the precise statement.
 
     Explicit no-proxy mounts disable httpx's ``trust_env`` path so macOS system
     proxies (which omit the ExceptionsList) are never applied. ``keepalive_expiry``
@@ -404,7 +410,7 @@ def build_keepalive_http_client(base_url: str = "", *, async_mode: bool = False,
     """
     try:
         import httpx
-        proxy = _get_proxy_for_base_url(base_url)
+        proxy = proxy or _get_proxy_for_base_url(base_url)
         limits = httpx.Limits(max_keepalive_connections=20, max_connections=100, keepalive_expiry=20.0)
         timeout = httpx.Timeout(connect=15.0, read=None, write=15.0, pool=10.0)  # read=None for SSE streaming
         transport_cls = httpx.AsyncHTTPTransport if async_mode else httpx.HTTPTransport

@@ -140,6 +140,7 @@ from pathlib import Path as _Path
 sys.path.insert(0, str(_Path(__file__).resolve().parents[3]))
 
 from gateway.authz_mixin import _coerce_allow_set
+from gateway.slash_commands_resolve_platforms import PlatformAccessResolversMixin
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
     BasePlatformAdapter, SendResult, classify_send_error,
@@ -367,8 +368,14 @@ class _PollingLifecycleAbort(RuntimeError):
     """Internal control flow for polling startup fenced by teardown."""
 
 
-class TelegramAdapter(BasePlatformAdapter):
+class TelegramAdapter(PlatformAccessResolversMixin, BasePlatformAdapter):
     """Telegram bot adapter: users/groups, MarkdownV2 replies, forum topics, media."""
+
+    # /access env carriers (gateway/slash_commands_access.py contract).
+    ACCESS_ALLOWLIST_ENV_KEYS = {
+        "user": ("TELEGRAM_ALLOWED_USERS",),
+        "group": ("TELEGRAM_GROUP_ALLOWED_USERS", "TELEGRAM_GROUP_ALLOWED_CHATS"),
+    }
 
     MAX_MESSAGE_LENGTH = 4096
     supports_code_blocks = True  # MarkdownV2 renders fenced code blocks
@@ -5426,12 +5433,14 @@ class TelegramAdapter(BasePlatformAdapter):
         return f"[{event.source.user_name or user_id}|{user_id}]\n{event.text or ''}"
 
     def _telegram_group_observe_channel_prompt(self) -> str:
+        from gateway.observed_context import TELEGRAM_OBSERVED_CONTEXT_PROMPT_MARKER
+
         username = self._current_bot_username() or "unknown"
         bot_id = getattr(getattr(self, "_bot", None), "id", None) or "unknown"
         return (
             "You are handling a Telegram group chat message.\n"
             f"- Your identity: user_id={bot_id}, @-mention name in this group=@{username}\n"
-            "- observed Telegram group context may be provided in a separate context-only block "
+            f"- {TELEGRAM_OBSERVED_CONTEXT_PROMPT_MARKER} may be provided in a separate context-only block "
             "before the current message; it is not necessarily addressed to you.\n"
             "- Treat only the current new message as a request explicitly directed at you, "
             "and use observed context only when the current message asks for it.")
@@ -5585,11 +5594,31 @@ class TelegramAdapter(BasePlatformAdapter):
             if event.message_id:
                 entry["message_id"] = str(event.message_id)
             store.append_to_transcript(session_entry.session_id, entry)
+            self._maybe_schedule_observed_compaction(store, session_entry.session_id, len(entry["content"]))
             logger.info(
                 "[%s] Telegram group message observed (no bot trigger): chat=%s from=%s", adapter_name,
                 getattr(getattr(message, "chat", None), "id", "unknown"), event.source.user_id or "unknown")
         except Exception as exc:
             logger.warning("[%s] Failed to observe Telegram group message: %s", adapter_name, exc)
+
+    def _maybe_schedule_observed_compaction(self, store: Any, session_id: str, appended_chars: int) -> None:
+        """Schedule the shared background compaction pass (fire-and-forget; never raises)."""
+        try:
+            from gateway.observed_context import maybe_compact_observed_context
+
+            asyncio.get_running_loop()
+        except (ImportError, RuntimeError):
+            return
+        try:
+            from hermes_cli.config import load_config_readonly
+            user_config = load_config_readonly()
+        except Exception:
+            user_config = None
+        try:
+            maybe_compact_observed_context(store, session_id, user_config, appended_chars=appended_chars)
+        except Exception:
+            logger.debug("[%s] observed compaction scheduling failed", getattr(self, "name", "telegram"),
+                         exc_info=True)
 
     def _is_own_message(self, message: Message) -> bool:
         """True when sent by this bot itself (echoed getUpdates must not count as incoming unread)."""
@@ -6301,16 +6330,40 @@ class TelegramAdapter(BasePlatformAdapter):
             user_id=(str(user.id) if user else (str(chat.id) if chat_type in {"dm", "channel"} else None)),
             user_name=user_name, thread_id=thread_id_str, chat_topic=chat_topic, message_id=str(message.message_id),
             is_bot=bool(getattr(user, "is_bot", False)) if user else False)
+        # Learn chat names for /access group-name resolution: the Bot API cannot look
+        # up private groups by title, but every inbound update names the chats the bot
+        # is in (title for groups/channels, username for public ones).
+        try:
+            cache = getattr(self, "_seen_chats", None)
+            if cache is None:
+                cache = self._seen_chats = {}
+            for name in filter(None, {str(getattr(chat, "title", "") or "").strip(),
+                                      str(getattr(chat, "username", "") or "").strip()}):
+                if len(cache) >= 512 and name.lower() not in cache:
+                    cache.pop(next(iter(cache)), None)
+                cache[name.lower()] = str(chat.id)
+        except Exception:
+            pass
         reply_to_id, reply_to_text = self._reply_context(message)
         from gateway.platforms.base import resolve_channel_prompt  # per-channel/topic ephemeral prompt
         from plugins.platforms.telegram.telegram_context import group_identity_prompt
         _chat_id_str = str(chat.id)
         channel_prompt = resolve_channel_prompt(self.config.extra, thread_id_str or _chat_id_str, _chat_id_str if thread_id_str else None)
+        # Mention metadata for /access and the generic mention fallback: text_mention
+        # entities carry the resolved user; plain @username mentions stay text-only.
+        mentions = []
+        for entity in (getattr(message, "entities", None) or []):
+            mentioned_user = getattr(entity, "user", None)
+            if mentioned_user is not None and getattr(mentioned_user, "id", None):
+                mentions.append({"id": str(mentioned_user.id),
+                                 "label": getattr(mentioned_user, "full_name", None)
+                                 or getattr(mentioned_user, "username", None) or ""})
         return MessageEvent(
             text=message.text or "", message_type=msg_type, source=source, raw_message=message,
             message_id=str(message.message_id), platform_update_id=update_id,
             reply_to_message_id=reply_to_id, reply_to_text=reply_to_text, auto_skill=topic_skill,
             channel_prompt=group_identity_prompt(self, message, channel_prompt),
+            metadata={"mentions": mentions} if mentions else None,
             timestamp=message.date)
 
     # -- Message reactions (processing lifecycle) --

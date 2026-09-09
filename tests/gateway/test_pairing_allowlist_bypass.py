@@ -386,7 +386,7 @@ def test_whatsapp_live_allowlist_denies_when_env_key_removed(monkeypatch):
     adapter = WhatsAppAdapter(
         PlatformConfig(enabled=True, extra={"dm_policy": "allowlist"})
     )
-    assert adapter._allow_from == {"15551234567"}
+    assert adapter._allow_from == {"15551234567@s.whatsapp.net"}  # canonical form
 
     monkeypatch.delenv("WHATSAPP_ALLOWED_USERS", raising=False)
     assert adapter._live_dm_allow_from() == set()

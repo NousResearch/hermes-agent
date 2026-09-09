@@ -96,6 +96,55 @@ class SessionRecoveryMixin:
             thread_sessions_per_user=getattr(self.config, "thread_sessions_per_user", False),
             profile=self._resolve_profile_for_key(source))
 
+    def _legacy_whatsapp_keys(self, source: SessionSource, session_key: str) -> list:
+        """Dialect-variant keys for the same WhatsApp-family chat: the transports (and
+        older builds) keyed sessions per wire dialect (``@c.us``, ``@s.whatsapp.net``,
+        bare digits).  The canonical key is derived first; the variants exist only so
+        pre-canonical sessions are adopted instead of orphaned."""
+        from gateway.session import _WHATSAPP_FAMILY
+        if source.platform not in _WHATSAPP_FAMILY or source.chat_type != "dm":
+            return []
+        from gateway.whatsapp_identity import normalize_whatsapp_identifier
+        bare = normalize_whatsapp_identifier(source.chat_id or "")
+        if not bare:
+            return []
+        prefix, _, _tail = session_key.rpartition(bare)
+        if not prefix:
+            return []
+        return [f"{prefix}{bare}{suffix}" for suffix in ("@c.us", "@s.whatsapp.net")
+                if f"{prefix}{bare}{suffix}" != session_key]
+
+    def _adopt_legacy_whatsapp_entry(self, source: SessionSource, session_key: str) -> None:
+        """One-time adoption of pre-canonical WhatsApp session keys: MOVE (not copy) the
+        most recent active dialect-variant entry onto the canonical key so a transport's
+        wire-dialect flip (or the identity standardization) never orphans a transcript.
+        Mirrors ``_adopt_legacy_slack_entry``; DMs only (group keys carry participant
+        isolation and have no dialect history)."""
+        legacy_keys = self._legacy_whatsapp_keys(source, session_key)
+        if not legacy_keys:
+            return
+        migrated: Optional[SessionEntry] = None
+        with self._lock:
+            self._ensure_loaded_locked()
+            if session_key in self._entries:
+                return
+            candidates = [self._entries[k] for k in legacy_keys if k in self._entries]
+            if not candidates:
+                return
+            # The routing index holds only current entries, so any candidate is live;
+            # take the most recently updated one.
+            legacy_entry = max(candidates, key=lambda e: e.updated_at)
+            legacy_key = legacy_entry.session_key
+            migrated = self._entries.pop(legacy_key)
+            migrated.session_key = session_key
+            migrated.origin = source
+            migrated.chat_id = source.chat_id
+            self._entries[session_key] = migrated
+        if migrated is not None:
+            self._save_entries()
+            self._record_gateway_session_peer(
+                migrated.session_id, session_key, source, display_name=migrated.display_name)
+
     def _legacy_slack_session_key(self, source: SessionSource) -> Optional[str]:
         """Pre-workspace Slack key for an explicitly scoped source. Deliberately Slack-only: an
         unscoped Slack session may be claimed by only one workspace (old key cannot tell teams)."""

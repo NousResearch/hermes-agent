@@ -167,10 +167,12 @@ class ClientLifecycleMixin:
         return False
 
     @staticmethod
-    def _build_keepalive_http_client(base_url: str = "", *, verify: Any = True) -> Any:
+    def _build_keepalive_http_client(
+        base_url: str = "", *, verify: Any = True, proxy: Optional[str] = None
+    ) -> Any:
         """Build the shared OpenAI httpx client used by main and aux paths."""
         from agent.process_bootstrap import build_keepalive_http_client
-        return build_keepalive_http_client(base_url, verify=verify)
+        return build_keepalive_http_client(base_url, verify=verify, proxy=proxy)
 
     _create_openai_client = _forward("agent.agent_runtime_helpers", "create_openai_client")
     _force_close_tcp_sockets = _forward_static("agent.agent_runtime_helpers", "force_close_tcp_sockets")

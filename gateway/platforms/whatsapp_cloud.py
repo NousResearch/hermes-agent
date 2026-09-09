@@ -41,6 +41,7 @@ except ImportError:
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import BasePlatformAdapter, SendResult
 from gateway.platforms.event import MessageEvent, MessageType
+from gateway.whatsapp_identity import canonical_phone_jid, to_engine_chat_id
 from gateway.platforms.whatsapp_common import _OPTIN_TRUTHY, WhatsAppBehaviorMixin, _get_wsecret
 from gateway.platforms.media_cache import ext_for_mime
 from gateway import rich_sent_store
@@ -237,8 +238,32 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         """Normalize allowlist entries to bare wa_id (digits): strip ``@...`` JID suffixes and non-digits."""
         return {re.sub(r"\D", "", entry.split("@", 1)[0]) or entry for entry in ids}
 
+    async def resolve_access_ref(self, ref: str, *, scope: str, event=None):
+        """Cloud-API /access resolution: numeric wa_ids pass through, phones normalize
+        through the shared mixin, @Name resolves against pushnames learned from inbound
+        events (Meta exposes no roster API).  Group scope returns None honestly — this
+        adapter drops group-shaped payloads (Meta group support is not implemented)."""
+        from gateway.slash_commands_access import AccessResolution
+
+        text = str(ref or "").strip()
+        if not text:
+            return None
+        if scope == "group":
+            # Meta group support is not implemented — this adapter drops
+            # group-shaped payloads, so any stored group id would be dead.
+            # Empty (not None) skips the generic raw passthrough honestly.
+            return AccessResolution()
+        if text.startswith("@"):
+            learned = self._access_pushname_lookup(text[1:])
+            return AccessResolution(canonical=learned, label=text[1:]) if learned else AccessResolution()
+        if "@" in text:
+            return AccessResolution(canonical=canonical_phone_jid(text))
+        return None  # phone-shaped: the shared mixin's generic fallback normalizes it
+
     def _is_dm_allowed(self, sender_id: str) -> bool:
-        """Allowlist check against the normalized bare wa_id."""
+        """Allowlist check against the normalized bare wa_id.  The stored canonical id
+        is ``@s.whatsapp.net``; both sides fold to bare digits so any dialect in the
+        config matches."""
         if self._dm_policy == "allowlist":
             bare = re.sub(r"\D", "", str(sender_id).split("@", 1)[0])
             return (bare or sender_id) in self._normalize_allow_ids(self._live_dm_allow_from())
@@ -339,8 +364,11 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
 
     @staticmethod
     def _outbound_payload(chat_id: str, kind: str, block: Any, reply_to: Optional[str]) -> Dict[str, Any]:
-        """Common ``/messages`` envelope; ``context`` quotes ``reply_to`` when given."""
-        payload: Dict[str, Any] = {"messaging_product": "whatsapp", "recipient_type": "individual", "to": chat_id, "type": kind, kind: block}
+        """Common ``/messages`` envelope; ``context`` quotes ``reply_to`` when given.
+
+        The wire dialect is Meta's bare ``wa_id`` — the canonical internal id renders
+        here once, so every send path (text, media, interactive, template) speaks it."""
+        payload: Dict[str, Any] = {"messaging_product": "whatsapp", "recipient_type": "individual", "to": to_engine_chat_id(chat_id, "cloud"), "type": kind, kind: block}
         if reply_to:
             payload["context"] = {"message_id": reply_to}
         return payload
@@ -535,7 +563,9 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             return SendResult(success=False, error="Exactly one of media_id or media_link must be set")
         media_block: Dict[str, Any] = {"id": media_id} if media_id else {"link": media_link}
         if caption and media_kind in {"image", "video", "document"}:
-            media_block["caption"] = caption
+            # Markdown→WhatsApp conversion so caption text never leaks raw
+            # # / ** markers (WhatsApp renders *bold*/_italic_ in captions).
+            media_block["caption"] = self.format_message(caption)
         if filename and media_kind == "document":
             media_block["filename"] = filename
         return await self._post_message_result(
@@ -968,8 +998,14 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             return None
         extract = _BODY_BY_KIND.get(msg_type_str)
         body = str(extract(raw_message) or "") if extract else ""
-        chat_id = sender_id = str(raw_message.get("from") or "").strip()
-        sender_name = contacts_by_waid.get(sender_id, "")
+        raw_wa_id = str(raw_message.get("from") or "").strip()
+        chat_id = sender_id = canonical_phone_jid(raw_wa_id)
+        # The contacts roster is keyed by Meta's bare wa_id — look up BEFORE the
+        # canonical form replaces the wire id.
+        sender_name = contacts_by_waid.get(raw_wa_id, "")
+        # Learn the sender's profile name for /access @Name resolution (Meta exposes
+        # no roster API; inbound profile names are the only directory).
+        self.remember_pushname(sender_id, sender_name)
         # DMs only: chat_id == sender wa_id. A ``chat`` field marks a group-shaped
         # payload (capability-gated by Meta) — refuse rather than treat as a DM.
         if raw_message.get("chat"):

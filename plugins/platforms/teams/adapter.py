@@ -487,9 +487,20 @@ class TeamsAdapter(BasePlatformAdapter):
         media: list = [m for m in [await self._cache_attachment(a) for a in getattr(activity, "attachments", None) or []] if m]
         media_kinds = [kind for _, _, kind in media]  # media items are (path, media_type, kind)
         msg_type = next((t for kind, t in _MEDIA_KIND_PRECEDENCE if kind in media_kinds), MessageType.TEXT)
+        # Standard mention metadata: Bot Framework activity.entities carry Graph mention
+        # objects (mentioned.{id, name}) — the bot's own <at> tag was stripped above.
+        mention_meta = []
+        for entity in (getattr(activity, "entities", None) or []):
+            if getattr(entity, "type", "") != "mention":
+                continue
+            mentioned = getattr(entity, "mentioned", None)
+            mid = str(getattr(mentioned, "id", "") or "")
+            if mid and mid != user_id:
+                mention_meta.append({"id": mid, "label": str(getattr(mentioned, "name", "") or "")})
         await self.handle_message(MessageEvent(
             text=text, source=source, message_type=msg_type, message_id=msg_id,
-            media_urls=[path for path, _, _ in media], media_types=[mt for _, mt, _ in media]))
+            media_urls=[path for path, _, _ in media], media_types=[mt for _, mt, _ in media],
+            metadata={"mentions": mention_meta} if mention_meta else None))
 
     async def _cache_attachment(self, att: Any) -> Optional[tuple]:
         """Download + cache one inbound attachment → ``(path, media_type, kind)`` or ``None``."""

@@ -93,6 +93,13 @@ def policy_from_extra(extra: dict, scope: str) -> SlashAccessPolicy:
     return SlashAccessPolicy(enabled=bool(admin_ids), admin_user_ids=admin_ids, user_allowed_commands=cmds)
 
 
+# WhatsApp transports deliver the same human in several dialects (@c.us, @s.whatsapp.net,
+# @lid, bare digits); admin lists may hold any of them.  These platforms get their admin
+# ids canonicalized (gateway.whatsapp_identity.canonical_phone_jid) so the exact-match
+# admin comparison accepts every operator spelling.
+_WHATSAPP_FAMILY_PLATFORMS = frozenset({"whatsapp", "whatsapp_cloud", "waha"})
+
+
 def policy_for_source(gateway_config: Any, source: Any) -> SlashAccessPolicy:
     """Resolve the slash-gating policy for a SessionSource.
 
@@ -114,6 +121,15 @@ def policy_for_source(gateway_config: Any, source: Any) -> SlashAccessPolicy:
         extra = platform_config if isinstance(platform_config, dict) else {}
     chat_type = getattr(source, "chat_type", None)
     scope = "dm" if chat_type and chat_type.lower() in _DM_CHAT_TYPES else "group"
+    platform_name = str(getattr(source.platform, "value", source.platform) or "").lower()
+    if platform_name in _WHATSAPP_FAMILY_PLATFORMS:
+        # Accept every operator spelling (@c.us / @s.whatsapp.net / bare digits / local
+        # formats) by folding admin ids into the one canonical form; the source's user_id
+        # is canonicalized at the adapter boundary, so exact-match works.
+        admin_key, _cmd_key = _SCOPE_KEYS.get(scope, _SCOPE_KEYS["dm"])
+        from gateway.whatsapp_identity import canonicalize_id_list
+        canonical_admins = canonicalize_id_list(extra.get(admin_key))
+        extra = {**extra, admin_key: list(canonical_admins)}
     return policy_from_extra(extra, scope)
 
 

@@ -585,9 +585,15 @@ class MattermostAdapter(BasePlatformAdapter):
             user_id=sender_id, user_name=data.get("sender_name", "").lstrip("@") or sender_id,
             thread_id=thread_id, message_id=post_id)
         from gateway.platforms.base import resolve_channel_prompt
+        # Standard mention metadata: Mattermost mentions are @username in the raw text.
+        import re as _re
+        mention_meta = [{"id": uname, "label": uname}
+                        for uname in _re.findall(r"@([a-z0-9.\-_]+)", message_text or "")
+                        if uname.lower() != (self._bot_username or "").lower()]
         await self.handle_message(MessageEvent(
             text=message_text, message_type=msg_type, source=source, raw_message=post, message_id=post_id,
             media_urls=media_urls or None, media_types=media_types or None,
+            metadata={"mentions": mention_meta} if mention_meta else None,
             channel_prompt=resolve_channel_prompt(self.config.extra, channel_id, None)))
 
 

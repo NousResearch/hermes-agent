@@ -323,6 +323,51 @@ class TestWeixinChunkDelivery:
         assert sleep_mock.await_count == 1
 
 
+    @patch("gateway.platforms.weixin.asyncio.sleep", new_callable=AsyncMock)
+    @patch("gateway.platforms.weixin._send_message", new_callable=AsyncMock)
+    def test_prepare_failed_without_context_token_is_not_a_rate_limit(self, send_message_mock, sleep_mock):
+        # A cron / proactive push with no stored context_token cannot take the tokenless
+        # retry, so "prepare failed" used to fall through to the rate-limit arm: a backoff
+        # per chunk plus a cooldown circuit that then fast-fails unrelated sends. It is a
+        # stale session, not a frequency limit — surface it instead of burning the backoff.
+        adapter = self._connected_adapter()
+        adapter._token_store.get = lambda account_id, chat_id: None
+        adapter._send_chunk_retries = 3
+        adapter._send_chunk_retry_delay_seconds = 0
+        send_message_mock.return_value = {
+            "ret": weixin.RATE_LIMIT_ERRCODE, "errcode": None, "errmsg": "prepare failed",
+        }
+
+        result = asyncio.run(adapter.send("wxid_test123", "first"))
+
+        assert result.success is False
+        assert "stale session" in (result.error or "")
+        assert send_message_mock.await_count == 1
+        assert sleep_mock.await_count == 0
+        assert adapter._rate_limit_circuit_until == 0.0
+
+    @patch("gateway.platforms.weixin.asyncio.sleep", new_callable=AsyncMock)
+    @patch("gateway.platforms.weixin._send_message", new_callable=AsyncMock)
+    def test_prepare_failed_after_tokenless_retry_is_not_a_rate_limit(self, send_message_mock, sleep_mock):
+        # The tokenless retry is the only cure and it is spent after one attempt; a second
+        # "prepare failed" must not be re-filed as a frequency limit.
+        adapter = self._connected_adapter()
+        adapter._send_chunk_retries = 3
+        adapter._send_chunk_retry_delay_seconds = 0
+        send_message_mock.return_value = {
+            "ret": weixin.RATE_LIMIT_ERRCODE, "errcode": None, "errmsg": "prepare failed",
+        }
+
+        result = asyncio.run(adapter.send("wxid_test123", "first"))
+
+        assert result.success is False
+        assert "stale session" in (result.error or "")
+        # 1 tokenful attempt + 1 tokenless retry, then surfaced — no backoff loop.
+        assert send_message_mock.await_count == 2
+        assert sleep_mock.await_count == 0
+        assert adapter._rate_limit_circuit_until == 0.0
+
+
 class TestWeixinOutboundMedia:
 
 

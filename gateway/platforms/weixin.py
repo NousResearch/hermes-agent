@@ -1000,9 +1000,25 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
                             self._token_store._cache.pop(self._token_store._key(self._account_id, chat_id), None)
                             logger.warning("[%s] session expired for %s; retrying without context_token", self.name, _safe_id(chat_id))
                             continue
+
                         errmsg = resp.get("errmsg") or resp.get("msg")
                         if ret != RATE_LIMIT_ERRCODE and errcode != RATE_LIMIT_ERRCODE:
                             raise RuntimeError(f"iLink sendmessage error: ret={ret} errcode={errcode} errmsg={errmsg or 'unknown error'}")
+                        if _is_stale_session_ret(ret, errcode, errmsg):
+                            # ret=-2 with a stale-session errmsg is NOT a frequency limit, so the
+                            # rate-limit arm below is the wrong medicine: it burns a backoff per chunk
+                            # and can trip the adapter-wide cooldown circuit, which then fast-fails
+                            # unrelated sends. The tokenless retry above is the only cure, and by this
+                            # point it is spent — either already attempted, or never available because
+                            # the send carried no context_token (the cron / proactive-push case).
+                            _spent = ("already attempted" if retried_without_token
+                                      else "unavailable (no context_token)")
+                            # break, not raise: the generic except-arm below would otherwise
+                            # retry the chunk against the same dead session for nothing.
+                            last_error = RuntimeError(
+                                f"iLink sendmessage stale session: ret={ret} errcode={errcode} "
+                                f"errmsg={errmsg or 'stale session'}; tokenless retry {_spent}")
+                            break
                         # Keep a descriptive error for when the loop exhausts while still limited.
                         last_error = RuntimeError(f"iLink sendmessage rate limited: ret={ret} errcode={errcode} errmsg={errmsg or 'rate limited'}")
                         if self._record_rate_limit_event():

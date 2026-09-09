@@ -4872,6 +4872,9 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         Config: ``discord.bots_require_inline_mention`` (or env
         ``DISCORD_BOTS_REQUIRE_INLINE_MENTION``).
         """
+        configured = self.config.extra.get("bots_require_inline_mention")
+        if isinstance(configured, str):
+            return configured.lower() in {"true", "1", "yes", "on"}
         return self._extra_or_env_flag(
             "bots_require_inline_mention", "DISCORD_BOTS_REQUIRE_INLINE_MENTION", "true", truthy=True
         )

@@ -92,6 +92,99 @@ def test_build_engine_dispatch(monkeypatch):
         ww._build_engine({"provider": "bogus"})
 
 
+def test_engine_classes_are_owned_by_the_extracted_module():
+    """wake_word imports the extracted engines and must not shadow them with
+    copies — two class families carrying thresholds/model lookup/cleanup is
+    exactly the bug class where fixes to the apparent owner do nothing."""
+    from tools import wake_word_engines as engines
+
+    assert ww._Engine is engines._Engine
+    assert ww._OpenWakeWordEngine is engines._OpenWakeWordEngine
+    assert ww._SherpaKwsEngine is engines._SherpaKwsEngine
+    assert ww._PorcupineEngine is engines._PorcupineEngine
+
+
+def test_engine_construction_ensures_audio_io_only_for_local_capture(monkeypatch, tmp_path):
+    """Constructor-to-capture admission: an engine constructor ensures its own
+    wake-* extra always, but audio-io (sounddevice+numpy) ONLY when the resolved
+    capture mode is local. Client capture (desktop streams PCM via wake.feed)
+    must never trigger installation of local audio libraries.
+
+    Regression (Q033): the active engine constructors ensured only wake-*, so a
+    freshly installed per-engine extra without sounddevice/numpy failed at
+    capture; the extracted _ensure_dep fixed that but was dead code because
+    wake_word shadowed the extracted classes.
+    """
+    from tools import wake_word_engines as engines
+
+    ensured: list[str] = []
+
+    def _fake_ensure_import(feature, *a, **k):
+        ensured.append(feature)
+
+    monkeypatch.setattr(pm, "ensure_import", _fake_ensure_import)
+    monkeypatch.setattr(pm, "available", lambda feature: feature in ensured)
+
+    class _FakeModel:
+        id = "hey_hermes"
+
+        @staticmethod
+        def from_model(model_path, libtensorflowlite_c_path=None):
+            return _FakeModel()
+
+        def process_streaming(self, embeddings):
+            return iter(())
+
+        def reset(self):
+            pass
+
+        def close(self):
+            pass
+
+    class _FakeFeatures:
+        @staticmethod
+        def from_builtin(models_dir=None, libtensorflowlite_c_path=None):
+            return _FakeFeatures()
+
+        def process_streaming(self, audio_chunk):
+            return iter(())
+
+        def reset(self):
+            pass
+
+        def close(self):
+            pass
+
+    mod = types.ModuleType("pyopen_wakeword")
+    mod.OpenWakeWord = _FakeModel
+    mod.OpenWakeWordFeatures = _FakeFeatures
+    monkeypatch.setitem(sys.modules, "pyopen_wakeword", mod)
+
+    cfg = {"provider": "openwakeword"}
+
+    # Client capture: engine extra only, never audio-io.
+    engines._OpenWakeWordEngine({**cfg, "capture": "client"})
+    assert "wake-openwakeword" in ensured
+    assert "audio-io" not in ensured
+
+    # Local capture: engine extra plus the capture deps.
+    ensured.clear()
+    engines._OpenWakeWordEngine({**cfg, "capture": "local"})
+    assert "wake-openwakeword" in ensured
+    assert "audio-io" in ensured
+
+    # The caller has already selected client capture even when config says auto.
+    ensured.clear()
+    monkeypatch.setattr(ww, "_lock_path", lambda: tmp_path / "wake.lock")
+    owner = object()
+    try:
+        ww.start_listening(lambda: None, owner=owner, config=cfg, external_audio=True)
+        assert "wake-openwakeword" in ensured
+        assert "audio-io" not in ensured
+    finally:
+        ww.stop_listening(owner=owner)
+
+
 # ── Requirements probe ───────────────────────────────────────────────────
 
 

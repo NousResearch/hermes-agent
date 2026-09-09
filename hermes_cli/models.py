@@ -2203,6 +2203,8 @@ def probe_api_models(
             data = _get_json(url, timeout=timeout, headers=headers, **_open_kwargs)
         except Exception:
             continue
+        if _neg_key is not None:
+            _probe_neg_cache.pop(_neg_key, None)
         return _probe_result(
             [m.get("id", "") for m in data.get("data", [])], url, candidate_base.rstrip("/"),
             alternate_base if alternate_base != candidate_base else normalized, is_fallback)

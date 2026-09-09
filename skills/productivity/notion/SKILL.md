@@ -82,6 +82,7 @@ Syntax notes:
 - `key=value` — string fields
 - `key[nested]=value` — nested object fields
 - `key:=value` — typed assignment (booleans, numbers, null, arrays)
+- `name==value` — query parameter (e.g. `page_size==100`); `:=` is body-only
 
 ### Search
 ```bash
@@ -100,7 +101,7 @@ ntn api v1/pages/{page_id}/markdown
 
 ### Read page content as blocks
 ```bash
-ntn api v1/blocks/{page_id}/children
+ntn api v1/blocks/{page_id}/children page_size==100
 ```
 
 ### Create page from Markdown

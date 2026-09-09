@@ -374,3 +374,95 @@ def test_the_flag_reads_every_yaml_spelling_of_on_and_fails_open_on_the_rest(tmp
     _set_private(_make_bot_profile(home, "lucky"), value)
 
     assert ("@lucky" in bot_mode_probe.get_bot_mode_protocol_section(home)) is (not private)
+
+
+# ── circles: several meshes on one machine ───────────────────────────────────
+
+
+def _set_circle(profile_dir, circle, *, private=None):
+    """Put a bot in a circle (and optionally take it private too), keeping its shape."""
+    extra = f"    private: {private}\n" if private is not None else ""
+    (profile_dir / "profile.yaml").write_text(
+        f"ui_meta:\n  hermes-bots:\n    shape: cloud\n    circle: {circle}\n{extra}", encoding="utf-8")
+
+
+def _lines(section):
+    """The local roster bullets of a protocol section."""
+    start = section.find("Your teammates")
+    end = section.find("Teammates on OTHER")
+    return section[start:end if end > 0 else None]
+
+
+@pytest.mark.parametrize(
+    ("mine", "theirs", "their_private", "force_private", "visible"),
+    [
+        ("work", "work", None, None, True),
+        ("work", "hobby", None, None, False),
+        (None, None, None, None, True),
+        (None, "work", None, None, False),
+        ("work", None, None, None, False),
+        ("Work", "work", None, None, True),
+        ("work", "'  work  '", None, None, True),
+        (None, "''", None, None, True),
+        (None, "[]", None, None, True),
+        (None, "42", None, None, True),
+        (None, "true", None, None, True),
+        ("work", "work", "true", None, False),
+        ("work", "work", None, "true", False),
+    ],
+    ids=["same-circle", "different-circles", "shared-default", "shared-cannot-see-a-circle",
+         "a-circle-cannot-see-shared", "case-insensitive", "trimmed", "empty-fails-open",
+         "list-fails-open", "number-fails-open", "bool-fails-open", "private-outranks-circle",
+         "force-private-outranks-circle"],
+)
+def test_an_agent_sees_only_its_own_circle_and_private_outranks_that(tmp_path, mine, theirs, their_private, force_private, visible):
+    """Work bots and hobby bots share a machine but not a mesh. Agents with no circle form the
+    shared circle and behave exactly as they did before. A value that is not a usable name fails
+    open to the shared circle, because a typo must never quietly cut an agent off."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    me = _make_bot_profile(home, "reviewer")
+    other = _make_bot_profile(home, "programmer")
+    if mine is not None:
+        _set_circle(me, mine)
+    if theirs is not None or their_private is not None:
+        _set_circle(other, theirs if theirs is not None else "''", private=their_private)
+    if force_private is not None:
+        (home / "config.yaml").write_text(f"bots:\n  force_private: {force_private}\n", encoding="utf-8")
+
+    section = bot_mode_probe.get_bot_mode_protocol_section(me)
+
+    assert section.startswith("## Messaging other agents")
+    assert ("@programmer" in _lines(section)) is visible
+
+
+@pytest.mark.parametrize(
+    ("written", "expected"),
+    [("'  Work  '", "work"), ("hobby", "hobby"), ("'" + "x" * 100 + "'", "x" * 64),
+     ("''", ""), ("[]", ""), ("42", ""), ("true", "")],
+    ids=["trimmed-and-lower-cased", "plain", "capped", "empty", "list", "number", "bool"],
+)
+def test_a_circle_name_is_trimmed_lower_cased_and_capped(tmp_path, written, expected):
+    """The relay normalises the same way, so a peer's `Work` matches this machine's `work`."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    _set_circle(profile := _make_bot_profile(home, "reviewer"), written)
+
+    assert bot_mode_probe._circle_of(profile) == expected
+
+
+def test_the_remote_roster_shows_only_the_viewers_circle(tmp_path, monkeypatch):
+    """Cross-machine rows carry `circle`, and the viewer only learns about its own."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    me = _make_bot_profile(home, "reviewer")
+    _set_circle(me, "work")
+    rows = [{"profile": name, "handle": name, "connection_id": "mini", "connection_label": "mini",
+             "title": "", "description": "", "circle": circle}
+            for name, circle in (("programmer", "work"), ("lucky", "hobby"), ("plain", ""))]
+    monkeypatch.setattr(bot_mode_probe, "_remote_roster", lambda root: rows)
+
+    section = bot_mode_probe.get_bot_mode_protocol_section(me)
+
+    assert "@programmer" in section
+    assert "@lucky" not in section and "@plain" not in section

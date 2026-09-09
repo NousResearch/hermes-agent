@@ -673,3 +673,21 @@ def test_the_remote_roster_drops_a_private_agent_however_the_flag_is_spelled(val
     row = {"profile": "lucky", "handle": "lucky", "connection_id": "mini", "private": value}
 
     assert (_normalize_roster_row(row) is not None) is kept
+
+
+
+@pytest.mark.parametrize(
+    ("extra", "expected"),
+    [({"circle": " hobby "}, "hobby"), ({"circle": "  Work "}, "work"), ({"circle": "x" * 200}, "x" * 64),
+     ({}, ""), ({"circle": None}, ""), ({"circle": 42}, ""), ({"circle": True}, ""),
+     ({"circle": ["work"]}, ""), ({"circle": {"a": 1}}, "")],
+    ids=["trimmed", "lower-cased", "capped", "absent", "none", "number", "bool", "list", "dict"],
+)
+def test_a_relay_row_carries_the_circle_normalised_the_way_the_gateway_reads_it(extra, expected):
+    """Same normalisation as `_circle_of`, so a peer's `Work` matches our `work`; anything that is
+    not a usable name becomes the shared circle rather than an accidental isolation."""
+    from tools.bot_relay import _normalize_roster_row
+
+    row = _normalize_roster_row({"profile": "lucky", "handle": "lucky", "connection_id": "mini", **extra})
+
+    assert row is not None and row["circle"] == expected

@@ -561,10 +561,14 @@ class TestSetupWizardDeploymentShape:
 
     @pytest.mark.parametrize("initial_cfg, expected_pin", [
         (None, True),
+        ({"apiKey": "***", "hosts": {"hermes": {}}}, True),
         ({"apiKey": "***", "hosts": {"hermes": {"pinUserPeer": False, "peerName": "eri"}}}, False),
-    ], ids=["fresh-config-defaults-to-single", "configured-multi-keeps-multi"])
+        ({"apiKey": "***", "hosts": {"hermes": {"enabled": True, "workspace": "hermes", "peerName": "eri"}}}, False),
+    ], ids=["fresh-config-defaults-to-single", "empty-host-block-defaults-to-single",
+            "configured-multi-keeps-multi", "existing-install-without-mapping-keys-keeps-multi"])
     def test_choice_default_follows_config(self, monkeypatch, tmp_path, initial_cfg, expected_pin):
-        """Enter on a fresh config picks the pinned personal shape; a chosen shape stays the default."""
+        """Enter on a fresh config picks the pinned personal shape. An existing install, with or
+        without mapping keys, keeps its detected shape so Enter never merges every account onto one peer."""
         answers = ["cloud", "", "eri", "hermetika", "hermes"]
         host = self._run_setup(monkeypatch, tmp_path, answers=answers, initial_cfg=initial_cfg)
         assert host["pinUserPeer"] is expected_pin

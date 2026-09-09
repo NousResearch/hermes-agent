@@ -394,7 +394,7 @@ def _configure_raw_identity_mapping(hermes_host, current_pin, current_aliases, c
                           "runtimePeerPrefix — namespace for unknown IDs (blank for none)")
 
 
-def _setup_identity_mapping(cfg: dict, hermes_host: dict, current_peer: str) -> None:
+def _setup_identity_mapping(cfg: dict, hermes_host: dict, current_peer: str, new_host: bool) -> None:
     """Gateway identity mapping step. Only the gateway supplies a runtime user ID (CLI/TUI/
     desktop fall through to peerName), so the step is gated on gateway detection."""
     current_pin, current_aliases, current_prefix, aliases_from_root, prefix_from_root = (
@@ -417,7 +417,7 @@ def _setup_identity_mapping(cfg: dict, hermes_host: dict, current_peer: str) -> 
     peer_target = hermes_host.get("peerName") or current_peer or "user"
     ai_peer_label = hermes_host.get("aiPeer") or cfg.get("aiPeer") or "hermes"
     # Fresh configs default to the personal shape; configured ones keep their detected shape.
-    identity_configured = any(k in hermes_host or k in cfg for k in _IDENTITY_MAPPING_KEYS)
+    identity_configured = not new_host or any(k in cfg for k in _IDENTITY_MAPPING_KEYS)
     default_choice = {"single": "1", "hybrid": "2", "multi": "3"}[current_shape] if identity_configured else "1"
     print("\n  This step covers the HUMAN mapping only. Each account using the\n"
           "  gateway resolves to a peer — the entity Honcho reasons about over\n"
@@ -727,6 +727,8 @@ def cmd_setup(args) -> None:
     hermes_host = cfg.setdefault("hosts", {}).setdefault(_host_key(), {})
     _migrate_pin_key(cfg)  # canonicalize legacy pinPeerName before detection/writes
     _migrate_pin_key(hermes_host)
+    # Taken before the prompts populate the block: an existing install must not default to pinning every account.
+    new_host = not any(k in hermes_host for k in (*_IDENTITY_MAPPING_KEYS, "peerName", "workspace", "enabled"))
 
     # --- 1. Cloud or local? ---
     print("  Deployment:\n    cloud -- Honcho cloud (api.honcho.dev)\n    local -- self-hosted Honcho server")
@@ -749,7 +751,7 @@ def cmd_setup(args) -> None:
         if new := _prompt(label, default=default):
             hermes_host[key] = new
 
-    _setup_identity_mapping(cfg, hermes_host, current_peer)
+    _setup_identity_mapping(cfg, hermes_host, current_peer, new_host)
     print("\n  For a gateway with many users and agents, run\n"
           "  'hermes honcho peers map' to map accounts interactively.")
 

@@ -33,6 +33,10 @@ _WAL_SIZE_LIMIT_BYTES = 64 * 1024 * 1024  # 64 MiB
 _wal_fallback_warned_paths: set[str] = set()
 _wal_fallback_warned_lock = threading.Lock()
 
+# Dedup for the both-pragmas-failed WARNING (WAL *and* DELETE rejected, e.g. APFS external SSDs under contention).
+_wal_delete_fallback_failed_paths: set[str] = set()
+_wal_delete_fallback_failed_lock = threading.Lock()
+
 # Dedup for the probe-unknown WARNING (on-disk journal mode unreadable, nothing touched).
 _wal_probe_unknown_paths: set[str] = set()
 _wal_probe_unknown_lock = threading.Lock()
@@ -291,7 +295,20 @@ def _enable_wal(conn: sqlite3.Connection, db_label: str, require_wal: bool, curr
         if require_wal:
             raise WalUnsupportedError(str(exc)) from exc
         _log_wal_fallback_once(db_label, exc)
-        _set_journal_mode_no_wait(conn, "DELETE")
+        try:
+            _set_journal_mode_no_wait(conn, "DELETE")
+        except sqlite3.OperationalError as delete_exc:
+            # Filesystems that reject BOTH pragmas (APFS external SSDs under heavy contention raise
+            # "disk I/O error" on DELETE too). The connection keeps its current mode — typically the
+            # SQLite default DELETE — and stays usable for reads/writes, so propagating would crash
+            # every DB-init caller (SessionDB, kanban_db, ResponseStore) for no benefit. Log once
+            # per db_label and return the mode actually in effect, read back rather than guessed.
+            _log_once("wal_delete_fallback_failed", db_label, exc, delete_exc)
+            try:
+                read_back = _mode_from_row(conn.execute("PRAGMA journal_mode").fetchone())
+            except sqlite3.OperationalError:
+                read_back = ""
+            return read_back or "delete"
         return "delete"
 
 
@@ -398,6 +415,14 @@ _ONCE_LOGS = {
         "%s: WAL journal_mode unsupported on this filesystem (%s) — falling back to journal_mode=DELETE (slower "
         "rollback-journal mode; reduces concurrency but works on NFS/SMB/FUSE/ZFS). See "
         "https://www.sqlite.org/wal.html for details. This message fires once per process per database."),
+    "wal_delete_fallback_failed": (_wal_delete_fallback_failed_lock, "_wal_delete_fallback_failed_paths", logging.WARNING,
+        # Both pragmas rejected (observed on APFS external SSDs under heavy contention): the connection keeps
+        # whatever mode it has (typically the SQLite default DELETE) and stays usable for reads/writes, so this
+        # is WARNING, not ERROR — propagating would crash every DB-init caller. Deduped per db_label because
+        # kanban_db.connect() runs on every kanban operation.
+        "%s: both WAL and DELETE journal_mode failed (WAL: %s; DELETE: %s) — continuing with the connection's "
+        "current journal mode (reads/writes still work). Typically seen on APFS external SSDs under heavy "
+        "contention. This message fires once per process per database."),
     "delete_overridden": (_delete_overridden_warned_lock, "_delete_overridden_warned_paths", logging.ERROR,
         # Never-live-downgrade keeps WAL; without this the operator never learns their delete had no effect.
         "%s: database.journal_mode=delete is configured but the on-disk database is already WAL; keeping WAL (a live "

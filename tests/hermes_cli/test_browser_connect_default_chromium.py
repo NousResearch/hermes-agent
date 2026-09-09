@@ -96,6 +96,7 @@ class TestDetectDefaultDarwin:
         "bundle,expected",
         [
             ("com.google.Chrome", "chrome"),
+            ("company.thebrowser.Dia", "dia"),
             ("com.brave.Browser", "brave"),
             ("com.brave.Browser.origin", "brave-origin"),
             ("com.microsoft.edgemac", "edge"),
@@ -176,3 +177,23 @@ class TestLinuxProfileDir:
         monkeypatch.setenv("HOME", str(tmp_path))
         monkeypatch.setenv("XDG_CONFIG_HOME", "/home/t/.config")
         assert bc.real_profile_data_dir("edge", "Linux") == "/home/t/.config/microsoft-edge"
+
+
+class TestMacOnlyBrowser:
+    """Dia ships on macOS only. Elsewhere it must resolve to nothing, not to LOCALAPPDATA
+    or ~/.config themselves (snapshotting a parent dir is the wrong-principal bug)."""
+
+    def test_darwin_profile_dir(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HOME", str(tmp_path))
+        assert bc.real_profile_data_dir("dia", "Darwin") == str(
+            tmp_path / "Library" / "Application Support" / "Dia" / "User Data")
+
+    @pytest.mark.parametrize("system", ["Windows", "Linux"])
+    def test_no_profile_dir_off_mac(self, system, tmp_path, monkeypatch):
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+        assert bc.real_profile_data_dir("dia", system) is None
+
+    @pytest.mark.parametrize("system", ["Windows", "Linux"])
+    def test_no_executable_off_mac(self, system):
+        assert bc.chromium_executable("dia", system) is None

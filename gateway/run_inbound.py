@@ -480,6 +480,11 @@ class GatewayInboundMixin:
             logger.debug("reaped-session staleness check failed", exc_info=True)
 
     def _hm_evict_running_agent(self, _quick_key: str, reason: str) -> None:
+        from gateway.run import _AGENT_PENDING_SENTINEL, _INTERRUPT_REASON_STOP, request_hard_interrupt
+        state = self._peek_session_state(_quick_key)
+        running_agent = state.turn.agent if state else None
+        if running_agent and running_agent is not _AGENT_PENDING_SENTINEL:
+            request_hard_interrupt(running_agent, _INTERRUPT_REASON_STOP)
         self._invalidate_session_run_generation(_quick_key, reason=reason)
         self._release_running_agent_state(_quick_key)
 

@@ -9,6 +9,12 @@ Covers (mocked -- no real dsh process, no model spend):
 - handler dispatch matrix via mocked client:
   run success, run missing goal, run timeout, list unreachable, unknown action
 - registry integration: toolset "dsh", async handler, schema shape
+- run_headless subprocess lifecycle (create_subprocess_exec mocked): argv/env
+  construction, launch failures (missing executable / bad cwd), timeout with
+  kill-tree + bounded drain
+- rpc()/list_sessions HTTP transport (aiohttp mocked): Typert frame shape,
+  HTTP error mapping (401/403 auth, 500), non-JSON body, connection refused,
+  compaction + limit, malformed session.list payload
 """
 
 import asyncio
@@ -333,3 +339,329 @@ def test_tool_error_code_surfaces_as_extra_field():
     out = _load_json(_err("boom", code="DSH_TIMEOUT", elapsed_s=9))
     assert out["code"] == "DSH_TIMEOUT"
     assert out["elapsed_s"] == 9
+
+
+# ---------------------------------------------------------------------------
+# run_headless(): subprocess lifecycle (create_subprocess_exec fully mocked)
+# ---------------------------------------------------------------------------
+
+def _fake_proc(returncode, stdout=b"", stderr=b"", *, first_communicate=None):
+    """Build a fake asyncio subprocess with the surface run_headless touches."""
+    state = {"communicate_calls": 0}
+
+    class _Proc:
+        pid = 4242
+
+        def __init__(self):
+            # instance attr: a class-body ``returncode = returncode`` would
+            # hit the unbound class-local (Python scoping gotcha)
+            self.returncode = returncode
+
+        async def communicate(self):
+            state["communicate_calls"] += 1
+            if first_communicate is not None and state["communicate_calls"] == 1:
+                raise first_communicate
+            return stdout, stderr
+
+        def kill(self):
+            state["killed"] = True
+
+    return _Proc(), state
+
+
+def _spawn_fake(monkeypatch, proc, *, fail=None):
+    """Monkeypatch asyncio.create_subprocess_exec; capture argv/env/cwd."""
+    from tools import dsh_client
+
+    captured = {}
+
+    async def _fake_exec(*argv, **kwargs):
+        captured["argv"] = argv
+        captured["cwd"] = kwargs.get("cwd")
+        captured["env"] = kwargs.get("env")
+        captured["start_new_session"] = kwargs.get("start_new_session")
+        if fail is not None:
+            raise fail
+        return proc
+
+    monkeypatch.setattr(dsh_client.asyncio, "create_subprocess_exec", _fake_exec)
+    return captured
+
+
+def test_run_headless_missing_command_raises_not_configured():
+    from tools.dsh_client import run_headless, DshNotConfigured
+
+    with pytest.raises(DshNotConfigured) as ei:
+        asyncio.run(run_headless("do a thing", config={}))
+    assert ei.value.code == "DSH_NOT_CONFIGURED"
+    assert "dsh.command" in ei.value.message
+
+
+def test_run_headless_nonpositive_config_timeout_raises(monkeypatch):
+    from tools.dsh_client import run_headless, DshNotConfigured
+
+    captured = {}
+
+    async def _never_called(*argv, **kwargs):
+        captured["spawned"] = True
+
+    monkeypatch.setattr("asyncio.create_subprocess_exec", _never_called)
+    with pytest.raises(DshNotConfigured):
+        asyncio.run(
+            run_headless("x", config={"command": ["dsh"], "timeout": 0})
+        )
+    assert "spawned" not in captured  # fail fast, before any process starts
+
+
+def test_run_headless_launch_file_not_found(monkeypatch):
+    from tools.dsh_client import run_headless, DshLaunchFailed
+
+    proc, _ = _fake_proc(0)
+    _spawn_fake(monkeypatch, proc, fail=FileNotFoundError(2, "no such file"))
+    with pytest.raises(DshLaunchFailed) as ei:
+        asyncio.run(run_headless("x", config={"command": ["dsh"]}))
+    assert ei.value.code == "DSH_LAUNCH_FAILED"
+    assert "executable not found" in ei.value.message
+
+
+def test_run_headless_launch_oserror_bad_cwd(monkeypatch):
+    from tools.dsh_client import run_headless, DshLaunchFailed
+
+    proc, _ = _fake_proc(0)
+    _spawn_fake(monkeypatch, proc, fail=OSError(2, "bad cwd"))
+    with pytest.raises(DshLaunchFailed) as ei:
+        asyncio.run(
+            run_headless("x", config={"command": ["dsh"]}, cwd="Z:/no/such/dir")
+        )
+    assert ei.value.code == "DSH_LAUNCH_FAILED"
+    assert "cwd" in ei.value.message
+
+
+def test_run_headless_success_builds_argv_env_and_summary(monkeypatch):
+    from tools.dsh_client import run_headless, _DEFAULT_PROFILE
+
+    proc, _ = _fake_proc(0, stdout=b"final assistant text here\n")
+    captured = _spawn_fake(monkeypatch, proc)
+    config = {
+        "command": ["node", "--import", "tsx/esm", "D:/harness/bin.ts"],
+        "profile": "headless",
+        "bash_dir": "D:/Git/bin",
+        "cwd": "F:/work",
+    }
+    result = asyncio.run(run_headless("fix the bug", config=config))
+    assert result["ok"] is True
+    assert result["status"] == "completed"
+    assert result["output"] == "final assistant text here"
+    assert result["cwd"] == "F:/work"
+
+    argv = captured["argv"]
+    assert argv == ("node", "--import", "tsx/esm", "D:/harness/bin.ts",
+                    "--profile", "headless", "fix the bug")
+    # bash_dir is prepended to PATH so the child never resolves the WSL shim.
+    assert captured["env"]["PATH"].startswith("D:/Git/bin" + __import__("os").pathsep)
+    assert captured["cwd"] == "F:/work"
+    assert captured["start_new_session"] is (__import__("sys").platform != "win32")
+    assert _DEFAULT_PROFILE == "headless"  # guard: test relies on this default
+
+
+def test_run_headless_profile_default_and_goal_arg(monkeypatch):
+    """profile/argv defaults when the config omits them."""
+    from tools.dsh_client import run_headless
+
+    proc, _ = _fake_proc(0, stdout=b"ok\n")
+    captured = _spawn_fake(monkeypatch, proc)
+    asyncio.run(run_headless("do it", config={"command": ["dsh"]}))
+    assert captured["argv"] == ("dsh", "--profile", "headless", "do it")
+
+
+def test_run_headless_timeout_kills_tree_and_raises(monkeypatch):
+    from tools import dsh_client
+    from tools.dsh_client import run_headless, DshTimeoutError
+
+    proc, state = _fake_proc(
+        1, stdout=b"partial output before the deadline\n",
+        first_communicate=asyncio.TimeoutError(),
+    )
+    _spawn_fake(monkeypatch, proc)
+    killed = []
+
+    def _spy_kill(target):
+        killed.append(target)
+
+    monkeypatch.setattr(dsh_client, "_kill_process_tree", _spy_kill)
+    with pytest.raises(DshTimeoutError) as ei:
+        asyncio.run(
+            asyncio.wait_for(
+                run_headless("slow job", config={"command": ["dsh"], "timeout": 5}),
+                timeout=15,
+            )
+        )
+    assert ei.value.code == "DSH_TIMEOUT"
+    assert "killed" in ei.value.message
+    assert killed == [proc]                      # the tree killer ran on it
+    assert state["communicate_calls"] == 2       # bounded drain after the kill
+    assert "partial output" in ei.value.extra["stdout_tail"]
+
+
+# ---------------------------------------------------------------------------
+# rpc() / list_sessions(): HTTP transport (aiohttp fully mocked)
+# ---------------------------------------------------------------------------
+
+class _FakeResp:
+    """Stand-in for an aiohttp response: status + text() + async CM."""
+
+    def __init__(self, status=200, body=""):
+        self.status = status
+        self._body = body
+
+    async def text(self):
+        return self._body
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+
+def _fake_aiohttp(monkeypatch, resp_factory):
+    """Inject a minimal fake aiohttp module; capture posted frames."""
+    import sys
+    import types
+
+    captured = []
+
+    class _ClientTimeout:
+        def __init__(self, **kwargs):
+            self.total = kwargs.get("total")
+
+    class _ClientConnectionError(OSError):
+        pass
+
+    class _FakeSession:
+        def __init__(self):
+            self.closed = False
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            self.closed = True
+            return False
+
+        def post(self, url, *, json=None, timeout=None):
+            captured.append({"url": url, "json": json, "timeout": timeout})
+            return resp_factory()
+
+    fake = types.ModuleType("aiohttp")
+    fake.ClientSession = _FakeSession
+    fake.ClientTimeout = _ClientTimeout
+    fake.ClientConnectionError = _ClientConnectionError
+    monkeypatch.setitem(sys.modules, "aiohttp", fake)
+    return captured
+
+
+def test_rpc_success_posts_typert_envelope(monkeypatch):
+    from tools.dsh_client import rpc
+
+    ok_body = json.dumps(
+        {"type": "server-response", "rpcId": "x",
+         "result": {"ok": True, "value": {"items": [1, 2]}}}
+    )
+    captured = _fake_aiohttp(monkeypatch, lambda: _FakeResp(200, ok_body))
+    value = asyncio.run(
+        rpc("session.list", {}, config={"url": "http://127.0.0.1:3080"})
+    )
+    assert value == {"items": [1, 2]}
+
+    call = captured[0]
+    assert call["url"] == "http://127.0.0.1:3080/api/session.list"
+    frame = call["json"]
+    assert frame["type"] == "client-request"
+    assert frame["method"] == "session.list"
+    assert frame["payload"] == {}
+    assert frame["rpcId"].startswith("hermes-")
+    assert call["timeout"].total == 15
+
+
+def test_rpc_http_error_mapping(monkeypatch):
+    from tools.dsh_client import rpc, DshAuthError, DshProtocolError
+
+    for status, exc_type, code in [
+        (401, DshAuthError, "DSH_AUTH_FAILED"),
+        (403, DshAuthError, "DSH_AUTH_FAILED"),
+        (500, DshProtocolError, "DSH_PROTOCOL_ERROR"),
+    ]:
+        _fake_aiohttp(monkeypatch, lambda s=status: _FakeResp(s, "boom"))
+        with pytest.raises(exc_type) as ei:
+            asyncio.run(rpc("session.list", {}, config={"url": "http://127.0.0.1:3080"}))
+        assert ei.value.code == code
+
+
+def test_rpc_non_json_body_protocol_error(monkeypatch):
+    from tools.dsh_client import rpc, DshProtocolError
+
+    _fake_aiohttp(monkeypatch, lambda: _FakeResp(200, "<html>not json</html>"))
+    with pytest.raises(DshProtocolError) as ei:
+        asyncio.run(rpc("session.list", {}, config={"url": "http://127.0.0.1:3080"}))
+    assert "non-JSON" in ei.value.message
+
+
+def test_rpc_connection_refused_unreachable(monkeypatch):
+    from tools.dsh_client import rpc, DshUnreachable
+
+    def _raising_resp():
+        fake = __import__("sys").modules["aiohttp"]
+        raise fake.ClientConnectionError("connection refused")
+
+    _fake_aiohttp(monkeypatch, _raising_resp)
+    with pytest.raises(DshUnreachable) as ei:
+        asyncio.run(rpc("session.list", {}, config={"url": "http://127.0.0.1:3080"}))
+    assert ei.value.code == "DSH_UNREACHABLE"
+    assert "not listening" in ei.value.message
+
+
+def test_rpc_missing_url_not_configured():
+    from tools.dsh_client import rpc, DshNotConfigured
+
+    with pytest.raises(DshNotConfigured):
+        asyncio.run(rpc("session.list", {}, config={"url": ""}))
+
+
+def test_list_sessions_compacts_and_limits(monkeypatch):
+    from tools import dsh_client
+    from tools.dsh_client import list_sessions
+
+    items = []
+    for i in range(10):
+        items.append({
+            "sessionId": f"s{i}",
+            "cwd": f"F:/work{i}",
+            "agentPreset": "standard",
+            "running": i % 2 == 0,
+            "updatedAt": 12345 + i,
+            "projections": {"values": {"title": f"Task {i}"}},
+        })
+
+    async def _fake_rpc(method, payload, **kw):
+        assert method == "session.list"
+        return {"items": items}
+
+    monkeypatch.setattr(dsh_client, "rpc", _fake_rpc)
+    out = asyncio.run(list_sessions(limit=3))
+    assert out["ok"] is True
+    assert out["count"] == 3
+    assert out["items"][0]["title"] == "Task 0"
+    assert out["items"][0]["sessionId"] == "s0"
+
+
+def test_list_sessions_missing_items_protocol_error(monkeypatch):
+    from tools import dsh_client
+    from tools.dsh_client import list_sessions, DshProtocolError
+
+    async def _fake_rpc(method, payload, **kw):
+        return {"unexpected": True}
+
+    monkeypatch.setattr(dsh_client, "rpc", _fake_rpc)
+    with pytest.raises(DshProtocolError):
+        asyncio.run(list_sessions())

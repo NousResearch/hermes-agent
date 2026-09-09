@@ -1,14 +1,14 @@
 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <!--
-    Hermes Setup application manifest.
+    North Forge Setup application manifest.
 
     The TL;DR: tell Windows we are NOT an installer in the classic "needs
-    UAC elevation" sense, despite the product name. We provision into
-    %LOCALAPPDATA%\hermes which is user-scoped and never touch HKLM or
-    Program Files. install.ps1 runs as a child process and elevates
-    itself only if a future stage explicitly needs HKLM access.
+    UAC elevation" sense, despite the product name. bootstrap-north-forge.ps1
+    only creates sibling `-venv` / `-data` folders next to the checkout on the
+    user's own drive and never touches HKLM / Program Files, so asInvoker is
+    correct.
 
-    Without this manifest, the "Hermes Setup" productName embedded in
+    Without this manifest, the "North Forge Setup" productName embedded in
     the binary's resource trips Windows's installer-detection heuristic
     (https://learn.microsoft.com/en-us/windows/security/identity-protection/
     user-account-control/how-user-account-control-works#installer-detection)
@@ -17,12 +17,12 @@
 -->
 <assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
     <assemblyIdentity
-        version="0.0.1.0"
+        version="0.1.0.0"
         processorArchitecture="*"
-        name="NousResearch.Hermes.Setup"
+        name="NorthForge.Setup"
         type="win32"
     />
-    <description>Hermes Setup</description>
+    <description>North Forge Setup</description>
 
     <trustInfo xmlns="urn:schemas-microsoft-com:asm.v3">
         <security>

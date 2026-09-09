@@ -636,6 +636,47 @@ def _ensure_default_soul_md(home: Path) -> None:
     _secure_file(soul_path)
 
 
+# North Forge fork: a fresh HERMES_HOME must start on the "north-forge" skin, not the stock
+# Hermes "default" (gold/kawaii) that skin_engine falls back to when display.skin is unset.
+# Enforced HERE, at home-seed time (mirroring _ensure_default_soul_md), so first-launch
+# appearance does not depend on engine-default behaviour or on whatever skin was last active
+# during testing. This sets the STARTING point only — an explicit user choice (including a
+# later `hermes config set display.skin ...`) is never overridden, so switching skins keeps
+# working exactly as before.
+_NF_STOCK_SKIN_VALUES = frozenset({"", "default", "none", "null"})
+
+
+def _ensure_default_skin(home: Path) -> None:
+    """On a North-Forge-seeded home with no real skin choice, set display.skin = north-forge.
+
+    "North-Forge-seeded" = ``home/skins/north-forge.yaml`` is present (bootstrap-north-forge.ps1
+    and north-forge.cmd both drop it there). "No real choice" = display.skin is absent or one of
+    {default, none, null}. Any other value — a user skin, a deliberate switch — is left untouched.
+    Best-effort: never raises, so a read-only/odd config.yaml cannot break home init or startup.
+    """
+    if is_managed():
+        return  # managed deployments own config.yaml via the managed overlay
+    try:
+        if not (home / "skins" / "north-forge.yaml").is_file():
+            return
+        config_path = home / "config.yaml"
+        raw = read_user_config_raw(config_path)
+        if not isinstance(raw, dict):
+            return
+        display = raw.get("display")
+        display = display if isinstance(display, dict) else {}
+        current = display.get("skin")
+        if isinstance(current, str) and current.strip().lower() not in _NF_STOCK_SKIN_VALUES:
+            return  # explicit choice — leave it
+        if isinstance(current, str) and current.strip().lower() == "north-forge":
+            return  # already correct
+        raw["display"] = {**display, "skin": "north-forge"}
+        atomic_config_write(config_path, raw)
+        _secure_file(config_path)
+    except Exception as exc:  # noqa: BLE001 — cosmetic default, never fatal
+        logger.debug("Could not seed north-forge default skin in %s: %s", home, exc)
+
+
 # Home paths whose directory skeleton was created this process. Only successful passes are
 # recorded, so a raised managed-mode/missing-profile error keeps re-checking on later loads.
 _HERMES_HOME_ENSURED: set = set()

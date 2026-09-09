@@ -68,6 +68,73 @@ def _exec_profile(ctx: CommandContext) -> CommandReply:
                         data={"profile": profile_name, "home": home_display})
 
 
+def _exec_edition(ctx: CommandContext) -> CommandReply:
+    """Core /edition text — North Forge tier + pinned-edition status and switch menu.
+
+    Read-only (the executor invariant): switching an edition changes ``HERMES_HOME``
+    and needs a relaunch, so this prints the exact ``hermes profile use`` command
+    rather than mutating state. On a Basic-tier drive there is nothing to switch to.
+    """
+    try:
+        from hermes_cli import nf_tier
+    except Exception as exc:  # pragma: no cover
+        return CommandReply(f"North Forge tier subsystem unavailable: {exc}", data={"error": str(exc)})
+
+    p = nf_tier.load(use_cache=False)
+    arg = (ctx.args or "").strip()
+
+    if p.state == nf_tier.STATE_UNPROVISIONED:
+        return CommandReply(
+            "This drive has no North Forge provisioning record — all editions are "
+            "available. Use `hermes profile list` / `hermes profile use <name>`.",
+            data={"state": p.state})
+
+    if p.state == nf_tier.STATE_TAMPERED:
+        return CommandReply(nf_tier._tampered_message(p),
+                            data={"state": p.state, "error": p.error})
+
+    try:
+        from hermes_cli.profiles import get_active_profile_name
+        current = get_active_profile_name()
+    except Exception:
+        current = "default"
+    current_label = current if current != "default" else "North Forge (chassis)"
+    pin_label = p.pinned_edition or "North Forge (chassis)"
+
+    if p.locked:
+        text = (
+            f"Edition: {pin_label}\n"
+            f"Tier:    Basic — locked to this edition on this drive.\n"
+            f"There is no switcher: no other edition is installed or reachable here."
+        )
+        return CommandReply(text, data={
+            "state": p.state, "tier": p.tier, "current": current,
+            "pinned_edition": p.pinned_edition, "locked": True, "switchable": []})
+
+    # Full tier — the pin is only a default; list what can be switched to.
+    try:
+        from hermes_cli.profiles import list_profile_names
+        names = list_profile_names()
+    except Exception:
+        names = ["default"]
+    menu = []
+    for n in names:
+        label = n if n != "default" else "default  (North Forge chassis)"
+        mark = "→ " if (n == current or (n == "default" and current == "default")) else "  "
+        pinmark = "  [pinned default]" if nf_tier.normalize_edition(n) == (p.pinned_edition or "default") else ""
+        menu.append(f"  {mark}{label}{pinmark}")
+    text = (
+        f"Edition: {current_label}\n"
+        f"Tier:    Full — pinned default is '{pin_label}'; any edition is available.\n\n"
+        f"Installed editions:\n" + "\n".join(menu) +
+        f"\n\nSwitch with:  hermes profile use <name>   (then relaunch)"
+    )
+    return CommandReply(text, data={
+        "state": p.state, "tier": p.tier, "current": current,
+        "pinned_edition": p.pinned_edition, "locked": False, "switchable": names,
+        "requested": arg or None})
+
+
 def _exec_bundles(ctx: CommandContext) -> CommandReply:
     """Core /bundles data — installed skill bundles listing."""
     try:
@@ -168,6 +235,7 @@ EXECUTORS: dict[str, Callable[[CommandContext], CommandReply]] = {
     "version": _exec_version,
     "egress": _exec_egress,
     "profile": _exec_profile,
+    "edition": _exec_edition,
     "bundles": _exec_bundles,
     "gateway_help": _exec_help,
     "gateway_commands": _exec_commands}

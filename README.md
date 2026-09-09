@@ -1,22 +1,27 @@
+# North Forge
+
 <p align="center">
-  <img src="assets/banner.png" alt="Hermes Agent" width="100%">
+  <img src="assets/banner.png" alt="North Forge" width="100%">
 </p>
 
-# Hermes Agent ☤
 <p align="center">
-  <a href="https://hermes-agent.nousresearch.com/">Hermes Agent</a> | <a href="https://hermes-agent.nousresearch.com/">Hermes Desktop</a>
+  A generic, brandable AI-agent chassis on top of the <a href="https://hermes-agent.nousresearch.com/">Hermes Agent</a> engine by Nous Research.
 </p>
 <p align="center">
-  <a href="https://hermes-agent.nousresearch.com/docs/"><img src="https://img.shields.io/badge/Docs-hermes--agent.nousresearch.com-FFD700?style=for-the-badge" alt="Documentation"></a>
+  <a href="https://hermes-agent.nousresearch.com/docs/"><img src="https://img.shields.io/badge/Engine%20docs-hermes--agent.nousresearch.com-FFD700?style=for-the-badge" alt="Engine documentation"></a>
   <a href="https://discord.gg/NousResearch"><img src="https://img.shields.io/badge/Discord-5865F2?style=for-the-badge&logo=discord&logoColor=white" alt="Discord"></a>
-  <a href="https://github.com/NousResearch/hermes-agent/blob/main/LICENSE"><img src="https://img.shields.io/badge/License-MIT-green?style=for-the-badge" alt="License: MIT"></a>
-  <a href="https://nousresearch.com"><img src="https://img.shields.io/badge/Built%20by-Nous%20Research-blueviolet?style=for-the-badge" alt="Built by Nous Research"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-green?style=for-the-badge" alt="License: MIT"></a>
+  <a href="https://nousresearch.com"><img src="https://img.shields.io/badge/Engine%20by-Nous%20Research-blueviolet?style=for-the-badge" alt="Engine by Nous Research"></a>
   <a href="README.zh-CN.md"><img src="https://img.shields.io/badge/Lang-中文-red?style=for-the-badge" alt="中文"></a>
   <a href="README.ur-pk.md"><img src="https://img.shields.io/badge/Lang-اردو-green?style=for-the-badge" alt="اردو"></a>
   <a href="README.es.md"><img src="https://img.shields.io/badge/Lang-Español-orange?style=for-the-badge" alt="Español"></a>
 </p>
 
-**The self-improving AI agent built by [Nous Research](https://nousresearch.com).** It's the only agent with a built-in learning loop — it creates skills from experience, improves them during use, nudges itself to persist knowledge, searches its own past conversations, and builds a deepening model of who you are across sessions. Run it on a $5 VPS, a GPU cluster, or serverless infrastructure that costs nearly nothing when idle. It's not tied to your laptop — talk to it from Telegram while it works on a cloud VM.
+**North Forge is an AI agent you can make your own.** It is [Hermes Agent](https://hermes-agent.nousresearch.com/) — the self-improving agent engine by [Nous Research](https://nousresearch.com) — carrying a North Forge identity, voice, and workflow: its own `SOUL.md`, its own conventions, nothing tied to a single industry. The engine underneath is used unmodified, so whatever Hermes Agent does, North Forge does.
+
+The engine brings a built-in learning loop — it creates skills from experience, improves them during use, nudges itself to persist knowledge, searches its own past conversations, and builds a deepening model of who you are across sessions. Run it on a $5 VPS, a GPU cluster, or serverless infrastructure that costs nearly nothing when idle. It's not tied to your laptop — talk to it from Telegram while it works on a cloud VM.
+
+North Forge is a fork of [`NousResearch/hermes-agent`](https://github.com/NousResearch/hermes-agent), kept rebased on upstream and used here unmodified; the engine — agent loop, memory, skills, model providers, terminal and messaging interfaces — is Nous Research's work, MIT-licensed. What North Forge adds is identity and workflow: this README, `SOUL.md`, packaging metadata, and the project ledger under [`logs/ledger/`](logs/ledger/). Both copyright lines are in [`LICENSE`](LICENSE). Maintained by Kenneth C. Walker Jr.; fork and identity issues → <https://github.com/kwalker7631/north-forge-agent/issues>, engine issues → the upstream project.
 
 Use any model you want — [Nous Portal](https://portal.nousresearch.com), OpenRouter, OpenAI, your own endpoint, and [many others](https://hermes-agent.nousresearch.com/docs/integrations/providers). Switch with `hermes model` — no code changes, no lock-in.
 
@@ -34,15 +39,63 @@ Use any model you want — [Nous Portal](https://portal.nousresearch.com), OpenR
 
 ## Quick Install
 
-### Linux, macOS, WSL2, Termux
+North Forge runs two ways, and the difference matters. **To run _this fork_ — with
+its identity, its project ledger under [`logs/ledger/`](logs/ledger/), and its CLI
+skin — use the drive-native launcher immediately below.** The upstream one-liners
+further down (`curl … | bash`, `iex (irm …)`) install **stock Hermes Agent**, not
+North Forge; reach for those only if plain Hermes is what you want.
+
+### Windows — run North Forge from the drive (recommended)
+
+**This is the way to run North Forge.** It runs *in place* from wherever the repo
+folder sits — a USB stick, an external SSD, any local folder. The Python venv and
+the agent's data directory (`HERMES_HOME`) are created as **siblings of the
+checkout, on the same drive**; nothing is written to `%LOCALAPPDATA%` or anywhere
+else on the host, so you can unplug the drive and carry it to another machine.
+You get the North Forge identity, the project ledger under [`logs/ledger/`](logs/ledger/),
+and the North Forge CLI skin — none of which the stock Hermes installer below sets up.
+
+1. Get the repo onto the drive — clone it, or copy a folder you were handed:
+
+   ```powershell
+   git clone https://github.com/kwalker7631/north-forge-agent.git
+   ```
+
+2. Double-click **`north-forge.cmd`** in the repo root (or run it from a terminal).
+   The first run bootstraps the venv + data folder once (~1 minute); every run
+   after starts the agent immediately. Arguments pass straight through:
+
+   ```powershell
+   .\north-forge.cmd            # start chatting
+   .\north-forge.cmd gateway    # run the messaging gateway instead
+   ```
+
+Requires **Python 3.11+** (or [`uv`](https://docs.astral.sh/uv/), which fetches
+its own) and **PowerShell 5.1+** on `PATH`. What the first run does is spelled out
+in [`scripts/bootstrap-north-forge.ps1`](scripts/bootstrap-north-forge.ps1).
+Linux/macOS drive-native launch is not wired yet — on those platforms use the
+stock-Hermes installer below.
+
+---
+
+Everything below installs **stock Hermes Agent, not North Forge** — a machine-local
+install with no fork identity, no [`logs/ledger/`](logs/ledger/), and no North
+Forge CLI skin. Use it only if plain Hermes is what you want.
+
+### Stock Hermes — Linux, macOS, WSL2, Termux
 
 ```bash
 curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
 ```
 
-### Windows (native, PowerShell)
+### Stock Hermes — Windows (installs stock Hermes, not North Forge)
 
-> **Heads up:** Native Windows runs Hermes without WSL — CLI, gateway, TUI, and tools all work natively. If you'd rather use WSL2, the Linux/macOS one-liner above works there too. Found a bug? Please [file issues](https://github.com/NousResearch/hermes-agent/issues).
+> **This is upstream's installer, not North Forge.** `iex (irm …install.ps1)`
+> installs **stock Hermes Agent** into `%LOCALAPPDATA%\hermes` — a machine-local,
+> host-integrated install. It does **not** give you this fork: no North Forge
+> identity, no [`logs/ledger/`](logs/ledger/), no `north-forge.cmd` launcher, no
+> North Forge CLI skin. Reach for it only if you specifically want plain Hermes;
+> to run **this fork**, use the drive-native path above.
 
 Run this in PowerShell:
 
@@ -50,15 +103,21 @@ Run this in PowerShell:
 iex (irm https://hermes-agent.nousresearch.com/install.ps1)
 ```
 
-The installer handles everything: uv, Python 3.11, Node.js, ripgrep, ffmpeg, **and a portable Git Bash** (MinGit, unpacked to `%LOCALAPPDATA%\hermes\git` — no admin required, completely isolated from any system Git install). Hermes uses this bundled Git Bash to run shell commands.
+Native Windows runs Hermes without WSL — CLI, gateway, TUI, and tools all work
+natively. Found a bug in the engine? Please [file issues](https://github.com/NousResearch/hermes-agent/issues).
 
-If you already have Git installed, the installer detects it and uses that instead. Otherwise a ~45MB MinGit download is all you need — it won't touch or interfere with any system Git.
+The installer sets up its own uv, Python 3.11, Node.js, ripgrep, ffmpeg, and — if
+you don't already have Git — a self-contained Git it manages itself, with no admin
+rights and no changes to any system Git install. For the current prerequisites and
+exactly what gets downloaded, see the upstream
+[install guide](https://hermes-agent.nousresearch.com/docs/getting-started/quickstart)
+(these details change with upstream, so they're not duplicated here).
 
 > **Android / Termux:** The tested manual path is documented in the [Termux guide](https://hermes-agent.nousresearch.com/docs/getting-started/termux). On Termux, Hermes installs a curated `.[termux]` extra because the full `.[all]` extra currently pulls Android-incompatible voice dependencies.
 >
-> **Windows:** Native Windows is fully supported — the PowerShell one-liner above installs everything. If you'd rather use WSL2, the Linux command works there too. Native Windows install lives under `%LOCALAPPDATA%\hermes`; WSL2 installs under `~/.hermes` as on Linux.
+> **WSL2:** the Linux/macOS one-liner above works there too — it installs under `~/.hermes` as on Linux. (Native Windows stock installs live under `%LOCALAPPDATA%\hermes`.)
 
-After installation:
+After a stock-Hermes install:
 
 ```bash
 source ~/.bashrc    # reload shell (or: source ~/.zshrc)
@@ -118,6 +177,20 @@ hermes doctor       # Diagnose any issues
 ```
 
 📖 **[Full documentation →](https://hermes-agent.nousresearch.com/docs/)**
+
+---
+
+## Drive class
+
+A North Forge drive is prepared with a short **class label** in its volume name, so a recipient — or anyone helping them troubleshoot — can tell at a glance what kind of drive they're holding. What the drive is actually provisioned as (its tier and pinned edition) is recorded on the drive itself; check it any time with `scripts\nf-setup.ps1 -Show`.
+
+---
+
+## Customizing your agent
+
+North Forge ships in different editions. Some editions let you fully customize the AI behind it — the model and provider it runs on, its persona, and its configuration — from the drive's setup menu. Other editions come pre-configured and are ready to use exactly as they are, with nothing to set up.
+
+If your edition supports customization, the options are in the setup menu. If it doesn't, everything is already wired up — just start it and go.
 
 ---
 
@@ -259,6 +332,6 @@ scripts/run_tests.sh
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT — see [LICENSE](LICENSE). Copyright © 2025 Nous Research (Hermes Agent engine) and © 2026 Kenneth C. Walker Jr. (North Forge).
 
-Built by [Nous Research](https://nousresearch.com).
+North Forge is built on [Hermes Agent](https://hermes-agent.nousresearch.com/) by [Nous Research](https://nousresearch.com).

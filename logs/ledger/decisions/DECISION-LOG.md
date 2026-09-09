@@ -1,0 +1,354 @@
+# North-Forge Decision Register
+
+Append-only. One row per **open judgment call** — a choice between defensible
+options, not a fault. "Rebrand vs thin downstream", "keep or delete the attic
+clone", "rename the `hermes` command" are decisions; a broken build or a leaked
+secret is an error (`errors/ERROR-LOG.md`).
+
+Never delete a row — close it by moving the block under `## Resolved` with a
+`DECIDED` / `DEFERRED` / `DROPPED` status, a one-line rationale, and the
+implementing `CHG-` id(s). A superseded or migrated item keeps its old id and
+gains a `Superseded-by:` / `Supersedes:` link.
+
+`DECISION-` id scheme, the `Confidence` vocabulary, and `Run:` ids are defined in
+[`README.md`](../README.md).
+
+---
+
+## Open
+
+### DECISION-2026-09-07-002 — Rebrand-claim wording — "engine used unmodified" / "full rebrand"
+
+- **Opened:** 2026-09-07 · **Base:** hermes@233757037d (6 behind upstream/main)
+- **Run:** RUN-2026-09-07-006
+- **Source:** Codex audit **F-07** (see `logs/CODEX-AUDIT-2026-09-07.md`).
+- **Confidence:** Confirmed Fact — the phrases and the counter-examples are
+  verified in the tree.
+- **Supersedes:** —
+- **The call:** two `README.md` / `BRANDING.md` claims are broader than the code:
+  1. *"engine used unmodified"* — fork commits do modify application files
+     (`agent/prompt_builder.py`, `cli.py`, `hermes_cli/**`). Accurate would be
+     *"core behavior retained; identity entry points patched."*
+  2. *"full rebrand"* — true only under `BRANDING.md`'s narrow ownership taxonomy;
+     it is not a full operator journey while some visible CLI strings (interactive
+     welcome, chat subparser description) still say Hermes and (pre-`CHG-011`)
+     Quick Install installed upstream. Those may be deliberate compatibility
+     surfaces, but the boundary should be stated plainly.
+- **Options:**
+  - **A — Tighten the wording.** Replace the two phrases with the precise form
+    above; add one sentence in `BRANDING.md` naming the deliberately-Hermes
+    visible surfaces. No identifier churn.
+  - **B — Leave as-is.** Defensible under `BRANDING.md`'s stated taxonomy; the
+    detailed category tables already qualify it. Cost: an operator reading only
+    the headline claims is mildly misled.
+- **Leaning:** A (cheap, honest, no code risk) — **not yet done**; logged for
+  scheduling.
+- **Blocking:** nothing.
+- **Owner:** Kenneth C. Walker Jr.
+- **Status:** OPEN
+
+---
+
+## Resolved
+
+### DECISION-2026-09-06-003 — Install model — drive-native run-in-place vs machine-local managed install?
+
+- **Opened:** 2026-09-07 · **Base:** hermes@693641aa8b (0 behind upstream/main)
+- **Run:** RUN-2026-09-07-001 (opened) · RUN-2026-09-07-011 (ratified)
+- **Id note:** the `2026-09-06` date in the id is kept at the owner's request, for
+  continuity with the `-001` / `-002` rebrand batch; the entry was actually opened
+  2026-09-07. (The daily-reset id rule in `README.md` is relaxed here by owner call.)
+- **Source:** the consolidated pass of 2026-09-07 (step 4); the "portable-first"
+  principle in [[north-forge-architecture]]; the minimal bootstrap shipped this
+  pass (`CHG-2026-09-07-005`).
+- **Confidence:** Confirmed Fact — the two shapes and their trade-offs are as
+  stated; the shipped implementation named under **Decided** was read in the tree
+  and exercised across `RUN-2026-09-07-005` … `-010`, and independently reviewed by
+  two Codex audits (`logs/CODEX-AUDIT-2026-09-07.md`;
+  `logs/CODEX-HERMES-EDITION-REUSE-CHECK-2026-09-07.md`).
+- **Supersedes:** —
+- **The call:** when North Forge is deployed on a drive, does it **run in place
+  from the drive** (portable, self-contained, nothing installed on the host) or
+  does it perform a **managed install into a machine-local location**
+  (`~/.hermes`, `%LOCALAPPDATA%\hermes`) the way upstream's installer does?
+- **Options:**
+  - **A — Drive-native run-in-place:** the venv and `HERMES_HOME` data folder live
+    as siblings of the checkout on the same drive; nothing is written to the host;
+    unplug and move to another machine. Matches portable-first. Cost: slower cold
+    start, venv rebuild if the drive path changes, no host PATH integration.
+  - **B — Machine-local managed install:** bootstrap installs into `~/.hermes` /
+    `%LOCALAPPDATA%\hermes` like upstream — faster, host PATH integration,
+    survives drive re-lettering. Cost: leaves state on every host it touches; not
+    portable; contradicts portable-first.
+  - **C — Hybrid:** drive-native by default, an opt-in flag for a machine install.
+    Most flexible; more surface to build and document.
+- **Leaning at open:** **A (drive-native)**, provisionally — consistent with the
+  portable-first principle already established. **Explicitly not ratified.** The
+  *hardened* form of A — sealing the drive, the dual-volume
+  `NORTHFORGE` / `NORTHFORGE-DATA` split, and the certify / verify / audit
+  machinery — is **out of scope** for the current pass and waits for real
+  ratification of this decision. What ships now (`CHG-2026-09-07-005`,
+  `scripts/bootstrap-north-forge.ps1` + `north-forge.cmd`) is only the *minimal*
+  single-drive, single-folder-tree bootstrap + launcher: enough to make a fresh
+  clone launch, deliberately **not** built on the unratified hardened design.
+- **Decided:** 2026-09-07 (`RUN-2026-09-07-011`) — **ratified A (drive-native
+  run-in-place)**, owner call. The sibling-venv layout (venv + `HERMES_HOME` data
+  folder as siblings of the checkout on the same drive, nothing written to the
+  host), the launch-readiness probe (`scripts/nf-preflight.ps1` +
+  `scripts/lib/nf-readiness.ps1` — detects a moved or re-lettered drive and
+  rebuilds the venv **in place**, never on the host), and the tier / pin system
+  (`hermes_cli/nf_tier.py` + on-drive `provisioning.json` / `.nf-key`, `NF-v0.6.0`)
+  together are already a **working, tested implementation of exactly this model** —
+  no machine-local state, portable between machines by design. Two separate Codex
+  audits reviewed this surface independently and both found the implementation
+  matches the drive-native shape: the `F-01`…`F-10` baseline audit
+  (`logs/CODEX-AUDIT-2026-09-07.md`) and the hermes-edition reuse check
+  (`logs/CODEX-HERMES-EDITION-REUSE-CHECK-2026-09-07.md` — *"north-forge-agent
+  already has working equivalents: `bootstrap-north-forge.ps1`, `north-forge.cmd`,
+  `nf-preflight.ps1`, `make-drive-root-shortcut.ps1`"*).
+  - **Implementing commits — `NF-v0.5.1` → `NF-v0.6.0`:** `CHG-2026-09-07-015`
+    (bootstrap path-safety guard — venv/data may not equal, sit inside, or contain
+    the checkout), `CHG-2026-09-07-020` (four-check launch-time readiness probe +
+    silent in-place venv-only rebuild), `CHG-2026-09-07-022` (tier / pinned-edition
+    control, all state on the drive) are the load-bearing ones; built on the
+    original minimal bootstrap `CHG-2026-09-07-005` (`NF-v0.3.0`).
+  - **B and C rejected:** B (machine-local managed install) leaves state on every
+    host and contradicts portable-first; C (hybrid opt-in machine install) adds
+    surface with no established need.
+- **Hardened form — now unblocked, not mandated:** the sealed-drive / dual-volume
+  `NORTHFORGE` + `NORTHFORGE-DATA` split / certify-verify-audit work this entry
+  parked is no longer gated on an unratified decision. Ratifying A does **not**
+  order that work built — starting it is a separate scheduling call. This remains
+  the ratified home `DECISION-2026-09-07-003` named for a future non-drive-resident
+  key store.
+- **Blocking:** the hardened install / seal / dual-volume / certification work was
+  blocked until this was `DECIDED` — **cleared 2026-09-07** (`RUN-2026-09-07-011`);
+  see "Hardened form" above. The minimal bootstrap was never blocked and shipped in
+  `NF-v0.3.0`.
+- **Owner:** Kenneth C. Walker Jr.
+- **Status:** DECIDED
+
+### DECISION-2026-09-06-002 — Attic clone — keep or delete it?
+
+- **Opened:** 2026-09-06 · **Base:** hermes@693641aa8b (0 behind upstream/main)
+- **Run:** RUN-2026-09-06-001 (opened) · RUN-2026-09-07-011 (decided)
+- **Source:** `AUDIT-2026-09-06-001` F-01 (`CHG-2026-09-06-002`) and its open-item #5;
+  restated in `AUDIT-2026-09-06-002` open-item #5.
+- **Confidence:** Confirmed Fact — `D:\north-forge-agent-attic\nested-clone-2026-09-06\`
+  is a pristine second clone (~869 MB, `.git` ≈ 713 MB), zero unique commits,
+  same `origin`/`upstream` remotes; it was moved there out of the checkout, never deleted.
+  Re-confirmed present and unchanged 2026-09-07 (`RUN-2026-09-07-011`).
+- **Supersedes:** — (this was never an `ERR-` row; it lived only as an audit
+  finding + recommendation).
+- **The call:** now that `origin/main` carries the real work (`e6c97b43ef`, pushed
+  and verified), is the local safety copy still worth ~869 MB?
+- **Options:**
+  - **A — Delete** `D:\north-forge-agent-attic\nested-clone-2026-09-06\` — reclaim
+    ~869 MB. `origin/main` + a fresh `git clone` fully reconstruct it.
+  - **B — Keep** it as a cold offline backup (useful only if GitHub is
+    unreachable *and* the working `.git` is also lost — a narrow scenario).
+- **Leaning at open:** **A (delete)** — the pushed, verified `origin/main` removes the
+  reason it was kept. Low urgency (disk is 76% free).
+- **Decided:** 2026-09-07 (`RUN-2026-09-07-011`) — chose **A (delete)**, owner call,
+  same batch and same reasoning as the ratification of `DECISION-2026-09-06-003`:
+  `origin/main` carries everything, the attic copy holds zero unique commits, and a
+  fresh `git clone` plus the pushed history fully reconstruct it. B's narrow
+  "GitHub unreachable *and* the local `.git` also lost" scenario does not justify
+  ~869 MB.
+  - **Implementing step — done 2026-09-07** (`RUN-2026-09-07-011`): ran
+    `Remove-Item -Recurse -Force "D:\north-forge-agent-attic\nested-clone-2026-09-06"`
+    after verifying the copy had zero unique commits (`820106d4a5` is an ancestor of
+    `origin/main`), no local branches, no stashes, no uncommitted work. **~895 MB
+    reclaimed** on `D:`. The sibling file
+    `D:\north-forge-agent-attic\marguerite-and-penny-suno.txt` was **not** touched;
+    the now near-empty `D:\north-forge-agent-attic\` directory was left in place.
+- **Blocking:** nothing — disk space only.
+- **Owner:** Kenneth C. Walker Jr.
+- **Status:** DECIDED
+
+### DECISION-2026-09-07-003 — Edition / tier mechanism — what is an "edition", and how is Basic tier enforced?
+
+- **Opened:** 2026-09-07 · **Base:** hermes@2237be3559 (0 behind upstream/main) — written on `13fd25e063`, rebased clean onto `origin/main` `a4ffbca513`
+- **Run:** RUN-2026-09-07-010 (opened and decided the same run)
+- **Source:** the owner's tier/pin build assignment (RUN-2026-09-07-010 prompt);
+  the two-tier access model in [[north-forge-architecture]]; a queued research
+  question (`logs/CODEX-VISION-SKETCH-2026-09-07.md` — **never produced**, so this
+  run did its own check first).
+- **Confidence:** Confirmed Fact — the existing mechanisms and their enforcement
+  points were read in the tree and exercised this run (`config.yaml`
+  `skills.disabled` is enforced at `tools/skills_tool.py:553`, not only in
+  listings; profile selection funnels through
+  `hermes_cli/main.py::_apply_profile_override` → `resolve_profile_env`;
+  `cryptography` / `pynacl` are project deps but **not** in the bare dev venv).
+- **Supersedes:** —
+- **The call:** North Forge needs "editions" (generic chassis, Kyocera, Penny
+  Pincher, Sales, Pine Barron Farms) with exactly one **pinned** front-door per
+  drive and a two-tier lock (Full = switcher; Basic = pin only, unreachable
+  otherwise, enforced at command dispatch not just the UI). Nothing in the tree
+  had a "tier" or a lockable profile. What is an edition, mechanically, and where
+  is the lock?
+- **Options:**
+  - **A — Edition = a Hermes profile; tier/pin = a signed North-Forge record +
+    gates at every profile-selection path.** Reuses profile isolation (SOUL.md,
+    `skills/`, `mcp.json`, `config.yaml`, state) and `distribution.yaml`
+    packaging. New `hermes_cli/nf_tier.py` + `provisioning.json` (HMAC-signed) +
+    small calls in `_apply_profile_override`, `resolve_profile_env`,
+    `set_active_profile`, `profile_cmd`, the dashboard router, and a `/edition`
+    command. Cost: the lock surface is every profile entry point (six of them) —
+    each must be covered.
+  - **B — Edition = a persona overlay + a `config.yaml` `skills.disabled`
+    filter.** Lightest; enforcement rides entirely on the existing
+    `skills_tool.py:553` invocation gate. Cost: an edition cannot carry its own
+    MCP servers, model config, or state — too thin for Kyocera (hotline tooling,
+    KB builder, drift audits), and "sees everything including Pine Barron Farms"
+    implies editions are separate installs.
+  - **C — Hybrid:** edition = profile, but selection routed through one new
+    North-Forge chokepoint that disables every other path. Cost: same wide
+    lockdown surface as A with more indirection.
+- **Leaning at open:** A.
+- **Decided:** 2026-09-07 (`RUN-2026-09-07-010`) — chose **A**, owner-confirmed
+  (edition = full Hermes profile; HMAC-signed provisioning keyed by the admin
+  passcode, fail-closed; wire every selection path in one pass). Implemented by
+  **`CHG-2026-09-07-022`** (`NF-v0.6.0`).
+  - **Signature strength, stated honestly:** the record is HMAC-SHA256 with the
+    key stored on the drive (`<nf-root>/north-forge/.nf-key`, `0600`, outside
+    `profiles/`). That is **tamper-evident, not tamper-proof** — it fails a
+    casual `"basic"`→`"full"` edit closed; it is not a defence against an operator
+    who will find `.nf-key` and script a re-sign. Asymmetric signing (Ed25519 via
+    `cryptography`/`pynacl`) was rejected for this pass: the verifier runs in
+    `main.py` **before argparse and before any hermes import**, where pulling in
+    `cryptography` is a cost and a "must never block startup" risk, and the bare
+    dev venv does not even carry it. The real containment for proprietary edition
+    content is that it is **not shipped to a Basic drive at all**; the admin
+    passcode (`.nf-admin`, pbkdf2) additionally gates *re-running* `nf-setup.ps1`.
+    A future hardened-drive form (sealed volume, dual-partition split) could carry
+    a real key store — that is **out of scope here and tracked under
+    `DECISION-2026-09-06-003`**, which this does **not** resolve.
+  - **Fail-open vs fail-closed boundary:** *absent* record = un-provisioned =
+    behaves exactly like upstream Hermes (dev checkouts / CI / plain installs
+    unaffected — keeps fork drift testable). *Present but unverifiable* = tampered
+    = the drive refuses to start. These are deliberately different.
+- **Intersection noted (not resolved):** `DECISION-2026-09-06-003` (install
+  model — drive-native vs machine-local; hardened form awaits ratification). The
+  hardened drive is where a non-drive-resident key store would live; this pass
+  builds only the minimal signed-file form and does not pre-empt that decision.
+- **Owner:** Kenneth C. Walker Jr.
+- **Status:** DECIDED
+
+### DECISION-2026-09-07-001 — Splash art — keep the stock Hermes launch mark, or swap it?
+
+- **Opened:** 2026-09-07 · **Base:** hermes@233757037d (6 behind upstream/main) — committed on `c4e88d2ab6`
+- **Run:** RUN-2026-09-07-004 (opened and decided the same run)
+- **Id note:** first `DECISION-` dated 2026-09-07, so `-001` per the daily-reset
+  rule in [`README.md`](../README.md) § Naming. Unrelated to the `2026-09-06`-dated
+  `-002` / `-003` (whose dates were pinned by owner call for continuity with the
+  rebrand batch).
+- **Source:** carried since `RUN-2026-09-07-003` — the `INDEX.md` "Latest run" row
+  recorded the `⚕ NOUS HERMES` launch splash as **"left open for the owner (not
+  defaulted)"**. Raised again by the owner this run alongside the drive-native
+  onboarding fixes, now that final brand art exists under `assets/icons/`.
+- **Confidence:** Confirmed Fact — verified in the checkout that
+  `hermes_cli/banner.py` `HERMES_CADUCEUS` (the `⚕` braille hero) and
+  `HERMES_AGENT_LOGO` (the `HERMES-AGENT` wordmark) are **byte-identical to
+  `upstream/main`**; NF's only diff to that file is the one-line
+  `format_banner_version_label()` label. `banner.py` already prefers
+  `skin.banner_hero` / `skin.banner_logo` over those constants
+  (`banner.py:855`, `:916`).
+- **Supersedes:** —
+- **The call:** the CLI shows upstream's `⚕` caduceus + `HERMES-AGENT` wordmark at
+  every `hermes` / `north-forge.cmd` launch. Leave it, or replace it with North
+  Forge's own mark?
+- **Options:**
+  - **A — Leave as-is.** Consistent with "engine used unmodified"; the ASCII
+    startup art is not in `BRANDING.md`'s North-Forge-owned list;
+    `assets/icons/splash-alt.png` is already earmarked for a future *graphical*
+    loading screen. Zero change.
+  - **B — Edit `banner.py`.** Replace the `HERMES_AGENT_LOGO` constant (and maybe
+    the caduceus) with North Forge art. Small text swap, but a permanent
+    multi-line diff on a hot upstream file — merge-conflict risk on every rebase.
+  - **C — Swap via a North Forge skin.** Ship `skins/north-forge.yaml` with
+    `banner_logo` / `banner_hero`; `banner.py` stays byte-identical to upstream
+    except its existing one-liner. Slightly more than a "text swap" (new skin
+    file + activation wiring) but zero added engine drift. The repo's brand PNGs
+    can't render in a terminal, so the art is new Rich-markup ASCII either way.
+- **Leaning at open:** C.
+- **Decided:** 2026-09-07 (`RUN-2026-09-07-004`) — chose **C (swap via a North
+  Forge skin)**, owner-selected. Implemented by **`CHG-2026-09-07-012`**: new
+  tracked `skins/north-forge.yaml` (`banner_logo` "NORTH FORGE" ANSI-Shadow +
+  `banner_hero` anvil/sparks + full North-Forge `branding`; colors/spinner
+  inherited from the built-in `default` skin). `scripts/bootstrap-north-forge.ps1`
+  seeds it into `HERMES_HOME/skins/` and sets `display.skin=north-forge` on a
+  fresh bootstrap (never overriding an operator's own skin choice);
+  `north-forge.cmd` re-copies it every launch. `hermes_cli/banner.py` and
+  `hermes_cli/skin_engine.py` are **unchanged**. Verified end-to-end against the
+  drive venv — the activated skin drives the banner and the `⚕`/`HERMES`
+  constants are no longer reached on that path.
+- **Reaffirmed:** 2026-09-07 (`RUN-2026-09-07-006`). A mid-stream instruction in
+  the `RUN-2026-09-07-005` batch floated deferring this and reverting the skin
+  swap; that reversal was **never executed** (RUN-005 shipped only the F-04 fix),
+  and the owner's follow-up confirmed **keep the shipped swap — stays DECIDED
+  (C), not DEFERRED**. No code change; the `RUN-2026-09-07-005` INDEX hedge notes
+  about a "pending deferral" were corrected.
+- **Owner:** Kenneth C. Walker Jr.
+- **Status:** DECIDED
+
+### DECISION-2026-09-06-001 — Fork identity — rebrand vs thin downstream?
+
+- **Opened:** 2026-09-06 · **Base:** hermes@693641aa8b (0 behind upstream/main)
+- **Run:** RUN-2026-09-06-001 (opened) · RUN-2026-09-06-002 (implemented)
+- **Source:** `AUDIT-2026-09-06-001` §6 (full README review) and F-06 / F-08
+- **Confidence:** Confirmed Fact — the branding state is verified (every `README*.md`,
+  `SOUL.md`, `LICENSE`, `package.json`, `pyproject.toml` field is still upstream's);
+  the *choice* between the two shapes is what is open.
+- **Supersedes:** the identity half of `ERR-2026-09-06-002` (migrated here — the
+  version-drift half of that ERR was a real fault and stays in `ERROR-LOG.md`,
+  RESOLVED by `CHG-2026-09-06-014`).
+- **The call:** does north-forge present as its own product, or stay a
+  lightly-marked fork kept rebased on `NousResearch/hermes-agent`?
+- **Options:**
+  - **A — Thin downstream:** add a short north-forge note atop `README.md` + a
+    root `CLAUDE.md` (provenance + what north-forge adds + the ledger workflow);
+    leave `SOUL.md` / `package.json` / `pyproject.toml` as upstream's. Cheapest
+    upstream merges forever; north-forge stays visibly a downstream user.
+  - **B — Full rebrand:** rewrite the top of `README.md`, `SOUL.md` persona, the
+    `name` / `repository` / `homepage` fields in `package.json` and
+    `pyproject.toml`, add the maintainer's copyright line alongside Nous's in
+    `LICENSE` (MIT — Nous's line stays). More friction on every future
+    `upstream/main` merge; north-forge reads as its own project.
+- **Leaning:** **B (full rebrand)** — selected by the maintainer on 2026-09-06.
+- **Blocking:** `NF-v0.2.0` (the changelog reserves `NF-v0.2.0` for the first
+  identity commit). Nothing else.
+- **Owner:** Kenneth C. Walker Jr.
+- **Decided:** 2026-09-06 — chose **B (full rebrand)**. Implemented in one
+  branding-only commit under `RUN-2026-09-06-002`: `README.md` top-level identity
+  rewritten, `SOUL.md` re-voiced to North Forge's established persona,
+  `package.json` `name` / `repository` / `homepage` / `bugs` repointed to
+  `kwalker7631/north-forge-agent` (+ `package-lock.json` root-name sync),
+  `pyproject.toml` gained `[project.urls]`, `LICENSE` gained the maintainer's
+  copyright line alongside Nous Research's. Per the carve-out in this entry, the
+  `pyproject.toml` **distribution name `hermes-agent` was left unchanged** (never
+  published, ~19× internal refs, pinned in `uv.lock`). No application code, no
+  `.env`, no attic-clone change — agent behaviour identical before and after.
+  Cut `NF-v0.2.0` (MAJOR). Committed locally, **not pushed** (held for review).
+  Implementing changes: `CHG-2026-09-06-020`, `CHG-2026-09-06-021`,
+  `CHG-2026-09-06-022`, `CHG-2026-09-06-023`, `CHG-2026-09-06-024`.
+- **Follow-up:** 2026-09-06 (`RUN-2026-09-06-003`, `NF-v0.2.1`, PATCH) — the two
+  loose ends the rebrand commit left: `assets/banner.png` re-branded to North
+  Forge and re-referenced in `README.md` (**placeholder art**, flagged in the
+  PNG `tEXt` chunks — final art still owed), and two drive-facing README sections
+  added ("Drive class", "Customizing your agent"). No code / `.env` / dist-name
+  change. `CHG-2026-09-06-025`, `CHG-2026-09-06-026`. Local only, not pushed.
+- **Status:** DECIDED
+
+---
+
+## Register (quick scan)
+
+| ID | Date | Area | Question | Status | Decided |
+| --- | --- | --- | --- | --- | --- |
+| DECISION-2026-09-06-001 | 2026-09-06 | Fork identity | Rebrand vs thin downstream? | DECIDED — B (full rebrand), landed `NF-v0.2.0` (CHG-2026-09-06-020..024) | 2026-09-06 |
+| DECISION-2026-09-06-002 | 2026-09-06 | Repo hygiene | Keep or delete the attic clone? | DECIDED — A (delete), `RUN-2026-09-07-011` / `CHG-2026-09-07-023`. `origin/main` carries all work, zero unique commits in the copy; `D:\north-forge-agent-attic\nested-clone-2026-09-06\` **deleted 2026-09-07** (~895 MB reclaimed) | 2026-09-07 |
+| DECISION-2026-09-06-003 | 2026-09-07 | Install model | Drive-native run-in-place vs machine-local managed install? | DECIDED — A (drive-native run-in-place), `RUN-2026-09-07-011` / `CHG-2026-09-07-023`. Sibling-venv + `nf-preflight.ps1` + `nf_tier.py` (`NF-v0.5.1`→`NF-v0.6.0`) already implement it; two Codex audits concur. Hardened form (seal / dual-volume / certify) now unblocked, not mandated | 2026-09-07 |
+| DECISION-2026-09-07-001 | 2026-09-07 | Branding | Keep the stock Hermes launch splash, or swap it? | DECIDED — C (swap via a North Forge skin), landed `CHG-2026-09-07-012`; reaffirmed `RUN-2026-09-07-006` (deferral floated then withdrawn, never executed) | 2026-09-07 |
+| DECISION-2026-09-07-003 | 2026-09-07 | Access architecture | What is an "edition", and how is Basic tier enforced? | DECIDED — A (edition = Hermes profile; HMAC-signed `provisioning.json` + gates at every profile-selection path), landed `CHG-2026-09-07-022` (`NF-v0.6.0`). Signature is tamper-evident not tamper-proof; hardened key store deferred to `DECISION-2026-09-06-003` | 2026-09-07 |
+| DECISION-2026-09-07-002 | 2026-09-07 | Branding wording | "engine used unmodified" / "full rebrand" broader than the code (Codex F-07) | OPEN — leaning A (tighten wording, no identifier churn); logged only | — |

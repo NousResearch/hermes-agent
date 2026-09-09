@@ -1,0 +1,31 @@
+# North Forge edition — Pine Barron Farms.
+# A Hermes profile distribution: `hermes profile install editions/pine-barron-farms`
+# clones this into <HERMES_HOME>/profiles/pine-barron-farms/. nf-setup.ps1 installs
+# it automatically when a drive is pinned to `pine-barron-farms`.
+#
+# This folder ships the PERSONA and METHOD only (SOUL.md). The studio canon packet
+# — characters, locations, episode history, the full prompt method — is NOT in the
+# public chassis; it is dropped in at deploy time from admin-gated content. See
+# canon/README.md.
+name: pine-barron-farms
+version: 0.1.0
+description: >-
+  Virtual-production partner and working memory for an AI video studio: writes
+  ready-to-shoot generation cards in the studio's format, holds canon consistency,
+  keeps a cross-tool pipeline pointed at one source of truth. Accessibility-first,
+  one-step-at-a-time.
+author: North Forge
+license: MIT
+hermes_requires: ">=0.12.0"
+
+env_requires: []
+
+# Only these exact paths are copied on install and replaced on `hermes profile
+# update`. canon/README.md (the placeholder) is listed so it ships; the canon
+# DIRECTORY is not, so a real canon packet dropped in at deploy
+# (canon/PINE_BARRON_FARMS_CANON.md) is never touched by an update.
+distribution_owned:
+  - SOUL.md
+  - distribution.yaml
+  - README.md
+  - canon/README.md

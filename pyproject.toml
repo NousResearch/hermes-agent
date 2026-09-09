@@ -178,6 +178,15 @@ dependencies = [
   "nemo-relay>=0.8.3,<0.9; (sys_platform == 'darwin' and platform_machine == 'arm64') or (sys_platform == 'linux' and platform_machine == 'x86_64' and 'android' not in platform_release) or (sys_platform == 'linux' and platform_machine == 'aarch64' and 'android' not in platform_release) or (sys_platform == 'win32' and platform_machine == 'AMD64') or (sys_platform == 'win32' and platform_machine == 'ARM64')",
 ]
 
+[project.urls]
+# North-Forge fork identity (DECISION-2026-09-06-001, CHG-2026-09-06-023).
+# The distribution `name` above deliberately stays "hermes-agent": it is never
+# published (setup.py blocks wheel builds), is referenced ~19x by the
+# self-referential `hermes-agent[...]` extras below, and is pinned in uv.lock /
+# the installed .venv. Renaming it is blast radius with no outward benefit.
+Homepage = "https://github.com/kwalker7631/north-forge-agent"
+Repository = "https://github.com/kwalker7631/north-forge-agent"
+
 [project.optional-dependencies]
 # Native Anthropic provider — only needed when provider=anthropic (not via
 # OpenRouter or other aggregators).

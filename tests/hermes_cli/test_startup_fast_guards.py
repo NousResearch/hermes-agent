@@ -81,7 +81,7 @@ def test_fast_version_parity_off_termux(tmp_path):
     result = _run_version({"HERMES_HOME": str(home), "TERMUX_VERSION": ""})
     assert result.returncode == 0, result.stderr
     out = result.stdout
-    for field in ("Hermes Agent v", "Install directory:", "Python:", "OpenAI SDK:"):
+    for field in ("North Forge v", "Install directory:", "Python:", "OpenAI SDK:"):
         assert field in out, f"fast --version output missing {field!r}:\n{out}"
 
 
@@ -93,7 +93,7 @@ def test_fast_version_parity_on_termux(tmp_path):
         {"HERMES_HOME": str(home), "TERMUX_VERSION": "0.118"}
     )
     assert result.returncode == 0, result.stderr
-    assert "Hermes Agent v" in result.stdout
+    assert "North Forge v" in result.stdout
     assert "Traceback" not in result.stderr
 
 

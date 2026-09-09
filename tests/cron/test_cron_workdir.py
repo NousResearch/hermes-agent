@@ -320,3 +320,34 @@ class TestRunJobTerminalCwd:
         assert observed["terminal_cwd_during_run"] == baseline
         assert os.environ["TERMINAL_CWD"] == baseline
         assert get_session_cwd(observed["task_id"]) is None
+
+    def test_agent_prerun_script_receives_configured_workdir(
+        self, monkeypatch, tmp_path
+    ):
+        import cron.scheduler as sched
+
+        workdir = tmp_path / "project"
+        workdir.mkdir()
+        observed: dict = {}
+        self._install_stubs(monkeypatch, observed)
+
+        def run_script(job, script_path, workdir=None, cancel_event=None):
+            observed["script_workdir"] = workdir
+            return True, '{"wakeAgent": false}'
+
+        monkeypatch.setattr(
+            sched, "_run_job_script_with_claim_heartbeat", run_script
+        )
+        success, *_ = sched.run_job(
+            {
+                "id": "agent-script-workdir",
+                "name": "agent-script-workdir",
+                "prompt": "Review the project.",
+                "script": "collect.py",
+                "workdir": str(workdir),
+                "schedule_display": "manual",
+            }
+        )
+
+        assert success is True
+        assert observed["script_workdir"] == str(workdir)

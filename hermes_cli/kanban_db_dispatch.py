@@ -1513,6 +1513,9 @@ def _dispatch_lane_task(
     # it by assigning a profile, and health telemetry suppresses "stuck" for it.
     profile_exists = _profile_exists_fn()
     if profile_exists is not None and not profile_exists(assignee):
+        if not dry_run:
+            from hermes_cli.kanban_recipes_runtime import block_missing_profile
+            block_missing_profile(conn, task_id, assignee)
         result.skipped_nonspawnable.append(task_id)
         return False
     # Per-profile cap: one profile's local model / API quota / browser pool

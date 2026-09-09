@@ -840,6 +840,9 @@ def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
 
 def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
     """Add columns introduced after v1 to legacy DBs (called via ``init_db``)."""
+    from hermes_cli.kanban_recipes_store import migrate_recipe_tables
+
+    migrate_recipe_tables(conn)
     cols = _column_names(conn, "tasks")
     for name, ddl in _EARLY_TASK_COLUMNS:
         if name not in cols:

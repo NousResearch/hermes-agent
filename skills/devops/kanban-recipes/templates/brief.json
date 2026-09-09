@@ -1,0 +1,9 @@
+{
+  "schema_version": 1,
+  "recipe_id": "research-brief",
+  "inputs": {"topic": {"type": "string", "required": true}},
+  "nodes": [
+    {"key": "research", "assignee": "researcher", "title": "Research {{input.topic}}", "body": "Write cited findings. Do not publish externally."},
+    {"key": "brief", "assignee": "writer", "title": "Prepare brief", "body": "Read the parent handoff and summarize supported claims. Do not publish externally.", "needs": ["research"]}
+  ]
+}

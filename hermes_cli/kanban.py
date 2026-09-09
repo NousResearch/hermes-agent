@@ -146,6 +146,11 @@ def kanban_command(args: argparse.Namespace) -> int:
                   "Run 'hermes kanban --help' for the full list of actions.", file=sys.stderr)
         return 0
 
+    # Recipes validate their complete request and board identity before any migration.
+    if action == "recipe":
+        from hermes_cli.kanban_recipes_cli import recipe_command
+        return recipe_command(args)
+
     # Fast-fail for UX only; the durable trust boundary is in kanban_db, since children can
     # import DB mutators directly.
     if _is_delegated_child_cli_mutation(args):

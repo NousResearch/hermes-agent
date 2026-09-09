@@ -57,7 +57,7 @@ def test_every_owed_identity_requires_current_evidence(monkeypatch, bad):
     directory = home / "logs" / "update_receipts"
     directory.mkdir(parents=True)
     if bad == "marker":
-        (home / "fleet_restart_pending").write_text("expected_sha=new\n")
+        (home / "fleet_restart_pending").write_text("expected_sha=future\n")
     owed = {"kind": "gateway", "profile": "beta", "code_sha": "old"}
     if bad == "wrong-kind":
         owed["kind"] = "serve"
@@ -84,3 +84,22 @@ def test_every_owed_identity_requires_current_evidence(monkeypatch, bad):
     monkeypatch.setattr(update_cmd, "_current_checkout_sha", lambda: "new")
     monkeypatch.setattr(update_receipt, "collect_fleet_versions", lambda: rows)
     assert update_cmd_fleet._pending_fleet_restart_needed()
+
+
+def test_marker_retired_when_live_fleet_matches_expected_sha(monkeypatch):
+    """When running gateways already run the marker's expected_sha, the marker retires (#106682)."""
+    home = get_hermes_home()
+    marker = home / "fleet_restart_pending"
+    marker.write_text("expected_sha=new\n")
+    monkeypatch.setattr(update_cmd, "_current_checkout_sha", lambda: "new")
+    monkeypatch.setattr(
+        update_receipt,
+        "collect_fleet_versions",
+        lambda: [{"profile": "alpha", "pid": 1, "state": "current", "code_sha": "new"}],
+    )
+    assert not update_cmd_fleet._pending_fleet_restart_needed()
+    assert not marker.exists(), (
+        "fleet_restart_pending marker must be retired when live fleet satisfies it"
+    )
+
+

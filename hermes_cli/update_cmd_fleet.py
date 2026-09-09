@@ -183,15 +183,52 @@ def _live_fleet_covers_receipt(expected_sha: str | None) -> bool:
         return False
 
 
+def _read_fleet_restart_pending_expected_sha() -> str | None:
+    """Read expected_sha from the fleet_restart_pending marker if present, else None."""
+    path = _fleet_restart_pending_marker_path()
+    try:
+        content = path.read_text(encoding="utf-8")
+        for line in content.splitlines():
+            if line.startswith("expected_sha="):
+                sha = line.split("=", 1)[1].strip()
+                return sha or None
+    except OSError:
+        pass
+    return None
+
+
 def _pending_fleet_restart_needed() -> bool:
     """Reconcile old restart obligations against current, identity-matched gateways."""
     from hermes_cli.update_cmd import _current_checkout_sha
+    from hermes_cli.update_receipt import collect_fleet_versions
 
     # The marker has no runtime inventory and may belong to a newer, killed update
     # than latest.json. An older receipt cannot discharge that unknown obligation.
+    # However, if every live gateway already runs the marker's expected_sha, the
+    # restart obligation is satisfied: retire the marker so we do not spam false
+    # warnings on CLI startup or force-restart a healthy fleet (#106682).
     with suppress(OSError):
         if _fleet_restart_pending_marker_path().is_file():
-            return True
+            expected_sha = _read_fleet_restart_pending_expected_sha()
+            if expected_sha:
+                try:
+                    fleet = collect_fleet_versions()
+                    if fleet and all(
+                        row.get("state") == "current" and row.get("code_sha") == expected_sha
+                        for row in fleet
+                    ):
+                        logger.info(
+                            "fleet_restart_pending retired: all live gateways already run %s",
+                            expected_sha,
+                        )
+                        _clear_fleet_restart_pending_marker()
+                    else:
+                        return True
+                except Exception as exc:
+                    logger.debug("Could not verify fleet restart against marker: %s", exc)
+                    return True
+            else:
+                return True
     if not _receipt_reports_stale_runtime():
         return False
     return not _live_fleet_covers_receipt(_current_checkout_sha())

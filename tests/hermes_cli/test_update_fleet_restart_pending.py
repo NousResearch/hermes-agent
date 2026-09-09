@@ -182,6 +182,90 @@ def test_pending_needed_when_marker_exists():
     assert update_cmd._pending_fleet_restart_needed() is False
 
 
+def test_pending_retired_when_live_fleet_matches_marker_expected_sha(monkeypatch):
+    """When all live gateways already run expected_sha, the marker self-heals (#106682)."""
+    sha = "a" * 40
+    update_cmd._write_fleet_restart_pending_marker(expected_sha=sha)
+    marker = update_cmd._fleet_restart_pending_marker_path()
+    assert marker.is_file()
+
+    monkeypatch.setattr(
+        "hermes_cli.update_receipt.collect_fleet_versions",
+        lambda: [{"profile": "default", "pid": 42, "state": "current", "code_sha": sha}],
+    )
+    assert update_cmd._pending_fleet_restart_needed() is False
+    assert not marker.exists(), "marker must be retired after live fleet verified"
+
+
+def test_pending_needed_when_live_fleet_runs_stale_sha_vs_marker(monkeypatch):
+    """When any live gateway runs an older SHA, restart remains pending (#106682)."""
+    expected = "a" * 40
+    stale = "b" * 40
+    update_cmd._write_fleet_restart_pending_marker(expected_sha=expected)
+    marker = update_cmd._fleet_restart_pending_marker_path()
+
+    monkeypatch.setattr(
+        "hermes_cli.update_receipt.collect_fleet_versions",
+        lambda: [{"profile": "default", "pid": 42, "state": "current", "code_sha": stale}],
+    )
+    try:
+        assert update_cmd._pending_fleet_restart_needed() is True
+        assert marker.is_file(), "marker must remain when live gateway is stale"
+    finally:
+        update_cmd._clear_fleet_restart_pending_marker()
+
+
+def test_pending_needed_when_live_gateway_not_current_vs_marker(monkeypatch):
+    """When a live gateway is in a non-current state, restart remains pending (#106682)."""
+    sha = "a" * 40
+    update_cmd._write_fleet_restart_pending_marker(expected_sha=sha)
+    marker = update_cmd._fleet_restart_pending_marker_path()
+
+    monkeypatch.setattr(
+        "hermes_cli.update_receipt.collect_fleet_versions",
+        lambda: [{"profile": "default", "pid": 42, "state": "stale", "code_sha": sha}],
+    )
+    try:
+        assert update_cmd._pending_fleet_restart_needed() is True
+        assert marker.is_file()
+    finally:
+        update_cmd._clear_fleet_restart_pending_marker()
+
+
+def test_pending_needed_when_no_live_gateways_found_for_marker(monkeypatch):
+    """When no live gateways are found, marker remains pending to allow catch-up (#106682)."""
+    sha = "a" * 40
+    update_cmd._write_fleet_restart_pending_marker(expected_sha=sha)
+    marker = update_cmd._fleet_restart_pending_marker_path()
+
+    monkeypatch.setattr(
+        "hermes_cli.update_receipt.collect_fleet_versions",
+        lambda: [],
+    )
+    try:
+        assert update_cmd._pending_fleet_restart_needed() is True
+        assert marker.is_file()
+    finally:
+        update_cmd._clear_fleet_restart_pending_marker()
+
+
+def test_pending_needed_when_marker_lacks_expected_sha(monkeypatch):
+    """A legacy marker without expected_sha cannot self-heal and remains pending (#106682)."""
+    update_cmd._write_fleet_restart_pending_marker()
+    marker = update_cmd._fleet_restart_pending_marker_path()
+
+    monkeypatch.setattr(
+        "hermes_cli.update_receipt.collect_fleet_versions",
+        lambda: [{"profile": "default", "pid": 42, "state": "current", "code_sha": "a" * 40}],
+    )
+    try:
+        assert update_cmd._pending_fleet_restart_needed() is True
+        assert marker.is_file()
+    finally:
+        update_cmd._clear_fleet_restart_pending_marker()
+
+
+
 def test_pending_needed_when_unfinished_receipt_runtime_sha_skews(monkeypatch):
     disk_sha = "e" * 40
     old_sha = "7" * 40

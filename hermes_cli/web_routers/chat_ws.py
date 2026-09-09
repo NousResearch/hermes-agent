@@ -278,21 +278,53 @@ async def console_ws(ws: WebSocket) -> None:
     active_task: asyncio.Task | None = None
     pending_confirmation: Optional[str] = None
     command_generation = 0
+    # Handle to the concurrent executor Future so cancel/timeout can propagate
+    # beyond the asyncio waiter (run_in_executor threads keep running otherwise).
+    pending_executor_future: Any | None = None
+
+    def _try_cancel_executor_future(reason: str, command_id: int) -> None:
+        fut = pending_executor_future
+        if fut is None or fut.done():
+            return
+        cancelled = fut.cancel()
+        if not cancelled:
+            # Already running — asyncio.wait_for / Task.cancel() cannot stop a
+            # ThreadPoolExecutor worker. Log and attempt cooperative abort of any
+            # active LLM request owned by the console command so the provider
+            # stream (e.g. llama.cpp) does not keep decoding after the UI
+            # reports cancelled/timeout. See #106179.
+            _log.warning(
+                "console executor worker still running after %s (command_id=%s); "
+                "attempting cooperative abort of active request",
+                reason, command_id,
+            )
+            try:
+                # Best-effort: if the console command owns an AIAgent-style
+                # request, abort its HTTP client via the shared _active_request_abort
+                # hook. Probe a console-scoped registry first, then fall back to
+                # scanning for an agent attached to the worker thread.
+                from hermes_cli.web_server_chat import _abort_console_active_request
+                _abort_console_active_request(reason)
+            except Exception:
+                _log.debug("console cooperative abort failed", exc_info=True)
 
     async def run_command(line: str, *, confirmed: bool, command_id: int) -> None:
-        nonlocal active_task, pending_confirmation, command_generation
+        nonlocal active_task, pending_confirmation, command_generation, pending_executor_future
         try:
             loop = asyncio.get_running_loop()
+            pending_executor_future = loop.run_in_executor(
+                _get_console_executor(),
+                functools.partial(_execute_console_line, engine, line, confirmed=confirmed, profile=profile),
+            )
             result = await asyncio.wait_for(
-                loop.run_in_executor(
-                    _get_console_executor(),
-                    functools.partial(_execute_console_line, engine, line, confirmed=confirmed, profile=profile),
-                ),
+                pending_executor_future,
                 timeout=_CONSOLE_COMMAND_TIMEOUT_SECONDS,
             )
         except asyncio.CancelledError:
+            _try_cancel_executor_future("cancel", command_id)
             raise
         except asyncio.TimeoutError:
+            _try_cancel_executor_future("timeout", command_id)
             if command_id == command_generation:
                 pending_confirmation = None
                 await out.error_then_complete(
@@ -313,6 +345,7 @@ async def console_ws(ws: WebSocket) -> None:
         finally:
             if command_id == command_generation:
                 active_task = None
+                pending_executor_future = None
 
     def start_command(line: str, *, confirmed: bool = False) -> None:
         nonlocal active_task, command_generation
@@ -343,6 +376,20 @@ async def console_ws(ws: WebSocket) -> None:
             if frame_type == "cancel":
                 if active_task and not active_task.done():
                     command_generation += 1
+                    # Propagate to the executor Future before cancelling the waiter
+                    # so queued work is dropped and a running worker is warned/aborted.
+                    if pending_executor_future is not None and not pending_executor_future.done():
+                        cancelled = pending_executor_future.cancel()
+                        if not cancelled:
+                            _log.warning(
+                                "console cancel: executor worker still running (command_id=%s); attempting cooperative abort",
+                                command_generation - 1,
+                            )
+                            try:
+                                from hermes_cli.web_server_chat import _abort_console_active_request
+                                _abort_console_active_request("cancel")
+                            except Exception:
+                                _log.debug("console cooperative abort failed", exc_info=True)
                     active_task.cancel()
                     active_task = None
                     pending_confirmation = None
@@ -389,6 +436,8 @@ async def console_ws(ws: WebSocket) -> None:
         pass
     finally:
         if active_task and not active_task.done():
+            if pending_executor_future is not None and not pending_executor_future.done():
+                pending_executor_future.cancel()
             active_task.cancel()
             try:
                 await active_task

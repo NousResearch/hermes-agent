@@ -897,6 +897,16 @@ class _InlineRequest:
             raise TimeoutError(
                 f"Non-streaming API call timed out before request dispatch (threshold: {int(self.stale_timeout)}s)")
         self.agent._active_request_abort = self.abort_hook
+        # Console workers: also publish to the console cooperative abort registry
+        # so Hermes Console cancel/timeout can force-close the provider stream
+        # even though asyncio cannot stop the ThreadPoolExecutor thread (#106179).
+        try:
+            import threading
+            if threading.current_thread().name.startswith("hermes-console"):
+                from hermes_cli.web_server_chat import _register_console_request_abort
+                _register_console_request_abort(self.abort_hook)
+        except Exception:
+            pass
         return client
 
     def mark_done(self) -> None:
@@ -964,6 +974,13 @@ def direct_api_call(agent, api_kwargs: dict):
         request.stop_watchdogs()
         if getattr(agent, "_active_request_abort", None) is request.abort_hook:
             agent._active_request_abort = None
+        try:
+            import threading
+            if threading.current_thread().name.startswith("hermes-console"):
+                from hermes_cli.web_server_chat import _unregister_console_request_abort
+                _unregister_console_request_abort(request.abort_hook)
+        except Exception:
+            pass
         request_client = request.pop_client()
         if request_client is not None:
             agent._close_request_openai_client(request_client,
@@ -998,6 +1015,24 @@ class _RequestClientRegistry:
     def set_client(self, client, *, kind: str = "openai"):
         with self.lock:
             self.client, self.kind, self.owner_tid = client, kind, threading.get_ident()
+        # Console cooperative abort: streaming requests also need to be closable
+        # from the websocket cancel handler even though the worker thread cannot
+        # be force-stopped (#106179).
+        try:
+            import threading as _th
+            if _th.current_thread().name.startswith("hermes-console"):
+                from hermes_cli.web_server_chat import _register_console_request_abort
+                # _close expects (reason) but close_once is used for streams;
+                # wrap to callable that aborts via close_once.
+                def _console_stream_abort(reason: str, _self=self):
+                    try:
+                        _self.close_once(reason)
+                    except Exception:
+                        pass
+                from hermes_cli.web_server_chat import _register_console_request_abort as _r
+                _r(_console_stream_abort)
+        except Exception:
+            pass
         return client
 
     @staticmethod
@@ -3164,6 +3199,15 @@ class _StreamingCall(StreamingWaitMonitor):
             # Reuse only after a clean stream; otherwise really close (fresh pool next).
             self.clients.close_once(
                 "stream_request_complete" if self.result["response"] is not None else "stream_error_cleanup")
+            # Console cooperative abort: clear the console abort registration for this
+            # streaming worker so a later cancel on a reused thread doesn't hit a stale hook (#106179).
+            try:
+                import threading as _th2
+                if _th2.current_thread().name.startswith("hermes-console"):
+                    from hermes_cli.web_server_chat import _unregister_console_request_abort
+                    _unregister_console_request_abort()
+            except Exception:
+                pass
 
     # ── poll-loop monitor (heartbeat / stale kill / interrupt) ──────────
 

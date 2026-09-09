@@ -459,6 +459,46 @@ _CONSOLE_EXECUTOR_MAX_WORKERS = 4
 _console_executor: Optional[concurrent.futures.ThreadPoolExecutor] = None
 _console_executor_lock = threading.Lock()
 
+# Cooperative abort registry for console executor workers (#106179).
+# Console commands run synchronously in ThreadPoolExecutor workers; asyncio
+# Task.cancel()/wait_for timeout cannot stop an already-running thread.
+# If a console command owns an LLM request (custom provider backed by
+# llama.cpp), the worker thread registers its _active_request_abort hook here
+# so the websocket cancel/timeout path can force-close the provider HTTP
+# stream instead of leaving it decoding for 30+ minutes.
+_console_abort_lock = threading.Lock()
+_console_active_aborts: dict[int, object] = {}
+
+
+def _register_console_request_abort(abort) -> None:
+    if not callable(abort):
+        return
+    tid = threading.get_ident()
+    with _console_abort_lock:
+        _console_active_aborts[tid] = abort
+
+
+def _unregister_console_request_abort(abort=None) -> None:
+    tid = threading.get_ident()
+    with _console_abort_lock:
+        if abort is None:
+            _console_active_aborts.pop(tid, None)
+        elif _console_active_aborts.get(tid) is abort:
+            _console_active_aborts.pop(tid, None)
+
+
+def _abort_console_active_request(reason: str) -> None:
+    """Abort any active console-owned LLM request (best-effort, #106179)."""
+    with _console_abort_lock:
+        aborts = list(_console_active_aborts.values())
+    for abort in aborts:
+        try:
+            abort(reason)
+        except Exception:
+            _log.debug("console abort hook failed (%s)", reason, exc_info=True)
+    if aborts:
+        _log.info("console cooperative abort dispatched to %d worker(s) (%s)", len(aborts), reason)
+
 
 def _get_console_executor() -> concurrent.futures.ThreadPoolExecutor:
     """Lazily create the bounded console worker pool (once per process)."""

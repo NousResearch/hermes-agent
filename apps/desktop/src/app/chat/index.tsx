@@ -704,7 +704,6 @@ const ChatViewContent = memo(function ChatViewContent({
     reasoningMenuContent,
     requestModelOptionsForOwner
   })
-
   // Drop files anywhere in the conversation area, not just on the composer
   // input. In-app drags (project tree / gutter) carry workspace-relative paths
   // the gateway resolves directly, so they stay inline `@file:` refs. OS/Finder

@@ -101,6 +101,30 @@ class TestUploadToPastebin:
             with pytest.raises(RuntimeError, match="Failed to upload"):
                 upload_to_pastebin("content")
 
+    def test_fallback_defaults_to_one_day_retention(self):
+        """dpaste.com's minimum retention is 1 day and anonymous pastes cannot be
+        deleted, so the fallback must never default to a longer window (#106164)."""
+        from hermes_cli.debug import upload_to_pastebin
+
+        with patch("hermes_cli.debug._upload_paste_rs",
+                    side_effect=Exception("down")), \
+             patch("hermes_cli.debug._upload_dpaste_com",
+                    return_value="https://dpaste.com/TEST") as dp:
+            upload_to_pastebin("content")
+
+        dp.assert_called_once_with("content", expiry_days=1)
+
+    def test_explicit_expiry_is_passed_through(self):
+        from hermes_cli.debug import upload_to_pastebin
+
+        with patch("hermes_cli.debug._upload_paste_rs",
+                    side_effect=Exception("down")), \
+             patch("hermes_cli.debug._upload_dpaste_com",
+                    return_value="https://dpaste.com/TEST") as dp:
+            upload_to_pastebin("content", expiry_days=30)
+
+        dp.assert_called_once_with("content", expiry_days=30)
+
 
 # ---------------------------------------------------------------------------
 # Log reading
@@ -632,6 +656,14 @@ class TestDeletePaste:
         assert req.method == "DELETE"
         assert "paste.rs/abc123" in req.full_url
 
+    def test_dpaste_url_error_explains_no_delete(self):
+        """dpaste.com pastes have no owner token, so the user must be told the
+        paste cannot be deleted and will expire on its own (#106164)."""
+        from hermes_cli.debug import delete_paste
+
+        with pytest.raises(ValueError, match="cannot be deleted.*expire on their own"):
+            delete_paste("https://dpaste.com/ABC123")
+
 
 class TestScheduleAutoDelete:
     """``_schedule_auto_delete`` used to spawn a detached Python subprocess
@@ -814,6 +846,66 @@ class TestShareIncludesAutoDelete:
         assert "PUBLIC paste service" in out
         assert "NOT redacted" in out
 
+    def test_privacy_notice_mentions_dpaste_fallback(self, hermes_home, capsys):
+        from hermes_cli.debug import run_debug_share
+
+        args = MagicMock()
+        args.lines = 50
+        args.local = False
+        args.nous = False
+
+        with patch("hermes_cli.dump.run_dump"), \
+             patch("hermes_cli.debug.upload_to_pastebin",
+                    return_value="https://paste.rs/test"), \
+             patch("hermes_cli.debug._schedule_auto_delete"):
+            run_debug_share(args)
+
+        out = capsys.readouterr().out
+        assert "fall back to dpaste.com" in out
+        assert "CANNOT be deleted" in out
+
+    def test_share_output_warns_on_dpaste_fallback(self, hermes_home, capsys):
+        """With dpaste.com URLs the output must not promise 6-hour auto-delete
+        or a working `hermes debug delete` (#106164)."""
+        from hermes_cli.debug import run_debug_share
+
+        args = MagicMock()
+        args.lines = 50
+        args.expire = 1
+        args.local = False
+        args.nous = False
+
+        with patch("hermes_cli.dump.run_dump"), \
+             patch("hermes_cli.debug.upload_to_pastebin",
+                    return_value="https://dpaste.com/TEST"), \
+             patch("hermes_cli.debug._schedule_auto_delete"):
+            run_debug_share(args)
+
+        out = capsys.readouterr().out
+        assert "fell back to dpaste.com" in out
+        assert "CANNOT be deleted" in out
+        assert "To delete now" not in out
+        assert "paste.rs pastes will auto-delete in 6 hours" in out
+
+    def test_share_output_keeps_delete_hint_for_paste_rs(self, hermes_home, capsys):
+        from hermes_cli.debug import run_debug_share
+
+        args = MagicMock()
+        args.lines = 50
+        args.local = False
+        args.nous = False
+
+        with patch("hermes_cli.dump.run_dump"), \
+             patch("hermes_cli.debug.upload_to_pastebin",
+                    return_value="https://paste.rs/test"), \
+             patch("hermes_cli.debug._schedule_auto_delete"):
+            run_debug_share(args)
+
+        out = capsys.readouterr().out
+        assert "Pastes will auto-delete in 6 hours" in out
+        assert "To delete now:  hermes debug delete <url>" in out
+        assert "fell back to dpaste.com" not in out
+
 
 # ---------------------------------------------------------------------------
 # build_debug_share — structured core used by the dashboard endpoint
@@ -873,6 +965,20 @@ class TestBuildDebugShare:
         assert "Report" in result.urls
         assert len(result.failures) == 1
         assert "paste service hiccup" in result.failures[0]
+
+    def test_defaults_to_one_day_fallback_expiry(self, hermes_home):
+        """The dashboard endpoint calls build_debug_share() with no expiry; the
+        default must stay at dpaste.com's 1-day minimum (#106164)."""
+        from hermes_cli.debug import build_debug_share
+
+        with patch("hermes_cli.dump.run_dump"), patch(
+            "hermes_cli.debug.upload_to_pastebin",
+            return_value="https://paste.rs/x"
+        ) as up, patch("hermes_cli.debug._schedule_auto_delete"):
+            build_debug_share(log_lines=50)
+
+        for call in up.call_args_list:
+            assert call.kwargs.get("expiry_days") == 1
 
 
 

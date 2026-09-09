@@ -5,7 +5,7 @@ import pytest
 from rich.console import Console
 
 from cli import ChatConsole
-from hermes_cli.skills_hub import do_check, do_install, do_list, do_update, handle_skills_slash
+from hermes_cli.skills_hub import do_check, do_install, do_list, do_tap, do_update, handle_skills_slash
 
 
 class _DummyLockFile:
@@ -496,3 +496,48 @@ def test_do_update_unmodified_skill_updates_normally(monkeypatch, tmp_path):
 
     assert installs == ["someone/hub-skill"]
     assert "Updated 1 skill(s)" in sink.getvalue()
+
+
+def test_do_tap_lifecycle_and_refresh(hub_env):
+    sink = StringIO()
+    console = Console(file=sink, force_terminal=False, color_system=None)
+
+    # 1. Empty list
+    do_tap("list", console=console)
+    assert "No custom taps configured" in sink.getvalue()
+
+    # 2. Add tap
+    sink.seek(0); sink.truncate(0)
+    do_tap("add", "callacat/hermes-capabilities", console=console)
+    assert "Added tap" in sink.getvalue()
+
+    # 3. List configured
+    sink.seek(0); sink.truncate(0)
+    do_tap("list", console=console)
+    assert "callacat/hermes-capabilities" in sink.getvalue()
+
+    # 4. Refresh specific tap
+    sink.seek(0); sink.truncate(0)
+    do_tap("refresh", "callacat/hermes-capabilities", console=console)
+    assert "Refreshed tap index cache" in sink.getvalue()
+
+    # 5. Refresh all taps
+    sink.seek(0); sink.truncate(0)
+    do_tap("refresh", "", console=console)
+    assert "Refreshed index cache for all configured taps" in sink.getvalue()
+
+    # 6. Refresh non-existent tap
+    sink.seek(0); sink.truncate(0)
+    do_tap("refresh", "nonexistent/tap", console=console)
+    assert "Tap not found" in sink.getvalue()
+
+    # 7. Remove tap
+    sink.seek(0); sink.truncate(0)
+    do_tap("remove", "callacat/hermes-capabilities", console=console)
+    assert "Removed tap" in sink.getvalue()
+
+    # 8. Unknown action
+    sink.seek(0); sink.truncate(0)
+    do_tap("invalid_action", console=console)
+    assert "Unknown tap action" in sink.getvalue()
+    assert "refresh" in sink.getvalue()

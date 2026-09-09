@@ -992,6 +992,7 @@ New taps are assigned `community` trust by default. Skills installed from them r
 hermes skills tap list                                # show all configured taps
 hermes skills tap add myorg/skills-repo               # add (default path: skills/)
 hermes skills tap remove myorg/skills-repo            # remove
+hermes skills tap refresh [myorg/skills-repo]         # refresh index cache (all taps or specific tap)
 ```
 
 Inside a running session:
@@ -1000,9 +1001,10 @@ Inside a running session:
 /skills tap list
 /skills tap add myorg/skills-repo
 /skills tap remove myorg/skills-repo
+/skills tap refresh [myorg/skills-repo]
 ```
 
-Taps are stored in `~/.hermes/skills/.hub/taps.json` (created on demand).
+Taps are stored in `~/.hermes/skills/.hub/taps.json` (created on demand). Taps support both flat (`skills/<skill-name>/SKILL.md`) and category-nested (`skills/<category>/<skill-name>/SKILL.md`) layouts.
 
 ## Bundled skill updates (`hermes skills reset`)
 

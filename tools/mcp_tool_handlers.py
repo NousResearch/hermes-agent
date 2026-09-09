@@ -279,6 +279,37 @@ async def _track_inflight_rpc(server: Any, server_name: str, op: str):
             inflight.discard(task)
 
 
+def _session_user_id_call_kwargs(server: Any, args: dict) -> Dict[str, Any]:
+    """``call_tool`` kwargs with the session user id attached as request metadata.
+
+    Salvage of #91469 (frizikk): MCP servers that authorize or scope by caller
+    see ``HERMES_SESSION_USER_ID`` under a ``_meta``-style key instead of an
+    anonymous call. The key is overridable per server via
+    ``server.session_user_id_meta_key``; the ``call_tool`` signature is probed
+    for ``meta``/``_meta`` so stubbed sessions (MagicMock in tests) keep the
+    exact pre-PR ``(tool_name, arguments=args)`` call shape.
+    """
+    call_kwargs: Dict[str, Any] = {"arguments": args}
+    try:
+        from gateway.session_context import get_session_env
+
+        session_user_id = get_session_env("HERMES_SESSION_USER_ID", "")
+    except Exception:
+        return call_kwargs
+    if not session_user_id:
+        return call_kwargs
+    meta_key = getattr(server, "session_user_id_meta_key", None) or "nousresearch.hermes/user_id"
+    try:
+        sig = inspect.signature(server.session.call_tool)
+    except (ValueError, TypeError):
+        return call_kwargs
+    if "meta" in sig.parameters:
+        call_kwargs["meta"] = {meta_key: session_user_id}
+    elif "_meta" in sig.parameters:
+        call_kwargs["_meta"] = {meta_key: session_user_id}
+    return call_kwargs
+
+
 async def _call_tool_racing_stdio_death(server, server_name: str, tool_name: str, args: dict):
     """``session.call_tool`` that fails fast when the stdio child is/gets dead: pre-call (a dead
     child must not hold the slot for the full timeout) and mid-call (race against
@@ -289,7 +320,7 @@ async def _call_tool_racing_stdio_death(server, server_name: str, tool_name: str
     _stdio_dead = getattr(server, "_stdio_children_dead", None)
     if callable(_stdio_dead) and _stdio_dead() is True:
         raise _StdioChildExited(f"MCP stdio subprocess for '{server_name}' had already exited when the call was dispatched")
-    _call_coro = server.session.call_tool(tool_name, arguments=args)
+    _call_coro = server.session.call_tool(tool_name, **_session_user_id_call_kwargs(server, args))
     _watch_children = getattr(server, "_watch_stdio_children", None)
     if not (inspect.iscoroutinefunction(_watch_children) and asyncio.iscoroutine(_call_coro)):
         # Stubbed sessions return a non-awaitable, or there is no child-watcher to race: plain await.

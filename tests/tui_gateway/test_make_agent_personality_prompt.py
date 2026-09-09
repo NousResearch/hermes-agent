@@ -16,7 +16,7 @@ def _runtime():
     }
 
 
-def _call_make_agent(cfg):
+def _call_make_agent(cfg, on_construct=None):
     with ExitStack() as stack:
         stack.enter_context(patch("tui_gateway.server._load_cfg", return_value=cfg))
         stack.enter_context(patch("tui_gateway.server._get_db", return_value=MagicMock()))
@@ -42,7 +42,7 @@ def _call_make_agent(cfg):
                 return_value=_runtime(),
             )
         )
-        mock_agent = stack.enter_context(patch("run_agent.AIAgent"))
+        mock_agent = stack.enter_context(patch("run_agent.AIAgent", side_effect=on_construct))
         from tui_gateway.server import _make_agent
 
         _make_agent("sid-1", "key-1")
@@ -71,3 +71,24 @@ def test_make_agent_preserves_manual_prompt_without_personality():
     }
     kwargs = _call_make_agent(cfg)
     assert kwargs["ephemeral_system_prompt"] == "manual forever"
+
+
+def test_managed_agent_build_uses_certified_prompt_and_scoped_cwd(monkeypatch, tmp_path):
+    from agent.runtime_cwd import resolve_agent_cwd
+    from tui_gateway import server
+
+    prior = resolve_agent_cwd()
+    metadata = {"path": str(tmp_path), "root_session_id": "root", "branch": "session/root", "base_commit": "abc"}
+    monkeypatch.setattr(server, "_sessions", {"sid-1": {"conversation_worktree": metadata}})
+    seen = []
+
+    def construct(**kwargs):
+        seen.append(resolve_agent_cwd())
+        return MagicMock()
+
+    kwargs = _call_make_agent({"agent": {"system_prompt": "Keep the operator instructions."}}, construct)
+    assert seen == [tmp_path]
+    assert resolve_agent_cwd() == prior
+    assert "Keep the operator instructions." in kwargs["ephemeral_system_prompt"]
+    assert str(tmp_path) in kwargs["ephemeral_system_prompt"]
+    assert kwargs["ephemeral_system_prompt"].count("certified Git worktree") == 1

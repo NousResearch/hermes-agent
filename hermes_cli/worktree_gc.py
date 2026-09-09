@@ -115,8 +115,11 @@ def _classify_tree(_ops, repo_root: str, entry: Path, merge_cache, remote_heads)
         return "keep", "kanban task tree (owned by kanban gc)", []
     from agent.conversation_worktree import conversation_worktree_is_manager_owned
 
-    if conversation_worktree_is_manager_owned(entry) is not False:
+    ownership = conversation_worktree_is_manager_owned(entry)
+    if ownership is True:
         return "keep", "manager-owned conversation worktree", []
+    if ownership is None:
+        return "keep", "conversation ownership could not be verified", []
     if _ops._worktree_lock_is_live(repo_root, path, timeout=5) == "live":
         return "keep", "in use by a running hermes session", []
     tracked_dirty, untracked = _dirty_split(path)
@@ -206,9 +209,11 @@ def reclaim_worktrees(
         try:
             remove_result = _git(["worktree", "remove", record.path, "--force"], cwd=repo_root, timeout=30)
             if remove_result.returncode != 0:
-                return [f"failed to remove {record.name}: {remove_result.stderr.strip()}"]
+                record_actions.append(f"failed to remove {record.name}: {remove_result.stderr.strip()}")
+                return record_actions
             if record.verdict == "reap-keep-branch":
-                return [f"removed {record.name} (branch {record.branch} kept — pushed open-PR lane)"]
+                record_actions.append(f"removed {record.name} (branch {record.branch} kept — pushed open-PR lane)")
+                return record_actions
             if record.branch and record.branch not in _PROTECTED_BRANCHES:
                 _git(["branch", "-D", record.branch], cwd=repo_root, timeout=10)
             record_actions.append(f"removed {record.name}")

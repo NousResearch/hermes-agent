@@ -190,6 +190,8 @@ constructing the agent. The legacy `-w` flow remains available when conversation
 disabled or no conversation policy applies. Hermes must not create both a legacy CLI worktree and a
 conversation worktree for the same session.
 
+The CLI binding, lease, and policy helpers live in `hermes_cli/cli_conversation_worktree_mixin.py`. Session and branch dispatch call that module before publishing a new identity. Both startup pruning (`hermes_cli/worktree_ops.py`) and attended cleanup (`hermes_cli/worktree_gc.py`) preserve manager-owned or uncertain trees and recheck ownership under the manager lock before mutation.
+
 ### Discord and iMessage
 
 The gateway's fresh-session/reset path invokes the manager once when it creates a new root session.

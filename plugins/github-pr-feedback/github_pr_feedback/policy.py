@@ -397,6 +397,7 @@ class MergeMaintainerPolicy:
     report_only: bool
     post_merge: PostMergePolicy | None
     allow_budget_exhausted_local_ci: bool = False
+    auto_enroll_owned_prs: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -1043,6 +1044,7 @@ def _parse_merge_maintainer(
             "report_only",
             "post_merge",
             "require_per_pr_enrollment",
+            "auto_enroll_owned_prs",
         }
         if set(raw) - allowed:
             raise ValueError("disabled merge_maintainer has unknown fields")
@@ -1058,7 +1060,7 @@ def _parse_merge_maintainer(
         "report_only",
         "post_merge",
     }
-    optional = {"allow_budget_exhausted_local_ci"}
+    optional = {"allow_budget_exhausted_local_ci", "auto_enroll_owned_prs"}
     if not required.issubset(raw) or set(raw) - required - optional:
         raise ValueError("merge_maintainer has missing or unknown fields")
     repository = _repository(raw["repository"], "merge_maintainer repository")
@@ -1099,6 +1101,9 @@ def _parse_merge_maintainer(
     )
     if not isinstance(allow_budget_exhausted_local_ci, bool):
         raise ValueError("allow_budget_exhausted_local_ci must be a boolean")
+    auto_enroll_owned_prs = raw.get("auto_enroll_owned_prs", False)
+    if not isinstance(auto_enroll_owned_prs, bool):
+        raise ValueError("auto_enroll_owned_prs must be a boolean")
     return MergeMaintainerPolicy(
         assignee=_nonempty_string(raw["assignee"], "merge_maintainer assignee"),
         repository=repository,
@@ -1109,6 +1114,7 @@ def _parse_merge_maintainer(
         report_only=report_only,
         post_merge=_parse_post_merge(raw["post_merge"], target=target),
         allow_budget_exhausted_local_ci=allow_budget_exhausted_local_ci,
+        auto_enroll_owned_prs=auto_enroll_owned_prs,
     )
 
 

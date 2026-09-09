@@ -79,8 +79,8 @@ def test_block_loop_detected_event_emitted(kanban_home: Path) -> None:
         assert payload.get("kind") == "capability"
 
 
-def test_legacy_pr_feedback_needs_input_triage_auto_recovers(kanban_home: Path) -> None:
-    """Ordinary PR feedback intake loops are role-owned validation work."""
+def test_machine_pr_feedback_block_returns_to_dispatcher(kanban_home: Path) -> None:
+    """Recoverable PR/CI worker failures never become human-sticky blocks."""
 
     import hermes_cli.kanban_db_connect as _hermes_cli_kanban_db_connect
     with _hermes_cli_kanban_db_connect.connect_closing() as conn:
@@ -93,19 +93,18 @@ def test_legacy_pr_feedback_needs_input_triage_auto_recovers(kanban_home: Path) 
         )
         assert kb.claim_task(conn, tid, claimer="pr-repair-steward") is not None
         kb.block_task(conn, tid, reason="start validation", kind="needs_input")
-        kb.unblock_task(conn, tid)
-        assert kb.claim_task(conn, tid, claimer="pr-repair-steward") is not None
-        kb.block_task(conn, tid, reason="start validation", kind="needs_input")
-        assert kb.get_task(conn, tid).status == "triage"
-
-        promoted = kb.recompute_ready(conn)
-
-        assert promoted == 1
         task = kb.get_task(conn, tid)
         assert task is not None
         assert task.status == "ready"
         events = [event.kind for event in kb.list_events(conn, tid)]
-        assert "triage_auto_resolved" in events
+        assert "machine_handoff" in events
+
+
+def test_db_accepts_synthetic_assignee_for_internal_worker(kanban_home: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    (kanban_home / "profiles").mkdir()
+    with kbc.connect_closing() as conn:
+        task_id = kb.create_task(conn, title="Review worker", assignee="worker")
+        assert task_id.startswith("t_")
 
 
 def test_intent_review_needs_input_triage_stays_human_gated(kanban_home: Path) -> None:

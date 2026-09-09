@@ -509,8 +509,9 @@ async def test_production_factory_new_failure_preserves_all_old_gateway_state(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("policy_enabled", [False, True])
 async def test_first_cli_handoff_reuses_verified_workspace_without_binding_claim(
-    tmp_path, manager
+    tmp_path, manager, policy_enabled
 ):
     """Default interactive creation would claim a second root and lose CLI cwd."""
     from gateway.run import GatewayRunner
@@ -528,7 +529,7 @@ async def test_first_cli_handoff_reuses_verified_workspace_without_binding_claim
     store = SessionStore(
         tmp_path / "sessions",
         config,
-        conversation_worktree_manager_factory=lambda _db: manager,
+        conversation_worktree_manager_factory=lambda _db: manager if policy_enabled else None,
     )
     store._db = SimpleNamespace(get_conversation_root=lambda session_id: session_id)
     adapter = MagicMock()
@@ -573,7 +574,13 @@ async def test_first_cli_handoff_reuses_verified_workspace_without_binding_claim
     assert entry.session_id == "cli-session"
     assert entry.cwd == str(cli_workspace)
     assert observed["cwd"] == str(cli_workspace)
-    assert list(store._conversation_root_leases) == ["cli-session"]
+    assert list(store._conversation_root_leases) == (["cli-session"] if policy_enabled else [])
+    # Re-handoff also repairs a pre-feature route with the same session id.
+    entry.cwd = None
+    rebound = store.switch_session(entry.session_key, "cli-session", conversation_kind="task",
+                                   persisted_cwd=str(cli_workspace))
+    assert rebound.cwd == str(cli_workspace)
+    assert manager.bound_roots == []
 
 
 @pytest.mark.asyncio
@@ -623,3 +630,100 @@ async def test_new_bind_failure_preserves_cached_agent_and_generation(tmp_path):
     assert runner.session_store._entries[session_key] is old_entry
     assert runner._agent_cache[session_key] is cached_agent
     assert runner.invalidations == []
+
+
+@pytest.mark.parametrize("fork", [False, True])
+def test_gateway_resume_and_handoff_follow_nearest_workspace_across_compression(tmp_path, monkeypatch, manager, fork):
+    import hermes_state
+
+    monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", tmp_path / "state.db")
+    store = SessionStore(tmp_path / "sessions", GatewayConfig(),
+                         conversation_worktree_manager_factory=lambda _db: manager)
+    source = SessionSource(platform=Platform.DISCORD, chat_id="lineage", chat_type="dm", user_id="operator")
+    try:
+        first = store.get_or_create_session(source)
+        expected_root = first.session_id
+        if fork:
+            expected_root = "explicit-fork"
+            store._db.create_session(expected_root, source="discord", parent_session_id=first.session_id,
+                                     model_config={"_branched_from": first.session_id})
+            manager.bind_new_root_session(expected_root, conversation_kind="interactive")
+        store._db.create_session("compressed", source="discord", parent_session_id=expected_root)
+        leases_before = dict(store._conversation_root_leases)
+        cwd, metadata = store.resolve_task_owned_workspace("compressed", str(manager.root / expected_root))
+        assert metadata["root_session_id"] == expected_root
+        assert store._conversation_root_leases == leases_before
+        switched = store.switch_session(first.session_key, "compressed")
+        assert switched.conversation_worktree["root_session_id"] == expected_root
+        assert switched.cwd == str(manager.root / expected_root)
+        assert "compressed" not in manager.bound_roots
+        cwd, metadata = store.resolve_task_owned_workspace("compressed", switched.cwd)
+        assert cwd == switched.cwd
+        assert metadata["root_session_id"] == expected_root
+        if fork:
+            assert first.session_id not in store._conversation_root_leases
+    finally:
+        store.close_all_db_handles()
+
+
+@pytest.mark.parametrize("operation", ["create", "reset", "switch"])
+def test_failed_gateway_persistence_preserves_previous_route_and_lease(store, manager, source, monkeypatch, operation):
+    first = None if operation == "create" else store.get_or_create_session(source)
+    initial_leases = dict(store._conversation_root_leases)
+    monkeypatch.setattr(store, "_save_sessions_json", lambda data: (_ for _ in ()).throw(OSError("disk full")))
+    with pytest.raises(OSError, match="disk full"):
+        if operation == "create":
+            store.get_or_create_session(source)
+        elif operation == "reset":
+            store.reset_session(first.session_key)
+        else:
+            store.switch_session(first.session_key, "other-root")
+    assert store.lookup_by_session_key(build_session_key(source)) is first
+    assert store._conversation_root_leases == initial_leases
+    assert all(not lease.released for lease in initial_leases.values())
+
+
+def test_gateway_teardown_releases_other_roots_and_retains_failed_lease_for_retry(store, source, monkeypatch):
+    from dataclasses import replace
+
+    first = store.get_or_create_session(source)
+    second = store.get_or_create_session(replace(source, chat_id="second-chat"))
+    first_lease = store._conversation_root_leases[first.session_id]
+    second_lease = store._conversation_root_leases[second.session_id]
+    release = first_lease.release
+    monkeypatch.setattr(first_lease, "release", lambda: (_ for _ in ()).throw(
+        ConversationWorktreeError("registry unavailable", phase="lease")))
+    with pytest.raises(ConversationWorktreeError, match="registry unavailable"):
+        store.close_all_db_handles()
+    assert second_lease.released
+    assert store._conversation_root_leases == {first.session_id: first_lease}
+    monkeypatch.setattr(first_lease, "release", release)
+    store.close_all_db_handles()
+    assert first_lease.released
+    assert not store._conversation_root_leases
+
+
+@pytest.mark.parametrize("bootstrap_fails", [False, True])
+def test_legacy_interactive_route_requires_certified_migration_before_use(store, manager, source, bootstrap_fails):
+    key = build_session_key(source)
+    legacy = SessionEntry(session_key=key, session_id="legacy-root", created_at=datetime.now(),
+                          updated_at=datetime.now(), origin=source, platform=source.platform,
+                          chat_type=source.chat_type, cwd=str(manager.root.parent))
+    store._ensure_loaded()
+    store._entries[key] = legacy
+    manager.fail_new = bootstrap_fails
+    if bootstrap_fails:
+        with pytest.raises(ConversationWorktreeError, match="bootstrap did not complete"):
+            store.get_or_create_session(source, touch_activity=False)
+        assert store.lookup_by_session_key(key) is legacy
+        assert legacy.cwd == str(manager.root.parent)
+        assert not legacy.conversation_worktree
+        assert not store._conversation_root_leases
+    else:
+        resolved = store.get_or_create_session(source, touch_activity=False)
+        assert resolved is legacy
+        assert resolved.cwd == str(manager.root / "legacy-root")
+        assert manager.bound_roots == ["legacy-root"]
+        import json
+        saved = json.loads((store.sessions_dir / "sessions.json").read_text())
+        assert saved[key]["cwd"] == resolved.cwd

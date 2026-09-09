@@ -61,6 +61,7 @@ def _compute_host_turn_frame(
         "history_version": history_version, "cols": int(session.get("cols", 80) or 80),
         "cwd": _session_cwd(session),
         "context_cwd_is_launch_artifact": _context_cwd_is_launch_artifact(session),
+        "conversation_worktree": dict(session.get("conversation_worktree") or {}),
         "profile_home": session.get("profile_home") or "",
         "model_override": session.get("model_override"),
         "reasoning_config_override": session.get("create_reasoning_override"),

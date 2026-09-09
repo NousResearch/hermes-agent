@@ -672,6 +672,8 @@ def _classify_prune_candidates(repo_root: str, candidates: list) -> list:
     check is a read-only query on a distinct worktree (no repo-wide lock), so a bounded pool is
     safe; mutation stays serial. ``git cherry`` verdicts are memoized on disk.
     """
+    from agent.conversation_worktree import conversation_worktree_is_manager_owned
+
     merge_cache = _load_worktree_merge_cache()
     cache_size_before = len(merge_cache)
     cache_lock = threading.Lock()
@@ -688,6 +690,9 @@ def _classify_prune_candidates(repo_root: str, candidates: list) -> list:
 
     def _classify(item):
         entry, mtime, force = item
+        ownership = conversation_worktree_is_manager_owned(entry)
+        if ownership is not False:
+            return (entry, mtime, force, "conversation-preserved", None)
         # Never delete real work regardless of age: only clean, merged/pushed trees are reaped.
         if _worktree_is_dirty(str(entry), timeout=5):
             return (entry, mtime, force, "dirty", None)
@@ -743,6 +748,8 @@ def _reap_prune_verdicts(repo_root: str, verdicts: list, stale_work_cutoff: floa
     *kept_branches* must survive the orphaned-branch pass. Branch deletion is gated on
     ``worktree remove`` succeeding so a failed removal never orphans reachable commits.
     """
+    from agent.conversation_worktree import conversation_worktree_reclaim_guard
+
     preserved_stale: list = []
     kept_branches: set = set()
     for entry, mtime, force, verdict, lock_state in verdicts:
@@ -751,25 +758,28 @@ def _reap_prune_verdicts(repo_root: str, verdicts: list, stale_work_cutoff: floa
             if mtime <= stale_work_cutoff:
                 preserved_stale.append(f"{entry.name} ({reason})")
             continue
-        if verdict == "locked-live":
+        if verdict in {"locked-live", "conversation-preserved"}:
             logger.debug("Skipping live-locked worktree: %s", entry.name)
             continue
 
-        if lock_state == "dead":
-            _git_quiet(["worktree", "unlock", str(entry)], repo_root,
-                       log=f"Failed to unlock dead worktree {entry.name}")
-
         try:
-            branch = _git(["branch", "--show-current"], str(entry), timeout=5).stdout.strip()
-            remove_result = _git(["worktree", "remove", str(entry), "--force"], repo_root, timeout=15)
-            if remove_result.returncode != 0:
-                logger.debug("Failed to remove worktree %s: %s", entry.name, remove_result.stderr.strip())
-                continue
-            if branch and verdict == "reap-keep-branch":
-                kept_branches.add(branch)
-            elif branch:
-                _git(["branch", "-D", branch], repo_root)
-            logger.debug("Pruned stale worktree: %s (force=%s)", entry.name, force)
+            with conversation_worktree_reclaim_guard(Path(repo_root), entry) as ownership:
+                if ownership is not False:
+                    continue
+                if lock_state == "dead":
+                    _git_quiet(["worktree", "unlock", str(entry)], repo_root,
+                               log=f"Failed to unlock dead worktree {entry.name}")
+
+                branch = _git(["branch", "--show-current"], str(entry), timeout=5).stdout.strip()
+                remove_result = _git(["worktree", "remove", str(entry), "--force"], repo_root, timeout=15)
+                if remove_result.returncode != 0:
+                    logger.debug("Failed to remove worktree %s: %s", entry.name, remove_result.stderr.strip())
+                    continue
+                if branch and verdict == "reap-keep-branch":
+                    kept_branches.add(branch)
+                elif branch:
+                    _git(["branch", "-D", branch], repo_root)
+                logger.debug("Pruned stale worktree: %s (force=%s)", entry.name, force)
         except Exception as e:
             logger.debug("Failed to prune worktree %s: %s", entry.name, e)
     return preserved_stale, kept_branches

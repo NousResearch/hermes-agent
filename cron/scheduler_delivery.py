@@ -264,7 +264,7 @@ def _seed_cron_session(
                 scope_id=str(scope_id) if scope_id else None)
             # Create the row and pass its exact id to the mirror — origin-heuristic rediscovery
             # bails on populated chats.
-            _entry = session_store.get_or_create_session(dest_source)
+            _entry = session_store.get_or_create_session(dest_source, conversation_kind="task")
             seeded_session_id = getattr(_entry, "session_id", None)
     return mirror_to_session(
         platform_name, str(chat_id), _cron_mirror_message(job, text),

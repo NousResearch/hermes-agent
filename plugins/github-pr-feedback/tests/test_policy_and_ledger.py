@@ -1502,16 +1502,17 @@ def test_policy_accepts_a_linked_git_worktree(tmp_path: Path) -> None:
     assert policy.enabled is True
 
 
-def test_ledger_uses_profile_scoped_hermes_home(
+def test_ledger_uses_shared_control_home_for_profile_workers(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "profiles" / "pr-local-ci-auditor"))
     monkeypatch.setattr(
-        "github_pr_feedback.ledger.get_hermes_home", lambda: tmp_path / "profile"
+        "github_pr_feedback.ledger.get_default_hermes_root", lambda: tmp_path
     )
 
     ledger = FeedbackLedger.for_current_profile()
 
-    assert ledger.path == tmp_path / "profile" / "github-pr-feedback" / "ledger.sqlite3"
+    assert ledger.path == tmp_path / "github-pr-feedback" / "ledger.sqlite3"
     ledger.close()
 
 

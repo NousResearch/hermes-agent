@@ -108,7 +108,13 @@ def main():
     _start_parent_death_watchdog(os.getppid())
     _prepare_slash_worker_runtime()
     with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
-        cli = HermesCLI(model=args.model or None, compact=True, resume=args.session_key, verbose=False)
+        cli = HermesCLI(
+            model=args.model or None,
+            compact=True,
+            resume=args.session_key,
+            verbose=False,
+            manage_conversation_worktree=False,
+        )
     # Spurious stdin-EOF recovery (same shared-file-description O_NONBLOCK issue as the gateway entry
     # point — any child inheriting fd 0 can flip the flag).
     _sw_recovery_times: list[float] = []

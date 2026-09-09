@@ -9,6 +9,7 @@ from unittest.mock import patch
 import yaml
 
 from hermes_cli.config import migrate_config
+from hermes_cli.config_defaults import DEFAULT_CONFIG
 
 
 LEGACY_POLICY = {
@@ -56,7 +57,7 @@ def test_v39_moves_legacy_desktop_policy_without_changing_unrelated_fields(tmp_p
 
     migrated = _migrate(tmp_path, original)
 
-    assert migrated["_config_version"] == 40
+    assert migrated["_config_version"] == DEFAULT_CONFIG["_config_version"]
     assert migrated["conversation_worktree"] == LEGACY_POLICY
     assert migrated["desktop"] == {
         "repo_scan_enabled": False,
@@ -85,7 +86,7 @@ def test_v39_explicit_top_level_policy_wins_and_legacy_duplicate_is_removed(tmp_
 
     migrated = _migrate(tmp_path, original)
 
-    assert migrated["_config_version"] == 40
+    assert migrated["_config_version"] == DEFAULT_CONFIG["_config_version"]
     assert migrated["conversation_worktree"] == canonical
     assert migrated["desktop"] == {"repo_scan_roots": ["/srv/projects"]}
     assert migrated["session"] == original["session"]

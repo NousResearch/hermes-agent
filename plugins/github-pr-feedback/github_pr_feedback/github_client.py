@@ -54,12 +54,11 @@ class MergeStateStillComputingError(GitHubClientError):
 
 
 MAX_FEEDBACK_BODY_CHARS = 16_384
-# Bumped from 100: a single-operator repo generating many PRs in parallel
-# (burndown-phase branches, PR-repair follow-ups) can genuinely exceed 100
-# open PRs at once, and the discovery-cap check must fail closed rather than
-# silently operate on a truncated page -- so this has to stay ahead of real
-# volume, not just today's count.
-MAX_DISCOVERED_PULL_REQUESTS = 300
+# Bounded above the current single-operator backlog (329 open LunaBot PRs as
+# of 2026-09-06). The discovery-cap check must fail closed rather than silently
+# operate on a truncated page, so keep the ceiling finite while leaving room
+# for the burst of PRs produced by the burndown workflow.
+MAX_DISCOVERED_PULL_REQUESTS = 500
 _REPOSITORY = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 _SHA = re.compile(r"^[0-9a-fA-F]{40}$")
 _LOGIN = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$")
@@ -121,16 +120,24 @@ class GitHubRequestGate(AbstractContextManager["GitHubRequestGate"]):
         self._handle: Any = None
         self._lock_handle: Any = None
         self._state: dict[str, float] = {}
+        self._entry_lock = threading.Lock()
+        self._entry_lock_held = False
         self._process_lock_held = False
 
     def __enter__(self) -> "GitHubRequestGate":
         self._path.parent.mkdir(parents=True, exist_ok=True)
-        _PROCESS_REQUEST_LOCK.acquire()
-        self._process_lock_held = True
+        # Acquire the per-gate lock before the shared process lock.  The file
+        # lock is acquired before the process lock so separate Hermes
+        # processes cannot deadlock while each holds one lock and waits for
+        # the other.
+        self._entry_lock.acquire()
+        self._entry_lock_held = True
         try:
             self._lock_handle = self._lock_path.open("a+", encoding="utf-8")
             if fcntl is not None:
                 fcntl.flock(self._lock_handle.fileno(), fcntl.LOCK_EX)
+            _PROCESS_REQUEST_LOCK.acquire()
+            self._process_lock_held = True
             self._handle = self._path.open("a+", encoding="utf-8")
             self._state = self._read_state()
             now = self._clock()
@@ -160,6 +167,9 @@ class GitHubRequestGate(AbstractContextManager["GitHubRequestGate"]):
             if self._process_lock_held:
                 self._process_lock_held = False
                 _PROCESS_REQUEST_LOCK.release()
+            if self._entry_lock_held:
+                self._entry_lock_held = False
+                self._entry_lock.release()
             raise
 
     def defer(self, seconds: float) -> None:
@@ -189,6 +199,9 @@ class GitHubRequestGate(AbstractContextManager["GitHubRequestGate"]):
             if self._process_lock_held:
                 self._process_lock_held = False
                 _PROCESS_REQUEST_LOCK.release()
+            if self._entry_lock_held:
+                self._entry_lock_held = False
+                self._entry_lock.release()
 
     def _read_state(self) -> dict[str, float]:
         assert self._handle is not None
@@ -1363,6 +1376,15 @@ class GitHubClient:
         )
         feedback.sort(key=lambda item: item.created_at)
         return tuple(feedback)
+
+    def list_ci_receipt_comments(self, repository: str, number: int) -> tuple[Feedback, ...]:
+        """Read issue comments, the durable transport for worker CI receipts."""
+
+        endpoint = f"repos/{repository}/issues/{number}/comments?per_page=100"
+        return tuple(
+            _feedback("issue_comment", row, timestamp_key="created_at")
+            for row in self._read_pages(endpoint)
+        )
 
     def _read_pages(self, endpoint: str) -> tuple[dict[str, Any], ...]:
         payload = self._json(["gh", "api", "--paginate", "--slurp", endpoint])

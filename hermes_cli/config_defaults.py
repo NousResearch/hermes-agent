@@ -1812,8 +1812,9 @@ DEFAULT_CONFIG = {
             # Range 200..60000.
             "listing_max_tokens": 4000,
         },
-        # Remote connector discovery/lifecycle. Free-tier identities do not need
-        # a subscription preflight; the gateway enforces their actual grant.
+        # Remote connector discovery/lifecycle through the Nous tool gateway.
+        # The flag is the user's off switch; availability additionally requires
+        # the portal sign-in every managed tool gates on.
         "connectors": {"enabled": True},
     },
     "logging": {  # File logging to ~/.hermes/logs/: agent.log captures INFO+, errors.log WARNING+.

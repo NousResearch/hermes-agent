@@ -28,8 +28,8 @@ consent flow — a promise with no delivery path.
 De-authentication is deliberately NOT exposed to the model: disconnecting
 an account is a user decision, made in the portal dashboard.
 
-Availability: the shared connector check_fn permits existing enabled free-tier
-identities and entitled Portal accounts; the gateway enforces actual policy.
+Availability: gated by the portal sign-in the managed tools already use
+(``check_fn``), so signed-out sessions see exactly today's behavior.
 """
 
 import json

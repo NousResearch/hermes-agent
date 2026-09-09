@@ -82,8 +82,16 @@ export function useQuickEntryBridge({
     }
 
     setQuickEntrySubmitHandler(async ({ correlationId, target, text }) => {
-      const ack = (result: QuickEntrySubmitResult) =>
+      let acknowledged = false
+
+      const ack = (result: QuickEntrySubmitResult) => {
+        if (acknowledged) {
+          return
+        }
+
+        acknowledged = true
         window.hermesDesktop?.quickEntry.ackSubmit(correlationId, result)
+      }
 
       if (target === QUICK_TARGET_NEW) {
         // Create and submit as one route-neutral operation so drift cannot
@@ -104,11 +112,31 @@ export function useQuickEntryBridge({
         const delegate = sessionTileDelegate()
 
         if (delegate) {
+          let promptDispatched = false
+
           try {
             const runtimeId = await delegate.resumeTile(target)
+            promptDispatched = true
             await delegate.submitToSession(runtimeId, text)
-            ack({ ok: true })
+
+            ack({
+              code: 'submit-failed',
+              message: 'The selected session prompt was dispatched, but backend acceptance is unknown.',
+              ok: false,
+              retryable: false
+            })
           } catch (error) {
+            if (promptDispatched) {
+              ack({
+                code: 'submit-failed',
+                message: 'The selected session prompt was dispatched, but backend acceptance is unknown.',
+                ok: false,
+                retryable: false
+              })
+
+              return
+            }
+
             ack({ code: 'submit-failed', message: error instanceof Error ? error.message : String(error), ok: false, retryable: true })
           }
 

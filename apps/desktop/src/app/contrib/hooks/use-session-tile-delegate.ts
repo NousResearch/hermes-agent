@@ -464,7 +464,7 @@ export function useSessionTileDelegate({
         if (isReadOnlyRuntimeId(runtimeId)) {
           notify({ kind: 'info', message: translateNow('desktop.readOnlyTranscriptSendBlocked') })
 
-          return
+          return runtimeId
         }
 
         const storedSessionId = storedSessionIdForRuntime(runtimeId)
@@ -505,13 +505,22 @@ export function useSessionTileDelegate({
           : requestGateway
 
         noteMessageSent($sessionTiles.get().find(tile => tile.runtimeId === runtimeId)?.workspaceMode ?? 'sessions')
+        let acceptedRuntimeId = runtimeId
 
         await withSessionNotFoundResume(
           runtimeId,
           storedSessionId,
           liveId => routedRequest('prompt.submit', { session_id: liveId, text }, PROMPT_SUBMIT_REQUEST_TIMEOUT_MS),
-          { requestGateway: routedRequest, onRecovered: rebindTileRuntime(runtimeId) }
+          {
+            requestGateway: routedRequest,
+            onRecovered: recoveredId => {
+              acceptedRuntimeId = recoveredId
+              rebindTileRuntime(runtimeId)(recoveredId)
+            }
+          }
         )
+
+        return acceptedRuntimeId
       },
       updateSession: (runtimeId, updater) => updateSessionState(runtimeId, updater)
     })

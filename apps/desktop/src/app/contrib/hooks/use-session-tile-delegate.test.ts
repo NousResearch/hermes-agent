@@ -23,7 +23,7 @@ vi.mock('@/store/gateway', async importActual => ({
   requestGatewayForProfile: vi.fn()
 }))
 
-const { getLatestSessionMessages } = await import('@/hermes')
+const { getLatestSessionMessages, PROMPT_SUBMIT_REQUEST_TIMEOUT_MS } = await import('@/hermes')
 const { requestGatewayForAgent, requestGatewayForProfile } = await import('@/store/gateway')
 
 const row = (over: Partial<SessionInfo>): SessionInfo =>
@@ -756,5 +756,75 @@ describe('useSessionTileDelegate stale multi-window guard (#65047)', () => {
       undefined
     )
     expect($notifications.get().some(note => note.kind === 'warning')).toBe(false)
+  })
+})
+
+describe('useSessionTileDelegate submitToSession', () => {
+  beforeEach(() => {
+    setSessions([])
+  })
+
+  afterEach(() => {
+    setSessions([])
+  })
+
+  it('returns the accepting runtime id on both the happy and recovered paths', async () => {
+    setSessions([row({ id: 'stored-submit', profile: 'default' })])
+
+    const state = { busy: false, messages: [{ id: 'm1' }], storedSessionId: 'stored-submit' }
+    const runtimeIdByStoredSessionIdRef = { current: new Map([['stored-submit', 'runtime-dead']]) }
+    const sessionStateByRuntimeIdRef = { current: new Map([['runtime-dead', state]]) }
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'prompt.submit') {
+        return {} as never
+      }
+
+      if (method === 'session.resume') {
+        return { session_id: 'runtime-recovered' } as never
+      }
+
+      throw new Error(`unexpected gateway method: ${method}`)
+    })
+
+    let promptAttempts = 0
+    requestGateway.mockImplementationOnce(async () => {
+      promptAttempts += 1
+      throw new Error('session not found')
+    })
+
+    renderTile(requestGateway, { runtimeIdByStoredSessionIdRef, sessionStateByRuntimeIdRef })
+    const delegate = sessionTileDelegate()!
+
+    const recoveredId = await delegate.submitToSession('runtime-dead', 'Send from Quick Entry')
+    expect(recoveredId).toBe('runtime-recovered')
+
+    const acceptedId = await delegate.submitToSession('runtime-recovered', 'Send again')
+    expect(acceptedId).toBe('runtime-recovered')
+    expect(promptAttempts).toBe(1)
+    expect(runtimeIdByStoredSessionIdRef.current.get('stored-submit')).toBe('runtime-recovered')
+    expect(requestGateway).toHaveBeenNthCalledWith(
+      1,
+      'prompt.submit',
+      { session_id: 'runtime-dead', text: 'Send from Quick Entry' },
+      PROMPT_SUBMIT_REQUEST_TIMEOUT_MS
+    )
+    expect(requestGateway).toHaveBeenNthCalledWith(2, 'session.resume', {
+      session_id: 'stored-submit',
+      source: 'desktop',
+      omit_messages: true,
+      profile: 'default'
+    })
+    expect(requestGateway).toHaveBeenNthCalledWith(
+      3,
+      'prompt.submit',
+      { session_id: 'runtime-recovered', text: 'Send from Quick Entry' },
+      PROMPT_SUBMIT_REQUEST_TIMEOUT_MS
+    )
+    expect(requestGateway).toHaveBeenNthCalledWith(
+      4,
+      'prompt.submit',
+      { session_id: 'runtime-recovered', text: 'Send again' },
+      PROMPT_SUBMIT_REQUEST_TIMEOUT_MS
+    )
   })
 })

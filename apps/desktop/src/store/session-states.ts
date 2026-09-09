@@ -2305,8 +2305,12 @@ export interface SessionTileDelegate {
    *  without writing when the cache never held it (no phantom entries); the
    *  caller writes the mirror itself. */
   updateHeldSession?(runtimeId: string, updater: (state: ClientSessionState) => ClientSessionState): boolean
-  /** Submit a prompt to a tile's live session. */
-  submitToSession(runtimeId: string, text: string): Promise<void>
+  /**
+   * Resolves with the live runtime session id that ACCEPTED the prompt. A
+   * session-not-found recovery can rebind the runtime, so the accepted id may
+   * differ from the input id; callers that report delivery must use this value.
+   */
+  submitToSession(runtimeId: string, text: string): Promise<string>
   /** THE session-state write path — routes through the wiring cache so the
    *  cache, the primary view (when active), and every tile mirror agree. */
   updateSession(runtimeId: string, updater: (state: ClientSessionState) => ClientSessionState): ClientSessionState

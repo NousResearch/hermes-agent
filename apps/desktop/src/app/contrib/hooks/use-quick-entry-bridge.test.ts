@@ -50,26 +50,7 @@ describe('useQuickEntryBridge', () => {
     vi.clearAllMocks()
   })
 
-  it('does not acknowledge a selected-session void submit as success', async () => {
-    const correlationId = 'selected-submit-correlation'
-    const ackSubmit = vi.fn()
-    ackSubmit.mockImplementationOnce(() => {
-      throw new Error('ack channel failed')
-    })
-    window.hermesDesktop = {
-      quickEntry: {
-        ackSubmit,
-        pushState: vi.fn()
-      }
-    } as typeof window.hermesDesktop
-
-    const resumeTile = vi.fn(async () => 'runtime-session-1')
-    const submitToSession = vi.fn(async () => {})
-    vi.mocked(sessionTileDelegate).mockReturnValue({
-      resumeTile,
-      submitToSession
-    } as ReturnType<typeof sessionTileDelegate>)
-
+  async function renderBridge() {
     function Harness() {
       useQuickEntryBridge({
         submitText: () => true,
@@ -89,10 +70,35 @@ describe('useQuickEntryBridge', () => {
       root?.render(createElement(Harness))
     })
 
+    return { container, submit: registeredSubmitHandler.current! }
+  }
+
+  it('acknowledges an accepted selected-session submit with exact identity', async () => {
+    const correlationId = 'selected-submit-correlation'
+    const ackSubmit = vi.fn()
+    ackSubmit.mockImplementationOnce(() => {
+      throw new Error('ack channel failed')
+    })
+    window.hermesDesktop = {
+      quickEntry: {
+        ackSubmit,
+        pushState: vi.fn()
+      }
+    } as unknown as typeof window.hermesDesktop
+
+    const resumeTile = vi.fn(async () => 'runtime-session-1')
+    const submitToSession = vi.fn(async () => 'runtime-session-1')
+    vi.mocked(sessionTileDelegate).mockReturnValue({
+      resumeTile,
+      submitToSession
+    } as unknown as ReturnType<typeof sessionTileDelegate>)
+
+    const { container, submit } = await renderBridge()
+
     expect(registeredSubmitHandler.current).toBeTypeOf('function')
 
     await act(async () => {
-      await registeredSubmitHandler.current?.({
+      await submit({
         correlationId,
         target: 'stored-session-1',
         text: 'Send from Quick Entry'
@@ -103,10 +109,115 @@ describe('useQuickEntryBridge', () => {
     expect(submitToSession).toHaveBeenCalledWith('runtime-session-1', 'Send from Quick Entry')
     expect(ackSubmit).toHaveBeenCalledTimes(1)
     expect(ackSubmit).toHaveBeenCalledWith(correlationId, {
+      ok: true,
+      runtimeSessionId: 'runtime-session-1',
+      sessionId: 'stored-session-1'
+    })
+
+    container.remove()
+  })
+
+  it('reports the recovered runtime id when the delegate rebinds it', async () => {
+    const correlationId = 'selected-submit-recovered'
+    const ackSubmit = vi.fn()
+    window.hermesDesktop = {
+      quickEntry: {
+        ackSubmit,
+        pushState: vi.fn()
+      }
+    } as unknown as typeof window.hermesDesktop
+
+    const resumeTile = vi.fn(async () => 'runtime-session-before-recovery')
+    const submitToSession = vi.fn(async () => 'runtime-session-recovered')
+    vi.mocked(sessionTileDelegate).mockReturnValue({
+      resumeTile,
+      submitToSession
+    } as unknown as ReturnType<typeof sessionTileDelegate>)
+
+    const { container, submit } = await renderBridge()
+
+    await act(async () => {
+      await submit({ correlationId, target: 'stored-session-1', text: 'Recover me' })
+    })
+
+    expect(ackSubmit).toHaveBeenCalledTimes(1)
+    expect(ackSubmit).toHaveBeenCalledWith(correlationId, {
+      ok: true,
+      runtimeSessionId: 'runtime-session-recovered',
+      sessionId: 'stored-session-1'
+    })
+
+    container.remove()
+  })
+
+  it('keeps a post-dispatch failure non-retryable', async () => {
+    const correlationId = 'selected-submit-post-dispatch-failure'
+    const ackSubmit = vi.fn()
+    window.hermesDesktop = {
+      quickEntry: {
+        ackSubmit,
+        pushState: vi.fn()
+      }
+    } as unknown as typeof window.hermesDesktop
+
+    const resumeTile = vi.fn(async () => 'runtime-session-1')
+    const submitToSession = vi.fn(async () => {
+      throw new Error('gateway down')
+    })
+    vi.mocked(sessionTileDelegate).mockReturnValue({
+      resumeTile,
+      submitToSession
+    } as unknown as ReturnType<typeof sessionTileDelegate>)
+
+    const { container, submit } = await renderBridge()
+
+    await act(async () => {
+      await submit({ correlationId, target: 'stored-session-1', text: 'Fail after dispatch' })
+    })
+
+    expect(ackSubmit).toHaveBeenCalledTimes(1)
+    expect(ackSubmit).toHaveBeenCalledWith(correlationId, {
       code: 'submit-failed',
       message: 'The selected session prompt was dispatched, but backend acceptance is unknown.',
       ok: false,
       retryable: false
+    })
+
+    container.remove()
+  })
+
+  it('keeps a pre-dispatch failure retryable', async () => {
+    const correlationId = 'selected-submit-pre-dispatch-failure'
+    const ackSubmit = vi.fn()
+    window.hermesDesktop = {
+      quickEntry: {
+        ackSubmit,
+        pushState: vi.fn()
+      }
+    } as unknown as typeof window.hermesDesktop
+
+    const resumeTile = vi.fn(async () => {
+      throw new Error('resume failed')
+    })
+    const submitToSession = vi.fn(async () => 'runtime-session-1')
+    vi.mocked(sessionTileDelegate).mockReturnValue({
+      resumeTile,
+      submitToSession
+    } as unknown as ReturnType<typeof sessionTileDelegate>)
+
+    const { container, submit } = await renderBridge()
+
+    await act(async () => {
+      await submit({ correlationId, target: 'stored-session-1', text: 'Fail before dispatch' })
+    })
+
+    expect(submitToSession).not.toHaveBeenCalled()
+    expect(ackSubmit).toHaveBeenCalledTimes(1)
+    expect(ackSubmit).toHaveBeenCalledWith(correlationId, {
+      code: 'submit-failed',
+      message: 'resume failed',
+      ok: false,
+      retryable: true
     })
 
     container.remove()

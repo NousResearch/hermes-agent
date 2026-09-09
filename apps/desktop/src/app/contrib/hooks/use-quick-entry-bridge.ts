@@ -117,14 +117,9 @@ export function useQuickEntryBridge({
           try {
             const runtimeId = await delegate.resumeTile(target)
             promptDispatched = true
-            await delegate.submitToSession(runtimeId, text)
+            const acceptedRuntimeId = await delegate.submitToSession(runtimeId, text)
 
-            ack({
-              code: 'submit-failed',
-              message: 'The selected session prompt was dispatched, but backend acceptance is unknown.',
-              ok: false,
-              retryable: false
-            })
+            ack({ ok: true, runtimeSessionId: acceptedRuntimeId, sessionId: target })
           } catch (error) {
             if (promptDispatched) {
               ack({

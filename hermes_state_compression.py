@@ -22,6 +22,14 @@ _COOLDOWN_ROW_SQL = (
     "SELECT compression_failure_cooldown_until, compression_failure_error FROM sessions WHERE id = ?"
 )
 
+# A non-automatic end stamp is stale when the row still received conversation traffic this
+# recently (#106459: a transient/erroneous end stamp wedged compression into a permanent
+# "Cannot compress further" death loop — every turn summarized fine, then publish refused,
+# then the oversized history overflowed again). Generous window: a deliberate boundary
+# (session reset/switch) re-routes subsequent turns to a NEW row within minutes, so a
+# stamped row driven by live turns this fresh is not a boundary anyone acted on.
+_STAMP_HEAL_ACTIVITY_WINDOW_SECONDS = 900.0
+
 # One forward step of get_compression_chain: the preferred continuation child of ``?``.
 _CHAIN_STEP_SQL = f"""
                     SELECT child.id
@@ -155,6 +163,71 @@ class SessionCompressionMixin:
             return updated.rowcount == 1
         return bool(self._execute_write(_do))
 
+    def _continuation_child_exists(self, conn, session_id: str) -> bool:
+        """Whether any non-branch/non-delegate/non-tool child row hangs off *session_id*
+        (continuation marker of a real boundary — a deliberate end usually forks one)."""
+        child = conn.execute(
+            """
+            SELECT 1
+            FROM sessions
+            WHERE parent_session_id = ?
+            """
+            + self._NON_CONTINUATION_CHILD_FILTER_SQL.format(alias="")
+            + """
+            LIMIT 1
+            """,
+            (session_id, session_id, session_id),
+        ).fetchone()
+        return child is not None
+
+    def end_stamp_contradicted_by_live_traffic(self, session_id: str, window_seconds: float = None) -> bool:
+        """Read-only stale-stamp predicate (#106459). True when the row is stamped ended
+        with a NON-automatic reason yet the boundary is contradicted by observable
+        liveness: no continuation child was published from it and the row still received
+        conversation traffic inside *window_seconds*. The router driving a row the stamp
+        claims is over is the same contradiction #88197 already heals for automatic
+        stamps, under stricter guards — the authoritative heal runs inside
+        ``publish_compression_child``'s transaction, where the compression lease is
+        re-verified; this read only lets the pre-flush guard skip an abort it would
+        otherwise regret (the flush is durable and not rolled back)."""
+        if not session_id:
+            return False
+        window = _STAMP_HEAL_ACTIVITY_WINDOW_SECONDS if window_seconds is None else window_seconds
+        with self._read_ctx() as conn:
+            row = conn.execute(
+                f"""
+                SELECT ended_at, end_reason, ({_sql_session_last_active("sessions")}) AS last_active
+                FROM sessions WHERE id = ?
+                """,
+                (session_id,),
+            ).fetchone()
+            if row is None or row["ended_at"] is None or is_automatic_end_reason(row["end_reason"]):
+                return False
+            if self._continuation_child_exists(conn, session_id):
+                return False
+            try:
+                last_active = float(row["last_active"])
+            except (TypeError, ValueError):
+                return False
+            return last_active >= time.time() - window
+
+    def _heal_stale_parent_end_stamp(self, conn, parent_session_id: str, last_active: Any, now: float) -> bool:
+        """Transaction-side twin of :meth:`end_stamp_contradicted_by_live_traffic`. The
+        caller must already hold a verified live compression lease (publish does, before
+        this runs). Clears the stamp only when no continuation child exists and the row
+        was driven within the heal window; anything else fails closed."""
+        if self._continuation_child_exists(conn, parent_session_id):
+            return False
+        try:
+            if float(last_active) < now - _STAMP_HEAL_ACTIVITY_WINDOW_SECONDS:
+                return False
+        except (TypeError, ValueError):
+            return False
+        conn.execute(
+            "UPDATE sessions SET ended_at = NULL, end_reason = NULL WHERE id = ?",
+            (parent_session_id,))
+        return True
+
     def _publish_child_session_row(self, conn, parent, *, parent_session_id, child_session_id, source,
                                    model, model_config, system_prompt, cwd, profile_name) -> None:
         """INSERT the compression child's ``sessions`` row copied from *parent*. Same contract as
@@ -215,8 +288,10 @@ class SessionCompressionMixin:
             parent = conn.execute(
                 """SELECT ended_at, end_reason, cwd, git_branch, git_repo_root,
                           user_id, session_key, chat_id, chat_type,
-                          thread_id, display_name, origin_json, profile_name
-                   FROM sessions WHERE id = ?""",
+                          thread_id, display_name, origin_json, profile_name,
+                          ({_sql_last_active}) AS _last_active
+                   FROM sessions WHERE id = ?""".format(
+                       _sql_last_active=_sql_session_last_active("sessions")),
                 (parent_session_id,),
             ).fetchone()
             if parent is None:
@@ -225,12 +300,20 @@ class SessionCompressionMixin:
                 # An AUTOMATIC end stamp (tui_shutdown, ws_disconnect, orphan reap, idle/LRU
                 # evict) is stale by construction — this lease holder is still continuing the
                 # conversation, and left alone it wedges rotation forever. Clear it; the closure
-                # UPDATE below re-stamps end_reason='compression'. Deliberate boundaries fail closed.
+                # UPDATE below re-stamps end_reason='compression'. A NON-automatic stamp gets one
+                # stricter liveness check (#106459): no continuation child and the row still
+                # received traffic inside the heal window means the boundary is contradicted by
+                # the router still driving it — the lease holder above is mid-rotation on a
+                # session the stamp claims is over, so heal and proceed. A quiet or forked row
+                # is a real boundary and fails closed.
                 if not is_automatic_end_reason(parent["end_reason"]):
-                    raise RuntimeError(f"Compression parent already ended: {parent_session_id}")
-                conn.execute(
-                    "UPDATE sessions SET ended_at = NULL, end_reason = NULL WHERE id = ?",
-                    (parent_session_id,))
+                    if not self._heal_stale_parent_end_stamp(
+                            conn, parent_session_id, parent["_last_active"], time.time()):
+                        raise RuntimeError(f"Compression parent already ended: {parent_session_id}")
+                else:
+                    conn.execute(
+                        "UPDATE sessions SET ended_at = NULL, end_reason = NULL WHERE id = ?",
+                        (parent_session_id,))
             if not messages:
                 raise RuntimeError("Compression child handoff must not be empty")
             self._publish_child_session_row(

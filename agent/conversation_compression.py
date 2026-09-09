@@ -2897,6 +2897,21 @@ def _parent_deliberately_ended(session_db: Any, session_id: str) -> bool:
         return False
 
 
+def _end_stamp_contradicted_by_live_traffic(session_db: Any, session_id: str) -> bool:
+    """Stale-stamp read (#106459): a non-automatic end stamp on a row still being driven
+    (traffic inside the heal window, no continuation child) is contradicted by the router,
+    so the pre-flush abort below must not fire — the authoritative in-transaction heal in
+    publish_compression_child clears it under the verified compression lease. Fails CLOSED:
+    an unreadable predicate must not widen the deliberate-end abort."""
+    pred = getattr(type(session_db), "end_stamp_contradicted_by_live_traffic", None)
+    if not callable(pred):
+        return False
+    try:
+        return bool(pred(session_db, session_id))
+    except Exception:
+        return False
+
+
 def _carry_session_state_to_child(agent: Any, old_session_id: str, old_title: Any) -> None:
     """Migrate /goal, /heartbeat, /loop state and the title from the parent to the child.
     Each lookup is a flat per-session read with no parent walk, so state would silently die at the boundary. The title
@@ -2945,7 +2960,11 @@ def _publish_rotated_compaction(
     # The flush is durable and NOT rolled back on abort: a deliberately-ended parent
     # fails publish forever, so check that before writing. Automatic end stamps are
     # healed by publish (don't abort); the lease is re-acquirable (don't check it).
-    if _parent_deliberately_ended(agent._session_db, old_session_id):
+    # A non-automatic stamp contradicted by live traffic (row still driven, no
+    # continuation child) is stale (#106459) — publish heals it in-transaction, so
+    # don't abort here either; only a quiet, unforked deliberate boundary aborts.
+    if _parent_deliberately_ended(agent._session_db, old_session_id) and not _end_stamp_contradicted_by_live_traffic(
+            agent._session_db, old_session_id):
         raise RuntimeError(f"Compression parent already ended: {old_session_id}")
     # Foreign-tail ceiling: the flush below writes OUR rows (already in handoff);
     # rows above the start watermark up to this MAX(id) are foreign appends.

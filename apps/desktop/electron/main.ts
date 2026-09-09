@@ -170,8 +170,8 @@ import {
   shouldRemoveAppBundle,
   uninstallArgsForMode
 } from './desktop-uninstall'
-import { describeDevCdpDecision, resolveDevCdpPort } from './dev-cdp'
 import { poolBackendAuthorityEnv } from './desktop-pool-cron-authority'
+import { describeDevCdpDecision, resolveDevCdpPort } from './dev-cdp'
 import { ensureKanbanDispatcherReady } from './dispatcher-readiness'
 import { installEmbedReferer } from './embed-referer'
 import { createEventDeduper } from './event-dedupe'

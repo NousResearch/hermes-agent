@@ -602,6 +602,20 @@ def test_update_keep_stash_parks_instead_of_restoring(monkeypatch, tmp_path):
     assert discard_calls == []
 
 
+def test_update_keep_stash_parks_when_already_up_to_date(monkeypatch, tmp_path):
+    """A no-op Desktop update must not restore source edits over the current checkout."""
+    restore_calls, discard_calls, park_calls = _setup_keep_stash_test(monkeypatch, tmp_path)
+    side_effect, _ = _make_update_side_effect(commit_count="0")
+    monkeypatch.setattr(hermes_main.subprocess, "run", side_effect)
+
+    hermes_main.cmd_update(SimpleNamespace(yes=True, keep_stash=True))
+
+    assert len(park_calls) == 1
+    assert park_calls[0][0] == "abc123deadbeef"
+    assert restore_calls == []
+    assert discard_calls == []
+
+
 def test_update_without_keep_stash_still_restores(monkeypatch, tmp_path):
     """Regression guard: default behavior (no --keep-stash) is unchanged —
     the autostash is auto-restored under --yes."""

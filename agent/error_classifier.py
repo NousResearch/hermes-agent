@@ -150,9 +150,14 @@ _PAYLOAD_TOO_LARGE_PATTERNS = (
 # Per-image size/dimension 400s (Anthropic 5 MB / 8000 px; MiniMax "media
 # exceeds size limit" #76039) — a specific 400 before the request hits 413. A
 # non-image media hit is harmless: the shrink pass finds no image parts.
+# "patches after processing": OpenAI Codex Responses rejects an image whose
+# tile-patch budget (ceil(w/32)×ceil(h/32)) exceeds its 30000-patch ceiling
+# with wording that names no image-size vocabulary — without this pattern it
+# fell to format_error (non-retryable), bypassing the shrink recovery (#106337).
 _IMAGE_TOO_LARGE_PATTERNS = (
     "image exceeds", "image too large", "image_too_large", "image size exceeds", "image dimensions exceed",
     "dimensions exceed max allowed size", "max allowed size: 8000", "media exceeds", "media too large",
+    "patches after processing",
 )
 
 # Undecodable image bytes → strip-and-retry, never shrink. xAI wordings

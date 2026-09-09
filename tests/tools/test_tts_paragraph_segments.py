@@ -137,7 +137,7 @@ def test_writer_rejects_empty_stream(tmp_path):
 
 
 def test_samples_are_little_endian_and_not_silently_multichannel():
-    import numpy as np
+    np = pytest.importorskip("numpy")
     block = pcm_from_samples(np.array([-2, 0, 2], dtype=np.float32), 16000)
     assert block == PCMBlock(struct.pack('<hhh', -32767, 0, 32767), 16000)
     for bad in [np.array([[1, 2]]), np.array([np.nan]), np.array([np.inf])]:
@@ -162,7 +162,7 @@ def test_cleaner_removes_multiline_nonspoken_blocks_before_segmentation():
 
 
 def test_kittentts_loads_once_and_preserves_generation_options(tmp_path, monkeypatch):
-    import numpy as np
+    np = pytest.importorskip("numpy")
     from tools import tts_tool_local as local
     calls, loads = [], []
     def generate(text, **kwargs):
@@ -264,6 +264,7 @@ class NeuTTS:
 
 
 def test_neutts_actual_subprocess_loads_model_and_reference_once(tmp_path, fake_neutts):
+    pytest.importorskip("numpy")
     from tools.tts_tool_local import _generate_neutts
     trace, config = fake_neutts
     output = tmp_path / 'neutts.wav'
@@ -278,6 +279,7 @@ def test_neutts_actual_subprocess_loads_model_and_reference_once(tmp_path, fake_
 
 
 def test_neutts_legacy_text_path_remains_supported(tmp_path, fake_neutts):
+    pytest.importorskip("numpy")
     from tools.tts_tool_local import _generate_neutts
     trace, config = fake_neutts
     output = tmp_path / 'legacy.wav'

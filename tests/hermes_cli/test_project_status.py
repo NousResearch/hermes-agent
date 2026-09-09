@@ -100,6 +100,46 @@ def test_exact_task_id_precedes_an_explicit_board_filter(
     assert (resolved.task_id, resolved.board) == (expected, "alpha")
 
 
+def test_archived_tasks_remain_excluded_by_default_but_resolve_when_opted_in(
+    status_home: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from hermes_cli.kanban_status import resolve_status_reference
+
+    task_id = _create_task("alpha", "Archived checkout", monkeypatch, "t_archived1")
+    with kbc.connect(board="alpha") as conn:
+        conn.execute("UPDATE tasks SET status = 'archived' WHERE id = ?", (task_id,))
+        conn.commit()
+
+    default = resolve_status_reference(task_id)
+    opted_in = resolve_status_reference(task_id, include_archived=True)
+    by_title = resolve_status_reference("archived checkout", include_archived=True)
+
+    assert default.ok is False
+    assert opted_in.ok is True
+    assert (opted_in.scope, opted_in.task_id, opted_in.board) == ("task", task_id, "alpha")
+    assert (by_title.scope, by_title.task_id, by_title.board) == ("task", task_id, "alpha")
+
+
+def test_archived_reference_opt_in_preserves_ambiguity_fail_closed(
+    status_home: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from hermes_cli.kanban_status import resolve_status_reference
+
+    first = _create_task("alpha", "Archived checkout", monkeypatch, "t_archived2")
+    second = _create_task("beta", "Archived checkout", monkeypatch, "t_archived3")
+    for board, task_id in (("alpha", first), ("beta", second)):
+        with kbc.connect(board=board) as conn:
+            conn.execute("UPDATE tasks SET status = 'archived' WHERE id = ?", (task_id,))
+            conn.commit()
+
+    resolved = resolve_status_reference("archived checkout", include_archived=True)
+
+    assert resolved.ok is False
+    assert resolved.error == "ambiguous reference 'archived checkout'"
+
+
 def test_project_default_board_is_used_when_authoritative(status_home: Path) -> None:
     from hermes_cli.kanban_status import resolve_status_reference
 

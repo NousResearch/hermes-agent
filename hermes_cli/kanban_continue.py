@@ -130,7 +130,9 @@ def run_continue_slash(text: str) -> dict[str, Any]:
     if not continue_command_enabled():
         return _result(dispatch_status="disabled", message="/continue is disabled (kanban.continue_command)")
     assert reference is not None
-    resolution = resolve_status_reference(reference, board=explicit_board)
+    resolution = resolve_status_reference(
+        reference, board=explicit_board, include_archived=True,
+    )
     if not resolution.ok or resolution.scope != "task" or not resolution.task_id or not resolution.board:
         return _result(board=resolution.board, dispatch_status="not_eligible", continuation_state="unknown", message=resolution.error or "task is not eligible")
     board, task_id = resolution.board, resolution.task_id

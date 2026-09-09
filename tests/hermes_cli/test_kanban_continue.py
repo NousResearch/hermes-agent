@@ -1,7 +1,10 @@
 from types import SimpleNamespace
+from pathlib import Path
 
 import pytest
 
+from hermes_cli import kanban_db as kb
+from hermes_cli import kanban_db_connect as kbc
 from hermes_cli import kanban_continue as cont
 
 
@@ -24,7 +27,7 @@ def _wire(monkeypatch, task, delegate):
     monkeypatch.setattr(cont, "continue_command_enabled", lambda: True)
     monkeypatch.setattr(
         cont, "resolve_status_reference",
-        lambda _ref, board=None: SimpleNamespace(ok=True, scope="task", task_id=task.id, board=board or "default", error=None),
+        lambda _ref, board=None, **_kwargs: SimpleNamespace(ok=True, scope="task", task_id=task.id, board=board or "default", error=None),
     )
     monkeypatch.setattr(cont.kbc, "connect", lambda board: _Conn())
     monkeypatch.setattr(cont.kb, "get_task", lambda _conn, _task_id: task)
@@ -33,6 +36,19 @@ def _wire(monkeypatch, task, delegate):
     monkeypatch.setattr(cont, "_active_result", lambda *_args: None)
     monkeypatch.setattr(cont, "_recovery_result", lambda *_args: None)
     monkeypatch.setattr(cont.implement, "run_implement_slash", delegate)
+
+
+@pytest.fixture
+def kanban_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.delenv("HERMES_KANBAN_DB", raising=False)
+    monkeypatch.delenv("HERMES_KANBAN_BOARD", raising=False)
+    kb._INITIALIZED_PATHS.clear()
+    kb.init_db()
+    return home
 
 
 def test_normal_ready_delegates_to_implement(monkeypatch, task):
@@ -69,6 +85,71 @@ def test_done_is_terminal_without_delegation(monkeypatch, task):
     assert result["terminal"] is True
     assert result["selected_action"] == "terminal"
     assert result["dispatch_status"] == "not_eligible"
+
+
+def test_archived_is_terminal_without_delegation_or_fabricated_dispatch(monkeypatch, task):
+    task.status = "archived"
+    seen = {}
+    _wire(monkeypatch, task, lambda _text: pytest.fail("delegation must not occur"))
+    monkeypatch.setattr(
+        cont,
+        "resolve_status_reference",
+        lambda _ref, board=None, **kwargs: seen.update(kwargs) or SimpleNamespace(
+            ok=True, scope="task", task_id=task.id, board=board or "default", error=None,
+        ),
+    )
+
+    result = cont.run_continue_slash("t_123")
+
+    assert seen == {"include_archived": True}
+    assert result == {
+        **cont._result(
+            task_id=task.id,
+            board="default",
+            task_status="archived",
+            continuation_state="terminal",
+            selected_action="terminal",
+            dispatch_status="not_eligible",
+            terminal=True,
+            message="task is archived; it will not be restarted",
+        ),
+    }
+
+
+def test_archived_continue_is_a_read_only_terminal_noop(kanban_home, monkeypatch):
+    with kbc.connect() as conn:
+        task_id = kb.create_task(conn, title="Archived continue", assignee="rozmilo-codex")
+        conn.execute("UPDATE tasks SET status = 'archived' WHERE id = ?", (task_id,))
+        conn.commit()
+        before_runs = len(kb.list_runs(conn, task_id))
+        before_events = [event.kind for event in kb.list_events(conn, task_id)]
+
+    monkeypatch.setattr(cont, "continue_command_enabled", lambda: True)
+    monkeypatch.setattr(cont.implement, "run_implement_slash", lambda *_args: pytest.fail("implemented"))
+    monkeypatch.setattr(cont.review, "run_review_slash", lambda *_args: pytest.fail("reviewed"))
+    monkeypatch.setattr(cont.fix_review, "run_fix_review_slash", lambda *_args: pytest.fail("fixed"))
+
+    result = cont.run_continue_slash(task_id)
+
+    assert result["command"] == "continue"
+    assert result["task_id"] == task_id
+    assert result["board"] == "default"
+    assert result["task_status"] == "archived"
+    assert result["terminal"] is True
+    assert result["recovery_required"] is False
+    assert result["selected_action"] == "terminal"
+    assert result["delegated_command"] is None
+    assert result["run_id"] is None
+    assert result["decision_id"] is None
+    assert result["implementation_provider"] is None
+    assert result["implementation_model"] is None
+    assert result["reviewer_provider"] is None
+    assert result["reviewer_model"] is None
+
+    with kbc.connect() as conn:
+        assert kb.get_task(conn, task_id).status == "archived"
+        assert len(kb.list_runs(conn, task_id)) == before_runs == 0
+        assert [event.kind for event in kb.list_events(conn, task_id)] == before_events == ["created"]
 
 
 def test_active_implementation_is_reported_without_delegation(monkeypatch, task):

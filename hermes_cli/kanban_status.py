@@ -151,21 +151,27 @@ def _board_slugs(explicit: Optional[str]) -> tuple[str, ...]:
     return tuple(sorted({str(item.get("slug") or kb.DEFAULT_BOARD) for item in kb.list_boards(include_archived=False)}))
 
 
-def _tasks_on_board(board: str, **filters: Any) -> list[kb.Task]:
+def _tasks_on_board(
+    board: str, *, include_archived: bool = False, **filters: Any,
+) -> list[kb.Task]:
     path = kb.kanban_db_path(board=board)
     if not path.is_file():
         return []
     with _read_only_connection(path) as conn:
-        return kb.list_tasks(conn, include_archived=False, **filters)
+        return kb.list_tasks(conn, include_archived=include_archived, **filters)
 
 
-def _task_on_board(board: str, task_id: str) -> Optional[kb.Task]:
+def _task_on_board(
+    board: str, task_id: str, *, include_archived: bool = False,
+) -> Optional[kb.Task]:
     path = kb.kanban_db_path(board=board)
     if not path.is_file():
         return None
     with _read_only_connection(path) as conn:
         task = kb.get_task(conn, task_id)
-        return task if task and task.status != "archived" else None
+        if task is None or (task.status == "archived" and not include_archived):
+            return None
+        return task
 
 
 def _projects(**filters: Any) -> list[pdb.Project]:
@@ -221,6 +227,7 @@ def _ambiguous(reference: str, candidates: list[StatusCandidate]) -> StatusResol
 
 def _task_reference_candidates(
     boards: tuple[str, ...], reference: str, *, partial: bool,
+    include_archived: bool = False,
 ) -> list[StatusCandidate]:
     """Read no more task rows than are needed to prove ambiguity."""
     candidates: list[StatusCandidate] = []
@@ -232,7 +239,8 @@ def _task_reference_candidates(
         candidates.extend(
             _candidate_for_task(task, slug)
             for task in _tasks_on_board(
-                slug, limit=remaining, order_by="title", **filters,
+                slug, include_archived=include_archived, limit=remaining,
+                order_by="title", **filters,
             )
         )
     return candidates
@@ -268,7 +276,9 @@ def _project_reference_candidates(
     ]
 
 
-def resolve_status_reference(reference: str, *, board: Optional[str] = None) -> StatusResolution:
+def resolve_status_reference(
+    reference: str, *, board: Optional[str] = None, include_archived: bool = False,
+) -> StatusResolution:
     """Resolve a task or project deterministically; ambiguity never selects a winner."""
     ref = str(reference or "").strip()
     if not ref:
@@ -278,7 +288,7 @@ def resolve_status_reference(reference: str, *, board: Optional[str] = None) -> 
         exact_ids = [
             _candidate_for_task(task, slug)
             for slug in all_boards
-            if (task := _task_on_board(slug, ref)) is not None
+            if (task := _task_on_board(slug, ref, include_archived=include_archived)) is not None
         ]
     except (OSError, sqlite3.Error) as exc:
         return StatusResolution(reference=ref, error=f"status read failed: {exc}")
@@ -318,7 +328,9 @@ def resolve_status_reference(reference: str, *, board: Optional[str] = None) -> 
         )
 
     try:
-        exact_matches = _task_reference_candidates(boards, ref, partial=False)
+        exact_matches = _task_reference_candidates(
+            boards, ref, partial=False, include_archived=include_archived,
+        )
         exact_matches += _project_reference_candidates(ref, board=board, partial=False)
     except (OSError, sqlite3.Error, ValueError) as exc:
         return StatusResolution(reference=ref, error=f"status read failed: {exc}")
@@ -336,7 +348,9 @@ def resolve_status_reference(reference: str, *, board: Optional[str] = None) -> 
         return _ambiguous(ref, exact_matches)
 
     try:
-        partial_matches = _task_reference_candidates(boards, ref, partial=True)
+        partial_matches = _task_reference_candidates(
+            boards, ref, partial=True, include_archived=include_archived,
+        )
         partial_matches += _project_reference_candidates(ref, board=board, partial=True)
     except (OSError, sqlite3.Error, ValueError) as exc:
         return StatusResolution(reference=ref, error=f"status read failed: {exc}")

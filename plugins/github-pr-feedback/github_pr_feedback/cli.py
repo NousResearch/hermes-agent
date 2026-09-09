@@ -69,6 +69,63 @@ except ImportError:
 
 _MISSING = object()
 _FULL_SHA = re.compile(r"^[0-9a-fA-F]{40}$")
+_SECRET_ASSIGNMENT = re.compile(
+    r"(?i)\b(token|secret|password|authorization|api[_-]?key)\s*[:=]\s*\S+"
+)
+_PR_REPAIR_RECEIPT_COMMENT = re.compile(
+    r"<!--\s*pr-maintenance-receipt:v1\s+status=completed\s+kind=\w+\s+"
+    r"head=([0-9a-fA-F]{40,64})\s*-->"
+)
+_MARKER_REQUIRED_FEEDBACK_KINDS = frozenset(
+    {"pr_repair", "issue_comment", "review_comment", "review"}
+)
+
+
+def _factual_reply_is_missing(
+    github: GitHubClient, receipt: FeedbackReceipt, *, resolved_head_sha: str
+) -> bool:
+    """Require a canonical, exact-head completion marker before finalization."""
+
+    try:
+        feedback = github.list_feedback(receipt.repository, receipt.pr_number)
+    except GitHubClientError:
+        return True
+    for item in feedback:
+        match = _PR_REPAIR_RECEIPT_COMMENT.search(item.body)
+        if not match or match.group(1).casefold() != resolved_head_sha.casefold():
+            continue
+        if not pr_repair_attribution_required(receipt.repository):
+            return False
+        if PR_REPAIR_ATTRIBUTION_PREFIX in item.body:
+            return False
+    return True
+
+
+def _retrigger_codex_review(
+    github: GitHubClient, repository: str, pr_number: int, resolved_head_sha: str
+) -> str:
+    """Request a fresh Codex review when a repaired head is not yet reviewed."""
+
+    try:
+        feedback = github.list_feedback(repository, pr_number)
+    except GitHubClientError:
+        return "unavailable"
+    if _codex_reviewed_head(feedback, resolved_head_sha):
+        return "already_current"
+    if any(
+        codex_review_trigger_requested(item.body, resolved_head_sha)
+        for item in feedback
+    ):
+        return "already_requested"
+    try:
+        github.post_issue_comment(
+            repository,
+            pr_number,
+            codex_review_trigger_comment(resolved_head_sha),
+        )
+    except GitHubClientError:
+        return "unavailable"
+    return "triggered"
 
 
 @dataclass(frozen=True, slots=True)

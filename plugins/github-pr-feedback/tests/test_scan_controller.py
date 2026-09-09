@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import shlex
 import sqlite3
 import subprocess
 import sys
@@ -24,6 +25,8 @@ from github_pr_feedback.controller import (
     _ci_failure_assignee,
     _ci_receipt_feedback_reason,
     _is_self_resolution_receipt,
+    _local_ci_feedback_id,
+    _select_local_ci_candidates,
     _task,
 )
 from github_pr_feedback.ci_runner import (
@@ -848,7 +851,7 @@ def test_failed_exact_head_static_receipt_immediately_dispatches_one_typed_fixer
     assert task.assignee == "ci-static-fixer"
     assert task.head_sha == head_sha
     assert task.initial_status == "running"
-    assert task.max_runtime_seconds == 900
+    assert task.max_runtime_seconds == 60 * 60
     assert task.max_retries == 2
     assert "first 90 seconds" in task.instructions
     assert "do not repeat completed work" in task.instructions
@@ -1665,10 +1668,11 @@ def test_scan_dispatches_one_read_only_exact_head_ci_audit_when_actions_are_disa
     assert "scripts/run_hygiene_lane.py" in task.instructions
     assert "scripts/run_static_lane.py" in task.instructions
     assert "scripts/run_test_lane.py" in task.instructions
-    assert "hermes github-pr-feedback audit-pr" in task.instructions
-    assert f"env HERMES_HOME='{control_home}' hermes github-pr-feedback audit-pr" in (
-        task.instructions
+    governed_prefix = (
+        f"env HERMES_HOME={shlex.quote(str(control_home))} "
+        f"{shlex.quote(sys.executable)} -m hermes_cli.main github-pr-feedback"
     )
+    assert f"{governed_prefix} audit-pr" in task.instructions
     assert f"--head-sha {sha}" in task.instructions
     ledger.close()
 

@@ -6,6 +6,7 @@ import re
 import os
 import shlex
 import subprocess
+import sys
 from collections import Counter
 from collections.abc import Callable, Mapping
 from concurrent.futures import ThreadPoolExecutor
@@ -2253,6 +2254,184 @@ def _local_ci_feedback_id(pull_request: PullRequest) -> str:
     return f"{LOCAL_CI_FEEDBACK_ID}:{pull_request.base_sha.casefold()}"
 
 
+def _required_local_ci_backlog_count(
+    policy: PluginPolicy,
+    ledger: FeedbackLedger,
+    target: RepositoryTarget,
+    pull_requests: tuple[PullRequest, ...],
+) -> int:
+    """Count admitted open heads without the merge lane's exact CI evidence.
+
+    This uses the pull-request identities already returned by the primary
+    listing plus local manifest and ledger state. It deliberately performs no
+    additional GitHub reads, and any unavailable or inconsistent local
+    evidence remains backlog so secondary scans fail closed.
+    """
+
+    audit_policy = policy.local_ci_audit
+    if (
+        audit_policy is None
+        or not audit_policy.required_for_open_prs
+        or not audit_policy.applies_to(target.base_repository)
+    ):
+        return 0
+    admitted = tuple(
+        pull
+        for pull in pull_requests
+        if policy.admit_pull_request(pull).admitted
+    )
+    if not admitted:
+        return 0
+    manifest_path = target.local_path / "tests" / "manifests" / "test_lanes.toml"
+    try:
+        manifest_digest = sha256(manifest_path.read_bytes()).hexdigest()
+    except OSError:
+        return len(admitted)
+
+    from .ci_runner import CIAuditReceipt
+
+    missing = 0
+    for pull in admitted:
+        if pull.base_sha is None:
+            missing += 1
+            continue
+        try:
+            receipt = ledger.latest_ci_receipt(
+                pull.base_repository,
+                pull.number,
+                pull.head_sha,
+                manifest_digest=manifest_digest,
+                not_before=datetime.min.replace(tzinfo=UTC),
+            )
+        except (LedgerStateError, TypeError, ValueError):
+            missing += 1
+            continue
+        if (
+            not isinstance(receipt, CIAuditReceipt)
+            or receipt.status != "passed"
+            or receipt.identity.repository != pull.base_repository
+            or receipt.identity.pr_number != pull.number
+            or receipt.identity.base_sha.casefold() != pull.base_sha.casefold()
+            or receipt.identity.head_sha.casefold() != pull.head_sha.casefold()
+            or receipt.manifest_digest != manifest_digest
+        ):
+            missing += 1
+    return missing
+
+
+def _select_local_ci_candidates(
+    policy: PluginPolicy,
+    ledger: FeedbackLedger,
+    target: RepositoryTarget,
+    pull_requests: tuple[PullRequest, ...],
+) -> tuple[PullRequest, ...]:
+    """Select a bounded, round-robin local-CI window without starvation.
+
+    The primary PR listing has already been fetched, so this performs no
+    additional GitHub reads. Failed dispatches are retried before never-tried
+    heads, while a durable per-repository cursor rotates the bounded window
+    across both groups so either group eventually gets selected.
+    """
+
+    audit_policy = policy.local_ci_audit
+    if audit_policy is None or not audit_policy.applies_to(target.base_repository):
+        return pull_requests
+    limit = audit_policy.max_open_prs_per_scan
+    if len(pull_requests) <= limit:
+        return pull_requests
+
+    backlog: list[tuple[PullRequest, int, datetime, int]] = []
+    for pull in pull_requests:
+        if not policy.admit_pull_request(pull).admitted:
+            continue
+        if _has_current_passed_ci_receipt(ledger, target, pull):
+            continue
+        state = ledger.exact_receipt_state(
+            FeedbackReceipt(
+                repository=pull.base_repository,
+                pr_number=pull.number,
+                feedback_kind="pr_local_ci",
+                feedback_id=_local_ci_feedback_id(pull),
+                head_sha=pull.head_sha,
+            )
+        )
+        if state is not None and state[0] in {"claimed", "completed"}:
+            continue
+        status_rank = 0 if state is not None and state[0] == "failed" else 1
+        age = pull.updated_at or datetime.min.replace(tzinfo=UTC)
+        attempts = 0 if state is None else state[1]
+        backlog.append((pull, status_rank, age, attempts))
+    backlog = tuple(
+        sorted(
+            backlog,
+            key=lambda item: (
+                item[1],
+                item[2],
+                item[0].number,
+                item[3],
+            ),
+        )
+    )
+    if not backlog:
+        return pull_requests[:limit]
+    cursor = ledger.local_ci_selection_cursor(target.base_repository) % len(backlog)
+    rotated = backlog[cursor:] + backlog[:cursor]
+    selected = [item[0] for item in rotated[:limit]]
+    ledger.advance_local_ci_selection_cursor(
+        target.base_repository,
+        cursor=cursor + limit,
+        candidate_count=len(backlog),
+        updated_at=datetime.now(UTC),
+    )
+    selected_keys = {(pull.number, pull.head_sha.casefold()) for pull in selected}
+    if len(selected) < limit:
+        for pull in pull_requests:
+            key = (pull.number, pull.head_sha.casefold())
+            if key in selected_keys:
+                continue
+            selected.append(pull)
+            selected_keys.add(key)
+            if len(selected) == limit:
+                break
+    return tuple(selected)
+
+
+def _has_current_passed_ci_receipt(
+    ledger: FeedbackLedger,
+    target: RepositoryTarget,
+    pull: PullRequest,
+) -> bool:
+    """Return whether one listed PR has passed evidence for its exact base."""
+
+    if pull.base_sha is None:
+        return False
+    manifest_path = target.local_path / "tests" / "manifests" / "test_lanes.toml"
+    try:
+        manifest_digest = sha256(manifest_path.read_bytes()).hexdigest()
+        receipt = ledger.latest_ci_receipt(
+            pull.base_repository,
+            pull.number,
+            pull.head_sha,
+            manifest_digest=manifest_digest,
+            not_before=datetime.min.replace(tzinfo=UTC),
+        )
+    except (OSError, LedgerStateError, TypeError, ValueError):
+        return False
+    from .ci_runner import CIAuditReceipt
+
+    return (
+        isinstance(receipt, CIAuditReceipt)
+        and receipt.status == "passed"
+        and receipt.identity.repository == pull.base_repository
+        and receipt.identity.pr_number == pull.number
+        and receipt.identity.base_sha.casefold() == pull.base_sha.casefold()
+        and receipt.identity.head_sha.casefold() == pull.head_sha.casefold()
+        and receipt.manifest_digest == manifest_digest
+    )
+
+
+
+
 def _task(
     policy: PluginPolicy,
     receipt: FeedbackReceipt,
@@ -2495,7 +2674,7 @@ def _ci_failure_task(
         "canonical PR head, and the latest owner reply. If a verified push and factual reply "
         "already exist, do not repeat completed work: run only the affected failed lane when "
         "fresh exact-head evidence is absent, then acknowledge and complete. Do not retry a "
-        "tool-blocked command; use one literal repository-owned command or the existing verified "
+        "background terminal process or tool-blocked command; use one literal repository-owned command or the existing verified "
         "receipt evidence. "
         "Re-read the canonical pull request and require both its base and head to equal the receipt "
         "identities before editing and immediately before every GitHub write. Reproduce the exact "
@@ -2541,7 +2720,10 @@ def _ci_failure_task(
         evidence_heading="Authoritative local CI failure receipt (JSON)",
         initial_status="running" if policy.auto_dispatch else "blocked",
         max_retries=2 if policy.auto_dispatch else 1,
-        max_runtime_seconds=900 if policy.auto_dispatch else None,
+        max_runtime_seconds=60 * 60 if policy.auto_dispatch else None,
+        model_override=LOCAL_CI_WORKER_MODEL,
+        provider_override=LOCAL_CI_WORKER_PROVIDER,
+        reasoning_effort="none",
     )
 
 

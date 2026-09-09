@@ -208,7 +208,9 @@ def test_subprocess_runner_exposes_safe_failure_code_without_output(
         ),
     )
     with pytest.raises(GitHubClientError) as raised:
-        SubprocessCommandRunner(sleeper=lambda _delay: None).run(["gh", "api", "labels"])
+        SubprocessCommandRunner(
+            sleeper=lambda _delay: None, request_gate=RecordingGate()
+        ).run(["gh", "api", "labels"])
     assert raised.value.code == code
     assert stderr not in str(raised.value)
 

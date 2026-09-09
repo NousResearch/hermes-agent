@@ -13,13 +13,29 @@ import { sessionTileDelegate } from '@/store/session-states'
 import { isAuxiliaryWindow } from '@/store/windows'
 
 interface QuickEntryBridgeParams {
-  submitText: (text: string) => Promise<unknown> | unknown
+  submitText: (text: string) => Promise<boolean> | boolean
   submitTextToNewSession: (text: string) => Promise<{ runtimeSessionId: string; sessionId: string }>
 }
 
 // The picker is a capture aid, not a session browser — a handful of recent
 // rows is the whole point.
 const QUICK_ENTRY_SESSION_OPTIONS = 5
+
+/**
+ * `submitText` resolves false when a pre-submit guard declines the prompt
+ * without throwing (for example, while the target is busy). That is a failed
+ * delivery, not an acknowledgement of success.
+ */
+export function quickEntrySubmitAck(submitted: boolean): QuickEntrySubmitResult {
+  return submitted
+    ? { ok: true }
+    : {
+        code: 'submit-rejected',
+        message: 'The prompt was not accepted.',
+        ok: false,
+        retryable: true
+      }
+}
 
 function sessionOptions(): QuickEntrySessionOption[] {
   return $sessions
@@ -109,8 +125,8 @@ export function useQuickEntryBridge({
       }
 
       try {
-        await submitTextRef.current(text)
-        ack({ ok: true })
+        const submitted = await submitTextRef.current(text)
+        ack(quickEntrySubmitAck(submitted))
       } catch (error) {
         ack({ code: 'submit-failed', message: error instanceof Error ? error.message : String(error), ok: false, retryable: true })
       }

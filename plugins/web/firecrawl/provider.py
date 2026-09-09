@@ -114,7 +114,16 @@ class _KeylessFirecrawlClient:
         return response.json()
 
     search = lambda self, *, query, limit=5: self._post("/v2/search", {"query": query, "limit": limit})  # noqa: E731
-    scrape = lambda self, *, url, formats: self._post("/v2/scrape", {"url": url, "formats": formats})  # noqa: E731
+
+    def scrape(self, *, url: str, formats: List[str], wait_for: Any = None, waitFor: Any = None, **_ignored: Any) -> Dict[str, Any]:
+        """REST scrape. SDK-shaped ``wait_for`` (or REST ``waitFor``) maps to JSON ``waitFor``.
+        When the caller omits wait, resolve ``web.extract_wait_ms`` so the keyless ring
+        inherits the same wait as ``_scrape_one``."""
+        payload: Dict[str, Any] = {"url": url, "formats": formats}
+        wait = _coerce_wait_ms(wait_for if wait_for is not None else waitFor, fallback=_extract_wait_ms())
+        if wait > 0:
+            payload["waitFor"] = wait
+        return self._post("/v2/scrape", payload)
 
 
 def _get_firecrawl_gateway_url() -> str:
@@ -237,6 +246,37 @@ def _error_entry(url: str, error: str, *, title: str = "", raw: bool = False, bl
 
 _SCRAPE_TIMEOUT_MSG = "Scrape timed out after 60s — page may be too large or unresponsive. Try browser_navigate instead."
 _UNSAFE_REDIRECT_MSG = "Blocked: URL targets a private or internal network address"
+_DEFAULT_EXTRACT_WAIT_MS = 3000
+# Stay under the 60s asyncio scrape ceiling so a huge config wait cannot look like a hung page.
+_MAX_EXTRACT_WAIT_MS = 50_000
+
+
+def _coerce_wait_ms(value: Any, *, fallback: int = _DEFAULT_EXTRACT_WAIT_MS) -> int:
+    """Positive wait in ms, 0 to omit, invalid → *fallback*. Clamped below the scrape timeout."""
+    if value is None:
+        return fallback
+    try:
+        wait = int(value)
+    except (TypeError, ValueError):
+        return fallback
+    if wait <= 0:
+        return 0
+    return min(wait, _MAX_EXTRACT_WAIT_MS)
+
+
+def _extract_wait_ms() -> int:
+    """``web.extract_wait_ms`` (default 3000). Lazy ``_load_web_config`` so tests can patch it."""
+    from tools.web_tools import _load_web_config
+    cfg = _load_web_config()
+    if "extract_wait_ms" not in cfg:
+        return _DEFAULT_EXTRACT_WAIT_MS
+    return _coerce_wait_ms(cfg.get("extract_wait_ms"), fallback=_DEFAULT_EXTRACT_WAIT_MS)
+
+
+def _scrape_wait_kwargs() -> Dict[str, int]:
+    """SDK scrape kwargs: ``wait_for=N`` or empty when the user opted out with ``<=0``."""
+    wait = _extract_wait_ms()
+    return {"wait_for": wait} if wait > 0 else {}
 
 
 async def _scrape_one(url: str, formats: List[str], format: Optional[str]) -> Dict[str, Any]:
@@ -248,7 +288,10 @@ async def _scrape_one(url: str, formats: List[str], format: Optional[str]) -> Di
     try:
         logger.info("Firecrawl scraping: %s", url)
         try:
-            scrape_result = await asyncio.wait_for(asyncio.to_thread(_get_firecrawl_client().scrape, url=url, formats=formats), timeout=60)
+            scrape_result = await asyncio.wait_for(
+                asyncio.to_thread(_get_firecrawl_client().scrape, url=url, formats=formats, **_scrape_wait_kwargs()),
+                timeout=60,
+            )
         except asyncio.TimeoutError:
             logger.warning("Firecrawl scrape timed out for %s", url)
             return _error_entry(url, _SCRAPE_TIMEOUT_MSG)

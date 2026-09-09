@@ -8,6 +8,7 @@ Coverage:
   check_web_api_key() — unified availability check across all web backends.
 """
 
+import asyncio
 import importlib
 import json
 import os
@@ -187,9 +188,140 @@ class TestFirecrawlClientConfig:
 
         assert result["success"] is True
         assert captured["url"] == "https://api.firecrawl.dev/v2/scrape"
-        assert captured["json"] == {"url": "https://example.com", "formats": ["markdown"]}
+        assert captured["json"]["url"] == "https://example.com"
+        assert captured["json"]["formats"] == ["markdown"]
         assert captured["headers"] == {"Content-Type": "application/json"}
         assert "Authorization" not in captured["headers"]
+
+
+class TestFirecrawlExtractWaitFor:
+    """web.extract_wait_ms must reach Firecrawl scrape (REST waitFor / SDK wait_for).
+
+    Issue #106904: first-paint snapshots look complete because scrape sent only url+formats.
+    Search must stay wait-free. extract_wait_ms<=0 omits the field (legacy).
+    """
+
+    def _capture_httpx(self, monkeypatch):
+        from plugins.web.firecrawl import provider as firecrawl_provider
+
+        captured = {}
+
+        class _Response:
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                return {"success": True, "data": {"markdown": "# ok"}}
+
+        def _fake_post(url, *, json, headers, timeout):
+            captured["url"] = url
+            captured["json"] = json
+            captured["headers"] = headers
+            captured["timeout"] = timeout
+            return _Response()
+
+        monkeypatch.setattr(firecrawl_provider.httpx, "post", _fake_post)
+        return firecrawl_provider, captured
+
+    def test_default_config_declares_extract_wait_ms_3000(self):
+        from hermes_cli.config_defaults import DEFAULT_CONFIG
+
+        assert DEFAULT_CONFIG["web"]["extract_wait_ms"] == 3000
+
+    def test_default_keyless_scrape_sends_waitFor_3000(self, monkeypatch):
+        firecrawl_provider, captured = self._capture_httpx(monkeypatch)
+        monkeypatch.setattr("tools.web_tools._load_web_config", lambda: {})
+
+        firecrawl_provider._KeylessFirecrawlClient().scrape(
+            url="https://example.com", formats=["markdown"]
+        )
+
+        assert captured["url"] == "https://api.firecrawl.dev/v2/scrape"
+        assert captured["json"]["url"] == "https://example.com"
+        assert captured["json"]["formats"] == ["markdown"]
+        assert captured["json"]["waitFor"] == 3000
+        assert "Authorization" not in captured["headers"]
+
+    def test_custom_extract_wait_ms_reaches_waitFor(self, monkeypatch):
+        firecrawl_provider, captured = self._capture_httpx(monkeypatch)
+        monkeypatch.setattr(
+            "tools.web_tools._load_web_config",
+            lambda: {"extract_wait_ms": 8000},
+        )
+
+        firecrawl_provider._KeylessFirecrawlClient().scrape(
+            url="https://example.com", formats=["markdown"]
+        )
+
+        assert captured["json"]["waitFor"] == 8000
+
+    def test_zero_extract_wait_ms_omits_waitFor(self, monkeypatch):
+        firecrawl_provider, captured = self._capture_httpx(monkeypatch)
+        monkeypatch.setattr(
+            "tools.web_tools._load_web_config",
+            lambda: {"extract_wait_ms": 0},
+        )
+
+        firecrawl_provider._KeylessFirecrawlClient().scrape(
+            url="https://example.com", formats=["markdown"]
+        )
+
+        assert "waitFor" not in captured["json"]
+        assert captured["json"] == {"url": "https://example.com", "formats": ["markdown"]}
+
+    def test_scrape_one_passes_wait_for_to_sdk(self, monkeypatch):
+        from plugins.web.firecrawl import provider as firecrawl_provider
+
+        captured = {}
+
+        class _FakeClient:
+            def scrape(self, *, url, formats, **kwargs):
+                captured["kwargs"] = {"url": url, "formats": formats, **kwargs}
+                return {
+                    "markdown": "# ok",
+                    "metadata": {"title": "t", "sourceURL": url},
+                }
+
+        monkeypatch.setattr(firecrawl_provider, "check_website_access", lambda _url: None)
+        monkeypatch.setattr(firecrawl_provider, "is_safe_url", lambda _url: True)
+        monkeypatch.setattr(firecrawl_provider, "_get_firecrawl_client", lambda: _FakeClient())
+        monkeypatch.setattr("tools.web_tools._load_web_config", lambda: {})
+
+        result = asyncio.run(
+            firecrawl_provider._scrape_one(
+                "https://example.com/issue", ["markdown"], "markdown"
+            )
+        )
+
+        assert result.get("error") is None
+        assert captured["kwargs"]["url"] == "https://example.com/issue"
+        assert captured["kwargs"]["formats"] == ["markdown"]
+        assert captured["kwargs"].get("wait_for") == 3000
+
+    def test_keyless_search_control_omits_waitFor(self, monkeypatch):
+        firecrawl_provider, captured = self._capture_httpx(monkeypatch)
+        monkeypatch.setattr(
+            "tools.web_tools._load_web_config",
+            lambda: {"extract_wait_ms": 8000},
+        )
+
+        firecrawl_provider._KeylessFirecrawlClient().search(query="firecrawl", limit=1)
+
+        assert captured["url"] == "https://api.firecrawl.dev/v2/search"
+        assert captured["json"] == {"query": "firecrawl", "limit": 1}
+        assert "waitFor" not in captured["json"]
+
+    def test_firecrawl_extract_keyless_sends_waitFor(self, monkeypatch):
+        from plugins.web import keyless_mcp
+
+        firecrawl_provider, captured = self._capture_httpx(monkeypatch)
+        monkeypatch.setattr("tools.web_tools._load_web_config", lambda: {})
+
+        results = keyless_mcp.firecrawl_extract_keyless(["https://example.com/lazy"])
+
+        assert captured["json"]["waitFor"] == 3000
+        assert results[0]["url"] == "https://example.com/lazy"
+        assert not results[0].get("error")
 
 
 class TestBackendSelection:

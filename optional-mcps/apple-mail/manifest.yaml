@@ -14,24 +14,41 @@ source: https://github.com/sweetrb/apple-mail-mcp
 # auditable); bump the pin via PR after validating a new release.
 #
 # How this pin was validated (catalog policy: "version validated on macOS").
-# On macOS, `npx -y apple-mail-mcp@2.17.6`:
+# On macOS, `npx -y apple-mail-mcp@2.17.10`:
 #   - completes an MCP `initialize` handshake reporting serverInfo.version
-#     2.17.6 — i.e. the bytes npx resolved are the bytes pinned here;
+#     2.17.10 — i.e. the bytes npx resolved are the bytes pinned here;
 #   - returns a full `tools/list` of 50 tools, every one carrying a description;
 #   - resolves all 18 `tools.default_enabled` entries below against that
 #     list, so no allow-listed name went stale across the bump.
 # Tools added since the previous pin are deliberately left OUT of
 # default_enabled — widening the default surface is the maintainers' call.
-# Re-run all three checks before moving this pin. (Re-pinned immediately
-# outside the normal >=2-week age policy: 2.17.6 fixes a fast-uri security
-# vulnerability, 4 GHSAs high severity, reachable via ajv's JSON-schema
-# validation on every tool call regardless of default_enabled.)
+# Re-run all three checks before moving this pin.
+#
+# Previous pin 2.17.6 (2026-09-03, fast-uri security fix: 4 high-severity
+# GHSAs reachable via ajv's JSON-schema validation on every tool call,
+# regardless of default_enabled).
+#
+# 2.17.10 is re-pinned ahead of the normal >=2-week age policy for the same
+# class of reason: it fixes a defect in the two tools at the very top of
+# default_enabled. On a British/Australian/Irish Mac macOS says "Not
+# authorised"; the server matched only the American "not authorized", so
+# `doctor` and `health-check` reported `permissions: ok` on a genuine TCC
+# refusal and then blamed missing accounts the user already had. The same
+# constant gates error normalisation, so no tool on those locales ever told
+# the user to grant automation access. It now also matches the
+# locale-independent `(-1743)` OSStatus, covering fully localised (fr/de/es)
+# systems no English pattern can. Reported and root-caused by @jarrah31 as
+# sweetrb/apple-mail-mcp#218.
+#
+# The three intervening releases stay skipped, deliberately: 2.17.7 was
+# docs-only, 2.17.8 fixed reply/forward (absent from default_enabled below),
+# and 2.17.9 was a dependency bump.
 transport:
   type: stdio
   command: "npx"
   args:
     - "-y"
-    - "apple-mail-mcp@2.17.6"
+    - "apple-mail-mcp@2.17.10"
 
 # Drives Apple Mail locally via AppleScript; no credentials.
 auth:

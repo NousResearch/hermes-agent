@@ -14,9 +14,9 @@ source: https://github.com/sweetrb/apple-notes-mcp
 # auditable); bump the pin via PR after validating a new release.
 #
 # How this pin was validated (catalog policy: "version validated on macOS").
-# On macOS, `npx -y apple-notes-mcp@2.8.2`:
+# On macOS, `npx -y apple-notes-mcp@2.8.3`:
 #   - completes an MCP `initialize` handshake reporting serverInfo.version
-#     2.8.2 — i.e. the bytes npx resolved are the bytes pinned here;
+#     2.8.3 — i.e. the bytes npx resolved are the bytes pinned here;
 #   - returns a full `tools/list` of 36 tools, every one carrying a description;
 #   - resolves all 20 `tools.default_enabled` entries below against that
 #     list, so no allow-listed name went stale across the bump.
@@ -32,12 +32,24 @@ source: https://github.com/sweetrb/apple-notes-mcp
 # tool call — universal reach, not gated by default_enabled. Per this
 # catalog's own precedent of re-pinning immediately for security releases,
 # the age policy yields to a security fix.
+#
+# 2.8.2 -> 2.8.3 on the same footing: it fixes a defect in `doctor` and
+# `health-check`, the two tools at the top of default_enabled below. Notes
+# carried three independent copies of the "is this a permission refusal?"
+# test — an inline regex in the error mappings and two raw substring checks in
+# the manager — all matching only the American "not authorized". On a
+# British/Australian/Irish Mac macOS says "Not authorised", so a genuine TCC
+# refusal reported `permissions: ok`. 2.8.3 unifies all three behind one
+# exported classifier and also matches the locale-independent `(-1743)`
+# OSStatus, covering fully localised systems no English pattern can. Found by
+# extension from sweetrb/apple-mail-mcp#218, which reported the identical
+# defect in the sibling server.
 transport:
   type: stdio
   command: "npx"
   args:
     - "-y"
-    - "apple-notes-mcp@2.8.2"
+    - "apple-notes-mcp@2.8.3"
 
 # Drives Apple Notes locally via AppleScript; no credentials.
 auth:

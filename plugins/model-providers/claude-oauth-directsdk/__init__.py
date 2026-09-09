@@ -1,7 +1,7 @@
 """Claude OAuth DirectSDK — standalone Hermes model-provider registration."""
 from providers import register_provider
 from providers.base import ProviderProfile
-from .model_catalog import MODEL_METADATA, native_model
+from .model_catalog import ALIASES, MODEL_METADATA, native_model
 
 
 class ClaudeOAuthDirectSDKProfile(ProviderProfile):
@@ -48,7 +48,6 @@ profile = ClaudeOAuthDirectSDKProfile(
     api_mode='chat_completions',
     auth_type='external_process',
     supports_health_check=False,
-    steering_as_user_message=True,
     native_reasoning_details_type='claude-oauth-directsdk.native_assistant',
     env_vars=(),
     base_url='process://claude-oauth-directsdk',
@@ -57,5 +56,6 @@ profile = ClaudeOAuthDirectSDKProfile(
     process_command_env_vars=('CLAUDE_OAUTH_DIRECTSDK_COMMAND',),
     default_aux_model='claude-sonnet-5[1m]',
     fallback_models=tuple(MODEL_METADATA),
+    model_aliases={alias: native_model(alias) for alias in ALIASES},
 )
 register_provider(profile)

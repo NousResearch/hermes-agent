@@ -62,7 +62,7 @@ Text streams incrementally. A complete tool batch is published only after assist
 
 A versioned `reasoning_details` envelope retains ordered native assistant messages and signed thinking. Unchanged projections preserve native blocks, including harmless surrounding-whitespace normalization. Transformed assistant text/tool projections replay canonical text and tool-use blocks instead of stale signed thinking; foreign provider reasoning carriers are ignored. Edited-assistant replay passed against the real service. Native autocompaction is disabled so Hermes retains compaction ownership; this does not establish parity for every history transformation or cross-model signed replay.
 
-This provider opts into delivering actual queued steering as a canonical user message after the tool batch. It does not parse tool text to manufacture user authority. Other providers retain their existing steering behavior. Natural change-of-plan steering passed in the real loop; an exact synthetic acknowledgment instruction was still rejected even with correct user-role delivery. Transport fidelity cannot guarantee model obedience.
+Mid-turn `/steer` uses Hermes' standard delivery: a standalone typed user row appended after the newest tool result. This provider adds no steering-specific transport. Natural change-of-plan steering passed live in the real loop; transport fidelity cannot guarantee model obedience.
 
 ## Lifecycle and request support
 

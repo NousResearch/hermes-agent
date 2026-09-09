@@ -175,3 +175,66 @@ def test_parent_watchdog_warns_when_disarmed_by_unusable_marker(monkeypatch, cap
 class _NoThread:
     def start(self):
         raise AssertionError("watchdog thread must not start")
+
+
+def test_parent_watchdog_detects_dead_parent_when_start_marker_probe_raises_oserror():
+    """#80204: when marker probe fails with OSError on a dead parent, watchdog
+    must degrade to PID liveness check and reap the orphan, not return False."""
+    def broken_marker_probe(_pid: int) -> str:
+        raise OSError("ps could not inspect PID 4242: ps: 4242: No such process")
+
+    # Parent is dead: pid_exists returns False -> must return True (orphaned)
+    assert (
+        _is_serve_orphaned(
+            4242,
+            "ps:Thu Aug 20 22:33:11 2026",
+            pid_exists=lambda _pid: False,
+            process_start_marker=broken_marker_probe,
+        )
+        is True
+    )
+
+    # Parent is still alive: pid_exists returns True -> fail-safe False
+    assert (
+        _is_serve_orphaned(
+            4242,
+            "ps:Thu Aug 20 22:33:11 2026",
+            pid_exists=lambda _pid: True,
+            process_start_marker=broken_marker_probe,
+        )
+        is False
+    )
+
+
+def test_parent_watchdog_detects_dead_parent_on_process_lookup_error():
+    """#80204: ProcessLookupError from probe immediately signals parent is gone."""
+    def lookup_error_probe(pid: int) -> str:
+        raise ProcessLookupError(pid)
+
+    assert (
+        _is_serve_orphaned(
+            4242,
+            "ps:Thu Aug 20 22:33:11 2026",
+            pid_exists=lambda _pid: True,
+            process_start_marker=lookup_error_probe,
+        )
+        is True
+    )
+
+
+def test_ps_process_start_marker_raises_process_lookup_error_on_missing_process(monkeypatch):
+    """#80204: _process_start_marker raises ProcessLookupError when ps exits non-zero with no marker."""
+    import subprocess
+    import pytest
+    from hermes_cli import web_server_lifecycle
+
+    def fake_run(*args, **kwargs):
+        return subprocess.CompletedProcess(args=args, returncode=1, stdout="", stderr="ps: 4242: No such process")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setattr(web_server_lifecycle.sys, "platform", "darwin")
+    monkeypatch.setattr(web_server_lifecycle.os, "name", "posix")
+
+    with pytest.raises(ProcessLookupError):
+        web_server_lifecycle._process_start_marker(4242)
+

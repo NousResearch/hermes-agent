@@ -454,11 +454,35 @@ def _gateway_platform_value(platform: Any) -> str:
 
 def _non_conversational_metadata(
     metadata: Optional[Dict[str, Any]] = None, *, platform: Any = None) -> Optional[Dict[str, Any]]:
-    """Mark Discord lifecycle/status sends without changing other platforms."""
+    """Mark Discord lifecycle/status sends without changing other platforms.
+
+    Deliberately does NOT stamp email's ``gateway_internal_send`` provenance: this helper also
+    wraps turn-local sends (heartbeats, live status, progress threading) whose authority comes
+    from the inbound turn — under review_first those must pass the per-message trust decision,
+    never a provenance bypass. Use :func:`_gateway_internal_send_metadata` for that, and only
+    on gateway-OWNED outbound work."""
     if _gateway_platform_value(platform) != "discord":
         return metadata
     merged = dict(metadata or {})
     merged["non_conversational"] = True
+    return merged
+
+
+def _gateway_internal_send_metadata(
+    metadata: Optional[Dict[str, Any]] = None, *, platform: Any = None) -> Optional[Dict[str, Any]]:
+    """Stamp gateway-internal provenance on an EMAIL send (other platforms pass through).
+
+    Under review_first the email adapter grants SMTP on this marker (still gated by the
+    auto-send allowlist), so it must only ever wrap outbound work the gateway itself composed
+    independently of any inbound turn — home-channel lifecycle broadcasts and DeliveryRouter
+    cron/targeted delivery. Anything generated inside an inbound email turn (replies, progress,
+    heartbeats, status) must NOT come through here: its authority is the turn's inbound
+    message, and it must pass the per-message trust decision instead. An unwrapped email
+    notification degrades to a visible Draft, never an unwanted send."""
+    if _gateway_platform_value(platform) != "email":
+        return metadata
+    merged = dict(metadata or {})
+    merged["gateway_internal_send"] = True
     return merged
 
 

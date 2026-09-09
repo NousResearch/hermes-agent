@@ -2079,20 +2079,60 @@ class GatewayTurnMixin:
     def _resolve_enabled_toolsets_for_source(
         self, user_config: dict, source: "SessionSource", platform_key: str,
     ) -> list:
-        """Enabled toolsets for an agent run, honoring an adapter ``toolsets_for_source()`` override
-        validated through the SAME ``_get_platform_tools`` path (unknown / platform-restricted
-        toolsets dropped, not trusted)."""
+        """Enabled toolsets for an agent run, honoring an adapter ``toolsets_for_source()`` override.
+        A non-empty override is validated through the SAME ``_get_platform_tools`` path (unknown /
+        platform-restricted toolsets dropped, not trusted). An explicit EMPTY list means ZERO tools
+        and bypasses ``_get_platform_tools`` entirely — it would re-add platform-native toolsets and
+        MCP servers. Contract: None = platform defaults, [] = no tools, non-empty = replace."""
         from hermes_cli.tools_config import _get_platform_tools
+        # Wire-invisible zero-tool flag (email review_first), stamped only in-process at dispatch:
+        # never deserialized, so a restored source cannot carry it — the adapter override below
+        # (fail-closed via toolsets_override_fail_closed) covers those.
+        if getattr(source, "email_zero_tools", False):
+            return []
+        adapter = None
         try:
             adapter = self._adapter_for_source(source)
             override = adapter.toolsets_for_source(source) if adapter is not None else None
         except Exception:
+            # An adapter that declares fail-closed overrides (review_first email) must never fall
+            # back to platform defaults on an override error.
+            if getattr(adapter, "toolsets_override_fail_closed", False):
+                return []
             override = None
+        if adapter is None and platform_key == "email":
+            # The email adapter is the only authority on the outbound policy (review_first ⇒
+            # zero tools). With no live adapter — e.g. a restored/redelivered source before the
+            # platform connects — that authority is unresolved, so the turn's tools fail closed
+            # to zero rather than falling through to configured defaults. This also makes
+            # _proxy_delegation_allowed derive the same refusal from effective toolsets.
+            return []
+        if isinstance(override, list) and not override:
+            return []
         if override and isinstance(override, list):
             pts = dict(user_config.get("platform_toolsets") or {})
             pts[platform_key] = [str(x) for x in override]
             user_config = {**user_config, "platform_toolsets": pts}
         return sorted(_get_platform_tools(user_config, platform_key))
+
+    def _proxy_delegation_allowed(self, source: "SessionSource") -> bool:
+        """False when this source's turn must run tool-free (email review_first): a proxy agent's
+        toolset cannot be constrained from here, so resolve the EFFECTIVE toolsets — which covers
+        restored/deserialized sources that lost the wire-invisible ``email_zero_tools`` flag — and
+        refuse delegation when they resolve to zero. An email source with NO live adapter is also
+        refused: the adapter is the only authority on the outbound policy, so its absence must not
+        default to delegation. Fails closed on any error."""
+        try:
+            if getattr(source, "email_zero_tools", False):
+                return False
+            from gateway.config import Platform
+            if source.platform == Platform.EMAIL and self._adapter_for_source(source) is None:
+                return False
+            from gateway.run import _load_gateway_config, _platform_config_key
+            return self._resolve_enabled_toolsets_for_source(
+                _load_gateway_config(), source, _platform_config_key(source.platform)) != []
+        except Exception:
+            return False
 
     def _resolve_turn_toolsets(self, user_config: dict, source: "SessionSource", platform_key: str):
         """``(enabled_toolsets, disabled_toolsets)`` for an agent run on ``source``."""
@@ -3815,7 +3855,9 @@ class GatewayTurnMixin:
         """Run the agent; returns the full run_conversation result dict.
 
         Keys: "final_response", "messages", "api_calls", "completed"."""
-        if self._get_proxy_url():
+        # Zero-tool sources (email review_first) never delegate to the proxy: its agent's toolset
+        # cannot be constrained from here, so those turns run locally with an empty toolset.
+        if self._get_proxy_url() and self._proxy_delegation_allowed(source):
             return await self._run_agent_via_proxy(
                 message=message, context_prompt=context_prompt, history=history, source=source,
                 session_id=session_id, session_key=session_key, run_generation=run_generation,

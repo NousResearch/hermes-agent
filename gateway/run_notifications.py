@@ -720,7 +720,7 @@ class GatewayNotificationsMixin:
 
     async def _send_home_channel_message(self, platform, home, transport, message: str, failure_fmt: str) -> bool:
         """Best-effort send to one home channel; True on success, failures logged with ``failure_fmt``."""
-        from gateway.run import _non_conversational_metadata
+        from gateway.run import _gateway_internal_send_metadata, _non_conversational_metadata
         try:
             metadata = self._thread_metadata_for_target(platform, home.chat_id, home.thread_id, adapter=transport.adapter)
             if transport.is_relay:
@@ -729,7 +729,11 @@ class GatewayNotificationsMixin:
                     metadata["user_id"] = home.user_id
                 if home.scope_id:
                     metadata["scope_id"] = home.scope_id
-            send_metadata = _non_conversational_metadata(metadata, platform=platform)
+            # Home-channel broadcasts are gateway-OWNED lifecycle notices (startup/shutdown/
+            # restart) — the one turn-independent send path that may carry email's
+            # gateway_internal_send provenance (still allowlist-gated at the adapter).
+            send_metadata = _gateway_internal_send_metadata(
+                _non_conversational_metadata(metadata, platform=platform), platform=platform)
             if send_metadata is not None or transport.is_relay:
                 result = await transport.send(platform, str(home.chat_id), message, metadata=send_metadata)
             else:

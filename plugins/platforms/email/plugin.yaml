@@ -34,6 +34,6 @@ optional_env:
     prompt: "Allowed users (comma-separated)"
     password: false
   - name: EMAIL_HOME_ADDRESS
-    description: "Default address for cron / notification delivery"
+    description: "Notification destination for cron / gateway notices only — grants no automatic-send authority"
     prompt: "Home address"
     password: false

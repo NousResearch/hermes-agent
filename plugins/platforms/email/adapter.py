@@ -3,6 +3,7 @@ receives, SMTP sends. Configured via EMAIL_* env vars or ``platforms.email`` in 
 
 import asyncio
 import email as email_lib
+from collections import OrderedDict
 from contextlib import contextmanager, suppress
 import imaplib
 import logging
@@ -11,12 +12,13 @@ import re
 import smtplib
 import socket
 import ssl
+import time
 import uuid
 from email.header import decode_header
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.mime.base import MIMEBase
-from email.utils import formatdate
+from email.utils import formatdate, parseaddr
 from email import encoders
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -55,6 +57,15 @@ _HTML_SUBS = ((re.compile(r"<br\s*/?>", re.IGNORECASE), "\n"), (re.compile(r"<p[
 # "method=result" tokens (``dmarc=pass``) and property values (``header.from=x``) in Authentication-Results.
 _AUTH_METHOD_RE = re.compile(r"\b(dmarc|dkim|spf)\s*=\s*([a-z]+)", re.IGNORECASE)
 _AUTH_PROP_RE = re.compile(r"\b(header\.from|header\.d|smtp\.mailfrom|smtp\.from|envelope-from)\s*=\s*([^\s;]+)", re.IGNORECASE)
+
+# Review-first outbound dispositions: "sent" went out via SMTP; "drafted" was appended to the IMAP
+# drafts mailbox for human review and never touched SMTP.
+DISPOSITION_SENT = "sent"
+DISPOSITION_DRAFTED = "drafted"
+# Metadata key stamped ONLY by trusted gateway-composed send paths (cron delivery via DeliveryRouter,
+# lifecycle notifications via _non_conversational_metadata). Under review_first it authorizes
+# transmission solely to the auto-send allowlist; never derived from message content.
+GATEWAY_INTERNAL_SEND_KEY = "gateway_internal_send"
 
 
 def _esecret_int(name: str, default: int) -> int:
@@ -241,7 +252,13 @@ def _strip_html(html: str) -> str:
 
 
 def _extract_email_address(raw: str) -> str:
-    """Extract bare email address from 'Name <addr>' format."""
+    """Extract the bare email address from 'Name <addr>' format via RFC 2822 parsing.
+    parseaddr honors quoting, so a display name containing an angle-bracketed address
+    ('"x <victim@a>" <attacker@b>') can never shadow the real sender the way a first-match
+    regex could; the regex remains only as a fallback for garbage parseaddr rejects."""
+    parsed = parseaddr(raw or "")[1].strip().lower()
+    if parsed:
+        return parsed
     match = re.search(r"<([^>]+)>", raw)
     return (match.group(1) if match else raw).strip().lower()
 
@@ -258,11 +275,125 @@ def _domains_aligned(a: str, b: str) -> bool:
     return bool(a and b) and (a == b or a.endswith("." + b) or b.endswith("." + a))
 
 
-def _verify_sender_authentication(msg: email_lib.message.Message, from_addr: str, *, authserv_id: str = "") -> Tuple[bool, str]:
+def _normalize_addr(addr: Any) -> str:
+    """Normalize one email address for comparison: parse, strip, lowercase."""
+    return parseaddr(str(addr or ""))[1].strip().lower()
+
+
+def _normalize_address_allowlist(raw: Any) -> frozenset:
+    """Normalize ``auto_send_authenticated_senders`` fail-closed: a bare string is a one-element list
+    (common YAML mistake); non-string or ``@``-less entries drop with a warning; any other shape yields
+    an empty set — which under review_first drafts everything."""
+    raw = [raw] if isinstance(raw, str) else raw
+    if not isinstance(raw, (list, tuple, set, frozenset)):
+        if raw is not None:
+            logger.warning("[Email] auto_send_authenticated_senders must be a list of addresses; got %r — "
+                           "treating as empty (fail closed)", type(raw).__name__)
+        return frozenset()
+    normalized = set()
+    for entry in raw:
+        addr = _normalize_addr(entry) if isinstance(entry, str) else ""
+        if "@" in addr:
+            normalized.add(addr)
+        else:
+            logger.warning("[Email] Ignoring malformed allowlist entry %r", entry)
+    return frozenset(normalized)
+
+
+def _positive_int(raw: Any, default: int) -> int:
+    """Coerce a config value to a positive int, falling back to *default*."""
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return default
+    return value if value > 0 else default
+
+
+def _select_strict_auth_header(msg: email_lib.message.Message, authserv_id: str) -> "Tuple[Optional[str], str]":
+    """Position-verified exact-pin Authentication-Results selection for review_first.
+
+    An authserv-id string inside a header is itself attacker-controlled text, so pinning alone cannot
+    establish provenance — position can: the receiving server prepends its trace headers, so only
+    headers ABOVE the message's first transport ``Received:`` line were written by the receiving
+    infrastructure. Requires an exact pin match (no subdomain alignment), exactly ONE matching header
+    in that region, and at least one ``Received:`` header (every SMTP-delivered message carries the
+    receiving server's own); anything else fails closed. Returns ``(header_value | None, reason)``."""
+    if not authserv_id:
+        return None, "review_first requires a pinned authserv_id (platforms.email.authserv_id) — failing closed"
+    pin, first_received, candidates = authserv_id.strip().lower(), None, []
+    for idx, (name, value) in enumerate(msg.items()):
+        lname = name.lower()
+        if lname == "received":
+            first_received = idx if first_received is None else first_received
+        elif lname == "authentication-results":
+            v = " ".join(str(value).split())
+            if v.split(";", 1)[0].strip().lower() == pin:
+                candidates.append((idx, v))
+    if first_received is None:
+        return None, "no transport Received header — cannot verify Authentication-Results provenance, failing closed"
+    candidates = [(i, v) for i, v in candidates if i < first_received]
+    if not candidates:
+        return None, "no Authentication-Results from the pinned authserv-id above the transport Received chain — failing closed"
+    if len(candidates) > 1:
+        return None, f"ambiguous Authentication-Results: {len(candidates)} headers claim the trusted authserv-id — failing closed"
+    return candidates[0][1], ""
+
+
+_STRICT_CLAUSE_METHOD_RE = re.compile(r"^\s*(dmarc|dkim|spf)\s*=\s*([a-z0-9]+)", re.IGNORECASE)
+
+
+def _strict_authentication_verdict(trusted: str, from_domain: str) -> Tuple[bool, str]:
+    """Method-scoped evaluation of one server-stamped Authentication-Results value (review_first).
+
+    RFC 8601 resinfo units are ``;``-separated clauses, each opening with ``method=result``; a
+    property binds only to the clause that produced it (a ``header.d`` sitting in an spf clause
+    proves nothing about DKIM), and DKIM accepts ONLY an aligned ``header.d`` — never
+    ``header.from``, which is the attacker-controlled visible identity, not a signing identity.
+    Duplicate clauses for the same method are ambiguous and fail that method closed, as do
+    clauses this parser cannot recognize as opening with a known method. Scoping and identity
+    semantics follow the direction of #56608 (method-scoped AR properties, DKIM identity), which
+    owns the repo-wide legacy parser under the #103093 tracker with authserv trust-topology in
+    #88560; they are enforced here independently because under review_first this verdict becomes
+    automatic SMTP send authority."""
+    clauses: Dict[str, Optional[Tuple[str, Dict[str, str]]]] = {}
+    for raw_clause in trusted.split(";")[1:]:  # segment 0 is the authserv-id
+        m = _STRICT_CLAUSE_METHOD_RE.match(raw_clause)
+        if not m:
+            continue
+        method, result = m.group(1).lower(), m.group(2).lower()
+        props = {p.lower(): v.strip().strip('"') for p, v in _AUTH_PROP_RE.findall(raw_clause)}
+        clauses[method] = None if method in clauses else (result, props)
+
+    def _clause(method: str) -> Tuple[str, Dict[str, str]]:
+        entry = clauses.get(method)
+        return entry if entry else ("", {})
+
+    result, props = _clause("dmarc")
+    if result == "pass":
+        hf = props.get("header.from", "")
+        dmarc_domain = _domain_of(hf) if "@" in hf else hf
+        if dmarc_domain and _domains_aligned(dmarc_domain, from_domain):
+            return True, "dmarc=pass"
+    result, props = _clause("spf")
+    if result == "pass":
+        spf_domain = _domain_of(props.get("smtp.mailfrom", "")) or props.get("smtp.from", "") or props.get("envelope-from", "")
+        if _domains_aligned(_domain_of(spf_domain) if "@" in spf_domain else spf_domain, from_domain):
+            return True, "spf=pass aligned"
+    result, props = _clause("dkim")
+    if result == "pass" and _domains_aligned(props.get("header.d", ""), from_domain):
+        return True, "dkim=pass aligned"
+    return False, f"authentication failed ({trusted[:120]})"
+
+
+def _verify_sender_authentication(msg: email_lib.message.Message, from_addr: str, *, authserv_id: str = "",
+                                  strict: bool = False) -> Tuple[bool, str]:
     """Verify the ``From:`` domain is authenticated; returns ``(authenticated, reason)``.
     ``From:`` is attacker-controlled (GHSA-rxqh-5572-8m77); the only trustworthy signal is the
     ``Authentication-Results`` header stamped by the *receiving* server. It prepends, so the FIRST
     instance is trusted and an injected copy sorts below it; pinned to *authserv_id* when given.
+    *strict* (review_first) hardens the selection via :func:`_select_strict_auth_header` and
+    evaluates it with :func:`_strict_authentication_verdict` (method-scoped properties, no DKIM
+    ``header.from`` fallback).
     True on DMARC pass, aligned SPF pass, or aligned DKIM (``header.d``) pass. No header → fail-closed
     (opt out via ``EmailAdapter._require_authenticated_sender``)."""
     from_domain = _domain_of(from_addr)
@@ -270,6 +401,11 @@ def _verify_sender_authentication(msg: email_lib.message.Message, from_addr: str
         return False, "missing From domain"
     if not (headers := msg.get_all("Authentication-Results")):
         return False, "no Authentication-Results header"
+    if strict:
+        trusted, reason = _select_strict_auth_header(msg, authserv_id)
+        if trusted is None:
+            return False, reason
+        return _strict_authentication_verdict(trusted, from_domain)
     values = (" ".join(str(raw).split()) for raw in headers)  # authserv-id precedes the first ';'
     trusted = next((v for v in values if not authserv_id or (serv := v.split(";", 1)[0].strip().lower()) == authserv_id.lower()
                     or _domains_aligned(serv, authserv_id)), None)
@@ -277,8 +413,17 @@ def _verify_sender_authentication(msg: email_lib.message.Message, from_addr: str
         return False, "no Authentication-Results from trusted authserv-id"
     methods = {m.lower(): r.lower() for m, r in _AUTH_METHOD_RE.findall(trusted)}
     props = {p.lower(): v.strip().strip('"') for p, v in _AUTH_PROP_RE.findall(trusted)}
-    if methods.get("dmarc") == "pass":  # DMARC already enforces From alignment
-        return True, "dmarc=pass"
+    if methods.get("dmarc") == "pass":
+        # DMARC enforces alignment only for the identity it evaluated (header.from) — that
+        # domain must itself align with the parsed From: domain, or a legitimately-passing
+        # third-party message whose From: was mis-extracted (display-name spoof) would be
+        # trusted. Legacy accepts a server that did not record header.from, but a recorded
+        # misaligned domain never authenticates — aligned SPF/DKIM below may still vouch for
+        # the actual From: domain.
+        hf = props.get("header.from", "")
+        dmarc_domain = _domain_of(hf) if "@" in hf else hf
+        if not dmarc_domain or _domains_aligned(dmarc_domain, from_domain):
+            return True, "dmarc=pass"
     if methods.get("spf") == "pass":  # envelope/MAIL FROM domain must align with From
         spf_domain = _domain_of(props.get("smtp.mailfrom", "")) or props.get("smtp.from", "") or props.get("envelope-from", "")
         if _domains_aligned(_domain_of(spf_domain) if "@" in spf_domain else spf_domain, from_domain):
@@ -360,6 +505,54 @@ class EmailAdapter(BasePlatformAdapter):
             self._require_authenticated_sender = not _esecret_bool("EMAIL_TRUST_FROM_HEADER", False)
         # Optional authserv-id pinning Authentication-Results to the operator's own server (defeats an injected header sorting first).
         self._authserv_id = (extra.get("authserv_id", "") or _get_secret("EMAIL_AUTHSERV_ID", "")).strip().lower()
+        # Review-first outbound policy (config.yaml only — behavior settings are not env vars; .env stays
+        # credentials-only). Absent/empty preserves the legacy always-send behavior ("direct"); an unknown
+        # value fails closed into review_first so a typo can never silently disable review.
+        raw_policy = str(extra.get("outbound_policy") or "").strip().lower()
+        if raw_policy not in ("", "direct", "review_first"):
+            logger.error("[Email] Unknown outbound_policy %r — failing closed to review_first (valid: direct, review_first)", raw_policy)
+        self._outbound_policy = "direct" if not raw_policy else ("direct" if raw_policy == "direct" else "review_first")
+        # Auto-send allowlist: replies transmit via SMTP only for senders on this list whose inbound
+        # message passed authentication. Independent of EMAIL_ALLOWED_USERS / EMAIL_ALLOW_ALL_USERS
+        # (which gate access, not send authority). Empty/malformed ⇒ fail closed: every reply drafts.
+        self._auto_send_allowlist = _normalize_address_allowlist(extra.get("auto_send_authenticated_senders"))
+        self._drafts_mailbox = str(extra.get("drafts_mailbox") or "Drafts").strip() or "Drafts"
+        self._sent_mailbox = str(extra.get("sent_mailbox") or "Sent").strip() or "Sent"
+        # Sent archival via IMAP APPEND: default on under review_first, off under direct (legacy installs
+        # stay byte-identical).
+        self._save_sent = is_truthy_value(extra.get("save_sent"), default=(self._outbound_policy == "review_first"))
+        # Under review_first EVERY email-triggered turn is tool-free — trusted senders included. Email
+        # content must never trigger tools, and a per-sender toolset knob would be a widening lever.
+        if extra.get("untrusted_sender_toolsets"):
+            logger.warning("[Email] untrusted_sender_toolsets is not supported — review_first email turns "
+                           "always run with zero tools; ignoring the configured value.")
+        # Resolver contract: when toolsets_for_source raises, fail closed to an empty toolset instead of
+        # falling back to platform defaults.
+        self.toolsets_override_fail_closed = self._outbound_policy == "review_first"
+        # Anchor-less sends without gateway-internal provenance in the OUT-OF-PROCESS standalone path:
+        # "draft" reviews them, "send" lets them out. Unknown values fail closed. In-process anchor-less
+        # sends draft unconditionally (see _decide_disposition).
+        raw_agent_sends = str(extra.get("agent_initiated_sends") or "draft").strip().lower()
+        if raw_agent_sends not in ("draft", "send"):
+            logger.error("[Email] Unknown agent_initiated_sends %r — failing closed to 'draft' (valid: draft, send)", raw_agent_sends)
+            raw_agent_sends = "draft"
+        self._agent_initiated_sends = raw_agent_sends
+        # Abuse limits for untrusted draft generation: every accepted stranger costs a model turn and a
+        # Drafts entry. Enforced at dispatch, before any model work.
+        self._untrusted_draft_limit_per_sender_hour = _positive_int(extra.get("untrusted_draft_limit_per_sender_hour"), 4)
+        self._untrusted_draft_limit_global_hour = _positive_int(extra.get("untrusted_draft_limit_global_hour"), 20)
+        self._untrusted_draft_times_by_sender: Dict[str, List[float]] = {}
+        self._untrusted_draft_times_global: List[float] = []
+        # Per-message trust records keyed (normalized sender, Message-ID): binding trust to the specific
+        # inbound message (not the sender) prevents a later message from the same address — e.g. a forged
+        # one that failed DMARC — overwriting trust for an in-flight reply. A colliding forged Message-ID
+        # can only overwrite toward authenticated=False (one reply drafts instead of sending).
+        self._msg_trust: "OrderedDict[Tuple[str, str], bool]" = OrderedDict()
+        self._msg_trust_max = 500
+        # Inbound Message-IDs already dispatched: a replayed message arriving under a fresh IMAP UID must
+        # not trigger a second model turn or a second draft.
+        self._seen_message_ids: "OrderedDict[str, bool]" = OrderedDict()
+        self._seen_message_ids_max = 1000
         self._seen_uids: set = set()
         self._seen_uids_max: int = 2000   # cap to prevent unbounded memory growth
         self._poll_task: Optional[asyncio.Task] = None
@@ -580,7 +773,8 @@ class EmailAdapter(BasePlatformAdapter):
             logger.debug("[Email] Skipping automated sender: %s", sender_addr)
             return None
         # Verify From: while the trusted Authentication-Results header is in scope; the verdict is consumed at dispatch (GHSA-rxqh-5572-8m77).
-        sender_authenticated, auth_reason = _verify_sender_authentication(msg, sender_addr, authserv_id=self._authserv_id)
+        sender_authenticated, auth_reason = _verify_sender_authentication(
+            msg, sender_addr, authserv_id=self._authserv_id, strict=self._outbound_policy == "review_first")
         return {"uid": uid, "sender_addr": sender_addr, "sender_name": sender_name, "subject": subject,
                 "message_id": msg.get("Message-ID", ""), "in_reply_to": msg.get("In-Reply-To", ""),
                 "body": _extract_text_body(msg),
@@ -625,38 +819,109 @@ class EmailAdapter(BasePlatformAdapter):
             return False
         return True
 
+    def _untrusted_draft_allowed(self, sender_addr: str) -> bool:
+        """Hourly rate limits for untrusted draft generation (per-sender + global), enforced at
+        dispatch before any model work. False (with a clear log) when a budget is exhausted."""
+        now = time.time()
+        cutoff = now - 3600.0
+        sender_norm = _normalize_addr(sender_addr)
+        global_times = [t for t in self._untrusted_draft_times_global if t > cutoff]
+        sender_times = [t for t in self._untrusted_draft_times_by_sender.get(sender_norm, []) if t > cutoff]
+        allowed = True
+        if len(global_times) >= self._untrusted_draft_limit_global_hour:
+            logger.warning("[Email] Draft generation skipped for %s: global hourly limit reached (%d/h)",
+                           sender_addr, self._untrusted_draft_limit_global_hour)
+            allowed = False
+        elif len(sender_times) >= self._untrusted_draft_limit_per_sender_hour:
+            logger.warning("[Email] Draft generation skipped for %s: per-sender hourly limit reached (%d/h)",
+                           sender_addr, self._untrusted_draft_limit_per_sender_hour)
+            allowed = False
+        else:
+            sender_times.append(now)
+            global_times.append(now)
+        self._untrusted_draft_times_global = global_times
+        if sender_times:
+            self._untrusted_draft_times_by_sender[sender_norm] = sender_times
+        else:
+            self._untrusted_draft_times_by_sender.pop(sender_norm, None)
+        while len(self._untrusted_draft_times_by_sender) > 500:
+            self._untrusted_draft_times_by_sender.pop(next(iter(self._untrusted_draft_times_by_sender)))
+        return allowed
+
     async def _dispatch_message(self, msg_data: Dict[str, Any]) -> None:
         """Convert a fetched email into a MessageEvent and dispatch it."""
         sender_addr = msg_data["sender_addr"]
         if not self._sender_accepted(sender_addr, msg_data):
             return
+        # Replay suppression: the same inbound Message-ID under a fresh IMAP UID (resent/copied mail)
+        # must not trigger a second model turn or a second draft.
+        if inbound_message_id := msg_data.get("message_id") or "":
+            if inbound_message_id in self._seen_message_ids:
+                logger.warning("[Email] Dropping duplicate inbound Message-ID %s from %s", inbound_message_id, sender_addr)
+                return
+            self._seen_message_ids[inbound_message_id] = True
+            while len(self._seen_message_ids) > self._seen_message_ids_max:
+                self._seen_message_ids.popitem(last=False)
+        # Review-first trust verdict, decided once — derived ONLY from the verified
+        # Authentication-Results evaluation plus the configured allowlist, never message content.
+        review_first = self._outbound_policy == "review_first"
+        sender_trusted = (not review_first) or (
+            _normalize_addr(sender_addr) in self._auto_send_allowlist
+            and bool(msg_data.get("sender_authenticated", False)))
+        if review_first and not sender_trusted and not self._untrusted_draft_allowed(sender_addr):
+            return
         subject, body, attachments = msg_data["subject"], msg_data["body"].strip(), msg_data["attachments"]
+        if len(body) > MAX_MESSAGE_LENGTH:
+            logger.warning("[Email] Truncating oversized inbound body from %s (%d chars)", sender_addr, len(body))
+            body = body[:MAX_MESSAGE_LENGTH] + "\n\n[... truncated by gateway]"
         text = f"[Subject: {subject}]\n\n{body}" if subject and not subject.startswith("Re:") else body  # subject unless reply
         # DOCUMENT wins over PHOTO for mixed attachments: run.py keys image handling off the per-path mime type regardless
         # of message_type, but document-context injection gates strictly on MessageType.DOCUMENT — so DOCUMENT surfaces both.
         kinds = {att["type"] for att in attachments}
         self._thread_context[sender_addr] = {"subject": subject, "message_id": msg_data["message_id"]}
+        # Bind the authentication verdict to this specific message so the reply's delivery decision can
+        # never be influenced by a later message from the same address.
+        self._record_message_trust(_normalize_addr(sender_addr), msg_data["message_id"],
+                                   msg_data.get("sender_authenticated", False))
         name = msg_data["sender_name"] or sender_addr
+        source = self.build_source(chat_id=sender_addr, chat_name=name, chat_type="dm", user_id=sender_addr, user_name=name)
+        # Review-first trust boundary: both flags are wire-invisible and stamped from verified metadata
+        # only. email_zero_tools makes the gateway resolve this turn to ZERO callable tools regardless of
+        # sender trust (email content must never trigger tools) and blocks proxy-mode delegation. The
+        # "untrusted" thread_id segregates the session key so a forged-From message can never share
+        # conversation history (or the cached agent) with the real sender's trusted session.
+        source.email_sender_trusted = sender_trusted
+        source.email_zero_tools = review_first
+        if review_first and not sender_trusted:
+            source.thread_id = "untrusted"
         event = MessageEvent(
             text=text or "(empty email)", message_id=msg_data["message_id"],
             message_type=MessageType.DOCUMENT if "document" in kinds else MessageType.PHOTO if "image" in kinds else MessageType.TEXT,
-            source=self.build_source(chat_id=sender_addr, chat_name=name, chat_type="dm", user_id=sender_addr, user_name=name),
+            source=source,
             media_urls=[att["path"] for att in attachments], media_types=[att["media_type"] for att in attachments],
             reply_to_message_id=msg_data["in_reply_to"] or None)
         logger.info("[Email] New message from %s: %s", sender_addr, subject)
         await self.handle_message(event)
 
     async def _run_send(self, fn, args: tuple, log_fmt: str, *log_args) -> SendResult:
-        """Run a blocking SMTP sender in the executor; wrap its Message-ID in a SendResult."""
+        """Run a blocking sender in the executor; senders return ``(message_id, disposition)``."""
         try:
-            return SendResult(success=True, message_id=await asyncio.get_running_loop().run_in_executor(None, fn, *args))
+            msg_id, disposition = await asyncio.get_running_loop().run_in_executor(None, fn, *args)
+            return SendResult(success=True, message_id=msg_id, disposition=disposition)
         except Exception as e:
             logger.error(log_fmt, *log_args, e)
             return SendResult(success=False, error=str(e))
 
     async def send(self, chat_id: str, content: str, reply_to: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None) -> SendResult:
-        """Send an email reply to the given address."""
-        return await self._run_send(self._send_email, (chat_id, content, reply_to), "[Email] Send failed to %s: %s", chat_id)
+        """Send an email reply to the given address (or draft it for review)."""
+        if self._outbound_policy == "review_first" and (metadata or {}).get("_interim_send"):
+            # Mid-turn status/heartbeat sends (marked by the gateway's _interim_metadata) are
+            # dropped under review_first: email is not a streaming surface, their authority is
+            # the inbound turn's, and neither an SMTP send nor a Drafts entry per heartbeat is
+            # acceptable. The turn-final reply still passes the full trust decision.
+            logger.debug("[Email] Suppressing mid-turn interim send to %s under review_first", chat_id)
+            return SendResult(success=True)
+        return await self._run_send(self._send_email, (chat_id, content, reply_to, metadata), "[Email] Send failed to %s: %s", chat_id)
 
     def _message_id_domain(self) -> str:
         """Domain for generated Message-IDs; ``localhost`` when EMAIL_ADDRESS lacks ``@``."""
@@ -691,16 +956,97 @@ class EmailAdapter(BasePlatformAdapter):
             except Exception:
                 smtp.close()
 
-    def _send_email(self, to_addr: str, body: str, reply_to_msg_id: Optional[str] = None) -> str:
-        """Send an email via SMTP. Runs in executor thread."""
-        msg, msg_id, subject = self._new_reply(to_addr, body, reply_to_msg_id, attach_empty_body=True)
-        self._smtp_send(msg)
-        logger.info("[Email] Sent reply to %s (subject: %s)", to_addr, subject)
-        return msg_id
+    def _imap_append(self, mailbox: str, flags: str, msg: MIMEMultipart) -> None:
+        """Append one message to an IMAP mailbox. Raises on failure."""
+        imap = self._connect_imap()
+        try:
+            imap.login(self._address, self._password)
+            _send_imap_id(imap)
+            status, data = imap.append(mailbox, flags, imaplib.Time2Internaldate(time.time()), msg.as_bytes())
+            if status != "OK":
+                raise RuntimeError(f"IMAP append to {mailbox!r} failed: {status} {data}")
+        finally:
+            _close_imap(imap)
 
-    def _send_with_files(self, to_addr: str, body: str, files: List[Tuple[Path, str]], *, lenient: bool) -> str:
-        """Send a reply with attachments; *lenient* logs-and-skips unattachable files instead of raising."""
-        msg, msg_id, _ = self._new_reply(to_addr, body)
+    def _record_message_trust(self, sender_norm: str, message_id: str, authenticated: bool) -> None:
+        """Record the authentication verdict for one inbound message, keyed (sender, Message-ID) so
+        trust is bound to the specific message a reply anchors to — never the sender's latest."""
+        if not message_id:
+            return
+        self._msg_trust[(sender_norm, message_id)] = bool(authenticated)
+        while len(self._msg_trust) > self._msg_trust_max:
+            self._msg_trust.popitem(last=False)
+
+    @staticmethod
+    def _explicit_reply_anchor(reply_to_msg_id: Optional[str], metadata: Optional[Dict[str, Any]]) -> Optional[str]:
+        """Inbound Message-ID this outbound replies to: the explicit per-turn ``reply_to``, else the
+        ``reply_to_message_id`` the gateway's thread metadata carries for send paths without a
+        ``reply_to`` parameter (attachment batches). Deliberately NO thread-context fallback: that
+        per-sender state tracks the sender's NEWEST message, so a reply to one message could resolve
+        to another's trust record — the delivery decision only ever binds to an explicit anchor."""
+        return reply_to_msg_id or str((metadata or {}).get("reply_to_message_id") or "") or None
+
+    def _decide_disposition(self, to_addr: str, reply_to_msg_id: Optional[str] = None,
+                            metadata: Optional[Dict[str, Any]] = None) -> str:
+        """Sent or drafted, for one outbound message. Legacy ``direct`` always sends. Under
+        ``review_first``: gateway-internal sends (gateway-stamped metadata, never message content)
+        send only to the auto-send allowlist; a reply sends only when its EXPLICIT anchor's inbound
+        message carries a live authenticated trust record AND the recipient is allowlisted (a missing
+        or ambiguous record — including after a restart — drafts; permission is never inferred from
+        the recipient address alone); any anchor-less in-process send drafts unconditionally (the
+        ``agent_initiated_sends`` toggle applies only to out-of-process standalone sends)."""
+        if self._outbound_policy != "review_first":
+            return DISPOSITION_SENT
+        to_norm = _normalize_addr(to_addr)
+        if (metadata or {}).get(GATEWAY_INTERNAL_SEND_KEY) is True:
+            # Gateway-internal provenance authorizes transmission ONLY to the allowlist:
+            # EMAIL_HOME_ADDRESS is a notification destination, never send authority.
+            if to_norm and to_norm in self._auto_send_allowlist:
+                return DISPOSITION_SENT
+            logger.info("[Email] Gateway-internal send to non-allowlisted recipient %s drafts under review_first", to_addr)
+            return DISPOSITION_DRAFTED
+        if (anchor := self._explicit_reply_anchor(reply_to_msg_id, metadata)) is not None:
+            if self._msg_trust.get((to_norm, anchor)) is True and to_norm in self._auto_send_allowlist:
+                return DISPOSITION_SENT
+            return DISPOSITION_DRAFTED
+        return DISPOSITION_DRAFTED
+
+    def _deliver_message(self, msg: MIMEMultipart, to_addr: str, *, subject: str,
+                         reply_to_msg_id: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None) -> str:
+        """Authoritative delivery for every outbound email; returns the disposition. ``sent`` = SMTP
+        plus best-effort Sent-mailbox archival (an archival failure logs and still reports sent so
+        callers never retry SMTP and duplicate the message). ``drafted`` = IMAP APPEND to the drafts
+        mailbox; a failed append raises — it must never fall back to SMTP."""
+        disposition = self._decide_disposition(to_addr, reply_to_msg_id, metadata)
+        if disposition == DISPOSITION_SENT:
+            self._smtp_send(msg)
+            if self._save_sent:
+                try:
+                    self._imap_append(self._sent_mailbox, r"(\Seen)", msg)
+                except Exception as e:
+                    logger.warning("[Email] Sent-mailbox archival to %r failed (SMTP delivery already "
+                                   "succeeded, not retrying): %s", self._sent_mailbox, e)
+            logger.info("[Email] Disposition sent: %s (subject: %s)", to_addr, subject)
+        else:
+            self._imap_append(self._drafts_mailbox, r"(\Draft)", msg)
+            logger.info("[Email] Disposition drafted: proposed reply for %s stored in %r (subject: %s)",
+                        to_addr, self._drafts_mailbox, subject)
+        return disposition
+
+    def _send_email(self, to_addr: str, body: str, reply_to_msg_id: Optional[str] = None,
+                    metadata: Optional[Dict[str, Any]] = None) -> Tuple[str, str]:
+        """Build a plain-text reply and deliver it (executor thread). Returns ``(message_id, disposition)``."""
+        reply_to_msg_id = self._explicit_reply_anchor(reply_to_msg_id, metadata)
+        msg, msg_id, subject = self._new_reply(to_addr, body, reply_to_msg_id, attach_empty_body=True)
+        disposition = self._deliver_message(msg, to_addr, subject=subject, reply_to_msg_id=reply_to_msg_id, metadata=metadata)
+        return msg_id, disposition
+
+    def _send_with_files(self, to_addr: str, body: str, files: List[Tuple[Path, str]], *, lenient: bool,
+                         reply_to_msg_id: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None) -> Tuple[str, str]:
+        """Build a reply with attachments and deliver it; *lenient* logs-and-skips unattachable files
+        instead of raising. Returns ``(message_id, disposition)``."""
+        reply_to_msg_id = self._explicit_reply_anchor(reply_to_msg_id, metadata)
+        msg, msg_id, subject = self._new_reply(to_addr, body, reply_to_msg_id)
         for path, name in files:
             try:
                 _attach_file(msg, path, name)
@@ -708,13 +1054,14 @@ class EmailAdapter(BasePlatformAdapter):
                 if not lenient:
                     raise
                 logger.warning("[Email] Failed to attach %s: %s", path, e)
-        self._smtp_send(msg)
-        return msg_id
+        disposition = self._deliver_message(msg, to_addr, subject=subject, reply_to_msg_id=reply_to_msg_id, metadata=metadata)
+        return msg_id, disposition
 
     async def send_image(self, chat_id: str, image_url: str, caption: Optional[str] = None,
                          reply_to: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None) -> SendResult:
-        """Send an image URL as part of an email body (``metadata`` unused)."""
-        return await self.send(chat_id, f"{caption or ''}\n\nImage: {image_url}".strip(), reply_to)
+        """Send an image URL as part of an email body. ``metadata`` carries delivery-security context
+        (gateway_internal_send) and must survive every send path."""
+        return await self.send(chat_id, f"{caption or ''}\n\nImage: {image_url}".strip(), reply_to, metadata)
 
     async def send_multiple_images(self, chat_id: str, images: List[Tuple[str, str]],
                                    metadata: Optional[Dict[str, Any]] = None, human_delay: float = 0.0) -> None:
@@ -735,25 +1082,43 @@ class EmailAdapter(BasePlatformAdapter):
         if not local_paths and not body_parts:
             return
         try:
-            await asyncio.get_running_loop().run_in_executor(None, self._send_email_with_attachments, chat_id, "\n\n".join(body_parts), local_paths)
+            await asyncio.get_running_loop().run_in_executor(
+                None, self._send_email_with_attachments, chat_id, "\n\n".join(body_parts), local_paths, metadata)
         except Exception as e:
             logger.error("[Email] Multi-image send failed, falling back: %s", e, exc_info=True)
             await super().send_multiple_images(chat_id, images, metadata, human_delay)
 
-    def _send_email_with_attachments(self, to_addr: str, body: str, file_paths: List[str]) -> str:
-        """Send an email with multiple file attachments via SMTP (unattachable files are skipped)."""
-        msg_id = self._send_with_files(to_addr, body, [(Path(f), Path(f).name) for f in file_paths], lenient=True)
-        logger.info("[Email] Sent multi-attachment email to %s (%d files)", to_addr, len(file_paths))
-        return msg_id
+    def _send_email_with_attachments(self, to_addr: str, body: str, file_paths: List[str],
+                                     metadata: Optional[Dict[str, Any]] = None) -> Tuple[str, str]:
+        """Deliver an email with multiple attachments (unattachable files are skipped). No ``reply_to``
+        parameter on this path — the anchor rides in ``metadata["reply_to_message_id"]`` (stamped by the
+        gateway's thread metadata); without one the send is anchor-less and drafts, staying fail-closed."""
+        msg_id, disposition = self._send_with_files(
+            to_addr, body, [(Path(f), Path(f).name) for f in file_paths], lenient=True, metadata=metadata)
+        logger.info("[Email] Multi-attachment email to %s (%d files): %s", to_addr, len(file_paths), disposition)
+        return msg_id, disposition
 
     async def send_document(self, chat_id: str, file_path: str, caption: Optional[str] = None,
                             file_name: Optional[str] = None, reply_to: Optional[str] = None, **kwargs) -> SendResult:
-        """Send a file as an email attachment."""
-        return await self._run_send(self._send_email_with_attachment, (chat_id, caption or "", file_path, file_name), "[Email] Send document failed: %s")
+        """Send a file as an email attachment (or draft it for review)."""
+        return await self._run_send(
+            self._send_email_with_attachment, (chat_id, caption or "", file_path, file_name, reply_to, kwargs.get("metadata")),
+            "[Email] Send document failed: %s")
 
-    def _send_email_with_attachment(self, to_addr: str, body: str, file_path: str, file_name: Optional[str] = None) -> str:
-        """Send an email with a single file attachment via SMTP (raises if unattachable)."""
-        return self._send_with_files(to_addr, body, [(Path(file_path), file_name or Path(file_path).name)], lenient=False)
+    def _send_email_with_attachment(self, to_addr: str, body: str, file_path: str, file_name: Optional[str] = None,
+                                    reply_to_msg_id: Optional[str] = None,
+                                    metadata: Optional[Dict[str, Any]] = None) -> Tuple[str, str]:
+        """Deliver an email with a single attachment (raises if unattachable). Returns ``(message_id, disposition)``."""
+        return self._send_with_files(to_addr, body, [(Path(file_path), file_name or Path(file_path).name)],
+                                     lenient=False, reply_to_msg_id=reply_to_msg_id, metadata=metadata)
+
+    def toolsets_for_source(self, source) -> Optional[List[str]]:
+        """Under ``review_first`` EVERY email-triggered turn — trusted, allowlisted senders included —
+        resolves to an explicit empty toolset: zero callable tools, honored literally by the gateway
+        (no platform-default or MCP fallback). Defense in depth behind the ``email_zero_tools`` source
+        flag stamped at dispatch; ``toolsets_override_fail_closed`` tells the resolver that an
+        exception here also means zero tools. ``direct`` keeps the platform's normal resolution."""
+        return [] if self._outbound_policy == "review_first" else None
 
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
         """Return basic info about the email chat."""
@@ -761,8 +1126,47 @@ class EmailAdapter(BasePlatformAdapter):
 
 
 # Plugin glue: register() exposes the platform via the registry; EMAIL_* env → PlatformConfig seeding stays in core.
+def _standalone_draft_append(extra: dict, address: str, password: str, msg, chat_id: str) -> Dict[str, Any]:
+    """Append a standalone message to the drafts mailbox (review_first). Raises on IMAP failure."""
+    imap_host = (extra.get("imap_host") or _get_secret("EMAIL_IMAP_HOST", "")).strip()
+    if not imap_host:
+        return {"error": "Email review_first requires IMAP to store drafts, but EMAIL_IMAP_HOST is not configured — refusing to send"}
+    drafts_mailbox = str(extra.get("drafts_mailbox") or "Drafts").strip() or "Drafts"
+    imap_port = _esecret_int("EMAIL_IMAP_PORT", 993)
+    imap_security = _normalize_security(_get_secret("EMAIL_IMAP_SECURITY", "") or extra.get("imap_security", ""))
+    ctx = _tls_context(_esecret_bool("EMAIL_IMAP_TLS_VERIFY", is_truthy_value(extra.get("imap_tls_verify"), default=True)), imap_host)
+    if imap_security == "tls":
+        imap = imaplib.IMAP4_SSL(imap_host, imap_port, timeout=30, ssl_context=ctx)
+    else:
+        imap = imaplib.IMAP4(imap_host, imap_port, timeout=30)
+        if imap_security == "starttls":
+            try:
+                imap.starttls(ssl_context=ctx)
+            except Exception:
+                _close_imap(imap)
+                raise
+    try:
+        imap.login(address, password)
+        _send_imap_id(imap)
+        status, data = imap.append(drafts_mailbox, r"(\Draft)", imaplib.Time2Internaldate(time.time()), msg.as_bytes())
+        if status != "OK":
+            raise RuntimeError(f"IMAP append to {drafts_mailbox!r} failed: {status} {data}")
+    finally:
+        _close_imap(imap)
+    logger.info("[Email] Disposition drafted (standalone): proposed message for %s stored in %r under review_first",
+                chat_id, drafts_mailbox)
+    return {"success": True, "platform": "email", "chat_id": chat_id, "disposition": DISPOSITION_DRAFTED,
+            "note": f"review_first policy: message stored in {drafts_mailbox!r} for review, not transmitted"}
+
+
 async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_files=None, force_document=False):
-    """Out-of-process Email delivery via SMTP (one-shot); standalone_sender_fn contract."""
+    """Out-of-process Email delivery (one-shot); standalone_sender_fn contract.
+
+    Honors the review-first policy: a standalone send runs out-of-process with no gateway-authored
+    provenance and no inbound reply anchor, so under ``review_first`` it transmits ONLY when the
+    operator explicitly configured ``agent_initiated_sends: send``. Recipient membership in the
+    allowlist or EMAIL_HOME_ADDRESS establishes nothing about the send's origin and grants no
+    transmission authority here; everything else is drafted and never touches SMTP."""
     extra = getattr(pconfig, "extra", {}) or {}
     address, password = extra.get("address") or _get_secret("EMAIL_ADDRESS", ""), _get_secret("EMAIL_PASSWORD", "")
     smtp_host, smtp_port = extra.get("smtp_host") or _get_secret("EMAIL_SMTP_HOST", ""), _esecret_int("EMAIL_SMTP_PORT", 587)
@@ -770,21 +1174,44 @@ async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_f
     smtp_tls_verify = _esecret_bool("EMAIL_SMTP_TLS_VERIFY", is_truthy_value(extra.get("smtp_tls_verify"), default=True))
     if not all([address, password, smtp_host]):
         return {"error": "Email not configured (EMAIL_ADDRESS, EMAIL_PASSWORD, EMAIL_SMTP_HOST required)"}
+    raw_policy = str(extra.get("outbound_policy") or "").strip().lower()
+    review_first = raw_policy not in ("", "direct")  # unknown values fail closed to review_first
+    agent_sends = str(extra.get("agent_initiated_sends") or "draft").strip().lower()
     try:
         msg = MIMEText(message, "plain", "utf-8")
         for key, value in (("From", address), ("To", chat_id), ("Subject", "Hermes Agent"), ("Date", formatdate(localtime=True))):
             msg[key] = value
+        if review_first and agent_sends != "send":
+            return _standalone_draft_append(extra, address, password, msg, chat_id)
         server = _open_smtp(smtp_host, smtp_port, smtp_security, _tls_context(smtp_tls_verify, smtp_host), smtplib.SMTP, smtplib.SMTP_SSL)
         server.login(address, password)
         server.send_message(msg)
         server.quit()
-        return {"success": True, "platform": "email", "chat_id": chat_id}
+        return {"success": True, "platform": "email", "chat_id": chat_id, "disposition": DISPOSITION_SENT}
     except Exception as e:
         try:
             from tools.send_message_tool import _error as _e
             return _e(f"Email send failed: {e}")
         except Exception:
             return {"error": f"Email send failed: {e}"}
+
+
+# Behavior keys bridged from a ``platforms.email:`` / ``email:`` YAML block into PlatformConfig.extra
+# (config-only settings — deliberately no env mirrors; .env stays credentials-only).
+_YAML_EXTRA_KEYS = (
+    "skip_attachments", "require_authenticated_sender", "authserv_id",
+    "outbound_policy", "auto_send_authenticated_senders", "drafts_mailbox", "sent_mailbox", "save_sent",
+    "untrusted_sender_toolsets", "agent_initiated_sends",
+    "untrusted_draft_limit_per_sender_hour", "untrusted_draft_limit_global_hour",
+)
+
+
+def _apply_yaml_config(yaml_cfg: dict, email_cfg: dict) -> "dict | None":
+    """``apply_yaml_config_fn`` contract: seed behavior keys written at the top level of the email
+    platform block (the documented shape) into ``PlatformConfig.extra``, where the adapter reads them.
+    Keys nested under ``extra:`` already arrive without this bridge."""
+    seeded = {k: email_cfg[k] for k in _YAML_EXTRA_KEYS if k in email_cfg}
+    return seeded or None
 
 
 def _is_connected(config) -> bool:
@@ -807,4 +1234,5 @@ def register(ctx) -> None:
         required_env=["EMAIL_ADDRESS", "EMAIL_PASSWORD", "EMAIL_SMTP_HOST"],
         install_hint="Email uses the Python stdlib (smtplib/imaplib) — no extra deps", allowed_users_env="EMAIL_ALLOWED_USERS",
         allow_all_env="EMAIL_ALLOW_ALL_USERS", cron_deliver_env_var="EMAIL_HOME_ADDRESS", standalone_sender_fn=_standalone_send,
+        apply_yaml_config_fn=_apply_yaml_config,  # platforms.email.<behavior key> → PlatformConfig.extra
         max_message_length=50_000, pii_safe=True, emoji="📧", allow_update_command=True)

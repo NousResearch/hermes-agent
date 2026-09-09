@@ -277,6 +277,11 @@ class DeliveryRouter:
             return {"success": True, "filtered": "silence_narration", "delivered": False}
 
         send_metadata = dict(metadata or {})
+        if target.platform == Platform.EMAIL:
+            # Gateway-authored provenance for review-first email: this router only carries
+            # gateway-composed deliveries (cron output, targeted notifications), never model replies.
+            # The email adapter auto-sends on this marker ONLY to its auto-send allowlist.
+            send_metadata["gateway_internal_send"] = True
         home = self.config.get_home_channel(target.platform) if transport.is_relay else None
         if home is not None and home.chat_id == target.chat_id:
             send_metadata.update({k: v for k, v in (("user_id", home.user_id), ("scope_id", home.scope_id)) if v})

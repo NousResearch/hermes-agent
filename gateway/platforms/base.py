@@ -105,6 +105,11 @@ def _thread_metadata_for_source(source, reply_to_message_id: str | None = None) 
     thread_id = getattr(source, "thread_id", None)
     platform = _platform_name(getattr(source, "platform", None))
     metadata = {"thread_id": thread_id} if thread_id is not None else {}
+    if platform == "email" and reply_to_message_id:
+        # Review-first email binds the delivery decision (send vs draft) to the anchored
+        # inbound message; senders without a reply_to parameter (attachment batches) read
+        # the anchor from metadata instead of racy per-sender thread context.
+        metadata["reply_to_message_id"] = str(reply_to_message_id)
     # Slack workspace identity is routing state: carry it so a multi-workspace Socket Mode
     # gateway never falls back to its primary WebClient.
     scope_id = getattr(source, "scope_id", None) if platform == "slack" else None
@@ -1572,6 +1577,9 @@ class SendResult:
     # SEND_ERROR_KINDS member (failures only) via :func:`classify_send_error`, so consumers
     # branch without substring-matching ``error``.
     error_kind: Optional[str] = None
+    # Email review-first outcome: "sent" (SMTP) or "drafted" (stored for review, not transmitted).
+    # None on platforms without a review policy.
+    disposition: Optional[str] = None
 
 
 # Longest server ``retry_after`` ``_send_with_retry`` will sleep inline. Longer penalties return the

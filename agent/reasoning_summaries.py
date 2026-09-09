@@ -10,10 +10,14 @@ the blank-line join Hermes' own Responses adapter does.
 
 from __future__ import annotations
 
+from typing import Any
+
+from agent.message_content import flatten_message_text
+
 __all__ = ["separate_glued_reasoning_blocks"]
 
 
-def separate_glued_reasoning_blocks(previous: str, delta: str) -> str:
+def separate_glued_reasoning_blocks(previous: str, delta: Any) -> str:
     """Return *delta*, prefixed with a paragraph break when it glues onto *previous*.
 
     A break is inserted when *delta* opens a *closed* bold heading and *previous* is mid-line
@@ -21,5 +25,7 @@ def separate_glued_reasoning_blocks(previous: str, delta: str) -> str:
     alone: its deltas carry their own whitespace, and a fragment that merely opens emphasis
     (``**`` alone) is not a part boundary — summary parts carry the whole heading in one delta.
     """
+    # Relays also emit content-part lists/dicts; fragments carry their own whitespace.
+    delta = flatten_message_text(delta, sep="")
     glued = previous and delta and not previous[-1].isspace() and delta.startswith("**") and "**" in delta[2:]
     return f"\n\n{delta}" if glued else delta

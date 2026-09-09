@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Set, Union
 
 from registration_lifecycle import replacement_coordinator
@@ -16,6 +17,12 @@ if TYPE_CHECKING:  # pragma: no cover
     from hermes_cli.plugins import LoadedPlugin
 
 logger = logging.getLogger("hermes_cli.plugins")
+
+
+def _hook_source_of(name: str, module: Any) -> Optional[tuple]:
+    """(plugin name, resolved ``__file__``) identity shared by the general and memory loaders."""
+    source = getattr(module, "__file__", None)
+    return (name, str(Path(source).resolve())) if source else None
 
 
 @dataclass
@@ -161,12 +168,37 @@ class PluginLedgerMixin:
             return
         ids = {id(r) for r in registrations}
         self._registration_order = [r for r in self._registration_order if id(r) not in ids]
-        for plugin_key, owned in list(self._ownership_ledger.items()):
-            remaining = [r for r in owned if id(r) not in ids]
-            if remaining:
-                self._ownership_ledger[plugin_key] = remaining
-            else:
-                self._ownership_ledger.pop(plugin_key, None)
+        for ledger in (self._ownership_ledger, self._memory_hook_registrations):
+            for plugin_key, owned in list(ledger.items()):
+                remaining = [r for r in owned if id(r) not in ids]
+                if remaining:
+                    ledger[plugin_key] = remaining
+                else:
+                    ledger.pop(plugin_key, None)
+
+    # -- dual-kind hook ownership -------------------------------------------------------------
+    # A plugin dir loaded by general discovery AND as the configured memory provider calls
+    # ``register()`` twice against the same manager. General discovery owns the hook group; the
+    # memory loader's hooks are a fallback group keyed by (name, resolved source path) that is
+    # dropped once the same source loads through discovery. Groups, not callbacks, are replaced:
+    # one register() may deliberately create several closures for one hook.
+
+    def _drop_fallback_hooks(self, hook_source: Optional[tuple]) -> None:
+        if hook_source is not None:
+            for handle in self._memory_hook_registrations.pop(hook_source, []):
+                handle.dispose()
+
+    def _register_fallback_hook(self, context: Any, hook_source: Optional[tuple], hook_name: str,
+                                callback: Callable) -> PluginRegistration:
+        """Register ``callback`` unless the same source is already live through general discovery, in
+        which case return an inert handle so the provider keeps its disposable-handle contract."""
+        if hook_source is None:
+            return context.register_hook(hook_name, callback)
+        owned = any(loaded.enabled and _hook_source_of(loaded.manifest.name, loaded.module) == hook_source
+                    for loaded in self._plugins.values())
+        handle = context._track("hook", hook_name, lambda: None) if owned else context.register_hook(hook_name, callback)
+        self._memory_hook_registrations.setdefault(hook_source, []).append(handle)
+        return handle
 
     def _dispose_registrations(self, registrations: List[PluginRegistration]) -> None:
         """Dispose registrations in reverse acquisition order, best effort."""

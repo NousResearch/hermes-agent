@@ -28,6 +28,14 @@ _CONTINUABLE_MODES = {"chat_completions", "bedrock_converse", "anthropic_message
 _THINK_TAG_RE = re.compile(r'<(?:think|thinking|reasoning|REASONING_SCRATCHPAD)[^>]*>', re.IGNORECASE)
 _TRUNCATED_FINAL = "Response truncated due to output length limit"
 _FIRST_TRUNCATED_FINAL = "First response truncated due to output length limit"
+# #106260: a stream that died on a context-overflow error after partial delivery must not seed a
+# continuation — the transcript already cannot fit, and appending the partial stub grows every
+# later request into the same overflow. End the turn via the recovery contract instead.
+_CONTEXT_OVERFLOW_PARTIAL_FINAL = (
+    "The request no longer fits the model's context window, so the partial "
+    "response was not continued. Continue in a fresh session (/new; gateway "
+    "chats are reset automatically)."
+)
 
 _THINKING_EXHAUSTED = (
     "💭 Reasoning exhausted the output token budget — no visible response was produced.",
@@ -65,11 +73,12 @@ def normalize_response_for_agent(agent: Any, response: Any) -> Any:
 
 def partial_result(
     messages: List[Dict[str, Any]], api_call_count: int, final_response: str,
-    error: Optional[str] = None, *, failed: bool = False,
+    error: Optional[str] = None, *, failed: bool = False, compression_exhausted: bool = False,
 ) -> Dict[str, Any]:
     """Typed incomplete-turn result (``partial`` unless ``failed``); ``error`` defaults to
-    ``final_response``."""
-    return {
+    ``final_response``. ``compression_exhausted`` carries the #98722 typed bit the gateway
+    consumes to reset/move future input to a clean session (see run_turn.py)."""
+    result = {
         "final_response": final_response,
         "messages": messages,
         "api_calls": api_call_count,
@@ -77,6 +86,9 @@ def partial_result(
         ("failed" if failed else "partial"): True,
         "error": final_response if error is None else error,
     }
+    if compression_exhausted:
+        result["compression_exhausted"] = True
+    return result
 
 
 @dataclass
@@ -121,16 +133,20 @@ class _Trunc(TruncationVerdict):
     def end_turn(
         self, final_response: str, error: Optional[str] = None, *,
         result_messages: Optional[List[Dict[str, Any]]] = None, cleanup: bool = True,
-        failed: bool = False,
+        failed: bool = False, compression_exhausted: bool = False,
     ) -> TruncationVerdict:
-        """Persist and end the turn as partial (or ``failed``)."""
+        """Persist and end the turn as partial (or ``failed``).
+
+        ``compression_exhausted`` forwards the #98722 typed bit so the gateway can
+        move future input off a bloated session (run_turn.py consumes it).
+        """
         agent = self.agent
         if cleanup:
             agent._cleanup_task_resources(self.effective_task_id)
         agent._persist_session(self.messages, self.conversation_history)
         return self.done("return", partial_result(
             self.messages if result_messages is None else result_messages, self.api_call_count,
-            final_response, error, failed=failed,
+            final_response, error, failed=failed, compression_exhausted=compression_exhausted,
         ))
 
     @property
@@ -325,6 +341,33 @@ def recover_from_truncation(
         f"{agent.log_prefix}⚠️  Response truncated (finish_reason='length') - model hit max output tokens",
         force=True,
     )
+
+    # #106260: a context-overflow error after partial delivery must not seed a
+    # continuation. _partial_stream_stub marks such stubs _overflow_terminal and
+    # leaves content empty; continuing would only re-send a larger request into
+    # the same overflow. The stub path never raises, so this class never reached
+    # recover_from_overflow's compress-and-retry on main either — ending the turn
+    # replaces a growth loop, not a compression attempt.
+    if getattr(st.response, "_overflow_terminal", False):
+        agent._flush_status_buffer()
+        agent._vprint(
+            f"{agent.log_prefix}⚠️ Stream ended on a context-overflow error after "
+            "partial delivery — not continuing (the request no longer fits the model's "
+            "context window).",
+            force=True,
+        )
+        # Prior tool batches can leave a tool-result tail; this path never reaches
+        # finalize_turn (same as the truncated-tool-call terminal above).
+        close_interrupted_tool_sequence(st.messages, _CONTEXT_OVERFLOW_PARTIAL_FINAL)
+        # Carry the #98722 typed exhaustion bit so the gateway resets/moves future
+        # input to a clean session instead of leaving this bloated one authoritative
+        # for the next turn.
+        return st.end_turn(
+            _CONTEXT_OVERFLOW_PARTIAL_FINAL,
+            error=_CONTEXT_OVERFLOW_PARTIAL_FINAL,
+            failed=True,
+            compression_exhausted=True,
+        )
 
     _trunc_msg = normalize_response_for_agent(agent, response)
     _trunc_content = getattr(_trunc_msg, "content", None) if _trunc_msg else None

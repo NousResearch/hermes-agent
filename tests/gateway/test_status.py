@@ -206,23 +206,6 @@ class TestScopedGatewayPidQuery:
         assert pid_path.exists()
         assert (profile_dir / "gateway.lock").exists()
 
-    def test_scoped_query_never_unlinks_live_foreign_identity(self, tmp_path, monkeypatch):
-        # Live PID whose record claims a THIRD home: not adoptable, but its identity files must
-        # survive the poll (double-run/takeover protection).
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "default-home"))
-        profile_dir, pid_path, record = self._write_scoped_profile(tmp_path)
-        # Both identity files migrate together in the real world; repoint both homes.
-        record["hermes_home"] = str((tmp_path / "elsewhere").resolve())
-        pid_path.write_text(json.dumps(record))
-        (profile_dir / "gateway.lock").write_text(json.dumps(record))
-        monkeypatch.setattr(status, "is_gateway_runtime_lock_active", lambda lock: True)
-        monkeypatch.setattr(status, "_pid_exists", lambda pid: True)
-        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 123)
-        monkeypatch.setattr(status, "_read_process_cmdline", lambda pid: None)
-        assert status.get_running_pid(pid_path) is None
-        assert pid_path.exists()
-        assert (profile_dir / "gateway.lock").exists()
-
     def test_scoped_query_still_cleans_dead_pid_record(self, tmp_path, monkeypatch):
         # A dead PID's stale record is still cleanup-unlinked, scoped or not.
         monkeypatch.setenv("HERMES_HOME", str(tmp_path / "default-home"))

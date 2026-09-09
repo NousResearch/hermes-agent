@@ -450,15 +450,6 @@ def _pid_record_belongs_to_current_profile(record: Optional[dict[str, Any]]) -> 
     return not record_home or _same_hermes_home(record_home, _get_process_hermes_home())
 
 
-def _pid_record_matches_home(record: Optional[dict[str, Any]], expected_home: Path) -> bool:
-    """True when the record's ``hermes_home`` matches ``expected_home`` (legacy records: True).
-    Scoped queries validate against the probed home, not the serve process's."""
-    if not isinstance(record, dict):
-        return False
-    record_home = record.get("hermes_home")
-    return not record_home or _same_hermes_home(record_home, expected_home)
-
-
 def _build_runtime_status_record() -> dict[str, Any]:
     return {
         **_build_pid_record(), "gateway_state": "starting", "exit_reason": None,
@@ -1473,7 +1464,7 @@ def get_running_pid(
                 continue
             home_ok = (
                 _pid_record_belongs_to_current_profile(record) if expected_home is None
-                else _pid_record_matches_home(record, expected_home)
+                else not recorded_gateway_home_conflicts(record, expected_home=expected_home)
             )
             if home_ok and _record_matches_live_gateway_pid(
                 record, pid, expected_home=expected_home

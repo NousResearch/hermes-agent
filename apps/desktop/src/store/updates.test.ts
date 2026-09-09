@@ -86,6 +86,7 @@ const {
   applyBackendUpdate,
   $backendUpdateApply,
   reportBackendContract,
+  REQUIRED_BACKEND_CONTRACT,
   applyUpdates,
   applyEverythingUpdate,
   hasMultipleUpdateTargets,
@@ -193,7 +194,7 @@ describe('reportBackendContract', () => {
   })
 
   it('dismisses the toast when the backend meets the contract', () => {
-    reportBackendContract(6)
+    reportBackendContract(REQUIRED_BACKEND_CONTRACT)
     expect(dismissSpy).toHaveBeenCalledWith('backend-contract-skew')
     expect(notifySpy).not.toHaveBeenCalled()
   })
@@ -233,8 +234,8 @@ describe('reportBackendContract', () => {
     lastToast().onDismiss()
     notifySpy.mockClear()
 
-    reportBackendContract(6) // backend updated → satisfied, snooze cleared
-    reportBackendContract(5) // a later regression must warn immediately
+    reportBackendContract(REQUIRED_BACKEND_CONTRACT) // backend updated → satisfied, snooze cleared
+    reportBackendContract(REQUIRED_BACKEND_CONTRACT - 1) // a later regression must warn immediately
     expect(notifySpy).toHaveBeenCalledTimes(1)
   })
 })

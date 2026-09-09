@@ -754,9 +754,16 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
         rewriteOptimistic(liveSessionId)
         const text = buildContextText(syncedAttachments)
 
+        // One id for this logical send, reused by every retry below. The
+        // gateway ledger collapses retries onto the original turn, which is
+        // what makes the ambiguous-timeout retry safe instead of a way to
+        // send the same message twice.
+        const clientRequestId = crypto.randomUUID()
+
         const submitParams = (targetId: string) => ({
           session_id: targetId,
           text,
+          client_request_id: clientRequestId,
           ...(interrupted && { interrupted }),
           // Off-screen widget intent: the gateway types the persisted user
           // row display_kind=hidden so no client renders it as a bubble.
@@ -815,6 +822,11 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
             // A starved backend loop (#55578 symptom d) rejects the submit even
             // though the stored session is fine — recover it like a dead id
             // instead of erroring out and losing the session binding.
+            //
+            // The timeout is ambiguous — the submit may already have been
+            // accepted — which is exactly what client_request_id above makes
+            // safe: a contract-v7 backend recognizes the id and collapses this
+            // retry onto the original turn instead of running it twice.
             { alsoTimeout: true }
           )
         } catch (firstErr) {

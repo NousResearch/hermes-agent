@@ -353,7 +353,7 @@ def _row_ids_of(messages) -> set:
     return {row_id for message in messages if isinstance((row_id := _message_row_id(message)), int)}
 
 
-def _truncate_history_for_submit(rid, sid, session, params, requested_rebind_ids):
+def _truncate_history_for_submit(rid, sid, session, params, requested_rebind_ids, accept_intent=None):
     """Rewind/regenerate cut under ``history_lock``: ``(err, survivor_fields)``; the fields
     are the client rowId-rebind payload."""
     history = _history_without_ephemeral_scaffolding(session.get("history", []))
@@ -376,6 +376,9 @@ def _truncate_history_for_submit(rid, sid, session, params, requested_rebind_ids
     log_fn(
         "prompt.submit: truncating session %s history %d -> %d messages (ordinal=%d)",
         sid, len(history), len(truncated), ordinal)
+    # Reserve only after validation, before the first durable history mutation.
+    if accept_intent is not None and (reply := accept_intent()) is not None:
+        return reply, {}
     # Write the truncated transcript BEFORE touching memory (fail closed: a failed write
     # after the in-memory rewrite would stack the new exchange on the "undone" turns).
     # Writes through _session_db (profile sessions own their state.db).
@@ -464,7 +467,7 @@ def _persist_session_row_for_submit(rid, session):
     return None
 
 
-def _run_after_agent_ready(rid, sid, session, text, display_kind, hosted_terminal_callback):
+def _run_after_agent_ready(rid, sid, session, text, display_kind, hosted_terminal_callback, intent_params=None):
     """Turn thread body: patient wait for a deferred build (a slow build must not eat the
     accepted in-flight message), then run."""
     # The wait delivers the prompt when the still-running build completes, honors a cancel promptly, notices
@@ -480,6 +483,7 @@ def _run_after_agent_ready(rid, sid, session, text, display_kind, hosted_termina
         with session["history_lock"]:
             session["running"] = False
             session["last_active"] = time.time()
+        _abort_prompt_submit_intent(intent_params or {}, session)
         _emit("session.info", sid, _session_info(session.get("agent"), session))
         return
     with session["history_lock"]:
@@ -491,6 +495,7 @@ def _run_after_agent_ready(rid, sid, session, text, display_kind, hosted_termina
                 "Turn cancelled before the agent was ready"
                 if session.get("_turn_cancel_requested")
                 else "Session no longer running before the agent was ready")})
+            _abort_prompt_submit_intent(intent_params or {}, session)
             return
     _run_prompt_submit(
         rid, sid, session, text, display_kind=display_kind,
@@ -502,7 +507,7 @@ _TRUNCATION_PARAMS = (
 
 
 def _lock_in_submit_turn(
-    rid, sid, session, text, params, has_truncation, requested_rebind_ids, hosted_task):
+    rid, sid, session, text, params, has_truncation, requested_rebind_ids, hosted_task, accept_intent=None):
     """Under ``history_lock``: refuse watch-child races / malformed truncation, apply the
     cut, mark the turn running + in flight.  Returns ``(err, survivor_fields)``."""
     fields = {}
@@ -518,9 +523,11 @@ def _lock_in_submit_turn(
             ), fields
         if has_truncation:
             err, fields = _truncate_history_for_submit(
-                rid, sid, session, params, requested_rebind_ids)
+                rid, sid, session, params, requested_rebind_ids, accept_intent)
             if err is not None:
                 return err, {}
+        if accept_intent is not None and (reply := accept_intent()) is not None:
+            return reply, {}
         session["running"] = True
         session["_turn_cancel_requested"] = False
         session["last_active"] = time.time()
@@ -541,13 +548,26 @@ def _(rid, params: dict) -> dict:
     display_kind = "hidden" if params.get("display_kind") == "hidden" else None
     if (stopped := _typed_stop_phrase_response(rid, text)) is not None:
         return stopped
-    if params.get("interrupted"):
-        # Client-side barge-in: latch so this turn's model message carries the note.
-        from tools.tts_streaming import mark_speech_interrupted
-        mark_speech_interrupted()
     session, err = _sess_nowait(params, rid)
     if err:
         return err
+    if (err := _prompt_submit_session_contract(params, rid, session)) is not None:
+        return err
+    intent_checked = False
+
+    def _accept_intent():
+        nonlocal intent_checked
+        if intent_checked:
+            return None
+        if (reply := _claim_prompt_submit_intent(params, rid, session)) is not None:
+            return reply
+        intent_checked = True
+        # A duplicate must not leak a barge-in marker into a later turn.
+        if params.get("interrupted"):
+            from tools.tts_streaming import mark_speech_interrupted
+            mark_speech_interrupted()
+        return None
+
     hosted_task = params.get("_hosted_task")
     hosted_terminal_callback = params.get("_hosted_terminal_callback")
     internal_hosted_submit = hosted_task is not None or hosted_terminal_callback is not None
@@ -591,8 +611,14 @@ def _(rid, params: dict) -> dict:
             if internal_hosted_submit:
                 return _err(rid, 4091, "hosted room member session is busy")
             busy_transport = t or session.get("transport")
+            # Rewinds cannot become queued appends; the client must retry the cut.
+            if has_truncation:
+                return _err(rid, 4009, "session busy")
+            if (reply := _accept_intent()) is not None:
+                return reply
         busy_response = _handle_busy_submit(
-            rid, sid, session, text, busy_transport, queued=bool(params.get("queued")))
+            rid, sid, session, text, busy_transport, queued=bool(params.get("queued")),
+            client_request_id=str(params.get("client_request_id") or "").strip())
         if busy_response is not None:
             return busy_response
     raw_rebind_ids = params.get("rebind_survivor_row_ids")
@@ -600,7 +626,7 @@ def _(rid, params: dict) -> dict:
         {r for r in raw_rebind_ids if isinstance(r, int) and not isinstance(r, bool)}
         if isinstance(raw_rebind_ids, list) else None)
     err, survivor_fields = _lock_in_submit_turn(
-        rid, sid, session, text, params, has_truncation, requested_rebind_ids, hosted_task)
+        rid, sid, session, text, params, has_truncation, requested_rebind_ids, hosted_task, _accept_intent)
     if err is not None:
         return err
     if turn_isolation:
@@ -622,13 +648,14 @@ def _(rid, params: dict) -> dict:
             "compute-host dispatch failed for session %s; falling back inline: %s", sid,
             isolated_response["error"].get("message", "unknown error"))
     if (err := _persist_session_row_for_submit(rid, session)) is not None:
+        _abort_prompt_submit_intent(params, session)
         return err
     # A completed FAILED build must not wedge the session: rebuild, don't replay it.
     if not _restart_completed_failed_agent_build(sid, session, session.get("agent_ready")):
         _start_agent_build(sid, session)
     run_thread = threading.Thread(
         target=lambda: _run_after_agent_ready(
-            rid, sid, session, text, display_kind, hosted_terminal_callback),
+            rid, sid, session, text, display_kind, hosted_terminal_callback, params),
         daemon=True)
     # Handle lets session.interrupt tell a live turn from a stuck `running` flag.
     session["_run_thread"] = run_thread

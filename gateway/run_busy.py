@@ -17,6 +17,7 @@ import time
 from agent.i18n import t
 from agent.session_activity import format_iteration_progress
 from gateway.config import Platform
+from gateway.message_actor import source_for_event_actor
 from gateway.platforms.base import EphemeralReply
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.session import SessionSource
@@ -666,7 +667,7 @@ class GatewayBusySessionMixin:
         # inject messages into a session they don't own.
         from gateway.run import _AGENT_PENDING_SENTINEL
         # See #17775.
-        if not self._is_user_authorized(event.source):
+        if not self._is_user_authorized(source_for_event_actor(event)):
             logger.warning(
                 "Dropping message from unauthorized user in active session: "
                 "user=%s (%s), platform=%s, session=%s", event.source.user_id, event.source.user_name,
@@ -958,32 +959,6 @@ class GatewayBusySessionMixin:
         if not _loop_arg or _loop_arg in {"status", "pause", "resume", "stop", "clear", "cancel", "help", "--help", "-h"}:
             return await self._handle_loop_command(event)
         return "Agent is running — use /loop status / pause / stop mid-run, or /stop before setting a new loop."
-
-    def _check_slash_access(self, source: SessionSource, canonical_cmd: str) -> Optional[str]:
-        """Denial message if ``source`` cannot run ``canonical_cmd``, else None (both dispatch paths
-        use it so an in-flight agent can't bypass admin gating; no ``allow_admin_from`` → None)."""
-        from gateway.slash_access import policy_for_source as _policy_for_source
-        if not canonical_cmd:
-            return None
-        policy = _policy_for_source(self.config, source)
-        if not policy.enabled or policy.can_run(source.user_id, canonical_cmd):
-            return None
-        logger.info(
-            "Slash command /%s denied for %s:%s (not admin, not in user_allowed_commands)",
-            canonical_cmd, source.platform.value if source.platform else "?", source.user_id,
-        )
-        allowed_preview = sorted(policy.user_allowed_commands)
-        if allowed_preview:
-            suffix = (
-                "You can run: " + ", ".join(f"/{c}" for c in allowed_preview[:12])
-                + ("…" if len(allowed_preview) > 12 else "") + ". Use /whoami for the full list."
-            )
-        else:
-            suffix = (
-                "No slash commands are enabled for non-admins on this platform. Ask an admin to "
-                "add you to allow_admin_from or to set user_allowed_commands."
-            )
-        return f"⛔ /{canonical_cmd} is admin-only here. {suffix}"
 
     def _sibling_thread_run_keys(self, source: SessionSource, own_key: str) -> list:
         """Running-agent keys of OTHER participants in the same thread (per-user thread mode keys

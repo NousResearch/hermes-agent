@@ -714,6 +714,123 @@ async def test_topic_refuses_unauthorized_user(tmp_path, monkeypatch):
     assert tables == set()
 
 
+@pytest.mark.asyncio
+async def test_topic_uses_message_actor_when_routing_source_has_no_user(tmp_path):
+    """Never persist the literal string ``None`` for an anonymized source."""
+    db = SessionDB(db_path=tmp_path / "state.db")
+    runner = _make_runner(session_db=db)
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        user_id=None,
+        chat_id="208214988",
+        user_name=None,
+        chat_type="dm",
+        thread_id="42",
+    )
+    event = MessageEvent(
+        text="/topic",
+        source=source,
+        user_id="208214988",
+        user_name="tester",
+        message_id="m-actor",
+    )
+
+    await runner._handle_topic_command(event)
+
+    assert db.is_telegram_topic_mode_enabled(
+        chat_id="208214988", user_id="208214988"
+    )
+    row = db._conn.execute(
+        "SELECT user_id FROM telegram_dm_topic_mode WHERE chat_id = ?",
+        ("208214988",),
+    ).fetchone()
+    assert row["user_id"] == "208214988"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("text", ["/topic off", "/topic previous-session"])
+async def test_topic_stateful_branches_fail_closed_without_actor(tmp_path, text):
+    db = SessionDB(db_path=tmp_path / "state.db")
+    runner = _make_runner(session_db=db)
+    event = MessageEvent(
+        text=text,
+        source=SessionSource(
+            platform=Platform.TELEGRAM,
+            user_id=None,
+            chat_id="208214988",
+            chat_type="dm",
+            thread_id="42",
+        ),
+    )
+
+    result = await runner._handle_topic_command(event)
+
+    assert "not authorized" in result.lower()
+    assert db.is_telegram_topic_mode_enabled(
+        chat_id="208214988", user_id="208214988"
+    ) is False
+
+
+@pytest.mark.asyncio
+async def test_topic_off_uses_actor_without_changing_routing_source(tmp_path):
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.enable_telegram_topic_mode(chat_id="208214988", user_id="208214988")
+    runner = _make_runner(session_db=db)
+    shared_source = SessionSource(
+        platform=Platform.TELEGRAM,
+        user_id=None,
+        chat_id="208214988",
+        chat_type="dm",
+    )
+    event = MessageEvent(
+        text="/topic off",
+        source=shared_source,
+        user_id="208214988",
+        user_name="tester",
+    )
+
+    result = await runner._handle_topic_command(event)
+
+    assert "now OFF" in result
+    assert event.source is shared_source
+    assert event.source.user_id is None
+    assert db.is_telegram_topic_mode_enabled(
+        chat_id="208214988", user_id="208214988"
+    ) is False
+
+
+@pytest.mark.asyncio
+async def test_topic_restore_uses_actor_for_ownership_and_binding(tmp_path):
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.create_session(
+        session_id="previous-session",
+        source="telegram",
+        user_id="208214988",
+    )
+    runner = _make_runner(session_db=db)
+    shared_source = SessionSource(
+        platform=Platform.TELEGRAM,
+        user_id=None,
+        chat_id="208214988",
+        chat_type="dm",
+        thread_id="42",
+    )
+    event = MessageEvent(
+        text="/topic previous-session",
+        source=shared_source,
+        user_id="208214988",
+        user_name="tester",
+    )
+
+    result = await runner._handle_topic_command(event)
+
+    assert "Session restored" in result
+    binding = db.get_telegram_topic_binding(chat_id="208214988", thread_id="42")
+    assert binding["user_id"] == "208214988"
+    assert event.source is shared_source
+    assert event.source.user_id is None
+
+
 # ──────────────────────────────────────────────────────────────────────
 # Cross-topic Reply leak / stripped-reply recovery
 # ──────────────────────────────────────────────────────────────────────

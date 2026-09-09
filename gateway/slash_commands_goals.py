@@ -2,6 +2,7 @@
 Bound onto ``GatewayRunner`` through ``GatewaySlashCommandsMixin``."""
 
 from __future__ import annotations
+from gateway.message_actor import event_actor_identity, source_for_event_actor
 
 import logging
 
@@ -43,7 +44,7 @@ class GatewayGoalCommandsMixin:
             return t("gateway.goal.unavailable")
 
         def authorize_gate():
-            if not self._resume_caller_is_admin(event.source):
+            if not self._resume_caller_is_admin(source_for_event_actor(event)):
                 return ("⛔ /goal gate add requires an explicitly configured "
                         "gateway admin (allow_admin_from for DMs, "
                         "group_allow_admin_from for groups).")

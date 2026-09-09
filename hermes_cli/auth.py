@@ -451,6 +451,12 @@ def _auth_file_path() -> Path:
     return path
 
 
+def _codex_auth_file_path() -> Path:
+    """Canonical root auth store for the single-use Codex OAuth grant."""
+    from hermes_constants import get_default_hermes_root
+    return get_default_hermes_root() / "auth.json"
+
+
 def _global_auth_file_path() -> Optional[Path]:
     """Global-root auth.json in profile mode; None when profile and global root are the same dir.
 
@@ -855,6 +861,10 @@ def read_credential_pool(provider_id: Optional[str] = None) -> Dict[str, Any]:
 
     In profile mode the global-root ``auth.json`` is a read-only fallback applied per provider ONLY
     when the profile has zero entries for it (``hermes auth add`` in the profile shadows global)."""
+    if provider_id == "openai-codex":
+        store = _load_auth_store(_codex_auth_file_path())
+        pool = store.get("credential_pool")
+        return list(pool.get(provider_id, [])) if isinstance(pool, dict) and isinstance(pool.get(provider_id), list) else []
     pool = _load_auth_store().get("credential_pool")
     pool = pool if isinstance(pool, dict) else {}
     global_pool = _load_global_auth_store().get("credential_pool")
@@ -862,6 +872,13 @@ def read_credential_pool(provider_id: Optional[str] = None) -> Dict[str, Any]:
 
     if provider_id is None:
         merged = dict(pool)
+        # Codex is singleton/single-use OAuth: never expose a profile shadow,
+        # including when the canonical root has no pool rows.
+        merged.pop("openai-codex", None)
+        canonical_store = _load_auth_store(_codex_auth_file_path())
+        canonical_pool = canonical_store.get("credential_pool")
+        if isinstance(canonical_pool, dict) and isinstance(canonical_pool.get("openai-codex"), list):
+            merged["openai-codex"] = list(canonical_pool["openai-codex"])
         for gp_key, gp_entries in global_pool.items():
             existing = merged.get(gp_key)
             if not (isinstance(gp_entries, list) and gp_entries):
@@ -937,8 +954,9 @@ def write_credential_pool(
     recency merge, which would otherwise read their cleared ``last_status_at`` (None ->
     epoch 0) as a stale snapshot and copy a still-binding cooldown back."""
     removed = {rid for rid in (removed_ids or ()) if rid}
-    with _auth_store_lock():
-        auth_store = _load_auth_store()
+    target_path = _codex_auth_file_path() if provider_id == "openai-codex" else None
+    with _auth_store_lock(target_path=target_path):
+        auth_store = _load_auth_store(target_path) if target_path is not None else _load_auth_store()
         pool = _store_section(auth_store, "credential_pool")
         sanitized = [
             sanitize_borrowed_credential_payload(e, provider_id) if isinstance(e, dict) else e
@@ -959,7 +977,7 @@ def write_credential_pool(
             if disk_id and disk_id not in new_ids and disk_id not in removed:
                 merged.append(sanitize_borrowed_credential_payload(disk_entry, provider_id))
         pool[provider_id] = merged
-        return _save_auth_store(auth_store)
+        return _save_auth_store(auth_store, target_path=target_path)
 
 
 def _suppressed_source_list(suppressed: Dict[str, Any], provider_id: str) -> Optional[List[str]]:

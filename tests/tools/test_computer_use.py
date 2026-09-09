@@ -58,6 +58,18 @@ class TestSchema:
         from tools.computer_use.schema import COMPUTER_USE_SCHEMA
         assert "max_elements" not in COMPUTER_USE_SCHEMA["parameters"]["properties"]
 
+    def test_schema_description_carries_safety_guidance(self):
+        """computer_use has no dedicated system-prompt block (see the note in
+        agent/prompt_builder.py) — its safety guidance lives only in this
+        description, so it must warn against credential UI and screenshot/page
+        prompt injection every time the tool is offered, not just when a skill
+        happens to be loaded.
+        """
+        from tools.computer_use.schema import COMPUTER_USE_SCHEMA
+        description = COMPUTER_USE_SCHEMA["description"]
+        assert "password" in description and "payment" in description
+        assert "prompt injection" in description
+
 
 class TestRegistration:
     def test_tool_registers_with_registry(self):

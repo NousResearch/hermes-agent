@@ -56,6 +56,23 @@ def test_mute_supports_shared_status_and_unmute_without_local_skill_scope():
         assert value.parse_args(["wisdom", "mute", choice]).duration == choice
 
 
+def test_sync_defaults_to_read_only_and_requires_explicit_retry(monkeypatch):
+    from unittest.mock import Mock
+    from hermes_cli.subcommands.wisdom import cmd_wisdom
+    from hermes_wisdom import service as module
+    service = Mock()
+    service.sync_status.return_value = {'can_retry': True}
+    service.retry_sync.return_value = {'can_retry': False}
+    monkeypatch.setattr(module, 'WisdomService', lambda: service)
+    args = parser().parse_args(['wisdom', 'sync', '--json'])
+    assert args.action == 'status'
+    assert cmd_wisdom(args) == 0
+    service.sync_status.assert_called_once()
+    service.retry_sync.assert_not_called()
+    assert cmd_wisdom(parser().parse_args(['wisdom', 'sync', 'retry', '--json'])) == 0
+    service.retry_sync.assert_called_once()
+
+
 def test_setup_requires_an_explicit_disclosure_switch_for_automation():
     value = parser()
     setup = value.parse_args(["wisdom", "setup", "--accept-disclosure", "--json"])

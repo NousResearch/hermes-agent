@@ -1898,6 +1898,7 @@ from hermes_cli.web_models import (  # noqa: F401
     WisdomNotificationRequest,
     WisdomConsentRequest,
     WisdomMutePrepareRequest,
+    WisdomSyncRetryRequest,
     WisdomMuteChooseRequest,
     DebugShareRequest,
     TTSSpeakRequest,
@@ -15629,6 +15630,16 @@ async def get_wisdom_status(profile: Optional[str] = None):
     return await _run_wisdom(
         profile, lambda service: service.status(), require_setup=False
     )
+
+
+@app.get("/api/wisdom/sync")
+async def get_wisdom_sync(profile: Optional[str] = None):
+    return await _run_wisdom(profile, lambda service: service.sync_status())
+
+
+@app.post("/api/wisdom/sync/retry")
+async def post_wisdom_sync_retry(body: WisdomSyncRetryRequest):
+    return await _run_wisdom(body.profile, lambda service: service.retry_sync())
 
 
 def _wisdom_action_name(verb: str, profile: Optional[str]) -> str:

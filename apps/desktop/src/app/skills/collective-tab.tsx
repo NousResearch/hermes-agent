@@ -10,6 +10,7 @@ import { WisdomMediationCard } from '@/components/wisdom-mediation-card'
 import { WisdomNotificationSettings } from '@/components/wisdom-notification-settings'
 import { WisdomNotificationsCard } from '@/components/wisdom-notifications-card'
 import { WisdomPublicationReview } from '@/components/wisdom-publication-review'
+import { WisdomSyncStatus } from '@/components/wisdom-sync-status'
 import {
   acknowledgeWisdomNotifications,
   applyWisdomInstall,
@@ -500,6 +501,7 @@ export function CollectiveTab({ profile, query }: { profile: ProfileScope; query
   return (
     <div className="flex h-full min-h-0 flex-col">
       <div className="shrink-0 border-b border-(--ui-stroke-tertiary) px-3 py-2">
+        <WisdomSyncStatus profile={profile} />
         <div className="flex items-center justify-between gap-3">
           <div>
             <div className="text-xs font-medium">{copy.title}</div>

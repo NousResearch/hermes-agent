@@ -18,6 +18,7 @@ export type Locale =
   | "ar";
 
 export interface WisdomTranslations {
+  syncRecovery?: import('@hermes/shared').WisdomSyncCopy
   notificationPreferences: import('@hermes/shared').WisdomMuteCopy;
   tab: string
   browseHub: string

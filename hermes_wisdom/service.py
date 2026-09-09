@@ -761,6 +761,18 @@ class WisdomService:
             "contract": asdict(CONTRACT_PIN),
         }
 
+    def sync_status(self) -> dict[str, Any]:
+        from .sync_recovery import WisdomSyncRecovery
+
+        self.require_setup()
+        return WisdomSyncRecovery(self).status()
+
+    def retry_sync(self) -> dict[str, Any]:
+        from .sync_recovery import WisdomSyncRecovery
+
+        self.require_setup()
+        return WisdomSyncRecovery(self).retry()
+
     def _eligible_paths(self) -> list[Path]:
         root = get_skills_dir().resolve()
         if not root.exists():

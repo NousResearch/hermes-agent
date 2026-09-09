@@ -1,4 +1,4 @@
-import type { WisdomMuteControl, WisdomMuteDuration, WisdomMuteSnapshot } from '@hermes/shared'
+import type { WisdomMuteControl, WisdomMuteDuration, WisdomMuteSnapshot, WisdomSyncSnapshot } from '@hermes/shared'
 
 import type { ActionResponse } from '@/types/hermes'
 
@@ -340,6 +340,11 @@ const request = <T>(
   })
 
 export const getWisdomStatus = (profile?: ProfileScope): Promise<WisdomStatus> => request('/api/wisdom/status', profile)
+
+export const getWisdomSync = (profile?: ProfileScope): Promise<WisdomSyncSnapshot> =>
+  request('/api/wisdom/sync', profile)
+export const retryWisdomSync = (profile?: ProfileScope): Promise<WisdomSyncSnapshot> =>
+  request('/api/wisdom/sync/retry', profile, { method: 'POST', body: {}, timeoutMs: 120_000 })
 
 export const getWisdomMute = (profile?: ProfileScope): Promise<WisdomMuteSnapshot> =>
   request('/api/wisdom/mute', profile)

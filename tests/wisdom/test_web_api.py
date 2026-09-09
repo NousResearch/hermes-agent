@@ -9,6 +9,7 @@ from fastapi import HTTPException
 
 from hermes_cli import web_server
 from hermes_cli.web_models import (
+    WisdomSyncRetryRequest,
     WisdomPublicationRequest,
     WisdomDecisionRequest,
     WisdomCandidateEventRequest,
@@ -22,6 +23,28 @@ from hermes_cli.web_models import (
     WisdomSuggestRequest,
     WisdomUpdateApplyRequest,
 )
+
+
+def test_sync_status_bff_is_read_only_and_retry_is_explicit(monkeypatch):
+    calls = []
+    class Service:
+        def sync_status(self):
+            calls.append('read')
+            return {'can_retry': True}
+        def retry_sync(self):
+            calls.append('retry')
+            return {'can_retry': False}
+    async def run(profile, fn):
+        assert profile == 'research'
+        return fn(Service())
+    monkeypatch.setattr(web_server, '_run_wisdom', run)
+    assert asyncio.run(web_server.get_wisdom_sync('research')) == {'can_retry': True}
+    assert calls == ['read']
+    assert asyncio.run(web_server.post_wisdom_sync_retry(WisdomSyncRetryRequest(profile='research'))) == {'can_retry': False}
+    assert calls == ['read', 'retry']
+    from pydantic import ValidationError
+    with pytest.raises(ValidationError):
+        WisdomSyncRetryRequest(profile='research', user_id='someone-else')
 
 
 def test_local_publication_bff_separates_read_from_hash_bound_confirmation(monkeypatch):

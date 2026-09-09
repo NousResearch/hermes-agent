@@ -418,6 +418,11 @@ class WisdomConsentRequest(BaseModel):
     profile: Optional[str] = None
 
 
+class WisdomSyncRetryRequest(BaseModel):
+    model_config = {"extra": "forbid"}
+    profile: Optional[str] = None
+
+
 class WisdomMutePrepareRequest(BaseModel):
     model_config = {"extra": "forbid"}
     profile: Optional[str] = None

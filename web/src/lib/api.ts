@@ -1,5 +1,5 @@
 import { buildHermesWebSocketUrl } from '@hermes/shared'
-import type { WisdomMuteControl, WisdomMuteDuration, WisdomMuteSnapshot } from '@hermes/shared'
+import type { WisdomMuteControl, WisdomMuteDuration, WisdomMuteSnapshot, WisdomSyncSnapshot } from '@hermes/shared'
 
 // The dashboard can be served either at the root of its host (e.g.
 // https://kanban.tilos.com/) or under a URL prefix when reverse-proxied
@@ -655,6 +655,10 @@ export const api = {
   getSkills: (profile?: string) => fetchJSON<SkillInfo[]>(`/api/skills${profileQuery(profile)}`),
   getWisdomStatus: (profile?: string) => fetchJSON<WisdomStatus>(`/api/wisdom/status${profileQuery(profile)}`),
   getWisdomMute: (profile?: string) => fetchJSON<WisdomMuteSnapshot>(`/api/wisdom/mute${profileQuery(profile)}`),
+  getWisdomSync: (profile?: string) => fetchJSON<WisdomSyncSnapshot>(`/api/wisdom/sync${profileQuery(profile)}`),
+  retryWisdomSync: (profile?: string) => fetchJSON<WisdomSyncSnapshot>('/api/wisdom/sync/retry', {
+    method: 'POST', body: JSON.stringify({ profile })
+  }),
   prepareWisdomMute: (profile?: string) =>
     fetchJSON<WisdomMuteControl>('/api/wisdom/mute/prepare', {
       method: 'POST',

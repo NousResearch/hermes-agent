@@ -12,6 +12,7 @@ import type { TipId } from '@/lib/tips/catalog'
 export type Locale = 'en' | 'zh' | 'zh-hant' | 'ja' | 'ar' | 'ru'
 
 export interface WisdomTranslations {
+  syncRecovery?: import('@hermes/shared').WisdomSyncCopy
   notificationPreferences: WisdomMuteCopy
   title: string
   loading: string

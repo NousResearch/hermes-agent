@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 
@@ -52,6 +53,31 @@ def test_shared_mute_command_is_private_and_preserves_pending_feedback(monkeypat
     group = controller.execute("mute forever", service, _context(is_group=True))
     preferences.native_mute_command.assert_not_called()
     assert group.actions[0].label == "Continue in DM"
+
+
+def test_sync_status_and_retry_stay_private_and_use_bound_controls():
+    counts = dict.fromkeys(('pending', 'syncing', 'retryable', 'conflict', 'uncertain', 'waiting_for_receipt'), 0)
+    service = Mock()
+    service.sync_status.return_value = {'delivery': counts, 'operation': {**counts, 'retryable': 1}, 'can_retry': True}
+    service.retry_sync.return_value = {'delivery': counts, 'operation': counts, 'can_retry': False}
+    controller = WisdomCommandController()
+    context = _context()
+    group = controller.execute('sync retry', service, _context(is_group=True))
+    assert group.actions[0].label == 'Continue in DM'
+    service.sync_status.assert_not_called()
+    service.retry_sync.assert_not_called()
+    view = controller.execute('sync', service, context)
+    assert 'Retry available: 1' in view.to_text()
+    service.retry_sync.assert_not_called()
+    bind_view_callbacks(view, context)
+    token = next(a for a in view.actions if a.operation == 'sync_retry').callback_data.removeprefix('wi:cmd:')
+    with pytest.raises(PermissionError):
+        controller.execute_token(token, service, _context(user_id='other'))
+    result = controller.execute_token(token, service, context)
+    service.retry_sync.assert_called_once()
+    assert not any(a.operation == 'sync_retry' for a in result.actions)
+    with pytest.raises(ValueError):
+        controller.execute_token(token, service, context)
 
 
 class _Service:

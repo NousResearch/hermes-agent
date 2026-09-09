@@ -23,6 +23,7 @@ import { useI18n } from '@/i18n'
 import { WisdomFileEditor } from './WisdomFileEditor'
 import { WisdomAgentActivity } from './WisdomAgentActivity'
 import { WisdomNotificationSettings } from './WisdomNotificationSettings'
+import { WisdomSyncStatus } from './WisdomSyncStatus'
 import { WisdomCheckBadge, WisdomReviewTables } from './WisdomChecks'
 import { wisdomManifestValidationError } from '@/lib/wisdom-manifest'
 
@@ -628,6 +629,7 @@ export function CollectiveWisdomPanel({ profile }: Props) {
     <section className="space-y-4" aria-label={copy.title}>
       <WisdomAgentActivity profile={profile} />
       <WisdomNotificationSettings profile={profile} />
+      <WisdomSyncStatus profile={profile} />
       <div className="flex flex-col gap-3 border border-border bg-muted/10 p-4 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <h2 className="font-mondwest text-lg text-text-primary">{copy.title}</h2>

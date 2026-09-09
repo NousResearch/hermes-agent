@@ -49,6 +49,7 @@ _PRIVATE_COMMANDS = {
     "inbox",
     "consent",
     "mute",
+    "sync",
 }
 
 
@@ -435,6 +436,7 @@ class WisdomCommandController:
             "uninstall": self._uninstall,
             "notifications": self._notifications,
             "mute": self._mute,
+            "sync": self._sync,
         }
         handler = handlers.get(keyword)
         if handler is None:
@@ -535,6 +537,7 @@ class WisdomCommandController:
             "installed": "installed",
             "notifications": "notifications",
             "mute": "mute",
+            "sync": "sync",
             "status": "status",
             "setup": "setup",
             "help": "help",
@@ -584,6 +587,11 @@ class WisdomCommandController:
                 _NavigationTarget("command", {"raw_args": "mute"}),
                 value.navigation_history,
             )
+
+        if operation == "sync_retry":
+            if context.is_group:
+                raise PermissionError("Sync status is private. Continue in a direct message.")
+            return complete(self._sync(service, ["retry"]))
 
         if operation == "setup_confirm":
             result = service.setup(disclosure_accepted=True)
@@ -866,7 +874,7 @@ class WisdomCommandController:
                 ),
                 WisdomItem(
                     "Account and activity",
-                    _wisdom_help_lines("setup", "status", "notifications", "mute", "inbox", "consent", "help"),
+                    _wisdom_help_lines("setup", "status", "sync", "notifications", "mute", "inbox", "consent", "help"),
                 ),
                 WisdomItem(
                     "Examples",
@@ -939,6 +947,34 @@ class WisdomCommandController:
             )],
         )
 
+    def _sync(self, service: WisdomService, args: list[str]) -> WisdomView:
+        if len(args) > 1 or (args and args[0] not in {"status", "retry"}):
+            raise ValueError("Use /wisdom sync [status|retry]")
+        data = service.retry_sync() if args == ["retry"] else service.sync_status()
+        labels = {
+            "pending": "Waiting to sync",
+            "syncing": "Syncing",
+            "retryable": "Retry available",
+            "conflict": "Conflicting server record; needs investigation",
+            "uncertain": "Delivery unconfirmed; message will not be resent",
+            "waiting_for_receipt": "Waiting for notification receipt",
+        }
+        items = []
+        for key, title in (("delivery", "Notification receipts"), ("operation", "Operation reports")):
+            counts = data[key]
+            items.append(WisdomItem(title, "\n".join(
+                f"{label}: {counts[state]}" for state, label in labels.items() if counts[state]
+            ) or "Up to date"))
+        actions = [WisdomAction("Refresh", "sync")]
+        if data["can_retry"]:
+            actions.append(WisdomAction("Retry sync", "sync_retry", primary=True))
+        return WisdomView(
+            "Collective Wisdom sync",
+            "Only saved receipts and reports are synced. Messages are not resent, "
+            "and skills are not installed, updated, or published again.",
+            items=items, actions=actions,
+        )
+
     def _setup(self, service: WisdomService, _args: list[str]) -> WisdomView:
         return WisdomView(
             "Set up Collective Wisdom",
@@ -975,6 +1011,7 @@ class WisdomCommandController:
                 f"Local store: ready · {pending} pending operation(s)",
                 f"State: {', '.join(degraded) if degraded else 'healthy'}",
             ]),
+            actions=[WisdomAction("Sync status", "sync")],
         )
 
     def _browse(

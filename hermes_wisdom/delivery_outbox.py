@@ -234,6 +234,7 @@ class DeliveryOutbox:
                     """SELECT r.* FROM wisdom_remote_delivery r
                   LEFT JOIN wisdom_assessment a ON a.id=r.assessment_id
                   WHERE r.organization_id=? AND r.user_id=? AND r.state!='settled'
+                  AND (r.last_error IS NULL OR r.last_error!='settlement_conflict')
                   AND r.attempts<? AND r.available_at<=? AND (r.sync_until IS NULL OR r.sync_until<=?)
                   AND (r.state='outcome' OR a.lease_token IS NULL OR a.lease_token!=r.local_token OR a.lease_until<=?)
                   ORDER BY r.available_at,r.request_id LIMIT 1""",

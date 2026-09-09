@@ -47,6 +47,8 @@ def cmd_wisdom(args: argparse.Namespace) -> int:
             result = service.setup(disclosure_accepted=accepted)
         elif command == "status":
             result = service.status()
+        elif command == "sync":
+            result = service.retry_sync() if args.action == "retry" else service.sync_status()
         elif command == "inbox":
             from hermes_wisdom.mediation import WisdomMediation
 
@@ -289,6 +291,8 @@ def build_wisdom_parser(subparsers) -> None:
         help="Accept the local telemetry and owner-private draft disclosure",
     )
     add("status", "Show local and Gateway Wisdom status")
+    sync = add("sync", "Check or retry saved notification receipts and operation reports")
+    sync.add_argument("action", choices=("status", "retry"), nargs="?", default="status")
     add("inbox", "Read agent advice and pending native consent")
     consent = add("consent", "Inspect or confirm an exact local interaction")
     consent.add_argument("interaction_id")

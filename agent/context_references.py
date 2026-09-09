@@ -176,7 +176,9 @@ def preprocess_context_references(
 ) -> ContextReferenceResult:
     """Sync wrapper; safe both without a loop (CLI) and inside a running loop (gateway)."""
     coro = preprocess_context_references_async(
-        message, cwd=cwd, context_length=context_length, url_fetcher=url_fetcher, allowed_root=allowed_root
+        message, cwd=cwd, context_length=context_length, url_fetcher=url_fetcher, allowed_root=allowed_root,
+        source_provenance_registry=source_provenance_registry, session_id=session_id, turn_id=turn_id,
+        request_id=request_id, policy_digest=policy_digest,
     )
     try:
         asyncio.get_running_loop()
@@ -209,7 +211,8 @@ async def preprocess_context_references_async(
     soft_limit = max(1, int(context_length * 0.25))
     tasks = (
         _expand_reference(ref, cwd_path, url_fetcher=url_fetcher, allowed_root=allowed_root_path,
-                          max_inline_tokens=hard_limit)
+                          max_inline_tokens=hard_limit, source_provenance_registry=source_provenance_registry,
+                          session_id=session_id, turn_id=turn_id, request_id=request_id, policy_digest=policy_digest)
         for ref in refs
     )
     expanded = await asyncio.gather(*tasks)
@@ -251,10 +254,16 @@ _GIT_REFERENCE_ARGS: dict[str, Callable[[ContextReference], list[str]]] = {
 async def _expand_reference(
     ref: ContextReference, cwd: Path, *, url_fetcher: UrlFetcher = None, allowed_root: Path | None = None,
     max_inline_tokens: int | None = None,
+    source_provenance_registry=None, session_id: str | None = None, turn_id: str | None = None,
+    request_id: str | None = None, policy_digest: str | None = None,
 ) -> Expansion:
     try:
         if ref.kind in ("file", "folder"):
-            return _expand_path_reference(ref, cwd, allowed_root=allowed_root, max_inline_tokens=max_inline_tokens)
+            return _expand_path_reference(
+                ref, cwd, allowed_root=allowed_root, max_inline_tokens=max_inline_tokens,
+                source_provenance_registry=source_provenance_registry, session_id=session_id, turn_id=turn_id,
+                request_id=request_id, policy_digest=policy_digest,
+            )
         if ref.kind in _GIT_REFERENCE_ARGS:
             git_args = _GIT_REFERENCE_ARGS[ref.kind](ref)
             return _expand_git_reference(ref, cwd, git_args, "git " + " ".join(git_args))
@@ -277,9 +286,15 @@ async def _expand_reference(
 
 
 def _expand_path_reference(ref: ContextReference, cwd: Path, *, allowed_root: Path | None = None,
-                           max_inline_tokens: int | None = None) -> Expansion:
+                           max_inline_tokens: int | None = None,
+                           source_provenance_registry=None, session_id: str | None = None,
+                           turn_id: str | None = None, request_id: str | None = None,
+                           policy_digest: str | None = None) -> Expansion:
     """``@file:`` / ``@folder:``: resolve, allow-check, then inline text / binary stub / listing."""
     is_folder = ref.kind == "folder"
+    # The unresolved spelling: _resolve_path()'s .resolve() call follows/erases any symlink
+    # component, so this is what a provenance grant must inspect to catch one (below).
+    unresolved_path = cwd / Path(os.path.expanduser(ref.target))
     path = _resolve_path(cwd, ref.target, allowed_root=allowed_root)
     _ensure_reference_path_allowed(path)
     if not path.exists():
@@ -295,7 +310,29 @@ def _expand_path_reference(ref: ContextReference, cwd: Path, *, allowed_root: Pa
         return None, _binary_reference_block(ref, path)
     text = path.read_text(encoding="utf-8")
     if ref.line_start is not None:
-        text = "\n".join(text.splitlines()[max(ref.line_start - 1, 0):ref.line_end or ref.line_start])
+        line_end = ref.line_end or ref.line_start
+        text = "\n".join(text.splitlines()[max(ref.line_start - 1, 0):line_end])
+        # An exact bounded slice can carry trusted provenance for the egress boundary — but only
+        # when the caller supplied a full request identity, and never through a path whose
+        # ancestors include a symlink (an attacker-controlled indirection could point the same
+        # spelling at different bytes between the read and a later trust check).
+        if (
+            source_provenance_registry is not None
+            and all(isinstance(v, str) and v for v in (session_id, turn_id, request_id, policy_digest))
+        ):
+            from agent.source_provenance import SourceProvenanceError
+            try:
+                # issue_file_slice byte-compares against its own independent re-read, which keeps
+                # each line's original terminator — must match exactly, not the display text above
+                # (splitlines() + "\n".join() drops a trailing newline the source file still has).
+                raw_lines = path.read_bytes().splitlines(keepends=True)
+                raw_slice = b"".join(raw_lines[max(ref.line_start - 1, 0):line_end])
+                source_provenance_registry.issue_file_slice(
+                    path=unresolved_path, line_start=ref.line_start, line_end=line_end, content=raw_slice,
+                    session_id=session_id, turn_id=turn_id, request_id=request_id, policy_digest=policy_digest,
+                )
+            except SourceProvenanceError as exc:
+                return f"{ref.raw}: source provenance grant declined ({exc})", None
     lang = _FENCE_LANGUAGES.get(path.suffix.lower(), "")
     text_tokens = estimate_tokens_rough(text)
     # Check BEFORE building the fenced block: an oversized file is not going to be

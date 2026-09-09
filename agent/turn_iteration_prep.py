@@ -239,16 +239,8 @@ def _inject_steer_after_newest_tool_result(agent: Any, messages: Any, steer_text
             messages.insert(_si + 1, steer_user_row(steer_text))
             logger.debug("Pre-API-call steer drain: appended user row after tool msg at index %d", _si)
             return
-    _lock = getattr(agent, "_pending_steer_lock", None)
-    if _lock is not None:
-        with _lock:
-            if agent._pending_steer:
-                agent._pending_steer = agent._pending_steer + "\n" + steer_text
-            else:
-                agent._pending_steer = steer_text
-    else:
-        existing = getattr(agent, "_pending_steer", None)
-        agent._pending_steer = (existing + "\n" + steer_text) if existing else steer_text
+    from agent.agent_runtime_helpers import _requeue_pending_steer
+    _requeue_pending_steer(agent, steer_text)
 
 
 @dataclass

@@ -721,6 +721,33 @@ class TestSteerMarkerContract:
         assert "User guidance:" not in format_steer_marker("hi")
 
 
+class TestSteerRowIsHumanInput:
+    def test_steer_row_counts_as_a_user_originated_turn(self, tmp_path):
+        """The steer row is typed (renderer label, alternation-repair guard) but it carries full user
+        authority: every "is this human input" predicate — in memory and the DB pick /undo uses — must
+        agree with the anchor-restoration predicate that already accepts it."""
+        from agent.context_compressor import ContextCompressor, is_user_originated_turn
+        from agent.conversation_compression import _is_real_user_message
+        from agent.prompt_builder import steer_user_row
+        from hermes_state import SessionDB
+
+        row = steer_user_row("focus on the error handling")
+        assert _is_real_user_message(row)
+        assert is_user_originated_turn(row)
+        assert ContextCompressor._is_actionable_user_turn(row)
+
+        db = SessionDB(db_path=tmp_path / "state.db")
+        try:
+            db.create_session(session_id="s1", source="cli")
+            db.append_message("s1", role="user", content="first question")
+            db.append_message("s1", role="assistant", content="first answer")
+            db.append_message("s1", role="user", content=row["content"], display_kind=row["display_kind"])
+            recents = db.list_recent_user_messages("s1", limit=5)
+            assert [r["preview"][:5] for r in recents] == ["[OUT-", "first"]
+        finally:
+            db.close()
+
+
 class TestSteerCommandRegistry:
     def test_steer_in_command_registry(self):
         """The /steer slash command must be registered so it reaches all

@@ -730,7 +730,9 @@ class SessionSearchMixin:
         decode loop; otherwise ``/undo N`` pairs an in-memory count that excludes handoffs
         with a DB pick that includes them."""
         active_clause = "" if include_inactive else " AND active = 1"
-        display_clause = " AND (display_kind IS NULL OR display_kind = '')"
+        # A /steer row is typed for the renderer but is human input: keep it so the DB pick agrees
+        # with the in-memory user_originated_turn_view count.
+        display_clause = " AND (display_kind IS NULL OR display_kind = '' OR display_kind = 'steer')"
         with self._read_ctx() as conn:
             rows = conn.execute(
                 "SELECT id, timestamp, content FROM messages WHERE session_id = ? AND role = 'user'"

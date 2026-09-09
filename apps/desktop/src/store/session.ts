@@ -1148,6 +1148,7 @@ function rescopeComposerSelection(nextScope: string | null): void {
     return
   }
 
+  composerSelectionGeneration += 1
   composerSelectionScope = nextScope
   $currentModel.set(storedComposerString(COMPOSER_MODEL_KEY) ?? '')
   $currentProvider.set(storedComposerString(COMPOSER_PROVIDER_KEY) ?? '')

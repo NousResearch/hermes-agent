@@ -11,6 +11,7 @@ import { notifyError } from '@/store/notifications'
 import { $activeGatewayProfile } from '@/store/profile'
 import {
   $activeSessionId,
+  $connection,
   $currentModel,
   $currentProvider,
   getComposerSelectionGeneration,
@@ -183,7 +184,8 @@ export function useModelControls({
   // Returns whether the switch was applied so callers can await it before
   // applying follow-up changes. `true` means applied (or deferred/busy-queued
   // for the next turn). `false` means NOT applied — either pending
-  // confirmation (warning with Confirm action already shown, pill rolled back)
+  // confirmation (warning with Confirm action already shown, pill rolled back),
+  // stale (a newer selection or foreground owns any follow-up),
   // or a real failure (error toast). Callers must NOT treat `false` as a
   // generic failure: for `pending` the gateway intentionally returned
   // `confirm_required` and no error should be surfaced.
@@ -211,12 +213,32 @@ export function useModelControls({
 
       const prevSource = getCurrentModelSource()
       const liveGatewayProfile = cacheProfile || $activeGatewayProfile.get()
+      const activeProfile = $activeGatewayProfile.get()
+      const connectionId = $connection.get()?.connectionId
+      let selectionGeneration = getComposerSelectionGeneration()
+      let expectedModel = selection.model
+      let expectedProvider = selection.provider
+
+      // ponytail: reuse the composer intent token; values alone miss a same-row reselect.
+      const isStale = () =>
+        touchesPrimary
+          ? $activeSessionId.get() !== primaryRuntimeId ||
+            $activeGatewayProfile.get() !== activeProfile ||
+            $connection.get()?.connectionId !== connectionId ||
+            getComposerSelectionGeneration() !== selectionGeneration ||
+            $currentModel.get() !== expectedModel ||
+            $currentProvider.get() !== expectedProvider
+          : false
 
       const paintSelection = () => {
+        expectedModel = selection.model
+        expectedProvider = selection.provider
+
         if (touchesPrimary) {
           setCurrentModel(selection.model)
           setCurrentProvider(selection.provider)
           markComposerSelectionManual()
+          selectionGeneration = getComposerSelectionGeneration()
         } else if (liveSessionId) {
           // Optimistic tile paint — session.info will confirm; rollback on error.
           sessionTileDelegate()?.updateSession(liveSessionId, state => ({
@@ -232,6 +254,13 @@ export function useModelControls({
       }
 
       const rollbackSelection = () => {
+        if (isStale()) {
+          return
+        }
+
+        expectedModel = prevModel
+        expectedProvider = prevProvider
+
         if (touchesPrimary) {
           setCurrentModel(prevModel)
           setCurrentProvider(prevProvider)
@@ -281,6 +310,10 @@ export function useModelControls({
         })
 
       const finishSwitch = (result: ModelSwitchResponse | undefined) => {
+        if (isStale()) {
+          return
+        }
+
         // A pick made DURING a turn is queued by the gateway and applied at the
         // next turn start (`deferred`). Re-fetching now would answer with the
         // model still running and repaint the old name over the user's choice —
@@ -296,6 +329,10 @@ export function useModelControls({
       try {
         const result = await requestSwitch()
 
+        if (isStale()) {
+          return false
+        }
+
         if (result?.confirm_required) {
           rollbackSelection()
           // ONE shared applier for guarded switches (#95293): the same
@@ -306,18 +343,12 @@ export function useModelControls({
             confirmMessage: result.confirm_message,
             failureMessage: copy.modelSwitchFailed,
             finish: finishSwitch,
-            // Staleness guard — the warning can linger while the user picks
-            // a different model or switches sessions. Clicking Confirm must
-            // not clobber the newer choice: bail if the live state no longer
-            // matches the snapshot this notification was created for.
             isStale: () =>
-              touchesPrimary
-                ? $activeSessionId.get() !== liveSessionId ||
-                  $currentModel.get() !== prevModel ||
-                  $currentProvider.get() !== prevProvider
-                : !liveSessionId ||
-                  $sessionStates.get()[liveSessionId]?.model !== prevModel ||
-                  $sessionStates.get()[liveSessionId]?.provider !== prevProvider,
+              isStale() ||
+              (!touchesPrimary &&
+                (!liveSessionId ||
+                  $sessionStates.get()[liveSessionId]?.model !== expectedModel ||
+                  $sessionStates.get()[liveSessionId]?.provider !== expectedProvider)),
             repaint: () => {
               paintSelection()
               cacheSelection(selection.provider, selection.model)
@@ -333,6 +364,10 @@ export function useModelControls({
 
         return true
       } catch (err) {
+        if (isStale()) {
+          return false
+        }
+
         // An OLDER gateway refuses a mid-turn switch outright (4009) instead of
         // deferring it. Don't punish the user for a backend they haven't
         // updated: keep the pick painted as the composer's selection, which is

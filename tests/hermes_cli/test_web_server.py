@@ -428,6 +428,51 @@ class TestWebServerEndpoints:
         finally:
             verify.close()
 
+    def test_get_sessions_auto_archive_reads_the_requested_profiles_own_config(self):
+        """``?profile=<name>`` auto-archive must gate on THAT profile's sessions.auto_archive,
+        not the dashboard process's own config.yaml.
+
+        _maybe_auto_archive_for_profile already opens the target profile's state.db and
+        throttles per-profile, but read its policy via a bare load_config() — the dashboard
+        process's own home. A profile that explicitly disabled auto_archive still had its
+        stale sessions swept whenever anyone hit the dashboard's own auto_archive=True.
+        """
+        from hermes_cli import profiles as profiles_mod
+        from hermes_cli.config import load_config, save_config
+        from hermes_state import SessionDB
+
+        # Dashboard process's own config: aggressive auto-archive.
+        config = load_config()
+        config.setdefault("sessions", {}).update(
+            {"auto_archive": True, "auto_archive_days": 1, "min_interval_hours": 0})
+        save_config(config)
+
+        # A secondary profile that explicitly opted OUT of auto-archive.
+        worker_home = profiles_mod.get_profile_dir("worker")
+        worker_home.mkdir(parents=True)
+        (worker_home / "config.yaml").write_text(
+            yaml.safe_dump({"sessions": {"auto_archive": False}}), encoding="utf-8")
+
+        seed = SessionDB(db_path=worker_home / "state.db")
+        try:
+            seed.create_session("worker-stale", source="cli")
+            seed._conn.execute(
+                "UPDATE sessions SET started_at = ? WHERE id = ?",
+                (time.time() - 30 * 86400, "worker-stale"))
+        finally:
+            seed.close()
+
+        _web_server_sessions._last_auto_archive_check.clear()
+        response = self.client.get("/api/sessions?profile=worker&limit=50&offset=0")
+
+        assert response.status_code == 200
+        verify = SessionDB(db_path=worker_home / "state.db", read_only=True)
+        try:
+            assert verify.get_session("worker-stale")["archived"] == 0
+            assert verify.get_meta("last_auto_archive") is None
+        finally:
+            verify.close()
+
     def test_get_sessions_fresh_store_returns_empty_list(self):
         response = self.client.get("/api/sessions?limit=50&offset=0")
 

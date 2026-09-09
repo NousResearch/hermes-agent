@@ -28,6 +28,14 @@ _CONTINUABLE_MODES = {"chat_completions", "bedrock_converse", "anthropic_message
 _THINK_TAG_RE = re.compile(r'<(?:think|thinking|reasoning|REASONING_SCRATCHPAD)[^>]*>', re.IGNORECASE)
 _TRUNCATED_FINAL = "Response truncated due to output length limit"
 _FIRST_TRUNCATED_FINAL = "First response truncated due to output length limit"
+# #106260: a stream that died on a context-overflow error after partial delivery must not seed a
+# continuation — the transcript already cannot fit, and appending the partial stub grows every
+# later request into the same overflow. End the turn via the recovery contract instead.
+_CONTEXT_OVERFLOW_PARTIAL_FINAL = (
+    "The conversation exceeded the model's context window and compression could "
+    "not recover it, so the partial response was not continued. Start a new "
+    "session (or /new) to continue with a clean transcript."
+)
 
 _THINKING_EXHAUSTED = (
     "💭 Reasoning exhausted the output token budget — no visible response was produced.",
@@ -325,6 +333,24 @@ def recover_from_truncation(
         f"{agent.log_prefix}⚠️  Response truncated (finish_reason='length') - model hit max output tokens",
         force=True,
     )
+
+    # #106260: a context-overflow error after partial delivery must not seed a
+    # continuation. _partial_stream_stub marks such stubs _overflow_terminal and
+    # leaves content empty; continuing would only re-send a larger request into
+    # the same overflow (compression already failed / protect_last_n covers it).
+    if getattr(st.response, "_overflow_terminal", False):
+        agent._flush_status_buffer()
+        agent._vprint(
+            f"{agent.log_prefix}⚠️ Stream ended on a context-overflow error after "
+            "partial delivery — not continuing (the transcript is already over "
+            "budget).",
+            force=True,
+        )
+        return st.end_turn(
+            _CONTEXT_OVERFLOW_PARTIAL_FINAL,
+            error=_CONTEXT_OVERFLOW_PARTIAL_FINAL,
+            failed=True,
+        )
 
     _trunc_msg = normalize_response_for_agent(agent, response)
     _trunc_content = getattr(_trunc_msg, "content", None) if _trunc_msg else None

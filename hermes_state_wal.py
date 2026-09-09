@@ -344,38 +344,59 @@ _EXTERNAL_RUNTIME_REPAIR_HINT = (
 )
 
 
-def _interpreter_in_project_venv(project_root) -> bool:
-    """True when the running interpreter lives in the install tree's own ``venv``/``.venv``.
+_HYBRID_RUNTIME_REPAIR_HINT = (
+    "the running interpreter is outside this checkout's venv — `{cmd}` rebuilds that venv with a "
+    "fixed SQLite; restart Hermes from `{venv}` to pick it up"
+)
 
-    Only that layout is rebuilt by ``hermes update``; a git checkout driven by a system Python or an
-    externally managed venv keeps its linked SQLite whatever ``hermes update`` does to the code tree.
+
+def _live_project_venv(project_root):
+    """The venv ``hermes update``'s runtime repair would cut over for this checkout.
+
+    Resolution matches ``hermes_cli.managed_uv._default_live_venv`` — interpreter-file presence,
+    managed ``venv`` winning over ``.venv`` — so an empty ``venv/`` next to a live ``.venv`` still
+    counts as repair-capable, while a bare directory without an interpreter does not (#79179).
     """
     try:
         from pathlib import Path
 
-        from hermes_constants import project_venv_dir
+        from hermes_constants import venv_python_path
 
-        venv = project_venv_dir(project_root)
-        return venv is not None and Path(sys.prefix).resolve() == venv.resolve()
+        primary, fallback = Path(project_root) / "venv", Path(project_root) / ".venv"
+        if venv_python_path(primary).is_file():
+            return primary
+        if venv_python_path(fallback).is_file():
+            return fallback
     except Exception:
-        return False
+        pass
+    return None
 
 
 def _wal_reset_repair_hint() -> str:
     """Repair hint matching what ``hermes update`` can actually do for this install type.
 
     See #75153 and #79179: ``git``/``unknown`` describe the code layout, not who owns the running
-    interpreter, so the managed-runtime wording additionally requires the project's own venv.
+    interpreter. The repair targets the checkout's live venv (``_live_project_venv``), so running
+    from it means ``hermes update`` fixes the very interpreter in use; running from outside it
+    still leaves a rebuildable venv worth pointing at; having none leaves only the
+    external-runtime wording.
     """
     try:
+        from pathlib import Path
+
+        from hermes_constants import venv_python_path
+
         from hermes_cli.config import detect_install_method, get_project_root, recommended_update_command_for_method
         root = get_project_root()
         method = detect_install_method(root)
         cmd = recommended_update_command_for_method(method)
         if method in {"git", "unknown"}:
-            if _interpreter_in_project_venv(root):
+            live = _live_project_venv(root)
+            if live is None:
+                return _EXTERNAL_RUNTIME_REPAIR_HINT
+            if Path(sys.prefix).resolve() == live.resolve():
                 return f"Hermes-managed installs can repair the embedded runtime with `{cmd}`"
-            return _EXTERNAL_RUNTIME_REPAIR_HINT
+            return _HYBRID_RUNTIME_REPAIR_HINT.format(cmd=cmd, venv=venv_python_path(live))
         return f"update the container image with `{cmd}`" if method == "docker" else cmd  # else nix/nixos
     except Exception:
         return "install a Python build bundled with SQLite 3.51.3+ (or backports 3.50.7 / 3.44.6) and restart Hermes"

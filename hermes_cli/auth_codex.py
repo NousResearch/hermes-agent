@@ -212,13 +212,97 @@ def _refresh_payload_access_token(
     return payload, access
 
 
+# OpenSSL 3.5+ may offer PQ hybrid groups (X25519MLKEM768) that some middleboxes
+# drop. Hint-only: Hermes never rewrites OPENSSL_CONF / TLS version / Groups.
+_PQ_MIDDLEBOX_SSL_HINT = (
+    " OpenSSL 3.5+ defaults to post-quantum TLS groups (e.g. X25519MLKEM768 / ML-KEM hybrid). "
+    "Some middleboxes reject the larger TLS 1.3 ClientHello. "
+    "Workaround: set OPENSSL_CONF restricting Groups to classic curves "
+    "(x25519:secp256r1:secp384r1:x448), or diagnose with TLS 1.2. "
+    "Hermes does not auto-rewrite global TLS policy."
+)
+
+
+def _iter_exception_chain(exc: BaseException) -> Iterator[BaseException]:
+    """Yield ``exc`` then ``__cause__`` / ``__context__`` without looping."""
+    seen: set[int] = set()
+    stack: List[BaseException] = [exc]
+    while stack:
+        current = stack.pop()
+        ident = id(current)
+        if ident in seen:
+            continue
+        seen.add(ident)
+        yield current
+        for nxt in (current.__cause__, current.__context__):
+            if nxt is not None:
+                stack.append(nxt)
+
+
+def _pq_middlebox_ssl_failure(exc: BaseException) -> bool:
+    """True when a Codex transport error matches SSL EOF / PQ-middlebox handshake timeout."""
+    import ssl as ssl_mod
+    texts: List[str] = []
+    type_names: List[str] = []
+    ssl_typed = False
+    for err in _iter_exception_chain(exc):
+        texts.append(str(err))
+        type_names.append(type(err).__name__)
+        if isinstance(err, ssl_mod.SSLError):
+            ssl_typed = True
+        lname = type(err).__name__.lower()
+        if "ssl" in lname or "tls" in lname:
+            ssl_typed = True
+    combined = " ".join(texts + type_names)
+    combined_u = combined.upper()
+    combined_l = combined.lower()
+    if "UNEXPECTED_EOF_WHILE_READING" in combined_u:
+        return True
+    if "SSLEOFERROR" in combined_u or "EOF OCCURRED IN VIOLATION OF PROTOCOL" in combined_u:
+        return True
+    if "_ssl.c:" in combined_l and "handshake operation timed out" in combined_l:
+        return True
+    ssl_context = (
+        ssl_typed or "ssl" in combined_l or "tls" in combined_l or "_ssl.c:" in combined_l)
+    return bool(ssl_context and "handshake" in combined_l and "timed out" in combined_l)
+
+
+def _pq_middlebox_ssl_hint(exc: BaseException) -> str:
+    """Return the OPENSSL_CONF / TLS 1.2 workaround hint, or empty (fail-open)."""
+    return _PQ_MIDDLEBOX_SSL_HINT if _pq_middlebox_ssl_failure(exc) else ""
+
+
+def _codex_exc_text(exc: BaseException) -> str:
+    """Keep ``str(exc)``; surface wrapped SSL cause text when httpx hid it."""
+    import ssl as ssl_mod
+    primary = str(exc).strip() or type(exc).__name__
+    for err in _iter_exception_chain(exc):
+        if err is exc:
+            continue
+        extra = str(err).strip()
+        if not extra or extra in primary:
+            continue
+        extra_l = extra.lower()
+        if (
+            isinstance(err, ssl_mod.SSLError)
+            or "ssl" in extra_l or "tls" in extra_l or "_ssl.c:" in extra_l
+        ):
+            return f"{primary} [{extra}]"
+    return primary
+
+
+def _codex_transport_error(exc: BaseException, failure: Tuple[str, str]) -> AuthError:
+    """Shape a device-login transport failure; append PQ/middlebox hint only when matched."""
+    return _codex_err(f"{failure[0]}: {_codex_exc_text(exc)}{_pq_middlebox_ssl_hint(exc)}", failure[1])
+
+
 def _codex_login_post(url: str, *, failure: Tuple[str, str], **kwargs: Any) -> "httpx.Response":
     """One 15s POST for the device-login flow; transport errors become ``_codex_err(*failure)``."""
     try:
         with _codex_http_client(timeout=httpx.Timeout(15.0)) as client:
             return client.post(url, **kwargs)
     except Exception as exc:
-        raise _codex_err(f"{failure[0]}: {exc}", failure[1])
+        raise _codex_transport_error(exc, failure) from exc
 
 
 def _codex_http_client(**kwargs: Any) -> "httpx.Client":
@@ -743,6 +827,11 @@ def _codex_poll_authorization_code(
     except KeyboardInterrupt:
         print("\nLogin cancelled.")
         raise SystemExit(130)
+    except AuthError:
+        raise
+    except Exception as exc:
+        raise _codex_transport_error(
+            exc, ("Device auth polling failed", "device_code_poll_error")) from exc
     if code_resp is None:
         raise _codex_err("Login timed out after 15 minutes.", "device_code_timeout")
     return code_resp

@@ -51,9 +51,7 @@ export function ScrollToBottomButton({ sessionId }: { sessionId: string | null }
   const countLabel = t.sidebar.messageCount(count)
   const [beforeCount, afterCount] = countLabel.split(String(count))
 
-  const label = approval
-    ? t.assistant.approval.jumpToApproval
-    : `${t.assistant.thread.scrollToBottom} · ${countLabel}`
+  const label = approval ? t.assistant.approval.jumpToApproval : `${t.assistant.thread.scrollToBottom} · ${countLabel}`
 
   return (
     <button

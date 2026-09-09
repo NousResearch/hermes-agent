@@ -93,11 +93,12 @@ describe('messages below the viewport', () => {
       }
     )
 
-    const flush = () => act(() => {
-      const callback = frame
-      frame = undefined
-      callback?.(0)
-    })
+    const flush = () =>
+      act(() => {
+        const callback = frame
+        frame = undefined
+        callback?.(0)
+      })
 
     const options = {
       scrollRef: { current: viewport },

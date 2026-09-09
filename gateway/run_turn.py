@@ -179,7 +179,8 @@ class GatewayTurnMixin:
     def _resolve_turn_agent_config(
         self, user_message: str, model: str, runtime_kwargs: dict,
         *, session_id: Optional[str] = None, session_key: Optional[str] = None,
-        source: Optional[SessionSource] = None, internal: bool = False,
+        source: Optional[SessionSource] = None, conversation_history: Optional[list] = None,
+        internal: bool = False,
     ) -> dict:
         """Effective model/runtime config for one turn. With `/fast` priority on, fast-mode
         ``request_overrides`` are deep-merged OVER the per-provider ones so both reach the model."""
@@ -205,7 +206,7 @@ class GatewayTurnMixin:
                     session_key=session_key,
                     source=source.platform.value if source and source.platform else "gateway",
                     is_user_turn=True,
-                    is_first_turn=False,
+                    is_first_turn=not bool(conversation_history),
                     internal=False,
                     tool_continuation=False,
                 )

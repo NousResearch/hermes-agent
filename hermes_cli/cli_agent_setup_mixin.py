@@ -388,7 +388,7 @@ class CLIAgentSetupMixin:
                     session_key=getattr(self, "session_id", None),
                     source="cli",
                     is_user_turn=True,
-                    is_first_turn=self.agent is None,
+                    is_first_turn=not bool(getattr(self, "conversation_history", None)),
                     internal=False,
                     tool_continuation=False,
                 )

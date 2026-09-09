@@ -200,6 +200,29 @@ class TestFastModeRouting(unittest.TestCase):
         assert route["runtime"]["provider"] == "openrouter"
         assert route.get("request_overrides") is None
 
+    def test_turn_route_first_turn_uses_history_not_agent_construction_state(self):
+        cli_mod = _import_cli()
+        stub = SimpleNamespace(
+            model="primary", api_key="primary-key", base_url="https://api.example/v1",
+            provider="custom", requested_provider="custom", api_mode="chat_completions",
+            acp_command=None, acp_args=[], _credential_pool=None, service_tier=None,
+            session_id="session-1", agent=object(), conversation_history=[],
+        )
+        seen = []
+
+        def fake_apply(route, **context):
+            seen.append(context["is_first_turn"])
+            return SimpleNamespace(changed=False, payload=route, trace=[])
+
+        with patch("hermes_cli.middleware.apply_turn_route_middleware", fake_apply):
+            cli_mod.HermesCLI._resolve_turn_agent_config(stub, "first")
+            # A route change can rebuild the agent without starting a new turn.
+            stub.agent = None
+            stub.conversation_history = [{"role": "user", "content": "first"}]
+            cli_mod.HermesCLI._resolve_turn_agent_config(stub, "later")
+
+        assert seen == [True, False]
+
     def test_turn_route_resolves_requested_provider_alias(self):
         cli_mod = _import_cli()
         stub = SimpleNamespace(

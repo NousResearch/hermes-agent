@@ -3247,7 +3247,13 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
             raise AuxiliaryExplicitCancellation()
         # Reasoning-field fallback (DeepSeek/Qwen/Kimi put the summary in reasoning_content); capped.
         content = extract_content_or_reasoning(response, max_reasoning_chars=8000)
-        where = f"(provider={self.provider or 'auto'} model={self.summary_model or self.model})"
+        # 2026-09-08 bugfix: this used to read `self.summary_model or self.model`, which falls through to
+        # the MAIN conversation model (e.g. switchyard/fallback after a failover) whenever self.summary_model
+        # is unset and routing resolved the real summarizer via `task="compression"` instead — so a truncated
+        # switchyard/compress summary was misreported to the user as a switchyard/fallback failure. Reuse the
+        # same actually-resolved-route precedence as the telemetry above (`_aux_route` is populated by
+        # call_llm with the route it really selected).
+        where = f"(provider={_aux_route.get('provider') or self.provider or 'auto'} model={_aux_model})"
         # Some OpenAI-compatible proxies (e.g. cmkey.cn, one-api channels) return a well-formed HTTP 200
         # with an empty or whitespace-only ``content`` instead of an error or empty ``choices``. That
         # payload passes ``_validate_llm_response`` (a ``message`` exists), so it reaches here and would

@@ -448,12 +448,14 @@ def _profile_db(params: dict | None = None):
 def _canonical_profile_request(name: str) -> str:
     """Canonicalize profile basenames emitted by older session-info payloads.
 
-    ``Path(default_home).name`` was historically sent as a profile id. Those
-    basenames are installation details, while explicit unknown profile names
-    must continue to fail closed in ``_profile_home``.
+    ``Path(default_home).name`` was historically sent as a profile id. Those basenames are
+    installation details — unless a real named profile of that name exists (``hermes`` is a legal
+    id), in which case it wins; other unknown names keep failing closed in ``_profile_home``.
     """
     if name.casefold() in {".hermes", "hermes"}:
-        return "default"
+        from hermes_cli import profiles as profiles_mod
+        if not Path(profiles_mod.get_profile_dir(name)).is_dir():
+            return "default"
     return name
 
 
@@ -478,12 +480,8 @@ def _profile_home(profile: str | None) -> Path | None:
     home = Path(profiles_mod.get_profile_dir(name))
     if not home.is_dir():
         raise FileNotFoundError(f"Profile '{name}' does not exist.")
-    launch = Path(_hermes_home)
-    if home == launch:
+    if home.resolve() == Path(_hermes_home).resolve():
         return None  # already the launch profile (no override needed)
-    if home.name == launch.name or home.is_symlink() or launch.is_symlink():
-        if home.resolve() == launch.resolve():
-            return None
     _served_profile_homes.add(home)  # the change watcher must stat every served sibling store too
     return home
 

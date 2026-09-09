@@ -217,23 +217,14 @@ def profile_name_for_home(path: str | Path | None) -> str | None:
     current = Path(path).expanduser()
     try:
         default_root = get_default_hermes_root()
-        if current == default_root:
-            return "default"
-        if current.parent.name == "profiles":
-            named = named_profile_home(current)
+        for candidate in (current, current.resolve(strict=False)):
+            if candidate == default_root or candidate == default_root.resolve(strict=False):
+                return "default"
+            named = named_profile_home(candidate)
             if named is not None:
                 return named.name
-            if current.name and not current.name.startswith("."):
-                return current.name
-        if current.resolve(strict=False) == default_root.resolve(strict=False):
-            return "default"
-        named = named_profile_home(current)
     except (OSError, RuntimeError, ValueError):
         return None
-    if named is not None:
-        return named.name
-    if current.parent.name == "profiles" and current.name and not current.name.startswith("."):
-        return current.name
     return None
 
 

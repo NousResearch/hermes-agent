@@ -35,13 +35,9 @@ def test_explicit_profile_target_never_falls_back(tmp_path, monkeypatch):
     # A real resolution I/O failure must propagate, too (no predicate patch).
     profiles = home / "profiles"
     profiles.rename(home / "saved-profiles")
-    try:
-        profiles.symlink_to("profiles")
-    except OSError:
-        pass
-    else:
-        with pytest.raises((OSError, RuntimeError)):
-            server._profile_home("worker")
+    profiles.symlink_to("profiles")
+    with pytest.raises((OSError, RuntimeError)):
+        server._profile_home("worker")
 
 
 def test_custom_root_basename_target_fails_closed_when_unavailable(tmp_path, monkeypatch):
@@ -61,4 +57,3 @@ def test_custom_root_basename_target_fails_closed_when_unavailable(tmp_path, mon
     with pytest.raises(FileNotFoundError):
         with server._profile_db({"profile": "customer-data"}):
             pass
-

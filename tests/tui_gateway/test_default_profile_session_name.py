@@ -26,6 +26,9 @@ def test_default_home_aliases_are_reported_as_default(tmp_path, monkeypatch):
     for alias in (default_home.name, "hermes"):
         assert server._response_profile_name(alias) == "default"
     assert server._session_info(None, {"profile_home": str(default_home)})["profile_name"] == "default"
+    # "hermes" is a legal profile id: a REAL named profile of that name is never swallowed by the alias.
+    (default_home / "profiles" / "hermes").mkdir(parents=True)
+    assert server._response_profile_name("hermes") == "hermes"
 
 
 def test_profile_home_resolution_stamps_default_rows(tmp_path, monkeypatch):
@@ -165,4 +168,3 @@ def test_custom_default_root_real_session_db_owner_stamping(tmp_path, monkeypatc
         assert launch_db.get_session("lazy-default") is None
         assert launch_db.get_session("seeded-default") is None
         assert launch_db.get_session("branched-default") is None
-

@@ -1438,6 +1438,10 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
             } for _key, p in sorted(self._plugins.items())
         ]
 
+    def get_registered_tool_names(self) -> Set[str]:
+        """Return a snapshot of tool names registered by enabled plugins."""
+        return set(self._plugin_tool_names)
+
     def find_plugin_skill(self, qualified_name: str) -> Optional[Path]:
         """Return the ``Path`` to a plugin skill's SKILL.md, or ``None``."""
         entry = self._plugin_skills.get(qualified_name)

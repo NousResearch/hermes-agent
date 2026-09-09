@@ -295,7 +295,7 @@ export function useStatusbarItems({
   const tokensPerSecond = tokensPerSecondLabel(currentUsage)
 
   const approvalModeItem = useApprovalModeStatusbarItem(activeGatewayProfile, requestGateway)
-  const settingsLockItem = useSettingsLockStatusbarItem(requestGateway)
+  const settingsLockItem = useSettingsLockStatusbarItem(requestGateway, gatewayState === 'open')
   const systemResourcesItem = useSystemResourcesStatusbarItem()
 
   const gatewayMenuContent = useMemo(

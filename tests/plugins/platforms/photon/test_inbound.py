@@ -15,7 +15,7 @@ from typing import Any, Dict, List
 import pytest
 
 from gateway.config import Platform, PlatformConfig
-from gateway.platforms.base import MessageEvent, MessageType
+from gateway.platforms.event import MessageEvent, MessageType
 from plugins.platforms.photon.adapter import PhotonAdapter
 
 
@@ -65,6 +65,43 @@ async def test_dispatch_text_dm(monkeypatch: pytest.MonkeyPatch) -> None:
     assert src.chat_id == "+15551234567"
     assert src.chat_type == "dm"
     assert src.user_id == "+15551234567"
+
+
+@pytest.mark.asyncio
+async def test_dispatch_read_receipt_does_not_wake_agent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = _make_adapter(monkeypatch)
+    captured = _capture(adapter, monkeypatch)
+    receipt = _dm_event("", msg_id="spc-read-1")
+    receipt["content"] = {
+        "type": "read",
+        "targetMessageId": "bot-msg-1",
+        "targetDirection": "outbound",
+    }
+
+    await adapter._dispatch_inbound(receipt)
+
+    assert captured == []
+
+
+@pytest.mark.asyncio
+async def test_dispatch_read_receipt_alias_does_not_wake_agent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Some spectrum-ts streams label receipts ``read_receipt`` — same drop."""
+    adapter = _make_adapter(monkeypatch)
+    captured = _capture(adapter, monkeypatch)
+    receipt = _dm_event("", msg_id="spc-read-2")
+    receipt["content"] = {
+        "type": "read_receipt",
+        "targetMessageId": "bot-msg-2",
+        "targetDirection": "outbound",
+    }
+
+    await adapter._dispatch_inbound(receipt)
+
+    assert captured == []
 
 
 # A real 1x1 transparent PNG (passes base.py's _looks_like_image magic check).

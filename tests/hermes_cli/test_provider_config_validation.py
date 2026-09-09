@@ -68,3 +68,23 @@ class TestNormalizeCustomProviderEntry:
         assert result["base_url"] == "${PROVIDER_A_BASE_URL}"
 
 
+    def test_numeric_yaml_name_and_key_become_strings(self):
+        """Unquoted YAML `name: 2070` / key 2070 must not be dropped as non-str."""
+        from hermes_cli.config import find_provider_entry, stringify_provider_map
+
+        result = _normalize_custom_provider_entry(
+            {"name": 2070, "base_url": "http://192.168.1.10:8082/v1"},
+            provider_key=2070,
+        )
+        assert result is not None
+        assert result["name"] == "2070"
+        assert result["provider_key"] == "2070"
+
+        mapped = stringify_provider_map({2070: {"base_url": "http://x"}})
+        assert list(mapped) == ["2070"]
+
+        stored, entry = find_provider_entry({2070: {"base_url": "http://x"}}, "2070")
+        assert stored == 2070
+        assert entry == {"base_url": "http://x"}
+
+

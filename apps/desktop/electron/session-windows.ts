@@ -64,8 +64,13 @@ function chatWindowWebPreferences(preloadPath: string) {
 // onboarding overlays and the global session sidebar. `watch=1` marks a
 // spectator window (e.g. a running subagent's session): the renderer resumes it
 // lazily so the gateway never builds an agent just to stream into it.
-function buildSessionWindowUrl(sessionId: string, { devServer, rendererIndexPath, watch }: any = {}) {
-  const query = `?win=secondary${watch ? '&watch=1' : ''}`
+// `profile` names the backend the window must boot against (same carry as the
+// HUD's buildHudWindowUrl): without it a pop-out/watch window adopts the
+// PRIMARY profile and resolves the session id against the wrong backend
+// (#82768, #61286). Absent → unchanged primary adoption.
+function buildSessionWindowUrl(sessionId: string, { devServer, profile, rendererIndexPath, watch }: any = {}) {
+  const profileKey = typeof profile === 'string' ? profile.trim() : ''
+  const query = `?win=secondary${watch ? '&watch=1' : ''}${profileKey ? `&profile=${encodeURIComponent(profileKey)}` : ''}`
   const route = `#/${encodeURIComponent(sessionId)}`
 
   if (devServer) {
@@ -75,6 +80,23 @@ function buildSessionWindowUrl(sessionId: string, { devServer, rendererIndexPath
   }
 
   return `${pathToFileURL(rendererIndexPath).toString()}${query}${route}`
+}
+
+// Full peer windows render the ordinary app shell, so they deliberately do
+// not use the `win` query parameter that selects a specialized renderer. The
+// separate marker lets the renderer distinguish a peer from the one primary
+// app window: app-launch source restoration belongs to the primary only, while
+// a peer keeps the already-running backend it joined during boot.
+function buildInstanceWindowUrl({ devServer, rendererIndexPath }: any = {}) {
+  const query = '?peer=1'
+
+  if (devServer) {
+    const base = devServer.endsWith('/') ? devServer.slice(0, -1) : devServer
+
+    return `${base}/${query}`
+  }
+
+  return `${pathToFileURL(rendererIndexPath).toString()}${query}`
 }
 
 // Full "instance" windows (⌘⇧N / the "New Window" command) open a complete app
@@ -160,6 +182,7 @@ function createSessionWindowRegistry() {
 }
 
 export {
+  buildInstanceWindowUrl,
   buildSessionWindowUrl,
   chatWindowWebPreferences,
   createSessionWindowRegistry,

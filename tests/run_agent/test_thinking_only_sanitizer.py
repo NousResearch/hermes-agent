@@ -93,6 +93,17 @@ class TestDropThinkingOnlyAndMergeUsers:
         # Should return the original list untouched (identity) when no changes.
         assert out is msgs
 
+    def test_adjacent_users_merge_even_when_no_thinking_row_was_dropped(self):
+        scaffold = {"role": "user", "content": "SUMMARY SCAFFOLD"}
+        live_ask = {"role": "user", "content": "REAL ASK"}
+        msgs = [scaffold, live_ask]
+
+        out = AIAgent._drop_thinking_only_and_merge_users(msgs)
+
+        assert out == [{"role": "user", "content": "SUMMARY SCAFFOLD\n\nREAL ASK"}]
+        assert scaffold["content"] == "SUMMARY SCAFFOLD"
+        assert live_ask["content"] == "REAL ASK"
+
 
     def test_preserves_alternation_after_drop(self):
         msgs = [

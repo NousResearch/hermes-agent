@@ -1,30 +1,19 @@
 """Redaction applied to monitoring data before egress.
 
-One unconditional scrub, no modes, no knobs. Every string that leaves the
-process passes through ``redact_for_export``:
-
-  * Secrets first — wraps ``agent/redact.py::redact_sensitive_text(force=True)``
-    plus bearer/token-shape patterns, and fails CLOSED: if the redactor cannot
-    run, the raw string is never emitted.
-  * PII second — e-mail addresses, phone numbers, and UUID-shaped identifiers
-    are rewritten to ``[email]`` / ``[phone]`` / ``[id]``.
-
-There is deliberately no setting to weaken this. The monitoring plane is
-content-free by design: rendered log messages are not exported, and bounded
-structured strings are still scrubbed as defense-in-depth. This redactor also
-remains available for a future, explicitly gated redacted-message detail mode.
+One unconditional scrub, no modes, no knobs. Every string that leaves the process passes
+through ``redact_for_export``: secrets first (``agent/redact.py::redact_sensitive_text(force=True)``
+plus bearer/token shapes, failing CLOSED so a broken redactor never emits the raw string), then
+PII (e-mail, phone, UUID-shaped ids -> ``[email]`` / ``[phone]`` / ``[id]``).
 """
 
 from __future__ import annotations
 
 import re
-from typing import Optional
+from typing import Any, Optional
 
 # ── secret shapes (belt-and-suspenders on top of agent/redact.py) ───────────
 _BEARER_RE = re.compile(r"\bBearer\s+[A-Za-z0-9._~+\-/]+=*", re.IGNORECASE)
-_TOKEN_RE = re.compile(
-    r"\b(xox[baprs]-[A-Za-z0-9-]+|sk-[A-Za-z0-9_-]{8,}|gh[pousr]_[A-Za-z0-9_]{8,})\b"
-)
+_TOKEN_RE = re.compile(r"\b(xox[baprs]-[A-Za-z0-9-]+|sk-[A-Za-z0-9_-]{8,}|gh[pousr]_[A-Za-z0-9_]{8,})\b")
 _SECRET_LITERAL_RE = re.compile(r"\*{3,}")
 _BEARER_RESIDUE_RE = re.compile(r"\bBearer\s+\[[^\]]+\]", re.IGNORECASE)
 
@@ -34,10 +23,9 @@ _EMAIL_RE = re.compile(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}")
 _PHONE_RE = re.compile(
     r"(?<!\w)(?:\+?\d{1,3}[\s.\-]?)?(?:\(\d{2,4}\)[\s.\-]?)?\d{3}[\s.\-]?\d{3,4}(?:[\s.\-]?\d{2,4})?(?!\w)"
 )
-# Long opaque hex/uuid-ish user identifiers.
-_UUID_RE = re.compile(
-    r"\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b"
-)
+_UUID_RE = re.compile(r"\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b")
+
+UNAVAILABLE = "[redaction-unavailable]"
 
 
 def _secret_redact(text: str) -> str:
@@ -47,11 +35,9 @@ def _secret_redact(text: str) -> str:
         out = redact_sensitive_text(text, force=True)
     except Exception:
         # Fail CLOSED: if the redactor can't run, do not emit the raw string.
-        return "[redaction-unavailable]"
-    out = _BEARER_RE.sub("[redacted]", out)
-    out = _TOKEN_RE.sub("[redacted]", out)
-    out = _SECRET_LITERAL_RE.sub("[redacted]", out)
-    out = _BEARER_RESIDUE_RE.sub("[redacted]", out)
+        return UNAVAILABLE
+    for pattern in (_BEARER_RE, _TOKEN_RE, _SECRET_LITERAL_RE, _BEARER_RESIDUE_RE):
+        out = pattern.sub("[redacted]", out)
     return out
 
 
@@ -66,6 +52,13 @@ def redact_for_export(text: Optional[str]) -> Optional[str]:
     return out
 
 
-__all__ = [
-    "redact_for_export",
-]
+def redact_bounded(raw: Any, *, limit: int = 500, empty: str = "[redacted]", unavailable: str = UNAVAILABLE) -> str:
+    """Redact ``str(raw or "")`` and length-bound it; ``empty`` replaces an empty
+    result, ``unavailable`` is returned if redaction itself raises."""
+    try:
+        return (redact_for_export(str(raw or "")) or empty)[:limit]
+    except Exception:
+        return unavailable
+
+
+__all__ = ["redact_for_export", "redact_bounded"]

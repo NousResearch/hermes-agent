@@ -9,9 +9,8 @@
 import type { ReadableAtom } from 'nanostores'
 import type { ReactElement, ReactNode, PointerEvent as ReactPointerEvent } from 'react'
 
-import type { DoubleTapContext } from '@/components/pane-shell/tree/renderer/drag-session'
 import { registerPaneCloser, removeTreePane, treePanesWithPrefix } from '@/components/pane-shell/tree/store'
-import type { PaneStripTool } from '@/components/ui/pane-tab'
+import type { MenuKit } from '@/components/ui/actions-menu'
 import { registry } from '@/contrib/registry'
 import type { TileDock } from '@/store/session-states'
 
@@ -40,22 +39,17 @@ export interface PaneMirror<T> {
    *  as `tabLead` — a name that moves faster than re-registration (see
    *  PaneChrome.tabTitle). Falls back to `title`. */
   tabTitle?: (key: string) => ReactNode
-  /** Glyph buttons the tile contributes to the strip, after the last tab (where
-   *  "+" sits), while it is the ACTIVE pane — e.g. a preview's console /
-   *  DevTools toggles. DATA, not markup: the strip's `PaneStripGlyph` owns the
-   *  styling so every glyph on every strip matches. */
-  stripTools?: (key: string) => readonly PaneStripTool[]
+  /** Mint another tile of this kind — the strip's "+" (see PaneChrome.newTab).
+   *  Per tile so a mirror can offer it for some of its tabs and not others. */
+  newTab?: (key: string) => (() => void) | undefined
   render: (key: string) => ReactNode
+  /** Extra rows at the top of the zone tab menu (see PaneChrome.tabMenuPrefix). */
+  tabMenuPrefix?: (key: string) => ((kit: MenuKit) => ReactNode) | undefined
   /** Wrap the tile's TAB (domain context menu — session verbs). */
   tabWrap?: (key: string, tab: ReactElement) => ReactNode
   /** Override the tile's TAB drag (session drop language: stack/split/link).
    *  Returns whether it took the drag (see PaneChrome.tabDrag). */
-  tabDrag?: (
-    key: string,
-    event: ReactPointerEvent<HTMLElement>,
-    onTap: () => void,
-    double?: DoubleTapContext
-  ) => boolean
+  tabDrag?: (key: string, event: ReactPointerEvent<HTMLElement>, onTap: () => void) => boolean
   /** Wired as the pane's closer (tab Close). */
   close: (key: string) => void
 }
@@ -64,6 +58,7 @@ export interface PaneMirror<T> {
  *  Module-level state lives in the returned closure, so call it once per app. */
 export function paneMirror<T>(cfg: PaneMirror<T>): () => void {
   const registered = new Map<string, { dispose: () => void; title: string }>()
+
   const paneId = (key: string) => `${cfg.prefix}:${key}`
 
   const sync = () => {
@@ -87,21 +82,21 @@ export function paneMirror<T>(cfg: PaneMirror<T>): () => void {
         data: {
           tabLead: cfg.tabLead ? () => cfg.tabLead!(key) : undefined,
           tabTitle: cfg.tabTitle ? () => cfg.tabTitle!(key) : undefined,
-          stripTools: cfg.stripTools ? () => cfg.stripTools!(key) : undefined,
           dock: {
             before: cfg.before?.(tile),
             pane: cfg.anchor?.(tile) ?? 'workspace',
             pos: cfg.dir?.(tile) ?? 'right'
           },
           minWidth: cfg.minWidth,
+          newTab: cfg.newTab?.(key),
           // Every mirrored tile is a full workspace surface docked beside main —
           // and closeable, which is what keeps its tab when it lands in a zone of
-          // its own (see lone-header.ts).
+          // its own (see strip-visibility.ts).
           placement: 'main',
           tabDrag: cfg.tabDrag
-            ? (event: ReactPointerEvent<HTMLElement>, onTap: () => void, double?: DoubleTapContext) =>
-                cfg.tabDrag!(key, event, onTap, double)
+            ? (event: ReactPointerEvent<HTMLElement>, onTap: () => void) => cfg.tabDrag!(key, event, onTap)
             : undefined, // returns boolean (handled) — see PaneChrome.tabDrag
+          tabMenuPrefix: cfg.tabMenuPrefix?.(key),
           tabWrap: cfg.tabWrap ? (tab: ReactElement) => cfg.tabWrap!(key, tab) : undefined
         },
         render: () => cfg.render(key)

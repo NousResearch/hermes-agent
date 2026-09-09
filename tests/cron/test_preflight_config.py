@@ -70,11 +70,11 @@ def _run_job_patched(job, tmp_path, *, resolve=None, skill_view=None):
     fake_db = MagicMock()
     patches = [
         patch("cron.scheduler._hermes_home", tmp_path),
-        patch("cron.scheduler._resolve_origin", return_value=None),
+        patch("cron.scheduler_delivery._resolve_origin", return_value=None),
         patch("hermes_cli.env_loader.load_hermes_dotenv"),
         patch("hermes_cli.env_loader.reset_secret_source_cache"),
-        patch("hermes_state.SessionDB", return_value=fake_db),
-        patch("tools.mcp_tool.discover_mcp_tools", return_value=[]),
+        patch("hermes_state_registry.acquire", return_value=fake_db),
+        patch("tools.mcp_tool_discovery.discover_mcp_tools", return_value=[]),
     ]
     if resolve is None:
         patches.append(
@@ -129,7 +129,7 @@ class TestMissingProviderKeyBlocks:
         job = _job()
         deliveries = []
 
-        def fake_deliver(job, content, adapters=None, loop=None):
+        def fake_deliver(job, content, adapters=None, loop=None, **kwargs):
             deliveries.append(content)
             return None
 
@@ -139,11 +139,11 @@ class TestMissingProviderKeyBlocks:
             for _tick in range(2):
                 fresh = [j for j in cron_jobs.load_jobs() if j["id"] == job["id"]][0]
                 with patch("cron.scheduler._hermes_home", tmp_path), \
-                     patch("cron.scheduler._resolve_origin", return_value=None), \
+                     patch("cron.scheduler_delivery._resolve_origin", return_value=None), \
                      patch("hermes_cli.env_loader.load_hermes_dotenv"), \
                      patch("hermes_cli.env_loader.reset_secret_source_cache"), \
-                     patch("hermes_state.SessionDB", return_value=fake_db), \
-                     patch("tools.mcp_tool.discover_mcp_tools", return_value=[]), \
+                     patch("hermes_state_registry.acquire", return_value=fake_db), \
+                     patch("tools.mcp_tool_discovery.discover_mcp_tools", return_value=[]), \
                      patch("hermes_cli.runtime_provider.resolve_runtime_provider",
                            side_effect=_AuthErrorFactory()), \
                      patch.object(sched, "_deliver_result", side_effect=fake_deliver), \
@@ -233,7 +233,7 @@ class TestOptOut:
         job = _job()
         deliveries = []
 
-        def fake_deliver(job, content, adapters=None, loop=None):
+        def fake_deliver(job, content, adapters=None, loop=None, **kwargs):
             deliveries.append(content)
             return None
 
@@ -243,11 +243,11 @@ class TestOptOut:
             for _tick in range(2):
                 fresh = [j for j in cron_jobs.load_jobs() if j["id"] == job["id"]][0]
                 with patch("cron.scheduler._hermes_home", tmp_path), \
-                     patch("cron.scheduler._resolve_origin", return_value=None), \
+                     patch("cron.scheduler_delivery._resolve_origin", return_value=None), \
                      patch("hermes_cli.env_loader.load_hermes_dotenv"), \
                      patch("hermes_cli.env_loader.reset_secret_source_cache"), \
-                     patch("hermes_state.SessionDB", return_value=fake_db), \
-                     patch("tools.mcp_tool.discover_mcp_tools", return_value=[]), \
+                     patch("hermes_state_registry.acquire", return_value=fake_db), \
+                     patch("tools.mcp_tool_discovery.discover_mcp_tools", return_value=[]), \
                      patch("hermes_cli.runtime_provider.resolve_runtime_provider",
                            side_effect=_AuthErrorFactory()), \
                      patch.object(sched, "_deliver_result", side_effect=fake_deliver), \
@@ -319,7 +319,7 @@ class TestDeliveryPlatform:
         job = _job(deliver="notaplatform")
         with cron_jobs.use_cron_store(tmp_path):
             cron_jobs.save_jobs([job])
-            with patch("cron.scheduler._is_known_delivery_platform",
+            with patch("cron.scheduler_delivery._is_known_delivery_platform",
                        return_value=False):
                 success, output, final_response, error, agent_constructed = \
                     _run_job_patched(job, tmp_path)

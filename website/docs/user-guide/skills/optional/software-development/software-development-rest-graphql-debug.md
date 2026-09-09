@@ -15,7 +15,7 @@ Debug REST/GraphQL APIs: status codes, auth, schemas, repro.
 | | |
 |---|---|
 | Source | Optional — install with `hermes skills install official/software-development/rest-graphql-debug` |
-| Path | `optional-skills/software-development/rest-graphql-debug` |
+| Path | `optional-skills/software-development\rest-graphql-debug` |
 | Version | `1.2.0` |
 | Author | eren-karakus0 |
 | License | MIT |
@@ -76,7 +76,7 @@ terminal("""curl -X POST https://api.example.com/users \\
 terminal('curl -sI https://api.example.com/health')
 
 # Pretty-print JSON
-terminal('curl -s https://api.example.com/users | python3 -m json.tool')
+terminal('curl -s https://api.example.com/users | python -m json.tool')
 ```
 
 ### GraphQL via terminal

@@ -2,7 +2,7 @@
 // usage bands. Each trigger emits ONE synthetic `notification.show` /
 // `notification.clear` gateway event through the real fan-out
 // (`emitLocalGatewayEvent`), so it exercises the actual dispatcher branch in
-// `use-message-stream/gateway-event.ts` — toast render, key-replacement
+// `use-message-stream/gateway-event/status.ts` — toast render, key-replacement
 // escalation, TTL self-dismiss, native OS notification, and billing re-poll.
 //
 // Installed only under `import.meta.env.DEV` (see contrib/wiring.tsx), so none

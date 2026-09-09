@@ -3,6 +3,8 @@
 Split out of ``tools/browser_tool.py``. Facade-owned state is read through ``_bt`` (``tools.browser_tool``, resolved per call) — no import cycle."""
 
 import contextlib
+import errno
+import time
 import functools
 import os
 import shutil
@@ -12,7 +14,7 @@ from pathlib import Path
 from typing import List, Optional
 
 from hermes_cli._subprocess_compat import windows_hide_flags
-from hermes_constants import agent_browser_runnable, get_hermes_home, is_termux as _is_termux_environment, node_tool_runnable
+from hermes_constants import agent_browser_runnable, find_node_executable, get_hermes_home, is_termux as _is_termux_environment, node_tool_runnable
 from tools.browser_tool_origin import origin_module as _origin
 from tools import browser_tool_cdp as _cdp
 from tools import browser_tool_cloud as _cloud
@@ -106,6 +108,29 @@ def _agent_browser_candidates(extended_path: str):
         yield shutil.which("agent-browser", path=str(local_bin_dir))
 
 
+def _agent_browser_npx_lock_path(env: dict[str, str], *, timeout: float = 5.0) -> Optional[Path]:
+    """Use npm's effective cache, including project/user npmrc configuration."""
+    configured = env.get("npm_config_cache") or env.get("NPM_CONFIG_CACHE")
+    if not configured:
+        npm = find_node_executable("npm")
+        if not npm:
+            return None
+        try:
+            result = subprocess.run(
+                [npm, "config", "get", "cache"], env=env, stdin=subprocess.DEVNULL,
+                capture_output=True, text=True, timeout=max(0.0, timeout),
+                creationflags=windows_hide_flags(),
+            )
+        except (OSError, subprocess.SubprocessError):
+            return None
+        if result.returncode != 0:
+            return None
+        configured = result.stdout.strip()
+        if not configured:
+            return None
+    return Path(configured).expanduser() / ".hermes-agent-browser-warmup.lock"
+
+
 def _find_agent_browser(*, validate: bool = True) -> str:
     """Find the agent-browser CLI: PATH, Homebrew/managed dirs, local node_modules/.bin, npx fallback, lazy install.
 
@@ -140,6 +165,8 @@ def _find_agent_browser(*, validate: bool = True) -> str:
             return _accept(candidate)
     # npx fallback (also searches the extended PATH)
     if _resolve_npx_bin():
+        if validate:
+            warm_agent_browser_npx_cache()
         return _accept(_bt.NPX_AGENT_BROWSER_SENTINEL)
     if not validate:
         raise FileNotFoundError("agent-browser CLI not found")
@@ -179,6 +206,17 @@ def warm_agent_browser_npx_cache(timeout: float = 60.0) -> bool:
         return False
     env = _bt._build_browser_env()
     env["PATH"] = _merge_browser_path(env.get("PATH", ""))
+    deadline = time.monotonic() + timeout
+    with _agent_browser_npx_cache_lock(env, timeout=timeout) as acquired:
+        if not acquired:
+            return False
+        remaining = deadline - time.monotonic()
+        return remaining > 0 and _run_agent_browser_npx_warmup(npx_bin, env, remaining)
+
+
+def _run_agent_browser_npx_warmup(npx_bin: str, env: dict, timeout: float) -> bool:
+    """Run under the shared-cache lock, retaining process-tree timeout cleanup."""
+    _bt = _origin()
     popen_kwargs: dict = {"stdout": subprocess.PIPE, "stderr": subprocess.PIPE, "text": True, "env": env}
     if os.name == "posix":
         popen_kwargs.update(creationflags=windows_hide_flags(), start_new_session=True)
@@ -340,3 +378,56 @@ def check_browser_vision_requirements() -> bool:
     except ImportError:
         return False
     return check_vision_requirements()
+
+
+@contextlib.contextmanager
+def _agent_browser_npx_cache_lock(env: dict[str, str], *, timeout: float = 60.0):
+    """Serialize cold writers sharing npm's cache, with a bounded contention wait.
+
+    The lock and npx execution share the caller's timeout budget. Acquisition
+    failure skips warming. Kernel locks release on process death; deleting the
+    npm cache while it is held can replace its inode and defeat serialization.
+    """
+    deadline = time.monotonic() + timeout
+    path = _agent_browser_npx_lock_path(env, timeout=min(5.0, timeout))
+    if path is None:
+        _origin().logger.debug('Skipping npx warmup: effective npm cache unavailable')
+        yield False
+        return
+    handle = None
+    acquired = False
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        handle = path.open('a+b')
+        if os.name == 'nt':
+            import msvcrt
+            handle.seek(0, os.SEEK_END)
+            if handle.tell() == 0:
+                handle.write(b'\0')
+                handle.flush()
+            handle.seek(0)
+            lock = lambda: msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+        else:
+            import fcntl
+            lock = lambda: fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        while True:
+            try:
+                lock()
+                acquired = True
+                break
+            except OSError as exc:
+                if exc.errno not in {errno.EACCES, errno.EAGAIN, errno.EDEADLK}:
+                    raise
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    _origin().logger.debug('Skipping npx warmup: shared cache lock remained contended')
+                    break
+                time.sleep(min(0.1, remaining))
+    except OSError:
+        _origin().logger.debug('Skipping npx warmup: shared cache lock unavailable', exc_info=True)
+    try:
+        yield acquired
+    finally:
+        if handle is not None:
+            # Closing releases flock and Windows byte locks, including on exceptions.
+            handle.close()

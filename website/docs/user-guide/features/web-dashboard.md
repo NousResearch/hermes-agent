@@ -1060,6 +1060,50 @@ The bundled first consumer is the **drain** provider (`plugins/dashboard_auth/dr
 
 Custom providers can implement `supports_token`/`verify_token` the same way to expose their own machine-authable endpoints.
 
+### Trusted reverse-proxy authentication (X-Remote-User / REMOTE_USER)
+
+The `DashboardAuthProvider` ABC also supports a **request-scoped** capability — `supports_request_auth = True` + `verify_request_auth(request=...)` — that lets an upstream reverse proxy be the single authentication wall. The proxy performs the real login (Apache pwauth/htpasswd, nginx `auth_basic`/`auth_request`, an SSO front-end) and then vouches for the user to Hermes via a request header, so the dashboard trusts it with no second login and no session cookie. It is the request-scoped analog of the token seam above.
+
+The bundled **`remote_user`** provider (`plugins/dashboard_auth/remote_user`) is the reference implementation. It reads the username from a configurable header (default `X-Remote-User`) and registers when a trusted proxy is configured:
+
+```bash
+# ~/.hermes/.env  (secrets file; the provider fails closed without a trusted proxy)
+HERMES_DASHBOARD_REMOTE_USER_TRUSTED_PROXIES=192.168.0.2     # required (IP or CIDR)
+HERMES_DASHBOARD_REMOTE_USER_HEADER=X-Remote-User            # optional; or X-Forwarded-User
+HERMES_DASHBOARD_REMOTE_USER_SECRET=...                      # optional defense-in-depth (below)
+```
+
+Security requirements (these are the trust rules — get them wrong and the header is forgeable):
+
+- **Trust the socket peer, never `X-Forwarded-For`.** The provider only honors the header when the request's *peer IP* is in `trusted_proxies`. `X-Forwarded-For` is user-controllable until it reaches a trusted proxy, so it must never be used to decide *who* the caller is. This mirrors how Keycloak validates `--proxy-trusted-addresses=`.
+- **Allowlist only the actual proxy addresses** (specific IPs or a tight CIDR) and bind/expose the dashboard port so only those proxies — plus whatever firewall/tunnel you control — can reach it. Terminate TLS at the proxy.
+- **The proxy must overwrite (not append) the identity header**, else a client can smuggle a forged `X-Remote-User` through the proxy: strip any inbound value, then set it from the authenticated user.
+- **Optional shared-secret header (defense in depth).** Setting `secret` requires the proxy to also send `X-Remote-User-Secret` matching it (constant-time compare), so even a client that tunnels through the proxy's network path can't forge an identity.
+
+Apache example (pwauth/basic auth; the `RequestHeader` fixup runs after authentication, so `%{REMOTE_USER}` is populated from `r->user` — use `expr=`, not the `%{REMOTE_USER}e` env form, which expands to `(null)`):
+
+```apache
+ProxyPreserveHost On
+RequestHeader unset X-Remote-User
+RequestHeader set X-Remote-User "expr=%{REMOTE_USER}"
+RequestHeader unset X-Remote-User-Secret
+RequestHeader set X-Remote-User-Secret "SHARED_SECRET"     # only if a secret is configured
+RequestHeader set X-Forwarded-Proto "https"
+```
+
+nginx example (`auth_basic`, or `auth_request` with an auth service):
+
+```nginx
+proxy_set_header Host $host;
+proxy_set_header X-Remote-User $remote_user;               # or X-Forwarded-User
+proxy_set_header X-Remote-User-Secret "SHARED_SECRET";     # only if a secret is configured
+proxy_set_header X-Forwarded-Proto $scheme;
+```
+
+Headers are case-insensitive. There is no single standard header name — the Apache/REMOTE_USER family uses `X-Remote-User`, while much of the nginx ecosystem uses `X-Forwarded-User`. Set `HERMES_DASHBOARD_REMOTE_USER_HEADER` to whatever your proxy emits; what matters is that the proxy sets exactly that name and that only the trusted proxy can reach the port.
+
+`remote_user` registers only when configured and is otherwise a no-op. Use it with the dashboard bound non-loopback (`hermes dashboard --host 0.0.0.0`) so the auth gate is engaged.
+
 ### Verifying the gate is on
 
 ```bash

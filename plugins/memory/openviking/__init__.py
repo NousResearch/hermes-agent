@@ -1618,7 +1618,7 @@ class OpenVikingMemoryProvider(MemoryProvider):
 
     @classmethod
     def _post_prefetch_search(cls, client: _VikingClient, query: str, session_id: str, *, limit: int,
-                              context_type: str | List[str], target_uri: Optional[str] = None,
+                              context_type: str | List[str], target_uri: Optional[str | List[str]] = None,
                               deadline: float, request_timeout: float) -> dict:
         """Session-aware search first, falling back to search/find (budget errors propagate)."""
         base_payload = {
@@ -1656,10 +1656,19 @@ class OpenVikingMemoryProvider(MemoryProvider):
             deadline = time.monotonic() + cfg["timeout_seconds"]
             target_uri = None
             # Without an actor peer, OpenViking's default user-root search also
-            # includes all peers. Restrict the no-sender case to user memory.
+            # includes all peers. Use exact roots to exclude peer directories.
             if cfg["scope"] == "peer" and not self._user_id:
                 user = self._user_space(client, timeout=self._remaining_recall_timeout(deadline, cfg["request_timeout_seconds"]))
-                target_uri = f"viking://user/{user}/memories"
+                user_memory_uri = f"viking://user/{user}/memories"
+                target_uri = (
+                    [
+                        user_memory_uri,
+                        f"viking://user/{user}/resources",
+                        "viking://resources",
+                    ]
+                    if cfg["resources"]
+                    else user_memory_uri
+                )
             result = self._unwrap_result(self._post_prefetch_search(
                 client, query_text, session_id, limit=max(cfg["limit"] * 4, 20),
                 context_type=["memory", "resource"] if cfg["resources"] else "memory",

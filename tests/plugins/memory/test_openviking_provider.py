@@ -2045,6 +2045,67 @@ def test_automatic_recall_applies_configured_peer_scope(
     ]
 
 
+def test_no_sender_peer_recall_includes_enabled_resource_roots_on_fallback(
+    monkeypatch,
+):
+    requests = []
+
+    class Client:
+        def __init__(self, endpoint, api_key="", account="", user="", agent=""):
+            self._user = user
+            self._agent = agent
+
+        def post(self, path, payload=None, **kwargs):
+            requests.append((path, dict(payload or {})))
+            if path == "/api/v1/search/search":
+                raise RuntimeError("session search unavailable")
+            return {"result": {"memories": [], "resources": []}}
+
+    monkeypatch.setattr(openviking_module, "_VikingClient", Client)
+    provider = _make_prefetch_provider()
+    provider._conn_snapshot = (
+        "https://openviking.example",
+        "key",
+        "account",
+        "alice",
+        "configured-assistant",
+    )
+    provider._user_id = ""
+    monkeypatch.setattr(provider, "_recall_config", lambda: {
+        "scope": "peer",
+        "limit": 6,
+        "score_threshold": 0.15,
+        "max_injected_chars": 4000,
+        "timeout_seconds": 4.0,
+        "request_timeout_seconds": 3.0,
+        "full_read_limit": 2,
+        "prefer_abstract": False,
+        "resources": True,
+    })
+    monkeypatch.setattr(provider, "_user_space", lambda *args, **kwargs: "alice")
+
+    provider._search_prefetch_context(
+        "remember project context", session_id="session-1"
+    )
+
+    target_uri = [
+        "viking://user/alice/memories",
+        "viking://user/alice/resources",
+        "viking://resources",
+    ]
+    base_payload = {
+        "query": "remember project context",
+        "limit": 24,
+        "score_threshold": 0,
+        "context_type": ["memory", "resource"],
+        "target_uri": target_uri,
+    }
+    assert requests == [
+        ("/api/v1/search/search", {**base_payload, "session_id": "session-1"}),
+        ("/api/v1/search/find", base_payload),
+    ]
+
+
 @pytest.mark.parametrize("user_peer_id", ["alice", ""])
 def test_turn_payloads_use_runtime_user_identity_on_every_write_path(user_peer_id):
     messages = [

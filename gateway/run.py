@@ -3271,6 +3271,26 @@ class GatewayRunner(
     GatewayAgentCacheMixin):
     """Main gateway controller: manages adapter lifecycles, routes messages to/from the agent."""
 
+    _subagent_status_registry_lock = threading.Lock()
+
+    def _prepare_subagent_status_owner(
+        self, *, source, adapter, route_metadata, surface_mode: str, loop,
+    ):
+        """Create a Telegram-only detached-status owner with one shared registry."""
+        if surface_mode == "off" or adapter is None:
+            return None
+        from gateway.subagent_status import SubagentStatusRegistry, create_telegram_subagent_status
+
+        with self._subagent_status_registry_lock:
+            registry = getattr(self, "_subagent_status_registry", None)
+            if registry is None:
+                registry = SubagentStatusRegistry()
+                self._subagent_status_registry = registry
+        pair = create_telegram_subagent_status(
+            source=source, adapter=adapter, route_metadata=route_metadata, loop=loop, registry=registry,
+        )
+        return pair[0] if pair is not None else None
+
     # Class-level defaults so partial construction in tests doesn't blow up on attribute access.
     _busy_input_mode: str = "interrupt"
     _busy_text_mode: str = "interrupt"

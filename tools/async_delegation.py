@@ -183,6 +183,22 @@ def _persist_dispatch(record: Dict[str, Any]) -> None:
     _prune_durable_records()
 
 
+def _persist_dispatch_or_rollback(delegation_id: str, record: Dict[str, Any]) -> None:
+    """Persistence is part of admission: never leave an active ghost on failure."""
+    try:
+        _persist_dispatch(record)
+    except Exception:
+        with _records_lock:
+            if _records.get(delegation_id) is record:
+                _records.pop(delegation_id, None)
+        try:
+            with _DB_LOCK, _transaction() as conn:
+                conn.execute("DELETE FROM async_delegations WHERE delegation_id=?", (delegation_id,))
+        except Exception:
+            logger.warning("Failed to remove partially persisted async delegation %s", delegation_id, exc_info=True)
+        raise
+
+
 def _prune_durable_records() -> None:
     """Bound terminal history, preferring delivered records for deletion."""
     cutoff = time.time() - _DURABLE_RETENTION_SECONDS
@@ -589,7 +605,7 @@ def _dispatch(
             return {"status": "rejected", "error": capacity_error}
         _records[delegation_id] = record
         live_units = sum(1 for r in _records.values() if r.get("status") in _LIVE_STATES)
-    _persist_dispatch(record)
+    _persist_dispatch_or_rollback(delegation_id, record)
     # Units of one call share a slot, so live units can exceed slots: size the pool by units or a
     # unit queues behind a full pool and the stale monitor kills it before its child ever starts.
     executor = _get_executor(max(max_async_children, live_units))
@@ -791,6 +807,60 @@ def push_task_failure_notice(delegation_id: str, entry: Dict[str, Any], *, n_tas
         process_registry.completion_queue.put(evt)
     except Exception as exc:  # pragma: no cover
         logger.error("Async delegation batch %s: failed to enqueue task failure notice: %s", delegation_id, exc)
+
+
+def _finalize_status_projection(record: Dict[str, Any], combined: Dict[str, Any]) -> None:
+    callback = record.get("status_finalize_fn")
+    if not callable(callback):
+        return
+    from tools.delegation_status import DetachedStatusPhase
+    task_count = len(record.get("goals") or ())
+    outcomes = [DetachedStatusPhase.FAILED] * task_count
+    for entry in combined.get("results") or ():
+        if isinstance(entry, dict) and isinstance(entry.get("task_index"), int):
+            index = entry["task_index"]
+            if 0 <= index < task_count and entry.get("status") in {"completed", "success"}:
+                outcomes[index] = DetachedStatusPhase.DONE
+    callback(tuple(outcomes))
+
+
+def _push_batch_completion_event(record: Dict[str, Any], combined: Dict[str, Any], status: str) -> None:
+    _push_completion_event(record, combined, status)
+
+
+def _finalize_batch(delegation_id: str, combined: Dict[str, Any], status: str) -> None:
+    with _records_lock:
+        record = _records.get(delegation_id)
+        if record is None or record.get("status") not in _ACTIVE_STATES:
+            return
+        record.update(status="finalizing", completed_at=time.time(), interrupt_fn=None, progress_fn=None)
+        snapshot = dict(record)
+    try:
+        _push_batch_completion_event(snapshot, combined, status)
+    finally:
+        _finalize_status_projection(snapshot, combined)
+        with _records_lock:
+            if delegation_id in _records:
+                _records[delegation_id]["status"] = status
+            _prune_completed_locked()
+
+
+def _finalize_stalled(delegation_id: str) -> None:
+    with _records_lock:
+        record = _records.get(delegation_id)
+        if record is None or record.get("status") not in _ACTIVE_STATES:
+            return
+        record.update(status="finalizing", completed_at=time.time(), interrupt_fn=None, progress_fn=None)
+        snapshot = dict(record)
+    result = {"results": [], "error": "stalled", "total_duration_seconds": 0.0}
+    try:
+        _push_batch_completion_event(snapshot, result, "stalled")
+    finally:
+        _finalize_status_projection(snapshot, result)
+        with _records_lock:
+            if delegation_id in _records:
+                _records[delegation_id]["status"] = "stalled"
+            _prune_completed_locked()
 
 
 # ── Stale monitor ───────────────────────────────────────────────────────────

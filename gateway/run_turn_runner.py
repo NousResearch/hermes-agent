@@ -1527,7 +1527,7 @@ class TurnRunner:
             # turn so a restart-interrupted turn is recorded WITH its id for drain-window dedup.
             if ctx.inbound_message_id is not None:
                 kwargs["persist_user_platform_id"] = str(ctx.inbound_message_id)
-            return agent.run_conversation(api_message, **kwargs)
+            return self._run_conversation_with_status(agent, api_message, kwargs)
         finally:
             unregister_gateway_notify(session_key)
             # Cancel pending clarify entries so blocked agent threads don't hang past the end of the
@@ -1536,6 +1536,19 @@ class TurnRunner:
                 from tools.clarify_gateway import clear_session
                 clear_session(session_key)
             reset_current_session_key(token)
+
+    def _run_conversation_with_status(self, agent, message, kwargs):
+        """Bind a turn-local detached-status owner only while the parent runs."""
+        from tools.delegation_status import bind_detached_status_owner
+
+        owner = self._ctx.subagent_status_owner
+        try:
+            with bind_detached_status_owner(owner):
+                return agent.run_conversation(message, **kwargs)
+        finally:
+            request_seal = getattr(owner, "request_seal", None)
+            if callable(request_seal):
+                request_seal()
 
     def _finish_stream_consumer(self, result, agent_history, stream_consumer):
         ctx = self._ctx

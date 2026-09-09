@@ -344,6 +344,26 @@ def _dispatch_unit(unit: _Batch, unit_id: Optional[str], slot_key: Optional[str]
     """Hand ONE unit to the async registry; the runner joins on that unit's children only."""
     from tools.async_delegation import dispatch_async_delegation_batch
     child_agents = [c for (_, _, c) in unit.children]
+    from tools.delegation_status import attach_detached_status_sink, get_detached_status_owner, DetachedStatusPhase
+
+    owner = get_detached_status_owner()
+    sink = owner.admit_batch(len(unit.children)) if owner is not None else None
+    if sink is not None:
+        for task_index, _task, child in unit.children:
+            attach_detached_status_sink(child, sink, task_index=task_index)
+
+    def _runner():
+        from tools.delegation_status import bind_detached_status_owner
+        with bind_detached_status_owner(None):
+            result = _execute_and_aggregate(unit, honor_parent_interrupt=False)
+        if sink is not None:
+            outcomes = tuple(
+                DetachedStatusPhase.DONE if entry.get("status") in {"completed", "success"}
+                else DetachedStatusPhase.FAILED
+                for entry in result.get("results") or ()
+            )
+            sink.finalize(outcomes)
+        return result
 
     def _interrupt():
         for c in child_agents:
@@ -354,7 +374,7 @@ def _dispatch_unit(unit: _Batch, unit_id: Optional[str], slot_key: Optional[str]
         goals=[t["goal"] for t in unit.task_list], context=unit.context,
         toolsets=None,  # metadata for the completion block only; subagents inherit the parent's toolsets
         role=unit.top_role, model=unit.creds["model"],
-        runner=lambda: _execute_and_aggregate(unit, honor_parent_interrupt=False),
+        runner=_runner,
         interrupt_fn=_interrupt, delegation_id=unit_id, slot_key=slot_key,
         task_indexes=[i for (i, _, _) in unit.children] if len(unit.children) < len(unit.task_list) else None,
         progress_fn=lambda: _batch_progress_token(child_agents), **routing,

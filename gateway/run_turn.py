@@ -2738,8 +2738,17 @@ class GatewayTurnMixin:
             _cleanup_adapter = None
 
         # The one-slot progress/holder containers shared with the callbacks are TurnContext defaults.
+        _status_surface_mode = disp._display_surface_mode("long_running_notifications", allow_generic=True)
+        _status_owner = self._prepare_subagent_status_owner(
+            source=source,
+            adapter=self._adapter_for_source(source),
+            route_metadata=self._thread_metadata_for_source(source, turn_params.get("event_message_id")),
+            surface_mode=_status_surface_mode,
+            loop=asyncio.get_running_loop(),
+        )
         turn_ctx = TurnContext(
             source=source, message=message, AIAgent=AIAgent, session_key=session_key,
+            subagent_status_owner=_status_owner,
             run_generation=run_generation, _cleanup_progress=_cleanup_progress,
             _run_still_current=self._run_still_current_fn(session_key, run_generation),
             progress_queue=queue.Queue() if disp.needs_progress_queue else None,

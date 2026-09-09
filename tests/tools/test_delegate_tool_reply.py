@@ -2,12 +2,13 @@
 
 Covers:
 - handler: records to agent-instance state and fails closed without it
-- extraction: no-call fallback, single call, multi-call append, compression
-  safety (agent-instance state survives when messages[] is replaced)
+- extraction: no-call fallback, single call, multi-call append
 - visibility: delegation_reply not in CONFIGURABLE_TOOLSETS, not in default
   tool definitions, but present in child toolsets built by _build_child_agent
   (validated via constructor-capture pattern from test_delegate.py)
 - system prompt discipline injection
+
+Real compaction, cleanup and transport regressions live in test_delegate_reply_runtime.py.
 """
 
 import json
@@ -98,40 +99,6 @@ def test_extraction_non_list_returns_none():
 
 
 # ---------------------------------------------------------------------------
-# Compression safety regression (the core teknium1 review point)
-# ---------------------------------------------------------------------------
-
-def test_extraction_survives_context_compression():
-    """The deliverable is read from agent-instance state, not messages[].
-
-    Context compression replaces the middle of messages[] with a summary
-    (context_compressor.py Phase 4). This test proves that even if messages[]
-    is completely replaced by a synthetic summary, the deliverable recorded on
-    the agent instance is intact — because the handler wrote it at execution
-    time, outside the transcript.
-    """
-    child = MagicMock()
-    child._delegate_reply_chunks = ["FULL AUDIT REPORT"]
-    # Simulate compression: messages[] is now a synthetic summary, no
-    # delegate_tool_reply tool calls remain in it.
-    compressed_messages = [
-        {"role": "user", "content": "do the audit"},
-        {"role": "assistant", "content": "[Summary of earlier turns: subagent ran audit and delivered results.]"},
-        {"role": "assistant", "content": "done"},
-    ]
-    # Extraction does NOT read messages — it reads the agent instance.
-    assert _extract_reply_deliverable(child) == "FULL AUDIT REPORT"
-    # Even if someone passed messages, it wouldn't matter — the function
-    # signature takes `child`, not `messages`.
-
-
-def test_extraction_multi_chunk_survives_compression():
-    child = MagicMock()
-    child._delegate_reply_chunks = ["chunk-A", "chunk-B", "chunk-C"]
-    assert _extract_reply_deliverable(child) == "chunk-A\n\nchunk-B\n\nchunk-C"
-
-
-# ---------------------------------------------------------------------------
 # Visibility / toolset membership (constructor-capture pattern)
 # ---------------------------------------------------------------------------
 
@@ -158,12 +125,18 @@ def _make_mock_parent():
     return parent
 
 
-def test_build_child_agent_includes_delegation_reply():
+@pytest.mark.parametrize("parent_depth, expected_role", [(0, "orchestrator"), (1, "leaf")])
+def test_build_child_agent_includes_delegation_reply(parent_depth, expected_role):
     """Exercise the real _build_child_agent, not a hand-written append."""
     parent = _make_mock_parent()
     parent.enabled_toolsets = ["terminal", "file"]
+    parent._delegate_depth = parent_depth
 
-    with patch("tools.delegate_tool._load_config", return_value={}):
+    with (
+        patch("tools.delegate_tool._load_config", return_value={}),
+        patch("tools.delegate_tool._get_max_spawn_depth", return_value=2),
+        patch("tools.delegate_tool._get_orchestrator_enabled", return_value=True),
+    ):
         with patch("run_agent.AIAgent") as MockAgent:
             mock_child = MagicMock()
             MockAgent.return_value = mock_child
@@ -181,6 +154,16 @@ def test_build_child_agent_includes_delegation_reply():
 
         enabled = MockAgent.call_args[1]["enabled_toolsets"]
         assert "delegation_reply" in enabled
+        assert mock_child._delegate_role == expected_role
+        assert mock_child._delegate_reply_chunks == []
+        assert ("delegation" in enabled) == (expected_role == "orchestrator")
+        assert parent.enabled_toolsets == ["terminal", "file"]
+        from model_tools import get_tool_definitions
+        definitions = get_tool_definitions(
+            enabled_toolsets=enabled, disabled_toolsets=MockAgent.call_args[1]["disabled_toolsets"],
+            quiet_mode=True, skip_tool_search_assembly=True,
+        )
+        assert "delegate_tool_reply" in {t["function"]["name"] for t in definitions}
 
 
 def test_parent_disabled_toolsets_cannot_remove_delivery_channel():
@@ -217,6 +200,15 @@ def test_delegation_reply_not_in_configurable_toolsets():
 def test_delegation_reply_not_in_core_tools():
     from toolsets import _HERMES_CORE_TOOLS
     assert "delegate_tool_reply" not in _HERMES_CORE_TOOLS
+
+
+@pytest.mark.parametrize("toolset", [None, "hermes-cli", "hermes-telegram"])
+def test_parent_default_schemas_do_not_include_delivery(toolset):
+    from model_tools import get_tool_definitions
+    definitions = get_tool_definitions(
+        enabled_toolsets=[toolset] if toolset else None, quiet_mode=True, skip_tool_search_assembly=True,
+    )
+    assert "delegate_tool_reply" not in {t["function"]["name"] for t in definitions}
 
 
 def test_delegation_reply_toolset_resolves():

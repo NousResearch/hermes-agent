@@ -409,8 +409,8 @@ class _SchemaOutcome:
 def _validate_child_output_schema(
     child: Any, result: Dict[str, Any], task_index: int, child_task_id: str, relay_child_text: Any
 ) -> _SchemaOutcome:
-    """Validate the final answer against the attached output_schema with ONE bounded retry. Schema-less children (no
-    dict on ``child._delegate_output_schema``) take no branch here so their result entry stays byte-identical."""
+    """Select the authoritative delivery, then validate an optional schema with ONE bounded retry.
+    Schema-less children retain the existing result shape without schema outcome fields."""
     # Select once before validation and result assembly, even without a schema.
     delivery = _extract_reply_deliverable(child)
     if delivery is not None:

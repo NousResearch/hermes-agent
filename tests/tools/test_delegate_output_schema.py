@@ -16,6 +16,8 @@ import json
 import threading
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from tools.delegate_tool import (
     DELEGATE_TASK_SCHEMA,
     _run_single_child,
@@ -204,6 +206,39 @@ def _run(child):
 
 
 class TestRunSingleChildSchemaValidation:
+    def test_retry_without_explicit_call_uses_only_corrected_final_response(self):
+        child = _StubChild([
+            ("cleanup", ["not json"]),
+            ('{"city": "Oslo"}', []),
+        ])
+        child._delegate_output_schema = ADDRESS_SCHEMA
+        entry = _run(child)
+        assert entry["schema_valid"] is True
+        assert entry["summary"] == '{"city": "Oslo"}'
+        assert child._delegate_reply_chunks == []
+
+    def test_multiple_delivery_chunks_are_validated_as_one_document(self):
+        child = _StubChild([("cleanup", ['{"city":', '"Rome"}'])])
+        child._delegate_output_schema = ADDRESS_SCHEMA
+        entry = _run(child)
+        assert entry["schema_valid"] is True
+        assert json.loads(entry["summary"]) == {"city": "Rome"}
+        assert len(child.calls) == 1
+
+    @pytest.mark.parametrize("correction", ["", "   "])
+    def test_empty_explicit_retry_is_not_replaced_by_cleanup(self, correction):
+        child = _StubChild([
+            ("cleanup", ["rejected delivery"]),
+            ('{"city": "not the deliverable"}', [correction]),
+        ])
+        child._delegate_output_schema = ADDRESS_SCHEMA
+        entry = _run(child)
+        assert entry["schema_valid"] is False
+        assert entry["status"] == "failed"
+        assert entry["schema_retries"] == 1
+        assert child._delegate_reply_chunks == [correction]
+        assert "not the deliverable" not in entry["summary"]
+
     def test_explicit_delivery_is_validated_before_trailing_prose(self):
         child = _StubChild(
             [("cleanup complete", ['{"city": "Rome"}'])]

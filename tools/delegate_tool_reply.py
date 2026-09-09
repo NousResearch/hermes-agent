@@ -84,8 +84,8 @@ def delegate_tool_reply(content: str, parent_agent=None, **kw) -> str:
 
     Args:
         content: the full deliverable text (one chunk).
-        parent_agent: the child AIAgent instance (threaded in by the registry
-            via ``kw["parent_agent"]``).
+        parent_agent: the executing child AIAgent, passed by the shared inline
+            executor (ordinary registry dispatch has no agent reference).
 
     Returns:
         JSON acknowledgement. Missing agent context fails closed because an

@@ -82,6 +82,12 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
     "nebius-token-factory": HermesOverlay(extra_env_vars=("NEBIUS_API_KEY", "NEBIUS_TOKEN_FACTORY_API_KEY"),
                                           base_url_override="https://api.tokenfactory.nebius.com/v1",
                                           base_url_env_var="NEBIUS_BASE_URL"),
+    "siliconflow": HermesOverlay(extra_env_vars=("SILICONFLOW_API_KEY",),
+                                 base_url_override="https://api.siliconflow.com/v1",
+                                 base_url_env_var="SILICONFLOW_BASE_URL"),
+    "siliconflow-cn": HermesOverlay(extra_env_vars=("SILICONFLOW_CN_API_KEY",),
+                                    base_url_override="https://api.siliconflow.cn/v1",
+                                    base_url_env_var="SILICONFLOW_CN_BASE_URL"),
     "ollama-cloud": HermesOverlay(base_url_override="https://ollama.com/v1", base_url_env_var="OLLAMA_BASE_URL"),
     # Azure Foundry serves OpenAI- and Anthropic-style endpoints; transport comes from model.api_mode.
     "azure-foundry": HermesOverlay(base_url_env_var="AZURE_FOUNDRY_BASE_URL"),

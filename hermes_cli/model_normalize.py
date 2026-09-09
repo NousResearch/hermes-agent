@@ -65,6 +65,10 @@ _MATCHING_PREFIX_STRIP_PROVIDERS: frozenset[str] = frozenset({
     "arcee",
     "ollama-cloud",
     "nebius-token-factory",
+    # SiliconFlow serves ``vendor/model`` ids (deepseek-ai/…, zai-org/…). Only a
+    # literal ``siliconflow/`` prefix is redundant; vendor prefixes must survive.
+    "siliconflow",
+    "siliconflow-cn",
     "custom",
     "gemini",
     "xai"})

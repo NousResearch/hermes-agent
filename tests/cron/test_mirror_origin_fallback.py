@@ -13,7 +13,7 @@ origin-FALLBACK target is not a broadcast: it is the best available stand-in
 for the user's primary conversation.
 
 Design under test:
-- Delivery targets carry a `mirror_eligibility` tag set at resolution time:
+- Delivery targets carry `_resolved_from` provenance used to determine mirror eligibility:
   * origin match            -> eligible (unchanged)
   * origin-fallback (deliver=origin, no origin) -> eligible (NEW)
   * explicit platform:chat  -> eligible ONLY with per-job attach_to_session

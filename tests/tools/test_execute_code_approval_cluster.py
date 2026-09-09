@@ -131,6 +131,10 @@ def gw_session(monkeypatch):
     with A._lock:
         A._gateway_queues.pop(session_key, None)
         A._gateway_notify_cbs.pop(session_key, None)
+        # A sibling test's pending fallback record must not leak into this
+        # test's no-pending assertions (submit_pending does not clear on
+        # overwrite paths that never queue anything).
+        A._pending.pop(session_key, None)
         A._permanent_approved.discard("execute_code")
         A._session_approved.get(session_key, set()).discard("execute_code")
     try:
@@ -256,11 +260,11 @@ def test_guard_session_approval_short_circuits_prompt(gw_session):
             s.discard("execute_code")
 
 
-def test_guard_gateway_missing_notify_is_pending(gw_session):
-    # No notify callback registered → backward-compat pending approval.
+def test_guard_gateway_missing_notify_is_terminal_block(gw_session):
+    # No notify callback registered -> fail closed without a pending record.
     res = A.check_execute_code_guard("import os", "local")
     assert res["approved"] is False
-    assert res["status"] == "pending_approval"
+    assert res["outcome"] == "no_responder"
 
 
 def test_guard_smart_mode(gw_session, monkeypatch):
@@ -270,11 +274,10 @@ def test_guard_smart_mode(gw_session, monkeypatch):
     res = A.check_execute_code_guard("import os", "local")
     assert res["approved"] is True and res.get("smart_approved") is True
 
-    # Smart DENY on an interactive surface now asks the owner. With no bound
-    # notifier it remains pending rather than being hard-denied.
+    # Smart DENY on an interactive surface has no responder, so it fails closed.
     monkeypatch.setattr(approval_smart, "_smart_approve", lambda c, d: "deny")
     res = A.check_execute_code_guard("import os", "local")
-    assert res["approved"] is False and res["status"] == "pending_approval"
+    assert res["approved"] is False and res["outcome"] == "no_responder"
 
     # escalate → falls through to manual gateway approval
     monkeypatch.setattr(approval_smart, "_smart_approve", lambda c, d: "escalate")
@@ -408,13 +411,10 @@ def test_execute_code_smart_deny_pending_payload_is_one_operation(gw_session, mo
 
     result = A.check_execute_code_guard("print('pending')", "local")
 
-    assert result["status"] == "pending_approval"
+    assert result["outcome"] == "no_responder"
     assert result["smart_denied"] is True
     assert result["allow_permanent"] is False
-    with A._lock:
-        pending = dict(A._pending[gw_session])
-    assert pending["smart_denied"] is True
-    assert pending["allow_permanent"] is False
+    assert gw_session not in A._pending
 
 
 def test_terminal_serializes_smart_deny_pending_capabilities(monkeypatch):

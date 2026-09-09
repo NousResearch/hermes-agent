@@ -1985,6 +1985,22 @@ def _read_codex_access_token() -> Optional[str]:
         token = _pool_runtime_api_key(entry)
         if token:
             return token
+    # Pool entries in cooldown (regular quota exhausted) still carry the SAME credential
+    # that serves Luna Reserve (gpt-reserve) — the reserve is a separate metered model on
+    # the same OAuth account, so a cooldown on the regular allowance must not block it.
+    # DEAD entries (revoked/re-authed) are skipped: their tokens are unusable.
+    if pool_present:
+        try:
+            from agent.credential_pool import STATUS_DEAD, load_pool
+            pool = load_pool("openai-codex")
+            for e in pool.entries():
+                if getattr(e, "last_status", None) == STATUS_DEAD:
+                    continue
+                token = _pool_runtime_api_key(e)
+                if token:
+                    return token
+        except Exception as exc:
+            logger.debug("Could not read Codex pool entries for reserve fallback: %s", exc)
     try:
         from hermes_cli.auth import _read_codex_tokens
         access_token = _read_codex_tokens().get("tokens", {}).get("access_token")

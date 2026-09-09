@@ -1322,6 +1322,36 @@ class TestOpenRouterUpstreamRateLimit:
         assert result.error_context.get("upstream_provider") == "DeepSeek"
 
 
+class TestCodexUsageLimitReserve:
+    """Codex OAuth regular-allowance 429 → upstream_rate_limit (Luna Reserve path).
+
+    The account's regular quota is exhausted but the credential is healthy:
+    gpt-reserve (Luna Reserve) is a separate metered model on the SAME credential.
+    Classifying as upstream_rate_limit skips pool rotation/cooldown so the
+    fallback chain (which prepends gpt-reserve for Codex primaries) takes over.
+    """
+
+    def test_codex_usage_limit_429_classified_as_upstream_rate_limit(self):
+        e = MockAPIError(
+            "The usage limit has been reached",
+            status_code=429,
+            body={
+                "error": {
+                    "type": "usage_limit_reached",
+                    "message": "The usage limit has been reached",
+                    "plan_type": "plus",
+                    "resets_at": 1788970089,
+                    "resets_in_seconds": 10068,
+                }
+            },
+        )
+        result = classify_api_error(e, provider="openai-codex", model="gpt-5.6-luna")
+        assert result.reason == FailoverReason.upstream_rate_limit
+        assert result.should_rotate_credential is False
+        assert result.should_fallback is True
+        assert result.error_context.get("upstream_provider") == "openai-codex"
+
+
     def test_account_level_429_still_rotates_credential(self):
         """A real account-level 429 (no upstream wrapper) → rate_limit, rotates."""
         e = MockAPIError(

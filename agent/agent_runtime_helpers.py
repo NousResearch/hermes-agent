@@ -2065,6 +2065,26 @@ def _build_primary_runtime_snapshot(agent, api_mode) -> Dict[str, Any]:
     return rt
 
 
+def _prepend_codex_reserve_entry(agent) -> None:
+    """Prepend Luna Reserve (gpt-reserve) to the fallback chain for Codex OAuth primaries.
+
+    A regular-allowance 429 (classified upstream_rate_limit) then falls back to the
+    account's separate reserve quota instead of jumping straight to other providers.
+    Same credential, same endpoint — the backend_identity skip guard passes because
+    the model differs. No-op for non-Codex primaries or when already present.
+    """
+    if (getattr(agent, "provider", "") or "").strip().lower() != "openai-codex":
+        return
+    from hermes_cli.codex_models import CODEX_RESERVE_MODEL
+    reserve_entry = {"provider": "openai-codex", "model": CODEX_RESERVE_MODEL}
+    if not any(
+        (e.get("provider") or "").strip().lower() == "openai-codex"
+        and (e.get("model") or "").strip() == CODEX_RESERVE_MODEL
+        for e in agent._fallback_chain
+    ):
+        agent._fallback_chain.insert(0, reserve_entry)
+
+
 def _finish_switch(agent, new_provider, old_norm, new_norm) -> None:
     """Post-switch bookkeeping: fallback reset/prune, request_overrides, billing route."""
     agent._fallback_activated = False
@@ -2080,7 +2100,10 @@ def _finish_switch(agent, new_provider, old_norm, new_norm) -> None:
             if (entry.get("provider") or "").strip().lower() not in {old_norm, new_norm}
         ]
     agent._fallback_chain = fallback_chain
-    agent._fallback_model = fallback_chain[0] if fallback_chain else None
+    # A switch TO Codex must re-arm the reserve rung (the prune above may have dropped it);
+    # a switch AWAY leaves it pruned.
+    _prepend_codex_reserve_entry(agent)
+    agent._fallback_model = agent._fallback_chain[0] if agent._fallback_chain else None
     # Apply the switched-to provider's request_overrides (custom_providers extra_body).
     try:
         _apply_switched_provider_request_overrides(agent, new_provider)

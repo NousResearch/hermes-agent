@@ -1443,6 +1443,9 @@ _CODEX_OAUTH_CONTEXT_FALLBACK: Dict[str, int] = {
     "gpt-5.3-codex-spark": 128_000, "gpt-5.2-codex": 272_000, "gpt-5.4-mini": 272_000,
     "gpt-5.6-sol": 272_000, "gpt-5.6-terra": 272_000, "gpt-5.6-luna": 272_000, "gpt-daybreak-blue-latest": 272_000,
     "gpt-5.5": 272_000, "gpt-5.4": 272_000, "gpt-5.2": 272_000, "gpt-5": 272_000,
+    # Luna Reserve (gpt-reserve) is a fallback model on the same Codex OAuth credential; the
+    # backend serves it with the same 272K window as the 5.6 family.
+    "gpt-reserve": 272_000,
 }
 # Codex OAuth advertises 272K for these families but ACCEPTS ~900K+ (verified live; gpt-5.5 and
 # gpt-5.4-mini genuinely reject >272K). 900K keeps ≥11K margin. OPT-IN ONLY via explicit ``-900k``

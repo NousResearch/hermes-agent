@@ -1033,6 +1033,11 @@ def _init_fallback_chain(agent, fallback_model):
 
     # Ordered backups tried when the primary is exhausted (legacy single-dict or list).
     agent._fallback_chain = _fallback_entries(fallback_model)
+    # Luna Reserve: when the primary is Codex OAuth, prepend gpt-reserve so a regular-allowance
+    # 429 (classified upstream_rate_limit) falls back to the account's separate reserve quota
+    # instead of jumping straight to other providers. Same helper as switch_model's _finish_switch.
+    from agent.agent_runtime_helpers import _prepend_codex_reserve_entry
+    _prepend_codex_reserve_entry(agent)
     agent._fallback_index = 0
     agent._fallback_activated = getattr(agent, "_fallback_activated", False)
     # Legacy attribute kept for backward compat (tests, external callers)

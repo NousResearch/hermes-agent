@@ -677,6 +677,14 @@ def _status_429(c: _Ctx) -> Verdict:
         upstream = _extract_upstream_provider_name(c.body)
         ctx = {"upstream_provider": upstream} if upstream else {}
         return _v(_R.upstream_rate_limit, should_fallback=True, error_context=ctx)
+    # Codex OAuth quota wall: the account's REGULAR allowance is exhausted but the
+    # credential is healthy — Luna Reserve (gpt-reserve) is a separate metered model
+    # on the same credential. Route to upstream_rate_limit so the pool skips rotation
+    # and the fallback chain (which prepends gpt-reserve for Codex primaries) takes
+    # over instead of benching the credential for hours.
+    if c.provider_slug == "openai-codex" and c.code == "usage_limit_reached":
+        return _v(_R.upstream_rate_limit, should_fallback=True,
+                  error_context={"upstream_provider": "openai-codex"})
     # Quota walls as 429 (Anthropic ``usage_limit_reached``, "quota", billing
     # phrases) are billing ONLY when the body is not itself a rate-limit phrase
     # ("Rate limit exceeded" contains "limit exceeded") and carries no reset/

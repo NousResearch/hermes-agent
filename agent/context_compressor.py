@@ -2629,9 +2629,11 @@ class ContextCompressor(MicroCompactionMixin, ContextEngine):
     def _demote_tool_result_at(
         result: List[Dict[str, Any]], idx: int, call_id_to_tool: Dict[str, tuple[str, str]],
         min_prune_chars: int, protected_skills: Optional[set[str]] = None,
+        pressure: bool = False,
     ) -> bool:
         """Replace the tool result at ``idx`` with a 1-line summary; True if modified.
-        ``protected_skills`` (lower-cased) spares matching skill_view bodies; None (pressure pass) overrides the guard."""
+        ``protected_skills`` (lower-cased) spares matching skill_view bodies; pressure demotion still retains the
+        current worker assignment while overriding the skill guard."""
         msg = result[idx]
         if msg.get("role") != "tool":
             return False
@@ -2653,7 +2655,14 @@ class ContextCompressor(MicroCompactionMixin, ContextEngine):
             _skill = _json_dict(tool_args).get("name", "")
             if isinstance(_skill, str) and _skill.lower() in protected_skills:
                 return False
-        result[idx] = {**msg, "content": _summarize_tool_result(tool_name, tool_args, content)}
+        from agent.context_compressor_kanban import newest_assignment_summary
+
+        summary = newest_assignment_summary(result, idx, call_id_to_tool)
+        if summary is None:
+            summary = _summarize_tool_result(tool_name, tool_args, content)
+        if summary == content:
+            return False
+        result[idx] = {**msg, "content": summary}
         return True
 
     def _pressure_demote_tail(
@@ -2675,7 +2684,7 @@ class ContextCompressor(MicroCompactionMixin, ContextEngine):
         def _shrink_at(i: int) -> None:
             # Each helper no-ops on the other role, so both may run unconditionally.
             nonlocal demoted, pressure_hits
-            if self._demote_tool_result_at(result, i, call_id_to_tool, min_prune_chars):
+            if self._demote_tool_result_at(result, i, call_id_to_tool, min_prune_chars, pressure=True):
                 demoted += 1
                 pressure_hits += 1
             if self._truncate_tool_call_args_at(result, i):
@@ -2695,7 +2704,7 @@ class ContextCompressor(MicroCompactionMixin, ContextEngine):
             # Last resort: the newest body alone may exceed the soft budget; summarize it.
             if (
                 last_tool_idx is not None and last_tool_idx >= prune_boundary and _protected_region_tokens() > soft_ceiling
-            ) and self._demote_tool_result_at(result, last_tool_idx, call_id_to_tool, min_prune_chars):
+            ) and self._demote_tool_result_at(result, last_tool_idx, call_id_to_tool, min_prune_chars, pressure=True):
                 demoted += 1
                 pressure_hits += 1
         if pressure_hits and not self.quiet_mode:
@@ -3063,10 +3072,55 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
         summary = _reinject_pruned_skill_markers(summary, _pruned_names)
         return self._augment_summary_lean(summary, turns_to_summarize)
 
+    @staticmethod
+    def _current_assignment_summary(
+        messages: List[Dict[str, Any]], start: int, end: int,
+    ) -> Optional[str]:
+        """Return the newest current-task Kanban projection inside a soon-to-be-dropped window."""
+        from agent.context_compressor_kanban import assignment_summary_from_handoff, newest_assignment_summary
+
+        call_id_to_tool = _tool_calls_by_id(messages)
+        for index in range(min(end, len(messages)) - 1, max(0, start) - 1, -1):
+            summary = newest_assignment_summary(messages, index, call_id_to_tool)
+            if summary is not None:
+                return summary
+            message = messages[index]
+            if message.get(COMPRESSED_SUMMARY_METADATA_KEY) or ContextCompressor._is_context_summary_message(message):
+                summary = assignment_summary_from_handoff(
+                    _content_text_for_contains(message.get("content")),
+                )
+                if summary is not None:
+                    return summary
+        return None
+
+    @staticmethod
+    def _append_current_assignment_summary(summary: str, assignment_summary: str) -> str:
+        """Carry a bounded current-task projection in the deterministic handoff."""
+        assignment_summary = _redact_compaction_text(assignment_summary)
+        if assignment_summary in summary:
+            return summary
+        return f"{summary.rstrip()}\n\n[CURRENT KANBAN ASSIGNMENT]\n{assignment_summary}"
+
     def _demote_stale_tail_tools(self, messages: List[Dict[str, Any]], tail_start: int) -> List[Dict[str, Any]]:
         """Lean mode: demote tail tool results older than the newest ``_LEAN_TAIL_KEEP_TOOL_ROUNDS`` rounds to
-        recovery stubs; skill-marker rows untouched. New list (untouched rows shared, demoted copied)."""
+        recovery stubs; the newest current-task Kanban projection is also protected. Skill-marker rows are
+        untouched. New list (untouched rows shared, demoted copied)."""
         session_id = getattr(self, "_session_id", "") or ""
+        call_id_to_tool = _tool_calls_by_id(messages)
+        from agent.context_compressor_kanban import newest_assignment_summary
+
+        current_assignment_idx = next(
+            (
+                i
+                for i in range(len(messages) - 1, tail_start - 1, -1)
+                if newest_assignment_summary(messages, i, call_id_to_tool) is not None
+            ),
+            None,
+        )
+        current_assignment_summary = (
+            newest_assignment_summary(messages, current_assignment_idx, call_id_to_tool)
+            if current_assignment_idx is not None else None
+        )
         rounds_seen = 0
         protected: set[int] = set()
         prev_idx = None
@@ -3081,7 +3135,15 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
         for i in range(tail_start, len(messages)):
             msg = messages[i]
             content = msg.get("content")
-            if msg.get("role") != "tool" or i in protected or not isinstance(content, str):
+            if (
+                msg.get("role") != "tool"
+                or i in protected
+                or not isinstance(content, str)
+            ):
+                continue
+            if i == current_assignment_idx:
+                if current_assignment_summary is not None:
+                    result[i] = _rewritten(msg, current_assignment_summary)
                 continue
             if len(content) < _LEAN_TAIL_DEMOTE_MIN_CHARS or SKILL_PRUNED_MARKER_PREFIX in content or _is_summary_stub(content):
                 continue
@@ -4627,7 +4689,11 @@ Write only the summary body. Do not include any preamble or prefix."""
         # Lean mode demotes stale tail tool results before summary generation so stubs exist even if it aborts.
         if getattr(self, "tail_mode", "lean") == "lean":
             messages = self._demote_stale_tail_tools(messages, compress_end)
+        current_assignment_summary = self._current_assignment_summary(messages, compress_start, compress_end)
         scan = self._scan_window_handoffs(messages, compress_start, compress_end, turns_to_summarize)
+        if current_assignment_summary is None:
+            # A prior handoff beyond the initial window is consumed by the scan; carry its assignment forward.
+            current_assignment_summary = self._current_assignment_summary(messages, 0, len(messages))
         turns_to_summarize = scan.turns_to_summarize
         self._record_compression_regions(
             head_messages=messages[:compress_start], middle_messages=turns_to_summarize, tail_messages=messages[compress_end:],
@@ -4661,6 +4727,9 @@ Write only the summary body. Do not include any preamble or prefix."""
             summary = self._fallback_summary_for_window(
                 telemetry, turns_to_summarize, compress_end - compress_start, feasibility_skip,
             )
+        if current_assignment_summary:
+            summary = self._append_current_assignment_summary(summary, current_assignment_summary)
+            self._previous_summary = self._strip_summary_prefix(summary)
         # Phase 4: Assemble compressed message list
         compressed = self._assemble_compressed(messages, compress_start, compress_end, scan, summary)
         return self._finalize_compressed(compressed, messages, n_messages)

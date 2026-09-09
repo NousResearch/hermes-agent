@@ -280,14 +280,18 @@ def is_noninteractive() -> bool:
 
 
 def prompt_yes_no(question: str, default: bool = True) -> bool:
-    """Prompt for yes/no. Ctrl+C exits; empty input, ``HERMES_NONINTERACTIVE=1`` or a
-    closed/redirected stdin return ``default`` instead of aborting the whole process."""
+    """Prompt for yes/no. Ctrl+C exits; empty input, ``HERMES_NONINTERACTIVE=1``, a closed
+    stdin or a non-TTY stdin return ``default`` instead of blocking forever or aborting."""
     if is_noninteractive():
         return default
     # Inside setup, route binary selections through the curses menu so ESC and left-arrow work
     # consistently; every other caller keeps the traditional line prompt.
     if _SETUP_NAVIGATION.get() is not None:
         return _curses_prompt_choice(question, ["Yes", "No"], 0 if default else 1) == 0
+    # A piped stdin whose writer never sends EOF (agent tool call, cron, scripted restart) would
+    # block the input() below indefinitely — take the default like HERMES_NONINTERACTIVE (#106932).
+    if not is_interactive_stdin():
+        return default
     default_str = "Y/n" if default else "y/N"
     while True:
         try:

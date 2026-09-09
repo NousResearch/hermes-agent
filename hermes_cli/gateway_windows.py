@@ -1243,6 +1243,12 @@ def start() -> None:
             print("⚠ Gateway install did not complete in this process.")
             print("  If a UAC prompt opened, approve it, then run: hermes gateway start")
             return
+        # install() already spawns through _start_or_report_running() when its start_now default
+        # holds; spawning again here would race a second gateway into the anti-double-run gate.
+        running_pids = _gateway_pids()
+        if running_pids:
+            _report_already_running(running_pids)
+            return
 
     # Manual starts use the same console-less direct spawn as restart() and install --start-now;
     # Scheduled Task / Startup entries are only login persistence.

@@ -211,6 +211,29 @@ def test_prompt_strips_bracketed_paste_markers(monkeypatch):
 
 
 
+def test_prompt_yes_no_returns_default_when_stdin_is_not_a_tty(monkeypatch):
+    """A piped stdin whose writer never sends EOF must not block on input();
+    take the default like the HERMES_NONINTERACTIVE path (#106932)."""
+    monkeypatch.delenv("HERMES_NONINTERACTIVE", raising=False)
+
+    class PipedStdin:
+        def isatty(self):
+            return False
+
+    monkeypatch.setattr(setup_mod.sys, "stdin", PipedStdin())
+
+    def _no_input(*_args, **_kwargs):
+        raise AssertionError("input() must not be reached on non-TTY stdin")
+
+    monkeypatch.setattr("builtins.input", _no_input)
+
+    assert setup_mod.prompt_yes_no("Install it now?", default=True) is True
+    assert setup_mod.prompt_yes_no("Save anyway?", default=False) is False
+
+    monkeypatch.setattr(setup_mod.sys, "stdin", None)
+    assert setup_mod.prompt_yes_no("Install it now?", default=False) is False
+
+
 def test_prompt_choice_uses_curses_helper(monkeypatch):
     monkeypatch.setattr(setup_mod, "_curses_prompt_choice", lambda question, choices, default=0, description=None: 1)
 

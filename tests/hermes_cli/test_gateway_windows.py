@@ -364,6 +364,72 @@ def test_gateway_vbs_script_is_console_less(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# start() double-spawn — issue #106932
+#
+# Background: when the service is not installed, start() offers to install();
+# install() with its start_now default already spawns through
+# _start_or_report_running(). Control returning to start() then spawned a
+# SECOND gateway that only died in the anti-double-run gate. start() must
+# re-check for a live gateway after install() instead of spawning again.
+# ---------------------------------------------------------------------------
+
+
+def _arrange_start_with_install(monkeypatch, pid_snapshots):
+    """Drive start() down the not-installed path: prompt accepts, install() is
+    scripted, and _gateway_pids() returns the pid snapshots in order."""
+    monkeypatch.setattr(gateway_windows, "_assert_windows", lambda: None)
+    monkeypatch.setattr(gateway_windows, "_print_start_attestation_warning", lambda: None)
+    snapshots = [list(pids) for pids in pid_snapshots]
+    monkeypatch.setattr(
+        gateway_windows,
+        "_gateway_pids",
+        lambda: snapshots.pop(0) if len(snapshots) > 1 else list(snapshots[0]),
+    )
+    task_answers = iter([False, True])  # before install / after install
+    monkeypatch.setattr(gateway_windows, "is_task_registered", lambda: next(task_answers))
+    monkeypatch.setattr(gateway_windows, "is_startup_entry_installed", lambda: False)
+    monkeypatch.setattr("hermes_cli.setup.prompt_yes_no", lambda _q, _d=True: True)
+
+    calls = {"install": [], "spawn": [], "report_start": []}
+    monkeypatch.setattr(
+        gateway_windows, "install", lambda *a, **k: calls["install"].append((a, k))
+    )
+    monkeypatch.setattr(
+        gateway_windows,
+        "_spawn_detached",
+        lambda *a, **k: calls["spawn"].append(1) or 12345,
+    )
+    monkeypatch.setattr(
+        gateway_windows, "_report_gateway_start", lambda via: calls["report_start"].append(via)
+    )
+    return calls
+
+
+def test_start_reports_running_after_install_spawns_instead_of_spawning_again(monkeypatch, capsys):
+    """install() already spawned via start_now; start() reports that gateway
+    instead of racing a second one into the anti-double-run gate (#106932)."""
+    calls = _arrange_start_with_install(monkeypatch, [[], [4242]])
+
+    gateway_windows.start()
+
+    assert calls["install"] == [((), {"force": False})]
+    assert calls["spawn"] == []
+    assert calls["report_start"] == []
+    assert "already running" in capsys.readouterr().out
+
+
+def test_start_still_spawns_when_install_leaves_nothing_running(monkeypatch, capsys):
+    """Control: install() that does not start the gateway (start_now answered
+    No) leaves start() responsible for the direct spawn."""
+    calls = _arrange_start_with_install(monkeypatch, [[], []])
+
+    gateway_windows.start()
+
+    assert calls["spawn"] == [1]
+    assert calls["report_start"] == ["direct spawn (PID 12345)"]
+
+
 
 
 

@@ -88,6 +88,35 @@ def _eval_js(task_id: str, expression: str) -> Dict[str, Any]:
     return {"success": True, "result": result.get("data", {}).get("result")}
 
 
+def _ensure_supervisor(task_id: str):
+    """The supervisor for ``task_id``, attaching one on demand for a LOCAL built-in browser session.
+
+    Cloud/CDP-override sessions and browser_exec attach their supervisor when the session is created;
+    a local agent-browser ``--session`` has no ``cdp_url`` of its own, so nothing did. Ask the daemon
+    for the packaged Chromium's endpoint (``get cdp-url``: same daemon, same reaper) and attach.
+    Returns None when no endpoint is reachable; the fill then refuses rather than touching argv."""
+    from tools.browser_supervisor import SUPERVISOR_REGISTRY
+
+    supervisor = SUPERVISOR_REGISTRY.get(task_id)
+    if supervisor is not None:
+        return supervisor
+    from tools.browser_tool import _last_session_key
+    from tools.browser_tool_cdp import _get_dialog_policy_config, _resolve_cdp_override
+    from tools.browser_tool_session import _run_browser_command
+
+    res = _run_browser_command(_last_session_key(task_id), "get", ["cdp-url"])
+    cdp_url = str(((res or {}).get("data") or {}).get("cdpUrl") or "") if (res or {}).get("success") else ""
+    if not cdp_url:
+        return None
+    policy, timeout_s = _get_dialog_policy_config()
+    try:
+        return SUPERVISOR_REGISTRY.get_or_start(task_id=task_id, cdp_url=_resolve_cdp_override(cdp_url),
+                                                dialog_policy=policy, dialog_timeout_s=timeout_s)
+    except Exception as exc:
+        logger.debug("vault fill: supervisor attach to local session failed (%s)", exc)
+        return None
+
+
 def _eval_js_secret(task_id: str, expression: str) -> Dict[str, Any]:
     """Evaluate a SECRET-BEARING JS expression. Supervisor CDP-WS only.
 
@@ -98,13 +127,9 @@ def _eval_js_secret(task_id: str, expression: str) -> Dict[str, Any]:
     (``error_type='supervisor_required'``) and nothing is written.
     """
     try:
-        from tools.browser_supervisor import SUPERVISOR_REGISTRY
-
-        supervisor = SUPERVISOR_REGISTRY.get(task_id)
-    except ImportError:
-        supervisor = None
-    except Exception as exc:  # pragma: no cover — defensive
-        logger.debug("vault fill: supervisor registry unavailable (%s)", exc)
+        supervisor = _ensure_supervisor(task_id)
+    except Exception as exc:
+        logger.debug("vault fill: supervisor unavailable (%s)", exc)
         supervisor = None
 
     if supervisor is None:
@@ -169,9 +194,7 @@ def _focus_bound_origin(task_id: str, origin: str, kind: str) -> Optional[str]:
     (browser_exec sessions open their own tabs, so the tab the supervisor attached to first is rarely the
     login page). Returns the origin when a tab was focused, else None (caller falls back to the current page)."""
     try:
-        from tools.browser_supervisor import SUPERVISOR_REGISTRY
-
-        supervisor = SUPERVISOR_REGISTRY.get(task_id)
+        supervisor = _ensure_supervisor(task_id)
     except Exception:
         supervisor = None
     if supervisor is None:
@@ -435,7 +458,7 @@ BROWSER_VAULT_LIST_SCHEMA = {
         "when it says unavailable_in_this_session, tell the user to unlock it from an interactive session. "
         "Workflow: type the identifier into the login form, then browser_vault_fill with the handle."
     ),
-    "input_schema": {"type": "object", "properties": {}, "required": []},
+    "parameters": {"type": "object", "properties": {}, "required": []},
 }
 
 BROWSER_VAULT_UNLOCK_SCHEMA = {
@@ -445,7 +468,7 @@ BROWSER_VAULT_UNLOCK_SCHEMA = {
         "password is typed into a masked prompt owned by the UI and never enters the conversation. "
         "Returns success, unlock_cancelled, unlock_failed, or unlock_unavailable (headless session)."
     ),
-    "input_schema": {
+    "parameters": {
         "type": "object",
         "properties": {"backend": {"type": "string", "enum": ["onepassword", "bitwarden"],
                                    "description": "Backend name from browser_vault_list `locked`."}},
@@ -464,7 +487,7 @@ BROWSER_VAULT_FILL_SCHEMA = {
         "fill time). If a password manager is locked the user is prompted to unlock first. Never retry a "
         "payment_declined result."
     ),
-    "input_schema": {
+    "parameters": {
         "type": "object",
         "properties": {
             "handle": {

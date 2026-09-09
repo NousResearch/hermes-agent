@@ -400,20 +400,21 @@ class TestBrowserVaultTools:
                 return {"success": True, "result": "https://example.com/login"}
             return {"success": True, "result": json.dumps(controls)}
 
-        # No supervisor registered → _eval_js_secret must refuse without
-        # ever touching _run_browser_command.
+        # No supervisor registered and the local daemon exposes no CDP endpoint → the fill refuses.
+        # The daemon may be asked for its endpoint (`get cdp-url`, no secret) but NEVER handed an
+        # `eval` carrying the password: that is the argv exposure this test pins.
         with patch("agent.vault_store.get_vault_store", return_value=store), \
              patch.object(browser_vault_tool, "_eval_js", side_effect=fake_eval), \
              patch("tools.browser_supervisor.SUPERVISOR_REGISTRY") as reg, \
-             patch("tools.browser_tool_session._run_browser_command") as run_cmd:
+             patch("tools.browser_tool_session._run_browser_command", return_value={"success": False}) as run_cmd:
             reg.get.return_value = None
             raw = browser_vault_tool.browser_vault_fill(meta.id)
         out = json.loads(raw)
         assert out["success"] is False
         assert out["error_type"] == "supervisor_required"
         assert "supervis" in out["error"].lower()
-        run_cmd.assert_not_called()
-        assert "s3cret-pw" not in raw
+        assert all(call.args[1] == "get" for call in run_cmd.call_args_list), run_cmd.call_args_list
+        assert "s3cret-pw" not in json.dumps([str(c) for c in run_cmd.call_args_list]) and "s3cret-pw" not in raw
 
     def test_nonsecret_eval_fallback_still_works(self):
         """_eval_js (non-secret) may still fall back to the CLI eval path."""
@@ -592,3 +593,15 @@ class TestVaultSchemaCrossToolset:
         desc_builtin = with_builtin[0]["function"]["description"]
         assert "`fill_input` inside browser_exec" in desc_exec and "browser_type" not in desc_exec
         assert "browser_type" in desc_builtin and "fill_input" not in desc_builtin
+
+
+def test_every_registered_tool_schema_declares_openai_style_parameters():
+    """The registry emits ``parameters`` (OpenAI function shape) and every provider adapter converts from
+    it; a schema that spells it ``input_schema`` (Anthropic shape) ships with NO parameters, so the model is
+    told the tool takes nothing and calls browser_vault_fill without a handle."""
+    import model_tools  # noqa: F401 — triggers discovery
+    from tools.registry import registry
+
+    missing = [entry.name for entry in registry.get_all_entries()
+               if "parameters" not in entry.schema or "input_schema" in entry.schema]
+    assert not missing, missing

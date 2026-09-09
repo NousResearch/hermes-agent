@@ -438,6 +438,61 @@ class TestJobCRUD:
         with pytest.raises(ValueError, match="Invalid repeat"):
             update_job(job["id"], {"repeat": "banana"})
 
+    def test_oneshot_turned_recurring_becomes_forever(self, tmp_cron_dir):
+        """A one-shot budget must not survive a schedule change to a recurring kind.
+
+        create_job derives repeat from the schedule kind; update_job must honour
+        the same contract when the kind flips, otherwise a job "fixed" from a
+        one-shot to `every 15m` keeps times=1 and retires after its first fire.
+        """
+        from cron.jobs import update_job
+
+        job = create_job(prompt="poll", schedule="in 15m")
+        assert job["repeat"]["times"] == 1
+
+        updated = update_job(job["id"], {"schedule": "every 15m"})
+        assert updated["schedule"]["kind"] == "interval"
+        assert updated["repeat"]["times"] is None
+
+    def test_recurring_turned_oneshot_becomes_once(self, tmp_cron_dir):
+        """The reverse flip must gain the one-shot default instead of staying forever."""
+        from cron.jobs import update_job
+
+        job = create_job(prompt="poll", schedule="every 15m")
+        assert job["repeat"]["times"] is None
+
+        updated = update_job(job["id"], {"schedule": "in 15m"})
+        assert updated["schedule"]["kind"] == "once"
+        assert updated["repeat"]["times"] == 1
+
+    def test_explicit_repeat_in_same_update_wins(self, tmp_cron_dir):
+        """An explicit repeat beats the re-derived default on kind flips."""
+        from cron.jobs import update_job
+
+        job = create_job(prompt="poll", schedule="in 15m")
+
+        updated = update_job(job["id"], {"schedule": "every 15m", "repeat": 3})
+        assert updated["repeat"]["times"] == 3
+
+    def test_same_kind_schedule_edit_keeps_repeat(self, tmp_cron_dir):
+        """Re-pointing a recurring schedule at another cadence is not a kind flip."""
+        from cron.jobs import update_job
+
+        job = create_job(prompt="poll", schedule="every 15m", repeat=5)
+
+        updated = update_job(job["id"], {"schedule": "every 30m"})
+        assert updated["schedule"]["kind"] == "interval"
+        assert updated["repeat"]["times"] == 5
+
+    def test_explicit_finite_oneshot_keeps_budget_turned_recurring(self, tmp_cron_dir):
+        """An explicitly finite one-shot (repeat=2) carries its budget to the recurring side."""
+        from cron.jobs import update_job
+
+        job = create_job(prompt="poll", schedule="in 15m", repeat=2)
+
+        updated = update_job(job["id"], {"schedule": "every 15m"})
+        assert updated["repeat"]["times"] == 2
+
     def test_rejects_stale_past_one_shot_at_creation(self, tmp_cron_dir, monkeypatch):
         now = datetime(2026, 3, 18, 4, 30, 0, tzinfo=timezone.utc)
         monkeypatch.setattr("cron.jobs._hermes_now", lambda: now)

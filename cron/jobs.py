@@ -1897,6 +1897,38 @@ def _normalize_job_updates(job: Dict[str, Any], updates: Dict[str, Any]) -> None
             updates["repeat"] = {"times": normalize_repeat_value(_rp), "completed": completed}
 
 
+def _rederive_repeat_for_schedule_change(
+    job: Dict[str, Any], updates: Dict[str, Any]
+) -> None:
+    """Re-derive the ``repeat`` default when a schedule update flips the kind.
+
+    ``create_job`` derives it from the schedule kind (once -> 1, recurring -> forever); the update
+    path must honour the same contract, otherwise a one-shot turned recurring keeps its ``times=1``
+    budget and retires after one fire, while a recurring job turned one-shot never completes. An
+    explicit ``repeat`` in the same update wins; a same-kind schedule edit leaves ``repeat`` alone.
+    """
+    if "schedule" not in updates or "repeat" in updates:
+        return
+    new_schedule = updates["schedule"]
+    if isinstance(new_schedule, str):
+        new_schedule = parse_schedule(new_schedule)
+        updates["schedule"] = new_schedule
+    old_kind = (job.get("schedule") or {}).get("kind")
+    new_kind = new_schedule.get("kind")
+    if old_kind == new_kind:
+        return
+    repeat = dict(job.get("repeat") or {})
+    times = repeat.get("times")
+    if new_kind == "once" and times is None:
+        repeat["times"] = 1
+    elif new_kind != "once" and old_kind == "once" and times == 1:
+        repeat["times"] = None
+    else:
+        return
+    repeat.setdefault("completed", 0)
+    updates["repeat"] = repeat
+
+
 def _apply_schedule_update(updated: Dict[str, Any], updates: Dict[str, Any], job_id: str) -> None:
     """Parse a string schedule, refresh ``schedule_display`` and (unless paused) ``next_run_at``."""
     updated_schedule = updated["schedule"]
@@ -1936,6 +1968,7 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
         raise ValueError(f"Cron job field(s) cannot be updated: {', '.join(sorted(bad_fields))}")
 
     def apply(jobs, i, job):
+        _rederive_repeat_for_schedule_change(job, updates)
         _normalize_job_updates(job, updates)
         previous_inference_axes = _normalized_inference_axes(job)
         updated = _apply_skill_fields({**job, **updates})

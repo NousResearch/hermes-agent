@@ -642,67 +642,12 @@ def _get_bot_chat_delivery_timeout() -> int:
 
 
 def _deliver_to_bot_chat(job: dict, content: str, profile: str) -> Optional[str]:
-    """Hand output to the live Bot Chat owner, or use the legacy unowned CLI lane.
-
-    None means completed; a queued/claimed receipt returns an explicit unverified status
-    string so existing Optional[str] callers cannot misreport admission as delivery.
-    ``profile`` is ``""`` for the job's own profile.
-    """
-    import hashlib
-    import json
+    """Deliver job output into a profile's canonical Bot Chat as a real inbound user turn, via
+    ``hermes [-p <profile>] chat --in ~ -c "Bot Chat" --create-if-missing -Q --query-file`` — the
+    Bot Mode agent-to-agent lane, so canonical-session rules apply and it is alternation-safe.
+    ``profile`` is ``""`` for the job's own profile. None on success, else an error string."""
     import tempfile
-    import uuid
-    from hermes_constants import get_hermes_home
-    from hermes_cli.profiles import get_profile_dir
-    from tools.bot_live_delivery import (
-        deliver_to_live_owner, find_canonical_live_owner, read_delivery_result,
-    )
-
     job_id = job.get("id", "?")
-    profile_label = profile or "(own)"
-    message = (
-        f'[Cronjob "{job.get("name", job_id)}" output — scheduled job, not the user. '
-        f"Review it, act on anything that needs action, and summarize "
-        f"for the chat.]\n\n{content}"
-    )
-    try:
-        source_home = get_hermes_home().resolve()
-        home = (get_profile_dir(profile) if profile else source_home).resolve()
-        # run_one_job/claim_fire attach the durable execution id before delivery. The
-        # transient fallback supports direct helper callers, never deduping recurring
-        # runs by their (potentially identical) output or previous last_run timestamp.
-        run_id = job.get("execution_id")
-        if not run_id:
-            run_id = job.setdefault("_bot_chat_run_id", uuid.uuid4().hex)
-        key = hashlib.sha256(json.dumps(
-            [str(source_home), job_id, str(run_id), str(home)],
-            ensure_ascii=False, separators=(",", ":"),
-        ).encode("utf-8")).hexdigest()
-        # Read BEFORE discovery: the previous owner may have exited after accepting.
-        # No receipt state, including ambiguous/failed, authorizes a CLI replay.
-        receipt = read_delivery_result(home, key)
-        if receipt is None:
-            owner = find_canonical_live_owner(home)
-            if owner is not None:
-                receipt = deliver_to_live_owner(home, owner, message, delivery_id=key)
-        if receipt is not None:
-            if receipt["message"] != message:
-                raise ValueError("delivery id already belongs to a different payload")
-            status = receipt["status"]
-            target = f"bot-chat:{profile_label}"
-            receipts = job.setdefault("_bot_chat_delivery_receipts", {})
-            receipts[target] = {"status": status, "delivery_id": key}
-            logger.info("Job '%s': Bot Chat %s receipt=%s status=%s",
-                        job_id, profile_label, key, status)
-            if status == "settled":
-                return None
-            detail = ("completion unverified; do not resend" if status in ("queued", "claimed")
-                      else receipt.get("error") or receipt.get("reason") or "not completed")
-            return f"{target} {status} (receipt {key}): {detail}"
-    except Exception as exc:
-        # Discovery/admission uncertainty must never open a second-writer fallback.
-        return f"bot-chat delivery to profile '{profile_label}' unverified: {exc}"
-
     hermes_bin = shutil.which("hermes")
     if hermes_bin:
         argv = [hermes_bin]
@@ -720,15 +665,19 @@ def _deliver_to_bot_chat(job: dict, content: str, profile: str) -> Optional[str]
         logger.warning("Job '%s': %s", job_id, msg, **log_kwargs)
         return msg
 
-    from agent.delegation_context import delegated_child_subprocess_env
-    env = delegated_child_subprocess_env(os.environ)
+    env = os.environ.copy()
     if profile:
         argv += ["-p", profile]
         # -p owns profile resolution; this scheduler's HERMES_HOME must not shadow it.
         env.pop("HERMES_HOME", None)
-    else:
-        # Multiplex workers carry the profile in a ContextVar, not os.environ.
-        env["HERMES_HOME"] = str(source_home)
+
+    # Prefix marks this as scheduled output, not the human (Bot Mode sender-attribution).
+    message = (
+        f'[Cronjob "{job.get("name", job_id)}" output — scheduled job, not the user. '
+        f"Review it, act on anything that needs action, and summarize "
+        f"for the chat.]\n\n{content}"
+    )
+    profile_label = profile or "(own)"
 
     query_file = None
     try:
@@ -843,12 +792,28 @@ def _delivery_lane_value(job: dict, *, for_failure: bool = False):
     return job.get("deliver", "local")
 
 
-def _resolve_delivery_targets(job: dict, *, for_failure: bool = False) -> List[dict]:
+def _is_intentional_delivery_opt_out(part: str) -> bool:
+    """True when a discarded fan-out member is an intentional no-delivery token, not a genuine
+    resolution failure. ``local`` is the structural opt-out (whole-value ``deliver: local``
+    resolves to zero targets by design); ``origin`` with no origin and no home channel is the
+    documented origin-less no-op lane (``_unresolved_delivery_outcome``, #43014) — flagging it
+    would make every CLI ``deliver=origin`` job emit a spurious error on every run."""
+    return part in ("local", "origin")
+
+
+def _resolve_delivery_targets(
+    job: dict, *, for_failure: bool = False,
+    resolution_errors: Optional[List[str]] = None,
+) -> List[dict]:
     """Resolve auto-delivery targets from comma-separated ``deliver``; ``all`` expands to every
     platform with a home channel and combines with explicit targets. Dedup by (platform, chat_id,
     thread_id). ``for_failure=True`` (failure summaries, interrupted-run notices, drift/preflight
     alerts) resolves from ``failure_deliver`` INSTEAD when the job carries one —
-    ``failure_deliver: local`` is the structural opt-out; absent, failures follow ``deliver``."""
+    ``failure_deliver: local`` is the structural opt-out; absent, failures follow ``deliver``.
+
+    When ``resolution_errors`` is a list, every fan-out member that is discarded (rather than
+    intentionally opted out) appends a human-readable entry there, so callers that deliver to the
+    surviving targets can still report the drop instead of silently succeeding."""
     deliver = _normalize_deliver_value(_delivery_lane_value(job, for_failure=for_failure))
     if deliver == "local":
         return []
@@ -863,6 +828,10 @@ def _resolve_delivery_targets(job: dict, *, for_failure: bool = False) -> List[d
     for part in parts:
         target = _resolve_single_delivery_target(job, part)
         if not target:
+            if resolution_errors is not None and not _is_intentional_delivery_opt_out(part):
+                resolution_errors.append(
+                    f"unresolvable delivery target '{part}': target skipped, "
+                    "output was not delivered there")
             continue
         key = (target["platform"].lower(), str(target["chat_id"]), target.get("thread_id"))
         kept = seen.get(key)
@@ -1048,21 +1017,14 @@ def _cron_delivery_notify_enabled(cfg: Optional[dict]) -> bool:
 
 def _record_delivery_verification(job: dict, unverified_targets: list) -> None:
     """Persist ``last_delivery_unverified``: list of ``platform:chat_id`` targets acked with no
-    evidence, or None, alongside queued Bot Chat receipts. Never raises (bookkeeping must not fail a
+    evidence, or None. Skips the write when unchanged; never raises (bookkeeping must not fail a
     delivery)."""
     new_value = list(unverified_targets) or None
-    queued = {target: receipt for target, receipt in
-              job.get("_bot_chat_delivery_receipts", {}).items()
-              if receipt["status"] in ("queued", "claimed")} or None
-    values = {key: value for key, value in {
-        "last_delivery_unverified": new_value, "last_delivery_queued": queued,
-    }.items() if (job.get(key) or None) != value}
-    if not values:
+    if (job.get("last_delivery_unverified") or None) == new_value:
         return
-    job.update(values)
     try:
         from cron.jobs import update_job
-        update_job(job["id"], values)
+        update_job(job["id"], {"last_delivery_unverified": new_value})
     except Exception as exc:  # pragma: no cover - defensive
         logger.debug("Job '%s': could not record delivery verification: %s", job.get("id"), exc)
 
@@ -1656,8 +1618,9 @@ def _deliver_result(
     running) the live adapter is tried first (E2EE rooms can't use the standalone HTTP path), then
     standalone fallback. ``for_failure=True`` routes failure-category notices through the job's
     ``failure_deliver`` override when present (NS-788). Returns None on success, else an error."""
-    job.pop("_bot_chat_delivery_receipts", None)
-    targets = _resolve_delivery_targets(job, for_failure=for_failure)
+    resolution_errors: List[str] = []
+    targets = _resolve_delivery_targets(
+        job, for_failure=for_failure, resolution_errors=resolution_errors)
     if not targets:
         _record_delivery_verification(job, [])
         return _unresolved_delivery_outcome(job, for_failure)
@@ -1669,16 +1632,10 @@ def _deliver_result(
     # and that nested delivery must not be keyed under the outer execution id.
     external_execution = os.environ.get("_HERMES_CRON_EXTERNAL_WORKER", "")
     if (external_execution and adapters is None
-            and external_execution == str(job.get("execution_id") or "")
-            and any(target["platform"] != BOT_CHAT_PLATFORM for target in targets)):
+            and external_execution == str(job.get("execution_id") or "")):
         from cron.delivery_queue import enqueue_and_wait
 
-        _record_delivery_verification(job, [])
-        error = enqueue_and_wait(external_execution, job, content, for_failure=for_failure)
-        from cron.jobs import get_job
-        refreshed = get_job(job["id"]) or {}
-        job["last_delivery_queued"] = refreshed.get("last_delivery_queued")
-        return error
+        return enqueue_and_wait(external_execution, job, content, for_failure=for_failure)
 
     from gateway.config import load_gateway_config
 
@@ -1741,17 +1698,19 @@ def _deliver_result(
         return msg
 
     delivery_errors = []
+    # Fan-out members discarded at resolution time (unknown platform, invalid explicit
+    # target, missing home channel, deleted bot-chat profile) must fail the run's delivery
+    # accounting even when a surviving sibling delivers fine — otherwise the job records
+    # last_status=ok while a requested target never received anything.
+    for resolution_error in resolution_errors:
+        _note_target_error(job, resolution_error, delivery_errors)
     for target in targets:
-        # Bot Chat owns admission; never concurrently resume a live owner's transcript.
+        # bot-chat targets bypass gateway adapters: output becomes an inbound turn in the target
+        # profile's Bot Chat via the chat CLI lane. Must precede the Platform enum, which lacks it.
         if target["platform"] == BOT_CHAT_PLATFORM:
             bot_chat_error = _deliver_to_bot_chat(job, content, target["chat_id"])
             if bot_chat_error:
-                receipt_target = f"bot-chat:{target['chat_id'] or '(own)'}"
-                receipt = job.get("_bot_chat_delivery_receipts", {}).get(receipt_target)
-                if not receipt or receipt["status"] not in ("queued", "claimed"):
-                    delivery_errors.append(bot_chat_error)
-                if receipt and receipt["status"] == "ambiguous":
-                    unverified_targets.append(bot_chat_error)
+                delivery_errors.append(bot_chat_error)
             continue
 
         t = _prepare_target_delivery(

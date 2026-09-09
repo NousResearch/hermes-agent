@@ -13,6 +13,7 @@ import asyncio
 import hashlib
 import threading
 import time
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -27,6 +28,8 @@ from gateway.platforms.api_server import (
     cors_middleware,
     security_headers_middleware,
 )
+from hermes_state import SessionDB
+from run_agent import AIAgent
 from tools import approval as approval_mod
 from tools import approval_gateway_wait
 
@@ -138,6 +141,37 @@ def _make_slow_agent(**kwargs):
     return mock_agent, ready, interrupted
 
 
+def _make_production_codex_agent(db: SessionDB, session_id: str) -> AIAgent:
+    """Real AIAgent persistence with only the external Codex turn stubbed."""
+    agent = AIAgent(
+        api_key="test-key",
+        base_url="https://openrouter.ai/api/v1",
+        api_mode="codex_app_server",
+        quiet_mode=True,
+        skip_context_files=True,
+        skip_memory=True,
+        session_db=db,
+        session_id=session_id,
+    )
+    agent._session_db_created = True
+    codex_session = MagicMock()
+    codex_session.run_turn.return_value = SimpleNamespace(
+        interrupted=False,
+        error=None,
+        thread_id="thread-api",
+        turn_id="turn-api",
+        projected_messages=[
+            {"role": "assistant", "content": "CODEX_API_ASSISTANT"}
+        ],
+        tool_iterations=0,
+        final_text="CODEX_API_ASSISTANT",
+        should_retire=False,
+    )
+    setattr(agent, "_codex_session", codex_session)
+    setattr(agent, "tool_progress_callback", None)
+    return agent
+
+
 @pytest.fixture
 def adapter():
     return _make_adapter()
@@ -205,12 +239,256 @@ class TestStartRun:
                 assert status["object"] == "hermes.run"
 
     @pytest.mark.asyncio
-    async def test_start_binds_chat_id_for_delegation_wake_target(self, adapter):
+    async def test_existing_body_session_must_exist_before_run_admission(
+        self, auth_adapter
+    ):
+        db = MagicMock()
+        db.get_session.return_value = None
+        auth_adapter._session_db = db
+        app = _create_runs_app(auth_adapter)
+
+        with patch.object(auth_adapter, "_create_agent") as create_agent:
+            async with TestClient(TestServer(app)) as cli:
+                response = await cli.post(
+                    "/v1/runs",
+                    json={"input": "hello", "session_id": "missing-session"},
+                    headers={"Authorization": "Bearer sk-secret"},
+                )
+                payload = await response.json()
+
+        assert response.status == 404
+        assert payload["error"]["code"] == "session_not_found"
+        create_agent.assert_not_called()
+        assert auth_adapter._run_streams == {}
+
+    @pytest.mark.asyncio
+    async def test_body_session_history_read_failure_blocks_run(self, auth_adapter):
+        db = MagicMock()
+        db.get_session.return_value = {"id": "broken-history"}
+        db.get_messages_as_conversation.side_effect = RuntimeError("db unreadable")
+        auth_adapter._session_db = db
+        app = _create_runs_app(auth_adapter)
+
+        with patch.object(auth_adapter, "_create_agent") as create_agent:
+            async with TestClient(TestServer(app)) as cli:
+                response = await cli.post(
+                    "/v1/runs",
+                    json={"input": "hello", "session_id": "broken-history"},
+                    headers={"Authorization": "Bearer sk-secret"},
+                )
+                payload = await response.json()
+
+        assert response.status == 503
+        assert payload["error"]["code"] == "session_db_unavailable"
+        create_agent.assert_not_called()
+        assert auth_adapter._run_streams == {}
+
+    @pytest.mark.asyncio
+    async def test_missing_previous_response_blocks_session_run_admission(
+        self, auth_adapter
+    ):
+        db = MagicMock()
+        db.get_session.return_value = {"id": "canonical-session"}
+        auth_adapter._session_db = db
+        auth_adapter._response_store.get = MagicMock(return_value=None)
+        app = _create_runs_app(auth_adapter)
+
+        with patch.object(auth_adapter, "_create_agent") as create_agent:
+            async with TestClient(TestServer(app)) as cli:
+                response = await cli.post(
+                    "/v1/runs",
+                    json={
+                        "input": "hello",
+                        "session_id": "canonical-session",
+                        "previous_response_id": "resp-missing",
+                    },
+                    headers={"Authorization": "Bearer sk-secret"},
+                )
+                payload = await response.json()
+
+        assert response.status == 404
+        assert "Previous response not found" in payload["error"]["message"]
+        create_agent.assert_not_called()
+        db.get_messages_as_conversation.assert_not_called()
+        assert auth_adapter._run_streams == {}
+
+    @pytest.mark.asyncio
+    async def test_explicit_empty_history_prevents_session_db_fallback(
+        self, auth_adapter
+    ):
+        db = MagicMock()
+        db.get_messages_as_conversation.side_effect = AssertionError(
+            "explicit empty history must remain authoritative"
+        )
+        auth_adapter._session_db = db
+        app = _create_runs_app(auth_adapter)
+
+        with patch.object(auth_adapter, "_create_agent") as create_agent:
+            agent = MagicMock()
+            agent.run_conversation.return_value = {"final_response": "done"}
+            agent.session_prompt_tokens = 0
+            agent.session_completion_tokens = 0
+            agent.session_total_tokens = 0
+            create_agent.return_value = agent
+            async with TestClient(TestServer(app)) as cli:
+                response = await cli.post(
+                    "/v1/runs",
+                    json={
+                        "input": "hello",
+                        "session_id": "caller-history",
+                        "conversation_history": [],
+                    },
+                    headers={"Authorization": "Bearer sk-secret"},
+                )
+
+        assert response.status == 202
+        db.get_messages_as_conversation.assert_not_called()
+        assert agent.run_conversation.call_args.kwargs["conversation_history"] == []
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("history_source", ["previous_response", "multi_input"])
+    async def test_explicit_empty_history_precedes_other_caller_sources(
+        self, auth_adapter, history_source
+    ):
+        auth_adapter._session_db = MagicMock()
+        app = _create_runs_app(auth_adapter)
+        body = {
+            "session_id": "caller-history",
+            "conversation_history": [],
+        }
+        if history_source == "previous_response":
+            body.update({"input": "hello", "previous_response_id": "resp-prior"})
+            auth_adapter._response_store.get = MagicMock(
+                return_value={
+                    "conversation_history": [
+                        {"role": "user", "content": "FROM_PREVIOUS"}
+                    ],
+                    "session_id": "caller-history",
+                }
+            )
+        else:
+            body["input"] = [
+                {"role": "user", "content": "FROM_INPUT"},
+                {"role": "user", "content": "hello"},
+            ]
+
+        with patch.object(auth_adapter, "_create_agent") as create_agent:
+            agent = MagicMock()
+            agent.run_conversation.return_value = {"final_response": "done"}
+            agent.session_prompt_tokens = 0
+            agent.session_completion_tokens = 0
+            agent.session_total_tokens = 0
+            create_agent.return_value = agent
+            async with TestClient(TestServer(app)) as cli:
+                response = await cli.post(
+                    "/v1/runs",
+                    json=body,
+                    headers={"Authorization": "Bearer sk-secret"},
+                )
+                assert response.status == 202
+                for _ in range(40):
+                    if agent.run_conversation.called:
+                        break
+                    await asyncio.sleep(0.01)
+
+        assert agent.run_conversation.call_args.kwargs["conversation_history"] == []
+
+    @pytest.mark.asyncio
+    async def test_explicit_history_marks_agent_authority_for_lease_wait(
+        self, auth_adapter
+    ):
+        auth_adapter._session_db = MagicMock()
+        app = _create_runs_app(auth_adapter)
+        observed = {}
+
+        with patch.object(auth_adapter, "_create_agent") as create_agent:
+            agent = MagicMock()
+
+            def capture_authority(**_kwargs):
+                observed["authoritative"] = getattr(
+                    agent,
+                    "_preserve_caller_history_on_lease_wait",
+                    False,
+                )
+                return {"final_response": "done"}
+
+            agent.run_conversation.side_effect = capture_authority
+            agent.session_prompt_tokens = 0
+            agent.session_completion_tokens = 0
+            agent.session_total_tokens = 0
+            create_agent.return_value = agent
+            async with TestClient(TestServer(app)) as cli:
+                response = await cli.post(
+                    "/v1/runs",
+                    json={
+                        "input": "hello",
+                        "session_id": "caller-history",
+                        "conversation_history": [],
+                    },
+                    headers={"Authorization": "Bearer sk-secret"},
+                )
+                assert response.status == 202
+                for _ in range(40):
+                    if "authoritative" in observed:
+                        break
+                    await asyncio.sleep(0.01)
+
+        assert observed == {"authoritative": True}
+        assert "_preserve_caller_history_on_lease_wait" not in agent.__dict__
+
+    @pytest.mark.asyncio
+    async def test_server_history_marks_agent_for_post_lease_reload(
+        self, auth_adapter, tmp_path
+    ):
+        db = SessionDB(tmp_path / "post-lease-reload.db")
+        db.create_session("canonical-session", "api_server")
+        db.append_message("canonical-session", "user", "stale API preload")
+        auth_adapter._session_db = db
+        app = _create_runs_app(auth_adapter)
+        observed = {}
+
+        with patch.object(auth_adapter, "_create_agent") as create_agent:
+            agent = MagicMock()
+
+            def capture_reload(**_kwargs):
+                observed["reload"] = getattr(
+                    agent,
+                    "_reload_durable_history_after_lease",
+                    False,
+                )
+                return {"final_response": "done"}
+
+            agent.run_conversation.side_effect = capture_reload
+            agent.session_prompt_tokens = 0
+            agent.session_completion_tokens = 0
+            agent.session_total_tokens = 0
+            create_agent.return_value = agent
+            async with TestClient(TestServer(app)) as cli:
+                response = await cli.post(
+                    "/v1/runs",
+                    json={"input": "hello", "session_id": "canonical-session"},
+                    headers={"Authorization": "Bearer sk-secret"},
+                )
+                assert response.status == 202
+                for _ in range(40):
+                    if "reload" in observed:
+                        break
+                    await asyncio.sleep(0.01)
+
+        assert observed == {"reload": True}
+        assert "_reload_durable_history_after_lease" not in agent.__dict__
+
+    @pytest.mark.asyncio
+    async def test_start_binds_chat_id_for_delegation_wake_target(
+        self, adapter, tmp_path
+    ):
         """/v1/runs must bind the raw session id as the api_server chat_id
         (like every other agent-entry route does via _run_agent): the async
         delegation dispatch reads HERMES_SESSION_CHAT_ID to pick its wake
         self-post target, and an empty binding forces background delegations
         on this route back to synchronous execution."""
+        adapter._session_db = SessionDB(tmp_path / "wake-target.db")
+        adapter._session_db.create_session("runs-raw-sid", "api_server")
         app = _create_runs_app(adapter)
         captured = {}
 
@@ -317,6 +595,83 @@ class TestStartRun:
         assert kwargs["requested_provider"] == "minimax"
         assert kwargs["model_options"] == model_options
 
+    @pytest.mark.asyncio
+    async def test_production_codex_turn_persists_for_restart_followup(self, tmp_path):
+        state_path = tmp_path / "state.db"
+        headers = {"Authorization": "Bearer sk-secret"}
+
+        first_adapter = _make_adapter(api_key="sk-secret")
+        first_db = SessionDB(state_path)
+        first_adapter._session_db = first_db
+        session_id = first_db.create_session("runs continuity", "api_server")
+        first_app = _create_runs_app(first_adapter)
+        async with TestClient(TestServer(first_app)) as cli:
+            with patch.object(
+                first_adapter,
+                "_create_agent",
+                side_effect=lambda **kwargs: _make_production_codex_agent(
+                    first_db, kwargs["session_id"]
+                ),
+            ):
+                started = await cli.post(
+                    "/v1/runs",
+                    json={"input": "turn one", "session_id": session_id},
+                    headers=headers,
+                )
+                assert started.status == 202
+                run_id = (await started.json())["run_id"]
+                status = None
+                for _ in range(80):
+                    status_response = await cli.get(
+                        f"/v1/runs/{run_id}", headers=headers
+                    )
+                    status = await status_response.json()
+                    if status["status"] in {"completed", "failed", "cancelled"}:
+                        break
+                    await asyncio.sleep(0.05)
+                assert status is not None
+                assert status["status"] == "completed", status
+
+        first_db.close()
+        first_adapter._session_db = None
+
+        second_adapter = _make_adapter(api_key="sk-secret")
+        second_db = SessionDB(state_path)
+        second_adapter._session_db = second_db
+        second_app = _create_runs_app(second_adapter)
+        try:
+            with patch.object(second_adapter, "_create_agent") as create_agent:
+                agent = MagicMock()
+                agent.run_conversation.return_value = {"final_response": "done"}
+                agent.session_prompt_tokens = 0
+                agent.session_completion_tokens = 0
+                agent.session_total_tokens = 0
+                create_agent.return_value = agent
+                async with TestClient(TestServer(second_app)) as cli:
+                    followup = await cli.post(
+                        "/v1/runs",
+                        json={"input": "turn two", "session_id": session_id},
+                        headers=headers,
+                    )
+                    assert followup.status == 202
+                    for _ in range(80):
+                        if agent.run_conversation.called:
+                            break
+                        await asyncio.sleep(0.05)
+
+            assert agent.run_conversation.called
+            loaded = agent.run_conversation.call_args.kwargs["conversation_history"]
+            assert [
+                (message["role"], message["content"])
+                for message in loaded
+            ] == [
+                ("user", "turn one"),
+                ("assistant", "CODEX_API_ASSISTANT"),
+            ]
+        finally:
+            second_db.close()
+            second_adapter._session_db = None
+
 
 # ---------------------------------------------------------------------------
 # GET /v1/runs/{run_id} — poll run status
@@ -326,7 +681,9 @@ class TestStartRun:
 class TestRunStatus:
 
     @pytest.mark.asyncio
-    async def test_status_reflects_explicit_session_id(self, adapter):
+    async def test_status_reflects_explicit_session_id(self, adapter, tmp_path):
+        adapter._session_db = SessionDB(tmp_path / "status-session.db")
+        adapter._session_db.create_session("space-session", "api_server")
         app = _create_runs_app(adapter)
         async with TestClient(TestServer(app)) as cli:
             with patch.object(adapter, "_create_agent") as mock_create:
@@ -390,10 +747,62 @@ class TestRunEvents:
                 assert "run.completed" in body
                 assert "Hello!" in body
 
+    @pytest.mark.asyncio
+    async def test_codex_persistence_failure_emits_failed_without_completed(
+        self, auth_adapter, tmp_path
+    ):
+        db = SessionDB(tmp_path / "codex-failure.db")
+        auth_adapter._session_db = db
+        session_id = db.create_session(
+            "codex persistence failure",
+            "api_server",
+        )
+        agent = _make_production_codex_agent(auth_adapter._session_db, session_id)
+        real_flush = agent._flush_messages_to_session_db
+
+        def fail_projected_assistant(messages, conversation_history=None):
+            if any(
+                isinstance(message, dict)
+                and message.get("content") == "CODEX_API_ASSISTANT"
+                for message in messages
+            ):
+                return False
+            return real_flush(messages, conversation_history)
+
+        agent._flush_messages_to_session_db = fail_projected_assistant
+        app = _create_runs_app(auth_adapter)
+        headers = {"Authorization": "Bearer sk-secret"}
+
+        with patch.object(auth_adapter, "_create_agent", return_value=agent):
+            async with TestClient(TestServer(app)) as cli:
+                response = await cli.post(
+                    "/v1/runs",
+                    json={"input": "hello", "session_id": session_id},
+                    headers=headers,
+                )
+                run_id = (await response.json())["run_id"]
+                events = await cli.get(
+                    f"/v1/runs/{run_id}/events",
+                    headers=headers,
+                )
+                body = await events.text()
+
+        assert body.count('"run.failed"') == 1
+        assert '"run.completed"' not in body
+        assert "session database" in body
+        durable = auth_adapter._session_db.get_messages_as_conversation(session_id)
+        assert [(message["role"], message["content"]) for message in durable] == [
+            ("user", "hello"),
+        ]
+
 
     @pytest.mark.asyncio
-    async def test_approval_resolve_all_is_scoped_to_target_run(self, auth_adapter):
+    async def test_approval_resolve_all_is_scoped_to_target_run(
+        self, auth_adapter, tmp_path
+    ):
         """Same client session_id must not let one run approve another run's queue."""
+        auth_adapter._session_db = SessionDB(tmp_path / "approval-session.db")
+        auth_adapter._session_db.create_session("shared-project", "api_server")
         app = _create_runs_app(auth_adapter)
         async with TestClient(TestServer(app)) as cli:
             with patch.object(auth_adapter, "_create_agent") as mock_create:

@@ -875,6 +875,7 @@ class TestCapabilitiesEndpoint:
             assert data["features"]["chat_completions"] is True
             assert data["features"]["run_status"] is True
             assert data["features"]["run_events_sse"] is True
+            assert data["features"]["runs_session_history"] is True
             assert data["features"]["runs_idempotency"] == {
                 "supported": True,
                 "durable": True,

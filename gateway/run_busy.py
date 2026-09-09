@@ -736,6 +736,14 @@ class GatewayBusySessionMixin:
         if is_steer_mode and not self._busy_steer_ack_enabled(event, session_key):
             return True
 
+        from gateway.display_config import resolve_display_setting
+        from gateway.run import _load_gateway_config, _platform_config_key
+
+        if not resolve_display_setting(
+            _load_gateway_config(), _platform_config_key(event.source.platform), "busy_ack_enabled", True,
+        ):
+            return True
+
         self._session_state(session_key).turn.busy_ack_ts = now
 
         message = self._compose_busy_ack_message(

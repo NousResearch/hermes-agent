@@ -118,8 +118,20 @@ _MAX_RESERVED_SOCKETS = 8
 def _bind_reserved(port: int) -> int | None:
     """Bind ``127.0.0.1:port`` (0 = ephemeral) and park it until the waiter adopts it; None if taken.
     The cap evicts ephemeral parks only: losing a pinned CIMD port (the only ones the published
-    document declares) mid-flow would reopen the race."""
+    document declares) mid-flow would reopen the race.
+
+    SO_REUSEADDR is set BEFORE binding: once the waiter adopts this socket it becomes the
+    callback listener, and if the consent tab holds its connection open past the waiter's
+    ``server_close()`` the server-side close is the active one — leaving the connection in
+    TIME_WAIT keyed to this socket. Linux only allows a ``SO_REUSEADDR`` rebind against a
+    TIME_WAIT socket when the socket that created that TIME_WAIT itself had the flag set,
+    so a listener adopted from a plain (flag-less) socket wedges the port against the next
+    flow for the whole kernel window (#73997): the re-entered authorization right after a
+    successful consent dies with ``Errno 98``. The raw-bind path sets the same flag via
+    ``allow_reuse_address`` in ``_start_callback_server``; this keeps the adopted path equal.
+    """
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     try:
         sock.bind(("127.0.0.1", port))
     except OSError:

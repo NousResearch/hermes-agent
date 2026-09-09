@@ -1233,8 +1233,9 @@ def test_codex_final_preflight_bounds_middleware_cache_key(monkeypatch):
 
 
 @pytest.mark.parametrize("middleware_kind", ["request", "execution"])
+@pytest.mark.parametrize("rewrite_input", [False, True])
 def test_codex_middleware_model_rewrite_drops_stale_reasoning_and_stamps_response(
-    monkeypatch, middleware_kind,
+    monkeypatch, middleware_kind, rewrite_input,
 ):
     agent = _build_agent(monkeypatch, model="gpt-5.6")
     setattr(agent, "_disable_streaming", True)
@@ -1247,6 +1248,8 @@ def test_codex_middleware_model_rewrite_drops_stale_reasoning_and_stamps_respons
         assert "context_management" in request
         replacement = dict(request)
         replacement["model"] = "gpt-5.5"
+        if rewrite_input:
+            replacement["input"] = [{"role": "user", "content": "Middleware replacement"}]
         return replacement
 
     if middleware_kind == "request":
@@ -1266,6 +1269,7 @@ def test_codex_middleware_model_rewrite_drops_stale_reasoning_and_stamps_respons
         def _execution_middleware(request, next_call, **_context):
             replacement = _rewritten(request)
             request["model"] = replacement["model"]
+            request["input"] = replacement["input"]
             return next_call(request)
 
         monkeypatch.setattr(
@@ -1325,10 +1329,13 @@ def test_codex_middleware_model_rewrite_drops_stale_reasoning_and_stamps_respons
     assert captured["model"] == "gpt-5.5"
     assert "context_management" not in captured
     assert not any(item.get("type") in {"reasoning", "compaction"} for item in captured["input"])
-    assert any(
-        item.get("role") == "assistant" and item.get("content") == "Earlier answer"
-        for item in captured["input"]
-    )
+    if rewrite_input:
+        assert captured["input"] == [{"role": "user", "content": "Middleware replacement"}]
+    else:
+        assert any(
+            item.get("role") == "assistant" and item.get("content") == "Earlier answer"
+            for item in captured["input"]
+        )
     assert result["messages"][-1]["codex_reasoning_items"] == [{
         "type": "reasoning",
         "encrypted_content": "new-model-blob",

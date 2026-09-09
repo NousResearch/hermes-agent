@@ -8,6 +8,7 @@ redirect ``_model_request_active`` bracket and the response-vs-redirect crossing
 
 from __future__ import annotations
 
+from copy import deepcopy
 from contextlib import nullcontext
 from dataclasses import dataclass
 import logging
@@ -43,7 +44,7 @@ class ApiCallVerdict:
 
 def _codex_request_for_dispatch(
     agent: Any, request: Any, built_model: Any, api_messages: Any, *,
-    built_with_native_compaction: bool,
+    built_with_native_compaction: bool, built_input: Any,
 ) -> tuple[Any, Any]:
     """Bind encrypted replay and response provenance to the final middleware model."""
     from agent.codex_responses_adapter import _wire_model_identity
@@ -56,7 +57,11 @@ def _codex_request_for_dispatch(
     input_items = request.get("input")
     request = dict(request)
     request.pop("context_management", None)
-    if built_with_native_compaction and isinstance(api_messages, list):
+    if (
+        built_with_native_compaction
+        and isinstance(api_messages, list)
+        and input_items == built_input
+    ):
         from agent.codex_responses_adapter import classify_responses_route
 
         route = classify_responses_route(agent)._asdict()
@@ -114,6 +119,8 @@ def perform_api_call(
     response = None
     response_issuer_model = None
     built_issuer_model = None
+    built_input = None
+    built_with_native_compaction = False
     if agent.api_mode == "codex_responses":
         from agent.codex_responses_adapter import _wire_model_identity
 
@@ -124,6 +131,15 @@ def perform_api_call(
         )
         response_issuer_model = _wire_model_identity(
             api_kwargs.get("model") if isinstance(api_kwargs, dict) else None
+        )
+        built_input = deepcopy(
+            _original_api_kwargs.get("input")
+            if isinstance(_original_api_kwargs, dict)
+            else None
+        )
+        built_with_native_compaction = (
+            isinstance(_original_api_kwargs, dict)
+            and "context_management" in _original_api_kwargs
         )
 
     def _verdict(action: str) -> ApiCallVerdict:
@@ -144,10 +160,8 @@ def perform_api_call(
         if agent.api_mode == "codex_responses":
             next_api_kwargs, response_issuer_model = _codex_request_for_dispatch(
                 agent, next_api_kwargs, built_issuer_model, api_messages,
-                built_with_native_compaction=(
-                    isinstance(_original_api_kwargs, dict)
-                    and "context_management" in _original_api_kwargs
-                ),
+                built_with_native_compaction=built_with_native_compaction,
+                built_input=built_input,
             )
             next_api_kwargs = agent._get_transport().preflight_kwargs(
                 next_api_kwargs, allow_stream=False, is_github_responses=agent._is_copilot_url(),

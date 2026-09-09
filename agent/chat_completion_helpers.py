@@ -745,10 +745,14 @@ def _dispatch_nonstreaming_api_request(agent, api_kwargs: dict, *, make_client):
         _completions = getattr(getattr(agent.client, "chat", None), "completions", None)
         if not callable(getattr(_completions, "prepare", None)):
             api_kwargs.pop("_moa_prepared_request", None)
-        return agent.client.chat.completions.create(**api_kwargs)
+        return _dispatch_provider_request(
+            agent, api_kwargs,
+            lambda authorized: agent.client.chat.completions.create(**authorized),
+        )
+    request_client = make_client("chat_completion_request")
     return _dispatch_provider_request(
         agent, api_kwargs,
-        lambda authorized: make_client("chat_completion_request").chat.completions.create(**authorized),
+        lambda authorized: request_client.chat.completions.create(**authorized),
     )
 
 

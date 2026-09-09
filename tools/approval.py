@@ -16,6 +16,7 @@ import hashlib
 import importlib
 import logging
 import os
+import re
 import threading
 from typing import Optional
 

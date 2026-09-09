@@ -17,10 +17,16 @@ import { formatTimelineRange, formatTimelineTimestamp } from './timestamp'
 import { Thread } from '.'
 
 const requestFreshSession = vi.hoisted(() => vi.fn())
+const startManualProviderOAuth = vi.hoisted(() => vi.fn())
 
 vi.mock('@/store/profile', async importOriginal => ({
   ...(await importOriginal<Record<string, unknown>>()),
   requestFreshSession: () => requestFreshSession()
+}))
+
+vi.mock('@/store/onboarding', async importOriginal => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  startManualProviderOAuth: (...args: unknown[]) => startManualProviderOAuth(...args)
 }))
 
 // Timeline timestamps render only when `display.timestamps` is enabled.
@@ -33,6 +39,7 @@ stubThreadEnvironment()
 afterEach(() => {
   cleanup()
   requestFreshSession.mockClear()
+  startManualProviderOAuth.mockClear()
 })
 
 function userMessage(): ThreadMessage {
@@ -100,6 +107,33 @@ function ownershipRefusalMessage(): ThreadMessage {
   } as unknown as ThreadMessage
 }
 
+function oauthExpiredMessage(): ThreadMessage {
+  return {
+    id: 'assistant-error-2',
+    role: 'assistant',
+    content: [],
+    status: { type: 'incomplete', reason: 'error', error: 'HTTP 401: User not found.' },
+    createdAt,
+    metadata: {
+      unstable_state: null,
+      unstable_annotations: [],
+      unstable_data: [],
+      steps: [],
+      // What agent/error_surface.py stamps on a rejected OAuth grant.
+      custom: {
+        errorSurface: {
+          authKind: 'oauth',
+          code: 'auth',
+          layer: 'auth',
+          provider: 'nous',
+          providerLabel: 'Nous Portal',
+          retryable: false
+        }
+      }
+    }
+  } as unknown as ThreadMessage
+}
+
 function Harness({
   assistant = assistantMessage(),
   onBranchInNewChat
@@ -148,6 +182,19 @@ describe('ownership refusal recovery (#106217)', () => {
 
     screen.getByRole('button', { name: 'Start new session' }).click()
     expect(requestFreshSession).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('expired OAuth grant recovery', () => {
+  it('explains the expiry and re-runs that provider sign-in in one click', async () => {
+    render(<Harness assistant={oauthExpiredMessage()} />)
+
+    expect(await screen.findByText(/Nous Portal sign-in has expired/)).toBeTruthy()
+    // Signing in changes the outcome, so Retry stays as the follow-up click.
+    expect(screen.getByRole('button', { name: 'Retry' })).toBeTruthy()
+
+    screen.getByRole('button', { name: 'Sign in to Nous Portal again' }).click()
+    expect(startManualProviderOAuth).toHaveBeenCalledWith('nous', undefined)
   })
 })
 

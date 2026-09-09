@@ -3718,6 +3718,8 @@ export const zh: Translations = {
       errorRetry: '重试',
       errorStartNewSession: '开始新会话',
       errorSwitchProvider: '切换服务商',
+      errorSignInAgain: provider => `重新登录 ${provider}`,
+      errorOauthExpired: provider => `您的 ${provider} 登录已过期或被撤销。请重新登录以继续对话。`,
       errorOpenLogs: '打开日志',
       errorOpenLogsFailed: '无法打开日志文件夹',
       errorOpenDesktopLogs: '打开桌面端日志',

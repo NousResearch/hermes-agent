@@ -3042,6 +3042,8 @@ export const zhHant = defineLocale({
       errorRetry: '重試',
       errorStartNewSession: '開始新工作階段',
       errorSwitchProvider: '切換服務商',
+      errorSignInAgain: provider => `重新登入 ${provider}`,
+      errorOauthExpired: provider => `您的 ${provider} 登入已過期或被撤銷。請重新登入以繼續對話。`,
       errorOpenLogs: '開啟日誌',
       errorOpenLogsFailed: '無法開啟日誌資料夾',
       errorOpenDesktopLogs: '開啟桌面端日誌',

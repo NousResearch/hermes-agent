@@ -30,11 +30,12 @@ import { PreviewAttachment } from '@/components/chat/preview-attachment'
 import { Codicon } from '@/components/ui/codicon'
 import { CopyButton } from '@/components/ui/copy-button'
 import { useI18n } from '@/i18n'
-import { type ErrorSurface, formatErrorDiagnostics } from '@/lib/error-surface'
+import { type ErrorSurface, formatErrorDiagnostics, isOAuthReauthSurface } from '@/lib/error-surface'
 import { triggerHaptic } from '@/lib/haptics'
 import {
   AudioLines,
   GitForkIcon,
+  KeyRound,
   Loader2Icon,
   RefreshCwIcon,
   SmilePlusIcon,
@@ -48,7 +49,8 @@ import { useEnterAnimation } from '@/lib/use-enter-animation'
 import { cn } from '@/lib/utils'
 import { playSpeechText, stopVoicePlayback } from '@/lib/voice-playback'
 import { notifyError } from '@/store/notifications'
-import { requestFreshSession } from '@/store/profile'
+import { startManualProviderOAuth } from '@/store/onboarding'
+import { $activeGatewayProfile, normalizeProfileKey, requestFreshSession } from '@/store/profile'
 import { requestSendDiagnostics } from '@/store/send-diagnostics'
 import { $connection, $currentModel } from '@/store/session'
 import { $voicePlayback } from '@/store/voice-playback'
@@ -470,7 +472,14 @@ const ErrorLayerLabel: FC = () => {
   const labels = t.assistant.thread.errorLayers
   const label = (surface && labels[surface.layer]) || labels.generic
 
-  return <div className="font-medium">{label}</div>
+  return (
+    <>
+      <div className="font-medium">{label}</div>
+      {isOAuthReauthSurface(surface) && (
+        <div>{t.assistant.thread.errorOauthExpired(surface.providerLabel || surface.provider)}</div>
+      )}
+    </>
+  )
 }
 
 // Isolated because useNavigate() THROWS outside a <Router> (bare test
@@ -510,10 +519,30 @@ const ErrorRecoveryActions: FC = () => {
   // runtime's logs.
   const remoteConnection = connection?.mode === 'remote'
 
+  // An expired/revoked OAuth grant (HTTP 401 on nous / openai-codex / ...):
+  // the one-click fix is re-running that provider's sign-in, which the
+  // onboarding overlay already owns end to end (device code → poll →
+  // reload.env → model confirm). Scoped to the gateway profile the failed
+  // session runs on, so a Bot profile's grant is renewed, not the primary's.
+  const oauthReauth = isOAuthReauthSurface(surface)
+  const gatewayProfile = useStore($activeGatewayProfile)
+
+  const signInAgain = useCallback(() => {
+    if (!oauthReauth) {
+      return
+    }
+
+    triggerHaptic('submit')
+    const key = normalizeProfileKey(gatewayProfile)
+    startManualProviderOAuth(surface.provider, key === 'default' ? undefined : key)
+  }, [gatewayProfile, oauthReauth, surface])
+
   // Retry = assistant-ui reload (same wiring as the footer's refresh action):
   // re-runs the failed turn's prompt in place. Suppressed when the classifier
-  // says the failure is deterministic (retrying reproduces it).
-  const retryable = !surface || surface.retryable
+  // says the failure is deterministic (retrying reproduces it) — except for an
+  // OAuth rejection, where signing in again changes the outcome and Retry is
+  // the natural second click.
+  const retryable = !surface || surface.retryable || oauthReauth
 
   // Another surface holds this session's lease (#106217): Retry would hit the
   // same refusal, so the way out is a fresh session on this surface.
@@ -563,6 +592,12 @@ const ErrorRecoveryActions: FC = () => {
       {ownershipRefusal && (
         <button className="aui-error-action" onClick={startNewSession} type="button">
           {copy.errorStartNewSession}
+        </button>
+      )}
+      {oauthReauth && (
+        <button className="aui-error-action" onClick={signInAgain} type="button">
+          <KeyRound className="size-3" />
+          {copy.errorSignInAgain(surface.providerLabel || surface.provider)}
         </button>
       )}
       {retryable && (

@@ -15,7 +15,10 @@ const PANE_REVEALERS: Record<string, () => void> = {
   chat: () => revealTreePane('workspace'),
   files: () => setFileBrowserOpen(true),
   review: () => openReview(),
-  sessions: () => setSidebarOpen(true),
+  sessions: () => {
+    setSidebarOpen(true)
+    revealTreePane('sessions')
+  },
   terminal: () => setTerminalTakeover(true)
 }
 

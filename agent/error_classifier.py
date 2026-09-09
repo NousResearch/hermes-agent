@@ -718,7 +718,7 @@ def _classify_400(c: _Ctx) -> Verdict:
     if code == "invalid_encrypted_content" or "invalid_encrypted_content" in msg or (
         "encrypted content for item" in msg and "could not be verified" in msg
     ) or "could not decrypt the provided encrypted_content" in msg or (
-        "encrypted content" in msg and "could not be decrypted or parsed" in msg
+        "encrypted content could not be decrypted or parsed" in msg
     ):
         return _V_INVALID_ENCRYPTED
     # Reasoning-mandatory route rejecting a disable (GLM-5.3 on Nous Portal / OpenRouter). Deterministic

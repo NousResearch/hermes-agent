@@ -11,11 +11,35 @@ import unicodedata
 import uuid
 from types import SimpleNamespace
 from typing import Any, Callable, Dict, Iterator, List, NamedTuple, Optional, TypeGuard
+from urllib.parse import urlsplit, urlunsplit
 
 from agent.message_sanitization import deterministic_call_id
 from agent.prompt_builder import DEFAULT_AGENT_IDENTITY
 
 logger = logging.getLogger(__name__)
+
+
+def _canonical_responses_base_url(base_url: Any) -> str:
+    """Stable custom-endpoint identity across SDK trailing-slash normalization."""
+    raw = str(base_url or "").strip()
+    if not raw:
+        return ""
+    try:
+        parsed = urlsplit(raw)
+    except ValueError:
+        return raw.rstrip("/")
+    if not parsed.scheme or not parsed.netloc:
+        return raw.rstrip("/")
+    return urlunsplit((
+        parsed.scheme.lower(), parsed.netloc.lower(), parsed.path.rstrip("/"),
+        parsed.query, parsed.fragment,
+    ))
+
+
+def _canonical_issuer_kind(issuer: Any) -> Any:
+    if not (isinstance(issuer, str) and issuer.startswith("other:")):
+        return issuer
+    return f"other:{_canonical_responses_base_url(issuer.removeprefix('other:'))}"
 
 
 def _classify_responses_issuer(
@@ -27,7 +51,8 @@ def _classify_responses_issuer(
     for flag, kind in ((is_xai_responses, "xai_responses"), (is_github_responses, "github_responses"), (is_codex_backend, "codex_backend")):
         if flag:
             return kind
-    return f"other:{base_url}" if base_url else "other"
+    normalized_url = _canonical_responses_base_url(base_url)
+    return f"other:{normalized_url}" if normalized_url else "other"
 
 
 # Per-process throttle for the cross-issuer skip warning.
@@ -354,7 +379,10 @@ def _replay_reasoning_items(
             continue
         item_issuer = ri.get("_issuer_kind")
         item_model = ri.get("_issuer_model")
-        foreign_issuer = current_issuer_kind is not None and item_issuer is not None and item_issuer != current_issuer_kind
+        foreign_issuer = (
+            current_issuer_kind is not None and item_issuer is not None
+            and _canonical_issuer_kind(item_issuer) != _canonical_issuer_kind(current_issuer_kind)
+        )
         foreign_model = current_issuer_model is not None and item_model is not None and item_model != current_issuer_model
         if foreign_issuer or foreign_model:
             if not _CROSS_ISSUER_WARN_EMITTED:

@@ -67,7 +67,7 @@ class TestCodexBuildKwargs:
         ]
 
         same_model = transport.build_kwargs(
-            model="gpt-5.6-sol", messages=history, tools=[], base_url=base_url,
+            model="gpt-5.6-sol", messages=history, tools=[], base_url=base_url + "/",
         )
         other_model = transport.build_kwargs(
             model="gpt-5.7-sol", messages=history, tools=[], base_url=base_url,

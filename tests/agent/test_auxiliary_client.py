@@ -3062,7 +3062,7 @@ class TestCodexAdapterReasoningTranslation:
 
     def test_reasoning_replay_is_scoped_to_auxiliary_wire_model(self):
         real_client = MagicMock()
-        real_client.base_url = "https://responses.example.com/v1"
+        real_client.base_url = "https://responses.example.com/v1/"
         adapter = _CodexCompletionsAdapter(real_client, "gpt-5.7-sol")
         history = [
             {

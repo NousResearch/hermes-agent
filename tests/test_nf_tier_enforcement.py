@@ -155,6 +155,58 @@ def test_missing_key_is_tamper(drive):
     assert t.load(drive).state == t.STATE_TAMPERED
 
 
+def _resign(t, drive: Path, **fields):
+    """Mutate signed fields of an existing record and re-sign it with the REAL
+    key, so the HMAC genuinely verifies but the payload shape is what we set."""
+    rp = t.record_path(drive)
+    rec = json.loads(rp.read_text())
+    rec.update(fields)
+    key = bytes.fromhex(t.key_path(drive).read_text(encoding="utf-8").strip())
+    rec["sig"] = t._compute_sig(key, rec)
+    rp.write_text(json.dumps(rec, indent=2), encoding="utf-8")
+    t.clear_cache()
+
+
+@pytest.mark.parametrize("bad", [
+    {"schema": "one"},                       # non-numeric schema (the exact PC-2026-09-08-001 repro)
+    {"schema": True},                        # bool is not a schema number
+    {"schema": 1.0},                         # float, not int
+    {"schema": [1]},                         # list
+    {"tier": 3},                             # non-string tier
+    {"pinned_edition": ["penny-pincher"]},   # list, not string
+    {"installed_editions": {"penny-pincher": 1}},  # dict, not list
+    {"installed_editions": [1, 2]},          # list of non-strings
+    {"note": 12345},                         # non-string signed text field
+])
+def test_correctly_signed_but_malformed_record_is_tampered_not_an_exception(drive, bad):
+    """A record whose signature verifies but whose fields are the wrong TYPE must
+    make load() return STATE_TAMPERED — never raise, never fall through to
+    'tier system inert' (PC-2026-09-08-001)."""
+    t = _nf()
+    _provision(drive, tier="basic", pin="penny-pincher")
+    _resign(t, drive, **bad)
+
+    p = t.load(drive)                                  # must not raise
+    assert p.state == t.STATE_TAMPERED, (bad, p)
+    assert p.error
+    # and the policy entry points still fail closed, not open
+    with pytest.raises(t.NfTierError):
+        t.enforce_startup_profile("kyocera", from_flag=True, root=drive)
+    with pytest.raises(t.NfTierError):
+        t.assert_edition_allowed("penny-pincher", root=drive)
+
+
+def test_load_is_total_over_arbitrary_signed_json(drive):
+    """Fuzz-ish: any JSON value in any signed field → tampered, never a traceback."""
+    t = _nf()
+    _provision(drive, tier="basic", pin="penny-pincher")
+    for fld in t._SIGNED_FIELDS:
+        for val in (None, 0, -1, 3.14, True, [], {}, [{}], "x" * 5000, {"a": {"b": 1}}):
+            _resign(t, drive, **{fld: val})
+            p = t.load(drive)
+            assert p.state in (t.STATE_ACTIVE, t.STATE_TAMPERED), (fld, val, p)
+
+
 def test_admin_passcode_gate(drive):
     t = _nf()
     assert t.verify_admin_passcode("whatever", drive) is True   # none set yet
@@ -243,6 +295,22 @@ def test_integration_tampered_record_refuses_to_start(drive):
     r = _run_hermes(["chat"], drive)
     assert r.returncode == 1
     assert "invalid" in r.stderr or "modified" in r.stderr
+
+
+def test_integration_malformed_but_signed_record_blocks_and_does_not_move_home(drive):
+    """PC-2026-09-08-001 end-to-end: a correctly-signed record with a non-numeric
+    `schema` must make a real `hermes -p kyocera` exit non-zero, and HERMES_HOME
+    must not move to the requested edition."""
+    t = _nf()
+    _provision(drive, tier="basic", pin="penny-pincher")
+    _resign(t, drive, schema="one")
+
+    r = _run_hermes(["-p", "kyocera", "chat"], drive)
+    assert r.returncode == 1, r.stderr
+    assert "kyocera" not in _resolved(r).replace("\\", "/").split("profiles/")[-1]
+    # bare launch is likewise refused (record is present but unusable)
+    r2 = _run_hermes(["chat"], drive)
+    assert r2.returncode == 1, r2.stderr
 
 
 def test_integration_full_defaults_to_pin_but_switches(drive):

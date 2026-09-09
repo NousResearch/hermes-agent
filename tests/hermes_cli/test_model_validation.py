@@ -285,7 +285,7 @@ class TestCopilotNormalization:
         assert opencode_model_api_mode("opencode-zen", "x-preview-f-free") == "chat_completions"
         assert opencode_model_api_mode("opencode-zen", "opencode-zen/x-preview-f-free") == "chat_completions"
         # Other free-tier Zen models are chat/completions too.
-        assert opencode_model_api_mode("opencode-zen", "hy3-free") == "chat_completions"
+        assert opencode_model_api_mode("opencode-zen", "nemotron-3.5-lightning-free") == "chat_completions"
         assert opencode_model_api_mode("opencode-zen", "nemotron-3.5-lightning-free") == "chat_completions"
         # Hy3 on Go is chat/completions (Go endpoint table).
         assert opencode_model_api_mode("opencode-go", "hy3") == "chat_completions"

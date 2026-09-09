@@ -17,6 +17,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+import threading
 import time
 from abc import ABC, abstractmethod
 from typing import Callable, Dict, Iterator, List, Optional
@@ -120,6 +121,9 @@ class StreamingTTSProvider(ABC):
     def stream(self, text: str) -> Iterator[bytes]:
         """Yield PCM chunks for ``text``. Raise on failure (caller logs)."""
 
+    def cancel(self) -> None:
+        """Stop this speech session when supported; must not block the caller."""
+
 
 _REGISTRY: Dict[str, type[StreamingTTSProvider]] = {}
 
@@ -186,14 +190,26 @@ class OpenAICodexStreamer(StreamingTTSProvider):
     def __init__(self, tts_config: Dict, section: Dict):
         super().__init__(tts_config, section)
         from tools.tts_tool_codex import _codex_tts_credentials
+        self.section = tts_config.get("openai_codex") or section
         # Capture the requesting profile's pool while the Desktop router's profile scope is active.
         self.pool, self.credentials = _codex_tts_credentials()
+        self._cancel_event = threading.Event()
+
+    def cancel(self) -> None:
+        self._cancel_event.set()
 
     def stream(self, text: str) -> Iterator[bytes]:
-        from tools.codex_web_audio import synthesize_codex_speech
+        from tools.tts_tool_codex import synthesize_codex_speech_with_credentials
         voice = str(self.section.get("voice") or "juniper")
         timeout = max(10.0, min(float(self.section.get("timeout") or 120), 180.0))
-        speech = synthesize_codex_speech(text, self.credentials["api_key"], voice=voice, timeout=timeout)
+        if self._cancel_event.is_set():
+            return
+        speech = synthesize_codex_speech_with_credentials(
+            text, self.pool, self.credentials, voice=voice, timeout=timeout,
+            cancel_event=self._cancel_event,
+        )
+        if self._cancel_event.is_set():
+            return
         fd, path = tempfile.mkstemp(suffix=".mp3")
         os.close(fd)
         try:
@@ -212,6 +228,8 @@ class OpenAICodexStreamer(StreamingTTSProvider):
             assert proc.stdout is not None
             try:
                 while chunk := proc.stdout.read(64 * 1024):
+                    if self._cancel_event.is_set():
+                        return
                     total += len(chunk)
                     if total > _STREAM_SENTENCE_BYTE_CAP:
                         proc.terminate()

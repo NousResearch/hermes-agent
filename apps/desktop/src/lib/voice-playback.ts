@@ -1,6 +1,7 @@
 import { resolveGatewayWsUrl } from '@hermes/shared'
 
 import { getApiRequestConnection, getApiRequestProfile, speakText } from '@/hermes'
+import { translateNow } from '@/i18n'
 import {
   cutSentences,
   directTtsConfig,
@@ -8,6 +9,7 @@ import {
   synthesizeSpeechClientDirect
 } from '@/lib/voice-client-direct'
 import { RECONNECT_ATTEMPT_TIMEOUT_MS, withTimeout } from '@/lib/with-timeout'
+import { notifyError } from '@/store/notifications'
 import {
   $voicePlayback,
   setVoicePlaybackState,
@@ -460,7 +462,7 @@ function openSpeechStream(wsUrl: string, options: VoicePlaybackOptions): SpeechS
       return
     }
 
-    let frame: { channels?: number; sample_rate?: number; type?: string }
+    let frame: { channels?: number; sample_rate?: number; type?: string; message?: string }
 
     try {
       frame = JSON.parse(event.data) as typeof frame
@@ -486,6 +488,14 @@ function openSpeechStream(wsUrl: string, options: VoicePlaybackOptions): SpeechS
       finishWhenDrained()
     } else if (frame.type === 'fallback') {
       settle(started ? 'done' : 'fallback')
+    } else if (frame.type === 'error') {
+      notifyError(
+        new Error(frame.message || translateNow('notifications.voice.playbackFailed')),
+        translateNow('notifications.voice.playbackFailed')
+      )
+      // Provider rejection is terminal, including before the first PCM frame.
+      // Replaying through POST would retry the same failure (or repeat speech).
+      settle('done')
     }
   }
 

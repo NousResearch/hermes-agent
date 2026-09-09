@@ -38,11 +38,11 @@ import { getLatestSessionMessages } from '@/hermes'
 import { type ChatMessage, chatMessageText, preserveLocalAssistantErrors, toChatMessages } from '@/lib/chat-messages'
 import { isMessagingSource } from '@/lib/session-source'
 import { latestSessionTodos } from '@/lib/todos'
-import { activateWakeIndicator } from '@/lib/wake-indicator'
+import { activateWakeIndicator, clearWakeIndicator } from '@/lib/wake-indicator'
 import { playWakeSound } from '@/lib/wake-sound'
+import { startWakeVoiceConversation, type WakeVoicePayload } from '@/lib/wake-voice-start'
 import { $billingSettingsRequest } from '@/store/billing-block'
 import { $desktopBoot } from '@/store/boot'
-import { requestVoiceConversationStart } from '@/store/composer'
 import { $activeConnectionId } from '@/store/connections'
 import { $cronReviewRequest, setCronFocusJobId } from '@/store/cron'
 import { $pinnedSessionIds, pinSession, restoreWorktree, unpinSession } from '@/store/layout'
@@ -53,8 +53,6 @@ import {
   $freshSessionRequest,
   $profileScope,
   ALL_PROFILES,
-  ensureGatewayProfile,
-  newSessionInProfile,
   normalizeProfileKey,
   refreshActiveProfile
 } from '@/store/profile'
@@ -771,7 +769,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
       emitGatewayEvent(event)
 
       if (event.type === 'wake.detected') {
-        const payload = event.payload as { profile?: null | string; start_new_session?: boolean } | undefined
+        const payload = event.payload as WakeVoicePayload | undefined
 
         // Free the Mac mic so voice conversation can open getUserMedia.
         // Server already pauses the detector lease; this stops client PCM feed.
@@ -782,27 +780,10 @@ export function ContribWiring({ children }: { children: ReactNode }) {
         playWakeSound()
         activateWakeIndicator()
 
-        // Multi-profile routing: a wake phrase enrolled by another profile
-        // re-homes the gateway to that profile first (live swap — same path
-        // as clicking it in the profile rail), then opens the fresh session
-        // and starts voice there.
-        const targetProfile = payload?.profile?.trim()
-        const activeProfile = normalizeProfileKey($activeGatewayProfile.get())
-
-        if (targetProfile && normalizeProfileKey(targetProfile) !== activeProfile) {
-          if (payload?.start_new_session !== false) {
-            newSessionInProfile(targetProfile)
-          } else {
-            void ensureGatewayProfile(normalizeProfileKey(targetProfile)).catch((error: unknown) => {
-              // #81094: the voice-path switch must surface its failure too.
-              notifyError(error, `Failed to switch to profile "${normalizeProfileKey(targetProfile)}"`)
-            })
-          }
-        } else if (payload?.start_new_session !== false) {
-          startFreshSessionDraft()
-        }
-
-        requestVoiceConversationStart()
+        void startWakeVoiceConversation(payload, startFreshSessionDraft).catch((error: unknown) => {
+          clearWakeIndicator()
+          notifyError(error, 'Failed to start the wake-word voice conversation')
+        })
 
         return
       }

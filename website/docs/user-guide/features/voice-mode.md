@@ -143,6 +143,47 @@ private and may change upstream; Hermes identifies the request as Hermes, refuse
 redirects or mismatched text, bounds response sizes, and returns a clear error if
 ChatGPT blocks or removes a route.
 
+### Codex subscription live voice in Desktop
+
+1. Open the profile you want to speak with in Hermes Desktop. In Settings,
+   select **OpenAI Codex OAuth** for both Speech-to-Text and Text-to-Speech,
+   completing the Codex login when prompted. Audio-provider login leaves the
+   chat model selection unchanged; select a Codex model separately if you also
+   want the conversation's model to use that subscription.
+2. Ensure `ffmpeg` is installed on the Hermes gateway host. Desktop receives
+   24 kHz mono PCM decoded there from the subscription's read-aloud audio.
+3. Start a voice conversation from the composer, or enable the wake-word
+   listener and say **“Hey Hermes”**, then speak after the wake chime.
+4. Hermes transcribes your utterance, runs the normal agent turn, and speaks
+   completed reply sentences while the rest of the reply is generated. You can
+   speak over a reply to interrupt it, or say **“stop”** to end the conversation.
+   An enabled wake listener rearms after voice ends.
+
+The default wake detector uses the bundled `hey_hermes` model. It is independent
+of the STT provider: selecting Codex does not replace the wake phrase. For the
+default Desktop setup:
+
+```yaml
+wake_word:
+  enabled: true
+  provider: openwakeword
+  phrase: hey hermes
+  surface: gui
+  capture: client
+```
+
+`capture: client` uses the Desktop microphone even when the gateway is remote.
+Profile-specific phrases use the existing wake engine's enrollment settings;
+Desktop waits for the detected profile to activate before starting voice.
+Changing the display phrase alone does not retrain the bundled model.
+
+Codex audio stays on the authenticated gateway relay so credential refresh stays
+with the profile. This is sentence-based live voice, with utterance-based STT
+and read-aloud synthesis, rather than an OpenAI Realtime API session. First-audio
+latency depends on ChatGPT's private read-aloud flow and network conditions.
+Provider failures surface in Desktop and stop that speech attempt without
+replaying an already spoken response.
+
 ---
 
 ## CLI Voice Mode

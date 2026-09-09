@@ -18,10 +18,12 @@ from __future__ import annotations
 
 import base64
 import json
+import math
 import random
 import time
 import uuid
 from dataclasses import dataclass
+from threading import Event
 from typing import Any, Dict, Iterable, Optional
 
 import requests
@@ -79,6 +81,20 @@ class CodexSpeech:
     conversation_id: str
     message_id: str
     spoken_text: str
+
+
+@dataclass(frozen=True)
+class _OperationBudget:
+    deadline: float
+    cancel_event: Optional[Event] = None
+
+    def remaining(self) -> float:
+        if self.cancel_event is not None and self.cancel_event.is_set():
+            raise InterruptedError("Codex subscription speech was cancelled")
+        remaining = self.deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError("Codex subscription speech exceeded its timeout")
+        return remaining
 
 
 def resolve_voice(raw: str) -> str:
@@ -159,9 +175,12 @@ def _pow_hash_hex(value: str) -> str:
     return f"{result:08x}"
 
 
-def _solve_pow(device_id: str, seed: str, difficulty: str) -> str:
+def _solve_pow(
+    device_id: str, seed: str, difficulty: str, budget: _OperationBudget
+) -> str:
     started = time.monotonic()
     for nonce in range(_MAX_POW_ATTEMPTS):
+        budget.remaining()
         elapsed = int((time.monotonic() - started) * 1000)
         payload = _encode_fingerprint(
             _fingerprint_array(device_id, nonce=nonce, elapsed_ms=elapsed)
@@ -205,19 +224,24 @@ def _headers(token: str, device_id: str, *, final: bool = False) -> Dict[str, st
     return headers
 
 
-def _bounded_bytes(response: requests.Response, limit: int, label: str) -> bytes:
+def _bounded_bytes(
+    response: requests.Response, limit: int, label: str, budget: _OperationBudget
+) -> bytes:
+    budget.remaining()
     length = response.headers.get("content-length")
     if length and length.isdigit() and int(length) > limit:
         raise ValueError(f"{label} response exceeds {limit} bytes")
     chunks: list[bytes] = []
     total = 0
     for chunk in response.iter_content(64 * 1024):
+        budget.remaining()
         if not chunk:
             continue
         total += len(chunk)
         if total > limit:
             raise ValueError(f"{label} response exceeds {limit} bytes")
         chunks.append(chunk)
+    budget.remaining()
     return b"".join(chunks)
 
 
@@ -227,7 +251,7 @@ def _request(
     path: str,
     *,
     headers: Dict[str, str],
-    timeout: float,
+    budget: _OperationBudget,
     json_body: Optional[dict] = None,
     params: Optional[dict] = None,
     limit: int = _MAX_JSON_BYTES,
@@ -238,21 +262,25 @@ def _request(
         headers=headers,
         json=json_body,
         params=params,
-        timeout=timeout,
+        timeout=budget.remaining(),
         stream=True,
         allow_redirects=False,
     )
-    if 300 <= response.status_code < 400:
-        raise RuntimeError(
-            f"ChatGPT {path} refused redirect (HTTP {response.status_code})"
-        )
-    body = _bounded_bytes(response, limit, path)
-    if response.status_code >= 400:
-        detail = body.decode("utf-8", "replace")[:300]
-        raise RuntimeError(
-            f"ChatGPT {path} failed (HTTP {response.status_code}): {detail}"
-        )
-    return response, body
+    try:
+        budget.remaining()
+        if 300 <= response.status_code < 400:
+            raise RuntimeError(
+                f"ChatGPT {path} refused redirect (HTTP {response.status_code})"
+            )
+        body = _bounded_bytes(response, limit, path, budget)
+        if response.status_code >= 400:
+            detail = body.decode("utf-8", "replace")[:300]
+            raise RuntimeError(
+                f"ChatGPT {path} failed (HTTP {response.status_code}): {detail}"
+            )
+        return response, body
+    finally:
+        response.close()
 
 
 def _prepare_body(final_body: dict, state: str, partial_text: str) -> dict:
@@ -372,33 +400,33 @@ def _poll_conversation_message(
     token: str,
     device_id: str,
     conversation_id: str,
-    timeout: float,
+    budget: _OperationBudget,
 ) -> tuple[str, str]:
     """Recover a completed assistant message when the SSE switched transports early."""
     if not conversation_id:
         return "", ""
     path = f"/backend-api/conversation/{conversation_id}"
-    deadline = time.monotonic() + min(timeout, 15.0)
-    while time.monotonic() < deadline:
+    poll_budget = _OperationBudget(
+        min(budget.deadline, time.monotonic() + 15.0), budget.cancel_event
+    )
+    while time.monotonic() < poll_budget.deadline:
         try:
             _, raw = _request(
                 session,
                 "GET",
                 path,
                 headers={**_headers(token, device_id), "x-openai-target-path": path},
-                timeout=min(15.0, timeout),
+                budget=poll_budget,
                 limit=_MAX_JSON_BYTES,
             )
             data = json.loads(raw)
         except (RuntimeError, ValueError, json.JSONDecodeError):
-            time.sleep(0.35)
-            continue
+            data = {}
         mapping = data.get("mapping") if isinstance(data, dict) else None
         if not isinstance(mapping, dict):
-            time.sleep(0.35)
-            continue
+            mapping = {}
         ordered = []
-        current = str(data.get("current_node") or "")
+        current = str(data.get("current_node") or "") if isinstance(data, dict) else ""
         if current in mapping:
             ordered.append(mapping[current])
         ordered.extend(node for key, node in mapping.items() if key != current)
@@ -418,12 +446,17 @@ def _poll_conversation_message(
                 and parts[0].strip()
             ):
                 return str(message.get("id") or ""), parts[0].strip()
-        time.sleep(0.35)
+        delay = min(0.35, max(0, poll_budget.deadline - time.monotonic()))
+        if budget.cancel_event is None:
+            time.sleep(delay)
+        else:
+            budget.cancel_event.wait(delay)
+        budget.remaining()
     return "", ""
 
 
 def _sentinel(
-    session: requests.Session, token: str, device_id: str, timeout: float
+    session: requests.Session, token: str, device_id: str, budget: _OperationBudget
 ) -> tuple[str, str]:
     headers = {
         **_headers(token, device_id),
@@ -435,7 +468,7 @@ def _sentinel(
         "POST",
         _SENTINEL_PREPARE,
         headers=headers,
-        timeout=timeout,
+        budget=budget,
         json_body={"p": _requirements_token(device_id)},
     )
     prepared = json.loads(raw)
@@ -446,7 +479,7 @@ def _sentinel(
         difficulty = str(challenge.get("difficulty") or "")
         if not seed or not difficulty:
             raise RuntimeError("ChatGPT Sentinel required PoW without seed/difficulty")
-        proof = _solve_pow(device_id, seed, difficulty)
+        proof = _solve_pow(device_id, seed, difficulty, budget)
     finalize = {"prepare_token": str(prepared.get("prepare_token") or "")}
     if proof:
         finalize["proofofwork"] = proof
@@ -455,7 +488,7 @@ def _sentinel(
         "POST",
         _SENTINEL_FINALIZE,
         headers=headers,
-        timeout=timeout,
+        budget=budget,
         json_body=finalize,
     )
     requirement = str(json.loads(raw).get("token") or "")
@@ -472,7 +505,7 @@ def _conduit(
     final_body: dict,
     state: str,
     conduit_token: str,
-    timeout: float,
+    budget: _OperationBudget,
 ) -> str:
     headers = {
         **_headers(token, device_id),
@@ -487,7 +520,7 @@ def _conduit(
         "POST",
         _CONVERSATION_PREPARE,
         headers=headers,
-        timeout=timeout,
+        budget=budget,
         json_body=_prepare_body(
             final_body, state, final_body["messages"][0]["content"]["parts"][0]
         ),
@@ -501,108 +534,123 @@ def synthesize_codex_speech(
     *,
     voice: str = "juniper",
     timeout: float = 120,
+    cancel_event: Optional[Event] = None,
     _retry_mismatch: bool = True,
 ) -> CodexSpeech:
-    """Create verified, history-disabled ChatGPT read-aloud audio for *text*."""
+    """Create verified, history-disabled read-aloud audio within one operation budget.
+
+    Cancellation and deadline checks run between requests and streamed chunks;
+    an in-flight synchronous socket read remains bounded by its request timeout.
+    """
     requested = text.strip()
     if not requested:
         raise ValueError("Codex subscription TTS input is empty")
     if len(requested) > 4096:
         raise ValueError("Codex subscription TTS input exceeds 4096 characters")
     selected_voice = resolve_voice(voice)
+    if not math.isfinite(timeout) or timeout <= 0:
+        raise ValueError("Codex subscription TTS timeout must be positive and finite")
+    budget = _OperationBudget(time.monotonic() + timeout, cancel_event)
+    budget.remaining()
     prompt = "Return exactly this text, with no quotes or changes: " + requested
     device_id = str(uuid.uuid4())
-    trace_id = str(uuid.uuid4())
-    final_body = _conversation_body(prompt)
-    session = requests.Session()
+    with requests.Session() as session:
+        # Cookies are obtained from response headers: never download warmup HTML.
+        # Share a small warmup budget and retain its cookies for the mismatch retry.
+        warmup_deadline = min(budget.deadline, time.monotonic() + 5.0)
+        for path in ("/", "/api/auth/session", "/cdn-cgi/trace"):
+            budget.remaining()
+            remaining = warmup_deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            try:
+                response = session.get(
+                    _BASE_URL + path,
+                    timeout=min(remaining, budget.remaining()),
+                    allow_redirects=False,
+                    stream=True,
+                )
+                response.close()
+            except requests.RequestException:
+                pass
 
-    # Best-effort cookie warmup. Sentinel remains authoritative if the homepage is Cloudflare-blocked.
-    for path in ("/", "/api/auth/session", "/cdn-cgi/trace"):
-        try:
-            session.get(
-                _BASE_URL + path, timeout=min(timeout, 20), allow_redirects=False
+        for attempt in range(2 if _retry_mismatch else 1):
+            budget.remaining()
+            trace_id = str(uuid.uuid4())
+            final_body = _conversation_body(prompt)
+            conduit = _conduit(
+                session, token, device_id, trace_id, final_body, "none", "no-token", budget
             )
-        except requests.RequestException:
-            pass
+            requirement, proof = _sentinel(session, token, device_id, budget)
+            for _ in range(4):
+                if not conduit:
+                    break
+                conduit = _conduit(
+                    session, token, device_id, trace_id, final_body, "success", conduit, budget
+                )
 
-    conduit = _conduit(
-        session, token, device_id, trace_id, final_body, "none", "no-token", timeout
-    )
-    requirement, proof = _sentinel(session, token, device_id, timeout)
-    for _ in range(4):
-        if not conduit:
-            break
-        conduit = _conduit(
-            session, token, device_id, trace_id, final_body, "success", conduit, timeout
-        )
-
-    headers = {
-        **_headers(token, device_id, final=True),
-        "content-type": "application/json",
-        "accept": "text/event-stream",
-        "openai-sentinel-chat-requirements-token": requirement,
-        "openai-sentinel-proof-token": proof,
-        "x-oai-turn-trace-id": trace_id,
-        "x-openai-target-path": _CONVERSATION,
-    }
-    _, raw = _request(
-        session,
-        "POST",
-        _CONVERSATION,
-        headers=headers,
-        timeout=timeout,
-        json_body=final_body,
-        limit=_MAX_SSE_BYTES,
-    )
-    conversation_id, message_id, spoken = _parse_conversation_sse(
-        raw.decode("utf-8", "replace").splitlines()
-    )
-    if conversation_id and not spoken:
-        polled_id, polled_text = _poll_conversation_message(
-            session, token, device_id, conversation_id, timeout
-        )
-        message_id = polled_id or message_id
-        spoken = polled_text or spoken
-    if not conversation_id or not message_id:
-        raise RuntimeError(
-            "ChatGPT conversation returned no synthesizable assistant message"
-        )
-    if spoken != requested:
-        if _retry_mismatch:
-            return synthesize_codex_speech(
-                requested,
-                token,
-                voice=selected_voice,
-                timeout=timeout,
-                _retry_mismatch=False,
+            headers = {
+                **_headers(token, device_id, final=True),
+                "content-type": "application/json",
+                "accept": "text/event-stream",
+                "openai-sentinel-chat-requirements-token": requirement,
+                "openai-sentinel-proof-token": proof,
+                "x-oai-turn-trace-id": trace_id,
+                "x-openai-target-path": _CONVERSATION,
+            }
+            _, raw = _request(
+                session,
+                "POST",
+                _CONVERSATION,
+                headers=headers,
+                budget=budget,
+                json_body=final_body,
+                limit=_MAX_SSE_BYTES,
             )
-        raise RuntimeError(
-            f"ChatGPT changed the requested TTS text; refusing mismatched content: {spoken!r}"
-        )
+            conversation_id, message_id, spoken = _parse_conversation_sse(
+                raw.decode("utf-8", "replace").splitlines()
+            )
+            if conversation_id and not spoken:
+                polled_id, polled_text = _poll_conversation_message(
+                    session, token, device_id, conversation_id, budget
+                )
+                message_id = polled_id or message_id
+                spoken = polled_text or spoken
+            if not conversation_id or not message_id:
+                raise RuntimeError(
+                    "ChatGPT conversation returned no synthesizable assistant message"
+                )
+            if spoken != requested:
+                if _retry_mismatch and attempt == 0:
+                    continue
+                raise RuntimeError(
+                    "ChatGPT changed the requested TTS text; refusing mismatched content: "
+                    f"{spoken!r}"
+                )
 
-    synth_headers = {
-        **_headers(token, device_id),
-        "accept": "*/*",
-        "x-openai-target-path": _SYNTHESIZE,
-        "referer": f"{_BASE_URL}/c/{conversation_id}",
-    }
-    response, audio = _request(
-        session,
-        "GET",
-        _SYNTHESIZE,
-        headers=synth_headers,
-        timeout=timeout,
-        params={
-            "conversation_id": conversation_id,
-            "message_id": message_id,
-            "voice": selected_voice,
-            "format": "mp3",
-        },
-        limit=_MAX_AUDIO_BYTES,
-    )
-    content_type = (response.headers.get("content-type") or "").split(";", 1)[0].lower()
-    if not content_type.startswith("audio/"):
-        raise RuntimeError(
-            f"ChatGPT synthesize returned non-audio content type {content_type!r}"
-        )
-    return CodexSpeech(audio, content_type, conversation_id, message_id, spoken)
+            synth_headers = {
+                **_headers(token, device_id),
+                "accept": "*/*",
+                "x-openai-target-path": _SYNTHESIZE,
+                "referer": f"{_BASE_URL}/c/{conversation_id}",
+            }
+            response, audio = _request(
+                session,
+                "GET",
+                _SYNTHESIZE,
+                headers=synth_headers,
+                budget=budget,
+                params={
+                    "conversation_id": conversation_id,
+                    "message_id": message_id,
+                    "voice": selected_voice,
+                    "format": "mp3",
+                },
+                limit=_MAX_AUDIO_BYTES,
+            )
+            content_type = (response.headers.get("content-type") or "").split(";", 1)[0].lower()
+            if not content_type.startswith("audio/"):
+                raise RuntimeError(
+                    f"ChatGPT synthesize returned non-audio content type {content_type!r}"
+                )
+            return CodexSpeech(audio, content_type, conversation_id, message_id, spoken)

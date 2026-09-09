@@ -354,6 +354,8 @@ async def speak_stream_ws(ws: "WebSocket") -> None:
                binary PCM frames, then ``{"type": "end"}``
       server → ``{"type": "fallback"}`` when the configured provider has no
                chunked API — the client uses the POST endpoint instead.
+      server → ``{"type": "error", "message": "..."}`` on synthesis failure;
+               already-played audio must not be replayed through fallback.
     """
     if not _ws_auth_ok(ws):
         await ws.close(code=4401)
@@ -407,6 +409,8 @@ async def speak_stream_ws(ws: "WebSocket") -> None:
 
         def _emit(value) -> bool:
             """Publish with backpressure; abandon a blocked put after barge-in."""
+            if stop.is_set():
+                return False
             future = asyncio.run_coroutine_threadsafe(chunks.put(value), loop)
             while not stop.is_set():
                 try:
@@ -451,13 +455,17 @@ async def speak_stream_ws(ws: "WebSocket") -> None:
                 if not cleaned:
                     continue
                 for piece in _split_text_for_speak_stream(cleaned, cap):
+                    if stop.is_set():
+                        return
                     for chunk in streamer.stream(piece):
                         if stop.is_set():
                             return
                         if not _emit(chunk):
                             return
         except Exception as exc:
-            _log.warning("speak-stream synthesis failed: %s", exc)
+            if not stop.is_set():
+                _log.warning("speak-stream synthesis failed: %s", exc)
+                _emit({"type": "error", "message": "Speech synthesis failed. Check your voice provider settings."})
         finally:
             _emit(None)
 
@@ -481,19 +489,34 @@ async def speak_stream_ws(ws: "WebSocket") -> None:
         text_q.put(None)  # unblock the producer
 
     pump = asyncio.ensure_future(_pump_client())
+    next_chunk = None
     try:
         while True:
-            chunk = await chunks.get()
+            # A provider may still be blocked in network I/O after barge-in.
+            # Socket teardown must never wait for its terminal queue marker.
+            next_chunk = asyncio.create_task(chunks.get())
+            ready, _ = await asyncio.wait((pump, next_chunk), return_when=asyncio.FIRST_COMPLETED)
+            if pump in ready:
+                break
+            chunk = next_chunk.result()
             if chunk is None:
+                await ws.send_json({"type": "end"})
+                break
+            if isinstance(chunk, dict):
+                await ws.send_json(chunk)
                 break
             await ws.send_bytes(chunk)
-        if not stop.is_set():
-            await ws.send_json({"type": "end"})
     except (WebSocketDisconnect, RuntimeError):
         pass
     finally:
         stop.set()
         text_q.put(None)
+        cancel = getattr(streamer, "cancel", None)
+        if cancel is not None:
+            cancel()
         pump.cancel()
+        if next_chunk is not None:
+            next_chunk.cancel()
+        await asyncio.gather(pump, *([next_chunk] if next_chunk is not None else []), return_exceptions=True)
         with contextlib.suppress(Exception):
             await ws.close()

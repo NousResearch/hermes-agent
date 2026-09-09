@@ -82,8 +82,17 @@ def test_codex_sse_parser_applies_assistant_text_patches():
 
 def test_codex_synthesis_refuses_model_changed_text(monkeypatch):
     class FakeSession:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            self.close()
+
+        def close(self):
+            pass
+
         def get(self, *_args, **_kwargs):
-            return SimpleNamespace(status_code=403)
+            return SimpleNamespace(status_code=403, close=lambda: None)
 
     mismatch = "\n".join([
         "data: " + json.dumps({"conversation_id": "conversation-id"}),
@@ -178,7 +187,7 @@ def test_codex_streamer_enforces_pcm_cap(monkeypatch):
     )
     monkeypatch.setattr("tools.tts_tool_codex._has_codex_tts_backend", lambda: True)
     monkeypatch.setattr(
-        "tools.codex_web_audio.synthesize_codex_speech",
+        "tools.tts_tool_codex.synthesize_codex_speech",
         lambda *_args, **_kwargs: SimpleNamespace(audio=b"ID3audio"),
     )
     monkeypatch.setattr(tts_streaming.shutil, "which", lambda _name: "ffmpeg")

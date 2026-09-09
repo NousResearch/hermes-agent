@@ -411,6 +411,38 @@ Example:
 }
 ```
 
+### Client tools (function calling round-trip)
+
+Clients may attach OpenAI-style `tools` to `POST /v1/chat/completions`
+(Raycast AI Extensions, Open WebUI function calling, and any other
+frontend that ships executable tools). The server never executes client
+tools. Instead:
+
+1. The tool schemas are described to the agent for that turn.
+2. When the agent decides a client tool is needed, the response carries
+   `finish_reason: "tool_calls"` with `message.tool_calls` in standard
+   OpenAI shape (streaming: `delta.tool_calls` chunks, and raw
+   `<tool_call>` text is never sent to the wire).
+3. Your client executes the tool locally and sends a follow-up request
+   containing the assistant `tool_calls` message plus a `role: "tool"`
+   result message. The server folds the result back into the agent
+   conversation and returns the continued answer.
+
+Tool names that collide with built-in Hermes tools are namespaced to
+`client__<name>` on the agent side and mapped back to the client's
+original name in responses. A per-client-tool chain is capped to prevent
+runaway loops. Disable with:
+
+```yaml
+gateway:
+  platforms:
+    api_server:
+      client_tools: false
+```
+
+Requests without a `tools` array are unaffected. (`/v1/responses` does not
+accept client tools yet.)
+
 ### GET /health
 
 Health check. Returns `{"status": "ok"}`. Also available at **GET /v1/health** for OpenAI-compatible clients that expect the `/v1/` prefix.

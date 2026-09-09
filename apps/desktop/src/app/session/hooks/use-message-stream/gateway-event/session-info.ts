@@ -1,15 +1,18 @@
 import { normalizePersonalityValue } from '@/lib/chat-runtime'
 import { modelOptionsQueryKey } from '@/lib/model-options'
 import { reconcileApprovalModeForProfile } from '@/store/approval-mode'
+import { reconcileSessionCompacting } from '@/store/compaction'
 import { requestDesktopOnboardingForCredentialWarning } from '@/store/onboarding'
 import { followActiveSessionCwd } from '@/store/projects'
 import {
+  $activeSessionId,
   $currentCwd,
   $currentModel,
   $currentProvider,
   $selectedStoredSessionId,
   $sessions,
   sessionMatchesStoredId,
+  setActiveSessionId,
   setCurrentBranch,
   setCurrentCwdTransient,
   setCurrentFastMode,
@@ -25,7 +28,12 @@ import {
 import { reportInstallMethodWarning } from '@/store/updates'
 
 import { finalizeInterruptedMessages } from '../../use-prompt-actions/rewind'
-import { hasSessionInfoStatePatch, PRE_TURN_LIVE_SETTLE_GRACE_MS, sessionInfoStatePatch } from '../utils'
+import {
+  applySessionInfoStatePatch,
+  hasSessionInfoStatePatch,
+  PRE_TURN_LIVE_SETTLE_GRACE_MS,
+  sessionInfoStatePatch
+} from '../utils'
 
 import type { GatewayEventContext } from './types'
 
@@ -35,16 +43,26 @@ import type { GatewayEventContext } from './types'
  *
  * Absent is not the same as different: the backend omits the id on a
  * not-yet-built (`lazy`) session, and refusing there would leave the workspace
- * marked un-owned for the rest of the conversation. Matching goes through the
- * lineage (`sessionMatchesStoredId`) so a compression-rotated tip and the root
- * a pinned-row selection may hold still read as one conversation.
+ * marked un-owned for the rest of the conversation. That only reads as the
+ * selection when the event is the pane's OWN runtime, though: an unscoped
+ * event applies precisely when no session is active, and the fan-outs
+ * (`broadcast_session_info`, the approvals loop) re-emit for every live
+ * session at once, each with its own cwd. As an unconditional wildcard those
+ * repoint `$currentCwd` and claim it for whatever is selected — nothing, in
+ * the report this comes from — until the next release drops the claim again.
+ * Hence `boundToPane`: with no binding there is no evidence, and no evidence
+ * must not become an ownership claim.
+ *
+ * Matching goes through the lineage (`sessionMatchesStoredId`) so a
+ * compression-rotated tip and the root a pinned-row selection may hold still
+ * read as one conversation.
  */
-function sessionInfoDescribesSelectedSession(storedSessionId: string | undefined): boolean {
+function sessionInfoDescribesSelectedSession(storedSessionId: string | undefined, boundToPane: boolean): boolean {
   const infoStoredSessionId = storedSessionId?.trim() || null
   const selected = $selectedStoredSessionId.get() ?? null
 
   if (!infoStoredSessionId) {
-    return true
+    return boundToPane
   }
 
   // A named session cannot describe a fresh draft. Treating a null selection as
@@ -65,6 +83,51 @@ function sessionInfoDescribesSelectedSession(storedSessionId: string | undefined
     .some(session => sessionMatchesStoredId(session, infoStoredSessionId) && sessionMatchesStoredId(session, selected))
 }
 
+/**
+ * Adopt a rebuilt runtime back into the open pane (#93942 scenario B).
+ *
+ * A mid-conversation model/provider switch rebuilds the agent runtime: the
+ * new runtime emits `session.info` (and every later event) under a NEW
+ * explicit session_id while the pane still holds the dead one as its active
+ * id — so `isActiveEvent` is false for the same conversation and the view
+ * stops receiving live updates until a full resume. When an incoming
+ * `session.info` lineage-matches the selected conversation but carries a
+ * different runtime id, and the OLD runtime shows no live turn (not busy,
+ * not streaming), re-bind: adopt the new id as the active session id,
+ * keeping the durable selection untouched. A live turn on the old runtime
+ * (overlap window during a manual switch) refuses the adoption.
+ */
+function maybeRebindPaneToRebuiltRuntime(ctx: GatewayEventContext): boolean {
+  const { deps, explicitSid, isActiveEvent, payload } = ctx
+
+  if (!explicitSid || isActiveEvent || typeof payload?.stored_session_id !== 'string') {
+    return false
+  }
+
+  const selected = $selectedStoredSessionId.get()
+
+  // A rebuilt runtime announces itself for a conversation that is already
+  // persisted, so it always names one; an unnamed payload has no lineage to
+  // match and must not capture the pane's active runtime id.
+  if (!selected || !sessionInfoDescribesSelectedSession(payload.stored_session_id, false)) {
+    return false
+  }
+
+  const activeId = $activeSessionId.get()
+  const oldState = activeId ? deps.sessionStateByRuntimeIdRef.current.get(activeId) : undefined
+
+  // Only a dead old runtime may be adopted over: hijacking a streaming turn
+  // would split one conversation's events across two panes.
+  if (oldState?.busy || oldState?.awaitingResponse || oldState?.streamId) {
+    return false
+  }
+
+  setActiveSessionId(explicitSid)
+  ctx.deps.activeSessionIdRef.current = explicitSid
+
+  return true
+}
+
 /** session.info / session.usage / session.title. */
 export function handleSessionInfoEvent(ctx: GatewayEventContext): boolean {
   const { deps, event, payload, sessionId, explicitSid, isActiveEvent, occurredAt, fromActiveSource } = ctx
@@ -81,14 +144,29 @@ export function handleSessionInfoEvent(ctx: GatewayEventContext): boolean {
   } = deps
 
   if (event.type === 'session.info') {
+    // A rebuilt runtime (mid-conversation model/provider switch) speaks under
+    // a NEW session_id. Before scoping anything by isActiveEvent, check
+    // whether this event is the rebuilt runtime announcing itself for the
+    // conversation already on screen — if so, re-bind the pane so every
+    // subsequent isActiveEvent gate keeps matching (#93942 scenario B).
+    const rebound = maybeRebindPaneToRebuiltRuntime(ctx)
+
     // Apply session-scoped fields when the event targets the active
     // session, OR when it's a global broadcast and we have no session.
-    const apply = explicitSid ? isActiveEvent : !activeSessionIdRef.current
+    const apply = (explicitSid ? isActiveEvent : !activeSessionIdRef.current) || rebound
     const statePatch = sessionInfoStatePatch(payload)
     const hasStatePatch = hasSessionInfoStatePatch(statePatch)
     const modelChanged = typeof payload?.model === 'string'
     const providerChanged = typeof payload?.provider === 'string'
     const runningChanged = typeof payload?.running === 'boolean'
+
+    // Reconnect can miss the structured `compacted` edge. A gateway-authored
+    // running=false is a terminal fact; a running heartbeat is intentionally
+    // not used as a timeout-like guess, so genuine compaction stays visible.
+    if (sessionId && payload?.running === false) {
+      reconcileSessionCompacting(sessionId, 'terminal')
+    }
+
     // The backend stamps model/provider (as strings) on EVERY session.info,
     // so the presence flags above are true on every heartbeat/turn edge —
     // fine for the cheap atom writes below (nanostores skips identical
@@ -120,7 +198,10 @@ export function handleSessionInfoEvent(ctx: GatewayEventContext): boolean {
       // Active-session model/provider still flows through the session state
       // cache via updateSessionState → syncRuntimeMetadataToView below.
 
-      if (typeof payload?.cwd === 'string' && sessionInfoDescribesSelectedSession(payload.stored_session_id)) {
+      if (
+        typeof payload?.cwd === 'string' &&
+        sessionInfoDescribesSelectedSession(payload.stored_session_id, isActiveEvent || rebound)
+      ) {
         // The active session's agent can relocate itself (new repo/worktree
         // via the terminal). When the SAME active session's cwd actually
         // moves, follow it — refresh the project tree + scope so the sidebar
@@ -177,12 +258,7 @@ export function handleSessionInfoEvent(ctx: GatewayEventContext): boolean {
     if (sessionId && hasStatePatch) {
       updateSessionState(
         sessionId,
-        state => ({
-          ...state,
-          ...statePatch,
-          branch: statePatch.branch ?? state.branch,
-          cwd: statePatch.cwd ?? state.cwd
-        }),
+        state => applySessionInfoStatePatch(state, statePatch),
         payload?.stored_session_id || undefined
       )
     }
@@ -196,11 +272,10 @@ export function handleSessionInfoEvent(ctx: GatewayEventContext): boolean {
     // mutates the per-runtime cache entry, and syncSessionStateToView
     // guards the view publish to the active session, so this is safe.
     if (runningChanged && sessionId) {
-      // Set when THIS event released a turn that ended without ever
-      // producing an assistant payload, so the catch-up side effects below
-      // run on that edge only. The updater is invoked exactly once,
+      // Set when THIS event releases a confirmed live turn whose terminal
+      // message never arrived. The updater is invoked exactly once,
       // synchronously, by updateSessionState.
-      let recoveredWithoutPayload = false
+      let recoveredIncompleteTurn = false
 
       const nextState = updateSessionState(
         sessionId,
@@ -272,15 +347,14 @@ export function handleSessionInfoEvent(ctx: GatewayEventContext): boolean {
           }
 
           // Past that gate the turn DID start and the backend now reports it
-          // finished. When no assistant payload ever arrived (gateway crash
-          // mid-stream, provider error before the first delta, agent-build
-          // failure) message.complete never fires, so this is the only event
-          // that can release the session. Bailing here instead left
+          // finished. When message.complete never fires (gateway crash
+          // mid-stream, provider error, reconnect gap), this is the only
+          // event that can release the session. Bailing here instead left
           // awaitingResponse/busy latched until app restart (#46517): the
           // per-session busy flag is authoritative for isTargetSessionBusy,
           // so submitPrompt and the slash dispatcher silently returned false
           // and the session accepted no further input.
-          recoveredWithoutPayload = state.awaitingResponse && !state.sawAssistantPayload
+          recoveredIncompleteTurn = state.turnLive
 
           return {
             ...state,
@@ -305,13 +379,13 @@ export function handleSessionInfoEvent(ctx: GatewayEventContext): boolean {
         payload?.stored_session_id || undefined
       )
 
-      if (recoveredWithoutPayload) {
+      if (recoveredIncompleteTurn) {
         // Stays unscoped, like the settle above: a background session's
         // sidebar row has to drop its working dot without the user opening
-        // it. This fires on the recovery edge only — once awaitingResponse
-        // is false the `state.busy === busy` guard above short-circuits
-        // every later heartbeat — so it costs one coalesced refresh per
-        // broken turn, not one per tick.
+        // it. This fires on the recovery edge only — once turnLive is false
+        // the `state.busy === busy` guard above short-circuits every later
+        // heartbeat — so it costs one coalesced refresh per broken turn,
+        // not one per tick.
         scheduleSessionsRefresh()
 
         // The transcript catch-up IS scoped. The stream died, but the turn

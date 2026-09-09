@@ -6,6 +6,7 @@ import { isCardTool, isFileEditTool, isSilentTool } from '@/lib/tool-render-clas
 import { extractToolErrorMessage, formatToolResultSummary } from '@/lib/tool-result-summary'
 
 import {
+  browserExecStepLabel,
   compactPreview,
   contextValue,
   formatDurationSeconds,
@@ -347,6 +348,7 @@ const DEFAULT_COUNT_NOUN_BY_TOOL: Record<string, string> = {
   search_files: 'result',
   session_search_recall: 'result',
   todo: 'todo',
+  todo_list: 'todo',
   web_search: 'result'
 }
 
@@ -1380,6 +1382,19 @@ function dynamicTitle(
           compactPreview(summarizeShellCommand(command), 160)
         )
       )
+    }
+  }
+
+  if (part.toolName === 'browser_exec') {
+    // The browser_exec schema asks the model to open `code` with a one-line
+    // `# …` comment describing the step in plain language; the CLI/TUI
+    // already surface it (agent/display.py). Mirror that here so desktop
+    // rows read "Searching Amazon for paper towels" instead of the generic
+    // "Browser Exec".
+    const label = browserExecStepLabel(firstStringField(args, ['code']))
+
+    if (label) {
+      return { title: label }
     }
   }
 

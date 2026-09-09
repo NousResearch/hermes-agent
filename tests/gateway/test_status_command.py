@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from gateway.config import GatewayConfig, Platform, PlatformConfig
-from gateway.platforms.base import MessageEvent
+from gateway.platforms.event import MessageEvent
 from gateway.session import SessionEntry, SessionSource, build_session_key
 
 
@@ -245,7 +245,7 @@ def _make_reasoning_runner(tmp_path, monkeypatch, config_yaml: str):
 async def test_status_effort_matches_real_resolver(
     tmp_path, monkeypatch, config_yaml, expected
 ):
-    """/status must report what the real resolver returns for the next turn."""
+    """/status reports the configuration resolved for its displayed model."""
     runner = _make_reasoning_runner(tmp_path, monkeypatch, config_yaml)
 
     result = await runner._handle_message(_make_event("/status"))
@@ -282,7 +282,7 @@ async def test_status_effort_follows_session_override(
 
 
 @pytest.mark.asyncio
-async def test_status_drops_effort_line_when_resolution_fails(tmp_path, monkeypatch):
+async def test_status_drops_effort_line_when_resolution_fails(tmp_path, monkeypatch, caplog):
     """A resolver failure degrades to omitting the line, not a wrong level.
 
     The handler swallows resolution errors on purpose — /status is a
@@ -306,6 +306,75 @@ async def test_status_drops_effort_line_when_resolution_fails(tmp_path, monkeypa
     assert "**Hermes Gateway Status**" in result
     assert "**Model:** `openai/gpt-test`" in result
     assert "**Lifetime tokens billed:**" in result
+    assert any(
+        record.levelname == "WARNING"
+        and record.message == "Failed to resolve reasoning effort for /status"
+        and record.exc_info is not None
+        for record in caplog.records
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("route_source", ["live", "cached", "persisted"])
+async def test_status_effort_tracks_displayed_model_changes(tmp_path, monkeypatch, route_source):
+    """Effort follows the displayed route, even when the global/default model differs."""
+    runner = _make_reasoning_runner(
+        tmp_path, monkeypatch,
+        "model:\n  default: openai/global\n  provider: openai\n"
+        "agent:\n  reasoning_effort: low\n  reasoning_overrides:\n"
+        "    openai/first: high\n    openai/second: xhigh\n",
+    )
+    session_key = build_session_key(_make_source())
+    runner._session_db._db.get_dominant_session_model_route.return_value = {}
+    for model, effort in [("openai/first", "high"), ("openai/second", "xhigh")]:
+        agent = SimpleNamespace(model=model, provider="openai")
+        if route_source == "live":
+            runner._running_agents[session_key] = agent
+        elif route_source == "cached":
+            runner._agent_cache[session_key] = (agent, "signature")
+        else:
+            runner._session_db._db.get_dominant_session_model_route.return_value = {
+                "model": model, "billing_provider": "openai",
+            }
+        result = await runner._handle_status_command(_make_event("/status"))
+        assert f"**Model:** `{model}` (openai)" in result
+        assert f"**Effort:** `{effort}`" in result
+
+
+@pytest.mark.asyncio
+async def test_status_effort_session_isolation_and_localization(tmp_path, monkeypatch):
+    """Updating/resetting one conversation's effort cannot affect another's status."""
+    from agent.i18n import t
+
+    runner = _make_reasoning_runner(
+        tmp_path, monkeypatch, "agent:\n  reasoning_effort: low\n"
+    )
+    events = [_make_event("/status"), _make_event("/status")]
+    events[1].source.chat_id = "c2"
+    entries = {
+        build_session_key(event.source): SessionEntry(
+            session_key=build_session_key(event.source), session_id=f"sess-{index}",
+            created_at=datetime.now(), updated_at=datetime.now(),
+            platform=Platform.TELEGRAM, chat_type="dm",
+        )
+        for index, event in enumerate(events)
+    }
+    runner.session_store.get_or_create_session.side_effect = (
+        lambda source: entries[build_session_key(source)]
+    )
+    first, second = [build_session_key(event.source) for event in events]
+    runner._set_session_reasoning_override(first, {"enabled": True, "effort": "high"})
+    runner._set_session_reasoning_override(second, {"enabled": False})
+    for language in ("en", "de"):
+        monkeypatch.setenv("HERMES_LANGUAGE", language)
+        for event, effort in zip(events, ("high", t("gateway.reasoning.level_disabled"))):
+            result = await runner._handle_status_command(event)
+            assert t("gateway.status.effort", effort=effort) in result
+    runner._set_session_reasoning_override(first, None)
+    result = await runner._handle_status_command(events[0])
+    assert t("gateway.status.effort", effort="low") in result
+    result = await runner._handle_status_command(events[1])
+    assert t("gateway.status.effort", effort=t("gateway.reasoning.level_disabled")) in result
 
 
 @pytest.mark.asyncio
@@ -543,7 +612,8 @@ async def test_status_command_bypasses_active_session_guard():
     """When an agent is running, /status must be dispatched immediately via
     base.handle_message — not queued or treated as an interrupt (#5046)."""
     import asyncio
-    from gateway.platforms.base import BasePlatformAdapter, MessageEvent, MessageType
+    from gateway.platforms.base import BasePlatformAdapter
+    from gateway.platforms.event import MessageEvent, MessageType
     from gateway.session import build_session_key
     from gateway.config import Platform, PlatformConfig
 

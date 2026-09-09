@@ -61,15 +61,26 @@ def test_query_and_query_file_mutually_exclusive(tmp_path):
 
 
 def test_bot_mode_protocol_never_inlines_message_into_shell():
-    """The DM protocol must use --query-file / stdin, not -q "…" inlining."""
+    """The DM transport must use --query-file / stdin, not -q "…" inlining.
+
+    The transport moved from prompt-injected instructions (bot_mode_probe)
+    to the message_agent tool (bot_mode_dm) in Aug 2026 — the invariant now
+    holds on the tool's command builder, and the probe must no longer teach
+    any shellout at all.
+    """
     sys.path.insert(0, str(REPO))
     try:
         import importlib
 
+        dm = importlib.import_module("tools.bot_mode_dm")
+        src = Path(dm.__file__).read_text(encoding="utf-8")
         probe = importlib.import_module("tools.bot_mode_probe")
-        src = Path(probe.__file__).read_text(encoding="utf-8")
+        probe_src = Path(probe.__file__).read_text(encoding="utf-8")
     finally:
         sys.path.remove(str(REPO))
     assert "--query-file" in src
     assert '-q "Message from' not in src
     assert 'dm <peer>/<agent-name> "Message from' not in src
+    # The protocol section teaches the tool, never a hand-rolled shellout.
+    assert "message_agent" in probe_src
+    assert "--query-file /tmp/dm.txt" not in probe_src

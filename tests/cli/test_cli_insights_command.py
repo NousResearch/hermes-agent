@@ -2,7 +2,7 @@ from unittest.mock import MagicMock, patch
 from types import SimpleNamespace
 
 from cli import HermesCLI
-from hermes_cli.main import cmd_insights
+from hermes_cli.main_agent_cmds import cmd_insights
 
 
 class _InsightsEngineStub:

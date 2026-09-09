@@ -37,6 +37,8 @@ import ast
 import inspect
 
 from gateway import run as gateway_run
+from gateway import run_turn as gateway_run_turn
+from gateway import run_turn as gateway_run_turn
 from gateway.config import GatewayConfig, Platform
 from gateway.session import SessionSource, SessionStore
 from hermes_state import SessionDB
@@ -47,7 +49,7 @@ from hermes_state import SessionDB
 # ---------------------------------------------------------------------------
 def _find_compression_exhausted_reset_block() -> ast.If:
     """Return the ``if agent_result.get('compression_exhausted') ...`` block."""
-    tree = ast.parse(inspect.getsource(gateway_run))
+    tree = ast.parse(inspect.getsource(gateway_run_turn))
 
     for node in ast.walk(tree):
         if not isinstance(node, ast.If):

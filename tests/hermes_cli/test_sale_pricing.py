@@ -6,10 +6,22 @@ import json
 from unittest.mock import MagicMock
 
 import hermes_cli.models as models_mod
-from hermes_cli.models import (
-    compute_sale_discount,
-    fetch_models_with_pricing,
-)
+from hermes_cli import models_pricing
+from hermes_cli.models_pricing import compute_sale_discount, fetch_models_with_pricing
+
+
+def test_free_model_gets_flat_100_percent_discount():
+    """$0/$0 models always show -100%; was_* pass through when present."""
+    assert compute_sale_discount("0", "0", None) == (100, "", "")
+    assert compute_sale_discount(
+        "0", "0", {"prompt": "0.000002", "completion": "0.00001"}
+    ) == (100, "0.000002", "0.00001")
+    # "0.0000000000" strings (Nous portal shape) count as free too.
+    assert compute_sale_discount("0.0000000000", "0.0000000000", None) == (100, "", "")
+
+
+def test_paid_model_without_original_shows_no_sale():
+    assert compute_sale_discount("0.000002", "0.00001", None) is None
 
 
 
@@ -17,7 +29,7 @@ from hermes_cli.models import (
 
 
 def test_fetch_models_with_pricing_copies_nested_original(monkeypatch):
-    models_mod._pricing_cache.clear()
+    models_pricing._pricing_cache.clear()
     payload = {
         "data": [
             {
@@ -86,7 +98,7 @@ def test_resolve_nous_pricing_credentials_honors_inference_env_override(monkeypa
         "hermes_cli.auth.resolve_nous_runtime_credentials",
         lambda: None,
     )
-    api_key, base_url = models_mod._resolve_nous_pricing_credentials()
+    api_key, base_url = models_pricing._resolve_nous_pricing_credentials()
     assert api_key == ""
     # The bare origin, whichever form the override was written in: callers
     # append their own path (``/v1/models``), so a suffix here would double up.
@@ -105,7 +117,7 @@ def test_resolve_nous_pricing_credentials_normalizes_either_suffix(monkeypatch):
         "https://stg-inference-api.nousresearch.com/v1/",
     ):
         monkeypatch.setenv("NOUS_INFERENCE_BASE_URL", override)
-        assert models_mod._resolve_nous_pricing_credentials()[1] == (
+        assert models_pricing._resolve_nous_pricing_credentials()[1] == (
             "https://stg-inference-api.nousresearch.com"
         )
 
@@ -117,8 +129,8 @@ def test_a_failed_catalog_fetch_is_not_cached_forever(monkeypatch):
     call, but it expires — the processes that read this run for weeks, and
     every caller silently falls back to a curated list meanwhile.
     """
-    models_mod._pricing_cache.clear()
-    models_mod._pricing_cache_retry_after.clear()
+    models_pricing._pricing_cache.clear()
+    models_pricing._pricing_cache_retry_after.clear()
 
     calls = []
 
@@ -137,7 +149,7 @@ def test_a_failed_catalog_fetch_is_not_cached_forever(monkeypatch):
     monkeypatch.setattr(
         models_mod.time,
         "monotonic",
-        lambda: now + models_mod._FAILED_CATALOG_TTL_SECONDS + 1,
+        lambda: now + models_pricing._FAILED_CATALOG_TTL_SECONDS + 1,
     )
     assert fetch_models_with_pricing(base_url="https://example.test") == {}
     assert len(calls) == 2
@@ -145,8 +157,8 @@ def test_a_failed_catalog_fetch_is_not_cached_forever(monkeypatch):
 
 def test_a_successful_catalog_fetch_stays_cached(monkeypatch):
     """Only the failures expire; a real catalog is still fetched once."""
-    models_mod._pricing_cache.clear()
-    models_mod._pricing_cache_retry_after.clear()
+    models_pricing._pricing_cache.clear()
+    models_pricing._pricing_cache_retry_after.clear()
 
     calls = []
     body = json.dumps(
@@ -168,7 +180,7 @@ def test_a_successful_catalog_fetch_stays_cached(monkeypatch):
     monkeypatch.setattr(
         models_mod.time,
         "monotonic",
-        lambda: now + models_mod._FAILED_CATALOG_TTL_SECONDS + 1,
+        lambda: now + models_pricing._FAILED_CATALOG_TTL_SECONDS + 1,
     )
     assert "a/b" in fetch_models_with_pricing(base_url="https://example.test")
     assert len(calls) == 1

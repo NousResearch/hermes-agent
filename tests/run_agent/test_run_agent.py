@@ -4919,6 +4919,7 @@ class TestRunConversation:
                 "or scope before resuming"
             ),
             kind="needs_input",
+            expected_run_id=None,
         )
 
     def test_no_kanban_block_when_not_in_kanban_mode(self, agent, monkeypatch):

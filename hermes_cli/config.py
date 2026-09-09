@@ -1142,6 +1142,21 @@ def _validate_fallback_model(fb: Any, issues: List[ConfigIssue]) -> None:
                         suffix=" — fallback will be disabled")
 
 
+def _validate_code_execution(config: Dict[str, Any], issues: List[ConfigIssue]) -> None:
+    """A negative max_tool_calls otherwise only surfaces as a ValueError deep in the code
+    execution tool's first call; catch it at startup instead."""
+    ce_cfg = config.get("code_execution")
+    if not isinstance(ce_cfg, dict):
+        return
+    value = ce_cfg.get("max_tool_calls")
+    if isinstance(value, int) and not isinstance(value, bool) and value < 0:
+        _issue(
+            issues, "error",
+            f"code_execution.max_tool_calls is negative ({value!r})",
+            "Use zero to disable the limit, or a positive integer to cap tool calls",
+        )
+
+
 def _validate_web_backends(config: Dict[str, Any], issues: List[ConfigIssue]) -> None:
     """A stale web backend selection otherwise fails only at the first web_search/web_extract
     call with a generic "no registered provider" error; warn at startup instead."""
@@ -1204,6 +1219,7 @@ def validate_config_structure(config: Optional[Dict[str, Any]] = None) -> List["
                    f"Root-level key '{key}' looks misplaced — should it be under 'model:' or inside a 'custom_providers' entry?",
                    f"Move '{key}' under the appropriate section")
 
+    _validate_code_execution(config, issues)
     _validate_web_backends(config, issues)
     return issues
 

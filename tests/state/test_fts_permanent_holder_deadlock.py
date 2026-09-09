@@ -68,7 +68,14 @@ def _seed_stale_db(tmp_path, monkeypatch):
     return db_path
 
 
-def _write_deferral(db_path, *, attempts, age_seconds, now):
+def _write_deferral(db_path, *, attempts, age_seconds, now, holder_pids=(4242,)):
+    """Seed the deferral breadcrumb.
+
+    `holder_pids` must match the holder the code will actually see: production
+    compares the persisted set against the live scan and restarts the counters
+    when they differ, so seeding a fictional PID would silently exercise the
+    holder-changed path instead of the futility path.
+    """
     raw = sqlite3.connect(str(db_path))
     raw.execute(
         "INSERT INTO state_meta (key, value) VALUES (?, ?) "
@@ -79,7 +86,7 @@ def _write_deferral(db_path, *, attempts, age_seconds, now):
                 "first_seen": now - age_seconds,
                 "last_seen": now,
                 "attempts": attempts,
-                "holder_pids": [4242],
+                "holder_pids": sorted(holder_pids),
             }),
         ),
     )
@@ -104,11 +111,182 @@ def _pin_unreapable_holder(monkeypatch, db_path):
     )
 
 
+class TestUnprovableHolderStaysFailClosed:
+    """The futility exit must never fire on a holder we could not identify.
+
+    `foreign_state_db_holders()` returns `(-1, "open-file scan failed: ...")`
+    when a /proc or open-file scan fails, or `(-1, "open-file scan
+    unavailable")` when psutil is missing. Its docstring is explicit that
+    structural maintenance must not assume quiescence in that state.
+
+    That is precisely what `fts_rebuild_admission` cannot speak for: the flock
+    serializes cooperating FTS rebuilders, it is not evidence that an
+    uninspectable process -- or a process holding an unlinked SQLite generation
+    -- has gone away. So an unknown holder keeps deferring past the threshold,
+    forever if necessary, rather than trading a hang for possible corruption.
+    """
+
+    @pytest.mark.parametrize(
+        "sentinel",
+        [
+            pytest.param((-1, "open-file scan failed: boom"), id="scan-failed"),
+            pytest.param((-1, "open-file scan unavailable"), id="psutil-missing"),
+        ],
+    )
+    def test_unknown_holder_past_the_threshold_still_defers(
+        self, tmp_path, monkeypatch, sentinel
+    ):
+        db_path = _seed_stale_db(tmp_path, monkeypatch)
+        now = 1_000_000.0
+        # Well past both thresholds; only the holder's identity differs.
+        # holder_pids=() because production filters pid > 0, so a (-1, ...)
+        # scan persists an EMPTY set. Seeding a fictional pid here would take
+        # the holder-changed reset path and never reach the fail-closed branch.
+        _write_deferral(
+            db_path,
+            attempts=FUTILE_ATTEMPTS * 5,
+            age_seconds=FUTILE_SECONDS * 5,
+            now=now,
+            holder_pids=(),
+        )
+        monkeypatch.setattr(
+            SessionDB, "_foreign_state_db_holders", lambda self: [sentinel], raising=False,
+        )
+        monkeypatch.setattr(
+            SessionDB, "_reap_inactive_orphan_desktop_holders",
+            lambda self, holders, *, min_age_seconds: [], raising=False,
+        )
+        monkeypatch.setattr(hermes_state_schema.time, "time", lambda: now)
+
+        reopened = SessionDB(db_path=db_path)
+        try:
+            assert reopened._fts_stale is True, (
+                "an unprovable holder must not reach the futility exit"
+            )
+            assert _meta_value(db_path, FTS_STALE_KEY) == "1"
+            # The history must be INTACT, not reset: an unchanged holder set
+            # that is merely unprovable keeps accruing, and the exit declines
+            # anyway. This is what distinguishes the fail-closed guard from the
+            # holder-identity reset -- without the guard, this same state
+            # reaches the exit and rebuilds.
+            raw = _meta_value(db_path, FTS_REBUILD_DEFERRAL_KEY)
+            assert raw is not None
+            record = json.loads(raw)
+            assert record["attempts"] > FUTILE_ATTEMPTS, (
+                f"deferral history was reset (attempts={record['attempts']}), so this "
+                "case is exercising the identity-change path, not the guard"
+            )
+            assert now - record["first_seen"] > FUTILE_SECONDS, (
+                "first_seen was reset, so the futility thresholds were not actually met"
+            )
+            # Canonical writes stay available while deferred.
+            reopened.append_message("s1", "user", "still writable while unprovable")
+        finally:
+            reopened.close()
+
+    def test_unknown_holder_mixed_with_a_known_one_still_defers(
+        self, tmp_path, monkeypatch
+    ):
+        """One unprovable entry poisons the whole set, not just its own row."""
+        db_path = _seed_stale_db(tmp_path, monkeypatch)
+        now = 1_000_000.0
+        # The known pid 4242 is what production persists for this mixed set
+        # (the -1 entry is filtered out), so the identity check must agree and
+        # the test must fail closed on the unprovable entry alone.
+        _write_deferral(
+            db_path, attempts=FUTILE_ATTEMPTS * 5, age_seconds=FUTILE_SECONDS * 5, now=now,
+            holder_pids=(4242,),
+        )
+        monkeypatch.setattr(
+            SessionDB, "_foreign_state_db_holders",
+            lambda self: [(4242, str(db_path) + "-wal"), (-1, "open-file scan failed: x")],
+            raising=False,
+        )
+        monkeypatch.setattr(
+            SessionDB, "_reap_inactive_orphan_desktop_holders",
+            lambda self, holders, *, min_age_seconds: [], raising=False,
+        )
+        monkeypatch.setattr(hermes_state_schema.time, "time", lambda: now)
+
+        reopened = SessionDB(db_path=db_path)
+        try:
+            assert reopened._fts_stale is True
+            # Same distinction as above: the history must survive, proving the
+            # guard declined rather than the identity check resetting it.
+            raw = _meta_value(db_path, FTS_REBUILD_DEFERRAL_KEY)
+            assert raw is not None
+            record = json.loads(raw)
+            assert record["attempts"] > FUTILE_ATTEMPTS
+            assert now - record["first_seen"] > FUTILE_SECONDS
+        finally:
+            reopened.close()
+
+
+class TestPermanenceBelongsToAHolderSet:
+    """Accrued futility must not transfer from one holder to another.
+
+    #106393's contract is "the SAME holder set has blocked N consecutive
+    deferrals". Without comparing the persisted `holder_pids` against the
+    current scan, holder A's accumulated hour lets a freshly-arrived holder B
+    skip the wait on its very first deferral.
+    """
+
+    def test_a_new_holder_resets_the_accrued_history(self, tmp_path, monkeypatch):
+        db_path = _seed_stale_db(tmp_path, monkeypatch)
+        now = 1_000_000.0
+        # Holder A (pid 4242) accrued more than enough history to be futile.
+        _write_deferral(
+            db_path, attempts=FUTILE_ATTEMPTS, age_seconds=FUTILE_SECONDS, now=now
+        )
+        # ...but the holder present NOW is B (pid 7777).
+        monkeypatch.setattr(
+            SessionDB, "_foreign_state_db_holders",
+            lambda self: [(7777, str(db_path) + "-wal")], raising=False,
+        )
+        monkeypatch.setattr(
+            SessionDB, "_reap_inactive_orphan_desktop_holders",
+            lambda self, holders, *, min_age_seconds: [], raising=False,
+        )
+        monkeypatch.setattr(hermes_state_schema.time, "time", lambda: now)
+
+        reopened = SessionDB(db_path=db_path)
+        try:
+            assert reopened._fts_stale is True, (
+                "holder B inherited holder A's futility history"
+            )
+            # The breadcrumb must now describe B, with the counters restarted.
+            raw = _meta_value(db_path, FTS_REBUILD_DEFERRAL_KEY)
+            assert raw is not None, "the deferral breadcrumb was not written"
+            record = json.loads(raw)
+            assert record["holder_pids"] == [7777]
+            assert record["attempts"] == 1
+            assert record["first_seen"] == now
+        finally:
+            reopened.close()
+
+    def test_the_same_holder_keeps_its_history(self, tmp_path, monkeypatch):
+        """Control for the test above: an unchanged set must still reach the exit."""
+        db_path = _seed_stale_db(tmp_path, monkeypatch)
+        now = 1_000_000.0
+        _write_deferral(
+            db_path, attempts=FUTILE_ATTEMPTS, age_seconds=FUTILE_SECONDS, now=now
+        )
+        _pin_unreapable_holder(monkeypatch, db_path)   # same pid 4242 as seeded
+        monkeypatch.setattr(hermes_state_schema.time, "time", lambda: now)
+
+        reopened = SessionDB(db_path=db_path)
+        try:
+            assert reopened._fts_stale is False
+            assert _meta_value(db_path, FTS_REBUILD_DEFERRAL_KEY) is None
+        finally:
+            reopened.close()
+
+
 class TestPermanentHolderExitCondition:
     def test_holder_not_yet_proven_permanent_is_still_deferred_to(self, tmp_path, monkeypatch):
         """Below the futility threshold nothing changes: the holder wins, cheaply."""
         db_path = _seed_stale_db(tmp_path, monkeypatch)
-        now = 10_000.0
+        now = 1_000_000.0
         # One attempt short, and one second short, of proven-futile.
         _write_deferral(
             db_path,
@@ -131,7 +309,7 @@ class TestPermanentHolderExitCondition:
     def test_proven_permanent_holder_no_longer_blocks_the_rebuild(self, tmp_path, monkeypatch):
         """Past the threshold the rebuild proceeds and the breadcrumbs are cleared."""
         db_path = _seed_stale_db(tmp_path, monkeypatch)
-        now = 10_000.0
+        now = 1_000_000.0
         _write_deferral(
             db_path,
             attempts=FUTILE_ATTEMPTS,
@@ -155,7 +333,7 @@ class TestPermanentHolderExitCondition:
     def test_futility_needs_both_attempts_and_elapsed_time(self, tmp_path, monkeypatch):
         """Many fast retries are not proof of permanence; the clock must agree too."""
         db_path = _seed_stale_db(tmp_path, monkeypatch)
-        now = 10_000.0
+        now = 1_000_000.0
         _write_deferral(
             db_path,
             attempts=FUTILE_ATTEMPTS * 10,
@@ -178,7 +356,7 @@ class TestPermanentHolderExitCondition:
         authority. With the flock unavailable the rebuild must still defer.
         """
         db_path = _seed_stale_db(tmp_path, monkeypatch)
-        now = 10_000.0
+        now = 1_000_000.0
         _write_deferral(
             db_path,
             attempts=FUTILE_ATTEMPTS,
@@ -214,7 +392,7 @@ class TestPermanentHolderExitCondition:
         the acquire must be a probe: the breadcrumb guarantees the retry.
         """
         db_path = _seed_stale_db(tmp_path, monkeypatch)
-        now = 10_000.0
+        now = 1_000_000.0
         _write_deferral(
             db_path,
             attempts=FUTILE_ATTEMPTS,
@@ -314,12 +492,15 @@ def test_rebuild_under_a_live_second_process_keeps_the_database_intact(tmp_path,
 
         time.sleep(0.5)  # let the peer commit before the rebuild starts
 
-        now = 10_000.0
+        now = 1_000_000.0
+        # Seed the history against the peer's REAL pid. Using a fictional one
+        # would take the holder-changed reset path and never test futility.
         _write_deferral(
             db_path,
             attempts=FUTILE_ATTEMPTS,
             age_seconds=FUTILE_SECONDS,
             now=now,
+            holder_pids=(peer.pid,),
         )
         monkeypatch.setattr(
             SessionDB, "_reap_inactive_orphan_desktop_holders",

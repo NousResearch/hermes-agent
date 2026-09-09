@@ -464,16 +464,40 @@ class SessionSchemaMixin:
             row = None
         parsed = safe_json_loads(row[0]) if row else None
         record = parsed if isinstance(parsed, dict) else {}
+        # Permanence is a property of a SPECIFIC holder set, not of the clock.
+        # If the set changed, the previous history describes different processes
+        # and must not be inherited -- otherwise holder A's accrued hour lets a
+        # freshly-arrived holder B skip the wait entirely.
+        holder_pids = sorted({pid for pid, _path in foreign_holders if pid > 0})
+        previous_pids = record.get("holder_pids")
+        if not isinstance(previous_pids, list):
+            previous_pids = None
+        else:
+            try:
+                previous_pids = sorted({int(p) for p in previous_pids})
+            except (TypeError, ValueError):
+                previous_pids = None
+        holder_set_changed = (
+            previous_pids is not None
+            and previous_pids != holder_pids
+            # Two empty sets are not a change. An unprovable scan filters to an
+            # empty holder_pids, so treating empty-vs-empty as a change would
+            # silently reset the history of a genuinely stuck holder on every
+            # single deferral.
+            and not (not previous_pids and not holder_pids)
+        )
         try:
             first_seen = float(record.get("first_seen", now))
             attempts = int(record.get("attempts", 0)) + 1
         except (TypeError, ValueError):
             first_seen, attempts = now, 1
+        if holder_set_changed:
+            first_seen, attempts = now, 1
         if first_seen > now or first_seen < 0:
             first_seen = now
         diagnostic = {
             "first_seen": first_seen, "last_seen": now, "attempts": attempts,
-            "holder_pids": sorted({pid for pid, _path in foreign_holders if pid > 0}),
+            "holder_pids": holder_pids,
         }
         cursor.execute(
             "INSERT INTO state_meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
@@ -489,7 +513,13 @@ class SessionSchemaMixin:
                     "state.db FTS rebuild deferrals; checking holders again.", reaped, attempts,
                 )
                 foreign_holders = self._foreign_state_db_holders()
-            if foreign_holders and attempts < _FTS_HOLDER_FUTILE_ATTEMPTS:
+            # Suppressed once the futility exit takes over, since that path logs
+            # its own ERROR -- but an unprovable holder never reaches that exit,
+            # so it must keep getting the actionable message.
+            if foreign_holders and (
+                attempts < _FTS_HOLDER_FUTILE_ATTEMPTS
+                or any(pid <= 0 for pid, _path in foreign_holders)
+            ):
                 logger.error(
                     "state.db FTS repair remains blocked after %d deferrals "
                     "by holder(s) %s. Stopping the Desktop backend "
@@ -500,6 +530,24 @@ class SessionSchemaMixin:
                 )
         if not foreign_holders:
             return False
+        # An unknown holder (pid < 0) is the "could not prove quiescence"
+        # sentinel from foreign_state_db_holders(): a failed /proc or open-file
+        # scan, or psutil missing. Its own docstring says structural maintenance
+        # must not assume quiescence in that state, and it is exactly what the
+        # rebuild flock CANNOT speak for -- fts_rebuild_admission serializes
+        # cooperating FTS rebuilders, it is no evidence that an uninspectable
+        # process or an unlinked SQLite generation is gone. So the futility exit
+        # is unavailable here: keep deferring, fail closed, forever if need be.
+        # The visible-PID case is the one this exit was written for.
+        uninspectable = [h for h in foreign_holders if h[0] <= 0]
+        if uninspectable:
+            logger.warning(
+                "state.db FTS repair stays deferred after %d deferrals: holder state "
+                "could not be proven (%s). The futility exit needs identifiable "
+                "holders; an unprovable scan is not something the rebuild lock can "
+                "serialize against.", attempts, uninspectable,
+            )
+            return True
         if attempts >= _FTS_HOLDER_FUTILE_ATTEMPTS and now - first_seen >= _FTS_HOLDER_FUTILE_SECONDS:
             # Proven-futile wait: proceed under the rebuild flock rather than
             # deferring forever while canonical writes keep failing. See the

@@ -466,6 +466,36 @@ class TestSendTelegramMediaDelivery:
         assert "No deliverable text or media remained" in result["error"]
         bot.send_message.assert_not_awaited()
 
+    def test_media_failure_after_text_delivery_returns_partial_error(self, tmp_path, monkeypatch):
+        report_path = tmp_path / "report.html"
+        report_path.write_text("<html><body>report</body></html>")
+
+        bot = MagicMock()
+        bot.send_message = AsyncMock(return_value=SimpleNamespace(message_id=1))
+        bot.send_photo = AsyncMock()
+        bot.send_video = AsyncMock()
+        bot.send_voice = AsyncMock()
+        bot.send_audio = AsyncMock()
+        bot.send_document = AsyncMock(side_effect=RuntimeError("upload timed out"))
+        _install_telegram_mock(monkeypatch, bot)
+
+        result = asyncio.run(
+            _send_telegram(
+                "token",
+                "12345",
+                "Daily report",
+                media_files=[(str(report_path), False)],
+            )
+        )
+
+        assert "error" in result
+        assert result["partial_success"] is True
+        assert result["message_id"] == "1"
+        assert "1 of 1 Telegram media attachments" in result["error"]
+        assert "upload timed out" in result["warnings"][0]
+        bot.send_message.assert_awaited_once()
+        bot.send_document.assert_awaited_once()
+
 
 # ---------------------------------------------------------------------------
 # Regression: long messages are chunked before platform dispatch

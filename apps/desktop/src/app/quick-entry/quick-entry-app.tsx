@@ -7,7 +7,8 @@ import {
   QUICK_TARGET_NEW,
   type QuickComposerEvent,
   quickComposerReducer,
-  type QuickComposerState
+  type QuickComposerState,
+  quickEntryResultEvent
 } from '@/store/quick-entry'
 
 // Native select popups do not reliably inherit the closed control's colors.
@@ -48,15 +49,7 @@ export function QuickEntryApp() {
     if (send) {
       const submitId = submitIdRef.current
       void api?.submit(send).then(result => {
-        dispatch(
-          result.ok
-            ? { submitId, type: 'submit-ok' }
-            : {
-                message: result.message || 'Quick Entry could not deliver the prompt.',
-                submitId,
-                type: 'submit-error'
-              }
-        )
+        dispatch(quickEntryResultEvent(result, submitId))
         if (!result.ok) {
           requestAnimationFrame(() => inputRef.current?.focus())
         }

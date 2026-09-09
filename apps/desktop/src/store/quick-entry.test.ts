@@ -7,7 +7,9 @@ import {
   type QuickComposerEvent,
   quickComposerReducer,
   type QuickComposerState,
-  type QuickEntrySubmitPayload
+  type QuickEntrySubmitPayload,
+  quickEntryResultEvent,
+  type QuickEntrySubmitResult
 } from './quick-entry'
 
 // Drive the reducer like the window does, collecting every send it asked for.
@@ -44,20 +46,19 @@ describe('quickComposerReducer', () => {
       connected: false,
       draft: '',
       error: null,
+      lastSubmitText: '',
+      orphanedFailure: null,
       pendingSubmitId: null,
       sessions: [],
       submitting: false,
       target: QUICK_TARGET_CURRENT,
+      unknownSubmitId: null,
       visible: true
     })
   })
 
   it('submit sends the trimmed draft but waits for acknowledgement to clear and hide', () => {
-    const { sent, state } = run([
-      connect,
-      { draft: '  ship it  ', type: 'edit' },
-      { submitId: 1, type: 'submit' }
-    ])
+    const { sent, state } = run([connect, { draft: '  ship it  ', type: 'edit' }, { submitId: 1, type: 'submit' }])
 
     expect(sent).toEqual([{ target: QUICK_TARGET_CURRENT, text: 'ship it' }])
     expect(state.draft).toBe('  ship it  ')
@@ -86,13 +87,20 @@ describe('quickComposerReducer', () => {
     })
   })
 
-  it('ignores submit acknowledgements with stale ids', () => {
+  it('keeps the current owner for stale acknowledgements and records an unmatched late failure', () => {
     const { state } = run([connect, { draft: 'keep', type: 'edit' }, { submitId: 7, type: 'submit' }])
 
     expect(quickComposerReducer(state, { submitId: 8, type: 'submit-ok' }).state).toEqual(state)
-    expect(
-      quickComposerReducer(state, { message: 'stale', submitId: 8, type: 'submit-error' }).state
-    ).toEqual(state)
+    const failed = quickComposerReducer(state, { message: 'stale', submitId: 8, type: 'submit-error' }).state
+
+    expect(failed).toMatchObject({
+      draft: 'keep',
+      error: 'stale',
+      lastSubmitText: '',
+      orphanedFailure: { message: 'stale', text: 'keep' },
+      pendingSubmitId: 7,
+      submitting: true
+    })
   })
 
   it('keeps resume and current-target submits on their existing routes', () => {
@@ -212,22 +220,22 @@ describe('quickComposerReducer', () => {
     expect(state.draft).toBe('')
   })
 
-  it('the blur that follows a submit does not re-send or resurrect the draft', () => {
+  it('the blur that follows a submit keeps that submit correlated and delivered', () => {
     const { sent, state } = run([connect, { draft: 'go', type: 'edit' }, { type: 'submit' }, { type: 'blur' }])
 
     expect(sent).toEqual([{ target: QUICK_TARGET_CURRENT, text: 'go' }])
-    expect(state.draft).toBe('')
-    expect(state.submitting).toBe(false)
+    expect(state.draft).toBe('go')
+    expect(state.submitting).toBe(true)
     expect(state.visible).toBe(false)
   })
 
-  it('being re-summoned resets the capture surface but KEEPS the pushed gateway truth', () => {
+  it('being re-summoned reconnects to an in-flight submit and KEEPS the pushed gateway truth', () => {
     const afterSubmit = run([connect, { draft: 'first', type: 'edit' }, { type: 'submit' }]).state
     const { sent, state } = run([{ type: 'shown' }], afterSubmit)
 
     expect(sent).toEqual([])
-    expect(state.draft).toBe('')
-    expect(state.target).toBe(QUICK_TARGET_CURRENT)
+    expect(state.draft).toBe('first')
+    expect(state.submitting).toBe(true)
     expect(state.visible).toBe(true)
     // The gateway did not disconnect just because the window was re-opened.
     expect(state.connected).toBe(true)
@@ -240,5 +248,161 @@ describe('quickComposerReducer', () => {
 
     expect(first.sent).toEqual([{ target: QUICK_TARGET_CURRENT, text: 'one' }])
     expect(second.sent).toEqual([{ target: QUICK_TARGET_CURRENT, text: 'two' }])
+  })
+
+  it('keeps the correlation and draft when dismissed mid-submit', () => {
+    const { state } = run([
+      connect,
+      { draft: 'pending prompt', type: 'edit' },
+      { submitId: 7, type: 'submit' },
+      { type: 'dismiss' }
+    ])
+
+    expect(state.draft).toBe('pending prompt')
+    expect(state.pendingSubmitId).toBe(7)
+    expect(state.submitting).toBe(true)
+    expect(state.visible).toBe(false)
+  })
+
+  it('reconnects to the same generation when re-shown mid-submit', () => {
+    const dismissed = run([
+      connect,
+      { draft: 'pending prompt', type: 'edit' },
+      { submitId: 7, type: 'submit' },
+      { type: 'dismiss' }
+    ]).state
+    const state = quickComposerReducer(dismissed, { type: 'shown' }).state
+
+    expect(state.draft).toBe('pending prompt')
+    expect(state.error).toBeNull()
+    expect(state.pendingSubmitId).toBe(7)
+    expect(state.submitting).toBe(true)
+    expect(state.visible).toBe(true)
+  })
+
+  it('a late success for the owning generation clears the surface', () => {
+    const dismissed = run([
+      connect,
+      { draft: 'pending prompt', type: 'edit' },
+      { submitId: 7, type: 'submit' },
+      { type: 'dismiss' }
+    ]).state
+    const shown = quickComposerReducer(dismissed, { type: 'shown' }).state
+    const state = quickComposerReducer(shown, { submitId: 7, type: 'submit-ok' }).state
+
+    expect(state.draft).toBe('')
+    expect(state.pendingSubmitId).toBeNull()
+    expect(state.visible).toBe(false)
+  })
+
+  it('a late failure for the owning generation keeps the text and shows the error', () => {
+    const { state } = run([
+      connect,
+      { draft: 'pending prompt', type: 'edit' },
+      { submitId: 7, type: 'submit' },
+      { type: 'dismiss' },
+      { message: 'gateway down', submitId: 7, type: 'submit-error' }
+    ])
+
+    expect(state.draft).toBe('pending prompt')
+    expect(state.error).toBe('gateway down')
+    expect(state.pendingSubmitId).toBeNull()
+    expect(state.visible).toBe(true)
+  })
+
+  it('a timeout is unknown, keeps the correlation, and is not retryable', () => {
+    const { state } = run([
+      connect,
+      { draft: 'pending prompt', type: 'edit' },
+      { submitId: 7, type: 'submit' },
+      { message: 'may still be delivered', submitId: 7, type: 'submit-unknown' }
+    ])
+    const retried = run(
+      [
+        { draft: 'try again', type: 'edit' },
+        { submitId: 8, type: 'submit' }
+      ],
+      state
+    )
+
+    expect(state.draft).toBe('pending prompt')
+    expect(state.error).toBe('may still be delivered')
+    expect(state.pendingSubmitId).toBeNull()
+    expect(state.submitting).toBe(false)
+    expect(state.unknownSubmitId).toBe(7)
+    expect(state.visible).toBe(true)
+    expect(retried.sent).toEqual([])
+    expect(retried.state.draft).toBe('try again')
+    expect(retried.state.unknownSubmitId).toBe(7)
+  })
+
+  it('a late success reconciles the unknown outcome', () => {
+    const unknown = run([
+      connect,
+      { draft: 'pending prompt', type: 'edit' },
+      { submitId: 7, type: 'submit' },
+      { message: 'may still be delivered', submitId: 7, type: 'submit-unknown' }
+    ]).state
+    const state = quickComposerReducer(unknown, { submitId: 7, type: 'submit-ok' }).state
+
+    expect(state.draft).toBe('')
+    expect(state.unknownSubmitId).toBeNull()
+    expect(state.visible).toBe(false)
+  })
+
+  it('a late failure clears the unknown correlation so a retry is allowed', () => {
+    const unknown = run([
+      connect,
+      { draft: 'pending prompt', type: 'edit' },
+      { submitId: 7, type: 'submit' },
+      { message: 'may still be delivered', submitId: 7, type: 'submit-unknown' }
+    ]).state
+    const state = quickComposerReducer(unknown, { message: 'rejected', submitId: 7, type: 'submit-error' }).state
+
+    expect(state.draft).toBe('pending prompt')
+    expect(state.error).toBe('rejected')
+    expect(state.unknownSubmitId).toBeNull()
+  })
+
+  it('quickEntryResultEvent maps timeout to submit-unknown, ok to submit-ok, else submit-error', () => {
+    const timeout: QuickEntrySubmitResult = { code: 'timeout', ok: false }
+    const ok: QuickEntrySubmitResult = { ok: true }
+    const failed: QuickEntrySubmitResult = { ok: false }
+    const timeoutEvent = quickEntryResultEvent(timeout, 7)
+
+    expect(timeoutEvent).toEqual({
+      message: 'Hermes has not confirmed the prompt yet — it may still be delivered.',
+      submitId: 7,
+      type: 'submit-unknown'
+    })
+    expect(timeoutEvent.type).not.toBe('submit-error')
+    expect(quickEntryResultEvent(ok, 7)).toEqual({ submitId: 7, type: 'submit-ok' })
+    expect(quickEntryResultEvent(failed, 7)).toEqual({
+      message: 'Quick Entry could not deliver the prompt.',
+      submitId: 7,
+      type: 'submit-error'
+    })
+  })
+
+  it('a failure for a superseded generation is handed back on the next summon', () => {
+    const { sent, state } = run([
+      connect,
+      { draft: 'first prompt', type: 'edit' },
+      { submitId: 7, type: 'submit' },
+      { type: 'dismiss' },
+      { type: 'shown' },
+      { draft: 'second prompt', type: 'edit' },
+      { submitId: 8, type: 'submit' },
+      { message: 'first failed', submitId: 7, type: 'submit-error' },
+      { submitId: 8, type: 'submit-ok' },
+      { type: 'shown' }
+    ])
+
+    expect(sent).toEqual([
+      { target: QUICK_TARGET_CURRENT, text: 'first prompt' },
+      { target: QUICK_TARGET_CURRENT, text: 'second prompt' }
+    ])
+    expect(state.draft).toBe('first prompt')
+    expect(state.error).toBe('first failed')
   })
 })

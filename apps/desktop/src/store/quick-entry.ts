@@ -157,6 +157,15 @@ export interface QuickComposerState {
   error: null | string
   /** Local correlation for ignoring an acknowledgement from an older submit. */
   pendingSubmitId: number | null
+  /** Text of the in-flight submit, kept so a late failure can restore it. */
+  lastSubmitText: string
+  /** A failure whose generation no longer owns the window. The next summon
+   *  restores this text instead of silently dropping the prompt. */
+  orphanedFailure: null | { message: string; text: string }
+  /** A submit whose outcome is UNKNOWN (relay timeout): the backend may still
+   *  have accepted it. Kept so a late acknowledgement can reconcile, and never
+   *  presented as retryable until non-acceptance is proven. */
+  unknownSubmitId: number | null
   /** Where a submit lands: current / new / a stored session id. */
   target: string
   /** Whether the window should be visible. False asks the shell to hide. */
@@ -171,8 +180,34 @@ export type QuickComposerEvent =
   | { type: 'state'; connected: boolean; sessions: QuickEntrySessionOption[] }
   | { type: 'submit'; submitId?: number }
   | { type: 'submit-error'; message: string; submitId: number }
+  | { message: string; submitId: number; type: 'submit-unknown' }
   | { type: 'submit-ok'; submitId: number }
   | { type: 'target'; target: string }
+
+/**
+ * Map a relay result to the composer event that reconciles it. A timeout is an
+ * UNKNOWN outcome — the prompt may already be accepted — so it must never be
+ * mapped to a retryable failure.
+ */
+export function quickEntryResultEvent(result: QuickEntrySubmitResult, submitId: number): QuickComposerEvent {
+  if (result.ok) {
+    return { submitId, type: 'submit-ok' }
+  }
+
+  if (result.code === 'timeout') {
+    return {
+      message: result.message || 'Hermes has not confirmed the prompt yet — it may still be delivered.',
+      submitId,
+      type: 'submit-unknown'
+    }
+  }
+
+  return {
+    message: result.message || 'Quick Entry could not deliver the prompt.',
+    submitId,
+    type: 'submit-error'
+  }
+}
 
 export interface QuickComposerTransition {
   /** Payload to send through the real prompt-submit path, or null for none. */
@@ -186,10 +221,13 @@ export const initialQuickComposerState: QuickComposerState = {
   connected: false,
   draft: '',
   error: null,
+  lastSubmitText: '',
+  orphanedFailure: null,
   pendingSubmitId: null,
   sessions: [],
   submitting: false,
   target: QUICK_TARGET_CURRENT,
+  unknownSubmitId: null,
   visible: true
 }
 
@@ -197,19 +235,27 @@ export function quickComposerReducer(state: QuickComposerState, event: QuickComp
   switch (event.type) {
     case 'blur':
     case 'dismiss': {
-      // Escape / focus loss discards without sending. A dismiss mid-submit still
-      // hides — the send already left for the main process.
+      // Escape / focus loss discards a surface with nothing unresolved. A submit
+      // already handed to main keeps its correlation and draft: the promise
+      // still resolves, and a late failure must be able to restore the text.
+      const unresolved = state.submitting || state.unknownSubmitId !== null
+
       return {
         send: null,
-        state: {
-          ...state,
-          draft: '',
-          error: null,
-          pendingSubmitId: null,
-          submitting: false,
-          target: QUICK_TARGET_CURRENT,
-          visible: false
-        }
+        state: unresolved
+          ? { ...state, error: null, visible: false }
+          : {
+              ...state,
+              draft: '',
+              error: null,
+              lastSubmitText: '',
+              orphanedFailure: null,
+              pendingSubmitId: null,
+              submitting: false,
+              target: QUICK_TARGET_CURRENT,
+              unknownSubmitId: null,
+              visible: false
+            }
       }
     }
 
@@ -218,17 +264,26 @@ export function quickComposerReducer(state: QuickComposerState, event: QuickComp
     }
 
     case 'shown': {
-      // Re-summoned: a fresh capture surface every time — never a stale draft or
-      // a leftover target — but the pushed gateway truth carries over.
+      // Re-summoned. With a submit unresolved the window reconnects to the SAME
+      // generation and shows the text still being delivered. Otherwise the
+      // surface is fresh — except that a failure whose generation lost the
+      // window hands its text back rather than dropping it.
+      if (state.submitting || state.unknownSubmitId !== null) {
+        return { send: null, state: { ...state, error: null, visible: true } }
+      }
+
       return {
         send: null,
         state: {
           ...state,
-          draft: '',
-          error: null,
+          draft: state.orphanedFailure?.text ?? '',
+          error: state.orphanedFailure?.message ?? null,
+          lastSubmitText: '',
+          orphanedFailure: null,
           pendingSubmitId: null,
           submitting: false,
           target: QUICK_TARGET_CURRENT,
+          unknownSubmitId: null,
           visible: true
         }
       }
@@ -258,28 +313,116 @@ export function quickComposerReducer(state: QuickComposerState, event: QuickComp
       const text = state.draft.trim()
 
       // Nothing to send — or nowhere to send it (gateway down): stay open and
-      // keep the draft so a stray Enter can't make the text vanish.
-      if (!text || state.submitting || !state.connected) {
+      // keep the draft so a stray Enter can't make the text vanish. Re-entering
+      // changed text supersedes the pending generation; an unknown outcome never
+      // invites a second delivery attempt.
+      if (
+        !text ||
+        !state.connected ||
+        state.unknownSubmitId !== null ||
+        (state.submitting && text === state.lastSubmitText)
+      ) {
         return { send: null, state }
       }
 
       return {
         send: { target: state.target, text },
         // Wait for main's result before clearing or hiding the capture window (#85590).
-        state: { ...state, error: null, pendingSubmitId: event.submitId ?? null, submitting: true }
+        state: {
+          ...state,
+          error: null,
+          // If changed text supersedes an unresolved generation, retain the
+          // older prompt: its late failure must hand that text back later.
+          lastSubmitText: state.submitting ? state.lastSubmitText : text,
+          pendingSubmitId: event.submitId ?? null,
+          submitting: true
+        }
       }
     }
 
     case 'submit-ok': {
-      return event.submitId > 0 && state.pendingSubmitId === event.submitId
-        ? { send: null, state: { ...state, draft: '', error: null, pendingSubmitId: null, submitting: false, visible: false } }
+      // The owning generation — or a submit whose outcome was unknown — clears
+      // the surface. A late success for a superseded generation is still good
+      // news, but it must not wipe the draft the window now owns.
+      const owner = state.pendingSubmitId === event.submitId || state.unknownSubmitId === event.submitId
+
+      return event.submitId > 0 && owner
+        ? {
+            send: null,
+            state: {
+              ...state,
+              draft: '',
+              error: null,
+              lastSubmitText: '',
+              // A successful newer generation does not erase an older
+              // generation's already-recorded late failure.
+              orphanedFailure: state.orphanedFailure,
+              pendingSubmitId: null,
+              submitting: false,
+              unknownSubmitId: null,
+              visible: false
+            }
+          }
         : { send: null, state }
     }
 
+    case 'submit-unknown': {
+      if (event.submitId <= 0 || state.pendingSubmitId !== event.submitId) {
+        return { send: null, state }
+      }
+
+      // Delivery is UNCONFIRMED, not failed: keep the draft, keep the
+      // correlation, and never present this as retryable.
+      return {
+        send: null,
+        state: {
+          ...state,
+          error: event.message,
+          pendingSubmitId: null,
+          submitting: false,
+          unknownSubmitId: event.submitId,
+          visible: true
+        }
+      }
+    }
+
     case 'submit-error': {
-      return event.submitId > 0 && state.pendingSubmitId === event.submitId
-        ? { send: null, state: { ...state, error: event.message, pendingSubmitId: null, submitting: false, visible: true } }
-        : { send: null, state }
+      if (event.submitId > 0 && state.pendingSubmitId === event.submitId) {
+        return {
+          send: null,
+          state: {
+            ...state,
+            error: event.message,
+            lastSubmitText: '',
+            pendingSubmitId: null,
+            submitting: false,
+            visible: true
+          }
+        }
+      }
+
+      if (event.submitId > 0 && state.unknownSubmitId === event.submitId) {
+        // Non-acceptance is now proven: drop the unknown correlation so a
+        // retry is legitimate, and keep the text.
+        return {
+          send: null,
+          state: { ...state, error: event.message, lastSubmitText: '', unknownSubmitId: null }
+        }
+      }
+
+      // Late failure whose generation no longer owns the window: keep the text
+      // for the next summon and surface the message now if nothing else has.
+      return {
+        send: null,
+        state: {
+          ...state,
+          error: state.error ?? event.message,
+          orphanedFailure: state.lastSubmitText
+            ? { message: event.message, text: state.lastSubmitText }
+            : state.orphanedFailure,
+          lastSubmitText: ''
+        }
+      }
     }
 
     case 'target': {

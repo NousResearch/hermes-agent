@@ -82,7 +82,12 @@ async function mergedRoster(
   liveConnectionId: null | string = 'local'
 ): Promise<RowFixture[]> {
   hostMock.state.connectionId.get.mockReturnValue(liveConnectionId as string)
-  hostMock.requestProfile.mockResolvedValue(local)
+
+  if (liveConnectionId && liveConnectionId !== 'local') {
+    hostMock.requestProfile.mockResolvedValue(local)
+  } else {
+    hostMock.request.mockResolvedValue(local)
+  }
 
   if (union) {
     hostMock.agents.mockResolvedValue(union)
@@ -115,8 +120,9 @@ afterEach(() => {
 })
 
 describe('no union roster', () => {
-  it('retains the polled profile socket for the query observer lifetime', async () => {
+  it('routes remote polls through the exact retained socket for the query observer lifetime', async () => {
     const release = vi.fn()
+    hostMock.state.connectionId.get.mockReturnValue('homelab')
     hostMock.retainProfileSocket.mockReturnValueOnce(release)
     hostMock.request.mockResolvedValue({ profiles: [] })
     hostMock.requestProfile.mockResolvedValue({ profiles: [] })
@@ -131,12 +137,41 @@ describe('no union roster', () => {
     const { result, unmount } = renderHook(() => useRoster(), { wrapper })
 
     await waitFor(() => expect(result.current.data).toBeTruthy())
-    expect(hostMock.retainProfileSocket).toHaveBeenCalledWith('default')
-    expect(hostMock.requestProfile).toHaveBeenCalledWith('default', 'profiles.list', {})
+    const retainedRoute = hostMock.retainProfileSocket.mock.calls[0][0]
+
+    expect(retainedRoute).toEqual({
+      connectionId: 'homelab',
+      mode: 'remote',
+      profile: 'default',
+      targetProfile: 'default'
+    })
+    expect(hostMock.requestProfile.mock.calls[0][0]).toBe(retainedRoute)
+    expect(hostMock.requestProfile).toHaveBeenCalledWith(retainedRoute, 'profiles.list', {})
     expect(hostMock.request).not.toHaveBeenCalled()
 
     unmount()
     expect(release).toHaveBeenCalledOnce()
+  })
+
+  it('keeps local multi-source polling on the ambient compatibility path', async () => {
+    hostMock.state.connectionId.get.mockReturnValue('local')
+    hostMock.request.mockResolvedValue({ profiles: [] })
+    hostMock.requestProfile.mockRejectedValue(new Error('profile-only route is ambiguous'))
+    hostMock.agents.mockResolvedValue({ agents: [], sources: [] })
+
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+
+    const wrapper = ({ children }: { children: ReactNode }) => (
+      <QueryClientProvider client={client}>{children}</QueryClientProvider>
+    )
+
+    const { result, unmount } = renderHook(() => useRoster(), { wrapper })
+
+    await waitFor(() => expect(result.current.data).toBeTruthy())
+    expect(hostMock.request).toHaveBeenCalledWith('profiles.list', {})
+    expect(hostMock.requestProfile).not.toHaveBeenCalled()
+
+    unmount()
   })
 
   it('leaves the local list exactly as it was', async () => {
@@ -606,7 +641,7 @@ describe('a stalled profiles.list cannot pin the spinner forever', () => {
     // Bots sidebar on a spinner with no error card. The 5s refetchInterval and
     // the gateway-open effect already recover drops.
     hostMock.state.connectionId.get.mockReturnValue('local')
-    hostMock.requestProfile.mockRejectedValue(new Error('state.db is locked'))
+    hostMock.request.mockRejectedValue(new Error('state.db is locked'))
 
     const client = new QueryClient({ defaultOptions: { queries: { retryDelay: 0 } } })
 
@@ -619,6 +654,6 @@ describe('a stalled profiles.list cannot pin the spinner forever', () => {
     await waitFor(() => expect(result.current.isError).toBe(true), { timeout: 5000 })
 
     expect(result.current.isLoading).toBe(false)
-    expect(hostMock.requestProfile.mock.calls.length).toBeGreaterThan(1)
+    expect(hostMock.request.mock.calls.length).toBeGreaterThan(1)
   })
 })

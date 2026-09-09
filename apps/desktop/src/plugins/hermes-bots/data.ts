@@ -659,7 +659,7 @@ export function useRoster() {
   }, [rosterRoute])
 
   return useQuery({
-    queryKey: [...ROSTER_KEY, activeConnectionId, activeProfile],
+    queryKey: [...ROSTER_KEY, activeConnectionId],
     queryFn: async () => {
       // Stamp the ISSUE time on the snapshot: mergeServerMeta compares it
       // against each bot's last local meta write, and a fetch issued before
@@ -692,7 +692,7 @@ export function useRoster() {
       // to keep dialing and disposing between polls.
 
       const local =
-        typeof host.requestProfile === 'function'
+        typeof rosterRoute !== 'string' && typeof host.requestProfile === 'function'
           ? await host.requestProfile<RosterSnapshot>(rosterRoute, 'profiles.list', {})
           : await requestForBot<RosterSnapshot>({ name: activeProfile }, 'profiles.list', {})
 

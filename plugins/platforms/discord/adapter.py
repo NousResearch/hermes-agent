@@ -5133,7 +5133,12 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         try:
             create = getattr(parent, "create_thread", None)
             if create is not None:
-                thread = await create(name=thread_name, auto_archive_duration=1440, reason=reason)
+                thread = await create(
+                    name=thread_name,
+                    type=discord.ChannelType.public_thread,
+                    auto_archive_duration=1440,
+                    reason=reason,
+                )
                 return str(thread.id)
         except Exception as direct_error:
             logger.debug(

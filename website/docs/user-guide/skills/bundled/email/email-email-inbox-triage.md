@@ -1,14 +1,14 @@
 ---
-title: "Email Inbox Triage — Triage an inbox: prioritize threads, draft replies safely"
+title: "Email Inbox Triage — Triage inboxes, prioritize threads, and draft safely"
 sidebar_label: "Email Inbox Triage"
-description: "Triage an inbox: prioritize threads, draft replies safely"
+description: "Triage inboxes, prioritize threads, and draft safely"
 ---
 
 {/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
 
 # Email Inbox Triage
 
-Triage an inbox: prioritize threads, draft replies safely.
+Triage inboxes, prioritize threads, and draft safely.
 
 ## Skill metadata
 

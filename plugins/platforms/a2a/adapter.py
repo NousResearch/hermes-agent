@@ -33,7 +33,7 @@ from . import protocol, security
 logger = logging.getLogger(__name__)
 
 _DEFAULT_PORT = 9900
-_ORPHAN_TIMEOUT, _WATCHDOG_INTERVAL = 300, 60  # seconds: pending task considered orphaned / watchdog period
+_WATCHDOG_INTERVAL = 60  # seconds between orphan-task sweeps
 _MAX_BODY = 1_048_576  # 1MB max request body — prevents DoS via memory exhaustion
 _SSE_KEEPALIVE = 5  # seconds between SSE keepalive comments
 _DEFAULT_DESCRIPTION = "Hermes Agent — a general-purpose agent reachable over A2A."
@@ -67,6 +67,15 @@ def _reply_timeout() -> float:
         return max(1.0, float(os.getenv("A2A_REPLY_TIMEOUT", "300")))
     except (ValueError, TypeError):
         return 300.0
+
+
+def _orphan_timeout() -> float:
+    """Seconds before a pending inbound task is treated as orphaned.
+
+    Same source as the HTTP reply wait so raising ``A2A_REPLY_TIMEOUT``
+    also extends the watchdog sweep (issue #106972).
+    """
+    return _reply_timeout()
 
 
 def _default_agent_name() -> str:
@@ -334,8 +343,9 @@ class A2AAdapter(BasePlatformAdapter):
         """Background thread that fails orphaned tasks (keeps them queryable)."""
         while not self._watchdog_stop.wait(_WATCHDOG_INTERVAL):
             try:
-                for tid in self.tasks.fail_orphans(_ORPHAN_TIMEOUT):
-                    logger.warning("A2A: orphaned task %s marked failed (timeout %ds)", tid, _ORPHAN_TIMEOUT)
+                timeout = int(_orphan_timeout())
+                for tid in self.tasks.fail_orphans(timeout):
+                    logger.warning("A2A: orphaned task %s marked failed (timeout %ds)", tid, timeout)
                     protocol.metrics.tasks_failed += 1
             except Exception:
                 logger.debug("A2A: watchdog error", exc_info=True)

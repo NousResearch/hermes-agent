@@ -28,6 +28,10 @@ export const PROMPT_SUBMIT_REQUEST_TIMEOUT_MS = 1_800_000
 export class HermesGateway extends JsonRpcGatewayClient {
   constructor() {
     super({
+      // boot-failure-reauth.ts recognizes this canonical text and routes the
+      // failure overlay to the remote Gateway sign-in recovery path.
+      authRejectedErrorMessage:
+        'Your remote gateway session has expired. Open Settings → Gateway and click "Sign in" again.',
       closedErrorMessage: 'Hermes gateway connection closed',
       connectErrorMessage: 'Could not connect to Hermes gateway',
       createRequestId: nextId => nextId,

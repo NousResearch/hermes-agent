@@ -1,23 +1,78 @@
 // connect() must reject before WebSocket coerces garbage into
 // `ws://<origin>/[object%20Object]` (#68250 stale-emit boot loop).
 
-import { JsonRpcGatewayClient, JsonRpcGatewayError } from '@hermes/shared'
+import { type GatewayEvent, isGatewayReauthRequired, JsonRpcGatewayClient, JsonRpcGatewayError } from '@hermes/shared'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+
+type FakeEvent = {
+  code?: number
+  data?: string
+}
+
+type FakeListener = (event: FakeEvent) => void
+
+const gatewayReadyFrame = JSON.stringify({
+  jsonrpc: '2.0',
+  method: 'event',
+  params: { type: 'gateway.ready' }
+})
 
 class FakeSocket {
   static OPEN = 1
+  static CLOSED = 3
+
   readyState = 0
-  addEventListener = vi.fn((type: string, handler: () => void) => {
-    if (type === 'open') {
-      setTimeout(() => {
-        this.readyState = FakeSocket.OPEN
-        handler()
-      }, 0)
+  private listeners = new Map<string, Set<FakeListener>>()
+
+  addEventListener = vi.fn((type: string, handler: FakeListener) => {
+    let handlers = this.listeners.get(type)
+
+    if (!handlers) {
+      handlers = new Set()
+      this.listeners.set(type, handlers)
     }
+
+    handlers.add(handler)
   })
-  removeEventListener = vi.fn()
-  close = vi.fn()
+
+  removeEventListener = vi.fn((type: string, handler: FakeListener) => {
+    this.listeners.get(type)?.delete(handler)
+  })
+
+  close = vi.fn(() => {
+    if (this.readyState === FakeSocket.CLOSED) {
+      return
+    }
+
+    this.readyState = FakeSocket.CLOSED
+    this.emit('close', { code: 1005 })
+  })
+
   send = vi.fn()
+
+  emitOpen() {
+    this.readyState = FakeSocket.OPEN
+    this.emit('open', {})
+  }
+
+  emitMessage(data: string) {
+    this.emit('message', { data })
+  }
+
+  emitClose(code: number) {
+    this.readyState = FakeSocket.CLOSED
+    this.emit('close', { code })
+  }
+
+  emitError() {
+    this.emit('error', {})
+  }
+
+  private emit(type: string, event: FakeEvent) {
+    for (const handler of this.listeners.get(type) ?? []) {
+      handler(event)
+    }
+  }
 }
 
 describe('JsonRpcGatewayClient connect() URL guard', () => {
@@ -26,6 +81,7 @@ describe('JsonRpcGatewayClient connect() URL guard', () => {
   })
 
   afterEach(() => {
+    vi.useRealTimers()
     vi.unstubAllGlobals()
   })
 
@@ -55,12 +111,227 @@ describe('JsonRpcGatewayClient connect() URL guard', () => {
     expect(client.connectionState).toBe('idle')
   })
 
-  it('accepts ws:// and wss://', async () => {
+  it('accepts ws:// and wss:// after gateway.ready', async () => {
     for (const url of ['ws://127.0.0.1:1234/api/ws?token=t', 'wss://gw.example.com/api/ws?ticket=t']) {
-      const client = new JsonRpcGatewayClient({ socketFactory: () => new FakeSocket() as unknown as WebSocket })
-      await client.connect(url)
+      const socket = new FakeSocket()
+
+      const client = new JsonRpcGatewayClient({
+        socketFactory: () => socket as unknown as WebSocket
+      })
+
+      const connectPromise = client.connect(url)
+
+      socket.emitOpen()
+      socket.emitMessage(gatewayReadyFrame)
+
+      await connectPromise
       expect(client.connectionState).toBe('open')
+      client.close()
     }
+  })
+
+  it('keeps the connection pending and connecting after raw open', async () => {
+    const socket = new FakeSocket()
+
+    const client = new JsonRpcGatewayClient({
+      socketFactory: () => socket as unknown as WebSocket
+    })
+
+    const connectPromise = client.connect('ws://127.0.0.1:1234/api/ws?token=t')
+    let resolved = false
+
+    void connectPromise.then(
+      () => {
+        resolved = true
+      },
+      () => undefined
+    )
+
+    socket.emitOpen()
+    await Promise.resolve()
+    await Promise.resolve()
+
+    expect(resolved).toBe(false)
+    expect(client.connectionState).toBe('connecting')
+
+    client.close()
+    await expect(connectPromise).rejects.toThrow('WebSocket closed')
+  })
+
+  it('opens on gateway.ready and dispatches the readiness event before resolving', async () => {
+    const socket = new FakeSocket()
+
+    const client = new JsonRpcGatewayClient({
+      socketFactory: () => socket as unknown as WebSocket
+    })
+
+    const events: GatewayEvent[] = []
+    const offEvent = client.onEvent(event => events.push(event))
+    const connectPromise = client.connect('ws://127.0.0.1:1234/api/ws?token=t')
+
+    socket.emitOpen()
+    socket.emitMessage(gatewayReadyFrame)
+    await connectPromise
+
+    expect(client.connectionState).toBe('open')
+    expect(events).toEqual([expect.objectContaining({ type: 'gateway.ready' })])
+    offEvent()
+  })
+
+  it('rejects requests before gateway.ready without sending', async () => {
+    const socket = new FakeSocket()
+
+    const client = new JsonRpcGatewayClient({
+      notConnectedErrorMessage: 'Hermes gateway is not connected',
+      socketFactory: () => socket as unknown as WebSocket
+    })
+
+    const connectPromise = client.connect('ws://127.0.0.1:1234/api/ws?token=t')
+
+    socket.emitOpen()
+
+    await expect(client.request('session.list')).rejects.toThrow('Hermes gateway is not connected')
+    expect(socket.send).not.toHaveBeenCalled()
+
+    client.close()
+    await expect(connectPromise).rejects.toThrow()
+  })
+
+  it('classifies a 4401 handshake close as requiring OAuth login', async () => {
+    const socket = new FakeSocket()
+
+    const authRejectedErrorMessage =
+      'Your remote gateway session has expired. Open Settings → Gateway and click "Sign in" again.'
+
+    const client = new JsonRpcGatewayClient({
+      authRejectedErrorMessage,
+      connectErrorMessage: 'Could not connect to Hermes gateway',
+      socketFactory: () => socket as unknown as WebSocket
+    })
+
+    const connectPromise = client.connect('wss://gw.example.com/api/ws?ticket=stale')
+
+    socket.emitOpen()
+    socket.emitClose(4401)
+
+    const error = await connectPromise.catch(reason => reason)
+
+    expect(error).toEqual(
+      expect.objectContaining({
+        message: authRejectedErrorMessage,
+        needsOauthLogin: true,
+        wsCloseCode: 4401
+      })
+    )
+    expect(isGatewayReauthRequired(error)).toBe(true)
+    expect(client.connectionState).toBe('closed')
+  })
+
+  it('preserves a 4403 handshake close without classifying it as reauth', async () => {
+    const socket = new FakeSocket()
+
+    const client = new JsonRpcGatewayClient({
+      connectErrorMessage: 'Could not connect to Hermes gateway',
+      socketFactory: () => socket as unknown as WebSocket
+    })
+
+    const connectPromise = client.connect('wss://gw.example.com/api/ws?ticket=t')
+
+    socket.emitOpen()
+    socket.emitClose(4403)
+
+    const error = await connectPromise.catch(reason => reason)
+
+    expect(error).toEqual(
+      expect.objectContaining({
+        message: 'Could not connect to Hermes gateway',
+        wsCloseCode: 4403
+      })
+    )
+    expect(isGatewayReauthRequired(error)).toBe(false)
+    expect(client.connectionState).toBe('closed')
+  })
+
+  it('rejects a non-ready first frame as a protocol failure', async () => {
+    const socket = new FakeSocket()
+
+    const client = new JsonRpcGatewayClient({
+      connectErrorMessage: 'Could not connect to Hermes gateway',
+      socketFactory: () => socket as unknown as WebSocket
+    })
+
+    const connectPromise = client.connect('ws://127.0.0.1:1234/api/ws?token=t')
+
+    socket.emitOpen()
+    socket.emitMessage(
+      JSON.stringify({
+        jsonrpc: '2.0',
+        method: 'event',
+        params: { type: 'session.event' }
+      })
+    )
+
+    await expect(connectPromise).rejects.toThrow('Could not connect to Hermes gateway')
+    expect(client.connectionState).toBe('error')
+    expect(socket.close).toHaveBeenCalledOnce()
+  })
+
+  it('close() rejects an in-flight handshake and its timeout cannot poison the next connection', async () => {
+    vi.useFakeTimers()
+
+    const sockets: FakeSocket[] = []
+
+    const client = new JsonRpcGatewayClient({
+      closedErrorMessage: 'Hermes gateway connection closed',
+      socketFactory: () => {
+        const socket = new FakeSocket()
+        sockets.push(socket)
+
+        return socket as unknown as WebSocket
+      }
+    })
+
+    const firstConnect = client.connect('ws://127.0.0.1:1234/api/ws?token=first')
+    sockets[0].emitOpen()
+
+    client.close()
+
+    await expect(firstConnect).rejects.toThrow('Hermes gateway connection closed')
+    expect(client.connectionState).toBe('closed')
+
+    const secondConnect = client.connect('ws://127.0.0.1:1234/api/ws?token=second')
+    sockets[1].emitOpen()
+    sockets[1].emitMessage(gatewayReadyFrame)
+    await secondConnect
+
+    expect(client.connectionState).toBe('open')
+
+    await vi.advanceTimersByTimeAsync(15_000)
+
+    expect(client.connectionState).toBe('open')
+  })
+
+  it('shares a same-URL attempt and rejects a different URL while connecting', async () => {
+    const socket = new FakeSocket()
+
+    const client = new JsonRpcGatewayClient({
+      socketFactory: () => socket as unknown as WebSocket
+    })
+
+    const firstConnect = client.connect('ws://127.0.0.1:1234/api/ws?token=t')
+    const sameUrlConnect = client.connect('ws://127.0.0.1:1234/api/ws?token=t')
+
+    expect(sameUrlConnect).toBe(firstConnect)
+
+    await expect(client.connect('ws://127.0.0.1:4321/api/ws?token=t')).rejects.toThrow(
+      'gateway connect() already in progress'
+    )
+
+    socket.emitOpen()
+    socket.emitMessage(gatewayReadyFrame)
+
+    await expect(Promise.all([firstConnect, sameUrlConnect])).resolves.toEqual([undefined, undefined])
+    expect(client.connectionState).toBe('open')
   })
 })
 
@@ -76,6 +347,7 @@ describe('JsonRpcGatewayClient structured errors', () => {
           setTimeout(() => {
             this.readyState = RespondingSocket.OPEN
             handler()
+            this.messageHandler?.({ data: gatewayReadyFrame })
           }, 0)
         }
 

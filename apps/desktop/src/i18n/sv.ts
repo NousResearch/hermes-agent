@@ -238,6 +238,17 @@ export const sv = defineLocale({
     row: { pin: 'Fäst', unpin: 'Lossa', markUnread: 'Markera som oläst', markRead: 'Markera som läst', unreadFailed: 'Det gick inte att uppdatera oläst status', copyId: 'Kopiera ID', export: 'Exportera', branchFrom: 'Skapa gren', rename: 'Byt namn…', archive: 'Arkivera', newWindow: 'Nytt fönster', openInTerminal: 'Öppna i terminal', hideTabBar: 'Dölj flikrad', openInNewTab: 'Öppna i ny flik', openInSplit: 'Öppna i delad vy', copyIdFailed: 'Det gick inte att kopiera sessions-id', sessionActions: 'Sessionsåtgärder', sessionRunning: 'Sessionen körs', needsInput: 'Behöver din inmatning', waitingForAnswer: 'Väntar på ditt svar', finishedUnread: 'Klar — oläst', backgroundRunning: 'Bakgrundsaktivitet körs', draftSession: 'Utkast — inget har skickats ännu', handoffOrigin: platform => `Överlämnad från ${platform}`, ownedByProfile: profile => `Profil: ${profile}`, renamed: 'Namn ändrat', renameFailed: 'Namnbytet misslyckades', renameTitle: 'Byt namn på session', renameDesc: 'Lämna tomt för att rensa.', untitledPlaceholder: 'Namnlös session', deleteTitle: 'Ta bort session?', deleteDesc: title => `Detta tar bort ”${title}” permanent. Det kan inte ångras.`, deleting: 'Tar bort…', deleted: 'Session borttagen', untitledChat: id => `Chatt ${id}`, messageCount: count => `${count} ${count === 1 ? 'meddelande' : 'meddelanden'}`, todoProgress: 'Slutförda uppgifter', ageNow: 'nu', ageDay: 'd', ageHour: 'h', ageMin: 'min' },
     dateDivider: { today: 'Tidigare i dag', yesterday: 'I går', thisWeek: 'Tidigare denna vecka', lastWeek: 'Förra veckan', thisMonth: 'Tidigare denna månad' }, statusDivider: { working: 'Arbetar', done: 'Klar' }, markAllRead: 'Markera alla som lästa'
   },
+  prompts: {
+    gatewayDisconnected: 'Hermes-gatewayen är inte ansluten',
+    sudoSendFailed: 'Det gick inte att skicka sudo-lösenordet',
+    secretSendFailed: 'Det gick inte att skicka hemligheten',
+    sudoTitle: 'Administratörslösenord',
+    sudoDesc: 'Hermes behöver ditt sudo-lösenord för att köra ett privilegierat kommando. Det skickas endast till din lokala agent.',
+    sudoPlaceholder: 'sudo-lösenord',
+    secretTitle: 'Hemlighet krävs',
+    secretDesc: 'Hermes behöver en inloggningsuppgift för att kunna fortsätta.',
+    secretPlaceholder: 'hemligt värde'
+  },
   desktop: {
     audioReadFailed: 'Det gick inte att läsa inspelat ljud', sessionUnavailable: 'Sessionen är inte tillgänglig', createSessionFailed: 'Det gick inte att skapa en ny session', promptFailed: 'Prompten misslyckades', providerCredentialRequired: 'Lägg till en leverantörsinloggning innan du skickar ditt första meddelande.', emptySlashCommand: 'tomt snedstreckskommando', desktopCommands: 'Skrivbordskommandon', skillCommandsAvailable: count => `${count} färdighetskommandon tillgängliga.`, warningLine: message => `varning: ${message}`,
     yoloArmed: 'YOLO aktiverat för den här chatten', yoloOff: 'YOLO av', yoloSystem: active => `YOLO ${active ? 'på' : 'av'} för den här sessionen`, yoloTitle: 'YOLO', yoloToggleFailed: 'Det gick inte att växla YOLO', profileStatus: current => `Profil: ${current}. Använd /profile <namn> eller väljaren ”Ny session” för att starta en chatt i en annan profil.`, unknownProfile: 'Okänd profil', noProfileNamed: (target, available) => `Ingen profil heter ”${target}”. Tillgängliga: ${available}`, newChatsProfile: name => `Nya chattar använder profil ${name}.`, setProfileFailed: 'Det gick inte att ange profil',

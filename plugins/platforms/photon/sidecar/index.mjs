@@ -76,6 +76,7 @@ import {
   classifyProbeRejection,
   shouldProbe,
   isZombieSuspect,
+  silenceProbeThreshold,
 } from "./stream-staleness.mjs";
 
 const projectId = process.env.PHOTON_PROJECT_ID;
@@ -114,10 +115,10 @@ const STREAM_INTERRUPTED_DEGRADE_COUNT =
 // rejected probe is INCONCLUSIVE, never proof either way — degradation
 // requires silence past the threshold plus a probe-proven live channel.
 // A non-positive threshold disables the watchdog.
-const STREAM_SILENCE_PROBE_MS = (() => {
-  const raw = Number(process.env.PHOTON_STREAM_SILENCE_PROBE_MS);
-  return Number.isFinite(raw) ? raw : 10 * 60 * 1000;
-})();
+const STREAM_SILENCE_PROBE_MS = silenceProbeThreshold(
+  localMode,
+  process.env.PHOTON_STREAM_SILENCE_PROBE_MS
+);
 const STREAM_PROBE_COOLDOWN_MS =
   Number(process.env.PHOTON_STREAM_PROBE_COOLDOWN_MS) || 2 * 60 * 1000;
 const STREAM_PROBE_TIMEOUT_MS =

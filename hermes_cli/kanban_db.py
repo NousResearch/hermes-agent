@@ -2496,11 +2496,65 @@ def _verify_created_cards(
 _TASK_ID_PROSE_RE = re.compile(r"\bt_[a-f0-9]{8,}\b")
 
 
+def _iter_cross_board_db_paths() -> Iterable[Path]:
+    """Yield configured active and archived board databases below Kanban roots."""
+    root = boards_root().resolve(strict=False)
+    archive_root = root / "_archived"
+
+    for meta in list_boards(include_archived=True):
+        slug = meta["slug"]
+        if slug == DEFAULT_BOARD:
+            path = kanban_home() / "kanban.db"
+        else:
+            path = board_dir(slug) / "kanban.db"
+            try:
+                path.resolve().relative_to(root)
+            except (OSError, ValueError):
+                continue
+        if path.is_file():
+            yield path
+
+    if not archive_root.is_dir():
+        return
+    for board_archive in archive_root.iterdir():
+        path = board_archive / "kanban.db"
+        if not board_archive.is_dir() or not path.is_file():
+            continue
+        try:
+            path.resolve().relative_to(archive_root.resolve())
+        except (OSError, ValueError):
+            continue
+        yield path
+
+
+def _read_task_ids_read_only(path: Path, task_ids: Iterable[str]) -> list[str]:
+    """Return task ids missing from a board without mutating its database."""
+    task_ids = list(task_ids)
+    if not task_ids:
+        return []
+    uri = f"{path.resolve().as_uri()}?mode=ro"
+    other_conn = sqlite3.connect(uri, uri=True)
+    try:
+        placeholders = ",".join("?" * len(task_ids))
+        rows = other_conn.execute(
+            f"SELECT id FROM tasks WHERE id IN ({placeholders})", task_ids,
+        ).fetchall()
+        present = {row[0] for row in rows}
+        return [task_id for task_id in task_ids if task_id not in present]
+    finally:
+        other_conn.close()
+
+
 def _scan_prose_for_phantom_ids(conn: sqlite3.Connection, text: str) -> list[str]:
     """``t_<hex>`` references in ``text`` that don't resolve to a task (deduped; advisory)."""
     if not text:
         return []
-    return _missing_task_ids(conn, dict.fromkeys(_TASK_ID_PROSE_RE.findall(text)))
+    missing = _missing_task_ids(conn, dict.fromkeys(_TASK_ID_PROSE_RE.findall(text)))
+    for path in _iter_cross_board_db_paths():
+        if not missing:
+            break
+        missing = _read_task_ids_read_only(path, missing)
+    return missing
 
 
 class HallucinatedCardsError(ValueError):

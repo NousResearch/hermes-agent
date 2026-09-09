@@ -215,9 +215,11 @@ class ClaudeAgentSdkSession(ClaudeSdkTurnMixin, ClaudeSdkPermissionsMixin, Claud
         # watchdog's semantics while the live client still has the old
         # include_partial_messages option.
         self._streaming = _provider_flag("streaming")
-        # Stream ownership (see _reader_loop). The reader task is the ONLY
-        # consumer of the SDK stream; `_turn_inbox` is non-None exactly while a
-        # turn is in flight, which is what makes "unsolicited" decidable.
+        # Stream ownership (the protocol lives in
+        # claude_agent_sdk_session_turn: `_reader_loop` arbitrates, `_consume_turn`
+        # claims and releases). The reader task is the ONLY consumer of the SDK
+        # stream; `_turn_inbox` is non-None exactly while a turn is in flight,
+        # which is what makes "unsolicited" decidable.
         self._reader_task: Any = None
         self._turn_inbox: Any = None
         self._turn_claims: Any = None
@@ -279,7 +281,8 @@ class ClaudeAgentSdkSession(ClaudeSdkTurnMixin, ClaudeSdkPermissionsMixin, Claud
         # — a None _client would skip disconnect and orphan it.
         self._client = client
         self._run_coro(client.connect(), timeout=60.0)
-        # From here on exactly ONE consumer owns the SDK stream (_reader_loop).
+        # From here on exactly ONE consumer owns the SDK stream
+        # (claude_agent_sdk_session_turn._reader_loop).
         # Started after connect so the client is live, before any turn so no
         # message can arrive unowned.
         self._start_reader()

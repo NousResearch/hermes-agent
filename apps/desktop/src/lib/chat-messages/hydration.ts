@@ -26,7 +26,16 @@ const CONTEXT_REF_RE = /@(file|folder|url|image|tool|terminal):(?:"[^"\n]+"|'[^'
  * (codex_responses_adapter `_OutputScan._message`); the remaining phases are the reply.
  */
 function codexMessageItemText(message: SessionMessage): string {
-  const items = message.codex_message_items
+  let items = message.codex_message_items
+
+  // REST carries SQLite JSON text; RPC history carries the decoded list.
+  if (typeof items === 'string') {
+    try {
+      items = JSON.parse(items)
+    } catch {
+      return ''
+    }
+  }
 
   if (!Array.isArray(items)) {
     return ''
@@ -147,6 +156,34 @@ function messageReactions(metadata: SessionMessage['display_metadata']): Message
 
   return reactions.filter(
     (r): r is MessageReaction => Boolean(r) && typeof r === 'object' && typeof (r as MessageReaction).emoji === 'string'
+  )
+}
+
+// Only parse producer-owned boundaries, never render the model's task preamble.
+// Older backends can persist an unwrapped result rather than an envelope.
+function asyncResultBody(content: string): string | undefined {
+  let bodies = [content]
+
+  if (content.startsWith('[ASYNC DELEGATION')) {
+    if (content.startsWith('[ASYNC DELEGATION BATCH COMPLETE')) {
+      // Task goals can span lines; stopping at a newline leaks the next goal and transcript footer.
+      bodies = content.split(/^--- [✓✗⚠] TASK \d+\/\d+(?:: [\s\S]*?)? {2}\(status=[^\n]*\) ---\r?\n/gm).slice(1)
+    } else {
+      const result = content.match(/^--- (?:RESULT|ERROR) ---\r?\n/m)
+      bodies = result ? [content.slice(result.index! + result[0].length)] : []
+    }
+  }
+
+  return (
+    bodies
+      .map(body => {
+        const output = body.startsWith('Cron job ') ? body.match(/^--- JOB OUTPUT ---\r?\n/m) : null
+        const result = output ? body.slice(output.index! + output[0].length) : body
+
+        return result.replace(/\nFull live transcript \(complete tool\/assistant trace\): [^\n]*\n*$/, '').trim()
+      })
+      .filter(Boolean)
+      .join('\n\n') || undefined
   )
 }
 
@@ -296,21 +333,20 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
       )
     }
 
-    if (message.role === 'assistant' && Array.isArray(message.tool_calls)) {
-      parts.push(
-        ...message.tool_calls.map((call, callIndex) => toolPartFromStoredCall(call, callIndex, message.timestamp))
-      )
-    }
-
-    // #68321: Responses-API turns can persist with `content` empty while the reply the
-    // user saw lives only in codex_message_items; without this the rehydrated bubble
-    // blanks and reconcileResumeMessages then strips the cached row at that ordinal.
-    if (message.role === 'assistant' && !displayContent && !parts.length) {
+    // Reply text can live only in the sidecar alongside reasoning or tool parts.
+    // Those parts are not a substitute for the answer; canonical content still wins.
+    if (message.role === 'assistant' && message.display_kind !== 'hidden' && !displayContent) {
       const codexText = codexMessageItemText(message)
 
       if (codexText) {
         parts.push(assistantTextPart(codexText, message.timestamp))
       }
+    }
+
+    if (message.role === 'assistant' && Array.isArray(message.tool_calls)) {
+      parts.push(
+        ...message.tool_calls.map((call, callIndex) => toolPartFromStoredCall(call, callIndex, message.timestamp))
+      )
     }
 
     if (!parts.length && !extractedAttachmentRefs?.length) {
@@ -373,6 +409,9 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
       id: `${message.timestamp || Date.now()}-${index}-${displayRole}`,
       role: displayRole,
       parts,
+      ...(message.display_kind === 'async_delegation_complete'
+        ? { asyncResult: asyncResultBody(displayContentForMessage(message.role, message.content || content)) }
+        : {}),
       timestamp: earliestTimestamp(message.timestamp, ...parts.map(part => part.timestamp)),
       ...(rowId !== undefined ? { rowId } : {}),
       ...(reactions.length ? { reactions } : {}),

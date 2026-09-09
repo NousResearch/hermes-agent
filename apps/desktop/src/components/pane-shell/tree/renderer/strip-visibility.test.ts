@@ -9,7 +9,6 @@ const tile = (): StripPane => ({ collapsePane: false, placement: 'main' })
 const workspace = (): StripPane => ({ collapsePane: false, placement: 'main', uncloseable: true })
 const toolPanel = (): StripPane => ({ collapsePane: true, placement: 'bottom' })
 const sideChrome = (): StripPane => ({ collapsePane: false, placement: 'right' })
-const hideOnlyChrome = (): StripPane => ({ collapsePane: false, hideOnly: true, placement: 'left' })
 
 describe('auto (no stored choice)', () => {
   it('gives a lone workspace no strip and a stack of two a strip', () => {
@@ -45,18 +44,14 @@ describe('no dead zone', () => {
     expect(resolveTabStripVisible({ mode: 'never', shown: [toolPanel()] })).toBe(true)
   })
 
-  it('keeps the strip for hide-only chrome even when the zone says never', () => {
-    // Sessions / Bots: the Show/Hide rows and the chips themselves live on
-    // the strip. Hiding it is the #91223 trap — nothing left to click.
-    expect(resolveTabStripVisible({ mode: 'never', shown: [hideOnlyChrome()] })).toBe(true)
-    expect(resolveTabStripVisible({ mode: 'never', shown: [hideOnlyChrome(), hideOnlyChrome()] })).toBe(true)
-  })
-
   it('still hides a zone that cannot strand anything', () => {
-    // The workspace is uncloseable, and a stack is reachable by tab cycling —
-    // the invariant protects handles, it does not veto hiding as such.
+    // The workspace is uncloseable, a stack is reachable by tab cycling, and
+    // hide-only chrome (sessions / Bots) keeps its panes + ⌘⌥T — the invariant
+    // protects handles, it does not veto hiding as such.
     expect(resolveTabStripVisible({ mode: 'never', shown: [workspace()] })).toBe(false)
     expect(resolveTabStripVisible({ mode: 'never', shown: [toolPanel(), toolPanel()] })).toBe(false)
+    expect(resolveTabStripVisible({ mode: 'never', shown: [sideChrome()] })).toBe(false)
+    expect(resolveTabStripVisible({ mode: 'never', shown: [sideChrome(), sideChrome()] })).toBe(false)
   })
 })
 

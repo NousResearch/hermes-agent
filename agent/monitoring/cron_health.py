@@ -23,7 +23,7 @@ from hermes_time import now as _now
 logger = logging.getLogger(__name__)
 _KNOWN_STATUSES = {"claimed", "running", "completed", "failed", "unknown"}
 _KNOWN_SOURCES = {"builtin", "direct", "external"}
-_KNOWN_DELIVERY_OUTCOMES = {"delivered", "failed", "suppressed", "suppressed_acked", "not_configured"}
+_KNOWN_DELIVERY_OUTCOMES = {"queued", "delivered", "failed", "suppressed", "suppressed_acked", "not_configured"}
 _TERMINAL_STATUSES = {"completed", "failed", "unknown"}
 
 

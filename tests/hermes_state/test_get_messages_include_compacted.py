@@ -14,6 +14,7 @@ job of ``include_inactive`` (audit / debug reads).
 
 import json
 import sqlite3
+import tracemalloc
 
 import pytest
 
@@ -149,6 +150,51 @@ class TestDisplayDedupe:
             )
 
         db._execute_write(_do)
+
+    def test_legacy_backfill_streams_large_payloads_across_batches(self, db):
+        """Legacy backfill must finish every keyset batch without retaining the archived payload."""
+        sid = "large-legacy"
+        payload_size = 2_000_000
+        db.create_session(sid, source="desktop")
+        db.append_messages_batch(
+            sid,
+            [{"role": "assistant", "content": f"small-{index}"} for index in range(1_001)],
+            chunk_rows=500,
+        )
+        first_row_id = db._read_one(
+            "SELECT id FROM messages WHERE session_id = ? ORDER BY id LIMIT 1", (sid,))[0]
+        self._copy_tail_as_new_generation(db, sid, [first_row_id])
+        db.append_messages_batch(
+            sid,
+            [
+                {"role": "assistant", "content": chr(65 + index) * payload_size}
+                for index in range(12)
+            ],
+        )
+        db._execute_write(lambda conn: conn.execute(
+            "UPDATE messages SET display_order = NULL, display_identity = NULL WHERE session_id = ?",
+            (sid,),
+        ))
+
+        tracemalloc.start()
+        try:
+            page = db.get_messages(sid, include_compacted=True, latest=True, limit=1)
+            _, peak = tracemalloc.get_traced_memory()
+        finally:
+            tracemalloc.stop()
+
+        assert page[0]["content"] == "L" * payload_size
+        assert peak < payload_size * 5
+        assert db._read_one(
+            "SELECT COUNT(*) FROM messages WHERE session_id = ? "
+            "AND (display_order IS NULL OR display_identity IS NULL)",
+            (sid,),
+        )[0] == 0
+        duplicate_orders = db._read_all(
+            "SELECT display_order FROM messages WHERE session_id = ? AND content = ? ORDER BY id",
+            (sid, "small-0"),
+        )
+        assert [row[0] for row in duplicate_orders] == [first_row_id, first_row_id]
 
     def test_display_paging_and_append_work_is_bounded(self, db):
         """Page and identity-lookup work scale with the page, not the transcript: 10x rows

@@ -727,18 +727,25 @@ class SessionMessagesMixin:
             missing = conn.execute(missing_sql, (session_id,)).fetchone()
             if missing is None:
                 return True
-            rows = conn.execute(
-                "SELECT * FROM messages WHERE session_id = ? AND (active = 1 OR compacted = 1) ORDER BY id",
-                (session_id,)).fetchall()
-            first_id: Dict[Tuple[Any, ...], int] = {}
-            keyed_rows = []
-            for row in rows:
-                key = self._display_dedupe_key(row)
-                first_id[key] = min(first_id.get(key, row["id"]), row["id"])
-                keyed_rows.append((row["id"], key))
-            conn.executemany(
-                "UPDATE messages SET display_order = ?, display_identity = ? WHERE id = ?",
-                [(first_id[key], self._display_identity(key), row_id) for row_id, key in keyed_rows])
+            first_id: Dict[bytes, int] = {}
+            last_id = 0
+            while True:
+                rows = conn.execute(
+                    "SELECT id, role, content, timestamp, tool_call_id, tool_calls, tool_name, "
+                    "display_kind, display_metadata FROM messages INDEXED BY idx_messages_session_id "
+                    "WHERE session_id = ? AND id > ? AND (active = 1 OR compacted = 1) "
+                    "ORDER BY id LIMIT 1000",
+                    (session_id, last_id))
+                updates = []
+                for row in rows:
+                    last_id = row["id"]
+                    identity = self._display_identity(self._display_dedupe_key(row))
+                    updates.append((first_id.setdefault(identity, last_id), identity, last_id))
+                rows.close()
+                if not updates:
+                    break
+                conn.executemany(
+                    "UPDATE messages SET display_order = ?, display_identity = ? WHERE id = ?", updates)
             return True
 
         return bool(self._execute_write(_do))

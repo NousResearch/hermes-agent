@@ -135,12 +135,19 @@ def _submit_fal_request(model: str, arguments: Dict[str, Any]):
             if status in {401, 402, 403}:
                 gateway_message = "\n\n" + nous_tool_gateway_unavailable_message(
                     "managed FAL image generation", force_fresh=True)
+            detail = str(exc).strip()
+            # Keep 401/403 on the entitlement-appendix path. For other 4xx
+            # (notably 409 BILLING_ERROR / unsupported_pricing_meter), surface
+            # the upstream body so callers are not left with only HTTP status.
+            detail_suffix = ""
+            if status not in {401, 402, 403} and detail:
+                detail_suffix = f"\n\n{detail}"
             raise ValueError(
                 f"Nous Subscription gateway rejected model '{model}' (HTTP {status}). This model "
                 f"may not yet be enabled on the Nous Portal's FAL proxy. Either:\n"
                 f"  • Set FAL_KEY in your environment to use FAL.ai directly, or\n"
                 f"  • Pick a different model via `hermes tools` → Image Generation."
-                f"{gateway_message}") from exc
+                f"{gateway_message}{detail_suffix}") from exc
         raise
 
 

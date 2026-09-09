@@ -93,9 +93,14 @@ class _ManagedFalSyncClient:
             if self._add_timeout_header is None:
                 raise RuntimeError("fal_client.client.add_timeout_header is required for timeout requests")
             self._add_timeout_header(start_timeout, request_headers)
-        response = self._maybe_retry_request(
-            self._http_client, "POST", url, json=arguments,
-            timeout=getattr(self._sync_client, "default_timeout", 120.0), headers=request_headers)
+        # Single POST: fal_client retries 408/409/429, but a managed-queue 409
+        # (billing / idempotency-key already bound) is deterministic. Retrying
+        # with the same x-idempotency-key masks BILLING_ERROR as a bound-key
+        # conflict. Transient TransportError/Timeout still bubble to the caller.
+        response = self._http_client.request(
+            "POST", url, json=arguments,
+            timeout=getattr(self._sync_client, "default_timeout", 120.0),
+            headers=request_headers)
         self._raise_for_status(response)
         data = response.json()
         return self._request_handle_class(

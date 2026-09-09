@@ -94,14 +94,20 @@ def _install_fake_fal_client(captured):
             }
 
     def _maybe_retry_request(client, method, url, json=None, timeout=None, headers=None):
-        captured["submit_via"] = "managed_client"
-        captured["http_client"] = client
-        captured["method"] = method
-        captured["submit_url"] = url
-        captured["arguments"] = json
-        captured["timeout"] = timeout
-        captured["headers"] = headers
-        return FakeResponse()
+        # Kept so _ManagedFalSyncClient init still finds the helper; submit
+        # must use a single httpx POST (FakeHttpClient.request) instead.
+        return FakeHttpClient().request(method, url, json=json, timeout=timeout, headers=headers)
+
+    class FakeHttpClient:
+        def request(self, method, url, json=None, timeout=None, headers=None, **kwargs):
+            captured["submit_via"] = "managed_client"
+            captured["http_client"] = self
+            captured["method"] = method
+            captured["submit_url"] = url
+            captured["arguments"] = json
+            captured["timeout"] = timeout
+            captured["headers"] = headers
+            return FakeResponse()
 
     class SyncRequestHandle:
         def __init__(self, request_id, response_url, status_url, cancel_url, client):
@@ -117,7 +123,7 @@ def _install_fake_fal_client(captured):
             captured["client_key"] = key
             captured["client_timeout"] = default_timeout
             self.default_timeout = default_timeout
-            self._client = object()
+            self._client = FakeHttpClient()
 
     fal_client_module = types.SimpleNamespace(
         submit=submit,
@@ -186,6 +192,7 @@ def test_managed_fal_submit_uses_gateway_origin_and_nous_token(monkeypatch):
         "tools.image_generation_tool",
         "image_generation_tool.py",
     )
+    image_generation_tool.fal_client = sys.modules["fal_client"]
     monkeypatch.setattr(image_generation_tool.uuid, "uuid4", lambda: "fal-submit-123")
     
     image_generation_tool._submit_fal_request(

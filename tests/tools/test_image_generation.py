@@ -427,6 +427,7 @@ class TestManagedGatewayErrorTranslation:
         """403 from managed gateway → ValueError mentioning FAL_KEY + hermes tools."""
         from unittest.mock import MagicMock
 
+        monkeypatch.setattr(image_tool, "_load_fal_client", lambda: MagicMock())
         # Simulate: managed mode active, managed submit raises 4xx.
         managed_gateway = MagicMock()
         managed_gateway.gateway_origin = "https://fal-queue-gateway.example.com"
@@ -457,6 +458,7 @@ class TestManagedGatewayErrorTranslation:
         they should bubble up unchanged so callers can retry or diagnose."""
         from unittest.mock import MagicMock
 
+        monkeypatch.setattr(image_tool, "_load_fal_client", lambda: MagicMock())
         managed_gateway = MagicMock()
         monkeypatch.setattr(image_tool, "_resolve_managed_fal_gateway",
                             lambda: managed_gateway)
@@ -469,6 +471,34 @@ class TestManagedGatewayErrorTranslation:
 
         with pytest.raises(ConnectionError):
             image_tool._submit_fal_request("fal-ai/flux-2-pro", {"prompt": "x"})
+
+
+    def test_409_billing_error_preserves_pricing_meter_detail(self, image_tool, monkeypatch):
+        """Managed 409 BILLING_ERROR must surface unsupported_pricing_meter in ValueError."""
+        from unittest.mock import MagicMock
+
+        monkeypatch.setattr(image_tool, "_load_fal_client", lambda: MagicMock())
+        managed_gateway = MagicMock()
+        monkeypatch.setattr(image_tool, "_resolve_managed_fal_gateway",
+                            lambda: managed_gateway)
+
+        billing = _MockHttpxError(
+            409, "BILLING_ERROR: unsupported_pricing_meter for this model")
+        mock_managed_client = MagicMock()
+        mock_managed_client.submit.side_effect = billing
+        monkeypatch.setattr(image_tool, "_get_managed_fal_client",
+                            lambda gw: mock_managed_client)
+
+        with pytest.raises(ValueError) as exc_info:
+            image_tool._submit_fal_request("fal-ai/flux-2-pro", {"prompt": "x"})
+
+        msg = str(exc_info.value)
+        assert "409" in msg
+        assert "unsupported_pricing_meter" in msg
+        assert "FAL_KEY" in msg
+        assert exc_info.value.__cause__ is billing
+        # 401/403 still get the entitlement appendix; 409 must not drop billing detail.
+        assert "fal-ai/flux-2-pro" in msg
 
 
 class TestKreaModelNormalization:

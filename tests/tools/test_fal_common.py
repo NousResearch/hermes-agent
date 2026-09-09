@@ -300,17 +300,16 @@ class TestManagedFalSyncClientSubmit:
             "status_url": "https://q.example.com/status",
             "cancel_url": "https://q.example.com/cancel",
         }
-        client._maybe_retry_request = MagicMock(return_value=response)
+        client._http_client.request = MagicMock(return_value=response)
         client._raise_for_status = MagicMock()
         client._request_handle_class = MagicMock()
 
         result = client.submit("my-app", {"prompt": "hello"})
 
-        client._maybe_retry_request.assert_called_once()
-        call_args = client._maybe_retry_request.call_args
-        assert call_args[0][0] is client._http_client
-        assert call_args[0][1] == "POST"
-        assert call_args[0][2] == "https://queue.example.com/my-app"
+        client._http_client.request.assert_called_once()
+        call_args = client._http_client.request.call_args
+        assert call_args[0][0] == "POST"
+        assert call_args[0][1] == "https://queue.example.com/my-app"
         assert call_args[1]["json"] == {"prompt": "hello"}
         assert call_args[1]["timeout"] == 120.0
         client._raise_for_status.assert_called_once_with(response)
@@ -326,13 +325,13 @@ class TestManagedFalSyncClientSubmit:
             "status_url": "",
             "cancel_url": "",
         }
-        client._maybe_retry_request = MagicMock(return_value=response)
+        client._http_client.request = MagicMock(return_value=response)
         client._raise_for_status = MagicMock()
         client._request_handle_class = MagicMock()
 
         client.submit("my-app", {}, path="sub/path")
 
-        url = client._maybe_retry_request.call_args[0][2]
+        url = client._http_client.request.call_args[0][1]
         assert url == "https://queue.example.com/my-app/sub/path"
 
     def test_submit_with_path_strips_leading_slash(self):
@@ -344,13 +343,13 @@ class TestManagedFalSyncClientSubmit:
             "status_url": "",
             "cancel_url": "",
         }
-        client._maybe_retry_request = MagicMock(return_value=response)
+        client._http_client.request = MagicMock(return_value=response)
         client._raise_for_status = MagicMock()
         client._request_handle_class = MagicMock()
 
         client.submit("my-app", {}, path="/leading/slash")
 
-        url = client._maybe_retry_request.call_args[0][2]
+        url = client._http_client.request.call_args[0][1]
         assert url == "https://queue.example.com/my-app/leading/slash"
 
     def test_submit_with_webhook_url(self):
@@ -362,13 +361,13 @@ class TestManagedFalSyncClientSubmit:
             "status_url": "",
             "cancel_url": "",
         }
-        client._maybe_retry_request = MagicMock(return_value=response)
+        client._http_client.request = MagicMock(return_value=response)
         client._raise_for_status = MagicMock()
         client._request_handle_class = MagicMock()
 
         client.submit("my-app", {}, webhook_url="https://hook.example.com/cb")
 
-        url = client._maybe_retry_request.call_args[0][2]
+        url = client._http_client.request.call_args[0][1]
         assert "fal_webhook=https%3A%2F%2Fhook.example.com%2Fcb" in url
 
     def test_submit_with_hint(self):
@@ -381,7 +380,7 @@ class TestManagedFalSyncClientSubmit:
             "status_url": "",
             "cancel_url": "",
         }
-        client._maybe_retry_request = MagicMock(return_value=response)
+        client._http_client.request = MagicMock(return_value=response)
         client._raise_for_status = MagicMock()
         client._request_handle_class = MagicMock()
 
@@ -401,7 +400,7 @@ class TestManagedFalSyncClientSubmit:
             "status_url": "",
             "cancel_url": "",
         }
-        client._maybe_retry_request = MagicMock(return_value=response)
+        client._http_client.request = MagicMock(return_value=response)
         client._raise_for_status = MagicMock()
         client._request_handle_class = MagicMock()
 
@@ -421,7 +420,7 @@ class TestManagedFalSyncClientSubmit:
             "status_url": "",
             "cancel_url": "",
         }
-        client._maybe_retry_request = MagicMock(return_value=response)
+        client._http_client.request = MagicMock(return_value=response)
         client._raise_for_status = MagicMock()
         client._request_handle_class = MagicMock()
 
@@ -438,7 +437,7 @@ class TestManagedFalSyncClientSubmit:
             "status_url": "",
             "cancel_url": "",
         }
-        client._maybe_retry_request = MagicMock(return_value=response)
+        client._http_client.request = MagicMock(return_value=response)
         client._raise_for_status = MagicMock()
         client._request_handle_class = MagicMock()
 
@@ -458,7 +457,7 @@ class TestManagedFalSyncClientSubmit:
             "status_url": "",
             "cancel_url": "",
         }
-        client._maybe_retry_request = MagicMock(return_value=response)
+        client._http_client.request = MagicMock(return_value=response)
         client._raise_for_status = MagicMock()
         client._request_handle_class = MagicMock()
 
@@ -474,13 +473,13 @@ class TestManagedFalSyncClientSubmit:
             "status_url": "",
             "cancel_url": "",
         }
-        client._maybe_retry_request = MagicMock(return_value=response)
+        client._http_client.request = MagicMock(return_value=response)
         client._raise_for_status = MagicMock()
         client._request_handle_class = MagicMock()
 
         client.submit("my-app", {}, headers={"X-Custom": "value"})
 
-        headers = client._maybe_retry_request.call_args[1]["headers"]
+        headers = client._http_client.request.call_args[1]["headers"]
         assert headers["X-Custom"] == "value"
 
     def test_submit_with_none_headers_defaults_to_empty_dict(self):
@@ -492,13 +491,13 @@ class TestManagedFalSyncClientSubmit:
             "status_url": "",
             "cancel_url": "",
         }
-        client._maybe_retry_request = MagicMock(return_value=response)
+        client._http_client.request = MagicMock(return_value=response)
         client._raise_for_status = MagicMock()
         client._request_handle_class = MagicMock()
 
         client.submit("my-app", {}, headers=None)
 
-        headers = client._maybe_retry_request.call_args[1]["headers"]
+        headers = client._http_client.request.call_args[1]["headers"]
         assert headers == {}
 
     def test_submit_uses_custom_default_timeout(self):
@@ -514,13 +513,13 @@ class TestManagedFalSyncClientSubmit:
             "status_url": "",
             "cancel_url": "",
         }
-        client._maybe_retry_request = MagicMock(return_value=response)
+        client._http_client.request = MagicMock(return_value=response)
         client._raise_for_status = MagicMock()
         client._request_handle_class = MagicMock()
 
         client.submit("app", {})
 
-        assert client._maybe_retry_request.call_args[1]["timeout"] == 300.0
+        assert client._http_client.request.call_args[1]["timeout"] == 300.0
 
     def test_submit_falls_back_to_120_when_no_default_timeout(self):
         """SyncClient without default_timeout attr → 120.0 fallback."""
@@ -537,13 +536,13 @@ class TestManagedFalSyncClientSubmit:
             "status_url": "",
             "cancel_url": "",
         }
-        client._maybe_retry_request = MagicMock(return_value=response)
+        client._http_client.request = MagicMock(return_value=response)
         client._raise_for_status = MagicMock()
         client._request_handle_class = MagicMock()
 
         client.submit("app", {})
 
-        assert client._maybe_retry_request.call_args[1]["timeout"] == 120.0
+        assert client._http_client.request.call_args[1]["timeout"] == 120.0
 
     def test_submit_passes_request_handle_kwargs(self):
         client, _, _ = self._make_client()
@@ -554,7 +553,7 @@ class TestManagedFalSyncClientSubmit:
             "status_url": "https://q.example.com/status",
             "cancel_url": "https://q.example.com/cancel",
         }
-        client._maybe_retry_request = MagicMock(return_value=response)
+        client._http_client.request = MagicMock(return_value=response)
         client._raise_for_status = MagicMock()
         client._request_handle_class = MagicMock()
 
@@ -580,7 +579,7 @@ class TestManagedFalSyncClientSubmit:
             "status_url": "",
             "cancel_url": "",
         }
-        client._maybe_retry_request = MagicMock(return_value=response)
+        client._http_client.request = MagicMock(return_value=response)
         client._raise_for_status = MagicMock()
         client._request_handle_class = MagicMock()
 
@@ -595,11 +594,190 @@ class TestManagedFalSyncClientSubmit:
             start_timeout=60,
         )
 
-        url = client._maybe_retry_request.call_args[0][2]
+        url = client._http_client.request.call_args[0][1]
         assert "app/sub?" in url
         assert "fal_webhook=" in url
         client._add_hint_header.assert_called_once()
         client._add_priority_header.assert_called_once()
         client._add_timeout_header.assert_called_once()
-        headers = client._maybe_retry_request.call_args[1]["headers"]
+        headers = client._http_client.request.call_args[1]["headers"]
         assert headers["X-Custom"] == "val"
+
+
+# ---------------------------------------------------------------------------
+# Managed queue submit must not retry deterministic 409s (billing / idempotency)
+# ---------------------------------------------------------------------------
+
+# Managed queue submit must not retry deterministic 409s (billing / idempotency).
+# The tests wire fal_client's retry helper so a regression that calls
+# _maybe_retry_request again would POST more than once with the same
+# x-idempotency-key and fail call_count == 1.
+_FAL_RETRY_CODES = (408, 409, 429)
+_FAL_MAX_ATTEMPTS = 10
+_BILLING_409_DETAIL = "BILLING_ERROR: unsupported_pricing_meter"
+_IDEMPOTENCY_409_DETAIL = (
+    "idempotency key is already bound to a different request "
+    "without a reusable request handle"
+)
+
+
+class _FakeFalResponse:
+    def __init__(self, status_code, payload):
+        self.status_code = status_code
+        self._payload = payload
+        self.text = str(payload)
+        self.headers = {}
+
+    def json(self):
+        return self._payload
+
+
+class _FakeFalHTTPError(Exception):
+    """Stand-in for fal_client.client.FalClientHTTPError / httpx.HTTPStatusError."""
+
+    def __init__(self, message, response):
+        super().__init__(message)
+        self.response = response
+        self.status_code = response.status_code
+
+
+def _fal_style_raise_for_status(response):
+    if getattr(response, "status_code", 200) < 400:
+        return
+    payload = {}
+    try:
+        payload = response.json()
+    except Exception:
+        payload = {}
+    detail = payload.get("detail", getattr(response, "text", "")) if isinstance(payload, dict) else getattr(response, "text", "")
+    raise _FakeFalHTTPError(str(detail), response)
+
+
+def _fal_style_maybe_retry_request(
+    client, method, url, json=None, timeout=None, headers=None, extra_retry_codes=None, **kwargs
+):
+    extra = extra_retry_codes or []
+    last_exc = None
+    for attempt in range(1, _FAL_MAX_ATTEMPTS + 1):
+        try:
+            response = client.request(
+                method, url, json=json, timeout=timeout, headers=headers, **kwargs
+            )
+            _fal_style_raise_for_status(response)
+            return response
+        except _FakeFalHTTPError as exc:
+            last_exc = exc
+            status = getattr(getattr(exc, "response", None), "status_code", None)
+            if status in _FAL_RETRY_CODES or status in extra:
+                if attempt < _FAL_MAX_ATTEMPTS:
+                    continue
+            raise
+    raise last_exc
+
+
+def _wire_production_retry_client(http_client):
+    """_ManagedFalSyncClient whose submit goes through the real retry helper path."""
+    fal_client, _ = _make_fal_client_mock(http_client=http_client)
+    fal_client.client._maybe_retry_request = _fal_style_maybe_retry_request
+    fal_client.client._raise_for_status = _fal_style_raise_for_status
+    fal_client.client.SyncRequestHandle = MagicMock()
+    client = _ManagedFalSyncClient(
+        fal_client, key="k", queue_run_origin="https://queue.example.com"
+    )
+    return client, fal_client.client.SyncRequestHandle
+
+
+class TestManagedFalSubmitNoRetryBilling409:
+    def test_billing_409_does_not_retry_same_idempotency_key(self):
+        http_client = MagicMock()
+        billing = _FakeFalResponse(
+            409,
+            {"error": "BILLING_ERROR", "detail": _BILLING_409_DETAIL},
+        )
+        idempotency_conflict = _FakeFalResponse(409, {"detail": _IDEMPOTENCY_409_DETAIL})
+
+        def fake_request(*_args, **_kwargs):
+            # First POST is the billing 409; subsequent POSTs (the production bug)
+            # replay the same idempotency key and get a bound-key conflict.
+            if http_client.request.call_count <= 1:
+                return billing
+            return idempotency_conflict
+
+        http_client.request.side_effect = fake_request
+
+        client, _ = _wire_production_retry_client(http_client)
+
+        with pytest.raises(_FakeFalHTTPError) as exc_info:
+            client.submit(
+                "openai/gpt-image-2.5/flare/text-to-image",
+                {"prompt": "a cat"},
+                headers={"x-idempotency-key": "fixed-key"},
+            )
+
+        assert http_client.request.call_count == 1
+        err = str(exc_info.value)
+        assert "unsupported_pricing_meter" in err
+        assert "BILLING_ERROR" in err
+        assert "already bound" not in err
+        headers = http_client.request.call_args.kwargs["headers"]
+        assert headers["x-idempotency-key"] == "fixed-key"
+
+    def test_idempotency_bound_409_without_reusable_handle_is_not_retried(self):
+        http_client = MagicMock()
+        http_client.request.return_value = _FakeFalResponse(
+            409, {"detail": _IDEMPOTENCY_409_DETAIL}
+        )
+        client, _ = _wire_production_retry_client(http_client)
+
+        with pytest.raises(_FakeFalHTTPError) as exc_info:
+            client.submit(
+                "fal-ai/flux-2-pro",
+                {"prompt": "x"},
+                headers={"x-idempotency-key": "fixed-key"},
+            )
+
+        assert http_client.request.call_count == 1
+        assert "already bound" in str(exc_info.value)
+        assert "reusable request handle" in str(exc_info.value)
+
+    def test_success_200_parses_handle_with_single_post(self):
+        http_client = MagicMock()
+        payload = {
+            "request_id": "req-ok",
+            "response_url": "https://q.example.com/resp",
+            "status_url": "https://q.example.com/status",
+            "cancel_url": "https://q.example.com/cancel",
+        }
+        http_client.request.return_value = _FakeFalResponse(200, payload)
+        client, handle_cls = _wire_production_retry_client(http_client)
+
+        result = client.submit("my-app", {"prompt": "hello"})
+
+        assert http_client.request.call_count == 1
+        request_call = http_client.request.call_args
+        assert request_call.args[0] == "POST"
+        assert request_call.args[1] == "https://queue.example.com/my-app"
+        assert request_call.kwargs["json"] == {"prompt": "hello"}
+        handle_cls.assert_called_once()
+        kwargs = handle_cls.call_args.kwargs
+        assert kwargs["request_id"] == "req-ok"
+        assert kwargs["response_url"] == payload["response_url"]
+        assert kwargs["status_url"] == payload["status_url"]
+        assert kwargs["cancel_url"] == payload["cancel_url"]
+        assert kwargs["client"] is http_client
+        assert result is handle_cls.return_value
+
+    def test_transport_error_is_not_treated_as_billing(self):
+        class TransportError(Exception):
+            pass
+
+        http_client = MagicMock()
+        http_client.request.side_effect = TransportError("connection reset")
+        client, _ = _wire_production_retry_client(http_client)
+
+        with pytest.raises(TransportError, match="connection reset") as exc_info:
+            client.submit("my-app", {"prompt": "hello"})
+
+        err = str(exc_info.value)
+        assert "BILLING_ERROR" not in err
+        assert "unsupported_pricing_meter" not in err

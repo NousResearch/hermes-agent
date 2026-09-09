@@ -17,9 +17,9 @@ from tools.tool_search import (
     assemble_tool_defs,
     dispatch_tool_describe,
     dispatch_tool_search,
-    normalize_tool_call_entries,
     resolve_underlying_call,
 )
+from tools.tool_search_validation import normalize_tool_call_entries
 
 
 def _tool_search_description(tool_defs):

@@ -21,7 +21,7 @@ from tools.tool_search_catalog import (
     BRIDGE_TOOL_NAMES, CHARS_PER_TOKEN, TOOL_CALL_NAME, TOOL_DESCRIBE_NAME, TOOL_SEARCH_NAME,
     CatalogEntry, _fn, _listing_group_label, _registry_entry, _registry_toolset,
     build_catalog, build_catalog_listing_with_form, search_catalog)
-from tools.tool_search_validation import validate_deferred_call_args
+from tools.tool_search_validation import normalize_tool_call_entries, validate_deferred_call_args
 from tools.connector_search import connections_in_scope, connector_entries_by_group, remote_schemas_for
 from tools.tool_gateway.names import CONNECTOR_BATCH_SENTINEL, is_connector_name
 
@@ -528,49 +528,6 @@ def scoped_deferrable_names(tool_defs: List[Dict[str, Any]]) -> frozenset[str]:
     defer_tools = load_config_readonly().effective_defer_tools
     return frozenset(n for n in _tool_def_names(tool_defs)
                      if n and is_deferrable_tool_name(n, defer_tools))
-
-
-def normalize_tool_call_entries(args: Dict[str, Any]) -> Tuple[List[Dict[str, Any]], Optional[str]]:
-    """Normalize ``tool_call`` arguments into a ``calls[]`` list of entries.
-
-    Accepts the advertised batch shape ``{"calls": [{"name", "arguments"}, ...]}``
-    and, tolerantly, the legacy single shape ``{"name": ..., "arguments": ...}``
-    (a single call is a batch of one). Each entry's ``arguments`` is coerced to
-    a dict (JSON strings parsed, ``None`` → ``{}``). Returns ``(entries, None)``
-    or ``([], error_message)``.
-    """
-    raw_calls = args.get("calls")
-    if raw_calls is None:
-        # Legacy single shape.
-        if not str(args.get("name") or "").strip():
-            return [], "tool_call requires 'calls' (an array of {name, arguments})"
-        raw_calls = [{"name": args.get("name"), "arguments": args.get("arguments")}]
-    if isinstance(raw_calls, dict):
-        raw_calls = [raw_calls]
-    if not isinstance(raw_calls, list) or not raw_calls:
-        return [], "tool_call 'calls' must be a non-empty array of {name, arguments}"
-
-    entries: List[Dict[str, Any]] = []
-    for position, raw in enumerate(raw_calls):
-        if not isinstance(raw, dict):
-            return [], f"tool_call calls[{position}] must be an object with 'name' and 'arguments'"
-        name = str(raw.get("name") or "").strip()
-        if not name:
-            return [], f"tool_call calls[{position}] requires a 'name'"
-        if name in BRIDGE_TOOL_NAMES:
-            return [], f"tool_call cannot invoke '{name}' (it is itself a bridge tool)"
-        raw_args = raw.get("arguments")
-        if raw_args is None:
-            raw_args = {}
-        if isinstance(raw_args, str):
-            try:
-                raw_args = json.loads(raw_args)
-            except json.JSONDecodeError as e:
-                return [], f"tool_call calls[{position}].arguments is not valid JSON: {e}"
-        if not isinstance(raw_args, dict):
-            return [], f"tool_call calls[{position}].arguments must be an object"
-        entries.append({"name": name, "arguments": raw_args})
-    return entries, None
 
 
 def resolve_underlying_call(args: Dict[str, Any]) -> Tuple[Optional[str], Dict[str, Any], Optional[str]]:

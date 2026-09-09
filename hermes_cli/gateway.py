@@ -1949,16 +1949,21 @@ def _profile_name_from_home(home: Path, default: Path) -> str | None:
 
 
 def _profile_suffix() -> str:
-    """Service-name suffix for HERMES_HOME: "" for the default root, the profile name for
-    ``<root>/profiles/<name>``, else a short hash of the path."""
+    """Service-name suffix for HERMES_HOME: "" for the platform-native default home (``~/.hermes``), the
+    profile name for ``<root>/profiles/<name>``, else a short hash of the path.
+
+    The bare name is reserved for the NATIVE default, not ``get_default_hermes_root()``: that helper
+    treats any HERMES_HOME outside ``~/.hermes`` (Docker ``/opt/data``, a temp dir) as "the root itself",
+    which let a temp-home harness resolve to the default profile's ``hermes-gateway`` unit and uninstall
+    the production gateway. Service names are host-wide identities; only the real default home owns the
+    bare one."""
     import hashlib
-    from hermes_constants import get_default_hermes_root
+    from hermes_constants import _get_platform_default_hermes_home, get_default_hermes_root
     home = get_hermes_home().resolve()
-    default = get_default_hermes_root().resolve()
-    if home == default:
+    if home == _get_platform_default_hermes_home().resolve():
         return ""
-    # Fallback: short hash for arbitrary HERMES_HOME paths
-    return _profile_name_from_home(home, default) or hashlib.sha256(str(home).encode()).hexdigest()[:8]
+    name = _profile_name_from_home(home, get_default_hermes_root().resolve())
+    return name or hashlib.sha256(str(home).encode()).hexdigest()[:8]
 
 
 def _profile_arg(hermes_home: str | None = None, default_root: str | Path | None = None) -> str:

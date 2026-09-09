@@ -949,9 +949,11 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
         except (*transport_errors, _APIConnectionError) as exc:
             if not isinstance(exc, transport_errors):
                 _log_failure(exc)
+            from agent.api_error_summary import provider_error_log_detail
+
             logger.warning("Codex Responses stream transport finalization failed after a terminal response was already "
                            "received; returning the completed response instead of retrying. %s error=%s",
-                           agent._client_log_context(), exc)
+                           agent._client_log_context(), provider_error_log_detail(exc))
 
     def _close_event_stream(event_stream: Any) -> None:
         close_fn = getattr(event_stream, "close", None)  # None while connect never succeeded
@@ -1005,10 +1007,13 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
                 if attempt >= max_stream_retries:
                     _log_failure(exc)
                     raise
+                from agent.api_error_summary import provider_error_log_detail
+
                 logger.debug(
                     "Codex Responses stream connect failed (attempt %s/%s); retrying. %s error=%s" if event_stream is None
                     else "Codex Responses stream transport failed mid-iteration (attempt %s/%s); retrying. %s error=%s",
-                    attempt + 1, max_stream_retries + 1, agent._client_log_context(), exc,
+                    attempt + 1, max_stream_retries + 1, agent._client_log_context(),
+                    provider_error_log_detail(exc),
                 )
                 continue
             except RuntimeError:
@@ -1022,9 +1027,14 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
             if not agent._interrupt_requested:
                 _drain_for_finalizer(event_stream)
             if final.status in {"incomplete", "failed"}:
+                from agent.redact import has_volatile_sensitive_text
+
+                private_context = has_volatile_sensitive_text()
                 logger.warning("Codex Responses stream terminal status=%s "
                                "(incomplete_details=%s, error=%s, streamed_chars=%d). %s",
-                               final.status, final.incomplete_details, final.error,
+                               final.status,
+                               "withheld" if private_context else final.incomplete_details,
+                               "withheld" if private_context else final.error,
                                sum(len(p) for p in agent._codex_streamed_text_parts), agent._client_log_context())
             return final
         finally:

@@ -22,10 +22,10 @@ from contextvars import copy_context
 from gateway.config import Platform
 from gateway.media_repair import repair_explicit_computer_use_media_paths
 from gateway.platforms.base import BasePlatformAdapter
-from gateway.platforms.event import MessageEvent
+from gateway.platforms.event import MessageEvent, MessageType
 from gateway.session import (
     SessionSource, _session_key_namespace, build_channel_continuity_note,
-    build_session_context,
+    build_session_context, is_shared_multi_user_session,
 )
 from gateway.session_transcript import TranscriptReadError
 from gateway.turn_context import TurnContext
@@ -45,6 +45,37 @@ logger = logging.getLogger("gateway.run")
 
 class GatewayTurnMixin:
     """Agent-turn execution for GatewayRunner (see module docstring)."""
+
+    def _resolve_event_volatile_user_context(self, event: MessageEvent) -> Optional[str]:
+        """Resolve an adapter-owned capability once at a foreground turn boundary."""
+        if (
+            event is None
+            or getattr(event, "ephemeral_context_ref", None) is None
+            or getattr(event, "_ephemeral_context_blocked", False)
+            or getattr(event, "internal", False)
+            or getattr(event, "message_type", None) not in {MessageType.TEXT, MessageType.COMMAND}
+            or bool(getattr(event, "media_urls", None))
+            or not getattr(event, "message_id", None)
+        ):
+            return None
+        source = getattr(event, "source", None)
+        config = getattr(self, "config", None)
+        if source is None or is_shared_multi_user_session(
+            source,
+            group_sessions_per_user=getattr(config, "group_sessions_per_user", True),
+            thread_sessions_per_user=getattr(config, "thread_sessions_per_user", False),
+        ):
+            return None
+        adapter = self._adapter_for_source(source)
+        resolver = getattr(adapter, "_resolve_ephemeral_user_context_for_dispatch_sync", None)
+        if not callable(resolver):
+            return None
+        try:
+            resolved = resolver(event)
+        except Exception:
+            logger.warning("Volatile user context resolution failed closed", exc_info=True)
+            return None
+        return resolved.strip() if isinstance(resolved, str) and resolved.strip() else None
 
     def _resolve_session_agent_runtime(
         self, *, source: Optional[SessionSource] = None, session_key: Optional[str] = None,
@@ -1955,6 +1986,7 @@ class GatewayTurnMixin:
             from gateway.run_heartbeat_acceptance import heartbeat_owner_is_current
             if not heartbeat_owner_is_current(self, event, session_key):
                 return
+            volatile_user_context = self._resolve_event_volatile_user_context(event)
             _run_start_session_id = session_entry.session_id
             _turn_started_monotonic = time.monotonic()
             # Admission/typing is not execution. All routing, authorization and
@@ -1971,6 +2003,7 @@ class GatewayTurnMixin:
                 persist_user_display_kind=prepared.persist_user_display_kind,
                 persist_user_display_metadata={"gateway_input_owner": prepared.persistence_owner},
                 message_type=event.message_type,
+                volatile_user_context=volatile_user_context,
             )
             _turn_seconds = time.monotonic() - _turn_started_monotonic
 
@@ -3435,7 +3468,8 @@ class GatewayTurnMixin:
         updated_history = result.get("messages", history)
         next_source, next_message, next_session_key = source, pending, session_key
         # message_type is carried into the recursive call so queued voice turns can stream TTS.
-        next_message_id = next_channel_prompt = next_message_type = None
+        next_message_id = next_inbound_message_id = None
+        next_channel_prompt = next_message_type = next_volatile_user_context = None
         # See #60671.
         if pending_event is not None:
             next_source = getattr(pending_event, "source", None) or source
@@ -3460,8 +3494,14 @@ class GatewayTurnMixin:
             if next_message is None:
                 return result
             next_message_id = self._reply_anchor_for_event(pending_event)
+            next_inbound_message_id = (
+                str(pending_event.message_id) if pending_event.message_id else None
+            )
             next_channel_prompt = getattr(pending_event, "channel_prompt", None)
             next_message_type = getattr(pending_event, "message_type", None)
+            next_volatile_user_context = self._resolve_event_volatile_user_context(
+                pending_event
+            )
 
         # Clear the prior turn's streaming-TTS completion marker so the recursive turn isn't suppressed.
         # See #60671.
@@ -3495,8 +3535,10 @@ class GatewayTurnMixin:
             message=next_message, context_prompt=turn_ctx.context_prompt, history=updated_history,
             source=next_source, session_id=session_id, session_key=next_session_key,
             run_generation=run_generation, _interrupt_depth=_interrupt_depth + 1,
-            event_message_id=next_message_id, channel_prompt=next_channel_prompt,
+            event_message_id=next_message_id, inbound_message_id=next_inbound_message_id,
+            channel_prompt=next_channel_prompt,
             message_type=next_message_type,
+            volatile_user_context=next_volatile_user_context,
         )
         return _preserve_queued_followup_history_offset(result, followup_result)
 
@@ -3785,6 +3827,7 @@ class GatewayTurnMixin:
         persist_user_message: Optional[Any] = None, persist_user_timestamp: Optional[float] = None,
         persist_user_display_kind: Optional[str] = None, message_type: Optional[str] = None,
         persist_user_display_metadata: Optional[dict] = None,
+        volatile_user_context: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Run the agent; returns the full run_conversation result dict.
 
@@ -3809,6 +3852,7 @@ class GatewayTurnMixin:
             persist_user_timestamp=persist_user_timestamp,
             persist_user_display_kind=persist_user_display_kind,
             persist_user_display_metadata=persist_user_display_metadata,
+            volatile_user_context=volatile_user_context,
         )
         _status_thread_metadata = self._run_agent_bind_turn_wiring(
             turn_ctx, turn_runner, source, event_message_id, disp._native_slack_task_cards,

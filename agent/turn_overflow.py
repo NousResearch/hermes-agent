@@ -316,9 +316,18 @@ def _adopt_provider_context_limit(st: _Recovery, error_msg: str, old_ctx: int) -
     the window and compress. Guessed probe tiers can turn a configured 1M window into
     256K/128K/64K. Returns the provider-reported limit, or ``None``."""
     from agent.model_metadata import save_context_length
+    from agent.redact import has_volatile_sensitive_text
 
     agent = st.agent
     compressor = agent.context_compressor
+    if has_volatile_sensitive_text():
+        # Do not learn or persist a numeric value derived from provider-owned error
+        # text: it can encode a transformed fragment of the private request.
+        agent._buffer_vprint(
+            "⚠️  Context length exceeded during a private-context turn; "
+            "keeping the configured context length and compressing."
+        )
+        return None
     new_ctx = get_context_length_from_provider_error(error_msg, old_ctx)
     if new_ctx is not None:
         agent._buffer_vprint(f"Context limit detected from API: {new_ctx:,} tokens (was {old_ctx:,})")
@@ -361,8 +370,13 @@ def _recover_context_length(st: _Recovery, _retry: TurnRetryState, error_msg: st
     input + max_tokens > window (shrink the OUTPUT cap only)."""
     agent = st.agent
     old_ctx = agent.context_compressor.context_length
+    from agent.redact import has_volatile_sensitive_text
 
-    available_out = parse_available_output_tokens_from_error(error_msg)
+    private_context = has_volatile_sensitive_text()
+
+    available_out = (
+        None if private_context else parse_available_output_tokens_from_error(error_msg)
+    )
     if available_out is not None:
         return _clamp_output_cap(st, _retry, available_out, old_ctx)
 
@@ -378,8 +392,15 @@ def _recover_context_length(st: _Recovery, _retry: TurnRetryState, error_msg: st
                 "(This is an output-cap error, not a context overflow — compression cannot fix it.)",
             ),
             log=(
-                f"{agent.log_prefix}Output-cap error not routed into compression "
-                f"(max_tokens over provider cap): {error_msg[:200]}",
+                (
+                    f"{agent.log_prefix}Output-cap error not routed into compression; "
+                    "provider details withheld for private-context turn"
+                    if private_context
+                    else (
+                        f"{agent.log_prefix}Output-cap error not routed into compression "
+                        f"(max_tokens over provider cap): {error_msg[:200]}"
+                    )
+                ),
             ),
             compression_exhausted=False,
         )

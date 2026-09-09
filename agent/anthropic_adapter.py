@@ -669,8 +669,12 @@ def create_anthropic_message(
         except Exception as exc:
             if not _is_stream_unavailable_error(exc):
                 raise
+            from agent.api_error_summary import provider_error_log_detail
+
             logger.debug(
-                "%sAnthropic Messages stream unavailable; falling back to messages.create(): %s", log_prefix, exc
+                "%sAnthropic Messages stream unavailable; falling back to messages.create(): %s",
+                log_prefix,
+                provider_error_log_detail(exc),
             )
     return messages_api.create(**{k: v for k, v in api_kwargs.items() if k != "stream"})
 

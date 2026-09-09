@@ -706,11 +706,19 @@ def _classify_400(c: _Ctx) -> Verdict:
     # Malformed message array before overflow: input can be tiny and compression
     # cannot fix it. litellm/Bedrock proxies use errorCode=INVALID_REQUEST_BODY.
     if any(p in msg for p in _INVALID_MESSAGE_BODY_PATTERNS) or code == "invalid_request_body":
+        from agent.redact import has_volatile_sensitive_text
+
+        detail = ""
+        args = (c.num_messages, c.approx_tokens)
+        if not has_volatile_sensitive_text():
+            detail = " error=%.200s"
+            args += (msg,)
         logger.warning(
             "Malformed message array 400 (invalid request body) classified as format_error, NOT context "
             "overflow — failing fast + falling back instead of entering the compression loop. This usually "
-            "means an empty-content assistant stub is in the transcript; num_messages=%s approx_tokens=%s. "
-            "error=%.200s", c.num_messages, c.approx_tokens, msg,
+            "means an empty-content assistant stub is in the transcript; num_messages=%s approx_tokens=%s."
+            + detail,
+            *args,
         )
         return _V_FORMAT_ERROR
     verdict = _first_match(msg, _400_TAIL_RULES)
@@ -947,6 +955,12 @@ def _is_openrouter_upstream_error(body: Any, provider: str) -> bool:
 
 def _extract_upstream_provider_name(body: Any) -> Optional[str]:
     """Pull the upstream provider name out of OpenRouter's error metadata."""
+    from agent.redact import has_volatile_sensitive_text
+
+    if has_volatile_sensitive_text():
+        # Provider-owned metadata can contain a transformed or boundary-sliced
+        # request echo. The static upstream-rate-limit classification is sufficient.
+        return None
     metadata = _error_obj(body).get("metadata")
     name = metadata.get("provider_name") if isinstance(metadata, dict) else None
     return name.strip() if isinstance(name, str) and name.strip() else None

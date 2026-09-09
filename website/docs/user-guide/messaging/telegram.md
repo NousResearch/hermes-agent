@@ -123,6 +123,59 @@ The first word filters the catalog; everything after it is carried into the sent
 
 Results are only served to users who pass your gateway allowlist — unauthorized users get an empty list, so your installed skill catalog is not exposed to strangers (inline queries can be sent from any chat, even ones the bot is not in).
 
+### Background live locations (optional)
+
+Telegram uses location messages for both fixed pins and live shares. Fixed pins
+and venues remain ordinary conversational input. To consume active live-location
+updates silently and make the latest position available to later foreground text
+turns, opt in through `~/.hermes/config.yaml`:
+
+```yaml
+platforms:
+  telegram:
+    background_locations: true
+```
+
+This option requires long polling. It is disabled in webhook mode because Hermes
+cannot independently prove that a reverse proxy delivered every stop update.
+
+With the option enabled:
+
+- active updates and their matching stop update do not start an agent turn or
+  trigger a reply;
+- the latest active record is bounded and held only in the running Telegram
+  adapter's memory, scoped by bot, sender, chat, topic, and profile;
+- an eligible foreground text or command turn resolves the latest record exactly
+  once and receives an immutable snapshot; movement or stopping after admission
+  affects future turns, not the already-running turn;
+- fixed pins and venues remain normal transcript content and suppress ambient
+  live-location context when batched with adjacent text;
+- shared multi-user sessions, media turns, internal/automatic turns, `/bg`,
+  `/btw`, MoA, proxy, and API-server paths do not capture a new ambient snapshot.
+
+Hermes does not directly write raw live updates or its injected snapshot to the
+session database, transcript, trajectory, debug request dumps, or state files. To
+keep provider prompt prefixes byte-stable, snapshots that were already sent are
+replayed from a bounded, agent-local RAM sidecar while their original user rows
+remain in the active context. They disappear when those rows are compressed or
+rewound, the cached agent is evicted, or the process restarts. Stopping a share
+prevents new snapshots but does not rewrite context already sent to the model.
+
+Model responses and tool calls remain ordinary conversation data. If a model echoes
+coordinates or passes them to a tool, those outputs follow the normal transcript,
+tool, and provider retention rules; Hermes does not attempt to identify and rewrite
+them after the model has consumed the snapshot.
+
+Reconnects, polling errors, expiry, adapter replacement, and shutdown clear the
+latest active records. A fresh live update is required after polling continuity is
+restored. Anonymous `sender_chat` and Telegram business-account locations are not
+retained because Hermes cannot safely bind them to its current user identity.
+
+The option defaults to `false`. When enabled, every eligible foreground turn from
+that sender—not only location-related questions—may send the current coordinates
+to the configured model provider. Providers or plugins that log raw requests may
+retain them outside Hermes's RAM-only boundary.
+
 ## Step 3: Privacy Mode (Critical for Groups)
 
 Telegram bots have a **privacy mode** that is **enabled by default**. This is the single most common source of confusion when using bots in groups.

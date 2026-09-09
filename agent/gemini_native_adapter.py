@@ -520,7 +520,15 @@ def _iter_sse_events(response: httpx.Response) -> Iterator[Dict[str, Any]]:
             try:
                 payload = json.loads(data)
             except json.JSONDecodeError:
-                logger.debug("Non-JSON Gemini SSE line: %s", data[:200])
+                from agent.redact import has_volatile_sensitive_text
+
+                if has_volatile_sensitive_text():
+                    logger.debug(
+                        "Non-JSON Gemini SSE line withheld for private-context turn (%d chars)",
+                        len(data),
+                    )
+                else:
+                    logger.debug("Non-JSON Gemini SSE line: %s", data[:200])
                 continue
             if isinstance(payload, dict):
                 yield payload

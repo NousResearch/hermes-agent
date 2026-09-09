@@ -11,6 +11,7 @@ roughly the full uncached system-prompt cost per nudge (~26% end-to-end on
 Sonnet 4.5 per the contributor's measurement).
 """
 
+from collections import OrderedDict
 from unittest.mock import patch
 
 
@@ -164,6 +165,56 @@ def test_review_fork_inherits_parent_cached_system_prompt():
         f"Got {captured['written_prompt']!r}, expected {parent_prompt!r}. "
         "This breaks Anthropic/OpenRouter prefix-cache parity (#25322)."
     )
+
+
+def test_review_fork_copies_ram_replay_sidecar_and_binds_redaction():
+    """Same-runtime review replays old bytes but receives no new snapshot."""
+    import run_agent
+
+    from agent.redact import has_volatile_sensitive_text
+    from agent.turn_context import _volatile_base_content_fingerprint
+
+    agent = _make_agent_stub(run_agent.AIAgent)
+    parent_history = OrderedDict(
+        {
+            "tg-old": (
+                "Latitude: 37.7749\nLongitude: -122.4194",
+                _volatile_base_content_fingerprint("old question"),
+            )
+        }
+    )
+    agent._volatile_user_context_history = parent_history
+    captured = {}
+    _Recorder = _make_recorder_class()
+
+    def _record_run(self, *args, **kwargs):
+        captured["history"] = self._volatile_user_context_history
+        captured["private_context_bound"] = has_volatile_sensitive_text()
+        captured["conversation_history"] = kwargs.get("conversation_history")
+        raise RuntimeError("stop after recording")
+
+    _Recorder.run_conversation = _record_run
+    messages = [
+        {
+            "role": "user",
+            "content": "old question",
+            "_volatile_user_context_replay_id": "tg-old",
+        },
+        {"role": "assistant", "content": "old answer"},
+    ]
+    with patch.object(run_agent, "AIAgent", _Recorder), patch(
+        "threading.Thread", _SyncThread
+    ):
+        agent._spawn_background_review(
+            messages_snapshot=messages,
+            review_memory=True,
+            review_skills=False,
+        )
+
+    assert captured["history"] == parent_history
+    assert captured["history"] is not parent_history
+    assert captured["private_context_bound"] is True
+    assert captured["conversation_history"] == messages
 
 
 def test_review_fork_inherits_parent_ephemeral_system_prompt():

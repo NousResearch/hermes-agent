@@ -244,7 +244,7 @@ def _print_nous_401_diagnostics(agent: Any, api_error: Exception) -> None:
     try:
         _body = getattr(api_error, "body", None) or getattr(api_error, "response", None)
         if _body is not None:
-            _body_text = str(_body)[:200]
+            _body_text = agent._clean_error_message(str(_body))
     except Exception:
         pass
     _plines(agent, "🔐 Nous 401 — Portal authentication failed.")
@@ -700,7 +700,7 @@ def nonretryable_client_error_result(
             "      • Self-signed local endpoint (llama.cpp, LM Studio, vLLM)? Use http://",
             "        for localhost, or add the server's cert to your trust store.",
         )
-    logger.error("%sNon-retryable client error: %s", agent.log_prefix, api_error)
+    logger.error("%sNon-retryable client error: %s", agent.log_prefix, _nonretryable_summary)
     # Skip persistence on likely context-overflow (400 + large session): persisting the
     # failed message grows the session and repeats the failure.
     # Persisting the failed user message would make the session even larger, causing the same failure on the
@@ -883,7 +883,9 @@ def log_api_error_attempt(
         f"   🌐 Endpoint: {_base}",
         f"   📝 Error: {_error_summary}",
     )
-    if status_code and status_code < 500:
+    from agent.redact import has_volatile_sensitive_text
+
+    if status_code and status_code < 500 and not has_volatile_sensitive_text():
         _err_body = getattr(api_error, "body", None)
         _err_body_str = str(_err_body)[:300] if _err_body else None
         if _err_body_str:
@@ -982,15 +984,23 @@ def compute_error_backoff(
     # Imported lazily so tests that patch ``agent.retry_utils.jittered_backoff`` /
     # ``adaptive_rate_limit_backoff`` (incl. the run_agent conftest fast-backoff fixture) intercept.
     from agent.retry_utils import adaptive_rate_limit_backoff, jittered_backoff, parse_retry_after_seconds
+    from agent.redact import has_volatile_sensitive_text
+
+    private_context = has_volatile_sensitive_text()
 
     # Respect Retry-After on every retryable provider error, not just 429s. Retryable
     # 5xx responses (e.g. Cloudflare 520/524) also carry the header or a structured
     # ``retry_after`` problem-detail body field; ignoring either turns an origin
-    # outage into a retry storm.
-    _retry_after = parse_retry_after_seconds(
-        getattr(getattr(api_error, "response", None), "headers", None)
-    )
-    if _retry_after is None:
+    # outage into a retry storm. A provider response from a private-context turn is
+    # the exception: remote numeric metadata can encode or transform a coordinate,
+    # then escape through the rounded delay/status even when literal redaction is
+    # active. Use only the local backoff policy for that turn.
+    _retry_after = None
+    if not private_context:
+        _retry_after = parse_retry_after_seconds(
+            getattr(getattr(api_error, "response", None), "headers", None)
+        )
+    if not private_context and _retry_after is None:
         _error_body = getattr(api_error, "body", None)
         if isinstance(_error_body, dict):
             # Some providers nest it as error.retry_after (the same unwrap
@@ -1011,7 +1021,7 @@ def compute_error_backoff(
     wait_time = _retry_after if _retry_after is not None else jittered_backoff(retry_count, base_delay=2.0, max_delay=60.0)
     _backoff_policy = None
     _adaptive = is_rate_limited or is_zai_coding_overload
-    if _adaptive and _retry_after is None:
+    if _adaptive and _retry_after is None and not private_context:
         wait_time, _backoff_policy = adaptive_rate_limit_backoff(
             retry_count, base_url=str(base_url), model=model, error=api_error, default_wait=wait_time,
         )
@@ -1037,7 +1047,7 @@ def compute_error_backoff(
     logger.warning(
         "Retrying API call in %ss (attempt %s/%s) %s policy=%s error=%s",
         wait_time, retry_count, max_retries, agent._client_log_context(),
-        _backoff_policy or "default", api_error,
+        _backoff_policy or "default", agent._summarize_api_error(api_error),
     )
     return wait_time
 
@@ -1060,6 +1070,7 @@ def validate_response_shape(agent: Any, response: Any) -> Tuple[bool, List[str]]
                 else str(_codex_error_obj) if _codex_error_obj
                 else f"Responses API returned status '{_codex_resp_status}'"
             )
+            _codex_error_msg = agent._clean_error_message(str(_codex_error_msg))
             logger.warning(
                 "Codex response status='%s' (error=%s). Routing to fallback. %s",
                 _codex_resp_status, _codex_error_msg, agent._client_log_context(),
@@ -1075,11 +1086,19 @@ def validate_response_shape(agent: Any, response: Any) -> Tuple[bool, List[str]]
                 len(_out_text_stripped),
             )
             return False, []
+        from agent.redact import has_volatile_sensitive_text
+
+        private_context = has_volatile_sensitive_text()
         logger.warning(
             "Codex response.output is empty after stream backfill "
             "(status=%s, incomplete_details=%s, model=%s). %s",
-            getattr(response, "status", None), getattr(response, "incomplete_details", None),
-            getattr(response, "model", None),
+            getattr(response, "status", None),
+            (
+                "withheld"
+                if private_context
+                else getattr(response, "incomplete_details", None)
+            ),
+            agent.model if private_context else getattr(response, "model", None),
             f"api_mode={agent.api_mode} provider={agent.provider}",
         )
         return True, ["response.output is empty"]
@@ -1100,6 +1119,9 @@ def describe_invalid_response(agent: Any, response: Any, api_duration: float) ->
     """Diagnostics for an empty/malformed response: ``(error_msg, provider_name,
     failure_hint)``. The hint is derived from the provider error code (524/504/429/
     5xx) and the response time, instead of always assuming rate limiting."""
+    from agent.redact import has_volatile_sensitive_text
+
+    private_context = has_volatile_sensitive_text()
     error_msg = "Unknown"
     provider_name = "Unknown"
     _has_error = bool(response and hasattr(response, 'error') and response.error)
@@ -1111,16 +1133,22 @@ def describe_invalid_response(agent: Any, response: Any, api_duration: float) ->
         error_msg = str(response.message)
 
     # OpenRouter often returns the actual model used.
-    if provider_name == "Unknown" and response and hasattr(response, 'model') and response.model:
+    if (
+        provider_name == "Unknown"
+        and response
+        and not private_context
+        and hasattr(response, 'model')
+        and response.model
+    ):
         provider_name = f"model={response.model}"
 
-    if provider_name == "Unknown" and response:
+    if provider_name == "Unknown" and response and not private_context:
         resp_attrs = {k: str(v)[:100] for k, v in vars(response).items() if not k.startswith('_')}
         if agent.verbose_logging:
             logging.debug(f"Response attributes for invalid response: {resp_attrs}")
 
     _resp_error_code = None
-    if _has_error:
+    if _has_error and not private_context:
         _code_raw = getattr(response.error, 'code', None)
         if _code_raw is None and isinstance(response.error, dict):
             _code_raw = response.error.get('code')
@@ -1129,6 +1157,10 @@ def describe_invalid_response(agent: Any, response: Any, api_duration: float) ->
                 _resp_error_code = int(_code_raw)
             except (TypeError, ValueError):
                 pass
+
+    if private_context:
+        error_msg = agent._clean_error_message(error_msg)
+        provider_name = str(getattr(agent, "provider", "") or "Unknown")
 
     return error_msg, provider_name, _failure_hint_for(_resp_error_code, api_duration)
 
@@ -1271,7 +1303,9 @@ def route_classified_error(
     from agent.conversation_compression import conversation_history_after_compression
     from agent.conversation_loop import _arm_fallback_restart, _ra
     from agent.model_metadata import estimate_request_tokens_rough
+    from agent.redact import has_volatile_sensitive_text
 
+    private_context = has_volatile_sensitive_text()
     _provider_overflow_recovery_pending = False
     is_rate_limited = False
     _wrapped_output_cap_budget = None
@@ -1299,7 +1333,11 @@ def route_classified_error(
     # ``compression.enabled: false`` forbids every automatic trigger, incl. these
     # overflow recovery paths; error out. Output-cap errors exempt.
     _is_output_cap_error = (
-        is_output_cap_error(error_msg) or parse_available_output_tokens_from_error(error_msg) is not None
+        is_output_cap_error(error_msg)
+        or (
+            not private_context
+            and parse_available_output_tokens_from_error(error_msg) is not None
+        )
     )
     if (
         classified.reason in _OVERFLOW_REASONS
@@ -1374,7 +1412,8 @@ def route_classified_error(
     # as available_out inside the handler.
     _wrapped_output_cap_budget = (
         parse_available_output_tokens_from_error(error_msg)
-        if classified.reason == FailoverReason.rate_limit else None
+        if classified.reason == FailoverReason.rate_limit and not private_context
+        else None
     )
     _is_transport_failure = classified.reason in _TRANSPORT_FAILURE_REASONS
     # Z.AI overload 429s classify `overloaded`, which `is_rate_limited` excludes. Detect

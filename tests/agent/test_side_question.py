@@ -1,5 +1,7 @@
 """Tests for agent/side_question.py — the /btw context-aware side question engine."""
 
+from collections import OrderedDict
+
 from unittest.mock import patch
 
 from agent.side_question import (
@@ -161,10 +163,24 @@ class TestForkPath:
 
         calls = {}
 
+        from agent.turn_context import _volatile_base_content_fingerprint
+
         class FakeFork:
+            _volatile_user_context_history = OrderedDict(
+                {
+                    "tg-old": (
+                        "Latitude: 37.7749\nLongitude: -122.4194",
+                        _volatile_base_content_fingerprint("fix foo.py"),
+                    )
+                }
+            )
+
             def run_conversation(self, user_message, conversation_history):
+                from agent.redact import has_volatile_sensitive_text
+
                 calls["user_message"] = user_message
                 calls["history"] = conversation_history
+                calls["private_context_bound"] = has_volatile_sensitive_text()
                 return {"final_response": "it was foo.py"}
 
             def shutdown_memory_provider(self):
@@ -180,7 +196,11 @@ class TestForkPath:
         whitelists = []
 
         history = [
-            {"role": "user", "content": "fix foo.py"},
+            {
+                "role": "user",
+                "content": "fix foo.py",
+                "_volatile_user_context_replay_id": "tg-old",
+            },
             {"role": "assistant", "content": "fixed"},
         ]
         with patch("agent.background_review.build_cache_parity_fork", fake_build), \
@@ -196,4 +216,5 @@ class TestForkPath:
         assert calls["history"] == history  # full snapshot replayed verbatim
         assert "which file?" in calls["user_message"]
         assert calls["write_origin"] == "side_question"
+        assert calls["private_context_bound"] is True
         assert calls.get("shutdown") and calls.get("closed")

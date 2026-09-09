@@ -57,6 +57,14 @@ def record_nous_rate_limit(
     Reset time comes from headers, then ``error_context["reset_at"]`` (body
     parsing), then ``default_cooldown``.
     """
+    from agent.redact import has_volatile_sensitive_text
+
+    if has_volatile_sensitive_text():
+        # Provider-controlled headers/body can echo arbitrary request fragments,
+        # including coordinates encoded as numeric reset values. Preserve breaker
+        # behavior with a local default while keeping the shared file untainted.
+        headers = None
+        error_context = None
     now = time.time()
     reset_at = None
     header_seconds = _parse_reset_seconds(headers)

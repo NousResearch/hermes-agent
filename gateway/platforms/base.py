@@ -1522,6 +1522,44 @@ def _append_text(existing: Optional[str], new: Optional[str]) -> str:
     return f"{existing}\n{new}" if existing else new
 
 
+def _ephemeral_context_sender_identity(event: MessageEvent) -> Optional[tuple[str, str, str]]:
+    """Return a coordinate-free sender scope for safely merging adapter capabilities."""
+    source = getattr(event, "source", None)
+    if source is None:
+        return None
+    sender = getattr(source, "user_id_alt", None) or getattr(source, "user_id", None)
+    chat_id = getattr(source, "chat_id", None)
+    if sender is None or chat_id is None:
+        return None
+    return (_platform_name(getattr(source, "platform", None)), str(chat_id), str(sender))
+
+
+def merge_ephemeral_context_ref(existing: MessageEvent, incoming: MessageEvent) -> None:
+    """Merge an opaque volatile-context capability while failing closed on ambiguity.
+
+    A one-time location pin marks its batch as blocked so an adjacent live-location
+    capability can never make the pin appear to be the user's current position. The
+    marker and reference are process-local attributes and contain no coordinates.
+    """
+    existing_ref = getattr(existing, "ephemeral_context_ref", None)
+    incoming_ref = getattr(incoming, "ephemeral_context_ref", None)
+    existing_identity = _ephemeral_context_sender_identity(existing)
+    blocked = bool(
+        getattr(existing, "_ephemeral_context_blocked", False)
+        or getattr(incoming, "_ephemeral_context_blocked", False)
+    )
+    if (existing_ref is not None or incoming_ref is not None) and (
+        existing_identity is None
+        or existing_identity != _ephemeral_context_sender_identity(incoming)
+    ):
+        blocked = True
+    if blocked:
+        existing.ephemeral_context_ref = None
+        existing._ephemeral_context_blocked = True
+    elif incoming_ref is not None:
+        existing.ephemeral_context_ref = incoming_ref
+
+
 @dataclass
 class _ExtractedResponse:
     """Deliverable parts of a handler response (see ``_extract_response_content``)."""
@@ -1679,6 +1717,7 @@ def merge_pending_message_event(pending_messages: Dict[str, MessageEvent], sessi
         # A photo burst always absorbs; otherwise merge only when media is involved on either
         # side. Captions merge in every absorbing case.
         if both_photo or existing.media_urls or incoming_has_media:
+            merge_ephemeral_context_ref(existing, event)
             if both_photo or incoming_has_media:
                 existing.media_urls.extend(event.media_urls)
                 existing.media_types.extend(event.media_types)
@@ -1697,6 +1736,7 @@ def merge_pending_message_event(pending_messages: Dict[str, MessageEvent], sessi
             return
         both_text = existing_type == MessageType.TEXT and event.message_type == MessageType.TEXT
         if merge_text and both_text:
+            merge_ephemeral_context_ref(existing, event)
             if event.text:
                 existing.text = _append_text(existing.text, event.text)
             return
@@ -2290,6 +2330,7 @@ class BasePlatformAdapter(ABC):
         if existing is None:
             existing = self._pending_text_batches[key] = event
         else:
+            merge_ephemeral_context_ref(existing, event)
             if event.text:
                 existing.text = _append_text(existing.text, event.text)
             if event.media_urls:
@@ -3311,6 +3352,7 @@ class BasePlatformAdapter(ABC):
             state = TextDebounceState(event=event, task=None, first_ts=now, last_ts=now)
             store[session_key] = state
         else:
+            merge_ephemeral_context_ref(state.event, event)
             if event.text:
                 state.event.text = _append_text(state.event.text, event.text)
             latest_message_id = getattr(event, "message_id", None)

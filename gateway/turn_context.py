@@ -50,6 +50,9 @@ class TurnContext:
     event_message_id: Optional[str] = None
     # Raw inbound platform id (not the event_message_id reply anchor); stamped on the user turn.
     inbound_message_id: Optional[str] = None
+    # Immutable, process-local snapshot resolved from an adapter capability at turn admission.
+    # It is bound around run_conversation and never stored in canonical history.
+    volatile_user_context: Optional[str] = None
     moa_config: Optional[dict] = None
     persist_user_message: Optional[Any] = None
     persist_user_timestamp: Optional[float] = None

@@ -17,6 +17,7 @@ in-process mock provider.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import shutil
 import sqlite3
@@ -24,13 +25,22 @@ import sys
 import tempfile
 import threading
 import types
+from collections import OrderedDict
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from agent.memory_manager import build_memory_context_block
-from agent.turn_context import build_turn_context, compose_user_api_content
+from agent.turn_context import (
+    VOLATILE_USER_CONTEXT_REPLAY_ID_KEY,
+    _volatile_base_content_fingerprint,
+    bind_volatile_user_context,
+    build_api_messages,
+    build_turn_context,
+    copy_volatile_user_context_history,
+    compose_user_api_content,
+)
 from hermes_state import SessionDB
 
 
@@ -497,7 +507,9 @@ class TestWireInvariant:
         handler.response_queue.append(_tc_resp("read_file", '{"file_path": "/nonexistent-path"}'))
         handler.response_queue.append(_text_resp("done"))
 
-        agent.run_conversation("hello please", conversation_history=[], task_id="t")
+        with patch("agent.turn_context._volatile_base_content_fingerprint") as fingerprint:
+            agent.run_conversation("hello please", conversation_history=[], task_id="t")
+        fingerprint.assert_not_called()
 
         reqs = _chat_requests(handler)
         assert len(reqs) == 2
@@ -545,6 +557,398 @@ class TestWireInvariant:
         # And the new current-turn message got its own injection + sidecar.
         current = _user_messages(_chat_requests(handler)[0])[-1]
         assert current["content"] == "second question\n\nPLUGIN-CTX"
+
+    def test_volatile_context_replays_from_ram_without_entering_storage(self, wire_env):
+        """A private turn snapshot remains byte-stable while only RAM retains it."""
+        make_agent, handler, db, sid = wire_env
+        agent = make_agent()
+        snapshot = (
+            "[Background Telegram location context]\n"
+            "Latitude: 37.7749\nLongitude: -122.4194"
+        )
+
+        with bind_volatile_user_context(agent, snapshot, "tg-1"):
+            first_result = agent.run_conversation(
+                "where am I?",
+                conversation_history=[],
+                task_id="t1",
+                persist_user_platform_id="tg-1",
+            )
+        first_wire = _user_messages(_chat_requests(handler)[0])[0]
+        assert first_wire["content"] == f"where am I?\n\nPLUGIN-CTX\n\n{snapshot}"
+        assert "37.7749" not in json.dumps(first_result["messages"])
+
+        history = db.get_messages_as_conversation(sid)
+        durable = json.dumps(history)
+        assert "37.7749" not in durable
+        assert history[0]["message_id"] == "tg-1"
+
+        handler.captured_requests = []
+        with bind_volatile_user_context(agent, None, "tg-2"):
+            agent.run_conversation(
+                "what should I bring?",
+                conversation_history=history,
+                task_id="t2",
+                persist_user_platform_id="tg-2",
+            )
+        replayed = _user_messages(_chat_requests(handler)[0])[0]
+        assert json.dumps(replayed, sort_keys=True) == json.dumps(first_wire, sort_keys=True)
+
+        for request in _chat_requests(handler):
+            for message in request.get("messages", []):
+                assert "_volatile_user_context_replay_id" not in message
+
+    def test_rewritten_row_does_not_inherit_volatile_context(self, wire_env):
+        """Compression/rewind may change the prefix; an id alone cannot move coordinates."""
+        make_agent, handler, db, sid = wire_env
+        agent = make_agent()
+        snapshot = "[Background Telegram location context]\nLatitude: 1.25\nLongitude: 2.5"
+        with bind_volatile_user_context(agent, snapshot, "tg-rewritten"):
+            agent.run_conversation(
+                "original",
+                conversation_history=[],
+                task_id="t1",
+                persist_user_platform_id="tg-rewritten",
+            )
+
+        history = db.get_messages_as_conversation(sid)
+        history[0]["content"] = "[compressed summary]"
+        history[0].pop("api_content", None)
+        handler.captured_requests = []
+        with bind_volatile_user_context(agent, None, "tg-2"):
+            agent.run_conversation(
+                "next",
+                conversation_history=history,
+                task_id="t2",
+                persist_user_platform_id="tg-2",
+            )
+        replayed = _user_messages(_chat_requests(handler)[0])[0]["content"]
+        assert replayed == "[compressed summary]"
+        assert "Latitude" not in replayed
+
+    def test_provider_error_summary_withholds_bound_volatile_context(self):
+        from run_agent import AIAgent
+
+        agent = types.SimpleNamespace()
+        snapshot = (
+            "[Background Telegram location context]\n"
+            "Latitude: 37.7749\nLongitude: -122.4194"
+        )
+        error = RuntimeError(
+            'provider echoed {"content":"Latitude: 37.7749\\nLongitude: -122.4194"}'
+        )
+
+        with bind_volatile_user_context(agent, snapshot, "tg-private"):
+            summary = AIAgent._summarize_api_error(error)
+
+        assert "37.7749" not in summary
+        assert "-122.4194" not in summary
+        assert summary == "Provider error details withheld for private-context turn"
+
+    def test_provider_error_withholds_boundary_sliced_private_context(self):
+        from run_agent import AIAgent
+
+        agent = types.SimpleNamespace()
+        snapshot = (
+            "[Background Telegram location context]\n"
+            "Latitude: 37.7749\nLongitude: -122.4194"
+        )
+        # A provider may truncate through the middle of a scalar, so exact literal
+        # replacement is insufficient for any provider-controlled error detail.
+        error = RuntimeError("x" * 498 + "37.77")
+        error.status_code = 377
+
+        with bind_volatile_user_context(agent, snapshot, "tg-private"):
+            summary = AIAgent._summarize_api_error(error)
+            cleaned = AIAgent._clean_error_message(agent, str(error))
+
+        expected = "Provider error details withheld for private-context turn"
+        assert summary == expected
+        assert cleaned == expected
+
+    def test_private_overflow_does_not_learn_provider_numeric_metadata(self):
+        from agent.turn_overflow import _adopt_provider_context_limit
+
+        agent = types.SimpleNamespace(
+            context_compressor=MagicMock(),
+            _buffer_vprint=MagicMock(),
+        )
+        recovery = types.SimpleNamespace(agent=agent)
+        snapshot = "Latitude: 37.7749\nLongitude: -122.4194"
+
+        with (
+            bind_volatile_user_context(agent, snapshot, "tg-private"),
+            patch("agent.model_metadata.save_context_length") as save_context_length,
+            patch(
+                "agent.turn_overflow.get_context_length_from_provider_error"
+            ) as parse_context_length,
+        ):
+            learned = _adopt_provider_context_limit(
+                recovery,
+                "maximum context length is 377749 tokens",
+                1_000_000,
+            )
+
+        assert learned is None
+        parse_context_length.assert_not_called()
+        save_context_length.assert_not_called()
+        agent.context_compressor.update_model.assert_not_called()
+        assert "377749" not in str(agent._buffer_vprint.call_args_list)
+
+    def test_private_shutdown_path_withholds_escaped_error_detail(self):
+        from agent.turn_loop_errors import handle_outer_loop_error
+
+        generic = "Provider error details withheld for private-context turn"
+        agent = types.SimpleNamespace(
+            _safe_print=MagicMock(),
+            _persist_session=MagicMock(),
+            _summarize_api_error=MagicMock(return_value=generic),
+        )
+        error = RuntimeError("shutdown provider fragment 37.77 / -122.41")
+        snapshot = "Latitude: 37.7749\nLongitude: -122.4194"
+
+        with (
+            bind_volatile_user_context(agent, snapshot, "tg-private"),
+            patch("agent.turn_loop_errors.sys.is_finalizing", return_value=True),
+            patch("agent.turn_loop_errors.logger.warning") as warning,
+        ):
+            verdict = handle_outer_loop_error(
+                agent,
+                e=error,
+                _outer_error_count=0,
+                api_call_count=2,
+                messages=[],
+                conversation_history=[],
+                _turn_exit_reason="unknown",
+                failed=False,
+                final_response=None,
+            )
+
+        assert verdict.action == "break"
+        assert generic in str(warning.call_args)
+        assert "37.77" not in str(warning.call_args)
+        assert "-122.41" not in str(agent._safe_print.call_args)
+
+    def test_provider_retry_and_invalid_response_paths_withhold_remote_text(
+        self, wire_env, caplog,
+    ):
+        from agent.turn_recovery import (
+            compute_error_backoff,
+            describe_invalid_response,
+            validate_response_shape,
+        )
+
+        make_agent, _handler, _db, _sid = wire_env
+        agent = make_agent()
+        agent.api_mode = "codex_responses"
+        agent._get_transport = lambda: types.SimpleNamespace(
+            validate_response=lambda _response: False
+        )
+        response = types.SimpleNamespace(
+            status="failed",
+            error={"code": 377749, "message": "provider slice 37.77 / -122.41"},
+            model="remote-37.77",
+        )
+        error = RuntimeError("retry fragment 37.77 / -122.41")
+        error.response = types.SimpleNamespace(headers={"Retry-After": "37.77"})
+        error.body = {"error": {"retry_after": 122.41}}
+        snapshot = "Latitude: 37.7749\nLongitude: -122.4194"
+
+        with (
+            bind_volatile_user_context(agent, snapshot, "tg-private"),
+            patch("agent.retry_utils.jittered_backoff", return_value=0.25),
+            caplog.at_level(logging.WARNING),
+        ):
+            invalid, details = validate_response_shape(agent, response)
+            error_msg, provider_name, failure_hint = describe_invalid_response(
+                agent, response, 0.1
+            )
+            wait = compute_error_backoff(
+                agent,
+                error,
+                retry_count=1,
+                max_retries=3,
+                is_rate_limited=False,
+                is_zai_coding_overload=False,
+                base_url=agent.base_url,
+                model=agent.model,
+            )
+
+        expected = "Provider error details withheld for private-context turn"
+        assert invalid is True
+        assert details == [f"response.status=failed: {expected}"]
+        assert error_msg == expected
+        assert provider_name == agent.provider
+        assert "377749" not in failure_hint
+        assert wait == 0.25
+        assert expected in caplog.text
+        assert "37.77" not in caplog.text
+        assert "-122.41" not in caplog.text
+
+    def test_provider_error_request_dump_is_skipped_for_volatile_turn(self, tmp_path):
+        from agent.agent_runtime_helpers import dump_api_request_debug
+
+        agent = types.SimpleNamespace(
+            _vprint=MagicMock(),
+            log_prefix="",
+            logs_dir=tmp_path,
+        )
+        snapshot = "[Background Telegram location context]\nLatitude: 1.25\nLongitude: 2.5"
+
+        with bind_volatile_user_context(agent, snapshot, "tg-private"):
+            result = dump_api_request_debug(
+                agent,
+                {"messages": [{"role": "user", "content": snapshot}]},
+                reason="provider_error",
+            )
+
+        assert result is None
+        assert list(tmp_path.rglob("request_dump_*.json")) == []
+        assert "skipped" in agent._vprint.call_args.args[0]
+
+    def test_historical_ram_replay_also_blocks_dump_and_redacts_errors(
+        self, wire_env, tmp_path,
+    ):
+        from agent.agent_runtime_helpers import dump_api_request_debug
+        from run_agent import AIAgent
+
+        make_agent, _handler, _db, _sid = wire_env
+        agent = make_agent()
+        snapshot = (
+            "[Background Telegram location context]\n"
+            "Latitude: 48.8566\nLongitude: 2.3522"
+        )
+        with bind_volatile_user_context(agent, snapshot, "tg-first"):
+            agent.run_conversation(
+                "where am I?",
+                conversation_history=[],
+                task_id="t1",
+                persist_user_platform_id="tg-first",
+            )
+
+        # The next turn has no current snapshot, but its wire prefix can replay the
+        # first turn's snapshot from RAM. Failure paths must keep treating it as private.
+        agent.logs_dir = tmp_path
+        with bind_volatile_user_context(agent, None, "tg-second"):
+            result = dump_api_request_debug(
+                agent,
+                {"messages": [{"role": "user", "content": snapshot}]},
+                reason="provider_error",
+            )
+            summary = AIAgent._summarize_api_error(
+                RuntimeError(f"provider echoed {snapshot}")
+            )
+
+        assert result is None
+        assert list(tmp_path.rglob("request_dump_*.json")) == []
+        assert "48.8566" not in summary
+        assert "2.3522" not in summary
+
+    def test_volatile_history_cap_is_stable_across_tool_followup_calls(self, wire_env):
+        make_agent, _handler, _db, _sid = wire_env
+        agent = make_agent()
+        messages = []
+        retained = OrderedDict()
+        for index in range(256):
+            replay_id = f"tg-{index}"
+            content = f"question {index}"
+            messages.append(
+                {
+                    "role": "user",
+                    "content": content,
+                    VOLATILE_USER_CONTEXT_REPLAY_ID_KEY: replay_id,
+                }
+            )
+            retained[replay_id] = (
+                f"Latitude: {index}.1\nLongitude: {index}.2",
+                _volatile_base_content_fingerprint(content),
+            )
+        agent._volatile_user_context_history = retained
+        previous, _ = build_api_messages(
+            agent,
+            messages,
+            current_turn_user_idx=len(messages) - 1,
+            ext_prefetch_cache="",
+            plugin_user_context="",
+            moa_config=None,
+            active_system_prompt="",
+        )
+        messages.append(
+            {
+                "role": "user",
+                "content": "current question",
+                VOLATILE_USER_CONTEXT_REPLAY_ID_KEY: "tg-current",
+            }
+        )
+
+        kwargs = dict(
+            current_turn_user_idx=len(messages) - 1,
+            ext_prefetch_cache="",
+            plugin_user_context="",
+            moa_config=None,
+            active_system_prompt="",
+        )
+        with bind_volatile_user_context(
+            agent,
+            "Latitude: 999.1\nLongitude: 999.2",
+            "tg-current",
+        ):
+            first, _ = build_api_messages(agent, messages, **kwargs)
+            second, _ = build_api_messages(agent, messages, **kwargs)
+
+        assert first == second
+        # A bounded sidecar may decline this turn's new snapshot, but it must never
+        # evict context for an active historical row and rewrite the cached prefix.
+        assert first[:-1] == previous
+        assert first[0]["content"].endswith("Latitude: 0.1\nLongitude: 0.2")
+        assert first[-1]["content"] == "current question"
+        assert len(agent._volatile_user_context_history) == 256
+
+    def test_moa_excludes_current_and_historical_volatile_context(self, wire_env):
+        make_agent, _handler, _db, _sid = wire_env
+        agent = make_agent()
+        old_context = "Latitude: 1.25\nLongitude: 2.5"
+        current_context = "Latitude: 37.7749\nLongitude: -122.4194"
+        messages = [
+            {
+                "role": "user",
+                "content": "old question",
+                VOLATILE_USER_CONTEXT_REPLAY_ID_KEY: "tg-old",
+            },
+            {"role": "assistant", "content": "old answer"},
+            {
+                "role": "user",
+                "content": "current question",
+                VOLATILE_USER_CONTEXT_REPLAY_ID_KEY: "tg-current",
+            },
+        ]
+        agent._volatile_user_context_history = OrderedDict(
+            {
+                "tg-old": (
+                    old_context,
+                    _volatile_base_content_fingerprint("old question"),
+                )
+            }
+        )
+
+        with bind_volatile_user_context(
+            agent, current_context, "tg-current"
+        ):
+            api_messages, _ = build_api_messages(
+                agent,
+                messages,
+                current_turn_user_idx=2,
+                ext_prefetch_cache="",
+                plugin_user_context="",
+                moa_config={},
+                active_system_prompt="",
+            )
+
+        serialized = json.dumps(api_messages)
+        assert "Latitude" not in serialized
+        assert "Longitude" not in serialized
+        assert "37.7749" not in serialized
+        assert "1.25" not in serialized
 
 
 # ---------------------------------------------------------------------------
@@ -891,6 +1295,168 @@ class TestMaxIterationsSummaryReplay:
         # The live history dict is never mutated.
         assert messages[0]["content"] == "q1"
         assert messages[0]["api_content"] == "q1\n\nPLUGIN-CTX"
+
+    def test_summary_request_replays_ram_context_with_identical_prefix(self):
+        """The direct summary call must reuse existing RAM suffixes, not recapture."""
+        from agent.chat_completion_helpers import _iteration_summary_api_messages
+        from run_agent import AIAgent
+
+        agent = AIAgent(
+            api_key="test-key",
+            base_url="https://openrouter.ai/api/v1",
+            provider="openai-compat",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+        agent._cached_system_prompt = "SYS"
+        agent.ephemeral_system_prompt = None
+        agent.prefill_messages = []
+        snapshot = "Latitude: 37.7749\nLongitude: -122.4194"
+        messages = [
+            {
+                "role": "user",
+                "content": "where am I?",
+                VOLATILE_USER_CONTEXT_REPLAY_ID_KEY: "tg-1",
+            },
+            {"role": "assistant", "content": "near the bay"},
+        ]
+
+        with bind_volatile_user_context(agent, snapshot, "tg-1"):
+            normal, _ = build_api_messages(
+                agent,
+                messages,
+                current_turn_user_idx=0,
+                ext_prefetch_cache="",
+                plugin_user_context="",
+                moa_config=None,
+                active_system_prompt="SYS",
+            )
+            summary = _iteration_summary_api_messages(
+                agent,
+                messages + [{"role": "user", "content": "Summarize the work."}],
+            )
+
+        assert summary[:-1] == normal
+        assert summary[-1]["content"] == "Summarize the work."
+        assert snapshot in summary[1]["content"]
+        assert snapshot not in json.dumps(messages)
+
+    def test_inline_moa_summary_does_not_replay_ram_context(self):
+        """An exhausted inline-MoA turn must keep its no-location boundary."""
+        from agent.chat_completion_helpers import _iteration_summary_api_messages
+        from run_agent import AIAgent
+
+        agent = AIAgent(
+            api_key="test-key",
+            base_url="https://openrouter.ai/api/v1",
+            provider="openai-compat",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+        agent._cached_system_prompt = "SYS"
+        agent.ephemeral_system_prompt = None
+        agent.prefill_messages = []
+        snapshot = "Latitude: 51.5074\nLongitude: -0.1278"
+        messages = [
+            {
+                "role": "user",
+                "content": "old question",
+                VOLATILE_USER_CONTEXT_REPLAY_ID_KEY: "tg-old",
+            },
+            {"role": "assistant", "content": "old answer"},
+            {
+                "role": "user",
+                "content": "compare approaches",
+                VOLATILE_USER_CONTEXT_REPLAY_ID_KEY: "tg-current",
+            },
+        ]
+
+        with bind_volatile_user_context(agent, snapshot, "tg-old"):
+            build_api_messages(
+                agent,
+                messages[:2],
+                current_turn_user_idx=0,
+                ext_prefetch_cache="",
+                plugin_user_context="",
+                moa_config=None,
+                active_system_prompt="SYS",
+            )
+        with bind_volatile_user_context(agent, snapshot, "tg-current"):
+            build_api_messages(
+                agent,
+                messages,
+                current_turn_user_idx=2,
+                ext_prefetch_cache="",
+                plugin_user_context="",
+                moa_config=None,
+                active_system_prompt="SYS",
+            )
+
+        summary = _iteration_summary_api_messages(
+            agent,
+            messages + [{"role": "user", "content": "Summarize the work."}],
+            allow_volatile_replay=False,
+        )
+
+        assert snapshot not in json.dumps(summary)
+        assert snapshot not in json.dumps(messages)
+
+    def test_same_runtime_fork_copies_replay_without_new_snapshot(self):
+        """A cache-parity fork gets historical bytes via an unaliased RAM copy."""
+        from run_agent import AIAgent
+
+        def make_agent():
+            instance = AIAgent(
+                api_key="test-key",
+                base_url="https://openrouter.ai/api/v1",
+                provider="openai-compat",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+            instance.ephemeral_system_prompt = None
+            return instance
+
+        parent = make_agent()
+        fork = make_agent()
+        snapshot = "Latitude: 48.8566\nLongitude: 2.3522"
+        history = [
+            {
+                "role": "user",
+                "content": "old question",
+                VOLATILE_USER_CONTEXT_REPLAY_ID_KEY: "tg-old",
+            },
+            {"role": "assistant", "content": "old answer"},
+        ]
+        with bind_volatile_user_context(parent, snapshot, "tg-old"):
+            parent_wire, _ = build_api_messages(
+                parent,
+                history,
+                current_turn_user_idx=0,
+                ext_prefetch_cache="",
+                plugin_user_context="",
+                moa_config=None,
+                active_system_prompt="",
+            )
+
+        copy_volatile_user_context_history(parent, fork)
+        assert fork._volatile_user_context_history is not parent._volatile_user_context_history
+        fork_messages = history + [{"role": "user", "content": "synthetic fork prompt"}]
+        with bind_volatile_user_context(fork, None, None):
+            fork_wire, _ = build_api_messages(
+                fork,
+                fork_messages,
+                current_turn_user_idx=2,
+                ext_prefetch_cache="",
+                plugin_user_context="",
+                moa_config=None,
+                active_system_prompt="",
+            )
+
+        assert fork_wire[:2] == parent_wire
+        assert fork_wire[-1]["content"] == "synthetic fork prompt"
 
 
 class TestSessionRowExistsBeforePreflightCompaction:

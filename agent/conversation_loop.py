@@ -1447,7 +1447,7 @@ def run_conversation(
             ra=_ra,
             # MoA turns append per-call aggregated context to the API copy of the
             # user message, so no byte-stable api_content sidecar can be stamped.
-            moa_active=bool(moa_config),
+            moa_active=moa_config is not None,
         )
     except PreflightCompressionTimedOut as _preflight_timeout_exc:
         return _preflight_timeout_result(agent, _preflight_timeout_exc, conversation_history)

@@ -1644,7 +1644,13 @@ try {
 
     # A zero-exit update is not proof that the runtime survived the update.
     if ($res.Code -eq 0 -and -not $desktopBuildFailed) {
-        $verifyCode = "import hermes_cli.main; from pathlib import Path; from hermes_cli.desktop_update_verify import verify_windows_desktop_update; verify_windows_desktop_update(Path.cwd())"
+        # The Desktop spawns this script with cwd=HERMES_HOME (see main.ts
+        # spawnUpdaterProcess), NOT the checkout, so Path.cwd() is the wrong
+        # project_root and verify fails "executable is missing" on every
+        # desktop-driven update. Derive the checkout from the imported
+        # module's own location instead (hermes_cli/ -> repo root), which is
+        # correct regardless of cwd.
+        $verifyCode = "import hermes_cli.main; from pathlib import Path; from hermes_cli.desktop_update_verify import verify_windows_desktop_update; verify_windows_desktop_update(Path(hermes_cli.main.__file__).resolve().parents[1])"
         $verify = Invoke-HermesStep $pythonExe @("-c", $verifyCode) "verify"
         if ($verify.Code -ne 0) {
             $finalCode = 8

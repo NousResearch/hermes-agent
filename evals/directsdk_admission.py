@@ -20,6 +20,7 @@ sys.path.insert(0, str(ROOT / 'plugins/model-providers/claude-oauth-directsdk'))
 import directsdk
 
 USAGE = {'input_tokens':101, 'output_tokens':37, 'cache_read_input_tokens':211, 'cache_creation_input_tokens':313}
+CASES = ('final', 'tools', 'max', 'tool_max', 'context', 'thinking', 'refusal', 'error', 'disconnect', 'cancel')
 
 
 def events(mode):
@@ -71,11 +72,11 @@ class Peer(BaseHTTPRequestHandler):
         self.wfile.flush()
 
 
-def run(binary):
+def run(binary, cases=CASES):
     binary = str(Path(binary).absolute())
     before = hashlib.sha256(Path(binary).read_bytes()).hexdigest()
     rows = []
-    for mode in ('final', 'tools', 'max', 'tool_max', 'context', 'thinking', 'refusal', 'error', 'disconnect', 'cancel'):
+    for mode in cases:
         with tempfile.TemporaryDirectory(prefix='directsdk-admission-eval-') as home:
             peer = ThreadingHTTPServer(('127.0.0.1', 0), Peer)
             peer.mode, peer.requests = mode, 0
@@ -104,6 +105,8 @@ def run(binary):
                         assert mode not in ('error', 'disconnect', 'cancel')
                         usage = result.usage.model_dump()
                         row.update(admission=usage['native_admission'], finish=result.choices[0].finish_reason)
+                        if mode == 'context':
+                            assert result.choices[0].finish_reason == 'model_context_window_exceeded'
                         assert usage['native_usage'] == USAGE
                         blocks = result.choices[0].message.reasoning_details[0]['messages'][0]['content']
                         if mode == 'thinking':
@@ -132,4 +135,6 @@ def run(binary):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('binary')
-    print(json.dumps(run(parser.parse_args().binary), indent=2))
+    parser.add_argument('--case', action='append', choices=CASES, help='Run only an affected case; default runs all cases')
+    args = parser.parse_args()
+    print(json.dumps(run(args.binary, args.case or CASES), indent=2))

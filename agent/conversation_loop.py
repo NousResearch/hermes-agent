@@ -1391,6 +1391,11 @@ def _run_api_retry_loop(agent, s: _LoopState) -> Optional[Dict[str, Any]]:
             if _run_phase(perform_api_call, agent, s).action == "break":
                 return None
             _rc = _run_phase(check_api_response, agent, s)
+            if _rc.action == "context_overflow":
+                # The response (including partial text/usage) is already saved.
+                # Reuse ordinary overflow classification and compression, after
+                # the phase has copied its updated accounting/rearm state back.
+                raise RuntimeError("Context length exceeded: model_context_window_exceeded")
             if _rc.action == "return":
                 return _rc.result
             if _rc.action == "break":

@@ -55,7 +55,7 @@ def projection(message):
         args = f['arguments']
         calls.append({'id': tc['id'], 'name': f['name'],
                       'input': json.loads(args) if isinstance(args, str) else args})
-    return {'content': (message.get('content') or '').strip(), 'tool_calls': calls}
+    return {'content': message.get('content') or '', 'tool_calls': calls}
 
 
 def content_blocks(content):
@@ -99,8 +99,10 @@ def prepare_history(messages):
                 if len(carriers) != 1 or carriers[0].get('version') != 1:
                     raise ValueError('Unsupported native assistant carrier version')
                 carrier = carriers[0]
-                expected = {**carrier['projection'], 'content': carrier['projection']['content'].strip()}
-                if projection(message) == expected:
+                expected = carrier['projection']
+                native_text = ''.join(block.get('text', '') for item in carrier['messages']
+                                      for block in item['content'] if block.get('type') == 'text')
+                if projection(message) == expected and native_text == expected['content']:
                     for native in carrier['messages']:
                         frames.append({'type': 'assistant', 'message': copy.deepcopy(native)})
                     continue
@@ -235,6 +237,11 @@ class Request:
                     os.killpg(self.process.pid, signal.SIGKILL)  # windows-footgun: ok — spawn rejects non-POSIX before creating a process
                 except ProcessLookupError:
                     pass
+                except PermissionError:
+                    # Darwin can report EPERM for an already-exited group during
+                    # repeated cancellation. Never hide denial for a live child.
+                    if self.process.poll() is None:
+                        raise
 
     def spawn(self, command, *, stdin=subprocess.DEVNULL, **kwargs):
         with self.lock:
@@ -491,7 +498,8 @@ class Client:
                         raise RuntimeError('Incomplete upstream response' + (': ' + native_error if native_error else ''))
                     assistants = [admission.capture.message]
                     stopped = True
-                native_failure_handled = admission.denied or (admission.used and assistants[0].get('stop_reason') == 'refusal')
+                partial_arguments = admission.capture.incomplete_arguments if admission.used else {}
+                native_failure_handled = admission.denied or bool(partial_arguments) or (admission.used and assistants[0].get('stop_reason') == 'refusal')
                 if native_error and not native_failure_handled:
                     raise RuntimeError('Native API error: ' + native_error)
                 if len(results) != 1 or not assistants or not stopped:
@@ -499,12 +507,13 @@ class Client:
                 final = results[0]
                 blocks = [b for a in assistants for b in a['content']]
                 calls = []
-                for block in blocks:
+                for index, block in enumerate(blocks):
                     if block.get('type') == 'tool_use':
                         name = block['name']
                         if not name.startswith(PREFIX) or name[len(PREFIX):] not in names:
                             raise RuntimeError('Native returned a tool outside the current host inventory')
-                        calls.append({'id': block['id'], 'type': 'function', 'function': {'name': name[len(PREFIX):], 'arguments': json.dumps(block['input'], separators=(',', ':'), allow_nan=False)}})
+                        arguments = partial_arguments[index] if index in partial_arguments else json.dumps(block['input'], separators=(',', ':'), allow_nan=False)
+                        calls.append({'id': block['id'], 'type': 'function', 'function': {'name': name[len(PREFIX):], 'arguments': arguments}})
                 boundary = bool(calls) and final.get('subtype') == 'error_max_turns' and p.returncode == 1
                 if not boundary and not native_failure_handled and (p.returncode != 0 or final.get('is_error') or final.get('subtype') != 'success'):
                     raise RuntimeError('Native request failed: ' + str(final.get('subtype')))
@@ -519,16 +528,22 @@ class Client:
                         raise RuntimeError('Native final text differs from incremental stream')
                 message = {'role': 'assistant', 'content': text or None, 'tool_calls': calls or None,
                            'reasoning_content': ''.join(b.get('thinking', '') for b in blocks if b.get('type') == 'thinking') or None}
-                carrier = {'type': CARRIER, 'version': 1, 'messages': assistants, 'projection': projection(message)}
-                message['reasoning_details'] = [carrier]
+                # Incomplete tool arguments are a host retry signal, never a valid
+                # signed replay block. Hermes' length path will not execute them.
+                carriers = [] if partial_arguments else [{'type': CARRIER, 'version': 1, 'messages': assistants, 'projection': projection(message)}]
+                message['reasoning_details'] = carriers
                 inp = usage['input_tokens'] + usage.get('cache_read_input_tokens', 0) + usage.get('cache_creation_input_tokens', 0)
                 normalized_usage = {'prompt_tokens': inp, 'completion_tokens': usage['output_tokens'], 'total_tokens': inp + usage['output_tokens'], 'prompt_tokens_details': {'cached_tokens': usage.get('cache_read_input_tokens', 0)}, 'cache_creation_input_tokens': usage.get('cache_creation_input_tokens', 0), 'native_usage': usage,
                                     'completion_tokens_details': {'reasoning_tokens': usage.get('output_tokens_details', {}).get('thinking_tokens', 0)},
                                     'native_cost': {'total_cost_usd': final.get('total_cost_usd'), 'modelUsage': final.get('modelUsage')}}
                 normalized_usage['native_admission'] = {'upstream_requests': int(admission.used), 'blocked_requests': admission.denied, 'request_id': admission.request_id}
-                finish = 'tool_calls' if calls else ('length' if any(a.get('stop_reason') in ('max_tokens', 'model_context_window_exceeded') for a in assistants) else 'stop')
+                # Context pressure is not output exhaustion. Preserve this stop
+                # so Hermes compresses canonical history rather than appending
+                # output-continuation prompts to an already-full context.
+                context_exhausted = any(a.get('stop_reason') == 'model_context_window_exceeded' for a in assistants)
+                finish = 'model_context_window_exceeded' if context_exhausted else ('length' if partial_arguments else ('tool_calls' if calls else ('length' if any(a.get('stop_reason') == 'max_tokens' for a in assistants) else 'stop')))
                 response = obj({'id': assistants[-1].get('id', 'claude-native'), 'model': kwargs['model'], 'object': 'chat.completion', 'choices': [{'index': 0, 'finish_reason': finish, 'message': message}], 'usage': normalized_usage})
-                chunk = self._chunk(kwargs['model'], {'content': None, 'tool_calls': [dict(tc, index=i) for i, tc in enumerate(calls)] or None, 'reasoning_details': [carrier]}, finish, normalized_usage)
+                chunk = self._chunk(kwargs['model'], {'content': None, 'tool_calls': [dict(tc, index=i) for i, tc in enumerate(calls)] or None, 'reasoning_details': carriers}, finish, normalized_usage)
                 chunk._response = response
                 yield chunk
         finally:

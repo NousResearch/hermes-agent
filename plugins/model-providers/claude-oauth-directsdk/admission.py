@@ -20,6 +20,7 @@ class Capture:
         self.pending = ''
         self.decoder = codecs.getincrementaldecoder('utf-8')()
         self.arguments = {}
+        self.incomplete_arguments = {}
 
     def feed(self, chunk):
         self.pending += self.decoder.decode(chunk)
@@ -62,14 +63,21 @@ class Capture:
     def _block_stop(self, event):
         index = event['index']
         if index in self.arguments:
-            self.message['content'][index]['input'] = json.loads(self.arguments.pop(index))
+            raw = self.arguments.pop(index)
+            try:
+                self.message['content'][index]['input'] = json.loads(raw)
+            except json.JSONDecodeError:
+                # A length-limited tool block can end inside its JSON arguments.
+                # Keep reading the terminal usage/reason; never repair it to {}.
+                self.incomplete_arguments[index] = raw
 
     def _delta(self, event):
         self.message.update(event.get('delta', {}))
         self.message['usage'].update(event.get('usage', {}))
 
     def _stop(self, event):
-        self.complete = bool(self.message and self.message.get('stop_reason') and not self.arguments)
+        self.complete = bool(self.message and self.message.get('stop_reason') and not self.arguments
+                             and (not self.incomplete_arguments or self.message['stop_reason'] == 'max_tokens'))
 
 
 class Admission:

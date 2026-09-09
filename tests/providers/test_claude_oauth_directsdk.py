@@ -106,7 +106,7 @@ class Contract(unittest.TestCase):
                     final = chunks[-1]
                     msg = {
                         "role": "assistant",
-                        "content": "hello",
+                        "content": ''.join(c.choices[0].delta.content or '' for c in chunks),
                         "tool_calls": [
                             {
                                 "id": "toolu_test",
@@ -131,7 +131,8 @@ class Contract(unittest.TestCase):
                 canonical = normalize_usage(final.usage, api_mode='chat_completions')
                 self.assertEqual(canonical.reasoning_tokens, 4)
                 self.assertEqual(final.usage.model_dump()['native_cost'], {'total_cost_usd': .012345, 'modelUsage': {'sonnet': {'costBasis': 'list'}}})
-                msg["content"] = (msg.get("content") or "").strip()
+                # Unchanged replay must be byte-faithful. Whitespace edits are
+                # covered separately and must invalidate signed native blocks.
                 req["messages"] += [
                     msg,
                     {

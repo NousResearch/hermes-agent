@@ -37,6 +37,29 @@ def test_host_history_edits_replay_canonical_visible_blocks():
         native.prepare_history(history)
 
 
+@pytest.mark.parametrize('legacy_projection', [False, True])
+def test_whitespace_edit_invalidates_native_replay(legacy_projection):
+    original = '    print("λ")\n'
+    visible = original.strip()
+    blocks = [{'type': 'thinking', 'thinking': 'fixture', 'signature': 'fixture-signature'},
+              {'type': 'text', 'text': original}]
+    message = {'role': 'assistant', 'content': original}
+    carrier = {'type': native.CARRIER, 'version': 1, 'projection': {'content': original, 'tool_calls': []},
+               'messages': [{'role': 'assistant', 'content': blocks}]}
+    message['reasoning_details'] = [carrier]
+    history = [{'role': 'user', 'content': 'fixture'}, message, {'role': 'user', 'content': 'continue'}]
+    # An unchanged prefix still retains the exact provider blocks/signature.
+    assert native.prepare_history(history)[1][1]['message']['content'] == blocks
+    message['content'] = visible
+    if legacy_projection:
+        # Older carriers recorded a stripped projection even though the native
+        # text included whitespace. They cannot override current canonical text.
+        carrier['projection']['content'] = visible
+    frame = native.prepare_history(history)[1][1]['message']
+    assert frame['content'] == [{'type': 'text', 'text': visible}]
+    assert carrier['messages'][0]['content'] == blocks
+
+
 @pytest.mark.skipif(os.name != "posix", reason="Native transport is POSIX")
 def test_active_stream_outlives_idle_budget_and_large_request_uses_files(tmp_path):
     script = tmp_path / "native.py"

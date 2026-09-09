@@ -22,7 +22,8 @@ logger = logging.getLogger("agent.conversation_loop")
 
 @dataclass
 class ResponseCheckVerdict:
-    """``action``: ``"break"`` (leave the retry loop — success, or a fallback/refusal restart
+    """``action``: ``"context_overflow"`` (use existing compression recovery),
+    ``"break"`` (leave the retry loop — success, or a fallback/refusal restart
     armed on ``_retry``), ``"continue"`` (retry the API call) or ``"return"`` (``result`` is
     the turn's result dict). The other fields are the retry-loop locals rebound."""
 
@@ -160,7 +161,50 @@ def check_api_response(
         compression_attempts = 0
         return _verdict("break")
 
-    if finish_reason == "length":
+    if finish_reason in {"length", "model_context_window_exceeded"}:
+        # Truncation restarts the outer loop before normal response intake. Record
+        # this admitted generation once, including its hook and usage, rather than
+        # silently dropping the partial step from observers and accounting.
+        from agent.turn_response_intake import _fire_post_api_request_hook
+        from agent.turn_truncation import normalize_response_for_agent
+
+        _fire_post_api_request_hook(
+            agent, response, normalize_response_for_agent(agent, response), finish_reason,
+            api_messages=api_messages, api_call_count=api_call_count,
+            api_duration=api_duration, api_start_time=api_start_time,
+            api_request_id=api_request_id, effective_task_id=effective_task_id,
+            turn_id=turn_id,
+        )
+        _usage_outcome = record_response_usage(
+            agent, response, messages=messages, api_call_count=api_call_count,
+            api_duration=api_duration, compression_attempts=compression_attempts,
+            max_compression_attempts=max_compression_attempts,
+        )
+        compression_attempts = _usage_outcome.compression_attempts
+        if _usage_outcome.rearmed:
+            _preflight_compression_blocked = False
+            _last_preflight_pressure = None
+        if finish_reason == "model_context_window_exceeded":
+            from agent.message_metadata import append_message
+
+            partial = normalize_response_for_agent(agent, response)
+            if partial.content:
+                # Save visible output before compression. Tool calls on this
+                # unfinished response do not execute; omit their replay blocks.
+                append_message(messages, {
+                    "role": "assistant", "content": partial.content,
+                    "finish_reason": finish_reason,
+                    "_length_continuation_fragment": True,
+                })
+            append_message(messages, {
+                "role": "user",
+                "content": "The context window was exhausted. After context compression, continue the unfinished response. No tool from the incomplete response was executed.",
+                "_length_continuation_nudge": True,
+            })
+            agent._session_messages = messages
+            agent._persist_session(messages, conversation_history)
+            _retry.restart_after_completed_generation = True
+            return _verdict("context_overflow")
         _tv = recover_from_truncation(
             agent, response, finish_reason, _retry, messages=messages,
             conversation_history=conversation_history, api_kwargs=api_kwargs,

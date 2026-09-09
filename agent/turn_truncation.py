@@ -262,7 +262,7 @@ def _continue_text(st: _Trunc, _retry: TurnRetryState, assistant_message: Any) -
     )
 
 
-def _retry_truncated_tool_call(st: _Trunc, api_kwargs: Any) -> TruncationVerdict:
+def _retry_truncated_tool_call(st: _Trunc, api_kwargs: Any, _retry: TurnRetryState, assistant_message: Any) -> TruncationVerdict:
     """Truncated tool call: re-run the same call (up to 4×) with a boosted max_tokens —
     a real output-cap truncation needs it, harmless for a network stall — else refuse to
     execute incomplete arguments."""
@@ -279,7 +279,21 @@ def _retry_truncated_tool_call(st: _Trunc, api_kwargs: Any) -> TruncationVerdict
         if _tc_requested_cap is not None:
             _tc_boost = max(_tc_boost, _tc_requested_cap)
         agent._ephemeral_max_output_tokens = min(_tc_boost, max(32768, _tc_requested_cap or 0))
-        return st.done("continue")  # don't append the broken response
+        # Keep visible commentary, never the incomplete call or its replay state.
+        # An empty marker also prevents a denied retry from becoming a summary
+        # request; it is removed before the next model payload is assembled.
+        append_message(st.messages, {
+            "role": "assistant", "content": assistant_message.content or "",
+            "finish_reason": "length", "_tool_retry_fragment": True,
+        })
+        append_message(st.messages, {
+            "role": "user",
+            "content": "Your tool call was truncated before its arguments were complete. The tool was not executed. Send the tool call again with complete arguments.",
+            "_length_continuation_nudge": True,
+        })
+        agent._session_messages = st.messages
+        _retry.restart_after_completed_generation = True
+        return st.done("break")
     agent._flush_status_buffer()
     if st.is_stub:
         agent._vprint(
@@ -343,7 +357,7 @@ def recover_from_truncation(
         if _trunc_msg is not None:
             if not _trunc_has_tool_calls:
                 return _continue_text(st, _retry, _trunc_msg)
-            return _retry_truncated_tool_call(st, api_kwargs)
+            return _retry_truncated_tool_call(st, api_kwargs, _retry, _trunc_msg)
 
     if len(messages) > 1:
         agent._vprint(f"{agent.log_prefix}   ⏪ Rolling back to last complete assistant turn")

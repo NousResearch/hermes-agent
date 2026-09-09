@@ -361,6 +361,12 @@ def begin_iteration(
         if not agent.quiet_mode:
             agent._safe_print(f"\n⚠️  Iteration budget exhausted ({agent.iteration_budget.used}/{agent.iteration_budget.max_total} iterations used)")
         return _verdict("break")
+    # A toolless/empty cut-off response has no replayable assistant content.
+    # Keep its marker until admission succeeds (the denied exit must not call
+    # the finalizer's summary model), but never send an empty row to a provider.
+    messages[:] = [m for m in messages if not (
+        m.get("_tool_retry_fragment") and not m.get("content")
+    )]
     return _verdict("fallthrough")
 
 
@@ -403,10 +409,11 @@ def apply_retry_restarts(
         )
 
     if _retry.restart_with_redirected_messages:
-        # Cancelled request produced no valid assistant item: reuse the same logical
-        # iteration after the outer loop appends partial context + correction.
-        api_call_count -= 1
-        agent.iteration_budget.refund()
+        # A redirect can arrive after a complete partial response, during context
+        # recovery. Refund only requests cancelled before a completed generation.
+        if not _retry.restart_after_completed_generation:
+            api_call_count -= 1
+            agent.iteration_budget.refund()
         _retry.restart_with_redirected_messages = False
         return _verdict("continue")
 
@@ -415,8 +422,9 @@ def apply_retry_restarts(
         return _verdict("break")
 
     if _retry.restart_with_compressed_messages:
-        api_call_count -= 1
-        agent.iteration_budget.refund()
+        if not _retry.restart_after_completed_generation:
+            api_call_count -= 1
+            agent.iteration_budget.refund()
         # Compression restarts count toward the retry limit so a compression that
         # shrinks messages but not enough can't loop forever.
         retry_count += 1
@@ -452,6 +460,11 @@ def apply_retry_restarts(
         # Failover shrank the compressor window: clear the preflight block so
         # preflight re-runs before the first fallback call (single consumer).
         _preflight_compression_blocked = False
+        return _verdict("continue")
+
+    if _retry.restart_after_completed_generation:
+        # The previous generation consumed budget. Do not refund it or retry
+        # inside the API-error loop; retain the existing output-cap adjustment.
         return _verdict("continue")
 
     if _retry.restart_with_length_continuation:

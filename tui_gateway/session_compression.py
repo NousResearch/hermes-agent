@@ -66,6 +66,7 @@ _COMPRESSION_INT_KEYS = (
     ("proactive_prune_min_reclaim_tokens", 4096, 0),
     ("protect_last_n", 20, 0),
     ("min_tail_user_messages", 1, 1),
+    ("tail_assistant_max_chars", 0, 0),
 )
 
 

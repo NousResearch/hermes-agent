@@ -8,7 +8,7 @@ import os
 import time
 import uuid
 from contextlib import suppress
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional
 
 try:
@@ -20,6 +20,7 @@ except ImportError:
 
 from gateway.platforms.api_server_room_grants import _json_error, _room_grant_error_response
 from gateway.platforms.api_server_run_idempotency import TERMINAL_STATUSES
+from tools.mcp_run_meta import RunMeta, parse_mcp_run_meta, reset_mcp_run_meta, set_mcp_run_meta
 
 
 logger = logging.getLogger("gateway.platforms.api_server")
@@ -322,6 +323,7 @@ class _RunLaunch:
     request_profile: Any
     browser_control_principal: Any
     browser_control_transport_family: Any
+    mcp_meta: Optional[RunMeta] = field(default=None, repr=False)
 
     @property
     def approval_session_key(self) -> str:
@@ -365,6 +367,10 @@ async def _handle_runs(self, request: "web.Request", *, _api_server) -> "web.Res
     body, room_error = await self._normalize_room_dispatch(request, body)
     if room_error is not None:
         return room_error
+    try:
+        mcp_meta = parse_mcp_run_meta(body.get("mcp_meta"))
+    except ValueError as exc:
+        return _json_error(_openai_error, str(exc), code="invalid_mcp_meta", status=400)
     room_dispatch, room_execution_policy = (
         v if isinstance(v, dict) else None for v in (
             (body.get("hosted_room_dispatch"), body.get("_room_execution_policy"))
@@ -450,7 +456,8 @@ async def _handle_runs(self, request: "web.Request", *, _api_server) -> "web.Res
             **{k: agent_overrides.get(k) for k in ("requested_model", "requested_provider", "model_options")}),
         request_profile=_api_server._api_request_profile.get(),
         browser_control_principal=_api_server._api_request_browser_control_principal.get(),
-        browser_control_transport_family=_api_server._api_request_browser_control_transport_family.get())
+        browser_control_transport_family=_api_server._api_request_browser_control_transport_family.get(),
+        mcp_meta=mcp_meta)
     self._activate_admitted_request()
     task = self._active_run_tasks[run_id] = asyncio.create_task(_execute_run(self, launch, _api_server=_api_server))
     with suppress(TypeError):
@@ -478,7 +485,10 @@ def _run_agent_sync(self, run: _RunLaunch, agent, approval_notify, *, _api_serve
     # (token, reset) pairs unwound in the finally block; bound only once each step succeeds.
     resets: list[tuple[Any, Callable]] = []
     with self._profile_scope(run.request_profile):
+        # Always bind, including None: a reused executor must not inherit a prior run.
+        meta_token = None
         try:
+            meta_token = set_mcp_run_meta(run.mcp_meta)
             # Contextvars, not process env: concurrent runs must not share identity.
             resets.append((set_current_session_key(run.approval_session_key), reset_current_session_key))
             # chat_id carries the raw session id like _run_agent() does; without it
@@ -500,6 +510,8 @@ def _run_agent_sync(self, run: _RunLaunch, agent, approval_notify, *, _api_serve
                 user_message=run.user_message, conversation_history=run.conversation_history,
                 task_id=effective_task_id)
         finally:
+            if meta_token is not None:
+                reset_mcp_run_meta(meta_token)
             # Clear ownership now so a later stop can't reap work this run left running.
             _api_server._clear_turn_process_ownership(agent)
             # Declared-conversation binding, same precedence gate as _run_agent.

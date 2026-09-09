@@ -442,7 +442,83 @@ Create a new agent run. Returns a `run_id` that can be used to subscribe to prog
 }
 ```
 
-Runs accept a simple `input` string and optional `session_id`, `instructions`, `conversation_history`, or `previous_response_id`. When `session_id` is provided, Hermes surfaces it in the run status so external UIs can correlate runs with their own conversation IDs.
+Runs accept a simple `input` string and optional `session_id`, `instructions`, `conversation_history`, `previous_response_id`, or `mcp_meta`. When `session_id` is provided, Hermes surfaces it in the run status so external UIs can correlate runs with their own conversation IDs.
+
+#### Per-run MCP metadata
+
+An API client can attach opaque request metadata to MCP tool calls. `mcp_meta` maps
+**exact configured MCP server names** to their respective `_meta` objects:
+
+```json
+{
+  "input": "Check the connected device",
+  "mcp_meta": {
+    "device_service": {
+      "example.com/run-assertion": "short-lived-assertion-issued-by-your-backend"
+    }
+  }
+}
+```
+
+Only `tools/call` requests to `device_service` receive this object as `params._meta`.
+Other MCP servers receive none of it. The names are case-sensitive config keys,
+not normalized tool-name prefixes or URLs. Unknown names do not select a server
+and their metadata is not forwarded elsewhere. Omission, `null`, or an empty map
+keeps existing behavior; an explicitly targeted empty object sends `_meta: {}`.
+
+Under profile multiplexing, metadata is bound to the run's originating profile
+before agent execution. Entering another profile scope cannot retarget inherited
+credentials. Calls carrying metadata require the connection's recorded owner to
+match that profile. Unknown ownership or a mismatch
+fails closed before lazy connection, after waiting for the RPC lock, and before
+recovery. The acquired connection instance is checked too, so a queued call cannot
+follow a replacement. A missing request profile scope is rejected rather than
+treated as the default profile.
+
+**Current limitation:** the MCP connection registry still uses bare server names.
+If two served profiles configure the same name, this guard blocks the non-owner;
+it does not create a second profile-qualified connection. Use distinct server
+names or separate gateway processes until the registry supports that isolation.
+Calls without run metadata retain existing behavior; this is not a general fix
+for all multiplexed MCP state, discovery, or OAuth credential selection.
+
+`GET /v1/capabilities` advertises
+`features.runs_mcp_meta: {"format": "per_server", "max_bytes": 16384}`.
+Clients that rely on metadata for authorization must check this capability first;
+older Hermes versions may ignore unfamiliar request fields.
+
+The total compact UTF-8 JSON representation is limited to 16 KiB, with a maximum
+nesting depth of eight (the outer map has depth zero). Each server entry must be
+an object. Server names must contain 1–128 characters, without ASCII control
+characters or DEL. Non-finite numbers, invalid Unicode, invalid server names, and
+protocol-owned keys (`progressToken`, prefixes such as `modelcontextprotocol.io/…`
+and `tools.mcp.com/…`) are rejected using the same predicate as MCP result filtering.
+Vendor keys such as `com.example.mcp/…` remain valid. Invalid metadata is rejected
+with HTTP 400 before a run is allocated. Validation errors do not echo the values.
+An idempotency key cannot be reused with different metadata.
+
+Metadata is bound to the run's executor context, inherited by delegated work, and
+captured separately for each MCP call and recovery retry. It is not supplied to
+the model as a prompt or tool argument, or added to the transcript, run status,
+SSE events, or idempotency storage. Reusing a session or executor does not reuse
+its previous metadata. Ending the executor restores its prior context; a child
+that is still unwinding can retain its inherited snapshot. A transport that
+cannot accept metadata fails the call rather than retrying without it.
+
+This is **transport, not authentication or OAuth credential selection**. Hermes
+does not verify assertions or derive authority from an arbitrary `user_id`.
+For authorization, the application backend should issue a short-lived assertion
+and the receiving MCP server must verify its signature, issuer, audience,
+expiration, revocation, and applicable user/tenant/agent/session permissions on
+every call. Scope credentials to the target service and the intended operation;
+never forward a user's general login token. The server must refuse calls with
+missing or invalid credentials when those are required.
+
+The application and configured MCP endpoint remain trusted. A server can echo
+metadata in its response, and code with access to the Hermes process can inspect
+its memory; this feature is not a sandbox against such code. Signing prevents
+forgery, not inspection or replay of a stolen bearer assertion. Enforce expiration
+and revocation downstream, including for work that outlives the originating run.
 
 For safely retryable creation, send an `Idempotency-Key` header (1–255 visible ASCII characters). Hermes durably reserves the key before starting work. An identical retry returns the original `run_id` with HTTP 202 and `Idempotency-Replayed: true`, including after a gateway restart and after the run has completed, failed, or been cancelled. Reusing the same key with a different JSON payload returns HTTP 409 with code `idempotency_key_conflict`. Keys are isolated by authenticated API profile/credential and retained for 24 hours after their last status update; clients should use unique, unguessable keys and must not reuse them for unrelated operations. Requests without the header retain the legacy behavior and always create a new run.
 

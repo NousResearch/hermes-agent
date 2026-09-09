@@ -19,6 +19,7 @@ from tools.mcp_tool_content import (
     _render_mcp_dropped_block_notice, _render_mcp_resource_block, _strip_reserved_meta_keys,
     _truncate_mcp_text_result)
 from tools.mcp_tool_errors import _is_auth_error, _is_session_expired_error
+from tools.mcp_run_meta import get_mcp_run_meta, mcp_run_meta_scope, require_mcp_meta_destination
 
 logger = logging.getLogger("tools.mcp_tool")
 _MISSING = object()
@@ -227,7 +228,8 @@ def _handle_stdio_child_exited_and_retry(server_name: str, exc: Exception, retry
 
 
 def _dispatch(server_name: str, server: Any, op: str, call, tool_timeout: float, recoverers,
-              on_final_failure: Callable[[BaseException], None], record_outcome: bool = False) -> str:
+              on_final_failure: Callable[[BaseException], None], record_outcome: bool = False,
+              destination_scope: Optional[str] = None) -> str:
     """Mark the call started on *server* (doubles may lack ``mark_tool_call``), run coroutine function *call*
     on the MCP loop and, on failure, walk ``recoverers`` (``(server_name, exc, retry_call, op) -> Optional[str]``,
     None = not its kind; order matters). Unrecovered exceptions go through ``on_final_failure`` and become the
@@ -245,6 +247,10 @@ def _dispatch(server_name: str, server: Any, op: str, call, tool_timeout: float,
         return tool_error("MCP call interrupted: user sent a new message")
     except Exception as exc:
         for recover in recoverers:
+            try:
+                require_mcp_meta_destination(server_name, destination_scope, server)
+            except ValueError as scope_error:
+                return tool_error(str(scope_error))
             recovered = recover(server_name, exc, call_once, op)
             if recovered is not None:
                 return recovered
@@ -279,7 +285,7 @@ async def _track_inflight_rpc(server: Any, server_name: str, op: str):
             inflight.discard(task)
 
 
-async def _call_tool_racing_stdio_death(server, server_name: str, tool_name: str, args: dict):
+async def _call_tool_racing_stdio_death(server, server_name: str, tool_name: str, args: dict, *, meta=None):
     """``session.call_tool`` that fails fast when the stdio child is/gets dead: pre-call (a dead
     child must not hold the slot for the full timeout) and mid-call (race against
     ``_watch_stdio_children``). Both raise :class:`_StdioChildExited` for the respawn path, which
@@ -289,7 +295,10 @@ async def _call_tool_racing_stdio_death(server, server_name: str, tool_name: str
     _stdio_dead = getattr(server, "_stdio_children_dead", None)
     if callable(_stdio_dead) and _stdio_dead() is True:
         raise _StdioChildExited(f"MCP stdio subprocess for '{server_name}' had already exited when the call was dispatched")
-    _call_coro = server.session.call_tool(tool_name, arguments=args)
+    # The pinned SDK supports meta. Never retry without supplied metadata: it can
+    # carry authorization that the downstream server requires for this request.
+    call_kwargs = {"meta": meta} if meta is not None else {}
+    _call_coro = server.session.call_tool(tool_name, arguments=args, **call_kwargs)
     _watch_children = getattr(server, "_watch_stdio_children", None)
     if not (inspect.iscoroutinefunction(_watch_children) and asyncio.iscoroutine(_call_coro)):
         # Stubbed sessions return a non-awaitable, or there is no child-watcher to race: plain await.
@@ -421,6 +430,15 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
     op = f"tools/call {tool_name}"
 
     def _handler(args: dict, **kwargs) -> str:
+        run_meta = get_mcp_run_meta(server_name)
+        destination_scope = None
+        if run_meta is not None:
+            try:
+                destination_scope = mcp_run_meta_scope()
+                # A foreign lazy config must not be connected before ownership is checked.
+                require_mcp_meta_destination(server_name, destination_scope)
+            except ValueError as exc:
+                return tool_error(str(exc))
         # Security boundary: untrusted-server write tools need approval before ANY transport work (incl. lazy spawn).
         error = _trust_gate_check(server_name, tool_name) or _check_circuit_breaker(server_name)
         if error is not None:
@@ -429,11 +447,20 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
         if server is None:
             return error
 
+        # Capture on the agent thread before crossing to the shared MCP loop.
+        # Keep an immutable snapshot so recovery retries receive the same context.
+        encoded_meta = json.dumps(run_meta) if run_meta is not None else None
+
         async def _call():
             async with server._rpc_lock, _track_inflight_rpc(server, server_name, op):
+                require_mcp_meta_destination(server_name, destination_scope, server)
                 server._pending_call_context = contextvars.copy_context()  # for the elicitation callback
                 try:
-                    result = await _call_tool_racing_stdio_death(server, server_name, tool_name, args)
+                    meta = json.loads(encoded_meta) if encoded_meta is not None else None
+                    if meta is None:
+                        result = await _call_tool_racing_stdio_death(server, server_name, tool_name, args)
+                    else:
+                        result = await _call_tool_racing_stdio_death(server, server_name, tool_name, args, meta=meta)
                 finally:
                     server._pending_call_context = None
             if getattr(server, "_mark_session_proven", None) is not None:  # round-trip done: transport healthy
@@ -446,7 +473,7 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
         return _dispatch(
             server_name, server, op, _call, tool_timeout,
             (_handle_stdio_child_exited_and_retry, _handle_auth_error_and_retry, _handle_session_expired_and_retry),
-            _on_failure, record_outcome=True)
+            _on_failure, record_outcome=True, destination_scope=destination_scope)
     return _handler
 
 

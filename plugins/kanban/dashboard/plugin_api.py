@@ -835,6 +835,48 @@ def list_diagnostics(
         return {"diagnostics": out, "count": sum(len(d["diagnostics"]) for d in out)}
 
 
+@router.get("/dispatcher-readiness")
+def dispatcher_readiness():
+    """Return the canonical gateway/dispatcher readiness contract for Desktop startup."""
+
+    try:
+        from gateway.status import resolve_gateway_liveness
+        from hermes_constants import get_hermes_home
+        from hermes_cli.kanban import _kanban_config
+
+        liveness = resolve_gateway_liveness(
+            profile_dir=get_hermes_home(), use_cache=False
+        )
+        dispatch_enabled = bool(_kanban_config().get("dispatch_in_gateway", True))
+    except Exception as exc:  # a diagnostic endpoint must never take down the dashboard
+        return {
+            "status": "unknown",
+            "ready": False,
+            "gateway_pid": None,
+            "message": f"dispatcher readiness unavailable: {exc}",
+        }
+    if not liveness.running:
+        return {
+            "status": "offline",
+            "ready": False,
+            "gateway_pid": None,
+            "message": "no gateway is running",
+        }
+    if not dispatch_enabled:
+        return {
+            "status": "disabled",
+            "ready": False,
+            "gateway_pid": liveness.pid,
+            "message": "kanban.dispatch_in_gateway is disabled",
+        }
+    return {
+        "status": "ready",
+        "ready": True,
+        "gateway_pid": liveness.pid,
+        "message": "kanban dispatcher is available",
+    }
+
+
 # --- Worker visibility — active-worker list, per-run inspect/terminate -------
 
 try:

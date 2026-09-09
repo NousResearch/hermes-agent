@@ -172,6 +172,7 @@ import {
 } from './desktop-uninstall'
 import { describeDevCdpDecision, resolveDevCdpPort } from './dev-cdp'
 import { ensureKanbanDispatcherReady } from './dispatcher-readiness'
+import { poolBackendAuthorityEnv } from './desktop-pool-cron-authority'
 import { installEmbedReferer } from './embed-referer'
 import { createEventDeduper } from './event-dedupe'
 import {
@@ -12682,8 +12683,7 @@ async function spawnPoolBackend(profile, entry, opts: { forceLocal?: boolean; po
         // Marks this dashboard backend as desktop-spawned so it runs the cron
         // lifecycle. Pool helpers must not also become machine-wide cron
         // authorities: the primary backend alone multiplexes every profile.
-        HERMES_DESKTOP: '1',
-        HERMES_DESKTOP_POOL: '1',
+        ...poolBackendAuthorityEnv,
         // Exact parent identity lets the backend self-exit after an unclean
         // Desktop death without mistaking a reused PID for its owner. If the
         // optional marker probe fails, retain legacy PID-only tracking.

@@ -59,6 +59,14 @@ export async function ensureKanbanDispatcherReady(
     payload = await fetchJson(url, token, { timeoutMs: 5_000 })
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error)
+    if (/\b404\b|not found|disabled/i.test(detail)) {
+      return {
+        status: 'disabled',
+        ready: false,
+        gateway_pid: null,
+        message: 'Kanban dispatcher readiness is unavailable because the optional plugin is disabled',
+      }
+    }
     throw new DispatcherReadinessError(`dispatcher readiness could not be verified: ${detail}`)
   }
 

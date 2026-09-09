@@ -71,6 +71,11 @@ def build_gateway_parser(
     gateway_stop = gateway_subparsers.add_parser("stop", help="Stop gateway service")
     _add_system_flag(gateway_stop)
     _flag(gateway_stop, "--all", help="Stop ALL gateway processes across all profiles")
+    _flag(
+        gateway_stop,
+        "--drain",
+        help="Wait for Desktop-supervised turns and Kanban workers to finish before stopping",
+    )
 
     gateway_restart = gateway_subparsers.add_parser("restart", help="Restart gateway service")
     _add_system_flag(gateway_restart)

@@ -6025,6 +6025,9 @@ def _cmd_uninstall(args):
 def _cmd_start(args):
     system = getattr(args, "system", False)
     start_all = getattr(args, "all", False)
+    from gateway.drain_control import clear_drain_request
+
+    clear_drain_request(home=get_hermes_home())
     if not start_all and _dispatch_via_service_manager_if_s6("start"):
         return
     if start_all:
@@ -6046,6 +6049,10 @@ def _cmd_stop(args):
     _refuse_from_inside_gateway("stop", "restart loops")
     stop_all = getattr(args, "all", False)
     system = getattr(args, "system", False)
+    if getattr(args, "drain", False):
+        from hermes_cli.gateway_desktop_drain import drain_all_desktop_work
+
+        drain_all_desktop_work()
     # Under s6 a bare pkill is seen as a crash and restarted; go through the supervisor.
     if stop_all and _dispatch_all_via_service_manager_if_s6("stop"):
         return

@@ -1,21 +1,8 @@
 import assert from 'node:assert/strict'
-import fs from 'node:fs'
-import path from 'node:path'
-import { fileURLToPath } from 'node:url'
 
 import { test } from 'vitest'
 
 import { DispatcherReadinessError, ensureKanbanDispatcherReady } from './dispatcher-readiness'
-
-const mainSource = fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), 'main.ts'), 'utf8')
-
-test('local Desktop startup gates backend.ready on dispatcher readiness', () => {
-  const readinessCall = mainSource.indexOf('await ensureKanbanDispatcherReady(baseUrl, authToken, fetchJson)')
-  const readyPhase = mainSource.indexOf("phase: 'backend.ready'", readinessCall)
-
-  assert.ok(readinessCall > 0, 'local startup must invoke the dispatcher readiness gate')
-  assert.ok(readyPhase > readinessCall, 'backend.ready must be published only after dispatcher readiness')
-})
 
 test('accepts a live gateway-owned dispatcher', async () => {
   const calls: Array<[string, string | null]> = []

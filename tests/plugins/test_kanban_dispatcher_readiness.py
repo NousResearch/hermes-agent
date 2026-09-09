@@ -26,9 +26,13 @@ def test_dispatcher_readiness_endpoint_surfaces_strict_state(monkeypatch):
         "status": "offline",
         "ready": False,
         "gateway_pid": None,
-        "message": "No gateway is running",
+        "message": "no gateway is running",
     }
-    monkeypatch.setattr("hermes_cli.kanban._dispatcher_readiness", lambda **_kwargs: expected)
+    monkeypatch.setattr(
+        "gateway.status.resolve_gateway_liveness",
+        lambda **_kwargs: type("Liveness", (), {"running": False, "pid": None})(),
+    )
+    monkeypatch.setattr("hermes_cli.kanban._kanban_config", lambda: {"dispatch_in_gateway": True})
     app = FastAPI()
     app.include_router(module.router, prefix="/api/plugins/kanban")
 

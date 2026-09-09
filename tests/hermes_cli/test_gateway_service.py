@@ -400,7 +400,6 @@ class TestGatewayStopCleanup:
         monkeypatch.setattr(gateway_cli, "systemd_stop", lambda system=False: events.append("stop"))
         monkeypatch.setattr(gateway_cli, "kill_gateway_processes", lambda **kwargs: 0)
         monkeypatch.setattr(gateway_cli, "_dispatch_all_via_service_manager_if_s6", lambda action: False)
-        monkeypatch.setattr(gateway_cli.atexit, "register", lambda *args, **kwargs: None)
         monkeypatch.setattr(
             "hermes_cli.gateway_desktop_drain.desktop_profile_homes",
             lambda: (tmp_path,),

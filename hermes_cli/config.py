@@ -1046,6 +1046,15 @@ def check_config_version(*, raise_on_parse_error: bool = False) -> Tuple[int, in
 
 # ---- Config structure validation ----
 
+
+# Platform roots are open mappings even when an unused platform is omitted from DEFAULT_CONFIG.
+# Config-key validation and container-shape validation must share this list.
+_PLATFORM_CONFIG_ROOT_KEYS = frozenset({
+    "discord", "telegram", "slack", "whatsapp", "signal", "mattermost",
+    "matrix", "feishu", "wecom", "weixin", "bluebubbles", "qqbot", "yuanbao",
+    "email", "sms", "dingtalk",
+})
+
 # DEFAULT_CONFIG is the single source of truth for documented roots; the set is derived so new
 # defaults are accepted automatically. These optional/legacy roots are valid on disk but
 # intentionally absent from DEFAULT_CONFIG (omitted when unused / alternate schema forms).
@@ -1194,6 +1203,119 @@ def _validate_web_backends(config: Dict[str, Any], issues: List[ConfigIssue]) ->
                    "Run 'hermes tools' and pick a different Web Search & Extract provider")
 
 
+_MISSING_CONTAINER_SCHEMA = object()
+_MODEL_OVERRIDE_FIELDS_SCHEMA = {
+    "context_window": 0,
+    "max_output_tokens": 0,
+    "supports_tools": False,
+    "supports_vision": False,
+    "supports_reasoning": False,
+    "model_family": "",
+}
+_EXTRA_CONTAINER_SCHEMA = {
+    **{key: {} for key in _PLATFORM_CONFIG_ROOT_KEYS},
+    "custom_providers": [{"models": [], "extra_body": {}, "extra_headers": {}}],
+    "mcp_servers": {
+        "*": {
+            "args": [],
+            "client_cert": [],
+            "env": {},
+            "headers": {},
+            "identity_header": {},
+            "tools": {"include": [], "exclude": []},
+            "sampling": {"allowed_models": []},
+            "elicitation": {},
+            "lifecycle": {},
+        },
+    },
+    "model_catalog": {"excluded_providers": []},
+    "model_overrides": {
+        "_default": _MODEL_OVERRIDE_FIELDS_SCHEMA,
+        "*": {
+            "_default": _MODEL_OVERRIDE_FIELDS_SCHEMA,
+            "*": _MODEL_OVERRIDE_FIELDS_SCHEMA,
+        },
+    },
+    "plugins": {"enabled": [], "disabled": []},
+    "providers": {"*": {"extra_body": {}, "extra_headers": {}}},
+}
+
+
+def _container_schema_child(schema: Any, key: Any) -> Any:
+    if isinstance(schema, dict):
+        return schema.get(key, schema.get("*", _MISSING_CONTAINER_SCHEMA))
+    if isinstance(schema, list) and schema:
+        return schema[0]
+    return _MISSING_CONTAINER_SCHEMA
+
+
+def _validate_stringified_containers(
+    value: Any,
+    issues: List[ConfigIssue],
+    path: str = "",
+    default_schema: Any = DEFAULT_CONFIG,
+    extra_schema: Any = _EXTRA_CONTAINER_SCHEMA,
+    set_path: Optional[str] = None,
+) -> None:
+    """Flag list/mapping settings stored as one quoted string.
+
+    Readers that require a container silently ignore these strings. Schema-declared strings remain
+    valid even when their contents use brackets or braces.
+    """
+    if set_path is None:
+        set_path = path
+    expected_type = next(
+        (kind for kind in (dict, list)
+         if isinstance(default_schema, kind) or isinstance(extra_schema, kind)),
+        None,
+    )
+    if expected_type is None:
+        return
+
+    if isinstance(value, str):
+        text = value.strip()
+        if text[:1] not in ("[", "{") or text[-1:] not in ("]", "}"):
+            return
+        try:
+            parsed = yaml.safe_load(text)
+        except yaml.YAMLError:
+            return
+        if not isinstance(parsed, (list, dict)):
+            return
+        kind = "list" if expected_type is list else "mapping"
+        _issue(
+            issues,
+            "warning",
+            f"{path} is a quoted string that looks like a container — Hermes expects a real YAML "
+            f"{kind} here and ignores the string",
+            f"Re-run: hermes config set {set_path} '<value>' (stored as a real {kind}), or rewrite "
+            f"it in config.yaml using YAML {kind} syntax",
+        )
+        return
+
+    if isinstance(value, dict) and expected_type is dict:
+        for key, child in value.items():
+            child_path = f"{path}.{key}" if path else str(key)
+            _validate_stringified_containers(
+                child,
+                issues,
+                child_path,
+                _container_schema_child(default_schema, key),
+                _container_schema_child(extra_schema, key),
+                f"{set_path}.{key}" if set_path else str(key),
+            )
+    elif isinstance(value, list) and expected_type is list:
+        for index, child in enumerate(value):
+            _validate_stringified_containers(
+                child,
+                issues,
+                f"{path}[{index}]",
+                _container_schema_child(default_schema, index),
+                _container_schema_child(extra_schema, index),
+                f"{set_path}.{index}" if set_path else str(index),
+            )
+
+
 def validate_config_structure(config: Optional[Dict[str, Any]] = None) -> List["ConfigIssue"]:
     """Validate config.yaml structure and return detected issues (accepts a pre-loaded dict).
     Catches common YAML mistakes that otherwise surface as confusing runtime errors."""
@@ -1232,6 +1354,7 @@ def validate_config_structure(config: Optional[Dict[str, Any]] = None) -> List["
                    f"Move '{key}' under the appropriate section")
 
     _validate_web_backends(config, issues)
+    _validate_stringified_containers(config, issues)
     return issues
 
 
@@ -3174,14 +3297,11 @@ _OPEN_DICT_TOP_LEVEL_KEYS = frozenset({
 # Top-level keys whose sub-keys are partially schema-defined (e.g. a PlatformConfig dataclass) but
 # where users may add fields DEFAULT_CONFIG doesn't enumerate: validate the FIRST segment only.
 _SCHEMA_DEFINED_DICT_KEYS = frozenset({
-    # Platform configs — PlatformConfig dataclass + dynamic extras
-    "discord", "telegram", "slack", "whatsapp", "signal", "mattermost",
-    "matrix", "feishu", "wecom", "weixin", "bluebubbles", "qqbot", "yuanbao",
-    "email", "sms", "dingtalk",
     # MCP server template / dynamic auth dicts
     "sessions", "checkpoints",
     # Plugin enable/disable lists + index_url override; absent from DEFAULT_CONFIG.
-    "plugins"})
+    "plugins",
+}) | _PLATFORM_CONFIG_ROOT_KEYS
 
 # Top-level keys that can be ANY user-supplied name.
 _DYNAMIC_TOP_LEVEL_KEYS = frozenset({

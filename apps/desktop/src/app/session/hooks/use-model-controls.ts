@@ -13,6 +13,7 @@ import {
   modelOptionsQueryKey,
   requestModelOptions
 } from '@/lib/model-options'
+import { activeGatewayConnectionId } from '@/store/gateway'
 import { notify, notifyError } from '@/store/notifications'
 import { $activeGatewayProfile } from '@/store/profile'
 import {
@@ -28,12 +29,13 @@ import {
   setCurrentProvider,
   setCurrentReasoningEffortWire
 } from '@/store/session'
-import { $sessionStates, sessionTileDelegate } from '@/store/session-states'
+import { $sessionStates, knownOwnerForSession, sessionTileDelegate } from '@/store/session-states'
 
 import { beginModelPick, isPickSuperseded, type ModelPickSnapshot, settleModelPick } from './model-pick-ledger'
 
 interface ModelControlsOptions {
   cacheOwnerConnectionId?: string
+  cacheOwnerProfile?: string
   cacheProfile?: string
   queryClient: QueryClient
   requestGateway: <T = unknown>(method: string, params?: Record<string, unknown>) => Promise<T>
@@ -47,6 +49,7 @@ interface ModelSwitchResponse {
 
 export function useModelControls({
   cacheOwnerConnectionId,
+  cacheOwnerProfile,
   cacheProfile,
   queryClient,
   requestGateway
@@ -257,7 +260,17 @@ export function useModelControls({
     async (selection: ModelSelection): Promise<boolean> => {
       const primaryRuntimeId = $activeSessionId.get()
       const liveSessionId = 'sessionId' in selection ? (selection.sessionId ?? null) : primaryRuntimeId
-      const touchesPrimary = !liveSessionId || liveSessionId === primaryRuntimeId
+      const activeProfile = $activeGatewayProfile.get()
+      const activeConnectionId = activeGatewayConnectionId()
+      const liveGatewayProfile = cacheProfile || activeProfile
+      const liveOwnerProfile = cacheOwnerProfile || liveGatewayProfile
+      const ownerConnectionId = cacheOwnerConnectionId ?? activeConnectionId ?? ''
+
+      const touchesPrimary =
+        (!liveSessionId || liveSessionId === primaryRuntimeId) &&
+        liveOwnerProfile === activeProfile &&
+        liveGatewayProfile === activeProfile &&
+        ownerConnectionId === (activeConnectionId ?? '')
 
       const readSnapshot = (): ModelPickSnapshot => {
         const tileState = touchesPrimary ? undefined : $sessionStates.get()[liveSessionId!]
@@ -273,7 +286,46 @@ export function useModelControls({
       }
 
       const before = readSnapshot()
-      const liveGatewayProfile = cacheProfile || $activeGatewayProfile.get()
+
+      const ownerKey = (profile: string, connectionId: string, targetProfile: string) =>
+        JSON.stringify([
+          profile.trim() || 'default',
+          connectionId.trim(),
+          targetProfile.trim() || profile.trim() || 'default',
+          liveSessionId
+        ])
+
+      const pickOwner = ownerKey(liveOwnerProfile, ownerConnectionId, liveGatewayProfile)
+
+      const primaryOwnerChanged = () =>
+        touchesPrimary &&
+        ($activeSessionId.get() !== liveSessionId ||
+          $activeGatewayProfile.get() !== activeProfile ||
+          activeGatewayConnectionId() !== activeConnectionId)
+
+      const pickOwnerChanged = () => {
+        if (primaryOwnerChanged()) {
+          return true
+        }
+
+        if (touchesPrimary || !liveSessionId) {
+          return false
+        }
+
+        const currentOwner = knownOwnerForSession(liveSessionId)
+
+        if (!currentOwner) {
+          return false
+        }
+
+        return typeof currentOwner === 'string'
+          ? ownerKey(currentOwner, '', currentOwner) !== pickOwner
+          : ownerKey(
+                currentOwner.profile,
+                currentOwner.connectionId,
+                currentOwner.targetProfile || currentOwner.profile
+              ) !== pickOwner
+      }
 
       const paintSelection = () => {
         if (touchesPrimary) {
@@ -331,13 +383,13 @@ export function useModelControls({
       // switch while config.set is in flight means nothing is repainted. The
       // composer selection generation is deliberately not consulted: effort
       // steps and preset edits bump it without touching the model.
-      const pickToken = beginModelPick(liveSessionId, before, readSnapshot())
+      const pickToken = beginModelPick(pickOwner, before, readSnapshot())
 
       // The snapshot to repaint after this pick failed to apply, or null to leave the paint alone.
       const settleUnapplied = () => {
-        const repaint = settleModelPick(liveSessionId, pickToken, false)
+        const repaint = settleModelPick(pickOwner, pickToken, false)
 
-        return repaint && !(touchesPrimary && $activeSessionId.get() !== liveSessionId) ? repaint : null
+        return repaint && !pickOwnerChanged() ? repaint : null
       }
 
       // The PRIMARY profile's main agent lets the gateway decide persistence
@@ -386,6 +438,16 @@ export function useModelControls({
       try {
         const result = await requestSwitch()
 
+        if (pickOwnerChanged()) {
+          settleModelPick(pickOwner, pickToken, !result?.confirm_required)
+
+          if (!result?.confirm_required) {
+            finishSwitch(result)
+          }
+
+          return false
+        }
+
         if (result?.confirm_required) {
           // A newer pick already owns the pill; asking to confirm this one
           // would only offer to undo it.
@@ -397,6 +459,9 @@ export function useModelControls({
 
           restoreSnapshot(restored)
           let retryToken: null | number = null
+          let retryFailureRepaint: ModelPickSnapshot | null = null
+          let expectedModel = restored.model
+          let expectedProvider = restored.provider
           // ONE shared applier for guarded switches (#95293): the same
           // confirm flow the Bots editor routes through — never fork this
           // logic per surface.
@@ -411,34 +476,55 @@ export function useModelControls({
             // snapshot this prompt was created for.
             isStale: () =>
               touchesPrimary
-                ? $activeSessionId.get() !== liveSessionId ||
-                  $currentModel.get() !== restored.model ||
-                  $currentProvider.get() !== restored.provider
-                : !liveSessionId ||
-                  $sessionStates.get()[liveSessionId]?.model !== restored.model ||
-                  $sessionStates.get()[liveSessionId]?.provider !== restored.provider,
+                ? pickOwnerChanged() ||
+                  $currentModel.get() !== expectedModel ||
+                  $currentProvider.get() !== expectedProvider
+                : pickOwnerChanged() ||
+                  !liveSessionId ||
+                  $sessionStates.get()[liveSessionId]?.model !== expectedModel ||
+                  $sessionStates.get()[liveSessionId]?.provider !== expectedProvider,
             model: selection.model,
             // The confirmed retry is a fresh pick in the ledger: it joins whatever is still in
             // flight, becomes the confirmed selection when it applies, and settles like any pick
             // when it fails — so an older pick failing later cannot restore what it replaced.
             repaint: () => {
               const retryBefore = readSnapshot()
+
               paintSelection()
               cacheSelection(selection.provider, selection.model)
-              retryToken = beginModelPick(liveSessionId, retryBefore, readSnapshot())
+              expectedModel = selection.model
+              expectedProvider = selection.provider
+              retryToken = beginModelPick(pickOwner, retryBefore, readSnapshot())
             },
-            requestConfirmed: () => requestSwitch(true),
-            finish: result => {
-              if (retryToken !== null) {
-                settleModelPick(liveSessionId, retryToken, true)
-              }
+            requestConfirmed: async () => {
+              try {
+                const confirmed = await requestSwitch(true)
 
-              finishSwitch(result)
+                if (retryToken !== null) {
+                  if (confirmed?.confirm_required) {
+                    retryFailureRepaint = settleModelPick(pickOwner, retryToken, false)
+                  } else {
+                    settleModelPick(pickOwner, retryToken, true)
+                  }
+                }
+
+                if (!confirmed?.confirm_required) {
+                  finishSwitch(confirmed)
+                }
+
+                return confirmed
+              } catch (err) {
+                if (retryToken !== null) {
+                  retryFailureRepaint = settleModelPick(pickOwner, retryToken, false)
+                }
+
+                throw err
+              }
             },
             rollback: () => {
-              const repaint = retryToken === null ? restored : settleModelPick(liveSessionId, retryToken, false)
+              const repaint = retryToken === null ? restored : retryFailureRepaint
 
-              if (repaint && !(touchesPrimary && $activeSessionId.get() !== liveSessionId)) {
+              if (repaint && !pickOwnerChanged()) {
                 restoreSnapshot(repaint)
               }
             }
@@ -447,7 +533,7 @@ export function useModelControls({
           return false
         }
 
-        settleModelPick(liveSessionId, pickToken, true)
+        settleModelPick(pickOwner, pickToken, true)
         finishSwitch(result)
 
         return true
@@ -458,15 +544,14 @@ export function useModelControls({
         // what the NEXT turn runs anyway. Current gateways never take this
         // path — they answer `deferred`.
         if (isBusySessionModelSwitch(err)) {
-          settleModelPick(liveSessionId, pickToken, true)
+          settleModelPick(pickOwner, pickToken, true)
 
-          return true
+          return pickOwnerChanged() ? false : true
         }
 
         // An abandoned pick (a newer one was made, or the user left the chat)
         // is not the user's current choice; its failure is not worth a toast.
-        const abandoned =
-          isPickSuperseded(liveSessionId, pickToken) || (touchesPrimary && $activeSessionId.get() !== liveSessionId)
+        const abandoned = isPickSuperseded(pickOwner, pickToken) || pickOwnerChanged()
 
         const restored = settleUnapplied()
 
@@ -481,7 +566,16 @@ export function useModelControls({
         return false
       }
     },
-    [cacheOwnerConnectionId, cacheProfile, copy, queryClient, requestGateway, t, updateModelOptionsCache]
+    [
+      cacheOwnerConnectionId,
+      cacheOwnerProfile,
+      cacheProfile,
+      copy,
+      queryClient,
+      requestGateway,
+      t,
+      updateModelOptionsCache
+    ]
   )
 
   return { applySavedMainModel, followDefaultModel, refreshCurrentModel, selectModel }

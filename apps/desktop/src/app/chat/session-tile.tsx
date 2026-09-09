@@ -276,6 +276,7 @@ function TileChat({
 
   const { selectModel } = useModelControls({
     cacheOwnerConnectionId: ownerRoute?.connectionId || undefined,
+    cacheOwnerProfile: ownerRoute?.profile || undefined,
     cacheProfile: ownerRoute?.targetProfile || ownerRoute?.profile || undefined,
     queryClient,
     requestGateway: requestTileGateway

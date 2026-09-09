@@ -11,10 +11,16 @@ import time
 import weakref
 from typing import Any, Dict, List, Optional, Tuple
 
+from hermes_state_common import _sql_session_last_active
+
 # caplog tests pin the "hermes_state" logger name.
 logger = logging.getLogger("hermes_state")
 
 _TOKEN_COUNTERS = ("input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens", "reasoning_tokens")
+
+
+def _billed_token_sql(prefix: str = "") -> str:
+    return " + ".join(f"COALESCE({prefix}{column}, 0)" for column in _TOKEN_COUNTERS[:4])
 
 
 def _token_update_sql(delta: bool) -> str:
@@ -384,17 +390,89 @@ class SessionUsageMixin:
         self._insert_session_row(session_id, "unknown")
         self._execute_write(lambda conn: self._record_model_usage(conn, session_id, task=task, **usage))
 
+    def _auxiliary_usage_totals_batch(self, session_ids) -> Dict[str, Dict[str, float]]:
+        """Auxiliary billed-token and estimated-cost totals keyed by session id."""
+        ids = list(dict.fromkeys(session_id for session_id in session_ids if session_id))
+        if len(ids) > 900:
+            totals: Dict[str, Dict[str, float]] = {}
+            for start in range(0, len(ids), 900):
+                totals.update(self._auxiliary_usage_totals_batch(ids[start:start + 900]))
+            return totals
+        if not ids:
+            return {}
+        placeholders = ",".join("?" for _ in ids)
+        rows = self._read_rows(f"""
+            SELECT session_id,
+                   SUM({_billed_token_sql()}),
+                   SUM(estimated_cost_usd)
+              FROM session_model_usage
+             WHERE task <> '' AND session_id IN ({placeholders})
+             GROUP BY session_id
+            """, ids)
+        return {
+            row["session_id"]: {
+                "tokens": int(row[1] or 0),
+                "cost_usd": float(row[2] or 0.0),
+            }
+            for row in rows
+        }
+
     def usage_totals(self, *, min_message_count: int = 1, include_archived: bool = False) -> Dict[str, float]:
-        """Tokens and spend across the whole store (one scan), so the sidebar total does not
-        shrink with paging. Spend prefers the billed figure over the estimate."""
-        where = ["parent_session_id IS NULL", "message_count >= ?"]
+        """Billed tokens and spend across the whole store, including cache and auxiliary calls."""
+        where = ["s.parent_session_id IS NULL", "s.message_count >= ?"]
         params: List[Any] = [min_message_count]
         if not include_archived:
-            where.append("COALESCE(archived, 0) = 0")
+            where.append("COALESCE(s.archived, 0) = 0")
         row = self._read_one(f"""
-            SELECT COALESCE(SUM(COALESCE(input_tokens, 0) + COALESCE(output_tokens, 0)), 0),
-                   COALESCE(SUM(COALESCE(actual_cost_usd, estimated_cost_usd, 0)), 0)
+            WITH RECURSIVE chain(session_id, path, depth) AS (
+                SELECT s.id, json_array(s.id), 0
+                  FROM sessions s
+                 WHERE {' AND '.join(where)}
+                UNION ALL
+                SELECT child.id,
+                       json_insert(chain.path, '$[#]', child.id),
+                       chain.depth + 1
+                  FROM chain
+                  JOIN sessions parent ON parent.id = chain.session_id
+                  JOIN sessions child ON child.parent_session_id = parent.id
+                 WHERE parent.end_reason = 'compression'
+                   AND json_extract(COALESCE(child.model_config, '{{}}'), '$._branched_from') IS NULL
+                   AND json_extract(COALESCE(child.model_config, '{{}}'), '$._delegate_from') IS NULL
+                   AND COALESCE(child.source, '') != 'tool'
+                   AND child.id = (
+                       SELECT preferred.id
+                         FROM sessions preferred
+                        WHERE preferred.parent_session_id = parent.id
+                          AND json_extract(COALESCE(preferred.model_config, '{{}}'), '$._branched_from') IS NULL
+                          AND json_extract(COALESCE(preferred.model_config, '{{}}'), '$._delegate_from') IS NULL
+                          AND COALESCE(preferred.source, '') != 'tool'
+                        ORDER BY
+                          CASE
+                            WHEN preferred.end_reason = 'compression' THEN 0
+                            WHEN preferred.ended_at IS NULL THEN 1
+                            ELSE 2
+                          END,
+                          {_sql_session_last_active('preferred')} DESC,
+                          preferred.started_at DESC,
+                          preferred.id DESC
+                        LIMIT 1
+                   )
+                   AND chain.depth < 100
+                   AND child.id NOT IN (SELECT value FROM json_each(chain.path))
+            )
+            SELECT COALESCE(SUM({_billed_token_sql('sessions.')}), 0) + COALESCE((
+                       SELECT SUM({_billed_token_sql('session_model_usage.')})
+                         FROM session_model_usage
+                         JOIN chain ON chain.session_id = session_model_usage.session_id
+                        WHERE session_model_usage.task <> ''
+                   ), 0),
+                   COALESCE(SUM(COALESCE(sessions.actual_cost_usd, sessions.estimated_cost_usd, 0)), 0) + COALESCE((
+                       SELECT SUM(session_model_usage.estimated_cost_usd)
+                         FROM session_model_usage
+                         JOIN chain ON chain.session_id = session_model_usage.session_id
+                        WHERE session_model_usage.task <> ''
+                   ), 0)
               FROM sessions
-             WHERE {' AND '.join(where)}
+              JOIN chain ON chain.session_id = sessions.id
             """, params)
         return {"tokens": int(row[0] or 0), "cost_usd": float(row[1] or 0.0)}

@@ -2852,8 +2852,8 @@ class TestCompressionChainProjection:
         assert tip2_row["preview"].startswith("second conversation continuation")
         assert tip2_row["cwd"] == "/tmp/workspaces/second"
 
-    def test_list_batches_tip_row_fetch_into_one_query(self, db, monkeypatch):
-        """Projection must resolve tip rows for a whole page in one batched
+    def test_list_batches_lineage_row_fetch_into_one_query(self, db, monkeypatch):
+        """Projection must resolve full lineages for a page in one batched
         query, not one _get_session_rich_row() call per compression root."""
         import time as _time
 
@@ -2890,10 +2890,11 @@ class TestCompressionChainProjection:
         sessions = db.list_sessions_rich(source="cli", limit=20)
         assert len(sessions) >= 2  # sanity: both chains actually surfaced
 
-        # Two compression roots resolved with exactly one batched call, and
-        # zero single-row calls — not one single-row call per root.
+        # Two compression lineages resolved with exactly one batched call, and
+        # zero single-row calls — not one single-row call per root.  Every row
+        # is needed because projected token and cost totals span the lineage.
         assert len(batch_calls) == 1
-        assert set(batch_calls[0]) == {"tip1", "tip2"}
+        assert set(batch_calls[0]) == {"root1", "mid1", "tip1", "root2", "tip2"}
         assert single_calls == []
 
 

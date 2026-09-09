@@ -56,8 +56,8 @@ def _seed_session(home, session_id, *, source, cwd=None, tokens=None, cost=None)
     """One session with a message, so it clears the sidebar's min_messages=1.
 
     ``cwd`` is what attaches it to a project — without one it lands in Home.
-    ``tokens`` is an (input, output) pair; both it and ``cost`` are written
-    straight to the row, the shape a finished turn leaves behind.
+    ``tokens`` is an (input, output[, cache read, cache write]) tuple; it and
+    ``cost`` are written straight to the row, the shape a finished turn leaves behind.
     """
     import sqlite3
 
@@ -75,9 +75,12 @@ def _seed_session(home, session_id, *, source, cwd=None, tokens=None, cost=None)
 
     conn = sqlite3.connect(home / "state.db")
     try:
+        token_buckets = tuple(tokens or (0, 0))
+        token_buckets += (0,) * (4 - len(token_buckets))
         conn.execute(
-            "UPDATE sessions SET input_tokens = ?, output_tokens = ?, estimated_cost_usd = ? WHERE id = ?",
-            (*(tokens or (0, 0)), cost or 0.0, session_id),
+            "UPDATE sessions SET input_tokens = ?, output_tokens = ?, cache_read_tokens = ?, "
+            "cache_write_tokens = ?, estimated_cost_usd = ? WHERE id = ?",
+            (*token_buckets, cost or 0.0, session_id),
         )
         conn.commit()
     finally:
@@ -159,7 +162,10 @@ class TestCrossProfileProjectTree:
         shared.mkdir(parents=True)
 
         for name, home in profiles_on_disk.items():
-            _seed_session(home, f"{name}-chat", source="cli", cwd=shared, tokens=(100, 20), cost=0.25)
+            _seed_session(
+                home, f"{name}-chat", source="cli", cwd=shared,
+                tokens=(40, 20, 60, 0), cost=0.25,
+            )
             _seed_project(home, "Shared", shared)
 
         payload = client.get("/api/profiles/projects/tree").json()
@@ -168,6 +174,36 @@ class TestCrossProfileProjectTree:
         assert project["sessionCount"] == 2
         assert project["totalTokens"] == 240
         assert project["totalCostUsd"] == pytest.approx(0.5)
+
+    def test_group_totals_include_the_whole_compression_lineage(
+        self, client, profiles_on_disk, tmp_path
+    ):
+        from hermes_state import SessionDB
+
+        shared = tmp_path / "repos" / "shared"
+        shared.mkdir(parents=True)
+        home = profiles_on_disk["worker"]
+        db = SessionDB(db_path=home / "state.db")
+        db.create_session("root", source="cli", cwd=str(shared))
+        db.append_message("root", role="user", content="before compression")
+        db.update_token_counts("root", input_tokens=100, estimated_cost_usd=1.0)
+        db.end_session("root", end_reason="compression")
+        db.create_session("tip", source="cli", parent_session_id="root")
+        db.append_message("tip", role="user", content="after compression")
+        db.update_token_counts(
+            "tip", input_tokens=200, cache_read_tokens=300, estimated_cost_usd=2.0)
+        db.record_auxiliary_usage(
+            "tip", "title_generation", input_tokens=40, output_tokens=10,
+            estimated_cost_usd=0.5)
+        db.close()
+        _seed_project(home, "Shared", shared)
+
+        payload = client.get("/api/profiles/projects/tree").json()
+        project = next(p for p in payload["projects"] if not p["isNoProject"])
+
+        assert project["sessionCount"] == 1
+        assert project["totalTokens"] == 650
+        assert project["totalCostUsd"] == pytest.approx(3.5)
 
     def test_profile_usage_covers_sessions_past_the_window(self, client, profiles_on_disk):
         # The whole point of aggregating in SQL: the total must not be a sum of

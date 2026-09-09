@@ -314,7 +314,7 @@ def _discover_repos_payload(
 _PROJECT_TREE_EXCLUDED_SOURCES = ["cron", "kanban"]
 
 
-def _project_tree_row(r: dict) -> dict:
+def _project_tree_row(r: dict, *, auxiliary_tokens: int = 0, auxiliary_cost_usd: float = 0.0) -> dict:
     """Project a SessionDB row to the minimal shape the sidebar renders (grouping fields +
     what ``SidebarSessionRow`` reads), minus the heavy columns."""
     row = {k: r.get(k) for k in (
@@ -324,8 +324,10 @@ def _project_tree_row(r: dict) -> dict:
         last_active=r.get("last_active") or r.get("started_at") or 0,
         source=r.get("source"), archived=bool(r.get("archived")),
         **{k: r.get(k) or 0 for k in (
-            "message_count", "tool_call_count", "input_tokens", "output_tokens")},
+            "message_count", "tool_call_count", "input_tokens", "output_tokens",
+            "cache_read_tokens", "cache_write_tokens")},
         **{k: r.get(k) for k in ("actual_cost_usd", "estimated_cost_usd", "model")},
+        _auxiliary_tokens=auxiliary_tokens, _auxiliary_cost_usd=auxiliary_cost_usd,
         is_active=False, **{k: r.get(k) for k in ("cwd", "git_branch", "git_repo_root")})
     return row
 
@@ -341,7 +343,22 @@ def _project_tree_inputs(
         limit=session_limit, offset=0, order_by_last_active=True, min_message_count=1,
         include_children=False, exclude_sources=_PROJECT_TREE_EXCLUDED_SOURCES,
         include_archived=False, compact_rows=True)
-    sessions = [_project_tree_row(r) for r in rows]
+    lineage_ids = {
+        session_id
+        for row in rows
+        for session_id in (row.get("_lineage_ids") or [row.get("id")])
+        if session_id
+    }
+    auxiliary = db._auxiliary_usage_totals_batch(lineage_ids)
+    sessions = []
+    for row in rows:
+        row_lineage_ids = row.get("_lineage_ids") or [row.get("id")]
+        sessions.append(_project_tree_row(
+            row,
+            auxiliary_tokens=sum(auxiliary.get(session_id, {}).get("tokens", 0) for session_id in row_lineage_ids),
+            auxiliary_cost_usd=sum(
+                auxiliary.get(session_id, {}).get("cost_usd", 0.0) for session_id in row_lineage_ids),
+        ))
     # Parallel-warm the git cache so build_tree's resolver doesn't cold-probe each cwd in turn.
     git_probe.warm_roots(s["cwd"] for s in sessions if s.get("cwd"))
     from hermes_cli import projects_db as pdb

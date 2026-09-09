@@ -162,7 +162,9 @@ def append_notes_to_multimodal_content(content: Any, notes: Optional[str]) -> bo
 _UNTITLED_PLATFORMS = frozenset({"cron", "subagent"})
 
 
-def _maybe_title_session_at_turn_start(agent: Any, messages: List[Any]) -> None:
+def _maybe_title_session_at_turn_start(
+    agent: Any, messages: List[Any], title_user_message: Optional[str] = None,
+) -> None:
     """Kick off auto-titling for the session's first user message; never fatal."""
     session_db = getattr(agent, "_session_db", None)
     session_id = getattr(agent, "session_id", None)
@@ -184,6 +186,8 @@ def _maybe_title_session_at_turn_start(agent: Any, messages: List[Any]) -> None:
                 if isinstance(metadata, dict) and isinstance(metadata.get("title_preview"), str):
                     title_preview = metadata["title_preview"]
                 break
+        if title_user_message is not None:
+            user_text = title_user_message.strip()
         if not user_text:
             return
         # The session row is created lazily; force it now or the title write matches
@@ -986,6 +990,7 @@ def build_turn_context(
     restore_or_build_system_prompt,
     install_safe_stdio, sanitize_surrogates, summarize_user_message_for_log, set_session_context,
     set_current_write_origin, ra, moa_active: bool=False,
+    title_user_message: Optional[str]=None,
 ) -> TurnContext:
     """Run the once-per-turn setup and return the loop's input context.
 
@@ -1126,7 +1131,7 @@ def build_turn_context(
     # Title the session now: titling depends only on the user's ask (before any injected
     # context lands on list content), so it runs concurrently with the turn. Daemon thread,
     # no-op once titled; it ensures the session row itself.
-    _maybe_title_session_at_turn_start(agent, messages)
+    _maybe_title_session_at_turn_start(agent, messages, title_user_message)
 
     # Sidecar skipped for codex_app_server/MoA; list content carries its context as a part in every mode.
     if 0 <= current_turn_user_idx < len(messages) and messages[current_turn_user_idx].get("role") == "user":

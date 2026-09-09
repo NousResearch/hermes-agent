@@ -149,7 +149,11 @@ def get_pending_for_session(session_key: str, *, include_choice_prompts: bool = 
     with _lock:
         for cid in _session_index.get(session_key) or []:
             entry = _entries.get(cid)
-            if entry is not None and (include_choice_prompts or entry.awaiting_text):
+            # Resolved batch cards stay indexed until the shared waiter collects every
+            # answer. They are no longer candidates for a typed reply: choosing Q1 by
+            # button must let typed text target the next unresolved card, Q2.
+            if (entry is not None and not entry.event.is_set()
+                    and (include_choice_prompts or entry.awaiting_text)):
                 return entry
         return None
 
@@ -278,7 +282,10 @@ def mark_awaiting_text(clarify_id: str) -> bool:
 def has_pending(session_key: str) -> bool:
     """True when this session has at least one pending clarify entry."""
     with _lock:
-        return any(_entries.get(cid) is not None for cid in _session_index.get(session_key) or [])
+        return any(
+            (entry := _entries.get(cid)) is not None and not entry.event.is_set()
+            for cid in _session_index.get(session_key) or []
+        )
 
 
 def clear_session(session_key: str) -> int:

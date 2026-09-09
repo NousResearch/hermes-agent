@@ -139,3 +139,30 @@ async def test_active_session_bypass_uses_profile_namespaced_key_under_multiplex
     assert adapter._pending_messages == {}
 
 
+@pytest.mark.asyncio
+async def test_gateway_batch_text_reply_skips_button_resolved_card_and_answers_next_question():
+    """The real gateway intercept must target the next unresolved batch card."""
+    _clear_clarify_state()
+    from gateway.run import GatewayRunner
+    from tools import clarify_gateway as cm
+
+    cm.register("q1", "telegram:batch", "First?", ["one", "two"])
+    second = cm.register("q2", "telegram:batch", "Second?", ["red", "blue"])
+    assert cm.resolve_gateway_clarify("q1", "one") is True
+
+    runner = object.__new__(GatewayRunner)
+    runner._pending_event_audio_paths = lambda event: []
+    runner._adapter_for_source = lambda source: None
+
+    async def prepare_reply(event):
+        return "2"
+
+    runner._prepare_clarify_reply_text = prepare_reply
+    event = _event("2")
+    result = await runner._hm_clarify_reply(event, event.source, "telegram:batch")
+
+    assert result == ""
+    assert second.event.is_set()
+    assert second.response == "blue"
+
+

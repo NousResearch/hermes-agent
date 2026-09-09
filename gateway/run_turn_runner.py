@@ -1254,23 +1254,41 @@ class TurnRunner:
                 "Clarify batch send failed to schedule",
             )
             try:
-                send_result = fut.result(timeout=15) if fut is not None else None
-            except Exception:
-                send_result = None
-            if not getattr(send_result, "success", False):
-                for clarify_id in clarify_ids:
-                    clarify_mod.resolve_gateway_clarify(clarify_id, "")
-                with suppress(Exception):
-                    ctx._status_adapter.clear_clarify_batch(batch_id)
-                return {"answers": {entry["qid"]: "" for entry in questions}, "timed_out": True}
-            try:
+                try:
+                    send_result = fut.result(timeout=15) if fut is not None else None
+                except TimeoutError:
+                    # A connector timeout is ambiguous: Telegram may already show every
+                    # card while its acknowledgement arrives late. Keep registrations
+                    # armed exactly like the single-question path so those cards remain
+                    # answerable.
+                    logger.warning("Clarify batch send timed out; retaining pending cards for late replies")
+                    send_result = True
+                except Exception:
+                    logger.warning("Clarify batch send failed", exc_info=True)
+                    send_result = None
+                if not getattr(send_result, "success", send_result is True):
+                    # Resolve and collect only this batch's cards. clear_session() could
+                    # cancel an unrelated pending card in the same session.
+                    for clarify_id in clarify_ids:
+                        clarify_mod.resolve_gateway_clarify(clarify_id, "")
+                    clarify_mod.wait_for_batch_responses(clarify_ids, timeout=0)
+                    return {"answers": {entry["qid"]: "" for entry in questions}, "timed_out": True}
                 answers_by_id, timed_out = clarify_mod.wait_for_batch_responses(
                     clarify_ids, clarify_mod.get_clarify_timeout())
+                return {"answers": {entry["qid"]: answers_by_id.get(clarify_id, "")
+                                    for entry, clarify_id in zip(questions, clarify_ids)}, "timed_out": timed_out}
             finally:
                 with suppress(Exception):
                     ctx._status_adapter.clear_clarify_batch(batch_id)
-            return {"answers": {entry["qid"]: answers_by_id.get(clarify_id, "")
-                                for entry, clarify_id in zip(questions, clarify_ids)}, "timed_out": timed_out}
+                # A batch always returns control to the active turn, including after an
+                # undeliverable card or shared timeout. Restore the continuation stream
+                # and typing indicator rather than leaving the chat visually stalled.
+                sc = self._stream_consumer()
+                if sc is not None:
+                    with suppress(Exception):
+                        sc.request_reopen_seed()
+                with suppress(Exception):
+                    ctx._status_adapter.resume_typing_for_chat(ctx._status_chat_id)
         clarify_id = uuid.uuid4().hex[:10]
         choices = list(choices) if choices else None
         clarify_mod.register(

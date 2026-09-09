@@ -33,6 +33,30 @@ _CLIENT_ERROR_TYPES = ("MemoryNotFoundError", "ValidationError")
 # so legacy mem0.json files written by the wizard don't override gateway-native ids.
 _DEFAULT_USER_ID = "hermes-user"
 
+# sync_turn sends the whole turn to the backend for fact extraction. OSS embedding
+# models often have small context windows (bge-small-zh-v1.5: 512 tokens ≈ 500 chars;
+# jina-embeddings-v3: 8192), and oversized turns make backend.add() raise — Ollama
+# answers HTTP 500, hosted APIs return INPUT_TOKEN_LIMIT_EXCEEDED — which _try only
+# logs, silently dropping the turn's memory extraction. Cap each message up front.
+_SYNC_MSG_MAX_CHARS = 450
+
+
+def _truncate_for_sync(text: str, max_len: int = _SYNC_MSG_MAX_CHARS) -> str:
+    """Cap a synced message at its last sentence boundary within ``max_len``.
+
+    Short messages pass through unchanged; long ones keep the last complete
+    sentence inside the window so fact extraction still sees coherent statements,
+    with a hard cut as fallback when no boundary exists (or one only appears in
+    the first third of the window, which usually means unsegmented input).
+    """
+    if len(text) <= max_len:
+        return text
+    for sep in ("。", "！", "？", ".\n", ".", "!", "?"):
+        cut = text[:max_len].rfind(sep)
+        if cut > max_len // 3:
+            return text[:cut + 1]
+    return text[:max_len]
+
 
 def _is_client_error(exc: Exception) -> bool:
     """True for user-caused errors (bad ID, not found) that should NOT trip circuit breaker."""
@@ -266,7 +290,10 @@ class Mem0MemoryProvider(MemoryProvider):
 
         def _sync():
             if self._backend is not None:
-                messages = [{"role": "user", "content": user_content}, {"role": "assistant", "content": assistant_content}]
+                messages = [
+                    {"role": "user", "content": _truncate_for_sync(user_content)},
+                    {"role": "assistant", "content": _truncate_for_sync(assistant_content)},
+                ]
                 self._try(lambda: self._add(messages, infer=True), logger.warning, "Mem0 sync failed: %s")
 
         with self._sync_lock:

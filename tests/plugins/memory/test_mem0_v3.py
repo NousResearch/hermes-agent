@@ -146,6 +146,85 @@ class TestMem0V3Internal:
         assert call[2]["infer"] is True
 
 
+class TestSyncTurnTruncation:
+    """sync_turn must cap messages before ingestion so small-context embedding
+    backends (OSS Ollama bge-small-zh-v1.5: 512 tokens; jina-embeddings-v3 token
+    limits) don't fail the whole extraction — a failure _try only logs."""
+
+    def _make_provider(self, monkeypatch, backend):
+        provider = Mem0MemoryProvider()
+        provider.initialize("test-session")
+        provider._user_id = "u123"
+        provider._agent_id = "hermes"
+        provider._backend = backend
+        return provider
+
+    def test_short_messages_pass_through_unchanged(self, monkeypatch):
+        backend = FakeBackend()
+        provider = self._make_provider(monkeypatch, backend)
+        provider.sync_turn("user said", "assistant replied", session_id="s1")
+        provider._sync_thread.join(timeout=2)
+        assert backend.captured[0][1] == [
+            {"role": "user", "content": "user said"},
+            {"role": "assistant", "content": "assistant replied"},
+        ]
+
+    def test_oversized_messages_truncated_at_sentence_boundary(self, monkeypatch):
+        backend = FakeBackend()
+        provider = self._make_provider(monkeypatch, backend)
+        max_len = mem0_plugin._SYNC_MSG_MAX_CHARS
+        long_user = ("Important fact about the project. " * 40).strip()
+        long_assistant = "这是很长的一段回答。" * 80
+        provider.sync_turn(long_user, long_assistant, session_id="s1")
+        provider._sync_thread.join(timeout=2)
+        sent = backend.captured[0][1]
+        assert len(sent[0]["content"]) <= max_len
+        assert sent[0]["content"].endswith(".")
+        assert len(sent[1]["content"]) <= max_len
+        assert sent[1]["content"].endswith("。")
+
+    def test_small_context_backend_never_sees_oversized_input(self, monkeypatch):
+        """Regression for #106235/#37421: an OSS embedding backend with a small
+        context window raises on oversized input; truncation up front keeps the
+        extraction from being silently dropped (no breaker failures)."""
+
+        class SmallContextBackend(FakeBackend):
+            def add(self, messages, **kwargs):
+                if any(len(m["content"]) > mem0_plugin._SYNC_MSG_MAX_CHARS for m in messages):
+                    raise RuntimeError("HTTP 500: embedding input exceeds model context")
+                return super().add(messages, **kwargs)
+
+        backend = SmallContextBackend()
+        provider = self._make_provider(monkeypatch, backend)
+        provider.sync_turn("x" * 5000, "y" * 5000, session_id="s1")
+        provider._sync_thread.join(timeout=2)
+        assert len(backend.captured) == 1
+        assert all(len(m["content"]) <= mem0_plugin._SYNC_MSG_MAX_CHARS for m in backend.captured[0][1])
+        assert provider._consecutive_failures == 0
+
+    @pytest.mark.parametrize(
+        "text,expected",
+        [
+            ("short text", "short text"),  # under the cap: untouched
+            ("这是很短的句子。", "这是很短的句子。"),  # CJK under the cap: untouched
+            # no sentence boundary anywhere: hard cut at the cap
+            ("x" * 600, "x" * mem0_plugin._SYNC_MSG_MAX_CHARS),
+        ],
+    )
+    def test_truncate_for_sync_pass_through_and_hard_cut(self, text, expected):
+        assert mem0_plugin._truncate_for_sync(text) == expected
+
+    def test_truncate_for_sync_keeps_last_complete_sentence(self):
+        max_len = mem0_plugin._SYNC_MSG_MAX_CHARS
+        text = "".join(f"Sentence {i}. " for i in range(100))
+        out = mem0_plugin._truncate_for_sync(text)
+        assert len(out) <= max_len
+        assert out.endswith(".")
+        assert out.startswith("Sentence 0. ")
+        # boundary only inside the first third of the window: hard cut instead
+        assert mem0_plugin._truncate_for_sync("One. " + "x" * 600) == ("One. " + "x" * 600)[:max_len]
+
+
 class TestMem0Prefetch:
     """prefetch() must recall on the CURRENT question, synchronously.
 

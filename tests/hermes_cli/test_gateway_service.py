@@ -218,6 +218,25 @@ class TestServiceIdentityForForeignHome:
         assert gateway_cli.get_service_name() == "hermes-gateway-alpha"
 
 
+class TestUninstallRefusesForeignUnit:
+    """systemd_uninstall must not stop/disable/unlink a unit pinned to another HERMES_HOME."""
+
+    def test_unit_for_other_home_is_left_alone(self, tmp_path, monkeypatch, capsys):
+        unit_path = tmp_path / "hermes-gateway.service"
+        unit_path.write_text('[Service]\nEnvironment="HERMES_HOME=/somewhere/else"\n', encoding="utf-8")
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "mine"))
+        monkeypatch.setattr(gateway_cli, "get_systemd_unit_path", lambda system=False: unit_path)
+        monkeypatch.setattr(gateway_cli, "_systemd_scope_preamble", lambda *a, **k: False)
+        calls = []
+        monkeypatch.setattr(gateway_cli, "_run_systemctl", lambda args, **k: calls.append(args))
+
+        gateway_cli.systemd_uninstall(system=False)
+
+        assert unit_path.exists()
+        assert calls == []
+        assert "/somewhere/else" in capsys.readouterr().out
+
+
 class TestGetCronDrainTimeout:
     def test_missing_config_falls_back_to_default(self, monkeypatch):
         monkeypatch.delenv("HERMES_CRON_DRAIN_TIMEOUT", raising=False)

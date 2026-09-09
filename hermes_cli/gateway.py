@@ -3218,8 +3218,24 @@ def _systemd_scope_preamble(
     return system
 
 
+def _systemd_unit_belongs_to_current_home(system: bool = False) -> bool:
+    """False (with a warning) when the installed unit pins a HERMES_HOME other than this process's: the
+    service name then resolved to ANOTHER install's gateway, and stop/disable/unlink would take it down."""
+    _sync_hermes_home_from_systemd_unit(system=system)  # sudo strips HERMES_HOME; adopt the unit's first
+    unit_home = _hermes_home_from_systemd_unit_file(system=system)
+    if unit_home is None or Path(unit_home).expanduser().resolve() == get_hermes_home().resolve():
+        return True
+    print_warning(
+        f"Refusing to remove {get_systemd_unit_path(system=system)}: it runs HERMES_HOME={unit_home}, "
+        f"but this process has HERMES_HOME={get_hermes_home()}"
+    )
+    return False
+
+
 def systemd_uninstall(system: bool = False):
     system = _systemd_scope_preamble("uninstall", system, require_installed=False)
+    if not _systemd_unit_belongs_to_current_home(system):
+        return
     _run_systemctl(["stop", get_service_name()], system=system, check=False, timeout=90)
     _run_systemctl(["disable", get_service_name()], system=system, check=False, timeout=30)
 

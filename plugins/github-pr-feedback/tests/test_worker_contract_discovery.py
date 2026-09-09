@@ -23,7 +23,7 @@ from github_pr_feedback.policy import FeedbackReceipt
 def test_doctor_checks_worker_plugin_opt_in_without_changing_profile(tmp_path, plugins, expected):
     profile = tmp_path / "profiles/worker/config.yaml"
     profile.parent.mkdir(parents=True)
-    profile.write_text(yaml.safe_dump({"plugins": plugins, "model": {"name": "keep-this-model"}}))
+    profile.write_text(yaml.safe_dump({"plugins": plugins, "model": {"name": "keep-this-model"}}), encoding="utf-8")
     before = profile.read_bytes()
     policy = SimpleNamespace(assignee="worker", assignee_rules=(), routing_rules=(),
                              local_ci_audit=None, repair_steward=None, targets={}, board="repairs",
@@ -121,7 +121,7 @@ def test_worker_readiness_ignores_malformed_user_override(tmp_path, monkeypatch)
         "enabled": ["github-pr-feedback"], "disabled": []}}))
     plugin = worker / "plugins/github-pr-feedback"
     plugin.mkdir(parents=True)
-    (plugin / "plugin.yaml").write_text("name: github-pr-feedback\nprovides_hooks: [\n")
+    (plugin / "plugin.yaml").write_text("name: github-pr-feedback\nprovides_hooks: [\n", encoding="utf-8")
     monkeypatch.setattr(importlib.metadata, "entry_points", lambda: [])
 
     assert worker_contract_enabled(tmp_path, "worker") is True
@@ -216,7 +216,7 @@ def test_worker_readiness_rejects_manifest_declared_hooks_without_importing_work
     (plugin / "plugin.yaml").write_text(yaml.safe_dump({
         "name": "github-pr-feedback", "provides_hooks": ["pre_tool_call", "pre_kanban_complete"]
     }))
-    (plugin / "__init__.py").write_text("raise AssertionError('worker code imported')\n")
+    (plugin / "__init__.py").write_text("raise AssertionError('worker code imported')\n", encoding="utf-8")
 
     assert worker_contract_enabled(tmp_path, "worker") is False
 
@@ -245,7 +245,7 @@ def test_worker_readiness_respects_managed_policy_and_invalid_encoding(tmp_path,
     from github_pr_feedback.worker_contract import worker_contract_enabled
     managed_dir = tmp_path / "managed"
     managed_dir.mkdir()
-    (managed_dir / "config.yaml").write_text(yaml.safe_dump(managed))
+    (managed_dir / "config.yaml").write_text(yaml.safe_dump(managed), encoding="utf-8")
     monkeypatch.setenv("HERMES_MANAGED_DIR", str(managed_dir))
     profile = tmp_path / "profiles/worker/config.yaml"
     profile.parent.mkdir(parents=True)

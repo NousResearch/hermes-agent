@@ -133,7 +133,7 @@ def worker_contract_enabled(
         return False
     home = root if assignee == "default" else root / "profiles" / assignee
     try:
-        config = yaml.safe_load((home / "config.yaml").read_text())
+        config = yaml.safe_load((home / "config.yaml").read_text(encoding="utf-8"))
     except (OSError, UnicodeError, yaml.YAMLError):
         return False
     raw_plugins = config.get("plugins") if isinstance(config, dict) else None

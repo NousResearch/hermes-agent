@@ -2481,7 +2481,7 @@ def _task(
             else ""
         )
         + " ending with the neutral marker `<!-- pr-maintenance-receipt:v1 status=completed "
-        f"kind={receipt.feedback_kind} head=<full literal resolved head SHA> -->`. "
+        f"kind={receipt.feedback_kind} feedback-id={receipt.feedback_id} head=<full literal resolved head SHA> -->`. "
         "Before any GitHub write, re-read the canonical PR "
         "and require that its head still equals the expected receipt SHA; otherwise stop fail-closed. "
         "Do not merge; merge remains controlled by deterministic safety gates. After the verified "
@@ -2689,7 +2689,7 @@ def _ci_failure_task(
         f"{shlex.quote(receipt.head_sha)} --resolved-head-sha <full literal resolved head SHA>`. "
         "The factual reply must state that merge remains gated and no CI/safety gate was relaxed. "
         "End the reply with the neutral marker `<!-- pr-maintenance-receipt:v1 "
-        "status=completed kind=ci_repair head=<full literal resolved head SHA> -->`. "
+        f"status=completed kind=ci_repair feedback-id={receipt.feedback_id} head=<full literal resolved head SHA> -->`. "
         "Never acknowledge before the push and reply both succeed."
     )
     if requires_review:

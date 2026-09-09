@@ -87,8 +87,8 @@ _SECRET_ASSIGNMENT = re.compile(
 # its canonical set; this regex only needs to prove *some* completed-and-
 # matching-head marker exists, not police which kind it names.
 _PR_REPAIR_RECEIPT_COMMENT = re.compile(
-    r"<!--\s*pr-maintenance-receipt:v1\s+status=completed\s+kind=\w+\s+"
-    r"head=([0-9a-fA-F]{40,64})\s*-->"
+    r"<!--\s*pr-maintenance-receipt:v1\s+status=completed\s+kind=(\w+)\s+"
+    r"feedback-id=([^\s>]+)\s+head=([0-9a-fA-F]{40,64})\s*-->"
 )
 # Feedback kinds whose worker-completed reply must carry the marker above.
 # pr_local_ci completes through a different typed-receipt flow (audit-pr),
@@ -120,7 +120,13 @@ def _factual_reply_is_missing(
         return True
     for item in feedback:
         match = _PR_REPAIR_RECEIPT_COMMENT.search(item.body)
-        if not match or match.group(1).casefold() != resolved_head_sha.casefold():
+        if (
+            not match
+            or match.group(1).casefold()
+            not in {receipt.feedback_kind.casefold(), "ci_repair"}
+            or match.group(2) != receipt.feedback_id
+            or match.group(3).casefold() != resolved_head_sha.casefold()
+        ):
             continue
         if not pr_repair_attribution_required(receipt.repository):
             return False

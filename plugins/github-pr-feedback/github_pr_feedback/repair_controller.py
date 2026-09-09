@@ -503,7 +503,7 @@ def _repair_task(
             "identity changes or the repair is ambiguous or broad. After the verified push and "
             "factual reply both succeed, acknowledge this exact repair with `"
             f"{completion_command}`. Never use shell substitution for the resolved SHA, and do not "
-            "omit the neutral `<!-- pr-maintenance-receipt:v1 status=completed kind=pr_repair "
+            f"omit the neutral `<!-- pr-maintenance-receipt:v1 status=completed kind=pr_repair feedback-id={receipt.feedback_id} "
             "head=<full literal resolved head SHA> -->` marker at the end of the factual reply. Do not "
             "complete the Kanban task until this acknowledgement succeeds. No-progress rule: after "
             "evaluating at most two viable resolutions, choose the smallest existing repository "

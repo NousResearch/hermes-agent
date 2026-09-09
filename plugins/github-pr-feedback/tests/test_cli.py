@@ -2569,7 +2569,7 @@ def test_factual_reply_for_ordinary_feedback_is_satisfied_by_its_own_marker_kind
     reply = (
         f"{pr_repair_attribution_line('runtime-correctness-steward')}\n"
         "Fixed the reported issue; focused tests pass.\n"
-        f"<!-- pr-maintenance-receipt:v1 status=completed kind=review_comment head={'a' * 40} -->"
+        f"<!-- pr-maintenance-receipt:v1 status=completed kind=review_comment feedback-id=123456 head={'a' * 40} -->"
     )
     github = _FakeGitHubComments([reply])
 
@@ -2589,11 +2589,11 @@ def test_factual_reply_for_ordinary_feedback_is_satisfied_by_an_earlier_receipts
     reply = (
         f"{pr_repair_attribution_line('runtime-correctness-steward')}\n"
         "Already fixed by an earlier receipt.\n"
-        f"<!-- pr-maintenance-receipt:v1 status=completed kind=issue_comment head={'a' * 40} -->"
+        f"<!-- pr-maintenance-receipt:v1 status=completed kind=issue_comment feedback-id=other head={'a' * 40} -->"
     )
     github = _FakeGitHubComments([reply])
 
-    assert not _factual_reply_is_missing(
+    assert _factual_reply_is_missing(
         github, _feedback_receipt("review_comment"), resolved_head_sha="a" * 40
     )
 
@@ -2610,7 +2610,7 @@ def test_factual_reply_is_missing_when_the_marker_head_does_not_match() -> None:
     other_head_marker = (
         "Fixed it.\n"
         "<!-- pr-maintenance-receipt:v1 status=completed kind=pr_repair "
-        f"head={'b' * 40} -->"
+        f"feedback-id=repair:actions_not_green head={'b' * 40} -->"
     )
     github = _FakeGitHubComments([other_head_marker])
 
@@ -2624,7 +2624,7 @@ def test_factual_reply_is_missing_on_our_repo_without_the_attribution_line() -> 
 
     marker_only = (
         "Fixed the conflict.\n"
-        f"<!-- pr-maintenance-receipt:v1 status=completed kind=pr_repair head={'a' * 40} -->"
+        f"<!-- pr-maintenance-receipt:v1 status=completed kind=pr_repair feedback-id=repair:actions_not_green head={'a' * 40} -->"
     )
     github = _FakeGitHubComments([marker_only])
 
@@ -2637,7 +2637,7 @@ def test_pr_repair_reply_is_satisfied_by_a_marker_and_attribution_on_our_repo() 
     reply = (
         f"{pr_repair_attribution_line('pr-repair-steward')}\n"
         "Fixed the conflict; focused tests pass.\n"
-        f"<!-- pr-maintenance-receipt:v1 status=completed kind=pr_repair head={'a' * 40} -->"
+        f"<!-- pr-maintenance-receipt:v1 status=completed kind=pr_repair feedback-id=repair:actions_not_green head={'a' * 40} -->"
     )
     github = _FakeGitHubComments([reply])
 
@@ -2651,7 +2651,7 @@ def test_pr_repair_reply_on_the_upstream_repo_does_not_require_attribution() -> 
 
     marker_only = (
         "Fixed the conflict.\n"
-        f"<!-- pr-maintenance-receipt:v1 status=completed kind=pr_repair head={'a' * 40} -->"
+        f"<!-- pr-maintenance-receipt:v1 status=completed kind=pr_repair feedback-id=repair:actions_not_green head={'a' * 40} -->"
     )
     github = _FakeGitHubComments([marker_only])
 
@@ -2672,7 +2672,7 @@ def test_pr_repair_reply_accepts_the_ci_failure_typed_fixers_own_marker_kind() -
     reply = (
         f"{pr_repair_attribution_line('ci-static-fixer')}\n"
         "Fixed the static-lane failure; focused tests pass.\n"
-        f"<!-- pr-maintenance-receipt:v1 status=completed kind=ci_repair head={'a' * 40} -->"
+        f"<!-- pr-maintenance-receipt:v1 status=completed kind=ci_repair feedback-id=repair:actions_not_green head={'a' * 40} -->"
     )
     github = _FakeGitHubComments([reply])
 

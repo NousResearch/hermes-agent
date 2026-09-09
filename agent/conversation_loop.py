@@ -1737,6 +1737,14 @@ def run_conversation(
             turn_author=turn_author,
             title_user_message=title_user_message,
         )
+    # Stamp the member that actually answered (see turn_response_check capture)
+    # onto every envelope — the single seam all success/error paths pass through.
+    try:
+        _routed = getattr(agent, "_last_routed_model", None)
+        if isinstance(result, dict) and _routed:
+            result["routed_model"] = _routed
+    except Exception:
+        pass
     result = export_current_turn_boundary(agent, result, user_message)
     _close_durable_failed_turn(agent, result)
     return result

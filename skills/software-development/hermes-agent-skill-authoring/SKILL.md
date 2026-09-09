@@ -144,6 +144,7 @@ A skill exists to make the agent's process more predictable — the agent reliab
 4. **Co-locate rules with the concept they govern.**
 5. **Use strong leading words** ("tight loop," "root cause," "regression test") over long repeated explanations.
 6. **Prune duplication and no-ops.** "Be careful" and "use best practices" don't change model behavior — replace with a checkable criterion or delete.
+7. **Surface choices with `clarify`, never a prose list.** When the skill needs the user to pick between concrete options (style, mode, format, one of N named candidates), call the `clarify` tool with the choices array and the recommended option first. A prose list ending in "which do you prefer?" is a review-blocking non-conformance — models narrate all options before asking, which wastes a turn. Use free-text `clarify` only when no candidate options exist (paths, raw values).
 
 ## Tests and Docs (required for repo skills)
 

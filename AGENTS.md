@@ -1092,6 +1092,16 @@ violate them.
    `.env.example` versions are usually stale and edits outside the
    skill's own block must be dropped during salvage.
 
+9. **When the user must choose between concrete options, use the
+   `clarify` tool instead of listing choices in prose.** Skills that
+   surface a decision (pick a style, pick a mode, confirm a direction,
+   choose one of N named options) should never end with a prose list +
+   "which one?". Call `clarify` directly with a question and a choices
+   array, with the recommended option first. Only use free-text
+   `clarify` (or a plain message) when there are genuinely no candidate
+   options to offer — e.g. asking for an absolute path or a free-form
+   value.
+
 The full salvage / modernization checklist for external skill PRs
 lives in the `hermes-agent-dev` skill at
 `references/new-skill-pr-salvage.md` — load it before polishing

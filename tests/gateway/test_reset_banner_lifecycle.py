@@ -16,7 +16,7 @@ from gateway.platforms.event import MessageEvent
 async def test_reset_banner_is_new_session(tmp_path, monkeypatch, existing, command):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.setattr("gateway.run._hermes_home", tmp_path)
-    (tmp_path / "config.yaml").write_text("model:\n  default: test-model\n  context_length: 2000\nagent:\n  reasoning_effort: low\n  service_tier: fast\n")
+    (tmp_path / "config.yaml").write_text("model:\n  default: test-model\n  context_length: 2000\nagent:\n  reasoning_effort: low\n  service_tier: fast\n", encoding="utf-8")
     runner = GatewayRunner.__new__(GatewayRunner)
     runner.config = GatewayConfig()
     runner.session_store = SessionStore(tmp_path / "sessions", runner.config)

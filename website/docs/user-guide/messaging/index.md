@@ -253,8 +253,11 @@ guarantee; later fallback and per-turn routing can change execution.
 
 Delegation defaults describe ordinary child-agent spawning. “Inherited from
 main” refers to the parent at spawn time, not named-profile workers or explicit
-per-task overrides. Tool approval includes the process runtime override when
-active; it is not a claim that every tool invocation requires approval.
+per-task overrides. Session-scoped `/yolo` is cleared by `/new` and `/reset`
+before the banner is built, so tool approval returns to the configured mode.
+A process-wide runtime override remains active across resets and is labeled
+`off (runtime override)`. Approval mode is not a claim that every tool invocation
+requires approval, nor that bypass disables hardline safety restrictions.
 
 The short session identifier is a prefix verified as unambiguous in the serving
 profile's session database. The full ID is retained alongside it: prefixes may

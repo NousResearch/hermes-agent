@@ -19,7 +19,7 @@ def test_new_defaults_follow_resolved_route(tmp_path, monkeypatch, channel):
         "model": {"default": "base", "context_length": 2000},
         "agent": {"reasoning_effort": "low", "service_tier": "fast",
                   "reasoning_overrides": {"fallback": "high", "channel": "xhigh"}},
-    }))
+    }), encoding="utf-8")
     runner = GatewayRunner.__new__(GatewayRunner)
     runner.config = GatewayConfig(platforms={Platform.MATRIX: PlatformConfig(
         channel_overrides={"room": ChannelOverride(model="channel")} if channel else {})})
@@ -38,7 +38,7 @@ def test_approval_defaults(tmp_path, monkeypatch, mode, expected):
     import yaml
     from gateway.session_banner import format_reset_settings
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    (tmp_path / "config.yaml").write_text(yaml.safe_dump({"approvals": {"mode": mode}}))
+    (tmp_path / "config.yaml").write_text(yaml.safe_dump({"approvals": {"mode": mode}}), encoding="utf-8")
     runner = SimpleNamespace(_load_reasoning_config=lambda model="": None, _load_service_tier=lambda: None)
     with patch("tools.approval._YOLO_MODE_FROZEN", False):
         text = format_reset_settings(runner, model="model")
@@ -50,7 +50,7 @@ def test_malformed_delegation_is_unknown_not_exception(tmp_path, monkeypatch, ba
     import yaml
     from gateway.session_banner import format_reset_settings
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    (tmp_path / "config.yaml").write_text(yaml.safe_dump({"delegation": bad}))
+    (tmp_path / "config.yaml").write_text(yaml.safe_dump({"delegation": bad}), encoding="utf-8")
     runner = SimpleNamespace(_load_reasoning_config=lambda model="": None, _load_service_tier=lambda: None)
     assert "Delegation default: unknown" in format_reset_settings(runner, model="model")
 

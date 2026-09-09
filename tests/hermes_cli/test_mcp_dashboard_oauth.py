@@ -88,6 +88,35 @@ def test_hosted_callback_bypasses_gated_cookie_auth(monkeypatch):
     assert flow._callback == ("abc", "expected")
 
 
+def test_oauth_callback_endpoint_preserves_iss_parameter(monkeypatch):
+    import asyncio
+    from hermes_cli import web_server
+    from tools.mcp_dashboard_oauth import DashboardOAuthFlow
+    from starlette.testclient import TestClient
+
+    flow = DashboardOAuthFlow(
+        flow_id="flow-iss-test",
+        server_name="cloudflare",
+        profile=None,
+        hermes_home="/tmp/hermes-test",
+        redirect_uri="https://agent.example/mcp/oauth/callback/cloudflare",
+    )
+    asyncio.run(
+        flow.publish_authorization_url(
+            "https://mcp.cloudflare.com/authorize?state=cf-state"
+        )
+    )
+    _web_server_mcp._mcp_oauth_flows[flow.flow_id] = flow
+    monkeypatch.setattr(web_server.app.state, "auth_required", True, raising=False)
+
+    response = TestClient(web_server.app).get(
+        "/api/mcp/oauth/callback/cloudflare?code=cf-code&state=cf-state&iss=https%3A%2F%2Fmcp.cloudflare.com"
+    )
+
+    assert response.status_code == 200
+    assert flow._callback == ("cf-code", "cf-state", "https://mcp.cloudflare.com")
+
+
 def test_hosted_auth_allows_same_server_name_in_different_profiles(tmp_path, monkeypatch):
     from hermes_cli import web_server
     from tools.mcp_dashboard_oauth import DashboardOAuthFlow

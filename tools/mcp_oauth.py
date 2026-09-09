@@ -26,7 +26,7 @@ import webbrowser
 from functools import partialmethod
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, NamedTuple, Optional
 from urllib.parse import parse_qs, urlparse
 
 from hermes_constants import secure_parent_dir
@@ -452,7 +452,10 @@ def _authorization_code_result(code: str, state: "str | None", iss: "str | None"
     try:
         from mcp.shared.auth import AuthorizationCodeResult
     except ImportError:  # mcp < 2.0
-        return code, state
+        class AuthorizationCodeResult(NamedTuple):  # type: ignore[no-redef]
+            code: str
+            state: Optional[str] = None
+            iss: Optional[str] = None
     return AuthorizationCodeResult(code=code, state=state, iss=iss)
 
 
@@ -646,8 +649,13 @@ def _make_callback_waiter(port: int, cimd_url: str | None = None, timeout: float
     async def _wait():
         dashboard_flow = get_dashboard_oauth_flow()
         if dashboard_flow is not None:
-            # Dashboard flow speaks the legacy tuple; normalize to one shape.
-            return _authorization_code_result(*await dashboard_flow.wait_for_callback())
+            cb_result = await dashboard_flow.wait_for_callback()
+            if isinstance(cb_result, tuple):
+                code = cb_result[0]
+                state = cb_result[1] if len(cb_result) > 1 else None
+                iss = cb_result[2] if len(cb_result) > 2 else None
+                return _authorization_code_result(code, state, iss)
+            return cb_result
         # The SDK entered the authorization-code flow, so any cached token is unusable. Reject BEFORE
         # binding: binding would block for the full timeout and collide with the TIME_WAIT port on retry.
         # Reject before binding the callback listener in non-interactive contexts. Reaching here means the

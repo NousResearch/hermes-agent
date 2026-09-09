@@ -100,6 +100,30 @@ def test_mcp_oauth_helpers_use_dashboard_flow_without_loopback_port():
     assert flow.authorization_url == "https://idp.example/authorize?state=state-4"
 
 
+def test_dashboard_flow_preserves_rfc9207_iss_parameter():
+    from tools.mcp_dashboard_oauth import DashboardOAuthFlow, dashboard_oauth_flow
+    from tools.mcp_oauth import _make_callback_waiter
+
+    flow = DashboardOAuthFlow(
+        flow_id="flow-iss",
+        server_name="cloudflare",
+        profile=None,
+        hermes_home="/tmp/hermes-test",
+        redirect_uri="https://agent.example/mcp/oauth/callback/cloudflare",
+    )
+    asyncio.run(flow.publish_authorization_url("https://mcp.cloudflare.com/authorize?state=cf-state"))
+
+    with dashboard_oauth_flow(flow):
+        flow.deliver_callback(code="cf-code", state="cf-state", error=None, iss="https://mcp.cloudflare.com")
+        assert flow._callback == ("cf-code", "cf-state", "https://mcp.cloudflare.com")
+        assert asyncio.run(flow.wait_for_callback()) == ("cf-code", "cf-state", "https://mcp.cloudflare.com")
+
+        result = asyncio.run(_make_callback_waiter(0)())
+        assert result.code == "cf-code"
+        assert result.state == "cf-state"
+        assert result.iss == "https://mcp.cloudflare.com"
+
+
 def test_failed_reauth_rollback_preserves_newer_oauth_state(tmp_path, monkeypatch):
     from tools.mcp_oauth import HermesTokenStorage
 

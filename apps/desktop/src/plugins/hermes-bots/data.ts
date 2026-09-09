@@ -7,7 +7,7 @@
  */
 
 import { atom, host, queryClient, useQuery, useValue } from '@hermes/plugin-sdk'
-import { useEffect } from 'react'
+import { useEffect, useMemo } from 'react'
 
 import { displayName } from './labels'
 import {
@@ -635,6 +635,15 @@ interface UnionRoster {
 export function useRoster() {
   const activeConnectionId = useValue(host.state.connectionId)
   const activeProfile = String(useValue(host.state.profile) || 'default').trim() || 'default'
+  const connectionId = String(activeConnectionId || '').trim()
+
+  const rosterRoute = useMemo<ProfileRoute | string>(
+    () =>
+      connectionId && connectionId !== 'local'
+        ? { connectionId, mode: 'remote', profile: activeProfile, targetProfile: activeProfile }
+        : activeProfile,
+    [connectionId, activeProfile]
+  )
 
   // The five-second roster refresh is recurring ownership, not a succession
   // of unrelated one-shot requests. Keep its profile socket leased for this
@@ -646,18 +655,11 @@ export function useRoster() {
       return undefined
     }
 
-    const connectionId = String(activeConnectionId || '').trim()
-
-    const route: ProfileRoute | string =
-      connectionId && connectionId !== 'local'
-        ? { connectionId, mode: 'remote', profile: activeProfile, targetProfile: activeProfile }
-        : activeProfile
-
-    return host.retainProfileSocket(route)
-  }, [activeConnectionId, activeProfile])
+    return host.retainProfileSocket(rosterRoute)
+  }, [rosterRoute])
 
   return useQuery({
-    queryKey: [...ROSTER_KEY, activeConnectionId],
+    queryKey: [...ROSTER_KEY, activeConnectionId, activeProfile],
     queryFn: async () => {
       // Stamp the ISSUE time on the snapshot: mergeServerMeta compares it
       // against each bot's last local meta write, and a fetch issued before
@@ -684,11 +686,16 @@ export function useRoster() {
         }
       }
 
-      // Owner routing is ambient in the SDK now (post-#92731): requestForBot
-      // resolves the active owner itself, no captured route needed here.
-      const activeBot = { name: activeProfile }
+      // Route the recurring request through the exact socket lease held above.
+      // A name-only bot would make requestForBot use the ambient active socket,
+      // leaving the retained secondary unused and allowing the real request path
+      // to keep dialing and disposing between polls.
 
-      const local = await requestForBot<RosterSnapshot>(activeBot, 'profiles.list', {})
+      const local =
+        typeof host.requestProfile === 'function'
+          ? await host.requestProfile<RosterSnapshot>(rosterRoute, 'profiles.list', {})
+          : await requestForBot<RosterSnapshot>({ name: activeProfile }, 'profiles.list', {})
+
       // Newer backends inject the teammate-messaging protocol into every
       // session's system prompt (agent.bot_mode_protocol) — SOUL.md must not
       // carry a second copy. Older gateways lack the flag: keep appending.

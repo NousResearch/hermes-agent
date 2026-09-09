@@ -82,7 +82,7 @@ async function mergedRoster(
   liveConnectionId: null | string = 'local'
 ): Promise<RowFixture[]> {
   hostMock.state.connectionId.get.mockReturnValue(liveConnectionId as string)
-  hostMock.request.mockResolvedValue(local)
+  hostMock.requestProfile.mockResolvedValue(local)
 
   if (union) {
     hostMock.agents.mockResolvedValue(union)
@@ -119,6 +119,7 @@ describe('no union roster', () => {
     const release = vi.fn()
     hostMock.retainProfileSocket.mockReturnValueOnce(release)
     hostMock.request.mockResolvedValue({ profiles: [] })
+    hostMock.requestProfile.mockResolvedValue({ profiles: [] })
     hostMock.agents.mockResolvedValue({ agents: [], sources: [] })
 
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
@@ -131,6 +132,8 @@ describe('no union roster', () => {
 
     await waitFor(() => expect(result.current.data).toBeTruthy())
     expect(hostMock.retainProfileSocket).toHaveBeenCalledWith('default')
+    expect(hostMock.requestProfile).toHaveBeenCalledWith('default', 'profiles.list', {})
+    expect(hostMock.request).not.toHaveBeenCalled()
 
     unmount()
     expect(release).toHaveBeenCalledOnce()
@@ -603,7 +606,7 @@ describe('a stalled profiles.list cannot pin the spinner forever', () => {
     // Bots sidebar on a spinner with no error card. The 5s refetchInterval and
     // the gateway-open effect already recover drops.
     hostMock.state.connectionId.get.mockReturnValue('local')
-    hostMock.request.mockRejectedValue(new Error('state.db is locked'))
+    hostMock.requestProfile.mockRejectedValue(new Error('state.db is locked'))
 
     const client = new QueryClient({ defaultOptions: { queries: { retryDelay: 0 } } })
 
@@ -616,6 +619,6 @@ describe('a stalled profiles.list cannot pin the spinner forever', () => {
     await waitFor(() => expect(result.current.isError).toBe(true), { timeout: 5000 })
 
     expect(result.current.isLoading).toBe(false)
-    expect(hostMock.request.mock.calls.length).toBeGreaterThan(1)
+    expect(hostMock.requestProfile.mock.calls.length).toBeGreaterThan(1)
   })
 })

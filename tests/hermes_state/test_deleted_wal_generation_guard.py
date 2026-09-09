@@ -7,17 +7,27 @@ fail closed on both the open and write paths instead of creating the second
 generation.
 """
 
+import contextlib
+import gc
+import json
 import os
+import queue
 import sqlite3
+import subprocess
 import sys
+import textwrap
+import threading
 from pathlib import Path
 
 import pytest
 
 import hermes_state
 import hermes_state_wal
-from hermes_state import DeletedWalGenerationError, SessionDB, classify_persistence_error, refuse_deleted_wal_generation
-from hermes_state_dbfile import iter_deleted_sqlite_sidecar_holders
+from hermes_state import (
+    DeletedWalGenerationError, SessionDB, _close_time_checkpoint_configurable, classify_persistence_error,
+    refuse_deleted_wal_generation,
+)
+from hermes_state_dbfile import _pread_db_header, iter_deleted_sqlite_sidecar_holders
 
 
 @pytest.fixture
@@ -52,6 +62,19 @@ def _unlink_sidecars(db_path: Path) -> None:
         sidecar = Path(os.fspath(db_path) + suffix)
         if sidecar.exists():
             os.unlink(sidecar)
+
+
+class _RecordingConn:
+    def __init__(self, real_conn):
+        self._real = real_conn
+        self.recorded = []
+
+    def execute(self, sql, *args, **kwargs):
+        self.recorded.append(str(sql))
+        return self._real.execute(sql, *args, **kwargs)
+
+    def __getattr__(self, name):
+        return getattr(self._real, name)
 
 
 def test_classify_deleted_wal_is_replaced_not_disk():
@@ -167,6 +190,372 @@ def test_writer_halts_after_own_wal_unlinked(tmp_path, force_wal):
     with pytest.raises(DeletedWalGenerationError):
         db.append_message("s", role="user", content="second-after-halt")
     db.close()
+
+
+def test_close_quarantines_a_lost_wal_generation_before_checkpoint(
+    tmp_path, force_wal, monkeypatch, caplog
+):
+    db = _make_db(tmp_path / "state.db", "s", "before-close")
+    real_conn = db._conn
+    recorder = _RecordingConn(real_conn)
+    db._conn = recorder
+    monkeypatch.setattr(db, "_wal_generation_was_lost", lambda: True)
+
+    with caplog.at_level("WARNING", logger="hermes_state"):
+        db.close()
+
+    assert db._db_wal_generation_lost is True
+    assert not any("wal_checkpoint" in sql for sql in recorder.recorded)
+    assert "Skipping the close-time WAL checkpoint" in caplog.text
+
+
+@pytest.mark.skipif(_close_time_checkpoint_configurable(),
+                    reason="setconfig can switch the close-time checkpoint off: no retirement capability needed")
+def test_missing_retirement_capability_refuses_writer_before_open(tmp_path, monkeypatch):
+    import ctypes
+
+    existing = tmp_path / "existing.db"
+    _make_db(existing, "seed", "read-only access remains available").close()
+
+    class MissingPythonAPI:
+        def __getitem__(self, name):
+            raise AttributeError(name)
+
+    monkeypatch.setattr(ctypes, "pythonapi", MissingPythonAPI())
+    unopened = tmp_path / "unopened" / "state.db"
+    with pytest.raises(RuntimeError, match="requires CPython with ctypes"):
+        SessionDB(db_path=unopened)
+    assert not unopened.parent.exists()
+    with SessionDB(db_path=existing, read_only=True) as reader:
+        assert reader.get_messages("seed")[0]["content"] == "read-only access remains available"
+
+
+# ── Integrity across close/shutdown, not just "no explicit PRAGMA" ─────────────────────────────────
+#
+# test_close_quarantines_a_lost_wal_generation_before_checkpoint (above) mocks the detector and asserts
+# that no ``wal_checkpoint`` string was executed. That is necessary but NOT sufficient: on Python < 3.12
+# ``sqlite3.Connection.close()`` runs SQLite's own internal last-connection checkpoint with no SQL of ours,
+# and it checkpoints the STALE generation's frames over pages the newer generation already rewrote — the
+# #105670 corruption. These tests unlink the sidecars for real, write and checkpoint a second generation
+# through the path, then assert the FILE is intact (and the second generation's rows survive) both after
+# ``SessionDB.close()`` and after the writer PROCESS exits.
+
+
+def _write_second_generation(db_path: Path, n_rows: int) -> int:
+    """From a process that does NOT already hold this db open, mint a fresh WAL generation through the path
+    (as any non-hermes opener would), write ``n_rows`` messages and checkpoint them into the main file.
+    Returns the message count on the path afterwards. MUST run in a different process from the writer that
+    holds the deleted generation — two live handles on one db in one process collide on the -shm."""
+    conn = sqlite3.connect(str(db_path), timeout=5.0, isolation_level=None)
+    try:
+        conn.execute("PRAGMA journal_mode")  # header says WAL -> a fresh -wal/-shm generation on the path
+        sessions = [r[0] for r in conn.execute("SELECT id FROM sessions ORDER BY id").fetchall()]
+        conn.execute("BEGIN IMMEDIATE")
+        for i in range(n_rows):
+            conn.execute(
+                "INSERT INTO messages (session_id, role, content, timestamp) VALUES (?, ?, ?, ?)",
+                (sessions[i % len(sessions)], "assistant", "gen2 " + "y" * 2000 + f" #{i}", 1.0 + i),
+            )
+        conn.execute("COMMIT")
+        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        return conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
+    finally:
+        conn.close()
+
+
+def _integrity_ok(db_path: Path) -> bool:
+    conn = sqlite3.connect(str(db_path), timeout=5.0)
+    try:
+        return [r[0] for r in conn.execute("PRAGMA integrity_check").fetchall()] == ["ok"]
+    except sqlite3.DatabaseError:
+        return False  # a badly torn file fails the pragma itself
+    finally:
+        conn.close()
+
+
+def _message_count(db_path: Path) -> int:
+    conn = sqlite3.connect(str(db_path), timeout=5.0)
+    try:
+        return conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
+    finally:
+        conn.close()
+
+
+def _deleted_wal_descriptor(identity: tuple, fd_directory: str) -> int:
+    """Find the test's exact unlinked inode without extending its lifetime."""
+    for name in os.listdir(fd_directory):
+        try:
+            fd = int(name)
+            stat = os.fstat(fd)
+            if (stat.st_dev, stat.st_ino) == identity:
+                assert stat.st_nlink == 0
+                return fd
+        except OSError:
+            continue
+    pytest.fail("the owning SQLite connection discarded its unlinked WAL")
+
+
+def _descriptor_contents(fd: int, identity: tuple) -> bytes:
+    stat = os.fstat(fd)
+    assert (stat.st_dev, stat.st_ino) == identity, "the retained descriptor was closed or reused"
+    return os.pread(fd, stat.st_size, 0)
+
+
+def _assert_retirement_preserves_recoverable_wal(tmp_path, *, fd_directory, also_corrupt):
+    """Keep committed old-WAL-only data recoverable across close().
+
+    A second valid WAL uses the same deleted pathname but belongs to another
+    connection; closing the first owner must not modify that inode. Where the
+    runtime cannot switch off SQLite's close-time checkpoint the owner is retired
+    unclosed and its inode stays readable; elsewhere the capture taken at close()
+    is the copy. Neither claims that unlinked files survive process exit.
+    """
+    path = tmp_path / "state.db"
+    db = _make_db(path, "gw-0", "seed")
+    wal = _require_wal(db)
+    db._conn.execute("PRAGMA wal_autocheckpoint=0")
+    db._try_wal_checkpoint()
+    sentinel = "committed only in the retired WAL " + "x" * 3000
+    db.append_message("gw-0", role="assistant", content=sentinel)
+    original_stat = wal.stat()
+    original_identity = (original_stat.st_dev, original_stat.st_ino)
+    _unlink_sidecars(path)
+
+    # SQLite is the sole owner of the original inode; dup/open here would mask
+    # a close() that incorrectly discards the only remaining copy.
+    original_fd = _deleted_wal_descriptor(original_identity, fd_directory)
+    original_contents = _descriptor_contents(original_fd, original_identity)
+    assert original_contents
+
+    other_path = tmp_path / "other.db"
+    other = sqlite3.connect(str(other_path))
+    try:
+        other.execute("PRAGMA journal_mode=WAL")
+        other.execute("CREATE TABLE independent (content TEXT)")
+        other.execute("INSERT INTO independent VALUES ('another owner committed this')")
+        other.commit()
+        other_wal = Path(str(other_path) + "-wal")
+        other_wal.rename(wal)
+        other_stat = wal.stat()
+        other_identity = (other_stat.st_dev, other_stat.st_ino)
+        wal.unlink()
+        other_fd = _deleted_wal_descriptor(other_identity, fd_directory)
+        other_contents = _descriptor_contents(other_fd, other_identity)
+        assert original_identity != other_identity
+        assert other_contents
+
+        # A previously observed structural error must not bypass lost-generation retirement.
+        db._db_corrupt = also_corrupt
+        db.close()
+        db.close()  # repeated owner release must not take another permanent reference
+        assert db._db_wal_generation_lost is True
+        assert db._conn is None
+        artifact = db._retired_generation_capture
+        assert artifact is not None
+        del db
+        gc.collect()
+
+        if _close_time_checkpoint_configurable():
+            # Closed for real: the capture taken at close() is the surviving copy.
+            retired_wal_bytes = (artifact / "state.db-wal").read_bytes()
+        else:
+            # Retired unclosed: idle readers may have closed, but the writer still holds this inode.
+            original_fd = _deleted_wal_descriptor(original_identity, fd_directory)
+            retired_wal_bytes = _descriptor_contents(original_fd, original_identity)
+        assert retired_wal_bytes == original_contents
+        assert _descriptor_contents(other_fd, other_identity) == other_contents
+
+        # The writer is now quiescent. Recover into copied files, never reopen
+        # its original path in this process while it holds the old SHM inode.
+        recovery_path = tmp_path / "recovery.db"
+        # Reuse the cached main-file descriptor: opening and closing a new one
+        # here would cancel this process's SQLite advisory locks.
+        image_size = path.stat().st_size
+        main_image = _pread_db_header(path, image_size)
+        assert main_image is not None and len(main_image) == image_size
+        recovery_path.write_bytes(main_image)
+        control = sqlite3.connect(recovery_path.as_uri() + "?immutable=1", uri=True)
+        try:
+            assert control.execute(
+                "SELECT COUNT(*) FROM messages WHERE content = ?", (sentinel,)
+            ).fetchone()[0] == 0, "control transaction was already in the main database"
+        finally:
+            control.close()
+        Path(str(recovery_path) + "-wal").write_bytes(retired_wal_bytes)
+        recovered = sqlite3.connect(str(recovery_path))
+        try:
+            assert recovered.execute(
+                "SELECT COUNT(*) FROM messages WHERE content = ?", (sentinel,)
+            ).fetchone()[0] == 1
+            assert recovered.execute("PRAGMA integrity_check").fetchall() == [("ok",)]
+        finally:
+            recovered.close()
+    finally:
+        other.close()
+
+
+@pytest.mark.linux_only
+@pytest.mark.parametrize("also_corrupt", [False, True])
+def test_retirement_preserves_recoverable_wal_and_other_deleted_generation(tmp_path, force_wal, also_corrupt):
+    _assert_retirement_preserves_recoverable_wal(
+        tmp_path, fd_directory="/proc/self/fd", also_corrupt=also_corrupt,
+    )
+
+
+@pytest.mark.macos_only
+@pytest.mark.parametrize("also_corrupt", [False, True])
+def test_retirement_preserves_unlinked_wal_on_macos(tmp_path, force_wal, also_corrupt):
+    _assert_retirement_preserves_recoverable_wal(
+        tmp_path, fd_directory="/dev/fd", also_corrupt=also_corrupt,
+    )
+
+
+# The long-lived "gateway" writer A: opens state.db in WAL mode, seeds + checkpoints history, leaves a few
+# frames in its WAL, then serves stdin commands (write / close / quit) so the test can drive close() at the
+# exact split-brain moment. Runs in its OWN process — the second generation is written from the test process,
+# so the two live handles never collide on one -shm. Returns normally on quit,
+# exercising normal interpreter cleanup as well as explicit close and GC.
+_GATEWAY_CHILD = textwrap.dedent(
+    """
+    import gc, json, os, sys
+    from pathlib import Path
+    repo, hermes_home, db_path = sys.argv[1], sys.argv[2], sys.argv[3]
+    sys.path.insert(0, repo)
+    os.environ["HERMES_HOME"] = hermes_home
+    import hermes_state_wal
+    if hermes_state_wal.is_sqlite_wal_reset_vulnerable():
+        hermes_state_wal.is_sqlite_wal_reset_vulnerable = lambda version_info=None: False
+    hermes_state_wal.resolve_journal_mode = lambda: "wal"
+    from hermes_state import DeletedWalGenerationError, SessionDB
+
+    def emit(**e):
+        sys.stdout.write(json.dumps(e) + "\\n"); sys.stdout.flush()
+
+    db = SessionDB(db_path=Path(db_path))
+    if not db._wal_active:
+        emit(event="skip"); sys.exit(3)
+    for sid in ("gw-0", "gw-1", "gw-2", "gw-3"):
+        db.create_session(sid, "cli")
+        db.append_message(sid, role="user", content="seed")
+    db._try_wal_checkpoint()  # history checkpointed into state.db, like a `sessions optimize` pass
+    for sid in ("gw-0", "gw-1", "gw-2", "gw-3"):
+        db.append_message(sid, role="assistant", content="uncheckpointed " + "x" * 3000)
+    emit(event="ready")
+
+    for line in sys.stdin:
+        cmd = line.strip()
+        if cmd == "write":
+            try:
+                db.append_message("gw-0", role="user", content="post-unlink turn")
+                emit(event="write", refused=False)
+            except DeletedWalGenerationError:
+                emit(event="write", refused=True)
+        elif cmd == "close":
+            db.close()
+            del db
+            gc.collect()
+            emit(event="closed")
+        elif cmd == "quit":
+            break
+    """
+)
+
+
+def _assert_new_generation_survives_retirement_and_exit(tmp_path, *, rename_sidecars):
+    repo_root = os.path.dirname(os.path.abspath(hermes_state.__file__))
+    hermes_home = tmp_path / "home"
+    hermes_home.mkdir()
+    path = tmp_path / "state.db"
+    stderr_path = tmp_path / "writer-stderr.log"
+    with stderr_path.open("w", encoding="utf-8") as stderr:
+        proc = subprocess.Popen(
+            [sys.executable, "-c", _GATEWAY_CHILD, repo_root, str(hermes_home), str(path)],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=stderr,
+            text=True, encoding="utf-8", bufsize=1,
+            env={**os.environ, "HERMES_STATE_DB_GUARD_BYPASS": "1"},
+        )
+        events = queue.Queue()
+
+        def read_events():
+            try:
+                for line in proc.stdout:
+                    events.put(line)
+            finally:
+                events.put(None)
+
+        reader = threading.Thread(target=read_events, daemon=True)
+        reader.start()
+
+        def next_event(name):
+            try:
+                line = events.get(timeout=20)
+            except queue.Empty:
+                pytest.fail(
+                    f"writer timed out waiting for {name!r}\n"
+                    + stderr_path.read_text(encoding="utf-8")
+                )
+            assert line is not None, (
+                f"writer exited early (rc={proc.poll()}) waiting for {name!r}\n"
+                + stderr_path.read_text(encoding="utf-8")
+            )
+            event = json.loads(line)
+            if name == "ready" and event.get("event") == "skip":
+                pytest.skip("WAL not active on this filesystem")
+            assert event.get("event") == name, event
+            return event
+
+        def send(command):
+            proc.stdin.write(command + "\n")
+            proc.stdin.flush()
+
+        try:
+            next_event("ready")
+            for suffix in ("-wal", "-shm"):
+                side = Path(str(path) + suffix)
+                assert side.exists()
+                if rename_sidecars:
+                    side.rename(tmp_path / ("retired.db" + suffix))
+                else:
+                    side.unlink()
+            expected = _write_second_generation(path, n_rows=400)
+            assert _integrity_ok(path)
+
+            send("write")
+            assert next_event("write")["refused"] is True
+
+            send("close")
+            next_event("closed")
+            assert _integrity_ok(path), "close/GC checkpointed the stale WAL over the main file"
+            assert _message_count(path) == expected, "close/GC rolled back the newer rows"
+
+            send("quit")
+            assert proc.wait(timeout=20) == 0, stderr_path.read_text(encoding="utf-8")
+            assert _integrity_ok(path), "normal exit checkpointed the stale WAL over the main file"
+            assert _message_count(path) == expected, "normal exit rolled back the newer rows"
+        finally:
+            with contextlib.suppress(BrokenPipeError):
+                proc.stdin.close()
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                proc.terminate()
+                try:
+                    proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    proc.wait(timeout=5)
+            reader.join(timeout=5)
+            proc.stdout.close()
+
+
+@pytest.mark.linux_only
+def test_deleted_wal_generation_survives_close_and_clean_process_exit(tmp_path):
+    _assert_new_generation_survives_retirement_and_exit(tmp_path, rename_sidecars=False)
+
+
+@pytest.mark.macos_only
+def test_renamed_wal_generation_survives_close_and_clean_process_exit(tmp_path):
+    _assert_new_generation_survives_retirement_and_exit(tmp_path, rename_sidecars=True)
 
 
 @pytest.mark.skipif(

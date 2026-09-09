@@ -29,6 +29,34 @@ from hermes_state_common import (
 # Log-record parity with the origin module (caplog tests pin "hermes_state").
 logger = logging.getLogger("hermes_state")
 
+
+def _prepare_connection_retirement():
+    """Bind a non-finalizing reference before opening a writable SQLite handle.
+
+    A Python container is cleared during interpreter shutdown. An unmatched
+    CPython C reference keeps the exact connection alive through that cleanup,
+    so SQLite cannot checkpoint its lost WAL generation from a finalizer. This
+    deliberately retains the connection and its descriptors until process exit;
+    it does not make already-unlinked WAL data durable after the last fd closes.
+    """
+    message = (
+        "Writable SessionDB on a Python without sqlite3 setconfig (< 3.12) requires CPython with "
+        "ctypes support to retain a quarantined SQLite connection through interpreter shutdown."
+    )
+    if sys.implementation.name != "cpython":
+        raise RuntimeError(message)
+    try:
+        import ctypes
+
+        # A private function object avoids changing another caller's signature.
+        retain = ctypes.pythonapi["Py_IncRef"]
+        retain.argtypes = (ctypes.py_object,)
+        retain.restype = None
+    except (ImportError, AttributeError, OSError) as exc:
+        raise RuntimeError(message) from exc
+    return retain
+
+
 # _read_sqlite_application_id runs on EVERY write (_raise_if_db_replaced) against the LIVE
 # state.db.  A bare open()/read()/close() there is the howtocorrupt §2.2 bug: close() cancels
 # every POSIX advisory lock this process holds on the file, dropping the writer's WAL-mode DMS

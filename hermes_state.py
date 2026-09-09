@@ -46,7 +46,8 @@ from hermes_state_telegram import SessionTelegramTopicsMixin
 from hermes_state_schema import SessionSchemaMixin
 import hermes_state_holders as _state_holders
 from hermes_state_dbfile import (
-    _canonical_sqlite_path, _connect_tracked_db, _read_sqlite_application_id, _stat_sqlite_sidecar_identity,
+    _canonical_sqlite_path, _connect_tracked_db, _prepare_connection_retirement,
+    _read_sqlite_application_id, _stat_sqlite_sidecar_identity,
     _watched_sqlite_sidecar_paths, has_invalid_sqlite_header_preopen, is_zeroed_state_db, quarantine_cross_process_lock,
     quarantine_invalid_state_db,
     RetiredGenerationCaptureError, capture_retired_wal_generation, refuse_deleted_wal_generation,
@@ -295,6 +296,12 @@ _REPAIR_LOCK_TIMEOUT_SECONDS = 120.0
 _IS_WINDOWS = sys.platform == "win32"
 
 
+def _close_time_checkpoint_configurable() -> bool:
+    """Whether this runtime can switch off SQLite's close-time checkpoint (Python 3.12+ ``setconfig``)."""
+    return (getattr(sqlite3, "SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE", None) is not None
+            and hasattr(sqlite3.Connection, "setconfig"))
+
+
 def divert_session_transcript_jsonl(session_id: str, messages) -> "Optional[Path]":
     """Append pending messages to HERMES_HOME/sessions/<id>.jsonl (state.db was replaced under a
     live process). Returns the path, or None if nothing to write."""
@@ -455,6 +462,8 @@ class SessionDB(
         # Durable capture of a lost WAL generation (see _capture_retired_generation): once per handle.
         self._retired_generation_capture: Optional[Path] = None
         self._retired_capture_lock = threading.Lock()
+        self._close_checkpoint_disabled = False  # sticky once setconfig(NO_CKPT_ON_CLOSE) succeeded
+        self._retire_connection: Optional[Callable[[Any], None]] = None
         self._db_corrupt, self._db_corrupt_reason = False, ""  # sticky quarantine (StateDbCorruptError)
         self._fts_usermerge_floor_applied = False  # one-shot usermerge-floor write guard
         self._fts_enabled = self._fts_stale = self._trigram_available = False
@@ -477,6 +486,11 @@ class SessionDB(
             if read_only:
                 self._open_read_only()
             else:
+                # Where SQLite's close-time checkpoint cannot be switched off, a lost-generation handle
+                # is retired unclosed (see close()). Resolve that capability before opening a writer:
+                # late cleanup must not import ctypes or look up it in a cleared module dictionary.
+                if not _close_time_checkpoint_configurable():
+                    self._retire_connection = _prepare_connection_retirement()
                 self._open_writer()
             self._record_db_file_identity()
             initialization_complete = True
@@ -1082,25 +1096,28 @@ class SessionDB(
                 setattr(err, attr, getattr(exc, attr))
         raise err from exc
 
-    def _disable_close_time_checkpoint(self) -> None:
+    def _disable_close_time_checkpoint(self) -> bool:
         """Best-effort SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE (Python 3.12+): sqlite3's
         close() otherwise runs the internal last-connection checkpoint that wrote
         the incident's pages under wrong page numbers (see StateDbCorruptError and
         the generation-loss halts).
-        <3.12 has no setconfig; the residual checkpoint only carries
-        pre-quarantine committed frames, which is tolerable."""
+        <3.12 has no setconfig, so a lost-generation handle is retired unclosed
+        instead (see close()): closing its last descriptor could both run that
+        checkpoint and discard committed data present only in an unlinked WAL."""
         flag = getattr(sqlite3, "SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE", None)
         conn = self._conn
         setconfig = getattr(conn, "setconfig", None)
         if flag is None or setconfig is None:
-            return
+            return self._close_checkpoint_disabled
         try:
             setconfig(flag, True)
+            self._close_checkpoint_disabled = True
         except Exception:
             logger.debug(
                 "Could not disable SQLite's close-time checkpoint on the quarantined handle for %s",
                 self.db_path, exc_info=True,
             )
+        return self._close_checkpoint_disabled
 
     def _raise_if_db_corrupt(self) -> None:
         if self._db_corrupt:
@@ -1203,12 +1220,13 @@ class SessionDB(
                     self._db_wal_generation_lost
                     or (bool(self._db_sidecar_identity) and self._wal_generation_was_lost())
                 )
+                retire_without_close = False
                 if generation_lost:
                     # Loss is settled here, not at exit: the unlinked WAL inode dies with this process's
                     # last descriptor. Capture the exact retired generation before the handle goes and
                     # refuse to settle without it (the capture raises; the handle stays open).
                     self._db_wal_generation_lost = True
-                    self._disable_close_time_checkpoint()
+                    checkpoint_disabled = self._disable_close_time_checkpoint()
                     artifact = self._capture_retired_generation("close")
                     logger.warning(
                         "Skipping the close-time WAL checkpoint for %s: this handle's WAL/SHM generation "
@@ -1216,6 +1234,24 @@ class SessionDB(
                         "writers before reopening and inspect the capture before deciding its disposition.",
                         self.db_path, artifact,
                     )
+                    # Where SQLite's own close-time checkpoint cannot be switched off (no setconfig,
+                    # Python < 3.12), sqlite3_close would still write the retired frames over the newer
+                    # generation: retire the exact connection unclosed instead.
+                    retire_without_close = not checkpoint_disabled
+                    if retire_without_close and self._retire_connection is None:
+                        try:  # setconfig exists but failed at runtime: bind the capability late
+                            self._retire_connection = _prepare_connection_retirement()
+                        except RuntimeError as exc:
+                            retire_without_close = False
+                            logger.error(
+                                "Cannot retain the quarantined connection for %s (%s); closing it may let "
+                                "SQLite checkpoint retired frames over the newer generation.", self.db_path, exc,
+                            )
+                    if retire_without_close:
+                        logger.warning(
+                            "Retaining the quarantined connection for %s unclosed: this runtime cannot "
+                            "switch off SQLite's close-time checkpoint.", self.db_path,
+                        )
                 quarantine_reason = None if generation_lost else self._quarantine_reason()
                 if quarantine_reason is not None:
                     logger.warning(
@@ -1234,11 +1270,18 @@ class SessionDB(
                         self._conn.execute("PRAGMA wal_checkpoint(PASSIVE)")
                     except Exception as exc:
                         logger.debug("WAL checkpoint (PASSIVE) at close failed: %s", exc)
-                conn, self._conn = self._conn, None
-                self._close_connection_quietly(conn)
-                # A clean close lets SQLite unlink the sidecars (a legitimate end of the
-                # generation, not a split): a teardown-race reopen must re-adopt.
-                self._db_sidecar_identity = {}
+                if retire_without_close:
+                    # One unmatched C reference pins this exact connection past GC and
+                    # module cleanup. Acquire it before detaching; repeated close() is
+                    # then inert. Do not inspect or mutate other owners' descriptors.
+                    self._retire_connection(self._conn)
+                    self._conn = None
+                else:
+                    conn, self._conn = self._conn, None
+                    self._close_connection_quietly(conn)
+                    # Only a clean close ends the generation; retain the recorded
+                    # identity when retiring an unsafe handle.
+                    self._db_sidecar_identity = {}
 
     def __del__(self) -> None:
         """Safety net: close() if the caller forgot. Attribute access stays

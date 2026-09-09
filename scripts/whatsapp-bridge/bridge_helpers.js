@@ -35,10 +35,11 @@ function unwrapMessageEnvelopes(content) {
 }
 
 export function getMessageContent(msg) {
-  const content = unwrapMessageEnvelopes(msg?.message || {});
+  const raw = msg?.message || {};
+  const content = unwrapMessageEnvelopes(raw);
   // A peeled envelope returns its inner message immediately: the payload
   // shape (template/buttons/list/etc.) applies to unenveloped messages.
-  if (content !== (msg?.message || {})) return content;
+  if (content !== raw) return content;
   if (content.templateMessage?.hydratedTemplate) return content.templateMessage.hydratedTemplate;
   if (content.buttonsMessage) return content.buttonsMessage;
   if (content.listMessage) return content.listMessage;

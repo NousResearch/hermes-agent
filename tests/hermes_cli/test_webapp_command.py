@@ -379,19 +379,12 @@ def test_webapp_process_table_fallback_uses_structured_command_identity(monkeypa
 
     monkeypatch.setattr(dashboard_procs, "_ledger_web_server_processes", lambda: {})
     monkeypatch.setattr(
-        dashboard_procs.subprocess,
-        "run",
-        lambda *args, **kwargs: type(
-            "Result",
-            (),
-            {
-                "returncode": 0,
-                "stdout": (
-                    "4242 python -m hermes_cli.main webapp --host 127.0.0.1 --port 9119\n"
-                    "4243 hermes chat -q webapp\n"
-                ),
-            },
-        )(),
+        dashboard_procs,
+        "_iter_process_table",
+        lambda: [
+            (4242, "python -m hermes_cli.main webapp --host 127.0.0.1 --port 9119"),
+            (4243, "hermes chat -q webapp"),
+        ],
     )
 
     assert dashboard_procs._scan_dashboard_processes() == [

@@ -671,3 +671,45 @@ class TestCloseAllUnder:
         profile_dir = tmp_path / "profiles" / "empty"
         profile_dir.mkdir(parents=True)
         assert registry.close_all_under(profile_dir) == 0
+
+    def test_waits_for_admitted_teardown_after_generation_is_gone(self, tmp_path, monkeypatch):
+        """Final release admits teardown before close; rmtree still needs that wait."""
+        profile_dir = tmp_path / "profiles" / "work"
+        profile_dir.mkdir(parents=True)
+        db = registry.acquire(profile_dir / "state.db")
+        entered, resume = TestMultiGenerationTeardownBarrier._pause_teardown_of(
+            monkeypatch, db
+        )
+        errors: list[BaseException] = []
+        releaser = TestMultiGenerationTeardownBarrier._release_async(db, errors)
+        try:
+            assert entered.wait(5.0)
+            resolved = (profile_dir / "state.db").resolve()
+            assert registry._generations.get(resolved) is None
+            barrier = registry._tearing_down.get(resolved)
+            assert barrier is not None and not barrier.event.is_set()
+
+            swept: list[int] = []
+            sweep_done = threading.Event()
+
+            def _sweep() -> None:
+                swept.append(registry.close_all_under(profile_dir))
+                sweep_done.set()
+
+            sweeper = threading.Thread(target=_sweep, daemon=True)
+            sweeper.start()
+            assert not sweep_done.wait(0.5), (
+                "close_all_under returned with a close still pending"
+            )
+            assert db._conn is not None
+
+            resume.set()
+            assert sweep_done.wait(10.0)
+            sweeper.join(10.0)
+        finally:
+            resume.set()
+            releaser.join(10.0)
+
+        assert errors == []
+        assert db._conn is None
+        assert swept == [0]

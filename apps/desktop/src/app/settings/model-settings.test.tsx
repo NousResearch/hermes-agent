@@ -409,6 +409,62 @@ describe('ModelSettings', () => {
     // Banner present on load, no switch required.
     expect(await screen.findByText(/still run on/)).toBeTruthy()
   })
+
+
+  it.each([
+    'http://localhost:11434/v1',
+    'http://byron.local:11434/v1',
+    'http://127.0.0.1:11434/v1',
+    'http://10.0.0.8:11434/v1',
+    'http://172.31.0.8:11434/v1',
+    'http://192.168.1.8:11434/v1',
+    'http://169.254.1.8:11434/v1',
+    'http://[::1]:11434/v1',
+    'http://[fd00::8]:11434/v1',
+    'http://[fe80::8]:11434/v1'
+  ])('does not flag a private auxiliary endpoint as stale: %s', async baseUrl => {
+    getAuxiliaryModels.mockResolvedValueOnce({
+      main: { provider: 'nous', model: 'hermes-4' },
+      tasks: [{ task: 'curator', provider: 'openai', model: 'llama3.2:3b', base_url: baseUrl }]
+    })
+
+    await renderModelSettings()
+    await waitFor(() => expect(getAuxiliaryModels).toHaveBeenCalled())
+
+    expect(screen.queryByText(/still run on/)).toBeNull()
+  })
+
+  it('shows a pinned auxiliary custom endpoint in its assignment row', async () => {
+    getAuxiliaryModels.mockResolvedValueOnce({
+      main: { provider: 'nous', model: 'hermes-4' },
+      tasks: [
+        {
+          task: 'curator',
+          provider: 'openai',
+          model: 'llama3.2:3b',
+          base_url: 'http://byron.local:11434/v1'
+        }
+      ]
+    })
+
+    await renderModelSettings()
+
+    expect(await screen.findByText(/openai · llama3\.2:3b · http:\/\/byron\.local:11434\/v1/)).toBeTruthy()
+  })
+
+  it.each(['https://api.openai.com/v1', 'not a URL'])(
+    'keeps the stale warning for a public or malformed endpoint: %s',
+    async baseUrl => {
+      getAuxiliaryModels.mockResolvedValueOnce({
+        main: { provider: 'nous', model: 'hermes-4' },
+        tasks: [{ task: 'curator', provider: 'openai', model: 'gpt-5', base_url: baseUrl }]
+      })
+
+      await renderModelSettings()
+
+      expect(await screen.findByText(/still run on/)).toBeTruthy()
+    }
+  )
 })
 
 describe('ModelSettings MoA preset editor', () => {

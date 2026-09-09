@@ -423,15 +423,14 @@ def is_host_excluded_by_no_proxy(hostname: str, no_proxy_value: str | None = Non
 
 import dataclasses
 from dataclasses import dataclass, field
-from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Dict, List, Optional, Any, Callable, Awaitable, Tuple, Union
-from enum import Enum
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.helpers import fence_state_after
+from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 from gateway.session import SessionSource, build_session_key
 from gateway.session_transcript import TranscriptReadError
 from hermes_constants import get_default_hermes_root, get_hermes_dir, get_hermes_home
@@ -1503,91 +1502,6 @@ async def cache_media_bytes_async(
         mime_type=mime_type,
         default_kind=default_kind,
     )
-
-
-class MessageType(Enum):
-    """Types of incoming messages."""
-    TEXT = "text"
-    LOCATION = "location"
-    PHOTO = "photo"
-    VIDEO = "video"
-    AUDIO = "audio"
-    VOICE = "voice"
-    DOCUMENT = "document"
-    STICKER = "sticker"
-    COMMAND = "command"  # /command style
-
-
-class ProcessingOutcome(Enum):
-    """Result classification for message-processing lifecycle hooks."""
-    SUCCESS = "success"
-    FAILURE = "failure"
-    CANCELLED = "cancelled"
-
-
-@dataclass
-class MessageEvent:
-    """Incoming message from a platform — the normalized shape all adapters produce."""
-    text: str
-    message_type: MessageType = MessageType.TEXT
-    # Author, mirrored from ``source`` for per-message prompt builders; None for non-IM sources.
-    user_id: Optional[str] = None
-    user_name: Optional[str] = None
-    source: SessionSource = None
-    raw_message: Any = None
-    message_id: Optional[str] = None
-    # Platform update id (Telegram ``update_id``): ``/restart`` records it so the new gateway
-    # advances past it even if PTB's shutdown ACK times out.
-    platform_update_id: Optional[int] = None
-    # Media attachments: local file paths (for vision tool access)
-    media_urls: List[str] = field(default_factory=list)
-    media_types: List[str] = field(default_factory=list)
-    # Per-attachment text-inlining contract; None = legacy "text/* already inlined into ``text``".
-    media_text_inlined: List[Optional[bool]] = field(default_factory=list)
-    reply_to_message_id: Optional[str] = None
-    reply_to_text: Optional[str] = None  # Text of the replied-to message (for context injection)
-    reply_to_author_id: Optional[str] = None
-    reply_to_author_name: Optional[str] = None
-    reply_to_is_own_message: bool = False  # True when the user replied to this bot/assistant's message
-    # Structured interactive-prompt reply (relay only): {prompt_id, option_id, label?,
-    # prompt_message_id?}; routed to the approval/slash-confirm/clarify resolvers BEFORE dispatch.
-    prompt_response: Optional[Dict[str, Any]] = None
-    # Auto-loaded skill(s) for topic/channel bindings; a single name or ordered list.
-    auto_skill: Optional[str | list[str]] = None
-    # Per-channel ephemeral system prompt; applied at API call time, never persisted to transcript.
-    channel_prompt: Optional[str] = None
-    # History-backfilled channel context (missed under require_mention); kept out of ``text`` so
-    # run.py's sender-prefix logic sees only the trigger message.
-    channel_context: Optional[str] = None
-    # Set for synthetic events (e.g. background-process notifications) that must bypass user authorization.
-    internal: bool = False
-    # Free-form per-event metadata (e.g. ``whatsapp_from_owner=True``); plugins must ``.get()``.
-    metadata: Dict[str, Any] = field(default_factory=dict)
-    timestamp: datetime = field(default_factory=datetime.now)
-    # May this event resolve gateway commands / control prompts? Proactive plugin events set False
-    # so untrusted payload text stays conversational. Kept last for positional compat.
-    allow_gateway_control: bool = True
-
-    def is_command(self) -> bool:
-        """Check if this is a command message (e.g., /new, /reset)."""
-        return self.allow_gateway_control and (self.text or "").lstrip().startswith("/")
-
-    def get_command(self) -> Optional[str]:
-        """Extract command name if this is a command message."""
-        if not self.is_command():
-            return None
-        raw = (self.text or "").lstrip().split(maxsplit=1)[0][1:].lower().split("@", 1)[0]
-        # Reject file paths: valid command names never contain /
-        return None if "/" in raw else raw
-
-    def get_command_args(self) -> str:
-        """Get the arguments after a command."""
-        if not self.is_command():
-            return self.text
-        parts = (self.text or "").lstrip().split(maxsplit=1)
-        args = parts[1] if len(parts) > 1 else ""
-        # iOS auto-corrects -- to — (em dash) and - to – (en dash)
-        return args.replace("\u2014\u2014", "--").replace("\u2014", "--").replace("\u2013", "-")
 
 
 @dataclass
@@ -3565,16 +3479,18 @@ class BasePlatformAdapter(ABC):
     async def handle_message(self, event: MessageEvent) -> None:
         """Process an incoming message; returns quickly by spawning a background
         task so new messages (and interrupts) can arrive while an agent runs."""
+        event._gateway_accepted = False
         if not self._message_handler:
             return
         if event.allow_gateway_control:
             coerce_plaintext_gateway_command(event)
-        # Topic recovery is Telegram-DM-only; skip the executor hop for group traffic.
-        if (getattr(self, "_topic_recovery_fn", None) is not None
+        expected_session_key = str((event.metadata or {}).get("gateway_session_key") or "").strip()
+        # Explicitly routed events already name their destination; recovering a
+        # different topic would redirect them and yield before the session claim.
+        if (not expected_session_key and getattr(self, "_topic_recovery_fn", None) is not None
                 and event.source.platform == Platform.TELEGRAM and event.source.chat_type == "dm"):
             await asyncio.to_thread(self._apply_topic_recovery, event)
         session_key = self._event_session_key(event)
-        expected_session_key = str((event.metadata or {}).get("gateway_session_key") or "").strip()
         if expected_session_key and session_key != expected_session_key:
             logger.warning("Dropping internally routed event: expected session=%s derived=%s",
                            expected_session_key, session_key)
@@ -3586,7 +3502,7 @@ class BasePlatformAdapter(ABC):
             await self._handle_message_while_active(event, session_key)
             return
         # Guard installed synchronously BEFORE the task spawns so a second message can't race in.
-        self._start_session_processing(event, session_key)
+        event._gateway_accepted = self._start_session_processing(event, session_key)
 
     async def _handle_message_while_active(self, event: MessageEvent, session_key: str) -> None:
         """Route a message that arrived while ``session_key`` is busy: bypass
@@ -3639,10 +3555,15 @@ class BasePlatformAdapter(ABC):
                     return
             except Exception as e:
                 logger.error("[%s] Busy-session handler failed: %s", self.name, e, exc_info=True)
+        # Without a runner FIFO, do not merge a wake into an occupied human slot
+        # (or collapse distinct wakes into one turn). Its caller can retry admission.
+        if event.internal and session_key in self._pending_messages:
+            return
         # Photo bursts/albums: queue without interrupting; they run after the current task.
         if event.message_type == MessageType.PHOTO:
             logger.debug("[%s] Queuing photo follow-up for session %s without interrupt", self.name, session_key)
             merge_pending_message_event(self._pending_messages, session_key, event)
+            event._gateway_accepted = True
             return
         if self._is_queue_text_debounce_candidate(event):
             logger.debug("[%s] New text message while session %s is active — "
@@ -3654,6 +3575,7 @@ class BasePlatformAdapter(ABC):
                          "(no interrupt, will cascade after current turn)", self.name, session_key)
             merge_pending_message_event(self._pending_messages, session_key, event,
                                         merge_text=event.message_type == MessageType.TEXT)
+            event._gateway_accepted = True
 
     @staticmethod
     def _get_human_delay() -> float:
@@ -3730,8 +3652,11 @@ class BasePlatformAdapter(ABC):
             if not await asyncio.to_thread(ledger_enabled):
                 return None
             source = event.source
+            # ``ledger_message_id`` wins when set: a queued chain's final answers the last message
+            # of the chain, not the event that opened it (see ``MessageEvent.ledger_message_id``).
+            _ledger_id = event.ledger_message_id if event.ledger_message_id is not None else getattr(event, "message_id", "")
             obligation_id = compute_obligation_id(
-                session_key, str(getattr(event, "message_id", "") or ""), text_content)
+                session_key, str(_ledger_id or ""), text_content)
             await asyncio.to_thread(
                 record_obligation, obligation_id=obligation_id, session_key=session_key,
                 platform=str(getattr(source.platform, "value", source.platform)),
@@ -3749,9 +3674,11 @@ class BasePlatformAdapter(ABC):
         delivery_adapter: "BasePlatformAdapter") -> None:
         """Mark the ledger row delivered/failed (best-effort). On ``send_path_degraded`` with a
         replacement adapter live, trigger another redelivery sweep (the watcher's may have run
-        before this failure landed; atomic claiming keeps it idempotent)."""
+        before this failure landed; atomic claiming keeps it idempotent). On a flood-control refusal
+        arm the runner's timed redelivery, so the reply goes out once the penalty has passed instead
+        of waiting for the next restart."""
         try:
-            from gateway.delivery_ledger import mark_delivered, mark_failed
+            from gateway.delivery_ledger import is_flood_error, mark_delivered, mark_failed
             if getattr(result, "success", False):
                 await asyncio.to_thread(mark_delivered, obligation_id)
                 return
@@ -3764,6 +3691,11 @@ class BasePlatformAdapter(ABC):
                 if live is not delivery_adapter and callable(redeliver):
                     await redeliver(event.source.platform,
                                     profile=getattr(delivery_adapter, "_owner_profile", None))
+            elif is_flood_error(error):
+                schedule = getattr(self.gateway_runner, "_schedule_flood_redelivery", None)
+                if callable(schedule):
+                    schedule(event.source.platform,
+                             profile=getattr(delivery_adapter, "_owner_profile", None))
         except Exception:
             logger.debug("delivery ledger update failed", exc_info=True)
 
@@ -3825,24 +3757,36 @@ class BasePlatformAdapter(ABC):
         except Exception as batch_err:
             logger.warning("[%s] Error batching images: %s", self.name, batch_err, exc_info=True)
 
-    async def _send_final_text(
-        self, event: MessageEvent, session_key: str, text_content: str, metadata: Dict[str, Any],
-        is_ephemeral_response: bool, ephemeral_ttl: int, record_delivery: Callable) -> None:
-        """Send the final text on the CURRENT transport (a reconnect may have replaced
-        this adapter), ledger-bracketed; the message-id owner owns the ephemeral delete."""
+    async def send_final_ledgered(
+        self, event: MessageEvent, session_key: str, text_content: str, metadata: Dict[str, Any], *,
+        reply_to: Optional[str], is_ephemeral_response: bool = False,
+    ) -> "SendResult":
+        """The delivery-ledger bracket every final text goes through, on the CURRENT transport
+        (a reconnect may have replaced this adapter): record the obligation before the send,
+        send with retry, finalize from the result — so a refused final (flood control, a dead
+        transport) leaves a ledger row the boot sweep / runtime redelivery can act on. ``event``
+        supplies the source and the ledger identity (``ledger_message_id`` or ``message_id``)."""
         delivery_adapter = self._final_delivery_adapter(event.source)
         logger.info("[%s] Sending response (%d chars) to %s", delivery_adapter.name,
                     len(text_content), event.source.chat_id)
-        _obligation_id = await self._record_delivery_obligation(
+        obligation_id = await self._record_delivery_obligation(
             event, session_key, text_content, delivery_adapter, is_ephemeral_response)
         result = await delivery_adapter._send_with_retry(
-            chat_id=event.source.chat_id, content=text_content,
-            reply_to=_reply_anchor_for_event(event), metadata=metadata)
+            chat_id=event.source.chat_id, content=text_content, reply_to=reply_to, metadata=metadata)
+        if obligation_id is not None:
+            await self._finalize_delivery_obligation(obligation_id, result, event, delivery_adapter)
+        return result
+
+    async def _send_final_text(
+        self, event: MessageEvent, session_key: str, text_content: str, metadata: Dict[str, Any],
+        is_ephemeral_response: bool, ephemeral_ttl: int, record_delivery: Callable) -> None:
+        """Normal-lane final: the ledger bracket plus the message-id owner's ephemeral delete."""
+        result = await self.send_final_ledgered(
+            event, session_key, text_content, metadata,
+            reply_to=_reply_anchor_for_event(event), is_ephemeral_response=is_ephemeral_response)
         record_delivery(result)
-        if _obligation_id is not None:
-            await self._finalize_delivery_obligation(_obligation_id, result, event, delivery_adapter)
         if ephemeral_ttl and ephemeral_ttl > 0 and result.success and result.message_id:
-            delivery_adapter._schedule_ephemeral_delete(
+            self._final_delivery_adapter(event.source)._schedule_ephemeral_delete(
                 event.source.chat_id, result.message_id, ephemeral_ttl)
 
     async def _notify_turn_error(self, event: MessageEvent, e: BaseException) -> Optional[dict]:

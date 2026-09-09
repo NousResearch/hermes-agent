@@ -55,8 +55,9 @@ HttpMethod = str  # type: ignore[assignment,misc]
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.helpers import MessageDeduplicator
 from gateway.platforms.base import (
-    gateway_trust_env, BasePlatformAdapter, MessageEvent, MessageType, SendResult, cache_image_from_url, cache_media_bytes_async,
+    gateway_trust_env, BasePlatformAdapter, SendResult, cache_image_from_url, cache_media_bytes_async,
 )
+from gateway.platforms.event import MessageEvent, MessageType
 from gateway.platforms._shared import coerce_port, get_scoped_secret as _get_scoped_secret
 
 logger = logging.getLogger(__name__)

@@ -24,6 +24,11 @@ def _agent_tool_defs(agent) -> list:
     return list(getattr(agent, "tools", None) or [])
 
 
+def agent_tool_names(agent) -> list:
+    """Names of ``agent.tools`` in wire order (unnamed entries skipped)."""
+    return [name for name in map(_def_name, _agent_tool_defs(agent)) if name]
+
+
 def _resolve_refresh_toolsets(agent, enabled_override, disabled_override):
     """Explicit reloads pass freshly-resolved toolsets (so a server just ENABLED in config is
     picked up) and the agent's selection is updated to match; automatic paths pass nothing

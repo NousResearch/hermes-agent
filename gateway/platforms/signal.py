@@ -25,8 +25,10 @@ import httpx
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
-    BasePlatformAdapter, MessageEvent, MessageType, ProcessingOutcome, SendResult, cache_image_from_bytes_async,
-    cache_audio_from_bytes_async, cache_document_from_bytes_async, cache_image_from_url, utf16_len)
+    BasePlatformAdapter, SendResult, cache_image_from_bytes_async,
+    cache_audio_from_bytes_async, cache_document_from_bytes_async, cache_image_from_url, utf16_len,
+)
+from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 from gateway.platforms.helpers import redact_phone
 from gateway.platforms.media_cache import mime_for_ext
 from tools.audio_container import CONTAINER_TO_EXT, sniff_container

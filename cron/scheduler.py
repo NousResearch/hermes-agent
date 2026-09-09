@@ -2373,9 +2373,10 @@ def run_job(
         # No audit row when we failed before the agent existed; the audit write must never raise.
         if _audit is not None:
             _audit.write({}, error_msg)
+        from cron.scheduler_diagnostics import format_run_error
         output = (
             _run_doc_header(job, f"{job_name} (FAILED)", job_id, prompt)
-            + f"## Error\n\n```\n{error_msg}\n```\n"
+            + format_run_error(e)
         )
         return False, output, "", error_msg
 
@@ -2517,7 +2518,8 @@ def run_one_job(
     # API fires) crosses this seam.  Ensure the detached worker has a durable
     # attempt to adopt before any launch can occur.
     if not job.get("execution_id"):
-        execution = create_execution(job["id"], source="direct")
+        execution = create_execution(
+            job["id"], source="direct", scheduled_instant=job.get("_scheduled_instant"))
         job["execution_id"] = execution["id"]
 
     execution_id = str(job["execution_id"])
@@ -2597,9 +2599,12 @@ def _record_fire_ownership_lost(job_id: str, fire_owner: Optional[str], executio
 def _classify_delivery_outcome(
     *, delivery_error, should_deliver: bool, unresolved_origin: bool,
     normalized_deliver: str, incident_acked: bool, success: bool,
+    delivery_queued=None,
 ) -> str:
     if delivery_error:
         return "failed"
+    if should_deliver and delivery_queued:
+        return "queued"
     if should_deliver and unresolved_origin:
         return "not_configured"
     if should_deliver and normalized_deliver != "local":
@@ -2801,7 +2806,13 @@ def _finish_interrupted_run(job: dict, execution_id: str, delivery_error: Option
 def _finish_completed_run(d: _RunDelivery, fire_owner: Optional[str], execution_id: str) -> bool:
     """mark_job_run (owner-fenced) + execution ledger row for a run that reached delivery."""
     job = d.job
+    if not d.should_deliver and job.get("last_delivery_queued"):
+        from cron.jobs import update_job
+        update_job(job["id"], {"last_delivery_queued": None})
+        job["last_delivery_queued"] = None
     mark_kwargs = {"delivery_error": d.delivery_error}
+    if d.success and not d.delivery_error and d.should_deliver and job.get("last_delivery_queued"):
+        mark_kwargs["status"] = "delivery_queued"
     if fire_owner is not None:
         mark_kwargs["expected_fire_owner"] = fire_owner
     if d.blocked_config:
@@ -2814,6 +2825,7 @@ def _finish_completed_run(d: _RunDelivery, fire_owner: Optional[str], execution_
         return True
     delivery_outcome = _classify_delivery_outcome(
         delivery_error=d.delivery_error,
+        delivery_queued=job.get("last_delivery_queued"),
         should_deliver=d.should_deliver,
         unresolved_origin=d.unresolved_origin,
         # Read the lane the notice was actually routed through (failure_deliver on failure).
@@ -2859,7 +2871,8 @@ def _deliver_crash_failure(
     )
     delivery_outcome = _classify_delivery_outcome(
         delivery_error=delivery_error, should_deliver=True, unresolved_origin=unresolved_origin,
-        normalized_deliver=normalized_deliver, incident_acked=False, success=False)
+        normalized_deliver=normalized_deliver, incident_acked=False, success=False,
+        delivery_queued=job.get("last_delivery_queued"))
     if delivery_outcome in ("delivered", "not_configured"):
         _mark_incident_alerted(failure_incident_id)
     return delivery_error, delivery_outcome
@@ -2878,7 +2891,8 @@ def _run_one_job_body(
 
     execution_id = job.get("execution_id")
     if not execution_id:
-        execution_id = create_execution(job["id"], source="direct")["id"]
+        execution_id = create_execution(
+            job["id"], source="direct", scheduled_instant=job.get("_scheduled_instant"))["id"]
     delivery_attempted = False
     delivery_error = None
     from agent.secret_scope import (
@@ -3152,7 +3166,10 @@ def _launch_external_cron_worker(job: dict) -> bool:
 
     from agent.secret_scope import is_multiplex_active
     from tools.environments.local import build_subprocess_env
-    from tools.process_registry import restart_safe_gateway_child_argv
+    from tools.process_registry import (
+        restart_safe_gateway_child_argv,
+        systemd_user_bus_env,
+    )
 
     multiplex_active = is_multiplex_active()
     scoped_command = restart_safe_gateway_child_argv(
@@ -3194,6 +3211,7 @@ def _launch_external_cron_worker(job: dict) -> bool:
         inherit_profile_home=True,
         extra={"HERMES_HOME": str(_get_hermes_home().resolve())},
     )
+    worker_env = systemd_user_bus_env(worker_env)
     try:
         process = subprocess.Popen(
             scoped_command,
@@ -3412,6 +3430,8 @@ def create_job_with_scheduler_registration(**kwargs) -> dict:
     from cron.scheduler_provider import resolve_cron_scheduler
 
     job = create_job(**kwargs)
+    if not job.get("enabled", True):
+        return job
     try:
         resolve_cron_scheduler().register_job(job)
     except Exception as exc:
@@ -3628,6 +3648,7 @@ def _process_due_job(job: dict, adapters, loop, verbose: bool) -> bool:
     # CAS returns the persisted record; bool fallback only for older test doubles.
     claimed_job = dict(claimed) if isinstance(claimed, dict) else dict(job)
     claimed_job["execution_id"] = job["execution_id"]
+    claimed_job["_scheduled_instant"] = job.get("_scheduled_instant")
     return run_one_job(claimed_job, adapters=adapters, loop=loop, verbose=verbose)
 
 
@@ -3681,7 +3702,8 @@ def _submit_with_guard(job: dict, pool: concurrent.futures.ThreadPoolExecutor, p
         return None
     # Record the attempt before dispatch; recovery marks abandoned rows unknown (no retry).
     try:
-        execution = create_execution(job_id, source="builtin")
+        execution = create_execution(
+            job_id, source="builtin", scheduled_instant=job.get("_scheduled_instant"))
         dispatched_job = dict(job, execution_id=execution["id"])
         _ctx = contextvars.copy_context()
     except Exception as execution_err:

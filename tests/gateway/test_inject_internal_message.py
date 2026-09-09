@@ -859,6 +859,7 @@ class TestStartupEmitProductionPath:
         stub._hosted_room_worker_watcher = AsyncMock()
         stub._spawn_supervised = MagicMock()
         stub._start_loop_heartbeat_task = MagicMock()
+        stub._start_heartbeat_poller = MagicMock()  # upstream 2026-09: heartbeat poller added to startup
         stub.hooks = MagicMock()
         stub.hooks.loaded_hooks = []
         stub.hooks.emit = AsyncMock()
@@ -868,6 +869,13 @@ class TestStartupEmitProductionPath:
         with patch(
             "gateway.channel_directory.build_channel_directory",
             new=AsyncMock(return_value={"platforms": {}}),
+        ), patch(
+            # upstream 2026-09 added a heartbeat-restore scan to startup; it
+            # needs session_store/executor plumbing the emit-path stub does
+            # not model. Irrelevant to HGF-004 (the emit contract), patched
+            # at the source module because run_startup imports it in-function.
+            "gateway.run_heartbeat_restore.restore_heartbeat_watches",
+            new=AsyncMock(),
         ):
             await GatewayStartupMixin._start_post_connect_services(stub, 0)
 

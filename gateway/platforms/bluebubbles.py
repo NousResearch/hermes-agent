@@ -19,8 +19,10 @@ import httpx
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms._shared import get_scoped_secret as _get_scoped_secret
 from gateway.platforms.base import (
-    BasePlatformAdapter, MessageEvent, MessageType, SendResult,
-    cache_image_from_bytes_async, cache_audio_from_bytes_async, cache_document_from_bytes_async)
+    BasePlatformAdapter, SendResult,
+    cache_image_from_bytes_async, cache_audio_from_bytes_async, cache_document_from_bytes_async,
+)
+from gateway.platforms.event import MessageEvent, MessageType
 from .media_cache import ext_for_mime
 from gateway.platforms.helpers import compile_mention_patterns, strip_markdown
 from utils import TRUTHY_STRINGS

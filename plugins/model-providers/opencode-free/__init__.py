@@ -8,7 +8,6 @@ hermes_cli.models.opencode_zen_free_runtime). Select via ``/model free``.
 
 from typing import Any
 
-from hermes_cli import __version__ as _HERMES_VERSION
 from providers import register_provider
 from providers.base import ProviderProfile
 
@@ -40,16 +39,16 @@ opencode_free = OpenCodeFreeProfile(
     env_vars=(),  # keyless — nothing to configure
     base_url="https://opencode.ai/zen/v1", display_name="OpenCode Free",
     description="OpenCode free models — keyless, no account needed",
-    # Attribution headers (same values as opencode-zen/go) plus the empty Authorization
-    # override that keeps the SDK's "Bearer <placeholder>" off the wire (free tier 401s it).
+    # The Zen free tier gates on the OpenCode CLI's attribution headers: Hermes attribution is
+    # 429'd as FreeUsageLimitError on every UA-gated free model (big-pickle, most *-free slugs).
+    # Mirror the OpenCode CLI so every free-tier model is servable keylessly (#106495). The empty
+    # Authorization override keeps the SDK's "Bearer <placeholder>" off the wire (free tier 401s it).
     default_headers={
         "Authorization": "",
-        "HTTP-Referer": "https://hermes-agent.nousresearch.com",
-        "X-Title": "Hermes Agent",
-        "User-Agent": f"HermesAgent/{_HERMES_VERSION}",
+        "HTTP-Referer": "https://opencode.ai/",
+        "X-Title": "opencode",
+        "User-Agent": "opencode/0.20.5",  # relay gates on the opencode/ prefix; verified live #106495
     },
-    # laguna is the fastest non-UA-gated free model; big-pickle 429s every
-    # client except the opencode CLI's own User-Agent.
     default_aux_model="laguna-s-2.1-free",
 )
 

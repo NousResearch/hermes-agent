@@ -63,9 +63,11 @@ def test_opencode_free_blanks_authorization_header(mock_openai):
 
 
 @patch("agent.process_bootstrap.OpenAI")
-def test_opencode_free_sends_hermes_attribution(mock_openai):
-    """Keyless requests still identify as Hermes (attribution headers match
-    the opencode zen/go profiles)."""
+def test_opencode_free_sends_opencode_attribution(mock_openai):
+    """Keyless free-tier requests identify as the OpenCode CLI: the Zen relay's
+    free tier gates on the attribution headers and 429s (FreeUsageLimitError)
+    any other client on every UA-gated free model (#106495). Only the keyed
+    opencode-zen/go paths keep the Hermes attribution (paid relay doesn't gate)."""
     mock_openai.return_value = MagicMock()
     create_openai_client(
         _FakeAgent(api_key="opencode-zen-free-keyless"),
@@ -74,8 +76,9 @@ def test_opencode_free_sends_hermes_attribution(mock_openai):
         shared=False,
     )
     headers = _zen_call_headers(mock_openai)
-    assert headers.get("X-Title") == "Hermes Agent"
-    assert str(headers.get("User-Agent", "")).startswith("HermesAgent/")
+    assert headers.get("X-Title") == "opencode"
+    assert headers.get("HTTP-Referer") == "https://opencode.ai/"
+    assert str(headers.get("User-Agent", "")).startswith("opencode/")
 
 
 @patch("agent.process_bootstrap.OpenAI")

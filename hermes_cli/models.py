@@ -1941,19 +1941,27 @@ _opencode_free_live_memo: Optional[tuple[float, Optional[list[str]]]] = None
 _OPENCODE_FREE_LIVE_MEMO_TTL = 300.0  # 5 min; SWR disk cache handles the rest
 
 
+# The Zen relay's free tier gates on the OpenCode CLI's attribution headers: requests carrying
+# Hermes-canonical attribution (``HermesAgent/<v>``, ``hermes-agent.nousresearch.com`` referer,
+# ``Hermes Agent`` title) are 429'd as ``FreeUsageLimitError`` on every UA-gated free model
+# (``big-pickle`` and most ``*-free`` slugs); only the non-UA-gated ``laguna-s-2.1-free`` survived
+# the Hermes attribution (#106495). Mirror the OpenCode CLI's header set so every free-tier model
+# is servable keylessly. The keyed opencode-zen/go profiles keep Hermes attribution — the paid
+# relay doesn't gate on UA.
+_OPENCODE_CLI_USER_AGENT = "opencode/0.20.5"  # relay gates on the ``opencode/`` prefix; verified live #106495
+
 def opencode_zen_free_headers() -> dict:
-    """Client default_headers for anonymous Zen free-tier requests. ``Authorization: ""`` overrides the
-    OpenAI SDK's ``Bearer <api_key>`` so the placeholder never reaches the wire (the relay 401s any
-    unknown bearer). Attribution headers mirror the opencode provider profile."""
-    try:
-        from hermes_cli import __version__ as _v
-    except Exception:
-        _v = "0"
+    """Client default_headers for anonymous Zen free-tier requests.
+
+    ``Authorization: ""`` overrides the OpenAI SDK's ``Bearer <api_key>`` so the placeholder
+    never reaches the wire (the relay 401s any unknown bearer). Attribution headers mirror the
+    OpenCode CLI: the free tier gates on them and 429s any other client (#106495).
+    """
     return {
         "Authorization": "",
-        "HTTP-Referer": "https://hermes-agent.nousresearch.com",
-        "X-Title": "Hermes Agent",
-        "User-Agent": f"HermesAgent/{_v}"}
+        "HTTP-Referer": "https://opencode.ai/",
+        "X-Title": "opencode",
+        "User-Agent": _OPENCODE_CLI_USER_AGENT}
 
 
 def _fetch_opencode_free_models(

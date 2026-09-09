@@ -63,7 +63,23 @@ class TestFreeRuntime:
     def test_headers_override_sdk_bearer(self):
         headers = opencode_zen_free_headers()
         assert headers["Authorization"] == ""
-        assert headers["X-Title"] == "Hermes Agent"
+        assert headers["X-Title"] == "opencode"
+        assert headers["HTTP-Referer"] == "https://opencode.ai/"
+        assert headers["User-Agent"] == "opencode/0.20.5"
+
+    def test_headers_match_opencode_cli_attribution(self):
+        """The Zen free tier gates on the OpenCode CLI's attribution headers and 429s any other
+        client (FreeUsageLimitError) on every UA-gated free model (#106495). The header set must
+        match the OpenCode CLI exactly — Hermes attribution is rejected."""
+        headers = opencode_zen_free_headers()
+        # The relay discriminates on these three; they must all be OpenCode-style, not Hermes.
+        assert headers["User-Agent"].startswith("opencode/"), (
+            f"free tier 429s non-opencode UA; got {headers['User-Agent']!r}")
+        assert headers["HTTP-Referer"] == "https://opencode.ai/", (
+            f"free tier 429s non-opencode referer; got {headers['HTTP-Referer']!r}")
+        assert headers["X-Title"] == "opencode", (
+            f"free tier 429s non-opencode title; got {headers['X-Title']!r}")
+        assert headers["Authorization"] == "", "placeholder bearer must never reach the wire"
 
 
 class TestRuntimeProviderKeylessRouting:

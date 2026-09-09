@@ -200,6 +200,57 @@ class TestUsageAccountSection:
         account_call = next(c for c in calls if c["args"] == ("nvidia",))
         assert account_call["kwargs"]["base_url"] == "https://integrate.api.nvidia.com/v1/"
 
+    @pytest.mark.asyncio
+    async def test_usage_command_prefers_session_model_override_over_dominant(self, monkeypatch):
+        """Right after /model (cached agent evicted, no resident agent), /usage must
+        query the override provider, not the stale dominant route."""
+        runner = _make_runner(SK)
+        runner._session_db = AsyncSessionDB(MagicMock())
+        runner._session_db._db.get_session.return_value = {
+            "billing_provider": "new-provider",
+            "billing_base_url": None,
+        }
+        runner._session_db._db.get_dominant_session_model_route.return_value = {
+            "model": "stale-dominant-model",
+            "billing_provider": "stale-provider",
+            "billing_base_url": "https://stale-provider.example.com/v1/",
+        }
+        session_entry = MagicMock(session_id="sess-1", session_key=SK)
+        runner.session_store.get_or_create_session.return_value = session_entry
+        # Production /model write path (legacy view over conversation.model_override).
+        runner._session_model_overrides[SK] = {
+            "model": "switched-model",
+            "provider": "new-provider",
+            "api_key": "",
+            "base_url": "",
+            "api_mode": "",
+            "request_overrides": {},
+            "capabilities": {},
+        }
+
+        calls = []
+
+        async def _fake_to_thread(fn, *args, **kwargs):
+            calls.append({"args": args, "kwargs": kwargs})
+            return fn(*args, **kwargs)
+
+        monkeypatch.setattr("gateway.run.asyncio.to_thread", _fake_to_thread)
+        monkeypatch.setattr(
+            "gateway.slash_commands_status.fetch_account_usage",
+            lambda provider, base_url=None, api_key=None: object(),
+        )
+        monkeypatch.setattr(
+            "gateway.slash_commands_status.render_account_usage_lines",
+            lambda snapshot, markdown=False: ["account limits"],
+        )
+        monkeypatch.setattr("agent.account_usage.nous_credits_lines", lambda markdown=False: [])
+
+        await runner._handle_usage_command(MagicMock())
+
+        account_call = next(c for c in calls if c["args"] == ("new-provider",))
+        assert account_call["kwargs"]["base_url"] is None
+        assert not [c for c in calls if c["args"] == ("stale-provider",)]
+
 
 class TestUsageReset:
     """`/usage reset [--force]` — banked Codex reset redemption via the gateway."""

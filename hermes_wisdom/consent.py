@@ -62,6 +62,7 @@ def public_plan(plan: dict[str, Any]) -> dict[str, Any]:
         "file_names",
         "step",
         "setup_instruction",
+        "setup_explanation",
         "setup_key",
     )
     return {key: plan[key] for key in keys if key in plan}
@@ -346,6 +347,8 @@ class WisdomConsent:
                 return self.project(_decode(existing))
             reference = json.loads(row["reference_json"])
         operation, plan = self._plan(reference)
+        if operation == "setup":
+            plan["setup_explanation"] = (json.loads(row["advice_json"] or "{}").get("explanation") or "")[:600]
         address = json.loads(session["address_json"])
         if address and address != actor.address:
             raise WisdomNotFound("Wisdom interaction not found")
@@ -669,7 +672,16 @@ class WisdomConsent:
         self.service.require_setup()
         now = self.queue.clock()
         preferences = WisdomPreferences(self.service, clock=self.queue.clock)
-        preference_user = preferences.identity(org) if action == "defer" else None
+        preference_user = None
+        if action == "defer":
+            with self.service.store.transaction() as db:
+                operation = db.execute(
+                    "SELECT operation FROM wisdom_consent WHERE id=? AND organization_id=?",
+                    (interaction_id, org),
+                ).fetchone()
+            # Setup deferral is entirely local, not an organization preference.
+            if operation and operation["operation"] != "setup":
+                preference_user = preferences.identity(org)
         with self.service.store.transaction() as db:
             self.queue._check_org(db, org)
             row = db.execute(
@@ -869,6 +881,12 @@ class WisdomConsent:
         from .operation_outbox import stage
 
         stage(db, value, state, result, now)
+        if state == "completed" and value["operation"] in {"install", "update", "setup"}:
+            self.queue.enqueue(
+                value["organization_id"], f"setup-handoff:{value['id']}",
+                {"kind": "setup_handoff", "consent_id": value["id"], "user_requested": True},
+                origin_session=value["owner_session"], _db=db,
+            )
 
     def pending(self, org: str) -> list[dict[str, Any]]:
         with self.service.store.transaction() as db:

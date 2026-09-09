@@ -69,6 +69,11 @@ the existing setup flow; do not create credentials or silently enable sharing.
    Explain missing commands, services, permissions, and environment variable
    names without reading or displaying credential values.
 5. Installing files does not authorize running setup or verification commands.
+   Native Install/Update queues a setup handoff for the same private session.
+   In agent delivery mode, the idle-session worker reads the installed guide
+   and proposes one step at a time using that session's model. Passed steps
+   queue the next review; Not now pauses the flow without repeating the card.
+   Do not create a competing proposal when an existing setup control is pending.
    Propose each step through `present_wisdom_consent` with `kind: setup`, the
    exact installed identity/version, and `step: {phase, index, command}`.
    `phase: setup` selects the zero-based setup instruction; `phase: verify`

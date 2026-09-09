@@ -389,6 +389,12 @@ class WisdomMediation:
         current = []
         for job in jobs:
             reference = job["reference"]
+            if reference.get("setup_status"):
+                from .setup_queue import setup_notice_current
+
+                if not setup_notice_current(self.service.store, reference):
+                    self.queue.retire(org, job)
+                    continue
             notification = reference.get("notification") or {}
             if job["event_key"].startswith("outcome:"):
                 with self.service.store.transaction() as db:
@@ -573,8 +579,11 @@ class WisdomMediation:
 
     def delivery_ready(self, org, items):
         from .delivery_outbox import DeliveryOutbox
+        from .setup_queue import setup_notice_current
 
         self.service.require_setup()
+        if not all(setup_notice_current(self.service.store, item["assessment"]["reference"]) for item in items):
+            return False
         user = DeliveryOutbox(self.service, clock=self.queue.clock).identity(org)
         return all(
             self.queue.delivery_ready(
@@ -663,8 +672,15 @@ class WisdomMediation:
         claimed = self.queue.claim(org, actor.session_key)
         from .weekly_queue import process_weekly_review
         from .share_queue import process_share_package
+        from .setup_queue import process_setup_handoff
 
         for index, job in enumerate(claimed):
+            if job["reference"]["kind"] == "setup_handoff":
+                try:
+                    claimed[index] = process_setup_handoff(self, org, job, runtime=runtime)
+                except Exception as exc:
+                    self.queue.fail(org, job["id"], job["lease_token"], type(exc).__name__)
+                continue
             if job["reference"]["kind"] == "share_package":
                 try:
                     claimed[index] = process_share_package(
@@ -686,7 +702,7 @@ class WisdomMediation:
             [
                 job
                 for job in claimed
-                if job["reference"]["kind"] not in {"weekly_review", "share_package"}
+                if job and job["reference"]["kind"] not in {"weekly_review", "share_package", "setup_handoff"}
             ],
         )
         jobs = self._current_feed_jobs(org, jobs)

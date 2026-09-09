@@ -18352,6 +18352,7 @@ def test_wisdom_activity_notice_is_profile_throttled_and_session_scoped(
 
 
 def test_wisdom_activity_notice_replaces_clears_and_survives_failures(monkeypatch):
+    monkeypatch.setattr("hermes_wisdom.service._config", lambda: {"notifications": {"delivery_mode": "fixed"}})
     emitted = []
     projections = iter(
         [

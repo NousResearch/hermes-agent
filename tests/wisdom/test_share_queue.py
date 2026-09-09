@@ -594,7 +594,7 @@ def test_publication_receipt_links_to_portal_without_expanding_checks(
     assert view.actions[0].url == "https://portal.example/review/draft"
 
 
-@pytest.mark.parametrize("operation,title", [("install", "Installed"), ("update", "Updated")])
+@pytest.mark.parametrize("operation,title", [("install", "Files installed"), ("update", "Files updated")])
 def test_install_and_update_receipts_are_compact(operation, title):
     view = interaction_view({
         "id": "consent",
@@ -605,7 +605,7 @@ def test_install_and_update_receipts_are_compact(operation, title):
     })
     assert view.summary == title
     assert view.items[0].title == "Release Evidence Brief"
-    assert not view.items[0].detail
+    assert "Prerequisites and verification must pass" in view.items[0].detail
     assert [a.label for a in view.actions] == ["View Assessment"]
 
 

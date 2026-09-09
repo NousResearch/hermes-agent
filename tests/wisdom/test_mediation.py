@@ -264,6 +264,8 @@ async def test_deferred_manual_review_reaches_native_transport_once(consent, req
     from tests.gateway.test_telegram_wisdom_command import _adapter as telegram_adapter
 
     instance, actor, identity, now = consent
+    if actor.platform == "telegram":
+        pytest.importorskip("telegram", reason="native Telegram transport requires the optional SDK")
     original = instance.present("org", identity, actor)
     job = instance.queue.assessments("org")[0]
     assert instance.queue.begin_delivery("org", identity, job["lease_token"])
@@ -709,7 +711,7 @@ def test_completed_assessment_toggle_is_read_only_and_actor_bound(consent, platf
             instance.service, f"wi:agent:{action}:{shown['id']}",
             platform=platform, actor_id=actor.actor_id, chat_id=actor.chat_id, thread_id=actor.thread_id,
         )
-        assert view.summary == "Installed"
+        assert view.summary == "Files installed"
         assert ("Adds rollback readiness" in view.to_text()) == (action != "assessment.hide")
         assert not any(a.primary for a in view.actions)
         with pytest.raises(WisdomNotFound):

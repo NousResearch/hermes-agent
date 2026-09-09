@@ -210,6 +210,8 @@ def _setup_view(result: dict) -> WisdomView:
         "abandoned": "Interrupted step cleared",
     }.get(state, "Setup progress")
     detail = facts["setup_instruction"]
+    if facts.get("setup_explanation"):
+        detail = facts["setup_explanation"] + "\n\n" + detail
     if step["command"]:
         detail += "\n\nProposed command (local terminal):\n" + step["command"]
     if state == "pending":
@@ -315,8 +317,8 @@ def interaction_view(
             )
         else:
             summary, detail = (
-                ("Installed" if result["operation"] == "install" else "Updated"),
-                "",
+                ("Files installed" if result["operation"] == "install" else "Files updated"),
+                "Setup is queued. Prerequisites and verification must pass before the skill is ready.",
             )
         actions = []
         if result["operation"] in {"install", "update"}:

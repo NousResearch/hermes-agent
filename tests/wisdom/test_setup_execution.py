@@ -25,7 +25,7 @@ from tools.registry import registry
 
 
 @pytest.fixture
-def setup(tmp_path, monkeypatch):
+def setup(tmp_path, monkeypatch, request):
     import hermes_cli.config as config
     from tools.approval import register_gateway_notify, resolve_gateway_approval, unregister_gateway_notify
 
@@ -48,7 +48,8 @@ def setup(tmp_path, monkeypatch):
     normalized = normalize_generated_package(package)
     guide = next(file.content for file in normalized.files if file.path == SETUP_PATH)
     client.files.append((SETUP_PATH, "file", guide.encode()))
-    service.install_apply(service.install_plan("skill-1")["receipt"])
+    if getattr(request, "param", True):
+        service.install_apply(service.install_plan("skill-1")["receipt"])
     monkeypatch.setattr("hermes_wisdom.service._config", lambda: {
         "enabled": True, "disclosure_acknowledged_at": "test", "delivery_mode": "agent",
     })
@@ -381,3 +382,171 @@ def test_execution_lock_survives_contention_and_releases_after_process_exit(setu
             child.wait(timeout=15)
     with _execution_lock(service.store, "skill-1"):
         pass
+
+
+@pytest.mark.parametrize("setup", [False], indirect=True)
+@pytest.mark.parametrize("case", ["complete", "defer", "changed", "secret", "missing_guide", "other_owner", "expired_lease", "new_control", "address_changed", "no_command"])
+def test_native_install_hands_off_owned_setup_without_implicit_execution(setup, monkeypatch, case):
+    from types import SimpleNamespace
+    from hermes_wisdom.delivery import DeliveryReceipt
+    from hermes_wisdom.mediation import WisdomMediation
+    from tests.wisdom.test_consumption import Client
+
+    service, actor, root = setup
+    if case == "missing_guide":
+        service.client.files = [row for row in service.client.files if row[0] != SETUP_PATH]
+    files = service.client.files
+    original_version = service.client.version
+
+    def version_detail(skill, version):
+        value = original_version(skill, version).version
+        return SimpleNamespace(version=value, model_dump=lambda **kwargs: {"version": {**value, "version": version}})
+
+    monkeypatch.setattr(service.client, "version", version_detail)
+    now = [time.time()]
+    mediation = WisdomMediation(service, clock=lambda: now[0])
+    consent = mediation.consent
+    runtime = {"model": "test-session-model", "provider": "test-provider"}
+    marker = root / "setup-marker"
+    model_calls = []
+
+    def model(**kwargs):
+        assert kwargs["main_runtime"] == runtime and kwargs["tools"] == []
+        assert kwargs["model"] == runtime["model"] and kwargs["provider"] == runtime["provider"]
+        evidence = json.loads(kwargs["messages"][-1]["content"])
+        assert str(root) not in kwargs["messages"][-1]["content"]
+        model_calls.append(evidence)
+        source = (f"from pathlib import Path; Path({str(marker)!r}).open('a').write('once')"
+                  if evidence["phase"] == "setup" else
+                  f"from pathlib import Path; assert Path({str(marker)!r}).read_text().endswith('once')")
+        command = "echo sk-aaaaaaaaaaaaaaaaaaaaaaaa" if case == "secret" else _python(source)
+        if case == "expired_lease":
+            now[0] += 200
+        elif case == "new_control":
+            consent.request("org-1", {"kind": "setup", "skill_id": "skill-1", "version": 1,
+                                      "step": {"phase": "setup", "index": 0, "command": _python("print('review only')")}},
+                            actor, title="User-requested setup", explanation="Review a different command.")
+        elif case == "address_changed":
+            register(replace(actor, chat_id="another-private-chat"))
+        elif case == "no_command":
+            command = None
+        return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(
+            tool_calls=None, content=json.dumps({"command": command, "explanation": "Review the declared step."}),
+        ))])
+
+    monkeypatch.setattr("agent.auxiliary_client.call_llm", model)
+
+    def register(who=actor):
+        mediation.queue.register_session(
+            "org-1", session_key=who.session_key, session_id=who.session_key,
+            platform=who.platform, actor_id=who.actor_id, private=True, available=True,
+            user_activity=True, address=who.address,
+        )
+
+    def deliver(items):
+        selected = mediation.begin_delivery("org-1", items)
+        assert selected == items
+        for item in items:
+            job = item["assessment"]
+            assert mediation.queue.complete_delivery("org-1", job["id"], job["lease_token"], receipt=DeliveryReceipt(
+                platform=actor.platform, destination=actor.chat_id, thread_id="", scope_id="",
+                message_id=job["id"], acknowledgement="provider_accepted",
+            ))
+
+    def prepare():
+        register()
+        return mediation.prepare("org-1", actor, runtime=runtime, history=[],
+                                 assessor=lambda *args, **kwargs: pytest.fail("setup must not be assessed for relevance"))
+
+    register()
+    install = consent.request("org-1", {"kind": "skill", "skill_id": "skill-1", "version": 1}, actor,
+                              title="Review installation", explanation="Install this test skill.")
+    deliver(prepare())
+    assert service.store.installation("skill-1") is None
+    installed = consent.resolve("org-1", install["id"], actor, "confirm")
+    assert installed["state"] == "completed"
+    assert interaction_view(installed).summary == "Files installed"
+    assert not marker.exists() and not model_calls
+    consent.resolve("org-1", install["id"], actor, "confirm")
+    with service.store.transaction() as db:
+        assert db.execute("SELECT count(*) FROM wisdom_assessment WHERE event_key=?", (f"setup-handoff:{install['id']}",)).fetchone()[0] == 1
+    if case == "other_owner":
+        other = replace(actor, session_key="other-session", actor_id="other")
+        register(other)
+        assert mediation.queue.claim("org-1", other.session_key) == []
+        return
+    if case == "changed":
+        target = Path(service.store.installation("skill-1")["target_path"])
+        (target / "SKILL.md").write_text("edited since installation")
+    first = prepare()
+    assert len(first) == 1
+    if case in {"changed", "missing_guide"}:
+        assert first[0]["interaction"] is None
+        assert "attention" in first[0]["advice"]["title"]
+        assert not model_calls and not marker.exists()
+        return
+    prerequisite = first[0]["interaction"]
+    assert prerequisite["facts"]["step"]["phase"] == "prerequisite"
+    deliver(first)
+    if case == "defer":
+        assert consent.resolve("org-1", prerequisite["id"], actor, "defer")["deferred"]
+        assert prepare() == []
+        assert not model_calls and not marker.exists()
+        return
+    consent.resolve("org-1", prerequisite["id"], actor, "confirm")
+    steps = prepare()
+    if case in {"secret", "expired_lease", "new_control", "address_changed"}:
+        assert steps == [] and not marker.exists()
+        assert len(model_calls) == 1
+        with service.store.transaction() as db:
+            assert "sk-aaaaaaaaaaaaaaaaaaaaaaaa" not in json.dumps([dict(row) for row in db.execute("SELECT * FROM wisdom_assessment")])
+        return
+    if case == "no_command":
+        assert len(steps) == 1 and steps[0]["interaction"] is None
+        assert steps[0]["advice"]["assessment_kind"] == "setup_status"
+        assert not marker.exists()
+        return
+    assert len(steps) == 1 and not marker.exists()
+    step = steps[0]["interaction"]
+    assert step["facts"]["step"]["phase"] == "setup"
+    assert "Review the declared step." in advice_view(steps).items[0].detail
+    reopened = resolve_surface_action(service, f"wi:agent:inspect:{step['id']}",
+                                      platform=actor.platform, actor_id=actor.actor_id, chat_id=actor.chat_id)
+    assert step["facts"]["step"]["command"] in reopened.items[0].detail
+    assert "Review the declared step." in reopened.items[0].detail
+    deliver(steps)
+    consent.resolve("org-1", step["id"], actor, "confirm")
+    assert _settle(consent, actor, step["id"])["state"] == "completed"
+    assert marker.read_text() == "once"
+    # A fresh mediator resumes from committed state, not the prior in-memory worker.
+    mediation = WisdomMediation(service, clock=lambda: now[0])
+    consent = mediation.consent
+    verification_items = prepare()
+    verification = verification_items[0]["interaction"]
+    assert verification["facts"]["step"]["phase"] == "verify"
+    assert inspect_installed_setup(service.store, "skill-1")["ready_to_use"] is not True
+    deliver(verification_items)
+    consent.resolve("org-1", verification["id"], actor, "confirm")
+    assert _settle(consent, actor, verification["id"])["state"] == "completed"
+    ready = prepare()
+    assert ready[0]["advice"]["title"].endswith("Ready")
+    assert inspect_installed_setup(service.store, "skill-1")["ready_to_use"] is True
+    deliver(ready)
+    assert prepare() == [] and len(model_calls) == 2
+
+    update_client = Client(files, mode="MANUAL")
+    update_client.version = version_detail
+    update_client.skill = service.client.skill
+    service._client = update_client
+    update = consent.request("org-1", {"kind": "skill", "skill_id": "skill-1", "version": 2}, actor,
+                             title="Review update", explanation="Update this installed test skill.")
+    deliver(prepare())
+    updated = consent.resolve("org-1", update["id"], actor, "confirm")
+    assert updated["state"] == "completed"
+    assert interaction_view(updated).summary == "Files updated"
+    assert inspect_installed_setup(service.store, "skill-1", version=2)["ready_to_use"] is not True
+    assert not mediation.delivery_ready("org-1", ready)
+    next_steps = prepare()
+    assert next_steps[0]["interaction"]["facts"]["version"] == 2
+    assert next_steps[0]["interaction"]["facts"]["step"]["phase"] == "prerequisite"
+    assert marker.read_text() == "once" and len(model_calls) == 2

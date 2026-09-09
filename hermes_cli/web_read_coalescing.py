@@ -43,7 +43,6 @@ def coalesced_read(func, *, thread_runner=run_sync):
         bound = signature.bind(*args, **kwargs)
         bound.apply_defaults()
         key = (str(get_hermes_home()), _freeze(bound.arguments))
-        hash(key)
         pending, admission = states.setdefault(loop, ({}, asyncio.Semaphore(1)))
         task = pending.get(key)
         if task is None:

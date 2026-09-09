@@ -126,7 +126,13 @@ class HostedRoomService:
     def local_profiles(self) -> tuple[str, ...]:
         profiles, profiles_dir = {"default"}, self.root / "profiles"
         if profiles_dir.is_dir():
-            profiles.update(path.name for path in profiles_dir.iterdir() if path.is_dir())
+            # Skip dot-directories such as the ``.deleted/`` tombstone written by
+            # ``hermes profile delete``; feeding those names into ``validate_roster``
+            # makes ``plan_next_task`` raise on every cycle (#106847 Bug 2).
+            profiles.update(
+                path.name for path in profiles_dir.iterdir()
+                if path.is_dir() and not path.name.startswith(".")
+            )
         return tuple(sorted(profiles))
 
     def bindings(self) -> tuple[HostedRoomBinding, ...]:

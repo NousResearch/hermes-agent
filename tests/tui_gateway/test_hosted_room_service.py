@@ -315,6 +315,25 @@ def _wait_for(predicate, timeout=2.0):
     raise AssertionError("condition was not reached")
 
 
+def test_local_profiles_skips_dot_directory_tombstones(tmp_path: Path):
+    """``.deleted/`` tombstones must not leak into local_profiles() (#106847 Bug 2).
+
+    ``hermes profile delete`` writes a ``profiles/.deleted/<name>`` tombstone; if
+    ``local_profiles()`` includes that dot-directory, ``validate_roster`` raises on
+    every ``plan_next_task`` cycle until the directory is removed by hand.
+    """
+    profiles = tmp_path / "profiles"
+    profiles.mkdir()
+    (profiles / "socrates").mkdir()
+    (profiles / "argus").mkdir()
+    (profiles / ".deleted").mkdir()
+    (profiles / ".deleted" / "socrates").write_text("deleted")
+
+    service = HostedRoomService(_server(), db_path=tmp_path / "state.db")
+
+    assert service.local_profiles() == ("argus", "default", "socrates")
+
+
 def test_stop_room_snapshots_tasks_before_status_transitions(monkeypatch, tmp_path):
     """One running task must not be counted again after it becomes stopping."""
 

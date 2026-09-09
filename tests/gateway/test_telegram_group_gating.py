@@ -883,3 +883,36 @@ def test_identity_freshness_does_not_depend_on_host_uptime(monkeypatch):
 
     adapter._note_bot_username("new_helper_bot")
     assert adapter._bot_identity_is_fresh() is True
+
+
+def test_clean_bot_trigger_text_preserves_trailing_space_after_mention():
+    """"/resume@botname 2" must keep the space so the command dispatches with its arg."""
+    adapter = _make_adapter(bot_username="hermes_bot")
+    assert adapter._clean_bot_trigger_text("/resume@hermes_bot 2") == "/resume 2"
+
+
+def test_clean_bot_trigger_text_preserves_args_with_multiple_words():
+    adapter = _make_adapter(bot_username="hermes_bot")
+    assert adapter._clean_bot_trigger_text("/model@hermes_bot anthropic/claude-sonnet-4") == "/model anthropic/claude-sonnet-4"
+
+
+def test_clean_bot_trigger_text_collapses_space_for_prose_mention():
+    """A plain mid-text mention still collapses to a single space (no double space)."""
+    adapter = _make_adapter(bot_username="hermes_bot")
+    assert adapter._clean_bot_trigger_text("thanks @hermes_bot a lot") == "thanks a lot"
+
+
+def test_clean_bot_trigger_text_leading_mention_before_command():
+    adapter = _make_adapter(bot_username="hermes_bot")
+    assert adapter._clean_bot_trigger_text("@hermes_bot /resume 2") == "/resume 2"
+
+
+def test_clean_bot_trigger_text_none_input():
+    adapter = _make_adapter(bot_username="hermes_bot")
+    assert adapter._clean_bot_trigger_text(None) is None
+
+
+def test_clean_bot_trigger_text_no_bot_username():
+    adapter = _make_adapter()
+    adapter._bot = None
+    assert adapter._clean_bot_trigger_text("/resume@hermes_bot 2") == "/resume@hermes_bot 2"

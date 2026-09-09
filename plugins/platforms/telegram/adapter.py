@@ -5379,7 +5379,14 @@ class TelegramAdapter(BasePlatformAdapter):
         bot_username = self._current_bot_username()
         if not text or not bot_username:
             return text
-        cleaned = re.sub(rf"(?i)@{re.escape(bot_username)}\b[,:\-]*\s*", "", text).strip()
+        username = re.escape(bot_username)
+        # A leading slash-command token keeps the space before its arguments intact
+        # (Telegram auto-fills "/resume@botname 2"; eating that space breaks the
+        # command). Any other occurrence (prose/caption mentions) keeps the old
+        # behavior of also consuming one trailing space, so ordinary text doesn't
+        # end up with a doubled space where the mention used to be.
+        text = re.sub(rf"^(\s*/\S+?)@{username}\b[,:\-]*", r"\1", text, count=1, flags=re.IGNORECASE)
+        cleaned = re.sub(rf"(?i)@{username}\b[,:\-]*\s*", "", text).strip()
         return cleaned or text
 
     def _topic_gates_pass(self, thread_id, *, warn_non_numeric: bool) -> Optional[bool]:

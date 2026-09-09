@@ -110,17 +110,25 @@ def _thread_metadata_for_source(source, reply_to_message_id: str | None = None) 
     scope_id = getattr(source, "scope_id", None) if platform == "slack" else None
     if scope_id:
         metadata["slack_team_id"] = str(scope_id)
+    # Telegram DMs (topic or plain) reply to the triggering message — but only
+    # when an explicit reply anchor was supplied (the runner's turn path passes
+    # one; queued follow-ups used to lose it because the empty-metadata
+    # bail-out below ran BEFORE this block, so a plain DM's answer hung on the
+    # message that opened the turn instead of the message that asked it,
+    # #103429). Bare anchorless calls (typing indicators, status pings, default
+    # media-send metadata) keep the historical plain-DM behavior: no keys.
+    if platform == "telegram" and getattr(source, "chat_type", None) == "dm":
+        if reply_to_message_id is not None or thread_id is not None:
+            metadata["telegram_dm_topic_reply_fallback"] = True
+            if thread_id is not None and str(thread_id) not in {"", "1"}:
+                metadata["direct_messages_topic_id"] = str(thread_id)
+            anchor = reply_to_message_id or getattr(source, "message_id", None)
+            if anchor is not None:
+                metadata["telegram_reply_to_message_id"] = str(anchor)
     if not metadata:
         return None
-    if platform == "telegram" and getattr(source, "chat_type", None) == "dm":
-        metadata["telegram_dm_topic_reply_fallback"] = True
-        if str(thread_id) not in {"", "1"}:
-            metadata["direct_messages_topic_id"] = str(thread_id)
-        anchor = reply_to_message_id or getattr(source, "message_id", None)
-        if anchor is not None:
-            metadata["telegram_reply_to_message_id"] = str(anchor)
-    # Routed profile (multiplex / profile_routes): outbound prune paths must not assume the
-    # adapter's static profile stamp.
+    # Routed profile (multiplex / profile_routes): outbound prune paths must not assume
+    # the adapter's static profile stamp.
     profile = str(getattr(source, "profile", None) or "").strip()
     if profile:
         metadata["hermes_profile"] = profile

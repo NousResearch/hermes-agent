@@ -156,6 +156,7 @@ class QQAdapter(BasePlatformAdapter):
         self._listen_task: Optional[asyncio.Task] = None
         self._heartbeat_task: Optional[asyncio.Task] = None
         self._heartbeat_interval: float = 30.0  # seconds, updated by Hello
+        self._last_hb_ack: Optional[float] = None  # monotonic ts of last op11 ACK
         self._session_id: Optional[str] = None
         self._last_seq: Optional[int] = None
         self._chat_type_map: Dict[str, str] = {}  # chat_id → "c2c"|"group"|"guild"|"dm"
@@ -427,6 +428,7 @@ class QQAdapter(BasePlatformAdapter):
         await asyncio.sleep(delay)
 
         self._heartbeat_interval = 30.0  # reset until Hello
+        self._last_hb_ack = None
         try:
             await self._open_gateway_ws()
             self._mark_connected()
@@ -466,6 +468,15 @@ class QQAdapter(BasePlatformAdapter):
                     await self._ws.send_json({"op": 1, "d": self._last_seq})
                 except Exception as exc:
                     logger.debug("[%s] Heartbeat failed: %s", self._log_tag, exc)
+                    continue
+                if self._last_hb_ack is not None:
+                    ack_age = time.monotonic() - self._last_hb_ack
+                    if ack_age > self._heartbeat_interval * 2.5:
+                        logger.warning(
+                            "[%s] No heartbeat ACK for %.0fs - closing WS to force reconnect",
+                            self._log_tag, ack_age)
+                        self._close_ws_soon()
+                        await asyncio.sleep(self._heartbeat_interval)
 
     async def _send_ws_auth(self, name: str, payload: Dict[str, Any], sent_msg: str, *log_args) -> bool:
         """Send an Identify/Resume payload; returns False if the send raised."""
@@ -524,6 +535,7 @@ class QQAdapter(BasePlatformAdapter):
         if op == 10:  # Hello — reply with Resume (have session) or Identify
             interval_ms = (d if isinstance(d, dict) else {}).get("heartbeat_interval", 30000)
             self._heartbeat_interval = interval_ms / 1000.0 * 0.8  # 80% of server interval
+            self._last_hb_ack = time.monotonic()
             logger.debug(
                 "[%s] Hello received, heartbeat_interval=%dms (sending every %.1fs)",
                 self._log_tag, interval_ms, self._heartbeat_interval)
@@ -543,7 +555,7 @@ class QQAdapter(BasePlatformAdapter):
             else:
                 logger.debug("[%s] Unhandled dispatch: %s", self._log_tag, t)
         elif op == 11:  # Heartbeat ACK
-            pass
+            self._last_hb_ack = time.monotonic()
         elif op == 7:  # Server Reconnect
             logger.info("[%s] Server requested reconnect (op 7)", self._log_tag)
             self._close_ws_soon()

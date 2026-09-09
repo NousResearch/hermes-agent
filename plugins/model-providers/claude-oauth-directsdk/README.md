@@ -84,6 +84,10 @@ Selecting the provider asks the Claude CLI itself, never Anthropic, before anyth
 
 The same `discover_models()` feeds `provider_model_ids()`, so the TUI/Desktop pickers and `/model` list the account's picker too.
 
+## Subscription usage: same metering as Claude Code
+
+Measured on a Pro account (Sonnet 5 1M, same 5-hour window): ~566K fresh input tokens through unmodified `claude -p` moved the session bar 6% → 25%; ~590K through this provider moved it 25% → 46%. That is 8.9 session-points per list-dollar on both routes, identical within the bar's integer rounding. On an identical coding task the provider used about 0.6x the input tokens of native Claude Code (smaller fixed prefix; equally good cache reuse; same 1h cache TTL). Anthropic's help center states SDK / `-p` usage draws from the same subscription pool as interactive Claude Code; the June 2026 plan to bill it at API rates was paused before taking effect. If a Hermes session drains a plan faster, look at what it sends per turn (toolsets, memory, thinking effort, auxiliary calls), not the route: compare Hermes `/usage` with Claude Code `/cost` on the same task.
+
 ## Model metadata and accounting
 
 The picker exposes these explicit native routes:

@@ -8,6 +8,7 @@ import { type SessionView, SessionViewProvider } from '@/app/chat/session-view'
 import { ModelMenuCloseContext } from '@/app/shell/model-menu-panel'
 import { registry } from '@/contrib/registry'
 import { formatModelPillLabel } from '@/lib/model-status-label'
+import { $connectionsRegistry } from '@/store/connection-registry-state'
 import { $activeSessionId, $currentModel, setCurrentModel, setCurrentModelSource } from '@/store/session'
 
 import { COMPOSER_AREAS, type ComposerModelPillContext, type ComposerModelPillProvider } from './contrib'
@@ -24,6 +25,7 @@ const modelState = (over: Partial<ChatBarState['model']> = {}): ChatBarState['mo
 
 afterEach(() => {
   cleanup()
+  $connectionsRegistry.set(null)
   $activeSessionId.set(null)
   setCurrentModel('')
   setCurrentModelSource('')
@@ -128,6 +130,58 @@ it('returns to the exact caret or backward selection after the model menu closes
   } finally {
     surface.remove()
   }
+})
+
+describe('ModelPill owner label', () => {
+  it('labels each selector from its catalog owner, not the registry primary', async () => {
+    $connectionsRegistry.set({
+      version: 2,
+      primary: 'local',
+      secureTokenStorage: true,
+      connections: [
+        { id: 'local', kind: 'local', label: 'Laptop', tokenSet: false, tokenPreview: null },
+        { id: 'remote', kind: 'ssh', label: 'Mini-2', tokenSet: false, tokenPreview: null }
+      ]
+    })
+    render(
+      <>
+        <ModelPill disabled={false} model={modelState({ ownerConnectionId: 'local', ownerProfile: 'default' })} />
+        <ModelPill
+          disabled={false}
+          model={modelState({
+            ownerConnectionId: 'remote',
+            ownerProfile: 'writer',
+            modelMenuContent: <div>Catalog</div>
+          })}
+        />
+      </>
+    )
+    expect(screen.getByText('default · Laptop')).toBeTruthy()
+    expect(screen.getByText('writer · Mini-2')).toBeTruthy()
+    const tile = screen.getByRole('button', { name: /writer · Mini-2/ })
+    act(() => tile.focus())
+    fireEvent.keyDown(tile, { key: 'Enter' })
+    expect((await screen.findByRole('menu')).textContent).toContain('writer · Mini-2')
+    expect(screen.getByRole('menu').textContent).not.toContain('Laptop')
+  })
+
+  it('retains exact owner identity without a registry label, including the compact keyboard control', async () => {
+    render(
+      <ModelPill
+        compact
+        disabled={false}
+        model={modelState({
+          ownerConnectionId: 'unlisted-gateway',
+          ownerProfile: 'default',
+          modelMenuContent: <div>Catalog</div>
+        })}
+      />
+    )
+    const trigger = screen.getByRole('button', { name: /default · unlisted-gateway/ })
+    act(() => trigger.focus())
+    fireEvent.keyDown(trigger, { key: 'Enter' })
+    expect((await screen.findByRole('menu')).textContent).toContain('default · unlisted-gateway')
+  })
 })
 
 describe('ModelPill per-surface model label', () => {

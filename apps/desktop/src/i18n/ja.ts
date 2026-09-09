@@ -376,7 +376,27 @@ export const ja = defineLocale({
       deleteAction: '資格情報を削除',
       deleteTitle: '資格情報を削除しますか？',
       deleteDescription: label => `「${label}」は暗号化ボールトから削除されます。元に戻せません。`,
-      deleteConfirm: '削除'
+      deleteConfirm: '削除',
+      sources: {
+        title: 'パスワードマネージャー',
+        blurb:
+          'パスワードマネージャーに保存したログインでエージェントがサインインできるようにします。セッションごとに一度マスターパスワードでロック解除し、メモリにはセッショントークンだけが保持されます。エージェントがマスターパスワードやパスワードを見ることはありません。',
+        toggleFailed: 'パスワードマネージャーの設定を更新できませんでした',
+        notInstalled: name => `${name} CLI がこのマシンに見つかりません。インストールしてから有効にしてください。`,
+        disabledDesc: 'オフ。有効にすると、このマネージャーのログインをエージェントが使えるようになります。',
+        lockedDesc: 'ロック中。今ロック解除するか、エージェントが最初にログインを必要としたときに尋ねられます。',
+        unlockedDesc: 'このセッションでロック解除済み。30分間操作がないか Hermes を閉じると自動的にロックされます。',
+        statusLocked: 'ロック中',
+        statusUnlocked: 'ロック解除済み',
+        unlock: 'ロック解除',
+        unlocking: 'ロック解除中…',
+        lock: 'ロック',
+        unlocked: name => `${name} をこのセッションでロック解除しました。`,
+        unlockTitle: name => `${name} のロックを解除`,
+        unlockDescription:
+          'マスターパスワードを入力してください。このマシン上のパスワードマネージャーに渡された後に破棄され、保存・記録されることも、エージェントに表示されることもありません。',
+        masterPasswordPlaceholder: 'マスターパスワード'
+      }
     },
     notifications: {
       title: '通知',
@@ -3410,7 +3430,14 @@ export const ja = defineLocale({
     sudoPlaceholder: 'sudo パスワード',
     secretTitle: 'シークレットが必要です',
     secretDesc: 'Hermes は続行するための認証情報が必要です。',
-    secretPlaceholder: 'シークレット値'
+    secretPlaceholder: 'シークレット値',
+    vaultUnlockSendFailed: 'マスターパスワードを送信できませんでした',
+    vaultUnlockTitle: name => `${name} のロックを解除`,
+    vaultUnlockDesc: name =>
+      `エージェントが ${name} に保存されたログインでサイトにサインインしようとしています。このセッションでロック解除するにはマスターパスワードを入力してください。パスワードはこのマシン上の ${name} に直接渡され、保存されることもエージェントに表示されることもありません。`,
+    vaultUnlockPlaceholder: 'マスターパスワード',
+    vaultUnlockKeepLocked: 'ロックしたまま',
+    vaultUnlockConfirm: 'ロック解除'
   },
 
   desktop: {

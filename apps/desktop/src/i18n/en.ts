@@ -555,7 +555,27 @@ export const en: Translations = {
       deleteAction: 'Delete credential',
       deleteTitle: 'Delete credential?',
       deleteDescription: label => `"${label}" will be removed from the encrypted vault. This cannot be undone.`,
-      deleteConfirm: 'Delete'
+      deleteConfirm: 'Delete',
+      sources: {
+        title: 'Password managers',
+        blurb:
+          'Let the agent sign in with logins from your password manager. You unlock it once per session with your master password; only a session token is kept in memory, and the agent never sees it or any password.',
+        toggleFailed: 'Could not update password manager',
+        notInstalled: name => `${name} CLI not found on this machine. Install it, then turn this on.`,
+        disabledDesc: 'Off. Turn on to let the agent use logins from this manager.',
+        lockedDesc: 'Locked. Unlock now, or the agent will ask you the first time it needs a login.',
+        unlockedDesc: 'Unlocked for this session. Locks automatically after 30 minutes idle or when Hermes closes.',
+        statusLocked: 'Locked',
+        statusUnlocked: 'Unlocked',
+        unlock: 'Unlock',
+        unlocking: 'Unlocking…',
+        lock: 'Lock',
+        unlocked: name => `${name} unlocked for this session.`,
+        unlockTitle: name => `Unlock ${name}`,
+        unlockDescription:
+          'Enter your master password. It is handed to the password manager on this machine and discarded — it is never stored, logged, or shown to the agent.',
+        masterPasswordPlaceholder: 'Master password'
+      }
     },
     notifications: {
       title: 'Notifications',
@@ -3866,7 +3886,14 @@ export const en: Translations = {
     sudoPlaceholder: 'sudo password',
     secretTitle: 'Secret required',
     secretDesc: 'Hermes needs a credential to continue.',
-    secretPlaceholder: 'secret value'
+    secretPlaceholder: 'secret value',
+    vaultUnlockSendFailed: 'Could not send master password',
+    vaultUnlockTitle: name => `Unlock ${name}`,
+    vaultUnlockDesc: name =>
+      `The agent wants to sign into a site with a login saved in ${name}. Enter your master password to unlock it for this session — it goes straight to ${name} on this machine and is never stored or shown to the agent.`,
+    vaultUnlockPlaceholder: 'Master password',
+    vaultUnlockKeepLocked: 'Keep locked',
+    vaultUnlockConfirm: 'Unlock'
   },
 
   desktop: {

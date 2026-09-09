@@ -105,33 +105,66 @@ def _cmd_add(args) -> None:
 
 
 def _cmd_list(args) -> None:
-    from agent.vault_store import get_vault_store
+    """Local items always; external managers only for the lifetime of this CLI process (a
+    `hermes vault list` unlock does not carry into a chat session — unlock there when asked)."""
+    from agent.vault_backends import enabled_backends
 
     c = _console()
-    items = get_vault_store().list_items()
-    if not items:
+    rows, locked = [], []
+    for backend in enabled_backends():
+        if backend.needs_unlock and not backend.is_unlocked():
+            locked.append(backend.display_name)
+            continue
+        rows.extend((backend.display_name, meta) for meta in backend.list_items())
+    if not rows and not locked:
         c.print("[dim]Vault is empty. Add an item with `hermes vault add`.[/]")
         return
-    from rich.table import Table
+    if rows:
+        from rich.table import Table
 
-    table = Table(title=f"Vault items ({len(items)})")
-    table.add_column("Handle", style="bold")
-    table.add_column("Kind")
-    table.add_column("Label")
-    table.add_column("Identifier")
-    table.add_column("Origin")
-    table.add_column("Created")
-    for meta in items:
-        table.add_row(
-            meta.id,
-            meta.kind,
-            meta.label,
-            meta.identifier or "-",
-            meta.origin or "-",
-            meta.created_at[:19],
-        )
-    c.print(table)
-    c.print("[dim]Passwords are never shown; the agent fills them server-side from the handle.[/]")
+        table = Table(title=f"Vault items ({len(rows)})")
+        for col in ("Handle", "Source", "Kind", "Label", "Identifier", "Origin"):
+            table.add_column(col, style="bold" if col == "Handle" else None)
+        for source, meta in rows:
+            table.add_row(meta.id, source, meta.kind, meta.label, meta.identifier or "-", meta.origin or "-")
+        c.print(table)
+        c.print("[dim]Passwords are never shown; the agent fills them server-side from the handle.[/]")
+    for name in locked:
+        c.print(f"[yellow]{name}[/] is enabled but locked — the agent will ask you to unlock it when it needs a login.")
+
+
+def _cmd_sources(args) -> None:
+    """Show/enable/disable the external password managers (`vault.<name>.enabled`)."""
+    import shutil
+
+    from agent.secret_sources.onepassword import find_op
+    from agent.vault_backends import enabled_backends
+    from agent.vault_backends.bitwarden import BitwardenLoginBackend
+    from agent.vault_backends.onepassword import OnePasswordLoginBackend
+    from hermes_cli.config import load_config, save_config
+
+    c = _console()
+    classes = {cls.name: cls for cls in (OnePasswordLoginBackend, BitwardenLoginBackend)}
+    if args.enable or args.disable:
+        name = args.enable or args.disable
+        if name not in classes:
+            c.print(f"[red]Unknown password manager {name!r}[/] (expected one of {', '.join(classes)})")
+            return
+        cfg = load_config()
+        cfg.setdefault("vault", {}).setdefault(name, {})["enabled"] = bool(args.enable)
+        save_config(cfg)
+        state = "enabled" if args.enable else "disabled"
+        c.print(f"[green]{classes[name].display_name} {state}[/] for browser logins.")
+        if args.enable and name == "bitwarden":
+            c.print("[dim]Run `bw login` once in a terminal first; Hermes only ever unlocks, never logs in.[/]")
+        return
+    enabled = {b.name for b in enabled_backends()}
+    installed = {"onepassword": find_op() is not None, "bitwarden": shutil.which("bw") is not None}
+    for name, cls in classes.items():
+        status = "[green]on[/]" if name in enabled else "[dim]off[/]"
+        cli = "" if installed[name] else "  [yellow](CLI not found)[/]"
+        c.print(f"  {cls.display_name:<10} {status}{cli}")
+    c.print("[dim]Toggle with `hermes vault sources --enable onepassword` / `--disable bitwarden`.[/]")
 
 
 def _cmd_rm(args) -> None:
@@ -164,6 +197,12 @@ def register_cli(subparser) -> None:
     p_rm = subs.add_parser("rm", help="Remove a vault item by handle")
     p_rm.add_argument("handle", help="Item handle (see `hermes vault list`)")
     p_rm.set_defaults(_vault_handler=_cmd_rm)
+
+    p_src = subs.add_parser("sources", help="Show or toggle password managers (1Password, Bitwarden) as login sources")
+    group = p_src.add_mutually_exclusive_group()
+    group.add_argument("--enable", metavar="NAME", help="Enable a manager: onepassword | bitwarden")
+    group.add_argument("--disable", metavar="NAME", help="Disable a manager")
+    p_src.set_defaults(_vault_handler=_cmd_sources)
 
 
 def vault_command(args) -> None:

@@ -106,9 +106,18 @@ export interface SecretRequest extends KeyedPrompt {
   requestId: string
 }
 
+// External password-manager unlock (agent/vault_backends). Resolved via
+// vault.unlock.respond {request_id, password}; "" keeps the manager locked.
+export interface VaultUnlockRequest extends KeyedPrompt {
+  backend: string
+  displayName: string
+  requestId: string
+}
+
 const approval = keyedPromptStore<ApprovalRequest>()
 const sudo = keyedPromptStore<SudoRequest>()
 const secret = keyedPromptStore<SecretRequest>()
+const vaultUnlock = keyedPromptStore<VaultUnlockRequest>()
 
 // Inline approval anchors, keyed by session: a tile's inline bar mounting must
 // not suppress the PRIMARY session's floating fallback (and vice versa).
@@ -216,14 +225,20 @@ export const $secretRequest = secret.$active
 export const setSecretRequest = secret.set
 export const clearSecretRequest = secret.clear
 
+export const $vaultUnlockRequest = vaultUnlock.$active
+export const setVaultUnlockRequest = vaultUnlock.set
+export const clearVaultUnlockRequest = vaultUnlock.clear
+export const sessionVaultUnlockRequest = (sessionId: string | null) =>
+  computed(vaultUnlock.$all, all => all[keyFor(sessionId)] ?? null)
+
 // True when the active session is blocked on the user (clarify question or an
 // approval / sudo / secret prompt). Mirrors the pet's `awaitingInput` concept
 // (agent/pet/state.py): the turn is paused on you, not working — so callers can
 // suppress "thinking" indicators and the Esc-to-interrupt shortcut while you
 // decide, instead of treating the wait as an in-flight turn.
 export const $activeSessionAwaitingInput = computed(
-  [$clarifyRequest, $approvalRequest, $sudoRequest, $secretRequest],
-  (clarify, approval, sudo, secret) => Boolean(clarify || approval || sudo || secret)
+  [$clarifyRequest, $approvalRequest, $sudoRequest, $secretRequest, $vaultUnlockRequest],
+  (clarify, approval, sudo, secret, vault) => Boolean(clarify || approval || sudo || secret || vault)
 )
 
 /** True when `sessionId` is parked on a blocking prompt that typing cannot
@@ -235,28 +250,33 @@ export const $activeSessionAwaitingInput = computed(
 export const hasBlockingPromptRequest = (sessionId: string | null | undefined): boolean => {
   const key = keyFor(sessionId)
 
-  return Boolean(approval.$all.get()[key] || sudo.$all.get()[key] || secret.$all.get()[key])
+  return Boolean(
+    approval.$all.get()[key] || sudo.$all.get()[key] || secret.$all.get()[key] || vaultUnlock.$all.get()[key]
+  )
 }
 
 /** Reactive twin of `hasBlockingPromptRequest`, for the composer's busy-action
  *  affordance (the primary button must advertise queue, not steer, while the
  *  turn is parked on a prompt Enter can't answer). */
 export const sessionBlockingPrompt = (sessionId: string | null) =>
-  computed([approval.$all, sudo.$all, secret.$all], (approvals, sudos, secrets) => {
+  computed([approval.$all, sudo.$all, secret.$all, vaultUnlock.$all], (approvals, sudos, secrets, vaults) => {
     const key = keyFor(sessionId)
 
-    return Boolean(approvals[key] || sudos[key] || secrets[key])
+    return Boolean(approvals[key] || sudos[key] || secrets[key] || vaults[key])
   })
 
 /** Per-session `awaitingInput` — the tile composer's counterpart of
  *  `$activeSessionAwaitingInput` (same sources, fixed session instead of the
  *  active one). */
 export function sessionAwaitingInput(sessionId: string | null) {
-  return computed([$clarifyRequests, approval.$all, sudo.$all, secret.$all], (clarify, approvals, sudos, secrets) => {
-    const key = keyFor(sessionId)
+  return computed(
+    [$clarifyRequests, approval.$all, sudo.$all, secret.$all, vaultUnlock.$all],
+    (clarify, approvals, sudos, secrets, vaults) => {
+      const key = keyFor(sessionId)
 
-    return Boolean(clarify[key] || approvals[key] || sudos[key] || secrets[key])
-  })
+      return Boolean(clarify[key] || approvals[key] || sudos[key] || secrets[key] || vaults[key])
+    }
+  )
 }
 
 // Drop in-flight prompts for `sessionId` (a turn ended) across all three kinds —
@@ -266,6 +286,7 @@ export function clearAllPrompts(sessionId?: string | null): void {
     approval.reset()
     sudo.reset()
     secret.reset()
+    vaultUnlock.reset()
     $approvalInlineAnchors.set({})
 
     return
@@ -274,4 +295,5 @@ export function clearAllPrompts(sessionId?: string | null): void {
   approval.clear(sessionId)
   sudo.clear(sessionId)
   secret.clear(sessionId)
+  vaultUnlock.clear(sessionId)
 }

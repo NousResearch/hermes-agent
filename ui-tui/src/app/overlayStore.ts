@@ -18,6 +18,7 @@ const buildOverlayState = (): OverlayState => ({
   petPicker: false,
   pluginsHub: false,
   secret: null,
+  vaultUnlock: null,
   sessions: false,
   skillsHub: false,
   subscription: null,

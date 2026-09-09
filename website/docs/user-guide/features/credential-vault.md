@@ -1,7 +1,8 @@
 # Credential Vault (Password-Blind Autofill)
 
-Store site logins in a locally encrypted vault and let the agent log into
-websites **without ever seeing the password**. The login identifier
+Let the agent log into websites **without ever seeing the password**, using
+logins from a locally encrypted vault or from your password manager
+(1Password, Bitwarden). The login identifier
 (email/username/phone) is ordinary metadata the agent can see and type
 itself; only the password is vault-secret — it is resolved server-side and
 injected directly into the page.
@@ -54,6 +55,62 @@ Item kinds: `login`, `payment`, and `address` are all stored (`payment` and
 `address` payloads remain fully secret); Phase 1 browser fill supports
 `login` items only.
 
+## Password managers (1Password, Bitwarden)
+
+You don't have to copy logins into the Hermes vault. Enable a password
+manager and its website logins become fillable handles alongside the local
+ones (`op:…` for 1Password, `bw:…` for Bitwarden). The password is fetched
+from the manager's CLI at fill time only and follows the same server-side
+injection, origin binding, and redaction as a local item.
+
+```bash
+hermes vault sources                        # status of each manager
+hermes vault sources --enable onepassword   # needs the `op` CLI on PATH
+hermes vault sources --enable bitwarden     # needs the `bw` CLI; run `bw login` once first
+```
+
+or **Desktop → Settings → Credential Vault → Password managers** (toggle,
+Unlock, Lock).
+
+### Unlocking is per session
+
+A manager starts **locked**. The first time the agent needs one of its
+logins it asks you to unlock: a masked master-password prompt appears in
+the CLI, TUI, or Desktop chat (or you can unlock ahead of time from
+Settings). Hermes hands the master password to `op signin` / `bw unlock` on
+stdin, never as a command-line argument, and keeps only the resulting
+session token in memory. The token expires after 30 minutes idle, when you
+press **Lock**, or when the session ends. The agent never sees the master
+password, the token, or any password.
+
+`browser_vault_list` reports a locked manager under `locked`, and
+`browser_vault_unlock(backend)` triggers the prompt explicitly.
+
+### Headless sessions never prompt
+
+Cron jobs, webhooks, the API server, and `hermes chat -q` have nobody to
+answer a prompt, so a locked manager is reported as
+`unavailable_in_this_session` and fills refuse — the same posture command
+approvals take there. Unlock from an interactive session or the Desktop app
+first (the token is per process, so a running gateway that you unlock from
+a chat keeps serving its own cron jobs), or give 1Password a service-account
+token (`OP_SERVICE_ACCOUNT_TOKEN`) to skip the prompt entirely. The local
+vault needs no unlock and keeps working everywhere.
+
+```yaml
+vault:
+  onepassword:
+    enabled: true
+    account: ""            # `op --account` shorthand; empty = default
+    service_account_token_env: OP_SERVICE_ACCOUNT_TOKEN
+  bitwarden:
+    enabled: true
+```
+
+Bitwarden here means the **Password Manager** (`bw`) — website logins — not
+the Secrets Manager (`bws`) that the [secrets](../secrets/bitwarden) feature
+uses for API keys.
+
 ## Desktop app
 
 Desktop users can manage the vault without a terminal: open
@@ -81,9 +138,10 @@ agent's error message points at both `hermes vault add` and this panel.
 ```
 User: log into example.com and check my dashboard
 Agent: browser_navigate("https://example.com/login")
-Agent: browser_vault_list()          → [{handle: "vault_…", label: "Example", identifier: "me@example.com", origin: "https://example.com"}]
+Agent: browser_vault_list()          → {items: [{handle: "op:…", backend: "onepassword", label: "Example", identifier: "me@example.com", origin: "https://example.com"}]}
+       (or, if 1Password is still locked: {items: [], locked: [{backend: "onepassword", unlock: "browser_vault_unlock"}]} → the agent calls browser_vault_unlock and you get a masked prompt)
 Agent: fill_input(<username field>, "me@example.com")
-Agent: browser_vault_fill("vault_…") → {"success": true, "filled_fields": 1, "kind": "login", "origin": "https://example.com"}
+Agent: browser_vault_fill("op:…")    → {"success": true, "filled_fields": 1, "backend": "onepassword", "kind": "login", "origin": "https://example.com"}
 Agent: browser_click(<submit>)
 ```
 
@@ -109,11 +167,15 @@ Agent: browser_click(<submit>)
   password*, are never filled.
 - **Encrypted at rest:** vault file and key are created `0600` in your
   Hermes home; nothing is sent to any server.
+- **Master password never stored:** for 1Password/Bitwarden the master
+  password goes to the manager CLI on stdin and is dropped; only the
+  session token is held, in memory, with an idle timeout. Headless sessions
+  can't prompt and see the manager as locked.
 
 ## Notes
 
-- No configuration is needed; the tools activate automatically once the
-  vault has an item.
+- No configuration is needed for the local vault; the tools activate
+  automatically once it has an item or a password manager is enabled.
 - The fill targets the single best current-password field (autocomplete
   token beats type heuristics; ties break in DOM order).
 - Design ported from Merit-Systems/OpenInstinct's opaque-handle vault

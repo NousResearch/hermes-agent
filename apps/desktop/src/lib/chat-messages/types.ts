@@ -117,6 +117,9 @@ export type GatewayEventPayload = {
   // secret.request (skill credential capture)
   env_var?: string
   prompt?: string
+  // vault.unlock.request (external password-manager unlock)
+  backend?: string
+  display_name?: string
   // terminal.read.request / preview.read.request (GUI agent reading the
   // in-app terminal pane or the browser/preview pane)
   start?: number

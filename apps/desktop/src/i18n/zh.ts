@@ -471,7 +471,26 @@ export const zh: Translations = {
       deleteAction: '删除凭据',
       deleteTitle: '删除凭据？',
       deleteDescription: label => `“${label}”将从加密保险库中移除。此操作无法撤销。`,
-      deleteConfirm: '删除'
+      deleteConfirm: '删除',
+      sources: {
+        title: '密码管理器',
+        blurb:
+          '允许智能体使用密码管理器中保存的登录信息登录网站。每个会话只需用主密码解锁一次，内存中仅保留会话令牌，智能体永远看不到主密码或任何密码。',
+        toggleFailed: '无法更新密码管理器',
+        notInstalled: name => `此电脑上未找到 ${name} CLI。请先安装，然后再开启。`,
+        disabledDesc: '已关闭。开启后智能体可使用此管理器中的登录信息。',
+        lockedDesc: '已锁定。可立即解锁，否则智能体在首次需要登录信息时会询问你。',
+        unlockedDesc: '本会话已解锁。闲置 30 分钟或关闭 Hermes 后会自动锁定。',
+        statusLocked: '已锁定',
+        statusUnlocked: '已解锁',
+        unlock: '解锁',
+        unlocking: '解锁中…',
+        lock: '锁定',
+        unlocked: name => `${name} 已在本会话中解锁。`,
+        unlockTitle: name => `解锁 ${name}`,
+        unlockDescription: '输入主密码。它会交给本机的密码管理器后立即丢弃，不会被存储、记录或展示给智能体。',
+        masterPasswordPlaceholder: '主密码'
+      }
     },
     plugins: {
       title: '桌面插件',
@@ -3985,7 +4004,14 @@ export const zh: Translations = {
     sudoPlaceholder: 'sudo 密码',
     secretTitle: '需要密钥',
     secretDesc: 'Hermes 需要一个凭据才能继续。',
-    secretPlaceholder: '密钥值'
+    secretPlaceholder: '密钥值',
+    vaultUnlockSendFailed: '无法发送主密码',
+    vaultUnlockTitle: name => `解锁 ${name}`,
+    vaultUnlockDesc: name =>
+      `智能体想使用保存在 ${name} 中的登录信息登录网站。输入主密码以在本会话中解锁——它会直接交给本机的 ${name}，不会被存储或展示给智能体。`,
+    vaultUnlockPlaceholder: '主密码',
+    vaultUnlockKeepLocked: '保持锁定',
+    vaultUnlockConfirm: '解锁'
   },
 
   desktop: {

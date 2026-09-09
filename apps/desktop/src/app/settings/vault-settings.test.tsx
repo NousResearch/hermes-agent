@@ -136,4 +136,45 @@ describe('VaultSettings', () => {
 
     await waitFor(() => expect(requestGateway).toHaveBeenCalledWith('vault.remove', { id: 'vault_abc123' }))
   })
+
+  it('unlocks a password manager from Settings; the master password leaves only via vault.unlock', async () => {
+    const sources = [
+      { name: 'onepassword', display_name: '1Password', enabled: true, needs_unlock: true, unlocked: false, installed: true },
+      { name: 'bitwarden', display_name: 'Bitwarden', enabled: false, needs_unlock: true, unlocked: false, installed: false }
+    ]
+    requestGateway.mockImplementation(async (method: string) => {
+      if (method === 'vault.list') {
+        // An external item has no delete affordance; its manager is shown as a source badge instead.
+        return { items: [{ ...LOGIN_ITEM, id: 'op:xyz', label: 'GitHub via 1Password', backend: 'onepassword' }] }
+      }
+      if (method === 'vault.sources') {
+        return { sources: sources.map(source => ({ ...source })) }
+      }
+      if (method === 'vault.unlock') {
+        sources[0] = { ...sources[0], unlocked: true }
+
+        return { unlocked: true }
+      }
+
+      return {}
+    })
+    renderVault()
+
+    await waitFor(() => expect(screen.getByText('GitHub via 1Password')).toBeTruthy())
+    expect(screen.queryByRole('button', { name: 'Delete credential' })).toBeNull()
+    // Not-installed manager can't be switched on; the installed one can be unlocked.
+    expect(screen.getByRole('switch', { name: 'Bitwarden' })).toHaveProperty('disabled', true)
+    fireEvent.click(screen.getByRole('button', { name: 'Unlock' }))
+    await waitFor(() => expect(screen.getByText('Unlock 1Password')).toBeTruthy())
+
+    fireEvent.change(screen.getByPlaceholderText('Master password'), { target: { value: 'correct horse' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Unlock' }).closest('form')!.querySelector('button[type=submit]')!)
+
+    await waitFor(() =>
+      expect(requestGateway).toHaveBeenCalledWith('vault.unlock', { name: 'onepassword', password: 'correct horse' })
+    )
+    await waitFor(() => expect(screen.getByText('Unlocked')).toBeTruthy())
+    expect(screen.queryByPlaceholderText('Master password')).toBeNull()
+    expect(screen.getByRole('button', { name: 'Lock' })).toBeTruthy()
+  })
 })

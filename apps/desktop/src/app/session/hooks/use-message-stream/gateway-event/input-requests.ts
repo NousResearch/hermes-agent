@@ -12,7 +12,7 @@ import {
 import { $gateway } from '@/store/gateway'
 import { setMcpSetupRequest } from '@/store/mcp-setup'
 import { dispatchNativeNotification } from '@/store/native-notifications'
-import { receiveApprovalRequest, setSecretRequest, setSudoRequest } from '@/store/prompts'
+import { receiveApprovalRequest, setSecretRequest, setSudoRequest, setVaultUnlockRequest } from '@/store/prompts'
 import { requestScrollToBottom } from '@/store/thread-scroll'
 
 import type { GatewayEventContext } from './types'
@@ -312,6 +312,32 @@ export function handleInputRequestEvent(ctx: GatewayEventContext): boolean {
 
       dispatchNativeNotification({
         body: promptText || envVar || translateNow('notifications.native.inputBody'),
+        kind: 'input',
+        sessionId,
+        title: translateNow('notifications.native.inputTitle')
+      })
+    }
+
+    return true
+  }
+
+  if (event.type === 'vault.unlock.request') {
+    // External password-manager unlock (agent/vault_backends). Blocked on
+    // vault.unlock.respond {request_id, password}; "" keeps it locked.
+    const requestId = typeof payload?.request_id === 'string' ? payload.request_id : ''
+
+    if (requestId) {
+      const backend = typeof payload?.backend === 'string' ? payload.backend : ''
+      const displayName = typeof payload?.display_name === 'string' ? payload.display_name : backend
+
+      setVaultUnlockRequest({ backend, displayName, requestId, sessionId: sessionId ?? null })
+
+      if (sessionId) {
+        updateSessionState(sessionId, state => ({ ...state, needsInput: true }))
+      }
+
+      dispatchNativeNotification({
+        body: translateNow('prompts.vaultUnlockTitle', displayName),
         kind: 'input',
         sessionId,
         title: translateNow('notifications.native.inputTitle')

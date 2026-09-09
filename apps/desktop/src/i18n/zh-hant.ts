@@ -365,7 +365,26 @@ export const zhHant = defineLocale({
       deleteAction: '刪除憑證',
       deleteTitle: '刪除憑證？',
       deleteDescription: label => `「${label}」將從加密保險庫中移除。此操作無法復原。`,
-      deleteConfirm: '刪除'
+      deleteConfirm: '刪除',
+      sources: {
+        title: '密碼管理器',
+        blurb:
+          '允許代理使用密碼管理器中儲存的登入資訊登入網站。每個工作階段只需用主密碼解鎖一次，記憶體中僅保留工作階段權杖，代理永遠看不到主密碼或任何密碼。',
+        toggleFailed: '無法更新密碼管理器',
+        notInstalled: name => `此電腦上找不到 ${name} CLI。請先安裝，再開啟此功能。`,
+        disabledDesc: '已關閉。開啟後代理即可使用此管理器中的登入資訊。',
+        lockedDesc: '已鎖定。可立即解鎖，否則代理在首次需要登入資訊時會詢問你。',
+        unlockedDesc: '本工作階段已解鎖。閒置 30 分鐘或關閉 Hermes 後會自動鎖定。',
+        statusLocked: '已鎖定',
+        statusUnlocked: '已解鎖',
+        unlock: '解鎖',
+        unlocking: '解鎖中…',
+        lock: '鎖定',
+        unlocked: name => `${name} 已在本工作階段解鎖。`,
+        unlockTitle: name => `解鎖 ${name}`,
+        unlockDescription: '輸入主密碼。它會交給本機的密碼管理器後立即捨棄，不會被儲存、記錄或顯示給代理。',
+        masterPasswordPlaceholder: '主密碼'
+      }
     },
     notifications: {
       title: '通知',
@@ -3268,7 +3287,14 @@ export const zhHant = defineLocale({
     sudoPlaceholder: 'sudo 密碼',
     secretTitle: '需要密鑰',
     secretDesc: 'Hermes 需要一個憑證才能繼續。',
-    secretPlaceholder: '密鑰值'
+    secretPlaceholder: '密鑰值',
+    vaultUnlockSendFailed: '無法傳送主密碼',
+    vaultUnlockTitle: name => `解鎖 ${name}`,
+    vaultUnlockDesc: name =>
+      `代理想使用儲存在 ${name} 中的登入資訊登入網站。輸入主密碼以在本工作階段解鎖——它會直接交給本機的 ${name}，不會被儲存或顯示給代理。`,
+    vaultUnlockPlaceholder: '主密碼',
+    vaultUnlockKeepLocked: '保持鎖定',
+    vaultUnlockConfirm: '解鎖'
   },
 
   desktop: {

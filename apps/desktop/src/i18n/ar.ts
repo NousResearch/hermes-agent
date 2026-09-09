@@ -430,7 +430,27 @@ export const ar = defineLocale({
       deleteAction: 'حذف بيانات الاعتماد',
       deleteTitle: 'حذف بيانات الاعتماد؟',
       deleteDescription: label => `سيُزال "${label}" من الخزنة المشفّرة. لا يمكن التراجع عن هذا.`,
-      deleteConfirm: 'حذف'
+      deleteConfirm: 'حذف',
+      sources: {
+        title: 'مديرو كلمات المرور',
+        blurb:
+          'اسمح للوكيل بتسجيل الدخول باستخدام بيانات الدخول المحفوظة في مدير كلمات المرور. تفتح القفل مرة واحدة في كل جلسة بكلمة المرور الرئيسية؛ يُحتفظ فقط برمز الجلسة في الذاكرة، ولا يرى الوكيل كلمة المرور الرئيسية أو أي كلمة مرور أبدًا.',
+        toggleFailed: 'تعذر تحديث مدير كلمات المرور',
+        notInstalled: name => `لم يتم العثور على واجهة ${name} CLI على هذا الجهاز. ثبّتها ثم فعّل هذا الخيار.`,
+        disabledDesc: 'متوقف. فعّله ليستخدم الوكيل بيانات الدخول من هذا المدير.',
+        lockedDesc: 'مقفل. افتح القفل الآن، أو سيطلب الوكيل ذلك عند أول حاجة إلى بيانات دخول.',
+        unlockedDesc: 'مفتوح لهذه الجلسة. يُقفل تلقائيًا بعد 30 دقيقة من الخمول أو عند إغلاق Hermes.',
+        statusLocked: 'مقفل',
+        statusUnlocked: 'مفتوح',
+        unlock: 'فتح القفل',
+        unlocking: 'جارٍ فتح القفل…',
+        lock: 'قفل',
+        unlocked: name => `تم فتح قفل ${name} لهذه الجلسة.`,
+        unlockTitle: name => `فتح قفل ${name}`,
+        unlockDescription:
+          'أدخل كلمة المرور الرئيسية. تُسلَّم إلى مدير كلمات المرور على هذا الجهاز ثم تُهمل — لا تُخزَّن ولا تُسجَّل ولا تُعرض على الوكيل أبدًا.',
+        masterPasswordPlaceholder: 'كلمة المرور الرئيسية'
+      }
     },
     plugins: {
       title: 'إضافات سطح المكتب',
@@ -3010,7 +3030,14 @@ export const ar = defineLocale({
     sudoPlaceholder: 'كلمة المرور',
     secretTitle: 'مطلوب سر',
     secretDesc: 'أدخل القيمة المطلوبة لمتابعة المهمة.',
-    secretPlaceholder: 'القيمة السرية'
+    secretPlaceholder: 'القيمة السرية',
+    vaultUnlockSendFailed: 'تعذر إرسال كلمة المرور الرئيسية',
+    vaultUnlockTitle: name => `فتح قفل ${name}`,
+    vaultUnlockDesc: name =>
+      `يريد الوكيل تسجيل الدخول إلى موقع ببيانات دخول محفوظة في ${name}. أدخل كلمة المرور الرئيسية لفتح القفل لهذه الجلسة — تُسلَّم مباشرة إلى ${name} على هذا الجهاز ولا تُخزَّن ولا تُعرض على الوكيل.`,
+    vaultUnlockPlaceholder: 'كلمة المرور الرئيسية',
+    vaultUnlockKeepLocked: 'إبقاؤه مقفلًا',
+    vaultUnlockConfirm: 'فتح القفل'
   },
   desktop: {
     audioReadFailed: 'فشلت قراءة الصوت',

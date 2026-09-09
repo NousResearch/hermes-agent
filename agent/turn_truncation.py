@@ -73,11 +73,12 @@ def normalize_response_for_agent(agent: Any, response: Any) -> Any:
 
 def partial_result(
     messages: List[Dict[str, Any]], api_call_count: int, final_response: str,
-    error: Optional[str] = None, *, failed: bool = False,
+    error: Optional[str] = None, *, failed: bool = False, compression_exhausted: bool = False,
 ) -> Dict[str, Any]:
     """Typed incomplete-turn result (``partial`` unless ``failed``); ``error`` defaults to
-    ``final_response``."""
-    return {
+    ``final_response``. ``compression_exhausted`` carries the #98722 typed bit the gateway
+    consumes to reset/move future input to a clean session (see run_turn.py)."""
+    result = {
         "final_response": final_response,
         "messages": messages,
         "api_calls": api_call_count,
@@ -85,6 +86,9 @@ def partial_result(
         ("failed" if failed else "partial"): True,
         "error": final_response if error is None else error,
     }
+    if compression_exhausted:
+        result["compression_exhausted"] = True
+    return result
 
 
 @dataclass
@@ -129,16 +133,20 @@ class _Trunc(TruncationVerdict):
     def end_turn(
         self, final_response: str, error: Optional[str] = None, *,
         result_messages: Optional[List[Dict[str, Any]]] = None, cleanup: bool = True,
-        failed: bool = False,
+        failed: bool = False, compression_exhausted: bool = False,
     ) -> TruncationVerdict:
-        """Persist and end the turn as partial (or ``failed``)."""
+        """Persist and end the turn as partial (or ``failed``).
+
+        ``compression_exhausted`` forwards the #98722 typed bit so the gateway can
+        move future input off a bloated session (run_turn.py consumes it).
+        """
         agent = self.agent
         if cleanup:
             agent._cleanup_task_resources(self.effective_task_id)
         agent._persist_session(self.messages, self.conversation_history)
         return self.done("return", partial_result(
             self.messages if result_messages is None else result_messages, self.api_call_count,
-            final_response, error, failed=failed,
+            final_response, error, failed=failed, compression_exhausted=compression_exhausted,
         ))
 
     @property
@@ -346,10 +354,14 @@ def recover_from_truncation(
             "budget).",
             force=True,
         )
+        # Carry the #98722 typed exhaustion bit so the gateway resets/moves future
+        # input to a clean session instead of leaving this bloated one authoritative
+        # for the next turn (review P1, andrexibiza).
         return st.end_turn(
             _CONTEXT_OVERFLOW_PARTIAL_FINAL,
             error=_CONTEXT_OVERFLOW_PARTIAL_FINAL,
             failed=True,
+            compression_exhausted=True,
         )
 
     _trunc_msg = normalize_response_for_agent(agent, response)

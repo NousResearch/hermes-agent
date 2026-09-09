@@ -3279,14 +3279,15 @@ class _StreamingCall(StreamingWaitMonitor):
             from agent.error_classifier import classify_api_error
             _cls = classify_api_error(
                 error, provider=str(getattr(self.agent, "provider", "") or ""), model=str(getattr(self.agent, "model", "") or ""))
-        # #106260: a context-overflow / payload-too-large error after partial delivery must NOT
-        # seed a continuation stub with the recovered text — the transcript already cannot fit
-        # (compression failed or protect_last_n covers it), and appending tens of KB only makes
-        # every later request larger. Return an EMPTY stub marked terminal: the loop ends the
-        # turn via the recovery contract instead of continuing into the same overflow.
-        if _cls is not None and _cls.reason in (
-            FailoverReason.context_overflow, FailoverReason.payload_too_large,
-        ):
+        # #106260: a context-overflow error after partial delivery must NOT seed a
+        # continuation stub with the recovered text — the transcript already cannot fit
+        # (compression failed or protect_last_n covers it), and appending tens of KB only
+        # makes every later request larger. Return an EMPTY stub marked terminal: the loop
+        # ends the turn via the recovery contract instead of continuing into the same
+        # overflow. Scope is deliberately context_overflow ONLY: payload_too_large (413)
+        # has its own byte-scored recovery owner (turn_overflow._recover_payload_too_large,
+        # #88960/#47339) that must not be bypassed (review P1, andrexibiza).
+        if _cls is not None and _cls.reason == FailoverReason.context_overflow:
             logger.warning(
                 "Partial stream ended on a context-overflow error after %s chars; "
                 "NOT seeding a continuation stub (transcript is already over budget): %s",

@@ -1,0 +1,111 @@
+"""Apple-native read-aloud for fullscreen TUI mode (`speak.*` RPC).
+
+macOS Speak Selection (Option+Esc) reads AXSelectedText, which terminal
+alternate-screen apps never expose — so the TUI speaks via /usr/bin/say
+(the same Apple voices) instead of the provider-keyed `voice.tts` path.
+"""
+
+import pytest
+
+from tui_gateway import methods_voice as m
+
+
+def _msgs():
+    return [
+        {"role": "user", "text": "hi"},
+        {"role": "assistant", "text": "first reply"},
+        {"role": "assistant", "text": "second reply"},
+    ]
+
+
+def test_resolve_empty_arg_picks_last_assistant_message():
+    assert m._say_resolve_text("", _msgs()) == "second reply"
+
+
+def test_resolve_numeric_arg_picks_nth_assistant_message():
+    assert m._say_resolve_text("1", _msgs()) == "first reply"
+    assert m._say_resolve_text("2", _msgs()) == "second reply"
+
+
+def test_resolve_numeric_arg_clamps_out_of_range():
+    assert m._say_resolve_text("99", _msgs()) == "second reply"
+
+
+def test_resolve_literal_text_passes_through():
+    assert m._say_resolve_text("hello there", _msgs()) == "hello there"
+
+
+def test_resolve_empty_history_returns_empty():
+    assert m._say_resolve_text("", []) == ""
+    assert m._say_resolve_text("", [{"role": "user", "text": "hi"}]) == ""
+
+
+class _FakePopen:
+    instances = []
+
+    def __init__(self, cmd, **kwargs):
+        self.cmd = cmd
+        self.pid = 1000 + len(_FakePopen.instances)
+        self.terminated = False
+        _FakePopen.instances.append(self)
+
+    def terminate(self):
+        self.terminated = True
+
+    def wait(self, timeout=None):
+        return 0
+
+    def poll(self):
+        return None if not self.terminated else 0
+
+
+@pytest.mark.macos_only
+def test_say_start_speaks_and_stop_silences(monkeypatch):
+    _FakePopen.instances.clear()
+    monkeypatch.setattr(m.subprocess, "Popen", _FakePopen)
+    m._say_stop_all()
+    assert m._say_speaking() is False
+    pid = m._say_start("hello world")
+    assert isinstance(pid, int)
+    assert _FakePopen.instances[-1].cmd[-1] == "hello world"
+    assert "/say" in _FakePopen.instances[-1].cmd[0] or "say" in _FakePopen.instances[-1].cmd[0]
+    assert m._say_speaking() is True
+    m._say_stop_all()
+    assert m._say_speaking() is False
+    assert _FakePopen.instances[-1].terminated is True
+
+
+@pytest.mark.macos_only
+def test_say_start_replaces_current_utterance(monkeypatch):
+    _FakePopen.instances.clear()
+    monkeypatch.setattr(m.subprocess, "Popen", _FakePopen)
+    m._say_stop_all()
+    m._say_start("first")
+    m._say_start("second")
+    assert _FakePopen.instances[0].terminated is True
+    assert _FakePopen.instances[-1].cmd[-1] == "second"
+    assert m._say_speaking() is True
+    m._say_stop_all()
+
+
+def test_speak_methods_registered_on_server():
+    from tui_gateway import server
+
+    for name in ("speak.say", "speak.stop", "speak.status"):
+        assert name in server._methods, f"{name} not registered"
+
+
+def test_speak_status_answers_without_audio():
+    from tui_gateway import server
+
+    m._say_stop_all()
+    result = server._methods["speak.status"](7, {})
+    assert result["result"]["ok"] is True
+    assert result["result"]["speaking"] is False
+
+
+def test_speak_say_rejects_empty_text_without_spawning():
+    from tui_gateway import server
+
+    result = server._methods["speak.say"](7, {})
+    assert "error" in result

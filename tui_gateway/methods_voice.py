@@ -5,6 +5,9 @@ per process). Bodies are rebound onto server.py's globals (method_ctx.bind_modul
 from __future__ import annotations
 
 import contextlib
+import shutil
+import subprocess
+import sys
 import threading
 
 from .method_ctx import HandlerRegistry, bind_module
@@ -773,6 +776,161 @@ def _(rid, params: dict) -> dict:
         return _err(rid, 5026, "voice module not available" if isinstance(e, ImportError) else str(e))
     threading.Thread(target=_speak_text_with_barge, args=(text,), daemon=True).start()
     return _ok(rid, {"status": "speaking"})
+
+
+# ── Apple-native read-aloud (`speak.*`): macOS Speak Selection (Option+Esc)
+# reads AXSelectedText, which fullscreen terminal apps never expose, so the
+# TUI speaks via /usr/bin/say (same Apple voices, no provider keys) instead
+# of the provider-keyed `voice.tts` path above. One utterance per process;
+# a new call barges the previous one. macOS-only by design.
+
+_SAY_MAX_CHARS = 5000
+
+_say_lock = threading.Lock()
+_say_proc = None  # Optional[subprocess.Popen] for the current utterance.
+
+
+def _say_resolve_text(arg: str, messages: list) -> str:
+    """Pick speakable text: '' → last assistant message; 'N' → Nth (1-based,
+    clamped); anything else → literal text. '' when nothing matches."""
+    arg = (arg or "").strip()
+    assistants = [
+        str(m.get("text") or m.get("context") or "").strip()
+        for m in messages or []
+        if isinstance(m, dict) and str(m.get("role") or "") == "assistant"
+    ]
+    assistants = [t for t in assistants if t]
+    if not arg:
+        return assistants[-1] if assistants else ""
+    try:
+        idx = int(arg)
+    except ValueError:
+        return arg
+    if not assistants:
+        return ""
+    return assistants[min(max(idx, 1), len(assistants)) - 1]
+
+
+def _say_spoken_script(text: str) -> str:
+    """TTS-friendly script (markdown/code stripped); raw truncated fallback."""
+    try:
+        from tools.tts_text_normalize import prepare_spoken_text
+        return prepare_spoken_text(text, max_chars=_SAY_MAX_CHARS) or text[:_SAY_MAX_CHARS]
+    except Exception:
+        return text[:_SAY_MAX_CHARS]
+
+
+def _say_stop_locked() -> bool:
+    """Terminate the current utterance. Caller holds `_say_lock`."""
+    global _say_proc
+    proc, _say_proc = _say_proc, None
+    if proc is None:
+        return False
+    try:
+        proc.terminate()
+        try:
+            proc.wait(timeout=2)
+        except Exception:
+            with contextlib.suppress(Exception):
+                proc.kill()
+    except Exception:
+        pass
+    return True
+
+
+def _say_stop_all() -> bool:
+    with _say_lock:
+        return _say_stop_locked()
+
+
+def _say_speaking() -> bool:
+    global _say_proc
+    with _say_lock:
+        proc = _say_proc
+        if proc is None:
+            return False
+        try:
+            alive = proc.poll() is None
+        except Exception:
+            alive = False
+        if not alive:
+            _say_proc = None
+        return alive
+
+
+def _say_start(text: str, voice=None, rate=None) -> int:
+    """Speak `text` via Apple `say`; barges any current utterance. Returns pid."""
+    global _say_proc
+    if sys.platform != "darwin":
+        raise RuntimeError("Apple read-aloud needs macOS (/usr/bin/say)")
+    cmd = [shutil.which("say") or "/usr/bin/say"]
+    if voice:
+        cmd += ["-v", str(voice)]
+    if rate:
+        cmd += ["-r", str(rate)]
+    cmd.append(text)
+    with _say_lock:
+        _say_stop_locked()
+        proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        _say_proc = proc
+        return proc.pid
+
+
+def _speak_session_messages(session_id: str) -> list:
+    """Normalized [{role, text}] transcript for a live session; [] when unknown."""
+    if not session_id:
+        return []
+    try:
+        with _sessions_lock:
+            session = _sessions.get(session_id)
+            history = list((session or {}).get("history", []) or [])
+    except Exception:
+        return []
+    if not history:
+        return []
+    try:
+        normalized = _history_to_messages(history)
+    except Exception:
+        normalized = history
+    out = []
+    for msg in normalized:
+        if not isinstance(msg, dict):
+            continue
+        out.append({"role": msg.get("role", ""), "text": str(msg.get("text") or msg.get("context") or "")})
+    return out
+
+
+@method("speak.say")
+def _(rid, params: dict) -> dict:
+    text = str(params.get("text") or "").strip()
+    if not text:
+        messages = _speak_session_messages(params.get("session_id", ""))
+        text = _say_resolve_text(str(params.get("arg") or ""), messages)
+    if not text:
+        return _err(rid, 4020, "nothing to speak — pass text, or start a conversation first")
+    script = _say_spoken_script(text)
+    if not script.strip():
+        return _err(rid, 4020, "nothing speakable after cleanup")
+    try:
+        pid = _say_start(script, voice=params.get("voice"), rate=params.get("rate"))
+    except RuntimeError as e:
+        return _err(rid, 5026, str(e))
+    except FileNotFoundError:
+        return _err(rid, 5026, "Apple 'say' not found — read-aloud needs macOS")
+    except Exception as e:
+        return _err(rid, 5026, f"read-aloud failed: {e}")
+    return _ok(rid, {"status": "speaking", "pid": pid})
+
+
+@method("speak.stop")
+def _(rid, params: dict) -> dict:
+    stopped = _say_stop_all()
+    return _ok(rid, {"status": "stopped", "stopped": stopped})
+
+
+@method("speak.status")
+def _(rid, params: dict) -> dict:
+    return _ok(rid, {"ok": True, "speaking": _say_speaking(), "platform": sys.platform})
 
 
 def register(server) -> None:

@@ -1488,7 +1488,14 @@ class FeedbackLedger:
                 ),
             )
 
-    def bind_worktree_slot_task(self, head_sha: str, task_id: str, board: str) -> None:
+    def bind_worktree_slot_task(
+        self,
+        head_sha: str,
+        task_id: str,
+        board: str,
+        *,
+        lease: WorktreeSlotLease | None = None,
+    ) -> None:
         """Record which dispatched Kanban task now owns a leased slot.
 
         Best-effort by design: if the slot was already reconciled away (or a
@@ -1498,10 +1505,26 @@ class FeedbackLedger:
         """
 
         with self._transaction():
+            if lease is None:
+                matches = self._connection.execute(
+                    "SELECT slot_id FROM worktree_pool_slots "
+                    "WHERE head_sha = ? AND status = 'leased'",
+                    (head_sha,),
+                ).fetchall()
+                if len(matches) != 1:
+                    # Without the lease, two slots carrying the same head are
+                    # ambiguous; never assign a task to the wrong worker.
+                    return
+                slot_clause = "slot_id = ?"
+                slot_values = (matches[0][0],)
+            else:
+                slot_clause = "slot_id = ? AND lease_version = ? AND owner_pid = ?"
+                slot_values = (lease.slot_id, lease.version, lease.owner_pid)
             self._connection.execute(
                 "UPDATE worktree_pool_slots SET task_id = ?, board = ? "
-                "WHERE head_sha = ? AND status = 'leased'",
-                (task_id, board, head_sha),
+                f"WHERE {slot_clause} "
+                "AND head_sha = ? AND status = 'leased'",
+                (task_id, board, *slot_values, head_sha),
             )
 
     def leased_worktree_slots(self) -> tuple[dict[str, object], ...]:

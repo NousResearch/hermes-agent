@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import os
 import shlex
 import subprocess
 from collections import Counter
@@ -189,6 +190,7 @@ class PreparedWorktree:
     path: Path
     branch: str
     expected_sha: str
+    lease: WorktreeSlotLease | None = None
 
 
 class SubprocessGitRunner:
@@ -238,7 +240,11 @@ class ScanResult:
 
 
 def _bind_pooled_worktree_task(
-    local_git: object, receipt: FeedbackReceipt, task_id: str, board: str
+    local_git: object,
+    receipt: FeedbackReceipt,
+    task_id: str,
+    board: str,
+    prepared: PreparedWorktree,
 ) -> None:
     """Best-effort: if local_git is a worktree pool, record which Kanban task
 
@@ -250,7 +256,12 @@ def _bind_pooled_worktree_task(
 
     bind_task = getattr(local_git, "bind_task", None)
     if callable(bind_task):
-        bind_task(receipt, task_id, board)
+        try:
+            bind_task(receipt, task_id, board, lease=prepared.lease)
+        except TypeError:
+            # Non-pooled test/dummy repositories predate the lease keyword;
+            # they have no pooled slot to bind or reconcile.
+            bind_task(receipt, task_id, board)
 
 
 def _prepare_receipt_worktree_with_overflow(
@@ -386,6 +397,39 @@ class LocalGitRepository:
             )
             self._verify_worktree(workspace, receipt.head_sha)
         return PreparedWorktree(workspace.resolve(), branch, receipt.head_sha)
+
+    @staticmethod
+    def _link_governed_venv(repository: Path, workspace: Path) -> None:
+        """Expose one verified project-local environment to an exact-head worktree."""
+
+        repository_root = repository.resolve(strict=True)
+        workspace_root = workspace.resolve(strict=True)
+        source = repository / ".venv"
+        destination = workspace / ".venv"
+        if not source.exists():
+            return
+        resolved_source = source.resolve(strict=True)
+        managed_venv_root = (repository_root.parent / "venvs").resolve(strict=False)
+        governed_roots = (*_ADDITIONAL_GOVERNED_VENV_ROOTS, managed_venv_root)
+        is_governed_root = resolved_source.is_relative_to(repository_root) or any(
+            resolved_source == root or resolved_source.is_relative_to(root)
+            for root in governed_roots
+        )
+        if (
+            not is_governed_root
+            or not resolved_source.is_dir()
+            or not (resolved_source / "bin/python").is_file()
+        ):
+            raise RuntimeError("project virtualenv is not a governed local environment")
+        if destination.is_symlink():
+            if destination.resolve(strict=True) != resolved_source:
+                raise RuntimeError("receipt worktree virtualenv target is inconsistent")
+            return
+        if destination.exists():
+            raise RuntimeError("receipt worktree virtualenv target is inconsistent")
+        if not destination.resolve(strict=False).is_relative_to(workspace_root):
+            raise RuntimeError("receipt worktree virtualenv path escaped its workspace")
+        os.symlink(resolved_source, destination, target_is_directory=True)
 
     def prepare_receipt_branch(
         self,
@@ -637,14 +681,21 @@ class PooledLocalGitRepository:
             # immediately instead of waiting out the full lease timeout.
             self._ledger.finish_worktree_slot(lease)
             raise
-        return PreparedWorktree(workspace, _receipt_branch(receipt), receipt.head_sha)
+        return PreparedWorktree(workspace, _receipt_branch(receipt), receipt.head_sha, lease)
 
     def release(self, lease: WorktreeSlotLease) -> None:
         """Return a previously acquired slot to the free pool."""
 
         self._ledger.finish_worktree_slot(lease)
 
-    def bind_task(self, receipt: FeedbackReceipt, task_id: str, board: str) -> None:
+    def bind_task(
+        self,
+        receipt: FeedbackReceipt,
+        task_id: str,
+        board: str,
+        *,
+        lease: WorktreeSlotLease | None = None,
+    ) -> None:
         """Record which dispatched Kanban task now owns this receipt's slot.
 
         Called opportunistically (duck-typed, see `getattr(local_git,
@@ -654,7 +705,9 @@ class PooledLocalGitRepository:
         full lease timeout.
         """
 
-        self._ledger.bind_worktree_slot_task(receipt.head_sha, task_id, board)
+        self._ledger.bind_worktree_slot_task(
+            receipt.head_sha, task_id, board, lease=lease
+        )
 
     def reconcile_leases(self, kanban: KanbanClient) -> int:
         """Release any leased slot whose bound Kanban task has gone terminal.
@@ -1416,7 +1469,7 @@ class ScanController:
                 )
             )
             _bind_pooled_worktree_task(
-                self._local_git, receipt, task_id, self._policy.board or ""
+                self._local_git, receipt, task_id, self._policy.board or "", prepared
             )
             self._ledger.finalize(receipt, task_id, lease)
         except Exception as error:  # noqa: BLE001 - retain retryable dispatch failure.
@@ -1534,7 +1587,7 @@ class ScanController:
                 )
             )
             _bind_pooled_worktree_task(
-                self._local_git, receipt, task_id, self._policy.board or ""
+                self._local_git, receipt, task_id, self._policy.board or "", prepared
             )
             self._ledger.finalize(receipt, task_id, lease)
         except Exception as error:  # noqa: BLE001 - retain retryable dispatch failure.
@@ -1760,7 +1813,7 @@ class ScanController:
                 )
             )
             _bind_pooled_worktree_task(
-                self._local_git, receipt, task_id, self._policy.board or ""
+                self._local_git, receipt, task_id, self._policy.board or "", prepared
             )
             self._ledger.finalize(receipt, task_id, lease)
         except Exception as error:  # noqa: BLE001 - retain retryable dispatch failure.

@@ -120,13 +120,13 @@ _CODEX_REVIEW_LOGIN = "chatgpt-codex-connector[bot]"
 _CODEX_REVIEW_MARKER = "codex-pull-request-review-summary"
 _CODEX_REVIEW_ROW = re.compile(
     r"\|\s*[^|\n]*\|\s*(?P<status>[^<|]*?)\s*<relative-time[^>]*>.*?</relative-time>\s*"
-    r"\|\s*`(?P<sha>[0-9a-fA-F]{7,40})`\s*\|",
+    r"\|\s*`(?P<sha>[0-9a-fA-F]{40})`\s*\|",
     re.DOTALL,
 )
 
 
 def _codex_reviewed_head(feedback: tuple[Feedback, ...], head_sha: str) -> bool:
-    short_head = head_sha[:7].casefold()
+    exact_head = head_sha.casefold()
     for item in feedback:
         if (
             item.reviewer.login.casefold() != _CODEX_REVIEW_LOGIN
@@ -135,7 +135,7 @@ def _codex_reviewed_head(feedback: tuple[Feedback, ...], head_sha: str) -> bool:
             continue
         for match in _CODEX_REVIEW_ROW.finditer(item.body):
             if (
-                match.group("sha").casefold() == short_head
+                match.group("sha").casefold() == exact_head
                 and "completed" in match.group("status").casefold()
             ):
                 return True

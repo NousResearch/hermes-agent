@@ -459,7 +459,7 @@ def _codex_feedback(body: str, *, login: str = "chatgpt-codex-connector[bot]") -
 
 
 def test_codex_reviewed_head_true_for_a_completed_review_of_the_exact_head() -> None:
-    feedback = (_codex_feedback(_codex_summary("✅ **Completed**", HEAD_SHA[:7])),)
+    feedback = (_codex_feedback(_codex_summary("✅ **Completed**", HEAD_SHA)),)
 
     assert _codex_reviewed_head(feedback, HEAD_SHA) is True
 
@@ -476,7 +476,7 @@ def test_codex_reviewed_head_false_when_the_review_covers_a_different_head() -> 
 
 
 def test_codex_reviewed_head_false_while_the_review_is_still_running() -> None:
-    feedback = (_codex_feedback(_codex_summary("⏳ **Running**", HEAD_SHA[:7])),)
+    feedback = (_codex_feedback(_codex_summary("⏳ **Running**", HEAD_SHA)),)
 
     assert _codex_reviewed_head(feedback, HEAD_SHA) is False
 

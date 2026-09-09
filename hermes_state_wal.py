@@ -33,8 +33,7 @@ _WAL_SIZE_LIMIT_BYTES = 64 * 1024 * 1024  # 64 MiB
 _wal_fallback_warned_paths: set[str] = set()
 _wal_fallback_warned_lock = threading.Lock()
 
-# Dedup WARNING for the #104596 probe-unknown guard (WAL path touching nothing
-# while ownership is not provably exclusive).
+# Dedup for the probe-unknown WARNING (on-disk journal mode unreadable, nothing touched).
 _wal_probe_unknown_paths: set[str] = set()
 _wal_probe_unknown_lock = threading.Lock()
 _wal_reset_bug_warned_paths: set[str] = set()
@@ -165,7 +164,8 @@ def resolve_journal_mode() -> str:
 class WalUnsupportedError(sqlite3.OperationalError):
     """Raised by :func:`apply_wal_with_fallback` under ``require_wal=True`` when
     the filesystem cannot provide WAL (SQLITE_PROTOCOL raised, or macOS-NFS silent
-    refusal). Subclasses ``OperationalError`` so DB-init handlers still catch it."""
+    refusal) or the on-disk mode cannot be verified (probe blocked by a concurrent
+    opener). Subclasses ``OperationalError`` so DB-init handlers still catch it."""
 
 
 def _verify_configured_delete(actual: str) -> str:
@@ -178,8 +178,9 @@ def _verify_configured_delete(actual: str) -> str:
 def apply_wal_with_fallback(conn: sqlite3.Connection, *, db_label: str = "state.db", require_wal: bool = False) -> str:
     """Set ``journal_mode=WAL`` on ``conn``, falling back to DELETE on failure.
 
-    Returns the mode actually set. Shared by :class:`SessionDB` and ``hermes_cli.kanban_db_connect.connect``.
-    WAL-incompatible filesystems either raise ``OperationalError`` ("locking protocol" / "disk I/O error") or —
+    Returns the mode actually set — or, when the read-only mode probe is blocked by a concurrent opener, ``"wal"``
+    as the assumed mode with nothing touched (``require_wal=True`` raises instead). Shared by :class:`SessionDB`
+    and ``hermes_cli.kanban_db_connect.connect``. WAL-incompatible filesystems either raise ``OperationalError`` ("locking protocol" / "disk I/O error") or —
     macOS NFS / SMB / AgentFS — silently refuse and stay in DELETE; either way log ERROR once per process per
     ``db_label`` and fall back. ``require_wal=True`` raises :class:`WalUnsupportedError` instead. WAL-reset-bug
     builds (https://sqlite.org/wal.html#walresetbug) never enable WAL on non-WAL files; an already-WAL DB keeps WAL
@@ -220,17 +221,13 @@ def apply_wal_with_fallback(conn: sqlite3.Connection, *, db_label: str = "state.
             raise sqlite3.OperationalError(_CANNOT_VERIFY_DELETE_MSG)
         return _verify_configured_delete(_set_journal_mode_no_wait(conn, "DELETE"))
     if current_mode is None:
-        # #104596: the probe failed (locked/busy under load) and the on-disk mode is unknown. A fresh 0-page
-        # DB probes "delete" cleanly, so None here means the probe could not read a real file — most often
-        # because a sibling connection (same process or another) holds it, in WAL, with live -wal/-shm sidecars.
-        # Emitting the set-pragma inside _enable_wal would re-run WAL-init and UNLINK those sidecars under the
-        # holder: two -shm generations that cannot see each other's locks -> split-brain corruption
-        # (btreeInitPage error 11). Ownership is not provably exclusive, so touch nothing: an already-WAL DB
-        # keeps working (this connection inherits the mode from the on-disk header, exactly like the early
-        # return above), the rare true-DELETE file degrades to DELETE with the warning below, and a new DB
-        # reaches _enable_wal on its next open. Mirrors the vulnerable-gate path's indeterminate handling.
+        # Probe failed (locked/busy): ownership not provably exclusive, same as the DELETE branch above. A fresh
+        # 0-page DB probes "delete" cleanly, so this is a real file some other connection holds — running WAL-init
+        # would unlink its -wal/-shm sidecars. Touch nothing: the connection inherits whatever mode the header has.
+        if require_wal:
+            raise WalUnsupportedError("could not verify the on-disk journal mode (database is locked — possible "
+                                      "concurrent openers); cannot guarantee WAL")
         _log_once("wal_probe_unknown", db_label)
-        _apply_wal_companions(conn)
         return "wal"
     return _enable_wal(conn, db_label, require_wal, current_mode)
 
@@ -408,16 +405,11 @@ _ONCE_LOGS = {
         "this DB and run a one-time offline 'PRAGMA journal_mode=DELETE' on the file. This message fires once per "
         "process per database."),
     "wal_probe_unknown": (_wal_probe_unknown_lock, "_wal_probe_unknown_paths", logging.WARNING,
-        # #104596: the read-only probe failed (locked/busy under load). A fresh 0-page DB probes "delete" cleanly,
-        # so None means the probe could not read a real file — most often because a sibling connection holds it, in
-        # WAL, with live -wal/-shm sidecars. Emitting the set-pragma here re-runs WAL-init and unlinks those
-        # sidecars under the holder: two -shm generations that cannot see each other's locks -> split-brain
-        # corruption. Keep the WARNING (not ERROR): the connection still inherits WAL from the on-disk header, so
-        # the common case is harmless — only the rare true-DELETE file degrades (silently, to DELETE).
-        "%s: could not verify the on-disk journal mode (database is locked / busy under load); refusing to issue a "
-        "journal-mode set-pragma while ownership is not provably exclusive (it could unlink the -wal/-shm sidecars "
-        "a sibling connection still holds open — split-brain corruption, #104596). Assuming the configured "
-        "journal_mode=wal and leaving the file untouched. This message fires once per process per database."),
+        # WARNING, not ERROR: the connection inherits the header's mode, so an already-WAL file (the common case)
+        # keeps working; only a true-DELETE file stays DELETE for this connection.
+        "%s: could not verify the on-disk journal mode (database is locked / busy); not issuing a journal-mode "
+        "set-pragma while another connection may hold the file (it could unlink the -wal/-shm sidecars that "
+        "connection still uses). Leaving the file untouched; this connection inherits the on-disk mode. This message fires once per process per database."),
 }
 
 

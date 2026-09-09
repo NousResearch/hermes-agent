@@ -351,20 +351,9 @@ class TestNoDowngradeUnderConcurrentOpeners:
             check.close()
 
     def test_probe_unreadable_touches_nothing(self, tmp_path, monkeypatch, caplog):
-        """#104596: when the on-disk mode cannot be verified (possible
-        concurrent openers — same-process siblings holding live -wal/-shm
-        sidecars), the WAL path must not emit the set-pragma at all.
-
-        Previously it fell through to ``PRAGMA journal_mode=WAL``; on an
-        incompatible filesystem that raised, but on a WAL DB whose sidecars
-        a sibling connection still holds, WAL-init silently unlinked them ->
-        two -shm generations -> split-brain corruption (btreeInitPage error
-        11). The guard now refuses to touch anything while ownership is
-        unproven: it assumes the configured WAL mode, logs one warning per
-        database, and returns without issuing the set-pragma — strictly more
-        conservative than the old raise (which still required emitting the
-        dangerous pragma first).
-        """
+        """Non-vulnerable runtime, probe blocked ("database is locked"): the WAL path
+        must not emit the set-pragma (here it would raise "locking protocol"); it
+        warns once and reports the inherited mode instead."""
         import logging
 
         monkeypatch.setattr(

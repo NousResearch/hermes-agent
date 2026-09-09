@@ -43,19 +43,13 @@ def _reset_configured_delete_override_warned_paths():
 
 
 def test_wal_probe_unknown_never_emits_set_pragma(monkeypatch, tmp_path, caplog):
-    """#104596: probe failure (None) must not reach the WAL set-pragma.
-
-    The DELETE branch refuses to flip modes when the on-disk mode cannot be
-    verified (ownership not provably exclusive). The configured-WAL branch
-    used to fall through to ``_enable_wal`` and emit ``PRAGMA
-    journal_mode=WAL`` anyway; when a sibling connection holds the DB in WAL
-    with live -wal/-shm sidecars, WAL-init unlinks those sidecars under the
-    holder -> two -shm generations -> split-brain corruption (btreeInitPage
-    error 11). The guard must touch nothing and assume the configured mode.
-    """
+    """Probe failure (None) on the configured-WAL path must not reach any journal-mode
+    pragma: the file may be held by a sibling whose -wal/-shm sidecars WAL-init would
+    unlink. The DELETE branch already refused; this binds the WAL branch to the same rule,
+    and ``require_wal=True`` must raise instead of reporting an unverified "wal"."""
     import logging
 
-    from hermes_state_wal import apply_wal_with_fallback
+    from hermes_state_wal import WalUnsupportedError, apply_wal_with_fallback
 
     _configure_mode(monkeypatch, tmp_path, "wal")
     _disable_vulnerable_gate(monkeypatch)
@@ -64,78 +58,32 @@ def test_wal_probe_unknown_never_emits_set_pragma(monkeypatch, tmp_path, caplog)
     class _SpyConnection(sqlite3.Connection):
         def __init__(self, *args, **kwargs):
             super().__init__(*args, **kwargs)
-            self.emitted: list[str] = []
+            self.pragmas: list[str] = []
 
         def execute(self, sql, *args, **kwargs):  # type: ignore[override]
-            if "journal_mode" in sql.lower() and "=" in sql.lower():
-                self.emitted.append(str(sql))
+            if str(sql).lstrip().lower().startswith("pragma"):
+                self.pragmas.append(str(sql))
             return super().execute(sql, *args, **kwargs)
 
     db_path = tmp_path / "probe-unknown.db"
     sibling = sqlite3.connect(str(db_path))
     try:
-        # A DB that is genuinely WAL on disk; the sibling holds the sidecars.
-        assert (
-            sibling.execute("PRAGMA journal_mode=WAL").fetchone()[0].lower()
-            == "wal"
-        )
-        # The probe fails under load (locked/busy) -> on-disk mode unknown.
-        monkeypatch.setattr(
-            "hermes_state_wal._on_disk_journal_mode", lambda _conn: None
-        )
+        assert sibling.execute("PRAGMA journal_mode=WAL").fetchone()[0].lower() == "wal"
+        monkeypatch.setattr("hermes_state_wal._on_disk_journal_mode", lambda _conn: None)
         conn = sqlite3.connect(str(db_path), factory=_SpyConnection)
         try:
             with caplog.at_level(logging.WARNING, logger="hermes_state_wal"):
-                result = apply_wal_with_fallback(
-                    conn, db_label="probe-unknown.db"
-                )
-            assert result == "wal"  # assumed configured mode
-            assert conn.emitted == []  # no set-pragma while ownership unproven
-            # The sibling's on-disk WAL state is untouched.
-            assert (
-                sibling.execute("PRAGMA journal_mode").fetchone()[0].lower()
-                == "wal"
-            )
-            assert any(
-                "could not verify the on-disk journal mode" in r.getMessage()
-                for r in caplog.records
-            )
+                assert apply_wal_with_fallback(conn, db_label="probe-unknown.db") == "wal"
+            assert conn.pragmas == []  # nothing touched while ownership is unproven
+            assert sibling.execute("PRAGMA journal_mode").fetchone()[0].lower() == "wal"
+            assert any("could not verify the on-disk journal mode" in r.getMessage() for r in caplog.records)
+            with pytest.raises(WalUnsupportedError, match="could not verify the on-disk journal mode"):
+                apply_wal_with_fallback(conn, db_label="probe-unknown.db", require_wal=True)
+            assert conn.pragmas == []
         finally:
             conn.close()
     finally:
         sibling.close()
-
-
-def test_wal_probe_unknown_warns_once_per_database(monkeypatch, tmp_path, caplog):
-    """Dedupe contract: one WARNING per (process, db_label)."""
-    import logging
-
-    from hermes_state_wal import apply_wal_with_fallback
-
-    _configure_mode(monkeypatch, tmp_path, "wal")
-    _disable_vulnerable_gate(monkeypatch)
-    hermes_state_wal._wal_probe_unknown_paths.clear()
-
-    monkeypatch.setattr(
-        "hermes_state_wal._on_disk_journal_mode", lambda _conn: None
-    )
-    db_path = tmp_path / "warn.db"
-    conn = sqlite3.connect(str(db_path))
-    try:
-        with caplog.at_level(logging.WARNING, logger="hermes_state_wal"):
-            assert apply_wal_with_fallback(conn, db_label="warn.db") == "wal"
-            assert apply_wal_with_fallback(conn, db_label="warn.db") == "wal"
-            assert (
-                apply_wal_with_fallback(conn, db_label="other.db") == "wal"
-            )
-        hits = [
-            r
-            for r in caplog.records
-            if "could not verify the on-disk journal mode" in r.getMessage()
-        ]
-        assert len(hits) == 2  # warn.db once, other.db once
-    finally:
-        conn.close()
 
 
 def test_database_journal_mode_has_a_canonical_default():

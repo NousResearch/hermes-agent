@@ -23,6 +23,11 @@ def test_localized_lifecycle_keeps_chat_filter_and_progress_contract(monkeypatch
     captured = []
     compression._emit_compaction_done(SimpleNamespace(status_callback=lambda kind, text: captured.append((kind, text))))
     assert captured == [('compacted', status.compaction_done_status(lang=lang))]
+    heartbeat = compression._CompressionActivityHeartbeat(
+        SimpleNamespace(_emit_status=lambda text: captured.append(text)), emit_client_status=True)
+    monkeypatch.setenv('HERMES_LANGUAGE', 'en' if lang != 'en' else 'zh')
+    heartbeat._emit_progress_status()
+    assert captured[-1] == status.compaction_heartbeat_status(lang=lang)
 
 
 def test_english_runtime_matches_legacy_constants():

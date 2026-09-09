@@ -1538,6 +1538,8 @@ class _CompressionActivityHeartbeat:
         # routine start status was emitted) keeps it alive with heartbeats;
         # quiet context engines emit neither (#98371 follow-up).
         self._emit_client_status = emit_client_status
+        # The heartbeat worker has no routed profile context; capture the visible phase language.
+        self._client_status_message = compression_status.compaction_heartbeat_status() if emit_client_status else ""
         self._stop = threading.Event()
         self._thread = threading.Thread(target=self._run, name="compression-activity-heartbeat", daemon=True)
 
@@ -1605,7 +1607,7 @@ class _CompressionActivityHeartbeat:
         if not callable(emit):
             return
         try:
-            emit(compression_status.compaction_heartbeat_status())
+            emit(self._client_status_message)
         except Exception:
             logger.debug(
                 "status emit error in compression heartbeat", exc_info=True

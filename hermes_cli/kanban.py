@@ -871,15 +871,48 @@ def _cmd_complete(args: argparse.Namespace) -> int:
     fail_msg: dict[str, str] = {}
     with kbc.connect_closing() as conn:
         def op(tid):
+            summary_local = summary
+            result_local = getattr(args, "result", None)
+            metadata_local = metadata
+            # CLI parity with agent tool path: enforce pre_tool_call hooks (Issue #106292).
+            # The agent's kanban_complete goes through model_tools._pre_dispatch_guards ->
+            # _dispatch_pre_tool_call_hooks before the DB write; the CLI previously skipped it,
+            # so an external lifecycle policy bound to pre_tool_call could be bypassed from the shell.
+            try:
+                from hermes_cli.plugins import _dispatch_pre_tool_call_hooks
+
+                hook_args = {
+                    "task_id": tid,
+                    "summary": summary_local,
+                    "result": result_local,
+                    "metadata": metadata_local,
+                }
+                block_msg, modified = _dispatch_pre_tool_call_hooks(
+                    "kanban_complete", hook_args, task_id=tid
+                )
+                if block_msg:
+                    fail_msg[tid] = block_msg
+                    return False
+                if isinstance(modified, dict):
+                    if "summary" in modified:
+                        summary_local = modified["summary"]
+                    if "result" in modified:
+                        result_local = modified["result"]
+                    if "metadata" in modified:
+                        metadata_local = modified["metadata"]
+            except Exception:
+                # Hook dispatch already fails closed for timeouts/bounded hooks;
+                # unexpected import/dispatch errors should not block CLI completion.
+                pass
             gate_err = _goal_gate_error(
-                conn, tid, (summary or args.result or "").strip(), "completion",
+                conn, tid, (summary_local or result_local or "").strip(), "completion",
                 "Re-scope with kanban edit, or record the block with kanban block instead of completing.",
                 "Provide evidence matching the task's acceptance criteria.")
             if gate_err:
                 fail_msg[tid] = gate_err
                 return False
             fail_msg[tid] = f"cannot complete {tid} (unknown id or terminal state)"
-            return kb.complete_task(conn, tid, result=args.result, summary=summary, metadata=metadata,
+            return kb.complete_task(conn, tid, result=result_local, summary=summary_local, metadata=metadata_local,
                                     expected_run_id=_worker_run_id_for(tid))
 
         return _bulk_apply(ids, op, lambda tid: f"Completed {tid}", fail_msg.__getitem__)

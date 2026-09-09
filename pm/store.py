@@ -222,8 +222,8 @@ def tree_digest(root: Path) -> str:
     """Deterministic sha256 over a directory tree: walk every file, sort
     by posix relpath, hash `relpath\\0<content>` per entry. No mtimes, no
     mode bits. Symlinks contribute their LINK TARGET TEXT (os.readlink),
-    not the target's bytes — the link is the data. Directory symlinks are
-    not followed.
+    not the target's bytes — the link is the data. Directory symlinks and
+    junctions are not followed.
 
     ``__pycache__`` directories are skipped: CPython writes .pyc caches
     into them the first time the staged interpreter runs (uv venv/uv sync
@@ -233,7 +233,14 @@ def tree_digest(root: Path) -> str:
 
     files: list[tuple[str, Path]] = []
     for dirpath, dirnames, filenames in os.walk(root):
-        dirnames[:] = [d for d in sorted(dirnames) if d != "__pycache__"]
+        descend = []
+        for name in sorted(dirnames):
+            path = Path(dirpath) / name
+            if path.is_symlink() or path.is_junction():
+                files.append((path.relative_to(root).as_posix(), path))
+            elif name != "__pycache__":
+                descend.append(name)
+        dirnames[:] = descend
         for fname in filenames:
             path = Path(dirpath) / fname
             files.append((path.relative_to(root).as_posix(), path))
@@ -243,7 +250,7 @@ def tree_digest(root: Path) -> str:
     for rel, path in files:
         digest.update(rel.encode("utf-8"))
         digest.update(b"\0")
-        if path.is_symlink():
+        if path.is_symlink() or path.is_junction():
             digest.update(os.readlink(path).encode("utf-8"))
         else:
             with open(path, "rb") as f:

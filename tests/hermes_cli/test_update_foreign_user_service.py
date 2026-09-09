@@ -2,6 +2,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from hermes_cli import gateway
+from hermes_cli import update_cmd_fleet
 
 
 def test_root_update_excludes_foreign_user_service_gateway():
@@ -40,6 +41,32 @@ def test_service_pid_exclusion_includes_foreign_user_service(monkeypatch):
     )
 
     assert gateway._get_service_pids(all_profiles=True) == {17595}
+
+
+def test_update_does_not_relaunch_sibling_user_services(monkeypatch):
+    service_pids = {17595, 17596}
+    monkeypatch.setattr(gateway, "_get_service_pids", lambda all_profiles: service_pids)
+    monkeypatch.setattr(gateway, "find_gateway_pids", lambda **kwargs: [])
+    monkeypatch.setattr(gateway, "find_profile_gateway_processes", lambda **kwargs: [])
+    monkeypatch.setattr(
+        gateway,
+        "_prepare_profile_gateway_update_restart",
+        lambda *args: (_ for _ in ()).throw(AssertionError("service gateways must not be relaunched manually")),
+    )
+    outcome = update_cmd_fleet._GatewayRestartOutcome(
+        incomplete=False,
+        phase_errors=[],
+        pre_restart_gateway_pids=[],
+        restarted_services=[],
+        failed_or_stale_units=[],
+        relaunched_profiles=[],
+        externally_supervised_profiles=[],
+        killed_pids=set(),
+    )
+
+    update_cmd_fleet._restart_manual_gateways(outcome, 45.0)
+
+    assert outcome.relaunched_profiles == []
 
 
 class _BytesReader:

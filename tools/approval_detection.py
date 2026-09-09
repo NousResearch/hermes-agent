@@ -160,11 +160,19 @@ def _mask_quoted_prose(command: str) -> str:
 _SUDO_STDIN_RE = re.compile(r'(?:^|[;&|`\n]|&&|\|\||\$\()\s*sudo\s+-S\b', re.IGNORECASE)
 
 
-def _check_sudo_stdin_guard(command: str) -> tuple:
+def _check_sudo_stdin_guard(
+    command: str, sudo_password_configured: bool | None = None,
+) -> tuple:
     """Detect ``sudo -S`` without configured SUDO_PASSWORD -> (is_blocked, description). When
     SUDO_PASSWORD is set, ``_transform_sudo_command`` injects ``-S`` itself, so this guard only
     fires when the LLM wrote it explicitly."""
-    if "SUDO_PASSWORD" not in os.environ and _SUDO_STDIN_RE.search(_normalize_command_for_detection(command).lower()):
+    if sudo_password_configured is None:
+        try:
+            from agent.secret_scope import get_secret
+            sudo_password_configured = bool(get_secret("SUDO_PASSWORD", ""))
+        except Exception:
+            sudo_password_configured = False
+    if not sudo_password_configured and _SUDO_STDIN_RE.search(_normalize_command_for_detection(command).lower()):
         return (True, "sudo password guessing via stdin (sudo -S)")
     return (False, None)
 

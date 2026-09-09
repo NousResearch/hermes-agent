@@ -31,6 +31,11 @@ def _match_user_deny_rule(command: str) -> str | None:
         deny_patterns = _ctx._get_approval_config().get("deny") or []
     except Exception:
         return None
+    return _match_user_deny_globs(command, deny_patterns)
+
+
+def _match_user_deny_globs(command: str, deny_patterns) -> str | None:
+    """Pure deny-glob matcher shared with the isolated classifier."""
     globs = [p.strip() for p in deny_patterns if isinstance(p, str) and p.strip()]
     if not globs:
         return None

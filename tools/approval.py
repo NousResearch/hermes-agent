@@ -16,6 +16,7 @@ import hashlib
 import importlib
 import logging
 import os
+import subprocess
 import threading
 from typing import Optional
 
@@ -500,7 +501,9 @@ def _unattended_contexts() -> list[_Unattended]:
     return contexts
 
 
-def _unattended_deny(command: str, ctx: _Unattended) -> dict | None:
+def _unattended_deny(
+    command: str, ctx: _Unattended, dangerous_verdict: tuple | None = None,
+) -> dict | None:
     """Deny-mode handling for one unattended context (cron / -q / webhook); None = allow.
 
     Pattern detection first, then tirith so content-level threats (homograph URLs,
@@ -516,7 +519,7 @@ def _unattended_deny(command: str, ctx: _Unattended) -> dict | None:
             subject, noun="dangerous commands",
             advice="Find an alternative approach that avoids this command.")}
 
-    is_dangerous, _pk, description = detect_dangerous_command(command)
+    is_dangerous, _pk, description = dangerous_verdict or detect_dangerous_command(command)
     if is_dangerous:
         result = block(f"Command flagged as dangerous ({description})")
         if ctx.name == "single_query":
@@ -901,22 +904,64 @@ def _floor_block(command: str, *, sudo_guard: bool = False) -> dict | None:
     return _user_deny_block(command)
 
 
+def _guard_worker_failure(*, timed_out: bool) -> dict:
+    description = ("command security inspection timed out" if timed_out
+                   else "command security inspection failed")
+    result = _hardline_block_result(description)
+    result["guard_timeout" if timed_out else "guard_error"] = True
+    result["message"] += (
+        " The command was not executed. Do NOT retry the same inline command; "
+        "write large content with write_file/patch and execute only a short reviewable command."
+    )
+    return result
+
+
+def _isolated_guard(command: str, *, full: bool) -> tuple[dict | None, tuple | None, bool]:
+    """Return ``(block, dangerous verdict, isolated)`` for long commands."""
+    from tools.approval_guard_worker import classify_long_command
+
+    try:
+        verdict = classify_long_command(command, full=full)
+    except subprocess.TimeoutExpired:
+        logger.error("isolated command guard timed out")
+        return _guard_worker_failure(timed_out=True), None, True
+    except Exception:
+        logger.exception("isolated command guard failed")
+        return _guard_worker_failure(timed_out=False), None, True
+    if verdict is None:
+        return None, None, False
+    kind = verdict["kind"]
+    if kind == "hardline":
+        return _hardline_block_result(verdict["description"], command), None, True
+    if kind == "sudo_stdin":
+        return _sudo_stdin_block_result(verdict["description"]), None, True
+    if kind == "user_deny":
+        return _user_deny_block_result(verdict["pattern"]), None, True
+    if kind == "dangerous":
+        return None, (True, verdict["pattern_key"], verdict["description"]), True
+    return None, (False, None, None) if full else None, True
+
+
 def check_dangerous_command(command: str, env_type: str,
                             approval_callback=None,
                             has_host_access: bool = False) -> dict:
     """Detect a dangerous command and handle approval (pattern layer only). ``has_host_access``:
     a Docker sandbox that bind-mounts host paths must not skip approval.
     Returns ``{"approved": True/False, "message": str or None, ...}``."""
-    if _should_skip_container_guards(env_type, has_host_access=has_host_access):
-        return _user_deny_block(command) or _approved()
-    blocked = _floor_block(command)
+    skip_floors = _should_skip_container_guards(env_type, has_host_access=has_host_access)
+    blocked, dangerous_verdict, isolated = _isolated_guard(command, full=not skip_floors)
+    if blocked is not None:
+        return blocked
+    if skip_floors:
+        return _approved() if isolated else (_user_deny_block(command) or _approved())
+    blocked = None if isolated else _floor_block(command)
     if blocked is not None:
         return blocked
     if _yolo_active():
         return _approved()
     if _command_matches_permanent_allowlist(command):
         return _approved()
-    is_dangerous, pattern_key, description = detect_dangerous_command(command)
+    is_dangerous, pattern_key, description = dangerous_verdict or detect_dangerous_command(command)
     if not is_dangerous:
         return _approved()
     return _run_approval_gate(
@@ -998,10 +1043,14 @@ def check_all_command_guards(command: str, env_type: str,
     dangerous-command findings are presented as ONE combined approval request, so a gateway
     force=True replay cannot bypass one check when only the other was shown to the user.
     ``has_host_access``: a Docker sandbox with bind-mounted host paths takes the normal flow."""
-    if _should_skip_container_guards(env_type, has_host_access=has_host_access):
-        return _user_deny_block(command) or _approved()
+    skip_floors = _should_skip_container_guards(env_type, has_host_access=has_host_access)
+    blocked, dangerous_verdict, isolated = _isolated_guard(command, full=not skip_floors)
+    if blocked is not None:
+        return blocked
+    if skip_floors:
+        return _approved() if isolated else (_user_deny_block(command) or _approved())
 
-    blocked = _floor_block(command, sudo_guard=True)
+    blocked = None if isolated else _floor_block(command, sudo_guard=True)
     if blocked is not None:
         return blocked
 
@@ -1016,7 +1065,7 @@ def check_all_command_guards(command: str, env_type: str,
     # unattended context applies its configured deny/approve mode, else allow.
     if not is_cli and not is_gateway and not is_ask:
         for ctx in _unattended_contexts():
-            result = _unattended_deny(command, ctx)
+            result = _unattended_deny(command, ctx, dangerous_verdict)
             if result is not None:
                 return result
         return _approved()
@@ -1024,7 +1073,7 @@ def check_all_command_guards(command: str, env_type: str,
     # Gather findings: warnings = [(pattern_key, description, is_tirith)]. Tirith block AND warn both go through the
     # approval flow (block used to be a hard stop) so users can inspect the findings and approve.
     tirith_result = _tirith_scan(command)
-    is_dangerous, pattern_key, description = detect_dangerous_command(command)
+    is_dangerous, pattern_key, description = dangerous_verdict or detect_dangerous_command(command)
     warnings = []
     session_key = get_current_session_key()
     if tirith_result["action"] in {"block", "warn"}:

@@ -13,7 +13,6 @@ from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import Any, Callable
-from urllib.parse import quote, urlencode
 
 from agent.skill_utils import extract_skill_editorial_metadata, parse_frontmatter
 from hermes_constants import get_skills_dir
@@ -33,6 +32,7 @@ from .contract import (
     sha256_address,
 )
 from .package import PackagePolicyError, verify_content_files
+from .portal_links import portal_item_url
 from .qualification import process_due_stability_jobs
 from .store import WisdomStore
 from .review_presentation import aggregate_review_text, full_review_text
@@ -192,22 +192,14 @@ class WisdomConsumption:
         org_id = self.store.active_org_id()
         if not org_id:
             return None
-        org_slug = org_id.split(":", 1)[-1]
         base = str(
             self.config.get("portal_url") or "https://portal.nousresearch.com"
         ).rstrip("/")
         if draft_id:
-            return (
-                f"{base}/orgs/{quote(org_slug, safe='')}/wisdom/review/"
-                f"{quote(draft_id, safe='')}"
-            )
+            return portal_item_url(base, org_id, "review", draft_id)
         if not skill_id:
             return None
-        url = (
-            f"{base}/orgs/{quote(org_slug, safe='')}/wisdom/skills/"
-            f"{quote(skill_id, safe='')}"
-        )
-        return f"{url}?{urlencode({'version': version})}" if version else url
+        return portal_item_url(base, org_id, "skills", skill_id, version=version)
 
     def _notification_catalog(
         self, events: list[dict[str, Any]]

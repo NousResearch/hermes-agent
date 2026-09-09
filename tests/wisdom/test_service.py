@@ -973,7 +973,7 @@ def test_telegram_candidate_creates_an_owner_private_draft_and_portal_link(
         "skill_name": "telegram-skill",
         "qualification": "high_usage",
         "state": "ready",
-        "portal_url": ("https://portal.test/orgs/wisdom-local/wisdom/review/draft-1"),
+        "portal_url": ("https://portal.test/wisdom/review/draft-1?org_id=nas_organisation%3Awisdom-local"),
         "created": True,
     }
     assert fake.uploaded > 0
@@ -1634,7 +1634,7 @@ def test_version_detail_resolves_metadata_and_profile_portal_url(
 
     assert detail["version"]["author_description"] == "Release 1"
     assert detail["portal_url"] == (
-        "http://127.0.0.1:3111/orgs/wisdom-local/wisdom/skills/skill-1?version=1"
+        "http://127.0.0.1:3111/wisdom/skills/skill-1?org_id=nas_organisation%3Awisdom-local&version=1"
     )
 
 

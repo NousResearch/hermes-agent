@@ -437,7 +437,7 @@ def test_returned_draft_invalidates_receipt_and_preserves_moderator_note(
     notification = manager.notifications()["events"][0]
     assert notification["category"] == "publication_decision"
     assert notification["skill_name"] == "owner-skill"
-    assert notification["portal_url"].endswith("/orgs/org-1/wisdom/review/draft-1")
+    assert notification["portal_url"].endswith("/wisdom/review/draft-1?org_id=org-1")
 
 
 def test_portal_submission_retires_exact_candidate_without_final_notice(
@@ -643,7 +643,7 @@ def test_feed_cursor_is_durable_deduplicated_and_telegram_uses_home_target(
         [
             {
                 "label": "View",
-                "url": "https://portal.nousresearch.com/orgs/org-1/wisdom/skills/skill-1?version=2",
+                "url": "https://portal.nousresearch.com/wisdom/skills/skill-1?org_id=org-1&version=2",
             }
         ]
     ]
@@ -697,7 +697,7 @@ def test_telegram_update_available_offers_verified_update_action(
         [
             {
                 "label": "View",
-                "url": "https://portal.nousresearch.com/orgs/org-1/wisdom/skills/skill-1?version=2",
+                "url": "https://portal.nousresearch.com/wisdom/skills/skill-1?org_id=org-1&version=2",
             },
             {
                 "label": "Update",
@@ -756,7 +756,7 @@ def test_uninstalled_org_skill_update_remains_an_installable_notification(
         [
             {
                 "label": "View",
-                "url": "https://portal.nousresearch.com/orgs/org-1/wisdom/skills/remote-skill?version=2",
+                "url": "https://portal.nousresearch.com/wisdom/skills/remote-skill?org_id=org-1&version=2",
             },
             {
                 "label": "Install",
@@ -843,7 +843,7 @@ def test_notifications_resolve_org_skill_names_filter_noise_and_deep_link(
             "version": 3,
             "state": None,
             "moderation_note": None,
-            "portal_url": "http://127.0.0.1:3111/orgs/org-1/wisdom/skills/remote-skill?version=3",
+            "portal_url": "http://127.0.0.1:3111/wisdom/skills/remote-skill?org_id=org-1&version=3",
             "occurred_at": "2026-08-24T00:00:00Z",
             "security_check": None,
             "professionalism_check": None,
@@ -864,7 +864,7 @@ def test_notifications_resolve_org_skill_names_filter_noise_and_deep_link(
         [
             {
                 "label": "View",
-                "url": "http://127.0.0.1:3111/orgs/org-1/wisdom/skills/remote-skill?version=3",
+                "url": "http://127.0.0.1:3111/wisdom/skills/remote-skill?org_id=org-1&version=3",
             },
             {
                 "label": "Install",
@@ -934,7 +934,7 @@ def test_telegram_public_home_excludes_device_state_and_mutation_controls(
         [
             {
                 "label": "View",
-                "url": "https://portal.nousresearch.com/orgs/org-1/wisdom/skills/remote-skill?version=3",
+                "url": "https://portal.nousresearch.com/wisdom/skills/remote-skill?org_id=org-1&version=3",
             }
         ]
     ]
@@ -1055,7 +1055,7 @@ def test_slack_public_home_only_emits_collective_publication_links(
         [
             {
                 "label": "View in Portal",
-                "url": "https://portal.nousresearch.com/orgs/org-1/wisdom/skills/remote-skill?version=3",
+                "url": "https://portal.nousresearch.com/wisdom/skills/remote-skill?org_id=org-1&version=3",
             }
         ]
     ]

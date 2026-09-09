@@ -585,7 +585,7 @@ def test_inspection_through_real_service_and_typed_version_response(
             "professionalism_check": {"status": "unavailable"},
         },
     })
-    monkeypatch.setattr("hermes_wisdom.service.portal_base_url", lambda: None)
+    monkeypatch.setattr("hermes_wisdom.service.portal_base_url", lambda: "https://portal.test")
     service = WisdomService(store=instance.service.store, client=client)
     evidence = WisdomMediation(service).inspect("org", job)
     client.version.assert_called_once_with("skill", 2)

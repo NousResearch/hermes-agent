@@ -17,7 +17,7 @@ from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path, PurePosixPath
 from typing import Any
-from urllib.parse import parse_qs, quote, urlparse
+from urllib.parse import parse_qs, urlparse
 
 from hermes_constants import get_hermes_home, get_skills_dir
 from agent.skill_utils import load_skill_editorial_metadata
@@ -54,6 +54,7 @@ from .package import (
     prepare_package,
     verify_content_files,
 )
+from .portal_links import portal_item_url
 from .professionalism import (
     enqueue_review,
     exact_utf8_package,
@@ -1359,11 +1360,7 @@ class WisdomService:
         org_id = self.store.active_org_id()
         if not org_id:
             raise PackagePolicyError("Collective Wisdom is not set up for this profile")
-        org_slug = org_id.split(":", 1)[-1]
-        return (
-            f"{portal_base_url()}/orgs/{quote(org_slug, safe='')}/wisdom/review/"
-            f"{quote(draft_id, safe='')}"
-        )
+        return portal_item_url(portal_base_url(), org_id, "review", draft_id)
 
     def portal_skill_url(
         self, skill_id: str, *, version: int | None = None
@@ -1372,12 +1369,9 @@ class WisdomService:
         org_id = self.store.active_org_id()
         if not org_id:
             return None
-        org_slug = org_id.split(":", 1)[-1]
-        url = (
-            f"{portal_base_url()}/orgs/{quote(org_slug, safe='')}/wisdom/skills/"
-            f"{quote(skill_id, safe='')}"
+        return portal_item_url(
+            portal_base_url(), org_id, "skills", skill_id, version=version
         )
-        return f"{url}?version={version}" if version is not None else url
 
     def _candidate_event_context(
         self, event_id: str

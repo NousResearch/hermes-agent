@@ -772,16 +772,22 @@ def _resolve_command_cwd(
     Same guard class as the env-creation sanitizers (#50636, #54447); this is the per-command sibling site.
     """
     if workdir:
-        from agent.runtime_cwd import resolve_kanban_worker_cwd
+        # Container backends run the command inside their own filesystem namespace:
+        # HERMES_KANBAN_WORKSPACE and os.path.isdir/commonpath below all resolve against
+        # the HOST filesystem, so mapping an explicit in-container workdir (e.g.
+        # /workspace/subdir) through them would silently substitute the host workspace
+        # root and drop the subdirectory. Pass it through verbatim instead.
+        if not _is_container_backend(env_type):
+            from agent.runtime_cwd import resolve_kanban_worker_cwd
 
-        worker_cwd = resolve_kanban_worker_cwd(workdir)
-        if worker_cwd is not None:
-            # A model commonly sends ``workdir="."``. Passing that relative
-            # value through lets a stale profile-owned LocalEnvironment
-            # interpret it against the stable checkout instead of the
-            # dispatcher-owned task worktree. Resolve it to an absolute path
-            # while the worker process is still anchored in its workspace.
-            return os.path.abspath(os.path.expanduser(worker_cwd))
+            worker_cwd = resolve_kanban_worker_cwd(workdir)
+            if worker_cwd is not None:
+                # A model commonly sends ``workdir="."``. Passing that relative
+                # value through lets a stale profile-owned LocalEnvironment
+                # interpret it against the stable checkout instead of the
+                # dispatcher-owned task worktree. Resolve it to an absolute path
+                # while the worker process is still anchored in its workspace.
+                return os.path.abspath(os.path.expanduser(worker_cwd))
         return workdir
     recorded = get_session_cwd(session_key)
     if recorded and _is_container_backend(env_type) and _is_unusable_container_cwd(recorded):

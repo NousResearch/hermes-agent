@@ -1,12 +1,17 @@
 import { useQuery } from '@tanstack/react-query'
 import { useEffect, useMemo, useRef, useState } from 'react'
 
-import { getElevenLabsVoices, getHermesConfigSchema, saveHermesConfig } from '@/hermes'
+import {
+  getElevenLabsVoices,
+  getHermesConfigSchema,
+  type ProfileScope,
+  saveHermesConfigRecord
+} from '@/hermes'
 import { useI18n } from '@/i18n'
 import { notifyError } from '@/store/notifications'
 import type { HermesConfigRecord } from '@/types/hermes'
 
-import { setHermesConfigCache, useHermesConfigRecord } from '../hooks/use-config-record'
+import { hermesConfigCacheWriter, useHermesConfigRecord } from '../hooks/use-config-record'
 
 import { ConfigField } from './config-field'
 import { SECTIONS } from './constants'
@@ -26,14 +31,20 @@ export function voiceProviderKeys(section: 'tts' | 'stt', providerKey: string): 
 /**
  * Inline voice/model settings for one TTS (or STT) provider, rendered inside
  * the Capabilities → toolset config panel underneath the provider's API-key
- * fields. Reads and writes the same `tts.<provider>.*` config keys as
+ * fields. Reads and writes the same `<section>.<provider>.*` config keys as
  * Settings → Voice (shared ConfigField renderer + enum/free-input rules), with
  * the same debounced autosave through the shared config cache.
  */
-export function VoiceProviderFields({ section, providerKey }: { section: 'tts' | 'stt'; providerKey: string }) {
+interface VoiceProviderFieldsProps {
+  section: 'tts' | 'stt'
+  providerKey: string
+  profile?: ProfileScope
+}
+
+export function VoiceProviderFields({ section, providerKey, profile }: VoiceProviderFieldsProps) {
   const { t } = useI18n()
   const keys = useMemo(() => voiceProviderKeys(section, providerKey), [section, providerKey])
-  const { data: loadedConfig } = useHermesConfigRecord()
+  const { data: loadedConfig } = useHermesConfigRecord(profile)
 
   const { data: schemaResponse } = useQuery({
     queryKey: ['hermes-config-schema'],
@@ -64,14 +75,14 @@ export function VoiceProviderFields({ section, providerKey }: { section: 'tts' |
     }
 
     const timeout = window.setTimeout(() => {
-      void saveHermesConfig(config)
-        .then(() => setHermesConfigCache(config))
+      void saveHermesConfigRecord(config, profile)
+        .then(() => hermesConfigCacheWriter(profile)(config))
         .catch(err => notifyError(err, t.settings.config.autosaveFailed))
     }, 550)
 
     return () => window.clearTimeout(timeout)
     // eslint-disable-next-line react-hooks/exhaustive-deps -- copy is stable; avoid re-scheduling autosave on locale change
-  }, [config, saveVersion])
+  }, [config, saveVersion, profile])
 
   // ElevenLabs cloned/library voices from the live account, when available —
   // mirrors the Settings → Voice dynamic voice list.

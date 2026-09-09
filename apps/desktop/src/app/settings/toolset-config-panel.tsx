@@ -890,7 +890,12 @@ export function ToolsetConfigPanel({ toolset, onConfiguredChange, profile }: Too
                   // Voice/model settings for this backend (tts.<key>.*) —
                   // the same fields Settings → Voice renders, inline so the
                   // Capabilities panel is a complete setup surface.
-                  <VoiceProviderFields providerKey={provider.tts_provider} section="tts" />
+                  <VoiceProviderFields profile={profile} providerKey={provider.tts_provider} section="tts" />
+                )}
+                {toolset === 'stt' && provider.stt_provider && (
+                  // Local model/runtime settings for this backend — setup must
+                  // be complete before the provider-select endpoint activates it.
+                  <VoiceProviderFields profile={profile} providerKey={provider.stt_provider} section="stt" />
                 )}
                 {MODEL_CATALOG_TOOLSETS.has(toolset) && (
                   <ModelCatalogPicker

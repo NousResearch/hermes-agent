@@ -376,10 +376,11 @@ async def get_toolset_config(name: str, profile: Optional[str] = None):
                         # row's backend key + capabilities for per-capability selection.
                         row["web_backend"] = prov["web_backend"]
                         row["capabilities"] = web_provider_capabilities(prov["web_backend"])
-                    if name == "tts" and prov.get("tts_provider"):
-                        # Key written to tts.provider; doubles as the config section
-                        # (tts.<key>.*) holding the provider's voice/model settings.
-                        row["tts_provider"] = prov["tts_provider"]
+                    provider_marker = f"{name}_provider"
+                    if name in {"stt", "tts"} and prov.get(provider_marker):
+                        # Key written to <toolset>.provider; doubles as the config
+                        # section holding this provider's voice/model settings.
+                        row[provider_marker] = prov[provider_marker]
                     providers.append(row)
             payload = {
                 "name": name, "has_category": cat is not None, "providers": providers,
@@ -485,7 +486,8 @@ async def select_toolset_provider(
     entitlement (``needs_nous_auth`` + ``feature``): the GUI has no inline
     login, so an unentitled selection would write config and never activate.
     """
-    from hermes_cli.tools_config import apply_provider_selection, web_provider_capabilities
+    from hermes_cli.tools_config import (
+        apply_provider_selection, provider_readiness_status, web_provider_capabilities)
     from hermes_cli.nous_subscription import (
         MANAGED_FEATURE_COVERAGE_CATEGORY, get_nous_subscription_features)
 
@@ -521,6 +523,11 @@ async def select_toolset_provider(
                         raise _bad_request(f"{body.provider} does not support {body.capability}")
                     _dict_section(config, "web")[f"{body.capability}_backend"] = backend
                 else:
+                    prov = _provider_row(config)
+                    if prov is not None and prov.get("config_setup"):
+                        status = provider_readiness_status(prov, config)
+                        if status == "needs_setup":
+                            raise _bad_request(f"Configure {body.provider} before selecting it")
                     try:
                         apply_provider_selection(name, body.provider, config)
                     except KeyError as exc:

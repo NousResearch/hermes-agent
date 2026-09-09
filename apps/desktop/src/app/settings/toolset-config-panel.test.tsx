@@ -65,6 +65,7 @@ vi.mock('@/hermes', () => ({
   getHermesConfigRecord: () => getHermesConfigRecord(),
   getHermesConfigSchema: () => getHermesConfigSchema(),
   saveHermesConfig: (config: unknown) => saveHermesConfig(config),
+  saveHermesConfigRecord: (config: unknown, profile?: unknown) => saveHermesConfig(config, profile),
   getElevenLabsVoices: () => getElevenLabsVoices(),
   // @/store/profile (pulled in transitively via use-config-record's
   // normalizeProfileKey import) calls this at module-init; the full-replacement
@@ -198,6 +199,46 @@ describe('ToolsetConfigPanel', () => {
     await waitFor(() => expect(saveHermesConfig).toHaveBeenCalled(), { timeout: 3000 })
     const saved = saveHermesConfig.mock.calls.at(-1)?.[0] as Record<string, Record<string, Record<string, string>>>
     expect(saved.tts.openai.voice).toBe('marin')
+  })
+
+  it('renders every local SenseVoice setup field in the STT provider row', async () => {
+    getToolsetConfig.mockResolvedValue(
+      config({
+        name: 'stt',
+        providers: [
+          {
+            name: 'SenseVoice',
+            badge: 'local · free',
+            tag: 'Cantonese + English GGUF',
+            env_vars: [],
+            post_setup: null,
+            requires_nous_auth: false,
+            is_active: false,
+            status: 'needs_setup',
+            stt_provider: 'sensevoice'
+          }
+        ]
+      })
+    )
+    getHermesConfigRecord.mockResolvedValue({
+      stt: {
+        sensevoice: {
+          binary: 'llama-funasr-sensevoice',
+          model: 'sense-voice-small.gguf',
+          vad_model: 'fsmn-vad.gguf',
+          backend: 'cpu',
+          timeout_seconds: 120
+        }
+      }
+    })
+
+    render(<ToolsetConfigPanel onConfiguredChange={vi.fn()} toolset="stt" />)
+
+    expect(await screen.findByDisplayValue('llama-funasr-sensevoice')).toBeTruthy()
+    expect(screen.getByDisplayValue('sense-voice-small.gguf')).toBeTruthy()
+    expect(screen.getByDisplayValue('fsmn-vad.gguf')).toBeTruthy()
+    expect(screen.getByText('Cpu')).toBeTruthy()
+    expect(screen.getByDisplayValue('120')).toBeTruthy()
   })
 
   it('renders no inline voice fields for rows without tts_provider (older backend)', async () => {

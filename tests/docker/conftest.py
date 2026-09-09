@@ -19,6 +19,8 @@ from collections.abc import Iterator
 
 import pytest
 
+from tests.docker.ownership import container_target, register_container, release_container
+
 IMAGE_TAG = os.environ.get("HERMES_TEST_IMAGE", "hermes-agent-harness:latest")
 
 
@@ -75,11 +77,15 @@ def container_name(request) -> Iterator[str]:
     """Generate a unique container name and ensure cleanup on test exit."""
     safe = request.node.name.replace("[", "_").replace("]", "_")
     name = f"hermes-test-{safe}"
-    yield name
-    subprocess.run(
-        ["docker", "rm", "-f", name],
-        capture_output=True, timeout=10,
-    )
+    try:
+        yield name
+    finally:
+        # Revoke gateway-spawn authority before cleanup, including failed tests.
+        target = release_container(name)
+        subprocess.run(
+            ["docker", "rm", "-f", target],
+            capture_output=True, timeout=10,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -116,7 +122,7 @@ def docker_exec(
     capabilities (e.g. reading /proc/1/exe, manipulating ownership).
     Most tests should use the default.
     """
-    cmd = ["docker", "exec", "-u", user, *extra_docker_args, container, *args]
+    cmd = ["docker", "exec", "-u", user, *extra_docker_args, container_target(container), *args]
     return subprocess.run(
         cmd, capture_output=True, text=True, timeout=timeout,
     )
@@ -194,7 +200,8 @@ def start_container(
     for e in env:
         args.extend(["-e", e])
     args.extend([image, *cmd.split()])
-    subprocess.run(args, check=True, capture_output=True, timeout=timeout)
+    result = subprocess.run(args, check=True, capture_output=True, text=True, timeout=timeout)
+    register_container(name, result.stdout.strip())
     wait_for_container_ready(name)
     return name
 

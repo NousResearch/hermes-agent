@@ -581,6 +581,58 @@ def _scoped_recovery_key() -> str:
     return _startup_env_secret("MATRIX_RECOVERY_KEY")
 
 
+# --- LaTeX math ($...$, $$...$$) -> Element data-mx-maths markup ---
+# Element (feature_latex_maths) typesets <div|span data-mx-maths="TEX"> at display time.
+# Our sanitizer allowlists tags/attrs, so data-mx-maths cannot pass through HTML
+# sanitization directly. Instead, math is swapped for opaque sentinel tokens before
+# Markdown conversion (protecting TeX from escaping) and expanded back to math
+# markup after sanitization. Tokens are plain printable text with no special
+# HTML/Markdown meaning, so both the Markdown converter and the sanitizer
+# pass them through verbatim.
+_TEX_TOKEN_RE = re.compile(r"HERMESTEX(?:DISPLAY|INLINE)(\d+)HERMESTEXEND")
+_TEX_DISPLAY_TOKEN = "HERMESTEXDISPLAY%dHERMESTEXEND"
+_TEX_INLINE_TOKEN = "HERMESTEXINLINE%dHERMESTEXEND"
+
+
+def _latex_to_tokens(text: str) -> tuple[str, list[tuple[str, str]]]:
+    """Replace ``$$...$$``/``$...$`` with sentinel tokens.
+
+    Returns the tokenized text plus an ordered ``(tag, tex)`` store, where tag
+    is ``div`` for display math and ``span`` for inline math. Dollars that do
+    not form a pair (prices, literals) are left untouched.
+    """
+    if not text or "$" not in text:
+        return text, []
+    store: list[tuple[str, str]] = []
+
+    def _sub_display(match: re.Match[str]) -> str:
+        store.append(("div", match.group(1).strip()))
+        return _TEX_DISPLAY_TOKEN % (len(store) - 1)
+
+    def _sub_inline(match: re.Match[str]) -> str:
+        store.append(("span", match.group(1).strip()))
+        return _TEX_INLINE_TOKEN % (len(store) - 1)
+
+    text = re.sub(r"\$\$([^\n$]+?)\$\$", _sub_display, text)
+    text = re.sub(r"(?<![\\$\w])\$([^\n$]+?)\$(?!\w)", _sub_inline, text)
+    return text, store
+
+
+def _tokens_to_mx_maths(html: str, store: list[tuple[str, str]]) -> str:
+    """Expand sentinel tokens into ``data-mx-maths`` markup (TeX HTML-escaped)."""
+
+    def _expand(match: re.Match[str]) -> str:
+        idx = int(match.group(1))
+        if idx >= len(store):
+            # Not one of our tokens (user-typed text that collides with the
+            # sentinel format) — leave it verbatim.
+            return match.group(0)
+        tag, tex = store[idx]
+        escaped = _html_escape(tex, quote=True)
+        return f'<{tag} data-mx-maths="{escaped}">{escaped}</{tag}>'
+
+    return _TEX_TOKEN_RE.sub(_expand, html)
+
 def _sanitize_matrix_html(html: str) -> str:
     sanitizer = _MatrixHtmlSanitizer()
     try:
@@ -1478,11 +1530,12 @@ class MatrixAdapter(BasePlatformAdapter):
 
     async def send_multiple_images(
         self, chat_id: str, images: list[tuple[str, str]], metadata: Optional[Dict[str, Any]] = None,
-        human_delay: float = 0.0) -> None:
+        human_delay: float = 0.0) -> SendResult:
         if not images:
-            return
+            return SendResult(success=False, error="no images to send")
         from urllib.parse import unquote as _unquote
         total = len(images)
+        delivered = False
         for idx, (image_url, alt_text) in enumerate(images, start=1):
             if human_delay > 0 and idx > 1:
                 await asyncio.sleep(human_delay)
@@ -1494,6 +1547,8 @@ class MatrixAdapter(BasePlatformAdapter):
                 result = await self.send_image(chat_id=chat_id, image_url=image_url, caption=caption, metadata=metadata)
             if not result.success:
                 logger.warning("Matrix: failed to send image %d/%d: %s", idx, total, result.error)
+            delivered = delivered or result.success
+        return SendResult(success=delivered, error=None if delivered else "all images failed to send")
 
     async def send_document(
         self, chat_id: str, file_path: str, caption: Optional[str] = None, file_name: Optional[str] = None,
@@ -2752,6 +2807,7 @@ class MatrixAdapter(BasePlatformAdapter):
     def _markdown_to_html(self, text: str) -> str:
         """Markdown → org.matrix.custom.html via ``markdown`` when installed, else the regex fallback."""
         text = _pre_sanitize_matrix_markdown(text)
+        text, tex_store = _latex_to_tokens(text)
         with suppress(ImportError):
             import markdown as _md
             md = _md.Markdown(extensions=["fenced_code", "tables", "nl2br", "sane_lists"])
@@ -2761,8 +2817,8 @@ class MatrixAdapter(BasePlatformAdapter):
             md.reset()
             if html.count("<p>") == 1:
                 html = html.replace("<p>", "").replace("</p>", "")
-            return _sanitize_matrix_html(html)
-        return _sanitize_matrix_html(self._markdown_to_html_fallback(text))
+            return _tokens_to_mx_maths(_sanitize_matrix_html(html), tex_store)
+        return _tokens_to_mx_maths(_sanitize_matrix_html(self._markdown_to_html_fallback(text)), tex_store)
 
     @staticmethod
     def _sanitize_link_url(url: str) -> str:
@@ -2868,9 +2924,11 @@ async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_f
         payload = {"msgtype": "m.text", "body": message}
         with suppress(ImportError):
             import markdown as _md
-            html = _md.markdown(message, extensions=["fenced_code", "tables"])
+            tokenized, tex_store = _latex_to_tokens(message)
+            html = _md.markdown(tokenized, extensions=["fenced_code", "tables"])
             payload["format"] = "org.matrix.custom.html"
-            payload["formatted_body"] = re.sub(r"<h[1-6]>(.*?)</h[1-6]>", r"<strong>\1</strong>", html)
+            payload["formatted_body"] = _tokens_to_mx_maths(
+                re.sub(r"<h[1-6]>(.*?)</h[1-6]>", r"<strong>\1</strong>", html), tex_store)
         # asyncio.wait_for, not aiohttp.ClientTimeout: cron invokes this via
         # run_coroutine_threadsafe ("Timeout context manager should be used inside a task").
         async with aiohttp.ClientSession() as session:

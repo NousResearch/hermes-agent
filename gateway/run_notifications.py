@@ -1416,6 +1416,15 @@ class GatewayNotificationsMixin:
         the group, None when nothing is deliverable here (retry siblings requeued)."""
         from gateway.run import _format_gateway_process_notification
         from tools.process_registry import process_registry as _pr
+        # API delivery does not start a model turn, so there is nothing to coalesce.
+        # Keep each unit's stable identity with its row across partial delivery/retry.
+        if group and group[0].get("origin_session_id"):
+            outcomes = []
+            for evt in group:
+                text = _format_gateway_process_notification(evt)
+                if text:
+                    outcomes.append(await self._deliver_completion_notification(text, evt))
+            return False if False in outcomes else True
         deliverable: list[tuple[dict, str]] = []
         for evt in group:
             synth_text = _format_gateway_process_notification(evt)

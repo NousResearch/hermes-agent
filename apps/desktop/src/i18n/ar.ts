@@ -1781,6 +1781,7 @@ export const ar = defineLocale({
     projects: {
       sectionLabel: 'المشاريع',
       home: 'الرئيسية',
+      autoDiscovered: 'مكتشف تلقائيًا',
       newButton: 'مشروع جديد',
       createTitle: 'مشروع جديد',
       createDesc: 'سمِّ مساحة العمل وأضف مجلدا أو أكثر.',
@@ -2697,6 +2698,7 @@ export const ar = defineLocale({
         streaming: 'خطأ في اتصال البث'
       },
       errorRetry: 'إعادة المحاولة',
+      errorStartNewSession: 'بدء جلسة جديدة',
       errorSwitchProvider: 'تبديل المزوّد',
       errorOpenLogs: 'فتح السجلات',
       errorOpenLogsFailed: 'تعذّر فتح مجلد السجلات',

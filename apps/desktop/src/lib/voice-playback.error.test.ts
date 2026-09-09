@@ -66,6 +66,7 @@ it.each([false, true])('surfaces provider failure without replay (audio started=
   if (partial) {
     Socket.latest.onmessage?.({ data: new Int16Array([10, 20]).buffer })
   }
+
   Socket.latest.onmessage?.({ data: JSON.stringify({ type: 'error', message: 'Speech synthesis failed.' }) })
 
   await expect(session!.done).resolves.toBe('done')

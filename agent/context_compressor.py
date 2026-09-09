@@ -1457,7 +1457,25 @@ def _sum_clarify(name, args, content, content_len, line_count):
     # min_prune_chars guard and skips the >=200-char dedup.
     max_summary_chars = _PRUNE_MIN_CHARS - 1
     truncation_marker = "...[truncated]"
-    response = _json_dict(content).get("user_response")
+    parsed = _json_dict(content)
+    response = parsed.get("user_response")
+    # Batch clarify (``questions=[...]``) nests each answer inside ``responses[].user_response``
+    # rather than the top level; without this every batch answer was lost and the summarizer only
+    # saw "asked user a question" (#106077).
+    if response is None:
+        batch_responses = parsed.get("responses")
+        if isinstance(batch_responses, list) and batch_responses:
+            collected = []
+            for entry in batch_responses:
+                if not isinstance(entry, dict):
+                    continue
+                single = entry.get("user_response")
+                # multi_select emits a list of strings; flatten it so the summary keeps every choice.
+                if isinstance(single, str) and single:
+                    collected.append(single)
+                elif isinstance(single, list) and all(isinstance(s, str) and s for s in single):
+                    collected.extend(single)
+            response = collected if collected else None
     is_answer_shaped = (isinstance(response, str) and bool(response)) or (
         isinstance(response, list) and bool(response) and all(isinstance(s, str) and s for s in response)
     )

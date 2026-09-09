@@ -454,19 +454,14 @@ export const en: Translations = {
       failed: 'failed',
       empty: 'No desktop plugins installed yet.',
       kinds: { bundled: 'bundled', disk: 'on disk', runtime: 'runtime' },
+      agentHalfMissing: 'agent half missing here',
+      agentHalfMissingTip:
+        'This is the desktop half of a bundled plugin, but its agent half is not installed on the currently connected backend/profile. Install it from Capabilities → Plugins.',
       agent: {
         title: 'Agent plugins',
-        blurb:
-          'Plugins you installed into the Hermes backend — tools, skills, MCP servers, hooks, and slash commands. Portable ones are Agent Plugins packages (skills + MCP bundles that work in other agents too). Toggles apply to new sessions.',
-        appliesTo: 'Applies to:',
-        empty: 'No agent plugins installed yet.',
-        loadFailed: 'Could not load agent plugins',
-        portable: 'portable',
-        search: 'Search plugins…',
-        noMatches: 'No plugins match your search.',
-        toggleFailed: (name: string) => `Could not toggle ${name}`,
-        updateBackendToManage: 'Update the Hermes backend to manage this plugin from Desktop.',
-        sources: { bundled: 'bundled', user: 'user', git: 'git', project: 'project', entrypoint: 'pip' }
+        movedToCapabilities:
+          'Agent plugins are managed per profile in Capabilities — installed list, toggles, and the plugin catalog live there.',
+        openCapabilities: 'Open Capabilities → Plugins'
       },
       installModal: {
         installFromGit: 'Install from Git',
@@ -480,6 +475,15 @@ export const en: Translations = {
         desktopLabel: 'Desktop UI',
         agentTargetLocal: profile => `Installs into the ${profile} backend (~/.hermes/plugins/)`,
         agentTargetRemote: profile => `Installs into the connected ${profile} backend`,
+        catalogPinned: (name, sha) =>
+          `Hermes catalog entry "${name}" — the agent component installs at the reviewed pin${sha ? ` ${sha}` : ''}, not the branch tip.`,
+        reviewedHeading: 'Reviewed catalog entry',
+        reviewedIntro:
+          'This entry was human-reviewed at its pinned commit. You can still inspect the exact code below.',
+        restartToApply: 'Restart the gateway for the plugin to take effect.',
+        restartNow: 'Restart gateway',
+        missingEnvAction: 'Set it up',
+        alreadyInstalled: (name: string) => `${name} is already installed.`,
         desktopTarget: "Installs into this app's local desktop-plugins folder",
         desktopOnlyNote: 'Desktop-only packages do not install a backend agent plugin.',
         insecureWarning: 'This URL uses an insecure or local scheme. Prefer https:// or git@ for production installs.',
@@ -1504,6 +1508,27 @@ export const en: Translations = {
     archive: 'Archive',
     skillArchivedTitle: 'Skill archived',
     skillArchivedMessage: 'Restorable via hermes curator restore.',
+    tabPlugins: 'Plugins',
+    plugins: {
+      empty: 'No agent plugins installed for this profile',
+      emptyHint: 'Browse the catalog below and install a reviewed plugin with one click.',
+      loadFailed: 'Could not load agent plugins',
+      toggleFailed: (name: string) => `Could not toggle ${name}`,
+      legacyBackend: 'This backend predates key-addressed plugin toggles — update Hermes to manage it here.',
+      portableBadge: 'portable',
+      catalogTitle: 'Plugin catalog',
+      catalogBrowse: 'Browse',
+      catalogHide: 'Hide the catalog browser',
+      catalogHint:
+        'Hit "+ Add to this Agent" on any plugin — reviewed entries install at their pinned commit into the selected profile. Bundled agent+desktop plugins offer both halves.',
+      alreadyInstalled: (name: string) => `${name} is already installed in this profile.`,
+      catalogProvenance: (sha: string) => `Installed from the Hermes catalog${sha ? ` at pin ${sha}` : ''}.`,
+      tierOfficial: 'official',
+      tierCommunity: 'community',
+      updateToPin: (sha: string) => `Update to ${sha}`,
+      updateFailed: (name: string) => `Could not update ${name}`,
+      updated: (name: string) => `${name} updated to the current catalog pin. Restart the gateway to apply.`
+    },
     officialCatalog: 'Available to install',
     officialPill: 'Official',
     hub: {
@@ -2414,6 +2439,7 @@ export const en: Translations = {
     projects: {
       sectionLabel: 'Projects',
       home: 'Home',
+      autoDiscovered: 'Auto-discovered',
       newButton: 'New project',
       createTitle: 'New project',
       createDesc: 'Name a workspace and add one or more folders.',
@@ -3550,6 +3576,7 @@ export const en: Translations = {
         streaming: 'Streaming connection error'
       },
       errorRetry: 'Retry',
+      errorStartNewSession: 'Start new session',
       errorSwitchProvider: 'Switch provider',
       errorOpenLogs: 'Open logs',
       errorOpenLogsFailed: 'Could not open the logs folder',

@@ -104,6 +104,29 @@ class TestModelResolution:
         assert meta["quality"] == "low"
 
 
+    def test_caller_model_overrides_scoped_config(self, tmp_path, monkeypatch):
+        """The image_generate dispatcher forwards the `hermes tools` pick (``image_gen.model``) as
+        the ``model`` kwarg; it must win over a scoped ``image_gen.openai.model`` left behind."""
+        import yaml
+        monkeypatch.delenv("OPENAI_IMAGE_MODEL", raising=False)
+        (tmp_path / "config.yaml").write_text(
+            yaml.safe_dump({"image_gen": {"openai": {"model": "gpt-image-2.5-sunburst"}}})
+        )
+        model_id, meta = openai_plugin._resolve_model("gpt-image-2.5-flare")
+        assert model_id == "gpt-image-2.5-flare"
+        assert meta["api_model"] == "gpt-image-2.5-flare"
+
+    def test_unknown_caller_model_falls_back_to_config(self, tmp_path, monkeypatch):
+        """An id from another backend left in ``image_gen.model`` never reaches OpenAI."""
+        import yaml
+        monkeypatch.delenv("OPENAI_IMAGE_MODEL", raising=False)
+        (tmp_path / "config.yaml").write_text(
+            yaml.safe_dump({"image_gen": {"openai": {"model": "gpt-image-2-low"}}})
+        )
+        model_id, _ = openai_plugin._resolve_model("fal-ai/flux-2/klein/9b")
+        assert model_id == "gpt-image-2-low"
+
+
 # ── Generate ────────────────────────────────────────────────────────────────
 
 
@@ -206,6 +229,53 @@ class TestGenerate:
         assert call.call_args.kwargs["model"] == api_model
         assert "response_format" not in call.call_args.kwargs
         assert Path(result["image"]).read_bytes() == bytes.fromhex(_PNG_HEX)
+
+    def test_model_kwarg_reaches_image_request(self, provider, monkeypatch, tmp_path):
+        """``generate(model=...)`` selects the tier even when a scoped config key disagrees."""
+        import yaml
+
+        monkeypatch.delenv("OPENAI_IMAGE_MODEL", raising=False)
+        (tmp_path / "config.yaml").write_text(yaml.safe_dump({
+            "image_gen": {"openai": {"model": "gpt-image-2.5-sunburst-high"}}
+        }))
+        fake_client = MagicMock()
+        fake_client.images.generate.return_value = _fake_response(b64=_b64_png())
+
+        with _patched_openai(fake_client):
+            result = provider.generate("a cat", model="gpt-image-2.5-flare-low")
+
+        assert result["success"] is True
+        assert result["model"] == "gpt-image-2.5-flare-low"
+        call_kwargs = fake_client.images.generate.call_args.kwargs
+        assert call_kwargs["model"] == "gpt-image-2.5-flare"
+        assert call_kwargs["quality"] == "low"
+
+    def test_tool_dispatch_pick_wins_over_scoped_config(self, provider, monkeypatch, tmp_path):
+        """End to end through ``image_generate`` dispatch: the model `hermes tools` / the Desktop
+        picker wrote to ``image_gen.model`` is the one requested, not a stale
+        ``image_gen.openai.model``."""
+        import json
+        import yaml
+        import tools.image_generation_tool as image_tool
+
+        monkeypatch.delenv("OPENAI_IMAGE_MODEL", raising=False)
+        (tmp_path / "config.yaml").write_text(yaml.safe_dump({
+            "image_gen": {
+                "provider": "openai",
+                "model": "gpt-image-2.5-flare",
+                "openai": {"model": "gpt-image-2.5-sunburst"},
+            }
+        }))
+        monkeypatch.setattr("agent.image_gen_registry.get_provider", lambda name: provider)
+        monkeypatch.setattr("hermes_cli.plugins._ensure_plugins_discovered", lambda *a, **k: None)
+        fake_client = MagicMock()
+        fake_client.images.generate.return_value = _fake_response(b64=_b64_png())
+
+        with _patched_openai(fake_client):
+            raw = image_tool._dispatch_to_plugin_provider("a cat", "square")
+
+        assert json.loads(raw)["model"] == "gpt-image-2.5-flare"
+        assert fake_client.images.generate.call_args.kwargs["model"] == "gpt-image-2.5-flare"
 
     @pytest.mark.parametrize("aspect,expected_size", [
         ("landscape", "1536x1024"),

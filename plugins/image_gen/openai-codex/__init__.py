@@ -3,6 +3,9 @@
 Same catalog/tiers as the ``openai`` plugin (``gpt-image-2`` low/medium/high), routed
 through the Codex Responses API ``image_generation`` tool, so no ``OPENAI_API_KEY`` is
 needed. Output is PNG; source images travel as Responses ``input_image`` parts.
+Selection: ``model`` kwarg (the ``image_generate`` dispatcher forwards the ``hermes tools``
+pick, ``image_gen.model``) → ``OPENAI_IMAGE_MODEL`` → ``image_gen.openai-codex.model`` →
+``image_gen.model`` → :data:`DEFAULT_MODEL`.
 
 Do NOT reintroduce an "account capability" classifier keyed on ``Tool choice
 'image_generation' not found in 'tools' parameter``: that 400 is a request-shape
@@ -74,9 +77,10 @@ def _summarize_error_body(body: str) -> str:
     return text[:_MAX_ERROR_BODY_CHARS]
 
 
-def _resolve_model() -> Tuple[str, Dict[str, Any]]:
+def _resolve_model(explicit: Optional[str] = None) -> Tuple[str, Dict[str, Any]]:
     return resolve_static_model(
-        GPT_IMAGE_2_TIERS, DEFAULT_MODEL, env_var="OPENAI_IMAGE_MODEL", config_key="openai-codex")
+        GPT_IMAGE_2_TIERS, DEFAULT_MODEL, env_var="OPENAI_IMAGE_MODEL", config_key="openai-codex",
+        explicit=explicit)
 
 
 def _read_codex_access_token() -> Optional[str]:
@@ -359,7 +363,7 @@ class OpenAICodexImageGenProvider(StaticImageGenProvider):
             return error_factory("openai-codex", aspect)(
                 "httpx Python package not installed (pip install httpx)", "missing_dependency")
 
-        tier_id, meta = _resolve_model()
+        tier_id, meta = _resolve_model(kwargs.get("model"))
         size = size_for(aspect)
         fail = error_factory("openai-codex", aspect, model=tier_id, prompt=prompt)
         attempts = _NONFINAL_RETRIES + 1

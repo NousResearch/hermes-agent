@@ -1,5 +1,6 @@
 """OpenAI GPT Image 2 and 2.5 Flare/Sunburst quality tiers;
-base64 output → image cache. Selection: ``OPENAI_IMAGE_MODEL`` → ``image_gen.openai.model`` →
+base64 output → image cache. Selection: ``model`` kwarg (the ``image_generate`` dispatcher forwards
+the ``hermes tools`` pick, ``image_gen.model``) → ``OPENAI_IMAGE_MODEL`` → ``image_gen.openai.model`` →
 ``image_gen.model`` → :data:`DEFAULT_MODEL`."""
 
 from __future__ import annotations
@@ -38,9 +39,9 @@ MODELS = {
 }
 
 
-def _resolve_model() -> Tuple[str, Dict[str, Any]]:
+def _resolve_model(explicit: Optional[str] = None) -> Tuple[str, Dict[str, Any]]:
     return resolve_static_model(
-        MODELS, DEFAULT_MODEL, env_var="OPENAI_IMAGE_MODEL", config_key="openai")
+        MODELS, DEFAULT_MODEL, env_var="OPENAI_IMAGE_MODEL", config_key="openai", explicit=explicit)
 
 
 def _load_image_bytes(ref: str) -> Tuple[bytes, str]:
@@ -116,7 +117,7 @@ class OpenAIImageGenProvider(StaticImageGenProvider):
         openai, err = import_openai("openai", aspect)
         if err:
             return err
-        tier_id, meta = _resolve_model()
+        tier_id, meta = _resolve_model(kwargs.get("model"))
         size = size_for(aspect)
         sources = collect_source_images(image_url, reference_image_urls, limit=16)
         is_edit = bool(sources)

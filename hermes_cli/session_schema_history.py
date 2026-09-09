@@ -207,6 +207,10 @@ SCHEMA_HISTORY: dict[str, _TableHistory] = {
         ('28 2026-09-25T23:25Z 2941aadffa', (('+', 'compression_overload_streak', 'compression_recovery_deadline'),)),
         ('29 2026-09-27T00:29Z d75f29934b', (('+', 'created_source', 'source'),)),
         ('30 2026-09-28T00:00Z #117713', (('+', 'auto_archived', 'archived'),)),
+        # Shipped by #65982 (claude-agent-sdk runtime). The label carries the PR
+        # rather than a main sha: the commit is rebased onto main continuously,
+        # so no sha written here would survive to the one that lands.
+        ('31 2026-09-09T00:00Z #65982', (('+', 'claude_sdk_session_id', 'system_prompt'),)),
         ),
     ),
     "messages": _TableHistory(

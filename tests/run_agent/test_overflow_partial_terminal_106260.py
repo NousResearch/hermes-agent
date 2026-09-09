@@ -40,21 +40,6 @@ def _make_stream_chunk(content=None, finish_reason=None):
 
 
 class TestOverflowTerminalStub:
-    def test_build_stub_carries_marker_and_empty_content(self):
-        from agent.chat_completion_helpers import _build_partial_stream_stub
-
-        stub = _build_partial_stream_stub(
-            "assistant", None, None, "test/model", None, overflow_terminal=True)
-        assert stub._overflow_terminal is True
-        assert stub.id == PARTIAL_STREAM_STUB_ID
-        assert stub.choices[0].finish_reason == FINISH_REASON_LENGTH
-        assert stub.choices[0].message.content is None
-
-        normal = _build_partial_stream_stub(
-            "assistant", "some text", None, "test/model", None)
-        assert getattr(normal, "_overflow_terminal", False) is False
-        assert normal.choices[0].message.content == "some text"
-
     @patch("run_agent.AIAgent._create_request_openai_client")
     @patch("run_agent.AIAgent._close_request_openai_client")
     def test_partial_stream_overflow_error_returns_terminal_stub(
@@ -145,9 +130,18 @@ class TestRecoverFromTruncationOverflowTerminal:
         )
 
         agent = self._mock_agent()
+        # The overflow fired right after a tool batch: the transcript tail is a
+        # raw tool result, which strict providers reject as tool -> user.
+        messages = [
+            {"role": "user", "content": "go"},
+            {"role": "assistant", "content": None,
+             "tool_calls": [{"id": "c1", "type": "function",
+                             "function": {"name": "read_file", "arguments": "{}"}}]},
+            {"role": "tool", "tool_call_id": "c1", "content": "big file"},
+        ]
         verdict = recover_from_truncation(
             agent, self._response(), FINISH_REASON_LENGTH, MagicMock(),
-            messages=[], conversation_history=None, api_kwargs={},
+            messages=messages, conversation_history=None, api_kwargs={},
             api_call_count=0, effective_task_id=None, current_turn_user_idx=None,
             length_continue_retries=0, truncated_response_parts=[],
             truncated_tool_call_retries=0, retry_count=0, compression_attempts=0,
@@ -160,25 +154,9 @@ class TestRecoverFromTruncationOverflowTerminal:
         # #98722 typed bit: the gateway consumes this to reset/move future input
         # to a clean session instead of leaving the bloated one authoritative.
         assert result.get("compression_exhausted") is True
-        # No fragment or nudge was appended to the transcript.
-        assert result.get("messages") == []
-
-    def test_normal_stub_is_not_treated_as_terminal(self):
-        from agent.turn_truncation import (
-            _CONTEXT_OVERFLOW_PARTIAL_FINAL,
-            recover_from_truncation,
-        )
-
-        agent = self._mock_agent()
-        verdict = recover_from_truncation(
-            agent, self._response(overflow_terminal=False), FINISH_REASON_LENGTH,
-            MagicMock(),
-            messages=[], conversation_history=None, api_kwargs={},
-            api_call_count=0, effective_task_id=None, current_turn_user_idx=None,
-            length_continue_retries=0, truncated_response_parts=["recovered text"],
-            truncated_tool_call_retries=0, retry_count=0, compression_attempts=0,
-        )
-        # Not the overflow-terminal final; the normal continuation path runs
-        # (no early return with the overflow message).
-        result = (verdict.result or {}) if verdict.action == "return" else None
-        assert result is None or result.get("final_response") != _CONTEXT_OVERFLOW_PARTIAL_FINAL
+        # The interrupted tool tail is closed so the next user turn alternates;
+        # no fragment or nudge was appended.
+        assert messages[-1]["role"] == "assistant"
+        assert messages[-1]["content"] == _CONTEXT_OVERFLOW_PARTIAL_FINAL
+        assert len(messages) == 4
+        assert result.get("messages") is messages

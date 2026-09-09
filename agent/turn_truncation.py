@@ -32,9 +32,9 @@ _FIRST_TRUNCATED_FINAL = "First response truncated due to output length limit"
 # continuation — the transcript already cannot fit, and appending the partial stub grows every
 # later request into the same overflow. End the turn via the recovery contract instead.
 _CONTEXT_OVERFLOW_PARTIAL_FINAL = (
-    "The conversation exceeded the model's context window and compression could "
-    "not recover it, so the partial response was not continued. Start a new "
-    "session (or /new) to continue with a clean transcript."
+    "The request no longer fits the model's context window, so the partial "
+    "response was not continued. Continue in a fresh session (/new; gateway "
+    "chats are reset automatically)."
 )
 
 _THINKING_EXHAUSTED = (
@@ -345,18 +345,23 @@ def recover_from_truncation(
     # #106260: a context-overflow error after partial delivery must not seed a
     # continuation. _partial_stream_stub marks such stubs _overflow_terminal and
     # leaves content empty; continuing would only re-send a larger request into
-    # the same overflow (compression already failed / protect_last_n covers it).
+    # the same overflow. The stub path never raises, so this class never reached
+    # recover_from_overflow's compress-and-retry on main either — ending the turn
+    # replaces a growth loop, not a compression attempt.
     if getattr(st.response, "_overflow_terminal", False):
         agent._flush_status_buffer()
         agent._vprint(
             f"{agent.log_prefix}⚠️ Stream ended on a context-overflow error after "
-            "partial delivery — not continuing (the transcript is already over "
-            "budget).",
+            "partial delivery — not continuing (the request no longer fits the model's "
+            "context window).",
             force=True,
         )
+        # Prior tool batches can leave a tool-result tail; this path never reaches
+        # finalize_turn (same as the truncated-tool-call terminal above).
+        close_interrupted_tool_sequence(st.messages, _CONTEXT_OVERFLOW_PARTIAL_FINAL)
         # Carry the #98722 typed exhaustion bit so the gateway resets/moves future
         # input to a clean session instead of leaving this bloated one authoritative
-        # for the next turn (review P1, andrexibiza).
+        # for the next turn.
         return st.end_turn(
             _CONTEXT_OVERFLOW_PARTIAL_FINAL,
             error=_CONTEXT_OVERFLOW_PARTIAL_FINAL,

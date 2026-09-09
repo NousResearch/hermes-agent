@@ -3267,42 +3267,37 @@ class _StreamingCall(StreamingWaitMonitor):
             logger.warning(
                 "Partial stream dropped tool call(s) %s after %s chars of text; surfaced warning to user: %s",
                 _partial_names, len(_partial_text or ""), error)
-        else:
-            logger.warning(
-                "Partial stream delivered before error; returning length-truncated stub with %s chars of "
-                "recovered content so the loop can continue from where the stream died: %s",
-                len(_partial_text or ""), error)
-        # Classify content filtering (MiniMax 1027, Azure content_filter, Anthropic refusal)
-        # before the error is swallowed into the stub: the loop reads the tag and falls back.
+        # Classify the error before it is swallowed into the stub: the loop reads the
+        # content-filter tag and falls back; a context overflow must not be continued at all.
         _cls = None
         with contextlib.suppress(Exception):
             from agent.error_classifier import classify_api_error
             _cls = classify_api_error(
                 error, provider=str(getattr(self.agent, "provider", "") or ""), model=str(getattr(self.agent, "model", "") or ""))
-        # #106260: a context-overflow error after partial delivery must NOT seed a
-        # continuation stub with the recovered text — the transcript already cannot fit
-        # (compression failed or protect_last_n covers it), and appending tens of KB only
-        # makes every later request larger. Return an EMPTY stub marked terminal: the loop
-        # ends the turn via the recovery contract instead of continuing into the same
-        # overflow. Scope is deliberately context_overflow ONLY: payload_too_large (413)
-        # has its own byte-scored recovery owner (turn_overflow._recover_payload_too_large,
-        # #88960/#47339) that must not be bypassed (review P1, andrexibiza).
+        _reset_stale_streak(self.agent)  # deltas fired => provider responsive: clear the breaker
+        # #106260: continuing after a context-overflow error re-sends a larger request into the
+        # same overflow. Return an EMPTY stub marked terminal so the loop ends the turn instead.
+        # Scope is context_overflow ONLY: payload_too_large (413) has its own byte-scored recovery
+        # owner (turn_overflow._recover_payload_too_large, #88960/#47339) that must not be bypassed.
         if _cls is not None and _cls.reason == FailoverReason.context_overflow:
             logger.warning(
                 "Partial stream ended on a context-overflow error after %s chars; "
                 "NOT seeding a continuation stub (transcript is already over budget): %s",
                 len(_partial_text or ""), error,
             )
-            _reset_stale_streak(self.agent)
             return _build_partial_stream_stub(
                 "assistant", None, None, getattr(self.agent, "model", "unknown"), None,
                 dropped_tool_names=_partial_names, overflow_terminal=True,
             )
+        if not _partial_names:
+            logger.warning(
+                "Partial stream delivered before error; returning length-truncated stub with %s chars of "
+                "recovered content so the loop can continue from where the stream died: %s",
+                len(_partial_text or ""), error)
         _stub = _build_partial_stream_stub("assistant", _partial_text, None,
             getattr(self.agent, "model", "unknown"), None, dropped_tool_names=_partial_names)
         if _cls is not None and _cls.reason == FailoverReason.content_policy_blocked:
             _stub._content_filter_terminated = True
-        _reset_stale_streak(self.agent)  # deltas fired => provider responsive: clear the breaker
         return _stub
 
     def run(self):

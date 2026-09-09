@@ -63,6 +63,18 @@
       "capabilities": ["tools"],
       "api_version": 1,
       "added_at": "2026-08-12"
+    },
+    {
+      "name": "artifact-relay",
+      "description": "Publish private Markdown and HTML artifacts from Hermes to a self-hosted or managed Artifact Relay.",
+      "author": "Egor Loktev",
+      "tags": ["artifacts", "markdown", "html", "publishing", "self-hosted", "privacy"],
+      "repo": "eloktev/hermes-artifact-relay",
+      "ref": "c91fa9229121dd616a275a45447301eacca45e6f",
+      "homepage": "https://github.com/eloktev/hermes-artifact-relay",
+      "capabilities": ["tools"],
+      "api_version": 1,
+      "added_at": "2026-09-06"
     }
   ]
 }

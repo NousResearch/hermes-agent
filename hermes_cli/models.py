@@ -154,9 +154,10 @@ _openrouter_catalog_cache: list[tuple[str, str]] | None = None
 
 
 def _openrouter_catalog_disk_ttl() -> float:
-    from hermes_cli.model_catalog import DEFAULT_TTL_MINUTES
+    """Same TTL as the catalog manifest this list is filtered from (honours ``model_catalog.ttl_minutes``)."""
+    from hermes_cli.model_catalog import refresh_interval_seconds
 
-    return DEFAULT_TTL_MINUTES * 60.0
+    return refresh_interval_seconds()
 
 
 def _openrouter_catalog_disk_path() -> Path:

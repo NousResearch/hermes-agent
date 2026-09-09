@@ -18,6 +18,7 @@ post_install: |
   Authenticate through the Trackly browser consent screen using Hermes MCP OAuth.
   If authentication has not started, run hermes mcp login trackly-sms.
   Reconnect, then ask for trackly_whoami and trackly_get_setup_status.
-  Live SMS through hosted MCP is not enabled during the current rollout.
+  Hosted OAuth and live SMS execution are enabled. Live sending requires account
+  eligibility, recipient consent, and human approval of each held message.
   Complete any sender and billing setup in Trackly. Review each held message in
   Trackly before execution. Never paste API keys, tokens, or email codes in chat.

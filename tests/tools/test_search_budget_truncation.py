@@ -49,7 +49,7 @@ def test_timeout_helper_strips_only_trailing_marker():
     [
         ("files", "content", timeout_output("src/a.py", "src/b.py"), ["src/a.py", "src/b.py"]),
         ("content", "files_only", timeout_output("src/a.py", "src/b.py"), ["src/a.py", "src/b.py"]),
-        ("content", "content", timeout_output("src/a.py:10:foo", "src/b.py:20:foo"), ["src/a.py", "src/b.py"]),
+        ("content", "content", timeout_output("src/a.py\x0010:foo", "src/b.py\x0020:foo"), ["src/a.py", "src/b.py"]),
     ],
 )
 def test_rg_timeout_returns_partial_results_without_marker(ops, monkeypatch, target, output_mode, raw, expected):

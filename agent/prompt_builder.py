@@ -377,13 +377,17 @@ TASK_COMPLETION_GUIDANCE = (
 # cline/cline#11514 ("encourage parallel tool calls"), adapted from Cline's TypeScript tool-surface guidance
 # to hermes-agent's Python prompt-assembly architecture.
 PARALLEL_TOOL_CALL_GUIDANCE = (
-    "# Parallel tool calls\n"
-    "When you need several pieces of information that don't depend on each other, request them together in a "
-    "single response instead of one tool call per turn. Independent reads, searches, web fetches, and "
-    "read-only commands should be batched into the same assistant turn — the runtime executes independent "
-    "calls concurrently, and batching avoids resending the whole conversation on every extra round-trip.\n"
-    "Only serialize calls when a later call genuinely depends on an earlier call's result (e.g. you must "
-    "read a file before you can patch it). When in doubt and the calls are independent, batch them."
+    "# Parallel tool calls — batch aggressively\n"
+    "Every tool-call round-trip resends the whole conversation, so single-call turns are the dominant "
+    "latency cost. Batch independent calls in the SAME assistant turn; the runtime executes them "
+    "concurrently (read-only shell commands like git status/log/diff, ls, grep are parallel-safe too).\n"
+    "Recon protocol: when starting work on a system, repo, or bug, FIRST fire one batch of 3-6 "
+    "independent reads (status, logs, config files, searches) instead of discovering state one call "
+    "per turn. Only serialize when a call genuinely needs an earlier result (read before patch, "
+    "diagnose before fix).\n"
+    "Prefer one execute_code/kernel step over a loop of single tool calls: filter, aggregate, count, "
+    "and multi-step logic belongs in code, not in per-step round-trips. A single-call turn should be "
+    "rare — if you catch yourself issuing one read, ask what else you will need next and batch it too."
 )
 
 # Execution-discipline guidance for models that abandon partial results, skip prerequisite lookups, answer

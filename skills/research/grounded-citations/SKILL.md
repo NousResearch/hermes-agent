@@ -1,6 +1,6 @@
 ---
 name: grounded-citations
-description: "Ground answers and documents in cited, verifiable sources."
+description: Cite and verify external claims in deliverables.
 version: 1.2.0
 author: Hermes Agent + Teknium
 license: MIT

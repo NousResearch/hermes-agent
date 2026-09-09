@@ -1,14 +1,14 @@
 ---
-title: "Document To Action Items — Extract cited obligations, deadlines, tasks from documents"
+title: "Document To Action Items — Extract cited tasks and deadlines from documents"
 sidebar_label: "Document To Action Items"
-description: "Extract cited obligations, deadlines, tasks from documents"
+description: "Extract cited tasks and deadlines from documents"
 ---
 
 {/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
 
 # Document To Action Items
 
-Extract cited obligations, deadlines, tasks from documents.
+Extract cited tasks and deadlines from documents.
 
 ## Skill metadata
 

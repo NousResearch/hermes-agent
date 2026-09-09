@@ -1,14 +1,14 @@
 ---
-title: "Subagent Driven Development — Execute plans via delegate_task subagents (2-stage review)"
+title: "Subagent Driven Development — Execute plans with delegate_task and two-stage review"
 sidebar_label: "Subagent Driven Development"
-description: "Execute plans via delegate_task subagents (2-stage review)"
+description: "Execute plans with delegate_task and two-stage review"
 ---
 
 {/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
 
 # Subagent Driven Development
 
-Execute plans via delegate_task subagents (2-stage review).
+Execute plans with delegate_task and two-stage review.
 
 ## Skill metadata
 

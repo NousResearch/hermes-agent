@@ -15,6 +15,7 @@ import json
 import logging
 import os
 import sqlite3
+import threading
 import time
 from contextlib import closing
 from datetime import datetime, timezone
@@ -202,14 +203,19 @@ def _report_unclean_exit(evidence: Dict[str, Any], home: Optional[Path]) -> None
     )
 
 
-def record_startup(home: Optional[Path] = None) -> Optional[Dict[str, Any]]:
-    """Boot entry point: report any unclean previous exit (evidence dict, also persisted
-    to ``gateway-exit-diag.log`` and logged at WARNING) then claim the sentinel.  Never raises."""
+def record_startup(
+    home: Optional[Path] = None, *, background_integrity_check: bool = False,
+) -> Optional[Dict[str, Any]]:
+    """Claim this life and report an unclean predecessor. Never raises.
+
+    Gateway startup runs the potentially lengthy database scan on a daemon thread:
+    diagnostics must not delay platform startup or hold shutdown open. The worker
+    only writes the exit diagnostic, never the lifecycle sentinel.
+    """
+    home = home if home is not None else _process_hermes_home()
     evidence: Optional[Dict[str, Any]] = None
     try:
         evidence = detect_unclean_exit(home)
-        if evidence is not None:
-            _report_unclean_exit(evidence, home)
     except Exception:
         logger.debug("Unclean-exit detection failed", exc_info=True)
     try:
@@ -224,6 +230,21 @@ def record_startup(home: Optional[Path] = None) -> Optional[Dict[str, Any]]:
         _write_sentinel(claim, home)
     except Exception:
         logger.debug("Failed to claim lifecycle sentinel", exc_info=True)
+    if evidence is not None:
+        def report() -> None:
+            try:
+                _report_unclean_exit(evidence, home)
+            except Exception:
+                logger.debug("Unclean-exit reporting failed", exc_info=True)
+
+        try:
+            if background_integrity_check:
+                logger.warning("Previous gateway exit was unclean; checking state.db in the background")
+                threading.Thread(target=report, name="gateway-integrity-check", daemon=True).start()
+            else:
+                report()
+        except Exception:
+            logger.debug("Could not start unclean-exit report", exc_info=True)
     return evidence
 
 

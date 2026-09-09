@@ -52,6 +52,19 @@ _CEILING_NO_TEXT = (
     "continuation attempt — its reasoning consumed the entire budget each time.\n\nTo fix this:\n"
     "→ Lower reasoning effort: `/reasoning low` or `/reasoning none`\n→ Or raise max_tokens for this model"
 )
+# When finish_reason=length is caused by context-window exhaustion (prompt + generated
+# ≈ context_length), appending a continuation nudge makes the next attempt strictly worse
+# (#106120). Abort only when usage positively proves ceiling fill; incomplete/ambiguous
+# evidence → fail open (legacy continuation). Tiny absolute slack for provider rounding.
+_CONTEXT_CEILING_EPSILON_CAP = 8
+_CONTEXT_WINDOW_EXHAUSTED = (
+    "⚠️ **Context window exhausted**\n\n"
+    "The model exhausted its context window while generating this response.\n"
+    "The prompt and generated output used approximately {used_tokens:,} of "
+    "{context_length:,} tokens.\n"
+    "Continuing would make the request larger and cannot recover this turn.\n\n"
+    "→ Reduce or compact the conversation, or increase the model context window."
+)
 
 
 def normalize_response_for_agent(agent: Any, response: Any) -> Any:
@@ -193,6 +206,103 @@ def _content_filter_fallback(st: _Trunc, _retry: TurnRetryState) -> Optional[Tru
     return None
 
 
+def _context_ceiling_epsilon(context_length: int) -> int:
+    """Tiny absolute slack for provider rounding — not a free-headroom threshold."""
+    return max(1, min(_CONTEXT_CEILING_EPSILON_CAP, context_length // 4096))
+
+
+def _agent_context_length(agent: Any) -> Optional[int]:
+    """Runtime context window from the compressor (Ollama clamp already applied)."""
+    compressor = getattr(agent, "context_compressor", None)
+    for source in (
+        getattr(compressor, "context_length", None) if compressor is not None else None,
+        getattr(agent, "context_length", None),
+    ):
+        try:
+            value = int(source or 0)
+        except (TypeError, ValueError):
+            continue
+        if value > 0:
+            return value
+    return None
+
+
+def _context_window_exhausted(agent: Any, response: Any) -> Optional[tuple[int, int, int]]:
+    """Return ``(prompt_tokens, output_tokens, context_length)`` only when usage proves
+    ``prompt + output ≈ context_length``. Incomplete or ambiguous evidence → ``None``
+    (fail open / keep legacy continuation)."""
+    usage_raw = getattr(response, "usage", None)
+    if usage_raw is None:
+        return None
+    context_length = _agent_context_length(agent)
+    if context_length is None:
+        return None
+    # Canonical buckets — do not hand-parse a single provider schema here.
+    from agent.usage_pricing import normalize_usage
+
+    canonical = normalize_usage(
+        usage_raw,
+        provider=getattr(agent, "provider", None),
+        api_mode=getattr(agent, "api_mode", None),
+    )
+    prompt_tokens = int(canonical.prompt_tokens or 0)
+    output_tokens = int(canonical.output_tokens or 0)
+    # Without a positive output count we cannot prove ceiling fill vs an output cap.
+    if prompt_tokens <= 0 or output_tokens <= 0:
+        return None
+    epsilon = _context_ceiling_epsilon(context_length)
+    if prompt_tokens + output_tokens >= context_length - epsilon:
+        return prompt_tokens, output_tokens, context_length
+    return None
+
+
+def _abort_context_window_exhausted(
+    st: _Trunc, assistant_message: Any, *,
+    prompt_tokens: int, output_tokens: int, context_length: int,
+) -> TruncationVerdict:
+    """End the turn immediately: continuation would grow an already-exhausted window (#106120)."""
+    from agent.conversation_loop import _join_truncated_parts
+
+    agent = st.agent
+    messages = st.messages
+    agent._ephemeral_reasoning_off = False
+    interim = getattr(assistant_message, "content", None)
+    if interim:
+        st.truncated_response_parts.append(interim)
+    partial = agent._strip_think_blocks(_join_truncated_parts(st.truncated_response_parts)).strip()
+    # Drop any earlier continuation trail so the next user turn starts clean.
+    idx = st.current_turn_user_idx
+    turn_start = idx + 1 if isinstance(idx, int) and idx >= 0 else 0
+    messages[turn_start:] = [
+        m for m in messages[turn_start:]
+        if not (isinstance(m, dict) and (
+            m.get("_length_continuation_fragment") or m.get("_length_continuation_nudge")
+        ))
+    ]
+    if partial:
+        append_message(messages, {
+            "role": "assistant", "content": partial, "finish_reason": "length",
+        })
+    agent._session_messages = messages
+    used_tokens = prompt_tokens + output_tokens
+    notice = _CONTEXT_WINDOW_EXHAUSTED.format(
+        used_tokens=used_tokens, context_length=context_length,
+    )
+    agent._vprint(
+        f"{agent.log_prefix}⚠️  Context window exhausted "
+        f"({used_tokens:,}/{context_length:,}; prompt={prompt_tokens:,}, "
+        f"output={output_tokens:,}) — skipping length continuation.",
+        force=True,
+    )
+    return st.end_turn(
+        f"{partial}\n\n{notice}" if partial else notice,
+        (
+            f"Context window exhausted: prompt ({prompt_tokens}) + output ({output_tokens}) "
+            f"used ~{used_tokens} of {context_length} tokens; length continuation cannot help"
+        ),
+    )
+
+
 def _continue_text(st: _Trunc, _retry: TurnRetryState, assistant_message: Any) -> TruncationVerdict:
     """Text truncation (no tool calls): append the fragment + a continuation nudge (up to
     4), then the ceiling exit that drops the fragment trail and keeps the stitched partial.
@@ -202,6 +312,15 @@ def _continue_text(st: _Trunc, _retry: TurnRetryState, assistant_message: Any) -
 
     agent = st.agent
     messages = st.messages
+    exhausted = _context_window_exhausted(agent, st.response)
+    if exhausted is not None:
+        prompt_tokens, output_tokens, context_length = exhausted
+        return _abort_context_window_exhausted(
+            st, assistant_message,
+            prompt_tokens=prompt_tokens, output_tokens=output_tokens,
+            context_length=context_length,
+        )
+
     st.length_continue_retries += 1
     n = st.length_continue_retries
     _interim_content = getattr(assistant_message, "content", None)

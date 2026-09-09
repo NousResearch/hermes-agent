@@ -314,6 +314,9 @@ long transcript or a busy terminal.
 
 - Keyboard ownership follows focus. The focused surface wins its keys; shell
   shortcuts must not steal a terminal's or editor's bindings.
+- Focusing the Sessions sidebar preserves the last active chat's visual emphasis.
+  Dimming still distinguishes session panes; sidebar navigation must not desaturate
+  the chat or transfer its active highlight to a hidden primary tab.
 - Register global shortcuts through the shared layer, not ad-hoc listeners.
 - One cancel gesture does one thing: cancel the active interaction, or close the
   topmost dismissable surface — never both, never the control underneath.

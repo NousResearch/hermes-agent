@@ -77,7 +77,7 @@ function deferred<T>() {
 function mount() {
   const reads: ReturnType<typeof deferred<SessionMessagesResponse>>[] = []
 
-  const api = vi.fn(() => {
+  const api = vi.fn<(request: unknown) => Promise<SessionMessagesResponse>>(() => {
     const read = deferred<SessionMessagesResponse>()
     reads.push(read)
 
@@ -546,4 +546,202 @@ it.each([
   }
 
   expect(h.requestGateway).not.toHaveBeenCalled()
+})
+
+it.each(['live', 'idle'].flatMap(phase => [true, false].map(resumedUser => ({ phase, resumedUser }))))(
+  'does not duplicate B after a real tool/interim turn ($phase, resumed user=$resumedUser)',
+  async ({ phase, resumedUser }) => {
+    const h = mount()
+    await act(async () => {
+      h.hook.result.current.cache.updateSessionState(
+        SID,
+        state => ({
+          ...state,
+          messages: toChatMessages(resumedUser ? persistedA.slice(0, 1) : []),
+          busy: true,
+          awaitingResponse: true,
+          adoptedRunningTurn: true,
+          turnLive: true
+        }),
+        STORED
+      )
+      enqueueQueuedPrompt(STORED, { text: prompt, attachments: [] })
+    })
+    const intro = 'I will check that first.'
+    await h.event('message.start')
+    await h.event('message.delta', intro)
+    await h.event('message.interim', intro)
+
+    for (const type of ['tool.start', 'tool.complete']) {
+      await act(async () =>
+        h.hook.result.current.stream.handleGatewayEvent({
+          type,
+          session_id: SID,
+          payload: {
+            tool_id: 'fixture-read',
+            name: 'read_file',
+            args: { path: 'fixture.txt' },
+            result: 'fixture contents'
+          }
+        })
+      )
+    }
+
+    await h.event('message.delta', reply)
+    await h.event('message.complete', reply)
+    expect(h.reads).toHaveLength(1)
+    await act(async () => h.hook.rerender({ drain: true }))
+    expect(h.requestGateway).toHaveBeenCalledTimes(1)
+    expect(getQueuedPrompts(STORED)).toEqual([])
+    await h.event('message.start')
+    await h.event('message.delta', reply)
+
+    if (phase === 'idle') {await h.event('message.complete', reply)}
+
+    const response: SessionMessage[] = [
+      persistedA[0],
+      {
+        id: 7,
+        role: 'assistant',
+        content: intro,
+        timestamp: 1.5,
+        tool_calls: [
+          { id: 'fixture-read', type: 'function', function: { name: 'read_file', arguments: '{"path":"fixture.txt"}' } }
+        ]
+      },
+      { id: 8, role: 'tool', tool_call_id: 'fixture-read', content: 'fixture contents', timestamp: 1.6 },
+      ...persistedBoth.slice(1)
+    ]
+
+    expect(h.state().messages.filter(m => m.role === 'user' && chatMessageText(m) === prompt)).toHaveLength(
+      resumedUser ? 2 : 1
+    )
+    await h.release(0, response)
+
+    if (phase === 'live') {await h.event('message.complete', reply)}
+    const rows = $messages.get().map(m => [m.role, chatMessageText(m)])
+    expect(h.requestGateway).toHaveBeenCalledTimes(1)
+    expect(rows.filter(([role, text]) => role === 'user' && text === prompt)).toHaveLength(2)
+    expect(h.state().messages.some(m => m.parts.some(p => p.type === 'tool-call'))).toBe(true)
+    const index = h.reads.length
+    void h.hook.result.current.hydrate(1, STORED, SID)
+    await h.release(index, response)
+    expect(h.state().messages.map(m => m.rowId)).toEqual(toChatMessages(response).map(m => m.rowId))
+    expect(h.requestGateway).toHaveBeenCalledTimes(1)
+  }
+)
+
+it.each(['legacy-marker', 'typed-marker', 'persisted-marker', 'idless-tail', 'unrelated-user'])(
+  'preserves accepted users and marker displays (%s)',
+  async scenario => {
+    const h = mount()
+    await act(async () => {
+      h.hook.result.current.cache.updateSessionState(
+        SID,
+        state => ({
+          ...state,
+          messages: toChatMessages(persistedA.slice(0, 1)),
+          busy: true,
+          awaitingResponse: true,
+          adoptedRunningTurn: true,
+          turnLive: true
+        }),
+        STORED
+      )
+      enqueueQueuedPrompt(STORED, { text: prompt, attachments: [] })
+    })
+    await h.event('message.start')
+    await h.event('message.complete', reply)
+    expect(h.reads).toHaveLength(1)
+    await act(async () => h.hook.rerender({ drain: true }))
+    expect(h.requestGateway).toHaveBeenCalledTimes(1)
+    expect(getQueuedPrompts(STORED)).toEqual([])
+    await h.event('message.start')
+    await h.event('message.delta', reply)
+    await h.event('message.complete', reply)
+
+    const marker: SessionMessage = {
+      id: 5,
+      role: 'user',
+      content: '[System: The active model for this chat has changed to next-model.]',
+      timestamp: 2.5,
+      ...(scenario === 'typed-marker' ? { display_kind: 'model_switch' as const } : {})
+    }
+
+    const storedTail: SessionMessage[] =
+      scenario === 'idless-tail'
+        ? persistedBoth.slice(2).map(row => ({ ...row, id: undefined }))
+        : scenario === 'unrelated-user'
+          ? [{ id: 33, role: 'user', content: 'a different accepted prompt' }]
+          : scenario === 'persisted-marker'
+            ? persistedBoth.slice(2)
+            : []
+
+    expect(h.state().messages.filter(m => m.role === 'user' && chatMessageText(m) === prompt)).toHaveLength(2)
+    await h.release(0, [...persistedA, marker, ...storedTail])
+    const rows = $messages.get().map(message => [message.role, chatMessageText(message)])
+    expect(h.requestGateway).toHaveBeenCalledTimes(1)
+    expect(rows.filter(([role, text]) => role === 'user' && text === prompt)).toHaveLength(2)
+    expect(rows.filter(([role, text]) => role === 'assistant' && text === reply)).toHaveLength(2)
+    expect(h.state().messages.find(m => m.rowId === 5)).toMatchObject({
+      role: scenario === 'typed-marker' ? 'system' : 'user',
+      parts: toChatMessages([marker])[0].parts
+    })
+
+    const index = h.reads.length
+    void h.hook.result.current.hydrate(1, STORED, SID)
+    await h.release(index, [...persistedA, marker, ...persistedBoth.slice(2)])
+    expect(h.state().messages.map(m => m.rowId)).toEqual([1, 2, 5, 3, 4])
+    expect(h.requestGateway).toHaveBeenCalledTimes(1)
+  }
+)
+
+it.each(['request-target', 'target-change'])('uses and revalidates the owner backend profile (%s)', async scenario => {
+  const { setSessionOwnerHint } = await import('@/store/session')
+  const h = mount()
+  await act(async () =>
+    h.hook.result.current.cache.updateSessionState(
+      SID,
+      state => ({ ...state, messages: toChatMessages(persistedA) }),
+      STORED
+    )
+  )
+
+  const owner = {
+    connectionId: 'fixture-remote',
+    profile: 'desktop-alias',
+    targetProfile: 'backend-old',
+    mode: 'remote' as const
+  }
+
+  setSessionOwnerHint(STORED, owner)
+  const pending = h.hook.result.current.hydrate(1, STORED, SID)
+  const request = h.api.mock.calls[0][0]
+
+  if (scenario === 'target-change') {setSessionOwnerHint(STORED, { ...owner, targetProfile: 'backend-new' })}
+  const before = h.state()
+  const visible = $messages.get()
+  const todos = $todosBySession.get()
+  const backendScope = { connectionId: owner.connectionId, profile: owner.targetProfile }
+  const backendTail = transcriptTailState(STORED, backendScope)
+  const tail = transcriptTailState(STORED, { connectionId: owner.connectionId, profile: owner.profile })
+  await act(async () => {
+    h.reads[0].resolve({
+      session_id: STORED,
+      messages: [...persistedA, { id: 9, role: 'system', content: 'old target profile response' }]
+    })
+    await pending
+  })
+
+  if (scenario === 'request-target') {
+    expect(request).toMatchObject({ connectionId: owner.connectionId, profile: owner.targetProfile })
+    expect(transcriptTailState(STORED, backendScope)).not.toBe(backendTail)
+    expect(transcriptTailState(STORED, { connectionId: owner.connectionId, profile: owner.profile })).toBe(tail)
+  } else {
+    expect.soft(h.state()).toBe(before)
+    expect.soft($messages.get()).toBe(visible)
+    expect.soft($todosBySession.get()).toBe(todos)
+    expect.soft(transcriptTailState(STORED, backendScope)).toBe(backendTail)
+    expect.soft(transcriptTailState(STORED, { connectionId: owner.connectionId, profile: owner.profile })).toBe(tail)
+  }
 })

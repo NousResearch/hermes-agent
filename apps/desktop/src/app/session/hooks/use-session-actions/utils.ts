@@ -458,7 +458,7 @@ export function reconcileResumeMessages(nextMessages: ChatMessage[], previousMes
  * row misses its committed copy and is appended a second time at the end of the
  * transcript — the duplicated user bubble of #67603.
  */
-const isGatewaySystemMarker = (message: ChatMessage): boolean =>
+export const isGatewaySystemMarker = (message: ChatMessage): boolean =>
   message.role === 'user' && chatMessageText(message).trimStart().startsWith('[System:')
 
 /**

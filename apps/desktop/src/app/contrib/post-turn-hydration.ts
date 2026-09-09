@@ -1,7 +1,7 @@
 import type { MutableRefObject } from 'react'
 
 import { graftRefreshedTailOntoBackfill } from '@/app/chat/transcript-backfill'
-import { reconcileResumeMessages } from '@/app/session/hooks/use-session-actions/utils'
+import { isGatewaySystemMarker, reconcileResumeMessages } from '@/app/session/hooks/use-session-actions/utils'
 import type { ClientSessionState } from '@/app/types'
 import {
   getApiRequestConnection,
@@ -37,7 +37,10 @@ function mergePostTurnMessages(stored: ChatMessage[], baseline: ClientSessionSta
   const current = state.messages
   const next = graftRefreshedTailOntoBackfill(stored, current)
   const baselineIds = new Set(baseline.messages.map(message => message.id))
-  let start = current.findIndex(message => message.role === 'user' && !baselineIds.has(message.id))
+
+  let start = current.findIndex(
+    message => message.role === 'user' && !isGatewaySystemMarker(message) && !baselineIds.has(message.id)
+  )
 
   // A queued submit may already be seeded when the old turn requests hydration.
   // Protect that baseline's LIVE user too, but never resurrect a settled warm
@@ -45,7 +48,11 @@ function mergePostTurnMessages(stored: ChatMessage[], baseline: ClientSessionSta
   const baselineUser =
     baseline.busy || baseline.awaitingResponse || baseline.streamId
       ? baseline.messages.findLast(
-          message => message.role === 'user' && message.rowId === undefined && message.id.startsWith('user-')
+          message =>
+            message.role === 'user' &&
+            !isGatewaySystemMarker(message) &&
+            message.rowId === undefined &&
+            message.id.startsWith('user-')
         )
       : undefined
 
@@ -59,13 +66,29 @@ function mergePostTurnMessages(stored: ChatMessage[], baseline: ClientSessionSta
     return reconcileResumeMessages(next, current)
   }
 
-  // The nearest durable row anchors role ordinals even with backfill or an
-  // adopted reply whose user wasn't in this renderer's cache yet.
+  // REST folds tool-bearing assistant rows together. Only accepted USER
+  // boundaries survive that projection; assistant ordinals are not turn ids.
+  const acceptedUser = (message: ChatMessage) => message.role === 'user' && !isGatewaySystemMarker(message)
+
+  const endOfTurn = (from: number) => {
+    const nextUser = next.findIndex((message, index) => index > from && acceptedUser(message))
+
+    return nextUser < 0 ? next.length : nextUser
+  }
+
+  const correspondingUser = (storedUser: ChatMessage, localUser: ChatMessage) =>
+    acceptedUser(storedUser) &&
+    storedUser.rowId !== undefined &&
+    (localUser.rowId !== undefined
+      ? storedUser.rowId === localUser.rowId
+      : chatMessageText(storedUser) === chatMessageText(localUser))
+
   let localAnchor = start - 1
   let storedAnchor = -1
 
   while (localAnchor >= 0) {
-    storedAnchor = next.findIndex(message => sameRow(message, current[localAnchor]))
+    const rowId = current[localAnchor].rowId
+    storedAnchor = rowId === undefined ? -1 : next.findIndex(message => message.rowId === rowId)
 
     if (storedAnchor >= 0) {
       break
@@ -74,50 +97,86 @@ function mergePostTurnMessages(stored: ChatMessage[], baseline: ClientSessionSta
     localAnchor -= 1
   }
 
-  let boundary = storedAnchor
-  const preceding = current[start - 1]
+  if (storedAnchor < 0) {
+    // An adopted running reply may precede this renderer's first user row.
+    // Recover only the first DURABLE turn, with its reply inside that turn.
+    // Idless/re-written history has no safe overlap: leave this concurrent
+    // read alone. A later idle read (no protected tail) remains authoritative.
+    const firstUser = next.findIndex(acceptedUser)
+    const firstTurnEnd = firstUser < 0 ? 0 : endOfTurn(firstUser)
 
-  if (preceding && localAnchor < start - 1) {
-    const ordinal = current.slice(localAnchor + 1, start).filter(message => message.role === preceding.role).length
+    const replyText = (messages: ChatMessage[]) =>
+      messages
+        .filter(message => message.role === 'assistant')
+        .map(chatMessageText)
+        .join('')
 
-    const candidates = next
-      .map((message, index) => ({ message, index }))
-      .filter(({ message, index }) => index > storedAnchor && message.role === preceding.role)
+    const localReply = replyText(current.slice(0, start))
 
-    const candidate = candidates[ordinal - 1]
-    // An unmatched prefix is a history rewrite, not evidence that the new
-    // local user is represented. Retain that user's tail after server history.
-    boundary =
-      candidate && chatMessageText(candidate.message) === chatMessageText(preceding) ? candidate.index : next.length - 1
+    if (
+      current.slice(0, start).some(acceptedUser) ||
+      firstUser < 0 ||
+      next[firstUser].rowId === undefined ||
+      !localReply ||
+      replyText(next.slice(firstUser + 1, firstTurnEnd)) !== localReply
+    ) {
+      return current
+    }
+
+    storedAnchor = firstUser
+    localAnchor = start - 1
+  }
+
+  let boundary = endOfTurn(storedAnchor)
+
+  // Advance by actual accepted users, never by a count of assistant rows or
+  // by searching past a mismatching user (identical prompts are legitimate).
+  for (const user of current.slice(localAnchor + 1, start).filter(acceptedUser)) {
+    if (boundary >= next.length || !correspondingUser(next[boundary], user)) {
+      return current
+    }
+
+    boundary = endOfTurn(boundary)
   }
 
   const localTail = current.slice(start)
-  const prefix = reconcileResumeMessages(next.slice(0, boundary + 1), current.slice(0, start))
+  const prefix = reconcileResumeMessages(next.slice(0, boundary), current.slice(0, start))
 
-  // A live turn owns its tail, including deltas still queued for the next RAF.
-  // Installing a stored reply before that first flush makes mutateStream seed
-  // a second reply. Hydrate the settled prefix now; adopt this tail when idle.
+  // The live stream owns even its RAF-buffered tail. Do not seed stored B
+  // before mutateStream's first flush, or the flush will create a second B.
   if (state.busy || state.awaitingResponse || state.streamId) {
     return [...prefix, ...localTail]
   }
 
-  const storedTail = next.slice(boundary + 1)
-  const reconciledTail = reconcileResumeMessages(storedTail, localTail)
-  const counts = new Map<ChatMessage['role'], number>()
-  const positions = new Map<ChatMessage['role'], number[]>()
-  storedTail.forEach((message, index) => positions.set(message.role, [...(positions.get(message.role) ?? []), index]))
+  const result = [...prefix]
+  let localStart = start
 
-  for (const message of localTail) {
-    const ordinal = counts.get(message.role) ?? 0
-    counts.set(message.role, ordinal + 1)
-    const index = positions.get(message.role)?.[ordinal]
+  while (localStart < current.length) {
+    const nextUser = current.findIndex((message, index) => index > localStart && acceptedUser(message))
+    const localEnd = nextUser < 0 ? current.length : nextUser
 
-    if (index === undefined) {
-      reconciledTail.push(message)
+    if (boundary >= next.length || !correspondingUser(next[boundary], current[localStart])) {
+      // An idless or mismatching user is not proof of persistence. Defer
+      // this ambiguous stored tail until a later idle read; do not duplicate
+      // it alongside the accepted local tail or silently consume that tail.
+      return [...result, ...current.slice(localStart)]
     }
+
+    const storedEnd = endOfTurn(boundary)
+    const storedTurn = next.slice(boundary, storedEnd)
+    const localTurn = current.slice(localStart, localEnd)
+    result.push(...reconcileResumeMessages(storedTurn, localTurn))
+
+    // A persisted prompt without its answer is not a persisted whole turn.
+    if (!storedTurn.some(message => message.role === 'assistant')) {
+      result.push(...localTurn.filter(message => message.role === 'assistant'))
+    }
+
+    boundary = storedEnd
+    localStart = localEnd
   }
 
-  return [...prefix, ...reconciledTail]
+  return [...result, ...next.slice(boundary)]
 }
 
 function hydrationScope(runtimeSessionId: string) {
@@ -136,7 +195,9 @@ function hydrationScope(runtimeSessionId: string) {
         : typeof owner === 'string'
           ? 'local'
           : getApiRequestConnection() || 'local',
-    profile: (typeof owner === 'string' ? owner : owner?.profile) || getApiRequestProfile() || 'default'
+    profile: (typeof owner === 'string' ? owner : owner?.profile) || getApiRequestProfile() || 'default',
+    targetProfile: typeof owner === 'object' && owner ? owner.targetProfile : undefined,
+    mode: typeof owner === 'object' && owner ? owner.mode : undefined
   }
 }
 
@@ -172,6 +233,8 @@ export function createPostTurnHydrator({
       return
     }
 
+    const backendScope = { connectionId: scope.connectionId, profile: scope.targetProfile || scope.profile }
+
     const lineage = () =>
       $sessions.get().find(session => sessionMatchesStoredId(session, storedSessionId))?._lineage_root_id
 
@@ -191,6 +254,8 @@ export function createPostTurnHydrator({
         runtimeIdByStoredSessionIdRef.current.get(storedSessionId) === runtimeSessionId &&
         owner?.connectionId === scope.connectionId &&
         owner?.profile === scope.profile &&
+        owner?.targetProfile === scope.targetProfile &&
+        owner?.mode === scope.mode &&
         lineage() === lineageRoot
       )
     }
@@ -204,7 +269,7 @@ export function createPostTurnHydrator({
         try {
           // Unlike getLatestSessionMessages, this read has no tail-bookkeeping
           // side effect before the ownership/freshness check below.
-          const latest = await getSessionMessages(storedSessionId, scope, {
+          const latest = await getSessionMessages(storedSessionId, backendScope, {
             limit: LATEST_SESSION_MESSAGES_LIMIT,
             order: 'latest',
             includeCompacted: true
@@ -217,7 +282,7 @@ export function createPostTurnHydrator({
           const messages = toChatMessages(latest.messages)
           const current = cache.get(runtimeSessionId)!
           const restoreTodos = !current.busy && !current.awaitingResponse && current.messages === baseline.messages
-          recordTranscriptTail(storedSessionId, latest, scope)
+          recordTranscriptTail(storedSessionId, latest, backendScope)
 
           const updated = updateSessionState(runtimeSessionId, state => ({
             ...state,

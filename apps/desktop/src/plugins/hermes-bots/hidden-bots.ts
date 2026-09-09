@@ -37,6 +37,20 @@ export function isBotPrivate(bot: RosterRow, metaByName: BotMetaSnapshot) {
   return isPrivateFlag(botRosterMeta(bot, metaByName)?.private)
 }
 
+/**
+ * The bot's mesh circle, '' for the shared default. See BotMeta.circle.
+ *
+ * Lower-cased like every other reader of this field — the dialog normalizes on save and the
+ * relay and gateway normalize on read, so a circle set outside the dialog (hand-edited meta,
+ * a sync from an older client) would otherwise display mixed-case while matching
+ * case-insensitively underneath.
+ */
+export function botCircle(bot: RosterRow, metaByName: BotMetaSnapshot): string {
+  const value = botRosterMeta(bot, metaByName)?.circle
+
+  return typeof value === 'string' ? value.trim().toLowerCase() : ''
+}
+
 /** Hiding the selected bot re-homes the selection to the next visible owner. */
 export function fallbackSelectionAfterHide(name: string) {
   if ($selectedBot.get() !== name) {

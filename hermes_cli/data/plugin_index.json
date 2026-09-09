@@ -63,6 +63,19 @@
       "capabilities": ["tools"],
       "api_version": 1,
       "added_at": "2026-08-12"
+    },
+    {
+      "name": "paw-pii",
+      "description": "Local ProgramAsWeights PII detection and redaction. Middleware scrubs LLM requests and tool results on-device; tools detect_pii / redact_pii.",
+      "author": "kvnloo / programasweights",
+      "tags": ["privacy", "pii", "security", "middleware", "local-model"],
+      "repo": "kvnloo/pii",
+      "subdir": "integrations/hermes",
+      "ref": "d891ebdd3a3dab27a3451923eb56f955253a2782",
+      "homepage": "https://github.com/kvnloo/pii/tree/main/integrations/hermes",
+      "capabilities": ["tools", "middleware"],
+      "api_version": 1,
+      "added_at": "2026-09-04"
     }
   ]
 }

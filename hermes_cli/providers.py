@@ -75,6 +75,11 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
                          base_url_env_var="GMI_BASE_URL"),
     "fireworks": HermesOverlay(extra_env_vars=("FIREWORKS_API_KEY",),
                                base_url_override="https://api.fireworks.ai/inference/v1"),
+    # India-resident OpenAI-compatible aggregator (Krutrim, Sarvam + global). Discovery via
+    # {base_url}/models. models.dev doesn't list it, so the base URL is supplied here.
+    "bharatrouter": HermesOverlay(is_aggregator=True, extra_env_vars=("BHARATROUTER_API_KEY",),
+                                  base_url_override="https://api.bharatrouter.com/v1",
+                                  base_url_env_var="BHARATROUTER_BASE_URL"),
     "actual": HermesOverlay(transport="codex_responses", extra_env_vars=("ACTUAL_API_KEY", "ACTUAL_BASE_URL"),
                             base_url_override="https://api.actual.inc/v1", base_url_env_var="ACTUAL_BASE_URL"),
     "upstage": HermesOverlay(extra_env_vars=("UPSTAGE_API_KEY",), base_url_override="https://api.upstage.ai/v1",

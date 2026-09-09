@@ -1,0 +1,5 @@
+name: bharatrouter-provider
+kind: model-provider
+version: 1.0.0
+description: BharatRouter — India-resident OpenAI-compatible gateway (Krutrim, Sarvam + global)
+author: Hermes Agent

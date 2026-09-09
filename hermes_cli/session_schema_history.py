@@ -58,7 +58,7 @@ def declared_snapshots(table: str) -> list[tuple[str, ...]]:
     history = SCHEMA_HISTORY[table]
     columns = list(history.base)
     snapshots = [tuple(columns)]
-    for _date, edits in history.events:
+    for _label, edits in history.events:
         _apply(columns, edits)
         snapshots.append(tuple(columns))
     return snapshots

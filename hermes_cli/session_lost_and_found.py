@@ -11,7 +11,7 @@ import sqlite3
 import subprocess
 import tempfile
 from pathlib import Path
-from typing import Any, Optional, Sequence
+from typing import Any, Callable, Optional, Sequence
 
 from hermes_cli.session_schema_history import SCHEMA_HISTORY, reachable_physical_layouts
 
@@ -312,10 +312,7 @@ def _insert_prefix_row(
 
 
 def _declared_types(conn: sqlite3.Connection, table: str) -> dict[str, str]:
-    return {
-        str(row[1]): str(row[2] or "")
-        for row in conn.execute(f'PRAGMA table_info("{table}")')
-    }
+    return {str(row[1]): str(row[2] or "") for row in conn.execute(f'PRAGMA table_info("{table}")')}
 
 
 def _type_conflicts(value: Any, declared: str) -> bool:
@@ -356,67 +353,82 @@ _HANDOFF_STATES = frozenset({"pending", "running", "completed", "failed"})
 _TITLE_SOURCES = frozenset({"derived", "llm", "user"})
 
 
+def _is_epoch(value: Any) -> bool:
+    return isinstance(value, (int, float)) and _EPOCH_LOW <= float(value) <= _EPOCH_HIGH
+
+
+def _is_nonempty_str(value: Any) -> bool:
+    return isinstance(value, str) and bool(value)
+
+
+# Sentinel columns: the cells that differ hardest between candidate layouts, so a wrong layout is
+# rejected instead of silently shifting every field. messages.id is a rowid alias, never a sentinel.
+_SENTINEL_RULES: dict[str, Callable[[Any], bool]] = {
+    "id": _is_session_id,
+    "source": _looks_like_source,
+    "started_at": _is_epoch,
+    "timestamp": _is_epoch,
+    "session_id": _is_nonempty_str,
+    "role": lambda value: value in MESSAGE_ROLES,
+    "model": _is_nonempty_str,
+}
+
+
 def _sentinel_holds(name: str, value: Any) -> bool:
-    if name == "id":  # sessions.id; messages.id is a rowid alias, never a sentinel
-        return _is_session_id(value)
-    if name == "source":
-        return _looks_like_source(value)
-    if name in ("started_at", "timestamp"):
-        return (
-            isinstance(value, (int, float))
-            and _EPOCH_LOW <= float(value) <= _EPOCH_HIGH
-        )
-    if name == "session_id":
-        return isinstance(value, str) and bool(value)
-    if name == "role":
-        return value in MESSAGE_ROLES
-    if name == "model":
-        return isinstance(value, str) and bool(value)
-    return True
+    rule = _SENTINEL_RULES.get(name)
+    return rule(value) if rule else True
+
+
+def _is_token(value: str) -> bool:
+    return bool(_TOKEN_PATTERN.match(value))
+
+
+def _is_json_start(value: str) -> bool:
+    return value[:1] in "{["
+
+
+def _is_path(value: str) -> bool:
+    return value[:1] in "/~" or (len(value) > 1 and value[1] == ":")
+
+
+def _is_url(value: str) -> bool:
+    return "://" in value
+
+
+def _blank_or(rule: Callable[[str], bool]) -> Callable[[str], bool]:
+    return lambda value: value == "" or rule(value)
+
+
+# Cheap per-column shape rules for text cells, by table (see module comment above).
+_TEXT_SHAPE_RULES: dict[str, dict[str, Callable[[str], bool]]] = {
+    "sessions": {
+        "session_key": lambda value: bool(_SESSION_KEY_PATTERN.match(value)),
+        **dict.fromkeys(("chat_type", "end_reason", "cost_status", "cost_source", "billing_mode",
+                         "last_activity_provenance", "handoff_platform"), _is_token),
+        "pricing_version": lambda value: bool(re.fullmatch(r"[a-z0-9][a-z0-9._-]*", value)),
+        "title_source": lambda value: value in _TITLE_SOURCES,
+        "handoff_state": lambda value: value in _HANDOFF_STATES,
+        "parent_session_id": _is_session_id,
+        "system_prompt_hash": lambda value: bool(re.fullmatch(r"[0-9a-f]{64}", value)),
+        "model_config": _is_json_start, "origin_json": _is_json_start,
+        "cwd": _is_path, "git_repo_root": _is_path,
+        "billing_base_url": _is_url,
+    },
+    "messages": {
+        **dict.fromkeys(("effect_disposition", "finish_reason", "display_kind"), _is_token),
+        **dict.fromkeys(("tool_calls", "reasoning_details", "codex_reasoning_items", "codex_message_items",
+                         "api_content", "display_metadata"), _blank_or(_is_json_start)),
+    },
+    "session_model_usage": {
+        "billing_base_url": _blank_or(_is_url),
+        **dict.fromkeys(("billing_mode", "cost_status", "cost_source"), _blank_or(_is_token)),
+    },
+}
 
 
 def _text_shape_holds(kind: str, name: str, value: str) -> bool:
-    """Cheap per-column shape rules for text cells (see module comment above)."""
-
-    if kind == "sessions":
-        if name == "session_key":
-            return bool(_SESSION_KEY_PATTERN.match(value))
-        if name in ("chat_type", "end_reason", "cost_status", "cost_source",
-                    "billing_mode", "last_activity_provenance", "handoff_platform"):
-            return bool(_TOKEN_PATTERN.match(value))
-        if name == "pricing_version":
-            return bool(re.fullmatch(r"[a-z0-9][a-z0-9._-]*", value))
-        if name == "title_source":
-            return value in _TITLE_SOURCES
-        if name == "handoff_state":
-            return value in _HANDOFF_STATES
-        if name == "parent_session_id":
-            return _is_session_id(value)
-        if name == "system_prompt_hash":
-            return bool(re.fullmatch(r"[0-9a-f]{64}", value))
-        if name in ("model_config", "origin_json"):
-            return value[:1] in "{["
-        if name in ("cwd", "git_repo_root"):
-            return value[:1] in "/~" or (len(value) > 1 and value[1] == ":")
-        if name == "billing_base_url":
-            return "://" in value
-        return True
-    if kind == "messages":
-        if name == "effect_disposition":
-            return bool(_TOKEN_PATTERN.match(value))
-        if name in ("tool_calls", "reasoning_details", "codex_reasoning_items",
-                    "codex_message_items", "api_content", "display_metadata"):
-            return value[:1] in "{[" or value == ""
-        if name in ("finish_reason", "display_kind"):
-            return bool(_TOKEN_PATTERN.match(value))
-        return True
-    if kind == "session_model_usage":
-        if name == "billing_base_url":
-            return "://" in value or value == ""
-        if name in ("billing_mode", "cost_status", "cost_source"):
-            return value == "" or bool(_TOKEN_PATTERN.match(value))
-        return True
-    return True
+    rule = _TEXT_SHAPE_RULES.get(kind, {}).get(name)
+    return rule(value) if rule else True
 
 
 def _cell_fits(kind: str, name: str, value: Any, dest_types: dict[str, str]) -> bool:
@@ -434,9 +446,7 @@ def _cell_fits(kind: str, name: str, value: Any, dest_types: dict[str, str]) -> 
     return not isinstance(value, str) or _text_shape_holds(kind, name, value)
 
 
-def _row_invariants_hold(
-    kind: str, layout: tuple[str, ...], rows: Sequence[tuple[Any, ...]]
-) -> bool:
+def _row_invariants_hold(kind: str, layout: tuple[str, ...], rows: Sequence[tuple[Any, ...]]) -> bool:
     """Cross-column invariants every writer honours, checked per record.
 
     ``handoff_error`` is only ever written together with ``handoff_state``
@@ -454,21 +464,41 @@ def _row_invariants_hold(
     state_at = positions.get("handoff_state")
     if error_at is None or state_at is None:
         return True
-    for row in rows:
-        if (
-            error_at < len(row)
-            and row[error_at] is not None
-            and (state_at >= len(row) or row[state_at] is None)
-        ):
-            return False
-    return True
+    # rows are exactly len(layout) wide (bucketed by width), so both positions are in range.
+    return all(row[error_at] is None or row[state_at] is not None for row in rows)
 
 
-def infer_physical_layouts(
-    kind: str,
-    rows: Sequence[tuple[Any, ...]],
-    dest_types: dict[str, str],
-) -> dict[int, list[Optional[str]]]:
+_SAMPLE_CAP = 512
+
+
+class LayoutEvidence:
+    """What layout inference needs from a population, gathered in one streaming pass.
+
+    Distinct non-NULL values per position (a column's admissibility is a property of the value, not the
+    row, and salvaged populations repeat values heavily — a few hundred distinct values per position
+    discriminate as well as 150k) plus, for ``sessions`` only, the rows themselves for the cross-column
+    invariant. Keeping the whole population — every ``messages.content`` included — until pass 2 would
+    hold the entire corrupted store in memory.
+    """
+
+    def __init__(self, kind: str) -> None:
+        self.kind = kind
+        self.widths: set[int] = set()
+        self.by_position: list[set[Any]] = []
+        self.rows_by_width: dict[int, list[tuple[Any, ...]]] = {}
+
+    def add(self, cells: tuple[Any, ...]) -> None:
+        self.widths.add(len(cells))
+        while len(self.by_position) < len(cells):
+            self.by_position.append(set())
+        for index, value in enumerate(cells):
+            if value is not None and len(self.by_position[index]) < _SAMPLE_CAP:
+                self.by_position[index].add(value)
+        if self.kind == "sessions":
+            self.rows_by_width.setdefault(len(cells), []).append(cells)
+
+
+def infer_physical_layouts(evidence: LayoutEvidence, dest_types: dict[str, str]) -> dict[int, list[Optional[str]]]:
     """Infer which source column each record position holds, per field count.
 
     Salvaged records carry no schema. Every layout a real store can have is,
@@ -488,18 +518,10 @@ def infer_physical_layouts(
     Returns an empty dict when no known layout fits the records.
     """
 
-    if kind not in SCHEMA_HISTORY or not rows:
+    kind = evidence.kind
+    if kind not in SCHEMA_HISTORY or not evidence.widths:
         return {}
-    widths = sorted({len(row) for row in rows})
-    # Distinct non-NULL values per position: a column's admissibility is a
-    # property of the value, not the row, and salvaged populations repeat
-    # values heavily (flags, counters, roles). Cap the sample per position —
-    # a few hundred distinct values discriminate as well as 150k.
-    by_position: list[set[Any]] = [set() for _ in range(widths[-1])]
-    for row in rows:
-        for index, value in enumerate(row):
-            if value is not None and len(by_position[index]) < 512:
-                by_position[index].add(value)
+    by_position = evidence.by_position
     verdicts: dict[tuple[str, Any], bool] = {}
 
     def fits(name: str, value: Any) -> bool:
@@ -509,11 +531,20 @@ def infer_physical_layouts(
             verdict = verdicts[key] = _cell_fits(kind, name, value, dest_types)
         return verdict
 
-    # Cross-column invariants need whole rows, not per-position value sets;
-    # a candidate of width ``w`` only ever names the rows of that width.
-    rows_by_width: dict[int, list[tuple[Any, ...]]] = {w: [] for w in widths}
-    for row in rows:
-        rows_by_width[len(row)].append(row)
+    # The invariant verdict depends only on where a candidate puts the two handoff columns, and most
+    # candidates of one width agree on that — memoise so the rows are not rescanned per candidate.
+    invariant_verdicts: dict[tuple[int, Optional[int], Optional[int]], bool] = {}
+
+    def invariants_hold(layout: tuple[str, ...]) -> bool:
+        same_width = evidence.rows_by_width.get(len(layout))
+        if not same_width:
+            return True
+        positions = {name: index for index, name in enumerate(layout)}
+        key = (len(layout), positions.get("handoff_error"), positions.get("handoff_state"))
+        verdict = invariant_verdicts.get(key)
+        if verdict is None:
+            verdict = invariant_verdicts[key] = _row_invariants_hold(kind, layout, same_width)
+        return verdict
 
     def accept(layout: tuple[str, ...], first_new: int) -> bool:
         for index in range(first_new, min(len(layout), len(by_position))):
@@ -521,14 +552,13 @@ def infer_physical_layouts(
             for value in by_position[index]:
                 if not fits(name, value):
                     return False
-        same_width = rows_by_width.get(len(layout))
-        return not same_width or _row_invariants_hold(kind, layout, same_width)
+        return invariants_hold(layout)
 
     # Enumerate once and bucket by width. A record of width ``k`` was written
     # while the table had exactly ``k`` columns (ADD COLUMN runs at startup,
     # before any row is written), so its layout is a chain state of exactly
     # that length.
-    survivors_by_width: dict[int, list[tuple[str, ...]]] = {w: [] for w in widths}
+    survivors_by_width: dict[int, list[tuple[str, ...]]] = {w: [] for w in sorted(evidence.widths)}
     for layout in reachable_physical_layouts(kind, accept):
         bucket = survivors_by_width.get(len(layout))
         if bucket is not None and layout not in bucket:
@@ -623,7 +653,8 @@ def map_lost_and_found_rows(lf_conn: sqlite3.Connection, dest: sqlite3.Connectio
     """Best-effort mapping of a .recover output DB into a fresh SessionDB."""
     report: dict[str, Any] = {
         "direct_table_rows": {}, "mapped": {"sessions": 0, "messages": 0, "session_model_usage": 0},
-        "legacy_minimal_sessions": 0, "mapped_by_layout": 0, "unrecognized_layout_rows": 0, "inferred_layouts": {},
+        "legacy_minimal_sessions": 0, "mapped_by_layout": 0, "unrecognized_layout_rows": 0,
+        "unrecognized_layout_widths": {}, "inferred_layouts": {},
         "unmapped_rows": 0, "insert_conflicts": 0, "lost_and_found_tables": [],
     }
     with _immediate_transaction(dest):
@@ -644,30 +675,30 @@ def map_lost_and_found_rows(lf_conn: sqlite3.Connection, dest: sqlite3.Connectio
         ]
         report["lost_and_found_tables"] = lf_tables
 
-        # Pass 1: classify every record and group it by kind. The physical layout is a property of the
-        # whole population (one store wrote all of them), so it is inferred once per kind, not per row.
-        classified: dict[str, list[tuple[Any, int, tuple[Any, ...]]]] = {kind: [] for kind in targets}
-        for lf_table in lf_tables:
-            if _table_columns(lf_conn, lf_table)[:3] != ["rootpgno", "pgno", "nfield"]:
-                continue
-            for row in lf_conn.execute(f'SELECT * FROM "{lf_table}"'):
-                try:
-                    nfield = int(row[2]) if row[2] is not None else 0
-                except (TypeError, ValueError):
-                    report["unmapped_rows"] += 1
+        def records():
+            """Yield (kind, lf_rowid, nfield, cells) for every classifiable lost_and_found row."""
+            for lf_table in lf_tables:
+                if _table_columns(lf_conn, lf_table)[:3] != ["rootpgno", "pgno", "nfield"]:
                     continue
-                lf_rowid = row[3]
-                cells = tuple(row[4 : 4 + max(nfield, 0)])
-                kind = classify_lost_and_found_row(nfield, cells)
-                if kind is None:
-                    report["unmapped_rows"] += 1
-                    continue
-                classified[kind].append((lf_rowid, nfield, cells))
+                for row in lf_conn.execute(f'SELECT * FROM "{lf_table}"'):
+                    try:
+                        nfield = int(row[2]) if row[2] is not None else 0
+                    except (TypeError, ValueError):
+                        yield None, None, 0, ()
+                        continue
+                    cells = tuple(row[4 : 4 + max(nfield, 0)])
+                    yield classify_lost_and_found_row(nfield, cells), row[3], nfield, cells
 
-        layouts = {
-            kind: infer_physical_layouts(kind, [cells for _, _, cells in records], dest_types[kind])
-            for kind, records in classified.items()
-        }
+        # Pass 1: stream the population once, keeping only what layout inference needs. The physical
+        # layout is a property of the whole population (one store wrote all of them), so it is inferred
+        # once per kind, not per row.
+        evidence = {kind: LayoutEvidence(kind) for kind in targets}
+        for kind, _, _, cells in records():
+            if kind is None:
+                report["unmapped_rows"] += 1
+            else:
+                evidence[kind].add(cells)
+        layouts = {kind: infer_physical_layouts(evidence[kind], dest_types[kind]) for kind in targets}
         # Per kind and record width, the column each position resolved to (None where the surviving
         # layouts disagreed and the cell was left to the destination default).
         report["inferred_layouts"] = {
@@ -677,46 +708,50 @@ def map_lost_and_found_rows(lf_conn: sqlite3.Connection, dest: sqlite3.Connectio
 
         # Pass 2: insert. Records whose width resolved to a layout are mapped by column name (#101409);
         # the rest take the historical positional prefix, audited by the recovery verifier's plausibility gate.
-        for kind, records in classified.items():
+        for kind, lf_rowid, nfield, cells in records():
+            if kind is None:
+                continue  # counted in pass 1
             columns, defaults = targets[kind]
-            for lf_rowid, nfield, cells in records:
-                layout = layouts[kind].get(len(cells))
-                legacy_minimal = kind == "sessions" and nfield == SESSIONS_LEGACY_MINIMAL_NFIELD
-                if layout is None and not legacy_minimal:
-                    report["unrecognized_layout_rows"] += 1
-                try:
-                    if layout is not None:
-                        # messages.id is a rowid alias: NULL in the record, carried by the lost_and_found row id.
-                        inserted = _insert_named_row(
-                            dest, kind, layout, cells, columns, defaults,
-                            {"id": lf_rowid} if kind == "messages" else None,
-                        )
-                        report["mapped_by_layout"] += int(inserted)
-                    elif legacy_minimal:
-                        # A 14-field record matching no known layout (torn cells, or a pre-history store):
-                        # salvage identity + timing rather than guessing 14 positional meanings.
-                        row_values = (
-                            cells[0], cells[1] if _looks_like_source(cells[1]) else "recovered",
-                            _heuristic_started_at(cells),
-                            f"{STUB_TITLE_PREFIX}] legacy session row (layout unknown)",
-                        )
-                        inserted = dest.execute(
-                            "INSERT OR IGNORE INTO sessions (id, source, started_at, title) VALUES (?, ?, ?, ?)",
-                            row_values,
-                        ).rowcount == 1
-                        report["legacy_minimal_sessions"] += int(inserted)
-                    else:
-                        values = list(cells[:len(columns)])
-                        if kind == "messages":
-                            values[0] = lf_rowid
-                        inserted = _insert_prefix_row(dest, kind, columns, values, defaults)
-                except sqlite3.DatabaseError:
-                    report["unmapped_rows"] += 1
-                    continue
-                if inserted:
-                    report["mapped"][kind] += 1
+            layout = layouts[kind].get(len(cells))
+            legacy_minimal = kind == "sessions" and nfield == SESSIONS_LEGACY_MINIMAL_NFIELD
+            if layout is None and not legacy_minimal:
+                report["unrecognized_layout_rows"] += 1
+                widths = report["unrecognized_layout_widths"].setdefault(kind, [])
+                if len(cells) not in widths:
+                    widths.append(len(cells))
+            try:
+                if layout is not None:
+                    # messages.id is a rowid alias: NULL in the record, carried by the lost_and_found row id.
+                    inserted = _insert_named_row(
+                        dest, kind, layout, cells, columns, defaults,
+                        {"id": lf_rowid} if kind == "messages" else None,
+                    )
+                    report["mapped_by_layout"] += int(inserted)
+                elif legacy_minimal:
+                    # A 14-field record matching no known layout (torn cells, or a pre-history store):
+                    # salvage identity + timing rather than guessing 14 positional meanings.
+                    row_values = (
+                        cells[0], cells[1] if _looks_like_source(cells[1]) else "recovered",
+                        _heuristic_started_at(cells),
+                        f"{STUB_TITLE_PREFIX}] legacy session row (layout unknown)",
+                    )
+                    inserted = dest.execute(
+                        "INSERT OR IGNORE INTO sessions (id, source, started_at, title) VALUES (?, ?, ?, ?)",
+                        row_values,
+                    ).rowcount == 1
+                    report["legacy_minimal_sessions"] += int(inserted)
                 else:
-                    report["insert_conflicts"] += 1
+                    values = list(cells[:len(columns)])
+                    if kind == "messages":
+                        values[0] = lf_rowid
+                    inserted = _insert_prefix_row(dest, kind, columns, values, defaults)
+            except sqlite3.DatabaseError:
+                report["unmapped_rows"] += 1
+                continue
+            if inserted:
+                report["mapped"][kind] += 1
+            else:
+                report["insert_conflicts"] += 1
     return report
 
 

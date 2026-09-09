@@ -1032,10 +1032,13 @@ def _recover_via_lost_and_found(
     # looks clean.
     guessed = int(mapping.get("unrecognized_layout_rows") or 0)
     if guessed:
+        widths = ", ".join(
+            f"{kind} rows with {'/'.join(map(str, sorted(ws)))} fields"
+            for kind, ws in sorted((mapping.get("unrecognized_layout_widths") or {}).items())
+        )
         plausibility_errors.append(
-            f"{guessed} salvaged row(s) matched no known physical column "
-            "layout and were mapped positionally; their fields may be "
-            "shifted. Inspect the affected sessions before trusting them."
+            f"{guessed} salvaged row(s) matched no known physical column layout and were mapped "
+            f"positionally ({widths}); their fields may be shifted. Inspect those sessions before trusting them."
         )
     if plausibility_errors:
         verification["errors"].extend(plausibility_errors)

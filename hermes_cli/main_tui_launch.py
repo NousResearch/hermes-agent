@@ -420,12 +420,37 @@ def _ensure_tui_workspace(tui_dir: Path) -> None:
     sys.exit(1)
 
 
+def _persistent_npm_userconfig() -> Optional[dict[str, str]]:
+    """``NPM_CONFIG_USERCONFIG`` for ``$HERMES_HOME/npmrc`` when it exists.
+
+    The repo-root ``.npmrc`` is git-tracked, so the updater's autostash parks
+    any mirror/proxy line added there and every update reinstalls without it
+    (restricted networks then prune optional native deps like get-windows and
+    the rebuild fails). ``$HERMES_HOME`` lives outside the git tree, survives
+    autostash/reset, and the update hand-off already carries ``HERMES_HOME``
+    down to every npm child. An explicit ``NPM_CONFIG_USERCONFIG`` wins.
+    """
+    from hermes_constants import get_hermes_home
+
+    if os.environ.get("NPM_CONFIG_USERCONFIG", "").strip():
+        return None
+    try:
+        candidate = get_hermes_home() / "npmrc"
+    except Exception:
+        return None
+    if not candidate.is_file():
+        return None
+    return {"NPM_CONFIG_USERCONFIG": str(candidate)}
+
+
 def _npm_lifecycle_env(env: dict[str, str] | None = None) -> dict[str, str]:
     """Build a clean environment for the pinned UI toolchain lifecycle."""
     run_env = {**os.environ, **(env or {}), "CI": "1"}
     # esbuild treats this as an executable override. If a shell points it at a
     # different release, the pinned package's postinstall rejects that binary.
     run_env.pop("ESBUILD_BINARY_PATH", None)
+    for key, value in (_persistent_npm_userconfig() or {}).items():
+        run_env.setdefault(key, value)
     return run_env
 
 

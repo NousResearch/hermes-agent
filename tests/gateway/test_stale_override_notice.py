@@ -175,6 +175,7 @@ def _runner(mode="info_only", *, picker_success=True):
         set_session_metadata=AsyncMock(),
         set_model_override=AsyncMock(),
     )
+    runner._check_slash_access = MagicMock(return_value=None)
     runner._stale_override_pending = {}
     runner._background_tasks = set()
     runner._adapter = _Adapter(picker_success=picker_success)
@@ -236,9 +237,15 @@ async def test_pending_auto_reset_skips_misleading_override_prompt():
 
 
 @pytest.mark.asyncio
-async def test_confirm_holds_then_resumes_only_after_explicit_choice():
+@pytest.mark.parametrize("shared", [False, True])
+async def test_confirm_holds_then_resumes_only_after_explicit_choice(shared):
     runner = _runner("confirm")
     event = _event()
+    if shared:
+        event.source.user_id = None
+        event.source.chat_type = "group"
+        event.user_id = "u1"
+        runner.config.group_sessions_per_user = False
 
     handled, response = await runner._maybe_handle_stale_override_notice(
         event, "session-key"
@@ -665,3 +672,90 @@ async def test_confirm_resumes_through_current_adapter_after_reconnect():
 
     prompt_adapter.handle_message.assert_not_awaited()
     resume_adapter.handle_message.assert_awaited_once_with(event)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("actor, route_user, expected", [
+    ("u2", None, "u2"), (222, "u1", "222"),
+    (None, "u1", "u1"), (False, "u1", "u1"), (MagicMock(), "u1", "u1"),
+])
+async def test_picker_owner_uses_concrete_actor_not_shared_route(actor, route_user, expected):
+    runner = _runner("confirm")
+    event = _event()
+    event.source.user_id = route_user
+    event.user_id = actor
+    handled, _response = await runner._maybe_handle_stale_override_notice(event, "session-key")
+    assert handled is True
+    assert runner._adapter.picker_call["metadata"]["requester_user_id"] == expected
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("per_user, alternate, expected", [(False, None, None), (True, "alternate", "alternate")])
+async def test_picker_without_new_actor_preserves_existing_ownership_policy(per_user, alternate, expected):
+    runner = _runner("confirm")
+    runner.config.group_sessions_per_user = per_user
+    event = _event()
+    event.user_id = None
+    event.source.chat_type = "group"
+    event.source.thread_id = None
+    event.source.prospective_thread_id = None
+    event.source.user_id_alt = alternate
+    handled, _response = await runner._maybe_handle_stale_override_notice(event, "session-key")
+    assert handled is True
+    assert runner._adapter.picker_call["metadata"].get("requester_user_id") == expected
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("axis", ["model", "reasoning"])
+async def test_denied_reset_creation_is_informational_and_preserves_actor_source(axis):
+    runner = _runner("confirm")
+    runner._stale_override_decision.return_value = OverrideNoticeDecision(
+        model_stale=axis == "model", reasoning_stale=axis == "reasoning"
+    )
+    event = _event()
+    event.user_id = 222
+    event.source.user_id = "111"
+    event.source.profile = "researcher"
+    event.source.delivered_via_upstream_relay = True
+    event.source.transport_provenance = object()
+    runner._check_slash_access.return_value = "admin-only"
+
+    assert await runner._maybe_handle_stale_override_notice(event, "session-key") == (False, None)
+    checked, command = runner._check_slash_access.call_args.args
+    assert command == axis and checked.user_id == "222"
+    assert checked is not event.source and event.source.user_id == "111"
+    assert checked.profile == event.source.profile
+    assert checked.delivered_via_upstream_relay is True
+    assert checked.transport_provenance is event.source.transport_provenance
+    assert "info-only mode" in runner._adapter.send.await_args.args[1]
+    assert runner._adapter.picker_call is None
+    assert runner._stale_override_pending == {}
+    runner._clear_stale_override_selection.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("value, denied_axis", [
+    ("default_model", "model"), ("default_reasoning", "reasoning"),
+    ("defaults", "reasoning"),
+])
+async def test_callback_rechecks_every_mutated_axis_without_consuming_denied_turn(value, denied_axis):
+    runner = _runner("confirm")
+    event = _event()
+    await runner._maybe_handle_stale_override_notice(event, "session-key")
+    callback = runner._adapter.picker_call["on_choice_selected"]
+    pending = runner._stale_override_pending["session-key"]
+    # Includes forged reasoning/defaults values absent from the model-only picker.
+    runner._check_slash_access.side_effect = lambda source, command: (
+        "admin-only" if command == denied_axis else None
+    )
+    result = await callback("123", value)
+    assert "admin-only" in result and "original message was not sent" in result
+    assert runner._stale_override_pending["session-key"] is pending
+    runner._clear_stale_override_selection.assert_not_awaited()
+    runner._adapter.handle_message.assert_not_awaited()
+    assert not (event.metadata or {}).get("_stale_override_notice_bypass")
+    runner._check_slash_access.reset_mock()
+    result = await callback("123", "continue")
+    assert result.startswith("Keeping the current overrides")
+    runner._check_slash_access.assert_not_called()
+    runner._adapter.handle_message.assert_awaited_once_with(event)

@@ -1,6 +1,7 @@
 """Session override notices and held-message lifecycle."""
 from __future__ import annotations
 import asyncio
+from copy import copy
 import logging
 import time
 from typing import Optional
@@ -138,6 +139,19 @@ class GatewayStaleOverrideMixin:
             default_reasoning=reasoning_effort(default_reasoning),
         )
 
+    def _stale_override_reset_denial(
+        self, source: SessionSource, *, model: bool, reasoning: bool
+    ) -> Optional[str]:
+        # Older standalone releases expose only the direct slash checker.
+        primary_check = getattr(self, "_primary_slash_access_check", None)
+        check = primary_check() if primary_check is not None else self._check_slash_access
+        for command, resets in (("model", model), ("reasoning", reasoning)):
+            if resets:
+                denial = check(source, command)
+                if denial:
+                    return denial
+        return None
+
     async def _clear_stale_override_selection(
         self, session_key: str, *, model: bool, reasoning: bool
     ) -> None:
@@ -254,12 +268,22 @@ class GatewayStaleOverrideMixin:
         adapter = self._adapter_for_source(event.source)
         if adapter is None:
             return False, None
-        notice_text = decision.message(idle_seconds / 60.0, held=config.mode == "confirm")
+        # Keep routing/profile and transport provenance while authorizing the actor.
+        policy_source = copy(event.source)
+        requester = getattr(event, "user_id", None)
+        if isinstance(requester, int) and not isinstance(requester, bool):
+            requester = str(requester)
+        if isinstance(requester, str) and requester:
+            policy_source.user_id = requester
+        confirm = config.mode == "confirm" and not self._stale_override_reset_denial(
+            policy_source, model=decision.model_stale, reasoning=decision.reasoning_stale
+        )
+        notice_text = decision.message(idle_seconds / 60.0, held=confirm)
         send_metadata = self._thread_metadata_for_source(
             event.source, self._reply_anchor_for_event(event)
         )
 
-        if config.mode == "info_only":
+        if not confirm:
             try:
                 await adapter.send(
                     event.source.chat_id,
@@ -308,7 +332,11 @@ class GatewayStaleOverrideMixin:
                 and getattr(self.config, "group_sessions_per_user", True)
             )
         )
-        if owner_required:
+        # New transports may separate a concrete actor from a shared route.
+        # Preserve existing per-user/alternate-ID policy when no actor is supplied.
+        if isinstance(requester, str) and requester:
+            send_metadata["requester_user_id"] = requester
+        elif owner_required:
             send_metadata["requester_user_id"] = str(
                 source.user_id_alt or source.user_id or ""
             )
@@ -327,6 +355,11 @@ class GatewayStaleOverrideMixin:
 
             reset_model = value in {"default_model", "defaults"}
             reset_reasoning = value in {"default_reasoning", "defaults"}
+            denial = self._stale_override_reset_denial(
+                policy_source, model=reset_model, reasoning=reset_reasoning
+            )
+            if denial:
+                return f"{denial} The original message was not sent."
             logger.info(
                 "Stale-override selection accepted session=%s choice=%s "
                 "reset_model=%s reset_reasoning=%s",

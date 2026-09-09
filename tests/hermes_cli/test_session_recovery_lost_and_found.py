@@ -859,3 +859,207 @@ def test_plausibility_gate_ignores_stub_only_sessions(tmp_path: Path) -> None:
         assert len(errors) == 1 and "sessions.started_at" in errors[0]
     finally:
         conn.close()
+
+
+# The physical column order of the reporter's upgraded store in #101409:
+# every column ALTER TABLE ADD COLUMN appended, in add order, which is NOT
+# the order SCHEMA_SQL declares them in. Written out literally (rather than
+# read back from the production layout table) so the regression pins the
+# reported layout, not whatever the mapper believes today.
+_UPGRADED_SESSIONS_PHYSICAL = (
+    "id", "source", "user_id", "model", "model_config", "system_prompt",
+    "parent_session_id", "started_at", "ended_at", "end_reason",
+    "message_count", "tool_call_count", "input_tokens", "output_tokens",
+    "cache_read_tokens", "cache_write_tokens", "reasoning_tokens",
+    "billing_provider", "billing_base_url", "billing_mode",
+    "estimated_cost_usd", "actual_cost_usd", "cost_status", "cost_source",
+    "pricing_version", "title", "api_call_count", "handoff_state",
+    "handoff_platform", "handoff_error", "cwd", "rewind_count", "archived",
+    "session_key", "chat_id", "chat_type", "thread_id", "git_branch",
+    "git_repo_root", "compression_failure_cooldown_until",
+    "compression_failure_error", "display_name", "origin_json",
+    "expiry_finalized", "compression_fallback_streak", "profile_name",
+    "compression_ineffective_count", "pinned", "system_prompt_hash",
+    "last_activity_at", "last_activity_description",
+    "last_activity_provenance", "git_metadata_generation", "title_source",
+    "hidden", "last_read_at",
+)
+
+
+_UPGRADED_MESSAGES_PHYSICAL = (
+    "id", "session_id", "role", "content", "tool_call_id", "tool_calls",
+    "tool_name", "timestamp", "token_count", "finish_reason", "reasoning",
+    "reasoning_content", "reasoning_details", "codex_reasoning_items",
+    "codex_message_items", "platform_message_id", "observed", "active",
+    "compacted", "effect_disposition", "api_content", "display_kind",
+    "display_metadata", "_compressed_summary",
+)
+
+
+_UPGRADED_USAGE_PHYSICAL = (
+    "session_id", "model", "billing_provider", "billing_base_url",
+    "api_call_count", "input_tokens", "output_tokens", "cache_read_tokens",
+    "cache_write_tokens", "reasoning_tokens", "estimated_cost_usd",
+    "first_seen", "last_seen", "billing_mode", "actual_cost_usd",
+    "cost_status", "cost_source", "task",
+)
+
+
+def test_upgraded_physical_layout_maps_cells_by_name(tmp_path: Path) -> None:
+    """#101409: salvaged cells from an ALTER-TABLE-upgraded store must land on
+    the columns they came from, not on the destination's declared order.
+
+    The reporter's store has ``model`` where the template declares
+    ``message_count``, ``started_at`` eight columns earlier than declared, and
+    ``timestamp`` where ``effect_disposition`` is declared. Mapping by
+    position writes the message count into ``model``, 0.0 into ``started_at``
+    and blanks every title.
+    """
+
+    output = tmp_path / "mapped.db"
+    SessionDB(db_path=output).close()
+
+    declared = sqlite3.connect(str(output))
+    try:
+        sessions_declared = [
+            str(row[1]) for row in declared.execute("PRAGMA table_info(sessions)")
+        ]
+        messages_declared = [
+            str(row[1]) for row in declared.execute("PRAGMA table_info(messages)")
+        ]
+    finally:
+        declared.close()
+    # Premise: declared order really does differ from the physical order, so
+    # a positional map cannot be correct.
+    assert sessions_declared[:56] != list(_UPGRADED_SESSIONS_PHYSICAL)
+    assert messages_declared[:24] != list(_UPGRADED_MESSAGES_PHYSICAL)
+
+    session_id = "20260701_101010_abc001"
+    started_at = 1_754_000_000.0
+    message_timestamp = 1_754_000_321.0
+    session_cells = {
+        "id": session_id,
+        "source": "telegram",
+        "model": "gpt-4.1",
+        "started_at": started_at,
+        "message_count": 42,
+        "tool_call_count": 7,
+        "input_tokens": 1_234,
+        "output_tokens": 567,
+        "title": "quarterly planning notes",
+        "title_source": "model",
+        "cwd": "/home/user/project",
+        "git_branch": "main",
+        "last_activity_at": started_at + 900.0,
+        "archived": 0,
+        "pinned": 0,
+    }
+    message_cells = {
+        "id": None,  # rowid alias: NULL in the record
+        "session_id": session_id,
+        "role": "assistant",
+        "content": "salvaged assistant payload",
+        "timestamp": message_timestamp,
+        "token_count": 55,
+        "finish_reason": "stop",
+        "observed": 1,
+        "active": 1,
+    }
+    usage_cells = {
+        "session_id": session_id,
+        "model": "gpt-4.1",
+        "billing_provider": "openai",
+        "billing_base_url": "https://api.openai.com/v1",
+        "api_call_count": 4,
+        "input_tokens": 1_234,
+        "output_tokens": 567,
+        "estimated_cost_usd": 0.25,
+        "billing_mode": "api",
+        "task": "",
+        "first_seen": started_at,
+        "last_seen": started_at + 900.0,
+    }
+
+    lf_path = tmp_path / "lost_and_found.db"
+    lf_conn = sqlite3.connect(str(lf_path), isolation_level=None)
+    try:
+        width = len(_UPGRADED_SESSIONS_PHYSICAL)
+        columns = ", ".join(f"c{index}" for index in range(width))
+        lf_conn.execute(
+            "CREATE TABLE lost_and_found (rootpgno INTEGER, pgno INTEGER, "
+            "nfield INTEGER, id INTEGER, " + columns + ")"
+        )
+
+        def insert(layout: tuple[str, ...], rowid: int, values: dict) -> None:
+            cells = [values.get(name) for name in layout]
+            padded = cells + [None] * (width - len(cells))
+            placeholders = ", ".join("?" for _ in range(4 + width))
+            lf_conn.execute(
+                "INSERT INTO lost_and_found VALUES (" + placeholders + ")",
+                [2, 5, len(layout), rowid, *padded],
+            )
+
+        insert(_UPGRADED_SESSIONS_PHYSICAL, 1, session_cells)
+        insert(_UPGRADED_MESSAGES_PHYSICAL, 100, message_cells)
+        insert(_UPGRADED_USAGE_PHYSICAL, 200, usage_cells)
+    finally:
+        lf_conn.close()
+
+    lf_conn = sqlite3.connect(str(lf_path), isolation_level=None)
+    dest = sqlite3.connect(str(output), isolation_level=None)
+    try:
+        dest.execute("PRAGMA foreign_keys=OFF")
+        report = map_lost_and_found_rows(lf_conn, dest)
+        assert report["mapped"] == {
+            "sessions": 1, "messages": 1, "session_model_usage": 1,
+        }
+        assert report["unrecognized_layout_rows"] == 0
+
+        session = dict(
+            zip(
+                ("started_at", "title", "model", "message_count", "source",
+                 "cwd", "title_source"),
+                dest.execute(
+                    "SELECT started_at, title, model, message_count, source, "
+                    "cwd, title_source FROM sessions WHERE id = ?",
+                    (session_id,),
+                ).fetchone(),
+            )
+        )
+        # Each cell landed on the column it was written from — not shifted.
+        assert session["started_at"] == started_at
+        assert session["title"] == session_cells["title"]
+        assert session["model"] == session_cells["model"]
+        assert session["message_count"] == session_cells["message_count"]
+        assert session["source"] == session_cells["source"]
+        assert session["cwd"] == session_cells["cwd"]
+        assert session["title_source"] == session_cells["title_source"]
+
+        timestamp, role, content, disposition, token_count = dest.execute(
+            "SELECT timestamp, role, content, effect_disposition, token_count "
+            "FROM messages WHERE session_id = ?",
+            (session_id,),
+        ).fetchone()
+        assert timestamp == message_timestamp
+        assert role == message_cells["role"]
+        assert content == message_cells["content"]
+        assert token_count == message_cells["token_count"]
+        # The declared-order collision the issue names: timestamp must not
+        # have been written into effect_disposition.
+        assert disposition is None
+
+        usage_model, task, calls, mode = dest.execute(
+            "SELECT model, task, api_call_count, billing_mode "
+            "FROM session_model_usage WHERE session_id = ?",
+            (session_id,),
+        ).fetchone()
+        assert usage_model == usage_cells["model"]
+        assert task == usage_cells["task"]
+        assert calls == usage_cells["api_call_count"]
+        assert mode == usage_cells["billing_mode"]
+
+        # Correctly mapped salvage has nothing for the gate to flag.
+        assert session_recovery._lost_and_found_plausibility_errors(dest) == []
+    finally:
+        lf_conn.close()
+        dest.close()

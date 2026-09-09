@@ -36,6 +36,63 @@ SESSIONS_LAYOUT_NFIELDS = frozenset({55, 54, 52})
 SESSIONS_LEGACY_MINIMAL_NFIELD = 14
 SESSION_MODEL_USAGE_NFIELD = 18
 
+# Physical column order of a store that has been upgraded in place rather
+# than created at the current schema: ``_reconcile_columns()`` APPENDS every
+# newly declared column with ALTER TABLE ADD COLUMN, so the table keeps the
+# order in which columns were added, not the order SCHEMA_SQL declares them.
+# A record with N fields carries the first N names of the matching list
+# (SQLite does not rewrite existing rows when a column is added).
+#
+# The sessions/messages orders below are the ones reported and verified
+# against real salvaged rows in #101409, extended with the columns declared
+# after that report (they are appended in the same way on any store upgraded
+# since). Stores that also carry a column which was declared and then removed
+# again (sessions.handoff_pending, sessions.icon,
+# messages.anthropic_content_blocks — each shipped for days) are shifted from
+# both known orders; such rows fail layout validation below and fall back to
+# the conservative path rather than being mis-mapped.
+PHYSICAL_LAYOUTS: dict[str, tuple[str, ...]] = {
+    "sessions": (
+        "id", "source", "user_id", "model", "model_config",
+        "system_prompt", "parent_session_id", "started_at", "ended_at",
+        "end_reason", "message_count", "tool_call_count", "input_tokens",
+        "output_tokens", "cache_read_tokens", "cache_write_tokens",
+        "reasoning_tokens", "billing_provider", "billing_base_url",
+        "billing_mode", "estimated_cost_usd", "actual_cost_usd",
+        "cost_status", "cost_source", "pricing_version", "title",
+        "api_call_count", "handoff_state", "handoff_platform",
+        "handoff_error", "cwd", "rewind_count", "archived",
+        "session_key", "chat_id", "chat_type", "thread_id", "git_branch",
+        "git_repo_root", "compression_failure_cooldown_until",
+        "compression_failure_error", "display_name", "origin_json",
+        "expiry_finalized", "compression_fallback_streak",
+        "profile_name", "compression_ineffective_count", "pinned",
+        "system_prompt_hash", "last_activity_at",
+        "last_activity_description", "last_activity_provenance",
+        "git_metadata_generation", "title_source", "hidden",
+        "last_read_at", "compression_recovery_deadline", "tool_names",
+    ),
+    "messages": (
+        "id", "session_id", "role", "content", "tool_call_id",
+        "tool_calls", "tool_name", "timestamp", "token_count",
+        "finish_reason", "reasoning", "reasoning_content",
+        "reasoning_details", "codex_reasoning_items",
+        "codex_message_items", "platform_message_id", "observed",
+        "active", "compacted", "effect_disposition", "api_content",
+        "display_kind", "display_metadata", "_compressed_summary",
+    ),
+    # Same class on the usage table: ``task`` is declared sixth but was added
+    # last, and ``billing_mode``/cost columns are declared before the counters
+    # they were added after.
+    "session_model_usage": (
+        "session_id", "model", "billing_provider", "billing_base_url",
+        "api_call_count", "input_tokens", "output_tokens",
+        "cache_read_tokens", "cache_write_tokens", "reasoning_tokens",
+        "estimated_cost_usd", "first_seen", "last_seen", "billing_mode",
+        "actual_cost_usd", "cost_status", "cost_source", "task",
+    ),
+}
+
 # Plausible unix-epoch window for started_at heuristics on legacy layouts.
 _EPOCH_LOW = 1_000_000_000.0   # 2001
 _EPOCH_HIGH = 4_000_000_000.0  # 2096
@@ -298,6 +355,139 @@ def _insert_prefix_row(
     return cursor.rowcount == 1
 
 
+# Columns whose salvaged value must look right before a candidate layout is
+# accepted for a record. They are the cells that differ hardest between the
+# declared and the upgraded-physical order, so a wrong layout is rejected
+# instead of silently shifting every field.
+_LAYOUT_SENTINELS: dict[str, tuple[str, ...]] = {
+    "sessions": ("id", "source", "started_at"),
+    "messages": ("session_id", "role", "timestamp"),
+    "session_model_usage": ("session_id", "model"),
+}
+
+
+def _declared_types(conn: sqlite3.Connection, table: str) -> dict[str, str]:
+    return {
+        str(row[1]): str(row[2] or "")
+        for row in conn.execute(f'PRAGMA table_info("{table}")')
+    }
+
+
+
+def _type_conflicts(value: Any, declared: str) -> bool:
+    """True when a salvaged cell cannot belong to a column of this type."""
+
+    if value is None:
+        return False
+    affinity = declared.upper()
+    if "INT" in affinity or "REAL" in affinity or "FLOA" in affinity or "DOUB" in affinity:
+        return not isinstance(value, (int, float))
+    if "CHAR" in affinity or "CLOB" in affinity or "TEXT" in affinity:
+        return not isinstance(value, str)
+    return False
+
+
+
+def _sentinel_holds(name: str, value: Any) -> bool:
+    if name == "id":  # sessions.id; messages.id is a rowid alias, never a sentinel
+        return _is_session_id(value)
+    if name == "source":
+        return _looks_like_source(value)
+    if name in ("started_at", "timestamp"):
+        return (
+            isinstance(value, (int, float))
+            and _EPOCH_LOW <= float(value) <= _EPOCH_HIGH
+        )
+    if name == "session_id":
+        return isinstance(value, str) and bool(value)
+    if name == "role":
+        return value in MESSAGE_ROLES
+    if name == "model":
+        return isinstance(value, str) and bool(value)
+    return True
+
+
+
+def _layout_fits_cells(
+    kind: str,
+    layout: list[str],
+    cells: tuple[Any, ...],
+    dest_types: dict[str, str],
+) -> bool:
+    positions = {name: index for index, name in enumerate(layout)}
+    for name in _LAYOUT_SENTINELS[kind]:
+        if name not in positions or positions[name] >= len(cells):
+            return False
+        if not _sentinel_holds(name, cells[positions[name]]):
+            return False
+    for name, value in zip(layout, cells):
+        declared = dest_types.get(name)
+        if declared is not None and _type_conflicts(value, declared):
+            return False
+    return True
+
+
+
+def select_physical_layout(
+    kind: str,
+    cells: tuple[Any, ...],
+    dest_columns: list[str],
+    dest_types: dict[str, str],
+) -> Optional[list[str]]:
+    """Return the source column names for ``cells``, or None if unknown.
+
+    A salvaged record carries no schema, so the only way to know which cell
+    is ``started_at`` is to recognise the layout that produced it. Two are
+    known: the destination's own declared order (a store created at the
+    current schema, never ALTERed) and the upgraded-in-place physical order
+    (#101409). Both are checked against the record's sentinel cells and
+    column affinities; an unrecognised layout returns None so the caller can
+    fall back conservatively instead of shifting every field.
+    """
+
+    candidates: list[list[str]] = []
+    for full in (dest_columns, list(PHYSICAL_LAYOUTS.get(kind, ()))):
+        candidate = full[: len(cells)]
+        if candidate and candidate not in candidates:
+            candidates.append(candidate)
+    for candidate in candidates:
+        if _layout_fits_cells(kind, candidate, cells, dest_types):
+            return candidate
+    return None
+
+
+
+def _insert_named_row(
+    dest: sqlite3.Connection,
+    table: str,
+    layout: list[str],
+    cells: tuple[Any, ...],
+    dest_columns: list[str],
+    notnull_substitutes: dict[str, Any],
+    overrides: Optional[dict[str, Any]] = None,
+) -> bool:
+    """INSERT salvaged cells by source column name, never by position."""
+
+    known = set(dest_columns)
+    mapped: dict[str, Any] = {}
+    for name, value in zip(layout, cells):
+        if name not in known:
+            continue  # column dropped since the source was written
+        if value is None and name in notnull_substitutes:
+            value = notnull_substitutes[name]
+        mapped[name] = value
+    mapped.update(overrides or {})
+    columns = list(mapped)
+    quoted = ", ".join(f'"{column}"' for column in columns)
+    placeholders = ", ".join("?" for _ in columns)
+    cursor = dest.execute(
+        f'INSERT OR IGNORE INTO "{table}" ({quoted}) VALUES ({placeholders})',
+        [mapped[column] for column in columns],
+    )
+    return cursor.rowcount == 1
+
+
+
 def _copy_direct_tables(lf_conn: sqlite3.Connection, dest: sqlite3.Connection) -> dict[str, int]:
     """Copy rows .recover managed to attribute to real canonical tables."""
     copied: dict[str, int] = {}
@@ -327,7 +517,8 @@ def map_lost_and_found_rows(lf_conn: sqlite3.Connection, dest: sqlite3.Connectio
     """Best-effort mapping of a .recover output DB into a fresh SessionDB."""
     report: dict[str, Any] = {
         "direct_table_rows": {}, "mapped": {"sessions": 0, "messages": 0, "session_model_usage": 0},
-        "legacy_minimal_sessions": 0, "unmapped_rows": 0, "insert_conflicts": 0, "lost_and_found_tables": [],
+        "legacy_minimal_sessions": 0, "mapped_by_layout": 0, "unrecognized_layout_rows": 0,
+        "unmapped_rows": 0, "insert_conflicts": 0, "lost_and_found_tables": [],
     }
     with _immediate_transaction(dest):
         report["direct_table_rows"] = _copy_direct_tables(lf_conn, dest)
@@ -340,6 +531,7 @@ def map_lost_and_found_rows(lf_conn: sqlite3.Connection, dest: sqlite3.Connectio
             for index in protected:
                 defaults.pop(index, None)
             targets[kind_name] = (_table_columns(dest, kind_name), defaults)
+        dest_types = {table: _declared_types(dest, table) for table in targets}
         lf_tables = [
             str(row[0]) for row in
             lf_conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'lost_and_found%'")
@@ -361,8 +553,23 @@ def map_lost_and_found_rows(lf_conn: sqlite3.Connection, dest: sqlite3.Connectio
                     report["unmapped_rows"] += 1
                     continue
                 columns, defaults = targets[kind]
+                layout = select_physical_layout(kind, cells, columns, dest_types[kind])
+                legacy_minimal = kind == "sessions" and nfield == SESSIONS_LEGACY_MINIMAL_NFIELD
+                if layout is None and not legacy_minimal:
+                    # No known layout produced these cells: the positional prefix below is a guess, so count
+                    # it — the recovery verifier's plausibility gate keeps such a salvage from being "verified".
+                    report["unrecognized_layout_rows"] += 1
                 try:
-                    if kind == "sessions" and nfield == SESSIONS_LEGACY_MINIMAL_NFIELD:
+                    if layout is not None:
+                        # Map cell to column by NAME (#101409): zipping onto the destination's declared order
+                        # shifts every field of a store upgraded via ALTER TABLE ADD COLUMN.
+                        inserted = _insert_named_row(
+                            dest, kind, layout, cells, columns,
+                            {columns[index]: value for index, value in defaults.items() if index < len(columns)},
+                            {"id": lf_rowid} if kind == "messages" else None,
+                        )
+                        report["mapped_by_layout"] += int(inserted)
+                    elif legacy_minimal:
                         # Pre-modern layout with unknown column order: salvage identity + timing only.
                         row_values = (
                             cells[0], cells[1] if _looks_like_source(cells[1]) else "recovered",

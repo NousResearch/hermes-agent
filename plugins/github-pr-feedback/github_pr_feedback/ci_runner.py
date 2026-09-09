@@ -464,11 +464,15 @@ def _pid_is_alive(pid: int) -> bool:
 
     if pid < 2:
         return False
-    # Use Hermes' cross-platform probe: on Windows ``os.kill(pid, 0)`` can
-    # deliver CTRL_C_EVENT to the target's console process group.
-    from gateway.status import _pid_exists
-
-    return _pid_exists(pid)
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    return True
 
 
 def _lane_argv(

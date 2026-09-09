@@ -48,6 +48,31 @@ If the maintained updater script is missing (for example after antivirus quarant
 
 On Windows, a Desktop reopened during packaging is stopped again immediately before the staged build is promoted. This cleanup is restricted to executables inside that checkout's Desktop release tree; unrelated installations are not stopped. A remaining lock still makes staged promotion fail rather than bypassing the rename error.
 
+### Upgrading the self-managed Node.js runtime
+
+On hosts without a usable Node.js (>= 20), the installer provisions a pinned Node.js release into `~/.hermes/node/` (and `%LOCALAPPDATA%\hermes\node` on Windows) and symlinks `node`, `npm`, and `npx` into `~/.local/bin`. `hermes update` refreshes repository files, Python dependencies, and workspace npm dependencies — it never re-provisions that managed Node tree. A broken or out-of-range tree is healed automatically on the next probe, but a healthy tree stays on the patch release it was installed with, so it needs an explicit upgrade now and then (security patches, an LTS line reaching EOL, or tooling that needs a newer runtime).
+
+On Linux and macOS, run the upgrade helper against the Hermes checkout:
+
+```bash
+cd /path/to/hermes-agent   # the repository clone hermes update pulls
+source scripts/lib/node-bootstrap.sh
+upgrade_managed_node
+```
+
+This re-downloads the latest release of the managed tree's **current major line** (a 22 tree gets the newest 22.x, a 26 tree the newest 26.x — it never downgrades to the library's default line). The new tree is downloaded and fully extracted before the old one is replaced, and the `~/.local/bin` links are re-pointed. The bundled npm is upgraded into the checkout's `engines.npm` range as part of the same pass. To jump to a different major line instead, set the target explicitly:
+
+```bash
+source scripts/lib/node-bootstrap.sh
+HERMES_NODE_TARGET_MAJOR=26 upgrade_managed_node
+```
+
+The helper only touches the Hermes-managed tree. A Node you installed yourself (system package, `nvm`, `brew`, Nix) is never modified — install a newer one with the same tool you used originally.
+
+On Windows, re-running `install.ps1` performs the equivalent upgrade: it replaces a managed tree that fails the current version check with the latest supported portable build (staged first, so an interrupted run cannot gut the install), and upgrades its bundled npm.
+
+Either way, close the Desktop app and any running gateway first — an in-use tree is skipped rather than corrupted, and the upgrade simply applies on the next run.
+
 ### Updating against a non-default branch: `--branch`
 
 By default `hermes update` tracks `origin/main`. Pass `--branch <name>` to update against a different branch — useful for QA channels, feature branches, or release-candidate testing:

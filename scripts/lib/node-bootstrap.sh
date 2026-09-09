@@ -410,6 +410,32 @@ heal_managed_node() {
     _nb_install_bundled_node
 }
 
+# Re-provision the managed tree even when it is healthy: `hermes update`
+# refreshes npm dependencies but never the managed Node runtime, so a tree
+# provisioned once keeps its original patch release until the major falls out
+# of the accepted range and heal starts firing. This is the documented
+# upgrade path for the self-managed runtime.
+#
+# The target major comes from the live tree itself (not the library default,
+# which stays at the oldest accepted major): refreshing a 26 tree must fetch
+# the latest 26.x, never downgrade it because HERMES_NODE_TARGET_MAJOR
+# defaults to 22.
+upgrade_managed_node() {
+    [ -d "$HERMES_HOME/node" ] || return 1
+    local probe ver major
+    for probe in "$HERMES_HOME/node/bin/node" "$HERMES_HOME/node/node"; do
+        if [ -x "$probe" ]; then
+            ver="$("$probe" --version 2>/dev/null)" || break
+            major="${ver#v}"; major="${major%%.*}"
+            case "$major" in ''|*[!0-9]*) break ;; esac
+            HERMES_NODE_TARGET_MAJOR="$major" _nb_install_bundled_node
+            return $?
+        fi
+    done
+    _nb_warn "No runnable managed Node under $HERMES_HOME/node — nothing to upgrade"
+    return 1
+}
+
 # ---------------------------------------------------------------------------
 # Public entry point
 # ---------------------------------------------------------------------------

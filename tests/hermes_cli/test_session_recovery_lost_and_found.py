@@ -31,8 +31,12 @@ from hermes_cli.session_recovery import (
 )
 
 from tests.hermes_cli.test_session_recovery import (
+    _assert_recovered_cjk_search,
     _btree_leaf_pages,
+    _enable_cjk,
     _make_page_spanning_source,
+    _seed_cjk_source,
+    _sha256,
 )
 
 
@@ -857,5 +861,115 @@ def test_plausibility_gate_ignores_stub_only_sessions(tmp_path: Path) -> None:
         conn.commit()
         errors = session_recovery._lost_and_found_plausibility_errors(conn)
         assert len(errors) == 1 and "sessions.started_at" in errors[0]
+    finally:
+        conn.close()
+
+
+def test_rebuild_fts_indexes_loads_cjk_only_on_connect(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, cjk_so: Path,
+) -> None:
+    """rebuild_fts_indexes touches messages_fts_cjk; the destination connection
+    must have registered cjk_unicode61."""
+    from hermes_cli.session_recovery import _connect
+
+    _enable_cjk(monkeypatch, cjk_so)
+    dest = tmp_path / "cjk-dest.db"
+    _seed_cjk_source(dest)
+
+    raw = sqlite3.connect(str(dest), isolation_level=None)
+    try:
+        raw_result = rebuild_fts_indexes(raw)
+        assert "cjk_unicode61" in raw_result.get("messages_fts_cjk", "").lower()
+    finally:
+        raw.close()
+
+    conn = _connect(dest)
+    try:
+        connected = rebuild_fts_indexes(conn)
+        assert connected["messages_fts_cjk"] == "rebuilt"
+        assert connected["messages_fts"] == "rebuilt"
+    finally:
+        conn.close()
+
+
+def test_lost_and_found_recovery_preserves_cjk_search(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, cjk_so: Path,
+) -> None:
+    """Page-level salvage destination and verify connections must load the tokenizer."""
+    import hermes_cli.session_lost_and_found as lost_and_found
+
+    _enable_cjk(monkeypatch, cjk_so)
+    source = tmp_path / "damaged-source.db"
+    source.write_bytes(b"source bytes remain immutable")
+    source_hash = _sha256(source)
+    snapshot_dir = tmp_path / "snapshot"
+    snapshot_dir.mkdir()
+    snapshot_source = snapshot_dir / "source.db"
+    snapshot_source.write_bytes(source.read_bytes())
+    output = tmp_path / "cjk-lost-and-found-recovered.db"
+
+    monkeypatch.setattr(lost_and_found, "find_sqlite3_cli", lambda: "fake-sqlite3")
+
+    def fake_recover(_source: Path, lf_path: Path, _sqlite3_bin: str) -> dict[str, object]:
+        recovered_rows = SessionDB(db_path=lf_path)
+        try:
+            assert recovered_rows._fts_cjk_available
+            recovered_rows.create_session("cjk-recovery-session", "cli")
+            recovered_rows.append_message(
+                "cjk-recovery-session", "user", "한국어 복구 경로를 확인한다",
+            )
+            recovered_rows.append_message(
+                "cjk-recovery-session", "assistant", "日本語の検索も残す",
+            )
+            recovered_rows.append_message(
+                "cjk-recovery-session", "user", "中文内容也要可搜",
+            )
+        finally:
+            recovered_rows.close()
+        return {"binary": "fake-sqlite3", "attempts": []}
+
+    monkeypatch.setattr(lost_and_found, "run_cli_lost_and_found_recover", fake_recover)
+    inspection = {
+        "source_bundle": {"main": {"path": str(source)}},
+        "source_fingerprint": session_recovery._source_fingerprint(source),
+        "tables": {},
+        "errors": [],
+        "warnings": [],
+    }
+
+    report = session_recovery._recover_via_lost_and_found(
+        source=source,
+        snapshot_source=snapshot_source,
+        snapshot_dir=snapshot_dir,
+        output=output,
+        inspection=inspection,
+        disk_space={"sufficient": True},
+        missing_required=["sessions", "messages"],
+    )
+
+    assert report["source_unchanged"] is True
+    assert _sha256(source) == source_hash
+    assert report["copy"]["messages"]["copied_rows"] == 3
+    assert report["verification"]["table_counts"]["messages"] == 3
+    assert report["verification"]["fts_checks"]["messages_fts_cjk"] == "ok"
+    _assert_recovered_cjk_search(output)
+
+
+def test_plausibility_probe_opens_cjk_destination(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, cjk_so: Path,
+) -> None:
+    """The post-salvage plausibility connection is a raw reopen of the CJK destination."""
+    from hermes_cli.session_recovery import _connect, _lost_and_found_plausibility_errors
+
+    _enable_cjk(monkeypatch, cjk_so)
+    dest = tmp_path / "cjk-dest.db"
+    _seed_cjk_source(dest)
+
+    conn = _connect(dest)
+    try:
+        assert _lost_and_found_plausibility_errors(conn) == []
+        conn.execute(
+            "INSERT INTO messages_fts_cjk (messages_fts_cjk) VALUES ('integrity-check')"
+        )
     finally:
         conn.close()

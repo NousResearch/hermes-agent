@@ -246,6 +246,12 @@ gateway:
     item_no_desc:          "    - {name}"
     failed:                "❌ Skill-Neuladen fehlgeschlagen: {error}"
 
+  archive:
+    nothing_to_archive:    "📦 Noch nichts zu archivieren — diese Sitzung hat keine gespeicherten Nachrichten."
+    failed:                "⚠️ Sitzung {session_id} konnte nicht archiviert werden — eine neue Sitzung wurde trotzdem gestartet."
+    titled_label:          " („{title}“)"
+    done:                  "📦 Sitzung {session_id}{label} archiviert — Wiederherstellung mit `hermes sessions unarchive {session_id}`."
+
   reset:
     header_default:        "✨ Sitzung zurückgesetzt! Neuanfang."
     header_new:            "✨ Neue Sitzung gestartet!"

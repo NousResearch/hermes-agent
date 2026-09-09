@@ -573,7 +573,12 @@ hermes sessions archive --title "dry run" --yes
 At least one filter is required — a bare `hermes sessions archive` refuses to
 archive your entire history. Archived sessions are hidden from
 `hermes sessions list` and `/resume` but remain in the database and can be
-unarchived from the Desktop/Dashboard session list.
+unarchived from the Desktop/Dashboard session list or with
+`hermes sessions unarchive <id>` (accepts unique ID prefixes).
+
+You can also archive the session you are currently in from any chat surface
+with `/archive` (CLI and gateway) — it archives the current transcript and
+starts a fresh session, printing the ID to unarchive later.
 
 ### Session Statistics
 

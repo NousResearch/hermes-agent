@@ -783,6 +783,35 @@ class GatewaySessionCommandsMixin:
                 os.remove(temp_path)
                 os.rmdir(temp_dir)
 
+    async def _handle_archive_command(self, event: MessageEvent) -> Union[str, EphemeralReply]:
+        """Handle /archive — archive the current session (soft-hide, restorable), then start fresh.
+
+        Inspired by Factory Droid v0.209's "archive sessions from chat": the archived flag and
+        bulk `hermes sessions archive` already exist, but the session you are IN could not be
+        archived without switching away first. Reuses the full /new reset pipeline so agent
+        eviction, hooks and delegation expiry behave identically.
+        """
+        source = event.source
+        session_key = self._session_key_for_source(source)
+        old_entry = self.session_store._entries.get(session_key)
+        old_sid = str(getattr(old_entry, "session_id", "") or "")
+        if not self._session_db:
+            return self._session_db_unavailable_reply()
+        row = await self._session_db.get_session(old_sid) if old_sid else None
+        if not row or not row.get("message_count"):
+            return t("gateway.archive.nothing_to_archive")
+        title = row.get("title") or ""
+        reset_reply = await self._handle_reset_command(event)
+        archived = False
+        try:
+            archived = bool(await self._session_db.set_session_archived(old_sid, True))
+        except Exception:
+            logger.warning("Failed to archive session %s from /archive", old_sid, exc_info=True)
+        if not archived:
+            return t("gateway.archive.failed", session_id=old_sid)
+        label = t("gateway.archive.titled_label", title=title) if title else ""
+        return t("gateway.archive.done", session_id=old_sid, label=label) + f"\n{reset_reply}"
+
     async def _handle_title_command(self, event: MessageEvent) -> str:
         """Handle /title command — set or show the current session's title."""
         source = event.source

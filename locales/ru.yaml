@@ -246,6 +246,12 @@ gateway:
     item_no_desc:          "    - {name}"
     failed:                "❌ Ошибка перезагрузки навыков: {error}"
 
+  archive:
+    nothing_to_archive:    "📦 Пока нечего архивировать — в этой сессии нет сохранённых сообщений."
+    failed:                "⚠️ Не удалось архивировать сессию {session_id} — новая сессия всё равно запущена."
+    titled_label:          " («{title}»)"
+    done:                  "📦 Сессия {session_id}{label} архивирована — восстановить: `hermes sessions unarchive {session_id}`."
+
   reset:
     header_default:        "✨ Сеанс сброшен! Начинаем с чистого листа."
     header_new:            "✨ Новый сеанс запущен!"

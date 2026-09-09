@@ -246,6 +246,12 @@ gateway:
     item_no_desc:          "    - {name}"
     failed:                "❌ Készségek újratöltése sikertelen: {error}"
 
+  archive:
+    nothing_to_archive:    "📦 Még nincs mit archiválni — ebben a munkamenetben nincs mentett üzenet."
+    failed:                "⚠️ Nem sikerült archiválni a(z) {session_id} munkamenetet — az új munkamenet így is elindult."
+    titled_label:          " („{title}”)"
+    done:                  "📦 A(z) {session_id}{label} munkamenet archiválva — visszaállítás: `hermes sessions unarchive {session_id}`."
+
   reset:
     header_default:        "✨ Munkamenet visszaállítva! Kezdjük tiszta lappal."
     header_new:            "✨ Új munkamenet elindítva!"

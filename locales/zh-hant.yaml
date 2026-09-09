@@ -246,6 +246,12 @@ gateway:
     item_no_desc:          "    - {name}"
     failed:                "❌ 技能重新載入失敗：{error}"
 
+  archive:
+    nothing_to_archive:    "📦 目前沒有可封存的內容 — 此工作階段沒有已儲存的訊息。"
+    failed:                "⚠️ 無法封存工作階段 {session_id} — 仍已開始新的工作階段。"
+    titled_label:          "（「{title}」）"
+    done:                  "📦 已封存工作階段 {session_id}{label} — 使用 `hermes sessions unarchive {session_id}` 還原。"
+
   reset:
     header_default:        "✨ 工作階段已重設！重新開始。"
     header_new:            "✨ 新工作階段已啟動！"

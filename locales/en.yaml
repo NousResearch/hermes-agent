@@ -261,6 +261,12 @@ gateway:
     item_no_desc:          "    - {name}"
     failed:                "❌ Skills reload failed: {error}"
 
+  archive:
+    nothing_to_archive:    "📦 Nothing to archive yet — this session has no saved messages."
+    failed:                "⚠️ Could not archive session {session_id} — a fresh session was still started."
+    titled_label:          " (“{title}”)"
+    done:                  "📦 Archived session {session_id}{label} — restore it with `hermes sessions unarchive {session_id}`."
+
   reset:
     header_default:        "✨ Session reset! Starting fresh."
     header_new:            "✨ New session started!"

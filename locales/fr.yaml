@@ -246,6 +246,12 @@ gateway:
     item_no_desc:          "    - {name}"
     failed:                "❌ Échec du rechargement des skills : {error}"
 
+  archive:
+    nothing_to_archive:    "📦 Rien à archiver pour l’instant — cette session n’a aucun message enregistré."
+    failed:                "⚠️ Impossible d’archiver la session {session_id} — une nouvelle session a tout de même été démarrée."
+    titled_label:          " (« {title} »)"
+    done:                  "📦 Session {session_id}{label} archivée — restaurez-la avec `hermes sessions unarchive {session_id}`."
+
   reset:
     header_default:        "✨ Session réinitialisée ! Nouveau départ."
     header_new:            "✨ Nouvelle session démarrée !"

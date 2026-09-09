@@ -246,6 +246,12 @@ gateway:
     item_no_desc:          "    - {name}"
     failed:                "❌ スキルの再読み込みに失敗しました: {error}"
 
+  archive:
+    nothing_to_archive:    "📦 まだアーカイブするものがありません — このセッションには保存されたメッセージがありません。"
+    failed:                "⚠️ セッション {session_id} をアーカイブできませんでした — 新しいセッションは開始されました。"
+    titled_label:          "(「{title}」)"
+    done:                  "📦 セッション {session_id}{label} をアーカイブしました — `hermes sessions unarchive {session_id}` で復元できます。"
+
   reset:
     header_default:        "✨ セッションをリセットしました。新たに開始します。"
     header_new:            "✨ 新しいセッションを開始しました。"

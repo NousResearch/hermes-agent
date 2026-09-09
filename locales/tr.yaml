@@ -246,6 +246,12 @@ gateway:
     item_no_desc:          "    - {name}"
     failed:                "❌ Beceri yeniden yükleme başarısız: {error}"
 
+  archive:
+    nothing_to_archive:    "📦 Henüz arşivlenecek bir şey yok — bu oturumda kayıtlı mesaj yok."
+    failed:                "⚠️ {session_id} oturumu arşivlenemedi — yine de yeni bir oturum başlatıldı."
+    titled_label:          " (“{title}”)"
+    done:                  "📦 {session_id}{label} oturumu arşivlendi — `hermes sessions unarchive {session_id}` ile geri yükleyin."
+
   reset:
     header_default:        "✨ Oturum sıfırlandı! Yeniden başlıyoruz."
     header_new:            "✨ Yeni oturum başlatıldı!"

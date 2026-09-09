@@ -246,6 +246,12 @@ gateway:
     item_no_desc:          "    - {name}"
     failed:                "❌ 스킬 재로드 실패: {error}"
 
+  archive:
+    nothing_to_archive:    "📦 아직 보관할 내용이 없습니다 — 이 세션에는 저장된 메시지가 없습니다."
+    failed:                "⚠️ 세션 {session_id}을(를) 보관하지 못했습니다 — 새 세션은 시작되었습니다."
+    titled_label:          " (“{title}”)"
+    done:                  "📦 세션 {session_id}{label}을(를) 보관했습니다 — `hermes sessions unarchive {session_id}`로 복원하세요."
+
   reset:
     header_default:        "✨ 세션이 초기화되었습니다! 새로 시작합니다."
     header_new:            "✨ 새 세션이 시작되었습니다!"

@@ -246,6 +246,12 @@ gateway:
     item_no_desc:          "    - {name}"
     failed:                "❌ Vaardigheids-herlaai het misluk: {error}"
 
+  archive:
+    nothing_to_archive:    "📦 Nog niks om te argiveer nie — hierdie sessie het geen gestoorde boodskappe nie."
+    failed:                "⚠️ Kon nie sessie {session_id} argiveer nie — 'n nuwe sessie is steeds begin."
+    titled_label:          " (“{title}”)"
+    done:                  "📦 Sessie {session_id}{label} geargiveer — herstel dit met `hermes sessions unarchive {session_id}`."
+
   reset:
     header_default:        "✨ Sessie herstel! Begin van voor."
     header_new:            "✨ Nuwe sessie begin!"

@@ -226,6 +226,11 @@ def build_sessions_parser(subparsers, *, cmd_sessions: Callable) -> None:
     sessions_unpin.add_argument(
         "session_ids", nargs="+", help="Session ID(s) or unique prefix(es) to unpin")
 
+    sessions_unarchive = sessions_subparsers.add_parser(
+        "unarchive", help="Un-archive (restore to listings) archived session(s)")
+    sessions_unarchive.add_argument(
+        "session_ids", nargs="+", help="Session ID(s) or unique prefix(es) to un-archive")
+
     sessions_pinned = sessions_subparsers.add_parser("pinned", help="List pinned sessions")
     add_json_flag(sessions_pinned, "Emit machine-readable JSON (for backup/restore scripting)")
 

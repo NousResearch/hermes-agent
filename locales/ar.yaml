@@ -269,6 +269,12 @@ gateway:
     item_no_desc:          "    - {name}"
     failed:                "❌ فشلت إعادة تحميل المهارات: {error}"
 
+  archive:
+    nothing_to_archive:    "📦 لا يوجد ما يمكن أرشفته بعد — لا تحتوي هذه الجلسة على رسائل محفوظة."
+    failed:                "⚠️ تعذّرت أرشفة الجلسة {session_id} — ومع ذلك بدأت جلسة جديدة."
+    titled_label:          " («{title}»)"
+    done:                  "📦 تمت أرشفة الجلسة {session_id}{label} — استعدها عبر `hermes sessions unarchive {session_id}`."
+
   reset:
     header_default:        "✨ أُعيد ضبط الجلسة! بداية جديدة."
     header_new:            "✨ بدأت جلسة جديدة!"

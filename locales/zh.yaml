@@ -246,6 +246,12 @@ gateway:
     item_no_desc:          "    - {name}"
     failed:                "❌ 技能重新加载失败：{error}"
 
+  archive:
+    nothing_to_archive:    "📦 暂无可归档内容 — 此会话没有已保存的消息。"
+    failed:                "⚠️ 无法归档会话 {session_id} — 已照常开始新会话。"
+    titled_label:          "（“{title}”）"
+    done:                  "📦 已归档会话 {session_id}{label} — 使用 `hermes sessions unarchive {session_id}` 恢复。"
+
   reset:
     header_default:        "✨ 会话已重置！重新开始。"
     header_new:            "✨ 新会话已启动！"

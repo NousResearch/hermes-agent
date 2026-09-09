@@ -246,6 +246,12 @@ gateway:
     item_no_desc:          "    - {name}"
     failed:                "❌ Falló la recarga de skills: {error}"
 
+  archive:
+    nothing_to_archive:    "📦 Nada que archivar todavía — esta sesión no tiene mensajes guardados."
+    failed:                "⚠️ No se pudo archivar la sesión {session_id} — aun así se inició una sesión nueva."
+    titled_label:          " (“{title}”)"
+    done:                  "📦 Sesión {session_id}{label} archivada — restaúrala con `hermes sessions unarchive {session_id}`."
+
   reset:
     header_default:        "✨ ¡Sesión reiniciada! Empezando de nuevo."
     header_new:            "✨ ¡Nueva sesión iniciada!"

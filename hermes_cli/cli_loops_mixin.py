@@ -163,6 +163,41 @@ class CLILoopsMixin:
             return True  # confirmation cancelled — command handled, keep REPL alive
         self.new_session(title=title)
 
+    def _cmd_archive_session(self, cmd_original: str):
+        """/archive — archive the current session (soft-hide, restorable) and start fresh.
+
+        Inspired by Factory Droid v0.209's "archive sessions from chat": archive state
+        already exists in state.db (`sessions.archived`, bulk `hermes sessions archive`),
+        but the session you are IN could not be archived without leaving it first.
+        """
+        from cli import _cprint
+        from hermes_state import format_session_db_unavailable
+        if not self._session_db:
+            _cprint(f"  {format_session_db_unavailable()}")
+            return True
+        old_id = self.session_id
+        sess = self._session_db.get_session(old_id) if old_id else None
+        if not sess or not sess.get("message_count"):
+            _cprint("  📦 Nothing to archive yet — this session has no saved messages.")
+            return True
+        if self._confirm_destructive_slash(
+            "archive",
+            "This archives the current session (hidden from listings; restore with\n"
+            "`hermes sessions unarchive <id>`) and starts a fresh one.",
+            cmd_original=cmd_original,
+        ) is None:
+            return True  # confirmation cancelled — command handled, keep REPL alive
+        title = self._session_db.get_session_title(old_id)
+        # Rotate FIRST: new_session flushes the in-flight turn to the old session and ends it,
+        # so the archived row carries the complete transcript.
+        self.new_session(silent=True)
+        if self._session_db.set_session_archived(old_id, True):
+            label = f" ('{title}')" if title else ""
+            _cprint(f"  📦 Archived session {old_id}{label} — starting fresh.")
+            _cprint(f"  Restore it later: hermes sessions unarchive {old_id}")
+        else:
+            _cprint("  Session could not be archived (not found in database).")
+
     def _cmd_retry(self, cmd_original: str):
         retry_msg = self.retry_last()
         if retry_msg and hasattr(self, '_pending_input'):

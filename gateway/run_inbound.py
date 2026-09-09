@@ -776,6 +776,16 @@ class GatewayInboundMixin:
             self._handle_reset_command,
         )
 
+    async def _hm_cmd_archive(self, event, source, _quick_key):
+        if await asyncio.to_thread(self._is_telegram_topic_root_lobby, source):
+            return True, self._telegram_topic_root_new_message()
+        return await self._hm_confirm_destructive(
+            event, "archive",
+            "This archives the current session (hidden from listings; restorable with "
+            "`hermes sessions unarchive`) and starts a fresh one.",
+            self._handle_archive_command,
+        )
+
     async def _hm_cmd_start(self, event, source, _quick_key):
         logger.info("Ignoring /start platform ping for session %s", _quick_key)
         return True, ""
@@ -907,6 +917,7 @@ class GatewayInboundMixin:
     # handled by ``_hm_cmd_<name>`` → ``(handled, result)``; ``(False, None)`` falls through to the agent.
     _HM_CANONICAL_COMMANDS = frozenset({
         "new", "start", "egress", "learn", "plan", "init", "blueprint", "undo", "queue", "steer", "moa",
+        "archive",
     })
 
     async def _hm_dispatch_canonical_command(

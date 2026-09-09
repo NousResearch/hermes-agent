@@ -12,7 +12,7 @@ from cli import HermesCLI
 # Command names that had an explicit branch in the pre-dispatch-table chain.
 OLD_CHAIN_COMMANDS = [
     "exit", "quit", "help", "palette", "whoami", "profile", "tools", "toolsets",
-    "config", "redraw", "clear", "history", "title", "handoff", "new", "resume",
+    "config", "redraw", "clear", "history", "title", "archive", "handoff", "new", "resume",
     "sessions", "model", "codex-runtime", "personality", "pet", "hatch", "retry",
     "prompt", "undo", "branch", "worktree", "save", "cron", "suggestions",
     "blueprint", "curator", "kanban", "skills", "learn", "init", "memory",

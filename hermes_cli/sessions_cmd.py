@@ -713,6 +713,19 @@ def _cmd_pin(db, args, pinning):
     return 1 if failures else None
 
 
+def _cmd_unarchive(db, args):
+    """Restore archived session(s) to listings/resume (the /archive escape hatch)."""
+    failures = 0
+    for raw_id in args.session_ids:
+        resolved = db.resolve_session_id(raw_id)
+        if resolved and db.set_session_archived(resolved, False):
+            title = db.get_session_title(resolved)
+            print(f"Un-archived session '{resolved}'.{f'  ({title})' if title else ''}")
+        else:
+            failures += _not_found(raw_id)
+    return 1 if failures else None
+
+
 def _cmd_pinned(db, args):
     # limit=1 keeps the recency page minimal; include_pinned back-fills ALL pinned rows the page missed.
     rows = db.list_sessions_rich(limit=1, include_pinned=True, exclude_sources=_default_exclude(args))
@@ -942,6 +955,7 @@ _DB_HANDLERS = {
     "prune": partial(_cmd_prune_or_archive, action="prune"), "pin": partial(_cmd_pin, pinning=True),
     "archive": partial(_cmd_prune_or_archive, action="archive"), "unpin": partial(_cmd_pin, pinning=False),
     "retitle-skills": _cmd_retitle_skills, "browse": _cmd_browse, "optimize": _cmd_optimize,
+    "unarchive": _cmd_unarchive,
     "clean-markers": _cmd_clean_markers, "optimize-storage": _cmd_optimize_storage,
     "repair-routing": _cmd_repair_routing, "stats": _cmd_stats,
 }

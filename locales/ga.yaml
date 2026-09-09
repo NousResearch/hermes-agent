@@ -250,6 +250,12 @@ gateway:
     item_no_desc:          "    - {name}"
     failed:                "❌ Theip ar athlódáil scileanna: {error}"
 
+  archive:
+    nothing_to_archive:    "📦 Níl aon rud le cartlannú fós — níl aon teachtaireachtaí sábháilte sa seisiún seo."
+    failed:                "⚠️ Níorbh fhéidir seisiún {session_id} a chartlannú — cuireadh tús le seisiún nua mar sin féin."
+    titled_label:          " (“{title}”)"
+    done:                  "📦 Cartlannaíodh seisiún {session_id}{label} — athchóirigh é le `hermes sessions unarchive {session_id}`."
+
   reset:
     header_default:        "✨ Seisiún athshocraithe! Ag tosú as an nua."
     header_new:            "✨ Seisiún nua tosaithe!"

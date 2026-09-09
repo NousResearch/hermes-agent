@@ -246,6 +246,12 @@ gateway:
     item_no_desc:          "    - {name}"
     failed:                "❌ Помилка перезавантаження навичок: {error}"
 
+  archive:
+    nothing_to_archive:    "📦 Поки нічого архівувати — у цій сесії немає збережених повідомлень."
+    failed:                "⚠️ Не вдалося архівувати сесію {session_id} — нову сесію все одно розпочато."
+    titled_label:          " («{title}»)"
+    done:                  "📦 Сесію {session_id}{label} архівовано — відновити: `hermes sessions unarchive {session_id}`."
+
   reset:
     header_default:        "✨ Сесію скинуто! Починаємо з чистого аркуша."
     header_new:            "✨ Нову сесію запущено!"

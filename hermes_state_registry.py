@@ -22,8 +22,8 @@ Lifecycle rules:
   generation is published while the previous generation is still tearing down.
 - A path can have SEVERAL closes admitted at once (the current generation's final release
   plus a retired generation's drain). The path barrier COUNTS them and is lifted only by
-  the last one to settle, so neither ``acquire`` nor ``close_all`` can escape while any
-  handle for that path is still inside checkpoint/WAL-unlink.
+  the last one to settle, so neither ``acquire`` nor ``close_all`` / ``close_all_under``
+  can escape while any handle for that path is still inside checkpoint/WAL-unlink.
 - Maintenance callers borrow handles with a temporary registry reference instead of
   iterating an unpinned snapshot.
 """
@@ -365,6 +365,10 @@ def close_all_under(directory: str | Path) -> int:
     Profile delete rmtree (and a same-name recreate) fails while this process still holds
     ``state.db``. Same contract as ``MemoryStore.release_all_under``: a live holder is
     expected to fail afterward; a process that holds none is a no-op returning 0.
+
+    A final ``release()`` can drop the generation and admit teardown before the physical
+    close finishes. Wait for those directory-matching barriers even when no generation
+    remains, otherwise rmtree still sees the open handle.
     """
     try:
         root = Path(directory).expanduser().resolve()
@@ -377,12 +381,13 @@ def close_all_under(directory: str | Path) -> int:
             for generation in list(_generations.values()) + list(_retired.values())
             if _path_is_under(generation.path, root)
         ]
-        if not generations:
-            return 0
-        selected_paths = {generation.path for generation in generations}
+        # Collect by directory, not by remaining generations: a last release already
+        # popped the generation and left only ``_tearing_down``.
         active_teardowns = [
-            barrier for path, barrier in _tearing_down.items() if path in selected_paths
+            barrier for path, barrier in _tearing_down.items()
+            if _path_is_under(path, root)
         ]
+        selected_paths = {generation.path for generation in generations}
         for path in selected_paths:
             teardown_barriers[path] = _admit_teardown_locked(path)
         for generation in generations:

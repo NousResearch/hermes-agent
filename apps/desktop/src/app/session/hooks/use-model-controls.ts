@@ -12,6 +12,7 @@ import { notifyError } from '@/store/notifications'
 import { $activeGatewayProfile } from '@/store/profile'
 import {
   $activeSessionId,
+  $connection,
   $currentModel,
   $currentProvider,
   getComposerSelectionGeneration,
@@ -36,6 +37,14 @@ interface ModelSwitchResponse {
   deferred?: boolean
 }
 
+interface FailedPrimaryMutation {
+  owner: string
+  previousGeneration: number
+  previousModel: string
+  previousProvider: string
+  previousSource: ReturnType<typeof getCurrentModelSource>
+}
+
 export function useModelControls({
   cacheOwnerConnectionId,
   cacheProfile,
@@ -44,7 +53,9 @@ export function useModelControls({
 }: ModelControlsOptions) {
   const { t } = useI18n()
   const copy = t.desktop
+  const failedPrimaryMutationsRef = useRef(new Map<number, FailedPrimaryMutation>())
   const profileRefreshEpochRef = useRef(0)
+  const restoredPrimaryGenerationRef = useRef<null | { global: number; operation: number; owner: string }>(null)
 
   // All callbacks here read reactive session state from the store (.get())
   // rather than capturing it as a prop. The actions bag in wiring.tsx mutates
@@ -168,7 +179,8 @@ export function useModelControls({
   // Returns whether the switch was applied so callers can await it before
   // applying follow-up changes. `true` means applied (or deferred/busy-queued
   // for the next turn). `false` means NOT applied — either pending
-  // confirmation (warning with Confirm action already shown, pill rolled back)
+  // confirmation (warning with Confirm action already shown, pill rolled back),
+  // stale (a newer selection or foreground owns any follow-up),
   // or a real failure (error toast). Callers must NOT treat `false` as a
   // generic failure: for `pending` the gateway intentionally returned
   // `confirm_required` and no error should be surfaced.
@@ -196,12 +208,60 @@ export function useModelControls({
 
       const prevSource = getCurrentModelSource()
       const liveGatewayProfile = cacheProfile || $activeGatewayProfile.get()
+      const activeProfile = $activeGatewayProfile.get()
+      const connectionId = $connection.get()?.connectionId
+      const mutationOwner = JSON.stringify([activeProfile, connectionId, primaryRuntimeId])
+      let selectionGeneration = getComposerSelectionGeneration()
+      const restoredGeneration = restoredPrimaryGenerationRef.current
+
+      const previousSelectionGeneration =
+        touchesPrimary &&
+        restoredGeneration?.global === selectionGeneration &&
+        restoredGeneration.owner === mutationOwner
+          ? restoredGeneration.operation
+          : selectionGeneration
+
+      let expectedModel = selection.model
+      let expectedProvider = selection.provider
+
+      // ponytail: reuse the composer intent token; values alone miss a same-row reselect.
+      const isStale = () => {
+        const globalGeneration = getComposerSelectionGeneration()
+        const restored = restoredPrimaryGenerationRef.current
+        const effectiveGeneration = restored?.global === globalGeneration ? restored.operation : globalGeneration
+
+        return touchesPrimary
+          ? $activeSessionId.get() !== primaryRuntimeId ||
+              $activeGatewayProfile.get() !== activeProfile ||
+              $connection.get()?.connectionId !== connectionId ||
+              effectiveGeneration !== selectionGeneration ||
+              $currentModel.get() !== expectedModel ||
+              $currentProvider.get() !== expectedProvider
+          : false
+      }
+
+      const recordFailedPrimaryMutation = () => {
+        if (touchesPrimary) {
+          failedPrimaryMutationsRef.current.set(selectionGeneration, {
+            owner: mutationOwner,
+            previousGeneration: previousSelectionGeneration,
+            previousModel: prevModel,
+            previousProvider: prevProvider,
+            previousSource: prevSource
+          })
+        }
+      }
 
       const paintSelection = () => {
+        expectedModel = selection.model
+        expectedProvider = selection.provider
+
         if (touchesPrimary) {
+          restoredPrimaryGenerationRef.current = null
           setCurrentModel(selection.model)
           setCurrentProvider(selection.provider)
           markComposerSelectionManual()
+          selectionGeneration = getComposerSelectionGeneration()
         } else if (liveSessionId) {
           // Optimistic tile paint — session.info will confirm; rollback on error.
           sessionTileDelegate()?.updateSession(liveSessionId, state => ({
@@ -216,11 +276,47 @@ export function useModelControls({
         updateModelOptionsCache(liveSessionId, provider, model, touchesPrimary && !liveSessionId, liveGatewayProfile)
       }
 
-      const rollbackSelection = () => {
+      const rollbackSelection = (cascadeFailedAncestors = true) => {
+        if (isStale()) {
+          return
+        }
+
+        let previousGeneration = previousSelectionGeneration
+        let previousModel = prevModel
+        let previousProvider = prevProvider
+        let previousSource = prevSource
+
+        if (touchesPrimary && cascadeFailedAncestors) {
+          failedPrimaryMutationsRef.current.delete(selectionGeneration)
+
+          for (let failed = failedPrimaryMutationsRef.current.get(previousGeneration); failed;) {
+            failedPrimaryMutationsRef.current.delete(previousGeneration)
+
+            if (failed.owner !== mutationOwner) {
+              break
+            }
+
+            previousGeneration = failed.previousGeneration
+            previousModel = failed.previousModel
+            previousProvider = failed.previousProvider
+            previousSource = failed.previousSource
+            failed = failedPrimaryMutationsRef.current.get(previousGeneration)
+          }
+
+          restoredPrimaryGenerationRef.current = {
+            global: getComposerSelectionGeneration(),
+            operation: previousGeneration,
+            owner: mutationOwner
+          }
+        }
+
+        expectedModel = previousModel
+        expectedProvider = previousProvider
+
         if (touchesPrimary) {
-          setCurrentModel(prevModel)
-          setCurrentProvider(prevProvider)
-          setCurrentModelSource(prevSource)
+          setCurrentModel(previousModel)
+          setCurrentProvider(previousProvider)
+          setCurrentModelSource(previousSource)
         } else if (liveSessionId) {
           sessionTileDelegate()?.updateSession(liveSessionId, state => ({
             ...state,
@@ -229,7 +325,7 @@ export function useModelControls({
           }))
         }
 
-        cacheSelection(prevProvider, prevModel)
+        cacheSelection(previousProvider, previousModel)
       }
 
       paintSelection()
@@ -266,6 +362,15 @@ export function useModelControls({
         })
 
       const finishSwitch = (result: ModelSwitchResponse | undefined) => {
+        if (isStale()) {
+          return
+        }
+
+        if (touchesPrimary) {
+          failedPrimaryMutationsRef.current.clear()
+          restoredPrimaryGenerationRef.current = null
+        }
+
         // A pick made DURING a turn is queued by the gateway and applied at the
         // next turn start (`deferred`). Re-fetching now would answer with the
         // model still running and repaint the old name over the user's choice —
@@ -281,8 +386,16 @@ export function useModelControls({
       try {
         const result = await requestSwitch()
 
+        if (isStale()) {
+          if (result?.confirm_required) {
+            recordFailedPrimaryMutation()
+          }
+
+          return false
+        }
+
         if (result?.confirm_required) {
-          rollbackSelection()
+          rollbackSelection(false)
           // ONE shared applier for guarded switches (#95293): the same
           // confirm flow the Bots editor routes through — never fork this
           // logic per surface.
@@ -292,24 +405,31 @@ export function useModelControls({
             confirmMessage: result.confirm_message,
             failureMessage: copy.modelSwitchFailed,
             finish: finishSwitch,
-            // Staleness guard — the session or model can move on while the
-            // dialog is open. Answering it must not clobber the newer choice:
-            // bail (with a notice) if the live state no longer matches the
-            // snapshot this prompt was created for.
             isStale: () =>
-              touchesPrimary
-                ? $activeSessionId.get() !== liveSessionId ||
-                  $currentModel.get() !== prevModel ||
-                  $currentProvider.get() !== prevProvider
-                : !liveSessionId ||
-                  $sessionStates.get()[liveSessionId]?.model !== prevModel ||
-                  $sessionStates.get()[liveSessionId]?.provider !== prevProvider,
+              isStale() ||
+              (!touchesPrimary &&
+                (!liveSessionId ||
+                  $sessionStates.get()[liveSessionId]?.model !== expectedModel ||
+                  $sessionStates.get()[liveSessionId]?.provider !== expectedProvider)),
             model: selection.model,
             repaint: () => {
               paintSelection()
               cacheSelection(selection.provider, selection.model)
             },
-            requestConfirmed: () => requestSwitch(true),
+            requestConfirmed: async () => {
+              try {
+                const confirmed = await requestSwitch(true)
+
+                if (confirmed?.confirm_required) {
+                  recordFailedPrimaryMutation()
+                }
+
+                return confirmed
+              } catch (err) {
+                recordFailedPrimaryMutation()
+                throw err
+              }
+            },
             rollback: rollbackSelection
           })
 
@@ -320,29 +440,28 @@ export function useModelControls({
 
         return true
       } catch (err) {
+        if (isBusySessionModelSwitch(err)) {
+          return isStale() ? false : true
+        }
+
+        recordFailedPrimaryMutation()
+
+        if (isStale()) {
+          return false
+        }
+
         // An OLDER gateway refuses a mid-turn switch outright (4009) instead of
         // deferring it. Don't punish the user for a backend they haven't
         // updated: keep the pick painted as the composer's selection, which is
         // what the NEXT turn runs anyway. Current gateways never take this
         // path — they answer `deferred`.
-        if (isBusySessionModelSwitch(err)) {
-          return true
-        }
-
         rollbackSelection()
         notifyError(err, copy.modelSwitchFailed)
 
         return false
       }
     },
-    [
-      cacheOwnerConnectionId,
-      cacheProfile,
-      copy.modelSwitchFailed,
-      queryClient,
-      requestGateway,
-      updateModelOptionsCache
-    ]
+    [cacheOwnerConnectionId, cacheProfile, copy.modelSwitchFailed, queryClient, requestGateway, updateModelOptionsCache]
   )
 
   return { applySavedMainModel, refreshCurrentModel, selectModel }

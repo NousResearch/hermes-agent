@@ -10,6 +10,7 @@ import {
   $currentModel,
   $currentProvider,
   getCurrentModelSource,
+  setComposerSelectionOwner,
   setCurrentModel,
   setCurrentModelSource,
   setCurrentProvider
@@ -86,7 +87,9 @@ function Harness({
 describe('useModelControls', () => {
   beforeEach(() => {
     confirmMock.mockReset()
+    notify.mockReset()
     notifyError.mockReset()
+    setComposerSelectionOwner('local', 'default')
     $activeGatewayProfile.set('default')
     $activeSessionId.set(null)
     setCurrentModel('')
@@ -95,9 +98,235 @@ describe('useModelControls', () => {
     SessionStates.$sessionStates.set({})
   })
 
+  it.each(['reject', 'confirm', 'success', 'confirmed-reject', 'confirmed-success', 'owner'])(
+    'a stale %s for A cannot repaint or finish in foreground B',
+    async outcome => {
+      const response = deferred<Record<string, unknown>>()
+      const queryClient = new QueryClient()
+      const invalidate = vi.spyOn(queryClient, 'invalidateQueries')
+      const request = vi.fn().mockReturnValue(response.promise)
+      const answer = deferred<boolean>()
+      $activeGatewayProfile.set('alpha')
+      $activeSessionId.set('runtime-a')
+      setCurrentModel('a-old')
+      setCurrentProvider('provider-a')
+
+      if (outcome.startsWith('confirmed-')) {
+        request.mockResolvedValueOnce({ confirm_required: true })
+        confirmMock.mockReturnValueOnce(answer.promise)
+      }
+
+      const { result } = renderHook(() =>
+        useModelControls({
+          cacheOwnerConnectionId: 'connection-a',
+          cacheProfile: 'alpha',
+          queryClient,
+          requestGateway: request
+        })
+      )
+
+      const pending = result.current.selectModel({ model: 'a-new', provider: 'provider-a' })
+
+      if (outcome.startsWith('confirmed-')) {
+        await pending
+        await act(async () => answer.resolve(true))
+        await waitFor(() => expect(request).toHaveBeenCalledTimes(2))
+      }
+
+      act(() => {
+        if (outcome === 'owner') {
+          setComposerSelectionOwner('connection-b', 'alpha')
+        } else {
+          $activeGatewayProfile.set('beta')
+          $activeSessionId.set('runtime-b')
+        }
+
+        // Reused ids/model values cannot make a different owner current again.
+        setCurrentModel(outcome === 'owner' ? 'a-new' : 'b-model')
+        setCurrentProvider(outcome === 'owner' ? 'provider-a' : 'provider-b')
+      })
+
+      await act(async () => {
+        if (outcome.endsWith('reject')) {
+          response.reject(new Error('A write failed'))
+        } else {
+          response.resolve(outcome === 'confirm' ? { confirm_required: true } : {})
+        }
+
+        await response.promise.catch(() => undefined)
+        await pending
+      })
+
+      expect([$currentProvider.get(), $currentModel.get()]).toEqual(
+        outcome === 'owner' ? ['provider-a', 'a-new'] : ['provider-b', 'b-model']
+      )
+      expect(queryClient.getQueryData(modelOptionsQueryKey('alpha', 'runtime-a', 'connection-a'))).toMatchObject({
+        model: 'a-new',
+        provider: 'provider-a'
+      })
+      expect(invalidate).not.toHaveBeenCalled()
+      expect(notify).not.toHaveBeenCalled()
+      expect(notifyError).not.toHaveBeenCalled()
+    }
+  )
+
+  it.each(['reject', 'confirm', 'success', 'confirmed-reject', 'confirmed-success', 'warning'])(
+    'an older %s cannot override a newer same-row pick',
+    async outcome => {
+      const response = deferred<Record<string, unknown>>()
+      const queryClient = new QueryClient()
+      const request = vi.fn().mockReturnValueOnce(response.promise).mockResolvedValue({})
+      const answer = deferred<boolean>()
+      $activeSessionId.set('runtime-a')
+      setCurrentModel('old')
+      setCurrentProvider('provider-a')
+
+      if (outcome.startsWith('confirmed-')) {
+        request
+          .mockReset()
+          .mockResolvedValueOnce({ confirm_required: true })
+          .mockReturnValueOnce(response.promise)
+          .mockResolvedValue({})
+        confirmMock.mockReturnValueOnce(answer.promise)
+      } else if (outcome === 'warning') {
+        request.mockReset().mockResolvedValueOnce({ confirm_required: true }).mockResolvedValue({})
+        confirmMock.mockReturnValueOnce(answer.promise)
+      }
+
+      const { result } = renderHook(() => useModelControls({ queryClient, requestGateway: request }))
+      const pending = result.current.selectModel({ model: 'first', provider: 'provider-a' })
+
+      if (outcome.startsWith('confirmed-') || outcome === 'warning') {
+        await pending
+
+        if (outcome !== 'warning') {
+          await act(async () => answer.resolve(true))
+          await waitFor(() => expect(request).toHaveBeenCalledTimes(2))
+        }
+      }
+
+      const newerModel = outcome === 'warning' ? 'old' : 'first'
+      await act(async () => {
+        await result.current.selectModel({ model: newerModel, provider: 'provider-a' })
+      })
+      const invalidate = vi.spyOn(queryClient, 'invalidateQueries')
+      notify.mockClear()
+
+      await act(async () => {
+        if (outcome === 'warning') {
+          answer.resolve(true)
+          await answer.promise
+        } else if (outcome.endsWith('reject')) {
+          response.reject(new Error('first failed'))
+        } else {
+          response.resolve(outcome === 'confirm' ? { confirm_required: true } : {})
+        }
+
+        if (outcome !== 'warning') {
+          await response.promise.catch(() => undefined)
+        }
+
+        await pending
+      })
+
+      if (outcome === 'warning') {
+        await waitFor(() => expect(request).toHaveBeenCalledTimes(2))
+      }
+
+      expect($currentModel.get()).toBe(newerModel)
+      expect(queryClient.getQueryData(modelOptionsQueryKey('default', 'runtime-a'))).toMatchObject({
+        model: newerModel,
+        provider: 'provider-a'
+      })
+      expect(invalidate).not.toHaveBeenCalled()
+      expect(notifyError).not.toHaveBeenCalled()
+    }
+  )
+
+  it.each(['newer-first', 'older-first'])(
+    'restores the last accepted model when overlapping failed switches settle %s',
+    async order => {
+      const firstResponse = deferred<Record<string, unknown>>()
+      const secondResponse = deferred<Record<string, unknown>>()
+      const queryClient = new QueryClient()
+      const request = vi.fn().mockReturnValueOnce(firstResponse.promise).mockReturnValueOnce(secondResponse.promise)
+      $activeSessionId.set('runtime-a')
+      setCurrentModel('old')
+      setCurrentProvider('provider-a')
+
+      const { result } = renderHook(() => useModelControls({ queryClient, requestGateway: request }))
+      const first = result.current.selectModel({ model: 'first', provider: 'provider-a' })
+      const second = result.current.selectModel({ model: 'second', provider: 'provider-a' })
+
+      await act(async () => {
+        if (order === 'newer-first') {
+          secondResponse.reject(new Error('second failed'))
+          await second
+          firstResponse.reject(new Error('first failed'))
+          await first
+        } else {
+          firstResponse.reject(new Error('first failed'))
+          await first
+          secondResponse.reject(new Error('second failed'))
+          await second
+        }
+      })
+
+      expect([$currentProvider.get(), $currentModel.get()]).toEqual(['provider-a', 'old'])
+      expect(queryClient.getQueryData(modelOptionsQueryKey('default', 'runtime-a'))).toMatchObject({
+        model: 'old',
+        provider: 'provider-a'
+      })
+    }
+  )
+
+  it.each(['reject', 'confirm_required'])(
+    'does not cascade a stale %s failure into another runtime rollback',
+    async outcome => {
+      const firstResponse = deferred<Record<string, unknown>>()
+      const secondResponse = deferred<Record<string, unknown>>()
+      const queryClient = new QueryClient()
+      const request = vi.fn().mockReturnValueOnce(firstResponse.promise).mockReturnValueOnce(secondResponse.promise)
+      $activeGatewayProfile.set('alpha')
+      $activeSessionId.set('runtime-a')
+      setCurrentModel('a-old')
+      setCurrentProvider('provider-a')
+
+      const { result } = renderHook(() => useModelControls({ queryClient, requestGateway: request }))
+      const first = result.current.selectModel({ model: 'a-new', provider: 'provider-a' })
+
+      act(() => {
+        $activeGatewayProfile.set('beta')
+        $activeSessionId.set('runtime-b')
+        setCurrentModel('b-old')
+        setCurrentProvider('provider-b')
+      })
+
+      await act(async () => {
+        if (outcome === 'reject') {
+          firstResponse.reject(new Error('A failed'))
+          await firstResponse.promise.catch(() => undefined)
+        } else {
+          firstResponse.resolve({ confirm_required: true })
+        }
+
+        await first
+      })
+
+      const second = result.current.selectModel({ model: 'b-new', provider: 'provider-b' })
+      await act(async () => {
+        secondResponse.reject(new Error('B failed'))
+        await second
+      })
+
+      expect([$currentProvider.get(), $currentModel.get()]).toEqual(['provider-b', 'b-old'])
+    }
+  )
+
   afterEach(() => {
     cleanup()
     vi.restoreAllMocks()
+    setComposerSelectionOwner('local', 'default')
     $activeGatewayProfile.set('default')
     $activeSessionId.set(null)
     setCurrentModel('')

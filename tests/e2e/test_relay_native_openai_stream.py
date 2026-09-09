@@ -32,6 +32,7 @@ def _stream_through_relay(tmp_path, monkeypatch, response_body: bytes, *, finali
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes-home"))
     monkeypatch.setenv("HERMES_STREAM_RETRIES", "0")
+    (tmp_path / "hermes-home" / "egress").mkdir(parents=True)
 
     def respond(request):
         return httpx.Response(200, headers={"content-type": "text/event-stream"},
@@ -44,6 +45,12 @@ def _stream_through_relay(tmp_path, monkeypatch, response_body: bytes, *, finali
                     model="test/model", quiet_mode=True, skip_context_files=True, skip_memory=True)
     agent.api_mode = "chat_completions"
     agent.session_id = "openai-relay-session"
+    agent._current_turn_id = "openai-relay-turn"
+    agent._current_api_request_id = "openai-relay-request"
+    from agent.source_provenance import DEFAULT_POLICY_DIGEST
+
+    agent._llm_egress_policy_digest = DEFAULT_POLICY_DIGEST
+    agent._llm_egress_state_dir = tmp_path / "hermes-home" / "egress"
     agent._interrupt_requested = False
     agent._create_request_openai_client = lambda *args, **kwargs: client
     lease = relay_runtime.SESSION_COORDINATOR.acquire_conversation(

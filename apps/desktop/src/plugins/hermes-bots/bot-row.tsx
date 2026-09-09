@@ -183,6 +183,24 @@ export function BotRow({ bot, onDelete, onEdit, onGroup, onNewSection, showHandl
     .filter(Boolean)
     .join(' · ')
 
+  const warm = () => {
+    // Pre-dial the bot's own source when the host exposes the optional warmup.
+    if (bot.sourceScoped && typeof host.warmAgent === 'function') {
+      try {
+        host.warmAgent(bot.connectionId, bot.name)
+      } catch {
+        // Warmup is best-effort and must not affect row interaction.
+      }
+      return
+    }
+    if (typeof host.warmProfile !== 'function') return
+    try {
+      host.warmProfile(bot.name)
+    } catch {
+      // Warmup is best-effort and must not affect row interaction.
+    }
+  }
+
   // Rows and Active Now share the exact-owner open path; only that path may
   // activate a source and resolve the canonical Bot Chat.
   const open = () => void openRosterBot(bot)

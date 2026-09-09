@@ -452,13 +452,20 @@ async def test_document_stale_plain_thread_retries_without_thread(tmp_path):
         return SimpleNamespace(message_id=991)
 
     adapter._bot = SimpleNamespace(send_document=mock_send_document)
+    from unittest.mock import Mock
+    db = Mock()
+    adapter._session_store = SimpleNamespace(_db=db)
+    adapter._hermes_profile_name = "default"
     result = await adapter.send_document(
         chat_id="123", file_path=str(path),
-        metadata={"thread_id": "9799", "chat_type": "dm"},
+        metadata={"thread_id": "9799", "chat_type": "dm", "hermes_profile": "worker"},
     )
 
     assert result.success is True
     assert result.message_id == "991"
+    db.delete_telegram_topic_binding.assert_called_once_with(
+        chat_id="123", thread_id="9799", profile_name="worker",
+    )
     assert calls[0]["message_thread_id"] == 9799
     assert "message_thread_id" not in calls[1]
 

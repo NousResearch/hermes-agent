@@ -1258,7 +1258,7 @@ class TelegramAdapter(BasePlatformAdapter):
                         "[%s] Thread %s not found for Telegram %s, retrying without message_thread_id",
                         self.name, send_kwargs.get("message_thread_id"), media_label)
                     self._prune_stale_dm_topic_binding(
-                        send_kwargs.get("chat_id"), send_kwargs.get("message_thread_id"), metadata)
+                        send_kwargs.get("chat_id"), send_kwargs.get("message_thread_id"), metadata=metadata)
                 else:
                     raise
                 if reset_media is not None:

@@ -693,7 +693,7 @@ class GatewayBusySessionMixin:
     # Ordinary slash handlers shared by idle and busy dispatch.
     _PLAIN_COMMANDS = (
         "status", "context", "restart", "approve", "deny", "pause", "agents", "bg", "btw",
-        "kanban", "project-status", "implement", "review", "fix-review", "subgoal", "heartbeat", "busy", "yolo", "verbose", "footer", "help",
+        "kanban", "project-status", "implement", "review", "fix-review", "continue", "subgoal", "heartbeat", "busy", "yolo", "verbose", "footer", "help",
         "commands", "profile", "update", "version",
     )
     # Dispatched only on the idle path (busy dispatch has its own allowlist).

@@ -401,6 +401,15 @@ class GatewaySlashCommandsMixin(
             logger.warning("fix-review dispatch failed: %s", exc)
             return "Fix-review is unavailable. No action taken."
 
+    async def _handle_continue_command(self, event: MessageEvent) -> str:
+        """Handle the canonical state-aware Kanban /continue router."""
+        from hermes_cli.kanban_continue import run_continue_slash_rendered
+        try:
+            return await asyncio.to_thread(run_continue_slash_rendered, event.get_command_args())
+        except Exception as exc:
+            logger.warning("continue dispatch failed: %s", exc)
+            return "Continue is unavailable. No action taken."
+
     async def _kanban_auto_subscribe(self, event: MessageEvent, task_id: str, requested_board) -> bool:
         """Subscribe the event's chat to *task_id* notifications (notify+wake). False when the
         source has no platform/chat to route back to."""

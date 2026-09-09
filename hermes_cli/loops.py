@@ -416,6 +416,57 @@ class LoopManager:
             if getattr(self._state, name) != getattr(baseline, name)
         }
 
+    @staticmethod
+    def _tick_identity(state: LoopState) -> Tuple[float, int, float]:
+        """Identity of the claimed tick, stable across its in-flight turn."""
+        return state.created_at, state.ticks_fired, state.last_fired_at
+
+    def _reconcile_tick(self, expected: Tuple[float, int, float], mutate) -> bool:
+        """Apply a completion mutation only to the same active, in-flight tick.
+
+        Controls can persist while a stop-condition judge is running. Reading the row and applying
+        the result in one transaction makes those controls win; a missing or malformed row also
+        refuses to write the stale local state.
+        """
+        db = _get_session_db()
+        if db is None:
+            self.refresh()
+            return False
+        applied = False
+
+        def _mutator(current_json):
+            nonlocal applied
+            applied = False
+            if not current_json:
+                return current_json
+            try:
+                current = LoopState.from_json(current_json)
+            except Exception:
+                return current_json
+            if (
+                current.status != "active"
+                or not current.awaiting_response
+                or self._tick_identity(current) != expected
+            ):
+                return current_json
+            mutate(current)
+            applied = True
+            return current.to_json()
+
+        try:
+            persisted = db.mutate_meta(_meta_key(self.session_id), _mutator)
+            current = _parse_state(persisted, self.session_id) if persisted else None
+            if persisted and current is None:
+                self.refresh()
+                return False
+            self._state = current
+            self._persisted_state_json = persisted
+            return applied
+        except Exception as exc:
+            logger.debug("LoopManager: tick reconciliation failed: %s", exc)
+            self.refresh()
+            return False
+
     def status_line(self) -> str:
         s = self._state
         if s is None or s.status == "cleared":
@@ -617,19 +668,34 @@ class LoopManager:
         s = self._state
         if s is None or not s.awaiting_response:
             return
-        s.awaiting_response = False
-        s.ticks_fired = max(0, s.ticks_fired - 1)
-        self._save()
+        expected = self._tick_identity(s)
 
-    def _stop(self, status: str, reason: str, message: str) -> Dict[str, Any]:
+        def _rewind(current):
+            current.awaiting_response = False
+            current.ticks_fired = max(0, current.ticks_fired - 1)
+
+        self._reconcile_tick(expected, _rewind)
+
+    def _stop(
+        self, status: str, reason: str, message: str, expected: Tuple[float, int, float],
+    ) -> Dict[str, Any]:
         """Persist a terminal (``done``) or recoverable (``paused``) stop and build the result."""
-        s = self._state
-        s.status = status
-        if status == "done":
-            s.last_stop_reason = reason
-        else:
-            s.paused_reason = reason
-        self._save()
+        def _finish(current):
+            current.awaiting_response = False
+            current.status = status
+            if status == "done":
+                current.last_stop_reason = reason
+            else:
+                current.paused_reason = reason
+
+        if not self._reconcile_tick(expected, _finish):
+            current = self._state
+            return {
+                "status": current.status if current else None,
+                "stopped": False,
+                "reason": "tick state changed",
+                "message": "",
+            }
         return {"status": status, "stopped": True, "reason": reason, "message": message}
 
     def complete_tick(self, last_response: str) -> Dict[str, Any]:
@@ -641,14 +707,14 @@ class LoopManager:
         s = self._state
         if s is None or not s.awaiting_response:
             return {"status": s.status if s else None, "stopped": False, "reason": "no tick in flight", "message": ""}
-        s.awaiting_response = False
+        expected = self._tick_identity(s)
         now = time.time()
         ticks = _ticks_label(s.ticks_fired)
 
         # 1. Agent self-stop marker.
         if response_signals_complete(last_response):
             return self._stop("done", "agent signaled the task is complete",
-                              f"✓ Loop finished after {ticks} — task complete.")
+                              f"✓ Loop finished after {ticks} — task complete.", expected)
 
         # 2. Evidence-based --until judge (reuses the /goal judge; fail-open).
         if s.until and (last_response or "").strip():
@@ -660,39 +726,49 @@ class LoopManager:
                 verdict, reason = "continue", f"judge unavailable: {type(exc).__name__}"
             if verdict == "done":
                 return self._stop("done", f"stop condition met: {reason}",
-                                  f"✓ Loop finished after {ticks} — {reason}")
+                                  f"✓ Loop finished after {ticks} — {reason}", expected)
             if verdict == "blocked":
                 # Unachievable stop condition: pause so the user can re-scope, don't spin.
                 why = f"stop condition judged unachievable: {reason}"
                 return self._stop("paused", why,
-                                  f"⏸ Loop paused — {why}. /loop resume to keep going, /loop stop to end it.")
+                                  f"⏸ Loop paused — {why}. /loop resume to keep going, /loop stop to end it.", expected)
 
         # 3. --times user cap.
         if s.times and s.ticks_fired >= s.times:
             return self._stop("done", f"completed the requested {s.times} runs",
-                              f"✓ Loop finished — ran {s.times}/{s.times} times.")
+                              f"✓ Loop finished — ran {s.times}/{s.times} times.", expected)
 
         # 4. Config backstop budget → pause (recoverable), not done.
         if s.max_ticks and s.ticks_fired >= s.max_ticks:
             return self._stop(
                 "paused", f"tick budget exhausted ({s.ticks_fired}/{s.max_ticks})",
                 f"⏸ Loop paused — {s.ticks_fired}/{s.max_ticks} ticks used "
-                "(loops.max_ticks). /loop resume to keep going, /loop stop to end it.",
+                "(loops.max_ticks). /loop resume to keep going, /loop stop to end it.", expected,
             )
 
         # 5. Still looping — schedule the next tick from turn end.
-        if s.mode == "self_paced":
-            digest = _digest_response(last_response)
-            floor = self_paced_floor_seconds()
-            if digest and digest == s.last_response_digest:
-                s.current_delay = min(max(s.current_delay, floor) * 2, self_paced_ceiling_seconds())
+        def _schedule(current):
+            current.awaiting_response = False
+            if current.mode == "self_paced":
+                digest = _digest_response(last_response)
+                floor = self_paced_floor_seconds()
+                if digest and digest == current.last_response_digest:
+                    current.current_delay = min(max(current.current_delay, floor) * 2, self_paced_ceiling_seconds())
+                else:
+                    current.current_delay = float(floor)
+                current.last_response_digest = digest
             else:
-                s.current_delay = float(floor)
-            s.last_response_digest = digest
-        else:
-            s.current_delay = s.interval_seconds
-        s.next_due_at = now + s.current_delay
-        self._save()
+                current.current_delay = current.interval_seconds
+            current.next_due_at = now + current.current_delay
+
+        if not self._reconcile_tick(expected, _schedule):
+            current = self._state
+            return {
+                "status": current.status if current else None,
+                "stopped": False,
+                "reason": "tick state changed",
+                "message": "",
+            }
         return {"status": "active", "stopped": False, "reason": "loop continues", "message": ""}
 
 

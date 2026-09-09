@@ -34,7 +34,8 @@ import {
   selectBranchMessages,
   sessionMatchesStoredId,
   sessionShouldHaveTranscript,
-  toBranchMessages
+  toBranchMessages,
+  toBranchSeedMessages
 } from './utils'
 
 const msg = (id: string, role: ChatMessage['role'], text: string, extra: Partial<ChatMessage> = {}): ChatMessage =>
@@ -286,6 +287,34 @@ describe('toBranchMessages', () => {
 
     expect(out.map(b => b.source.id)).toEqual(['u', 'a'])
     expect(out[0]).toMatchObject({ content: 'hi', role: 'user' })
+  })
+
+  it('keeps assistant replay provenance and hidden carriers in the fallback seed payload', () => {
+    const source = msg('a', 'assistant', 'hello', {
+      reasoning: 'private trace',
+      reasoning_content: 'private content',
+      reasoning_details: [{ text: 'private details' }],
+      _reasoning_route: 'same-route-provenance',
+      anthropic_content_blocks: [{ type: 'thinking', signature: 'signed' }],
+      bedrock_content_blocks: [{ reasoningContent: 'signed' }],
+      codex_reasoning_items: [{ type: 'reasoning', encrypted_content: 'opaque' }],
+      codex_message_items: [{ type: 'message', content: 'opaque' }]
+    })
+
+    expect(toBranchSeedMessages(toBranchMessages([source]))).toEqual([
+      {
+        role: 'assistant',
+        content: 'hello',
+        reasoning: 'private trace',
+        reasoning_content: 'private content',
+        reasoning_details: [{ text: 'private details' }],
+        _reasoning_route: 'same-route-provenance',
+        anthropic_content_blocks: [{ type: 'thinking', signature: 'signed' }],
+        bedrock_content_blocks: [{ reasoningContent: 'signed' }],
+        codex_reasoning_items: [{ type: 'reasoning', encrypted_content: 'opaque' }],
+        codex_message_items: [{ type: 'message', content: 'opaque' }]
+      }
+    ])
   })
 })
 

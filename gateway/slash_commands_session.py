@@ -32,7 +32,8 @@ _RESET_CLEANUP_TIMEOUT_S = 30.0
 _DM_CHAT_TYPES = {"dm", "direct", "private", ""}
 
 _BRANCH_COPIED_FIELDS = ("content", "tool_calls", "tool_call_id", "finish_reason", "reasoning",
-                         "reasoning_content", "reasoning_details", "codex_reasoning_items",
+                         "reasoning_content", "reasoning_details", "_reasoning_route",
+                         "anthropic_content_blocks", "bedrock_content_blocks", "codex_reasoning_items",
                          "codex_message_items", "timestamp")
 
 

@@ -76,6 +76,8 @@ class TestBuildReplayEntry:
             "reasoning": "thinking",
             "reasoning_content": "structured",
             "reasoning_details": details,
+            "anthropic_content_blocks": [{"type": "thinking", "signature": "sig"}],
+            "bedrock_content_blocks": [{"reasoningContent": "signed"}],
             "codex_reasoning_items": codex_items,
             "codex_message_items": msg_items,
             "finish_reason": "stop",
@@ -85,6 +87,8 @@ class TestBuildReplayEntry:
         assert entry["reasoning"] == "thinking"
         assert entry["reasoning_content"] == "structured"
         assert entry["reasoning_details"] == details
+        assert entry["anthropic_content_blocks"] == msg["anthropic_content_blocks"]
+        assert entry["bedrock_content_blocks"] == msg["bedrock_content_blocks"]
         assert entry["codex_reasoning_items"] == codex_items
         assert entry["codex_message_items"] == msg_items
         assert entry["finish_reason"] == "stop"
@@ -97,6 +101,8 @@ class TestBuildReplayEntry:
             "reasoning",
             "reasoning_content",
             "reasoning_details",
+            "anthropic_content_blocks",
+            "bedrock_content_blocks",
             "codex_reasoning_items",
             "codex_message_items",
             "finish_reason",

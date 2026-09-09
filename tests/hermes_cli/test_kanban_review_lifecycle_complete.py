@@ -17,12 +17,14 @@ from pathlib import Path
 import pytest
 
 from hermes_cli import kanban_db as kb
+from hermes_cli import kanban_db_connect as kbc
+from hermes_cli import kanban_db_dispatch as kbd
 from hermes_cli import kanban_diagnostics as kd
 
 
 @pytest.fixture
 def conn(tmp_path: Path):
-    db = kb.connect(tmp_path / "kanban.db")
+    db = kbc.connect(tmp_path / "kanban.db")
     try:
         yield db
     finally:
@@ -340,11 +342,14 @@ def test_interrupted_review_runs_retry_in_review_phase(
     )
 
     if reclaim_kind == "spawn_failure":
-        assert not kb._record_spawn_failure(
+        assert not kbd._record_task_failure(
             conn,
             task_id,
             "reviewer process failed to spawn",
+            outcome="spawn_failed",
             failure_limit=3,
+            release_claim=True,
+            end_run=True,
         )
     elif reclaim_kind == "expired_claim":
         with kb.write_txn(conn):
@@ -367,7 +372,7 @@ def test_interrupted_review_runs_retry_in_review_phase(
                 "UPDATE task_runs SET started_at = ? WHERE id = ?",
                 (old, review.current_run_id),
             )
-        assert kb.detect_stale_running(conn, stale_timeout_seconds=1) == [task_id]
+        assert kbd.detect_stale_running(conn, stale_timeout_seconds=1) == [task_id]
 
     retried = kb.get_task(conn, task_id)
     assert retried is not None
@@ -380,11 +385,14 @@ def test_interrupted_review_runs_retry_in_review_phase(
 
 def test_review_retry_still_trips_the_failure_breaker(conn) -> None:
     task_id, _review = _claimed_review(conn, "Reviewer repeatedly fails")
-    assert kb._record_spawn_failure(
+    assert kbd._record_task_failure(
         conn,
         task_id,
         "reviewer cannot start",
+        outcome="spawn_failed",
         failure_limit=1,
+        release_claim=True,
+        end_run=True,
     )
     blocked = kb.get_task(conn, task_id)
     assert blocked is not None
@@ -459,7 +467,7 @@ def test_crashed_and_timed_out_review_runs_retry_in_review_phase(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(kb, "_pid_alive", lambda _pid: False)
-    monkeypatch.setattr(kb, "_classify_worker_exit", lambda _pid: ("nonzero_exit", 1))
+    monkeypatch.setattr(kbd, "_classify_worker_exit", lambda _pid: ("nonzero_exit", 1))
     old = int(time.time()) - 1_000
 
     timed_out_id, timed_out_run = _claimed_review(
@@ -476,7 +484,7 @@ def test_crashed_and_timed_out_review_runs_retry_in_review_phase(
             "UPDATE task_runs SET worker_pid = ?, started_at = ? WHERE id = ?",
             (999_998, old, timed_out_run.current_run_id),
         )
-    assert timed_out_id in kb.enforce_max_runtime(conn, signal_fn=lambda *_: None)
+    assert timed_out_id in kbd.enforce_max_runtime(conn, signal_fn=lambda *_: None)
     timed_out = kb.get_task(conn, timed_out_id)
     assert timed_out is not None
     assert timed_out.status == "review"
@@ -491,7 +499,7 @@ def test_crashed_and_timed_out_review_runs_retry_in_review_phase(
             "UPDATE task_runs SET worker_pid = ?, started_at = ? WHERE id = ?",
             (999_999, old, crashed_run.current_run_id),
         )
-    assert crashed_id in kb.detect_crashed_workers(conn)
+    assert crashed_id in kbd.detect_crashed_workers(conn)
     crashed = kb.get_task(conn, crashed_id)
     assert crashed is not None
     assert crashed.status == "review"
@@ -691,7 +699,7 @@ def test_review_transitions_preserve_consecutive_failures(conn) -> None:
     # A crash now increments 1 -> 2 and trips a failure_limit=2 breaker —
     # the counter accumulated across the review cycle instead of being
     # amnesia-reset back to 0.
-    tripped = kb._record_task_failure(
+    tripped = kbd._record_task_failure(
         conn, task_id, "worker crashed", outcome="crashed", failure_limit=2,
     )
     assert tripped is True

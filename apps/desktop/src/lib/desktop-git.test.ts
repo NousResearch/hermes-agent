@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { setApiRequestConnection } from '@/hermes'
 import { $connection } from '@/store/session'
 
 import { desktopGit } from './desktop-git'
@@ -37,6 +38,7 @@ describe('desktop git facade', () => {
   })
 
   afterEach(() => {
+    setApiRequestConnection(null)
     vi.unstubAllGlobals()
     vi.clearAllMocks()
     $connection.set(null)
@@ -87,6 +89,27 @@ describe('desktop git facade', () => {
       method: 'POST',
       path: '/api/git/review/stage',
       profile: 'remote-docker'
+    })
+  })
+
+  it('routes remote git reads and writes through the active registered gateway', async () => {
+    setApiRequestConnection('remote-user')
+    $connection.set({ mode: 'remote', profile: 'default' } as never)
+
+    await desktopGit()?.repoStatus('/srv/work')
+    await desktopGit()?.review.stage('/srv/work', 'a.txt')
+
+    expect(api).toHaveBeenCalledWith({
+      connectionId: 'remote-user',
+      path: '/api/git/status?path=%2Fsrv%2Fwork',
+      profile: 'default'
+    })
+    expect(api).toHaveBeenCalledWith({
+      body: { file: 'a.txt', path: '/srv/work' },
+      connectionId: 'remote-user',
+      method: 'POST',
+      path: '/api/git/review/stage',
+      profile: 'default'
     })
   })
 

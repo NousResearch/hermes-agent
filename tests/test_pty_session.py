@@ -26,9 +26,10 @@ def test_ringbuffer_drops_oldest_over_capacity():
 class FakeBridge:
     """Implements the bridge contract PtySession depends on."""
 
-    def __init__(self, chunks):
+    def __init__(self, chunks, *, write_result=True):
         self._chunks = list(chunks)   # bytes; b"" = idle tick; None = EOF
         self.written = bytearray()
+        self.write_result = write_result
         self.closed = False
         self.resized = None
 
@@ -37,8 +38,10 @@ class FakeBridge:
             return b""                # idle
         return self._chunks.pop(0)
 
-    def write(self, data):
-        self.written.extend(data)
+    async def write(self, data):
+        if self.write_result:
+            self.written.extend(data)
+        return self.write_result
 
     def resize(self, cols, rows):
         self.resized = (cols, rows)
@@ -87,11 +90,106 @@ async def test_reattach_can_force_complete_tui_redraw_after_replay():
     await asyncio.sleep(0.05)
 
     ws = FakeWS()
-    await s.attach(ws, force_redraw=True)
+    assert await s.attach(ws, force_redraw=True) is True
 
     replay = b"".join(p for kind, p in ws.sent if kind == "bytes")
     assert replay == b"partial differential frame"
     assert bytes(bridge.written) == b"\x0c"
+    await s.close()
+
+
+@pytest.mark.asyncio
+async def test_failed_redraw_marks_session_dead_for_replacement():
+    from hermes_cli.pty_session import PtySession
+
+    bridge = FakeBridge([b""], write_result=False)
+    s = PtySession("k", bridge, buffer_cap=1024, read_timeout=0.01)
+    await s.start()
+    ws = FakeWS()
+
+    assert await s.attach(ws, force_redraw=True) is False
+    assert s.alive is False
+    await s.close()
+
+
+@pytest.mark.asyncio
+async def test_session_serializes_input_across_socket_tasks():
+    from hermes_cli.pty_session import PtySession
+
+    class OrderedBridge(FakeBridge):
+        def __init__(self):
+            super().__init__([b""])
+            self.first_started = asyncio.Event()
+            self.release_first = asyncio.Event()
+
+        async def write(self, data):
+            if not self.written:
+                self.first_started.set()
+                await self.release_first.wait()
+            self.written.extend(data)
+            return True
+
+    bridge = OrderedBridge()
+    s = PtySession("k", bridge, buffer_cap=1024, read_timeout=0.01)
+    await s.start()
+    ws = FakeWS()
+    await s.attach(ws)
+
+    first = asyncio.create_task(s.write(ws, b"first"))
+    await bridge.first_started.wait()
+    second = asyncio.create_task(s.write(ws, b"second"))
+    await asyncio.sleep(0)
+    assert bytes(bridge.written) == b""
+
+    bridge.release_first.set()
+    assert await first is True
+    assert await second is True
+    assert bytes(bridge.written) == b"firstsecond"
+    await s.close()
+
+
+@pytest.mark.asyncio
+async def test_superseded_failed_write_does_not_kill_replacement_session():
+    from hermes_cli.pty_session import PtySession
+
+    class SupersededBridge(FakeBridge):
+        def __init__(self):
+            super().__init__([b""])
+            self.old_write_started = asyncio.Event()
+            self.release_old_write = asyncio.Event()
+            self.calls = 0
+
+        async def write(self, data):
+            self.calls += 1
+            if self.calls == 1:
+                self.old_write_started.set()
+                await self.release_old_write.wait()
+                return False
+            self.written.extend(data)
+            return True
+
+    bridge = SupersededBridge()
+    s = PtySession("k", bridge, buffer_cap=1024, read_timeout=0.01)
+    await s.start()
+    old_ws = FakeWS()
+    new_ws = FakeWS()
+    await s.attach(old_ws)
+
+    old_write = asyncio.create_task(s.write(old_ws, b"old input"))
+    await bridge.old_write_started.wait()
+    new_attach = asyncio.create_task(s.attach(new_ws, force_redraw=True))
+    for _ in range(10):
+        if s._ws is new_ws:
+            break
+        await asyncio.sleep(0)
+    assert s._ws is new_ws
+
+    bridge.release_old_write.set()
+    assert await old_write is False
+    assert await new_attach is True
+    assert s.alive is True
+    assert await s.write(new_ws, b"new input") is True
+    assert bytes(bridge.written) == b"\x0cnew input"
     await s.close()
 
 
@@ -179,3 +277,64 @@ async def test_reaper_loop_invokes_reap(monkeypatch):
     except asyncio.CancelledError:
         pass
     assert calls["n"] >= 2
+
+
+async def _two_idle_sessions_first_close_gated(reg):
+    """Two detached (idle) sessions; k0's close() parks until ``release`` is set."""
+    from hermes_cli.pty_session import PtySession
+    bridges = []
+    for i in range(2):
+        bridge = FakeBridge([b""])
+        s = PtySession("k%d" % i, bridge, buffer_cap=1024, read_timeout=0.01)
+        await s.start()
+        s.detach(None)                        # unattached, last_detached_at set
+        reg._sessions[s.key] = s
+        bridges.append(bridge)
+
+    entered, release = asyncio.Event(), asyncio.Event()
+    k0 = reg._sessions["k0"]
+    original_close = k0.close
+
+    async def gated_close():
+        entered.set()
+        await release.wait()
+        await original_close()
+
+    k0.close = gated_close
+    return bridges, entered, release
+
+
+@pytest.mark.asyncio
+async def test_concurrent_reap_idle_is_idempotent():
+    """reap_idle is reached from attach_or_spawn and the run_reaper loop; both
+    may doom the same keys, so one reap can pop a key the other already took
+    while awaiting its close(). The second pop must skip, not raise."""
+    reg = make_registry(ttl=60.0)
+    bridges, entered, release = await _two_idle_sessions_first_close_gated(reg)
+
+    far_future = time.monotonic() + 10_000    # both idle past ttl → doomed
+    first = asyncio.create_task(reg.reap_idle(now=far_future))
+    await entered.wait()                      # k0 popped; first reap parked in close()
+    await reg.reap_idle(now=far_future)       # second reap takes k1
+
+    release.set()
+    await first                               # first reap reaches the taken k1
+    assert not reg._sessions
+    assert all(b.closed for b in bridges)
+
+
+@pytest.mark.asyncio
+async def test_close_all_survives_key_popped_by_concurrent_reap():
+    """close_all snapshots keys, then awaits each close(); a reap that runs
+    during that await can remove a later key from the snapshot."""
+    reg = make_registry(ttl=60.0)
+    bridges, entered, release = await _two_idle_sessions_first_close_gated(reg)
+
+    closer = asyncio.create_task(reg.close_all())
+    await entered.wait()                      # close_all popped k0, parked in close()
+    await reg.reap_idle(now=time.monotonic() + 10_000)   # pops k1 meanwhile
+    release.set()
+    await closer                              # k1 of the snapshot is already gone
+
+    assert not reg._sessions
+    assert all(b.closed for b in bridges)

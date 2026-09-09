@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -92,7 +91,6 @@ def test_registered_observable_metric_names_cover_snapshot_metrics(monkeypatch):
     docs/observability/monitoring.md: an emitted-but-unregistered gauge is
     silently dropped. Regression guard for background_work / cron additions.
     """
-    import inspect
     from agent.monitoring import gateway_health_export
 
     # Build a representative snapshot (gateway + cron + background_work) without
@@ -121,9 +119,7 @@ def test_registered_observable_metric_names_cover_snapshot_metrics(monkeypatch):
 
     snapshot_names = {m.name for m in gateway_health_export._read_runtime_snapshot({}).metrics}
 
-    # Extract the registered metric_names list literal from _start_metric_provider.
-    src = inspect.getsource(gateway_health_export._start_metric_provider)
-    registered = {n for n in snapshot_names if f'"{n}"' in src}
+    registered = set(gateway_health_export._OBSERVABLE_METRIC_NAMES)
 
     missing = snapshot_names - registered
     assert not missing, f"gauges emitted but NOT registered in metric_names (will be silently dropped): {sorted(missing)}"

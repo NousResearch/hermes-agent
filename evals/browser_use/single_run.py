@@ -77,7 +77,9 @@ logging.disable(logging.CRITICAL)
 
 import run_agent  # noqa: E402
 
-assert run_agent.__file__.startswith(WT), f"wrong tree: {run_agent.__file__}"
+_loaded = os.path.normcase(os.path.normpath(run_agent.__file__))
+_want = os.path.normcase(os.path.normpath(WT))
+assert _loaded.startswith(_want), f"wrong tree: {run_agent.__file__}"
 
 if ARM == "prns":
     # Strip the helpers digest from the schema: header-only description.
@@ -89,10 +91,30 @@ if ARM == "prns":
 
 from run_agent import AIAgent  # noqa: E402
 
+# Provider resolution: default openrouter (original battery), but allow the
+# Nous-subscription path on boxes without an OpenRouter key. Credentials are
+# resolved through the product's own auth state, never printed.
+_or_key = os.environ.get("OPENROUTER_API_KEY", "").strip()
+if _or_key:
+    _agent_auth = dict(
+        base_url="https://openrouter.ai/api/v1",
+        api_key=_or_key,
+        provider="openrouter",
+    )
+else:
+    # Resolved by the orchestrator BEFORE HERMES_HOME is redirected to the
+    # throwaway home (auth state lives in the real profile). Never printed.
+    _tok = os.environ.get("BUBENCH_NOUS_TOKEN", "").strip()
+    if not _tok:
+        raise SystemExit("no OPENROUTER_API_KEY and no Nous auth available")
+    _agent_auth = dict(
+        base_url=os.environ.get("BUBENCH_NOUS_BASE_URL", "https://inference-api.nousresearch.com/v1"),
+        api_key=_tok,
+        provider="nous",
+    )
+
 agent = AIAgent(
-    base_url="https://openrouter.ai/api/v1",
-    api_key=os.environ["OPENROUTER_API_KEY"],
-    provider="openrouter",
+    **_agent_auth,
     model=MODEL,
     max_iterations=30,
     quiet_mode=True,

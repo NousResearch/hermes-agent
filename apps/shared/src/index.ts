@@ -41,11 +41,18 @@ export {
   type CronTriggerRunResult
 } from './cron-trigger-controller'
 export {
+  clampDataUrlReadMaxMb,
+  DATA_URL_READ_DEFAULT_MAX_MB,
+  DATA_URL_READ_MAX_MAX_MB,
+  DATA_URL_READ_MIN_MAX_MB
+} from './data-url-read-max'
+export {
   type ConnectionState,
   type GatewayClientOptions,
   type GatewayEvent,
   type GatewayEventName,
   type GatewayRequestId,
+  isGatewayWebSocketUrl,
   type JsonRpcErrorPayload,
   type JsonRpcFrame,
   JsonRpcGatewayClient,
@@ -63,6 +70,7 @@ export {
   type SkinColorToken
 } from './skin'
 export {
+  backgroundMaterialFor,
   clampIntensity,
   DEFAULT_GLASS_MATERIAL,
   DEFAULT_GLASS_SCOPE,
@@ -70,7 +78,10 @@ export {
   GLASS_SCOPES,
   glassActive,
   type GlassMaterial,
+  glassMaterialForPicker,
+  glassMaterialsFor,
   type GlassScope,
+  glassSupportedOn,
   glassSurfaceKeep,
   normalizeMaterial,
   normalizeMode,
@@ -83,8 +94,12 @@ export {
   TRANSLUCENCY_STEP,
   type TranslucencyMode,
   type TranslucencyState,
+  translucencySupportedOn,
   vibrancyFor,
-  windowOpacityFor
+  windowOpacityFor,
+  WINDOWS_BACKGROUND_MATERIALS,
+  WINDOWS_GLASS_MIN_BUILD,
+  type WindowsBackgroundMaterial
 } from './translucency'
 export {
   buildHermesWebSocketUrl,

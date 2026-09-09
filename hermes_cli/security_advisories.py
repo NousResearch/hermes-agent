@@ -1,34 +1,7 @@
-"""
-Security advisory checker for Hermes Agent.
+"""Security advisory checker for Hermes Agent.
 
-Detects known-compromised Python packages installed in the active venv
-(supply-chain attacks like the Mini Shai-Hulud worm of May 2026 that
-poisoned ``mistralai 2.4.6`` on PyPI) and surfaces remediation guidance to
-the user.
-
-Design goals:
-
-- **Cheap.** A single ``importlib.metadata.version()`` call per advisory
-  package. Safe to run on every CLI startup.
-- **Loud when it matters, silent otherwise.** If no compromised package is
-  installed, the user sees nothing.
-- **Acknowledgeable.** Once the user has read and acted on an advisory they
-  can dismiss it via ``hermes doctor --ack <id>``; the ack is persisted to
-  ``config.security.acked_advisories`` and survives restart.
-- **Extensible.** Adding a new advisory is one entry in ``ADVISORIES``;
-  adding a new compromised version is a one-line edit. No code changes
-  needed when the next worm hits.
-
-The check is invoked from three places:
-
-1. ``hermes doctor`` (and ``hermes doctor --ack <id>``)
-2. CLI startup banner (one short line, then full guidance via
-   ``hermes doctor``)
-3. Gateway startup (logged to gateway.log; first interactive message gets
-   a one-line operator banner)
-
-This module is intentionally dependency-free beyond the stdlib so it can
-run in environments where the rest of Hermes failed to import.
+Cheap (one ``importlib.metadata.version()`` call per advisory package, safe on every CLI startup)
+and silent unless a compromised package is actually installed.
 """
 
 from __future__ import annotations
@@ -43,43 +16,17 @@ from typing import Iterable, Optional
 logger = logging.getLogger(__name__)
 
 
-# =============================================================================
-# Advisory catalog
-#
-# Each advisory is a community-facing security warning about one or more
-# specific package versions that are known to be compromised. To add a new
-# advisory:
-#
-#   1. Append a new ``Advisory`` to ``ADVISORIES`` below
-#   2. Set ``compromised`` to a tuple of ``(pkg_name, frozenset_of_versions)``
-#      — version strings must match what ``importlib.metadata.version()``
-#      returns. Use an empty frozenset to flag *any installed version*
-#      (rare; only when the maintainer namespace itself is compromised).
-#   3. Write 2-4 short ``remediation`` lines a non-expert can copy/paste.
-#
-# Do NOT remove old advisories. Once an advisory ships, leave it in place so
-# users running an older release with the compromised package still get
-# warned. Mark superseded ones via ``superseded_by`` if needed.
-# =============================================================================
+# Advisory catalog. To add one: append an ``Advisory`` to ``ADVISORIES`` with ``compromised`` as
+# ``(pkg_name, frozenset_of_versions)`` pairs (versions exactly as ``importlib.metadata.version()``
+# returns them; an empty frozenset flags ANY installed version — rare, namespace compromise only)
+# and 2-4 copy/pasteable ``remediation`` lines. Never remove old advisories: users on an older
+# release with the compromised package must still get warned.
 
 
 @dataclass(frozen=True)
 class Advisory:
-    """One security advisory entry.
-
-    Attributes:
-        id: stable identifier used for acks (e.g. ``shai-hulud-2026-05``).
-            Lowercase-hyphen, never reused.
-        title: one-line headline shown in banners.
-        summary: 1-3 sentence description of what was compromised and how.
-        url: reference URL (Socket advisory, GitHub advisory, PyPI page).
-        compromised: tuple of ``(package_name, frozenset_of_versions)``
-            pairs. Empty frozenset means "any version of this package is
-            considered suspect" — use sparingly.
-        remediation: ordered list of steps the user should take. First step
-            should be the uninstall command; subsequent steps the credential
-            audit / rotation guidance.
-        published: ISO date string for sort order.
+    """``id`` is lowercase-hyphen, stable and never reused (it is what acks key on). ``remediation``
+    is ordered: uninstall command first, then credential audit/rotation guidance.
     """
 
     id: str
@@ -109,9 +56,7 @@ ADVISORIES: tuple[Advisory, ...] = (
             "the compromised 2.4.6 is still installed."
         ),
         url="https://socket.dev/blog/mini-shai-hulud-worm-pypi",
-        compromised=(
-            ("mistralai", frozenset({"2.4.6"})),
-        ),
+        compromised=(("mistralai", frozenset({"2.4.6"})),),
         remediation=(
             "Run: pip uninstall -y mistralai  (or: uv pip uninstall mistralai)",
             "Rotate API keys in ~/.hermes/.env (OpenRouter, Anthropic, OpenAI, "
@@ -129,11 +74,6 @@ ADVISORIES: tuple[Advisory, ...] = (
 )
 
 
-# =============================================================================
-# Detection
-# =============================================================================
-
-
 @dataclass(frozen=True)
 class AdvisoryHit:
     """One package-version match against an advisory."""
@@ -144,86 +84,48 @@ class AdvisoryHit:
 
 
 def _installed_version(pkg_name: str) -> Optional[str]:
-    """Return the installed version of ``pkg_name``, or None if not installed.
-
-    Uses ``importlib.metadata`` so we don't depend on pip being importable
-    inside the active venv (uv-created venvs may lack pip).
+    """Installed version of ``pkg_name`` via ``importlib.metadata`` (uv venvs may lack pip), or
+    None if not installed or metadata is corrupt — never crash the CLI startup path.
     """
-    try:
-        from importlib.metadata import PackageNotFoundError, version
-    except ImportError:  # py<3.8 — Hermes requires 3.10+ but defensive.
-        return None
+    from importlib.metadata import PackageNotFoundError, version
     try:
         return version(pkg_name)
     except PackageNotFoundError:
         return None
     except Exception:
-        # Some metadata corruption modes raise ValueError or OSError. Don't
-        # let advisory checking crash the CLI startup path.
         logger.debug("importlib.metadata.version(%s) raised", pkg_name, exc_info=True)
         return None
 
 
-def detect_compromised(
-    advisories: Iterable[Advisory] = ADVISORIES,
-) -> list[AdvisoryHit]:
-    """Scan installed packages and return all advisory hits.
-
-    A "hit" means an advisory's listed package is installed AND the version
-    is in the compromised set (or the compromised set is empty, meaning
-    *any* version is suspect).
-    """
-    hits: list[AdvisoryHit] = []
-    for advisory in advisories:
-        for pkg_name, bad_versions in advisory.compromised:
-            installed = _installed_version(pkg_name)
-            if installed is None:
-                continue
-            if not bad_versions or installed in bad_versions:
-                hits.append(AdvisoryHit(
-                    advisory=advisory,
-                    package=pkg_name,
-                    installed_version=installed,
-                ))
-    return hits
+def detect_compromised(advisories: Iterable[Advisory] = ADVISORIES) -> list[AdvisoryHit]:
+    """All hits: package installed AND version in the compromised set (or the set is empty)."""
+    return [
+        AdvisoryHit(advisory, pkg_name, installed)
+        for advisory in advisories
+        for pkg_name, bad_versions in advisory.compromised
+        if (installed := _installed_version(pkg_name)) is not None and (not bad_versions or installed in bad_versions)
+    ]
 
 
-# =============================================================================
-# Acknowledgement persistence
-#
-# Acks live under ``security.acked_advisories`` in config.yaml as a list of
-# advisory IDs. The list is the only state — no per-host data, no
-# timestamps, no fingerprints. Users sharing a config.yaml across machines
-# (rare but possible) get the same dismissal everywhere, which is the
-# correct behavior for a global advisory.
-# =============================================================================
-
+# ─── Acknowledgement persistence ──────────────────────────────────────────────
+# Acks live under ``security.acked_advisories`` in config.yaml as a list of advisory IDs — the only
+# state (no per-host data or timestamps), so a shared config.yaml dismisses everywhere.
 
 def get_acked_ids() -> set[str]:
-    """Return the set of advisory IDs the user has dismissed.
-
-    Returns an empty set if config can't be loaded (don't block startup
-    just because config is broken — the advisory will keep firing until
-    config is repaired, which is fine).
+    """Advisory IDs the user has dismissed; empty when config can't be loaded (never block startup —
+    the advisory keeps firing until config is repaired).
     """
     try:
         from hermes_cli.config import load_config
-        cfg = load_config()
+        raw = (load_config().get("security") or {}).get("acked_advisories") or []
     except Exception:
         logger.debug("Could not load config for advisory acks", exc_info=True)
         return set()
-    sec = cfg.get("security") or {}
-    raw = sec.get("acked_advisories") or []
-    if not isinstance(raw, list):
-        return set()
-    return {str(x).strip() for x in raw if str(x).strip()}
+    return {str(x).strip() for x in raw if str(x).strip()} if isinstance(raw, list) else set()
 
 
 def ack_advisory(advisory_id: str) -> bool:
-    """Persist an ack for ``advisory_id``. Returns True on success.
-
-    Idempotent — acking an already-acked ID is a no-op.
-    """
+    """Persist an ack for ``advisory_id``. Returns True on success."""
     advisory_id = advisory_id.strip()
     if not advisory_id:
         return False
@@ -239,8 +141,7 @@ def ack_advisory(advisory_id: str) -> bool:
         if not isinstance(existing, list):
             existing = []
         if advisory_id not in existing:
-            existing.append(advisory_id)
-            sec["acked_advisories"] = existing
+            sec["acked_advisories"] = existing + [advisory_id]
             save_config(cfg)
         return True
     except Exception:
@@ -249,32 +150,17 @@ def ack_advisory(advisory_id: str) -> bool:
 
 
 def filter_unacked(hits: list[AdvisoryHit]) -> list[AdvisoryHit]:
-    """Return only hits whose advisories the user has not dismissed."""
-    if not hits:
-        return []
-    acked = get_acked_ids()
+    """Only hits whose advisories the user has not dismissed."""
+    acked = get_acked_ids() if hits else set()
     return [h for h in hits if h.advisory.id not in acked]
 
 
-# =============================================================================
-# Rendering helpers
-# =============================================================================
-
-
 def _term_supports_color() -> bool:
-    if os.environ.get("NO_COLOR"):
-        return False
-    if not sys.stdout.isatty():
-        return False
-    return True
+    return not os.environ.get("NO_COLOR") and sys.stdout.isatty()
 
 
 def short_banner_lines(hits: list[AdvisoryHit]) -> list[str]:
-    """Return 1-3 short lines suitable for a startup banner.
-
-    Caller is responsible for color/styling. Always names the worst hit
-    explicitly so the user knows what's wrong without running doctor.
-    """
+    """1-3 short unstyled lines for a startup banner; always names the worst hit explicitly."""
     if not hits:
         return []
     primary = hits[0]
@@ -284,15 +170,14 @@ def short_banner_lines(hits: list[AdvisoryHit]) -> list[str]:
         "  Run 'hermes doctor' for remediation steps.",
     ]
     if len(hits) > 1:
-        lines.insert(1, f"  ({len(hits) - 1} additional advisor"
-                       f"{'ies' if len(hits) > 2 else 'y'} also active.)")
+        lines.insert(1, f"  ({len(hits) - 1} additional advisor{'ies' if len(hits) > 2 else 'y'} also active.)")
     return lines
 
 
 def full_remediation_text(hit: AdvisoryHit) -> list[str]:
-    """Return a multi-line block describing the advisory + remediation."""
+    """Multi-line block describing the advisory + remediation."""
     a = hit.advisory
-    lines = [
+    return [
         f"=== {a.title} ===",
         f"ID:        {a.id}    Severity: {a.severity}    Published: {a.published}",
         f"Detected:  {hit.package}=={hit.installed_version}",
@@ -301,24 +186,14 @@ def full_remediation_text(hit: AdvisoryHit) -> list[str]:
         a.summary,
         "",
         "Remediation:",
+        *(f"  {i}. {step}" for i, step in enumerate(a.remediation, 1)),
     ]
-    for i, step in enumerate(a.remediation, 1):
-        lines.append(f"  {i}. {step}")
-    return lines
 
 
-# =============================================================================
-# Startup-banner gating
-#
-# We do NOT want to hammer the user with the banner on every command. Once
-# they've seen it inside a 24h window we cache that fact in
-# ``~/.hermes/cache/advisory_banner_seen`` (a single line per advisory ID:
-# ``<id> <iso8601_timestamp>``).
-#
-# Acked advisories never re-banner. Cached-but-not-acked advisories
-# re-banner after 24h so the user doesn't fully forget.
-# =============================================================================
-
+# ─── Startup-banner gating ────────────────────────────────────────────────────
+# Once the banner is seen we cache that in ``~/.hermes/cache/advisory_banner_seen`` (one
+# ``<id> <timestamp>`` line per advisory). Acked advisories never re-banner; cached-but-not-acked
+# ones re-banner after 24h so the user doesn't fully forget.
 
 _BANNER_CACHE_FILE = "advisory_banner_seen"
 _BANNER_REPEAT_HOURS = 24
@@ -336,47 +211,31 @@ def _banner_cache_path() -> Optional[Path]:
 
 def _read_banner_cache() -> dict[str, float]:
     p = _banner_cache_path()
-    if p is None or not p.exists():
-        return {}
-    out: dict[str, float] = {}
     try:
-        for line in p.read_text(encoding="utf-8").splitlines():
-            line = line.strip()
-            if not line:
-                continue
-            parts = line.split(None, 1)
-            if len(parts) != 2:
-                continue
-            advisory_id, ts = parts
-            try:
-                out[advisory_id] = float(ts)
-            except ValueError:
-                continue
+        lines = p.read_text(encoding="utf-8").splitlines() if p is not None and p.exists() else []
     except Exception:
         return {}
+    out: dict[str, float] = {}
+    for parts in (line.split(None, 1) for line in lines):
+        try:
+            if len(parts) == 2:
+                out[parts[0]] = float(parts[1])
+        except ValueError:
+            continue
     return out
 
 
 def _write_banner_cache(seen: dict[str, float]) -> None:
-    p = _banner_cache_path()
-    if p is None:
-        return
     try:
-        lines = [f"{aid} {ts}" for aid, ts in seen.items()]
-        p.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        if (p := _banner_cache_path()) is not None:
+            p.write_text("\n".join(f"{aid} {ts}" for aid, ts in seen.items()) + "\n", encoding="utf-8")
     except Exception:
         logger.debug("Could not write advisory banner cache", exc_info=True)
 
 
-def hits_due_for_banner(
-    hits: list[AdvisoryHit],
-    *,
-    repeat_hours: int = _BANNER_REPEAT_HOURS,
-) -> list[AdvisoryHit]:
-    """Return only hits whose banner is due (not acked, not recently shown).
-
-    Side effect: stamps the banner cache for any hit that's about to be
-    shown. Callers should subsequently render the result.
+def hits_due_for_banner(hits: list[AdvisoryHit], *, repeat_hours: int = _BANNER_REPEAT_HOURS) -> list[AdvisoryHit]:
+    """Hits whose banner is due (not acked, not recently shown). Side effect: stamps the banner
+    cache for every returned hit, so callers must render the result.
     """
     import time
 
@@ -386,22 +245,40 @@ def hits_due_for_banner(
     now = time.time()
     cache = _read_banner_cache()
     cutoff = now - (repeat_hours * 3600)
-
-    due: list[AdvisoryHit] = []
-    for hit in fresh:
-        last = cache.get(hit.advisory.id, 0.0)
-        if last < cutoff:
-            due.append(hit)
-            cache[hit.advisory.id] = now
+    due = [hit for hit in fresh if cache.get(hit.advisory.id, 0.0) < cutoff]
+    for hit in due:
+        cache[hit.advisory.id] = now
     if due:
         _write_banner_cache(cache)
     return due
 
 
-# =============================================================================
-# Public entry points used by doctor / CLI / gateway
-# =============================================================================
+def startup_banner(hits: list[AdvisoryHit]) -> Optional[str]:
+    """Printable startup banner, or None if nothing is due (updates the banner cache)."""
+    due = hits_due_for_banner(hits)
+    if not due:
+        return None
+    text = "\n".join(short_banner_lines(due))
+    return f"\x1b[1;31m{text}\x1b[0m" if _term_supports_color() else text
 
+
+def gateway_log_message(hits: list[AdvisoryHit]) -> Optional[str]:
+    """One-line log message for gateway operators, or None."""
+    fresh = filter_unacked(hits)
+    if not fresh:
+        return None
+    if len(fresh) == 1:
+        h = fresh[0]
+        return (f"Security advisory [{h.advisory.id}] active: {h.package}=={h.installed_version} "
+                f"matches {h.advisory.title}. See {h.advisory.url}")
+    return (f"{len(fresh)} security advisories active (IDs: {', '.join(h.advisory.id for h in fresh)}). "
+            "Run `hermes doctor` on the gateway host for details.")
+
+
+# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
+# Names external plugins imported from this module before the Sep 2026 decomposition.
+# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
+# The whole block is removed by reverting the commit that added it.
 
 def render_doctor_section(hits: list[AdvisoryHit]) -> tuple[bool, list[str]]:
     """Render the security-advisory section for ``hermes doctor``.
@@ -419,35 +296,4 @@ def render_doctor_section(hits: list[AdvisoryHit]) -> tuple[bool, list[str]]:
             lines.append("")
         lines.extend(full_remediation_text(hit))
     return True, lines
-
-
-def startup_banner(hits: list[AdvisoryHit]) -> Optional[str]:
-    """Return a printable startup banner, or None if nothing is due.
-
-    Updates the banner cache as a side effect (so the next call within
-    24h returns None for the same hit).
-    """
-    due = hits_due_for_banner(hits)
-    if not due:
-        return None
-    lines = short_banner_lines(due)
-    if _term_supports_color():
-        red = "\x1b[1;31m"
-        reset = "\x1b[0m"
-        return red + "\n".join(lines) + reset
-    return "\n".join(lines)
-
-
-def gateway_log_message(hits: list[AdvisoryHit]) -> Optional[str]:
-    """Return a one-line log message for gateway operators, or None."""
-    fresh = filter_unacked(hits)
-    if not fresh:
-        return None
-    if len(fresh) == 1:
-        h = fresh[0]
-        return (f"Security advisory [{h.advisory.id}] active: "
-                f"{h.package}=={h.installed_version} matches {h.advisory.title}. "
-                f"See {h.advisory.url}")
-    return (f"{len(fresh)} security advisories active "
-            f"(IDs: {', '.join(h.advisory.id for h in fresh)}). "
-            f"Run `hermes doctor` on the gateway host for details.")
+# ---- END PLUGIN-COMPAT ----

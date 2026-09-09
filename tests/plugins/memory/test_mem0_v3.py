@@ -146,6 +146,52 @@ class TestMem0V3Internal:
         assert call[2]["infer"] is True
 
 
+class TestSyncTurnTruncation:
+    """sync_turn must cap messages before ingestion so small-context embedding
+    backends (OSS Ollama bge-small-zh-v1.5: 512 tokens; jina-embeddings-v3 token
+    limits) don't fail the whole extraction — a failure _try only logs."""
+
+    def _make_provider(self, monkeypatch, backend):
+        provider = Mem0MemoryProvider()
+        provider.initialize("test-session")
+        provider._user_id = "u123"
+        provider._agent_id = "hermes"
+        provider._backend = backend
+        return provider
+
+    def test_small_context_backend_never_sees_oversized_input(self, monkeypatch):
+        """Regression for #106235/#37421: an OSS embedding backend with a small
+        context window raises on oversized input; truncation up front keeps the
+        extraction from being silently dropped (no breaker failures)."""
+
+        class SmallContextBackend(FakeBackend):
+            def add(self, messages, **kwargs):
+                if any(len(m["content"]) > mem0_plugin._SYNC_MSG_MAX_CHARS for m in messages):
+                    raise RuntimeError("HTTP 500: embedding input exceeds model context")
+                return super().add(messages, **kwargs)
+
+        backend = SmallContextBackend()
+        provider = self._make_provider(monkeypatch, backend)
+        provider.sync_turn("Short question?", "".join(f"Fact {i}. " for i in range(200)), session_id="s1")
+        provider._sync_thread.join(timeout=2)
+        assert len(backend.captured) == 1
+        sent = backend.captured[0][1]
+        assert sent[0]["content"] == "Short question?"  # under the cap: untouched
+        assert len(sent[1]["content"]) <= mem0_plugin._SYNC_MSG_MAX_CHARS and sent[1]["content"].endswith(".")
+        assert provider._consecutive_failures == 0
+
+    def test_sync_max_chars_config_raises_cap(self, monkeypatch, tmp_path):
+        """8k-token embedders should not be stuck at the 512-token default (#106235)."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("MEM0_API_KEY", "test-key")
+        (tmp_path / "mem0.json").write_text('{"sync_max_chars": 3000}')
+        backend = FakeBackend()
+        provider = self._make_provider(monkeypatch, backend)
+        provider.sync_turn("hi", "Long answer. " * 200, session_id="s1")  # 2600 chars
+        provider._sync_thread.join(timeout=2)
+        assert backend.captured[0][1][1]["content"] == "Long answer. " * 200
+
+
 class TestMem0Prefetch:
     """prefetch() must recall on the CURRENT question, synchronously.
 

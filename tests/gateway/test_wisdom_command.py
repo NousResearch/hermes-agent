@@ -318,6 +318,45 @@ def test_skill_preview_keeps_install_as_the_trailing_action():
     ]
 
 
+def test_browse_install_opens_exact_version_review_without_applying():
+    service = _Service()
+    context = _context()
+    controller = WisdomCommandController()
+    browse = controller.execute("browse", service, context)
+    bind_view_callbacks(browse, context)
+    install = next(a for a in browse.items[0].actions if a.operation == "install_modes")
+    assert install.arguments["reference"] == "skill-1@v2"
+    modes = controller.execute_token(
+        install.callback_data.removeprefix("wi:cmd:"), service, context
+    )
+    assert service.calls == [("search_skills", "")]
+    bind_view_callbacks(modes, context)
+    manual = next(a for a in modes.actions if a.arguments.get("update_mode") == "MANUAL")
+    plan = controller.execute_token(
+        manual.callback_data.removeprefix("wi:cmd:"), service, context
+    )
+    assert plan.title == "Confirm install"
+    assert ("install_plan", "skill-1@v2", "MANUAL") in service.calls
+    assert not any(call[0] == "install_apply" for call in service.calls)
+
+
+def test_browse_install_control_is_session_bound_and_has_local_command():
+    service = _Service()
+    context = _context()
+    controller = WisdomCommandController()
+    browse = controller.execute("browse", service, context)
+    bind_view_callbacks(browse, context)
+    install = next(a for a in browse.items[0].actions if a.operation == "install_modes")
+    assert install.local_command == "/wisdom install skill-1@v2"
+    with pytest.raises(PermissionError):
+        controller.execute_token(
+            install.callback_data.removeprefix("wi:cmd:"),
+            service,
+            _context(user_id="someone-else"),
+        )
+    assert service.calls == [("search_skills", "")]
+
+
 def test_local_action_command_resumes_bound_controller_action():
     service = _Service()
     context = _context(chat_id="local:session-1")

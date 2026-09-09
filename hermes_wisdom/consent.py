@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import uuid
@@ -95,6 +96,71 @@ class WisdomConsent:
         self.queue = MediationStore(
             service.store, **({"clock": clock} if clock else {})
         )
+
+    def request(
+        self, org: str, reference: dict[str, Any], actor: ConsentActor,
+        *, title: str, explanation: str,
+    ) -> dict[str, Any]:
+        """Queue explicit review, replacing deferred/expired consent, never applying it."""
+        self.service.require_setup()
+        now = self.queue.clock()
+        reference = {**reference, "user_requested": True}
+        target = (
+            ("skill_id", reference["skill_id"], "version", reference["version"])
+            if reference["kind"] == "skill"
+            else ("event_id", reference["event_id"], "source_hash", reference["content_hash"])
+        )
+        request_key = "request:" + hashlib.sha256(json.dumps(
+            [reference, actor.session_key, actor.platform, actor.actor_id, actor.address],
+            sort_keys=True,
+        ).encode()).hexdigest()
+        with self.service.store.transaction() as db:
+            self.queue._check_org(db, org)
+            existing = db.execute(
+                """SELECT c.*,a.state AS delivery_state,d.deferred_at
+                FROM wisdom_consent c JOIN wisdom_assessment a ON a.id=c.assessment_id
+                LEFT JOIN wisdom_consent_defer d ON d.interaction_id=c.id AND d.surface=c.platform
+                WHERE c.organization_id=? AND c.owner_session=? AND c.actor_id=? AND c.platform=?
+                AND json_extract(c.plan_json,?)=? AND json_extract(c.plan_json,?)=?
+                ORDER BY c.created_at DESC,c.rowid DESC LIMIT 1""",
+                (org, actor.session_key, actor.actor_id, actor.platform,
+                 f"$.{target[0]}", target[1], f"$.{target[2]}", target[3]),
+            ).fetchone()
+            if existing:
+                value = _decode(existing)
+                if value["plan"].get("origin_address") and value["plan"]["origin_address"] != actor.address:
+                    raise WisdomNotFound("Wisdom interaction not found")
+                if (
+                    value["state"] in {"applying", "completed"}
+                    or value["delivery_state"] in {"delivering", "delivery_uncertain"}
+                    or (value["state"] == "pending" and value["expires_at"] > now
+                        and value["deferred_at"] is None)
+                ):
+                    return self.project(value)
+                # Keep the original receipt and suppression history. A successor
+                # key makes concurrent requests and interrupted plan rebuilds idempotent.
+                request_key = f"request:consent:{value['id']}"
+                if value["state"] == "pending":
+                    db.execute(
+                        "UPDATE wisdom_consent SET state=?,updated_at=? WHERE id=?",
+                        ("expired" if value["expires_at"] <= now else "stale", now, value["id"]),
+                    )
+                db.execute(
+                    """UPDATE wisdom_assessment SET state='retired',lease_token=NULL,lease_until=NULL,updated_at=?
+                    WHERE id=? AND state NOT IN ('delivered','delivering','delivery_uncertain')""",
+                    (now, value["assessment_id"]),
+                )
+            identity = self.queue.enqueue(
+                org, request_key, reference, origin_session=actor.session_key, _db=db,
+            )
+            advice = {"assessment_id": identity, "title": title,
+                      "explanation": explanation, "relevance": "recommend"}
+            db.execute(
+                """UPDATE wisdom_assessment SET owner_session=?,advice_json=?,state='ready',updated_at=?
+                WHERE id=? AND state='pending' AND lease_token IS NULL""",
+                (actor.session_key, json.dumps(advice), now, identity),
+            )
+        return self.present(org, identity, actor)
 
     def _plan(self, reference: dict[str, Any]) -> tuple[str, dict[str, Any]]:
         if reference["kind"] == "candidate":

@@ -123,32 +123,6 @@ def present(args: dict) -> str:
         get_session_env("HERMES_SESSION_SCOPE_ID"),
     )
     reference = _reference(service, target)
-    reference["user_requested"] = True
-    if target.kind == "skill":
-        with service.store.transaction() as db:
-            existing = db.execute(
-                """SELECT id FROM wisdom_consent WHERE organization_id=?
-                AND owner_session=? AND actor_id=? AND platform=?
-                AND state IN ('pending','applying','completed')
-                AND (state!='pending' OR expires_at>?)
-                AND json_extract(plan_json,'$.skill_id')=?
-                AND json_extract(plan_json,'$.version')=?
-                ORDER BY created_at DESC LIMIT 1""",
-                (org, key, user, platform, mediation.queue.clock(), target.identity, target.version),
-            ).fetchone()
-        if existing:
-            result = mediation.consent._resolve(org, existing["id"], actor, "inspect")
-            return json.dumps({
-                "status": result["state"],
-                "interaction": result,
-                "instruction": "Use the existing native consent card; no new notification was queued. A conversational yes does not apply this operation.",
-            })
-    identity = mediation.queue.enqueue(
-        org,
-        f"request:{target.kind}:{target.identity}:{target.version or reference.get('content_hash')}",
-        reference,
-        origin_session=key,
-    )
     mediation.queue.register_session(
         org,
         session_key=key,
@@ -160,24 +134,31 @@ def present(args: dict) -> str:
         user_activity=True,
         address=actor.address,
     )
-    advice = {
-        "assessment_id": identity,
-        "title": target.title,
-        "explanation": target.explanation,
-        "relevance": "recommend",
-    }
+    result = mediation.consent.request(
+        org, reference, actor, title=target.title, explanation=target.explanation,
+    )
     with service.store.transaction() as db:
         mediation.queue._check_org(db, org)
-        db.execute(
-            """UPDATE wisdom_assessment SET owner_session=?,advice_json=?,state='ready'
-            WHERE id=? AND state='pending' AND lease_token IS NULL""",
-            (key, json.dumps(advice), identity),
-        )
-    result = mediation.consent.present(org, identity, actor)
+        state = db.execute(
+            "SELECT state FROM wisdom_assessment WHERE id=? AND organization_id=?",
+            (result["assessment_id"], org),
+        ).fetchone()[0]
+    delivery = {
+        "pending": "queued", "assessing": "queued", "ready": "queued", "fallback": "queued",
+        "delivering": "in_progress", "delivered": "delivered", "delivery_uncertain": "uncertain",
+    }.get(state, "not_queued")
+    instruction = {
+        "queued": "Native card delivery is queued for after this turn; it has not been displayed yet.",
+        "in_progress": "Native card delivery is in progress; do not claim it has opened yet.",
+        "delivered": "Use the previously delivered native card; no new notification was queued.",
+        "uncertain": "Card delivery is unconfirmed. No duplicate was queued; use /wisdom sync to inspect delivery status.",
+        "not_queued": "No card delivery is queued; use /wisdom sync to inspect delivery status.",
+    }[delivery]
     return json.dumps({
         "status": result["state"],
         "interaction": result,
-        "instruction": "Wait for the native consent control. A conversational yes does not apply this operation.",
+        "delivery": {"state": delivery},
+        "instruction": instruction + " A conversational yes does not apply this operation.",
     })
 
 
@@ -223,8 +204,9 @@ registry.register(
     schema={
         "name": "present_wisdom_consent",
         "description": (
-            "Present native, exact-package Wisdom consent in the current private conversation. "
+            "Queue native, exact-package Wisdom consent in the current private conversation. "
             "Explain relevance; backend supplies warnings and controls. Never installs or publishes. "
+            "Read delivery.state: queued is not yet displayed; do not claim the card opened. "
             "Users must click the control or use the deterministic local CLI confirmation."
         ),
         "parameters": Presentation.model_json_schema(),

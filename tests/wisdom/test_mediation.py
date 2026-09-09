@@ -19,7 +19,7 @@ from hermes_wisdom.delivery import DeliveryReceipt
 
 
 @pytest.fixture
-def consent(tmp_path):
+def consent(tmp_path, request):
     store = WisdomStore(tmp_path / "wisdom")
     store.activate_installation_identity("installation", "org")
     now = [1000.0]
@@ -42,12 +42,14 @@ def consent(tmp_path):
     }
     service.install_apply.return_value = {"state": "active"}
     instance = WisdomConsent(service, clock=lambda: now[0])
-    actor = ConsentActor("session", "telegram", "user", "chat", "thread")
+    platform = getattr(request, "param", "telegram")
+    address = {"telegram": ("42", "123", ""), "slack": ("D1", "123.456", "T1")}.get(getattr(request, "param", None), ("chat", "thread", ""))
+    actor = ConsentActor("session", platform, "user", *address)
     instance.queue.register_session(
         "org",
         session_key="session",
         session_id="session",
-        platform="telegram",
+        platform=platform,
         actor_id="user",
         private=True,
         available=True,
@@ -116,6 +118,7 @@ def test_requested_consent_is_not_gated_as_an_unsolicited_recommendation(
         "HERMES_SESSION_CHAT_ID": actor.chat_id,
         "HERMES_SESSION_CHAT_TYPE": "private",
         "HERMES_SESSION_THREAD_ID": actor.thread_id,
+        "HERMES_SESSION_SCOPE_ID": actor.scope_id,
     }
     monkeypatch.setattr(wisdom_tool, "available", lambda: True)
     monkeypatch.setattr(
@@ -149,8 +152,156 @@ def test_requested_consent_is_not_gated_as_an_unsolicited_recommendation(
         "title": "Asked again", "explanation": "Another request for the same version.",
     }))
     assert repeated["interaction"]["id"] == result["interaction"]["id"]
-    assert "no new notification" in repeated["instruction"]
+    assert repeated["delivery"]["state"] == result["delivery"]["state"] == "queued"
     assert len(instance.queue.assessments("org")) == 2  # Original feed and one request.
+
+
+@pytest.fixture
+def request_tool(consent, monkeypatch, tmp_path):
+    from tools import wisdom_tool
+
+    instance, actor, _, _ = consent
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    env = {
+        "HERMES_SESSION_PLATFORM": actor.platform,
+        "HERMES_SESSION_KEY": actor.session_key,
+        "HERMES_SESSION_USER_ID": actor.actor_id,
+        "HERMES_SESSION_CHAT_ID": actor.chat_id,
+        "HERMES_SESSION_CHAT_TYPE": "private",
+        "HERMES_SESSION_THREAD_ID": actor.thread_id,
+        "HERMES_SESSION_SCOPE_ID": actor.scope_id,
+    }
+    monkeypatch.setattr(wisdom_tool, "available", lambda: True)
+    monkeypatch.setattr("gateway.session_context.get_session_env", lambda key: env.get(key, ""))
+    monkeypatch.setattr("hermes_wisdom.service.WisdomService", lambda: instance.service)
+    mediation = WisdomMediation(instance.service)
+    mediation.queue = instance.queue
+    mediation.consent = instance
+    monkeypatch.setattr("hermes_wisdom.mediation.WisdomMediation", lambda service: mediation)
+
+    def request():
+        return json.loads(wisdom_tool.registry.dispatch("present_wisdom_consent", {
+            "kind": "skill", "identity": "skill", "version": 1,
+            "title": "Requested skill", "explanation": "You asked to review this skill.",
+        }))
+
+    return request
+
+
+def test_manual_request_after_not_now_queues_one_fresh_review(consent, request_tool):
+    instance, actor, identity, now = consent
+    original = instance.present("org", identity, actor)
+    job = instance.queue.assessments("org")[0]
+    receipt = DeliveryReceipt(
+        platform=actor.platform, destination=actor.chat_id, thread_id=actor.thread_id,
+        message_id="original-card", acknowledgement="provider_accepted",
+    )
+    assert instance.queue.begin_delivery("org", identity, job["lease_token"])
+    assert instance.queue.complete_delivery("org", identity, job["lease_token"], receipt=receipt)
+    assert instance.resolve("org", original["id"], actor, "defer")["deferred"]
+    now[0] += 1
+    result = request_tool()
+    repeated = request_tool()
+    assert result["interaction"]["id"] != original["id"]
+    assert repeated["interaction"]["id"] == result["interaction"]["id"]
+    assert result["delivery"]["state"] == repeated["delivery"]["state"] == "queued"
+    jobs = instance.queue.assessments("org")
+    requested = next(j for j in jobs if j["id"] == result["interaction"]["assessment_id"])
+    assert requested["state"] == "ready"
+    assert requested["reference"]["user_requested"] is True
+    assert requested["origin_session"] == actor.session_key
+    assert len(jobs) == 2
+    assert instance.queue.claim("org", actor.session_key) == []  # Active agent turn.
+    with instance.service.store.transaction() as db:
+        assert db.execute("SELECT receipt_json FROM wisdom_delivery_receipt WHERE assessment_id=?", (identity,)).fetchone()[0] == receipt.model_dump_json()
+        assert db.execute("SELECT 1 FROM wisdom_consent_defer WHERE interaction_id=?", (original["id"],)).fetchone()
+    assert instance.resolve("org", original["id"], actor, "confirm")["state"] == "stale"
+    instance.service.install_apply.assert_not_called()
+    instance.queue.register_session(
+        "org", session_key=actor.session_key, session_id="session", platform=actor.platform,
+        actor_id=actor.actor_id, private=True, available=True, user_activity=True, address=actor.address,
+    )
+    claimed = instance.queue.claim("org", actor.session_key)
+    assert [j["id"] for j in claimed] == [requested["id"]]
+    assert instance.present("org", claimed[0]["id"], actor, lease_token=claimed[0]["lease_token"])["id"] == result["interaction"]["id"]
+
+
+@pytest.mark.parametrize("state", ["delivery_uncertain", "delivering", "delivered"])
+def test_manual_request_reports_existing_delivery_without_blind_resend(consent, request_tool, state):
+    instance, actor, identity, _ = consent
+    original = instance.present("org", identity, actor)
+    with instance.service.store.transaction() as db:
+        db.execute("UPDATE wisdom_assessment SET state=? WHERE id=?", (state, identity))
+    result = request_tool()
+    assert result["interaction"]["id"] == original["id"]
+    expected = {"delivery_uncertain": "uncertain", "delivering": "in_progress", "delivered": "delivered"}
+    assert result["delivery"]["state"] == expected[state]
+    assert len(instance.queue.assessments("org")) == 1
+    instance.service.install_apply.assert_not_called()
+
+
+def test_manual_request_rechecks_expired_consent_and_recovers_plan_failure(consent, request_tool):
+    instance, actor, identity, now = consent
+    original = instance.present("org", identity, actor)
+    now[0] = original["expires_at"] + 1
+    instance.service.install_plan.side_effect = TimeoutError("plan temporarily unavailable")
+    assert "error" in request_tool()
+    queued = instance.queue.assessments("org")
+    assert len(queued) == 2
+    instance.service.install_plan.side_effect = None
+    result = request_tool()
+    assert result["interaction"]["id"] != original["id"]
+    assert len(instance.queue.assessments("org")) == 2
+    assert result["delivery"]["state"] == "queued"
+    assert next(j for j in instance.queue.assessments("org") if j["id"] == identity)["state"] == "retired"
+    instance.service.install_apply.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("consent", ["telegram", "slack"], indirect=True)
+async def test_deferred_manual_review_reaches_native_transport_once(consent, request_tool):
+    from tests.gateway.test_slack_wisdom import _adapter as slack_adapter
+    from tests.gateway.test_telegram_wisdom_command import _adapter as telegram_adapter
+
+    instance, actor, identity, now = consent
+    original = instance.present("org", identity, actor)
+    job = instance.queue.assessments("org")[0]
+    assert instance.queue.begin_delivery("org", identity, job["lease_token"])
+    assert instance.queue.complete_delivery("org", identity, job["lease_token"], receipt=DeliveryReceipt(
+        platform=actor.platform, destination=actor.chat_id, thread_id=actor.thread_id,
+        scope_id=actor.scope_id, message_id="original-card", acknowledgement="provider_accepted",
+    ))
+    instance.resolve("org", original["id"], actor, "defer")
+    now[0] += 1
+    requested = request_tool()
+    mediation = WisdomMediation(instance.service)
+    mediation.queue, mediation.consent = instance.queue, instance
+    instance.queue.register_session(
+        "org", session_key=actor.session_key, session_id="session", platform=actor.platform,
+        actor_id=actor.actor_id, private=True, available=True, user_activity=True, address=actor.address,
+    )
+    assessor = Mock(side_effect=AssertionError("explicit review already has advice"))
+    items = mediation.prepare("org", actor, runtime={}, history=[], assessor=assessor)
+    assert len(items) == 1
+    assert items[0]["interaction"]["id"] == requested["interaction"]["id"]
+    assert mediation.begin_delivery("org", items) == items
+    adapter = slack_adapter() if actor.platform == "slack" else telegram_adapter()
+    if actor.platform == "slack":
+        transport = adapter._team_clients["T1"].chat_postMessage
+        transport.return_value = {"ok": True, "channel": actor.chat_id, "ts": "123.456"}
+    else:
+        transport = adapter._bot.do_api_request
+        transport.return_value = {"message_id": 19, "chat": {"id": 42}, "message_thread_id": int(actor.thread_id)}
+    receipt = await adapter.send_wisdom_mediation(advice_view(items), source=actor)
+    sent = json.dumps(transport.call_args.kwargs)
+    assert f"wi:agent:confirm:{requested['interaction']['id']}" in sent
+    assert f"wi:agent:confirm:{original['id']}" not in sent
+    transport.assert_awaited_once()
+    job = items[0]["assessment"]
+    assert instance.queue.complete_delivery("org", job["id"], job["lease_token"], receipt=receipt)
+    assert request_tool()["delivery"]["state"] == "delivered"
+    assert instance.queue.claim("org", actor.session_key) == []
+    instance.service.install_apply.assert_not_called()
 
 
 @pytest.mark.parametrize(

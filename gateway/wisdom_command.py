@@ -1058,6 +1058,7 @@ class WisdomCommandController:
         skill_id = str(item.get("id") or "")
         skill_name = str(item.get("slug") or skill_id)
         version = item.get("latest_version")
+        reference = f"{skill_id}@v{version}" if version is not None else skill_id
         return WisdomItem(
             skill_name,
             "\n".join([
@@ -1072,7 +1073,14 @@ class WisdomCommandController:
                     "show",
                     {"skill": skill_id},
                     local_command=_wisdom_command("show", skill_name),
-                )
+                ),
+                WisdomAction(
+                    "Install",
+                    "install_modes",
+                    {"reference": reference},
+                    primary=True,
+                    local_command=_wisdom_command("install", reference),
+                ),
             ],
         )
 

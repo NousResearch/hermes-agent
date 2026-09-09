@@ -415,25 +415,50 @@ def _log_only_write(text: str) -> None:
         return
     stream = _m().sys.stdout
     log_file = getattr(stream, "_log", None)
-    if log_file is None:
-        return
     with suppress(Exception):
-        log_file.write(text if text.endswith("\n") else text + "\n")
-        log_file.flush()
+        if log_file is None:
+            log_path = get_hermes_home() / "logs" / "update.log"
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+            with log_path.open("a", encoding="utf-8") as fallback:
+                fallback.write(text)
+        else:
+            log_file.write(text)
+            log_file.flush()
 
 
 def _run_logged_subprocess(cmd, *, cwd=None, env=None):
-    """Run ``cmd`` with combined output captured into update.log only; returns the
-    ``CompletedProcess`` so the caller can surface the output on failure."""
-    # Check if there are updates. On shallow checkouts `rev-list --count` walks the truncated graph and can
-    # report the entire remote ancestry (e.g. "Found 9980 new commit(s)" on a depth-1 install — #53479). The
-    # zero/nonzero gate is still sound (HEAD == origin/<branch> counts 0), so keep it, but treat the shallow
-    # NUMBER as unknown and recover the real one via the GitHub compare API when possible.
-    result = subprocess.run(
-        cmd, cwd=cwd, env=env, check=False, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-        text=True, encoding="utf-8", errors="replace")
-    _log_only_write(result.stdout or "")
-    return result
+    """Stream combined build output to update.log, retaining it for failure reporting."""
+    import codecs
+    import io
+    from hermes_cli._subprocess_compat import kill_process_tree, windows_hide_flags
+
+    child_env = dict(os.environ if env is None else env)
+    child_env.setdefault("PYTHONUNBUFFERED", "1")
+    spawn = {"creationflags": windows_hide_flags()} if os.name == "nt" else {"process_group": 0}
+    proc = subprocess.Popen(
+        cmd, cwd=cwd, env=child_env, stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, **spawn)
+    # read1 delivers partial lines too; incremental decoding preserves split UTF-8
+    # and the universal-newline behavior callers previously got from text=True.
+    decoder = io.IncrementalNewlineDecoder(codecs.getincrementaldecoder("utf-8")("replace"), True)
+    output = []
+    try:
+        while True:
+            chunk = proc.stdout.read1(8192)
+            text = decoder.decode(chunk, final=not chunk)
+            output.append(text)
+            _log_only_write(text)
+            if not chunk:
+                break
+        return subprocess.CompletedProcess(cmd, proc.wait(), stdout="".join(output))
+    except BaseException:
+        # Unlike Popen.__exit__, do not wait for a cancelled build to finish.
+        kill_process_tree(proc)
+        with suppress(subprocess.TimeoutExpired):
+            proc.wait(timeout=5)
+        raise
+    finally:
+        proc.stdout.close()
 
 
 def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):

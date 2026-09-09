@@ -31,7 +31,7 @@ def _claim_active_session_slot(
         from hermes_cli.active_sessions import try_acquire_active_session
         return try_acquire_active_session(
             session_id=session_key, surface=surface, config=_load_cfg(), registry_home=profile_home,
-            metadata={"live_session_id": live_session_id},
+            metadata={"live_session_id": live_session_id, "bot_live_delivery_consumer": True},
             track_liveness=str(surface or "").strip().lower() == "desktop")
     except Exception as exc:
         logger.warning("Failed to claim active session slot: %s", exc)
@@ -138,7 +138,8 @@ def _transfer_active_session_slot(sid: str, session: dict, *, new_session_id: st
         return True
     try:
         from hermes_cli.active_sessions import transfer_active_session
-        if transfer_active_session(lease, session_id=new_session_id, metadata={"live_session_id": sid}):
+        if transfer_active_session(lease, session_id=new_session_id, metadata={
+                "live_session_id": sid, "bot_live_delivery_consumer": True}):
             return True
     except Exception:
         logger.debug("Failed to transfer active session slot", exc_info=True)
@@ -310,12 +311,21 @@ def _attach_worker(sid: str, session: dict, worker) -> None:
     worker.close()
 
 
+# Wall-clock timestamps, like session last_active; retained after close/reap.
+_closed_session_activity: dict[str, float] = {}
+
+
 def _pop_session_by_id(sid: str) -> dict | None:
     """Atomically detach one live session from the registry — the ownership claim for teardown (a concurrent
     close/reaper no-ops). Separate from ``_teardown_session``: slow finalization must not run under the resume lock."""
     with _sessions_lock:
         session = _sessions.pop(sid, None)
         if session is not None:
+            from hermes_constants import get_hermes_home
+
+            home = str(Path(session.get("profile_home") or get_hermes_home()).resolve())
+            last_active = time.time() if session.get("running") else float(session.get("last_active") or 0)
+            _closed_session_activity[home] = max(_closed_session_activity.get(home, 0), last_active)
             session["_closing"] = True
             session["_sid"] = sid  # out of _sessions now, so teardown can't recover the live id by scanning
     return session
@@ -455,8 +465,18 @@ def _reattach_refusal(rid, sid: str, session: dict) -> dict | None:
 
 
 def _rebind_live_transport(sid: str, session: dict, transport: Transport) -> None:
-    """Point a live session at ``transport`` (caller holds ``history_lock``)."""
-    session["transport"] = transport
+    """Attach a live peer without displacing existing subscribers (caller holds ``history_lock``)."""
+    from tools.delegate_tool_registry import _active_subagents, _active_subagents_lock
+
+    # Transfer only this exact live generation's capabilities at the authenticated
+    # attachment seam, including records spawned through an older dispatch context.
+    with _active_subagents_lock:
+        _attach_session_transport(session, transport)
+        for record in _active_subagents.values():
+            if (record.get("owner_session_id") == sid
+                    and record.get("owner_session_record") is session
+                    and record.get("owner_transport") is not None):
+                record["owner_transport"] = session["transport"]
     # Every transport that showed this session (pop-outs resume the same sid); on disconnect the last
     # viewer becomes the transport instead of the drop sentinel.
     session.setdefault("viewers", {})[transport] = time.time()
@@ -473,9 +493,16 @@ def _ws_orphan_turn_activity_is_fresh(session: dict) -> bool:
     Reuses the agent's existing activity summary (``_touch_activity`` is stamped by API waits, stream
     tokens, and tool heartbeats — the same clock the turn-liveness watchdog samples; see
     agent/turn_liveness.py). See #100325, #98028.
+    Isolated turns mirror that clock from the child under a unique dispatch token;
+    their monotonic samples keep aging even if the child or its pipe stalls.
     """
     if _WS_ORPHAN_ACTIVITY_STALE_S <= 0:
         return False
+    if session.get("_compute_host_turn_id"):
+        with session["history_lock"]:
+            stamp = session.get("_compute_host_activity_ns")
+            return (session.get("running", False) and isinstance(stamp, int)
+                    and 0 <= (time.perf_counter_ns() - stamp) / 1_000_000_000 < _WS_ORPHAN_ACTIVITY_STALE_S)
     if not callable(summary_fn := getattr(session.get("agent"), "get_activity_summary", None)):
         return False
     try:
@@ -503,7 +530,16 @@ def _schedule_ws_orphan_reap(
             if _pending_ws_reaps.get(sid) is not timer:
                 return
             current = _sessions.get(sid)
-            if current is None or not _ws_session_is_detached(current):
+            if current is None:
+                _pending_ws_reaps.pop(sid, None)
+                return
+            if not _ws_session_is_detached(current):
+                # This Timer is abandoning the interrupt claim because another
+                # writer moved the live record off the detached transport.
+                # Do not leave reattach RPCs fenced with 4009, or let this
+                # generation's settlement polls shorten a later detachment.
+                current.pop("_client_gone_interrupt_requested", None)
+                current.pop("_client_gone_interrupt_polls", None)
                 _pending_ws_reaps.pop(sid, None)
                 return
             if _session_has_active_delegations(sid, current):
@@ -566,23 +602,35 @@ def _schedule_ws_orphan_reap(
 def _close_sessions_for_transport(transport, *, end_reason: str = "ws_disconnect") -> tuple[int, int]:
     """Single WS-disconnect teardown entry point: reap close_on_disconnect sessions (sidecar/dashboard) immediately;
     re-point the rest at the detached transport (later emits miss the dead socket) for the grace-windowed WS-orphan
-    reaper. Returns ``(reaped, detached)`` counts."""
-    with _sessions_lock:
-        owned = [(sid, s) for sid, s in _sessions.items() if s.get("transport") is transport]
+    reaper. Returns ``(reaped, detached)`` counts.
+
+    Multi-client fan-out: the departing transport is DETACHED from every session first. A session that still has
+    another client attached keeps streaming and is neither parked nor reaped — a watcher leaving must not end the
+    turn the remaining client is reading. Only the sessions left clientless take the historical
+    close_on_disconnect / park-sentinel path, so a single-client disconnect behaves exactly as it always has."""
+    clientless = _detach_transport_from_sessions(transport)
     reaped = detached = 0
-    for sid, session in owned:
+    for sid, session in clientless:
         claimed_for_teardown = None
         should_schedule_reap = False
-        # session.resume fast-path rebinds under _session_resume_lock: take it so a reconnect can't move the transport
-        # between check and claim.
+        # session.resume fast-path attaches under _session_resume_lock: take it so a reconnect can't attach
+        # between the detach above and the claim.
         with _session_resume_lock, _sessions_lock:
             current = _sessions.get(sid)
             if current is not session:
                 continue
-            if current.get("transport") is not transport:
-                # The reconnect owns this session now; drop only the old viewer registration.
-                (current.get("viewers") or {}).pop(transport, None)
-                continue
+            # Prune the departing viewer registration in every branch; it must not affect the new owner.
+            (current.get("viewers") or {}).pop(transport, None)
+            # Revalidate before claiming (#77129, kept under fan-out): between _detach_transport_from_sessions
+            # returning this session as clientless and this claim, a concurrent session.resume can attach a NEW
+            # live transport. Tearing the session down, or parking the sentinel over it, would knock an attached
+            # client into detached state and arm an orphan reap against a session that has a live owner. Attach
+            # and detach both serialize on _session_transport_lock, so this check is race-free against them; that
+            # lock is a leaf, so taking it under _sessions_lock is safe and _session_has_live_transport does not
+            # re-acquire it.
+            with _session_transport_lock:
+                if _session_has_live_transport(current, excluding=transport):
+                    continue
             if current.get("close_on_disconnect"):
                 claimed_for_teardown = _pop_session_by_id(sid)
             else:
@@ -594,10 +642,11 @@ def _close_sessions_for_transport(transport, *, end_reason: str = "ws_disconnect
                 viewers.pop(transport, None)
                 live = [vt for vt, ts in sorted(viewers.items(), key=lambda kv: kv[1]) if not _transport_is_dead(vt)]
                 if live:
-                    current["transport"] = live[-1]
+                    _rebind_live_transport(sid, current, live[-1])
                 else:
                     current["transport"] = _detached_ws_transport
                     current.pop("_client_gone_interrupt_requested", None)
+                    current.pop("_client_gone_interrupt_polls", None)
                     should_schedule_reap = True
                     # Register before releasing the detachment claim: an old disconnect
                     # must not arm its first timer over a reconnect's newer detachment.

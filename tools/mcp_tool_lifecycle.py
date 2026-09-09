@@ -84,11 +84,16 @@ def _filter_mcp_children(pids: set) -> set:
     return kept
 
 
-def _clear_connect_cooldowns() -> None:
+def _clear_connect_cooldowns(names=None) -> None:
     """Drop connect-retry cooldowns: a restart must re-attempt every server immediately, not
     honour a stale per-server backoff. Caller holds ``_core._lock``."""
-    _core._server_connect_retry_after.clear()
-    _core._server_connect_failures.clear()
+    if names is None:
+        _core._server_connect_retry_after.clear()
+        _core._server_connect_failures.clear()
+    else:
+        for name in names:
+            _core._server_connect_retry_after.pop(name, None)
+            _core._server_connect_failures.pop(name, None)
 
 
 def shutdown_mcp_servers(*, scope: Optional[str] = None):
@@ -100,6 +105,19 @@ def shutdown_mcp_servers(*, scope: Optional[str] = None):
     with _core._lock:
         selected = [name for name in _core._servers if scope is None or _core._server_scope_keys.get(name) == scope]
         servers_snapshot = [_core._servers[name] for name in selected]
+        selected_status = (
+            set(_core._servers) | set(_core._server_scope_keys)
+            | set(_core._server_connecting) | set(_core._server_connect_errors)
+            if scope is None else {
+                name for name, owner in _core._server_scope_keys.items() if owner == scope
+            }
+        )
+
+    def clear_selected_status():
+        _core._server_connecting.difference_update(selected_status)
+        for name in selected_status:
+            _core._server_connect_errors.pop(name, None)
+            _core._server_scope_keys.pop(name, None)
 
     # Fast path: nothing to shut down. The connect-cooldown maps can still be populated here — a server that
     # failed to connect is never recorded in ``_servers`` (that is the very premise of the #50394 cooldown),
@@ -115,7 +133,8 @@ def shutdown_mcp_servers(*, scope: Optional[str] = None):
                 for name in selected:
                     _core._servers.pop(name, None)
                     _core._server_scope_keys.pop(name, None)
-                _clear_connect_cooldowns()
+                clear_selected_status()
+                _clear_connect_cooldowns(None if scope is None else selected_status)
 
         with _core._lock:
             loop = _core._mcp_loop
@@ -132,7 +151,9 @@ def shutdown_mcp_servers(*, scope: Optional[str] = None):
     # (a server that failed to connect is never in ``_servers`` — the most likely state for
     # stale backoff entries), no connect-cooldown state may survive shutdown.
     with _core._lock:
-        _clear_connect_cooldowns()
+        if not servers_snapshot:
+            clear_selected_status()
+        _clear_connect_cooldowns(None if scope is None else selected_status)
     _loop._stop_mcp_loop(only_if_idle=scope is not None)
 
 

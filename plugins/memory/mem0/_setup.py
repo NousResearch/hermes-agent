@@ -18,7 +18,6 @@ from typing import Any
 
 from hermes_constants import get_hermes_home  # noqa: F401 — patched by tests
 
-from . import _read_mem0_json
 from ._oss_providers import EMBEDDER_PROVIDERS, KNOWN_DIMS, LLM_PROVIDERS, SECTION_REGISTRIES, VECTOR_PROVIDERS, validate_oss_config
 
 _OLLAMA_URL = "http://localhost:11434"
@@ -170,6 +169,7 @@ def _persist_provider_config(hermes_home: str, config: dict, provider_config: di
 
 def _setup_platform(hermes_home: str, config: dict, flags: dict[str, str]) -> None:
     """Platform mode setup — prompts for API key (secret -> .env), user/agent ids and rerank (-> mem0.json)."""
+    from . import _read_mem0_json
     provider_config = _read_mem0_json(Path(hermes_home) / "mem0.json")
     print("\n  Configuring mem0:\n")
     env_writes = _api_key_writes(flags, "Mem0 Platform API key", url="https://app.mem0.ai")
@@ -205,6 +205,7 @@ def _check_selfhosted_server(host: str) -> None:
 
 def _setup_selfhosted(hermes_home: str, config: dict, flags: dict[str, str]) -> None:
     """Self-hosted mode — point at an existing Mem0 server: URL -> mem0.json, key -> .env (MEM0_API_KEY)."""
+    from . import _read_mem0_json
     provider_config = _read_mem0_json(Path(hermes_home) / "mem0.json")
     print("\n  Configuring mem0 (self-hosted server):\n")
     host = flags.get("host") or _prompt("Mem0 server URL (e.g. http://localhost:8888)", default=provider_config.get("host") or None)
@@ -237,6 +238,7 @@ def _print_oss_summary(oss_config: dict, env_writes: dict, dry_run: bool = False
 
 def _finish_oss(hermes_home: str, config: dict, oss_config: dict, env_writes: dict[str, str], user_id: str, agent_id: str, pgvector_config: dict | None = None) -> None:
     """Shared OSS tail: write secrets + mem0.json, install deps, activate, check, summarize."""
+    from . import _read_mem0_json
     if env_writes:
         _write_env(Path(hermes_home) / ".env", env_writes)
     config_path = Path(hermes_home) / "mem0.json"  # merge-write, plain text (platform path uses save_config's 0600 atomic write)

@@ -12,6 +12,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+from stat import S_ISREG
 from typing import Any, Dict, List, Optional, Tuple
 
 # User-message texts that are really injected context wrappers, not typed input.
@@ -108,7 +109,7 @@ def _message_turn(message: Any) -> Optional[Tuple[str, str]]:
 
 def _first_user_line(turns: List[Tuple[str, str]]) -> Optional[str]:
     for role, text in turns:
-        if role == "user" and (line := text.strip().splitlines()[0].strip()):
+        if role == "user" and (line := text.strip().partition("\n")[0].strip()):
             return line[:_TITLE_MAX * 2]
     return None
 
@@ -169,20 +170,33 @@ _SOURCES = {
 }
 
 
-def _list_sessions(source: str, root: Optional[Path]) -> List[ForeignSession]:
-    default_root, pattern, recursive, parse = _SOURCES[source]
-    root = Path(root) if root else Path.home().joinpath(*default_root)
-    results: List[ForeignSession] = []
-    for jsonl in sorted((root.rglob(pattern) if recursive else root.glob(pattern)) if root.is_dir() else ()):
+def _walk(source: str, root: Optional[Path] = None) -> List[Tuple[Path, os.stat_result]]:
+    """Regular log files of *source* under *root* (default ``~/<tool dir>``) as ``(path, stat)``,
+    newest first. Symlinks escaping the root and unreadable/rotated entries are skipped, so one
+    bad file never hides the rest. Shared by the CLI picker and the desktop browser."""
+    default_root, pattern, recursive, _ = _SOURCES[source]
+    root = (Path(root) if root else Path.home().joinpath(*default_root)).resolve()
+    found: List[Tuple[Path, os.stat_result]] = []
+    for path in (root.rglob(pattern) if recursive else root.glob(pattern)) if root.is_dir() else ():
         try:
-            mtime = jsonl.stat().st_mtime
+            resolved = path.resolve()
+            st = resolved.stat()
         except OSError:
             continue
-        parsed = parse(jsonl)
+        if resolved.is_relative_to(root) and S_ISREG(st.st_mode):
+            found.append((resolved, st))
+    found.sort(key=lambda item: item[1].st_mtime, reverse=True)
+    return found
+
+
+def _list_sessions(source: str, root: Optional[Path]) -> List[ForeignSession]:
+    parse = _SOURCES[source][3]
+    results: List[ForeignSession] = []
+    for path, st in _walk(source, root):
+        parsed = parse(path)
         if parsed["turns"]:
-            results.append(ForeignSession(source, jsonl, mtime, parsed["cwd"], parsed["title_guess"],
+            results.append(ForeignSession(source, path, st.st_mtime, parsed["cwd"], parsed["title_guess"],
                                           len(parsed["turns"]), parsed["session_id"]))
-    results.sort(key=lambda s: s.mtime, reverse=True)
     return results
 
 

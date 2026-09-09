@@ -56,7 +56,7 @@ def strip_cloned_single_use_oauth_grants(profile_dir: Path) -> Dict[str, Any]:
     "files": [...]}`` of what was stripped. Never raises: a clone must not fail because hygiene
     could not run — the caller logs the summary.
     """
-    from hermes_cli.auth import _save_auth_store
+    from hermes_cli.auth import _same_path, _save_auth_store
     stripped: Dict[str, Any] = {"pool": [], "providers": [], "files": []}
     profile_dir = Path(profile_dir)
     for name in SINGLE_USE_OAUTH_SINGLETON_FILES:
@@ -69,6 +69,19 @@ def strip_cloned_single_use_oauth_grants(profile_dir: Path) -> Dict[str, Any]:
             logger.debug("Could not remove cloned %s from %s", name, profile_dir, exc_info=True)
     auth_path = profile_dir / "auth.json"
     if not auth_path.is_file():
+        return stripped
+    # A profile auth.json that IS the shared root store (symlink / hardlink) is not a clone;
+    # stripping it would delete every profile's single-use grants. _is_same_auth_store swallows
+    # a samefile() OSError as "two stores", which here would fail OPEN — so resolve identity
+    # positively: same path, or samefile() says so; any error refuses.
+    try:
+        from hermes_constants import get_default_hermes_root
+        root_auth_path = get_default_hermes_root() / "auth.json"
+        if _same_path(auth_path, root_auth_path) or (
+            root_auth_path.exists() and auth_path.samefile(root_auth_path)
+        ):
+            return stripped
+    except Exception:
         return stripped
     try:
         store = json.loads(auth_path.read_text(encoding="utf-8-sig"))

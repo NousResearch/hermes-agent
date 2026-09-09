@@ -2883,7 +2883,7 @@ def _salvage_or_refuse_grown_transcript(
     return compressed, None
 
 
-def _parent_deliberately_ended(session_db: Any, session_id: str) -> bool:
+def _parent_deliberately_ended(session_db: Any, session_id: str, holder: Optional[str] = None) -> bool:
     """True when publish_compression_child() would fail closed on the parent's end stamp, so the
     durable pre-publish flush is skipped. The store owns the verdict (#106459): an explicit close with
     no continuation is stale, not deliberate. Fails OPEN: an unreadable row must not turn a cheap
@@ -2891,7 +2891,9 @@ def _parent_deliberately_ended(session_db: Any, session_id: str) -> bool:
     verdict = getattr(session_db, "compression_parent_deliberately_ended", None)
     if callable(verdict):
         try:
-            return bool(verdict(session_id))
+            # *holder* is this attempt's compression-lease holder: the store orders an explicit close
+            # against the lease acquisition to tell a stale stamp from a close made mid-compression.
+            return bool(verdict(session_id, holder=holder))
         except Exception:
             return False
     # Stores without the verdict (test stand-ins): taxonomy-only fallback.
@@ -2954,7 +2956,7 @@ def _publish_rotated_compaction(
     # The flush is durable and NOT rolled back on abort: a deliberately-ended parent
     # fails publish forever, so check that before writing. Automatic end stamps are
     # healed by publish (don't abort); the lease is re-acquirable (don't check it).
-    if _parent_deliberately_ended(agent._session_db, old_session_id):
+    if _parent_deliberately_ended(agent._session_db, old_session_id, holder=lease.holder):
         raise RuntimeError(f"Compression parent already ended: {old_session_id}")
     # Foreign-tail ceiling: the flush below writes OUR rows (already in handoff);
     # rows above the start watermark up to this MAX(id) are foreign appends.

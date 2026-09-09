@@ -652,7 +652,10 @@ def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, 
                 pass  # stat failed — fall through to full read
 
         file_ops = _get_file_ops(task_id)
-        result = file_ops.read_file(path, offset, limit)
+        # The resolved (task-scoped) path, not the raw operand: a shared backend instance's
+        # own cwd is unrelated to this task, so a relative operand must not be re-resolved
+        # against it downstream (#file_ops.read_file resolves relative paths itself).
+        result = file_ops.read_file(resolved_str, offset, limit)
         result_dict = result.to_dict()
 
         # Cache a not-found result for retries. Deliberately NO early return:

@@ -797,6 +797,15 @@ def _resolve_command_cwd(
             recorded, env_type, default_cwd,
         )
         return default_cwd
+    # A recorded session cwd predates the dispatcher assigning this process a Kanban task
+    # (e.g. a stable profile-owned snapshot from before the worker was spawned) and must not
+    # win over the worker's own workspace — same guard as the explicit-workdir branch above.
+    if not _is_container_backend(env_type):
+        from agent.runtime_cwd import resolve_kanban_worker_cwd
+
+        worker_cwd = resolve_kanban_worker_cwd(recorded)
+        if worker_cwd is not None:
+            return os.path.abspath(os.path.expanduser(worker_cwd))
     return recorded or default_cwd
 
 

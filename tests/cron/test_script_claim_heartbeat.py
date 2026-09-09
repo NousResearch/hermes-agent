@@ -528,22 +528,32 @@ def test_heartbeat_thread_start_failure_does_not_start_execution(monkeypatch):
     )
 
 
-def test_repeated_heartbeat_errors_cancel_after_bounded_grace(monkeypatch):
-    """Store uncertainty cannot let a run outlive its last confirmed lease forever."""
+@pytest.mark.parametrize("store_latency", [0.0, 0.04])
+def test_repeated_heartbeat_errors_cancel_after_bounded_grace(monkeypatch, store_latency):
+    """Store uncertainty cannot let a run outlive its last confirmed lease forever.
+
+    Advance a private monotonic clock on each failed renewal. Real scheduling
+    latency must not decide how many failures fit inside the grace period.
+    """
     import cron.scheduler as scheduler
-    from cron import scheduler_script as sched_script
 
     calls = 0
+    now = [0.0]
+    clock = MagicMock(wraps=time)
+    clock.monotonic.side_effect = lambda: now[0]
+    monkeypatch.setattr(scheduler, "time", clock)
 
     def heartbeat(*_args, **_kwargs):
         nonlocal calls
         calls += 1
         if calls == 1:
             return True
+        time.sleep(store_latency)
+        now[0] += 1.0
         raise OSError("store unavailable")
 
     def run_body(_job, **kwargs):
-        assert kwargs["fire_claim_lost"].wait(timeout=0.5)
+        assert kwargs["fire_claim_lost"].wait(timeout=1.0)
         return True
 
     job = {
@@ -552,11 +562,13 @@ def test_repeated_heartbeat_errors_cancel_after_bounded_grace(monkeypatch):
     }
     monkeypatch.setattr(scheduler, "heartbeat_fire_claim", heartbeat)
     monkeypatch.setattr(scheduler, "_run_one_job_body", run_body)
-    monkeypatch.setattr(scheduler, "_RUN_CLAIM_HEARTBEAT_SECONDS", 0.01)
-    monkeypatch.setattr(scheduler, "_FIRE_CLAIM_HEARTBEAT_GRACE_SECONDS", 0.03)
+    monkeypatch.setattr(scheduler, "_RUN_CLAIM_HEARTBEAT_SECONDS", 0.001)
+    monkeypatch.setattr(scheduler, "_FIRE_CLAIM_HEARTBEAT_GRACE_SECONDS", 3.0)
 
     assert scheduler.run_one_job(job) is True
-    assert calls >= 3
+    # Initial success, then failures at t=1, t=2, t=3: neither early nor late.
+    assert calls == 4
+    assert now[0] == 3.0
 
 
 def test_terminal_owner_cas_failure_marks_ledger_ownership_lost(monkeypatch):

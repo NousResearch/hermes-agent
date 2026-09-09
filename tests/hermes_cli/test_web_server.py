@@ -1350,8 +1350,8 @@ class TestWebServerEndpoints:
 
         calls = []
 
-        def fake_spawn(subcommand, name, *, env_overrides=None):
-            calls.append((subcommand, name, env_overrides))
+        def fake_spawn(subcommand, name, *, env_overrides=None, escape_cgroup=False):
+            calls.append((subcommand, name, env_overrides, escape_cgroup))
             return Proc()
 
         monkeypatch.setattr(_web_server_files, "_dashboard_local_update_managed_externally", lambda: False)
@@ -1371,7 +1371,7 @@ class TestWebServerEndpoints:
             "action_id": "a" * 32,
         }
         assert calls == [
-            (["update"], "hermes-update", {"HERMES_ACTION_ID": "a" * 32})
+            (["update"], "hermes-update", {"HERMES_ACTION_ID": "a" * 32}, True)
         ]
 
     def test_update_hermes_reuses_running_action(self, monkeypatch):

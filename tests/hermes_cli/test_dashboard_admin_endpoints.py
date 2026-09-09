@@ -1039,6 +1039,120 @@ def test_spawn_hermes_action_scrubs_gateway_loop_guard_env(monkeypatch, tmp_path
 
 
 # ---------------------------------------------------------------------------
+# _spawn_hermes_action cgroup escape for dashboard-triggered updates (#106592)
+# ---------------------------------------------------------------------------
+
+def _patched_spawn(monkeypatch, tmp_path):
+    """Isolate _spawn_hermes_action's module state and capture the Popen argv/env."""
+    import hermes_cli.web_server as ws
+
+    monkeypatch.setattr(_web_server_gateway, "_ACTION_LOG_DIR", tmp_path)
+    monkeypatch.setattr(_web_server_gateway, "_ACTION_PROCS", {})
+
+    captured = {}
+
+    class _FakeProc:
+        pid = 1234
+
+    def _fake_popen(cmd, **kwargs):
+        captured["cmd"] = cmd
+        captured["env"] = kwargs.get("env")
+        return _FakeProc()
+
+    monkeypatch.setattr(ws.subprocess, "Popen", _fake_popen)
+    return captured
+
+
+def test_spawn_hermes_action_escapes_cgroup_when_dashboard_is_systemd_managed(monkeypatch, tmp_path):
+    """A dashboard-triggered ``hermes update`` must not share the dashboard's own systemd
+    cgroup: the update's post-update phase restarts that unit, and ``KillMode=control-group``
+    would SIGKILL the update mid-run — before its ``finally`` block can finalize the receipt
+    or clear its markers (#106592)."""
+    captured = _patched_spawn(monkeypatch, tmp_path)
+    monkeypatch.setattr(_web_server_gateway, "_dashboard_is_systemd_managed", lambda: True)
+    monkeypatch.setattr(
+        _web_server_gateway, "_cgroup_escaped_argv_and_env",
+        lambda cmd, env: (["systemd-run", "--user", "--scope", "--quiet", "--collect", "--", *cmd],
+                           {**env, "DBUS_SESSION_BUS_ADDRESS": "unix:path=/fake/bus"}),
+    )
+
+    _web_server_gateway._spawn_hermes_action(
+        ["update"], "hermes-update", env_overrides={"HERMES_ACTION_ID": "a" * 32}, escape_cgroup=True,
+    )
+
+    assert captured["cmd"][:5] == ["systemd-run", "--user", "--scope", "--quiet", "--collect"]
+    assert captured["cmd"][-1] == "update"
+    assert captured["env"]["DBUS_SESSION_BUS_ADDRESS"] == "unix:path=/fake/bus"
+
+
+def test_spawn_hermes_action_skips_escape_when_dashboard_is_not_systemd_managed(monkeypatch, tmp_path):
+    """A dashboard NOT running as a systemd unit has nothing to escape from — the child must
+    spawn exactly as before, with no ``systemd-run`` wrapper."""
+    captured = _patched_spawn(monkeypatch, tmp_path)
+    monkeypatch.setattr(_web_server_gateway, "_dashboard_is_systemd_managed", lambda: False)
+
+    def _fail_if_called(cmd, env):
+        raise AssertionError("cgroup escape must not be attempted when not systemd-managed")
+
+    monkeypatch.setattr(_web_server_gateway, "_cgroup_escaped_argv_and_env", _fail_if_called)
+
+    _web_server_gateway._spawn_hermes_action(
+        ["update"], "hermes-update", env_overrides={"HERMES_ACTION_ID": "a" * 32}, escape_cgroup=True,
+    )
+
+    assert captured["cmd"][0] != "systemd-run"
+
+
+def test_spawn_hermes_action_default_does_not_escape_cgroup(monkeypatch, tmp_path):
+    """Every OTHER action (gateway start/stop, skills install, ...) keeps today's plain
+    spawn: only callers that opt in with ``escape_cgroup=True`` risk the extra hop."""
+    captured = _patched_spawn(monkeypatch, tmp_path)
+    monkeypatch.setattr(_web_server_gateway, "_dashboard_is_systemd_managed", lambda: True)
+
+    def _fail_if_called(cmd, env):
+        raise AssertionError("cgroup escape must not be attempted unless escape_cgroup=True")
+
+    monkeypatch.setattr(_web_server_gateway, "_cgroup_escaped_argv_and_env", _fail_if_called)
+
+    _web_server_gateway._spawn_hermes_action(["gateway", "restart"], "gateway-restart")
+
+    assert captured["cmd"][0] != "systemd-run"
+
+
+def test_cgroup_escaped_argv_wraps_command_when_scope_usable(monkeypatch):
+    """The real escape helper: when ``systemd-run --user --scope`` is usable, prefix the
+    command with it and merge in the reachable-bus env instead of dropping it."""
+    import tools.process_registry as _process_registry
+
+    monkeypatch.setattr(_process_registry, "_systemd_run_user_scope_available", lambda: True)
+    monkeypatch.setattr(
+        _process_registry, "systemd_user_bus_env", lambda env: {**env, "DBUS_SESSION_BUS_ADDRESS": "unix:path=/fake"},
+    )
+    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/systemd-run" if name == "systemd-run" else None)
+
+    cmd, env = _web_server_gateway._cgroup_escaped_argv_and_env(["python", "-m", "hermes_cli.main", "update"], {})
+
+    assert cmd == [
+        "/usr/bin/systemd-run", "--user", "--scope", "--quiet", "--collect", "--",
+        "python", "-m", "hermes_cli.main", "update",
+    ]
+    assert env["DBUS_SESSION_BUS_ADDRESS"] == "unix:path=/fake"
+
+
+def test_cgroup_escaped_argv_falls_back_when_scope_unusable(monkeypatch):
+    """No reachable user D-Bus session (common for system services/containers, #70716's exact
+    failure mode) must degrade to the plain command, not raise or hang the spawn."""
+    import tools.process_registry as _process_registry
+
+    monkeypatch.setattr(_process_registry, "_systemd_run_user_scope_available", lambda: False)
+
+    cmd, env = _web_server_gateway._cgroup_escaped_argv_and_env(["python", "-m", "hermes_cli.main", "update"], {"X": "1"})
+
+    assert cmd == ["python", "-m", "hermes_cli.main", "update"]
+    assert env == {"X": "1"}
+
+
+# ---------------------------------------------------------------------------
 # Desktop lifespan reaps orphan gateways at serve startup (#77276)
 # ---------------------------------------------------------------------------
 

@@ -201,13 +201,15 @@ ln -sf "$(pwd)/venv/bin/hermes" ~/.local/bin/hermes
 ### Run tests
 
 ```bash
-# Preferred — matches CI (hermetic `env -i`, per-file subprocess isolation
-# via run_tests_parallel.py, worker count auto-scaled); see AGENTS.md
+# The standard command — always use this, never bare `pytest`. It matches CI
+# exactly: hermetic `env -i`, credential vars unset, per-file subprocess
+# isolation via run_tests_parallel.py, worker count auto-scaled. A direct
+# `pytest` run with API keys set or shared process state has caused repeated
+# "works locally, fails in CI" incidents (and the reverse). See AGENTS.md.
 scripts/run_tests.sh
 
-# Alternative (activate the venv first). The wrapper is still recommended
-# for parity with GitHub Actions before you open a PR:
-pytest tests/ -v
+# Scoped runs (the runner is file-granular; -k / pytest flags pass through):
+scripts/run_tests.sh tests/hermes_cli/ -k model_switch
 ```
 
 ---
@@ -842,14 +844,31 @@ that touches the OS, assume *any* platform can hit your code path.
 
 ### Testing cross-platform
 
-Tests that excercise behavior on specific platforms must run on their target platforms.
+Behavior that genuinely depends on the operating system must be tested on that
+actual operating system. Mark such a test with exactly one of the canonical
+host-OS markers — the marker is what puts the file in that CI lane's import set
+(`scripts/ci/list_os_marked_tests.py`), and `tests/conftest.py` skips it on every
+other host:
 
 ```python
 @pytest.mark.linux_only
 @pytest.mark.macos_only
 @pytest.mark.windows_only
 ```
-Avoid monkeypatching `sys.platform` unless absolutely needed, but if you do, also patch `platform.system()` / `platform.release()` / `platform.mac_ver()`.
+
+Do **not** monkeypatch `sys.platform`, `platform.system()`, `platform.release()`,
+`platform.mac_ver()`, or any other process-global host identity to fake another
+OS. A faked run reports green over zero real coverage, and a bare
+`skipif(sys.platform != ...)` leaves the file out of the OS lane's import set
+entirely. If a test needs the interpreter to believe it is on another OS to pass,
+it belongs on that OS behind the marker above.
+
+For cross-platform *decision* logic, extract a pure function that takes the
+platform facts as ordinary arguments (`def choose(system: str, release: str) ->
+...`) and unit-test it with literal inputs on any host; keep the one call site
+that reads the real `platform.*` values thin and covered by a host-OS-marked test.
+See AGENTS.md, "Don't fake the host OS".
+
 Symlinks, 0o600 permissions, SIGALRM, os.setsid/fork are all unix-only.
 
 ---
@@ -937,7 +956,7 @@ refactor/description   # Code restructuring
 
 ### Before submitting
 
-1. **Run tests**: `scripts/run_tests.sh` (recommended; same as CI) or `pytest tests/ -v` with the project venv activated
+1. **Run tests**: `scripts/run_tests.sh` (the standard command — same as CI; never bare `pytest`)
 2. **Test manually**: Run `hermes` and exercise the code path you changed
 3. **Check cross-platform impact**: If you touch file I/O, process management, or terminal handling, consider macOS, Linux, and WSL2
 4. **Keep PRs focused**: One logical change per PR. Don't mix a bug fix with a refactor with a new feature.

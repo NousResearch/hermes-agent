@@ -8,6 +8,174 @@ Heading format: `## [NF-vX.Y.Z] — YYYY-MM-DD — hermes@<sha> (N behind upstre
 
 ---
 
+## [NF-v0.8.1] — 2026-09-08 — hermes@c076d653a2 (0 behind upstream/main — rebased onto origin/main)
+
+**`RUN-2026-09-08-005` — consolidated commit pass: two batches of small
+correctness fixes landed together in dependency order, one session.** These are
+the "reconciliation-corrections" batch (the handler-registration race + its
+review corrections, the shared Windows subprocess env, the `windows_only`
+discovery fix) and the "focused-correctness" batch (`HERMES_HOME`-aware worktree
+archive, cross-platform testing policy, record-aware log filtering) plus the
+remaining pre-existing local work (cron empty-map persist, model-guard
+fail-closed, voice comment, timezone-cache race). Each is its own commit with its
+own `CHG-`/`ERR-`. **PATCH** — fixes, test infra, docs; no new capability, no
+schema or engine change. Committed per-`CHG-` on local `main` on base
+`hermes@7ee2b69151`, then `git pull --rebase origin main` and pushed. Base
+coordinate stamped at the rebase.
+
+Opened + resolved same run: `ERR-2026-09-08-005`..`-011`. Opened and left **OPEN**
+(deliberately not fixed, its own item): `ERR-2026-09-08-012` (`nf-setup.ps1`
+null-`$LASTEXITCODE` → `"Provisioning failed (exit )"` — fails safe; access-tier
+code, escalated). `session_listing.py` sparse-match hardening was **scoped but not
+started** this run (read-only inspection only) — carried forward.
+
+Verification: targeted suites green — `test_hermes_logging` 28 pass / 1 skip / **2
+pre-existing fails** (`test_profile_routing_follows_context_home`,
+`test_managed_mode_initial_open_sets_group_writable` — managed-mode/Windows lane,
+reproduced on a clean tree, not from this work), `test_hermes_time_cache` 2,
+`test_bootstrap_launcher_hardening` 13, `test_nf_tier_enforcement` 30 (incl. the
+now-`windows_only` PS drive, executed on this win32 host), `test_worktree_gc` 17,
+`test_logs` 26, `test_jobs` 113, `test_auth_model_picker_guards` 4,
+`test_list_os_marked_tests` + `test_os_marker_gating` 13. A full
+`scripts/run_tests.sh` was started but stopped (it contends with concurrent git
+ops for the index lock, and the fork carries a large pre-existing failure baseline
+in `tests/acp/` / `tests/agent/**` unrelated to any file in this batch — 26 fails
+in the first ~9% before it was stopped, none in a changed file or a file importing
+a changed module).
+
+### Fixed
+
+- **CHG-2026-09-08-017** — **Queued-handler dedup + registration made atomic under
+  `_queue_state_lock`.** `hermes_logging._add_rotating_handler()` scanned
+  `_queued_file_handlers` for the resolved log path **outside** the lock, then
+  appended **inside** it — two `setup_logging()` callers on different threads
+  (gateway init vs a CLI/plugin path; `setup_logging` takes no lock and its
+  `_logging_initialized` guard runs after registration) could both pass the scan
+  and each append a live `RotatingFileHandler` for the same file (duplicate lines,
+  two fds, two handlers racing one rotation). Extracted `_handler_covers_path()`
+  (moved above `_register_queued_handler` per review); the pre-check now runs
+  under the lock, and `_register_queued_handler(handler, dedup_path=…)` re-checks
+  under the lock before appending — the register-or-not decision and the append
+  are one critical section via a `duplicate` flag, and the losing handler is
+  closed **after** the lock is released (thread-local, unreferenced). Also closes
+  a latent mutation-during-iteration race vs `enable_profile_log_routing()`.
+  `tests/test_hermes_logging.py::test_concurrent_add_for_same_path_registers_one_handler`
+  forces the interleave with a `Barrier`, runs the workers on a
+  `ThreadPoolExecutor` so a worker exception surfaces via `future.result()`.
+  Corrected per an independent review (lock scope; worker-exception visibility).
+  Paths: `hermes_logging.py`, `tests/test_hermes_logging.py`. Ref:
+  `ERR-2026-09-08-005`. Run: RUN-2026-09-08-005.
+
+- **CHG-2026-09-08-019** — **Worktree GC archives reclaimed scratch under
+  `HERMES_HOME`, not a hardcoded `~/.hermes`.** `worktree_gc._archive_untracked()`
+  copied untracked files out of a doomed tree to
+  `Path.home()/".hermes"/"archive"/"worktree-prune"`, ignoring the active
+  `HERMES_HOME` / profile / a managed or relocated home. Now
+  `get_hermes_home()/"archive"/"worktree-prune"/<tree>-<stamp>`
+  (`from hermes_constants import get_hermes_home`, stdlib-only). The copy loop, the
+  `None`-on-failure contract, and `reclaim_worktrees()`'s "archive is `None` ⇒ keep
+  the tree" fail-safe are unchanged. Test fixture (real git, no mocks) now sets
+  `HOME` / `USERPROFILE` / `HERMES_HOME` to three temp dirs; asserts the archive is
+  under `$HERMES_HOME`, **not** under `~/.hermes`, contents byte-identical, archive
+  precedes removal; new `test_archive_failure_keeps_worktree_and_files` (real
+  `mkdir` failure via `HERMES_HOME`→a file) proves the tree is kept and files
+  intact. Paths: `hermes_cli/worktree_gc.py`, `tests/hermes_cli/test_worktree_gc.py`.
+  Ref: `ERR-2026-09-08-007`. Run: RUN-2026-09-08-005.
+
+- **CHG-2026-09-08-021** — **Record-aware `hermes logs` filtering** (closes two
+  bugs with one implementation). `hermes logs -n N --level/--session/--component/--since`:
+  (A) the filtered path over-read only `max(N*20, 2000)` lines from the tail —
+  3 `ERROR` records behind 2001 `INFO` lines returned nothing; (B) per-line
+  filtering leaked a rejected record's continuation lines (level/since pass a
+  line with no header) and dropped a matched record's continuation lines
+  (session/component fail them). New `_iter_records()` groups `(header|None,
+  [lines])`; `_matches_filters()` runs on the **header** only; a record is kept or
+  dropped whole. Filtered `_read_tail` now **streams the whole file once**, keeping
+  the last N matching records in `deque(maxlen=N)` — O(N records) memory, scan
+  bounded by log rotation (default 5 MB); no repo session-count safety limit
+  exists and none was invented. Unfiltered path unchanged (plain last-N-lines
+  tail). New `_FollowFilter` gives `-f` the same record-inheritance. `-n N`
+  preserved as "the last N" — N raw lines unfiltered, N whole matching records
+  filtered (header never sliced); run header reads `last N matching`.
+  `web_routers/status.py::get_logs` (the other `_read_tail` caller) post-filters
+  and trims, unaffected. `+12` tests. Paths: `hermes_cli/logs.py`,
+  `tests/hermes_cli/test_logs.py`. Ref: `ERR-2026-09-08-008`. Run: RUN-2026-09-08-005.
+
+- **CHG-2026-09-08-022** — **`cron.load_jobs()` persists the canonical
+  `{"jobs": []}` shape even when the repaired list is empty.** The write-back guard
+  was `if jobs and repair:` — an empty legacy id-keyed map / bare list was
+  normalised in memory but never rewritten, so every load re-ran the repair path.
+  Now `if repair:`. `tests/cron/test_jobs.py`: the empty-map test asserts the file
+  is rewritten and a second load is idempotent. Paths: `cron/jobs.py`,
+  `tests/cron/test_jobs.py`. Ref: `ERR-2026-09-08-009`. Run: RUN-2026-09-08-005.
+
+- **CHG-2026-09-08-023** — **`auth_model_picker._confirm_selection_guards()` fails
+  closed on an unexpected guard-registry error.** It caught every exception from
+  `model_selection_guards` and treated it as "no warnings" — an unexpected error
+  silently let an unvetted model change through. Now a non-`ImportError` exception
+  is `logger.exception(…)`'d with context, the user is told the model was not
+  changed, and it returns `False`; `ImportError` (feature not built in) still
+  returns `True`. New `tests/hermes_cli/test_auth_model_picker_guards.py` (4).
+  Paths: `hermes_cli/auth_model_picker.py`,
+  `tests/hermes_cli/test_auth_model_picker_guards.py`. Ref: `ERR-2026-09-08-010`.
+  Run: RUN-2026-09-08-005.
+
+- **CHG-2026-09-08-025** — **`hermes_time.get_timezone()` retries when the cache
+  identity shifts mid-resolve.** It captured the cache identity, resolved the zone
+  name outside the lock (config I/O), then published `(name, tz)` under the
+  captured identity — a profile / `HERMES_TIMEZONE` switch during that I/O (now
+  genuinely concurrent under tier/pin) poisoned the pre-switch slot or returned
+  the wrong profile's zone. Now the resolve-and-publish is a loop that re-reads
+  `_timezone_cache_identity()` after the resolve and retries on a shift. New
+  `tests/test_hermes_time_cache.py` (2). Paths: `hermes_time.py`,
+  `tests/test_hermes_time_cache.py`. Ref: `ERR-2026-09-08-011`. Run: RUN-2026-09-08-005.
+
+### Changed
+
+- **CHG-2026-09-08-024** — **`hermes_cli/voice.py` — comment-only.**
+  `normalize_voice_record_key_for_prompt_toolkit()`'s existing
+  `else _DEFAULT_PT_KEY` fallback for an unknown multi-char key token was
+  under-explained; the comment now names the `test_voice_wrapper` case
+  (`format_voice_record_key_for_status("ctrl+spcae")`) that pins it. No behaviour
+  change. Paths: `hermes_cli/voice.py`. Ref: —. Run: RUN-2026-09-08-005.
+
+### Documentation
+
+- **CHG-2026-09-08-020** — **`CONTRIBUTING.md` cross-platform testing policy.**
+  "Run tests": mandate `scripts/run_tests.sh`, never bare `pytest` (records the
+  "works locally / fails in CI" history), plus a scoped-run example. "Testing
+  cross-platform": `excercise`→`exercise`; state that OS-dependent behaviour must
+  be tested on that actual OS behind one canonical host-OS marker
+  (`linux_only`/`macos_only`/`windows_only`), and that the marker is what puts the
+  file in the CI lane's import set (`scripts/ci/list_os_marked_tests.py`) while
+  `conftest` skips it off-host; **remove** the "if you monkeypatch `sys.platform`,
+  also patch `platform.system()`/`.release()`/`.mac_ver()`" advice, replace with a
+  hard prohibition on faking process-global host identity; add: extract a pure
+  decision function taking platform facts as args and keep the real `platform.*`
+  call site thin behind a marked test. Paths: `CONTRIBUTING.md`. Ref: —. Run:
+  RUN-2026-09-08-005.
+
+### Test infrastructure
+
+- **CHG-2026-09-08-018** — **Shared `minimal_windows_subprocess_env()`; `nf-setup.ps1`
+  drive test marked `@pytest.mark.windows_only`.** `tests/test_nf_tier_enforcement.py`
+  gated its `nf-setup.ps1` integration test with a module-level
+  `_WINDOWS_ONLY = skipif(sys.platform != "win32")`; `scripts/ci/list_os_marked_tests.py`
+  scopes the CI Windows lane's import set by whole-word match on `windows_only`, so
+  a bare `skipif` never matched and the file was **not imported by the Windows
+  lane** — the test effectively never ran in CI (`ERR-2026-09-08-006`). Replaced
+  with `@pytest.mark.windows_only` (`conftest` still skips off-`win32`); the file
+  now appears in the lane list. Separately, the `_minimal_win_env()` helper that
+  existed verbatim in two test files is promoted to
+  `tests/_windows_env.py::minimal_windows_subprocess_env()` (identical body +
+  fallback semantics); both files import it, and the now-unused `import os` is
+  removed from `tests/test_bootstrap_launcher_hardening.py`. Test-only;
+  `scripts/nf-setup.ps1` unchanged. Paths: `tests/_windows_env.py`,
+  `tests/test_nf_tier_enforcement.py`, `tests/test_bootstrap_launcher_hardening.py`.
+  Ref: `ERR-2026-09-08-006`. Run: RUN-2026-09-08-005.
+
+---
+
 ## [NF-v0.8.0] — 2026-09-08 — hermes@c076d653a2 (0 behind upstream/main — rebased onto origin/main)
 
 **`RUN-2026-09-08-004` — full hygiene / cleanup pass + a second Codex

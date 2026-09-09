@@ -57,7 +57,189 @@ in [`README.md`](../README.md). Severity: **CRITICAL** · **HIGH** · **MEDIUM**
 
 ---
 
+### ERR-2026-09-08-012 — LOW — `nf-setup.ps1` reports `Provisioning failed (exit )` when `$LASTEXITCODE` is null
+
+- **Opened:** 2026-09-08 · **Base:** hermes@7ee2b69151 (0 behind upstream/main)
+- **Run:** RUN-2026-09-08-005
+- **Source:** surfaced fixing `tests/test_nf_tier_enforcement.py::test_nf_setup_ps1_provisions_and_survives_stderr`
+  (`CHG-2026-09-08-018`) — the test failed under `scripts/run_tests.sh`'s `env -i`
+  until an explicit Windows env was passed.
+- **What:** `scripts/nf-setup.ps1`'s `Invoke-NfTier` / `Invoke-Hermes` do
+  `$script:NfExit = $LASTEXITCODE` after `& $pyExe …`. If the child never
+  launches (bad `$pyExe`, AV block, or — the test case — a PowerShell that cannot
+  spawn any child because `PATH`/`SystemRoot`/`ComSpec` are unset), `$LASTEXITCODE`
+  keeps its prior value, which can be `$null`. `if ($script:NfExit -ne 0)` then
+  fires (`$null -ne 0` is true) and the script prints `Provisioning failed
+  (exit )` with an empty code.
+- **Confidence:** Confirmed Fact — reproduced this run.
+- **Exposure / impact:** **Fails safe** — it reports failure and writes no
+  provisioning record; the message is just uninformative. Access-tier code, so
+  not self-fixed (ledger Agent-Conduct rule). Never observed in a real operator
+  shell (all of cmd / Explorer / Task Scheduler / the Tauri installer pass a full
+  environment).
+- **Status:** OPEN
+- **Required action:** coerce a null `$LASTEXITCODE` to a non-zero code with a
+  clear message (`$script:NfExit = if ($null -eq $LASTEXITCODE) { 1 } else { $LASTEXITCODE }`,
+  or check `$?`). Its own change, not to be folded into a test-only fix. Owner /
+  next tier-logic pass.
+
+---
+
 ## Resolved
+
+### ERR-2026-09-08-011 — MEDIUM — `hermes_time.get_timezone()` can publish a zone under a stale cache identity
+
+- **Opened:** 2026-09-08 · **Base:** hermes@7ee2b69151 (0 behind upstream/main)
+- **Run:** RUN-2026-09-08-005 (opened + resolved same run)
+- **Source:** upstream code-quality review (coordinator batch).
+- **What:** `get_timezone()` captures `_timezone_cache_identity()`, resolves the
+  zone name **outside** `_cache_lock` (config file I/O), then
+  `_tz_cache.setdefault(identity, (name, tz))` under the captured identity. A
+  profile / `HERMES_TIMEZONE` switch landing during the resolve — genuinely
+  concurrent now that tier/pin gives the gateway and the dashboard separate
+  profile contexts — publishes this profile's zone under the pre-switch identity
+  (poisoning that slot) or hands it back for the wrong profile.
+- **Confidence:** Field-Reasoned — the race window is in the code; not
+  reproduced live (timing), but the new regression test drives the exact
+  interleave with a patched resolver.
+- **Exposure / impact:** wrong timezone shown for a profile in a multiplexed
+  process (gateway + dashboard). Not shipped before this fork.
+- **Status:** RESOLVED
+- **Resolved:** 2026-09-08 — `get_timezone()` re-reads `_timezone_cache_identity()`
+  after the resolve and retries on a shift instead of publishing a mismatched
+  pair. `tests/test_hermes_time_cache.py` (2). Resolving change: `CHG-2026-09-08-025`.
+
+### ERR-2026-09-08-010 — MEDIUM — Model-selection guard fails **open** on an unexpected registry error
+
+- **Opened:** 2026-09-08 · **Base:** hermes@7ee2b69151 (0 behind upstream/main)
+- **Run:** RUN-2026-09-08-005 (opened + resolved same run)
+- **Source:** upstream code-quality review (coordinator batch).
+- **What:** `hermes_cli/auth_model_picker._confirm_selection_guards()` wrapped the
+  whole `model_selection_guards` call in `except Exception: warnings = []` — an
+  unexpected guard-registry error was indistinguishable from "no warnings fired",
+  so an unvetted model change was saved silently.
+- **Confidence:** Confirmed Fact — the swallow is in the code; new test drives a
+  raising `selection_warnings`.
+- **Exposure / impact:** a cost / data-policy guard failing to load would let a
+  flagged model through the post-login picker with no prompt. Not shipped before
+  this fork.
+- **Status:** RESOLVED
+- **Resolved:** 2026-09-08 — a non-`ImportError` exception is logged with context
+  and returns `False` (model unchanged, user told to check the log);
+  `ImportError` (feature absent from the build) still returns `True`.
+  `tests/hermes_cli/test_auth_model_picker_guards.py` (4). Resolving change:
+  `CHG-2026-09-08-023`.
+
+### ERR-2026-09-08-009 — LOW — `cron.load_jobs()` never persists an empty repaired jobs map
+
+- **Opened:** 2026-09-08 · **Base:** hermes@7ee2b69151 (0 behind upstream/main)
+- **Run:** RUN-2026-09-08-005 (opened + resolved same run)
+- **Source:** upstream code-quality review (coordinator batch).
+- **What:** the write-back guard was `if jobs and repair:` — a legacy id-keyed map
+  or bare list that repairs to an **empty** canonical list was read fine in memory
+  but never rewritten, so every `load_jobs()` re-ran the repair path forever.
+- **Confidence:** Confirmed Fact — reproduced by the extended test.
+- **Exposure / impact:** cosmetic + a small repeated cost; no data loss. Upstream
+  latent bug.
+- **Status:** RESOLVED
+- **Resolved:** 2026-09-08 — guard changed to `if repair:`; the file is rewritten
+  to `{"jobs": []}` and the next load is idempotent. `tests/cron/test_jobs.py`
+  extended. Resolving change: `CHG-2026-09-08-022`.
+
+### ERR-2026-09-08-008 — MEDIUM — `hermes logs` filtering misses sparse matches and mishandles multiline records
+
+- **Opened:** 2026-09-08 · **Base:** hermes@7ee2b69151 (0 behind upstream/main)
+- **Run:** RUN-2026-09-08-005 (opened + resolved same run)
+- **Source:** upstream code-quality review (coordinator batch) — same failure
+  shape as the already-fixed log-filtering sparse-match bug lineage.
+- **What:** two bugs, one root shape (per-line filter over a fixed recent window):
+  **(A)** the filtered path over-read only `max(N*20, 2000)` lines from the tail —
+  3 `ERROR` records behind 2001 `INFO` lines ⇒ `hermes logs -n 2 --level ERROR`
+  returned nothing; **(B)** filtering ran per line, so a continuation line
+  (traceback frame / wrapped text, no level or timestamp) **passed** `--level` /
+  `--since` (a rejected record's traceback leaked) and **failed** `--session` /
+  `--component` (a matched record's traceback was dropped).
+- **Confidence:** Confirmed Fact — both reproduced by new tests.
+- **Exposure / impact:** `hermes logs` / the dashboard `/api/logs` view could hide
+  the very ERROR the operator is looking for, or show noise from rejected records.
+  Upstream latent bug.
+- **Status:** RESOLVED
+- **Resolved:** 2026-09-08 — `_iter_records()` groups a timestamped header with its
+  continuation lines; `_matches_filters()` runs on the header only; a record is
+  kept/dropped whole. Filtered `_read_tail` streams the whole file once, last N
+  matching records in `deque(maxlen=N)` (O(N) memory, rotation-bounded scan). New
+  `_FollowFilter` gives `-f` the same inheritance. `+12` tests. Resolving change:
+  `CHG-2026-09-08-021`.
+
+### ERR-2026-09-08-007 — MEDIUM — Worktree GC archives reclaimed scratch to a hardcoded `~/.hermes`
+
+- **Opened:** 2026-09-08 · **Base:** hermes@7ee2b69151 (0 behind upstream/main)
+- **Run:** RUN-2026-09-08-005 (opened + resolved same run)
+- **Source:** upstream code-quality review (coordinator batch).
+- **What:** `hermes_cli/worktree_gc._archive_untracked()` copied untracked scratch
+  out of a doomed worktree to `Path.home()/".hermes"/"archive"/"worktree-prune"`,
+  ignoring `HERMES_HOME` / the active profile / a managed or relocated home.
+- **Confidence:** Confirmed Fact.
+- **Exposure / impact:** on a non-default `HERMES_HOME` the reclaimed files land
+  where nothing looks for them; the tree is still removed, so the operator's only
+  copy is somewhere unexpected (not lost — the copy succeeds). Upstream latent bug.
+- **Status:** RESOLVED
+- **Resolved:** 2026-09-08 — `dest = get_hermes_home()/"archive"/"worktree-prune"/…`.
+  Fail-safe unchanged (`None` ⇒ keep the tree). Test fixture split `HOME` /
+  `HERMES_HOME`; `+1` test for the archive-failure path. Resolving change:
+  `CHG-2026-09-08-019`.
+
+### ERR-2026-09-08-006 — MEDIUM — `nf-setup.ps1` drive test invisible to the CI Windows lane
+
+- **Opened:** 2026-09-08 · **Base:** hermes@7ee2b69151 (0 behind upstream/main)
+- **Run:** RUN-2026-09-08-005 (opened + resolved same run)
+- **Source:** manual observation while consolidating the shared Windows test env.
+- **What:** `tests/test_nf_tier_enforcement.py` gated its `nf-setup.ps1`
+  integration test with a module-level
+  `_WINDOWS_ONLY = pytest.mark.skipif(sys.platform != "win32", …)`.
+  `scripts/ci/list_os_marked_tests.py` scopes the Windows lane's import set by
+  **whole-word, case-sensitive** match on `windows_only`; `_WINDOWS_ONLY` / the
+  `skipif` never matched, so the lane never imported the file and the test never
+  ran there.
+- **Confidence:** Confirmed Fact — `list_os_marked_tests.py windows_only` did not
+  list the file before, does after.
+- **Exposure / impact:** silent zero coverage of the `nf-setup.ps1` /
+  `nf_tier` provisioning drive on the one lane that could run it. No wrong
+  behaviour shipped; a real regression there would have passed CI.
+- **Status:** RESOLVED
+- **Resolved:** 2026-09-08 — the alias is deleted; the test is
+  `@pytest.mark.windows_only` (`conftest.pytest_collection_modifyitems` still
+  skips it off-`win32`). File now appears in the lane list; executed green on this
+  win32 host. Resolving change: `CHG-2026-09-08-018`.
+
+### ERR-2026-09-08-005 — MEDIUM — `hermes_logging` handler-registration check-then-append race
+
+- **Opened:** 2026-09-08 · **Base:** hermes@7ee2b69151 (0 behind upstream/main)
+- **Run:** RUN-2026-09-08-005 (opened + resolved same run) · reviewed independently
+  before landing.
+- **Source:** upstream code-quality review (coordinator batch).
+- **What:** `hermes_logging._add_rotating_handler()` scanned
+  `_queued_file_handlers` for a handler already writing the resolved log path
+  **outside** `_queue_state_lock`, then appended **inside** it. `setup_logging()`
+  takes no lock and its `_logging_initialized` guard runs *after* registration, so
+  two callers on different threads (gateway init vs a CLI/plugin path) could both
+  pass the scan and each append a live `RotatingFileHandler` for the same file.
+- **Confidence:** Confirmed Fact — the unlocked check-then-act is in the code; new
+  test forces the interleave with a `Barrier` and asserts one handler + one
+  closed loser.
+- **Exposure / impact:** duplicate log lines, two open fds on one file, and two
+  handlers independently deciding to roll it — worst on Windows. Also a latent
+  mutation-during-iteration hazard vs `enable_profile_log_routing()`. Upstream
+  latent bug.
+- **Status:** RESOLVED
+- **Resolved:** 2026-09-08 — `_handler_covers_path()` extracted; the pre-check runs
+  under the lock and `_register_queued_handler(handler, dedup_path=…)` re-checks
+  under the lock — decision + append are one critical section, loser closed after
+  the lock is released. `tests/test_hermes_logging.py` +1 concurrency test
+  (`ThreadPoolExecutor` so worker exceptions surface). Resolving change:
+  `CHG-2026-09-08-017`.
+
+
 
 ### ERR-2026-09-08-004 — MEDIUM — `editions/penny-pincher` persona oversells what it does
 
@@ -509,3 +691,11 @@ in [`README.md`](../README.md). Severity: **CRITICAL** · **HIGH** · **MEDIUM**
 | ERR-2026-09-08-002 | 2026-09-08 | MEDIUM | Installer / bootstrap tooling | Codex PC-2026-09-08-002/003: `apps/bootstrap-installer` Rust backend fed a frontend `repoRoot` straight to bootstrap (no re-check it's a real checkout, not the system drive); multi-drive autodetect returned the first match | RESOLVED | CHG-2026-09-08-014 — one shared `repo::validate_target` gate used by the picker **and** `run_bootstrap` pre-spawn; autodetect only when the global checkout count is exactly 1, else force a pick + disable Install. `+8` Rust tests |
 | ERR-2026-09-08-003 | 2026-09-08 | HIGH | Edition content | Codex PC-2026-09-08-004: `editions/pine-barron-farms/SOUL.md` says "I follow the loaded canon packet" but nothing loaded `canon/PINE_BARRON_FARMS_CANON.md` | RESOLVED | CHG-2026-09-08-015 — `canon/load_canon.py` (receipt: path + sha256 + bytes, or a not-found warning) loaded via a SOUL-mandated session-start command + the new `skills/pbf-canon/` skill; no engine change. `tests/test_pbf_canon_loader.py` (6, incl. an assembled-context proof) |
 | ERR-2026-09-08-004 | 2026-09-08 | MEDIUM | Edition content | Codex PC-2026-09-08-005: `editions/penny-pincher/SOUL.md` oversells ("I hold the running picture", "tracking bills") — no ledger mechanism exists; affordability answers didn't name what they omit | RESOLVED | CHG-2026-09-08-016 — wording only (per PC scope): "I write it down", "no bank connection / no ledger of its own", affordability answers always state what's missing. README matched |
+| ERR-2026-09-08-005 | 2026-09-08 | MEDIUM | Logging | `hermes_logging._add_rotating_handler()` checks `_queued_file_handlers` outside `_queue_state_lock`, appends inside it — two `setup_logging()` threads can each register a `RotatingFileHandler` for one file (dup lines, two fds, racing rotation) | RESOLVED | CHG-2026-09-08-017 — `_handler_covers_path()` extracted; pre-check under the lock, `_register_queued_handler(dedup_path=…)` re-checks under the lock (decision+append one critical section), loser closed after release. +1 concurrency test |
+| ERR-2026-09-08-006 | 2026-09-08 | MEDIUM | Test infra / CI | `tests/test_nf_tier_enforcement.py` gated its `nf-setup.ps1` drive with a bare `_WINDOWS_ONLY = skipif(...)`; `scripts/ci/list_os_marked_tests.py` matches `windows_only` whole-word, so the Windows lane never imported the file — the test never ran in CI | RESOLVED | CHG-2026-09-08-018 — `@pytest.mark.windows_only` (conftest still skips off-win32); file now in the lane list, executed green on this win32 host |
+| ERR-2026-09-08-007 | 2026-09-08 | MEDIUM | Worktree GC | `worktree_gc._archive_untracked()` writes reclaimed untracked scratch to a hardcoded `~/.hermes/archive/worktree-prune`, ignoring `HERMES_HOME` / profile / managed home | RESOLVED | CHG-2026-09-08-019 — `dest = get_hermes_home()/"archive"/"worktree-prune"/…`; fail-safe unchanged; fixture splits HOME/HERMES_HOME; +1 archive-failure test |
+| ERR-2026-09-08-008 | 2026-09-08 | MEDIUM | `hermes logs` | (A) filtered path over-reads only `max(N*20,2000)` tail lines → a match behind a wall of non-matches is missed; (B) per-line filter leaks a rejected record's continuation lines and drops a matched record's | RESOLVED | CHG-2026-09-08-021 — `_iter_records()` groups header+continuations; filter on header only; filtered `_read_tail` streams whole file, `deque(maxlen=N)`; `_FollowFilter` for `-f`. +12 tests |
+| ERR-2026-09-08-009 | 2026-09-08 | LOW | Cron | `cron.load_jobs()` guard `if jobs and repair:` — an empty legacy map repairs in memory but is never rewritten, so every load re-runs the repair path | RESOLVED | CHG-2026-09-08-022 — `if repair:`; file rewritten to `{"jobs": []}`, next load idempotent. Test extended |
+| ERR-2026-09-08-010 | 2026-09-08 | MEDIUM | CLI / model select | `auth_model_picker._confirm_selection_guards()` `except Exception: warnings = []` — a guard-registry error is indistinguishable from "no warnings", so a flagged model is saved silently | RESOLVED | CHG-2026-09-08-023 — non-`ImportError` → log + `False` (model unchanged); `ImportError` still `True`. +4 tests |
+| ERR-2026-09-08-011 | 2026-09-08 | MEDIUM | Timezone cache | `hermes_time.get_timezone()` publishes `(name, tz)` under a cache identity captured before the outside-lock resolve; a profile / `HERMES_TIMEZONE` switch mid-resolve poisons the slot or returns the wrong profile's zone | RESOLVED | CHG-2026-09-08-025 — re-read the identity after the resolve, retry on a shift. +2 tests |
+| ERR-2026-09-08-012 | 2026-09-08 | LOW | Access-tier tooling | `scripts/nf-setup.ps1` `$script:NfExit = $LASTEXITCODE` can be `$null` if `& $pyExe` never launches → `if ($script:NfExit -ne 0)` fires → `Provisioning failed (exit )`. Fails safe (no record written); message uninformative | OPEN | — (do not fix here — access-tier code; coerce null→nonzero in a dedicated change) |

@@ -816,6 +816,9 @@ class TestBackgroundReviewDeleteGate:
         finally:
             reset_current_write_origin(token)
         assert result["staged"] is True
+        assert result["proposal_staged"] is True
+        # The notification names BOTH restricted operations, not just "delete".
+        assert "replace or remove" in result["message"]
         # Atomic: the batch is only a proposal — its add must not land either.
         assert "fork consolidation" not in store._entries_for("memory")
 

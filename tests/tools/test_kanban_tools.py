@@ -179,6 +179,32 @@ def _make_git_repo(root: "os.PathLike") -> str:
     return repo
 
 
+def _make_git_repo_with_origin(root: "os.PathLike") -> tuple[str, str]:
+    """Create a repo with an ``origin`` remote (a local bare) and a pushed base
+    commit on ``main``. Returns ``(repo, bare)``."""
+    bare = os.path.join(str(root), "remote.git")
+    os.makedirs(bare, exist_ok=True)
+    subprocess.run(["git", "init", "--bare", "-q", bare], check=True)
+    repo = os.path.join(str(root), "repo")
+    os.makedirs(repo, exist_ok=True)
+
+    def git(*args, **kw):
+        return subprocess.run(
+            ["git"] + list(args), cwd=repo, capture_output=True, text=True, **kw
+        )
+
+    git("init", "-q")
+    git("config", "user.email", "t@t.t")
+    git("config", "user.name", "t")
+    git("remote", "add", "origin", bare)
+    with open(os.path.join(repo, "base.txt"), "w") as fh:
+        fh.write("base\n")
+    git("add", ".")
+    git("commit", "-q", "-m", "base")
+    git("push", "-q", "-u", "origin", "main")
+    return repo, bare
+
+
 def test_complete_rejected_when_workspace_dirty(worker_env, tmp_path, monkeypatch):
     """Post-mortem 2026-09-07 (card t_6c39e36f): a worker whose HERMES_KANBAN_WORKSPACE
     points into a git repo but whose working tree holds uncommitted edits MUST NOT
@@ -289,6 +315,50 @@ def test_git_porcelain_raises_on_nonzero_status(tmp_path, monkeypatch):
     )
     with pytest.raises(kt.GitVerifyUnavailable):
         kt._git_porcelain("/some/top")
+
+
+def test_git_gate_rejects_unpushed_head_without_commits(worker_env, tmp_path, monkeypatch):
+    """P1-3 regression: a worker that committed but did NOT push must be refused
+    even when it omits metadata.commits (the old gate let 'clean tree + absent
+    commits' through, so `git commit` without `git push` reached `done`)."""
+    from tools import kanban_tools as kt
+
+    repo, _bare = _make_git_repo_with_origin(tmp_path)
+    monkeypatch.setenv("HERMES_KANBAN_WORKSPACE", repo)
+    monkeypatch.setenv("HERMES_KANBAN_BRANCH", "main")
+    # An unpushed commit: the tree is clean, but HEAD is ahead of origin/main.
+    with open(os.path.join(repo, "extra.txt"), "w") as fh:
+        fh.write("unpushed\n")
+    subprocess.run(["git", "add", "."], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "unpushed"], cwd=repo,
+                   capture_output=True, text=True, check=True)
+
+    rejection = kt._git_verified_completion_rejection(
+        os.environ["HERMES_KANBAN_WORKSPACE"],
+        os.environ["HERMES_KANBAN_BRANCH"],
+        {"files": 1},
+    )
+    assert rejection is not None
+    assert "push" in rejection.lower() or "origin" in rejection.lower()
+
+
+def test_git_gate_allows_pushed_head_without_commits(worker_env, tmp_path, monkeypatch):
+    """A clean tree whose HEAD is already on origin is a valid 'no_change'
+    completion even with no metadata.commits declared."""
+    from tools import kanban_tools as kt
+
+    repo, _bare = _make_git_repo_with_origin(tmp_path)
+    monkeypatch.setenv("HERMES_KANBAN_WORKSPACE", repo)
+    monkeypatch.setenv("HERMES_KANBAN_BRANCH", "main")
+
+    rejection, receipt = kt._git_gate_verdict(
+        os.environ["HERMES_KANBAN_WORKSPACE"],
+        os.environ["HERMES_KANBAN_BRANCH"],
+        {"files": 1},
+    )
+    assert rejection is None
+    assert receipt is not None
+    assert receipt["kind"] == "no_change"
 
 
 def test_complete_goal_mode_rejected_by_judge(monkeypatch, tmp_path):

@@ -2596,11 +2596,33 @@ class ArtifactPreservationError(RuntimeError):
     """Raised when a declared scratch deliverable cannot be preserved."""
 
 
+# Typed git-verified completion receipts (see tools/kanban_tools.py). The worker
+# tool path computes one of these and hands it to ``complete_task``; a repo-backed
+# (worktree) task completed by its run owner must carry one. This is the single
+# source of truth for the receipt "kind" vocabulary.
+GIT_RECEIPT_VERIFIED_PUSH = "verified_push"
+GIT_RECEIPT_NO_CHANGE = "no_change"
+GIT_RECEIPT_NO_ORIGIN = "no_origin"
+GIT_RECEIPT_KINDS = (GIT_RECEIPT_VERIFIED_PUSH, GIT_RECEIPT_NO_CHANGE, GIT_RECEIPT_NO_ORIGIN)
+
+
+def _is_valid_git_receipt(receipt) -> bool:
+    """True when ``receipt`` is a typed git-verified completion receipt."""
+    return isinstance(receipt, dict) and receipt.get("kind") in GIT_RECEIPT_KINDS
+
+
+class GitReceiptRequiredError(RuntimeError):
+    """``complete_task`` refused: a repo-backed (worktree) task was completed by
+    its run owner without the git-verified receipt the completion gate requires
+    (P1-3 fail-closed). A ``RuntimeError`` so tool error handlers treat it as
+    recoverable, like ``ArtifactPreservationError``."""
+
+
 def complete_task(
     conn: sqlite3.Connection, task_id: str, *, result: Optional[str] = None,
     summary: Optional[str] = None, metadata: Optional[dict] = None,
     created_cards: Optional[Iterable[str]] = None, expected_run_id: Optional[int] = None,
-    fire_lifecycle_hook: bool = True, force: bool = False,
+    git_receipt: Optional[dict] = None, fire_lifecycle_hook: bool = True, force: bool = False,
 ) -> bool:
     """``running|ready|blocked|review -> done``; records ``result``.
 
@@ -2611,6 +2633,9 @@ def complete_task(
     ``created_cards`` are verified first — a phantom id raises
     :class:`HallucinatedCardsError` after an auditable event; afterwards the
     prose is scanned for unresolvable ``t_<hex>`` refs (advisory event only).
+    ``git_receipt`` is the typed proof from the git-verified completion gate; a
+    repo-backed (``worktree``) task completed by its run owner without one is
+    refused (:class:`GitReceiptRequiredError`) unless ``force`` is set.
     """
     now = int(time.time())
     # Cheap pre-check; re-checked inside the txn to close the parent-reopen race.
@@ -2622,6 +2647,13 @@ def complete_task(
         conn, task_id, metadata, summary=summary, result=result,
     )
     handoff_summary = summary if summary is not None else result
+    # P1-3 fail-closed backstop at the mutation boundary: a repo-backed
+    # (worktree) task closed by its run owner must carry the git-verified
+    # receipt the worker tool path computes. This catches direct callers that
+    # bypass the tool-layer gate. Human CLI / orchestrator / dashboard closes
+    # (expected_run_id is None) and force= are exempt.
+    if not force and expected_run_id is not None:
+        _require_git_receipt(conn, task_id, git_receipt)
     acceptance = prepare_acceptance(conn, task_id, expected_run_id, metadata)
     if acceptance is False:
         return False
@@ -2684,6 +2716,10 @@ def complete_task(
             _completed_event_payload(result, event_summary, verified_cards, metadata),
             run_id=run_id,
         )
+        if git_receipt is not None:
+            # Durable, independently-auditable record of what the gate verified
+            # (the notifier / reviewer can read this back without re-running git).
+            _append_event(conn, task_id, "git_receipt", git_receipt, run_id=run_id)
     _flag_phantom_prose_refs(conn, task_id, run_id, summary, result, verified_cards)
     # Success wipes the breaker counter (history stays on the event log).
     _clear_failure_counter(conn, task_id)
@@ -2693,6 +2729,33 @@ def complete_task(
     if fire_lifecycle_hook:
         _fire_task_hook("kanban_task_completed", _done_task, task_id, run_id, summary=handoff_summary)
     return True
+
+
+def _require_git_receipt(conn: sqlite3.Connection, task_id: str, git_receipt: Optional[dict]) -> None:
+    """Fail closed when a repo-backed worktree task lacks its git receipt.
+
+    Runs before the main write txn so a refusal leaves task state untouched; the
+    auditable event is recorded in its own tiny txn, mirroring
+    :func:`_gate_created_cards`.
+    """
+    row = conn.execute(
+        "SELECT workspace_kind FROM tasks WHERE id = ?", (task_id,),
+    ).fetchone()
+    if row is None or row[0] != "worktree":
+        return  # not a repo-backed worktree -> not gated
+    if _is_valid_git_receipt(git_receipt):
+        return
+    with write_txn(conn):
+        _append_event(
+            conn, task_id, "completion_blocked_git_receipt",
+            {"workspace_kind": row[0]},
+        )
+    raise GitReceiptRequiredError(
+        f"completion blocked: task {task_id} is a repo-backed worktree and was "
+        f"completed without the git-verified receipt the completion gate requires. "
+        f"Complete via kanban_complete (which computes the receipt), or pass "
+        f"force=True for a deliberate override."
+    )
 
 
 _REVIEW_APPROVED_NOTE = "Review approved without additional evidence."

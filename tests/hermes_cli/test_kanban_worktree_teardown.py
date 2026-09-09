@@ -180,6 +180,7 @@ def test_complete_task_reaps_clean_worktree(kanban_home: Path, repo: Path) -> No
         assert claim is not None
         assert kb.complete_task(
             conn, tid, summary="done", expected_run_id=claim.current_run_id,
+            git_receipt={"kind": "no_origin"},
         )
     assert not wt.exists()
     assert not _branch_exists(repo, f"wt/{tid}")
@@ -193,8 +194,11 @@ def test_complete_task_preserves_dirty_worktree(kanban_home: Path, repo: Path) -
             conn.execute("UPDATE tasks SET status='ready' WHERE id=?", (tid,))
         claim = kb.claim_task(conn, tid, claimer="worker")
         assert claim is not None
+        # A dirty worktree can't be git-verified, so force-close it to reach
+        # the teardown path under test.
         assert kb.complete_task(
             conn, tid, summary="done", expected_run_id=claim.current_run_id,
+            force=True,
         )
     assert wt.is_dir()
     assert (wt / "wip.txt").exists()
@@ -221,6 +225,7 @@ def test_parent_worktree_deferred_until_children_done(
         assert claim is not None
         assert kb.complete_task(
             conn, parent, summary="parent done", expected_run_id=claim.current_run_id,
+            git_receipt={"kind": "no_origin"},
         )
         # child still active -> parent worktree must survive for handoff
         assert parent_wt.is_dir()

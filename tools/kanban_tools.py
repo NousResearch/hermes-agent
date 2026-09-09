@@ -334,26 +334,55 @@ def _commit_on_remote(top: str, sha: str, branch: Optional[str]) -> Optional[str
     )
 
 
-def _git_verified_completion_rejection(
+def _git_head_sha(top: str) -> str:
+    """Return the current ``HEAD`` commit SHA, failing closed if git cannot answer."""
+    try:
+        r = subprocess.run(
+            ["git", "-C", top, "rev-parse", "HEAD"],
+            capture_output=True, text=True, timeout=10, check=False,
+        )
+    except Exception as exc:
+        raise GitVerifyUnavailable(f"git unavailable resolving HEAD: {exc}") from exc
+    if r.returncode != 0:
+        raise GitVerifyUnavailable(
+            f"git rev-parse HEAD failed (exit {r.returncode}): "
+            f"{r.stderr.strip() or 'unknown error'}"
+        )
+    return r.stdout.strip()
+
+
+def _git_gate_verdict(
     workspace: Optional[str],
     branch: Optional[str],
     metadata: Optional[dict],
-) -> Optional[str]:
-    """Return an actionable rejection message, or ``None`` to allow completion.
+) -> tuple[Optional[str], Optional[dict]]:
+    """Return ``(rejection, receipt)`` for the git-verified completion gate.
 
-    Enforced only when the worker's workspace is inside a git repo:
-      1. ``git status --porcelain`` must be empty (every change committed), and
-      2. any ``metadata.commits`` SHA must be present on ``origin/<branch>``.
+    ``rejection`` is an actionable message when completion must be refused;
+    ``receipt`` is the typed proof of what the gate verified, handed to
+    ``kanban_db.complete_task`` so the mutation boundary can enforce it. Exactly
+    one is non-``None`` when the workspace is inside a git repo; both are
+    ``None`` when the workspace is not gated (missing path or not a repo).
 
-    Fails closed: when git cannot be reached or cannot report state, completion
-    is refused with an "unverifiable" rejection instead of being certified.
+    Enforced when the workspace is inside a git repo:
+      1. ``git status --porcelain`` must be empty (every change committed).
+      2. The worker's ``metadata.commits`` SHAs must each be on ``origin/<branch>``
+         (``verified_push``); a repo with no ``origin`` only needs a clean tree
+         (``no_origin``); and a repo with an ``origin`` but no declared commits
+         must have ``HEAD`` already on the remote (``no_change``).
+
+    Fails closed: an unverifiable tree is refused, never certified — and a repo
+    with an ``origin`` never passes on absent ``commits`` alone; ``HEAD`` must
+    provably be on the remote.
     """
     if not workspace or not os.path.isdir(workspace):
-        return None
+        return None, None
     try:
+        from hermes_cli import kanban_db as kb  # receipt kind vocabulary (SSOT)
+
         top = _git_toplevel_ws(workspace)
         if top is None:
-            return None  # workspace is not in a git repo -> nothing to verify
+            return None, None  # workspace is not in a git repo -> nothing to verify
         porcelain = _git_porcelain(top)
         if porcelain.strip():
             dirty = porcelain.strip().splitlines()
@@ -366,26 +395,61 @@ def _git_verified_completion_rejection(
                 "Every file you touched in this repo must be committed. If these are "
                 "intended artifacts, move them out of the repo or add them to "
                 ".gitignore and commit the rest; then push the branch."
-            )
+            ), None
+        if not _git_origin_remote_exists(top):
+            # Nothing to push to: a clean tree is the whole invariant.
+            return None, {"kind": kb.GIT_RECEIPT_NO_ORIGIN}
         commits = metadata.get("commits") if isinstance(metadata, dict) else None
-        if not commits:
-            return None
         if isinstance(commits, str):
             commits = [commits]
-        for c in commits:
-            sha = str(c).strip()
-            if not sha:
-                continue
-            reason = _commit_on_remote(top, sha, branch)
-            if reason:
-                return reason
-        return None
+        if commits:
+            shas = [str(c).strip() for c in commits]
+            shas = [s for s in shas if s]
+            if not shas:
+                return (
+                    "Git completion gate: this repo has an origin remote, so "
+                    "metadata.commits must be a non-empty list of the pushed SHAs "
+                    "(or omit it and ensure HEAD is already on the remote)."
+                ), None
+            for sha in shas:
+                reason = _commit_on_remote(top, sha, branch)
+                if reason:
+                    return reason, None
+            return None, {
+                "kind": kb.GIT_RECEIPT_VERIFIED_PUSH, "commits": shas, "branch": branch,
+            }
+        # No commits declared and an origin exists: the worker must not reach
+        # `done` with unpushed commits, so prove HEAD is already on the remote.
+        if not branch:
+            return (
+                "Git completion gate: this repo has an origin remote but no branch "
+                "is known and metadata.commits was not declared — cannot verify "
+                "HEAD is pushed. Declare metadata.commits with the pushed SHAs."
+            ), None
+        head = _git_head_sha(top)
+        reason = _commit_on_remote(top, head, branch)
+        if reason:
+            return reason, None
+        return None, {"kind": kb.GIT_RECEIPT_NO_CHANGE, "head": head, "branch": branch}
     except GitVerifyUnavailable as exc:
         return (
             "Git completion gate could not verify the working tree — refusing to "
             f"complete: {exc} Fix the git error (or make the workspace verifiable) "
             "and retry kanban_complete."
-        )
+        ), None
+
+
+def _git_verified_completion_rejection(
+    workspace: Optional[str],
+    branch: Optional[str],
+    metadata: Optional[dict],
+) -> Optional[str]:
+    """Return an actionable rejection message, or ``None`` to allow completion.
+
+    Thin wrapper over :func:`_git_gate_verdict`; kept for the direct-call tests
+    that assert only on the rejection half of the verdict.
+    """
+    return _git_gate_verdict(workspace, branch, metadata)[0]
 
 
 def _enforce_worker_task_ownership(tid: str) -> None:
@@ -794,8 +858,10 @@ def _handle_complete(args: dict, **kw) -> str:
         # whose workspace is inside a git repo may not reach `done` with
         # uncommitted edits or unpushed commits. The worker tool path is
         # the only place with HERMES_KANBAN_WORKSPACE / _BRANCH set, so the
-        # gate leaves CLI / human / orchestrator completions untouched.
-        git_rejection = _git_verified_completion_rejection(
+        # gate leaves CLI / human / orchestrator completions untouched. The
+        # verdict's receipt is handed to complete_task so the mutation
+        # boundary enforces it too (defense-in-depth vs. direct callers).
+        git_rejection, git_receipt = _git_gate_verdict(
             os.environ.get("HERMES_KANBAN_WORKSPACE"),
             os.environ.get("HERMES_KANBAN_BRANCH"),
             metadata,
@@ -811,7 +877,9 @@ def _handle_complete(args: dict, **kw) -> str:
         try:
             ok = kb.complete_task(
                 conn, tid, result=result, summary=summary, metadata=metadata,
-                created_cards=created_cards, expected_run_id=_resolve_expected_run_id(kb, conn, tid))
+                created_cards=created_cards,
+                expected_run_id=_resolve_expected_run_id(kb, conn, tid),
+                git_receipt=git_receipt)
         except kb.ArtifactPreservationError as artifact_err:
             # Structured rejection — surface the phantom ids so the worker can retry with a corrected list
             # or drop the field. Audit event already landed in the DB. The task itself was NOT mutated (the
@@ -833,6 +901,14 @@ def _handle_complete(args: dict, **kw) -> str:
                 f"in-flight (no state change). Retry kanban_complete with the same "
                 f"summary/metadata and either drop these ids from created_cards, or pass "
                 f"created_cards=[] to skip the card-claim check entirely.")
+        except kb.GitReceiptRequiredError as git_err:
+            # The gate ran before the write txn, so the task was NOT mutated;
+            # the receipt the worker computed didn't satisfy the mutation-boundary
+            # check (e.g. the worktree is missing/not a repo). Fail closed.
+            return tool_error(
+                f"kanban_complete blocked by the git-verified completion gate: {git_err}. "
+                f"Your task is still in-flight (no state change). Re-materialize the "
+                f"worktree, then retry kanban_complete — or ask a human to force-close.")
         task = kb.get_task(conn, tid)
         _check(ok, (task.last_failure_error if task else None) or
                f"could not complete {tid} (unknown id, stale run, or already terminal)")

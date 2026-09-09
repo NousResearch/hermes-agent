@@ -581,6 +581,56 @@ def test_worktree_workspace_explicit_target_materializes_linked_worktree(kanban_
 
 
 
+# ---------------------------------------------------------------------------
+# Git-verified completion receipts (P1-3): enforced at the mutation boundary
+# ---------------------------------------------------------------------------
+
+
+def test_complete_task_requires_git_receipt_for_worktree(kanban_home):
+    """A repo-backed (worktree) task completed by its run owner without the
+    git-verified receipt must be refused at the mutation boundary, even by a
+    direct complete_task() caller that bypasses the tool-layer gate."""
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="wt", assignee="worker", workspace_kind="worktree")
+        assert kb.claim_task(conn, tid, claimer="host:worker") is not None
+        run_id = kb.get_task(conn, tid).current_run_id
+        assert run_id is not None
+
+        # No receipt -> fail closed, task untouched (still running).
+        with pytest.raises(kb.GitReceiptRequiredError):
+            kb.complete_task(conn, tid, summary="done", expected_run_id=run_id)
+        assert kb.get_task(conn, tid).status == "running"
+
+        # With a valid receipt -> allowed.
+        assert kb.complete_task(
+            conn, tid, summary="done", expected_run_id=run_id,
+            git_receipt={"kind": "no_change"},
+        ) is True
+        assert kb.get_task(conn, tid).status == "done"
+
+
+def test_complete_task_force_bypasses_git_receipt(kanban_home):
+    """A deliberate force=True override skips the git-receipt requirement."""
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="wt", assignee="worker", workspace_kind="worktree")
+        assert kb.claim_task(conn, tid, claimer="host:worker") is not None
+        run_id = kb.get_task(conn, tid).current_run_id
+        assert kb.complete_task(
+            conn, tid, summary="done", expected_run_id=run_id, force=True,
+        ) is True
+        assert kb.get_task(conn, tid).status == "done"
+
+
+def test_complete_task_scratch_needs_no_git_receipt(kanban_home):
+    """A scratch (non-repo) task completes without any git receipt (unchanged)."""
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="scratch", assignee="worker")
+        assert kb.claim_task(conn, tid, claimer="host:worker") is not None
+        run_id = kb.get_task(conn, tid).current_run_id
+        assert kb.complete_task(conn, tid, summary="done", expected_run_id=run_id) is True
+        assert kb.get_task(conn, tid).status == "done"
+
+
 def test_complete_task_persists_scratch_artifacts_before_cleanup(kanban_home):
     """Completion artifacts from scratch workspaces survive workspace cleanup."""
     with kbc.connect() as conn:

@@ -9,6 +9,7 @@ failures are fail-OPEN (``continue``); the turn budget is the backstop.
 from __future__ import annotations
 
 import asyncio
+import functools
 import hashlib
 import json
 import logging
@@ -17,6 +18,7 @@ import re
 import subprocess
 import threading
 import time
+import weakref
 from dataclasses import dataclass, field, asdict
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
@@ -220,6 +222,31 @@ DEFAULT_GATE_MAX_RETRIES = 3
 _MAX_BARRIER_WAIT_S = 30 * 60
 # Bounded tail of a failed gate's combined stdout/stderr fed back to the agent.
 _GATE_OUTPUT_TAIL_CHARS = 3000
+
+
+_GOAL_ADMISSION_LOCKS: weakref.WeakValueDictionary[str, threading.RLock] = (
+    weakref.WeakValueDictionary()
+)
+_GOAL_ADMISSION_LOCKS_LOCK = threading.Lock()
+
+
+def goal_admission_lock(session_id: str) -> threading.RLock:
+    """Return an in-process Desktop/TUI lock shared by goal mutations and admission.
+
+    The weak registry bounds idle session keys; callers' strong references keep a lock alive
+    while it is active or awaited. This does not serialize separate CLI or gateway processes.
+    """
+    key = str(session_id or "")
+    with _GOAL_ADMISSION_LOCKS_LOCK:
+        return _GOAL_ADMISSION_LOCKS.setdefault(key, threading.RLock())
+
+
+def _goal_mutation(method):
+    @functools.wraps(method)
+    def locked(self, *args, **kwargs):
+        with goal_admission_lock(self.session_id):
+            return method(self, *args, **kwargs)
+    return locked
 
 
 CONTINUATION_PROMPT_TEMPLATE = (
@@ -1435,6 +1462,7 @@ class GoalManager:
                 fresh_gate.last_failed_fingerprint = stale_gate.last_failed_fingerprint
         return _apply
 
+    @_goal_mutation
     def set(self, goal: str, *, max_turns: Optional[int] = None, contract: Optional[GoalContract] = None) -> GoalState:
         goal = (goal or "").strip()
         if not goal:
@@ -1446,6 +1474,7 @@ class GoalManager:
         )
         return self._save()
 
+    @_goal_mutation
     def set_contract(self, contract: GoalContract) -> Optional[GoalState]:
         """Attach or replace the completion contract on the active goal."""
         if self._state is None:
@@ -1453,6 +1482,7 @@ class GoalManager:
         self._state.contract = contract or GoalContract()
         return self._save()
 
+    @_goal_mutation
     def pause(self, reason: str = "user-paused") -> Optional[GoalState]:
         if not self._state:
             return None
@@ -1461,6 +1491,7 @@ class GoalManager:
         self._state.clear_wait()   # a wait barrier is meaningless once paused
         return self._save()
 
+    @_goal_mutation
     def resume(self, *, reset_budget: bool = True) -> Optional[GoalState]:
         if not self._state:
             return None
@@ -1471,6 +1502,7 @@ class GoalManager:
             self._state.turns_used = 0
         return self._save()
 
+    @_goal_mutation
     def clear(self) -> None:
         if self._state is None:
             return
@@ -1478,6 +1510,7 @@ class GoalManager:
         self._save()
         self._state = None
 
+    @_goal_mutation
     def mark_done(self, reason: str) -> None:
         if not self._state:
             return
@@ -1486,6 +1519,7 @@ class GoalManager:
         self._state.last_reason = reason
         self._save()
 
+    @_goal_mutation
     def update(self, prompt: str, *, max_turns: Optional[int] = None, criteria: Optional[List[str]] = None) -> GoalState:
         """Edit prompt/max_turns/criteria on the active goal, preserving all runtime state."""
         state = self._state
@@ -1523,6 +1557,7 @@ class GoalManager:
 
     # --- /subgoal user controls ---------------------------------------
 
+    @_goal_mutation
     def add_subgoal(self, text: str) -> str:
         """Append a user-added criterion; raises ``RuntimeError`` without ``has_goal()``."""
         state = self._require_goal()
@@ -1533,6 +1568,7 @@ class GoalManager:
         self._save()
         return text
 
+    @_goal_mutation
     def _pop_item(self, attr: str, index_1based: int):
         items = getattr(self._require_goal(), attr)
         idx = int(index_1based) - 1
@@ -1542,6 +1578,7 @@ class GoalManager:
         self._save()
         return removed
 
+    @_goal_mutation
     def _clear_items(self, attr: str) -> int:
         state = self._require_goal()
         prev = len(getattr(state, attr))
@@ -1565,6 +1602,7 @@ class GoalManager:
 
     # --- /goal gate quality gates ---------------------------------------
 
+    @_goal_mutation
     def add_gate(self, command: str, *, timeout_seconds: Optional[int] = None, max_retries: Optional[int] = None) -> GoalGate:
         """Append a quality-gate command; raises ``RuntimeError`` without ``has_goal()``."""
         state = self._require_goal()
@@ -1580,10 +1618,12 @@ class GoalManager:
         self._save()
         return gate
 
+    @_goal_mutation
     def remove_gate(self, index_1based: int) -> str:
         """Remove a gate by 1-based index. Returns the removed command."""
         return self._pop_item("gates", index_1based).command
 
+    @_goal_mutation
     def clear_gates(self) -> int:
         """Remove all gates. Returns the previous count."""
         return self._clear_items("gates")
@@ -1675,6 +1715,7 @@ class GoalManager:
 
     # --- /goal wait barrier -------------------------------------------
 
+    @_goal_mutation
     def _park(self, reason: str, **barrier) -> GoalState:
         state = self._require_active()
         state.clear_wait()
@@ -1714,6 +1755,7 @@ class GoalManager:
             raise ValueError("seconds must be a positive integer")
         return self._park(reason, waiting_until=time.time() + seconds, waiting_on_delegations=max(0, int(on_delegations)))
 
+    @_goal_mutation
     def stop_waiting(self) -> bool:
         """Clear any active wait barrier (pid / session / time). Returns True if one was cleared."""
         s = self._state
@@ -1796,13 +1838,21 @@ class GoalManager:
         concurrent user pause/clear/done/edit/replace and storage failure (see
         ``_reconcile_turn_state``); a write that cannot be applied safely fails closed without a
         continuation."""
-        state = self._state
+        state = load_goal(self.session_id)
+        self._state = state
         if state is None or state.status != "active":
             return _decision(state.status if state else None, False, None, "inactive", "no active goal", "")
 
         # Parked on a live process or an unexpired deadline: quiesce without burning a turn.
         if self.is_waiting():
             return self._waiting_decision(state)
+
+        # is_waiting() may clear an expired barrier through reconciliation, replacing _state with
+        # the current persisted row. Never continue accounting from the pre-reconciliation object.
+        state = load_goal(self.session_id)
+        self._state = state
+        if state is None or state.status != "active":
+            return _decision(state.status if state else None, False, None, "inactive", "no active goal", "")
 
         state.turns_used += 1
         state.last_turn_at = time.time()

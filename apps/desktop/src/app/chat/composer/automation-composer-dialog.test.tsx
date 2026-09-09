@@ -274,6 +274,62 @@ describe('AutomationComposerDialog', () => {
     await waitFor(() => expect($automationComposer.get().open).toBe(false))
   })
 
+  it('omits run_limit from loop.create when field is blank', async () => {
+    vi.mocked(runSessionControlAction).mockResolvedValueOnce({
+      type: 'exec',
+      display: null,
+      message: null,
+      notice: '',
+      output: ''
+    } as never)
+    await renderDialog()
+    act(() => openAs('loop'))
+    await screen.findByRole('dialog')
+    fireEvent.change(screen.getByLabelText(/loop prompt/i), { target: { value: 'Poll CI' } })
+    fireEvent.change(screen.getByLabelText(/interval/i), { target: { value: '300' } })
+    // Leave run limit blank — create mode should omit it entirely
+    fireEvent.click(screen.getByRole('button', { name: /start loop/i }))
+    await waitFor(() =>
+      expect(runSessionControlAction).toHaveBeenCalledWith('session-123', 'loop.create', {
+        prompt: 'Poll CI',
+        interval_seconds: 300
+      })
+    )
+  })
+
+  it('submits loop.update with run_limit=0 when edit field is blank (clears cap)', async () => {
+    vi.mocked(runSessionControlAction).mockResolvedValueOnce({
+      type: 'exec',
+      display: null,
+      message: null,
+      notice: '',
+      output: ''
+    } as never)
+    $sessionControlBySession.set({
+      'session-123': {
+        capability: 'supported',
+        snapshot: {
+          goal: null,
+          loop: { prompt: 'Poll CI', interval_seconds: 300, times: 10, until: '', status: 'active', mode: 'interval', ticks_fired: 3, max_ticks: 10, current_delay: 0, next_due_at: 0, last_fired_at: 0, created_at: 0, awaiting_response: false, deferred_by_goal: false },
+          heartbeat: null
+        }
+      }
+    } as never)
+    await renderDialog()
+    act(() => openAutomationComposerForEdit('loop', 'session-123'))
+    await screen.findByLabelText(/run limit/i)
+    // Run limit prefilled from snapshot; clear it to blank
+    fireEvent.change(screen.getByLabelText(/run limit/i), { target: { value: '' } })
+    fireEvent.click(screen.getByRole('button', { name: /save loop/i }))
+    await waitFor(() =>
+      expect(runSessionControlAction).toHaveBeenCalledWith('session-123', 'loop.update', {
+        prompt: 'Poll CI',
+        interval_seconds: 300,
+        run_limit: 0
+      })
+    )
+  })
+
   it('submits loop.create with interval and run limit', async () => {
     vi.mocked(runSessionControlAction).mockResolvedValueOnce({
       type: 'exec',

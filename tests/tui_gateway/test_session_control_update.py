@@ -197,6 +197,114 @@ class TestLoopUpdate:
         }))
         assert err["code"] == 4004
 
+    def test_loop_update_accepts_run_limit_zero_to_clear_cap(self, server, session, monkeypatch):
+        from hermes_cli.loops import LoopState, save_loop, load_loop
+        sid, key, _ = session
+        save_loop(key, LoopState(
+            prompt="original", status="active", mode="interval",
+            interval_seconds=60, current_delay=60,
+            times=10, ticks_fired=3,
+        ))
+        _forbid_dispatch(server, monkeypatch)
+        response = _call(server, "session.control", session_id=sid, action="loop.update", args={
+            "prompt": "updated",
+            "interval_seconds": 120,
+            "run_limit": 0,
+        })
+        assert "error" not in response
+        state = load_loop(key)
+        assert state.times == 0
+
+    def test_loop_update_preserves_run_limit_when_omitted(self, server, session, monkeypatch):
+        from hermes_cli.loops import LoopState, save_loop, load_loop
+        sid, key, _ = session
+        save_loop(key, LoopState(
+            prompt="original", status="active", mode="interval",
+            interval_seconds=60, current_delay=60,
+            times=7,
+        ))
+        _forbid_dispatch(server, monkeypatch)
+        _call(server, "session.control", session_id=sid, action="loop.update", args={
+            "prompt": "updated",
+            "interval_seconds": 120,
+        })
+        state = load_loop(key)
+        assert state.times == 7
+
+    def test_loop_update_rejects_negative_run_limit(self, server, session, monkeypatch):
+        from hermes_cli.loops import LoopState, save_loop
+        sid, key, _ = session
+        save_loop(key, LoopState(
+            prompt="original", status="active", mode="interval",
+            interval_seconds=60, current_delay=60,
+        ))
+        _forbid_dispatch(server, monkeypatch)
+        err = _error(_call(server, "session.control", session_id=sid, action="loop.update", args={
+            "prompt": "updated",
+            "interval_seconds": 120,
+            "run_limit": -1,
+        }))
+        assert err["code"] == 4004
+
+    def test_loop_update_rejects_boolean_run_limit(self, server, session, monkeypatch):
+        from hermes_cli.loops import LoopState, save_loop
+        sid, key, _ = session
+        save_loop(key, LoopState(
+            prompt="original", status="active", mode="interval",
+            interval_seconds=60, current_delay=60,
+        ))
+        _forbid_dispatch(server, monkeypatch)
+        err = _error(_call(server, "session.control", session_id=sid, action="loop.update", args={
+            "prompt": "updated",
+            "interval_seconds": 120,
+            "run_limit": True,
+        }))
+        assert err["code"] == 4004
+
+    def test_loop_update_rejects_string_run_limit(self, server, session, monkeypatch):
+        from hermes_cli.loops import LoopState, save_loop
+        sid, key, _ = session
+        save_loop(key, LoopState(
+            prompt="original", status="active", mode="interval",
+            interval_seconds=60, current_delay=60,
+        ))
+        _forbid_dispatch(server, monkeypatch)
+        err = _error(_call(server, "session.control", session_id=sid, action="loop.update", args={
+            "prompt": "updated",
+            "interval_seconds": 120,
+            "run_limit": "abc",
+        }))
+        assert err["code"] == 4004
+
+    def test_loop_create_rejects_run_limit_zero(self, server, session, monkeypatch):
+        sid, _, _ = session
+        _forbid_dispatch(server, monkeypatch)
+        err = _error(_call(server, "session.control", session_id=sid, action="loop.create", args={
+            "prompt": "new loop",
+            "interval_seconds": 60,
+            "run_limit": 0,
+        }))
+        assert err["code"] == 4004
+
+    def test_loop_update_clears_existing_cap_with_zero(self, server, session, monkeypatch):
+        from hermes_cli.loops import LoopState, save_loop, load_loop
+        sid, key, _ = session
+        save_loop(key, LoopState(
+            prompt="original", status="active", mode="interval",
+            interval_seconds=60, current_delay=60,
+            times=5, ticks_fired=2,
+        ))
+        _forbid_dispatch(server, monkeypatch)
+        response = _call(server, "session.control", session_id=sid, action="loop.update", args={
+            "prompt": "updated",
+            "interval_seconds": 120,
+            "run_limit": 0,
+        })
+        assert "error" not in response
+        state = load_loop(key)
+        assert state.times == 0
+        assert state.ticks_fired == 2
+
     def test_loop_update_changes_prompt_and_interval(self, server, session, monkeypatch):
         from hermes_cli.loops import LoopState, save_loop
         sid, key, _ = session

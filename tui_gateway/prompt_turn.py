@@ -391,14 +391,21 @@ def _run_post_turn_followups(
         return
     if goal_followup:
         continuation_token = session.pop("_goal_continuation_token", None)
-        # Re-open the manager only at admission. A prompt string alone is stale after pause,
-        # clear, done, or a replacement/re-scope that landed after judging.
-        goal_mgr = _active_goal_manager(session)
-        if goal_mgr is not None and goal_mgr.continuation_is_current(continuation_token):
-            with session["history_lock"]:
-                if session.get("running"):
-                    return  # user already sent something — their turn wins
-                session["running"] = True
+        admitted = False
+        from hermes_cli.goals import goal_admission_lock
+        history_lock = session["history_lock"]
+        # Wait outside admission so goal mutations remain responsive while a turn owns history.
+        with history_lock:
+            with goal_admission_lock(session.get("session_key") or sid):
+                # GoalManager snapshots persistent state in __init__, so load it only after
+                # admission to validate against the state that won the race.
+                goal_mgr = _active_goal_manager(session)
+                if goal_mgr is not None and goal_mgr.continuation_is_current(continuation_token):
+                    if session.get("running"):
+                        return  # user already sent something — their turn wins
+                    session["running"] = True
+                    admitted = True
+        if admitted:
             _dispatch_followup_turn(rid, sid, session, goal_followup, "goal continuation dispatch")
     # Safety net for completion events that arrived mid-turn.  Ownership is positive-proof
     # and compression-chain aware (same fail-closed gate as the poller): session B must

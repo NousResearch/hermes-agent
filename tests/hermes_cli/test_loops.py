@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 import time
 from unittest.mock import patch
 
@@ -398,6 +399,156 @@ class TestTickLifecycle:
         assert decision["stopped"] is True
         assert decision["status"] == "done"
 
+    @pytest.mark.parametrize("replacement_status", ("paused", "cleared"))
+    def test_completion_retry_does_not_reuse_applied_flag(self, hermes_home, monkeypatch, replacement_status):
+        from hermes_cli import loops
+        from hermes_cli.loops import LoopManager, LoopState
+
+        mgr = LoopManager(session_id=f"retry-{replacement_status}")
+        state = mgr.set("poll", interval_seconds=300)
+        state.next_due_at = time.time() - 1
+        mgr.fire_tick()
+        active_json = state.to_json()
+        replacement = LoopState.from_json(active_json)
+        replacement.status = replacement_status
+        replacement.awaiting_response = False
+        replacement_json = replacement.to_json()
+
+        class RetryingDB:
+            def mutate_meta(self, _key, mutator):
+                assert mutator(active_json) != active_json
+                return mutator(replacement_json)
+
+            def get_meta(self, _key):
+                return replacement_json
+
+        monkeypatch.setattr(loops, "_get_session_db", lambda: RetryingDB())
+        decision = mgr.complete_tick("LOOP_COMPLETE")
+
+        assert decision == {
+            "status": replacement_status,
+            "stopped": False,
+            "reason": "tick state changed",
+            "message": "",
+        }
+
+    def test_completion_missing_row_does_not_recreate_or_stop(self, hermes_home, monkeypatch):
+        from hermes_cli import loops
+        from hermes_cli.loops import LoopManager
+
+        mgr = LoopManager(session_id="missing-completion")
+        state = mgr.set("poll", interval_seconds=300)
+        state.next_due_at = time.time() - 1
+        mgr.fire_tick()
+
+        class MissingDB:
+            def mutate_meta(self, _key, mutator):
+                return mutator(None)
+
+            def get_meta(self, _key):
+                return None
+
+        monkeypatch.setattr(loops, "_get_session_db", lambda: MissingDB())
+        decision = mgr.complete_tick("LOOP_COMPLETE")
+
+        assert decision["stopped"] is False
+        assert decision["message"] == ""
+        assert mgr.state is None
+
+    def test_completion_malformed_row_does_not_recreate_or_stop(self, hermes_home, monkeypatch):
+        from hermes_cli import loops
+        from hermes_cli.loops import LoopManager
+
+        mgr = LoopManager(session_id="malformed-completion")
+        state = mgr.set("poll", interval_seconds=300)
+        state.next_due_at = time.time() - 1
+        mgr.fire_tick()
+
+        class MalformedDB:
+            def mutate_meta(self, _key, mutator):
+                return mutator("not-json")
+
+            def get_meta(self, _key):
+                return "not-json"
+
+        monkeypatch.setattr(loops, "_get_session_db", lambda: MalformedDB())
+        decision = mgr.complete_tick("LOOP_COMPLETE")
+
+        assert decision["stopped"] is False
+        assert decision["message"] == ""
+        assert mgr.state is None
+
+    def test_completion_mutate_exception_does_not_recreate_or_stop(self, hermes_home, monkeypatch):
+        from hermes_cli import loops
+        from hermes_cli.loops import LoopManager
+
+        mgr = LoopManager(session_id="exception-completion")
+        state = mgr.set("poll", interval_seconds=300)
+        state.next_due_at = time.time() - 1
+        assert mgr.fire_tick() is not None
+        assert mgr.state.awaiting_response is True
+        active_json = mgr.state.to_json()
+
+        class FailingDB:
+            def mutate_meta(self, _key, _mutator):
+                raise RuntimeError("write failed")
+
+            def get_meta(self, _key):
+                return active_json
+
+        monkeypatch.setattr(loops, "_get_session_db", lambda: FailingDB())
+        decision = mgr.complete_tick("LOOP_COMPLETE")
+
+        assert decision["stopped"] is False
+        assert decision["message"] == ""
+        assert mgr.state.awaiting_response is True
+        assert mgr.state.status == "active"
+
+    def test_done_completion_does_not_overwrite_concurrent_pause(self, hermes_home):
+        from hermes_cli.loops import LoopManager, load_loop
+
+        completing = LoopManager(session_id="race-done")
+        completing.set("poll", interval_seconds=300, until="condition")
+        completing.state.next_due_at = time.time() - 1
+        completing.fire_tick()
+        control_mgr = LoopManager(session_id="race-done")
+        barrier = threading.Barrier(2)
+
+        def slow_done_judge(*_args):
+            def pause_and_release():
+                control_mgr.pause(reason="operator paused")
+                barrier.wait(timeout=5)
+
+            worker = threading.Thread(target=pause_and_release)
+            worker.start()
+            barrier.wait(timeout=5)
+            worker.join(timeout=5)
+            return "done", "condition met", False, None, False
+
+        with patch("hermes_cli.goals.judge_goal", side_effect=slow_done_judge):
+            decision = completing.complete_tick("condition is met")
+
+        stored = load_loop("race-done")
+        assert decision["stopped"] is False
+        assert stored is not None and stored.status == "paused"
+
+    def test_abandon_does_not_overwrite_concurrent_pause(self, hermes_home):
+        from hermes_cli.loops import LoopManager, load_loop
+
+        completing = LoopManager(session_id="race-abandon")
+        completing.set("poll", interval_seconds=300)
+        completing.state.next_due_at = time.time() - 1
+        completing.fire_tick()
+        control_mgr = LoopManager(session_id="race-abandon")
+
+        control_mgr.pause(reason="operator paused")
+        completing.abandon_tick()
+
+        stored = load_loop("race-abandon")
+        assert stored is not None
+        assert stored.status == "paused"
+        assert stored.ticks_fired == 1
+
     def test_complete_tick_times_cap(self, hermes_home):
         from hermes_cli.loops import LoopManager
 
@@ -482,6 +633,57 @@ class TestTickLifecycle:
         with patch("hermes_cli.goals.judge_goal", side_effect=RuntimeError("api down")):
             decision = mgr.complete_tick("some output")
         assert decision["stopped"] is False  # fail-open: keep looping
+
+    @pytest.mark.parametrize("control", ("pause", "edit", "clear", "replace"))
+    def test_completion_does_not_overwrite_concurrent_control(self, hermes_home, control):
+        """A slow stop-condition judge must not save its stale pre-judge state."""
+        from hermes_cli.loops import LoopManager, load_loop
+
+        session_id = f"race-{control}"
+        completing = LoopManager(session_id=session_id)
+        completing.set("original prompt", interval_seconds=300, until="condition")
+        completing.state.next_due_at = time.time() - 1
+        completing.fire_tick()
+        control_mgr = LoopManager(session_id=session_id)
+
+        barrier = threading.Barrier(2)
+
+        def apply_control():
+            if control == "pause":
+                control_mgr.pause(reason="operator paused")
+            elif control == "edit":
+                control_mgr.pause(reason="edit window")
+                control_mgr.update("edited prompt", interval_seconds=600)
+            elif control == "clear":
+                control_mgr.clear()
+            else:
+                control_mgr.set("replacement prompt", interval_seconds=900)
+            barrier.wait(timeout=5)
+
+        def slow_judge(*_args):
+            worker = threading.Thread(target=apply_control)
+            worker.start()
+            barrier.wait(timeout=5)
+            worker.join(timeout=5)
+            return "continue", "not yet", False, None, False
+
+        with patch("hermes_cli.goals.judge_goal", side_effect=slow_judge):
+            completing.complete_tick("still working")
+
+        stored = load_loop(session_id)
+        assert stored is not None
+        if control == "pause":
+            assert stored.status == "paused"
+            assert stored.paused_reason == "operator paused"
+        elif control == "edit":
+            assert stored.status == "paused"
+            assert stored.prompt == "edited prompt"
+            assert stored.interval_seconds == 600
+        elif control == "clear":
+            assert stored.status == "cleared"
+        else:
+            assert stored.prompt == "replacement prompt"
+            assert stored.interval_seconds == 900
 
 
 class TestSelfPacedBackoff:

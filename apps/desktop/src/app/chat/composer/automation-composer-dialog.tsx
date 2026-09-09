@@ -189,7 +189,7 @@ export function AutomationComposerDialog({
     }
 
     try {
-      await submitAutomation(type, buildArgs(type, {
+      await submitAutomation(type, buildArgs(type, isEdit, {
         prompt: trimmedPrompt,
         criteria,
         maxTurns,
@@ -465,6 +465,7 @@ export function AutomationComposerDialog({
 
 function buildArgs(
   type: AutomationType,
+  isEdit: boolean,
   values: {
     prompt: string
     criteria: string[]
@@ -483,10 +484,14 @@ function buildArgs(
   }
 
   if (type === 'loop') {
+    const hasRunLimit = values.runLimit !== ''
+
+    const runLimitValue = hasRunLimit ? Number(values.runLimit) : 0
+
     return {
       prompt: values.prompt,
       interval_seconds: Number(values.interval),
-      ...(values.runLimit ? { run_limit: Number(values.runLimit) } : {}),
+      ...(isEdit ? { run_limit: runLimitValue } : (hasRunLimit ? { run_limit: runLimitValue } : {})),
       ...(values.stopCondition.trim() ? { stop_condition: values.stopCondition.trim() } : {})
     }
   }

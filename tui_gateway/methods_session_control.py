@@ -305,7 +305,12 @@ def _(rid, params: dict) -> dict:
     try:
         if action in _ACTION_COMMAND_MAP:
             name, arg = _ACTION_COMMAND_MAP[action]
-            action_result = _dispatch_command(rid, session_id=params.get("session_id") or "", name=name, arg=arg)
+            if name == "goal":
+                from hermes_cli.goals import goal_admission_lock
+                with goal_admission_lock(session_key):
+                    action_result = _dispatch_command(rid, session_id=params.get("session_id") or "", name=name, arg=arg)
+            else:
+                action_result = _dispatch_command(rid, session_id=params.get("session_id") or "", name=name, arg=arg)
         else:
             if action.endswith(".create"):
                 with _CREATION_LOCK, _session_profile_runtime_scope(session):
@@ -314,16 +319,18 @@ def _(rid, params: dict) -> dict:
                 lock = session.get("history_lock")
                 if lock is None:
                     return _err(rid, 4004, "Goal edit requires the session history lock. Refresh the session and try again.")
-                acquired = lock.acquire(blocking=False)
-                if not acquired:
-                    return _err(rid, 4004, "Goal is busy with a live session. Wait for the current turn to finish.")
-                try:
-                    if session.get("running"):
+                from hermes_cli.goals import goal_admission_lock
+                with goal_admission_lock(session_key):
+                    acquired = lock.acquire(blocking=False)
+                    if not acquired:
                         return _err(rid, 4004, "Goal is busy with a live session. Wait for the current turn to finish.")
-                    with _session_profile_runtime_scope(session):
-                        action_result = _execute_manager_action(session_key, action, validated)
-                finally:
-                    lock.release()
+                    try:
+                        if session.get("running"):
+                            return _err(rid, 4004, "Goal is busy with a live session. Wait for the current turn to finish.")
+                        with _session_profile_runtime_scope(session):
+                            action_result = _execute_manager_action(session_key, action, validated)
+                    finally:
+                        lock.release()
             else:
                 with _session_profile_runtime_scope(session):
                     action_result = _execute_manager_action(session_key, action, validated)
@@ -450,7 +457,34 @@ def _validate_goal_update_args(rid, args):
 
 
 def _validate_loop_update_args(rid, args):
-    return _validate_loop_create_args(rid, args)
+    from hermes_cli.loops import min_interval_seconds
+
+    prompt = args.get("prompt")
+    if not isinstance(prompt, str) or not (prompt := prompt.strip()):
+        return None, _err(rid, 4004, "loop prompt is required")
+    interval = args.get("interval_seconds")
+    if type(interval) is not int or interval < 1:
+        return None, _err(rid, 4004, "interval_seconds must be a positive integer")
+    floor = min_interval_seconds()
+    if interval < floor:
+        return None, _err(rid, 4004, f"interval_seconds must be at least {floor}")
+    if interval > _INTERVAL_CEILING:
+        return None, _err(rid, 4004, f"interval_seconds must be <= {_INTERVAL_CEILING}")
+    run_limit = args.get("run_limit")
+    if run_limit is not None:
+        if type(run_limit) is not int or isinstance(run_limit, bool) or run_limit < 0:
+            return None, _err(rid, 4004, "run_limit must be a non-negative integer")
+        if run_limit > _RUN_LIMIT_CEILING:
+            return None, _err(rid, 4004, f"run_limit must be <= {_RUN_LIMIT_CEILING}")
+    stop_condition = args.get("stop_condition")
+    if stop_condition is not None and (not isinstance(stop_condition, str) or not stop_condition.strip()):
+        return None, _err(rid, 4004, "stop_condition must be a non-empty string")
+    return {
+        "prompt": prompt,
+        "interval_seconds": interval,
+        "run_limit": run_limit,
+        "stop_condition": (stop_condition or "").strip(),
+    }, None
 
 
 def _validate_heartbeat_update_args(rid, args):

@@ -196,7 +196,7 @@ function AgentPluginsSection() {
 
   const { data: profilesData } = useQuery({
     queryKey: ['agent-plugins-profiles'],
-    queryFn: getProfiles,
+    queryFn: () => getProfiles(),
     staleTime: 60_000
   })
 

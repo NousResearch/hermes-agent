@@ -15,6 +15,7 @@ import {
 } from '@/lib/storage'
 import { withTimeout } from '@/lib/with-timeout'
 import { invalidateCronModelImpactScopeState } from '@/store/cron-model-impact-scope'
+import { $fleetRoster } from '@/store/fleet-roster'
 import {
   $gateway,
   activeGatewayConnectionId,
@@ -27,7 +28,7 @@ import {
 import { notifyError } from '@/store/notifications'
 import { $poolLimits } from '@/store/pool-limits'
 import { notifyRemoteOverrideAuthFailure } from '@/store/profile-remote-override'
-import { clearComposerSelectionOwner, setComposerSelectionOwner, setConnection } from '@/store/session'
+import { $connection, clearComposerSelectionOwner, setComposerSelectionOwner, setConnection } from '@/store/session'
 import type { SessionOwnerRoute } from '@/store/session-request-router'
 import { resetStarmapGraph } from '@/store/starmap'
 import type { ProfileInfo } from '@/types/hermes'
@@ -56,6 +57,15 @@ export const $activeProfile = atom<string>('default')
 // Cached profile list for the picker. Refreshed lazily; the dropdown also
 // re-fetches on open so a profile created elsewhere shows up.
 export const $profiles = atom<ProfileInfo[]>([])
+
+// Successful lists belong to their source, not whichever gateway is active
+// when a rail renders. Keep them on re-home; a failed incoming read must not
+// borrow the outgoing source's profiles (or discard its cached squares).
+export const $profilesByConnection = atom<ReadonlyMap<string, ProfileInfo[]>>(new Map())
+
+function profileListSource(connection: HermesConnection | null): string {
+  return connection?.connectionId ?? JSON.stringify(['legacy', connection?.mode, connection?.baseUrl])
+}
 
 export function setActiveProfile(name: string): void {
   $activeProfile.set(name || 'default')
@@ -94,6 +104,7 @@ export function refreshProfiles(): Promise<ProfileInfo[]> {
 
   const flight = (async () => {
     const epoch = profileListEpoch
+    const source = profileListSource($connection.get())
     const MAX_RETRIES = 2
 
     for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
@@ -101,7 +112,10 @@ export function refreshProfiles(): Promise<ProfileInfo[]> {
         const { profiles } = await getProfiles()
 
         if (epoch === profileListEpoch) {
-          $profiles.set(profiles)
+          batch(() => {
+            $profilesByConnection.set(new Map($profilesByConnection.get()).set(source, profiles))
+            $profiles.set(profiles)
+          })
         }
 
         return profiles
@@ -119,6 +133,12 @@ export function refreshProfiles(): Promise<ProfileInfo[]> {
         // a window to finish routing after WebSocket-ready but pre-HTTP-proxy
         // states (global remote mode, #70679).
         await new Promise(resolve => setTimeout(resolve, 500 * (attempt + 1)))
+
+        // A switch during backoff must not send this old flight to the new
+        // ambient REST route, even if its eventual cache write is guarded.
+        if (epoch !== profileListEpoch) {
+          throw error
+        }
       }
     }
 
@@ -134,6 +154,46 @@ export function refreshProfiles(): Promise<ProfileInfo[]> {
 
   return flight
 }
+
+// Source changes can keep the same profile name (default → default), including
+// direct agent activations that never run the connection-switch wipe.
+let profileListOwner = profileListSource($connection.get())
+
+$connection.subscribe(connection => {
+  const source = profileListSource(connection)
+
+  if (source === profileListOwner) {
+    return
+  }
+
+  profileListOwner = source
+  invalidateProfileListFetches()
+  $profiles.set($profilesByConnection.get().get(source) ?? [])
+})
+
+// Newly published successful enumerations supersede older per-source lists.
+// Do not consult the existing roster on re-home: it may predate the cached list.
+$fleetRoster.listen(roster => {
+  const cached = $profilesByConnection.get()
+  const next = new Map(cached)
+
+  for (const source of roster?.sources ?? []) {
+    // Main can mark cached names reachable even when enumeration failed.
+    if (source.reachable && !source.error) {
+      next.delete(source.connectionId)
+
+      // A pending older read must not repopulate the cache after invalidation.
+      if (source.connectionId === profileListOwner && refreshInFlight) {
+        invalidateProfileListFetches()
+      }
+    }
+  }
+
+  if (next.size !== cached.size) {
+    $profilesByConnection.set(next)
+  }
+  // Leave the active $profiles view alone; the inactive rail falls back to roster.
+})
 
 // ── Rail order ─────────────────────────────────────────────────────────────
 // User-defined order for the named (non-default) profile squares in the rail.

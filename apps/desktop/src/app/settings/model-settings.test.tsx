@@ -421,7 +421,13 @@ describe('ModelSettings', () => {
           base_url: 'http://byron.local:11434/v1',
           local_endpoint: true
         },
-        { task: 'vision', provider: 'openai', model: 'gpt-4o-mini', base_url: 'https://api.example.com/v1', local_endpoint: false }
+        {
+          task: 'vision',
+          provider: 'openai',
+          model: 'gpt-4o-mini',
+          base_url: 'https://api.example.com/v1',
+          local_endpoint: false
+        }
       ]
     })
 

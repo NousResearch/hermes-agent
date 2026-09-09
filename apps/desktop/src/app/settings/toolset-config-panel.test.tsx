@@ -5,6 +5,7 @@ import { MemoryRouter } from 'react-router'
 import type * as ReactRouterDom from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import type { ProfileScope } from '@/hermes'
 import type { OAuthPollResponse, OAuthStartResponse, ToolsetConfig } from '@/types/hermes'
 
 // Collect the component graph before the behavioral test deadline starts.
@@ -62,12 +63,13 @@ vi.mock('@/hermes', () => ({
   revealEnvVar: (key: string) => revealEnvVar(key),
   runToolsetPostSetup: (name: string, key: string) => runToolsetPostSetup(name, key),
   getActionStatus: (name: string, lines?: number) => getActionStatus(name, lines),
+  getApiRequestConnection: () => null,
   getApiRequestProfile: () => getApiRequestProfile(),
-  startOAuthLogin: (providerId: string, profile?: null | string, activateProvider?: boolean) =>
+  startOAuthLogin: (providerId: string, profile?: ProfileScope, activateProvider?: boolean) =>
     startOAuthLogin(providerId, profile, activateProvider),
-  pollOAuthSession: (providerId: string, sessionId: string, profile?: null | string) =>
+  pollOAuthSession: (providerId: string, sessionId: string, profile?: ProfileScope) =>
     pollOAuthSession(providerId, sessionId, profile),
-  cancelOAuthSession: (sessionId: string, profile?: null | string) => cancelOAuthSession(sessionId, profile),
+  cancelOAuthSession: (sessionId: string, profile?: ProfileScope) => cancelOAuthSession(sessionId, profile),
   getHermesConfigRecord: () => getHermesConfigRecord(),
   getHermesConfigSchema: () => getHermesConfigSchema(),
   saveHermesConfig: (config: unknown) => saveHermesConfig(config),
@@ -887,14 +889,19 @@ describe('ToolsetConfigPanel', () => {
         getToolsetConfig.mockClear()
         warning!.action!.onClick()
 
-        await waitFor(() => expect(startOAuthLogin).toHaveBeenCalledWith('nous', null, false))
+        await waitFor(() =>
+          expect(startOAuthLogin).toHaveBeenCalledWith('nous', { connectionId: null, profile: null }, false)
+        )
         expect(openSpy).toHaveBeenCalledWith(
           'https://portal.nousresearch.com/device?user_code=NOUS-1234',
           '_blank',
           'noopener,noreferrer'
         )
         // Approved poll → the panel refetches the config so status flips.
-        await waitFor(() => expect(pollOAuthSession).toHaveBeenCalledWith('nous', 'sess-1', null), { timeout: 8000 })
+        await waitFor(
+          () => expect(pollOAuthSession).toHaveBeenCalledWith('nous', 'sess-1', { connectionId: null, profile: null }),
+          { timeout: 8000 }
+        )
         await waitFor(() => expect(getToolsetConfig).toHaveBeenCalled(), { timeout: 8000 })
       } finally {
         openSpy.mockRestore()
@@ -977,7 +984,9 @@ describe('ToolsetConfigPanel', () => {
           await screen.findByRole('button', { name: /OpenAI Codex OAuth/ })
           fireEvent.click(await screen.findByRole('button', { name: /Use this backend/ }))
 
-          await waitFor(() => expect(startOAuthLogin).toHaveBeenCalledWith('openai-codex', null, false))
+          await waitFor(() =>
+            expect(startOAuthLogin).toHaveBeenCalledWith('openai-codex', { connectionId: null, profile: null }, false)
+          )
           await waitFor(() =>
             expect(notify).toHaveBeenCalledWith(
               expect.objectContaining({
@@ -996,9 +1005,16 @@ describe('ToolsetConfigPanel', () => {
           codeNotice?.action?.onClick()
           expect(writeText).toHaveBeenCalledWith('CODEX-1234')
           expect(selectToolsetProvider).not.toHaveBeenCalled()
-          await waitFor(() => expect(pollOAuthSession).toHaveBeenCalledWith('openai-codex', 'codex-session', null), {
-            timeout: 8000
-          })
+          await waitFor(
+            () =>
+              expect(pollOAuthSession).toHaveBeenCalledWith('openai-codex', 'codex-session', {
+                connectionId: null,
+                profile: null
+              }),
+            {
+              timeout: 8000
+            }
+          )
           await waitFor(() => expect(selectToolsetProvider).toHaveBeenCalledWith(toolset, 'OpenAI Codex OAuth'), {
             timeout: 8000
           })
@@ -1050,7 +1066,12 @@ describe('ToolsetConfigPanel', () => {
         await waitFor(() => expect(startOAuthLogin).toHaveBeenCalled())
         rendered.unmount()
 
-        await waitFor(() => expect(cancelOAuthSession).toHaveBeenCalledWith('abandoned-codex-session', null))
+        await waitFor(() =>
+          expect(cancelOAuthSession).toHaveBeenCalledWith('abandoned-codex-session', {
+            connectionId: null,
+            profile: null
+          })
+        )
         expect(dismissNotification).toHaveBeenCalledWith(expect.stringMatching(/^notification-/))
         expect(selectToolsetProvider).not.toHaveBeenCalled()
       } finally {
@@ -1103,7 +1124,9 @@ describe('ToolsetConfigPanel', () => {
           expires_in: 900
         })
 
-        await waitFor(() => expect(cancelOAuthSession).toHaveBeenCalledWith('late-start-session', null))
+        await waitFor(() =>
+          expect(cancelOAuthSession).toHaveBeenCalledWith('late-start-session', { connectionId: null, profile: null })
+        )
         expect(openSpy).not.toHaveBeenCalled()
         expect(selectToolsetProvider).not.toHaveBeenCalled()
       } finally {
@@ -1164,7 +1187,12 @@ describe('ToolsetConfigPanel', () => {
         rendered.unmount()
         rejectOpen?.(new Error('bridge unavailable'))
 
-        await waitFor(() => expect(cancelOAuthSession).toHaveBeenCalledWith('bridge-race-settings-session', null))
+        await waitFor(() =>
+          expect(cancelOAuthSession).toHaveBeenCalledWith('bridge-race-settings-session', {
+            connectionId: null,
+            profile: null
+          })
+        )
         expect(openSpy).not.toHaveBeenCalled()
         expect(selectToolsetProvider).not.toHaveBeenCalled()
       } finally {
@@ -1238,7 +1266,9 @@ describe('ToolsetConfigPanel', () => {
         rendered.unmount()
         resolvePoll?.({ status: 'approved', session_id: 'late-poll-session' })
 
-        await waitFor(() => expect(cancelOAuthSession).toHaveBeenCalledWith('late-poll-session', null))
+        await waitFor(() =>
+          expect(cancelOAuthSession).toHaveBeenCalledWith('late-poll-session', { connectionId: null, profile: null })
+        )
         expect(selectToolsetProvider).not.toHaveBeenCalled()
       } finally {
         timerSpy?.mockRestore()
@@ -1294,13 +1324,22 @@ describe('ToolsetConfigPanel', () => {
         fireEvent.click(await screen.findByRole('button', { name: /Use this backend/ }))
 
         await waitFor(
-          () => expect(pollOAuthSession).toHaveBeenCalledWith('openai-codex', 'profile-owned-session', 'coder'),
+          () =>
+            expect(pollOAuthSession).toHaveBeenCalledWith('openai-codex', 'profile-owned-session', {
+              connectionId: null,
+              profile: 'coder'
+            }),
           { timeout: 3000 }
         )
         getApiRequestProfile.mockReturnValue('other')
         resolvePoll?.({ status: 'approved', session_id: 'profile-owned-session' })
 
-        await waitFor(() => expect(cancelOAuthSession).toHaveBeenCalledWith('profile-owned-session', 'coder'))
+        await waitFor(() =>
+          expect(cancelOAuthSession).toHaveBeenCalledWith('profile-owned-session', {
+            connectionId: null,
+            profile: 'coder'
+          })
+        )
         expect(dismissNotification).toHaveBeenCalledWith(expect.stringMatching(/^notification-/))
         expect(selectToolsetProvider).not.toHaveBeenCalled()
       } finally {

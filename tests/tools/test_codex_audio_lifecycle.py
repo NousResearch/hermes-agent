@@ -136,7 +136,7 @@ def test_file_synthesis_validates_before_network_and_preserves_refresh_budget(
 
     def refresh(**kwargs):
         refreshes.append(kwargs)
-        return SimpleNamespace(runtime_api_key="fresh")
+        return SimpleNamespace(id="account", runtime_api_key="fresh")
 
     pool = SimpleNamespace(try_refresh_matching=refresh)
 

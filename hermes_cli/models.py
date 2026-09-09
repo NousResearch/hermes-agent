@@ -1985,6 +1985,9 @@ _OPENCODE_ZEN_FREE_BASE_URL = "https://opencode.ai/zen/v1"
 
 # ``-free``-suffixed slugs that are KEYED (Go-subscription) models, NOT anonymous-servable —
 # excluded from the keyless catalog despite the suffix (ox-alpha-free is Ox Alpha's Go twin).
+# The Go relay delisted ox-alpha-free (2026-09-09; GET /zen/go/v1/models omits it, POST → 401),
+# so it is gone from the opencode-go curated floor too — the exclusion stays so a stale live
+# list can never route it into the keyless catalog.
 _OPENCODE_FREE_KEYED_SUFFIX_MODELS = frozenset({"ox-alpha-free"})
 
 # In-process memo for _fetch_opencode_free_models(): (fetched_at, ids-or-None). Validation and

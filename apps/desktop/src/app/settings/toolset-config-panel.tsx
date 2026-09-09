@@ -8,6 +8,7 @@ import {
   cancelOAuthSession,
   deleteEnvVar,
   getActionStatus,
+  getApiRequestConnection,
   getApiRequestProfile,
   getToolsetConfig,
   getToolsetModels,
@@ -515,7 +516,21 @@ function ModelCatalogPicker({ toolset, providerName, isActiveBackend, profile }:
   )
 }
 
-export function ToolsetConfigPanel({ toolset, onConfiguredChange, profile }: ToolsetConfigPanelProps) {
+function captureToolsetScope(profile?: ProfileScope): { connectionId: null | string; profile: null | string } {
+  return profile && typeof profile === 'object'
+    ? { connectionId: profile.connectionId ?? null, profile: profile.profile ?? null }
+    : { connectionId: getApiRequestConnection(), profile: profile === undefined ? getApiRequestProfile() : profile }
+}
+
+export function ToolsetConfigPanel(props: ToolsetConfigPanelProps) {
+  // A pending sign-in and provider selection belong to one gateway/profile.
+  // Replacing that owner must dispose its session and all of its local state.
+  const scopeKey = JSON.stringify([props.toolset, captureToolsetScope(props.profile)])
+
+  return <ScopedToolsetConfigPanel {...props} key={scopeKey} />
+}
+
+function ScopedToolsetConfigPanel({ toolset, onConfiguredChange, profile }: ToolsetConfigPanelProps) {
   const { t } = useI18n()
   const copy = t.settings.toolsets
   const [cfg, setCfg] = useState<ToolsetConfig | null>(null)
@@ -535,7 +550,7 @@ export function ToolsetConfigPanel({ toolset, onConfiguredChange, profile }: Too
 
   const activeOAuthSessionRef = useRef<{
     generation: number
-    profile: null | string
+    profile: ProfileScope
     sessionId: string
   } | null>(null)
 
@@ -563,16 +578,24 @@ export function ToolsetConfigPanel({ toolset, onConfiguredChange, profile }: Too
       }
 
       if (session) {
-        void cancelOAuthSession(session.sessionId, session.profile)
+        void cancelOAuthSession(session.sessionId, session.profile).catch(() => undefined)
       }
     }
   }, [])
 
   const refresh = useCallback(async () => {
+    const scope = captureToolsetScope(profile)
+    const isCurrent = () => mountedRef.current && JSON.stringify(captureToolsetScope(profile)) === JSON.stringify(scope)
+
     setLoading(true)
 
     try {
-      const next = await getToolsetConfig(toolset, profile)
+      const next = await getToolsetConfig(toolset, scope)
+
+      if (!isCurrent()) {
+        return
+      }
+
       setCfg(next)
       const seeded: Record<string, boolean> = {}
 
@@ -584,9 +607,13 @@ export function ToolsetConfigPanel({ toolset, onConfiguredChange, profile }: Too
 
       setEnvState(seeded)
     } catch (err) {
-      notifyError(err, copy.failedLoad)
+      if (isCurrent()) {
+        notifyError(err, copy.failedLoad)
+      }
     } finally {
-      setLoading(false)
+      if (isCurrent()) {
+        setLoading(false)
+      }
     }
   }, [copy.failedLoad, toolset, profile])
 
@@ -628,6 +655,8 @@ export function ToolsetConfigPanel({ toolset, onConfiguredChange, profile }: Too
     providerChoiceClaimedRef.current = true
     setExpandedProvider(provider.name)
     setSelecting(provider.name)
+    const scope = captureToolsetScope(profile)
+    const isCurrent = () => mountedRef.current && JSON.stringify(captureToolsetScope(profile)) === JSON.stringify(scope)
 
     try {
       // Subscription-backed tool rows are deliberately authenticated before
@@ -641,11 +670,16 @@ export function ToolsetConfigPanel({ toolset, onConfiguredChange, profile }: Too
         }
       }
 
-      if (!mountedRef.current) {
+      if (!isCurrent()) {
         return
       }
 
-      const result = await selectToolsetProvider(toolset, provider.name, undefined, profile)
+      const result = await selectToolsetProvider(toolset, provider.name, undefined, scope)
+
+      if (!isCurrent()) {
+        return
+      }
+
       // Mirror the backend write locally so dependent UI (model catalog
       // enablement) tracks the new active backend without a refetch.
       setCfg(current =>
@@ -676,9 +710,13 @@ export function ToolsetConfigPanel({ toolset, onConfiguredChange, profile }: Too
       notify({ kind: 'success', title: copy.selectedTitle, message: copy.selectedMessage(provider.name) })
       onConfiguredChange?.()
     } catch (err) {
-      notifyError(err, copy.failedSelect(provider.name))
+      if (isCurrent()) {
+        notifyError(err, copy.failedSelect(provider.name))
+      }
     } finally {
-      setSelecting(null)
+      if (isCurrent()) {
+        setSelecting(null)
+      }
     }
   }
 
@@ -689,18 +727,8 @@ export function ToolsetConfigPanel({ toolset, onConfiguredChange, profile }: Too
   async function signInToOAuthProvider(providerId: string): Promise<boolean> {
     const generation = ++oauthOperationGenerationRef.current
 
-    // OAuth-session cancellation currently accepts a profile name (not a
-    // capability connection object). Preserve the selected profile while the
-    // panel is mounted; the provider picker itself continues to use `profile`
-    // for every config write.
-    const operationProfile =
-      profile && typeof profile === 'object'
-        ? (profile.profile ?? null)
-        : profile === undefined
-          ? getApiRequestProfile()
-          : profile
-
-    const usesExplicitScope = profile !== undefined
+    const operationProfile = captureToolsetScope(profile)
+    const operationScopeKey = JSON.stringify(operationProfile)
     const previousSession = activeOAuthSessionRef.current
 
     activeOAuthSessionRef.current = null
@@ -724,7 +752,7 @@ export function ToolsetConfigPanel({ toolset, onConfiguredChange, profile }: Too
     const operationIsCurrent = () =>
       mountedRef.current &&
       oauthOperationGenerationRef.current === generation &&
-      (usesExplicitScope || getApiRequestProfile() === operationProfile)
+      JSON.stringify(captureToolsetScope(profile)) === operationScopeKey
 
     const sessionIsCurrent = () => {
       const active = activeOAuthSessionRef.current

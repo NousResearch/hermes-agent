@@ -343,9 +343,7 @@ export function PluginInstallModal() {
                 <div className="font-medium text-foreground">
                   {request.catalogName ? m.reviewedHeading : m.securityHeading}
                 </div>
-                <p className="text-(--ui-text-secondary)">
-                  {request.catalogName ? m.reviewedIntro : m.securityIntro}
-                </p>
+                <p className="text-(--ui-text-secondary)">{request.catalogName ? m.reviewedIntro : m.securityIntro}</p>
               </div>
 
               {sourceLinks && (

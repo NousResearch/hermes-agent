@@ -161,6 +161,7 @@ def test_codex_streamer_captures_profile_scoped_pool(monkeypatch):
         "tools.tts_tool_codex._codex_tts_credentials", lambda: (pool, credentials)
     )
     monkeypatch.setattr("tools.tts_tool_codex._has_codex_tts_backend", lambda: True)
+    monkeypatch.setattr(tts_streaming.shutil, "which", lambda _name: "ffmpeg")
 
     streamer = tts_streaming.OpenAICodexStreamer({"provider": "openai-codex"}, {})
 
@@ -180,7 +181,7 @@ def test_codex_streamer_enforces_pcm_cap(monkeypatch):
     proc = Mock()
     proc.stdout = io.BytesIO(b"x" * 4096)
     proc.stderr = io.BytesIO()
-    proc.poll.return_value = 0
+    proc.poll.return_value = None
     proc.wait.return_value = 0
     monkeypatch.setattr(
         "tools.tts_tool_codex._codex_tts_credentials", lambda: (pool, credentials)
@@ -200,4 +201,6 @@ def test_codex_streamer_enforces_pcm_cap(monkeypatch):
     with pytest.raises(ValueError, match="exceeded the per-sentence byte cap"):
         list(streamer.stream("Bound this."))
 
-    proc.terminate.assert_called_once()
+    proc.kill.assert_called_once()
+    proc.wait.assert_called_once()
+    assert proc.stdout.closed

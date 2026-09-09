@@ -9,6 +9,11 @@ from pathlib import Path
 from threading import Event
 from typing import Any, Dict
 
+from hermes_constants import (
+    get_hermes_home,
+    reset_hermes_home_override,
+    set_hermes_home_override,
+)
 from tools.codex_web_audio import CodexSpeech, _OperationBudget, synthesize_codex_speech
 
 
@@ -25,13 +30,20 @@ def _codex_tts_credentials() -> tuple[Any, Dict[str, Any]]:
     from agent.credential_pool import load_pool
     from tools.transcription_codex import _codex_stt_credentials_from_pool_entry
 
-    pool = load_pool("openai-codex")
-    entry = pool.select()
-    if entry is None:
-        raise ValueError(
-            "OpenAI Codex OAuth credentials are unavailable. Run: hermes auth add openai-codex"
-        )
-    return pool, _codex_stt_credentials_from_pool_entry(entry)
+    home = get_hermes_home()
+    scope = set_hermes_home_override(home)
+    try:
+        pool = load_pool("openai-codex")
+        entry = pool.select()
+        if entry is None:
+            raise ValueError(
+                "OpenAI Codex OAuth credentials are unavailable. Run: hermes auth add openai-codex"
+            )
+        credentials = _codex_stt_credentials_from_pool_entry(entry)
+        credentials["_hermes_home"] = home
+        return pool, credentials
+    finally:
+        reset_hermes_home_override(scope)
 
 
 def synthesize_codex_speech_with_credentials(
@@ -48,23 +60,33 @@ def synthesize_codex_speech_with_credentials(
     api_key = credentials["api_key"]
     try:
         return synthesize_codex_speech(
-            text, api_key, voice=voice, timeout=budget.remaining(), cancel_event=cancel_event
+            text, api_key, account_id=credentials.get("account_id"),
+            voice=voice, timeout=budget.remaining(), cancel_event=cancel_event,
         )
     except RuntimeError as exc:
         message = str(exc)
         if "HTTP 401" not in message:
             raise
         budget.remaining()
-        refreshed = pool.try_refresh_matching(
-            api_key_hint=api_key,
-            credential_id=credentials.get("credential_id"),
-        )
+        # A pool retains tokens, but its auth-store helpers resolve paths at
+        # call time. The worker must retain the issuer's write authority after
+        # the router scope ends, without swapping the process environment.
+        scope = set_hermes_home_override(credentials.get("_hermes_home") or get_hermes_home())
+        try:
+            refreshed = pool.try_refresh_matching(
+                api_key_hint=api_key,
+                credential_id=credentials.get("credential_id"),
+            )
+        finally:
+            reset_hermes_home_override(scope)
         if refreshed is None or refreshed.runtime_api_key == api_key:
             raise
-        credentials["api_key"] = refreshed.runtime_api_key
+        from tools.transcription_codex import _codex_stt_credentials_from_pool_entry
+
+        credentials.update(_codex_stt_credentials_from_pool_entry(refreshed))
         return synthesize_codex_speech(
-            text, refreshed.runtime_api_key, voice=voice, timeout=budget.remaining(),
-            cancel_event=cancel_event,
+            text, credentials["api_key"], account_id=credentials.get("account_id"),
+            voice=voice, timeout=budget.remaining(), cancel_event=cancel_event,
         )
 
 

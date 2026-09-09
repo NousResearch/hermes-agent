@@ -111,13 +111,15 @@ def resolve_voice(raw: str) -> str:
 
 
 def _browser_date(now: float) -> str:
-    local = time.localtime(now)
-    offset = -time.timezone if local.tm_isdst <= 0 else -time.altzone
-    sign = "+" if offset >= 0 else "-"
-    offset = abs(offset)
+    # Match an English browser configured for UTC, independently of the
+    # gateway host's locale/DST. The conversation uses the same timezone.
+    local = time.gmtime(now)
+    weekdays = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
+    months = ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
     return (
-        time.strftime("%a %b %d %Y %H:%M:%S", local)
-        + f" GMT{sign}{offset // 3600:02d}{offset % 3600 // 60:02d}"
+        f"{weekdays[local.tm_wday]} {months[local.tm_mon - 1]} {local.tm_mday:02d} "
+        f"{local.tm_year:04d} {local.tm_hour:02d}:{local.tm_min:02d}:{local.tm_sec:02d} "
+        "GMT+0000 (Coordinated Universal Time)"
     )
 
 
@@ -158,8 +160,8 @@ def _encode_fingerprint(config: list[Any]) -> str:
     return base64.b64encode(json.dumps(config, separators=(",", ":")).encode()).decode()
 
 
-def _requirements_token(device_id: str) -> str:
-    return "gAAAAAC" + _encode_fingerprint(_fingerprint_array(device_id))
+def _requirements_token(config: list[Any]) -> str:
+    return "gAAAAAC" + _encode_fingerprint(config)
 
 
 def _pow_hash_hex(value: str) -> str:
@@ -176,15 +178,15 @@ def _pow_hash_hex(value: str) -> str:
 
 
 def _solve_pow(
-    device_id: str, seed: str, difficulty: str, budget: _OperationBudget
+    config: list[Any], seed: str, difficulty: str, budget: _OperationBudget
 ) -> str:
     started = time.monotonic()
+    proof_config = list(config)
     for nonce in range(_MAX_POW_ATTEMPTS):
         budget.remaining()
-        elapsed = int((time.monotonic() - started) * 1000)
-        payload = _encode_fingerprint(
-            _fingerprint_array(device_id, nonce=nonce, elapsed_ms=elapsed)
-        )
+        proof_config[3] = nonce
+        proof_config[9] = int((time.monotonic() - started) * 1000)
+        payload = _encode_fingerprint(proof_config)
         if _pow_hash_hex(seed + payload)[: len(difficulty)] <= difficulty:
             return f"gAAAAAB{payload}~S"
     raise RuntimeError(
@@ -192,7 +194,9 @@ def _solve_pow(
     )
 
 
-def _headers(token: str, device_id: str, *, final: bool = False) -> Dict[str, str]:
+def _headers(
+    token: str, device_id: str, *, account_id: Optional[str] = None, final: bool = False
+) -> Dict[str, str]:
     headers = {
         "accept": "*/*",
         "accept-language": "en-US,en;q=0.9",
@@ -219,6 +223,8 @@ def _headers(token: str, device_id: str, *, final: bool = False) -> Dict[str, st
         "oai-client-version": _BUILD_ID,
         "oai-client-build-number": "7646290",
     }
+    if account_id:
+        headers["ChatGPT-Account-ID"] = account_id
     if final:
         headers.update({"oai-echo-logs": "0,3352,1,4100", "oai-telemetry": "[1,null]"})
     return headers
@@ -330,8 +336,8 @@ def _conversation_body(prompt: str) -> dict:
         "parent_message_id": "client-created-root",
         "model": "auto",
         "client_prepare_state": "sent",
-        "timezone_offset_min": time.timezone // 60,
-        "timezone": time.tzname[0],
+        "timezone_offset_min": 0,
+        "timezone": "UTC",
         "conversation_mode": {"kind": "primary_assistant"},
         "enable_message_followups": False,
         "system_hints": [],
@@ -401,6 +407,8 @@ def _poll_conversation_message(
     device_id: str,
     conversation_id: str,
     budget: _OperationBudget,
+    *,
+    account_id: Optional[str] = None,
 ) -> tuple[str, str]:
     """Recover a completed assistant message when the SSE switched transports early."""
     if not conversation_id:
@@ -415,12 +423,12 @@ def _poll_conversation_message(
                 session,
                 "GET",
                 path,
-                headers={**_headers(token, device_id), "x-openai-target-path": path},
+                headers={**_headers(token, device_id, account_id=account_id), "x-openai-target-path": path},
                 budget=poll_budget,
                 limit=_MAX_JSON_BYTES,
             )
             data = json.loads(raw)
-        except (RuntimeError, ValueError, json.JSONDecodeError):
+        except (ValueError, json.JSONDecodeError):
             data = {}
         mapping = data.get("mapping") if isinstance(data, dict) else None
         if not isinstance(mapping, dict):
@@ -456,10 +464,12 @@ def _poll_conversation_message(
 
 
 def _sentinel(
-    session: requests.Session, token: str, device_id: str, budget: _OperationBudget
+    session: requests.Session, token: str, device_id: str, budget: _OperationBudget,
+    *, account_id: Optional[str] = None,
 ) -> tuple[str, str]:
+    config = _fingerprint_array(device_id)
     headers = {
-        **_headers(token, device_id),
+        **_headers(token, device_id, account_id=account_id),
         "content-type": "application/json",
         "accept": "*/*",
     }
@@ -469,7 +479,7 @@ def _sentinel(
         _SENTINEL_PREPARE,
         headers=headers,
         budget=budget,
-        json_body={"p": _requirements_token(device_id)},
+        json_body={"p": _requirements_token(config)},
     )
     prepared = json.loads(raw)
     challenge = prepared.get("proofofwork") or {}
@@ -479,7 +489,7 @@ def _sentinel(
         difficulty = str(challenge.get("difficulty") or "")
         if not seed or not difficulty:
             raise RuntimeError("ChatGPT Sentinel required PoW without seed/difficulty")
-        proof = _solve_pow(device_id, seed, difficulty, budget)
+        proof = _solve_pow(config, seed, difficulty, budget)
     finalize = {"prepare_token": str(prepared.get("prepare_token") or "")}
     if proof:
         finalize["proofofwork"] = proof
@@ -506,9 +516,11 @@ def _conduit(
     state: str,
     conduit_token: str,
     budget: _OperationBudget,
+    *,
+    account_id: Optional[str] = None,
 ) -> str:
     headers = {
-        **_headers(token, device_id),
+        **_headers(token, device_id, account_id=account_id),
         "content-type": "application/json",
         "accept": "*/*",
         "x-oai-turn-trace-id": trace_id,
@@ -533,6 +545,7 @@ def synthesize_codex_speech(
     token: str,
     *,
     voice: str = "juniper",
+    account_id: Optional[str] = None,
     timeout: float = 120,
     cancel_event: Optional[Event] = None,
     _retry_mismatch: bool = True,
@@ -579,18 +592,22 @@ def synthesize_codex_speech(
             trace_id = str(uuid.uuid4())
             final_body = _conversation_body(prompt)
             conduit = _conduit(
-                session, token, device_id, trace_id, final_body, "none", "no-token", budget
+                session, token, device_id, trace_id, final_body, "none", "no-token", budget,
+                account_id=account_id,
             )
-            requirement, proof = _sentinel(session, token, device_id, budget)
+            requirement, proof = _sentinel(
+                session, token, device_id, budget, account_id=account_id
+            )
             for _ in range(4):
                 if not conduit:
                     break
                 conduit = _conduit(
-                    session, token, device_id, trace_id, final_body, "success", conduit, budget
+                    session, token, device_id, trace_id, final_body, "success", conduit, budget,
+                    account_id=account_id,
                 )
 
             headers = {
-                **_headers(token, device_id, final=True),
+                **_headers(token, device_id, account_id=account_id, final=True),
                 "content-type": "application/json",
                 "accept": "text/event-stream",
                 "openai-sentinel-chat-requirements-token": requirement,
@@ -612,7 +629,7 @@ def synthesize_codex_speech(
             )
             if conversation_id and not spoken:
                 polled_id, polled_text = _poll_conversation_message(
-                    session, token, device_id, conversation_id, budget
+                    session, token, device_id, conversation_id, budget, account_id=account_id
                 )
                 message_id = polled_id or message_id
                 spoken = polled_text or spoken
@@ -629,7 +646,7 @@ def synthesize_codex_speech(
                 )
 
             synth_headers = {
-                **_headers(token, device_id),
+                **_headers(token, device_id, account_id=account_id),
                 "accept": "*/*",
                 "x-openai-target-path": _SYNTHESIZE,
                 "referer": f"{_BASE_URL}/c/{conversation_id}",
@@ -653,4 +670,6 @@ def synthesize_codex_speech(
                 raise RuntimeError(
                     f"ChatGPT synthesize returned non-audio content type {content_type!r}"
                 )
+            if not audio:
+                raise RuntimeError("ChatGPT synthesize returned empty audio")
             return CodexSpeech(audio, content_type, conversation_id, message_id, spoken)

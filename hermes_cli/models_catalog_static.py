@@ -241,15 +241,15 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "nemotron-3-ultra-free", "nemotron-3.5-lightning-free", "muse-spark-1.2-contributor-free",
         "muse-spark-1.3-contributor-free",
     ],
-    # Synced against opencode.ai/docs/go + live GET /zen/go/v1/models. "ox-alpha-free" is the
-    # Go-subscription twin of Zen's keyless Ox Alpha (NOT keyless — the Go relay requires a Go key).
+    # Synced against opencode.ai/docs/go + live GET /zen/go/v1/models. Known-delisted models are
+    # REMOVED (the live-first merge would otherwise keep offering a model that 401s): "ox-alpha-free"
+    # — the Go-subscription twin of Zen's keyless Ox Alpha — was delisted 2026-09-09.
     "opencode-go": [
         "kimi-k3", "kimi-k2.7-code", "kimi-k2.6", "kimi-k2.5", "gpt-5.6-luna", "grok-4.5", "glm-5.3",
         "glm-5.3-flash", "glm-5.2", "glm-5.1", "glm-5", "mimo-v2.5-pro", "mimo-v2.5", "mimo-v2-pro",
         "mimo-v2-omni", "minimax-m3", "minimax-m2.7", "minimax-m2.5", "deepseek-v4-pro",
         "deepseek-v4-flash", "qwen3.8-max", "qwen3.7-max", "qwen3.7-plus", "qwen3.6-plus",
         "qwen3.5-plus", "hy3", "hy3-preview", "muse-spark-1.2-contributor", "muse-spark-1.3-contributor",
-        "ox-alpha-free",
     ],
     "kilocode": [
         "anthropic/claude-opus-4.6", "anthropic/claude-sonnet-4.6", "openai/gpt-5.4",

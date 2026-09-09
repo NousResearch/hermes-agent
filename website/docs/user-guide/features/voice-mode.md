@@ -150,8 +150,10 @@ ChatGPT blocks or removes a route.
    completing the Codex login when prompted. Audio-provider login leaves the
    chat model selection unchanged; select a Codex model separately if you also
    want the conversation's model to use that subscription.
-2. Ensure `ffmpeg` is installed on the Hermes gateway host. Desktop receives
-   24 kHz mono PCM decoded there from the subscription's read-aloud audio.
+2. Install `ffmpeg` on the Hermes gateway host for sentence-by-sentence playback.
+   Desktop receives 24 kHz mono PCM decoded there from the subscription's
+   read-aloud audio. Without FFmpeg, Desktop can still play a completed reply
+   through the existing MP3 playback path.
 3. Start a voice conversation from the composer, or enable the wake-word
    listener and say **“Hey Hermes”**, then speak after the wake chime.
 4. Hermes transcribes your utterance, runs the normal agent turn, and speaks
@@ -177,8 +179,13 @@ Profile-specific phrases use the existing wake engine's enrollment settings;
 Desktop waits for the detected profile to activate before starting voice.
 Changing the display phrase alone does not retrain the bundled model.
 
-Codex audio stays on the authenticated gateway relay so credential refresh stays
-with the profile. This is sentence-based live voice, with utterance-based STT
+Codex audio stays on the selected gateway and profile, including OAuth login,
+account/workspace headers, and credential refresh. Stopping voice cancels pending
+microphone acquisition and transcription delivery as well as playback; late
+results cannot restart a stopped conversation. The wake listener releases the
+microphone before voice capture starts.
+
+This is sentence-based live voice, with utterance-based STT
 and read-aloud synthesis, rather than an OpenAI Realtime API session. First-audio
 latency depends on ChatGPT's private read-aloud flow and network conditions.
 Provider failures surface in Desktop and stop that speech attempt without

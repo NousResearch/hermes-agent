@@ -446,8 +446,7 @@ export const zh: Translations = {
         '这是捆绑插件的桌面部分，但其 agent 部分未安装在当前连接的后端/配置上。请在 能力 → 插件 中安装。',
       agent: {
         title: 'Agent 插件',
-        movedToCapabilities:
-          'Agent 插件按配置在「能力」页管理 — 已安装列表、开关和插件目录都在那里。',
+        movedToCapabilities: 'Agent 插件按配置在「能力」页管理 — 已安装列表、开关和插件目录都在那里。',
         openCapabilities: '打开 能力 → 插件'
       },
       installModal: {

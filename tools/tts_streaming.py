@@ -107,6 +107,7 @@ class StreamingTTSProvider(ABC):
     sample_rate: int = 24000
     channels: int = 1
     sample_width: int = 2  # bytes/sample (int16)
+    provider_name: str = ""
 
     def __init__(self, tts_config: Dict, section: Dict):
         self.tts_config = tts_config
@@ -141,7 +142,9 @@ def _try_instantiate(name: str, tts_config: Dict) -> Optional[StreamingTTSProvid
     if cls is None or not cls.available():
         return None
     try:
-        return cls(tts_config, tts_config.get(name) or {})
+        provider = cls(tts_config, tts_config.get(name) or {})
+        provider.provider_name = name
+        return provider
     except Exception as exc:  # pragma: no cover - defensive
         logger.debug("streaming provider %s init failed: %s", name, exc)
         return None
@@ -185,7 +188,8 @@ class OpenAICodexStreamer(StreamingTTSProvider):
     @staticmethod
     def available() -> bool:
         from tools.tts_tool_codex import _has_codex_tts_backend
-        return _has_codex_tts_backend()
+        # Without PCM decoding the Desktop's existing MP3 relay still works.
+        return bool(shutil.which("ffmpeg")) and _has_codex_tts_backend()
 
     def __init__(self, tts_config: Dict, section: Dict):
         super().__init__(tts_config, section)
@@ -194,9 +198,18 @@ class OpenAICodexStreamer(StreamingTTSProvider):
         # Capture the requesting profile's pool while the Desktop router's profile scope is active.
         self.pool, self.credentials = _codex_tts_credentials()
         self._cancel_event = threading.Event()
+        self._decoder_lock = threading.Lock()
+        self._decoder: Optional[subprocess.Popen] = None
 
     def cancel(self) -> None:
         self._cancel_event.set()
+        # stdout.read() cannot poll the event. Killing this disposable decoder
+        # releases that read without waiting on the WebSocket's event loop.
+        with self._decoder_lock:
+            decoder = self._decoder
+        if decoder is not None:
+            with contextlib.suppress(ProcessLookupError):
+                decoder.kill()
 
     def stream(self, text: str) -> Iterator[bytes]:
         from tools.tts_tool_codex import synthesize_codex_speech_with_credentials
@@ -222,26 +235,39 @@ class OpenAICodexStreamer(StreamingTTSProvider):
             proc = subprocess.Popen(
                 [ffmpeg, "-hide_banner", "-loglevel", "error", "-i", path, "-f", "s16le",
                  "-acodec", "pcm_s16le", "-ar", str(self.sample_rate), "-ac", str(self.channels), "pipe:1"],
-                stdout=subprocess.PIPE, stderr=subprocess.PIPE, stdin=subprocess.DEVNULL,
+                # A second unread pipe can fill and deadlock PCM decoding.
+                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL,
                 creationflags=windows_hide_flags())
+            with self._decoder_lock:
+                self._decoder = proc
             total = 0
             assert proc.stdout is not None
             try:
+                if self._cancel_event.is_set():
+                    return
                 while chunk := proc.stdout.read(64 * 1024):
                     if self._cancel_event.is_set():
                         return
                     total += len(chunk)
                     if total > _STREAM_SENTENCE_BYTE_CAP:
-                        proc.terminate()
                         raise ValueError("Codex live-voice PCM exceeded the per-sentence byte cap")
                     yield chunk
-                stderr = proc.stderr.read().decode("utf-8", "replace") if proc.stderr else ""
-                if proc.wait(timeout=10):
-                    raise RuntimeError(f"ffmpeg failed to decode Codex speech: {stderr[:300]}")
+                if self._cancel_event.is_set():
+                    return
+                exit_code = proc.wait(timeout=10)
+                if exit_code:
+                    raise RuntimeError(f"ffmpeg failed to decode Codex speech (exit {exit_code})")
+                if not total:
+                    raise RuntimeError("ffmpeg produced no audio for Codex speech")
             finally:
-                if proc.poll() is None:
-                    proc.terminate()
+                with self._decoder_lock:
+                    self._decoder = None
+                try:
+                    if proc.poll() is None:
+                        proc.kill()
                     proc.wait(timeout=5)
+                finally:
+                    proc.stdout.close()
         finally:
             with contextlib.suppress(OSError):
                 os.unlink(path)

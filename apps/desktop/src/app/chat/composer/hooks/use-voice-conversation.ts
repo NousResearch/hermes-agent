@@ -64,6 +64,9 @@ export function useVoiceConversation({
   const [muted, setMuted] = useState(false)
   const turnTimeoutRef = useRef<number | null>(null)
   const pendingStartRef = useRef(false)
+  const activeRef = useRef(enabled)
+  const captureGenerationRef = useRef(0)
+  const startingRef = useRef<number | null>(null)
   const turnClosingRef = useRef(false)
   const awaitingSpokenResponseRef = useRef(false)
   const responseIdRef = useRef<string | null>(null)
@@ -118,6 +121,12 @@ export function useVoiceConversation({
     statusRef.current = status
   }, [status])
 
+  const isCaptureCurrent = useCallback(
+    (generation: number) =>
+      generation === captureGenerationRef.current && activeRef.current && enabledRef.current && !mutedRef.current,
+    []
+  )
+
   const clearTurnTimeout = () => {
     if (turnTimeoutRef.current) {
       window.clearTimeout(turnTimeoutRef.current)
@@ -137,7 +146,9 @@ export function useVoiceConversation({
 
   const handleTurn = useCallback(
     async (forceTranscribe = false) => {
-      if (turnClosingRef.current) {
+      const generation = captureGenerationRef.current
+
+      if (turnClosingRef.current || !isCaptureCurrent(generation)) {
         return
       }
 
@@ -147,6 +158,10 @@ export function useVoiceConversation({
 
       try {
         const result = await handle.stop()
+
+        if (!isCaptureCurrent(generation)) {
+          return
+        }
 
         if (!result || (!result.heardSpeech && !forceTranscribe) || !onTranscribeAudio) {
           if (enabledRef.current && !mutedRef.current && !busyRef.current && statusRef.current !== 'speaking') {
@@ -160,6 +175,10 @@ export function useVoiceConversation({
 
         try {
           const transcript = (await onTranscribeAudio(result.audio)).trim()
+
+          if (!isCaptureCurrent(generation)) {
+            return
+          }
 
           if (!transcript) {
             if (enabledRef.current) {
@@ -186,8 +205,15 @@ export function useVoiceConversation({
           awaitingSpokenResponseRef.current = true
           dropSpeechSession()
           await onSubmit(transcript)
-          setStatus('thinking')
+
+          if (isCaptureCurrent(generation)) {
+            setStatus('thinking')
+          }
         } catch (error) {
+          if (!isCaptureCurrent(generation)) {
+            return
+          }
+
           notifyError(error, voiceCopy.transcriptionFailed)
 
           if (enabledRef.current && !mutedRef.current && !busyRef.current) {
@@ -197,16 +223,20 @@ export function useVoiceConversation({
           setStatus('idle')
         }
       } finally {
-        turnClosingRef.current = false
+        if (generation === captureGenerationRef.current) {
+          turnClosingRef.current = false
+        }
       }
     },
-    [handle, onSubmit, onTranscribeAudio, voiceCopy.transcriptionFailed]
+    [handle, isCaptureCurrent, onSubmit, onTranscribeAudio, voiceCopy.transcriptionFailed]
   )
 
   const startListening = useCallback(async () => {
     pendingStartRef.current = false
 
-    if (!enabledRef.current || mutedRef.current || busyRef.current) {
+    const generation = captureGenerationRef.current
+
+    if (!isCaptureCurrent(generation) || busyRef.current || startingRef.current !== null) {
       return
     }
 
@@ -218,6 +248,8 @@ export function useVoiceConversation({
       return
     }
 
+    startingRef.current = generation
+
     // Let the wake-word listener fully release the capture device before we
     // open ours — opening the mic while wake still holds it makes getUserMedia
     // fail (the "clicked voice but it never starts listening" bug).
@@ -228,7 +260,11 @@ export function useVoiceConversation({
     }
 
     // enabled/muted/busy or an interleaved turn may have changed while we waited.
-    if (!enabledRef.current || mutedRef.current || busyRef.current || statusRef.current !== 'idle') {
+    if (!isCaptureCurrent(generation) || busyRef.current || statusRef.current !== 'idle') {
+      if (startingRef.current === generation) {
+        startingRef.current = null
+      }
+
       return
     }
 
@@ -239,12 +275,25 @@ export function useVoiceConversation({
         silenceMs: 1_250,
         idleSilenceMs: 12_000,
         onError: error => {
+          if (!isCaptureCurrent(generation)) {
+            return
+          }
+
           notifyError(error, voiceCopy.microphoneFailed)
           pendingStartRef.current = false
           onFatalError?.()
         },
-        onSilence: () => void handleTurn()
+        onSilence: () => {
+          if (isCaptureCurrent(generation)) {
+            void handleTurn()
+          }
+        }
       })
+
+      if (!isCaptureCurrent(generation)) {
+        return
+      }
+
       setStatus('listening')
       // Clear any prior turn-timeout before arming a fresh one. Each listen
       // cycle reassigns turnTimeoutRef; without clearing first, a stale 60s
@@ -254,12 +303,20 @@ export function useVoiceConversation({
       clearTurnTimeout()
       turnTimeoutRef.current = window.setTimeout(() => void handleTurn(), 60_000)
     } catch (error) {
+      if (!isCaptureCurrent(generation)) {
+        return
+      }
+
       notifyError(error, voiceCopy.couldNotStartSession)
       pendingStartRef.current = false
       setStatus('idle')
       onFatalError?.()
+    } finally {
+      if (startingRef.current === generation) {
+        startingRef.current = null
+      }
     }
-  }, [handle, handleTurn, onFatalError, voiceCopy.couldNotStartSession, voiceCopy.microphoneFailed])
+  }, [handle, handleTurn, isCaptureCurrent, onFatalError, voiceCopy.couldNotStartSession, voiceCopy.microphoneFailed])
 
   const settleAfterSpeech = useCallback(
     (barged: boolean, stoppedDuringSetup = false) => {
@@ -291,7 +348,7 @@ export function useVoiceConversation({
 
       speechStartSequenceRef.current = 0
 
-      if (enabledRef.current && !stoppedByUser) {
+      if (activeRef.current && enabledRef.current && !mutedRef.current && !stoppedByUser) {
         pendingStartRef.current = true
       }
 
@@ -307,8 +364,18 @@ export function useVoiceConversation({
    */
   const submitCapturedUtterance = useCallback(
     async (audio: Blob | null) => {
+      const generation = captureGenerationRef.current
+
+      if (!isCaptureCurrent(generation)) {
+        return
+      }
+
       const resumeListening = () => {
-        if (enabledRef.current && !mutedRef.current) {
+        if (!isCaptureCurrent(generation)) {
+          return
+        }
+
+        if (!busyRef.current) {
           pendingStartRef.current = true
         }
 
@@ -325,6 +392,10 @@ export function useVoiceConversation({
 
       try {
         const transcript = (await onTranscribeAudio(audio)).trim()
+
+        if (!isCaptureCurrent(generation)) {
+          return
+        }
 
         if (!transcript) {
           resumeListening()
@@ -347,21 +418,32 @@ export function useVoiceConversation({
         // path refuses while `busy`, so wait for the interrupt to settle.
         const deadline = Date.now() + INTERRUPT_SETTLE_TIMEOUT_MS
 
-        while (busyRef.current && Date.now() < deadline) {
+        while (isCaptureCurrent(generation) && busyRef.current && Date.now() < deadline) {
           await new Promise(resolve => window.setTimeout(resolve, 100))
+        }
+
+        if (!isCaptureCurrent(generation)) {
+          return
         }
 
         awaitingSpokenResponseRef.current = true
         dropSpeechSession()
         consumePendingResponse()
         await onSubmit(transcript)
-        setStatus('thinking')
+
+        if (isCaptureCurrent(generation)) {
+          setStatus('thinking')
+        }
       } catch (error) {
+        if (!isCaptureCurrent(generation)) {
+          return
+        }
+
         notifyError(error, voiceCopy.transcriptionFailed)
         resumeListening()
       }
     },
-    [consumePendingResponse, onSubmit, onTranscribeAudio, voiceCopy.transcriptionFailed]
+    [consumePendingResponse, isCaptureCurrent, onSubmit, onTranscribeAudio, voiceCopy.transcriptionFailed]
   )
 
   /**
@@ -379,13 +461,19 @@ export function useVoiceConversation({
    * all call this).
    */
   const ensureBargeMonitor = useCallback(() => {
-    if (stopBargeMonitorRef.current) {
+    const generation = captureGenerationRef.current
+
+    if (stopBargeMonitorRef.current || !isCaptureCurrent(generation)) {
       return
     }
 
     stopBargeMonitorRef.current = monitorSpeechDuringPlayback({
       isPlaying: () => $voicePlayback.get().status === 'speaking',
       onSpeech: () => {
+        if (!isCaptureCurrent(generation)) {
+          return
+        }
+
         bargeCapturePendingRef.current = true
         bargedRef.current = true
         markVoicePlaybackInterrupted()
@@ -398,12 +486,16 @@ export function useVoiceConversation({
         }
       },
       onUtterance: audio => {
+        if (!isCaptureCurrent(generation)) {
+          return
+        }
+
         bargeCapturePendingRef.current = false
         stopBargeMonitorRef.current = null
         void submitCapturedUtterance(audio)
       }
     })
-  }, [submitCapturedUtterance])
+  }, [isCaptureCurrent, submitCapturedUtterance])
 
   /** Push any new reply text into the live session; finish when complete. */
   const feedSpeechSession = useCallback(
@@ -487,8 +579,6 @@ export function useVoiceConversation({
    */
   const openLiveSpeech = useCallback(
     (responseId: string) => {
-      const sequenceBeforeStart = $voicePlayback.get().sequence
-
       responseIdRef.current = responseId
       spokenSourceLengthRef.current = 0
       setStatus('speaking')
@@ -500,14 +590,15 @@ export function useVoiceConversation({
       ensureBargeMonitor()
 
       void (async () => {
-        const session = await startSpeechStream({ source: 'voice-conversation' })
+        const startingSession = startSpeechStream({ source: 'voice-conversation' })
+        const sequenceAtStart = $voicePlayback.get().sequence
+
+        speechStartSequenceRef.current = sequenceAtStart
+
+        const session = await startingSession
 
         // The session may resolve after the loop moved on (barge, disable).
-        if (responseIdRef.current !== responseId) {
-          if (session) {
-            stopVoicePlayback()
-          }
-
+        if (!activeRef.current || responseIdRef.current !== responseId) {
           return
         }
 
@@ -515,7 +606,7 @@ export function useVoiceConversation({
           // Stream discovery can also fail after an explicit Stop landed
           // during its async URL lookup. In that case, do not turn the stopped
           // live attempt into fresh fallback playback.
-          if ($voicePlayback.get().sequence > sequenceBeforeStart) {
+          if ($voicePlayback.get().sequence !== sequenceAtStart) {
             awaitingSpokenResponseRef.current = false
             settleAfterSpeech(false, true)
 
@@ -529,23 +620,17 @@ export function useVoiceConversation({
           return
         }
 
-        // startSpeechStream calls stopVoicePlayback once after its async URL
-        // lookup. A second sequence bump means the user pressed Stop while
-        // setup was still pending. Do not absorb that explicit stop into the
-        // post-start baseline or allow the new session to play.
-        const sequenceAfterStart = $voicePlayback.get().sequence
-        const stoppedDuringStart = sequenceAfterStart > sequenceBeforeStart + 1
-
-        speechStartSequenceRef.current = sequenceAfterStart
-        speechSessionRef.current = session
-
-        if (stoppedDuringStart) {
-          stopVoicePlayback()
+        // The playback owner reserves its sequence synchronously. A later
+        // stop or newer playback during async setup invalidates this attempt.
+        if ($voicePlayback.get().sequence !== sequenceAtStart) {
           awaitingSpokenResponseRef.current = false
           settleAfterSpeech(false, true)
 
           return
         }
+
+        speechStartSequenceRef.current = sequenceAtStart
+        speechSessionRef.current = session
 
         // Timer-driven feed: reply text flows into the session at delta rate
         // regardless of React render cadence.
@@ -584,6 +669,8 @@ export function useVoiceConversation({
       return
     }
 
+    activeRef.current = true
+    mutedRef.current = false
     setMuted(false)
     awaitingSpokenResponseRef.current = false
     dropSpeechSession()
@@ -600,6 +687,9 @@ export function useVoiceConversation({
   ])
 
   const end = useCallback(async () => {
+    activeRef.current = false
+    captureGenerationRef.current += 1
+    startingRef.current = null
     pendingStartRef.current = false
     clearTurnTimeout()
     stopVoicePlayback()
@@ -619,20 +709,56 @@ export function useVoiceConversation({
   }, [handleTurn])
 
   const toggleMute = useCallback(() => {
-    setMuted(value => {
-      const next = !value
+    const next = !mutedRef.current
 
-      if (next) {
-        clearTurnTimeout()
-        handle.cancel()
+    mutedRef.current = next
+    setMuted(next)
+
+    if (next) {
+      captureGenerationRef.current += 1
+      startingRef.current = null
+      pendingStartRef.current = false
+      turnClosingRef.current = false
+      clearTurnTimeout()
+      handle.cancel()
+      stopBargeMonitorRef.current?.()
+      stopBargeMonitorRef.current = null
+      bargeCapturePendingRef.current = false
+
+      if (statusRef.current === 'listening' || statusRef.current === 'transcribing') {
         setStatus('idle')
-      } else if (enabledRef.current && !busyRef.current && statusRef.current === 'idle') {
+      }
+    } else if (activeRef.current && enabledRef.current) {
+      if (statusRef.current === 'speaking') {
+        ensureBargeMonitor()
+      } else if (!busyRef.current && statusRef.current === 'idle') {
         pendingStartRef.current = true
       }
+    }
+  }, [ensureBargeMonitor, handle])
 
-      return next
-    })
-  }, [handle])
+  // eslint-disable-next-line no-restricted-syntax -- mount lifetime, not an atom mirror
+  useEffect(() => {
+    activeRef.current = enabled
+
+    return () => {
+      activeRef.current = false
+      captureGenerationRef.current += 1
+      pendingStartRef.current = false
+      clearTurnTimeout()
+      handle.cancel()
+      dropSpeechSession()
+
+      // Every composer mounts this hook, including inactive chats. Only the
+      // attempt this instance reserved may stop the shared playback owner.
+      if (speechStartSequenceRef.current > 0 && $voicePlayback.get().sequence === speechStartSequenceRef.current) {
+        stopVoicePlayback()
+      }
+    }
+    // The recorder's handle is recreated on render, but its methods own the
+    // same refs for this hook's lifetime. Cleanup belongs only to unmount.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   useEffect(() => {
     if (!enabled) {
@@ -678,7 +804,7 @@ export function useVoiceConversation({
   // idle between turns.
   // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
   useEffect(() => {
-    if (!enabled || muted) {
+    if (!enabled || muted || !activeRef.current) {
       return
     }
 

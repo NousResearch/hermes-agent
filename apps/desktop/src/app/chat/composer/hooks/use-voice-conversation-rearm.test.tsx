@@ -54,6 +54,8 @@ const mocks = vi.hoisted(() => {
       streamAvailable = true
     },
     startSpeechStream: vi.fn(async () => {
+      stopVoicePlayback()
+
       if (deferStreamStart) {
         await new Promise<void>(resolve => {
           resolveStreamStart = resolve
@@ -65,7 +67,7 @@ const mocks = vi.hoisted(() => {
       }
 
       const current = $voicePlayback.get()
-      $voicePlayback.set({ ...current, sequence: current.sequence + 1, status: 'preparing' })
+      $voicePlayback.set({ ...current, status: 'preparing' })
 
       return {
         append: vi.fn(),
@@ -199,12 +201,14 @@ describe('useVoiceConversation playback rearm', () => {
     await waitFor(() => expect(mocks.startSpeechStream).toHaveBeenCalled())
 
     mocks.stopVoicePlayback()
+    const stoppedSequence = $voicePlayback.get().sequence
+
     await act(async () => {
       mocks.continueStreamStart()
     })
 
     await waitFor(() => expect(hook.result.current.status).toBe('idle'))
-    expect(mocks.stopVoicePlayback).toHaveBeenCalledTimes(2)
+    expect($voicePlayback.get().sequence).toBe(stoppedSequence)
     expect(mocks.handle.start).toHaveBeenCalledTimes(1)
   })
 
@@ -254,5 +258,25 @@ describe('useVoiceConversation playback rearm', () => {
     )
     await waitFor(() => expect(mocks.handle.start).toHaveBeenCalledTimes(2))
     expect(hook.result.current.status).toBe('listening')
+  })
+
+  it.each([false, true])('unmount does not stop unrelated playback (voice active: %s)', async active => {
+    const hook = renderRearmConversation('owned-response', 'Voice reply')
+
+    if (active) {
+      await beginReply(hook)
+      await waitFor(() => expect(mocks.startSpeechStream).toHaveBeenCalled())
+    }
+
+    const unrelated = {
+      ...$voicePlayback.get(),
+      sequence: $voicePlayback.get().sequence + 1,
+      source: 'read-aloud' as const,
+      status: 'speaking' as const
+    }
+
+    $voicePlayback.set(unrelated)
+    hook.unmount()
+    expect($voicePlayback.get()).toEqual(unrelated)
   })
 })

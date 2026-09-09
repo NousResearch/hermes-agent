@@ -21,7 +21,6 @@ from fastapi import APIRouter
 from hermes_cli.web_routers._common import http_failure
 from hermes_cli.web_deps import late
 from hermes_cli.web_server_chat import _ws_auth_ok, _ws_request_is_allowed
-from hermes_cli.web_server_gateway import _split_text_for_speak_stream
 from fastapi import HTTPException, WebSocket, WebSocketDisconnect
 from hermes_cli.web_models import AudioTranscriptionRequest, TTSSpeakRequest, TTSLeaseRequest
 from typing import Any, Dict, Optional
@@ -379,7 +378,8 @@ async def speak_stream_ws(ws: "WebSocket") -> None:
         with _config_profile_scope(profile):
             cfg = _load_tts_config()
             streamer = resolve_streaming_provider(cfg)
-            cap = _resolve_max_text_length(_get_provider(cfg), cfg) if streamer else 0
+            provider = getattr(streamer, "provider_name", "") or _get_provider(cfg)
+            cap = _resolve_max_text_length(provider, cfg) if streamer else 0
         return streamer, cap
 
     try:
@@ -403,6 +403,7 @@ async def speak_stream_ws(ws: "WebSocket") -> None:
 
     def _produce():
         from tools.tts_streaming import SentenceChunker
+        from tools.tts_tool_delivery import _split_text_for_tts
         from tools.tts_text_normalize import _strip_markdown_for_tts
 
         chunker = SentenceChunker()
@@ -454,14 +455,20 @@ async def speak_stream_ws(ws: "WebSocket") -> None:
                 cleaned = _strip_markdown_for_tts(sentence)
                 if not cleaned:
                     continue
-                for piece in _split_text_for_speak_stream(cleaned, cap):
+                for piece in _split_text_for_tts(cleaned, cap):
                     if stop.is_set():
                         return
+                    produced_audio = False
                     for chunk in streamer.stream(piece):
                         if stop.is_set():
                             return
+                        if not chunk:
+                            continue
+                        produced_audio = True
                         if not _emit(chunk):
                             return
+                    if not produced_audio and not stop.is_set():
+                        raise RuntimeError("Voice provider returned no audio")
         except Exception as exc:
             if not stop.is_set():
                 _log.warning("speak-stream synthesis failed: %s", exc)
@@ -490,6 +497,7 @@ async def speak_stream_ws(ws: "WebSocket") -> None:
 
     pump = asyncio.ensure_future(_pump_client())
     next_chunk = None
+    sending = None
     try:
         while True:
             # A provider may still be blocked in network I/O after barge-in.
@@ -500,12 +508,20 @@ async def speak_stream_ws(ws: "WebSocket") -> None:
                 break
             chunk = next_chunk.result()
             if chunk is None:
-                await ws.send_json({"type": "end"})
+                send = ws.send_json({"type": "end"})
+            elif isinstance(chunk, dict):
+                send = ws.send_json(chunk)
+            else:
+                send = ws.send_bytes(chunk)
+            # A slow socket can block send_bytes just as an upstream can block
+            # synthesis. Barge-in owns both waits, including transport backpressure.
+            sending = asyncio.create_task(send)
+            ready, _ = await asyncio.wait((pump, sending), return_when=asyncio.FIRST_COMPLETED)
+            if pump in ready:
                 break
-            if isinstance(chunk, dict):
-                await ws.send_json(chunk)
+            sending.result()
+            if chunk is None or isinstance(chunk, dict):
                 break
-            await ws.send_bytes(chunk)
     except (WebSocketDisconnect, RuntimeError):
         pass
     finally:
@@ -514,9 +530,9 @@ async def speak_stream_ws(ws: "WebSocket") -> None:
         cancel = getattr(streamer, "cancel", None)
         if cancel is not None:
             cancel()
-        pump.cancel()
-        if next_chunk is not None:
-            next_chunk.cancel()
-        await asyncio.gather(pump, *([next_chunk] if next_chunk is not None else []), return_exceptions=True)
+        tasks = [task for task in (pump, next_chunk, sending) if task is not None]
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
         with contextlib.suppress(Exception):
             await ws.close()

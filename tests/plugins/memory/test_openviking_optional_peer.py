@@ -185,37 +185,44 @@ def test_new_setup_does_not_ask_for_or_save_peer(
         assert "agent_id" not in saved
 
 
-@pytest.mark.parametrize("peer", ["", "work-assistant"])
-def test_hermes_only_save_uses_the_same_clean_values_in_file_and_process(
-    tmp_path, peer
+def test_profile_link_removes_inline_values_from_file_and_process(
+    tmp_path, monkeypatch
 ):
-    from dotenv import dotenv_values
-
     env_path = tmp_path / ".env"
-    ov._setup._save_hermes_only_config(
-        config={"memory": {}},
-        provider_config={},
+    env_path.write_text(
+        "OPENVIKING_ENDPOINT=http://localhost:29333\n"
+        "OPENVIKING_API_KEY=test-key\n"
+        "OPENVIKING_AGENT=work-assistant\n"
+        "OTHER_KEY=keep\n",
+        encoding="utf-8",
+    )
+    for key in ov._OPENVIKING_ENV_KEYS:
+        monkeypatch.setenv(key, "old-value")
+
+    config = {"memory": {}}
+    provider_config = {}
+    profile_path = tmp_path / "ovcli.conf.personal"
+    ov._setup._link_ovcli_profile(
+        config=config,
+        provider_config=provider_config,
         env_path=env_path,
-        values={
-            "endpoint": "http://localhost:29333",
-            "api_key": "test\r\n-key\x00",
-            "agent": peer,
-        },
+        ovcli_path=profile_path,
     )
 
-    expected = {
-        "OPENVIKING_ENDPOINT": "http://localhost:29333",
-        "OPENVIKING_API_KEY": "test-key",
+    assert provider_config == {
+        "use_ovcli_config": True,
+        "ovcli_config_path": str(profile_path),
     }
-    if peer:
-        expected["OPENVIKING_AGENT"] = peer
-    assert dict(dotenv_values(env_path)) == expected
-    assert {
-        key: os.environ[key] for key in ov._OPENVIKING_ENV_KEYS if key in os.environ
-    } == expected
+    assert config["memory"]["provider"] == "openviking"
+    assert all(
+        key not in env_path.read_text(encoding="utf-8")
+        for key in ov._OPENVIKING_ENV_KEYS
+    )
+    assert "OTHER_KEY=keep" in env_path.read_text(encoding="utf-8")
+    assert all(key not in os.environ for key in ov._OPENVIKING_ENV_KEYS)
 
 
-def test_hermes_only_save_failure_leaves_process_environment_unchanged(
+def test_profile_link_failure_leaves_process_environment_unchanged(
     tmp_path, monkeypatch
 ):
     for key in ov._OPENVIKING_ENV_KEYS:
@@ -226,11 +233,11 @@ def test_hermes_only_save_failure_leaves_process_environment_unchanged(
 
     monkeypatch.setattr(ov, "_write_env_vars", fail_write)
     with pytest.raises(OSError, match="test write failure"):
-        ov._setup._save_hermes_only_config(
+        ov._setup._link_ovcli_profile(
             config={"memory": {}},
             provider_config={},
             env_path=tmp_path / ".env",
-            values={"endpoint": "http://localhost:29333", "api_key": "test-key"},
+            ovcli_path=tmp_path / "ovcli.conf.personal",
         )
 
     assert all(os.environ[key] == "old-value" for key in ov._OPENVIKING_ENV_KEYS)

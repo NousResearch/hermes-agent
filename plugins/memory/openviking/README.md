@@ -25,15 +25,16 @@ openviking-server doctor
 openviking-server
 ```
 
-Then configure Hermes:
+Then configure Hermes from either the CLI or Desktop:
 
 ```bash
 hermes memory setup    # select "openviking"
 ```
 
-The setup can link to an existing `~/.openviking/ovcli.conf`, copy its current
-connection values into Hermes, or create a minimal `ovcli.conf` when one does
-not exist.
+In Desktop, select **OpenViking** under **Settings > Memory & Context**, then
+choose **Configure**. Both setup surfaces can link an existing OpenViking CLI
+profile or create a named `~/.openviking/ovcli.conf.<name>` profile. Hermes stores
+only the profile link; connection secrets remain in the OpenViking profile.
 
 Or manually:
 
@@ -46,10 +47,11 @@ default profile that is `~/.hermes/.env`; for a named profile use
 `~/.hermes/profiles/<profile>/.env`.
 
 ```text
-OPENVIKING_ENDPOINT=http://127.0.0.1:1933
+OPENVIKING_URL=http://127.0.0.1:1933
 # OPENVIKING_API_KEY=...
 # OPENVIKING_ACCOUNT=default
 # OPENVIKING_USER=default
+# OPENVIKING_ACTOR_PEER_ID=work-assistant
 ```
 
 ## Config
@@ -68,11 +70,14 @@ profile's `.env`:
 
 | Env Var | Default | Description |
 |---------|---------|-------------|
-| `OPENVIKING_ENDPOINT` | `http://127.0.0.1:1933` | Server URL |
+| `OPENVIKING_URL` | `http://127.0.0.1:1933` | Server URL |
 | `OPENVIKING_API_KEY` | (none) | User/admin API key for authenticated servers |
 | `OPENVIKING_ACCOUNT` | `default` | Tenant account for local/trusted mode |
 | `OPENVIKING_USER` | `default` | Tenant user for local/trusted mode |
-| `OPENVIKING_AGENT` | (none) | Optional peer ID for separate assistant context |
+| `OPENVIKING_ACTOR_PEER_ID` | (none) | Optional peer ID for separate assistant context |
+
+`OPENVIKING_ENDPOINT` and `OPENVIKING_AGENT` remain runtime fallbacks for
+existing installations. New configuration should use the canonical names above.
 
 When `OPENVIKING_API_KEY` is set, Hermes lets OpenViking derive account/user
 identity from the key. In local or trusted deployments without an API key,

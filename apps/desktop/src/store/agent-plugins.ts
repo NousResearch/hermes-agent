@@ -205,13 +205,19 @@ export async function installAgentPlugin(
       warnings?: string[]
       missing_env?: string[]
       error?: string
-    }>('plugins.manage', withProfile({
-      action: 'install',
-      identifier: opts.identifier,
-      force: Boolean(opts.force),
-      enable: opts.enable ?? true,
-      ...(opts.catalogName ? { catalog_name: opts.catalogName } : {})
-    }, opts.profile))
+    }>(
+      'plugins.manage',
+      withProfile(
+        {
+          action: 'install',
+          identifier: opts.identifier,
+          force: Boolean(opts.force),
+          enable: opts.enable ?? true,
+          ...(opts.catalogName ? { catalog_name: opts.catalogName } : {})
+        },
+        opts.profile
+      )
+    )
 
     if (!result?.ok) {
       return { ok: false, error: result?.error || 'Install failed' }

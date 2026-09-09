@@ -161,10 +161,7 @@ describe('PluginsTab', () => {
 
     toggle.click()
 
-    expect(requestGateway).not.toHaveBeenCalledWith(
-      'plugins.manage',
-      expect.objectContaining({ action: 'toggle' })
-    )
+    expect(requestGateway).not.toHaveBeenCalledWith('plugins.manage', expect.objectContaining({ action: 'toggle' }))
   })
 
   it('appends the subdir fragment for multi-plugin repos', async () => {
@@ -183,9 +180,7 @@ describe('PluginsTab', () => {
     )
 
     await waitFor(() => {
-      expect($pluginInstallRequest.get()?.repo).toBe(
-        'https://github.com/example/plugins-monorepo#nested-plugin'
-      )
+      expect($pluginInstallRequest.get()?.repo).toBe('https://github.com/example/plugins-monorepo#nested-plugin')
     })
   })
 })

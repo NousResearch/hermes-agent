@@ -300,7 +300,9 @@ class SessionCompressionMixin:
     def restore_compression_failure_cooldown_row(self, session_id: str, snapshot: Dict[str, Any]) -> None:
         """Restore and verify an exact cooldown-row snapshot. Unlike record/clear this
         rollback API propagates write and verification failures: cancellation must not be
-        reported mutation-free when compensation failed."""
+        reported mutation-free when compensation failed. The one tolerated exception is a
+        session row that vanished mid-attempt: its cooldown died with it, so there is
+        nothing left to restore (#106271)."""
         if not snapshot.get("session_exists", False):
             if self.get_compression_failure_cooldown_row(session_id).get("session_exists", False):
                 raise RuntimeError("cannot restore absent compression cooldown row: session now exists")
@@ -311,9 +313,13 @@ class SessionCompressionMixin:
             cursor = conn.execute(
                 "UPDATE sessions SET compression_failure_cooldown_until = ?, "
                 "compression_failure_error = ? WHERE id = ?", (deadline, error, session_id))
-            if cursor.rowcount != 1:
-                raise RuntimeError(f"compression cooldown rollback session missing: {session_id}")
-        self._execute_write(_do)
+            return cursor.rowcount == 1
+        if not self._execute_write(_do):
+            # The session row was retired/expired (e.g. by the maintenance sweep) between
+            # the snapshot and this compensating write (#106271): a routine race must not
+            # crash the turn dispatcher when the rolled-back state no longer exists.
+            logger.warning("compression cooldown rollback session missing: %s", session_id)
+            return
         actual = self.get_compression_failure_cooldown_row(session_id)
         expected = _cooldown_row(True, deadline, error)
         if actual != expected:

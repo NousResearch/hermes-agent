@@ -6,7 +6,12 @@ import { useTourMarker } from '@/app/chat/tour-marker'
 import { ModelMenuCloseContext } from '@/app/shell/model-menu-panel'
 import { isElementInHiddenPane } from '@/components/pane-shell/pane-visibility'
 import { Button } from '@/components/ui/button'
-import { DropdownMenu, DropdownMenuContent, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuLabel,
+  DropdownMenuTrigger
+} from '@/components/ui/dropdown-menu'
 import { GlyphSpinner } from '@/components/ui/glyph-spinner'
 import { releaseTypingFocus } from '@/components/ui/keyboard-first'
 import { Tip } from '@/components/ui/tooltip'
@@ -14,6 +19,7 @@ import { useI18n } from '@/i18n'
 import { ChevronDown } from '@/lib/icons'
 import { formatModelStatusLabel } from '@/lib/model-status-label'
 import { cn } from '@/lib/utils'
+import { $connectionsRegistry } from '@/store/connection-registry-state'
 import { $currentModelSource, $defaultReasoningEffort, setModelPickerOpen } from '@/store/session'
 
 import { onComposerModelMenuRequest } from './focus'
@@ -46,7 +52,17 @@ export function ModelPill({
   disabled: boolean
   model: ChatBarState['model']
 }) {
-  const copy = useI18n().t.shell.statusbar
+  const { t } = useI18n()
+  const copy = t.shell.statusbar
+  const registry = useStore($connectionsRegistry)
+  const connection = registry?.connections.find(item => item.id === model.ownerConnectionId)
+  // ponytail: display the same owner as the catalog; never infer persistence scope.
+  const gatewayLabel = connection?.label || model.ownerConnectionId
+
+  const owner = gatewayLabel
+    ? t.profiles.fleet.onGateway(model.ownerProfile || '', gatewayLabel)
+    : model.ownerProfile || ''
+
   // Two return branches below, one handle: only ever one of them mounts.
   const tourMarker = useTourMarker('model-pill')
   const view = useSessionView()
@@ -131,8 +147,11 @@ export function ModelPill({
   ) : (
     <>
       {currentModel.trim() ? (
-        <span className="truncate">
-          {formatModelStatusLabel(currentModel, { defaultEffort, fastMode, reasoningEffort })}
+        <span className="min-w-0 text-left leading-none">
+          {owner && <span className="block truncate text-[0.625rem] leading-none">{owner}</span>}
+          <span className="block truncate">
+            {formatModelStatusLabel(currentModel, { defaultEffort, fastMode, reasoningEffort })}
+          </span>
         </span>
       ) : (
         <GlyphSpinner className="opacity-50" spinner="braille" />
@@ -162,13 +181,14 @@ export function ModelPill({
     ? copy.modelTitle(currentProvider, currentModel || copy.modelNone)
     : copy.switchModel
 
-  const title = pinnedOverride ? `${baseTitle} — ${copy.modelPinned}` : baseTitle
+  const title = [owner, baseTitle, pinnedOverride ? copy.modelPinned : ''].filter(Boolean).join(' — ')
+  const pickerTitle = [owner, copy.openModelPicker, pinnedOverride ? copy.modelPinned : ''].filter(Boolean).join(' — ')
 
   if (!model.modelMenuContent) {
     return (
-      <Tip label={pinnedOverride ? `${copy.openModelPicker} — ${copy.modelPinned}` : copy.openModelPicker} side="top">
+      <Tip label={pickerTitle} side="top">
         <Button
-          aria-label={copy.openModelPicker}
+          aria-label={pickerTitle}
           className={pillClass}
           data-tour={tourMarker}
           disabled={disabled}
@@ -225,6 +245,7 @@ export function ModelPill({
         side="top"
         sideOffset={8}
       >
+        {owner && <DropdownMenuLabel className="whitespace-normal break-words">{owner}</DropdownMenuLabel>}
         <ModelMenuCloseContext.Provider value={() => setMenuOpen(false)}>
           {model.modelMenuContent}
         </ModelMenuCloseContext.Provider>

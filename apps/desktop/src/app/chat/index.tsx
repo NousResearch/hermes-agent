@@ -591,6 +591,8 @@ const ChatViewContent = memo(function ChatViewContent({
     () => ({
       model: {
         model: currentModel,
+        ownerConnectionId: modelOptionsOwnerConnectionId,
+        ownerProfile: modelOptionsProfile || activeGatewayProfile,
         provider: currentProvider,
         canSwitch: gatewayOpen,
         loading: !gatewayOpen || (!currentModel && !currentProvider),
@@ -607,7 +609,17 @@ const ChatViewContent = memo(function ChatViewContent({
         active: false
       }
     }),
-    [contextSuggestions, currentModel, currentProvider, gatewayOpen, modelMenuContent, quickModels]
+    [
+      activeGatewayProfile,
+      contextSuggestions,
+      currentModel,
+      currentProvider,
+      gatewayOpen,
+      modelMenuContent,
+      modelOptionsOwnerConnectionId,
+      modelOptionsProfile,
+      quickModels
+    ]
   )
 
   // Drop files anywhere in the conversation area, not just on the composer

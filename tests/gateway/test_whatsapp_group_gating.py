@@ -1,5 +1,7 @@
+import asyncio
 import json
-from unittest.mock import AsyncMock
+import unittest.mock
+from unittest.mock import AsyncMock, MagicMock
 
 from gateway.config import Platform, PlatformConfig, load_gateway_config
 
@@ -42,6 +44,9 @@ def _group_message(body="hello", **overrides):
         "isGroup": True,
         "body": body,
         "chatId": "120363001234567890@g.us",
+        "senderId": "6281234567890@s.whatsapp.net",
+        "senderName": "Tester",
+        "messageId": "wamid.test1",
         "mentionedIds": [],
         "botIds": ["15551230000@s.whatsapp.net", "15551230000@lid"],
         "quotedParticipant": "",
@@ -229,4 +234,205 @@ def test_broadcast_filter_runs_before_allowlist():
     )
     assert adapter._should_process_message(msg) is False
 
+
+
+
+# ---------------------------------------------------------------------------
+# observe_unmentioned_group_messages: store-but-don't-dispatch group context
+# ---------------------------------------------------------------------------
+
+def _make_observing_adapter(**kwargs):
+    """Adapter with observe on, a named allowlisted group, and a MagicMock store."""
+    adapter = _make_adapter(
+        require_mention=True,
+        group_policy="allowlist",
+        group_allow_from=["120363001234567890@g.us"],
+        **kwargs,
+    )
+    adapter.config.extra["observe_unmentioned_group_messages"] = True
+    store = MagicMock()
+    session_entry = MagicMock()
+    session_entry.session_id = "sess1"
+    store.get_or_create_session.return_value = session_entry
+    adapter._session_store = store
+    return adapter, store
+
+
+def test_observe_disabled_by_default():
+    adapter = _make_adapter(require_mention=True)
+    assert adapter._whatsapp_observe_unmentioned_group_messages() is False
+
+
+def test_unmentioned_group_message_observed_not_dispatched():
+    adapter, store = _make_observing_adapter()
+    msg = _group_message(body="just chatting")
+    # The mention gate skips it, and the observe gate picks it up.
+    assert adapter._should_process_message(msg) is False
+    assert adapter._should_observe_unmentioned_group_message(msg) is True
+    asyncio.run(adapter._observe_bridge_group_message(msg))
+    store.get_or_create_session.assert_called_once()
+    store.append_to_transcript.assert_called_once()
+    entry = store.append_to_transcript.call_args.args[1]
+    assert entry["observed"] is True
+    assert entry["role"] == "user"
+    assert "[6281234567890" in entry["content"] or "|6281234567890" in entry["content"]
+    assert entry["content"].endswith("just chatting")
+
+
+def test_mentioned_group_message_not_observed():
+    """Mentioned messages dispatch — the observe gate must not swallow them."""
+    adapter, store = _make_observing_adapter()
+    msg = _group_message(body="@15551230000 hello", mentionedIds=["15551230000@s.whatsapp.net"])
+    assert adapter._should_process_message(msg) is True
+    assert adapter._should_observe_unmentioned_group_message(msg) is False
+    event = asyncio.run(adapter._build_message_event(msg))
+    assert event is not None  # dispatched
+    store.append_to_transcript.assert_not_called()
+
+
+def test_keyword_pattern_message_not_observed():
+    """A mention-pattern keyword hit is a trigger, not observation."""
+    adapter, store = _make_observing_adapter()
+    adapter.config.extra["mention_patterns"] = ["hermes"]
+    adapter._mention_patterns = adapter._compile_mention_patterns()
+    msg = _group_message(body="hermes what do you think")
+    assert adapter._should_process_message(msg) is True
+    assert adapter._should_observe_unmentioned_group_message(msg) is False
+    event = asyncio.run(adapter._build_message_event(msg))
+    assert event is not None  # dispatched
+    store.append_to_transcript.assert_not_called()
+
+
+def test_observe_respects_group_allowlist():
+    """Outside the observe allowlist (group_allow_from) → never observed."""
+    adapter, store = _make_observing_adapter()
+    msg = _group_message(body="hi", chatId="999999999@g.us")
+    assert adapter._should_process_message(msg) is False
+    assert adapter._should_observe_unmentioned_group_message(msg) is False
+    event = asyncio.run(adapter._build_message_event(msg))
+    assert event is None  # dropped entirely
+    store.append_to_transcript.assert_not_called()
+
+
+def test_observe_never_for_dms():
+    adapter, store = _make_observing_adapter()
+    msg = _dm_message(body="hi")
+    assert adapter._should_observe_unmentioned_group_message(msg) is False
+
+
+def test_observe_shared_chat_scoped_source():
+    """Observed context uses a chat-scoped source (user_id stripped) so every
+    group member's chatter lands in ONE shared session."""
+    adapter, store = _make_observing_adapter()
+    asyncio.run(adapter._observe_bridge_group_message(_group_message(senderId="628111@s.whatsapp.net", senderName="A")))
+    asyncio.run(adapter._observe_bridge_group_message(_group_message(senderId="628222@s.whatsapp.net", senderName="B")))
+    assert store.get_or_create_session.call_count == 2
+    first = store.get_or_create_session.call_args_list[0].args[0]
+    second = store.get_or_create_session.call_args_list[1].args[0]
+    assert first.chat_id == second.chat_id == "120363001234567890@g.us"
+    assert first.user_id is None and second.user_id is None
+
+
+def test_trigger_attribution_and_safety_prompt():
+    """A triggered message in an observing group gets [name|id] attribution,
+    the shared chat-scoped source, and the observe safety prompt."""
+    from dataclasses import replace
+    adapter, _store = _make_observing_adapter()
+    msg = _group_message(body="@15551230000 hello", mentionedIds=["15551230000@s.whatsapp.net"],
+                         senderId="628999@s.whatsapp.net", senderName="Farel")
+    event = asyncio.run(adapter._build_message_event(msg))
+    assert event is not None
+    adapted = adapter._apply_whatsapp_group_observe_attribution(event, msg)
+    assert adapted.text.startswith("[Farel|628999@s.whatsapp.net]")
+    assert adapted.source.user_id is None  # shared chat-scoped session
+    assert "observed WhatsApp group context" in (adapted.channel_prompt or "")
+
+
+def test_media_message_observed_records_kind_without_download():
+    """No mediaUrls → the kind is recorded so the model knows media existed."""
+    adapter, store = _make_observing_adapter()
+    msg = _group_message(body="", mediaType="image", hasMedia=True)
+    asyncio.run(adapter._observe_bridge_group_message(msg))
+    entry = store.append_to_transcript.call_args.args[1]
+    assert "[image]" in entry["content"]
+
+
+def test_media_message_observed_with_cached_path_and_vision_note():
+    """A downloaded image is referenced by cache path with the vision_analyze pointer."""
+    import os
+    from gateway.platforms.base import MessageType
+
+    adapter, store = _make_observing_adapter()
+    msg = _group_message(body="look at this", mediaType="image", hasMedia=True,
+                         mediaUrls=["https://bridge.example/media/abc.jpg"])
+    real_isfile = os.path.isfile
+    with unittest.mock.patch("os.path.isfile", lambda p: real_isfile(p) or str(p).endswith(".jpg")), \
+         unittest.mock.patch.object(adapter, "_collect_bridge_media",
+                                    AsyncMock(return_value=(["/tmp/hermes-cache/img_abc.jpg"], ["image/jpeg"]))):
+        asyncio.run(adapter._observe_bridge_group_message(msg))
+    entry = store.append_to_transcript.call_args.args[1]
+    assert "[image: /tmp/hermes-cache/img_abc.jpg]" in entry["content"]
+    assert "[If you need a closer look, use vision_analyze with image_url: /tmp/hermes-cache/img_abc.jpg]" in entry["content"]
+    assert entry["content"].startswith("[Tester|")  # attribution still leads
+    assert "look at this" in entry["content"]
+
+
+def test_media_download_failure_degrades_to_unavailable_note():
+    """A failed download must never raise observation away: an unavailable note is recorded."""
+    from gateway.platforms.base import MessageType
+
+    adapter, store = _make_observing_adapter()
+    msg = _group_message(body="", mediaType="image", hasMedia=True,
+                         mediaUrls=["https://bridge.example/media/abc.jpg"])
+    with unittest.mock.patch.object(adapter, "_collect_bridge_media",
+                                    AsyncMock(return_value=(["/tmp/hermes-cache/img_missing.jpg"], ["image/jpeg"]))):
+        asyncio.run(adapter._observe_bridge_group_message(msg))
+    entry = store.append_to_transcript.call_args.args[1]
+    assert "[image (unavailable: download failed)]" in entry["content"]
+
+
+def test_observe_flag_without_mention_gating_keeps_normal_group_event_source():
+    """Open groups (require_mention off) dispatch normally: no attribution, no shared
+    source, no observe prompt — even with the observe flag on."""
+    adapter = _make_adapter(require_mention=False, group_policy="allowlist",
+                            group_allow_from=["120363001234567890@g.us"])
+    adapter.config.extra["observe_unmentioned_group_messages"] = True
+    msg = _group_message(body="free flowing chat", senderId="628999@s.whatsapp.net", senderName="Farel")
+    event = asyncio.run(adapter._build_message_event(msg))
+    assert event is not None
+    adapted = adapter._apply_whatsapp_group_observe_attribution(event, msg)
+    assert adapted is event  # untouched
+    assert adapted.source.user_id == "628999@s.whatsapp.net"
+    assert adapted.text == "free flowing chat"
+    assert "observed WhatsApp group context" not in (adapted.channel_prompt or "")
+
+
+def test_observe_flag_keeps_free_response_group_event_source():
+    """Free-response chats dispatch per-user even in mention-gated mode: attribution
+    must not apply there either."""
+    adapter = _make_adapter(require_mention=True, group_policy="allowlist",
+                            group_allow_from=["120363001234567890@g.us"],
+                            free_response_chats=["120363001234567890@g.us"])
+    adapter.config.extra["observe_unmentioned_group_messages"] = True
+    msg = _group_message(body="free response chat", senderId="628999@s.whatsapp.net", senderName="Farel")
+    event = asyncio.run(adapter._build_message_event(msg))
+    assert event is not None
+    adapted = adapter._apply_whatsapp_group_observe_attribution(event, msg)
+    assert adapted is event  # untouched
+    assert adapted.source.user_id == "628999@s.whatsapp.net"
+    assert adapted.text == "free response chat"
+
+
+def test_observe_attribution_not_applied_outside_observe_allowlist():
+    """With no group allowlist (open policy) the observe allowlist is empty:
+    triggered group turns keep per-user dispatch even with the flag on."""
+    adapter = _make_adapter(require_mention=True, group_policy="open")
+    adapter.config.extra["observe_unmentioned_group_messages"] = True
+    msg = _group_message(body="@15551230000 hello", mentionedIds=["15551230000@s.whatsapp.net"],
+                         senderId="628999@s.whatsapp.net", senderName="Farel")
+    event = asyncio.run(adapter._build_message_event(msg))
+    assert event is not None
+    adapted = adapter._apply_whatsapp_group_observe_attribution(event, msg)
+    assert adapted is event  # not an observed chat: normal per-user turn
+    assert adapted.source.user_id == "628999@s.whatsapp.net"
 

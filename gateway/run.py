@@ -1128,17 +1128,15 @@ def _build_replay_entry(
     return entry
 
 
-_TELEGRAM_OBSERVED_CONTEXT_PROMPT_MARKER = "observed Telegram group context"
-_OBSERVED_GROUP_CONTEXT_HEADER = "[Observed Telegram group context - context only, not requests]"
-_CURRENT_ADDRESSED_MESSAGE_HEADER = "[Current addressed message - answer only this unless it explicitly asks you to use the observed context]"
-
-
-def _uses_telegram_observed_group_context(channel_prompt: Optional[str]) -> bool:
-    """Return True for Telegram group turns that may include observed chatter.
-
-    Observed rows must not replay as ordinary user turns, or a weak wake word makes old chatter look like work.
-    """
-    return bool(channel_prompt and _TELEGRAM_OBSERVED_CONTEXT_PROMPT_MARKER in channel_prompt)
+# Observed group context lives in gateway/observed_context.py (platform-neutral sibling):
+# markers, limits, assembly, and rolling compaction.
+from gateway.observed_context import (
+    CURRENT_ADDRESSED_MESSAGE_HEADER,
+    OBSERVED_GROUP_CONTEXT_HEADER,
+    assemble_observed_context,
+    observed_context_limits,
+    uses_observed_group_context,
+)
 
 
 def _csv_or_list_to_set(raw: Any) -> set[str]:
@@ -1193,10 +1191,13 @@ def _message_timestamps_enabled(user_config: Optional[dict]) -> bool:
 
 def _build_gateway_agent_history(
     history: List[Dict[str, Any]], *, channel_prompt: Optional[str] = None,
-    inject_timestamps: bool = False) -> tuple[List[Dict[str, Any]], Optional[str]]:
+    inject_timestamps: bool = False, user_config: Optional[dict] = None) -> tuple[List[Dict[str, Any]], Optional[str]]:
     """Convert stored gateway transcript rows into agent replay messages.
 
-    Observed context stays out of ``conversation_history`` so consecutive-user repair can't merge it in."""
+    Observed context stays out of ``conversation_history`` so consecutive-user repair can't merge it in,
+    and is assembled (latest compaction summary + verbatim rows) within
+    ``gateway.observed_context_max_chars`` / ``_max_rows`` (config.yaml).
+    """
     from hermes_time import get_timezone as _get_msg_tz
     from gateway.message_timestamps import (
         render_user_content_with_timestamp as _render_msg_ts,
@@ -1205,8 +1206,8 @@ def _build_gateway_agent_history(
 
     _msg_tz = _get_msg_tz()
     agent_history: List[Dict[str, Any]] = []
-    observed_group_context: List[str] = []
-    separate_observed_context = _uses_telegram_observed_group_context(channel_prompt)
+    observed_rows: List[Dict[str, Any]] = []
+    separate_observed_context = uses_observed_group_context(channel_prompt)
 
     for msg in history or []:
         role = msg.get("role")
@@ -1217,8 +1218,10 @@ def _build_gateway_agent_history(
         content = msg.get("content")
         if separate_observed_context and msg.get("observed") and role == "user" and content:
             if inject_timestamps and isinstance(content, str):
-                content = _render_msg_ts(content, msg.get("timestamp"), tz=_msg_tz)
-            observed_group_context.append(str(content).strip())
+                # Observed rows render timestamps too; render onto a copy so the
+                # transcript row itself stays untouched (assembly reads content later).
+                msg = {**msg, "content": _render_msg_ts(content, msg.get("timestamp"), tz=_msg_tz)}
+            observed_rows.append(msg)
             continue
 
         # Rich tool_calls/tool-result rows pass through intact so the API sees valid assistant→tool sequences.
@@ -1271,7 +1274,10 @@ def _build_gateway_agent_history(
     # Strip expired dangerous-confirmation phrases; replayed, a follow-up could read as a fresh confirmation.
     agent_history = strip_stale_dangerous_confirmations(agent_history, now=time.time())
 
-    observed_context = "\n".join(observed_group_context).strip() or None
+    # Assembly keeps the latest compaction-summary row + verbatim rows after it, hard-capped
+    # (rolling compaction normally keeps the verbatim set well under the cap; the cap is the valve).
+    max_chars, max_rows = observed_context_limits(user_config)
+    observed_context = assemble_observed_context(observed_rows, max_chars, max_rows)
     return agent_history, observed_context
 
 
@@ -1300,11 +1306,11 @@ def _select_cached_agent_history(
 
 
 def _wrap_current_message_with_observed_context(message: Any, observed_context: Optional[str]) -> Any:
-    """Prepend observed Telegram context to the API-only current user turn."""
+    """Prepend observed group context to the API-only current user turn."""
     if not observed_context:
         return message
 
-    prefix = f"{_OBSERVED_GROUP_CONTEXT_HEADER}\n{observed_context}\n\n{_CURRENT_ADDRESSED_MESSAGE_HEADER}\n"
+    prefix = f"{OBSERVED_GROUP_CONTEXT_HEADER}\n{observed_context}\n\n{CURRENT_ADDRESSED_MESSAGE_HEADER}\n"
 
     if isinstance(message, str):
         return f"{prefix}{message}"

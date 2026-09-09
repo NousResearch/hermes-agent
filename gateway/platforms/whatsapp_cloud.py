@@ -535,7 +535,9 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             return SendResult(success=False, error="Exactly one of media_id or media_link must be set")
         media_block: Dict[str, Any] = {"id": media_id} if media_id else {"link": media_link}
         if caption and media_kind in {"image", "video", "document"}:
-            media_block["caption"] = caption
+            # Markdown→WhatsApp conversion so caption text never leaks raw
+            # # / ** markers (WhatsApp renders *bold*/_italic_ in captions).
+            media_block["caption"] = self.format_message(caption)
         if filename and media_kind == "document":
             media_block["filename"] = filename
         return await self._post_message_result(

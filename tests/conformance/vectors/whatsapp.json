@@ -2,7 +2,7 @@
   "$comment": "GENERATED — do not hand-edit. Regenerate with hermes-agent scripts/generate_conformance_vectors.py; the native renderers are the oracle (executable spec).",
   "oracle": {
     "repo": "NousResearch/hermes-agent",
-    "commit": "40eebc7d70f3d8e95c429c8aa482f31ba6c867f6",
+    "commit": "c42e3c5f6744b1af01c8f7c24019b0e7faf2b67b",
     "generator": "scripts/generate_conformance_vectors.py",
     "generator_version": 1
   },
@@ -44,6 +44,27 @@
       "native_output": "This is ~struck~ text."
     },
     {
+      "id": "tilde-approx",
+      "category": "grid",
+      "expect": "parity",
+      "input": "cost ~2.00USD~ total",
+      "native_output": "cost ~ 2.00USD~ total"
+    },
+    {
+      "id": "tilde-space-safe",
+      "category": "grid",
+      "expect": "parity",
+      "input": "~5USD ~4USD and range ~5 to ~10",
+      "native_output": "~5USD ~4USD and range ~5 to ~10"
+    },
+    {
+      "id": "tilde-mixed",
+      "category": "grid",
+      "expect": "parity",
+      "input": "~~done~~ and ~maybe~",
+      "native_output": "~done~ and ~ maybe~"
+    },
+    {
       "id": "inline-code",
       "category": "grid",
       "expect": "parity",
@@ -62,7 +83,7 @@
       "category": "grid",
       "expect": "parity",
       "input": "```python\ndef f(x):\n    return x * 2\n```",
-      "native_output": "```python\ndef f(x):\n    return x * 2\n```"
+      "native_output": "*python*\n```\ndef f(x):\n    return x * 2\n```"
     },
     {
       "id": "link",
@@ -83,21 +104,28 @@
       "category": "grid",
       "expect": "parity",
       "input": "# Big Title\nBody follows.",
-      "native_output": "*Big Title*\nBody follows."
+      "native_output": "𝐁𝐢𝐠 𝐓𝐢𝐭𝐥𝐞\n\nBody follows."
     },
     {
       "id": "header-h2",
       "category": "grid",
       "expect": "parity",
       "input": "## Section\nBody follows.",
-      "native_output": "*Section*\nBody follows."
+      "native_output": "𝑺𝒆𝒄𝒕𝒊𝒐𝒏\n\nBody follows."
     },
     {
       "id": "header-h3",
       "category": "grid",
       "expect": "parity",
       "input": "### Sub-section\nBody follows.",
-      "native_output": "*Sub-section*\nBody follows."
+      "native_output": "𝑆𝑢𝑏-𝑠𝑒𝑐𝑡𝑖𝑜𝑛\n\nBody follows."
+    },
+    {
+      "id": "header-h3-italic-h",
+      "category": "grid",
+      "expect": "parity",
+      "input": "### high hopes\nBody follows.",
+      "native_output": "ℎ𝑖𝑔ℎ ℎ𝑜𝑝𝑒𝑠\n\nBody follows."
     },
     {
       "id": "ul-list",
@@ -125,21 +153,22 @@
       "category": "grid",
       "expect": "parity",
       "input": "> quoted wisdom\nregular line",
-      "native_output": "> quoted wisdom\nregular line"
+      "native_output": "> quoted wisdom\n> regular line"
     },
     {
       "id": "hrule",
       "category": "grid",
       "expect": "parity",
       "input": "above\n\n---\n\nbelow",
-      "native_output": "above\n\n---\n\nbelow"
+      "native_output": "above\n\n────────────\n\nbelow"
     },
     {
       "id": "table-simple",
       "category": "grid",
       "expect": "parity",
       "input": "| name | value |\n|------|-------|\n| a    | 1     |\n| b    | 2     |",
-      "native_output": "| name | value |\n|------|-------|\n| a    | 1     |\n| b    | 2     |"
+      "native_output": "*name*: a\n*value*: 1\n\n*name*: b\n*value*: 2",
+      "note": "default flatten renders key/value lines"
     },
     {
       "id": "emoji",
@@ -167,7 +196,7 @@
       "category": "grid",
       "expect": "parity",
       "input": "## Report\n\nStatus: **green**. Details in `runbook.md`.\n\n- item *one*\n- item **two**\n\n```sh\nmake deploy\n```\n\nSee [dashboard](https://grafana.example.com/d/x).",
-      "native_output": "*Report*\n\nStatus: *green*. Details in `runbook.md`.\n\n- item _one_\n- item *two*\n\n```sh\nmake deploy\n```\n\nSee dashboard (https://grafana.example.com/d/x)."
+      "native_output": "𝑹𝒆𝒑𝒐𝒓𝒕\n\nStatus: *green*. Details in `runbook.md`.\n\n- item _one_\n- item *two*\n\n*sh*\n```\nmake deploy\n```\n\nSee dashboard (https://grafana.example.com/d/x)."
     },
     {
       "id": "mdv2-reserved-chars",
@@ -216,14 +245,15 @@
       "category": "scar",
       "expect": "parity",
       "input": "```text\nliteral first line issue\n```",
-      "native_output": "```text\nliteral first line issue\n```"
+      "native_output": "*text*\n```\nliteral first line issue\n```"
     },
     {
       "id": "backslash-in-code",
       "category": "scar",
-      "expect": "parity",
+      "expect": "divergent",
       "input": "`C:\\Users\\ben\\file.txt` and ```\npath = \"a\\\\b\"\n```",
-      "native_output": "`C:\\Users\\ben\\file.txt` and ```\npath = \"a\\\\b\"\n```"
+      "native_output": "`C:\\Users\\ben\\file.txt` and ```\npath = \"a\\b\"\n\n```\n\n```",
+      "note": "corpus puts a fence opener mid-line (invalid CommonMark); renderer keeps the code backslashes and degrades the stray fence — the regex-era formatter passed raw markdown through"
     },
     {
       "id": "backtick-in-fence",
@@ -237,14 +267,15 @@
       "category": "scar",
       "expect": "parity",
       "input": "## The **Real** Deal",
-      "native_output": "*The *Real* Deal*"
+      "native_output": "𝑻𝒉𝒆 𝑹𝒆𝒂𝒍 𝑫𝒆𝒂𝒍"
     },
     {
       "id": "table-cjk",
       "category": "scar",
       "expect": "parity",
       "input": "| 名前 | 値 |\n|------|----|\n| 中文 | 42 |\n| b    | 2  |",
-      "native_output": "| 名前 | 値 |\n|------|----|\n| 中文 | 42 |\n| b    | 2  |"
+      "native_output": "*名前*: 中文\n*値*: 42\n\n*名前*: b\n*値*: 2",
+      "note": "default flatten renders key/value lines"
     },
     {
       "id": "link-display-escapes",
@@ -265,7 +296,7 @@
       "category": "adversarial",
       "expect": "divergent",
       "input": "```python\nprint('never closed')",
-      "native_output": "```python\nprint('never closed')",
+      "native_output": "*python*\n```\nprint('never closed')\n```",
       "note": "unterminated fence handling differs; both degrade without dropping content"
     },
     {
@@ -280,7 +311,7 @@
       "category": "adversarial",
       "expect": "divergent",
       "input": "sneaky \u0000PH0\u0000 token and \u0000SL1\u0000 too",
-      "native_output": "sneaky \u0000PH0\u0000 token and \u0000SL1\u0000 too",
+      "native_output": "sneaky �PH0� token and �SL1� too",
       "note": "placeholder alphabets are renderer-internal"
     },
     {
@@ -288,7 +319,7 @@
       "category": "adversarial",
       "expect": "parity",
       "input": "***what is this*** and ____that____",
-      "native_output": "**what is this** and *__that*__"
+      "native_output": "_*what is this*_ and **that**"
     },
     {
       "id": "empty-string",
@@ -302,21 +333,21 @@
       "category": "adversarial",
       "expect": "parity",
       "input": "   \n\t\n   ",
-      "native_output": "   \n\t\n   "
+      "native_output": ""
     },
     {
       "id": "long-line",
       "category": "adversarial",
       "expect": "parity",
       "input": "word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word ",
-      "native_output": "word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word "
+      "native_output": "word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word"
     },
     {
       "id": "many-fences",
       "category": "adversarial",
       "expect": "parity",
       "input": "```\na\n```\nmid\n```\nb\n```\nend ```inline``` tail",
-      "native_output": "```\na\n```\nmid\n```\nb\n```\nend ```inline``` tail"
+      "native_output": "```\na\n```\n\nmid\n\n```\nb\n```\n\nend `inline` tail"
     }
   ]
 }

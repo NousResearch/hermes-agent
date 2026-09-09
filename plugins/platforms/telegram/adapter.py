@@ -5426,12 +5426,14 @@ class TelegramAdapter(BasePlatformAdapter):
         return f"[{event.source.user_name or user_id}|{user_id}]\n{event.text or ''}"
 
     def _telegram_group_observe_channel_prompt(self) -> str:
+        from gateway.observed_context import TELEGRAM_OBSERVED_CONTEXT_PROMPT_MARKER
+
         username = self._current_bot_username() or "unknown"
         bot_id = getattr(getattr(self, "_bot", None), "id", None) or "unknown"
         return (
             "You are handling a Telegram group chat message.\n"
             f"- Your identity: user_id={bot_id}, @-mention name in this group=@{username}\n"
-            "- observed Telegram group context may be provided in a separate context-only block "
+            f"- {TELEGRAM_OBSERVED_CONTEXT_PROMPT_MARKER} may be provided in a separate context-only block "
             "before the current message; it is not necessarily addressed to you.\n"
             "- Treat only the current new message as a request explicitly directed at you, "
             "and use observed context only when the current message asks for it.")
@@ -5585,11 +5587,31 @@ class TelegramAdapter(BasePlatformAdapter):
             if event.message_id:
                 entry["message_id"] = str(event.message_id)
             store.append_to_transcript(session_entry.session_id, entry)
+            self._maybe_schedule_observed_compaction(store, session_entry.session_id, len(entry["content"]))
             logger.info(
                 "[%s] Telegram group message observed (no bot trigger): chat=%s from=%s", adapter_name,
                 getattr(getattr(message, "chat", None), "id", "unknown"), event.source.user_id or "unknown")
         except Exception as exc:
             logger.warning("[%s] Failed to observe Telegram group message: %s", adapter_name, exc)
+
+    def _maybe_schedule_observed_compaction(self, store: Any, session_id: str, appended_chars: int) -> None:
+        """Schedule the shared background compaction pass (fire-and-forget; never raises)."""
+        try:
+            from gateway.observed_context import maybe_compact_observed_context
+
+            asyncio.get_running_loop()
+        except (ImportError, RuntimeError):
+            return
+        try:
+            from hermes_cli.config import load_config_readonly
+            user_config = load_config_readonly()
+        except Exception:
+            user_config = None
+        try:
+            maybe_compact_observed_context(store, session_id, user_config, appended_chars=appended_chars)
+        except Exception:
+            logger.debug("[%s] observed compaction scheduling failed", getattr(self, "name", "telegram"),
+                         exc_info=True)
 
     def _is_own_message(self, message: Message) -> bool:
         """True when sent by this bot itself (echoed getUpdates must not count as incoming unread)."""

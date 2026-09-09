@@ -1098,7 +1098,11 @@ def test_github_client_does_not_flag_a_genuine_test_failure_as_billing_blocked()
     state = GitHubClient(runner).get_check_state("acme/widgets", "a" * 40)
 
     assert state == CheckState(
-        actions_enabled=True, all_green=False, check_count=1, billing_blocked=False
+        actions_enabled=True,
+        all_green=False,
+        check_count=1,
+        billing_blocked=False,
+        non_billing_failure=True,
     )
 
 

@@ -210,7 +210,10 @@ def evaluate_merge(
     elif (
         snapshot.check_state.actions_enabled
         and not snapshot.check_state.all_green
-        and not snapshot.check_state.billing_blocked
+        and (
+            not snapshot.check_state.billing_blocked
+            or snapshot.check_state.non_billing_failure
+        )
     ):
         blockers.append("github_checks_not_green")
     if snapshot.review_state.review_decision == "CHANGES_REQUESTED":

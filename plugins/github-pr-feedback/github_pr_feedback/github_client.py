@@ -384,6 +384,7 @@ class CheckState:
     # steward must not spend a repair attempt on it and the merge maintainer
     # must never treat it as a transient red check to wait out.
     action_required: bool = False
+    non_billing_failure: bool = False
 
 
 class GitHubClient:
@@ -716,8 +717,8 @@ class GitHubClient:
         except (KeyError, TypeError) as error:
             raise GitHubClientError("GitHub check state was unavailable") from error
         all_green = check_green and status_state == "success"
-        billing_blocked = False if all_green else self._billing_blocked(
-            repository, check_runs
+        billing_blocked, non_billing_failure = (False, False) if all_green else self._failure_flags(
+            repository, check_runs, status_state
         )
         action_required = any(
             isinstance(run, dict) and run.get("conclusion") == "action_required"
@@ -728,12 +729,13 @@ class GitHubClient:
             all_green=all_green,
             check_count=total_count + len(statuses),
             billing_blocked=billing_blocked,
+            non_billing_failure=non_billing_failure,
             action_required=action_required,
         )
 
-    def _billing_blocked(
-        self, repository: str, check_runs: list[dict[str, Any]]
-    ) -> bool:
+    def _failure_flags(
+        self, repository: str, check_runs: list[dict[str, Any]], status_state: str
+    ) -> tuple[bool, bool]:
         """Return whether a failing run carries GitHub's billing-lockout annotation.
 
         Only one annotated, non-passing run needs to be inspected: the billing
@@ -741,12 +743,20 @@ class GitHubClient:
         job in an affected run carries the identical annotation.
         """
 
+        billing_blocked = False
+        non_billing_failure = status_state in {"failure", "error"} and not check_runs
         for run in check_runs:
             if (
                 not isinstance(run, dict)
                 or run.get("status") != "completed"
                 or run.get("conclusion") in {"success", "neutral", "skipped"}
             ):
+                if (
+                    isinstance(run, dict)
+                    and run.get("status") == "completed"
+                    and run.get("conclusion") in {"failure", "error"}
+                ):
+                    non_billing_failure = True
                 continue
             run_id = run.get("id")
             output = run.get("output")
@@ -754,6 +764,7 @@ class GitHubClient:
                 output.get("annotations_count") if isinstance(output, dict) else None
             )
             if not isinstance(run_id, int) or not annotations_count:
+                non_billing_failure = run.get("conclusion") in {"failure", "error"}
                 continue
             try:
                 annotations = self._read_pages(
@@ -762,8 +773,10 @@ class GitHubClient:
             except GitHubClientError:
                 continue
             if any(_is_billing_lockout_message(a.get("message")) for a in annotations):
-                return True
-        return False
+                billing_blocked = True
+            else:
+                non_billing_failure = True
+        return billing_blocked, non_billing_failure
 
     def merge_pull_request(
         self, repository: str, number: int, head_sha: str, *, method: str

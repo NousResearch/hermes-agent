@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Set, Unio
 from registration_lifecycle import replacement_coordinator
 from hermes_cli.plugins_loader import _plugin_home_scope
 from hermes_cli.plugins_manifest import PluginManifest, manifest_key
+from hermes_cli.required_lifecycle import RequiredLifecycleError
 
 if TYPE_CHECKING:  # pragma: no cover
     from hermes_cli.plugins import LoadedPlugin
@@ -39,8 +40,13 @@ class PluginRegistration:
     # re-discovery when the plugin no longer re-registers it.
     # See #91701.
     persistent: bool = False
+    registration_id: str = ""
+    callback: Optional[Callable] = field(default=None, repr=False)
     _disposed: bool = field(default=False, init=False, repr=False)
     _on_dispose: Optional[Callable[["PluginRegistration"], None]] = field(default=None, init=False, repr=False)
+    _dispose_under_guard: Optional[Callable[["PluginRegistration"], None]] = field(
+        default=None, init=False, repr=False
+    )
 
     @property
     def active(self) -> bool:
@@ -49,6 +55,15 @@ class PluginRegistration:
 
     def dispose(self) -> None:
         """Release this registration once; repeated disposal is harmless."""
+        if self._disposed:
+            return
+        if self._dispose_under_guard is not None:
+            self._dispose_under_guard(self)
+            return
+        self._dispose_unlocked()
+
+    def _dispose_unlocked(self) -> None:
+        """Release while the owning manager holds its mutation lock."""
         if self._disposed:
             return
         self._disposed = True
@@ -62,7 +77,7 @@ class PluginRegistration:
 class PluginLedgerMixin:
     def _track_registration(
         self, manifest: PluginManifest, kind: str, key: str, release: Callable[[], None], *,
-        persistent: bool = False,
+        persistent: bool = False, registration_id: str = "", callback: Optional[Callable] = None,
     ) -> PluginRegistration:
         """Record one registration under its canonical plugin key. ``persistent`` ones (process-global host
         infrastructure) stay in the ownership ledger for attribution but NOT in ``_registration_order``, so a
@@ -70,13 +85,29 @@ class PluginLedgerMixin:
 
         See #91701.
         """
-        registration = PluginRegistration(
-            kind=kind, key=key, release=release, plugin_key=manifest_key(manifest), persistent=persistent)
-        registration._on_dispose = lambda disposed: self._forget_registrations([disposed])
-        self._ownership_ledger.setdefault(registration.plugin_key, []).append(registration)
-        if not persistent:
-            self._registration_order.append(registration)
-        return registration
+        with self._discovery_lock:
+            self._assert_registration_mutation_allowed()
+            registration = PluginRegistration(
+                kind=kind, key=key, release=release,
+                plugin_key=manifest_key(manifest), persistent=persistent,
+                registration_id=registration_id, callback=callback,
+            )
+            registration._on_dispose = lambda disposed: self._forget_registrations([disposed])
+            registration._dispose_under_guard = self._dispose_registration_guarded
+            self._ownership_ledger.setdefault(registration.plugin_key, []).append(registration)
+            if not persistent:
+                self._registration_order.append(registration)
+            self._registration_generation += 1
+            return registration
+
+    def _assert_registration_mutation_allowed(self) -> None:
+        if self._required_lifecycle_latch.has_active():
+            raise RequiredLifecycleError("required_lifecycle_reload_deferred")
+
+    def _dispose_registration_guarded(self, registration: PluginRegistration) -> None:
+        with self._discovery_lock:
+            self._assert_registration_mutation_allowed()
+            registration._dispose_unlocked()
 
     def _track_scoped_registration(
         self, manifest: PluginManifest, kind: str, name: str, registry: Any, current: Any,
@@ -175,6 +206,7 @@ class PluginLedgerMixin:
                     ledger[plugin_key] = remaining
                 else:
                     ledger.pop(plugin_key, None)
+        self._registration_generation += 1
 
     # -- dual-kind hook ownership -------------------------------------------------------------
     # A plugin dir loaded by general discovery AND as the configured memory provider calls
@@ -222,6 +254,7 @@ class PluginLedgerMixin:
     def unload(self, plugin: Union[str, PluginManifest, LoadedPlugin, None] = None) -> bool:
         """Unload registrations while excluding discovery/deferred loading."""
         with self._discovery_lock, _plugin_home_scope(self.home_path):
+            self._assert_registration_mutation_allowed()
             return self._unload_scoped(plugin)
 
     def _unload_scoped(self, plugin: Union[str, PluginManifest, LoadedPlugin, None] = None) -> bool:

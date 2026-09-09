@@ -1664,6 +1664,31 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
     for i, tool_call in enumerate(tool_calls, 1):
         if getattr(agent, "_incremental_persistence_failed", False):
             return
+        try:
+            from hermes_cli.plugins import assert_required_lifecycle_turn_healthy
+
+            assert_required_lifecycle_turn_healthy(
+                session_id=getattr(agent, "session_id", "") or "",
+                turn_id=getattr(agent, "_current_turn_id", "") or "",
+            )
+        except Exception as required_exc:
+            from hermes_cli.required_lifecycle import (
+                REQUIRED_LIFECYCLE_FAILURE_TEXT,
+                RequiredLifecycleError,
+            )
+
+            if not isinstance(required_exc, RequiredLifecycleError):
+                raise
+            for skipped in tool_calls[i - 1:]:
+                messages.append(
+                    make_tool_result_message(
+                        skipped.function.name,
+                        REQUIRED_LIFECYCLE_FAILURE_TEXT,
+                        skipped.id,
+                        effect_disposition="none",
+                    )
+                )
+            return
         # Check interrupt BEFORE each tool so a "stop" during the previous one skips the rest.
         if agent._interrupt_requested:
             if not _skip_remaining_sequential(

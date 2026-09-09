@@ -19,6 +19,12 @@ from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Mapping, Optional, Set, Union
 
 from hermes_cli.middleware import OBSERVER_SCHEMA_VERSION
+from hermes_cli.required_lifecycle import (
+    REQUIRED_LIFECYCLE_HOOKS,
+    RequiredHookResult,
+    RequiredLifecycleError,
+    validate_required_semantic_result,
+)
 
 logger = logging.getLogger("hermes_cli.plugins")
 
@@ -163,6 +169,89 @@ class PluginDispatchMixin:
             if name in parameters and parameters[name].kind in keyword_kinds
         })
 
+    def _required_lifecycle_snapshot(
+        self, hook_name: str, payload: Mapping[str, Any]
+    ) -> tuple[tuple[str, str, str], int, tuple[Callable, ...], dict[int, Any]] | None:
+        if hook_name not in REQUIRED_LIFECYCLE_HOOKS:
+            return None
+        configured = bool(self._required_lifecycle_policy) or (
+            self._required_lifecycle_policy_error is not None
+        )
+        try:
+            latch_key = self._required_lifecycle_latch.key(self.scope_key, payload)
+        except RequiredLifecycleError as exc:
+            if not configured:
+                return None
+            raise self._required_lifecycle_latch.fail_uncorrelated(
+                self.scope_key, exc.reason_code, hook_name
+            ) from None
+        if not configured and not self._required_lifecycle_latch.is_active(latch_key):
+            return None
+        self._required_lifecycle_latch.check(latch_key)
+        if self._required_lifecycle_policy_error is not None:
+            raise self._required_lifecycle_latch.fail(
+                latch_key, self._required_lifecycle_policy_error.reason_code, hook_name
+            )
+        with self._discovery_lock:
+            generation = self._registration_generation
+            self._required_lifecycle_latch.begin(latch_key, generation)
+            if not self._required_lifecycle_policy:
+                raise self._required_lifecycle_latch.fail(
+                    latch_key, "required_lifecycle_registration_changed", hook_name
+                )
+            callbacks = tuple(self._hooks.get(hook_name, ()))
+            required_current: dict[int, Any] = {}
+            try:
+                for plugin_key, hooks in self._required_lifecycle_policy.items():
+                    loaded = self._plugins.get(plugin_key)
+                    if loaded is None or not loaded.enabled or loaded.error is not None:
+                        raise RequiredLifecycleError(
+                            "required_lifecycle_registration_invalid", hook_name
+                        )
+                    for required_hook, registration_ids in hooks.items():
+                        hook_callbacks = tuple(self._hooks.get(required_hook, ()))
+                        for registration_id in registration_ids:
+                            matches = [
+                                registration
+                                for registration in self._ownership_ledger.get(plugin_key, ())
+                                if registration.active
+                                and registration.kind == "hook"
+                                and registration.key == required_hook
+                                and registration.registration_id == registration_id
+                                and registration.callback is not None
+                                and sum(
+                                    callback is registration.callback
+                                    for callback in hook_callbacks
+                                )
+                                == 1
+                            ]
+                            if len(matches) != 1:
+                                raise RequiredLifecycleError(
+                                    "required_lifecycle_registration_invalid", hook_name
+                                )
+                            if required_hook == hook_name:
+                                callback_key = id(matches[0].callback)
+                                if callback_key in required_current:
+                                    raise RequiredLifecycleError(
+                                        "required_lifecycle_registration_invalid", hook_name
+                                    )
+                                required_current[callback_key] = matches[0]
+            except RequiredLifecycleError as exc:
+                raise self._required_lifecycle_latch.fail(
+                    latch_key, exc.reason_code, hook_name
+                ) from None
+        return latch_key, generation, callbacks, required_current
+
+    def _required_generation_unchanged(
+        self, latch_key: tuple[str, str, str], generation: int, hook_name: str
+    ) -> None:
+        with self._discovery_lock:
+            unchanged = generation == self._registration_generation
+        if not unchanged:
+            raise self._required_lifecycle_latch.fail(
+                latch_key, "required_lifecycle_registration_changed", hook_name
+            )
+
     def invoke_hook(self, hook_name: str, **kwargs: Any) -> List[Any]:
         """Call all callbacks for *hook_name*; return their non-``None`` results.
 
@@ -177,26 +266,124 @@ class PluginDispatchMixin:
         # unrelated adapter payloads into one monolithic compatibility contract.
         if hook_name != "gateway_platform_event":
             kwargs.setdefault("telemetry_schema_version", OBSERVER_SCHEMA_VERSION)
-        results: List[Any] = []
+        required_snapshot = self._required_lifecycle_snapshot(hook_name, kwargs)
+        if required_snapshot is None:
+            callbacks = tuple(self._hooks.get(hook_name, ()))
+            latch_key = None
+            generation = -1
+            required_callbacks: dict[int, Any] = {}
+        else:
+            latch_key, generation, callbacks, required_callbacks = required_snapshot
+        required_results: List[Any] = []
+        optional_results: List[Any] = []
         timeout = _resolve_hook_callback_timeout()
         use_timeout = _hook_uses_callback_timeout(hook_name, timeout)
         fail_closed = hook_name in _HOOK_TIMEOUT_FAIL_CLOSED_HOOKS
-        for cb in self._hooks.get(hook_name, []):
+        for cb in callbacks:
+            required_registration = required_callbacks.get(id(cb))
+            if required_registration is not None:
+                assert latch_key is not None
+                self._required_generation_unchanged(latch_key, generation, hook_name)
+                try:
+                    if use_timeout:
+                        acknowledged = self._run_hook_callback_bounded(
+                            hook_name, cb, kwargs, timeout
+                        )
+                        if acknowledged is _HOOK_SKIPPED:
+                            raise RequiredLifecycleError(
+                                "required_lifecycle_delivery_failed", hook_name
+                            )
+                    else:
+                        acknowledged = self._invoke_hook_callback(cb, kwargs)
+                except Exception:
+                    raise self._required_lifecycle_latch.fail(
+                        latch_key, "required_lifecycle_delivery_failed", hook_name
+                    ) from None
+                if (
+                    not isinstance(acknowledged, RequiredHookResult)
+                    or acknowledged.registration_id
+                    != required_registration.registration_id
+                    or not validate_required_semantic_result(
+                        hook_name, acknowledged.result
+                    )
+                ):
+                    raise self._required_lifecycle_latch.fail(
+                        latch_key, "required_lifecycle_delivery_failed", hook_name
+                    )
+                self._required_generation_unchanged(latch_key, generation, hook_name)
+                if acknowledged.result is not None:
+                    required_results.append(acknowledged.result)
+                continue
             try:
                 if use_timeout:
                     ret = self._run_hook_callback_bounded(hook_name, cb, kwargs, timeout)
                     if ret is _HOOK_SKIPPED:
                         if fail_closed:  # policy hook: fail closed with a block directive
-                            results.append({"action": "block", "message": _PRE_TOOL_CALL_TIMEOUT_BLOCK_MESSAGE})
+                            optional_results.append({"action": "block", "message": _PRE_TOOL_CALL_TIMEOUT_BLOCK_MESSAGE})
                         continue
                 else:
                     ret = self._invoke_hook_callback(cb, kwargs)
                 if ret is not None:
-                    results.append(ret)
+                    optional_results.append(ret)
             except Exception as exc:
                 logger.warning(
                     "Hook '%s' callback %s raised: %s", hook_name, getattr(cb, "__name__", repr(cb)), exc)
-        return results
+        if required_snapshot is not None:
+            assert latch_key is not None
+            self._required_generation_unchanged(latch_key, generation, hook_name)
+            if hook_name == "pre_tool_call":
+                compatibility = [
+                    result
+                    for result in optional_results
+                    if isinstance(result, dict)
+                    and result.get("action") in {"block", "approve"}
+                ]
+                return required_results + compatibility
+            if hook_name == "transform_llm_output":
+                return required_results
+        return required_results + optional_results
+
+    def requires_hook(self, hook_name: str) -> bool:
+        return hook_name in REQUIRED_LIFECYCLE_HOOKS and (
+            bool(self._required_lifecycle_policy)
+            or self._required_lifecycle_policy_error is not None
+        )
+
+    def assert_required_lifecycle_turn_healthy(
+        self, *, session_id: str, turn_id: str
+    ) -> None:
+        configured = bool(self._required_lifecycle_policy) or (
+            self._required_lifecycle_policy_error is not None
+        )
+        try:
+            latch_key = self._required_lifecycle_latch.key(
+                self.scope_key, {"session_id": session_id, "turn_id": turn_id}
+            )
+        except RequiredLifecycleError:
+            if not configured:
+                return
+            raise
+        self._required_lifecycle_latch.check(latch_key)
+        if not configured and not self._required_lifecycle_latch.is_active(latch_key):
+            return
+        self._required_lifecycle_latch.check_generation(
+            latch_key, self._registration_generation, "lifecycle"
+        )
+
+    def finish_required_lifecycle_turn(
+        self, *, session_id: str, turn_id: str
+    ) -> None:
+        try:
+            latch_key = self._required_lifecycle_latch.key(
+                self.scope_key, {"session_id": session_id, "turn_id": turn_id}
+            )
+        except RequiredLifecycleError:
+            if not self._required_lifecycle_policy and (
+                self._required_lifecycle_policy_error is None
+            ):
+                return
+            raise
+        self._required_lifecycle_latch.clear(latch_key)
 
     def _run_hook_callback_bounded(
         self, hook_name: str, cb: Callable, kwargs: Dict[str, Any], timeout: float
@@ -383,7 +570,7 @@ class PluginDispatchMixin:
 
     def has_hook(self, hook_name: str) -> bool:
         """Return True when at least one callback is registered for a hook."""
-        return bool(self._hooks.get(hook_name))
+        return bool(self._hooks.get(hook_name)) or self.requires_hook(hook_name)
 
     def iter_hook_callbacks(self, hook_name: str) -> tuple[Callable, ...]:
         """Return a stable snapshot of callbacks registered for a hook."""

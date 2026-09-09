@@ -229,7 +229,9 @@ def stage_tool_call_message(
 
     assistant_msg = agent._build_assistant_message(assistant_message, finish_reason)
 
-    turn_content = assistant_message.content or ""
+    # The provider object stays private input.  Persistence, interim delivery,
+    # and fallback narration may use only the publication-safe projection.
+    turn_content = assistant_msg.get("content") or ""
 
     # A bare bracketed token (e.g. ``[memory]``) beside a function call is protocol
     # scaffolding; persisting it lets the post-tool fallback replay it forever (#78148).

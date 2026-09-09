@@ -48,6 +48,13 @@ def _serialized_replacement(method):
     """Make snapshot → write → lease attachment one atomic transaction."""
     @wraps(method)
     def wrapped(*args, **kwargs):
+        owner = args[0] if args else None
+        manager = getattr(owner, "_manager", None)
+        if manager is not None:
+            with manager._discovery_lock:
+                manager._assert_registration_mutation_allowed()
+                with replacement_coordinator.transaction():
+                    return method(*args, **kwargs)
         with replacement_coordinator.transaction():
             return method(*args, **kwargs)
 

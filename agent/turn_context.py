@@ -393,6 +393,7 @@ class TurnContext:
     plugin_user_context: str = ""  # ``pre_llm_call`` context (appended to user message)
     ext_prefetch_cache: str = ""  # external-memory prefetch, reused across iterations
     preflight_compression_blocked: bool = False  # immediate retry proved ineffective
+    required_lifecycle_failure: str = ""  # mandatory pre-LLM failure; never call provider
 
 
 def _persist_under_lock(agent: Any, fn, failure_msg: str, pending_cli_message: Any) -> None:
@@ -460,7 +461,6 @@ def _bind_turn_identity(
 ) -> Tuple[str, str]:
     """Stage callback/persist overrides on the agent and bind this turn's task and turn
     ids. Returns ``(effective_task_id, turn_id)``."""
-    agent._stream_callback = stream_callback  # picked up by _interruptible_api_call
     agent._persist_user_message_idx = None
     agent._persist_user_message_override = persist_user_message
     agent._persist_user_message_timestamp = persist_user_timestamp
@@ -475,6 +475,23 @@ def _bind_turn_identity(
     agent._relay_pending_turn_id = None
     agent._current_turn_id = turn_id
     agent._current_api_request_id = ""
+    # A mandatory output transform is a publication boundary.  Buffer all
+    # provider deltas until the transform has acknowledged the terminal text.
+    try:
+        from hermes_cli.plugins import requires_hook as _requires_hook
+
+        _must_buffer = _requires_hook("transform_llm_output")
+    except Exception:
+        _must_buffer = True
+    if _must_buffer:
+        agent._required_lifecycle_stream_delta_callback = agent.stream_delta_callback
+        agent.stream_delta_callback = None
+        agent._required_lifecycle_disable_streaming = bool(
+            getattr(agent, "_disable_streaming", False)
+        )
+        agent._disable_streaming = True
+        stream_callback = None
+    agent._stream_callback = stream_callback  # picked up by _interruptible_api_call
     # Tripwire: warn when this turn starts before the previous turn-end persist
     # (concurrent turns interleave transcript writes). Cleared in _persist_session.
     from agent.agent_runtime_helpers import note_turn_start
@@ -657,11 +674,12 @@ def _ensure_session_row(agent: Any, pending_cli_message: Any) -> None:
 def _collect_pre_llm_call_context(
     agent: Any, *, effective_task_id: str, turn_id: str, original_user_message: Any,
     messages: List[Any], conversation_history: Optional[List[Any]],
-) -> str:
+) -> tuple[str, str]:
     """Run ``pre_llm_call`` plugins; their context is injected into the user message
     (never the system prompt). Oversized per-hook context is spilled to disk so a
     runaway plugin can't inflate every subsequent turn's prompt."""
     try:
+        from hermes_cli.required_lifecycle import RequiredLifecycleError
         from hermes_cli.lifecycle import invoke_hook as _invoke_hook
         _pre_results = _invoke_hook(
             "pre_llm_call",
@@ -703,10 +721,15 @@ def _collect_pre_llm_call_context(
                 except Exception as _spill_exc:
                     logger.warning("hook context spill failed: %s", _spill_exc)
             _ctx_parts.append(_piece)
-        return "\n\n".join(_ctx_parts)
+        return "\n\n".join(_ctx_parts), ""
+    except RequiredLifecycleError as exc:
+        logger.warning(
+            "mandatory pre_llm_call lifecycle unavailable: %s", exc.reason_code
+        )
+        return "", exc.reason_code
     except Exception as exc:
         logger.warning("pre_llm_call hook failed: %s", exc)
-    return ""
+    return "", ""
 
 
 def _merge_gateway_notes(
@@ -956,7 +979,7 @@ def build_turn_context(
     conversation_history = compaction.conversation_history
     current_turn_user_idx = compaction.current_turn_user_idx
 
-    plugin_user_context = _collect_pre_llm_call_context(
+    plugin_user_context, required_lifecycle_failure = _collect_pre_llm_call_context(
         agent, effective_task_id=effective_task_id, turn_id=turn_id,
         original_user_message=original_user_message, messages=messages,
         conversation_history=conversation_history,
@@ -993,6 +1016,7 @@ def build_turn_context(
         current_turn_user_idx=current_turn_user_idx, should_review_memory=should_review_memory,
         plugin_user_context=plugin_user_context, ext_prefetch_cache=ext_prefetch_cache,
         preflight_compression_blocked=compaction.blocked,
+        required_lifecycle_failure=required_lifecycle_failure,
     )
 
 
@@ -1037,6 +1061,9 @@ def build_api_messages(
         # Structural clone, NOT msg.copy(): in-place transforms below must not reach
         # persisted history via nested containers; see _clone_message_for_send.
         api_msg = _clone_message_for_send(msg)
+        from hermes_cli.required_lifecycle import restore_required_provider_fields
+
+        restore_required_provider_fields(agent, msg, api_msg)
         # api_content is bookkeeping (exact bytes sent), never a provider field — pop
         # it from EVERY outgoing copy. display_* is display-only timeline metadata
         # (strict OpenAI backends reject unknown keys); _row_id is the durable row id

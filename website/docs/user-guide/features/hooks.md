@@ -388,6 +388,49 @@ def register(ctx):
 - Correlation fields such as `turn_id`, `api_request_id`, `task_id`, `session_id`, and `api_call_count` are hook-specific and may be absent. Treat IDs as opaque.
 - Runtime event-name validity comes from `hermes_cli.plugins.VALID_HOOKS`. `hermes hooks list` lists configured shell/outbound hooks, not every available event; `hermes hooks test <event>` reports the valid set only when an invalid event is supplied.
 
+### Operator-required lifecycle hooks
+
+Hermes normally isolates a failing plugin callback and continues. An operator can
+instead make the four turn-containment boundaries mandatory for a named plugin:
+`pre_llm_call`, `pre_tool_call`, `post_tool_call`, and
+`transform_llm_output`. When configured, a missing, replaced, timed-out, malformed,
+or failing required callback stops the turn. No later model request or tool starts,
+and untransformed provider text is not streamed or persisted.
+
+The plugin must register stable callback identities and return an acknowledgement
+created by `required_hook_result`:
+
+```python
+from hermes_cli.plugins import required_hook_result
+
+def register(ctx):
+    ctx.register_hook(
+        "pre_llm_call",
+        lambda **kw: required_hook_result("guard.pre-llm.v1", None),
+        registration_id="guard.pre-llm.v1",
+    )
+    # Register the other three required boundaries in the same way.
+```
+
+The operator-owned profile configuration must name every required identity:
+
+```yaml
+plugins:
+  enabled: [my-guard]
+  required_lifecycle_hooks:
+    my-guard:
+      pre_llm_call: [guard.pre-llm.v1]
+      pre_tool_call: [guard.pre-tool.v1]
+      post_tool_call: [guard.post-tool.v1]
+      transform_llm_output: [guard.output.v1]
+```
+
+This setting is strict by design. All four keys are required, identifiers must be
+unique and valid, and `pre_tool_call` plus `transform_llm_output` each have exactly
+one authority across the profile. A malformed policy fails closed rather than
+silently reverting to optional-hook behavior. Do not use this setting for telemetry
+plugins; it is intended for operator-selected safety and publication authorities.
+
 ### Cache-safe system prompt sections
 
 Plugins that need durable, always-on guidance can register a bounded system

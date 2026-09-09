@@ -131,23 +131,31 @@ def normalize_model_response(
     if assistant_message.content is not None and not isinstance(assistant_message.content, str):
         assistant_message.content = _coerce_content_text(assistant_message.content)
 
+    try:
+        from hermes_cli.plugins import requires_hook as _requires_hook
+
+        required_output_publication = _requires_hook("transform_llm_output")
+    except Exception:
+        required_output_publication = True
+
     # Agent-as-provider projection: splice the provider-agent's own tool work in as
     # call/result rows before this turn's assistant message; no-op for ordinary providers.
     splice_provider_projection(agent, response, messages)
 
-    _fire_post_api_request_hook(
-        agent, response, assistant_message, finish_reason, api_messages=api_messages,
-        api_call_count=api_call_count, api_duration=api_duration, api_start_time=api_start_time,
-        api_request_id=api_request_id, effective_task_id=effective_task_id, turn_id=turn_id,
-    )
+    if not required_output_publication:
+        _fire_post_api_request_hook(
+            agent, response, assistant_message, finish_reason, api_messages=api_messages,
+            api_call_count=api_call_count, api_duration=api_duration, api_start_time=api_start_time,
+            api_request_id=api_request_id, effective_task_id=effective_task_id, turn_id=turn_id,
+        )
 
     content = assistant_message.content
-    if content and not agent.quiet_mode:
+    if content and not agent.quiet_mode and not required_output_publication:
         if agent.verbose_logging:
             agent._vprint(f"{agent.log_prefix}🤖 Assistant: {content}")
         else:
             agent._vprint(f"{agent.log_prefix}🤖 Assistant: {content[:100]}{'...' if len(content) > 100 else ''}")
-    if content and agent.tool_progress_callback:
+    if content and agent.tool_progress_callback and not required_output_publication:
         _relay_thinking(agent, content)
 
     # Incomplete <REASONING_SCRATCHPAD> (opened, never closed): the model ran out of

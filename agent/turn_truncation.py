@@ -166,7 +166,22 @@ class _Trunc(TruncationVerdict):
         agent = self.agent
         if cleanup:
             agent._cleanup_task_resources(self.effective_task_id)
-        agent._persist_session(self.messages, self.conversation_history)
+        # Direct truncation results pass through conversation_loop's required
+        # output publication boundary.  When that boundary is configured (or
+        # its policy is invalid), persisting here would durably expose raw
+        # provider fragments before transform_llm_output can authorize them.
+        try:
+            from hermes_cli.plugins import requires_hook
+
+            required_output_pending = requires_hook("transform_llm_output")
+        except Exception as exc:
+            from hermes_cli.required_lifecycle import RequiredLifecycleError
+
+            if not isinstance(exc, RequiredLifecycleError):
+                raise
+            required_output_pending = True
+        if not required_output_pending:
+            agent._persist_session(self.messages, self.conversation_history)
         return self.done("return", partial_result(
             self.messages if result_messages is None else result_messages, self.api_call_count,
             final_response, error, failed=failed, compression_exhausted=compression_exhausted,
@@ -566,14 +581,22 @@ def handle_content_policy_refusal(
     if not _refusal_text:
         _refusal_text = (agent._extract_reasoning(_refusal_result) or "").strip()
 
-    agent._invoke_api_request_error_hook(
-        task_id=effective_task_id, turn_id=turn_id, api_request_id=api_request_id,
-        api_call_count=api_call_count, api_start_time=api_start_time, api_kwargs=api_kwargs,
-        error_type="ContentPolicyBlocked",
-        error_message=_refusal_text or "model declined to respond (content_filter)",
-        status_code=None, retry_count=retry_count, max_retries=max_retries, retryable=False,
-        reason=FailoverReason.content_policy_blocked.value,
-    )
+    try:
+        from hermes_cli.plugins import requires_hook as _requires_hook
+
+        required_output_publication = _requires_hook("transform_llm_output")
+    except Exception:
+        required_output_publication = True
+
+    if not required_output_publication:
+        agent._invoke_api_request_error_hook(
+            task_id=effective_task_id, turn_id=turn_id, api_request_id=api_request_id,
+            api_call_count=api_call_count, api_start_time=api_start_time, api_kwargs=api_kwargs,
+            error_type="ContentPolicyBlocked",
+            error_message=_refusal_text or "model declined to respond (content_filter)",
+            status_code=None, retry_count=retry_count, max_retries=max_retries, retryable=False,
+            reason=FailoverReason.content_policy_blocked.value,
+        )
     stop_thinking_spinner(agent, thinking_spinner)
 
     if agent._has_pending_fallback():
@@ -587,7 +610,8 @@ def handle_content_policy_refusal(
     logger.warning(
         "%sModel declined to respond (finish_reason=content_filter). model=%s provider=%s refusal=%s",
         agent.log_prefix, agent.model, agent.provider,
-        _refusal_log or "(no text)",
+        "(withheld by required output policy)"
+        if required_output_publication else _refusal_log or "(no text)",
     )
     agent._emit_status("⚠️ The model declined to respond to this request (safety refusal).")
     _refusal_detail = (

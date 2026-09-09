@@ -1276,6 +1276,14 @@ class AIAgent(
             if len(tool_calls) <= 1:
                 return self._execute_tool_calls_sequential(*args)
 
+            # A required post-tool observer is a serial containment boundary:
+            # do not start the next side effect before the previous result is
+            # acknowledged by the required lifecycle authority.
+            from hermes_cli.plugins import requires_hook as _requires_hook
+
+            if _requires_hook("post_tool_call"):
+                return self._execute_tool_calls_sequential(*args)
+
             from agent.tool_dispatch_helpers import _plan_tool_batch_segments
             active_env = get_active_env(effective_task_id)
             exec_cwd = Path(active_env.cwd) if active_env is not None and active_env.cwd else None

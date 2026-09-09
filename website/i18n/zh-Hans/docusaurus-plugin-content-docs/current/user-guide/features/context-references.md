@@ -1,7 +1,7 @@
 ---
 sidebar_position: 9
-sidebar_label: "Context References"
-title: "Context References"
+sidebar_label: "上下文引用"
+title: "上下文引用"
 description: "用于将文件、文件夹、git diff 及 URL 直接附加到消息中的内联 @-语法"
 ---
 

@@ -1,6 +1,6 @@
 ---
 sidebar_position: 3
-title: "Curator"
+title: "Curator（技能管理）"
 description: "Agent 创建的技能的后台维护——使用跟踪、过期检测、归档及 LLM 驱动的审查"
 ---
 

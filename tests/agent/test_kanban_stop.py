@@ -101,13 +101,28 @@ def test_kanban_checkpoint_module_is_gone():
 
 def test_no_live_import_of_the_retired_module():
     """Read as source: the loop is 9k lines and importing it for this
-    assertion would drag half the agent in. A stale import is what breaks."""
+    assertion would drag half the agent in. A stale import is what breaks.
+
+    2026-09-10: the stop-gate wiring moved out of ``conversation_loop.py`` into
+    ``turn_stop_gates.py`` in the upstream decomposition. This test asserted
+    BOTH halves against ``conversation_loop.py``, so the half that matters —
+    "the guard is still wired" — went red on a guard that had simply moved and
+    was working fine. The retired-import half is per-file and stays that way;
+    the wired half is now asked of the agent package as a whole, which is the
+    thing that is actually true or false.
+    """
     import pathlib, re, agent
-    for rel in ("conversation_loop.py",):
-        src = (pathlib.Path(agent.__file__).parent / rel).read_text()
-        assert not re.search(r"^\s*from\s+agent\.kanban_checkpoint\s+import", src, re.M)
-        assert not re.search(r"^\s*from\s+agent\s+import\s+kanban_checkpoint", src, re.M)
-    assert "build_kanban_stop_nudge" in src, "the guard that replaced it must still be wired"
+    root = pathlib.Path(agent.__file__).parent
+    for rel in ("conversation_loop.py", "turn_stop_gates.py"):
+        path = root / rel
+        if not path.exists():
+            continue
+        src = path.read_text()
+        assert not re.search(r"^\s*from\s+agent\.kanban_checkpoint\s+import", src, re.M), rel
+        assert not re.search(r"^\s*from\s+agent\s+import\s+kanban_checkpoint", src, re.M), rel
+    wired = [p.name for p in root.glob("*.py")
+             if "build_kanban_stop_nudge" in p.read_text(errors="ignore")]
+    assert wired, "the guard that replaced it must still be wired somewhere in agent/"
 
 
 def test_four_tool_terminal_set_is_our_deliberate_divergence():

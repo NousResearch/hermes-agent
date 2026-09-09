@@ -385,18 +385,21 @@ def target_bytes(kind: str, arg: object) -> bytes:
     return buf.getvalue()
 
 
-def cmd_write() -> None:
+def cmd_write() -> int:
+    """Return failure when any target cannot be generated or verified."""
     ensure_masters()
     written = 0
+    failures = 0
     for rel, kind, arg in TARGETS:
         path = ROOT / rel
-        path.parent.mkdir(parents=True, exist_ok=True)
         try:
+            path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(target_bytes(kind, arg))
             written += 1
-        except Exception as exc:  # noqa: BLE001 - report and keep going
+        except Exception as exc:  # noqa: BLE001 - report all, then fail
+            failures += 1
             print(f"  !! {rel}: FAILED ({exc})")
-    print(f"[ok] wrote {written}/{len(TARGETS)} files")
+    print(f"[write] wrote {written}/{len(TARGETS)} files")
 
     print("\n[verify]")
     for rel, kind, arg in TARGETS:
@@ -420,7 +423,10 @@ def cmd_write() -> None:
             else:
                 print(f"  {rel}: {im.format} {im.size}")
         except Exception as exc:
+            failures += 1
             print(f"  {rel}: VERIFY FAILED ({exc})")
+
+    return int(failures > 0)
 
 
 def cmd_check() -> int:
@@ -508,7 +514,7 @@ def cmd_check() -> int:
 def main() -> None:
     if "--check" in sys.argv:
         sys.exit(cmd_check())
-    cmd_write()
+    sys.exit(cmd_write())
 
 
 if __name__ == "__main__":

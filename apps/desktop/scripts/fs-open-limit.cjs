@@ -87,13 +87,21 @@ if (!globalThis.__hermesFsOpenLimited && LIMIT > 0) {
   const pump = () => {
     while (active < LIMIT && queue.length > 0) {
       active += 1
-      queue.shift()()
+      try {
+        queue.shift()()
+      } catch (err) {
+        // Invalid arguments never install a completion callback.
+        active -= 1
+        queueMicrotask(pump)
+        throw err
+      }
     }
   }
 
   const release = () => {
     active -= 1
-    pump()
+    // A queued validation error must not suppress the completed callback.
+    queueMicrotask(pump)
   }
 
   // ── fs.open (callback form) ───────────────────────────────────────

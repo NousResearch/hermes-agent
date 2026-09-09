@@ -66,8 +66,7 @@ await walk(${JSON.stringify(root)})
 console.log('WALK_OK')
 `
 
-test('the unbounded walk hits EMFILE under a low fd limit', () => {
-  if (!POSIX) return
+test.skipIf(!POSIX)('the unbounded walk hits EMFILE under a low fd limit', () => {
   // The bug, reproduced. If this ever stops failing, the test below is
   // no longer proving anything and the preload could be silently useless.
   const tree = mkTree(3000)
@@ -80,8 +79,7 @@ test('the unbounded walk hits EMFILE under a low fd limit', () => {
   }
 })
 
-test('the preload lets the same walk finish under the same limit', () => {
-  if (!POSIX) return
+test.skipIf(!POSIX)('the preload lets the same walk finish under the same limit', () => {
   const tree = mkTree(3000)
   try {
     const res = runNode(WALK_BODY(tree), { preload: true, ulimit: 64 })
@@ -92,8 +90,7 @@ test('the preload lets the same walk finish under the same limit', () => {
   }
 })
 
-test('both fs.open forms are queued, so a huge fan-out survives', () => {
-  if (!POSIX) return
+test.skipIf(!POSIX)('both fs.open forms are queued, so a huge fan-out survives', () => {
   // isbinaryfile uses promisify(fs.open) (the callback form) while the
   // walk itself uses fs.promises.open — the patch has to cover both, or
   // half the demand escapes the queue.
@@ -133,8 +130,7 @@ console.log('BOTH_FORMS_OK')
   assert.match(res.stdout, /BOTH_FORMS_OK/)
 })
 
-test('the callback fan-out DOES fail without the preload', () => {
-  if (!POSIX) return
+test.skipIf(!POSIX)('the callback fan-out DOES fail without the preload', () => {
   // Guards the test above: if 400 open+close cycles were survivable
   // unpatched, it would prove nothing about the queue.
   const body = `
@@ -194,8 +190,7 @@ console.log('QUEUE_STILL_LIVE')
   assert.match(res.stdout, /QUEUE_STILL_LIVE/)
 })
 
-test('holding descriptors while opening more cannot deadlock', () => {
-  if (!POSIX) return
+test.skipIf(!POSIX)('holding descriptors while opening more cannot deadlock', () => {
   // The slot is released when open() SETTLES, not when the fd closes, so a
   // task holding many descriptors occupies no slots. Gating the fd lifetime
   // instead deadlocks — that is the design this asserts against.

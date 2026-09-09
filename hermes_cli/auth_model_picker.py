@@ -25,20 +25,41 @@ def _confirm_selection_guards(
     """Prompt before saving a model that trips any selection guard (cost, data-policy, ...).
 
     Shows one [y/N] confirm listing every warning that fired. Returns True to proceed.
+
+    Fails **closed** on an unexpected guard-registry error: we cannot tell whether
+    the model is safe, so the change is refused — the exception is logged with
+    context and the user is told to check the log and retry. The one tolerated
+    failure is ``ImportError`` (the guard feature is simply not built into this
+    distribution): there is nothing to verify, so selection proceeds.
     """
     try:
         from hermes_cli.model_selection_guards import combined_message, selection_warnings
         warnings = selection_warnings(
             model_id, provider=provider, base_url=base_url, api_key=api_key, include_kinds=include_kinds,
         )
+        body = combined_message(warnings) if warnings else None
+    except ImportError:
+        # Selection-guard registry absent from this build — nothing to confirm.
+        return True
     except Exception:
-        warnings = []
-    if not warnings:
+        logger.exception(
+            "Model-selection safety guards failed to evaluate (model_id=%r, provider=%r, "
+            "base_url=%r, include_kinds=%r); refusing the model change",
+            model_id, provider, base_url, include_kinds,
+        )
+        print()
+        print(
+            "Could not verify this model's safety warnings, so the model was not "
+            "changed. Check the log and try again."
+        )
+        return False
+
+    if body is None:
         return True
 
     print()
     print("=" * 72)
-    print(combined_message(warnings))
+    print(body)
     print("=" * 72)
     try:
         response = input("Switch anyway? [y/N]: ").strip().lower()

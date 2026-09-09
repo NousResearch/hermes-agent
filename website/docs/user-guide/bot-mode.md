@@ -11,6 +11,9 @@ Bot Mode ships **built into the [desktop app](./desktop.md)** and is **on by def
 
 :::tip A Bot is a profile
 There is no new primitive to learn: a Bot **is** a Hermes profile — isolated config, memory, skills, credentials, and chat history under `~/.hermes/profiles/<name>/`. Bot Mode is a UI over that primitive, so everything you do in it is visible from the CLI too: `hermes -p <bot> chat` opens the same agent, and Bot routines appear in `hermes cron list`. No core patches, no background daemons, no extra storage.
+
+See [Profiles, agents, and bots](./profiles.md#profiles-agents-and-bots) for how
+Bot Mode relates to messaging bots and delegated subagents.
 :::
 
 ## The Bots pane

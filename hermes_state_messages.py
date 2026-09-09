@@ -22,10 +22,10 @@ logger = logging.getLogger("hermes_state")  # caplog tests pin the origin module
 # One INSERT shape for every message writer (append, batch, replace, compact, import).
 _INSERT_MESSAGE_SQL = """INSERT INTO messages (session_id, role, content, tool_call_id,
                    tool_calls, tool_name, effect_disposition, timestamp, token_count, finish_reason,
-                   reasoning, reasoning_content, reasoning_details, _reasoning_route, codex_reasoning_items,
-                   codex_message_items, platform_message_id, observed, _compressed_summary, active, api_content, display_kind,
-                   display_metadata, display_identity)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"""
+                   reasoning, reasoning_content, reasoning_details, _reasoning_route, anthropic_content_blocks,
+                   bedrock_content_blocks, codex_reasoning_items, codex_message_items, platform_message_id,
+                   observed, _compressed_summary, active, api_content, display_kind, display_metadata, display_identity)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"""
 _BUMP_GENERATION_SQL = """
             INSERT INTO conversation_generations (source, session_key, generation)
             VALUES (?, ?, 1)
@@ -261,8 +261,10 @@ class SessionMessagesMixin:
             _scrub_surrogates(_reasoning("reasoning")), _scrub_surrogates(_reasoning("reasoning_content")),
             self._reasoning_json_text(_reasoning("reasoning_details")),
             _scrub_surrogates(_route) if isinstance(_route, str) else None,
-            *(self._reasoning_json_text(_reasoning(k))
-              for k in ("codex_reasoning_items", "codex_message_items")),
+            *(self._reasoning_json_text(_reasoning(k)) for k in (
+                "anthropic_content_blocks", "bedrock_content_blocks",
+                "codex_reasoning_items", "codex_message_items",
+            )),
             msg.get("platform_message_id") or msg.get("message_id"),
             1 if msg.get("observed") else 0, 1 if msg.get("_compressed_summary") else 0, 1,
             _str_or_none(msg.get("api_content")), _str_or_none(msg.get("display_kind")),
@@ -285,7 +287,9 @@ class SessionMessagesMixin:
         self, session_id: str, role: str, content: str = None, tool_name: str = None, tool_calls: Any = None,
         tool_call_id: str = None, token_count: int = None, finish_reason: str = None, reasoning: str = None,
         reasoning_content: str = None, reasoning_details: Any = None, reasoning_route: str = None,
-        codex_reasoning_items: Any = None, codex_message_items: Any = None, platform_message_id: str = None, observed: bool = False,
+        anthropic_content_blocks: Any = None, bedrock_content_blocks: Any = None,
+        codex_reasoning_items: Any = None, codex_message_items: Any = None,
+        platform_message_id: str = None, observed: bool = False,
         effect_disposition: Optional[str] = None, _compressed_summary: bool = False, timestamp: Any = None,
         api_content: Optional[str] = None, display_kind: Optional[str] = None,
         display_metadata: Optional[Dict[str, Any]] = None, compression_lock_holder: Optional[str] = None,
@@ -299,7 +303,8 @@ class SessionMessagesMixin:
         tool_calls = _parse_tool_calls(tool_calls)
         message_timestamp = _coerce_timestamp(timestamp, time.time())
         params = self._message_row_params(
-            session_id, role, msg, tool_calls, message_timestamp, keep_reasoning=True)
+            session_id, role, msg, tool_calls, message_timestamp,
+            keep_reasoning=role == "assistant")
         def _do(conn):
             self._check_transcript_write_guards(conn, session_id, compression_lock_holder,
                 turn_lease_holder=turn_lease_holder, turn_lease_ttl_seconds=turn_lease_ttl_seconds)
@@ -988,7 +993,10 @@ class SessionMessagesMixin:
                     msg["_reasoning_route"] = row["_reasoning_route"]
                 msg.update(
                     (col, _json_or(row[col], None, f"Failed to deserialize {col}, falling back to None"))
-                    for col in ("reasoning_details", "codex_reasoning_items", "codex_message_items") if row[col])
+                    for col in (
+                        "reasoning_details", "anthropic_content_blocks", "bedrock_content_blocks",
+                        "codex_reasoning_items", "codex_message_items",
+                    ) if row[col])
             if include_ancestors:
                 skip, exact_clone_key = self._dedupe_replayed_user(messages, msg, exact_user_clones)
                 if skip:

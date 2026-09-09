@@ -582,6 +582,15 @@ class TestReapplyReasoningEcho:
                         "signature": "signed",
                     }
                 ],
+                "bedrock_content_blocks": [
+                    {"reasoningContent": {"reasoningText": {"text": "BEDROCK_PRIVATE_TRACE"}}}
+                ],
+                "codex_reasoning_items": [
+                    {"type": "reasoning", "encrypted_content": "CODEX_PRIVATE_TRACE"}
+                ],
+                "codex_message_items": [
+                    {"type": "message", "role": "assistant", "id": "FOREIGN_MESSAGE_ID"}
+                ],
             }
         ]
 
@@ -597,6 +606,30 @@ class TestReapplyReasoningEcho:
         assert "reasoning_content" not in api_messages[0]
         assert "reasoning_details" not in api_messages[0]
         assert "anthropic_content_blocks" not in api_messages[0]
+        assert "bedrock_content_blocks" not in api_messages[0]
+        assert "codex_reasoning_items" not in api_messages[0]
+        assert "codex_message_items" not in api_messages[0]
+
+
+def test_non_assistant_reasoning_replay_strip_removes_native_sidecars():
+    from agent.message_sanitization import strip_non_assistant_reasoning_replay_fields
+
+    message = {
+        "role": "user",
+        "content": "visible",
+        "_reasoning_route": "foreign-route",
+        "reasoning": "private",
+        "reasoning_content": "private",
+        "reasoning_details": [{"text": "private"}],
+        "anthropic_content_blocks": [{"thinking": "private"}],
+        "bedrock_content_blocks": [{"reasoningContent": "private"}],
+        "codex_reasoning_items": [{"encrypted_content": "private"}],
+        "codex_message_items": [{"id": "private"}],
+    }
+
+    strip_non_assistant_reasoning_replay_fields(message)
+
+    assert message == {"role": "user", "content": "visible"}
 
 
 # ---------------------------------------------------------------------------
@@ -918,6 +951,13 @@ class TestPerProviderReasoningEcho:
             "reasoning_details": [
                 {"type": "reasoning.summary", "summary": "PRIMARY_PRIVATE"}
             ],
+            "bedrock_content_blocks": [{"reasoningContent": "PRIMARY_PRIVATE"}],
+            "codex_reasoning_items": [
+                {"type": "reasoning", "encrypted_content": "PRIMARY_PRIVATE"}
+            ],
+            "codex_message_items": [
+                {"type": "message", "role": "assistant", "id": "PRIMARY_PRIVATE"}
+            ],
             "_reasoning_route": reasoning_route_fingerprint(
                 "custom:primary", "primary-model", "https://primary.example/v1"
             ),
@@ -928,6 +968,9 @@ class TestPerProviderReasoningEcho:
         assert "reasoning" not in primary_api
         assert "reasoning_content" not in primary_api
         assert "reasoning_details" not in primary_api
+        assert "bedrock_content_blocks" not in primary_api
+        assert "codex_reasoning_items" not in primary_api
+        assert "codex_message_items" not in primary_api
         assert "_reasoning_route" not in primary_api
 
         fallback_source = {
@@ -964,6 +1007,13 @@ class TestPerProviderReasoningEcho:
             "role": "assistant",
             "content": "Visible result.",
             "anthropic_content_blocks": hidden_blocks,
+            "bedrock_content_blocks": [{"reasoningContent": "BEDROCK_PRIVATE"}],
+            "codex_reasoning_items": [
+                {"type": "reasoning", "encrypted_content": "CODEX_PRIVATE"}
+            ],
+            "codex_message_items": [
+                {"type": "message", "role": "assistant", "id": "CODEX_PRIVATE"}
+            ],
             "_reasoning_route": reasoning_route_fingerprint(
                 agent.provider, agent.model, agent.base_url, agent.api_mode
             ),
@@ -973,7 +1023,45 @@ class TestPerProviderReasoningEcho:
         agent._copy_reasoning_content_for_api(source, api_message)
 
         assert "anthropic_content_blocks" not in api_message
+        assert "bedrock_content_blocks" not in api_message
+        assert "codex_reasoning_items" not in api_message
+        assert "codex_message_items" not in api_message
         assert source["anthropic_content_blocks"] == hidden_blocks
+
+    @pytest.mark.parametrize(
+        "api_mode,field,value",
+        [
+            ("anthropic_messages", "anthropic_content_blocks", [{"type": "thinking", "signature": "sig"}]),
+            ("bedrock_converse", "bedrock_content_blocks", [{"reasoningContent": "signed"}]),
+            ("codex_responses", "codex_reasoning_items", [{"type": "reasoning", "encrypted_content": "cipher"}]),
+            ("codex_responses", "codex_message_items", [{"type": "message", "role": "assistant", "id": "msg"}]),
+        ],
+    )
+    def test_matching_native_route_preserves_owner_sidecar(
+        self, api_mode, field, value
+    ):
+        from agent.agent_runtime_helpers import reasoning_route_fingerprint
+
+        agent = self._make_agent(
+            provider="custom:native",
+            model="native-model",
+            base_url="https://native.example/v1",
+        )
+        agent.api_mode = api_mode
+        source = {
+            "role": "assistant",
+            "content": "Visible result.",
+            field: value,
+            "_reasoning_route": reasoning_route_fingerprint(
+                agent.provider, agent.model, agent.base_url, api_mode
+            ),
+        }
+        api_message = dict(source)
+
+        agent._copy_reasoning_content_for_api(source, api_message)
+
+        assert api_message[field] is value
+        assert "_reasoning_route" not in api_message
 
     @pytest.mark.parametrize("role", ["system", "user", "tool"])
     def test_matching_anthropic_route_drops_hidden_blocks_on_non_assistant_roles(

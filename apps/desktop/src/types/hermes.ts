@@ -654,6 +654,9 @@ export interface MessageReaction {
 }
 
 export interface SessionMessage {
+  _reasoning_route?: string
+  anthropic_content_blocks?: unknown
+  bedrock_content_blocks?: unknown
   /**
    * Full tool arguments for a gateway-projected tool row (`role: 'tool'`).
    * `context` is an 80-char display preview. The expanded tool row rebuilds

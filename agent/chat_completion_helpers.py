@@ -37,7 +37,11 @@ from agent.gemini_native_adapter import is_native_gemini_base_url
 from agent.model_metadata import is_local_endpoint
 from agent.message_content import flatten_message_text
 from agent.message_metadata import append_message, stamp_message_timestamp
-from agent.message_sanitization import (_sanitize_surrogates, _repair_tool_call_arguments)
+from agent.message_sanitization import (
+    _repair_tool_call_arguments,
+    _sanitize_surrogates,
+    strip_non_assistant_reasoning_replay_fields,
+)
 from agent.reasoning_summaries import separate_glued_reasoning_blocks
 from agent.stream_single_writer import claim_stream_writer, stream_writer_is_current
 from tools.terminal_tool_lifecycle import is_persistent_env
@@ -1549,7 +1553,18 @@ def build_assistant_message(agent, assistant_message, finish_reason: str) -> dic
         if preserved:
             msg["reasoning_details"] = preserved
 
-    if reasoning_text or msg.get("reasoning_content") or msg.get("reasoning_details"):
+    native_replay_attrs = (
+        "anthropic_content_blocks",
+        "bedrock_content_blocks",
+        "codex_reasoning_items",
+        "codex_message_items",
+    )
+    if (
+        reasoning_text
+        or msg.get("reasoning_content")
+        or msg.get("reasoning_details")
+        or any(getattr(assistant_message, attr, None) for attr in native_replay_attrs)
+    ):
         # Internal provenance for route-safe historical replay. These keys are
         # stripped from every provider-facing clone before transport.
         from agent.agent_runtime_helpers import reasoning_route_fingerprint
@@ -1566,7 +1581,7 @@ def build_assistant_message(agent, assistant_message, finish_reason: str) -> dic
     # (reconstruction reorders signed blocks -> HTTP 400); codex_* items are
     # the encrypted reasoning / exact message items Responses prefix caching
     # needs.
-    for attr in ("anthropic_content_blocks", "bedrock_content_blocks", "codex_reasoning_items", "codex_message_items"):
+    for attr in native_replay_attrs:
         value = getattr(assistant_message, attr, None)
         if value:
             msg[attr] = value
@@ -1981,6 +1996,9 @@ def _iteration_summary_api_messages(agent, messages: list) -> list:
         # canonical history via nested containers.
         api_msg = _clone_message_for_send(msg)
         agent._copy_reasoning_content_for_api(msg, api_msg)
+        # The summary path bypasses normal request assembly; enforce the same
+        # assistant-only replay boundary here.
+        strip_non_assistant_reasoning_replay_fields(api_msg)
         for key in _SUMMARY_FOREIGN_MESSAGE_KEYS:
             if key == "reasoning" and agent._reasoning_replay_field_for_api() == "reasoning":
                 continue
@@ -2016,6 +2034,7 @@ def _iteration_summary_api_messages(agent, messages: list) -> list:
         # session state, and later tool-call repair mutates nested data.
         prefill_api = _clone_message_for_send(pfm)
         agent._copy_reasoning_content_for_api(pfm, prefill_api)
+        strip_non_assistant_reasoning_replay_fields(prefill_api)
         api_messages.insert((1 if effective_system else 0) + idx, prefill_api)
 
     # Compression/resume can orphan a tool result whose parent tool_call was summarized away.

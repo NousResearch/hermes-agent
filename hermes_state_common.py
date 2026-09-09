@@ -404,6 +404,8 @@ CREATE TABLE IF NOT EXISTS messages (
     reasoning_content TEXT,
     reasoning_details TEXT,
     _reasoning_route TEXT,
+    anthropic_content_blocks TEXT,
+    bedrock_content_blocks TEXT,
     codex_reasoning_items TEXT,
     codex_message_items TEXT,
     platform_message_id TEXT,

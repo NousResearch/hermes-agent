@@ -1397,7 +1397,8 @@ class SessionDB(
     _CONVERSATION_ROW_COLUMNS = (
         "id, role, content, tool_call_id, tool_calls, tool_name, effect_disposition, "
         "finish_reason, reasoning, reasoning_content, reasoning_details, _reasoning_route, "
-        "codex_reasoning_items, codex_message_items, platform_message_id, observed, "
+        "anthropic_content_blocks, bedrock_content_blocks, codex_reasoning_items, "
+        "codex_message_items, platform_message_id, observed, "
         "_compressed_summary, timestamp, active, api_content, display_kind, display_metadata"
     )
 

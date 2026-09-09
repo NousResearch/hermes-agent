@@ -23,6 +23,36 @@ _SURROGATE_RE = re.compile(r'[\ud800-\udfff]')
 # Keys handled explicitly by _sanitize_messages; every OTHER key is swept generically.
 _MESSAGE_CORE_KEYS = frozenset({"content", "name", "tool_calls", "role"})
 
+# Provider-native replay state is opaque, may contain hidden or signed reasoning,
+# and must never survive a route/provider boundary without matching provenance.
+REASONING_REPLAY_SIDECAR_FIELDS = (
+    "anthropic_content_blocks",
+    "bedrock_content_blocks",
+    "codex_reasoning_items",
+    "codex_message_items",
+)
+REASONING_REPLAY_SIDECAR_API_MODES = {
+    "anthropic_content_blocks": "anthropic_messages",
+    "bedrock_content_blocks": "bedrock_converse",
+    "codex_reasoning_items": "codex_responses",
+    "codex_message_items": "codex_responses",
+}
+REASONING_REPLAY_HIDDEN_FIELDS = (
+    "_reasoning_route",
+    "reasoning",
+    "reasoning_content",
+    "reasoning_details",
+    *REASONING_REPLAY_SIDECAR_FIELDS,
+)
+
+
+def strip_non_assistant_reasoning_replay_fields(message: dict) -> None:
+    """Remove assistant-only hidden replay state from a non-assistant message."""
+    if message.get("role") == "assistant":
+        return
+    for field in REASONING_REPLAY_HIDDEN_FIELDS:
+        message.pop(field, None)
+
 
 def _sanitize_surrogates(text: str) -> str:
     """Replace lone surrogate code points with U+FFFD; no-op when none present."""
@@ -671,7 +701,8 @@ def reapply_reasoning_echo(
             api_msg.pop("reasoning_content", None)
             api_msg.pop("reasoning", None)
             api_msg.pop("reasoning_details", None)
-            api_msg.pop("anthropic_content_blocks", None)
+            for field in REASONING_REPLAY_SIDECAR_FIELDS:
+                api_msg.pop(field, None)
         source_msg = api_msg
         if provider_boundary and needs_thinking_pad:
             apply_reasoning_content_policy(

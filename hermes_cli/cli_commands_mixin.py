@@ -205,8 +205,12 @@ _WORKTREE_SUBCOMMANDS = {
     **dict.fromkeys(("new", "add", "create"), "_worktree_new")}
 
 # Message fields copied verbatim onto a /branch row (plus role / tool_name / api_content).
-_BRANCH_COPY_KEYS = ("content", "tool_calls", "tool_call_id", "reasoning", "reasoning_details",
-                     "codex_reasoning_items", "codex_message_items", "timestamp")
+_BRANCH_COPY_KEYS = (
+    "content", "tool_calls", "tool_call_id", "reasoning", "reasoning_content",
+    "reasoning_details", "_reasoning_route", "anthropic_content_blocks",
+    "bedrock_content_blocks", "codex_reasoning_items",
+    "codex_message_items", "timestamp",
+)
 
 _HATCH_PROGRESS = {"compose": "  ┊ composing spritesheet…", "save": "  ┊ saving…"}
 

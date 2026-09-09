@@ -1366,6 +1366,8 @@ class TestRewriteTranscriptPreservesReasoning:
             reasoning="I need to think step by step.",
             reasoning_content="provider scratchpad",
             reasoning_details=[{"type": "summary", "text": "step by step"}],
+            anthropic_content_blocks=[{"type": "thinking", "signature": "sig"}],
+            bedrock_content_blocks=[{"reasoningContent": "signed"}],
             codex_reasoning_items=[{"id": "r1", "type": "reasoning"}],
         )
 
@@ -1374,6 +1376,8 @@ class TestRewriteTranscriptPreservesReasoning:
         assert before[0].get("reasoning") == "I need to think step by step."
         assert before[0].get("reasoning_content") == "provider scratchpad"
         assert before[0].get("reasoning_details") == [{"type": "summary", "text": "step by step"}]
+        assert before[0].get("anthropic_content_blocks") == [{"type": "thinking", "signature": "sig"}]
+        assert before[0].get("bedrock_content_blocks") == [{"reasoningContent": "signed"}]
         assert before[0].get("codex_reasoning_items") == [{"id": "r1", "type": "reasoning"}]
 
         # Now simulate /retry: build the SessionStore and call rewrite_transcript
@@ -1391,6 +1395,8 @@ class TestRewriteTranscriptPreservesReasoning:
         assert after[0].get("reasoning") == "I need to think step by step."
         assert after[0].get("reasoning_content") == "provider scratchpad"
         assert after[0].get("reasoning_details") == [{"type": "summary", "text": "step by step"}]
+        assert after[0].get("anthropic_content_blocks") == [{"type": "thinking", "signature": "sig"}]
+        assert after[0].get("bedrock_content_blocks") == [{"reasoningContent": "signed"}]
         assert after[0].get("codex_reasoning_items") == [{"id": "r1", "type": "reasoning"}]
 
 

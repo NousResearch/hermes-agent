@@ -1,7 +1,7 @@
 """Round-trip tests for the structured reasoning columns.
 
-get_messages() returns reasoning_details / codex_reasoning_items /
-codex_message_items as the raw TEXT stored in their columns (it only
+get_messages() returns reasoning_details and provider-native sidecars as the
+raw TEXT stored in their columns (it only
 hydrates content and tool_calls). Callers that feed those rows straight
 back into a write — the POST /api/sessions/{id}/fork handler pipes
 get_messages() into replace_messages() — must not re-encode that TEXT,
@@ -16,6 +16,8 @@ from hermes_state import SessionDB
 REASONING_DETAILS = [
     {"type": "reasoning.text", "text": "compare both branches first", "format": "unknown"}
 ]
+ANTHROPIC_CONTENT_BLOCKS = [{"type": "thinking", "thinking": "private", "signature": "sig"}]
+BEDROCK_CONTENT_BLOCKS = [{"reasoningContent": {"reasoningText": {"text": "private"}}}]
 CODEX_REASONING_ITEMS = [
     {"id": "rs_1", "type": "reasoning", "encrypted_content": "opaque-blob"}
 ]
@@ -43,6 +45,8 @@ def _seed(db, sid="src"):
         role="assistant",
         content="done",
         reasoning_details=REASONING_DETAILS,
+        anthropic_content_blocks=ANTHROPIC_CONTENT_BLOCKS,
+        bedrock_content_blocks=BEDROCK_CONTENT_BLOCKS,
         codex_reasoning_items=CODEX_REASONING_ITEMS,
         codex_message_items=CODEX_MESSAGE_ITEMS,
     )
@@ -65,8 +69,42 @@ class TestDirectWrite:
         _seed(db)
         msg = _assistant(db.get_messages_as_conversation("src"))
         assert msg["reasoning_details"] == REASONING_DETAILS
+        assert msg["anthropic_content_blocks"] == ANTHROPIC_CONTENT_BLOCKS
+        assert msg["bedrock_content_blocks"] == BEDROCK_CONTENT_BLOCKS
         assert msg["codex_reasoning_items"] == CODEX_REASONING_ITEMS
         assert msg["codex_message_items"] == CODEX_MESSAGE_ITEMS
+
+    @pytest.mark.parametrize("role", ["user", "tool", "system"])
+    def test_non_assistant_rows_do_not_store_hidden_reasoning(self, db, role):
+        db.create_session("non-assistant", source="cli")
+        db.append_message(
+            "non-assistant",
+            role=role,
+            content="visible",
+            reasoning="secret",
+            reasoning_content="secret",
+            reasoning_details=REASONING_DETAILS,
+            reasoning_route="same-route",
+            anthropic_content_blocks=ANTHROPIC_CONTENT_BLOCKS,
+            bedrock_content_blocks=BEDROCK_CONTENT_BLOCKS,
+            codex_reasoning_items=CODEX_REASONING_ITEMS,
+            codex_message_items=CODEX_MESSAGE_ITEMS,
+        )
+
+        [raw] = db.get_messages("non-assistant")
+        [exported] = db.export_session("non-assistant")["messages"]
+        for field in (
+            "reasoning",
+            "reasoning_content",
+            "reasoning_details",
+            "_reasoning_route",
+            "anthropic_content_blocks",
+            "bedrock_content_blocks",
+            "codex_reasoning_items",
+            "codex_message_items",
+        ):
+            assert raw[field] is None
+            assert exported[field] is None
 
 
 class TestForkRoundTrip:
@@ -77,6 +115,18 @@ class TestForkRoundTrip:
         _fork(db, "src", "fork")
         msg = _assistant(db.get_messages_as_conversation("fork"))
         assert msg["reasoning_details"] == REASONING_DETAILS
+
+    def test_anthropic_content_blocks_survive_fork(self, db):
+        _seed(db)
+        _fork(db, "src", "fork")
+        msg = _assistant(db.get_messages_as_conversation("fork"))
+        assert msg["anthropic_content_blocks"] == ANTHROPIC_CONTENT_BLOCKS
+
+    def test_bedrock_content_blocks_survive_fork(self, db):
+        _seed(db)
+        _fork(db, "src", "fork")
+        msg = _assistant(db.get_messages_as_conversation("fork"))
+        assert msg["bedrock_content_blocks"] == BEDROCK_CONTENT_BLOCKS
 
     def test_codex_reasoning_items_survive_fork(self, db):
         _seed(db)
@@ -97,6 +147,8 @@ class TestForkRoundTrip:
         _fork(db, "fork1", "fork2")
         msg = _assistant(db.get_messages_as_conversation("fork2"))
         assert msg["reasoning_details"] == REASONING_DETAILS
+        assert msg["anthropic_content_blocks"] == ANTHROPIC_CONTENT_BLOCKS
+        assert msg["bedrock_content_blocks"] == BEDROCK_CONTENT_BLOCKS
         assert msg["codex_reasoning_items"] == CODEX_REASONING_ITEMS
         assert msg["codex_message_items"] == CODEX_MESSAGE_ITEMS
 

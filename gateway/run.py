@@ -1097,7 +1097,9 @@ def _prepare_resume_pending_message(
 # * ``_reasoning_route``: internal SHA-256 provenance preventing hidden reasoning from
 # crossing provider routes; transport removes it.
 _ASSISTANT_REPLAY_FIELDS: tuple[str, ...] = (
-    "reasoning", "reasoning_content", "reasoning_details", "codex_reasoning_items", "codex_message_items",
+    "reasoning", "reasoning_content", "reasoning_details",
+    "anthropic_content_blocks", "bedrock_content_blocks",
+    "codex_reasoning_items", "codex_message_items",
     "finish_reason", "_reasoning_route")
 
 

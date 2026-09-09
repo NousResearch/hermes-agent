@@ -20,6 +20,36 @@ const reasoningOnlyRow: SessionMessage = {
 }
 
 describe('#68321 assistant rows whose reply persisted only in codex_message_items', () => {
+  it('retains replay provenance and raw hidden carriers for fallback branch seeding', () => {
+    const row: SessionMessage = {
+      id: 108,
+      role: 'assistant',
+      content: 'visible reply',
+      reasoning: 'private trace',
+      reasoning_content: 'private content',
+      reasoning_details: [{ text: 'private details' }],
+      _reasoning_route: 'same-route-provenance',
+      anthropic_content_blocks: [{ type: 'thinking', signature: 'signed' }],
+      bedrock_content_blocks: [{ reasoningContent: 'signed' }],
+      codex_reasoning_items: [{ type: 'reasoning', encrypted_content: 'opaque' }],
+      codex_message_items: [{ type: 'message', content: 'opaque' }],
+      timestamp: 2
+    }
+
+    const [assistant] = toChatMessages([row])
+
+    expect(assistant).toMatchObject({
+      reasoning: row.reasoning,
+      reasoning_content: row.reasoning_content,
+      reasoning_details: row.reasoning_details,
+      _reasoning_route: row._reasoning_route,
+      anthropic_content_blocks: row.anthropic_content_blocks,
+      bedrock_content_blocks: row.bedrock_content_blocks,
+      codex_reasoning_items: row.codex_reasoning_items,
+      codex_message_items: row.codex_message_items
+    })
+  })
+
   it('restores the reply text from codex_message_items when content persisted empty (#68321 GregKM repro)', () => {
     // Field-level evidence from the 2026-09-02 v0.21.0 reproduction:
     // role=assistant, content length 0, the exact user-visible response

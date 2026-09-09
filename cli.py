@@ -3297,13 +3297,34 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
         return True
 
     def _run_plugin_slash_command(self, base_cmd: str, user_args: str) -> None:
-        from hermes_cli.plugins import get_plugin_command_handler, resolve_plugin_command_result
+        from hermes_cli.plugin_invocation import PluginInvocation
+        from hermes_cli.plugins import (
+            call_plugin_command_handler, get_plugin_command_handler, resolve_plugin_command_result,
+        )
 
         plugin_handler = get_plugin_command_handler(base_cmd.lstrip("/"))
         if not plugin_handler:
             return
         try:
-            result = resolve_plugin_command_result(plugin_handler(user_args))
+            agent = getattr(self, "agent", None)
+            tool_names = frozenset(getattr(agent, "valid_tool_names", ()) or ())
+
+            def _dispatch(name, args):
+                if agent is None:
+                    raise RuntimeError("No active session agent is available")
+                from agent.agent_runtime_helpers import invoke_tool
+                return invoke_tool(agent, name, args, self.session_id)
+
+            result = resolve_plugin_command_result(call_plugin_command_handler(
+                plugin_handler, user_args,
+                invocation=PluginInvocation(
+                    session_id=str(getattr(self, "session_id", "") or ""),
+                    session_key=str(getattr(self, "session_id", "") or ""),
+                    surface="cli", platform="cli",
+                    cwd=Path.cwd(), workspace=Path.cwd(), tool_names=tool_names,
+                    authorized=agent is not None, _dispatch=_dispatch if agent is not None else None,
+                ),
+            ))
             if result:
                 _cprint(str(result))
         except Exception as e:

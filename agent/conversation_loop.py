@@ -753,10 +753,27 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
 
     # Plugin hook: on_session_start — fired once for a brand-new session, not on continuation.
     try:
+        from agent.agent_runtime_helpers import invoke_tool
+        from agent.runtime_cwd import resolve_agent_cwd
         from hermes_cli.lifecycle import invoke_hook as _invoke_hook
+        from hermes_cli.plugin_invocation import PluginInvocation
+        _session_cwd = resolve_agent_cwd()
+
+        def _dispatch_plugin_tool(name, args):
+            return invoke_tool(agent, name, args, agent.session_id or "")
+
+        _plugin_invocation = PluginInvocation(
+            session_id=str(agent.session_id or ""), surface=str(getattr(agent, "platform", "") or "agent"),
+            platform=str(getattr(agent, "platform", "") or ""), cwd=_session_cwd, workspace=_session_cwd,
+            tool_names=frozenset(getattr(agent, "valid_tool_names", ()) or ()), authorized=True,
+            _dispatch=_dispatch_plugin_tool,
+        )
         _invoke_hook(
             "on_session_start", session_id=agent.session_id, model=agent.model,
             platform=getattr(agent, "platform", None) or "",
+            cwd=str(_session_cwd), workspace=str(_session_cwd),
+            tool_names=sorted(getattr(agent, "valid_tool_names", ()) or ()),
+            invocation=_plugin_invocation,
         )
     except Exception as exc:
         logger.warning("on_session_start hook failed: %s", exc)

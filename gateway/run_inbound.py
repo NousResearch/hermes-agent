@@ -945,6 +945,77 @@ class GatewayInboundMixin:
         except Exception as e:
             return f"Quick command error: {e}"
 
+    def _plugin_command_invocation(self, source: Optional[SessionSource]) -> Any:
+        """Immutable PluginInvocation bound to the gateway session of *source*.
+
+        Tool dispatch is only possible when the session has a usable agent (running or
+        cached) — never resolved from process-global state. A session with no agent
+        yields an empty, fail-closed context; legacy handlers (which ignore the
+        context) still run.
+        """
+        from pathlib import Path
+
+        from agent.runtime_cwd import scope_terminal_cwd
+        from hermes_cli.plugin_invocation import PluginInvocation
+
+        quick_key = ""
+        if source is not None:
+            try:
+                quick_key = str(self._session_key_for_source(source) or "")
+            except Exception:
+                quick_key = ""
+        agent = None
+        if quick_key:
+            try:
+                agent = self._resident_agent_for(quick_key)
+            except Exception:
+                agent = None
+
+        def _dispatch(name, args):
+            if agent is None:
+                raise RuntimeError("No session agent is available to run tools")
+            from agent.agent_runtime_helpers import invoke_tool
+            from tools.approval_context import reset_current_session_key, set_current_session_key
+            token = None
+            if quick_key:
+                try:  # approvals route to this chat only inside agent turns; bind explicitly (#review pattern)
+                    token = set_current_session_key(quick_key)
+                except Exception:
+                    token = None
+            try:
+                # Task id mirrors the identity the agent loop uses for terminal/browser scoping.
+                task_id = getattr(agent, "session_id", "") or quick_key or ""
+                return invoke_tool(agent, name, args, task_id)
+            finally:
+                if token is not None:
+                    with suppress(Exception):
+                        reset_current_session_key(token)
+
+        cwd_raw = ""
+        try:
+            cwd_raw = (scope_terminal_cwd() or "").strip()
+        except Exception:
+            cwd_raw = ""
+        platform = ""
+        if source is not None:
+            try:
+                _pf = getattr(source, "platform", None)
+                platform = _pf.value if hasattr(_pf, "value") else (str(_pf) if _pf else "")
+            except Exception:
+                platform = ""
+        return PluginInvocation(
+            session_id=str(getattr(agent, "session_id", "") or ""),
+            session_key=quick_key,
+            surface="gateway",
+            platform=platform,
+            cwd=Path(cwd_raw) if cwd_raw else None,
+            workspace=None,
+            tool_names=(frozenset(getattr(agent, "valid_tool_names", ()) or ())
+                        if agent is not None else frozenset()),
+            authorized=agent is not None,
+            _dispatch=_dispatch if agent is not None else None,
+        )
+
     async def _hm_dispatch_quick_and_plugin_commands(
         self, event: "MessageEvent", source: SessionSource, command: Optional[str]
     ) -> Tuple[bool, Optional[str], Optional[str]]:
@@ -981,10 +1052,19 @@ class GatewayInboundMixin:
         # underscored autocomplete form matches plugin commands registered with hyphens.
         if command:
             try:
-                from hermes_cli.plugins import get_plugin_command_handler
+                from hermes_cli.plugins import call_plugin_command_handler, get_plugin_command_handler
                 plugin_handler = get_plugin_command_handler(command.replace("_", "-"))
                 if plugin_handler:
-                    result = plugin_handler(event.get_command_args().strip())
+                    # Plugin commands are never in the registry, so the early gate never fires for
+                    # them; apply the same admin/user policy to the raw typed name here (mirrors the
+                    # quick-command gate above; #44727). The policy stays disabled until an operator
+                    # lists an admin for the scope, so existing installs see no behavior change.
+                    _denied = self._check_slash_access(source, command)
+                    if _denied is not None:
+                        return True, _denied, command
+                    invocation = self._plugin_command_invocation(source)
+                    result = call_plugin_command_handler(
+                        plugin_handler, event.get_command_args().strip(), invocation=invocation)
                     if asyncio.iscoroutine(result):
                         result = await result
                     return True, str(result) if result else None, command

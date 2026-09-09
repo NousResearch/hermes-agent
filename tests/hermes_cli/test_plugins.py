@@ -25,7 +25,9 @@ from hermes_cli.plugins import (
     has_middleware,
     resolve_plugin_command_result,
     _portable_skill_namespace,
+    call_plugin_command_handler,
 )
+from hermes_cli.plugin_invocation import PluginInvocation
 from hermes_cli.relay_plugin_cutover import RELAY_PLUGINS_CONFIG_ENV
 from hermes_cli.middleware import (
     VALID_MIDDLEWARE,
@@ -2023,6 +2025,29 @@ class TestPreLlmCallTargetRouting:
 
 class TestPluginCommands:
     """Tests for plugin slash command registration via register_command()."""
+
+    def test_command_handler_keeps_legacy_one_argument_contract(self):
+        seen = []
+
+        def legacy(args):
+            seen.append(args)
+            return "ok"
+
+        invocation = PluginInvocation(session_id="session-1", surface="cli")
+        assert call_plugin_command_handler(legacy, "message", invocation=invocation) == "ok"
+        assert seen == ["message"]
+
+    def test_command_handler_passes_immutable_opt_in_invocation(self):
+        invocation = PluginInvocation(session_id="session-1", surface="gateway", authorized=True)
+
+        def context_aware(args, *, invocation=None):
+            return args, invocation
+
+        result, received = call_plugin_command_handler(context_aware, "message", invocation=invocation)
+        assert result == "message"
+        assert received is invocation
+        with pytest.raises((AttributeError, TypeError)):
+            received.session_id = "different"
 
 
 

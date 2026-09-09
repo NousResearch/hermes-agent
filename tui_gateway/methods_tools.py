@@ -481,8 +481,69 @@ def _plugin_command_handler(name: str):
         return None
 
 
-def _run_plugin_command(handler, arg: str) -> str:
-    return str(_tools_mod("hermes_cli.plugins").resolve_plugin_command_result(handler(arg)) or "")
+def _plugin_command_invocation(session: dict | None):
+    """Immutable PluginInvocation for a TUI/Desktop session record, else None.
+
+    Tool dispatch needs the session's live agent and binds it through the canonical
+    agent tool path (middleware/hooks/approval guards). A record without an agent
+    (fresh or resumed session, or no session at all) yields a fail-closed context;
+    legacy handlers that ignore the context still run.
+    """
+    try:
+        from pathlib import Path
+
+        from hermes_cli.plugin_invocation import PluginInvocation
+    except Exception:
+        return None
+    agent = session.get("agent") if isinstance(session, dict) else None
+    session_key = str(session.get("session_key") or "") if isinstance(session, dict) else ""
+    source = str(session.get("source") or "").strip() if isinstance(session, dict) else ""
+    if not source and agent is not None:
+        try:
+            source = str(getattr(agent, "platform", "") or "").strip()
+        except Exception:
+            source = ""
+    cwd_raw = str(session.get("cwd") or "").strip() if isinstance(session, dict) else ""
+
+    def _dispatch(name, args):
+        if agent is None:
+            raise RuntimeError("No session agent is available to run tools")
+        from agent.agent_runtime_helpers import invoke_tool
+        from tools.approval_context import reset_current_session_key, set_current_session_key
+        token = None
+        if session_key:
+            try:  # approvals route to this session only inside agent turns; bind explicitly
+                token = set_current_session_key(session_key)
+            except Exception:
+                token = None
+        try:
+            task_id = getattr(agent, "session_id", "") or session_key or ""
+            return invoke_tool(agent, name, args, task_id)
+        finally:
+            if token is not None:
+                try:
+                    reset_current_session_key(token)
+                except Exception:
+                    pass
+
+    return PluginInvocation(
+        session_id=str(getattr(agent, "session_id", "") or ""),
+        session_key=session_key,
+        surface=source or "tui",
+        platform=source or (str(getattr(agent, "platform", "") or "") if agent is not None else ""),
+        cwd=Path(cwd_raw) if cwd_raw else None,
+        workspace=None,
+        tool_names=(frozenset(getattr(agent, "valid_tool_names", ()) or ())
+                    if agent is not None else frozenset()),
+        authorized=agent is not None,
+        _dispatch=_dispatch if agent is not None else None,
+    )
+
+
+def _run_plugin_command(handler, arg: str, session: dict | None = None) -> str:
+    return str(_tools_mod("hermes_cli.plugins").resolve_plugin_command_result(
+        _tools_mod("hermes_cli.plugins").call_plugin_command_handler(
+            handler, arg, invocation=_plugin_command_invocation(session))) or "")
 
 
 def _is_profile_skill_command(session: dict, base: str) -> bool:
@@ -504,7 +565,7 @@ def _is_profile_skill_command(session: dict, base: str) -> bool:
 def _dispatch_plugin(rid, params, session, name, arg):
     if handler := _plugin_command_handler(name):
         with contextlib.suppress(Exception):
-            return _ok(rid, {"type": "plugin", "output": _run_plugin_command(handler, arg)})
+            return _ok(rid, {"type": "plugin", "output": _run_plugin_command(handler, arg, session)})
     return None
 
 
@@ -835,7 +896,7 @@ def _(rid, params: dict) -> dict:
         return _err(rid, 4018, f"skill command: use command.dispatch for /{base}")
     if plugin_handler := _plugin_command_handler(base) if base else None:
         try:
-            return _ok(rid, {"output": _run_plugin_command(plugin_handler, arg) or "(no output)"})
+            return _ok(rid, {"output": _run_plugin_command(plugin_handler, arg, session) or "(no output)"})
         except Exception as e:
             return _ok(rid, {"output": f"Plugin command error: {e}"})
     worker = session.get("slash_worker")

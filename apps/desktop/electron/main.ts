@@ -161,6 +161,7 @@ import { stopDesktopBackgroundServices } from './desktop-background-shutdown'
 import { loadOrCreateInstallationId, sshOwnershipId } from './desktop-installation'
 import { formatDesktopLogLine } from './desktop-log-line'
 import { resolveDesktopRemoteRoute, v1SshTerminalPoolKey } from './desktop-remote-route'
+import { poolBackendAuthorityEnv } from './desktop-pool-cron-authority'
 import {
   buildPosixCleanupScript,
   buildWindowsCleanupScript,
@@ -170,7 +171,6 @@ import {
   shouldRemoveAppBundle,
   uninstallArgsForMode
 } from './desktop-uninstall'
-import { poolBackendAuthorityEnv } from './desktop-pool-cron-authority'
 import { describeDevCdpDecision, resolveDevCdpPort } from './dev-cdp'
 import { ensureKanbanDispatcherReady } from './dispatcher-readiness'
 import { installEmbedReferer } from './embed-referer'

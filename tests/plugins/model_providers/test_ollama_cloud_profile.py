@@ -118,15 +118,17 @@ class TestOllamaCloudReasoningEffort:
         )
         assert top_level == {}
 
-    def test_minimal_effort_omitted(self, ollama_cloud_profile):
-        """``minimal`` is a real Hermes effort level but is not documented for
-        Ollama Cloud's /v1/chat/completions, so it is omitted rather than sent
-        verbatim (which could trigger a 400)."""
+    def test_minimal_effort_clamps_to_low(self, ollama_cloud_profile):
+        """``minimal`` is a real Hermes effort level but is rejected by
+        Ollama Cloud's /v1/chat/completions. The shared clamp degrades it to
+        ``low`` — the nearest supported level — instead of silently dropping
+        the user's ask (old behavior left the server default, i.e. MORE
+        thinking than requested: a ladder inversion)."""
         _, top_level = ollama_cloud_profile.build_api_kwargs_extras(
             supports_reasoning=True,
             reasoning_config={"enabled": True, "effort": "minimal"},
         )
-        assert top_level == {}
+        assert top_level == {"reasoning_effort": "low"}
 
 
 class TestOllamaCloudFullKwargsIntegration:
@@ -197,7 +199,7 @@ class TestOllamaModelSupportsThinking:
         monkeypatch.setattr(httpx, "Client", _Client)
 
     def test_thinking_capability_true(self, monkeypatch):
-        from hermes_cli.models import ollama_model_supports_thinking
+        from hermes_cli.models_local import ollama_model_supports_thinking
 
         self._patch_show(monkeypatch, capabilities=["completion", "tools", "thinking"])
         assert (
@@ -209,7 +211,7 @@ class TestOllamaModelSupportsThinking:
 
 
     def test_probe_failure_returns_none(self, monkeypatch):
-        from hermes_cli.models import ollama_model_supports_thinking
+        from hermes_cli.models_local import ollama_model_supports_thinking
 
         self._patch_show(monkeypatch, status=404)
         assert (
@@ -217,7 +219,7 @@ class TestOllamaModelSupportsThinking:
         )
 
     def test_exception_returns_none(self, monkeypatch):
-        from hermes_cli.models import ollama_model_supports_thinking
+        from hermes_cli.models_local import ollama_model_supports_thinking
 
         self._patch_show(monkeypatch, raise_exc=RuntimeError("boom"))
         assert (

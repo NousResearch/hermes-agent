@@ -1,5 +1,5 @@
 ---
-name: here.now
+name: here-now
 description: Publish sites to {slug}.here.now and store files in Drives.
 version: 1.15.3
 author: here.now

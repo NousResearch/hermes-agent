@@ -6,6 +6,14 @@ description: "Set up a local OpenAI-compatible LLM server on macOS with llama.cp
 
 # Run Local LLMs on Mac
 
+:::tip Desktop users: there's a one-click path
+On the Hermes desktop app, **Settings → Providers → Local Models** installs
+and manages a local llama.cpp server for you — model downloads, memory
+fitting, and context sizing included. See [Local Models](/user-guide/local-models).
+This guide is for manual setup: MLX, custom builds, or servers you want to
+run yourself.
+:::
+
 This guide walks you through running a local LLM server on macOS with an OpenAI-compatible API. You get full privacy, zero API costs, and surprisingly good performance on Apple Silicon.
 
 We cover two backends:
@@ -238,3 +246,7 @@ HERMES_STREAM_READ_TIMEOUT=1800
 | API call (non-streaming) | 1800s | No change needed | `HERMES_API_TIMEOUT` |
 
 The stream read timeout is the one most likely to cause issues — it's the socket-level deadline for receiving the next chunk of data. During prefill on large contexts, local models may produce no output for minutes while processing the prompt. The auto-detection handles this transparently.
+
+:::tip A silent first turn is usually prefill, not a hang
+Hermes sends its system prompt and tool schemas on every call, so on slower hardware the first turn can involve minutes of silence while the model processes that prompt before generating anything. That's prefill at work, not a stalled session. See [Slow first response (prefill)](./local-ollama-setup.md#slow-first-response-prefill) in the Ollama guide for mitigations like keeping the model loaded and trimming the fixed prompt with `hermes prompt-size`.
+:::

@@ -46,6 +46,17 @@ def test_explicit_openai_codex_provider_uses_existing_oauth_login():
     resolver.assert_not_called()
 
 
+def test_codex_oauth_is_never_selected_by_stt_autodetection():
+    from tools.transcription_tools import _get_provider
+
+    with (
+        patch("tools.transcription_tools._detect_local_backend", return_value=None),
+        patch("tools.transcription_tools._has_codex_stt_backend", return_value=True),
+        patch("tools.transcription_tools._CLOUD_PROVIDER_SPECS", {}),
+    ):
+        assert _get_provider({"enabled": True}) == "none"
+
+
 def test_codex_credentials_include_optional_chatgpt_account_id():
     from tools.transcription_tools import _resolve_codex_stt_credentials
 

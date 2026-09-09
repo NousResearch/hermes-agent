@@ -1,12 +1,12 @@
 ---
-title: "Qdrant Vector Search — Vector search engine for production RAG systems"
-sidebar_label: "Qdrant Vector Search"
+title: "Qdrant — Vector search engine for production RAG systems"
+sidebar_label: "Qdrant"
 description: "Vector search engine for production RAG systems"
 ---
 
 {/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
 
-# Qdrant Vector Search
+# Qdrant
 
 Vector search engine for production RAG systems.
 
@@ -15,7 +15,7 @@ Vector search engine for production RAG systems.
 | | |
 |---|---|
 | Source | Optional — install with `hermes skills install official/mlops/qdrant` |
-| Path | `optional-skills/mlops/qdrant` |
+| Path | `optional-skills/mlops\qdrant` |
 | Version | `1.0.1` |
 | Author | Orchestra Research |
 | License | MIT |
@@ -509,8 +509,8 @@ client = QdrantClient(
 
 ## References
 
-- **[Advanced Usage](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/mlops/qdrant/references/advanced-usage.md)** - Distributed mode, hybrid search, recommendations
-- **[Troubleshooting](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/mlops/qdrant/references/troubleshooting.md)** - Common issues, debugging, performance tuning
+- **[Advanced Usage](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/mlops\qdrant/references/advanced-usage.md)** - Distributed mode, hybrid search, recommendations
+- **[Troubleshooting](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/mlops\qdrant/references/troubleshooting.md)** - Common issues, debugging, performance tuning
 
 ## Resources
 

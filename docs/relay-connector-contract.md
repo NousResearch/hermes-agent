@@ -52,6 +52,8 @@ JSON object. Source of truth: `gateway/relay/descriptor.py`.
 | `platform_hint` | string | no | System-prompt platform hint. |
 | `pii_safe` | bool | no | Redact PII in session descriptions. |
 | `supports_context` | bool | no | Whether the connector can supply surrounding channel/group **context** for an addressed turn on this platform (Model A on-demand history fetch — Discord/Slack/Matrix; Model B passive buffer — Telegram/Signal/WhatsApp). Default false ⇒ no `context` is attached to inbound events. See §3. |
+| `supports_inchannel_continuable` | bool | no | Whether the platform can host a **flat continuable cron surface** (native Slack's `cron_continuable_surface: in_channel`): the brief posts top-level in the channel/DM and a plain reply continues the job via the flat `(platform, chat_id, None)` session. Default false ⇒ the gateway's scheduler fails safe to thread mode (D6 gate), so an older connector keeps today's thread behavior. |
+| `supports_block_formatting` | bool | no | Whether this platform's sender renders **block-level formatting** from raw markdown when the gateway stamps `metadata.format_hints` on `send`/`edit` frames (Slack: native `markdown` block for tables/lists/code, mrkdwn text kept as fallback). Default false ⇒ the gateway never stamps hints, so an older connector never receives the metadata. |
 | `supported_ops` | string[] | no | Op-level capability discovery: the outbound op names the connector's sender for this platform actually implements (e.g. `["send", "edit", "typing", "follow_up", "get_chat_info"]`). Absent/empty ⇒ the connector predates the field and the gateway assumes the legacy op set (`send`/`edit`/`typing`/`follow_up`); a NEW op is used only when explicitly advertised. |
 
 Most fields are a projection of the gateway's existing `PlatformEntry`; the
@@ -117,8 +119,13 @@ Both absent ⇒ byte-identical to today. A connector that never sends them, or a
 
 `PassthroughForward` is the wire form of a forwarded passthrough-plane request
 (Class-2/3 webhooks — Discord interactions, Twilio): `{platform, botId, method,
-path, headers: [[k,v],…], bodyB64}`. The body is base64-encoded so arbitrary
-bytes survive the newline-delimited-JSON transport; the gateway base64-decodes
+path, headers: [[k,v],…], bodyB64, profile?}`. `profile` is optional — the
+connector stamps it when NAS resolves the target profile for a Team-Gateway
+interaction; omitting it (single-profile gateways) preserves legacy routing to
+the default `agent:main` session namespace, mirroring the `profile` field the
+`inbound` frame's `SessionSource` already carries (#60586). The body is
+base64-encoded so arbitrary bytes survive the newline-delimited-JSON transport;
+the gateway base64-decodes
 back to the exact bytes the connector forwarded (the connector already verified
 the provider signature and stripped any shared-identity credential at the edge —
 §6 — so the gateway re-processes a sanitized, token-free body and acts on it via
@@ -440,21 +447,30 @@ clarify pickers) with NATIVE controls: Discord button components, Telegram
 inline keyboards, Slack Block Kit actions, WhatsApp button messages (≤3
 options) / list messages (4–10; >10 degrades to the numbered-text fallback).
 `prompt_kind` (`approval`/`clarify`/`choice`) is a styling hint only.
-`prompt_id` is gateway-minted (8 hex) and opaque to the connector; each
+`prompt_id` is gateway-minted and opaque to the connector; each
 option's callback payload carries the token `hp1:<prompt_id>:<option_id>`
 (≤64 bytes — Telegram's `callback_data` cap binds every lane; option ids are
-`[A-Za-z0-9_.-]`, ≤32 chars). `style` maps per-platform
+`[A-Za-z0-9_.-]`, ≤32 chars). The gateway mints the prompt id as
+`<per-process nonce>.<8 hex>` within that same alphabet and budget: the
+connector fans a passthrough forward (a Discord press) out to EVERY live
+gateway session of the tenant, unlike a message, which it narrows to the
+admitted instance set, so the nonce is how a gateway tells its OWN prompt
+from a sibling's. `style` maps per-platform
 (primary/success/danger/secondary). `timeout_s` is advisory on the wire —
 expiry is enforced GATEWAY-side (the pending-prompt registry drops expired
-entries; a stale press falls through as typed text, mirroring the native
-adapters' "approval expired" edit).
+entries; the owning gateway then replies with a short "no longer waiting"
+notice).
 
 **`prompt_response` (Phase 3 inbound).** The user's press crosses back as a
 normal inbound MessageEvent carrying
 `prompt_response: {prompt_id, option_id, label?, prompt_message_id?}` — never
 a bare platform `custom_id`. The event's `text` mirrors `/{option_id}` with
 `message_type: "command"` so a gateway predating the field routes the press
-as a typed reply instead of dropping it. The SOURCE is the authentic
+as a typed reply instead of dropping it. A gateway that DOES understand the
+field always consumes the press instead: a prompt id it did not mint belongs
+to a sibling gateway that the same fan-out also reached, and letting the
+`/{option_id}` text reach the chat lane made every sibling answer
+"Unknown command" under the owner's single ack. The SOURCE is the authentic
 CLICKING user (connector-observed: Telegram `callback_query.from`, Slack
 `block_actions.user`, WhatsApp `messages[].from`, Discord interaction
 member/user), so gateway-side authorization gates apply to a button press

@@ -15,7 +15,7 @@ Karpathy's LLM Wiki: build/query interlinked markdown KB.
 | | |
 |---|---|
 | Source | Bundled (installed by default) |
-| Path | `skills/research/llm-wiki` |
+| Path | `skills/research\llm-wiki` |
 | Version | `2.1.0` |
 | Author | Hermes Agent |
 | License | MIT |
@@ -475,7 +475,7 @@ Wants=network-online.target
 
 [Service]
 ExecStart=/path/to/ob sync --continuous
-WorkingDirectory=/home/user/wiki
+WorkingDirectory=%h/wiki
 Restart=on-failure
 RestartSec=10
 

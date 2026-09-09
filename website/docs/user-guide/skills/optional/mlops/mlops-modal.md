@@ -1,12 +1,12 @@
 ---
-title: "Modal Serverless Gpu — Serverless GPU cloud for ML jobs and model APIs"
-sidebar_label: "Modal Serverless Gpu"
+title: "Modal — Serverless GPU cloud for ML jobs and model APIs"
+sidebar_label: "Modal"
 description: "Serverless GPU cloud for ML jobs and model APIs"
 ---
 
 {/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
 
-# Modal Serverless Gpu
+# Modal
 
 Serverless GPU cloud for ML jobs and model APIs.
 
@@ -15,7 +15,7 @@ Serverless GPU cloud for ML jobs and model APIs.
 | | |
 |---|---|
 | Source | Optional — install with `hermes skills install official/mlops/modal` |
-| Path | `optional-skills/mlops/modal` |
+| Path | `optional-skills/mlops\modal` |
 | Version | `1.0.1` |
 | Author | Orchestra Research |
 | License | MIT |
@@ -31,7 +31,7 @@ The following is the complete skill definition that Hermes loads when this skill
 
 # Modal Serverless GPU
 
-Comprehensive guide to running ML workloads on Modal's serverless GPU cloud platform.
+Guide to running ML workloads on Modal's serverless GPU cloud platform.
 
 ## When to use Modal
 
@@ -357,8 +357,8 @@ if __name__ == "__main__":
 
 ## References
 
-- **[Advanced Usage](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/mlops/modal/references/advanced-usage.md)** - Multi-GPU, distributed training, cost optimization
-- **[Troubleshooting](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/mlops/modal/references/troubleshooting.md)** - Common issues and solutions
+- **[Advanced Usage](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/mlops\modal/references/advanced-usage.md)** - Multi-GPU, distributed training, cost optimization
+- **[Troubleshooting](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/mlops\modal/references/troubleshooting.md)** - Common issues and solutions
 
 ## Resources
 

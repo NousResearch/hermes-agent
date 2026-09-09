@@ -330,6 +330,68 @@ class TestStreamingResilience:
         assert result["final_response"] == "Hello"
 
     @pytest.mark.asyncio
+    async def test_residual_buffer_flushed_after_eof(self, monkeypatch):
+        """A final SSE frame without a trailing newline must not be dropped.
+
+        The line loop only consumes complete lines; if the upstream's last
+        frame lacks the newline, its content sat in ``buffer`` at EOF and
+        was silently discarded (pi#8997's bug class). The residual buffer
+        is now flushed after the read loop.
+        """
+        monkeypatch.setenv("GATEWAY_PROXY_URL", "http://host:8642")
+        monkeypatch.delenv("GATEWAY_PROXY_KEY", raising=False)
+        runner = _make_runner()
+        source = _make_source()
+
+        resp = _FakeSSEResponse(
+            status=200,
+            sse_chunks=[
+                'data: {"choices":[{"delta":{"content":"Hello"}}]}\n',
+                'data: {"choices":[{"delta":{"content":" world"}}]}',  # no newline, then EOF
+            ],
+        )
+        session = _FakeSession(resp)
+
+        with patch("gateway.run._load_gateway_config", return_value={}):
+            with _patch_aiohttp(session):
+                with patch("aiohttp.ClientTimeout"):
+                    result = await runner._run_agent_via_proxy(
+                        message="hi",
+                        context_prompt="",
+                        history=[],
+                        source=source,
+                        session_id="test",
+                    )
+
+        assert result["final_response"] == "Hello world"
+
+    @pytest.mark.asyncio
+    async def test_eof_without_done_and_no_content_is_an_error(self, monkeypatch):
+        """Clean EOF with no [DONE] and no content must surface an error, not
+        an empty 'response'. With content, the partial text is kept (and the
+        truncation is logged) rather than thrown away."""
+        monkeypatch.setenv("GATEWAY_PROXY_URL", "http://host:8642")
+        monkeypatch.delenv("GATEWAY_PROXY_KEY", raising=False)
+        runner = _make_runner()
+        source = _make_source()
+
+        resp = _FakeSSEResponse(status=200, sse_chunks=[])
+        session = _FakeSession(resp)
+
+        with patch("gateway.run._load_gateway_config", return_value={}):
+            with _patch_aiohttp(session):
+                with patch("aiohttp.ClientTimeout"):
+                    result = await runner._run_agent_via_proxy(
+                        message="hi",
+                        context_prompt="",
+                        history=[],
+                        source=source,
+                        session_id="test",
+                    )
+
+        assert "closed before the response completed" in result["final_response"]
+
+    @pytest.mark.asyncio
     async def test_client_timeout_sets_sock_connect(self, monkeypatch):
         """ClientTimeout must bound the TCP connect phase.
 

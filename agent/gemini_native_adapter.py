@@ -506,24 +506,41 @@ def _make_stream_chunk(
     return _envelope(model, "chat.completion.chunk", choice, None, cls=_GeminiStreamChunk)
 
 
+_SSE_DONE = object()  # sentinel: terminal [DONE] frame
+
+
+def _parse_sse_line(line: str) -> Any:
+    """One SSE line → payload dict, ``_SSE_DONE`` for the terminal frame, or None."""
+    line = line.rstrip("\r")
+    if not line.startswith("data: "):
+        return None
+    if (data := line[6:]) == "[DONE]":
+        return _SSE_DONE
+    try:
+        payload = json.loads(data)
+    except json.JSONDecodeError:
+        logger.debug("Non-JSON Gemini SSE line: %s", data[:200])
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
 def _iter_sse_events(response: httpx.Response) -> Iterator[Dict[str, Any]]:
     buffer = ""
     for chunk in response.iter_text():
         buffer += chunk or ""
         while "\n" in buffer:
             line, buffer = buffer.split("\n", 1)
-            line = line.rstrip("\r")
-            if not line.startswith("data: "):
-                continue
-            if (data := line[6:]) == "[DONE]":
+            payload = _parse_sse_line(line)
+            if payload is _SSE_DONE:
                 return
-            try:
-                payload = json.loads(data)
-            except json.JSONDecodeError:
-                logger.debug("Non-JSON Gemini SSE line: %s", data[:200])
-                continue
-            if isinstance(payload, dict):
+            if payload is not None:
                 yield payload
+    # The final frame may not be newline-terminated: flush the residual buffer
+    # after EOF instead of silently dropping its content (pi#8997 bug class).
+    if buffer:
+        payload = _parse_sse_line(buffer)
+        if payload is not None and payload is not _SSE_DONE:
+            yield payload
 
 
 def translate_stream_event(event: Dict[str, Any], model: str, tool_call_indices: Dict[str, Dict[str, Any]]) -> List[_GeminiStreamChunk]:

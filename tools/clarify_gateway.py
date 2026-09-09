@@ -87,6 +87,50 @@ def wait_for_response(clarify_id: str, timeout: float) -> Optional[str]:
     return entry.response
 
 
+def wait_for_batch_responses(clarify_ids: List[str], timeout: float) -> tuple[Dict[str, str], bool]:
+    """Wait once for a set of clarifies and retain every response (including explicit skips).
+
+    The shared deadline makes a batch bounded as one user interaction rather than one timeout per
+    question. Entries remain indexed until the batch settles so adapters can report progress.
+    """
+    with _lock:
+        entries = [(cid, _entries.get(cid)) for cid in clarify_ids]
+    deadline = None if timeout is None or float(timeout) <= 0.0 else time.monotonic() + float(timeout)
+    try:
+        from tools.environments.base import touch_activity_if_due
+    except Exception:  # pragma: no cover - optional
+        touch_activity_if_due = None
+    activity_state = {"last_touch": time.monotonic(), "start": time.monotonic()}
+    timed_out = False
+    while any(entry is not None and not entry.event.is_set() for _, entry in entries):
+        remaining = 1.0 if deadline is None else deadline - time.monotonic()
+        if remaining <= 0:
+            timed_out = True
+            break
+        next_pending = next(entry for _, entry in entries if entry is not None and not entry.event.is_set())
+        next_pending.event.wait(timeout=min(1.0, remaining))
+        if touch_activity_if_due is not None:
+            touch_activity_if_due(activity_state, "waiting for user clarify batch responses")
+    responses: Dict[str, str] = {}
+    with _lock:
+        for clarify_id, entry in entries:
+            if entry is None:
+                timed_out = True
+                continue
+            if entry.event.is_set():
+                responses[clarify_id] = entry.response or ""
+            else:
+                timed_out = True
+                responses[clarify_id] = ""
+            _entries.pop(clarify_id, None)
+            ids = _session_index.get(entry.session_key) or []
+            if clarify_id in ids:
+                ids.remove(clarify_id)
+            if not ids:
+                _session_index.pop(entry.session_key, None)
+    return responses, timed_out
+
+
 def resolve_gateway_clarify(clarify_id: str, response: str) -> bool:
     """Unblock the waiter on ``clarify_id``; False if already resolved/expired/unknown."""
     with _lock:

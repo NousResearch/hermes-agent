@@ -210,6 +210,58 @@ class TestTelegramClarifyCallback:
         assert adapter._clarify_state["cidC"] == "sk-auth"
 
 
+class TestTelegramClarifyBatch:
+    """A batch keeps partial answers while explicit controls drive its lifecycle."""
+
+    def setup_method(self):
+        _clear_clarify_state()
+
+    @pytest.mark.asyncio
+    async def test_batch_progress_does_not_consume_open_answer_and_continue_skips_remaining(self):
+        from tools import clarify_gateway as cm
+
+        adapter = _make_adapter()
+        adapter._bot.send_message = AsyncMock(return_value=MagicMock(message_id=100))
+        cm.register("cid-budget", "sk-batch", "Budget?", ["850", "500"])
+        cm.register("cid-shot", "sk-batch", "Screenshot?", None)
+
+        result = await adapter.send_clarify_batch(
+            chat_id="12345",
+            questions=[
+                {"qid": "q0", "question": "Budget?", "choices": ["850", "500"]},
+                {"qid": "q1", "question": "Screenshot?", "choices": None},
+            ],
+            clarify_ids=["cid-budget", "cid-shot"],
+            batch_id="batch1",
+            session_key="sk-batch",
+        )
+        assert result.success is True
+        assert adapter._bot.send_message.await_count == 2
+
+        # The user has answered the choice; the screenshot remains open.
+        assert cm.resolve_gateway_clarify("cid-budget", "850") is True
+        query = AsyncMock()
+        query.data = "clb:batch1:status"
+        query.message = MagicMock(chat_id=12345)
+        query.from_user = MagicMock(id="777", first_name="Tester")
+        query.answer = AsyncMock()
+        update = MagicMock(callback_query=query)
+
+        with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USERS": "*"}, clear=False):
+            await adapter._handle_callback_query(update, MagicMock())
+
+        with cm._lock:
+            assert cm._entries["cid-shot"].event.is_set() is False
+        assert "1/2" in query.answer.call_args.kwargs["text"]
+
+        query.data = "clb:batch1:continue"
+        with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USERS": "*"}, clear=False):
+            await adapter._handle_callback_query(update, MagicMock())
+        with cm._lock:
+            assert cm._entries["cid-shot"].response == ""
+            assert cm._entries["cid-shot"].event.is_set() is True
+
+
 # ===========================================================================
 # Base adapter fallback render — text numbered list
 # ===========================================================================

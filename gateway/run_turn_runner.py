@@ -1224,7 +1224,7 @@ class TurnRunner:
             logger.warning("%s boundary timed out or failed: %s", reason, err)
             return False
 
-    def _clarify_callback_sync(self, question: str, choices, multi_select: bool = False) -> str:
+    def _clarify_callback_sync(self, question: str, choices, multi_select: bool = False, questions=None) -> Any:
         """Present a clarify prompt and block on a response (clarify_tool's synchronous contract):
         schedule send_clarify on the gateway loop, block on the primitive's threading.Event with a
         timeout. Returns the response string, or a sentinel when none arrived."""
@@ -1235,6 +1235,42 @@ class TurnRunner:
         if not ctx._status_adapter:
             return ""
         session_key = ctx.session_key or ""
+        # A native batch-capable adapter receives all independent questions at once. This preserves
+        # partial answers and uses one shared timeout; adapters without the method retain the
+        # clarify_tool legacy per-question fallback.
+        send_batch = getattr(ctx._status_adapter, "send_clarify_batch", None)
+        if questions and callable(send_batch):
+            batch_id = uuid.uuid4().hex[:10]
+            clarify_ids = [uuid.uuid4().hex[:10] for _ in questions]
+            for clarify_id, spec in zip(clarify_ids, questions):
+                clarify_mod.register(clarify_id, session_key, spec["question"], spec.get("choices"),
+                                     multi_select=bool(spec.get("multi_select")))
+            self._close_native_stream_boundary("Clarify", "💬 等待你的选择...", reopen=True)
+            with suppress(Exception):
+                ctx._status_adapter.pause_typing_for_chat(ctx._status_chat_id)
+            fut = self._schedule(
+                send_batch(chat_id=ctx._status_chat_id, questions=questions, clarify_ids=clarify_ids,
+                           batch_id=batch_id, session_key=session_key, metadata=ctx._status_thread_metadata),
+                "Clarify batch send failed to schedule",
+            )
+            try:
+                send_result = fut.result(timeout=15) if fut is not None else None
+            except Exception:
+                send_result = None
+            if not getattr(send_result, "success", False):
+                for clarify_id in clarify_ids:
+                    clarify_mod.resolve_gateway_clarify(clarify_id, "")
+                with suppress(Exception):
+                    ctx._status_adapter.clear_clarify_batch(batch_id)
+                return {"answers": {entry["qid"]: "" for entry in questions}, "timed_out": True}
+            try:
+                answers_by_id, timed_out = clarify_mod.wait_for_batch_responses(
+                    clarify_ids, clarify_mod.get_clarify_timeout())
+            finally:
+                with suppress(Exception):
+                    ctx._status_adapter.clear_clarify_batch(batch_id)
+            return {"answers": {entry["qid"]: answers_by_id.get(clarify_id, "")
+                                for entry, clarify_id in zip(questions, clarify_ids)}, "timed_out": timed_out}
         clarify_id = uuid.uuid4().hex[:10]
         choices = list(choices) if choices else None
         clarify_mod.register(

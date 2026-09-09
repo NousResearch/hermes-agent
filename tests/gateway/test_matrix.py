@@ -9,7 +9,7 @@ import pytest
 from unittest.mock import MagicMock, patch, AsyncMock
 
 from gateway.config import Platform, PlatformConfig
-from gateway.platforms.base import MessageType
+from gateway.platforms.event import MessageType
 
 
 def _make_fake_mautrix():
@@ -1854,7 +1854,7 @@ class TestMatrixReactions:
 
     @pytest.mark.asyncio
     async def test_on_processing_complete_sends_check(self):
-        from gateway.platforms.base import MessageEvent, MessageType, ProcessingOutcome
+        from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 
         self.adapter._reactions_enabled = True
         self.adapter._reaction_redaction_delay_seconds = 0.01

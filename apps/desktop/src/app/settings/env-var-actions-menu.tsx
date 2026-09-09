@@ -10,6 +10,7 @@ import {
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { useI18n } from '@/i18n'
+import { openExternalLink } from '@/lib/external-link'
 import { triggerHaptic } from '@/lib/haptics'
 import { ExternalLink, Eye, EyeOff, KeyRound, Trash2 } from '@/lib/icons'
 import { cn } from '@/lib/utils'
@@ -61,7 +62,7 @@ function useEnvVarItems({
         onSelect: event => {
           event.preventDefault()
           triggerHaptic('selection')
-          window.open(docsUrl!, '_blank', 'noopener,noreferrer')
+          openExternalLink(docsUrl!)
         }
       })
     }

@@ -1,0 +1,32 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: wolfram
+description: Wolfram|Alpha computation, math, and curated knowledge.
+source: https://www.wolfram.com/agent-tools/
+
+# Official vendor-hosted remote MCP (URL-only — Hermes never spawns a local
+# process for this entry). No authentication required (verified live:
+# initialize succeeds anonymously).
+
+transport:
+  type: http
+  url: https://agenttools.wolfram.com/mcp
+
+auth:
+  type: none
+
+# Composer-suggestion triggers (desktop brand pills).
+suggest:
+  keywords:
+    - wolfram
+    - wolfram alpha
+    - computation
+  hosts:
+    - wolfram.com
+    - wolframalpha.com
+
+post_install: |
+  No account or credentials needed — tools are available as soon as the
+  session restarts.

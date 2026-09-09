@@ -93,6 +93,38 @@ class TestCliApprovalUi:
         thread.join(timeout=2)
         assert result["value"] == "deny"
 
+    def test_session_less_gate_offers_only_once_and_deny(self):
+        """A gate that re-asks every time must not advertise a session scope.
+
+        The protected agent-instruction gate (tools/file_tools.py) grants one
+        operation and persists nothing, so offering "session" here makes every
+        later write re-prompt and reads as a broken gate (#81887).
+        """
+        cli = _make_cli_stub()
+        result = {}
+
+        def _run_callback():
+            result["value"] = cli._approval_callback(
+                "<write to AGENTS.md>",
+                "protected agent-instruction file",
+                allow_permanent=False,
+                allow_session=False,
+            )
+
+        thread = threading.Thread(target=_run_callback, daemon=True)
+        thread.start()
+
+        deadline = time.time() + 2
+        while cli._approval_state is None and time.time() < deadline:
+            time.sleep(0.01)
+
+        assert cli._approval_state is not None
+        assert cli._approval_state["choices"] == ["once", "deny"]
+
+        cli._approval_state["response_queue"].put("once")
+        thread.join(timeout=2)
+        assert result["value"] == "once"
+
 
     def test_sudo_prompt_restores_existing_draft_after_response(self):
         cli = _make_cli_stub()
@@ -213,11 +245,11 @@ class TestCliApprovalUi:
                     "failed": False,
                 }
 
-        with patch.object(cli_module, "AIAgent", FakeAgent), \
+        with patch("run_agent.AIAgent", FakeAgent), \
              patch.object(cli_module, "_cprint"), \
              patch.object(cli_module, "ChatConsole") as chat_console:
             chat_console.return_value.print = MagicMock()
-            cli._handle_background_command("/btw check weather")
+            cli._handle_background_command("/bg check weather")
 
             # Join the worker thread deterministically rather than polling a
             # wall-clock deadline — under load the thread's finally-block pop

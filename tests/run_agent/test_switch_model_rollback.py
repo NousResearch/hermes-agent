@@ -46,6 +46,7 @@ def _make_agent_openrouter():
     agent._fallback_chain = []
     agent._fallback_model = None
     agent._config_context_length = None
+    agent.runtime_capabilities = {"native_compaction": False}
 
     return agent
 
@@ -73,6 +74,7 @@ def _make_agent_anthropic():
     agent._fallback_chain = []
     agent._fallback_model = None
     agent._config_context_length = None
+    agent.runtime_capabilities = {"native_compaction": False}
 
     return agent
 
@@ -108,6 +110,7 @@ def test_openai_client_rebuild_failure_rolls_back_to_original_state():
     assert agent.api_key == "or-key-original"
     assert agent.client is original_client
     assert agent._client_kwargs == original_kwargs
+    assert agent.runtime_capabilities == {"native_compaction": False}
 
 
 def test_anthropic_client_rebuild_failure_rolls_back_to_original_state():
@@ -124,10 +127,10 @@ def test_anthropic_client_rebuild_failure_rolls_back_to_original_state():
             side_effect=RuntimeError("simulated anthropic build failure"),
         ),
         patch(
-            "agent.anthropic_adapter.resolve_anthropic_token",
+            "agent.anthropic_credentials.resolve_anthropic_token",
             return_value="sk-ant-resolved",
         ),
-        patch("agent.anthropic_adapter._is_oauth_token", return_value=False),
+        patch("agent.anthropic_credentials._is_oauth_token", return_value=False),
         patch("hermes_cli.timeouts.get_provider_request_timeout", return_value=None),
     ):
         with pytest.raises(RuntimeError, match="simulated anthropic build failure"):

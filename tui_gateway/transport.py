@@ -1,27 +1,17 @@
 """Transport abstraction for the tui_gateway JSON-RPC server.
 
-Historically the gateway wrote every JSON frame directly to real stdout.  This
-module decouples the I/O sink from the handler logic so the same dispatcher
-can be driven over stdio (``tui_gateway.entry``) or WebSocket
-(``tui_gateway.ws``) without duplicating code.
-
-A :class:`Transport` is anything that can accept a JSON-serialisable dict and
-forward it to its peer.  The active transport for the current request is
-tracked in a :class:`contextvars.ContextVar` so handlers — including those
-dispatched onto the worker pool — route their writes to the right peer.
-
-Backward compatibility
-----------------------
-``tui_gateway.server.write_json`` still works without any transport bound.
-When nothing is on the contextvar and no session-level transport is found,
-it falls back to the module-level :class:`StdioTransport`, which wraps the
-original ``_real_stdout`` + ``_stdout_lock`` pair.  Tests that monkey-patch
-``server._real_stdout`` continue to work because the stdio transport resolves
-the stream lazily through a callback.
+A :class:`Transport` forwards a JSON-serialisable dict to its peer, so one dispatcher runs over stdio
+(``tui_gateway.entry``) or WebSocket (``tui_gateway.ws``). The request's transport lives in a
+``ContextVar`` so pool-dispatched handlers write to the right peer; with nothing bound
+``server.write_json`` falls back to the module-level :class:`StdioTransport`, which resolves
+``_real_stdout`` lazily so tests that monkey-patch it keep working.
 """
 
 from __future__ import annotations
 
+from collections import deque
+from dataclasses import dataclass, field
+import contextlib
 import contextvars
 import errno
 import json
@@ -30,38 +20,19 @@ import os
 import threading
 from typing import Any, Callable, Optional, Protocol, runtime_checkable
 
-# Errno values that mean "the peer is gone" rather than "the host has a
-# real I/O problem".  Anything outside this set re-raises so it surfaces
-# in the crash log instead of looking like a clean disconnect.
+# Errno values that mean "the peer is gone" rather than "the host has a real I/O problem". Anything
+# outside this set re-raises so it surfaces in the crash log instead of looking like a clean disconnect.
 _PEER_GONE_ERRNOS = frozenset({
-    errno.EPIPE,        # write to closed pipe (POSIX)
-    errno.ECONNRESET,   # peer reset the connection
-    errno.EBADF,        # fd closed under us
-    errno.ESHUTDOWN,    # transport endpoint shut down
-    getattr(errno, "WSAECONNRESET", -1),  # win32 mapping (no-op on POSIX)
-    getattr(errno, "WSAESHUTDOWN", -1),
+    errno.EPIPE, errno.ECONNRESET, errno.EBADF, errno.ESHUTDOWN,
+    getattr(errno, "WSAECONNRESET", -1), getattr(errno, "WSAESHUTDOWN", -1),  # win32 (no-op on POSIX)
 } - {-1})
 
 logger = logging.getLogger(__name__)
 
-# Optional knob: when true, StdioTransport does not call ``stream.flush``
-# after writing.  Use this on environments where a half-closed pipe (TUI
-# Node parent quit while the gateway is still emitting events) makes
-# flush block long enough to starve the rest of the worker pool.
-#
-# IMPORTANT: Python text stdout is fully buffered when attached to a
-# pipe (the TUI case), so this knob ONLY makes sense when the gateway
-# is launched with ``-u`` or ``PYTHONUNBUFFERED=1``.  Without one of
-# those, JSON-RPC frames will accumulate in the buffer and the TUI
-# will hang waiting for ``gateway.ready``.  Default stays off so the
-# existing flush-after-write behaviour is unchanged.
-_DISABLE_FLUSH = (os.environ.get("HERMES_TUI_GATEWAY_NO_FLUSH", "") or "").strip().lower() in {
-    "1",
-    "true",
-    "yes",
-    "on",
-}
-
+# When true, StdioTransport skips ``stream.flush`` after writing: on a half-closed pipe (TUI Node parent quit
+# while the gateway still emits) flush can block long enough to starve the worker pool. Python text stdout is
+# fully buffered on a pipe, so this ONLY makes sense with ``-u``/``PYTHONUNBUFFERED=1``; otherwise the TUI hangs.
+_DISABLE_FLUSH = (os.environ.get("HERMES_TUI_GATEWAY_NO_FLUSH", "") or "").strip().lower() in {"1", "true", "yes", "on"}
 
 @runtime_checkable
 class Transport(Protocol):
@@ -74,36 +45,44 @@ class Transport(Protocol):
         """Release any resources owned by this transport."""
 
 
-_current_transport: contextvars.ContextVar[Optional[Transport]] = (
-    contextvars.ContextVar(
-        "hermes_gateway_transport",
-        default=None,
-    )
+_current_transport: contextvars.ContextVar[Optional[Transport]] = contextvars.ContextVar(
+    "hermes_gateway_transport", default=None
 )
 
 
 def current_transport() -> Optional[Transport]:
-    """Return the transport bound for the current request, if any."""
     return _current_transport.get()
 
 
 def bind_transport(transport: Optional[Transport]):
-    """Bind *transport* for the current context. Returns a token for :func:`reset_transport`."""
+    """Bind *transport* for the current context; returns a token for :func:`reset_transport`."""
     return _current_transport.set(transport)
 
 
 def reset_transport(token) -> None:
-    """Restore the transport binding captured by :func:`bind_transport`."""
     _current_transport.reset(token)
 
 
-class StdioTransport:
-    """Writes JSON frames to a stream (usually ``sys.stdout``).
+def _raise_unless_peer_gone(exc: Exception, what: str) -> None:
+    """Return when *exc* from a stream write/flush means the peer is gone; re-raise anything else.
+    ``False`` from :meth:`StdioTransport.write` is the dispatcher's "broken stdout pipe" signal (``entry.py``
+    exits cleanly on it), so programming errors and real host I/O bugs (UnicodeEncodeError from a misconfigured
+    locale, ENOSPC, EACCES, ...) MUST re-raise so the crash log records them instead of masquerading as a clean
+    disconnect. Peer-gone: BrokenPipeError, ValueError("...closed file..."), OSError errno in _PEER_GONE_ERRNOS."""
+    if isinstance(exc, BrokenPipeError):
+        return
+    if isinstance(exc, ValueError):
+        if isinstance(exc, UnicodeEncodeError) or "closed file" not in str(exc):
+            raise exc
+        return
+    if not isinstance(exc, OSError) or exc.errno not in _PEER_GONE_ERRNOS:
+        raise exc
+    logger.debug("StdioTransport %s peer gone: %s", what, exc)
 
-    The stream is resolved via a callable so runtime monkey-patches of the
-    underlying stream continue to work — this preserves the behaviour the
-    existing test suite relies on (``monkeypatch.setattr(server, "_real_stdout", ...)``).
-    """
+
+class StdioTransport:
+    """Writes JSON frames to a stream (usually ``sys.stdout``) resolved via a callable, so runtime
+    monkey-patches of the stream keep working."""
 
     __slots__ = ("_stream_getter", "_lock")
 
@@ -112,85 +91,170 @@ class StdioTransport:
         self._lock = lock
 
     def write(self, obj: dict) -> bool:
-        """Return ``True`` on success, ``False`` ONLY when the peer is gone.
-
-        Returning ``False`` is the dispatcher's "broken stdout pipe" signal
-        — ``entry.py`` calls ``sys.exit(0)`` when ``write_json`` reports
-        ``False``.  So programming errors (non-JSON-safe payloads, encoding
-        misconfig, unexpected ValueErrors, host I/O bugs like ENOSPC) MUST
-        NOT return ``False``, otherwise a real bug looks like a clean
-        disconnect and is harder to diagnose.  Those re-raise so the
-        existing crash-log infrastructure records the traceback.
-
-        Peer-gone branches:
-          * ``BrokenPipeError``
-          * ``ValueError("...closed file...")``
-          * ``OSError`` whose errno is in :data:`_PEER_GONE_ERRNOS`
-            (EPIPE / ECONNRESET / EBADF / ESHUTDOWN; plus WSA mappings
-            on Windows).  Other OSError errnos (ENOSPC, EACCES, ...) are
-            real host problems and re-raise.
-        """
-        # Serialization is OUTSIDE the lock so a large payload can't
-        # block other threads emitting their own frames.  A non-JSON-safe
-        # payload is a programming error: re-raise so the crash log
-        # captures it instead of silently exiting via the False path.
+        """Return ``True`` on success, ``False`` ONLY when the peer is gone (see :func:`_raise_unless_peer_gone`)."""
+        # Serialization is OUTSIDE the lock so a large payload can't block other threads' frames. A
+        # non-JSON-safe payload is a programming error: re-raise.
         line = json.dumps(obj, ensure_ascii=False) + "\n"
-
         with self._lock:
             stream = self._stream_getter()
             try:
                 stream.write(line)
-            except BrokenPipeError:
+            except Exception as e:
+                _raise_unless_peer_gone(e, "write")
                 return False
-            except ValueError as e:
-                # ValueError("I/O operation on closed file") is the
-                # ONLY ValueError that means "peer gone".  Anything
-                # else — including UnicodeEncodeError, which is a
-                # ValueError subclass for misconfigured locales —
-                # is a real bug; re-raise so it surfaces in the crash log.
-                if isinstance(e, UnicodeEncodeError) or "closed file" not in str(e):
-                    raise
-                return False
-            except OSError as e:
-                if e.errno not in _PEER_GONE_ERRNOS:
-                    raise
-                logger.debug("StdioTransport write peer gone: %s", e)
-                return False
-
-            # A flush that *raises* with a peer-gone errno means the
-            # dispatcher should exit cleanly.  A flush that *hangs* on
-            # a half-closed pipe holds the lock until it returns — see
-            # ``_DISABLE_FLUSH`` for the "skip flush entirely" escape
-            # hatch.
+            # A flush that *raises* peer-gone means the dispatcher should exit cleanly; one that *hangs*
+            # on a half-closed pipe holds the lock until it returns — ``_DISABLE_FLUSH`` skips it entirely.
             if not _DISABLE_FLUSH:
                 try:
                     stream.flush()
-                except BrokenPipeError:
+                except Exception as e:
+                    _raise_unless_peer_gone(e, "flush")
                     return False
-                except ValueError as e:
-                    if isinstance(e, UnicodeEncodeError) or "closed file" not in str(e):
-                        raise
-                    return False
-                except OSError as e:
-                    if e.errno not in _PEER_GONE_ERRNOS:
-                        raise
-                    logger.debug("StdioTransport flush peer gone: %s", e)
-                    return False
-
         return True
 
     def close(self) -> None:
         return None
 
 
-class TeeTransport:
-    """Mirrors writes to one primary plus N best-effort secondaries.
+@dataclass(eq=False)
+class _FanoutPeer:
+    transport: Transport
+    pending: deque = field(default_factory=deque)
+    pending_bytes: int = 0
+    writing: bool = False
+    attached: bool = True
+    generation: int = 0
 
-    The primary's return value (and exceptions) determine the result —
-    secondaries swallow failures so a wedged sidecar never stalls the
-    main IO path.  Used by the PTY child so every dispatcher emit lands
-    on stdio (Ink) AND on a back-WS feeding the dashboard sidebar.
+
+class FanoutTransport:
+    """Ordered, bounded session-event mailboxes; RPC replies remain request-local.
+
+    One slow socket must not stop the emitting turn or any healthy subscriber.
+    Each peer has at most one daemon writer and a bounded backlog. On overflow
+    it loses its subscription (history/replay is the recovery path), not other
+    sessions sharing its socket. A write already in the OS cannot be revoked.
     """
+
+    _MAX_PENDING_FRAMES = 256
+    _MAX_PENDING_BYTES = 4 * 1024 * 1024
+
+    def __init__(self, *transports: Transport) -> None:
+        self._lock = threading.Lock()
+        self._peers: list[_FanoutPeer] = []
+        for transport in transports:
+            self.attach(transport)
+
+    def attach(self, transport: Transport) -> bool:
+        if transport is None or transport is self:
+            return False
+        with self._lock:
+            for peer in self._peers:
+                if peer.transport is transport:
+                    if peer.attached:
+                        return False
+                    # Reuse the in-flight writer: reconnect cannot spawn more
+                    # threads or overtake a write already inside this socket.
+                    peer.attached = True
+                    peer.generation += 1
+                    return True
+            self._peers.append(_FanoutPeer(transport))
+            return True
+
+    def _remove(self, peer: _FanoutPeer) -> None:
+        # Membership lock held; identity fences a stale writer from removing
+        # a later attachment of the same transport.
+        peer.attached = False
+        peer.pending.clear()
+        peer.pending_bytes = 0
+        if not peer.writing and peer in self._peers:
+            self._peers.remove(peer)
+
+    def detach(self, transport: Transport) -> bool:
+        with self._lock:
+            for peer in self._peers:
+                if peer.attached and peer.transport is transport:
+                    self._remove(peer)
+                    return True
+        return False
+
+    def contains(self, transport: Transport) -> bool:
+        with self._lock:
+            return any(peer.attached and peer.transport is transport for peer in self._peers)
+
+    def transports(self) -> list[Transport]:
+        with self._lock:
+            return [peer.transport for peer in self._peers if peer.attached]
+
+    def has_transports(self, *, excluding: Transport | None = None) -> bool:
+        return any(peer is not excluding for peer in self.transports())
+
+    def _drain(self, peer: _FanoutPeer) -> None:
+        while True:
+            with self._lock:
+                if not peer.attached or not peer.pending:
+                    peer.writing = False
+                    if not peer.attached:
+                        self._remove(peer)
+                    return
+                generation = peer.generation
+                frame, size = peer.pending.popleft()
+                peer.pending_bytes -= size
+            try:
+                from tui_gateway.ws import WSTransport
+                if isinstance(peer.transport, WSTransport):
+                    # write() acknowledges buffered tokens/timeouts, not socket
+                    # progress. Await the real send so WS cannot move an
+                    # unbounded backlog underneath this bounded mailbox.
+                    from agent.async_utils import safe_schedule_threadsafe
+                    future = safe_schedule_threadsafe(
+                        peer.transport.write_async(frame), peer.transport._loop)
+                    ok = future is not None and future.result()
+                else:
+                    ok = peer.transport.write(frame)
+            except Exception:
+                logger.debug("fanout write failed; pruning peer", exc_info=True)
+                ok = False
+            if not ok:
+                with self._lock:
+                    if peer.generation != generation:
+                        continue
+                    peer.writing = False
+                    self._remove(peer)
+                return
+
+    def write(self, obj: dict) -> bool:
+        # Freeze the queued frame so a caller cannot mutate it after admission.
+        encoded = json.dumps(obj, ensure_ascii=False)
+        size = len(encoded.encode("utf-8", errors="surrogatepass"))
+        frame = json.loads(encoded)
+        with self._lock:
+            for peer in list(self._peers):
+                if not peer.attached:
+                    continue
+                if (len(peer.pending) >= self._MAX_PENDING_FRAMES
+                        or peer.pending_bytes + size > self._MAX_PENDING_BYTES):
+                    logger.warning("fanout subscriber backlog full; detaching peer")
+                    self._remove(peer)
+                    continue
+                peer.pending.append((frame, size))
+                peer.pending_bytes += size
+                if not peer.writing:
+                    peer.writing = True
+                    threading.Thread(target=self._drain, args=(peer,),
+                                     name="tui-fanout", daemon=True).start()
+            return any(peer.attached for peer in self._peers)
+
+    def close(self) -> None:
+        """Detach without closing sockets owned by the connection handlers."""
+        with self._lock:
+            for peer in list(self._peers):
+                self._remove(peer)
+
+
+class TeeTransport:
+    """Mirrors writes to one primary plus N best-effort secondaries. The primary's return value (and
+    exceptions) determine the result; secondaries swallow failures so a wedged sidecar never stalls the
+    main IO path. Used by the PTY child: every emit lands on stdio (Ink) AND a back-WS for the dashboard."""
 
     __slots__ = ("_primary", "_secondaries")
 
@@ -202,10 +266,8 @@ class TeeTransport:
         # Primary first so a slow sidecar (WS publisher) never delays Ink/stdio.
         ok = self._primary.write(obj)
         for sec in self._secondaries:
-            try:
+            with contextlib.suppress(Exception):
                 sec.write(obj)
-            except Exception:
-                pass
         return ok
 
     def close(self) -> None:
@@ -213,7 +275,5 @@ class TeeTransport:
             self._primary.close()
         finally:
             for sec in self._secondaries:
-                try:
+                with contextlib.suppress(Exception):
                     sec.close()
-                except Exception:
-                    pass

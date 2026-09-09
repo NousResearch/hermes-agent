@@ -30,6 +30,29 @@ def image_tool():
 # Catalog integrity
 # ---------------------------------------------------------------------------
 
+@pytest.mark.parametrize("variant", ["flare", "sunburst"])
+@pytest.mark.parametrize("aspect,size", [
+    ("landscape", "landscape_4_3"), ("square", "square_hd"), ("portrait", "portrait_4_3"),
+])
+def test_image_25_selection_routes_generation_and_edits(image_tool, monkeypatch, variant, aspect, size):
+    model = f"openai/gpt-image-2.5/{variant}/text-to-image"
+    monkeypatch.setenv("FAL_IMAGE_MODEL", model)
+    monkeypatch.setenv("FAL_KEY", "test-key")
+    selected, meta = image_tool._resolve_fal_model()
+    assert selected == model
+    refs = [f"https://example.com/{i}.png" for i in range(17)]
+    for sources, endpoint in (([], model), (refs, f"openai/gpt-image-2.5/{variant}/edit")):
+        actual, payload = image_tool._prepare_fal_request(
+            selected, meta, "a cup", aspect, 42, {"guidance_scale": 9}, sources,
+        )
+        assert actual == endpoint
+        assert payload["quality"] == "medium"
+        assert payload["image_size"] == size
+        assert "seed" not in payload and "guidance_scale" not in payload
+        assert payload.get("image_urls", []) == sources[:16]
+    assert meta["upscale"] is False
+
+
 class TestFalCatalog:
     """Every FAL_MODELS entry must have a consistent shape."""
 
@@ -347,16 +370,18 @@ class TestAspectRatioNormalization:
 class TestRegistryIntegration:
 
     def test_schema_exposes_expected_agent_params(self, image_tool):
-        """The agent-facing schema exposes the unified text+image surface:
-        prompt (required), aspect_ratio, the image-to-image inputs
-        image_url + reference_image_urls, and the opt-in upscale pass. Model
-        selection stays a user-level config choice, never an agent-level arg."""
+        """The static registration schema stays minimal — prompt (required)
+        + aspect_ratio. Capability args (image_url, reference_image_urls,
+        upscale) are added per-model by the dynamic override so sessions
+        whose active model can't honor them never see them (#95681 diet).
+        Model selection stays a user-level config choice, never an
+        agent-level arg."""
         props = image_tool.IMAGE_GENERATE_SCHEMA["parameters"]["properties"]
-        assert set(props.keys()) == {
-            "prompt", "aspect_ratio", "image_url", "reference_image_urls",
-            "upscale",
-        }
+        assert set(props.keys()) == {"prompt", "aspect_ratio"}
         assert image_tool.IMAGE_GENERATE_SCHEMA["parameters"]["required"] == ["prompt"]
+        # The dynamic builder owns the capability args.
+        dyn = image_tool._build_dynamic_image_schema()
+        assert "parameters" in dyn and "prompt" in dyn["parameters"]["properties"]
 
     def test_aspect_ratio_enum_is_three_values(self, image_tool):
         enum = image_tool.IMAGE_GENERATE_SCHEMA["parameters"]["properties"]["aspect_ratio"]["enum"]
@@ -451,13 +476,11 @@ class TestKreaModelNormalization:
 
     def test_native_models_detected(self, image_tool):
         for mid in ("krea-2-medium", "krea-2-large", "krea-2-medium-turbo"):
-            assert image_tool.is_krea_model(mid) is True
             assert image_tool._normalize_krea_model(mid) == mid
 
 
     def test_non_krea_models_are_not_krea(self, image_tool):
         for mid in ("fal-ai/flux-2/klein/9b", "fal-ai/nano-banana-pro", None, "", 123):
-            assert image_tool.is_krea_model(mid) is False
             assert image_tool._normalize_krea_model(mid) is None
 
 

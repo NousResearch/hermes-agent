@@ -640,7 +640,7 @@ class TestMessageStorage:
             conn = real_connect(*args, **kwargs)
             conn.set_trace_callback(
                 lambda stmt: writes.append(stmt)
-                if re.match(r"\s*(INSERT|UPDATE|DELETE|REPLACE)\b", stmt, re.I) and "temp." not in stmt
+                if re.match(r"\s*(INSERT|UPDATE|DELETE|REPLACE|ALTER|DROP\s+TRIGGER)\b", stmt, re.I) and "temp." not in stmt
                 else None
             )
             return conn

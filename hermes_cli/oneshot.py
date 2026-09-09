@@ -281,6 +281,7 @@ class _ModelChoice:
     provider: str | None
     base_url: str | None = None
     api_key: str | None = None
+    api_mode: str | None = None
 
 
 def _configured_model(model_cfg: object) -> str:
@@ -343,8 +344,8 @@ def _resolve_model_and_provider(cfg: dict, model: Optional[str], provider: Optio
     return choice
 
 
-def _load_resume_target(session_db, resume: Optional[str]) -> tuple[Optional[str], list]:
-    """Resolve ``resume`` to ``(session_id, conversation_history)`` for a oneshot turn.
+def _load_resume_target(session_db, resume: Optional[str]) -> tuple[Optional[str], list, Optional[dict]]:
+    """Resolve ``resume`` to ``(session_id, conversation_history, session_meta)`` for a oneshot turn.
 
     Follows the same contract as the interactive CLI resume: compression-chain redirect via
     ``resolve_resume_session_id``, safe-resume guard, model-projection history with
@@ -354,18 +355,65 @@ def _load_resume_target(session_db, resume: Optional[str]) -> tuple[Optional[str
     nothing but is recorded under the requested session — ``hermes -z "hello" -c <title>
     --create-if-missing`` must fill the titled session it created, not mint a fresh id
     (same contract as the interactive /resume of an empty session).
+
+    The resolved row is also reopened (best effort): the previous run stamped ``ended_at``,
+    the existing-row upsert never clears the end fields, and ``end_session()`` only writes
+    rows whose ``ended_at`` is null — so without this step the resumed turn would be recorded
+    under a session that stays closed and its new lifecycle boundary would be lost (same
+    reason the interactive resume calls ``reopen_session()`` before continuing).
     """
     if not resume:
-        return None, []
+        return None, [], None
     if session_db is None:
         raise RuntimeError(f"cannot resume session {resume}: session store unavailable")
     resolved = session_db.resolve_resume_session_id(resume) or resume
-    if not session_db.get_session(resolved):
+    session_meta = session_db.get_session(resolved)
+    if not session_meta:
         raise RuntimeError(f"session not found: {resume}")
     session_db.assert_resume_safe(resolved, tip_only=True)
     restored, _display = session_db.get_resume_conversations(resolved)
     history = [m for m in restored if m.get("role") != "session_meta"]
-    return resolved, history
+    try:
+        session_db.reopen_session(resolved)
+    except Exception:
+        logging.debug("reopen_session failed for resumed one-shot session %s", resolved, exc_info=True)
+    return resolved, history, session_meta
+
+
+def _apply_stored_session_runtime(
+    choice: _ModelChoice, session_meta: Optional[dict], *, explicit_model: bool,
+) -> _ModelChoice:
+    """Run a resumed one-shot on the session's stored runtime, not the ambient config.
+
+    Same contract as the interactive ``_restore_session_model`` (cli_model_switch_mixin): no
+    stored model, or an explicit ``--model``, keeps the resolved ambient choice; otherwise the
+    stored model/provider/base_url/api_mode replace it (a resumed transcript must not be sent
+    to whatever the ambient config happens to point at). A changed provider drops the resolved
+    ``api_key`` — it belongs to the ambient/alias endpoint, and api_key is never persisted to
+    the session DB, so runtime resolution re-fetches credentials for the restored provider.
+    No-op when the stored route already matches the resolved one.
+    """
+    stored_model = str((session_meta or {}).get("model") or "").strip()
+    if not stored_model or explicit_model:
+        return choice
+    from hermes_state import SessionDB as _SessionDB
+    from hermes_cli.cli_model_switch_mixin import _heal_bare_custom_provider
+
+    stored_runtime = _SessionDB.session_gateway_runtime(session_meta)
+    stored_base_url = stored_runtime.get("base_url") or None
+    # Stricter than the TUI gateway's recovery — the CLI's resolve path hard-fails on bare "custom".
+    stored_provider = _heal_bare_custom_provider(
+        stored_runtime.get("provider") or None, base_url=stored_base_url, model=stored_model)
+    if stored_model == choice.model and (not stored_provider or stored_provider == choice.provider):
+        return choice
+    choice.model = stored_model
+    if stored_provider and stored_provider != choice.provider:
+        choice.provider = stored_provider
+        choice.base_url = stored_base_url
+        choice.api_key = None
+    if stored_runtime.get("api_mode"):
+        choice.api_mode = str(stored_runtime["api_mode"])
+    return choice
 
 
 def _run_agent(
@@ -386,12 +434,20 @@ def _run_agent(
 
     cfg = load_config()
     choice = _resolve_model_and_provider(cfg, model, provider)
+    # Resume resolves BEFORE the runtime provider: the session's stored model/route must
+    # replace the ambient config (see _apply_stored_session_runtime) and the ended row must
+    # be reopened before the agent can stamp a new lifecycle boundary.
+    session_db = _create_session_db_for_oneshot()
+    resume_sid, conversation_history, resume_meta = _load_resume_target(session_db, resume)
+    choice = _apply_stored_session_runtime(choice, resume_meta, explicit_model=bool((model or "").strip()))
     runtime = resolve_runtime_provider(
         requested=choice.provider,
         target_model=choice.model or None,
         explicit_base_url=choice.base_url,
         explicit_api_key=choice.api_key,
     )
+    if choice.api_mode:
+        runtime["api_mode"] = choice.api_mode
 
     # sorted() gives stable ordering for config-derived sets; explicit values preserve user order.
     toolsets_list = _normalize_toolsets(toolsets)
@@ -410,8 +466,6 @@ def _run_agent(
 
     skills_prompt = _build_preloaded_skills_prompt(skills)
 
-    session_db = _create_session_db_for_oneshot()
-    resume_sid, conversation_history = _load_resume_target(session_db, resume)
     # The try spans agent construction (not just ``chat``) so the store is always closed, even when
     # ``AIAgent(...)`` raises — the one-shot exit path hard-exits via os._exit and skips finalizers.
     agent = None

@@ -46,9 +46,11 @@ const {
   closeSecondaryGateways,
   configureGatewayRegistry,
   pruneSecondaryGateways,
+  reconnectSecondaryGateways,
   requestGatewayForAgent,
   retainGatewayForRelay,
-  setPrimaryGateway
+  setPrimaryGateway,
+  setPrimaryGatewayConnectionId
 } = await import('./gateway')
 
 const agentConn = {
@@ -166,6 +168,25 @@ describe('bot-relay gateway retention (#93594)', () => {
 
     await requestGatewayForAgent(null, 'research', 'profiles.list', {})
     expect(gatewayMocks.constructions).toBe(2)
+  })
+
+  it('does not retain an unused secondary for the plain primary profile', () => {
+    const release = retainGatewayForRelay(null, 'default')
+
+    reconnectSecondaryGateways()
+    expect(gatewayMocks.constructions).toBe(0)
+
+    release()
+  })
+
+  it('does not retain an unused secondary for the primary registry route', () => {
+    setPrimaryGatewayConnectionId('homelab')
+    const release = retainGatewayForRelay('homelab', 'default')
+
+    reconnectSecondaryGateways()
+    expect(gatewayMocks.constructions).toBe(0)
+
+    release()
   })
 
   it('explicit registry-local routes remain exempt so the idle reaper can reclaim spawned backends', () => {

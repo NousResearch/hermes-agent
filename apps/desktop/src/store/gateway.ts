@@ -990,7 +990,11 @@ export function retainGatewayForRelay(connectionId: null | string, profile: stri
   const key = normKey(profile)
   const connection = String(connectionId ?? '').trim()
 
-  if (connection === 'local') {
+  if (
+    connection === 'local' ||
+    (!connection && key === g.primaryProfile) ||
+    (Boolean(connection) && isPrimaryRegistryRoute(connection, key))
+  ) {
     return () => undefined
   }
 

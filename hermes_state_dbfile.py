@@ -20,7 +20,7 @@ import sys
 import threading
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 from hermes_state_common import (
     FTS_REBUILD_DEFERRAL_KEY, stat_db_file_identity as _stat_db_file_identity
@@ -213,7 +213,8 @@ class RetiredGenerationCaptureError(RuntimeError):
 def _fsync_path(path: Path) -> None:
     """fsync a file or directory we own. Never used on the live database: opening and closing a
     descriptor on a file SQLite has locked would cancel this process's POSIX advisory locks."""
-    if os.name == "nt":
+    from hermes_state import _IS_WINDOWS
+    if _IS_WINDOWS:
         return  # directories cannot be opened; file writes fsync their own handle
     fd = os.open(path, os.O_RDONLY)
     try:
@@ -248,14 +249,14 @@ def _own_descriptor_for_identity(identity) -> "Optional[int]":
     return None
 
 
-def _copy_descriptor(fd: int, dest: Path, *, size: int) -> Dict[str, Any]:
-    """pread ``size`` bytes of ``fd`` from offset 0 into ``dest`` (temp file, fsync, rename)."""
+def _copy_range(read: Callable[[int, int], Optional[bytes]], dest: Path, *, size: int) -> Dict[str, Any]:
+    """Stream ``size`` bytes via ``read(offset, length)`` into ``dest`` (temp file, fsync, rename)."""
     digest = hashlib.sha256()
     part = dest.with_name(dest.name + ".part")
     offset = 0
     with open(part, "wb") as out:
         while offset < size:
-            chunk = os.pread(fd, min(_CAPTURE_CHUNK_BYTES, size - offset), offset)
+            chunk = read(offset, min(_CAPTURE_CHUNK_BYTES, size - offset))
             if not chunk:
                 break
             out.write(chunk)
@@ -265,33 +266,25 @@ def _copy_descriptor(fd: int, dest: Path, *, size: int) -> Dict[str, Any]:
         os.fsync(out.fileno())
     os.replace(part, dest)
     return {"file": dest.name, "bytes": offset, "sha256": digest.hexdigest()}
+
+
+def _copy_descriptor(fd: int, dest: Path, *, size: int) -> Dict[str, Any]:
+    """pread ``fd`` (a descriptor SQLite owns; never closed here) into ``dest``."""
+    return _copy_range(lambda offset, length: os.pread(fd, length, offset), dest, size=size)
 
 
 def _copy_main_image(db_path: Path, dest: Path, *, size: int) -> Dict[str, Any]:
     """Copy the live main file through the lock-safe cached descriptor (see ``_pread_db_range``)."""
-    digest = hashlib.sha256()
-    part = dest.with_name(dest.name + ".part")
-    offset = 0
-    with open(part, "wb") as out:
-        while offset < size:
-            chunk = _pread_db_range(db_path, offset, min(_CAPTURE_CHUNK_BYTES, size - offset))
-            if not chunk:
-                break
-            out.write(chunk)
-            digest.update(chunk)
-            offset += len(chunk)
-        out.flush()
-        os.fsync(out.fileno())
-    os.replace(part, dest)
-    return {"file": dest.name, "bytes": offset, "sha256": digest.hexdigest()}
+    return _copy_range(lambda offset, length: _pread_db_range(db_path, offset, length), dest, size=size)
 
 
 def _parse_sqlite_header(header: bytes) -> Dict[str, Any]:
     if len(header) < _SQLITE_HEADER_BYTES or header[:16] != b"SQLite format 3\x00":
         return {"valid": False}
     raw_page_size = struct.unpack(">H", header[16:18])[0]
-    fields = {"change_counter": 24, "page_count": 28, "user_version": 60, "application_id": 68,
-              "version_valid_for": 92}
+    from hermes_state_errors import _STATE_DB_APPLICATION_ID_OFFSET
+    fields = {"change_counter": 24, "page_count": 28, "user_version": 60,
+              "application_id": _STATE_DB_APPLICATION_ID_OFFSET, "version_valid_for": 92}
     parsed = {name: struct.unpack(">I", header[off:off + 4])[0] for name, off in fields.items()}
     return {"valid": True, "page_size": 65536 if raw_page_size == 1 else raw_page_size, **parsed}
 

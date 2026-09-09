@@ -165,7 +165,7 @@ def check_api_response(
             agent, response, finish_reason, _retry, messages=messages,
             conversation_history=conversation_history, api_kwargs=api_kwargs,
             api_call_count=api_call_count, effective_task_id=effective_task_id,
-            current_turn_user_idx=current_turn_user_idx,
+            current_turn_user_idx=current_turn_user_idx, turn_id=turn_id,
             length_continue_retries=length_continue_retries,
             truncated_response_parts=truncated_response_parts,
             truncated_tool_call_retries=truncated_tool_call_retries, retry_count=retry_count,

@@ -7,6 +7,23 @@ import sys
 import textwrap
 from pathlib import Path
 
+import pytest
+
+
+@pytest.mark.parametrize("flags", [{"partial": True}, {"failed": True}, {"completed": False}])
+def test_printable_failure_exits_nonzero(flags):
+    program = (
+        "import hermes_cli.oneshot as oneshot\n"
+        f"oneshot._run_agent = lambda *a, **kw: ('Failure diagnostic', {flags!r})\n"
+        "raise SystemExit(oneshot.run_oneshot('hello'))\n"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", program], capture_output=True, timeout=30,
+        cwd=Path(__file__).resolve().parents[2], check=False,
+    )
+    assert result.returncode == 2
+    assert result.stdout == b"Failure diagnostic\n"
+
 
 def test_oneshot_replaces_lone_surrogate_and_exits_zero():
     """hermes -z must print U+FFFD and exit 0 when the model returns U+D800."""

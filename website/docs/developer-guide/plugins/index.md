@@ -947,6 +947,7 @@ Each hook is documented in full on the **[Event Hooks reference](/user-guide/fea
 | `pre_api_request` | Before each raw provider API request (several per turn when the model calls tools) | `session_id: str, model: str, provider: str, base_url: str, api_mode: str, api_call_count: int, message_count: int, tool_count: int, approx_input_tokens: int, max_tokens: int, request: dict` | ignored |
 | `post_api_request` | After each raw provider API request returns | `pre_api_request` fields plus `api_duration: float, finish_reason: str, response_model: str \| None, usage: dict, response: dict, assistant_content_chars: int, assistant_tool_call_count: int` | ignored |
 | `api_request_error` | A provider API call raised | correlation fields plus `status_code: int \| None, retry_count: int \| None, max_retries: int \| None, retryable: bool \| None, reason: str \| None, error: dict, request: dict` | ignored |
+| `transform_turn_failure` | A truncation exit returns before normal turn finalization | `response_text: str, error: str, session_id: str, task_id: str, turn_id: str, completed: bool, failed: bool, interrupted: bool, turn_exit_reason: str, finish_reason: str, model: str, platform: str` | first nonempty string replaces diagnostic text; failure state is immutable |
 | [`on_session_start`](/user-guide/features/hooks#on_session_start) | New session created (first turn only) | `session_id: str, model: str, platform: str` | ignored |
 | [`on_session_end`](/user-guide/features/hooks#on_session_end) | End of every `run_conversation` call + CLI exit | `session_id: str, completed: bool, interrupted: bool, model: str, platform: str` | ignored |
 | [`on_session_finalize`](/user-guide/features/hooks#on_session_finalize) | CLI/gateway tears down an active session | `session_id: str \| None, platform: str` | ignored |
@@ -959,6 +960,15 @@ Each hook is documented in full on the **[Event Hooks reference](/user-guide/fea
 Most hooks are fire-and-forget observers — their return values are ignored. The exceptions are `pre_llm_call`, which can inject context into the conversation, and `pre_tool_call`, which can return a block/approve directive.
 
 All callbacks should accept `**kwargs` for forward compatibility. If a hook callback crashes, it's logged and skipped. Other hooks and the agent continue normally.
+
+Truncation exits call `transform_turn_failure` followed by `on_session_end` with
+`completed=False` and `failed=True`. They never call the successful-output
+transform. `turn_exit_reason` distinguishes incomplete tool arguments from the
+provider length-handling branch; it does not infer a provider token cap. Failure
+diagnostics remain printable, but one-shot mode exits nonzero even when they are
+nonempty. A concrete consumer is the external Agency Runtime plugin, which needs
+to format failure diagnostics and close its correlated turn without accepting
+partial output.
 
 The kanban lifecycle hooks fire **after** the board DB change commits, so a callback always sees durable state and can never hold the SQLite write lock. Because kanban workers run as separate `hermes -p <profile> chat -q` subprocesses, `kanban_task_claimed` fires in the **dispatcher** process while `kanban_task_completed` / `kanban_task_blocked` fire in the **worker** process — hook in the dispatcher to observe every transition centrally, or in the worker for per-task in-session context.
 

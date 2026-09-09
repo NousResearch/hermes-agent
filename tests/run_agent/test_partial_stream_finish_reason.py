@@ -410,6 +410,53 @@ def loop_agent():
         return a
 
 
+@pytest.mark.parametrize("finish_reason", ["tool_calls", "length"])
+def test_truncated_turn_delivers_failure_and_session_end(loop_agent, tmp_path, monkeypatch, finish_reason):
+    import json
+    from hermes_cli import plugins
+    from tests.hermes_cli.test_plugins import _make_plugin_dir
+    from tests.run_agent.test_run_agent import _mock_response, _mock_tool_call
+
+    events = tmp_path / "failure-events.jsonl"
+    home = tmp_path / "failure-home"
+    _make_plugin_dir(
+        home / "plugins", "failure_observer", home=home,
+        register_body=(
+            "import json\n"
+            f"    path = {str(events)!r}\n"
+            "    def ended(**kw):\n"
+            "        with open(path, 'a') as f: f.write(json.dumps(kw) + '\\n')\n"
+            "    ctx.register_hook('on_session_end', ended)\n"
+            "    ctx.register_hook('transform_turn_failure', lambda **kw: 'Diagnostic: ' + kw['response_text'])"
+        ),
+    )
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    manager = plugins.PluginManager()
+    manager.discover_and_load()
+    monkeypatch.setattr(plugins, "get_plugin_manager", lambda: manager)
+    loop_agent.valid_tool_names = {"web_search"}
+    loop_agent.client.chat.completions.create.return_value = _mock_response(
+        content=None, finish_reason=finish_reason,
+        tool_calls=[_mock_tool_call(arguments='{"query": "unfinished')],
+    )
+    with (
+        patch.object(loop_agent, "_persist_session"),
+        patch.object(loop_agent, "_save_trajectory"),
+        patch.object(loop_agent, "_cleanup_task_resources"),
+    ):
+        result = loop_agent.run_conversation("Find an example")
+    assert result["failed"] is True
+    assert result["completed"] is False
+    assert result["finish_reason"] == finish_reason
+    assert result["final_response"].startswith("Diagnostic: ")
+    assert result["error"] == "Response truncated due to output length limit"
+    records = [json.loads(line) for line in events.read_text().splitlines()]
+    assert len(records) == 1
+    assert records[0]["session_id"] == loop_agent.session_id
+    assert records[0]["failed"] is True
+    assert records[0]["completed"] is False
+
+
 class TestConversationLoopPartialStreamContinuation:
     """End-to-end: a partial-stream stub feeds the loop and the loop
     asks for continuation instead of exiting with finish_reason=stop."""

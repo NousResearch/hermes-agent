@@ -260,7 +260,7 @@ def run_oneshot(
         real_stderr.write("hermes -z: no final response was produced; treating the run as failed.\n")
         real_stderr.flush()
         return 1
-    return 0
+    return 2 if result.get("failed") or result.get("partial") or result.get("completed") is False else 0
 
 
 def _create_session_db_for_oneshot():

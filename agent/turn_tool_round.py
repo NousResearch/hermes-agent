@@ -47,7 +47,7 @@ def run_tool_round(
     conversation_history: Any, api_call_count: Any, effective_task_id: Any, user_message: Any,
     system_message: Any, active_system_prompt: Any, compression_attempts: Any,
     max_compression_attempts: Any, final_response: Any, failed: Any, _turn_exit_reason: Any,
-    truncated_tool_call_retries: Any,
+    truncated_tool_call_retries: Any, turn_id: Any = None,
 ) -> ToolRoundVerdict:
     """Execute one tool round in the exact original order. Persist-before-execute is a
     durability invariant: resume must see the executed block if a destructive tool restarts
@@ -75,7 +75,7 @@ def run_tool_round(
     _tvv = validate_tool_calls(
         agent, assistant_message, finish_reason, messages=messages,
         conversation_history=conversation_history, api_call_count=api_call_count,
-        effective_task_id=effective_task_id,
+        effective_task_id=effective_task_id, turn_id=turn_id,
     )
     if _tvv.action == "return":
         return _verdict("return", _tvv.result)

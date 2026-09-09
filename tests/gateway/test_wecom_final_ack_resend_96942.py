@@ -306,8 +306,11 @@ class TestFinalAckDoubleTimeoutIndeterminate:
             assert resp.get("errmsg") == "settlement_indeterminate"
             assert resp.get("errcode") == 0
             assert resp.get("errmsg") != "ack_timeout_assumed_delivered"
-            # queue fully released after both attempts.
-            assert REQ_ID not in adapter._reply_queues
+            # Release the pending future, but retain the req-id tombstone: a late ACK
+            # from either attempt cannot certify a later stream on this request.
+            queue = adapter._reply_queues[REQ_ID]
+            assert queue.pending_ack is None
+            assert queue.ack_poisoned
         finally:
             await _cleanup(adapter)
 

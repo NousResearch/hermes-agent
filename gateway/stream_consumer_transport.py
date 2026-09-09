@@ -403,12 +403,14 @@ class StreamTransportMixin:
         # the full-frame path, so the adapter falls back to it there.
         body_text = getattr(self, "_accumulated", "")[split_offset:] if wire_full is False else None
 
-        # Mark a finalize frame delivered OPTIMISTICALLY, before the ack wait: WeCom
-        # renders the bytes before the ack, so a gateway join-cancel mid-wait must not
-        # strand final_content_delivered=False and duplicate the send (docs/rca-wecom-
-        # stream-final-ack-timeout-duplicate.md).  A definitive failure rolls it back.
+        # Claim the final attempt before awaiting, but do not certify delivery. The gateway's
+        # five-second join can cancel this consumer while the adapter's control worker keeps
+        # sending/retrying. In that case the outcome stays unconfirmed, and response_sent plus
+        # the payload record suppress a duplicate fallback. Only a receipt below marks delivered.
         if finalize:
-            self._mark_final_delivered(record=text)  # recorded: stale frame can't suppress
+            self._final_response_sent = True
+            self._final_content_delivered = False
+            self._record_turn_final_payload(text)
         ok = await self._try_native_frame(wire_text, finalize=finalize, is_overlay_frame=has_tool_overlay,
                                           body_text=body_text)
         # Tri-state: StreamFrameResult/StreamSendOutcome (WeCom) or bare bool (other adapters). __bool__

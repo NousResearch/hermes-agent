@@ -1846,8 +1846,9 @@ export const ja = defineLocale({
     title: 'スケジュール済みジョブ',
     count: count => `${count} 件のジョブ`,
     modelImpact: {
-      title: 'スケジュール済みジョブの確認が必要です',
-      message: count => `モデル設定を確認するまで、${count} 件のスケジュール済みジョブがスキップされます。`,
+      title: 'スケジュール済みジョブは元のモデルで実行されます',
+      message: count =>
+        `ピン留めされていない ${count} 件のスケジュール済みジョブは、作成時のモデルで引き続き実行されます。移行するにはピン留めするか cron.model を設定してください。`,
       detailMore: (names, remaining) => `${names}、ほか ${remaining} 件`,
       review: 'スケジュール済みジョブを確認',
       saveFailed: 'Hermes はモデルの変更を保存しませんでした。',

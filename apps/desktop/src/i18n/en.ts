@@ -2174,9 +2174,9 @@ export const en: Translations = {
     title: 'Scheduled jobs',
     count: count => `${count} ${count === 1 ? 'job' : 'jobs'}`,
     modelImpact: {
-      title: 'Scheduled jobs need review',
+      title: 'Scheduled jobs stay on their original model',
       message: count =>
-        `${count} scheduled ${count === 1 ? 'job' : 'jobs'} will be skipped until you review their model settings.`,
+        `${count} unpinned scheduled ${count === 1 ? 'job keeps' : 'jobs keep'} running on the model ${count === 1 ? 'it was' : 'they were'} created under. Pin ${count === 1 ? 'it' : 'them'} or set cron.model to move ${count === 1 ? 'it' : 'them'}.`,
       detailMore: (names, remaining) => `${names} and ${remaining} more`,
       review: 'Review scheduled jobs',
       saveFailed: 'Hermes did not save that model change.',

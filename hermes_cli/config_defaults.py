@@ -1628,13 +1628,10 @@ DEFAULT_CONFIG = {
         # platforms are configured. Failure -> last_status=blocked_config, ONE alert, no LLM call.
         # False = fail during the run instead.
         "preflight": True,
-        # Fail closed when an unpinned job's current global model/provider differs from its
-        # creation-time snapshot, so unattended jobs never silently inherit a paid default. False
-        # only when jobs should track changing global inference defaults.
-        "model_drift_guard": True,
         # Default model for cron jobs (WHAT model runs). Fire-time resolution: per-job pin >
-        # cron.model > model.default. When set, unpinned jobs follow it deliberately and the drift
-        # guard does not engage for the model axis. "" = fall through to model.default.
+        # cron.model > the job's creation-time snapshot > model.default. An unpinned job keeps
+        # running on the model it was created under when model.default later changes; cron.model
+        # is the way to move the whole fleet at once. "" = fall through.
         "model": "",
         # Inference provider paired with cron.model (NOT the scheduler provider below). "" = resolve
         # from global config.
@@ -2340,7 +2337,7 @@ DEFAULT_CONFIG = {
         # Extra ports detection probes for an external llama-server (besides 8080).
         "detect_ports": [],
     },
-    "_config_version": 41,  # Config schema version - bump this when adding new required fields
+    "_config_version": 42,  # Config schema version - bump this when adding new required fields
 }
 
 

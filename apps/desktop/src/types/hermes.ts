@@ -1494,7 +1494,6 @@ export interface CronModelImpactJob {
 
 export interface CronModelImpact {
   available: boolean
-  guard_enabled: boolean
   affected_count: number
   truncated: boolean
   jobs: CronModelImpactJob[]

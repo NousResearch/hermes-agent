@@ -127,8 +127,13 @@ def _maybe_inject_run_budget_wrapup(agent: Any, messages: List[Dict[str, Any]]) 
         (time.time() - started) < 0.8 * float(budget)
     ):
         return False
+    from agent.context_compressor import _DB_PERSISTED_MARKER
     for msg in reversed(messages):
         if isinstance(msg, dict) and msg.get("role") == "tool":
+            # Only the current tool-result tail is mutable; an older turn may already be
+            # cached (same contract as _maybe_inject_iteration_budget_warning).
+            if msg.get(_DB_PERSISTED_MARKER):
+                return False
             existing = msg.get("content", "")
             if isinstance(existing, str):
                 msg["content"] = existing + f"\n\n{RUN_BUDGET_WRAPUP_NOTICE}"

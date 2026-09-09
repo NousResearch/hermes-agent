@@ -643,12 +643,11 @@ def _handle_request_review(args: dict, **kw) -> str:
     if reviewer:
         from hermes_cli.profiles import list_profile_names, profile_exists
 
-        if not profile_exists(reviewer):
-            alternatives = ", ".join(list_profile_names()) or "none"
-            return tool_error(
-                f"reviewer profile {reviewer!r} is not installed. "
-                f"Installed profiles: {alternatives}"
-            )
+        # A non-profile reviewer would park the card in `review` on an assignee
+        # the dispatcher can never spawn (#106163).
+        _check(profile_exists(reviewer),
+               f"reviewer profile {reviewer!r} is not installed. "
+               f"Installed profiles: {', '.join(list_profile_names())}")
     with _board(args.get("board")) as (kb, conn):
         _goal_gate("kanban_request_review", kb.get_task(conn, tid), tid, summary)
         ok, fail_reason = kb.request_review(

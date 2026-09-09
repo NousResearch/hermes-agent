@@ -164,75 +164,44 @@ def test_complete_retry_with_empty_created_cards_succeeds(worker_env):
         conn.close()
 
 
-def test_request_review_rejects_missing_profile_without_mutation(
-    monkeypatch, worker_env, tmp_path
-):
+def test_request_review_rejects_unknown_reviewer_without_mutation(monkeypatch, worker_env, tmp_path):
+    """#106163: a non-profile ``reviewer`` (e.g. the literal "reviewer") must be
+    refused with an error the model sees, leaving the task running under the
+    implementer — never parked in ``review`` on an assignee nobody can spawn."""
     from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
     from tools import kanban_tools as kt
 
-    profiles_root = tmp_path / ".hermes" / "profiles"
-    (profiles_root / "verifier").mkdir(parents=True)
-    before_conn = kb.connect()
-    try:
-        before_task = kb.get_task(before_conn, worker_env)
-        assert before_task is not None
-        before_runs = kb.list_runs(before_conn, worker_env)
-        before_events = kb.list_events(before_conn, worker_env)
-    finally:
-        before_conn.close()
-    monkeypatch.setenv(
-        "HERMES_KANBAN_RUN_ID", str(before_task.current_run_id)
-    )
+    (tmp_path / ".hermes" / "profiles" / "verifier").mkdir(parents=True)
+    with kbc.connect() as conn:
+        before = kb.get_task(conn, worker_env)
+        before_events = kb.list_events(conn, worker_env)
+    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(before.current_run_id))
 
-    out = json.loads(kt._handle_request_review({
-        "summary": "Ready for review.",
-        "reviewer": "reviewer",
-    }))
+    out = json.loads(kt._handle_request_review({"summary": "Ready for review.", "reviewer": "reviewer"}))
 
-    assert "error" in out
-    assert "reviewer" in out["error"]
-    assert "verifier" in out["error"]
-    after_conn = kb.connect()
-    try:
-        after_task = kb.get_task(after_conn, worker_env)
-        assert after_task is not None
-        assert after_task.status == before_task.status == "running"
-        assert after_task.assignee == before_task.assignee == "test-worker"
-        assert after_task.current_run_id == before_task.current_run_id
-        assert kb.list_runs(after_conn, worker_env) == before_runs
-        assert kb.list_events(after_conn, worker_env) == before_events
-    finally:
-        after_conn.close()
+    assert "'reviewer'" in out["error"] and "verifier" in out["error"]
+    with kbc.connect() as conn:
+        after = kb.get_task(conn, worker_env)
+        assert (after.status, after.assignee, after.current_run_id) == ("running", "test-worker", before.current_run_id)
+        assert kb.list_events(conn, worker_env) == before_events
 
 
 def test_request_review_accepts_installed_profile(monkeypatch, worker_env, tmp_path):
     from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
     from tools import kanban_tools as kt
 
-    profiles_root = tmp_path / ".hermes" / "profiles"
-    (profiles_root / "verifier").mkdir(parents=True)
-    conn = kb.connect()
-    try:
-        running = kb.get_task(conn, worker_env)
-        assert running is not None
-    finally:
-        conn.close()
-    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(running.current_run_id))
+    (tmp_path / ".hermes" / "profiles" / "verifier").mkdir(parents=True)
+    with kbc.connect() as conn:
+        monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(kb.get_task(conn, worker_env).current_run_id))
 
-    out = json.loads(kt._handle_request_review({
-        "summary": "Ready for review.",
-        "reviewer": "verifier",
-    }))
+    out = json.loads(kt._handle_request_review({"summary": "Ready for review.", "reviewer": "verifier"}))
 
     assert out["ok"] is True
-    conn = kb.connect()
-    try:
+    with kbc.connect() as conn:
         task = kb.get_task(conn, worker_env)
-        assert task is not None
-        assert task.status == "review"
-        assert task.assignee == "verifier"
-    finally:
-        conn.close()
+        assert (task.status, task.assignee) == ("review", "verifier")
 
 
 def test_complete_goal_mode_rejected_by_judge(monkeypatch, tmp_path):

@@ -13,8 +13,10 @@ import {
   $projectsRpcAvailable,
   $projectTree,
   $worktreeRefreshToken,
+  addProjectFolder,
   ALL_PROJECTS,
   createProject,
+  deleteProject,
   enterProject,
   exitProjectScope,
   fetchProjectSessions,
@@ -27,7 +29,8 @@ import {
   refreshWorktrees,
   resolveNewSessionCwd,
   scanAndRecordRepos,
-  startWorkInRepo
+  startWorkInRepo,
+  updateProject
 } from './projects'
 import {
   $removedSessionIds,
@@ -496,6 +499,78 @@ describe('createProject', () => {
       'sidebar.projects.staleBackend'
     )
     expect($projectsRpcAvailable.get()).toBe(false)
+  })
+})
+
+describe('project writes while viewing all profiles', () => {
+  const project = {
+    folders: [],
+    id: 'p_1',
+    name: 'Warsongs',
+    primary_path: '/srv/ws',
+    color: null as null | string,
+    icon: null as null | string
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    $activeProjectId.set(null)
+    $projectsRpcAvailable.set(null)
+    $projects.set([project])
+    $projectTree.set([
+      { id: project.id, label: project.name, path: project.primary_path, color: null, icon: null, repos: [], sessionCount: 0 }
+    ])
+    $activeGatewayProfile.set('default')
+    setShowAllProfiles(false)
+  })
+
+  afterEach(() => {
+    setShowAllProfiles(false)
+    $activeGatewayProfile.set('default')
+  })
+
+  it.each(['default', 'coder'])('updates appearance in the active %s profile without leaving All profiles', async profile => {
+    const request = vi.fn().mockResolvedValue({})
+    activeGateway.mockReturnValue({ connectionState: 'open', request } as never)
+    $activeGatewayProfile.set(profile)
+    setShowAllProfiles(true)
+
+    await expect(updateProject(project.id, { color: '#ff0000' })).resolves.toBeUndefined()
+
+    expect(request).toHaveBeenCalledWith(
+      'projects.update',
+      expect.objectContaining({ profile, id: project.id, color: '#ff0000' })
+    )
+    expect($profileScope.get()).toBe(ALL_PROFILES)
+    expect($projects.get()).toEqual([expect.objectContaining({ id: project.id, color: '#ff0000' })])
+  })
+
+  it.each(['default', 'coder'])('adds a folder in the active %s profile without leaving All profiles', async profile => {
+    const request = vi.fn().mockResolvedValue({})
+    activeGateway.mockReturnValue({ connectionState: 'open', request } as never)
+    $activeGatewayProfile.set(profile)
+    setShowAllProfiles(true)
+
+    await expect(addProjectFolder(project.id, '/srv/ws/extra')).resolves.toBeUndefined()
+
+    expect(request).toHaveBeenCalledWith(
+      'projects.add_folder',
+      expect.objectContaining({ profile, id: project.id, path: '/srv/ws/extra' })
+    )
+    expect($profileScope.get()).toBe(ALL_PROFILES)
+  })
+
+  it.each(['default', 'coder'])('deletes a project in the active %s profile without leaving All profiles', async profile => {
+    const request = vi.fn().mockResolvedValue({ active_id: null, projects: [], scoped_session_ids: [] })
+    activeGateway.mockReturnValue({ connectionState: 'open', request } as never)
+    $activeGatewayProfile.set(profile)
+    setShowAllProfiles(true)
+
+    await expect(deleteProject(project.id)).resolves.toBeUndefined()
+
+    expect(request).toHaveBeenCalledWith('projects.delete', expect.objectContaining({ profile, id: project.id }))
+    expect($profileScope.get()).toBe(ALL_PROFILES)
+    expect($projects.get()).toEqual([])
   })
 })
 

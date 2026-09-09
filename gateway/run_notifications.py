@@ -1077,11 +1077,39 @@ class GatewayNotificationsMixin:
                 self._completion_deliveries_inflight.add(identity)
             return seen
 
-    async def _classify_completion_target(self, parent_session_id: str) -> str:
+    async def _classify_completion_target(
+        self, parent_session_id: str, *, source: Optional[SessionSource] = None,
+    ) -> str:
         """Classify an async-completion target before adapter acceptance: ``"deliver"`` (spawning
         session live or compression-rotated with a live continuation; the resolver still retargets),
         ``"terminal"`` (parent gone for good — unknown / user boundary like /new; drop the durable row
-        rather than falsely ack), ``"retry"`` (DB unavailable / rotation mid-flight; release the claim)."""
+        rather than falsely ack), ``"retry"`` (DB unavailable / rotation mid-flight; release the claim).
+
+        A multiplexed gateway must read the parent from the profile that created the event. The runner's
+        session DB resolves from the active runtime scope, so enter the event source's scope before the
+        lookup instead of using the gateway's unscoped default-profile handle.
+        """
+        if source is not None:
+            from gateway.profile_routing import ProfileRouteRejected
+            from gateway.run import _async_profile_runtime_scope
+            resolve_profile_home = getattr(self, "_resolve_profile_home_for_source", None)
+            if not callable(resolve_profile_home):
+                logger.debug(
+                    "Async-completion target %s cannot resolve its source profile; retrying delivery",
+                    parent_session_id,
+                )
+                return "retry"
+            try:
+                profile_home = cast(Path, resolve_profile_home(source))
+            except ProfileRouteRejected:
+                logger.warning(
+                    "Async-completion target %s has a rejected profile route; retrying delivery",
+                    parent_session_id,
+                )
+                return "retry"
+            async with _async_profile_runtime_scope(profile_home):
+                return await self._classify_completion_target(parent_session_id)
+
         from gateway.run import _USER_BOUNDARY_END_REASONS
         session_db = getattr(self, "_session_db", None)
         if session_db is None:
@@ -1127,13 +1155,13 @@ class GatewayNotificationsMixin:
         """Unavailable owners/transports must not spend a durable delivery attempt."""
         from gateway.wake import adapter_supports_push
 
+        source = await asyncio.to_thread(self._build_process_event_source, evt)
         parent_session_id = str(evt.get("parent_session_id") or "").strip()
         if parent_session_id:
-            verdict = await self._classify_completion_target(parent_session_id)
+            verdict = await self._classify_completion_target(parent_session_id, source=source)
             if verdict != "deliver":
                 # Definitively closed targets still need the normal terminal disposition.
                 return verdict == "terminal"
-        source = await asyncio.to_thread(self._build_process_event_source, evt)
         if source is not None:
             platform = source.platform.value if hasattr(source.platform, "value") else str(source.platform)
             adapter = self._resolve_injection_adapter(platform, source)
@@ -1192,7 +1220,8 @@ class GatewayNotificationsMixin:
         # can still fail closed inside the message pipeline AFTER the adapter accepted, which would falsely
         # acknowledge the durable row as delivered. Verify the target here, before acceptance, and give
         # drops an honest durable disposition.
-        verdict = await self._classify_completion_target(parent_session_id)
+        source = await asyncio.to_thread(self._build_process_event_source, evt)
+        verdict = await self._classify_completion_target(parent_session_id, source=source)
         if verdict == "terminal":
             if evt_type == "async_delegation":
                 logger.warning(

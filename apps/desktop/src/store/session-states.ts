@@ -16,7 +16,7 @@
  * itself here as the delegate so tile UI stays dependency-light.
  */
 
-import { LOCAL_CONNECTION_ID, registryBackendScopeKey } from '@hermes/shared'
+import { type GatewayEvent, LOCAL_CONNECTION_ID, registryBackendScopeKey } from '@hermes/shared'
 import { atom, computed } from 'nanostores'
 
 import type { ClientSessionState } from '@/app/types'
@@ -25,6 +25,7 @@ import {
   $activeTreeGroup,
   $layoutTree,
   focusedSessionTabAnchor,
+  isPaneVisible,
   moveTreePane,
   noteActiveTreeGroup,
   revealTreePane
@@ -55,6 +56,7 @@ import {
   setBusy,
   setSessions
 } from './session'
+import { secondaryProfileOwnerForEvent } from './session-event-provenance'
 import { assertSessionOwnerResolved } from './session-owner-resolution'
 import {
   requestForSessionProfile,
@@ -83,22 +85,50 @@ export const $sessionStates = atom<Record<string, ClientSessionState>>({})
 
 const sessionScopeByRuntimeId = new Map<string, string>()
 
-// Structured twin of the scope ledger: the same inbound events also carry the
-// exact (connectionId, profile) owner, which the composite scope string
-// cannot give back. Consumed as the LAST rung of knownOwnerForSession so a
-// runtime whose event source already proved its owner can still route
-// session-scoped RPCs (approval.respond) when every durable binding
-// (tile / hint / row) is absent — while durable stored identity keeps
-// outranking it (#97511).
-const sessionOwnerByRuntimeId = new Map<string, SessionOwnerRoute>()
+// Structured twin of the scope ledger: inbound events can carry either an
+// exact (connectionId, profile) owner or a producer-proven profile-only pool
+// owner. Consumed as the LAST rung of knownOwnerForSession so a runtime whose
+// event source already proved its owner can still route session-scoped RPCs
+// (approval.respond) when every durable binding (tile / hint / row) is absent
+// — while durable stored identity keeps outranking it (#97511).
+const sessionOwnerByRuntimeId = new Map<string, SessionOwnerScope>()
 
 export function recordSessionEventScope(event: { connectionId?: string; profile?: string; session_id?: string }): void {
-  if (event.session_id && event.connectionId) {
+  if (!event.session_id) {
+    return
+  }
+
+  if (event.connectionId) {
     sessionScopeByRuntimeId.set(event.session_id, registryBackendScopeKey(event.connectionId, event.profile))
     sessionOwnerByRuntimeId.set(event.session_id, {
       connectionId: event.connectionId,
       profile: String(event.profile ?? '').trim() || 'default'
     })
+
+    return
+  }
+
+  // Only gateway.ts's secondary closure can add this non-serializable marker.
+  // A profile field from a primary or arbitrary inbound event is descriptive,
+  // not an owner route, and must keep failing closed in multi-profile installs.
+  const profile = secondaryProfileOwnerForEvent(event as GatewayEvent)
+
+  if (profile) {
+    sessionOwnerByRuntimeId.set(event.session_id, profile)
+  }
+}
+
+/** Forget only profile-pool runtime owners during permanent LOCAL profile
+ * teardown. These string routes came exclusively from the legacy secondary
+ * producer; exact connection descriptors must survive a same-named remote
+ * profile's local delete/rename. */
+export function forgetProfileOnlyRuntimeOwners(profile: string): void {
+  const retired = normalizeProfileKey(profile)
+
+  for (const [runtimeId, owner] of sessionOwnerByRuntimeId) {
+    if (typeof owner === 'string' && normalizeProfileKey(owner) === retired) {
+      sessionOwnerByRuntimeId.delete(runtimeId)
+    }
   }
 }
 
@@ -988,10 +1018,10 @@ export function openTileGatewayScopes(): Set<string> {
  * Last rung: the owner recorded from the inbound runtime event itself
  * (sessionOwnerByRuntimeId, #97511) — an orphan runtime whose tile/hint/row
  * binding is absent or stale still routes through the exact
- * (connectionId, profile) its events proved, while every durable rung above
- * keeps outranking it, so a stored-id collision never inherits a stale
- * runtime ledger entry. Untagged events record nothing, so unknown owners in
- * multi-profile topology still fail closed.
+ * (connectionId, profile) or secondary socket's proven local profile. Every
+ * durable rung above keeps outranking it, so a stored-id collision never
+ * inherits a stale runtime ledger entry. Unproven profile fields record
+ * nothing, so unknown owners in multi-profile topology still fail closed.
  * Returns undefined when no owner is known — the caller fails closed
  * (assertSessionOwnerResolved), never falls to "active".
  */
@@ -1110,8 +1140,23 @@ export const $botChatSessionIds = atom<ReadonlySet<string>>(
   new Set((readJson<unknown>(BOT_CHAT_SCOPE_KEY) as unknown[] | null)?.filter(id => typeof id === 'string') ?? [])
 )
 
-function rememberBotChatScope(storedSessionId: string, isBotChat: boolean): void {
+/** The bot-mode scope each stored id was last opened under, for the main tab
+ *  (which has no tile to carry one). Window-local: the caption falls back to
+ *  the stored title until the chat is opened again. */
+export const $botChatScopes = atom<Readonly<Record<string, SessionTileWorkspaceScope>>>({})
+
+function rememberBotChatScope(storedSessionId: string, scope: SessionTileWorkspaceScope): void {
+  const isBotChat = scope.workspaceMode === 'bots'
   const current = $botChatSessionIds.get()
+  const { [storedSessionId]: previous, ...rest } = $botChatScopes.get()
+
+  const changed = isBotChat
+    ? previous?.workspaceOwnerKey !== scope.workspaceOwnerKey || previous?.workspaceTabTitle !== scope.workspaceTabTitle
+    : Boolean(previous)
+
+  if (changed) {
+    $botChatScopes.set(isBotChat ? { ...rest, [storedSessionId]: scope } : rest)
+  }
 
   if (current.has(storedSessionId) === isBotChat) {
     return
@@ -1141,7 +1186,7 @@ export function isBotChatSession(sessionId: null | string | undefined): boolean 
 export function setSessionTileWorkspaceScope(storedSessionId: string, scope: SessionTileWorkspaceScope): boolean {
   // Before the tile lookup: openSession routes every open through here, and a
   // bot chat usually has no tile to record the scope on.
-  rememberBotChatScope(storedSessionId, scope.workspaceMode === 'bots')
+  rememberBotChatScope(storedSessionId, scope)
 
   const tile = $sessionTiles.get().find(candidate => candidate.storedSessionId === storedSessionId)
   const workspaceOwnerKey = scope.workspaceMode === 'bots' ? scope.workspaceOwnerKey : undefined
@@ -1394,9 +1439,17 @@ export function openSessionTile(
   dir: TileDock = 'right',
   anchor?: string,
   before?: null | string,
-  workspaceScope: SessionTileWorkspaceScope = { workspaceMode: 'sessions' }
+  explicitScope?: SessionTileWorkspaceScope
 ) {
   const tiles = $sessionTiles.get()
+  const existing = tiles.find(t => t.storedSessionId === storedSessionId)
+
+  // No scope on an already-open tile is a MOVE (a split drag re-docking a tab),
+  // not a re-scope: keep the workspace it lives in instead of re-bucketing it
+  // into Sessions — a Bot tab used to vanish from the Bot workspace on drop.
+  const workspaceScope: SessionTileWorkspaceScope = explicitScope ?? {
+    workspaceMode: existing?.workspaceMode ?? 'sessions'
+  }
 
   // Opening a session in a tab/tile is "reading" it — clear its unread dot
   // exactly like main-thread resume does. Previously only
@@ -1406,7 +1459,9 @@ export function openSessionTile(
   markSessionRead(storedSessionId)
   ackStoredSessionId(storedSessionId)
 
-  if (workspaceScope.workspaceMode === 'sessions' && storedSessionId === $selectedStoredSessionId.get()) {
+  const aliases = lineageAliases(storedSessionId, $sessions.get())
+
+  if (workspaceScope.workspaceMode === 'sessions' && aliases.includes($selectedStoredSessionId.get() ?? '')) {
     return
   }
 
@@ -1414,7 +1469,7 @@ export function openSessionTile(
 
   const workspaceOwnerKey = workspaceScope.workspaceMode === 'bots' ? workspaceScope.workspaceOwnerKey : undefined
 
-  if (!tiles.some(t => t.storedSessionId === storedSessionId)) {
+  if (!tiles.some(t => aliases.includes(t.storedSessionId))) {
     saveTiles([
       ...tiles,
       {
@@ -1442,7 +1497,9 @@ export function openSessionTile(
     return
   }
 
-  setSessionTileWorkspaceScope(storedSessionId, workspaceScope)
+  if (explicitScope) {
+    setSessionTileWorkspaceScope(storedSessionId, explicitScope)
+  }
 
   // Already open: relocate the existing pane to the drop target (pane-mirror
   // only docks on first adoption, so a re-drag must move the tree pane itself).
@@ -1510,22 +1567,32 @@ export function focusOpenSession(
   storedSessionId: string,
   workspaceScope: SessionTileWorkspaceScope = { workspaceMode: 'sessions' }
 ): 'main' | 'tile' | null {
-  if ($sessionTiles.get().some(t => t.storedSessionId === storedSessionId)) {
-    const paneId = `${TILE_PANE_PREFIX}${storedSessionId}`
+  // Compression rotates a conversation's tip id while tiles stay keyed by
+  // whichever segment id they were opened with. An exact-id test right after
+  // a rotation said "not open" for a conversation that IS on screen, and
+  // callers opened the same chat in a second tab. Match any id of the
+  // lineage instead, and front the tile under ITS key.
+  const aliases = lineageAliases(storedSessionId, $sessions.get())
+  const tile = $sessionTiles.get().find(t => aliases.includes(t.storedSessionId))
+
+  if (tile) {
+    const paneId = `${TILE_PANE_PREFIX}${tile.storedSessionId}`
     revealTreePane(paneId) // un-dismiss + adopt + front in its group
     const tree = $layoutTree.get()
     const group = tree ? findGroupOfPane(tree, paneId) : null
 
-    if (group) {
-      noteActiveTreeGroup(group.id)
+    if (!group || !isPaneVisible(paneId)) {
+      return null
     }
+
+    noteActiveTreeGroup(group.id)
 
     return 'tile'
   }
 
   // Already the main session: front the workspace tab and drop tile focus so
   // the readouts + sidebar highlight come home (a no-op when main is focused).
-  if (workspaceScope.workspaceMode === 'sessions' && storedSessionId === $selectedStoredSessionId.get()) {
+  if (workspaceScope.workspaceMode === 'sessions' && aliases.includes($selectedStoredSessionId.get() ?? '')) {
     revealTreePane('workspace')
     noteActiveTreeGroup(null)
 
@@ -1557,7 +1624,8 @@ export function focusOpenSession(
  *  falls through to its authoritative open. No probe = the old behavior. */
 export function focusWorkspaceOwnerSessionTile(
   workspaceOwnerKey: string,
-  isStaleTile?: (tile: SessionTile) => boolean
+  isStaleTile?: (tile: SessionTile) => boolean,
+  onlyStoredIds?: readonly string[]
 ): null | string {
   const allOwned = $sessionTiles
     .get()
@@ -1582,6 +1650,13 @@ export function focusWorkspaceOwnerSessionTile(
     owned = allOwned.filter(tile => !stale.includes(tile))
   }
 
+  // `onlyStoredIds`: the sessions this call may front (Bot Mode passes the
+  // canonical chat's registry id + lineage tip). Other tabs in the owner's
+  // zone stay open; they are simply not what the caller asked for.
+  if (onlyStoredIds) {
+    owned = owned.filter(tile => onlyStoredIds.includes(tile.storedSessionId))
+  }
+
   if (owned.length === 0) {
     return null
   }
@@ -1591,9 +1666,9 @@ export function focusWorkspaceOwnerSessionTile(
   const paneId = resolveRememberedActivePane(workspaceScopeKey('bots', workspaceOwnerKey), paneIds) ?? paneIds[0]
   const storedSessionId = paneId.slice(TILE_PANE_PREFIX.length)
 
-  focusOpenSession(storedSessionId, { workspaceMode: 'bots', workspaceOwnerKey })
-
-  return storedSessionId
+  return focusOpenSession(storedSessionId, { workspaceMode: 'bots', workspaceOwnerKey }) === 'tile'
+    ? storedSessionId
+    : null
 }
 
 /** Does a sidebar click still need to navigate after `focusOpenSession`? A miss
@@ -1849,40 +1924,44 @@ export function reopenLastClosedTile(): void {
 // timer / model) reads these instead of the primary-only atoms.
 // ---------------------------------------------------------------------------
 
-/** Stored id of the focused session (the interacted zone's tile, else the
- *  primary's selection). Null on a fresh draft. */
-export const $focusedStoredSessionId = computed(
-  [$activeTreeGroup, $layoutTree, $selectedStoredSessionId, $workspaceMode],
-  (groupId, tree, selected, workspaceMode) => {
-    const active = groupId && tree ? findGroup(tree, groupId)?.active : undefined
+/** Focused pane identity, retaining Bot Mode's main-zone fallback. */
+const $focusedTreePaneId = computed([$activeTreeGroup, $layoutTree, $workspaceMode], (groupId, tree, workspaceMode) => {
+  const active = groupId && tree ? findGroup(tree, groupId)?.active : undefined
 
-    if (active?.startsWith(TILE_PANE_PREFIX)) {
-      return active.slice(TILE_PANE_PREFIX.length)
-    }
-
-    // The interaction tracker can point at sidebar CHROME while a chat still
-    // holds the main zone's active tab — clicking a Bots-pane roster row moves
-    // it to the sidebar group, whose active pane ('hermes-bots:pane') is not a
-    // session tile. In sessions mode the primary selection answers, exactly as
-    // always. In Bot Mode that fallback alone publishes a NULL "focused"
-    // edge: bot chats open as TILES and never set $selectedStoredSessionId,
-    // so the selection is null while the chat is plainly on screen. The Bots
-    // plugin reads that null edge as "the chat lost the center", releases its
-    // open claim, and re-asserts the Bots home over the still-visible chat —
-    // the reported "clicking a bot chat jumps to the list" (#96062). Bot
-    // Mode's on-screen truth is the main zone's active TILE; only when the
-    // main zone holds no tile (chat closed) does the selection answer, so a
-    // genuine close still lets the home return.
-    if (workspaceMode === 'bots' && tree) {
-      const mainActive = findGroupOfPane(tree, 'workspace')?.active
-
-      if (mainActive?.startsWith(TILE_PANE_PREFIX)) {
-        return mainActive.slice(TILE_PANE_PREFIX.length)
-      }
-    }
-
-    return selected
+  if (active?.startsWith(TILE_PANE_PREFIX)) {
+    return active
   }
+
+  // The interaction tracker can point at sidebar CHROME while a chat still
+  // holds the main zone's active tab — clicking a Bots-pane roster row moves
+  // it to the sidebar group, whose active pane ('hermes-bots:pane') is not a
+  // session tile. In sessions mode the primary selection answers, exactly as
+  // always. In Bot Mode that fallback alone publishes a NULL "focused"
+  // edge: bot chats open as TILES and never set $selectedStoredSessionId,
+  // so the selection is null while the chat is plainly on screen. The Bots
+  // plugin reads that null edge as "the chat lost the center", releases its
+  // open claim, and re-asserts the Bots home over the still-visible chat —
+  // the reported "clicking a bot chat jumps to the list" (#96062). Bot
+  // Mode's on-screen truth is the main zone's active TILE; only when the
+  // main zone holds no tile (chat closed) does the selection answer, so a
+  // genuine close still lets the home return.
+  if (workspaceMode === 'bots' && tree) {
+    const mainActive = findGroupOfPane(tree, 'workspace')?.active
+
+    if (mainActive?.startsWith(TILE_PANE_PREFIX)) {
+      return mainActive
+    }
+  }
+
+  return active
+})
+
+export const $focusedSessionIsTile = computed($focusedTreePaneId, active =>
+  Boolean(active?.startsWith(TILE_PANE_PREFIX))
+)
+
+export const $focusedStoredSessionId = computed([$focusedTreePaneId, $selectedStoredSessionId], (active, selected) =>
+  active?.startsWith(TILE_PANE_PREFIX) ? active.slice(TILE_PANE_PREFIX.length) : selected
 )
 
 /** Every session currently OPEN as a surface: the primary's selection plus

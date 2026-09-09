@@ -19,7 +19,7 @@ from agent.context_compressor import (
 )
 from hermes_state import SessionDB
 from gateway.config import GatewayConfig, HomeChannel, Platform, PlatformConfig
-from gateway.platforms.base import MessageEvent
+from gateway.platforms.event import MessageEvent
 from gateway.session import SessionEntry, SessionSource, build_session_key
 
 
@@ -376,11 +376,13 @@ async def test_group_new_keeps_existing_reset_semantics_when_dm_topic_mode_enabl
     # /new appends a random tip from hermes_cli.tips; one tip's text contains
     # the phrase "parallel work", which collides with the negative assertion
     # below (observed as a 1-in-N CI flake). Pin the tip.
-    monkeypatch.setattr(
-        "hermes_cli.tips.get_random_tip", lambda: "pinned tip for test"
-    )
+    tip_mock = MagicMock(return_value="pinned tip for test")
+    monkeypatch.setattr("hermes_cli.tips.get_random_tip", tip_mock)
 
     result = await runner._handle_message(_make_group_event("/new", thread_id="555"))
+
+    tip_mock.assert_called_once_with(surface="gateway")
+    assert "pinned tip for test" in result
 
     assert "Started a new Hermes session in this topic" not in result
     assert "parallel work" not in result

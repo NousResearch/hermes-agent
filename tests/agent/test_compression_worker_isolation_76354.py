@@ -159,7 +159,8 @@ def test_host_timeout_releases_pool_slot_while_protected_provider_is_still_block
     agent._cached_system_prompt = "sys"
     monkeypatch.setattr(
         "agent.conversation_compression.resolve_context_compression_timeouts",
-        lambda cfg=None: (0.05, 0.1),
+        # Allow provider-thread startup under the parallel runner before timing out.
+        lambda cfg=None: (2.0, 4.0),
     )
 
     provider_started = threading.Event()
@@ -167,7 +168,7 @@ def test_host_timeout_releases_pool_slot_while_protected_provider_is_still_block
 
     def _blocked_provider(_kwargs):
         provider_started.set()
-        assert release_provider.wait(timeout=10)
+        assert release_provider.wait(timeout=30)
         return "late-provider-result"
 
     def _compress_with_protected_provider(msgs, **_kwargs):
@@ -182,10 +183,10 @@ def test_host_timeout_releases_pool_slot_while_protected_provider_is_still_block
             live, "sys", approx_tokens=120_000
         )
         assert returned is live
-        assert provider_started.wait(timeout=1)
+        assert provider_started.wait(timeout=5)
         assert not release_provider.is_set()
 
-        deadline = time.time() + 1
+        deadline = time.time() + 5
         while time.time() < deadline:
             with cc._compress_admission_lock:
                 if cc._compress_admitted_count == 0:

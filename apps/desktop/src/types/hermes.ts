@@ -508,6 +508,10 @@ export interface SessionInfo {
    *  continuation tip. Stable across compressions — used as the durable id for
    *  pins so a pinned conversation survives auto-compression. */
   _lineage_root_id?: null | string
+  /** Every id on the compression chain (root, intermediates, tip) when this
+   *  entry is a projected continuation tip. Intermediates matter: a persisted
+   *  tile or route can hold a middle segment's id from when IT was the tip. */
+  _lineage_ids?: null | string[]
   input_tokens: number
   /** Spend for the session, straight off the `sessions` row. `actual` is set
    *  when the provider reported a price; `estimated` is our own pricing-table
@@ -587,6 +591,9 @@ export interface SessionMessage {
    */
   args?: unknown
   codex_reasoning_items?: unknown
+  /** Responses-API assistant message items; text parts here are the
+   *  user-visible reply when `content` persisted empty (#68321). */
+  codex_message_items?: unknown
   content: unknown
   /** Backend-projected user-visible content when a physical row also carries internal model scaffolding. */
   display_content?: unknown
@@ -596,7 +603,7 @@ export interface SessionMessage {
   reasoning_content?: null | string
   reasoning_details?: unknown
   display_kind?:
-    'async_delegation_complete' | 'auto_continue' | 'hidden' | 'model_switch' | 'personality_switch' | string
+    'async_delegation_complete' | 'auto_continue' | 'hidden' | 'model_switch' | 'personality_switch' | 'steer' | string
   /**
    * A backend older than this app can still serve this as unparsed JSON text,
    * so readers must narrow before indexing into it.
@@ -731,9 +738,15 @@ export interface SessionRuntimeInfo {
 }
 
 export interface UsageStats {
+  /** Rolling tokens-per-second over the last ~10 API calls (tui_gateway `_get_usage`). */
+  avg_tps?: number
+  /** Session prompt-cache hit rate, 0–100. Omitted (not 0) when the provider reports no cache reads. */
+  cache_hit_pct?: number
   calls: number
   context_max?: number
   context_percent?: number
+  context_estimated?: boolean
+  context_source?: string
   context_used?: number
   cost_usd?: number
   input: number
@@ -793,6 +806,8 @@ export interface ContextBreakdown {
   categories: ContextUsageCategory[]
   context_max: number
   context_percent: number
+  context_estimated?: boolean
+  context_source?: string
   context_used: number
   estimated_total: number
   model?: string
@@ -1426,11 +1441,10 @@ export interface MoaConfigResponse {
       aggregator_temperature: number
       degraded_reference_policy: 'loud' | 'silent'
       enabled: boolean
-      max_tokens: number
+
       reference_models: MoaModelSlot[]
       reference_temperature: number
-      /** Optional advisor output cap — round-tripped, not edited here. */
-      reference_max_tokens?: number | null
+
       /** Fan-out cadence (user_turn default | per_iteration | every_n:N) — round-tripped. */
       fanout?: string
       reference_timeout: number | null
@@ -1440,7 +1454,7 @@ export interface MoaConfigResponse {
   aggregator_temperature: number
   degraded_reference_policy: 'loud' | 'silent'
   enabled: boolean
-  max_tokens: number
+
   reference_models: MoaModelSlot[]
   reference_temperature: number
   reference_timeout: number | null
@@ -1480,7 +1494,6 @@ export interface CronModelImpactJob {
 
 export interface CronModelImpact {
   available: boolean
-  guard_enabled: boolean
   affected_count: number
   truncated: boolean
   jobs: CronModelImpactJob[]

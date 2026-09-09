@@ -19,7 +19,6 @@ import {
   SIDEBAR_SESSIONS_PAGE_SIZE
 } from '@/store/layout'
 import { messagingTotalsKey, normalizeProfileKey, sidebarProfileForScope } from '@/store/profile'
-import { $removedSessionIds } from '@/store/projects'
 import {
   $messagingSessions,
   $selectedStoredSessionId,
@@ -38,6 +37,7 @@ import {
   setSessions,
   setSessionsLoading
 } from '@/store/session'
+import { $removedSessionIds } from '@/store/session-removal'
 import { $sessionTiles, $workingSessionIds, getRecentlySettledSessionIds } from '@/store/session-states'
 
 import { refreshCronJobs as refreshCronJobsStore } from '../../cron/cron-actions'
@@ -303,11 +303,7 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
           // whole list re-renders once per turn/broadcast for nothing.
           setSessions(prev => {
             const incoming = dropTombstoned(
-              carryForwardFailedProfileSessions(
-                prev,
-                recents.sessions ?? [],
-                recents.errors ?? result.errors
-              )
+              carryForwardFailedProfileSessions(prev, recents.sessions ?? [], recents.errors ?? result.errors)
             )
 
             const next = mergeSessionPage(prev, incoming, sessionsToKeep())

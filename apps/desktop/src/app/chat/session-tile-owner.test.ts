@@ -52,8 +52,9 @@ describe('tileOwnerRoute', () => {
     )
 
     expect(routed).toEqual({ connectionId: 'pandora', profile: 'work', targetProfile: 'ceo' })
-    expect(tileOwnerRoute([tile({ ownerRoute: { connectionId: 'p', profile: 'w' }, storedSessionId: 's1' })], [], 's1'))
-      .not.toHaveProperty('targetProfile')
+    expect(
+      tileOwnerRoute([tile({ ownerRoute: { connectionId: 'p', profile: 'w' }, storedSessionId: 's1' })], [], 's1')
+    ).not.toHaveProperty('targetProfile')
   })
 
   it('narrows a bare profile owner away', () => {

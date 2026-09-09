@@ -43,7 +43,6 @@ function response(impact: ModelAssignmentResponse['cron_model_impact']): ModelAs
 function positive(name = 'Morning summary'): ModelAssignmentResponse['cron_model_impact'] {
   return {
     available: true,
-    guard_enabled: true,
     affected_count: 1,
     truncated: false,
     jobs: [{ id: 'job-1', name, drifted_axes: ['provider', 'model'] }]
@@ -71,9 +70,9 @@ describe('setMainModelAssignment', () => {
       model: 'new/model'
     })
     const notification = $notifications.get().find(item => item.id === CRON_MODEL_IMPACT_NOTIFICATION_ID)
-    expect(notification?.kind).toBe('warning')
-    expect(notification?.title).toBe('Scheduled jobs need review')
-    expect(notification?.message).toContain('1 scheduled job will be skipped')
+    expect(notification?.kind).toBe('info')
+    expect(notification?.title).toBe('Scheduled jobs stay on their original model')
+    expect(notification?.message).toContain('1 unpinned scheduled job keeps running on the model it was created under')
     expect(notification?.detail).toContain('Morning summary')
     expect(notification?.action?.label).toBe('Review scheduled jobs')
 
@@ -86,8 +85,7 @@ describe('setMainModelAssignment', () => {
     setModelAssignment.mockResolvedValue(
       response({
         available: true,
-        guard_enabled: true,
-        affected_count: 2,
+            affected_count: 2,
         truncated: false,
         jobs: [{ id: 'job-1', name: 'One', drifted_axes: ['provider'] }]
       })
@@ -114,8 +112,7 @@ describe('setMainModelAssignment', () => {
     setModelAssignment.mockResolvedValueOnce(
       response({
         available: true,
-        guard_enabled: true,
-        affected_count: 0,
+            affected_count: 0,
         truncated: false,
         jobs: []
       })
@@ -263,19 +260,6 @@ describe('setMainModelAssignment', () => {
     invalidateCronModelImpactScope({ clearNotification: false })
     action?.onClick()
     expect($cronReviewRequest.get()).toBe(requestCount)
-  })
-
-  it('clears an obsolete warning when the drift guard is disabled', async () => {
-    setModelAssignment.mockResolvedValueOnce(response(positive()))
-    await setMainModelAssignment({ provider: 'nous', model: 'one' })
-    expect($notifications.get()).toHaveLength(1)
-
-    setModelAssignment.mockResolvedValueOnce(
-      response({ available: true, guard_enabled: false, affected_count: 0, truncated: false, jobs: [] })
-    )
-    await setMainModelAssignment({ provider: 'nous', model: 'two' })
-
-    expect($notifications.get()).toEqual([])
   })
 
   it('does not let a dismissed notification mutate cron configuration', async () => {

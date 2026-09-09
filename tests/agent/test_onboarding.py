@@ -81,10 +81,13 @@ class TestHintMessages:
         assert "steer" in msg.lower()
 
     def test_busy_input_hint_gateway_advertises_only_gateway_commands(self):
+        from hermes_cli.commands import GATEWAY_KNOWN_COMMANDS
+        from hermes_cli.tips import _tip_command_refs
+
         for mode in ("queue", "interrupt", "steer", "redirect"):
-            msg = busy_input_hint_gateway(mode)
-            assert "/busy" not in msg
-            assert "`/" in msg
+            commands = _tip_command_refs(busy_input_hint_gateway(mode))
+            assert commands
+            assert commands <= GATEWAY_KNOWN_COMMANDS
 
 
     def test_hints_are_not_empty(self):

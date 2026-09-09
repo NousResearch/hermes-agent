@@ -62,7 +62,7 @@ const HintText: FC<{ children: ReactNode }> = ({ children }) => (
  * call (title generation autoloads the same model), never gets a frame,
  * and the load looked like nothing was happening. The status route reads
  * the same SSE snapshot, so this bar carries the identical percent. */
-function useLocalModelLoad(active: boolean): LocalModelLoadProgress & { model: string } | null {
+function useLocalModelLoad(active: boolean): (LocalModelLoadProgress & { model: string }) | null {
   const model = useStore($currentModel)
   const [progress, setProgress] = useState<(LocalModelLoadProgress & { model: string }) | null>(null)
 

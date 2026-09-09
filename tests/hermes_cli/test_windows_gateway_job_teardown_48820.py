@@ -27,6 +27,7 @@ import pytest
 import hermes_cli.gateway as gateway
 import hermes_cli.gateway_windows as gateway_windows
 import hermes_cli.main as hm
+import hermes_cli.main_install_repair as main_install_repair
 from hermes_cli._subprocess_compat import _WINDOWS_GATEWAY_BREAKAWAY_ENV
 from hermes_cli.update_cmd import _resume_windows_gateways_after_update
 
@@ -119,6 +120,7 @@ class TestResumeLivenessGate:
     @pytest.fixture(autouse=True)
     def _windows(self, monkeypatch):
         monkeypatch.setattr(hm, "_is_windows", lambda: True)
+        monkeypatch.setattr(main_install_repair, "_is_windows", lambda: True)
         monkeypatch.setattr(hm, "_refresh_windows_gateway_launchers", lambda: None)
         monkeypatch.setattr(
             gateway, "launch_detached_profile_gateway_restart", lambda *_a: True

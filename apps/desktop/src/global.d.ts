@@ -1,6 +1,8 @@
 import type { GatewayWsUrlResult } from '@hermes/shared'
 import type { TranslucencyState } from '@hermes/shared/translucency'
 
+import type { PoolLimits } from '../electron/pool-limits'
+
 import type { WakeIndicatorState } from './lib/wake-indicator'
 import type {
   PetOverlayBounds,
@@ -18,12 +20,16 @@ declare global {
       // Resolve a backend connection. Omit `profile` (or pass the primary) for
       // the window's backend; pass a named profile to lazily spawn/reuse that
       // profile's backend from the pool.
-      getConnection: (profile?: string | null) => Promise<HermesConnection>
+      getConnection: (
+        profile?: string | null,
+        opts?: { priority?: 'foreground' | 'background' }
+      ) => Promise<HermesConnection>
       // Registry-scoped backend resolution: dial (connectionId, profile). An
       // empty/local connectionId delegates to the legacy getConnection path.
       getConnectionFor?: (payload: {
         connectionId?: null | string
         profile?: null | string
+        priority?: 'foreground' | 'background'
       }) => Promise<HermesConnection>
       // Registry-scoped fresh WS URL (same result contract as getGatewayWsUrl).
       getGatewayWsUrlFor?: (payload: {
@@ -46,13 +52,24 @@ declare global {
       // Keepalive: mark a pool profile backend as recently used so the idle
       // reaper spares it while its chat is active.
       touchBackend: (profile?: string | null) => Promise<{ ok: boolean }>
+      // Pool sizing (Settings → Advanced): device-local, live-applied by the
+      // main process. get resolves the limits currently in force; set applies
+      // (and persists) new ones, evicting/reaping to converge immediately.
+      getPoolLimits: () => Promise<PoolLimits>
+      setPoolLimits: (limits: { maxBackends?: number; idleMs?: number }) => Promise<{
+        ok: boolean
+        limits: PoolLimits
+      }>
       getGatewayWsUrl: (profile?: null | string) => Promise<GatewayWsUrlResult>
       // Open (or focus) a standalone OS window for a single chat session so
       // the user can work with multiple chats side by side. Returns ok:false
       // with an error code when the sessionId is empty/invalid. `watch` opens
       // a spectator window (lazy resume — no agent build) for live-streaming
       // a running subagent's session.
-      openSessionWindow: (sessionId: string, opts?: { watch?: boolean }) => Promise<{ ok: boolean; error?: string }>
+      openSessionWindow: (
+        sessionId: string,
+        opts?: { profile?: null | string; watch?: boolean }
+      ) => Promise<{ ok: boolean; error?: string }>
       // Resume this session in the user's own terminal emulator (`hermes --tui
       // --resume <id>`) — the external terminal, not the in-app pane.
       openSessionInTerminal: (
@@ -255,6 +272,7 @@ declare global {
         connectionId?: null | string
         path: string
         profile?: null | string
+        sessionId?: string
         suggestedName?: string
       }) => Promise<{
         canceled?: boolean
@@ -844,6 +862,7 @@ export interface DesktopConnectionConfigInput {
   // For a 'cloud' connection: the selected Hermes Cloud org (slug or id) to
   // persist so Settings can reopen into it. Ignored for remote/local modes.
   cloudOrg?: string
+  cloudName?: string
   sshHost?: string
   sshUser?: string
   sshPort?: number | null

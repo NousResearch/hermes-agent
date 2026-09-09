@@ -23,8 +23,7 @@ export function tileOwnerRoute(
   storedSessionId: string
 ): SessionOwnerRoute | undefined {
   const owner: SessionOwnerScope =
-    tiles.find(tile => tile.storedSessionId === storedSessionId)?.ownerRoute ??
-    knownSessionOwner(rows, storedSessionId)
+    tiles.find(tile => tile.storedSessionId === storedSessionId)?.ownerRoute ?? knownSessionOwner(rows, storedSessionId)
 
   if (!owner || typeof owner !== 'object' || !owner.connectionId) {
     return undefined

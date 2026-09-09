@@ -1,6 +1,8 @@
-"""Hermes Achievements dashboard plugin backend.
+"""Hermes Achievements dashboard plugin backend, mounted at /api/plugins/hermes-achievements/.
 
-Mounted at /api/plugins/hermes-achievements/ by Hermes dashboard.
+Scans the session history into per-session stats (checkpointed by fingerprint so warm
+scans are cheap), aggregates them, and evaluates the tiered / multi-condition catalog.
+Cold scans run on a background thread; ``/achievements`` serves the last snapshot.
 """
 from __future__ import annotations
 
@@ -12,22 +14,9 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
 
-try:
-    from hermes_constants import get_hermes_home
-except ImportError:
-    import os as _os
-    def get_hermes_home() -> Path:  # type: ignore[misc]
-        val = (_os.environ.get("HERMES_HOME") or "").strip()
-        return Path(val) if val else Path.home() / ".hermes"
+from fastapi import APIRouter
 
-try:
-    from fastapi import APIRouter
-except Exception:  # Allows local unit tests without dashboard dependencies.
-    class APIRouter:  # type: ignore
-        def get(self, *_args, **_kwargs):
-            return lambda fn: fn
-        def post(self, *_args, **_kwargs):
-            return lambda fn: fn
+from hermes_constants import get_hermes_home
 
 router = APIRouter()
 
@@ -35,14 +24,8 @@ SNAPSHOT_TTL_SECONDS = 120
 _SCAN_LOCK = threading.Lock()
 _SNAPSHOT_CACHE: Optional[Dict[str, Any]] = None
 _SNAPSHOT_CACHE_AT = 0
-_SCAN_STATUS: Dict[str, Any] = {
-    "state": "idle",
-    "started_at": None,
-    "finished_at": None,
-    "last_error": None,
-    "last_duration_ms": None,
-    "run_count": 0,
-}
+# Key order is part of the /scan-status wire shape.
+_SCAN_STATUS: Dict[str, Any] = {"state": "idle", "started_at": None, "finished_at": None, "last_error": None, "last_duration_ms": None, "run_count": 0}
 
 ERROR_RE = re.compile(r"\b(error|failed|failure|traceback|exception|permission denied|not found|eaddrinuse|already in use|timed out|blocked)\b", re.I)
 PORT_RE = re.compile(r"\b(port\s+)?(3000|5173|8000|8080|9119)\b.*\b(in use|already|taken|eaddrinuse)\b|\beaddrinuse\b", re.I)
@@ -52,110 +35,121 @@ FILE_RE = re.compile(r"(?:/home/|~/?|\./|/mnt/)[\w./-]+\.(?:py|js|ts|tsx|jsx|css
 
 TIER_NAMES = ["Copper", "Silver", "Gold", "Diamond", "Olympian"]
 
-
-def tiers(values: List[int]) -> List[Dict[str, Any]]:
-    return [{"name": name, "threshold": threshold} for name, threshold in zip(TIER_NAMES, values)]
-
-
-def req(metric: str, gte: int) -> Dict[str, Any]:
-    return {"metric": metric, "gte": gte}
+def _ach(
+    id: str, name: str, description: str, category: str, icon: str, *,
+    metric: Optional[str] = None, tiers: Optional[List[int]] = None,
+    requires: Optional[List[tuple]] = None, secret: bool = False) -> Dict[str, Any]:
+    """Build one catalog entry. ``kind`` is derived: ``requires`` -> multi_condition; a
+    ``max_*`` metric is a per-session best (best_session); anything else accumulates over
+    the whole history (lifetime)."""
+    kind = "multi_condition" if requires is not None else ("best_session" if metric.startswith("max_") else "lifetime")
+    item: Dict[str, Any] = {"id": id, "name": name, "description": description, "category": category, "kind": kind, "icon": icon}
+    if secret:
+        item["secret"] = True
+    if requires is not None:
+        item["requirements"] = [{"metric": m, "gte": gte} for m, gte in requires]
+    else:
+        item["threshold_metric"] = metric
+        item["tiers"] = [{"name": n, "threshold": t} for n, t in zip(TIER_NAMES, tiers)]
+    return item
 
 
 ACHIEVEMENTS: List[Dict[str, Any]] = [
     # Agent Autonomy — mostly best-session feats
-    {"id": "let_him_cook", "name": "Let Him Cook", "description": "Let Hermes run a serious autonomous tool chain in one session.", "category": "Agent Autonomy", "kind": "best_session", "icon": "flame", "threshold_metric": "max_tool_calls_in_session", "tiers": tiers([200, 500, 1200, 3000, 8000])},
-    {"id": "autonomous_avalanche", "name": "Autonomous Avalanche", "description": "Accumulate a lifetime avalanche of Hermes tool calls across sessions.", "category": "Agent Autonomy", "kind": "lifetime", "icon": "avalanche", "threshold_metric": "total_tool_calls", "tiers": tiers([1000, 3000, 8000, 20000, 50000])},
-    {"id": "toolchain_maxxer", "name": "Toolchain Maxxer", "description": "Use a wide spread of distinct Hermes tools in one session.", "category": "Agent Autonomy", "kind": "best_session", "icon": "nodes", "threshold_metric": "max_distinct_tools_in_session", "tiers": tiers([18, 28, 45, 70, 100])},
-    {"id": "full_send", "name": "Full Send", "description": "Terminal, files, and web/browser all get involved in one real run.", "category": "Agent Autonomy", "kind": "multi_condition", "icon": "rocket", "requirements": [req("max_terminal_calls_in_session", 180), req("max_file_tool_calls_in_session", 120), req("max_web_browser_calls_in_session", 60)]},
-    {"id": "subagent_commander", "name": "Subagent Commander", "description": "Coordinate delegated agent work.", "category": "Agent Autonomy", "kind": "lifetime", "icon": "branch", "threshold_metric": "total_delegate_calls", "tiers": tiers([5, 40, 100, 1000, 5000])},
-    {"id": "background_process_enjoyer", "name": "Background Process Enjoyer", "description": "Start or control enough long-running processes to deserve the title.", "category": "Agent Autonomy", "kind": "lifetime", "icon": "daemon", "threshold_metric": "total_process_calls", "tiers": tiers([300, 800, 2000, 6000, 15000])},
-    {"id": "cron_necromancer", "name": "Cron Necromancer", "description": "Raise scheduled autonomous jobs from the dead.", "category": "Agent Autonomy", "kind": "lifetime", "icon": "clock", "threshold_metric": "total_cron_calls", "tiers": tiers([1000, 3000, 8000, 20000, 50000])},
+    _ach("let_him_cook", "Let Him Cook", "Let Hermes run a serious autonomous tool chain in one session.", "Agent Autonomy", "flame", metric="max_tool_calls_in_session", tiers=[200, 500, 1200, 3000, 8000]),
+    _ach("autonomous_avalanche", "Autonomous Avalanche", "Accumulate a lifetime avalanche of Hermes tool calls across sessions.", "Agent Autonomy", "avalanche", metric="total_tool_calls", tiers=[1000, 3000, 8000, 20000, 50000]),
+    _ach("toolchain_maxxer", "Toolchain Maxxer", "Use a wide spread of distinct Hermes tools in one session.", "Agent Autonomy", "nodes", metric="max_distinct_tools_in_session", tiers=[18, 28, 45, 70, 100]),
+    _ach("full_send", "Full Send", "Terminal, files, and web/browser all get involved in one real run.", "Agent Autonomy", "rocket", requires=[("max_terminal_calls_in_session", 180), ("max_file_tool_calls_in_session", 120), ("max_web_browser_calls_in_session", 60)]),
+    _ach("subagent_commander", "Subagent Commander", "Coordinate delegated agent work.", "Agent Autonomy", "branch", metric="total_delegate_calls", tiers=[5, 40, 100, 1000, 5000]),
+    _ach("background_process_enjoyer", "Background Process Enjoyer", "Start or control enough long-running processes to deserve the title.", "Agent Autonomy", "daemon", metric="total_process_calls", tiers=[300, 800, 2000, 6000, 15000]),
+    _ach("cron_necromancer", "Cron Necromancer", "Raise scheduled autonomous jobs from the dead.", "Agent Autonomy", "clock", metric="total_cron_calls", tiers=[1000, 3000, 8000, 20000, 50000]),
 
     # Debugging Chaos — higher thresholds + multi-condition events
-    {"id": "red_text_connoisseur", "name": "Red Text Connoisseur", "description": "Encounter enough errors to develop a palate for red text.", "category": "Debugging Chaos", "kind": "lifetime", "icon": "warning", "threshold_metric": "total_errors", "tiers": tiers([1500, 4000, 10000, 25000, 75000])},
-    {"id": "stack_trace_sommelier", "name": "Stack Trace Sommelier", "description": "Taste tracebacks by the flight, not by the sip.", "category": "Debugging Chaos", "kind": "lifetime", "icon": "wine", "threshold_metric": "traceback_events", "tiers": tiers([300, 1000, 3000, 8000, 20000])},
-    {"id": "actually_read_the_logs", "name": "Actually Read The Logs", "description": "Inspect logs repeatedly instead of guessing.", "category": "Debugging Chaos", "kind": "lifetime", "icon": "scroll", "threshold_metric": "log_read_events", "tiers": tiers([1000, 3000, 8000, 20000, 50000])},
-    {"id": "port_3000_taken", "name": "Port 3000 Is Taken", "description": "Discover dev-server port conflict patterns enough times to become numb.", "category": "Debugging Chaos", "kind": "lifetime", "icon": "plug", "secret": True, "threshold_metric": "port_conflict_events", "tiers": tiers([15, 40, 100, 300, 1000])},
-    {"id": "permission_denied_any_percent", "name": "Permission Denied Any%", "description": "Speedrun into permission walls.", "category": "Debugging Chaos", "kind": "lifetime", "icon": "lock", "secret": True, "threshold_metric": "permission_denied_events", "tiers": tiers([25, 75, 200, 600, 1500])},
-    {"id": "dependency_hell_tourist", "name": "Dependency Hell Tourist", "description": "Package installs fail, then somehow life continues.", "category": "Debugging Chaos", "kind": "multi_condition", "icon": "package_skull", "requirements": [req("install_error_events", 25), req("install_success_events", 10)]},
-    {"id": "the_fix_was_restarting", "name": "The Fix Was Restarting It", "description": "Restart after enough error clusters to call it a technique.", "category": "Debugging Chaos", "kind": "multi_condition", "icon": "restart", "requirements": [req("restart_after_error_events", 50), req("total_errors", 4000)]},
-    {"id": "forgot_the_env_var", "name": "Forgot The Env Var", "description": "Auth or configuration failed because an environment variable was missing.", "category": "Debugging Chaos", "kind": "lifetime", "icon": "key", "secret": True, "threshold_metric": "env_var_error_events", "tiers": tiers([5000, 15000, 40000, 100000, 250000])},
-    {"id": "yaml_colon_incident", "name": "YAML Colon Incident", "description": "Configuration syntax bites back.", "category": "Debugging Chaos", "kind": "lifetime", "icon": "colon", "secret": True, "threshold_metric": "yaml_error_events", "tiers": tiers([1000, 3000, 8000, 20000, 50000])},
-    {"id": "docker_name_collision", "name": "Docker Name Collision", "description": "A container name already exists. Of course it does.", "category": "Debugging Chaos", "kind": "lifetime", "icon": "container", "secret": True, "threshold_metric": "docker_conflict_events", "tiers": tiers([75, 200, 600, 1500, 4000])},
+    _ach("red_text_connoisseur", "Red Text Connoisseur", "Encounter enough errors to develop a palate for red text.", "Debugging Chaos", "warning", metric="total_errors", tiers=[1500, 4000, 10000, 25000, 75000]),
+    _ach("stack_trace_sommelier", "Stack Trace Sommelier", "Taste tracebacks by the flight, not by the sip.", "Debugging Chaos", "wine", metric="traceback_events", tiers=[300, 1000, 3000, 8000, 20000]),
+    _ach("actually_read_the_logs", "Actually Read The Logs", "Inspect logs repeatedly instead of guessing.", "Debugging Chaos", "scroll", metric="log_read_events", tiers=[1000, 3000, 8000, 20000, 50000]),
+    _ach("port_3000_taken", "Port 3000 Is Taken", "Discover dev-server port conflict patterns enough times to become numb.", "Debugging Chaos", "plug", metric="port_conflict_events", tiers=[15, 40, 100, 300, 1000], secret=True),
+    _ach("permission_denied_any_percent", "Permission Denied Any%", "Speedrun into permission walls.", "Debugging Chaos", "lock", metric="permission_denied_events", tiers=[25, 75, 200, 600, 1500], secret=True),
+    _ach("dependency_hell_tourist", "Dependency Hell Tourist", "Package installs fail, then somehow life continues.", "Debugging Chaos", "package_skull", requires=[("install_error_events", 25), ("install_success_events", 10)]),
+    _ach("the_fix_was_restarting", "The Fix Was Restarting It", "Restart after enough error clusters to call it a technique.", "Debugging Chaos", "restart", requires=[("restart_after_error_events", 50), ("total_errors", 4000)]),
+    _ach("forgot_the_env_var", "Forgot The Env Var", "Auth or configuration failed because an environment variable was missing.", "Debugging Chaos", "key", metric="env_var_error_events", tiers=[5000, 15000, 40000, 100000, 250000], secret=True),
+    _ach("yaml_colon_incident", "YAML Colon Incident", "Configuration syntax bites back.", "Debugging Chaos", "colon", metric="yaml_error_events", tiers=[1000, 3000, 8000, 20000, 50000], secret=True),
+    _ach("docker_name_collision", "Docker Name Collision", "A container name already exists. Of course it does.", "Debugging Chaos", "container", metric="docker_conflict_events", tiers=[75, 200, 600, 1500, 4000], secret=True),
 
     # Vibe Coding
-    {"id": "supposed_to_be_quick", "name": "This Was Supposed To Be Quick", "description": "A tiny ask becomes an entire expedition.", "category": "Vibe Coding", "kind": "best_session", "icon": "melting_clock", "threshold_metric": "max_messages_in_session", "tiers": tiers([300, 600, 1200, 2500, 6000])},
-    {"id": "one_more_small_change", "name": "One More Small Change", "description": "Make enough file edits in one session to invalidate the phrase small change.", "category": "Vibe Coding", "kind": "best_session", "icon": "pencil", "threshold_metric": "max_file_tool_calls_in_session", "tiers": tiers([150, 400, 1000, 3000, 8000])},
-    {"id": "vibe_architect", "name": "Vibe Architect", "description": "Touch a broad surface area in one project session.", "category": "Vibe Coding", "kind": "best_session", "icon": "blueprint", "threshold_metric": "max_files_touched_in_session", "tiers": tiers([300, 700, 1500, 4000, 10000])},
-    {"id": "pixel_goblin", "name": "Pixel Goblin", "description": "Do sustained frontend, CSS, SVG, or visual tuning.", "category": "Vibe Coding", "kind": "lifetime", "icon": "pixel", "threshold_metric": "frontend_activity_events", "tiers": tiers([20000, 50000, 120000, 300000, 800000])},
-    {"id": "ship_first_ask_later", "name": "Ship First, Ask Later", "description": "Git activity after a serious tool chain.", "category": "Vibe Coding", "kind": "multi_condition", "icon": "ship", "requirements": [req("git_events", 50), req("max_tool_calls_in_session", 500)]},
-    {"id": "css_exorcist", "name": "CSS Exorcist", "description": "Cast repeated styling demons out of the interface.", "category": "Vibe Coding", "kind": "lifetime", "icon": "spark_cursor", "threshold_metric": "css_activity_events", "tiers": tiers([10000, 30000, 80000, 200000, 500000])},
-    {"id": "one_character_fix", "name": "One Character Fix", "description": "A tiny edit after a pile of errors. Painful. Beautiful.", "category": "Vibe Coding", "kind": "multi_condition", "icon": "needle", "secret": True, "requirements": [req("tiny_patch_after_errors_events", 5), req("total_errors", 4000)]},
+    _ach("supposed_to_be_quick", "This Was Supposed To Be Quick", "A tiny ask becomes an entire expedition.", "Vibe Coding", "melting_clock", metric="max_messages_in_session", tiers=[300, 600, 1200, 2500, 6000]),
+    _ach("one_more_small_change", "One More Small Change", "Make enough file edits in one session to invalidate the phrase small change.", "Vibe Coding", "pencil", metric="max_file_tool_calls_in_session", tiers=[150, 400, 1000, 3000, 8000]),
+    _ach("vibe_architect", "Vibe Architect", "Touch a broad surface area in one project session.", "Vibe Coding", "blueprint", metric="max_files_touched_in_session", tiers=[300, 700, 1500, 4000, 10000]),
+    _ach("pixel_goblin", "Pixel Goblin", "Do sustained frontend, CSS, SVG, or visual tuning.", "Vibe Coding", "pixel", metric="frontend_activity_events", tiers=[20000, 50000, 120000, 300000, 800000]),
+    _ach("ship_first_ask_later", "Ship First, Ask Later", "Git activity after a serious tool chain.", "Vibe Coding", "ship", requires=[("git_events", 50), ("max_tool_calls_in_session", 500)]),
+    _ach("css_exorcist", "CSS Exorcist", "Cast repeated styling demons out of the interface.", "Vibe Coding", "spark_cursor", metric="css_activity_events", tiers=[10000, 30000, 80000, 200000, 500000]),
+    _ach("one_character_fix", "One Character Fix", "A tiny edit after a pile of errors. Painful. Beautiful.", "Vibe Coding", "needle", requires=[("tiny_patch_after_errors_events", 5), ("total_errors", 4000)], secret=True),
 
     # Hermes Native
-    {"id": "skillsmith", "name": "Skillsmith", "description": "Work with Hermes skills enough to leave fingerprints.", "category": "Hermes Native", "kind": "lifetime", "icon": "hammer_scroll", "threshold_metric": "skill_events", "tiers": tiers([5000, 15000, 40000, 100000, 250000])},
-    {"id": "skill_issue_skill_created", "name": "Skill Issue? Skill Created.", "description": "Create or patch durable procedures instead of repeating yourself.", "category": "Hermes Native", "kind": "lifetime", "icon": "anvil", "threshold_metric": "skill_manage_events", "tiers": tiers([25, 75, 200, 600, 1500])},
-    {"id": "memory_keeper", "name": "Memory Keeper", "description": "Persist durable knowledge with memory or Mnemosyne.", "category": "Hermes Native", "kind": "lifetime", "icon": "crystal", "threshold_metric": "memory_events", "tiers": tiers([100, 300, 1000, 3000, 8000])},
-    {"id": "memory_palace", "name": "Memory Palace", "description": "Build a serious durable-memory trail.", "category": "Hermes Native", "kind": "lifetime", "icon": "palace", "threshold_metric": "memory_write_events", "tiers": tiers([100, 300, 1000, 3000, 8000])},
-    {"id": "context_dragon", "name": "Context Dragon", "description": "Brush against compression, huge context, or token pressure repeatedly.", "category": "Hermes Native", "kind": "lifetime", "icon": "dragon", "threshold_metric": "context_events", "tiers": tiers([5000, 15000, 40000, 100000, 250000])},
-    {"id": "gateway_dweller", "name": "Gateway Dweller", "description": "Live through gateway-connected Hermes workflows.", "category": "Hermes Native", "kind": "lifetime", "icon": "antenna", "threshold_metric": "gateway_events", "tiers": tiers([5000, 15000, 40000, 100000, 250000])},
-    {"id": "plugin_goblin", "name": "Plugin Goblin", "description": "Use or develop plugins enough that the dashboard notices.", "category": "Hermes Native", "kind": "lifetime", "icon": "puzzle", "threshold_metric": "plugin_events", "tiers": tiers([1000, 3000, 8000, 20000, 50000])},
-    {"id": "rollback_wizard", "name": "Rollback Wizard", "description": "Invoke rollback/checkpoint recovery magic.", "category": "Hermes Native", "kind": "lifetime", "icon": "rewind", "secret": True, "threshold_metric": "rollback_events", "tiers": tiers([500, 1500, 4000, 10000, 25000])},
+    _ach("skillsmith", "Skillsmith", "Work with Hermes skills enough to leave fingerprints.", "Hermes Native", "hammer_scroll", metric="skill_events", tiers=[5000, 15000, 40000, 100000, 250000]),
+    _ach("skill_issue_skill_created", "Skill Issue? Skill Created.", "Create or patch durable procedures instead of repeating yourself.", "Hermes Native", "anvil", metric="skill_manage_events", tiers=[25, 75, 200, 600, 1500]),
+    _ach("memory_keeper", "Memory Keeper", "Persist durable knowledge with memory or Mnemosyne.", "Hermes Native", "crystal", metric="memory_events", tiers=[100, 300, 1000, 3000, 8000]),
+    _ach("memory_palace", "Memory Palace", "Build a serious durable-memory trail.", "Hermes Native", "palace", metric="memory_write_events", tiers=[100, 300, 1000, 3000, 8000]),
+    _ach("context_dragon", "Context Dragon", "Brush against compression, huge context, or token pressure repeatedly.", "Hermes Native", "dragon", metric="context_events", tiers=[5000, 15000, 40000, 100000, 250000]),
+    _ach("gateway_dweller", "Gateway Dweller", "Live through gateway-connected Hermes workflows.", "Hermes Native", "antenna", metric="gateway_events", tiers=[5000, 15000, 40000, 100000, 250000]),
+    _ach("plugin_goblin", "Plugin Goblin", "Use or develop plugins enough that the dashboard notices.", "Hermes Native", "puzzle", metric="plugin_events", tiers=[1000, 3000, 8000, 20000, 50000]),
+    _ach("rollback_wizard", "Rollback Wizard", "Invoke rollback/checkpoint recovery magic.", "Hermes Native", "rewind", metric="rollback_events", tiers=[500, 1500, 4000, 10000, 25000], secret=True),
 
     # Research/Web
-    {"id": "rabbit_hole_certified", "name": "Rabbit Hole Certified", "description": "Search or extract enough web content to qualify as a research spiral.", "category": "Research/Web", "kind": "lifetime", "icon": "spiral", "threshold_metric": "total_web_calls", "tiers": tiers([400, 1200, 3000, 8000, 20000])},
-    {"id": "citation_goblin", "name": "Citation Goblin", "description": "Extract enough web pages to become a tiny librarian.", "category": "Research/Web", "kind": "lifetime", "icon": "quote", "threshold_metric": "total_web_extract_calls", "tiers": tiers([100, 300, 1000, 3000, 8000])},
-    {"id": "docs_archaeologist", "name": "Docs Archaeologist", "description": "Dig through documentation sources over and over.", "category": "Research/Web", "kind": "lifetime", "icon": "compass", "threshold_metric": "docs_activity_events", "tiers": tiers([5000, 15000, 40000, 100000, 250000])},
-    {"id": "browser_possession", "name": "Browser Possession", "description": "Possess a browser through automation repeatedly.", "category": "Research/Web", "kind": "lifetime", "icon": "browser", "threshold_metric": "browser_calls", "tiers": tiers([75, 200, 600, 1500, 4000])},
+    _ach("rabbit_hole_certified", "Rabbit Hole Certified", "Search or extract enough web content to qualify as a research spiral.", "Research/Web", "spiral", metric="total_web_calls", tiers=[400, 1200, 3000, 8000, 20000]),
+    _ach("citation_goblin", "Citation Goblin", "Extract enough web pages to become a tiny librarian.", "Research/Web", "quote", metric="total_web_extract_calls", tiers=[100, 300, 1000, 3000, 8000]),
+    _ach("docs_archaeologist", "Docs Archaeologist", "Dig through documentation sources over and over.", "Research/Web", "compass", metric="docs_activity_events", tiers=[5000, 15000, 40000, 100000, 250000]),
+    _ach("browser_possession", "Browser Possession", "Possess a browser through automation repeatedly.", "Research/Web", "browser", metric="browser_calls", tiers=[75, 200, 600, 1500, 4000]),
 
     # Tool Mastery
-    {"id": "terminal_goblin", "name": "Terminal Goblin", "description": "Spend serious time in shell-land.", "category": "Tool Mastery", "kind": "lifetime", "icon": "terminal", "threshold_metric": "total_terminal_calls", "tiers": tiers([750, 2000, 6000, 15000, 50000])},
-    {"id": "patch_wizard", "name": "Patch Wizard", "description": "Bend files to your will with targeted patches.", "category": "Tool Mastery", "kind": "lifetime", "icon": "wand", "threshold_metric": "total_patch_calls", "tiers": tiers([250, 750, 2000, 6000, 15000])},
-    {"id": "file_archaeologist", "name": "File Archaeologist", "description": "Dig through the filesystem with reads and searches.", "category": "Tool Mastery", "kind": "lifetime", "icon": "folder", "threshold_metric": "total_file_reads_searches", "tiers": tiers([750, 2000, 6000, 15000, 50000])},
-    {"id": "image_whisperer", "name": "Image Whisperer", "description": "Use image generation or vision tools enough for visual work.", "category": "Tool Mastery", "kind": "lifetime", "icon": "eye", "threshold_metric": "image_vision_calls", "tiers": tiers([100, 300, 1000, 3000, 8000])},
-    {"id": "voice_of_the_machine", "name": "Voice Of The Machine", "description": "Use text-to-speech or voice tooling repeatedly.", "category": "Tool Mastery", "kind": "lifetime", "icon": "wave", "threshold_metric": "tts_calls", "tiers": tiers([10, 30, 100, 300, 800])},
+    _ach("terminal_goblin", "Terminal Goblin", "Spend serious time in shell-land.", "Tool Mastery", "terminal", metric="total_terminal_calls", tiers=[750, 2000, 6000, 15000, 50000]),
+    _ach("patch_wizard", "Patch Wizard", "Bend files to your will with targeted patches.", "Tool Mastery", "wand", metric="total_patch_calls", tiers=[250, 750, 2000, 6000, 15000]),
+    _ach("file_archaeologist", "File Archaeologist", "Dig through the filesystem with reads and searches.", "Tool Mastery", "folder", metric="total_file_reads_searches", tiers=[750, 2000, 6000, 15000, 50000]),
+    _ach("image_whisperer", "Image Whisperer", "Use image generation or vision tools enough for visual work.", "Tool Mastery", "eye", metric="image_vision_calls", tiers=[100, 300, 1000, 3000, 8000]),
+    _ach("voice_of_the_machine", "Voice Of The Machine", "Use text-to-speech or voice tooling repeatedly.", "Tool Mastery", "wave", metric="tts_calls", tiers=[10, 30, 100, 300, 800]),
 
     # Model Lore
-    {"id": "model_hopper", "name": "Model Hopper", "description": "Switch or inspect providers/models enough to count as a habit.", "category": "Model Lore", "kind": "lifetime", "icon": "swap", "threshold_metric": "model_events", "tiers": tiers([10000, 30000, 80000, 200000, 500000])},
-    {"id": "openrouter_enjoyer", "name": "OpenRouter Enjoyer", "description": "Route model work through OpenRouter repeatedly.", "category": "Model Lore", "kind": "lifetime", "icon": "router", "threshold_metric": "openrouter_events", "tiers": tiers([250, 750, 2000, 6000, 15000])},
-    {"id": "codex_conjurer", "name": "Codex Conjurer", "description": "Summon Codex-flavored assistance often enough for a ritual.", "category": "Model Lore", "kind": "lifetime", "icon": "codex", "threshold_metric": "codex_events", "tiers": tiers([500, 1500, 4000, 10000, 25000])},
-    {"id": "multi_model_mage", "name": "Multi-Model Mage", "description": "Use a real spread of distinct model names across Hermes history.", "category": "Model Lore", "kind": "lifetime", "icon": "prism", "threshold_metric": "distinct_model_count", "tiers": tiers([10, 20, 40, 80, 160])},
-    {"id": "five_model_flight", "name": "Five-Model Flight", "description": "Try at least five distinct LLMs instead of marrying the first model that answers.", "category": "Model Lore", "kind": "lifetime", "icon": "prism", "threshold_metric": "distinct_model_count", "tiers": tiers([5, 10, 20, 40, 80])},
-    {"id": "provider_polyglot", "name": "Provider Polyglot", "description": "Use models from multiple providers across Hermes history.", "category": "Model Lore", "kind": "lifetime", "icon": "swap", "threshold_metric": "distinct_provider_count", "tiers": tiers([2, 3, 5, 8, 12])},
-    {"id": "model_sommelier", "name": "Model Sommelier", "description": "Taste enough model/provider conversations to develop preferences.", "category": "Model Lore", "kind": "lifetime", "icon": "wine", "threshold_metric": "model_events", "tiers": tiers([250, 750, 2000, 6000, 15000])},
-    {"id": "claude_confidant", "name": "Claude Confidant", "description": "Bring Claude-flavored reasoning into the workflow repeatedly.", "category": "Model Lore", "kind": "lifetime", "icon": "quote", "threshold_metric": "claude_events", "tiers": tiers([50, 150, 500, 1500, 4000])},
-    {"id": "gemini_cartographer", "name": "Gemini Cartographer", "description": "Map enough Gemini-related workflows to know the terrain.", "category": "Model Lore", "kind": "lifetime", "icon": "compass", "threshold_metric": "gemini_events", "tiers": tiers([50, 150, 500, 1500, 4000])},
-    {"id": "open_weights_pilgrim", "name": "Open Weights Pilgrim", "description": "Actually chat with local/open-weight models through Hermes session metadata.", "category": "Model Lore", "kind": "lifetime", "icon": "terminal", "threshold_metric": "local_model_chat_sessions", "tiers": tiers([1, 3, 10, 30, 100])},
+    _ach("model_hopper", "Model Hopper", "Switch or inspect providers/models enough to count as a habit.", "Model Lore", "swap", metric="model_events", tiers=[10000, 30000, 80000, 200000, 500000]),
+    _ach("openrouter_enjoyer", "OpenRouter Enjoyer", "Route model work through OpenRouter repeatedly.", "Model Lore", "router", metric="openrouter_events", tiers=[250, 750, 2000, 6000, 15000]),
+    _ach("codex_conjurer", "Codex Conjurer", "Summon Codex-flavored assistance often enough for a ritual.", "Model Lore", "codex", metric="codex_events", tiers=[500, 1500, 4000, 10000, 25000]),
+    _ach("multi_model_mage", "Multi-Model Mage", "Use a real spread of distinct model names across Hermes history.", "Model Lore", "prism", metric="distinct_model_count", tiers=[10, 20, 40, 80, 160]),
+    _ach("five_model_flight", "Five-Model Flight", "Try at least five distinct LLMs instead of marrying the first model that answers.", "Model Lore", "prism", metric="distinct_model_count", tiers=[5, 10, 20, 40, 80]),
+    _ach("provider_polyglot", "Provider Polyglot", "Use models from multiple providers across Hermes history.", "Model Lore", "swap", metric="distinct_provider_count", tiers=[2, 3, 5, 8, 12]),
+    _ach("model_sommelier", "Model Sommelier", "Taste enough model/provider conversations to develop preferences.", "Model Lore", "wine", metric="model_events", tiers=[250, 750, 2000, 6000, 15000]),
+    _ach("claude_confidant", "Claude Confidant", "Bring Claude-flavored reasoning into the workflow repeatedly.", "Model Lore", "quote", metric="claude_events", tiers=[50, 150, 500, 1500, 4000]),
+    _ach("gemini_cartographer", "Gemini Cartographer", "Map enough Gemini-related workflows to know the terrain.", "Model Lore", "compass", metric="gemini_events", tiers=[50, 150, 500, 1500, 4000]),
+    _ach("open_weights_pilgrim", "Open Weights Pilgrim", "Actually chat with local/open-weight models through Hermes session metadata.", "Model Lore", "terminal", metric="local_model_chat_sessions", tiers=[1, 3, 10, 30, 100]),
 
     # Workflow Intelligence
-    {"id": "toolset_cartographer", "name": "Toolset Cartographer", "description": "Navigate Hermes toolsets deliberately instead of treating tools as a blur.", "category": "Hermes Native", "kind": "lifetime", "icon": "compass", "threshold_metric": "toolset_events", "tiers": tiers([20, 60, 200, 600, 1500])},
-    {"id": "config_surgeon", "name": "Config Surgeon", "description": "Operate on real config files, manifests, env files, and dashboard settings without flinching.", "category": "Hermes Native", "kind": "lifetime", "icon": "key", "threshold_metric": "config_events", "tiers": tiers([100, 300, 1000, 3000, 10000])},
-    {"id": "rebase_acrobat", "name": "Rebase Acrobat", "description": "Handle real git history surgery: rebase, conflict, merge, fetch, push.", "category": "Vibe Coding", "kind": "lifetime", "icon": "branch", "threshold_metric": "git_history_events", "tiers": tiers([10, 30, 100, 300, 800])},
-    {"id": "test_suite_tamer", "name": "Test Suite Tamer", "description": "Run enough verification commands that green text becomes part of the ritual.", "category": "Tool Mastery", "kind": "lifetime", "icon": "daemon", "threshold_metric": "test_events", "tiers": tiers([100, 300, 800, 2400, 6000])},
-    {"id": "screenshot_hunter", "name": "Screenshot Hunter", "description": "Capture, inspect, and polish visual proof instead of just claiming it works.", "category": "Tool Mastery", "kind": "lifetime", "icon": "eye", "threshold_metric": "screenshot_events", "tiers": tiers([50, 150, 500, 1500, 5000])},
+    _ach("toolset_cartographer", "Toolset Cartographer", "Navigate Hermes toolsets deliberately instead of treating tools as a blur.", "Hermes Native", "compass", metric="toolset_events", tiers=[20, 60, 200, 600, 1500]),
+    _ach("config_surgeon", "Config Surgeon", "Operate on real config files, manifests, env files, and dashboard settings without flinching.", "Hermes Native", "key", metric="config_events", tiers=[100, 300, 1000, 3000, 10000]),
+    _ach("rebase_acrobat", "Rebase Acrobat", "Handle real git history surgery: rebase, conflict, merge, fetch, push.", "Vibe Coding", "branch", metric="git_history_events", tiers=[10, 30, 100, 300, 800]),
+    _ach("test_suite_tamer", "Test Suite Tamer", "Run enough verification commands that green text becomes part of the ritual.", "Tool Mastery", "daemon", metric="test_events", tiers=[100, 300, 800, 2400, 6000]),
+    _ach("screenshot_hunter", "Screenshot Hunter", "Capture, inspect, and polish visual proof instead of just claiming it works.", "Tool Mastery", "eye", metric="screenshot_events", tiers=[50, 150, 500, 1500, 5000]),
 
     # Lifestyle
-    {"id": "marathon_operator", "name": "Marathon Operator", "description": "Accumulate a serious number of Hermes sessions.", "category": "Lifestyle", "kind": "lifetime", "icon": "marathon", "threshold_metric": "session_count", "tiers": tiers([75, 200, 500, 1500, 5000])},
-    {"id": "weekend_warrior", "name": "Weekend Warrior", "description": "Run Hermes on weekends enough times to make it a lifestyle.", "category": "Lifestyle", "kind": "lifetime", "icon": "calendar", "threshold_metric": "weekend_sessions", "tiers": tiers([25, 75, 200, 600, 1500])},
-    {"id": "night_shift_operator", "name": "Night Shift Operator", "description": "Run sessions during gremlin hours repeatedly.", "category": "Lifestyle", "kind": "lifetime", "icon": "moon", "threshold_metric": "night_sessions", "tiers": tiers([25, 75, 200, 600, 1500])},
-    {"id": "cache_hit_appreciator", "name": "Cache Hit Appreciator", "description": "Notice or benefit from prompt/cache behavior.", "category": "Lifestyle", "kind": "lifetime", "icon": "cache", "secret": True, "threshold_metric": "cache_events", "tiers": tiers([100, 300, 1000, 3000, 8000])},
+    _ach("marathon_operator", "Marathon Operator", "Accumulate a serious number of Hermes sessions.", "Lifestyle", "marathon", metric="session_count", tiers=[75, 200, 500, 1500, 5000]),
+    _ach("weekend_warrior", "Weekend Warrior", "Run Hermes on weekends enough times to make it a lifestyle.", "Lifestyle", "calendar", metric="weekend_sessions", tiers=[25, 75, 200, 600, 1500]),
+    _ach("night_shift_operator", "Night Shift Operator", "Run sessions during gremlin hours repeatedly.", "Lifestyle", "moon", metric="night_sessions", tiers=[25, 75, 200, 600, 1500]),
+    _ach("cache_hit_appreciator", "Cache Hit Appreciator", "Notice or benefit from prompt/cache behavior.", "Lifestyle", "cache", metric="cache_events", tiers=[100, 300, 1000, 3000, 8000], secret=True),
+
 ]
+
+# ---- Durable state files ----
+
+SNAPSHOT_FILE = "scan_snapshot.json"
+CHECKPOINT_FILE = "scan_checkpoint.json"
 
 
 def _data_dir() -> Path:
-    """Durable data root (``<hermes home>/plugin-data/hermes-achievements/``).
-
-    Was the install tree (``plugins/hermes-achievements/``) before the
-    plugin-data convention existed — state parked there died on
-    ``hermes plugins remove``/``update``. Legacy files migrate on first read.
-    """
+    """Durable data root (``<hermes home>/plugin-data/hermes-achievements/``). State used to
+    live in the install tree and died on ``hermes plugins remove``/``update``; legacy files
+    migrate on first read (see ``_data_file``)."""
     try:
         from plugins.plugin_storage import plugin_data_dir
-
         return plugin_data_dir("hermes-achievements")
     except Exception:
-        # Standalone dashboard import (no plugins package on sys.path):
-        # keep the plugin working with the same layout, computed locally.
+        # Standalone dashboard import (no plugins package on sys.path): same layout, computed locally.
         root = get_hermes_home() / "plugin-data" / "hermes-achievements"
         root.mkdir(parents=True, exist_ok=True)
         return root
@@ -173,32 +167,19 @@ def _data_file(name: str) -> Path:
     return path
 
 
-def state_path() -> Path:
-    return _data_file("state.json")
-
-
-def snapshot_path() -> Path:
-    return _data_file("scan_snapshot.json")
-
-
-def checkpoint_path() -> Path:
-    return _data_file("scan_checkpoint.json")
-
-
-def load_state() -> Dict[str, Any]:
-    path = state_path()
-    if not path.exists():
-        return {"unlocks": {}}
+def _read_json(name: str) -> Any:
+    """Parsed data file, or ``None`` when missing/unreadable."""
+    path = _data_file(name)
     try:
         return json.loads(path.read_text(encoding="utf-8"))
     except Exception:
-        return {"unlocks": {}}
+        return None
 
 
-def save_state(state: Dict[str, Any]) -> None:
-    path = state_path()
+def _write_json(name: str, data: Any) -> None:
+    path = _data_file(name)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(state, indent=2, sort_keys=True), encoding="utf-8")
+    path.write_text(json.dumps(_json_safe(data), indent=2, sort_keys=True), encoding="utf-8")
 
 
 def _json_safe(value: Any) -> Any:
@@ -211,55 +192,28 @@ def _json_safe(value: Any) -> Any:
     return value
 
 
-def load_snapshot() -> Optional[Dict[str, Any]]:
-    path = snapshot_path()
-    if not path.exists():
-        return None
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-        if isinstance(data, dict):
-            return data
-    except Exception:
-        return None
-    return None
+def load_state() -> Dict[str, Any]:
+    data = _read_json("state.json")
+    return {"unlocks": {}} if data is None else data
 
 
-def save_snapshot(data: Dict[str, Any]) -> None:
-    path = snapshot_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(_json_safe(data), indent=2, sort_keys=True), encoding="utf-8")
+def save_state(state: Dict[str, Any]) -> None:
+    _write_json("state.json", state)
 
 
 def load_checkpoint() -> Dict[str, Any]:
-    path = checkpoint_path()
-    if not path.exists():
-        return {"schema_version": 1, "generated_at": 0, "sessions": {}}
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-        if isinstance(data, dict):
-            data.setdefault("schema_version", 1)
-            data.setdefault("generated_at", 0)
-            data.setdefault("sessions", {})
-            if isinstance(data.get("sessions"), dict):
-                return data
-    except Exception:
-        pass
+    data = _read_json(CHECKPOINT_FILE)
+    if isinstance(data, dict):
+        data.setdefault("schema_version", 1)
+        data.setdefault("generated_at", 0)
+        data.setdefault("sessions", {})
+        if isinstance(data.get("sessions"), dict):
+            return data
     return {"schema_version": 1, "generated_at": 0, "sessions": {}}
 
 
-def save_checkpoint(data: Dict[str, Any]) -> None:
-    path = checkpoint_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(_json_safe(data), indent=2, sort_keys=True), encoding="utf-8")
-
-
 def session_fingerprint(meta: Dict[str, Any]) -> Dict[str, Any]:
-    return {
-        "last_active": meta.get("last_active"),
-        "started_at": meta.get("started_at"),
-        "model": meta.get("model"),
-        "title": meta.get("title") or meta.get("preview") or "Untitled",
-    }
+    return {"last_active": meta.get("last_active"), "started_at": meta.get("started_at"), "model": meta.get("model"), "title": meta.get("title") or meta.get("preview") or "Untitled"}
 
 
 def _cache_is_fresh(now: int) -> bool:
@@ -267,38 +221,28 @@ def _cache_is_fresh(now: int) -> bool:
 
 
 def _is_snapshot_stale(snapshot: Optional[Dict[str, Any]], now: Optional[int] = None) -> bool:
-    if not isinstance(snapshot, dict):
-        return True
-    ts = int(snapshot.get("generated_at") or 0)
-    current = int(now or time.time())
-    if ts <= 0:
-        return True
-    return (current - ts) > SNAPSHOT_TTL_SECONDS
+    ts = int(snapshot.get("generated_at") or 0) if isinstance(snapshot, dict) else 0
+    return ts <= 0 or (int(now or time.time()) - ts) > SNAPSHOT_TTL_SECONDS
 
 
 def _scan_status_payload(now: Optional[int] = None) -> Dict[str, Any]:
     current = int(now or time.time())
     snap = _SNAPSHOT_CACHE if isinstance(_SNAPSHOT_CACHE, dict) else None
-    generated_at = int((snap or {}).get("generated_at") or 0) if snap else 0
+    generated_at = int(snap.get("generated_at") or 0) if snap else 0
     return {
-        "state": _SCAN_STATUS.get("state", "idle"),
-        "started_at": _SCAN_STATUS.get("started_at"),
-        "finished_at": _SCAN_STATUS.get("finished_at"),
-        "last_error": _SCAN_STATUS.get("last_error"),
-        "last_duration_ms": _SCAN_STATUS.get("last_duration_ms"),
-        "run_count": _SCAN_STATUS.get("run_count", 0),
+        **_SCAN_STATUS,
         "ttl_seconds": SNAPSHOT_TTL_SECONDS,
         "snapshot_generated_at": generated_at or None,
         "snapshot_age_seconds": (current - generated_at) if generated_at else None,
-        "snapshot_stale": _is_snapshot_stale(snap, current),
-    }
+        "snapshot_stale": _is_snapshot_stale(snap, current)}
 
+
+# ---- Per-session analysis ----
 
 def _tool_name_from_call(call: Any) -> Optional[str]:
     if not isinstance(call, dict):
         return None
-    fn = call.get("function") or {}
-    return call.get("name") or fn.get("name")
+    return call.get("name") or (call.get("function") or {}).get("name")
 
 
 def _content(msg: Dict[str, Any]) -> str:
@@ -318,13 +262,17 @@ def _count_tool(tool_names: List[str], *needles: str) -> int:
     return sum(1 for name in lowered if any(needle in name for needle in needles))
 
 
+_PROVIDER_MARKERS = ["openai", "anthropic", "google", "gemini", "mistral", "meta", "qwen", "deepseek", "xai", "nous", "ollama", "groq", "openrouter", "codex"]
+_LOCAL_MARKERS = ["ollama", "llama.cpp", "localhost", "127.0.0.1", "local/", "local:", "gguf", "vllm-local"]
+
+
 def model_provider(model_name: str) -> Optional[str]:
     name = (model_name or "").strip().lower()
     if not name or name == "none":
         return None
     if "/" in name:
         return name.split("/", 1)[0]
-    for provider in ["openai", "anthropic", "google", "gemini", "mistral", "meta", "qwen", "deepseek", "xai", "nous", "ollama", "groq", "openrouter", "codex"]:
+    for provider in _PROVIDER_MARKERS:
         if provider in name:
             return "google" if provider == "gemini" else provider
     return name.split(":", 1)[0].split("-", 1)[0]
@@ -332,10 +280,7 @@ def model_provider(model_name: str) -> Optional[str]:
 
 def is_local_model_name(model_name: str) -> bool:
     name = (model_name or "").strip().lower()
-    if not name or name == "none":
-        return False
-    local_markers = ["ollama", "llama.cpp", "localhost", "127.0.0.1", "local/", "local:", "gguf", "vllm-local"]
-    return any(marker in name for marker in local_markers)
+    return bool(name) and name != "none" and any(marker in name for marker in _LOCAL_MARKERS)
 
 
 def analyze_messages(session_id: str, title: str, messages: List[Dict[str, Any]]) -> Dict[str, Any]:
@@ -344,15 +289,14 @@ def analyze_messages(session_id: str, title: str, messages: List[Dict[str, Any]]
     files_touched: Set[str] = set()
     full_text_parts: List[str] = []
     error_count = 0
-
     for msg in messages:
         text = _content(msg)
         full_text_parts.append(text)
         if msg.get("tool_name"):
             name = str(msg["tool_name"])
             tool_names.add(name)
-            # Tool result rows name the tool that already appeared in the assistant tool_calls.
-            # Keep it for distinct-tool detection, but do not double-count it as a new call.
+            # Tool result rows name the tool that already appeared in the assistant tool_calls:
+            # keep it for distinct-tool detection but don't double-count it as a new call.
             if msg.get("role") != "tool":
                 tool_sequence.append(name)
         for call in msg.get("tool_calls") or []:
@@ -369,23 +313,11 @@ def analyze_messages(session_id: str, title: str, messages: List[Dict[str, Any]]
 
     full_text = "\n".join(full_text_parts)
     lower = full_text.lower()
-    terminal_calls = _count_tool(tool_sequence, "terminal")
+
+    def hits(pattern: str) -> int:
+        return len(re.findall(pattern, full_text, re.I))
     web_calls = _count_tool(tool_sequence, "web_search", "web_extract")
-    web_extract_calls = _count_tool(tool_sequence, "web_extract")
     browser_calls = _count_tool(tool_sequence, "browser")
-    web_browser_calls = web_calls + browser_calls
-    patch_calls = _count_tool(tool_sequence, "patch")
-    file_reads_searches = _count_tool(tool_sequence, "read_file", "search_files")
-    file_tool_calls = _count_tool(tool_sequence, "read_file", "write_file", "patch", "search_files")
-    delegate_calls = _count_tool(tool_sequence, "delegate_task")
-    process_calls = _count_tool(tool_sequence, "process") + len(re.findall(r"background\s*=\s*true", full_text, re.I))
-    cron_calls = _count_tool(tool_sequence, "cronjob")
-    image_vision_calls = _count_tool(tool_sequence, "image", "vision")
-    tts_calls = _count_tool(tool_sequence, "tts", "text_to_speech")
-    skill_events = _count_tool(tool_sequence, "skill") + len(re.findall(r"\bskill", lower))
-    skill_manage_events = _count_tool(tool_sequence, "skill_manage")
-    memory_events = _count_tool(tool_sequence, "memory", "mnemosyne")
-    memory_write_events = _count_tool(tool_sequence, "mnemosyne_remember", "memory")
 
     return {
         "session_id": session_id,
@@ -395,83 +327,94 @@ def analyze_messages(session_id: str, title: str, messages: List[Dict[str, Any]]
         "tool_names": tool_names,
         "distinct_tool_count": len(tool_names),
         "error_count": error_count,
-        "terminal_calls": terminal_calls,
+        "terminal_calls": _count_tool(tool_sequence, "terminal"),
         "web_calls": web_calls,
-        "web_extract_calls": web_extract_calls,
+        "web_extract_calls": _count_tool(tool_sequence, "web_extract"),
         "browser_calls": browser_calls,
-        "web_browser_calls": web_browser_calls,
-        "patch_calls": patch_calls,
-        "file_reads_searches": file_reads_searches,
-        "file_tool_calls": file_tool_calls,
+        "web_browser_calls": web_calls + browser_calls,
+        "patch_calls": _count_tool(tool_sequence, "patch"),
+        "file_reads_searches": _count_tool(tool_sequence, "read_file", "search_files"),
+        "file_tool_calls": _count_tool(tool_sequence, "read_file", "write_file", "patch", "search_files"),
         "files_touched_count": len(files_touched),
-        "delegate_calls": delegate_calls,
-        "process_calls": process_calls,
-        "cron_calls": cron_calls,
-        "image_vision_calls": image_vision_calls,
-        "tts_calls": tts_calls,
-        "skill_events": skill_events,
-        "skill_manage_events": skill_manage_events,
-        "memory_events": memory_events,
-        "memory_write_events": memory_write_events,
+        "delegate_calls": _count_tool(tool_sequence, "delegate_task"),
+        "process_calls": _count_tool(tool_sequence, "process") + hits(r"background\s*=\s*true"),
+        "cron_calls": _count_tool(tool_sequence, "cronjob"),
+        "image_vision_calls": _count_tool(tool_sequence, "image", "vision"),
+        "tts_calls": _count_tool(tool_sequence, "tts", "text_to_speech"),
+        "skill_events": _count_tool(tool_sequence, "skill") + len(re.findall(r"\bskill", lower)),
+        "skill_manage_events": _count_tool(tool_sequence, "skill_manage"),
+        "memory_events": _count_tool(tool_sequence, "memory", "mnemosyne"),
+        "memory_write_events": _count_tool(tool_sequence, "mnemosyne_remember", "memory"),
         "port_conflict": bool(PORT_RE.search(full_text)),
         "port_conflict_events": 1 if PORT_RE.search(full_text) else 0,
-        "traceback_events": len(re.findall(r"traceback|exception", full_text, re.I)),
-        "log_read_events": len(re.findall(r"gateway\.log|errors\.log|agent\.log|/api/logs|\blogs\b", full_text, re.I)),
-        "permission_denied_events": len(re.findall(r"permission denied|eacces|operation not permitted", full_text, re.I)),
+        "traceback_events": hits(r"traceback|exception"),
+        "log_read_events": hits(r"gateway\.log|errors\.log|agent\.log|/api/logs|\blogs\b"),
+        "permission_denied_events": hits(r"permission denied|eacces|operation not permitted"),
         "install_error_events": 1 if INSTALL_RE.search(full_text) and ERROR_RE.search(full_text) else 0,
         "install_success_events": 1 if INSTALL_RE.search(full_text) and SUCCESS_RE.search(full_text) else 0,
         "restart_after_error_events": 1 if error_count and re.search(r"\brestart|reload|kill|start\b", full_text, re.I) else 0,
-        "env_var_error_events": len(re.findall(r"missing .*env|api key|environment variable|not configured|unauthorized|auth", full_text, re.I)),
-        "yaml_error_events": len(re.findall(r"yaml|yml|colon|parse error", full_text, re.I)) if ERROR_RE.search(full_text) else 0,
-        "docker_conflict_events": len(re.findall(r"docker.*(name|container).*already|container name conflict|Conflict\. The container", full_text, re.I)),
-        "frontend_activity_events": len(re.findall(r"\.(css|svg|tsx|jsx)|frontend|tailwind|react", full_text, re.I)),
-        "css_activity_events": len(re.findall(r"\.css|tailwind|style|className|visual", full_text, re.I)),
-        "git_events": len(re.findall(r"\bgit\s+(commit|push|merge|rebase|status|diff)", full_text, re.I)),
+        "env_var_error_events": hits(r"missing .*env|api key|environment variable|not configured|unauthorized|auth"),
+        "yaml_error_events": hits(r"yaml|yml|colon|parse error") if ERROR_RE.search(full_text) else 0,
+        "docker_conflict_events": hits(r"docker.*(name|container).*already|container name conflict|Conflict\. The container"),
+        "frontend_activity_events": hits(r"\.(css|svg|tsx|jsx)|frontend|tailwind|react"),
+        "css_activity_events": hits(r"\.css|tailwind|style|className|visual"),
+        "git_events": hits(r"\bgit\s+(commit|push|merge|rebase|status|diff)"),
         "tiny_patch_after_errors_events": 1 if error_count >= 5 and re.search(r"one character|single character|typo", full_text, re.I) else 0,
-        "context_events": len(re.findall(r"compress|context window|token|cache", full_text, re.I)),
-        "gateway_events": len(re.findall(r"gateway|discord|telegram|slack|api_server", full_text, re.I)),
-        "plugin_events": len(re.findall(r"plugin|dashboard-plugins|__HERMES_PLUGIN|manifest\.json", full_text, re.I)),
-        "rollback_events": len(re.findall(r"rollback|checkpoint", full_text, re.I)),
-        "docs_activity_events": len(re.findall(r"docs|documentation|docusaurus|README", full_text, re.I)),
-        "model_events": len(re.findall(r"model|provider|openrouter|codex|gemini|claude|anthropic|openai|mistral|qwen|deepseek|llama|ollama|vllm|gguf", full_text, re.I)),
-        "openrouter_events": len(re.findall(r"openrouter", full_text, re.I)),
-        "codex_events": len(re.findall(r"codex", full_text, re.I)),
-        "claude_events": len(re.findall(r"claude|anthropic", full_text, re.I)),
-        "gemini_events": len(re.findall(r"gemini|google ai|google model", full_text, re.I)),
-        "local_model_events": len(re.findall(r"ollama|llama\.cpp|gguf|vllm|local model|open[- ]weight|open weights", full_text, re.I)),
-        "toolset_events": len(re.findall(r"toolset|enabled_toolsets|browser tool|terminal tool|file tool|web tool", full_text, re.I)),
-        "config_events": len(re.findall(r"config\.ya?ml|\b[a-z0-9_-]+config\.(?:js|ts|json|ya?ml)|\.env(?:\b|\.)|manifest\.json|settings\.json|pyproject\.toml|package\.json", full_text, re.I)),
-        "git_history_events": len(re.findall(r"\bgit\s+(rebase|merge|fetch|pull|push|tag|checkout)|merge conflict|conflict\s*\(|rebase --continue", full_text, re.I)),
-        "test_events": len(re.findall(r"pytest|unittest|vitest|playwright|npm test|pnpm test|node --check|py_compile|tests? passed|\bOK\b", full_text, re.I)),
-        "screenshot_events": len(re.findall(r"screenshot|playwright|vision_analyze|browser_vision|\.png|image data", full_text, re.I)),
-        "release_events": len(re.findall(r"\bgit\s+tag|release|version bump|changelog|publish|pushed? tag", full_text, re.I)),
-        "cache_events": len(re.findall(r"cache hit|prompt caching|cache_read", full_text, re.I)),
-        "model_names": set(),
-    }
+        "context_events": hits(r"compress|context window|token|cache"),
+        "gateway_events": hits(r"gateway|discord|telegram|slack|api_server"),
+        "plugin_events": hits(r"plugin|dashboard-plugins|__HERMES_PLUGIN|manifest\.json"),
+        "rollback_events": hits(r"rollback|checkpoint"),
+        "docs_activity_events": hits(r"docs|documentation|docusaurus|README"),
+        "model_events": hits(r"model|provider|openrouter|codex|gemini|claude|anthropic|openai|mistral|qwen|deepseek|llama|ollama|vllm|gguf"),
+        "openrouter_events": hits(r"openrouter"),
+        "codex_events": hits(r"codex"),
+        "claude_events": hits(r"claude|anthropic"),
+        "gemini_events": hits(r"gemini|google ai|google model"),
+        "local_model_events": hits(r"ollama|llama\.cpp|gguf|vllm|local model|open[- ]weight|open weights"),
+        "toolset_events": hits(r"toolset|enabled_toolsets|browser tool|terminal tool|file tool|web tool"),
+        "config_events": hits(r"config\.ya?ml|\b[a-z0-9_-]+config\.(?:js|ts|json|ya?ml)|\.env(?:\b|\.)|manifest\.json|settings\.json|pyproject\.toml|package\.json"),
+        "git_history_events": hits(r"\bgit\s+(rebase|merge|fetch|pull|push|tag|checkout)|merge conflict|conflict\s*\(|rebase --continue"),
+        "test_events": hits(r"pytest|unittest|vitest|playwright|npm test|pnpm test|node --check|py_compile|tests? passed|\bOK\b"),
+        "screenshot_events": hits(r"screenshot|playwright|vision_analyze|browser_vision|\.png|image data"),
+        "release_events": hits(r"\bgit\s+tag|release|version bump|changelog|publish|pushed? tag"),
+        "cache_events": hits(r"cache hit|prompt caching|cache_read"),
+        "model_names": set()}
+
+
+# ---- Evaluation ----
+
+def _result(*, unlocked: bool, discovered: bool, state: str, tier, progress: int, next_tier, next_threshold: int, progress_pct: int) -> Dict[str, Any]:
+    """Uniform evaluation result (key order is part of the wire shape)."""
+    return {"unlocked": unlocked, "discovered": discovered, "state": state, "tier": tier, "progress": progress, "next_tier": next_tier, "next_threshold": next_threshold, "progress_pct": progress_pct}
+
+
+def _state(definition: Dict[str, Any], unlocked: bool, any_progress: bool) -> tuple[str, bool]:
+    """``(state, discovered)``: secret badges stay hidden until the first matching signal."""
+    secret = bool(definition.get("secret"))
+    state = "unlocked" if unlocked else ("secret" if secret and not any_progress else "discovered")
+    return state, any_progress or not secret
 
 
 def evaluate_tiered(definition: Dict[str, Any], aggregate: Dict[str, Any]) -> Dict[str, Any]:
-    metric = definition["threshold_metric"]
-    progress = int(aggregate.get(metric, 0) or 0)
+    progress = int(aggregate.get(definition["threshold_metric"], 0) or 0)
     tiers_list = sorted(definition.get("tiers", []), key=lambda t: t["threshold"])
     achieved = [t for t in tiers_list if progress >= t["threshold"]]
     next_tiers = [t for t in tiers_list if progress < t["threshold"]]
-    tier = achieved[-1]["name"] if achieved else None
-    next_tier = next_tiers[0]["name"] if next_tiers else None
     next_threshold = next_tiers[0]["threshold"] if next_tiers else (tiers_list[-1]["threshold"] if tiers_list else 1)
     current_threshold = achieved[-1]["threshold"] if achieved else 0
     denom = max(1, next_threshold - current_threshold)
     pct = 100 if not next_tiers and achieved else max(0, min(99, math.floor(((progress - current_threshold) / denom) * 100)))
-    unlocked = bool(achieved)
-    discovered = bool(progress > 0)
-    state = "unlocked" if unlocked else ("secret" if definition.get("secret") and not discovered else "discovered")
-    return {"unlocked": unlocked, "discovered": discovered or not definition.get("secret"), "state": state, "tier": tier, "progress": progress, "next_tier": next_tier, "next_threshold": next_threshold, "progress_pct": pct}
+    state, discovered = _state(definition, bool(achieved), progress > 0)
+    return _result(
+        unlocked=bool(achieved), discovered=discovered, state=state, tier=achieved[-1]["name"] if achieved else None,
+        progress=progress, next_tier=next_tiers[0]["name"] if next_tiers else None, next_threshold=next_threshold, progress_pct=pct)
 
 
 def evaluate_requirements(definition: Dict[str, Any], aggregate: Dict[str, Any]) -> Dict[str, Any]:
     requirements = definition.get("requirements", [])
     if not requirements:
-        return {"unlocked": False, "discovered": not definition.get("secret"), "state": "secret" if definition.get("secret") else "discovered", "tier": None, "progress": 0, "next_tier": None, "next_threshold": 1, "progress_pct": 0}
+        state, discovered = _state(definition, False, False)
+        return _result(unlocked=False, discovered=discovered, state=state, tier=None, progress=0, next_tier=None, next_threshold=1, progress_pct=0)
     parts = []
     any_progress = False
     complete = True
@@ -482,14 +425,16 @@ def evaluate_requirements(definition: Dict[str, Any], aggregate: Dict[str, Any])
         complete = complete and value >= threshold
         parts.append(min(1.0, value / max(1, threshold)))
     pct = math.floor((sum(parts) / len(parts)) * 100)
-    state = "unlocked" if complete else ("secret" if definition.get("secret") and not any_progress else "discovered")
-    return {"unlocked": complete, "discovered": any_progress or not definition.get("secret"), "state": state, "tier": None, "progress": pct, "next_tier": None, "next_threshold": 100, "progress_pct": 100 if complete else min(99, pct)}
+    state, discovered = _state(definition, complete, any_progress)
+    return _result(
+        unlocked=complete, discovered=discovered, state=state, tier=None, progress=pct, next_tier=None,
+        next_threshold=100, progress_pct=100 if complete else min(99, pct))
 
 
-def evaluate_boolean(definition: Dict[str, Any], aggregate: Dict[str, Any]) -> Dict[str, Any]:
-    # Backward-compatible helper for old tests/definitions. New catalog avoids simple booleans.
-    unlocked = bool(aggregate.get(definition["metric"]))
-    return {"unlocked": unlocked, "discovered": True, "state": "unlocked" if unlocked else "discovered", "tier": None, "progress": 1 if unlocked else 0, "next_tier": None, "next_threshold": 1, "progress_pct": 100 if unlocked else 0}
+def evaluate_definition(definition: Dict[str, Any], aggregate: Dict[str, Any]) -> Dict[str, Any]:
+    if "threshold_metric" in definition:
+        return evaluate_tiered(definition, aggregate)
+    return evaluate_requirements(definition, aggregate)
 
 
 METRIC_LABELS = {
@@ -554,8 +499,7 @@ METRIC_LABELS = {
     "release_events": "release, version, publish, or git tag events",
     "session_count": "Hermes sessions",
     "weekend_sessions": "sessions started on weekends",
-    "night_sessions": "sessions started late night or before dawn",
-}
+    "night_sessions": "sessions started late night or before dawn"}
 
 
 def metric_label(metric: str) -> str:
@@ -565,19 +509,16 @@ def metric_label(metric: str) -> str:
 def criteria_for(definition: Dict[str, Any]) -> str:
     if definition.get("secret") and definition.get("state") == "secret":
         return "Secret: exact requirement hidden until Hermes sees the first matching signal. Keep using Hermes across debugging, tools, memory, skills, plugins, and model workflows to reveal it."
-    secret_prefix = ""
     if "threshold_metric" in definition:
         tiers_list = sorted(definition.get("tiers", []), key=lambda t: t["threshold"])
         if not tiers_list:
-            return secret_prefix + "Requirement: use Hermes in the matching workflow."
-        metric = metric_label(definition["threshold_metric"])
+            return "Requirement: use Hermes in the matching workflow."
         ladder = ", ".join(f"{t['name']} {t['threshold']}" for t in tiers_list)
-        return secret_prefix + f"Requirement: {metric}. Tier ladder: {ladder}."
+        return f"Requirement: {metric_label(definition['threshold_metric'])}. Tier ladder: {ladder}."
     requirements = definition.get("requirements") or []
     if requirements:
-        parts = [f"{metric_label(r['metric'])} ≥ {int(r.get('gte', 1))}" for r in requirements]
-        return secret_prefix + "Requirement: " + "; ".join(parts) + "."
-    return secret_prefix + "Requirement: complete the matching Hermes behavior."
+        return "Requirement: " + "; ".join(f"{metric_label(r['metric'])} ≥ {int(r.get('gte', 1))}" for r in requirements) + "."
+    return "Requirement: complete the matching Hermes behavior."
 
 
 def display_achievement(item: Dict[str, Any]) -> Dict[str, Any]:
@@ -588,48 +529,33 @@ def display_achievement(item: Dict[str, Any]) -> Dict[str, Any]:
     return clean
 
 
-def scan_sessions(
-    limit: Optional[int] = None,
-    progress_callback: Optional[Any] = None,
-    progress_every: int = 250,
-) -> Dict[str, Any]:
+# ---- Scanning + aggregation ----
+
+def _scan_meta(mode: str, total: int, *, rescanned: int = 0, reused: int = 0, scanned_so_far: Optional[int] = None, expected_total: Optional[int] = None) -> Dict[str, Any]:
+    meta = {"mode": mode, "sessions_total": total, "sessions_rescanned": rescanned, "sessions_reused": reused}
+    if scanned_so_far is not None:
+        meta.update(sessions_scanned_so_far=scanned_so_far, sessions_expected_total=expected_total)
+    return meta
+
+
+def scan_sessions(limit: Optional[int] = None, progress_callback: Optional[Any] = None, progress_every: int = 250) -> Dict[str, Any]:
     """Scan Hermes sessions and build per-session achievement stats.
 
-    ``limit=None`` (the default) scans the ENTIRE session history. Prior
-    versions capped this at 200, which silently reduced achievement totals
-    to ~2% of history on long-running installs and made lifetime badges
-    unreachable. SQLite's ``LIMIT -1`` means "unlimited"; we map ``None``
-    and non-positive values to ``-1`` so callers get the full catalog.
-
-    Warm scans stay cheap: the checkpoint cache stores per-session stats
-    keyed by ``(started_at, last_active)`` and only re-analyzes sessions
-    whose fingerprint changed. Cold scans on large histories (thousands
-    of sessions) take tens of seconds to several minutes; ``evaluate_all``
-    runs them on a background thread so the dashboard UI never blocks on
-    the first request.
-
-    ``progress_callback(partial_sessions, scanned_so_far, total)`` — when
-    provided, fires every ``progress_every`` sessions with the sessions
-    analyzed so far and progress counters. Background scans use this to
-    publish intermediate snapshots so a long cold scan surfaces badges
-    incrementally on each dashboard refresh instead of going all-at-once
-    at the end.
+    ``limit=None`` (default) scans the ENTIRE history (SQLite ``LIMIT -1``); a former cap
+    of 200 silently shrank lifetime totals on long-running installs. The checkpoint stores
+    per-session stats keyed by ``(started_at, last_active)`` fingerprint so warm scans only
+    re-analyze changed sessions. ``progress_callback(partial_sessions, scanned_so_far,
+    total)`` fires every ``progress_every`` sessions so background scans can publish
+    intermediate snapshots.
     """
     try:
         from hermes_state import SessionDB
     except Exception as exc:
-        return {"sessions": [], "aggregate": {}, "error": f"Could not import SessionDB: {exc}", "scan_meta": {"mode": "failed", "sessions_total": 0, "sessions_rescanned": 0, "sessions_reused": 0}}
+        return {"sessions": [], "aggregate": {}, "error": f"Could not import SessionDB: {exc}", "scan_meta": _scan_meta("failed", 0)}
 
-    checkpoint = load_checkpoint()
-    previous_sessions = checkpoint.get("sessions") if isinstance(checkpoint.get("sessions"), dict) else {}
-    reused = 0
-    rescanned = 0
-
-    # SQLite treats LIMIT -1 as "no limit". Map None / <=0 to -1 so the
-    # full session history flows through unless the caller explicitly
-    # requests a small sample (e.g. a smoke test).
+    previous_sessions = load_checkpoint()["sessions"]  # load_checkpoint guarantees a dict
+    reused = rescanned = 0
     db_limit = -1 if (limit is None or limit <= 0) else int(limit)
-
     db = SessionDB()
     try:
         sessions_meta = db.list_sessions_rich(limit=db_limit, include_children=True, project_compression_tips=False)
@@ -641,136 +567,94 @@ def scan_sessions(
             if not sid:
                 continue
             fp = session_fingerprint(meta)
-            cached = previous_sessions.get(sid) if isinstance(previous_sessions, dict) else None
-            cached_stats = cached.get("stats") if isinstance(cached, dict) else None
-            cached_fp = cached.get("fingerprint") if isinstance(cached, dict) else None
-
-            if isinstance(cached_stats, dict) and cached_fp == fp:
-                stats = dict(cached_stats)
+            cached = previous_sessions.get(sid)
+            cached = cached if isinstance(cached, dict) else {}
+            title = meta.get("title") or meta.get("preview")
+            if isinstance(cached.get("stats"), dict) and cached.get("fingerprint") == fp:
+                stats = dict(cached["stats"])
                 reused += 1
             else:
-                messages = db.get_messages(sid)
-                stats = analyze_messages(sid, meta.get("title") or meta.get("preview") or "Untitled", messages)
+                stats = analyze_messages(sid, title or "Untitled", db.get_messages(sid))
                 rescanned += 1
-
-            stats["session_id"] = sid
-            stats["title"] = meta.get("title") or meta.get("preview") or stats.get("title") or "Untitled"
-            stats["started_at"] = meta.get("started_at")
-            stats["last_active"] = meta.get("last_active")
-            stats["source"] = meta.get("source")
+            stats.update(session_id=sid, title=title or stats.get("title") or "Untitled", started_at=meta.get("started_at"), last_active=meta.get("last_active"), source=meta.get("source"))
             if meta.get("model"):
-                stats.setdefault("model_names", set())
-                if isinstance(stats["model_names"], set):
-                    stats["model_names"].add(str(meta.get("model")))
-                elif isinstance(stats["model_names"], list):
-                    if str(meta.get("model")) not in stats["model_names"]:
-                        stats["model_names"].append(str(meta.get("model")))
+                # Checkpoint round-trips turn the set into a list; handle both.
+                model = str(meta.get("model"))
+                names = stats.setdefault("model_names", set())
+                if isinstance(names, set):
+                    names.add(model)
+                elif isinstance(names, list):
+                    if model not in names:
+                        names.append(model)
                 else:
-                    stats["model_names"] = {str(meta.get("model"))}
-
+                    stats["model_names"] = {model}
             sessions.append(stats)
             checkpoint_sessions[sid] = {"fingerprint": fp, "stats": _json_safe(stats)}
-
             if progress_callback is not None and progress_every > 0 and (idx % progress_every == 0) and idx < total_sessions:
                 try:
                     progress_callback(list(sessions), idx, total_sessions)
                 except Exception:
-                    # Progress callbacks are advisory — a broken publisher
-                    # must never abort the scan itself.
-                    pass
-
-        save_checkpoint({
-            "schema_version": 1,
-            "generated_at": int(time.time()),
-            "sessions": checkpoint_sessions,
-        })
+                    pass  # Advisory — a broken publisher must never abort the scan.
+        _write_json(CHECKPOINT_FILE, {"schema_version": 1, "generated_at": int(time.time()), "sessions": checkpoint_sessions})
     finally:
-        close = getattr(db, "close", None)
-        if close:
-            close()
+        db.close()
     return {
         "sessions": sessions,
         "aggregate": aggregate_stats(sessions),
-        "scan_meta": {
-            "mode": "incremental" if reused > 0 else "full",
-            "sessions_total": len(sessions),
-            "sessions_rescanned": rescanned,
-            "sessions_reused": reused,
-            "sessions_scanned_so_far": len(sessions),
-            "sessions_expected_total": total_sessions,
-        },
-    }
+        "scan_meta": _scan_meta(
+            "incremental" if reused > 0 else "full", len(sessions), rescanned=rescanned, reused=reused,
+            scanned_so_far=len(sessions), expected_total=total_sessions)}
+
+
+# Per-session bests: aggregate metric -> session stat key (also drives evidence_for).
+_SESSION_MAX_METRICS = {
+    "max_tool_calls_in_session": "tool_call_count",
+    "max_distinct_tools_in_session": "distinct_tool_count",
+    "max_messages_in_session": "message_count",
+    "max_terminal_calls_in_session": "terminal_calls",
+    "max_file_tool_calls_in_session": "file_tool_calls",
+    "max_web_calls_in_session": "web_calls",
+    "max_web_browser_calls_in_session": "web_browser_calls",
+    "max_files_touched_in_session": "files_touched_count"}
+# Lifetime sums: aggregate metric -> session stat key.
+_SESSION_SUM_METRICS = {
+    "total_errors": "error_count",
+    "total_tool_calls": "tool_call_count",
+    "total_terminal_calls": "terminal_calls",
+    "total_web_calls": "web_calls",
+    "total_web_extract_calls": "web_extract_calls",
+    "total_patch_calls": "patch_calls",
+    "total_file_reads_searches": "file_reads_searches",
+    "total_delegate_calls": "delegate_calls",
+    "total_process_calls": "process_calls",
+    "total_cron_calls": "cron_calls",
+    "browser_calls": "browser_calls",
+    "image_vision_calls": "image_vision_calls",
+    "tts_calls": "tts_calls"}
+# ``*_events`` counters summed under their own name.
+_SESSION_EVENT_KEYS = [
+    "traceback_events", "log_read_events", "port_conflict_events", "permission_denied_events", "install_error_events", "install_success_events", "restart_after_error_events", "env_var_error_events", "yaml_error_events", "docker_conflict_events", "frontend_activity_events", "css_activity_events", "git_events", "tiny_patch_after_errors_events", "skill_events", "skill_manage_events", "memory_events", "memory_write_events", "context_events", "gateway_events", "plugin_events", "rollback_events", "docs_activity_events", "model_events", "openrouter_events", "codex_events", "claude_events", "gemini_events", "local_model_events", "toolset_events", "config_events", "git_history_events", "test_events", "screenshot_events", "release_events", "cache_events",
+]
 
 
 def aggregate_stats(sessions: List[Dict[str, Any]]) -> Dict[str, Any]:
-    agg: Dict[str, Any] = {
-        "session_count": len(sessions),
-        "max_tool_calls_in_session": 0,
-        "max_distinct_tools_in_session": 0,
-        "max_messages_in_session": 0,
-        "max_terminal_calls_in_session": 0,
-        "max_file_tool_calls_in_session": 0,
-        "max_web_calls_in_session": 0,
-        "max_web_browser_calls_in_session": 0,
-        "max_files_touched_in_session": 0,
-        "total_errors": 0,
-        "total_tool_calls": 0,
-        "total_terminal_calls": 0,
-        "total_web_calls": 0,
-        "total_web_extract_calls": 0,
-        "total_patch_calls": 0,
-        "total_file_reads_searches": 0,
-        "total_delegate_calls": 0,
-        "total_process_calls": 0,
-        "total_cron_calls": 0,
-        "browser_calls": 0,
-        "image_vision_calls": 0,
-        "tts_calls": 0,
-        "distinct_model_count": 0,
-        "distinct_provider_count": 0,
-        "local_model_chat_sessions": 0,
-        "weekend_sessions": 0,
-        "night_sessions": 0,
-    }
-    sum_keys = [
-        "traceback_events", "log_read_events", "port_conflict_events", "permission_denied_events", "install_error_events", "install_success_events", "restart_after_error_events", "env_var_error_events", "yaml_error_events", "docker_conflict_events", "frontend_activity_events", "css_activity_events", "git_events", "tiny_patch_after_errors_events", "skill_events", "skill_manage_events", "memory_events", "memory_write_events", "context_events", "gateway_events", "plugin_events", "rollback_events", "docs_activity_events", "model_events", "openrouter_events", "codex_events", "claude_events", "gemini_events", "local_model_events", "toolset_events", "config_events", "git_history_events", "test_events", "screenshot_events", "release_events", "cache_events",
-    ]
-    for key in sum_keys:
+    # Key order is part of the /rescan wire shape.
+    agg: Dict[str, Any] = {"session_count": len(sessions)}
+    for key in (*_SESSION_MAX_METRICS, *_SESSION_SUM_METRICS, "distinct_model_count", "distinct_provider_count", "local_model_chat_sessions", "weekend_sessions", "night_sessions", *_SESSION_EVENT_KEYS):
         agg[key] = 0
-
     model_names: Set[str] = set()
     provider_names: Set[str] = set()
     for s in sessions:
-        agg["max_tool_calls_in_session"] = max(agg["max_tool_calls_in_session"], s.get("tool_call_count", 0))
-        agg["max_distinct_tools_in_session"] = max(agg["max_distinct_tools_in_session"], s.get("distinct_tool_count", 0))
-        agg["max_messages_in_session"] = max(agg["max_messages_in_session"], s.get("message_count", 0))
-        agg["max_terminal_calls_in_session"] = max(agg["max_terminal_calls_in_session"], s.get("terminal_calls", 0))
-        agg["max_file_tool_calls_in_session"] = max(agg["max_file_tool_calls_in_session"], s.get("file_tool_calls", 0))
-        agg["max_web_calls_in_session"] = max(agg["max_web_calls_in_session"], s.get("web_calls", 0))
-        agg["max_web_browser_calls_in_session"] = max(agg["max_web_browser_calls_in_session"], s.get("web_browser_calls", 0))
-        agg["max_files_touched_in_session"] = max(agg["max_files_touched_in_session"], s.get("files_touched_count", 0))
-        agg["total_errors"] += s.get("error_count", 0)
-        agg["total_tool_calls"] += s.get("tool_call_count", 0)
-        agg["total_terminal_calls"] += s.get("terminal_calls", 0)
-        agg["total_web_calls"] += s.get("web_calls", 0)
-        agg["total_web_extract_calls"] += s.get("web_extract_calls", 0)
-        agg["total_patch_calls"] += s.get("patch_calls", 0)
-        agg["total_file_reads_searches"] += s.get("file_reads_searches", 0)
-        agg["total_delegate_calls"] += s.get("delegate_calls", 0)
-        agg["total_process_calls"] += s.get("process_calls", 0)
-        agg["total_cron_calls"] += s.get("cron_calls", 0)
-        agg["browser_calls"] += s.get("browser_calls", 0)
-        agg["image_vision_calls"] += s.get("image_vision_calls", 0)
-        agg["tts_calls"] += s.get("tts_calls", 0)
-        for key in sum_keys:
+        for key, stat in _SESSION_MAX_METRICS.items():
+            agg[key] = max(agg[key], s.get(stat, 0))
+        for key, stat in _SESSION_SUM_METRICS.items():
+            agg[key] += s.get(stat, 0)
+        for key in _SESSION_EVENT_KEYS:
             agg[key] += s.get(key, 0)
-        model_names.update(s.get("model_names") or set())
         session_models = s.get("model_names") or set()
-        for model_name in session_models:
-            provider = model_provider(str(model_name))
-            if provider:
-                provider_names.add(provider)
-        if any(is_local_model_name(str(model_name)) for model_name in session_models):
+        model_names.update(session_models)
+        provider_names.update(filter(None, (model_provider(str(m)) for m in session_models)))
+        if any(is_local_model_name(str(m)) for m in session_models):
             agg["local_model_chat_sessions"] += 1
         if s.get("started_at"):
             try:
@@ -786,43 +670,36 @@ def aggregate_stats(sessions: List[Dict[str, Any]]) -> Dict[str, Any]:
     return agg
 
 
-def evaluate_definition(definition: Dict[str, Any], aggregate: Dict[str, Any]) -> Dict[str, Any]:
-    if "threshold_metric" in definition:
-        return evaluate_tiered(definition, aggregate)
-    if "requirements" in definition:
-        return evaluate_requirements(definition, aggregate)
-    return evaluate_boolean(definition, aggregate)
-
-
 def evidence_for(definition: Dict[str, Any], sessions: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
-    if not sessions:
+    key = _SESSION_MAX_METRICS.get(definition.get("threshold_metric"))
+    if not sessions or key is None:
         return None
-    metric = definition.get("threshold_metric")
-    metric_to_session_key = {
-        "max_tool_calls_in_session": "tool_call_count",
-        "max_distinct_tools_in_session": "distinct_tool_count",
-        "max_messages_in_session": "message_count",
-        "max_terminal_calls_in_session": "terminal_calls",
-        "max_file_tool_calls_in_session": "file_tool_calls",
-        "max_web_calls_in_session": "web_calls",
-        "max_web_browser_calls_in_session": "web_browser_calls",
-        "max_files_touched_in_session": "files_touched_count",
-    }
-    if metric in metric_to_session_key:
-        key = metric_to_session_key[metric]
-        s = max(sessions, key=lambda x: x.get(key, 0))
-        return {"session_id": s.get("session_id"), "title": s.get("title"), "value": s.get(key, 0)}
-    return None
+    s = max(sessions, key=lambda x: x.get(key, 0))
+    return {"session_id": s.get("session_id"), "title": s.get("title"), "value": s.get(key, 0)}
+
+
+# ---- Snapshot assembly ----
+
+def _snapshot(evaluated: List[Dict[str, Any]], scan: Dict[str, Any], now: int) -> Dict[str, Any]:
+    """Wire payload shared by finished, partial and pending snapshots."""
+    return {
+        "achievements": evaluated,
+        "sessions": scan.get("sessions", []),
+        "aggregate": scan.get("aggregate", {}),
+        "scan_meta": scan.get("scan_meta", {}),
+        "error": scan.get("error"),
+        "unlocked_count": sum(1 for a in evaluated if a["unlocked"]),
+        "discovered_count": sum(1 for a in evaluated if a.get("state") == "discovered"),
+        "secret_count": sum(1 for a in evaluated if a.get("state") == "secret"),
+        "total_count": len(evaluated),
+        "generated_at": now}
 
 
 def _compute_from_scan(scan: Dict[str, Any], *, is_partial: bool = False) -> Dict[str, Any]:
-    """Evaluate every achievement definition against a scan result.
-
-    Used by ``compute_all`` for finished scans AND by the background
-    progress callback for partial, in-flight snapshots. ``is_partial=True``
-    skips persisting ``state.json`` unlocks — we don't want to record an
-    "unlock time" based on half a scan that a later session might shift.
-    """
+    """Evaluate every achievement definition against a scan result. Used by ``compute_all``
+    for finished scans AND by the background progress callback for in-flight snapshots;
+    ``is_partial=True`` skips persisting ``state.json`` unlocks — an "unlock time" from
+    half a scan could be invalidated by a later session."""
     aggregate = scan.get("aggregate", {})
     state = load_state() if not is_partial else {"unlocks": {}}
     unlocks = state.setdefault("unlocks", {})
@@ -840,21 +717,7 @@ def _compute_from_scan(scan: Dict[str, Any], *, is_partial: bool = False) -> Dic
         evaluated.append(display_achievement(item))
     if not is_partial:
         save_state(state)
-    unlocked = [a for a in evaluated if a["unlocked"]]
-    discovered = [a for a in evaluated if a.get("state") == "discovered"]
-    secret = [a for a in evaluated if a.get("state") == "secret"]
-    return {
-        "achievements": evaluated,
-        "sessions": scan.get("sessions", []),
-        "aggregate": aggregate,
-        "scan_meta": scan.get("scan_meta", {}),
-        "error": scan.get("error"),
-        "unlocked_count": len(unlocked),
-        "discovered_count": len(discovered),
-        "secret_count": len(secret),
-        "total_count": len(evaluated),
-        "generated_at": now,
-    }
+    return _snapshot(evaluated, scan, now)
 
 
 def compute_all(progress_callback: Optional[Any] = None, progress_every: int = 250) -> Dict[str, Any]:
@@ -867,175 +730,103 @@ _BACKGROUND_SCAN_LOCK = threading.Lock()
 
 
 def _build_pending_snapshot(now: int) -> Dict[str, Any]:
-    """Placeholder payload used while the first-ever scan is still running.
+    """Structurally-complete placeholder served while the first-ever scan runs, so the UI
+    renders an empty list + spinner without special-casing "no data"."""
+    evaluated = [
+        display_achievement({
+            **d, "unlocked": False, "discovered": False, "state": "secret" if d.get("secret") else "discovered", "progress": 0,
+            "progress_pct": 0, "next_tier": (d.get("tiers") or [{}])[0].get("name"),
+            "next_threshold": (d.get("tiers") or [{}])[0].get("threshold", 1), "tier": None})
+        for d in ACHIEVEMENTS]
+    return _snapshot(evaluated, {"scan_meta": _scan_meta("pending", 0), "error": None}, now)
 
-    Returns a structurally-complete response so the dashboard UI can render
-    an empty achievement list + spinner without special-casing "no data yet".
-    """
-    evaluated = [display_achievement({**d, **{"unlocked": False, "discovered": False, "state": "secret" if d.get("secret") else "discovered", "progress": 0, "progress_pct": 0, "next_tier": (d.get("tiers") or [{}])[0].get("name"), "next_threshold": (d.get("tiers") or [{}])[0].get("threshold", 1), "tier": None}}) for d in ACHIEVEMENTS]
-    return {
-        "achievements": evaluated,
-        "sessions": [],
-        "aggregate": {},
-        "scan_meta": {"mode": "pending", "sessions_total": 0, "sessions_rescanned": 0, "sessions_reused": 0},
-        "error": None,
-        "unlocked_count": 0,
-        "discovered_count": sum(1 for a in evaluated if a.get("state") == "discovered"),
-        "secret_count": sum(1 for a in evaluated if a.get("state") == "secret"),
-        "total_count": len(evaluated),
-        "generated_at": now,
-    }
+
+def _set_cache(snapshot: Dict[str, Any], at: int) -> None:
+    global _SNAPSHOT_CACHE, _SNAPSHOT_CACHE_AT
+    _SNAPSHOT_CACHE = _json_safe(snapshot)
+    _SNAPSHOT_CACHE_AT = at
 
 
 def _run_scan_and_update_cache(publish_partial_snapshots: bool = True) -> None:
-    """Execute a scan + snapshot update. Called synchronously or from a thread.
-
-    When ``publish_partial_snapshots=True`` (the default for background
-    scans), the scanner periodically publishes an in-progress snapshot to
-    ``_SNAPSHOT_CACHE`` so each dashboard refresh during a long cold scan
-    shows more progress — badges unlock incrementally as sessions stream
-    in, instead of staying at zero for minutes and then jumping to the
-    final state. Synchronous /rescan callers pass ``False`` because they
-    block on the full result anyway.
-    """
-    global _SNAPSHOT_CACHE, _SNAPSHOT_CACHE_AT
+    """Execute a scan + snapshot update (synchronously or from a thread). With
+    ``publish_partial_snapshots`` (background scans) the scanner periodically publishes
+    in-progress snapshots to ``_SNAPSHOT_CACHE`` so a long cold scan unlocks badges
+    incrementally; synchronous /rescan callers pass ``False`` since they block on the result."""
     with _SCAN_LOCK:
         started = int(time.time())
-        _SCAN_STATUS["state"] = "running"
-        _SCAN_STATUS["started_at"] = started
-        _SCAN_STATUS["last_error"] = None
+        _SCAN_STATUS.update(state="running", started_at=started, last_error=None)
 
         def _publish_partial(partial_sessions, scanned_so_far, total):
-            global _SNAPSHOT_CACHE, _SNAPSHOT_CACHE_AT
             try:
                 partial_scan = {
                     "sessions": partial_sessions,
                     "aggregate": aggregate_stats(partial_sessions),
-                    "scan_meta": {
-                        "mode": "in_progress",
-                        "sessions_total": scanned_so_far,
-                        "sessions_rescanned": 0,
-                        "sessions_reused": 0,
-                        "sessions_scanned_so_far": scanned_so_far,
-                        "sessions_expected_total": total,
-                    },
+                    "scan_meta": _scan_meta("in_progress", scanned_so_far, scanned_so_far=scanned_so_far, expected_total=total),
                 }
-                partial = _compute_from_scan(partial_scan, is_partial=True)
-                # Keep the cache in the 'stale' TTL regime by NOT bumping
-                # _SNAPSHOT_CACHE_AT to "now". The UI treats partial
-                # results as stale so it keeps polling /scan-status and
-                # sees the final snapshot when the scan finishes. In-flight
-                # partials are visible but are never mistaken for finished.
-                _SNAPSHOT_CACHE = _json_safe(partial)
-                _SNAPSHOT_CACHE_AT = 0
+                # _SNAPSHOT_CACHE_AT stays 0 so partials remain in the 'stale' regime: the UI
+                # keeps polling /scan-status and never mistakes an in-flight result for a finished one.
+                _set_cache(_compute_from_scan(partial_scan, is_partial=True), 0)
             except Exception:
-                # Intermediate publication is best-effort; don't kill the scan.
-                pass
+                pass  # Intermediate publication is best-effort; don't kill the scan.
 
-        callback = _publish_partial if publish_partial_snapshots else None
         try:
-            computed = compute_all(progress_callback=callback)
-            _SNAPSHOT_CACHE = _json_safe(computed)
-            _SNAPSHOT_CACHE_AT = int(_SNAPSHOT_CACHE.get("generated_at") or int(time.time()))
-            save_snapshot(_SNAPSHOT_CACHE)
+            computed = _json_safe(compute_all(progress_callback=_publish_partial if publish_partial_snapshots else None))
+            _set_cache(computed, int(computed.get("generated_at") or int(time.time())))
+            _write_json(SNAPSHOT_FILE, _SNAPSHOT_CACHE)
             _SCAN_STATUS["state"] = "idle"
         except Exception as exc:
-            _SCAN_STATUS["state"] = "failed"
-            _SCAN_STATUS["last_error"] = str(exc)
+            _SCAN_STATUS.update(state="failed", last_error=str(exc))
         finally:
-            _SCAN_STATUS["finished_at"] = int(time.time())
-            _SCAN_STATUS["last_duration_ms"] = int((_SCAN_STATUS["finished_at"] - started) * 1000)
-            _SCAN_STATUS["run_count"] = int(_SCAN_STATUS.get("run_count", 0)) + 1
+            finished = int(time.time())
+            _SCAN_STATUS.update(finished_at=finished, last_duration_ms=int((finished - started) * 1000), run_count=int(_SCAN_STATUS.get("run_count", 0)) + 1)
 
 
 def _start_background_scan() -> None:
-    """Kick off a scan in a daemon thread if one isn't already running.
-
-    Idempotent: concurrent callers see the in-flight thread and return
-    immediately. The thread updates ``_SNAPSHOT_CACHE`` on completion so
-    subsequent ``/achievements`` requests see fresh data. While running,
-    it also publishes partial snapshots every ~250 sessions so the UI
-    reflects incremental progress on long cold scans.
-    """
+    """Kick off a daemon-thread scan unless one is already running (idempotent)."""
     global _BACKGROUND_SCAN_THREAD
     with _BACKGROUND_SCAN_LOCK:
         existing = _BACKGROUND_SCAN_THREAD
         if existing is not None and existing.is_alive():
             return
-        thread = threading.Thread(
-            target=_run_scan_and_update_cache,
-            kwargs={"publish_partial_snapshots": True},
-            name="hermes-achievements-scan",
-            daemon=True,
-        )
+        thread = threading.Thread(target=_run_scan_and_update_cache, kwargs={"publish_partial_snapshots": True}, name="hermes-achievements-scan", daemon=True)
         _BACKGROUND_SCAN_THREAD = thread
         thread.start()
 
 
 def evaluate_all(force: bool = False) -> Dict[str, Any]:
-    """Return the current achievements payload.
-
-    Behavior matrix:
-
-    * Fresh in-memory cache → return it instantly.
-    * Stale on-disk snapshot → load it, kick a background rescan, return
-      the stale data (UI decorates it with ``is_stale=True``).
-    * No snapshot yet (first-ever run) → kick a background scan, return
-      an empty-but-valid "pending" payload so the UI can render a spinner
-      without blocking.
-    * ``force=True`` (manual /rescan) → run synchronously, block the
-      caller, replace the cache.
-
-    Warm scans stay cheap (the checkpoint cache reuses per-session stats).
-    Cold scans on 8000+ session databases take minutes; the background
-    thread prevents that from ever blocking the dashboard request path.
-    """
+    """Return the current achievements payload: a fresh in-memory cache is returned as is;
+    a stale on-disk snapshot is served while a background rescan runs (UI decorates it with
+    ``is_stale=True``); with no snapshot yet an empty-but-valid "pending" payload is served
+    while the first scan runs; ``force=True`` (manual /rescan) scans synchronously. Cold
+    scans on 8000+ session databases take minutes, hence the background thread."""
     global _SNAPSHOT_CACHE, _SNAPSHOT_CACHE_AT
     now = int(time.time())
-
     if not force and _cache_is_fresh(now):
         return _SNAPSHOT_CACHE or {}
-
-    # Lazy-load persisted snapshot from disk so fresh process starts
-    # don't have to wait for a scan to serve cached data.
+    # Lazy-load the persisted snapshot so fresh process starts serve cached data.
     if _SNAPSHOT_CACHE is None:
-        persisted = load_snapshot()
+        persisted = _read_json(SNAPSHOT_FILE)
         if isinstance(persisted, dict):
-            generated_at = int(persisted.get("generated_at") or 0)
             _SNAPSHOT_CACHE = persisted
-            _SNAPSHOT_CACHE_AT = generated_at or now
-
+            _SNAPSHOT_CACHE_AT = int(persisted.get("generated_at") or 0) or now
     if force:
-        # Manual /rescan — block the caller, synchronous scan path.
-        # No partial publishing: the caller is waiting for the final result.
+        # No partial publishing: the caller is blocking on the final result.
         _run_scan_and_update_cache(publish_partial_snapshots=False)
-        if _SNAPSHOT_CACHE is not None:
-            return _SNAPSHOT_CACHE
-        # Scan failed with no prior cache — surface empty payload.
-        return _build_pending_snapshot(now)
+    elif not _cache_is_fresh(now):
+        # Serve what we have (stale is fine) and refresh in the background; on a first-ever
+        # run the UI polls /scan-status and re-fetches when the scan completes.
+        _start_background_scan()
+    return _SNAPSHOT_CACHE if _SNAPSHOT_CACHE is not None else _build_pending_snapshot(now)
 
-    # Non-force path: serve whatever we have and refresh in background.
-    if _SNAPSHOT_CACHE is not None:
-        if not _cache_is_fresh(now):
-            _start_background_scan()
-        return _SNAPSHOT_CACHE
 
-    # First-ever run on this machine — no snapshot yet. Kick off a scan
-    # and return a pending placeholder. The UI polls /scan-status and
-    # re-fetches /achievements when the scan completes.
-    _start_background_scan()
-    return _build_pending_snapshot(now)
-
+# ---- Routes ----
 
 @router.get("/achievements")
 async def achievements():
     data = evaluate_all()
     payload = {k: data[k] for k in ["achievements", "unlocked_count", "discovered_count", "secret_count", "total_count", "error", "generated_at"] if k in data}
     payload["is_stale"] = _is_snapshot_stale(data)
-    payload["scan_meta"] = {
-        **(data.get("scan_meta") or {}),
-        "status": _scan_status_payload(),
-    }
+    payload["scan_meta"] = {**(data.get("scan_meta") or {}), "status": _scan_status_payload()}
     return payload
 
 
@@ -1057,12 +848,8 @@ async def session_badges(session_id: str):
     if not session:
         return {"session_id": session_id, "badges": []}
     aggregate = aggregate_stats([session])
-    badges = []
-    for definition in ACHIEVEMENTS:
-        result = evaluate_definition(definition, aggregate)
-        if result["unlocked"]:
-            badges.append(display_achievement({**definition, **result}))
-    return {"session_id": session_id, "badges": badges}
+    results = [(d, evaluate_definition(d, aggregate)) for d in ACHIEVEMENTS]
+    return {"session_id": session_id, "badges": [display_achievement({**d, **r}) for d, r in results if r["unlocked"]]}
 
 
 @router.post("/rescan")
@@ -1076,17 +863,10 @@ async def reset_state():
     save_state({"unlocks": {}})
     _SNAPSHOT_CACHE = None
     _SNAPSHOT_CACHE_AT = 0
-    _SCAN_STATUS["state"] = "idle"
-    _SCAN_STATUS["started_at"] = None
-    _SCAN_STATUS["finished_at"] = None
-    _SCAN_STATUS["last_error"] = None
-    _SCAN_STATUS["last_duration_ms"] = None
-    try:
-        snapshot_path().unlink(missing_ok=True)
-    except Exception:
-        pass
-    try:
-        checkpoint_path().unlink(missing_ok=True)
-    except Exception:
-        pass
+    _SCAN_STATUS.update(state="idle", started_at=None, finished_at=None, last_error=None, last_duration_ms=None)
+    for name in (SNAPSHOT_FILE, CHECKPOINT_FILE):
+        try:
+            _data_file(name).unlink(missing_ok=True)
+        except Exception:
+            pass
     return {"ok": True}

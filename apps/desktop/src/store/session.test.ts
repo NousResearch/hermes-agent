@@ -45,10 +45,12 @@ import {
   keepFailedProfileMeta,
   knownSessionOwner,
   knownSessionProfile,
+  lineageAliases,
   mergeSessionPage,
   rememberedSessionProfile,
   resolveComposerSessionKey,
   sessionBelongsToProfile,
+  sessionMatchesStoredId,
   sessionOwnerRouteFromRow,
   sessionPinId,
   setComposerSelectionOwner,
@@ -363,6 +365,18 @@ describe('sessionPinId', () => {
     // After auto-compression the entry surfaces under a fresh tip id but keeps
     // the original root — pinning on the root keeps the pin stable.
     expect(sessionPinId(session({ id: 'tip', _lineage_root_id: 'root' }))).toBe('root')
+  })
+})
+
+describe('lineageAliases across a deep compression chain', () => {
+  it('aliases every segment, intermediates included', () => {
+    // The projected row carries the full chain: a tile or route can hold a
+    // MIDDLE segment's id from when IT was the tip.
+    const rows = [session({ _lineage_ids: ['root', 'mid', 'tip'], _lineage_root_id: 'root', id: 'tip' })]
+
+    expect(lineageAliases('mid', rows).sort()).toEqual(['mid', 'root', 'tip'])
+    expect(lineageAliases('tip', rows).sort()).toEqual(['mid', 'root', 'tip'])
+    expect(sessionMatchesStoredId(rows[0], 'mid')).toBe(true)
   })
 })
 
@@ -694,9 +708,7 @@ describe('carryForwardFailedProfileSessions', () => {
       session({ id: 'week', last_active: 100, profile: 'default', title: 'This week' })
     ]
 
-    const carried = carryForwardFailedProfileSessions(previous, [], [
-      { profile: 'default', error: 'disk I/O error' }
-    ])
+    const carried = carryForwardFailedProfileSessions(previous, [], [{ profile: 'default', error: 'disk I/O error' }])
 
     expect(carried.map(s => s.id)).toEqual(['running', 'yesterday', 'week'])
     expect(carried[1]).toBe(previous[1])
@@ -724,9 +736,11 @@ describe('carryForwardFailedProfileSessions', () => {
 
     const incoming = [session({ id: 'home', last_active: 100, profile: 'default' })]
 
-    expect(
-      carryForwardFailedProfileSessions(previous, incoming, [{ profile: 'work' }]).map(s => s.id)
-    ).toEqual(['idle-newer', 'home', 'idle-older'])
+    expect(carryForwardFailedProfileSessions(previous, incoming, [{ profile: 'work' }]).map(s => s.id)).toEqual([
+      'idle-newer',
+      'home',
+      'idle-older'
+    ])
   })
 
   it('treats a missing profile tag on the error as default', () => {

@@ -60,7 +60,10 @@ def test_gateway_tips_only_reference_gateway_commands() -> None:
         for command in _tip_command_refs(tip):
             if command == "command":
                 continue
-            assert command in GATEWAY_KNOWN_COMMANDS, tip
+            command_def = resolve_command(command)
+            assert command_def is not None, tip
+            assert not command_def.cli_only, tip
+            assert not command_def.gateway_config_gate, tip
 
 
 def test_cli_tips_do_not_reference_gateway_only_commands() -> None:
@@ -73,3 +76,18 @@ def test_cli_tips_do_not_reference_gateway_only_commands() -> None:
         for command in _tip_command_refs(tip):
             command_def = resolve_command(command)
             assert command_def is None or not command_def.gateway_only, tip
+
+
+def test_surface_selection_never_falls_back_to_unavailable_commands(monkeypatch):
+    monkeypatch.setattr("hermes_cli.tips.TIPS", ["Try /skin", "Try /verbose"])
+    assert not _tip_command_refs(get_random_tip(surface="gateway"))
+
+
+def test_command_references_preserve_identifiers_and_filter_adjacent_commands():
+    from hermes_cli.tips import _tip_available_on_surface
+
+    assert _tip_command_refs("Use /queue/steer or /some_command") == {
+        "queue", "steer", "some_command"
+    }
+    assert not _tip_available_on_surface("Try /queue/skin", "gateway")
+    assert _tip_available_on_surface("Try /HELP", "gateway")

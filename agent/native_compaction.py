@@ -190,8 +190,23 @@ def manual_native_responses_compaction(agent: Any, messages: List[Dict[str, Any]
     prefix = messages[:carrier_index]
 
     api_kwargs = agent._build_api_kwargs(prefix)
+    # Match the ordinary Codex request chokepoint: compact requests serialize the same
+    # user/tool history and must not bypass its unicode or Harmony-token hardening.
+    from agent.message_sanitization import (
+        _sanitize_structure_non_ascii,
+        _sanitize_structure_surrogates,
+    )
+
+    _sanitize_structure_surrogates(api_kwargs)
+    if getattr(agent, "_force_ascii_payload", False):
+        _sanitize_structure_non_ascii(api_kwargs)
     transport = agent._get_transport()
-    api_kwargs = transport.preflight_kwargs(api_kwargs, allow_stream=False)
+    api_kwargs = transport.preflight_kwargs(
+        api_kwargs,
+        allow_stream=False,
+        is_github_responses=route.is_github_responses,
+        sanitize_harmony_tokens=route.is_codex_backend,
+    )
     compact_kwargs = {
         key: api_kwargs[key]
         for key in (
@@ -234,9 +249,12 @@ def manual_native_responses_compaction(agent: Any, messages: List[Dict[str, Any]
     carrier = projected[carrier_index]
     existing = [
         dict(item) for item in carrier.get("codex_reasoning_items", [])
-        if isinstance(item, dict)
+        if isinstance(item, dict) and item.get("type") != "compaction"
     ]
-    carrier["codex_reasoning_items"] = existing + checkpoints
+    # The checkpoint describes the prefix before this assistant turn, so it must precede
+    # this turn's encrypted reasoning. Replacing a prior checkpoint keeps repeated manual
+    # compactions from replaying overlapping opaque context windows.
+    carrier["codex_reasoning_items"] = checkpoints + existing
     logger.info(
         "Manual native Responses compaction checkpoint stored: session=%s carrier=%d checkpoints=%d",
         getattr(agent, "session_id", None) or "none", carrier_index, len(checkpoints),

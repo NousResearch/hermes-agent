@@ -46,10 +46,10 @@ def test_registry_names_resolve_into_the_table():
     for name in HermesCLI._SLASH_DISPATCH:
         cmd = resolve_command(name)
         assert cmd is not None and HermesCLI._slash_handler(cmd.name) is not None, name
-    # Every command from the retired chain must keep resolving; commands added after
-    # the dispatch-table migration may use the naming-convention fallback.
+    # The retired chain keeps resolving and explicit post-migration commands must
+    # remain wired through the naming-convention fallback.
     dispatched = {c.name for c in COMMAND_REGISTRY if HermesCLI._slash_handler(c.name)}
-    assert set(OLD_CHAIN_COMMANDS) - {"exit"} | {"quit"} <= dispatched
+    assert dispatched == (set(OLD_CHAIN_COMMANDS) - {"exit"} | {"quit", "native-compact"})
 
 
 def _cli():

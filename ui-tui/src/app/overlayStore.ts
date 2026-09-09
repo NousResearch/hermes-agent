@@ -34,6 +34,7 @@ export const $isBlocked = computed(
   ({
     agents,
     approval,
+    askUserQuestions, // KENSEI CUSTOM: multi-question batched prompt (agent-modes)
     billing,
     clarify,
     confirm,
@@ -54,6 +55,7 @@ export const $isBlocked = computed(
     Boolean(
       agents ||
       approval ||
+      askUserQuestions || // KENSEI CUSTOM: multi-question batched prompt (agent-modes)
       billing ||
       clarify ||
       confirm ||

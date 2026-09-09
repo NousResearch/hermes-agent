@@ -230,6 +230,14 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
       return actions.answerClarify('')
     }
 
+    // KENSEI CUSTOM: multi-question batched prompt (agent-modes) — Ctrl+C/Esc
+    // cancels with an empty answer, matching the clarify cancel path.
+    if (overlay.askUserQuestions) {
+      const req = overlay.askUserQuestions
+      patchOverlayState({ askUserQuestions: null })
+      return actions.answerAskUserQuestions({}, req.requestId)
+    }
+
     if (overlay.approval) {
       return gateway
         .rpc<ApprovalRespondResponse>('approval.respond', { choice: 'deny', session_id: getUiState().sid })
@@ -413,7 +421,7 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
       // skip the prompt-overlay early-return for scroll keys so they fall
       // through to the wheel / PageUp / Shift+arrow handlers below.
       const promptOverlay =
-        overlay.approval || overlay.billing || overlay.clarify || overlay.confirm || overlay.subscription
+        overlay.approval || overlay.askUserQuestions || overlay.billing || overlay.clarify || overlay.confirm || overlay.subscription
 
       const fallThroughForScroll = promptOverlay && shouldFallThroughForScroll(key)
 

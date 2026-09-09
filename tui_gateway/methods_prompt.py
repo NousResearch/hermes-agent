@@ -1082,6 +1082,7 @@ def _(rid, params: dict) -> dict:
 
 
 _LATE_RESPOND_KEYS = {
+    "ask_user_questions.respond": "answers",  # KENSEI CUSTOM: multi-question batched prompt (agent-modes)
     "terminal.read.respond": "text", "preview.read.respond": "text", "preview.act.respond": "text",
     "window.read.respond": "text", "tour.respond": "text", "mcp.setup.respond": "result",
     "sudo.respond": "password", "secret.respond": "value"}

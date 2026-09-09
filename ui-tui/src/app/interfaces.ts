@@ -455,6 +455,7 @@ export interface UseComposerStateResult {
 }
 
 export interface InputHandlerActions {
+  answerAskUserQuestions: (answers: Record<number, string>, requestId: string) => void
   answerClarify: (answer: string) => void
   appendMessage: (msg: Msg) => void
   die: () => void

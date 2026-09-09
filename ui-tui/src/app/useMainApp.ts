@@ -986,6 +986,7 @@ export function useMainApp(gw: GatewayClient) {
 
   const { pagerPageSize } = useInputHandlers({
     actions: {
+      answerAskUserQuestions,
       answerClarify,
       appendMessage,
       die,

@@ -20,7 +20,7 @@ from tools.skills_guard import (
 
 PLUGIN_SCANNER_VERSION = "plugin-guard-v1"
 
-# Never scanned: VCS internals, caches, vendored envs.
+# Excluded from content and size/binary checks, never from link containment.
 EXCLUDED_DIRS = {
     ".git", "__pycache__", "node_modules", ".venv", "venv",
     ".mypy_cache", ".pytest_cache", ".ruff_cache", ".tox"}
@@ -51,14 +51,14 @@ MAX_PLUGIN_TOTAL_SIZE_KB = 10 * 1024   # 10MB of scannable tree
 MAX_PLUGIN_SINGLE_FILE_KB = 1024       # 1MB single file
 
 
-def _walk(plugin_dir: Path) -> Iterator[Tuple[Path, str]]:
-    """Yield (path, "a/b/c" relative path) for every non-excluded entry under plugin_dir."""
+def _walk(plugin_dir: Path, *, include_excluded: bool = False) -> Iterator[Tuple[Path, str]]:
+    """Yield entries without following directory symlinks (Path.rglob's default)."""
     for f in plugin_dir.rglob("*"):
         try:
             rel_parts = f.relative_to(plugin_dir).parts
         except ValueError:
             continue
-        if not any(part in EXCLUDED_DIRS for part in rel_parts):
+        if include_excluded or not any(part in EXCLUDED_DIRS for part in rel_parts):
             yield f, "/".join(rel_parts)
 
 
@@ -84,9 +84,10 @@ def _check_plugin_structure(plugin_dir: Path) -> List[Finding]:
     file_count = 0
     total_size = 0
     resolved_root = plugin_dir.resolve()
-    for f, rel in _walk(plugin_dir):
+    for f, rel in _walk(plugin_dir, include_excluded=True):
+        excluded = any(part in EXCLUDED_DIRS for part in Path(rel).parts)
         if f.is_symlink():
-            file_count += 1
+            file_count += not excluded
             try:
                 resolved = f.resolve()
             except OSError:
@@ -97,7 +98,7 @@ def _check_plugin_structure(plugin_dir: Path) -> List[Finding]:
                 findings.append(_finding("symlink_escape", "critical", "traversal", rel,
                                          f"symlink -> {resolved}", "symlink points outside the plugin directory"))
             continue
-        if not f.is_file():
+        if excluded or not f.is_file():
             continue
         file_count += 1
         try:
@@ -121,6 +122,35 @@ def _check_plugin_structure(plugin_dir: Path) -> List[Finding]:
     return findings
 
 
+def _scan_result(plugin_dir: Path, source: str, findings: List[Finding], mode: str) -> ScanResult:
+    verdict = _determine_verdict(findings)
+    from datetime import datetime, timezone
+
+    result = ScanResult(
+        skill_name=plugin_dir.name,
+        source=source or plugin_dir.name,
+        trust_level="community",
+        verdict=verdict,
+        findings=findings,
+        scanned_at=datetime.now(timezone.utc).isoformat(),
+    )
+    if findings:
+        categories = {f.category for f in findings}
+        result.summary = (
+            f"{plugin_dir.name}: {verdict} — {len(findings)} finding(s) "
+            f"in {', '.join(sorted(categories))}"
+        )
+    else:
+        result.summary = f"{plugin_dir.name}: clean scan, no threats detected"
+    result.scan_provenance = {
+        "scanner_version": PLUGIN_SCANNER_VERSION,
+        "verdict": verdict,
+        "source": result.source,
+        "mode": mode,
+    }
+    return result
+
+
 def scan_plugin(plugin_dir: Path, source: str = "") -> ScanResult:
     """Scan a plugin directory (typically the temp clone); every external plugin is ``community`` trust."""
     all_findings: List[Finding] = []
@@ -129,19 +159,17 @@ def scan_plugin(plugin_dir: Path, source: str = "") -> ScanResult:
         for f, rel in sorted(_walk(plugin_dir)):
             if f.is_file() and not f.is_symlink():
                 all_findings.extend(_filter_findings(scan_file(f, rel_path=rel), rel))
-    verdict = _determine_verdict(all_findings)
-    if all_findings:
-        categories = sorted({f.category for f in all_findings})
-        summary = f"{plugin_dir.name}: {verdict} — {len(all_findings)} finding(s) in {', '.join(categories)}"
-    else:
-        summary = f"{plugin_dir.name}: clean scan, no threats detected"
-    result = ScanResult(
-        skill_name=plugin_dir.name, source=source or plugin_dir.name, trust_level="community",
-        verdict=verdict, findings=all_findings, scanned_at=datetime.now(timezone.utc).isoformat(),
-        summary=summary)
-    result.scan_provenance = {
-        "scanner_version": PLUGIN_SCANNER_VERSION, "verdict": verdict, "source": result.source}
-    return result
+    return _scan_result(plugin_dir, source, all_findings, "full")
+
+
+def scan_plugin_structure(plugin_dir: Path, source: str = "") -> ScanResult:
+    """Structural-only scan: path/symlink traversal and bundle invariants.
+
+    Content heuristics are skipped; this is the layer a verified-artifact
+    channel (``--no-scan`` with an immutable ``--ref``) still enforces.
+    """
+    findings = _check_plugin_structure(plugin_dir) if plugin_dir.is_dir() else []
+    return _scan_result(plugin_dir, source, findings, "structural")
 
 
 def should_allow_plugin_install(
@@ -160,4 +188,9 @@ def should_allow_plugin_install(
 
 
 __all__ = [
-    "scan_plugin", "should_allow_plugin_install", "format_scan_report", "PLUGIN_SCANNER_VERSION"]
+    "scan_plugin",
+    "scan_plugin_structure",
+    "should_allow_plugin_install",
+    "format_scan_report",
+    "PLUGIN_SCANNER_VERSION",
+]

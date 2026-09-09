@@ -10,7 +10,9 @@ Covers:
 """
 
 import json
+import logging
 import threading
+import time
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -380,11 +382,51 @@ class TestStopAsyncWriterDrain:
     def test_shutdown_gives_the_writer_join_what_the_flush_left_of_the_timeout(self, make_manager, monkeypatch):
         mgr = make_manager("async")
         seen = {}
-        monkeypatch.setattr(mgr, "stop_async_writer", lambda timeout=10.0: seen.setdefault("timeout", timeout))
+        monkeypatch.setattr(mgr, "_stop_async_writer_before",
+                            lambda deadline: seen.setdefault("remaining", deadline - time.monotonic()) and [])
 
         mgr.shutdown(timeout=2.5)
 
-        assert 2.0 < seen["timeout"] <= 2.5
+        assert 2.0 < seen["remaining"] <= 2.5
+
+    def _pending_session(self, mgr, uploads):
+        session = _make_session(key="pending")
+        session.add_message("user", "pending")
+        mgr._cache["pending"] = session
+        mgr._async_queue.put(session)
+        mgr._flush_session = lambda s: uploads.append(s.key) or True
+        mgr._flush_session_locked = lambda s: uploads.append(s.key) or True
+        return session
+
+    def test_shutdown_with_the_budget_spent_starts_no_upload_and_warns_once(self, make_manager, caplog):
+        """The SDK has no per-call timeout, so the budget can only stop uploads from starting. With no time left,
+        shutdown must not open one and must say what stayed behind."""
+        mgr = make_manager("async")
+        uploads = []
+        session = self._pending_session(mgr, uploads)
+
+        started = time.monotonic()
+        with caplog.at_level(logging.WARNING, logger="plugins.memory.honcho"):
+            mgr.shutdown(timeout=0)
+
+        assert uploads == []
+        assert time.monotonic() - started < 1.0
+        assert mgr._async_queue.empty()
+        assert session.messages[0].get("_synced") is None
+        assert caplog.text.count("still unsynced") == 1
+        assert "1 message(s) in 1 session(s) still unsynced" in caplog.text
+
+    def test_stop_async_writer_drains_only_within_its_timeout(self, make_manager, caplog):
+        mgr = make_manager("async")
+        uploads = []
+        self._pending_session(mgr, uploads)
+
+        with caplog.at_level(logging.WARNING, logger="plugins.memory.honcho"):
+            mgr.stop_async_writer(timeout=0)
+
+        assert uploads == []
+        assert mgr._async_queue.empty()
+        assert "1 message(s) in 1 session(s) still unsynced" in caplog.text
 
 
 class TestAsyncWriterRetry:
@@ -412,6 +454,32 @@ class TestAsyncWriterRetry:
 
         mgr.shutdown()
         assert call_count[0] == 2
+
+    def test_does_not_retry_once_shutdown_began(self, make_manager):
+        """The shutdown flush already attempts the session within its budget; a 2s sleep and a second upload from
+        the writer would run past it."""
+        mgr = make_manager(write_frequency="async")
+        mgr._ensure_async_writer()
+        sess = _make_session()
+        sess.add_message("user", "msg")
+        calls = []
+        failed = threading.Event()
+
+        def failing_flush(session):
+            calls.append(session)
+            failed.set()
+            return False
+
+        mgr._flush_session = failing_flush
+        mgr._shutting_down = True
+        mgr._async_queue.put(sess)
+        assert failed.wait(timeout=5), "async writer never picked up the batch"
+
+        started = time.monotonic()
+        mgr.stop_async_writer(timeout=5)
+
+        assert time.monotonic() - started < 1.5
+        assert len(calls) == 1
 
     def test_drops_after_two_failures(self, make_manager):
         mgr = make_manager(write_frequency="async")

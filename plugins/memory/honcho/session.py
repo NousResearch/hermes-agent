@@ -371,8 +371,9 @@ class HonchoSessionManager(SessionAuthMixin, SessionPeersMixin, SessionContextMi
             return self._flush_session_locked(session)
 
     def _flush_session_before(self, session: HonchoSession, deadline: float | None) -> bool:
-        """_flush_session bounded by ``deadline``. False, with nothing sent, when the budget is spent or another
-        flush of this session holds the lock past it."""
+        """_flush_session that starts only while ``deadline`` has time left and waits for the session's lock no
+        longer than that; False, with nothing sent, otherwise. An upload that has started is not interrupted: the
+        SDK has no per-call timeout, so it runs to the client's HTTP timeout."""
         if deadline is None:
             self._flush_session(session)
             return True
@@ -380,7 +381,7 @@ class HonchoSessionManager(SessionAuthMixin, SessionPeersMixin, SessionContextMi
         if remaining <= 0 or not session._flush_lock.acquire(timeout=remaining):
             return False
         try:
-            self._flush_session_locked(session)
+            self._flush_session(session)  # re-enters the RLock already held above
         finally:
             session._flush_lock.release()
         return True
@@ -437,6 +438,10 @@ class HonchoSessionManager(SessionAuthMixin, SessionPeersMixin, SessionContextMi
                 if item is _ASYNC_SHUTDOWN:
                     break
                 if not self._try_flush(item, logging.WARNING, "Honcho async write failed, retrying once"):
+                    if self._shutting_down:
+                        # The shutdown flush is already attempting this session within its own budget.
+                        logger.error("Honcho async write failed while shutting down, so the batch stays unsynced")
+                        continue
                     time.sleep(2)
                     self._try_flush(item, logging.ERROR, "Honcho async write retry failed, dropping batch")
             except queue.Empty:
@@ -495,8 +500,15 @@ class HonchoSessionManager(SessionAuthMixin, SessionPeersMixin, SessionContextMi
 
     def flush_all(self, timeout: float | None = None) -> None:
         """Flush unsynced messages for all cached sessions, then drain the async queue inline. ``timeout`` bounds
-        the whole pass: a session it cannot reach in time keeps its messages and is counted in one warning."""
+        when a flush may start and how long it waits for a session's lock, not an upload already in flight, which
+        runs to the client's HTTP timeout. A session skipped keeps its messages and is counted in one warning."""
         deadline = None if timeout is None else time.monotonic() + timeout
+        skipped = self._flush_cached_before(deadline)
+        skipped.extend(self._drain_async_queue(deadline))
+        self._warn_unsynced(skipped, timeout)
+
+    def _flush_cached_before(self, deadline: float | None) -> list[HonchoSession]:
+        """Flush every cached and retry-listed session that ``deadline`` allows; returns the ones it did not."""
         with self._cache_lock:
             sessions = list(self._cache.values())
             sessions += [s for s in self._retry_sessions if not any(s is c for c in sessions)]
@@ -509,12 +521,14 @@ class HonchoSessionManager(SessionAuthMixin, SessionPeersMixin, SessionContextMi
                 logger.error("Honcho flush_all error for %s: %s", session.key, e)
         with self._cache_lock:
             self._retry_sessions = [s for s in self._retry_sessions if self._has_unsynced(s)]
-        skipped.extend(self._drain_async_queue(deadline))
+        return skipped
+
+    def _warn_unsynced(self, skipped: list[HonchoSession], timeout: float | None) -> None:
         left = [s for s in {id(s): s for s in skipped}.values() if self._has_unsynced(s)]
         if left:
             unsynced = sum(1 for s in left for m in list(s.messages) if not m.get("_synced"))
             logger.warning("Honcho flush ran out of time after %.1fs with %d message(s) in %d session(s) still unsynced",
-                           timeout, unsynced, len(left))
+                           timeout or 0.0, unsynced, len(left))
 
     def _drain_async_queue(self, deadline: float | None = None) -> list[HonchoSession]:
         """Flush every queued session inline. Returns the sessions ``deadline`` left unflushed."""
@@ -543,22 +557,32 @@ class HonchoSessionManager(SessionAuthMixin, SessionPeersMixin, SessionContextMi
             self._async_thread.start()
 
     def stop_async_writer(self, timeout: float = 10.0) -> None:
-        """Join the async writer, then drain whatever was queued before the join. saveMessages: false never
-        enqueues, so the drain is a no-op there and the exit stays clean."""
+        """Join the async writer, then drain whatever was queued before the join, both within ``timeout``.
+        saveMessages: false never enqueues, so the drain is a no-op there and the exit stays clean."""
+        self._warn_unsynced(self._stop_async_writer_before(time.monotonic() + timeout), timeout)
+
+    def _stop_async_writer_before(self, deadline: float) -> list[HonchoSession]:
+        """Join the writer for what is left of ``deadline``, then drain the queue under the same deadline. A writer
+        still inside an upload keeps running to the client's HTTP timeout; it holds the shared client, so it is
+        joined, never abandoned."""
         with self._async_thread_lock:
             self._shutting_down = True
         if self._async_queue is not None and self._async_thread is not None and self._async_thread.is_alive():
             self._async_queue.put(_ASYNC_SHUTDOWN)
-            self._async_thread.join(timeout=timeout)
-        self._drain_async_queue()
+            self._async_thread.join(timeout=max(0.0, deadline - time.monotonic()))
+        return self._drain_async_queue(deadline)
 
     def shutdown(self, timeout: float = 10.0) -> None:
-        """Flush everything, then stop the async writer thread, both within ``timeout``."""
+        """Flush everything, then stop the async writer thread, within ``timeout``. The budget stops new uploads
+        from starting and bounds the lock waits and the join; an upload already in flight runs to the client's
+        HTTP timeout. Whatever stayed unsynced is counted in one warning."""
         self._shutting_down = True
         if self._async_queue is not None:
             deadline = time.monotonic() + timeout
-            self.flush_all(timeout=timeout)
-            self.stop_async_writer(timeout=max(0.0, deadline - time.monotonic()))
+            skipped = self._flush_cached_before(deadline)
+            skipped.extend(self._drain_async_queue(deadline))
+            skipped.extend(self._stop_async_writer_before(deadline))
+            self._warn_unsynced(skipped, timeout)
 
     # ----- Prefetch cache -----
 

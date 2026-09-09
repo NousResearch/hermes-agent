@@ -139,10 +139,10 @@ class TestRedirectSiblingSurfaces:
         assert "Set display.platforms.telegram.streaming = False" in out
 
     def test_redirect_helper_only_touches_known_display_keys(self):
-        from gateway.display_config import OVERRIDEABLE_KEYS
+        from gateway.display_config import OVERRIDABLE_KEYS
         from hermes_cli.config import _redirect_platform_display_key
 
-        for setting in OVERRIDEABLE_KEYS:
+        for setting in OVERRIDABLE_KEYS:
             canonical, note = _redirect_platform_display_key(f"platforms.discord.{setting}")
             assert canonical == f"display.platforms.discord.{setting}"
             assert note

@@ -75,7 +75,7 @@ _PLATFORM_DEFAULTS: dict[str, dict[str, Any]] = {
 }
 
 # Canonical set of per-platform overrideable keys (for validation).
-OVERRIDEABLE_KEYS = frozenset(_GLOBAL_DEFAULTS.keys())
+OVERRIDABLE_KEYS = frozenset(_GLOBAL_DEFAULTS.keys())
 
 
 def resolve_display_setting(user_config: dict, platform_key: str, setting: str, fallback: Any = None) -> Any:

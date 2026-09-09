@@ -244,6 +244,18 @@ class CLIAgentSetupMixin:
         self.provider, self.api_mode, self.acp_command, self.acp_args = resolved_routing
         self._credential_pool = runtime.get("credential_pool")
         self._provider_source = runtime.get("source")
+        # ── KENSEI CUSTOM: durable provider display for status bar ──
+        # A pool-resolved custom runtime reports routing provider "custom"; keep the durable
+        # custom:<name> identity (or entry name) for display so the status bar shows the real
+        # provider instead of the generic transport label after a call.
+        provider_display = runtime.get("provider_name") or resolved_provider
+        if isinstance(provider_display, str) and provider_display.strip():
+            self.provider_display = provider_display.strip()
+            if self.agent is not None and getattr(self.agent, "provider_display", None) != provider_display:
+                setattr(self.agent, "provider_display", provider_display)
+        else:
+            self.provider_display = resolved_provider
+        # ── END KENSEI CUSTOM ──
         self.api_key = api_key
         self.base_url = base_url
 

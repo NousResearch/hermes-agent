@@ -133,6 +133,26 @@ def route_fields(row, model):
     return label, backing, state
 
 
+def _friendly_backing(model):
+    """Configured friendly name for a stable route when no live metadata exists."""
+    try:
+        from cli import _reverse_alias_for_display
+        friendly = _reverse_alias_for_display(model)
+        return friendly if friendly and friendly != model else None
+    except Exception:
+        return None
+
+
 def model_label(row, model):
     fields = route_fields(row, model)
-    return ' · '.join(fields) if fields else model
+    if not fields:
+        return model
+    label, backing, state = fields
+    if backing == 'Unknown model':
+        friendly = _friendly_backing(model)
+        if friendly:
+            return f"{label} · {friendly}" + (f" · {state}" if state != '? Unknown' else '')
+        # Without live metadata the backing identity is unknowable; rendering the raw ID
+        # adds nothing (the role label IS the route), so show label + state only.
+        return f"{label} · {state}" if state != '? Unknown' else label
+    return ' · '.join(fields)

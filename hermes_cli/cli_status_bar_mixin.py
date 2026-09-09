@@ -187,7 +187,18 @@ class CLIStatusBarMixin:
             model_short = f"{model_short[:23]}..."
 
         # ── KENSEI CUSTOM (restored): provider + reasoning effort for status bar ──
-        provider_name = (getattr(agent, "provider", None) or getattr(self, "provider", None) or "")
+        # Prefer the durable display identity: after a call, agent.provider degrades to the
+        # generic transport label "custom"; provider_display keeps the custom:<name> slug.
+        _agent_provider = getattr(agent, "provider", None)
+        _agent_display = getattr(agent, "provider_display", None) or getattr(self, "provider_display", None)
+        if _agent_provider and _agent_provider != "custom":
+            provider_name = str(_agent_display or _agent_provider)
+        elif _agent_provider == "custom":
+            # Transport label degraded mid-call: show the durable custom:<name> slug.
+            provider_name = str(_agent_display or _agent_provider)
+        else:
+            provider_name = (_agent_provider or getattr(self, "provider_display", None)
+                             or getattr(self, "provider", None) or "")
         reasoning_cfg = getattr(self, "reasoning_config", None)
         reasoning_effort = ""
         if isinstance(reasoning_cfg, dict) and reasoning_cfg.get("enabled") is not False:

@@ -655,7 +655,13 @@ class PluginContext:
     ) -> Optional[PluginRegistration]:
         """Register an in-session slash command (``/name``); handler ``fn(raw_args: str) -> str | None``
         (sync or async). ``args_hint`` (e.g. ``"<file>"``) lets adapters like Discord surface an argument
-        field; without it the command registers parameterless there but still accepts trailing text."""
+        field; without it the command registers parameterless there but still accepts trailing text.
+
+        Handlers may opt in to the per-dispatch invocation context by declaring a keyword-only
+        ``invocation`` parameter (or ``**kwargs``): the surface then passes an immutable
+        ``hermes_cli.plugin_invocation.PluginInvocation`` (session provenance + ``dispatch_tool``).
+        Legacy one-argument handlers keep their exact call contract — signature inspection decides,
+        so existing plugins are never called with unexpected arguments."""
         clean = name.lower().strip().lstrip("/").replace(" ", "-")
         if not clean:
             logger.warning("Plugin '%s' tried to register a command with an empty name.", self.manifest.name)
@@ -1975,6 +1981,24 @@ def get_plugin_command_handler(name: str) -> Optional[Callable]:
     """Return the handler for a plugin-registered slash command, or ``None``."""
     entry = _ensure_plugins_discovered()._plugin_commands.get(name)
     return entry["handler"] if entry else None
+
+
+def call_plugin_command_handler(handler: Callable, raw_args: str, *, invocation=None) -> Any:
+    """Call a plugin command without breaking legacy ``handler(raw_args)`` plugins.
+
+    A handler explicitly accepting an ``invocation`` keyword (or ``**kwargs``)
+    receives the immutable, surface-bound context.  Signature inspection keeps
+    older plugins on their exact one-argument call contract.
+    """
+    try:
+        parameters = inspect.signature(handler).parameters.values()
+        accepts_invocation = any(
+            parameter.name == "invocation" or parameter.kind is inspect.Parameter.VAR_KEYWORD
+            for parameter in parameters
+        )
+    except (TypeError, ValueError):
+        accepts_invocation = False
+    return handler(raw_args, invocation=invocation) if accepts_invocation else handler(raw_args)
 
 
 _PLUGIN_COMMAND_AWAIT_TIMEOUT_SECS = 30.0

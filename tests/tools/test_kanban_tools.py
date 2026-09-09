@@ -1161,3 +1161,47 @@ def test_attach_url_happy_path_public_host(worker_env, default_url_guard, monkey
         assert Path(atts[0].stored_path).read_bytes() == payload
     finally:
         conn.close()
+
+
+def test_rejects_unknown_reviewer_without_mutating_task(monkeypatch, worker_env):
+    from tools import kanban_tools as kt
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+    conn = kbc.connect()
+    try:
+        run = kb.latest_run(conn, worker_env)
+        assert run is not None
+        monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(run.id))
+    finally:
+        conn.close()
+    monkeypatch.setattr("hermes_cli.profiles.profile_exists", lambda name: False)
+    out = json.loads(kt._handle_request_review({
+        "summary": "implemented and tested", "reviewer": "missing-profile",
+    }))
+    assert out.get("error")
+    assert "missing-profile" in out["error"]
+    conn = kbc.connect()
+    try:
+        task = kb.get_task(conn, worker_env)
+        assert task.status == "running"
+        assert task.assignee == "test-worker"
+    finally:
+        conn.close()
+
+
+def test_rejects_copyable_assignee_placeholders_before_insert(monkeypatch, worker_env):
+    from tools import kanban_tools as kt
+    monkeypatch.setattr("hermes_cli.profiles.profile_exists", lambda name: False)
+    for assignee in ("reviewer", "<existing-profile>", "   "):
+        out = json.loads(kt._handle_create({
+            "title": "must-not-exist", "assignee": assignee,
+            "parents": [worker_env],
+        }))
+        assert out.get("error"), (assignee, out)
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+    conn = kbc.connect()
+    try:
+        assert not any(t.title == "must-not-exist" for t in kb.list_tasks(conn))
+    finally:
+        conn.close()

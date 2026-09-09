@@ -290,6 +290,64 @@ def _require_text(args: dict, name: str, message: Optional[str] = None) -> Any:
     return value
 
 
+_EXAMPLE_TOKEN_ASSIGNEES = frozenset({"reviewer", "writer", "researcher-a"})
+
+
+def _profile_exists_safe(name: Any) -> bool:
+    """Return whether *name* resolves to a profile on disk, without raising."""
+    try:
+        from hermes_cli.profiles import profile_exists
+        return bool(profile_exists(str(name)))
+    except Exception:
+        return False
+
+
+def _real_profile_names() -> list[str]:
+    """Return sorted on-disk profile names for actionable validation errors."""
+    try:
+        from hermes_cli.profiles import list_profiles
+        return sorted(profile.name for profile in list_profiles())
+    except Exception:
+        return []
+
+
+def _reject_placeholder_profile_name(kind: str, value: Any) -> Optional[str]:
+    """Reject blank names and angle-bracket placeholders before board writes."""
+    text = str(value)
+    if not text.strip():
+        return tool_error(f"{kind} must not be empty or whitespace-only")
+    if "<" in text or ">" in text:
+        return tool_error(
+            f"{kind} {text!r} is a placeholder, not a profile name; pass the "
+            "name of an existing profile directory under ~/.hermes/profiles")
+    return None
+
+
+def _reject_unknown_reviewer(reviewer: Any) -> Optional[str]:
+    """Reject reviewers that cannot be spawned, preserving the task unchanged."""
+    text = str(reviewer).strip()
+    if _profile_exists_safe(text):
+        return None
+    names = ", ".join(_real_profile_names()) or "(none found on disk)"
+    return tool_error(
+        f"reviewer {text!r} is not an existing profile under ~/.hermes/profiles, "
+        "so the review was NOT requested. Pass one of the real profiles: "
+        f"{names} — or omit reviewer, in which case the task keeps its current "
+        "assignee and that profile runs the review lane on its own work.")
+
+
+def _reject_example_token_assignee(assignee: Any) -> Optional[str]:
+    """Reject historic copyable role tokens unless they are real profiles."""
+    text = str(assignee).strip().lower()
+    if text not in _EXAMPLE_TOKEN_ASSIGNEES or _profile_exists_safe(text):
+        return None
+    names = ", ".join(_real_profile_names()) or "(none found on disk)"
+    return tool_error(
+        f"assignee {text!r} is not an existing profile; it is a placeholder "
+        "token and tasks assigned to it are never dispatched. Real profiles: "
+        f"{names}")
+
+
 _BOOL_WORDS = {"true": True, "1": True, "yes": True, "false": False, "0": False, "no": False}
 
 
@@ -640,6 +698,13 @@ def _handle_request_review(args: dict, **kw) -> str:
     metadata = _stamp_worker_session_metadata(tid, metadata)
     # Reviewer is model-supplied free text stored durably on the event payload.
     reviewer = _redact_opt(args.get("reviewer") or None)
+    if reviewer:
+        reviewer_err = (
+            _reject_placeholder_profile_name("reviewer", reviewer)
+            or _reject_unknown_reviewer(reviewer)
+        )
+        if reviewer_err:
+            return reviewer_err
     with _board(args.get("board")) as (kb, conn):
         _goal_gate("kanban_request_review", kb.get_task(conn, tid), tid, summary)
         ok, fail_reason = kb.request_review(
@@ -810,6 +875,12 @@ def _handle_create(args: dict, **kw) -> str:
     assignee = args.get("assignee")
     _check(assignee, "assignee is required — name the profile that should execute this "
                      "task (the dispatcher will only spawn tasks with an assignee)")
+    assignee_err = (
+        _reject_placeholder_profile_name("assignee", assignee)
+        or _reject_example_token_assignee(assignee)
+    )
+    if assignee_err:
+        return assignee_err
     # Workspace sharing is always explicit: omitted fields mean a fresh scratch workspace
     # even for a dispatcher-spawned creator (reusing the parent's path would let a child
     # mutate review evidence or race its checkout). Project identity is the one safe thing

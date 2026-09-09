@@ -218,8 +218,11 @@ KANBAN_REQUEST_REVIEW_SCHEMA = _schema(
                 "the whole diff; the reviewer has the board and the PR."
         )),
         "reviewer": _prop("string", (
-                "Optional reviewer profile. When provided, the task is "
-                "reassigned to that profile before review dispatch."
+                "Optional. Name the existing profile that must perform the "
+                "review; an unknown name is rejected before the review is "
+                "requested. If omitted, the task keeps its current assignee "
+                "and that profile reviews its own work. Use a different "
+                "existing profile when independent review is required."
         )),
         "metadata": {
             "type": "object",
@@ -361,10 +364,11 @@ KANBAN_CREATE_SCHEMA = _schema(
     {
         "title": _prop("string", "Short task title (required)."),
         "assignee": _prop("string", (
-                "Profile name that should execute this task "
-                "(e.g. 'researcher-a', 'reviewer', 'writer'). "
-                "Required — tasks without an assignee are never "
-                "dispatched."
+                "Profile name that should execute this task: an existing "
+                "profile directory or a permitted registered external seat. "
+                "Never invent a name, use a generic role word, or copy a "
+                "placeholder. Required — tasks without an assignee are "
+                "never dispatched."
         )),
         "body": _prop("string", (
                 "Opening post: full spec, acceptance criteria, "

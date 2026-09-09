@@ -18,6 +18,7 @@ def review_worker(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> str:
     home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    (home / "profiles" / "reviewer").mkdir(parents=True)
     monkeypatch.setenv("HERMES_PROFILE", "builder")
     monkeypatch.delenv("HERMES_DELEGATED_CHILD_CONTEXT", raising=False)
     kb._INITIALIZED_PATHS.clear()

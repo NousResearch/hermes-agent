@@ -140,7 +140,13 @@ def _set_model(rid, params, key, value, session):
             with _session_profile_runtime_scope(session):
                 _persist_live_session_runtime(session)
     else:
-        result = _apply_model_switch("", {"agent": None}, value, confirm_expensive_model=confirmed)
+        # --once keeps its specific 5001; other sessionless model sets 4001 so
+        # --global cannot persist profile defaults before session.create.
+        from hermes_cli.model_switch import parse_model_switch_args
+        if parse_model_switch_args(str(value)).is_once:
+            result = _apply_model_switch("", {"agent": None}, value, confirm_expensive_model=confirmed)
+        else:
+            return _err(rid, 4001, "config.set model requires a live session")
     return _kv(rid, key, result["value"], warning=result["warning"],
                confirm_required=result.get("confirm_required", False),
                confirm_message=result.get("confirm_message", ""), scope=result.get("scope", "session"))

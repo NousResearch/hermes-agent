@@ -38,6 +38,15 @@ def _sanitize_telegram_name(raw: str) -> str:
     return _TG_MULTI_UNDERSCORE.sub("_", name).strip("_")
 
 
+_TG_DASHES = re.compile("[\u2012\u2013\u2014\u2015\u2212]")
+
+
+def _normalize_telegram_desc(desc: str) -> str:
+    """Fold Unicode dashes (em/en/figure/horizontal-bar/minus) to ASCII ``-``.
+    BotFather rejects setMyCommands descriptions containing them (#2925)."""
+    return _TG_DASHES.sub("-", desc)
+
+
 def _truncate_desc(desc: str, limit: int) -> str:
     """Clamp a menu description to *limit* chars with a ``...`` tail."""
     return desc if len(desc) <= limit else desc[:limit - 3] + "..."
@@ -80,7 +89,7 @@ def telegram_bot_commands(*, include_plugins: bool = True) -> list[tuple[str, st
     if include_plugins:
         pairs += [(n, d) for n, d, hint in _iter_plugin_command_entries()
                   if not _requires_argument(hint)]
-    return [(tg, desc) for name, desc in pairs if (tg := _sanitize_telegram_name(name))]
+    return [(tg, _normalize_telegram_desc(desc)) for name, desc in pairs if (tg := _sanitize_telegram_name(name))]
 
 
 # Telegram allows 100 BotCommands; the 60-slot default keeps every built-in plus common skill
@@ -279,7 +288,7 @@ def telegram_menu_commands(max_commands: int = 100) -> tuple[list[tuple[str, str
                    for name, desc, cmd_key, raw in entries]
     candidates = _prioritize_telegram_menu_candidates(candidates)
     overflow_count = max(0, len(candidates) - max_commands)
-    menu = [(name, desc) for name, desc, _source, _raw_name in candidates[:max_commands]]
+    menu = [(name, _normalize_telegram_desc(desc)) for name, desc, _source, _raw_name in candidates[:max_commands]]
     return menu, hidden_count + overflow_count
 
 

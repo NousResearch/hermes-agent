@@ -183,6 +183,20 @@ class TestChatCompletionsBasic:
         assert "anthropic_content_blocks" in msgs[1]
         assert "bedrock_content_blocks" in msgs[1]
 
+    def test_convert_messages_strips_name_on_tool_results_only(self, transport):
+        """``name`` is stripped from tool results only (schema-foreign there),
+        preserved on user/assistant messages; the original list is untouched."""
+        msgs = [
+            {"role": "user", "content": "hi", "name": "sylvain"},
+            {"role": "tool", "tool_call_id": "call_1", "content": "ok",
+             "name": "execute_code"},
+        ]
+        result = transport.convert_messages(msgs)
+        assert result[1] == {"role": "tool", "tool_call_id": "call_1", "content": "ok"}
+        # Schema-valid on non-tool roles — untouched, including by identity.
+        assert result[0]["name"] == "sylvain"
+        assert msgs[1]["name"] == "execute_code"
+
     def test_convert_messages_no_copy_without_timestamp(self, transport):
         """A timestamp-free message list needs no sanitize pass and is
         returned by identity (preserves the deepcopy-on-demand contract)."""
@@ -392,6 +406,20 @@ class TestChatCompletionsBuildKwargs:
         )
         assert kw["max_tokens"] == GEMINI_DEFAULT_MAX_OUTPUT_TOKENS
         assert kw["extra_body"]["thinking_config"]["thinkingLevel"] == "high"
+
+        # Also verify gemini-3.8-flash gets headroom and correct thinking level
+        kw38 = transport.build_kwargs(
+            model="gemini-3.8-flash",
+            messages=[{"role": "user", "content": "Hi"}],
+            provider_profile=profile,
+            provider_name="gemini",
+            base_url=profile.base_url,
+            max_tokens=4096,
+            max_tokens_param_fn=lambda n: {"max_tokens": n},
+            reasoning_config={"enabled": True, "effort": "medium"},
+        )
+        assert kw38["max_tokens"] == GEMINI_DEFAULT_MAX_OUTPUT_TOKENS
+        assert kw38["extra_body"]["thinking_config"]["thinkingLevel"] == "medium"
 
     def test_gemini_without_thinking_keeps_explicit_max_tokens(self, transport):
         from providers import get_provider_profile

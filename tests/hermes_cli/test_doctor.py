@@ -1742,3 +1742,19 @@ def test_run_doctor_warns_when_lightpanda_binary_missing(monkeypatch, tmp_path):
     monkeypatch.setattr("tools.browser_lightpanda.find_lightpanda_binary", lambda: None)
     out = helper._run_doctor_and_capture(monkeypatch, tmp_path)
     assert "Lightpanda selected but binary not found" in out
+
+
+def test_docker_daemon_probe_uses_version_not_info(monkeypatch):
+    """`docker info` needs the /info endpoint, which socket proxies commonly block, so doctor reported
+    "daemon not running" against a working DOCKER_HOST (#72927). `docker version` (/version) is what the
+    backend itself probes with."""
+    from hermes_cli import doctor_tools
+
+    calls: list = []
+    monkeypatch.setattr(doctor_tools, "_safe_which", lambda name: "/usr/bin/docker")
+    monkeypatch.setattr(doctor_tools, "_run_ok", lambda cmd, timeout, **kw: calls.append(cmd) or True)
+    monkeypatch.setattr(doctor_tools, "_require", lambda *a, **k: None)
+
+    doctor_tools._check_docker_backend("docker", False, [])
+
+    assert calls and calls[0][:2] == ["docker", "version"]

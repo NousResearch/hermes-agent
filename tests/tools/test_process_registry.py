@@ -1911,6 +1911,7 @@ class TestSystemdCgroupIsolation:
 
         return fake_popen, captured
 
+    @pytest.mark.linux_only
     def test_wraps_in_systemd_scope_when_supervisor_and_available(
         self, registry, monkeypatch, _gateway_identity
     ):
@@ -1956,7 +1957,10 @@ class TestSystemdCgroupIsolation:
             if value == "--property"
         ]
         assert "MemoryAccounting=yes" in properties
-        assert "OOMPolicy=kill" in properties
+        # systemd rejects OOMPolicy= on transient --scope units across the versions
+        # users run (239/245/249, #102486); emitting it fails the probe and every
+        # cron worker dispatch. MemoryMax + MemoryAccounting carry the isolation.
+        assert not any(p.startswith("OOMPolicy=") for p in properties), properties
         memory_max = next(
             value for value in properties if value.startswith("MemoryMax=")
         )
@@ -2128,6 +2132,7 @@ class TestSystemdCgroupIsolation:
 
         assert session.systemd_unit == ""
 
+    @pytest.mark.linux_only
     def test_systemd_post_spawn_failure_never_kills_gateway_process_group(
         self, registry, monkeypatch, _gateway_identity
     ):
@@ -2162,6 +2167,7 @@ class TestSystemdCgroupIsolation:
         assert stop_unit.call_args.args[0].endswith(".scope")
         killpg.assert_not_called()
 
+    @pytest.mark.linux_only
     def test_pty_spawn_is_wrapped_in_systemd_scope(self, registry, monkeypatch, _gateway_identity):
         """Interactive executors receive the same sibling-cgroup isolation."""
         from ptyprocess import PtyProcess
@@ -2193,6 +2199,7 @@ class TestSystemdCgroupIsolation:
         assert argv[-3:] == ["/bin/bash", "-lic", "set +m; codex"]
         assert session.systemd_unit == f"hermes-worker-{session.id}.scope"
 
+    @pytest.mark.linux_only
     def test_pty_spawn_failure_reaps_scope_before_distinct_pipe_fallback(
         self, registry, monkeypatch, _gateway_identity
     ):
@@ -2248,6 +2255,7 @@ class TestSystemdCgroupIsolation:
             f"hermes-worker-{session.id}-pipe-fallback.scope"
         )
 
+    @pytest.mark.linux_only
     def test_pty_spawn_failure_does_not_fallback_when_scope_reap_fails(
         self, registry, monkeypatch, _gateway_identity
     ):
@@ -2342,6 +2350,7 @@ class TestSystemdCgroupIsolation:
         assert session.id in registry._finished
         assert session.id not in registry._running
 
+    @pytest.mark.linux_only
     def test_systemd_run_user_scope_available_caches_after_probe(
         self, registry, monkeypatch
     ):
@@ -2365,7 +2374,87 @@ class TestSystemdCgroupIsolation:
         assert first is True
         assert second is True
         assert len(probe_calls) == 1, "probe must run only once (cached)"
+        # The probe must not carry OOMPolicy= either: that is the argv systemd
+        # rejected on scope units and cached as "unavailable" (#102486).
+        probe_argv = probe_calls[0][0]
+        assert not any(
+            value.startswith("OOMPolicy=") for value in probe_argv if isinstance(value, str)
+        ), probe_argv
 
+    @pytest.mark.linux_only
+    def test_systemd_probe_derives_owned_user_bus_env_for_system_gateway(
+        self, registry, monkeypatch, request
+    ):
+        """A system service running as an unprivileged user has no login env,
+        but may still have a valid lingering user manager and D-Bus socket."""
+        import socket
+        import tempfile
+
+        import tools.process_registry as pr
+
+        # Short path: AF_UNIX socket paths are capped at ~104 bytes, longer than most tmp_path values.
+        runtime_dir = pr.Path(tempfile.mkdtemp(prefix="hbus-", dir="/tmp"))
+        runtime_dir.chmod(0o700)
+        bus_path = runtime_dir / "bus"
+        bus_socket = socket.socket(socket.AF_UNIX)
+        bus_socket.bind(str(bus_path))
+
+        def _cleanup():
+            bus_socket.close()
+            bus_path.unlink(missing_ok=True)
+            runtime_dir.rmdir()
+
+        request.addfinalizer(_cleanup)
+
+        monkeypatch.delenv("XDG_RUNTIME_DIR", raising=False)
+        monkeypatch.delenv("DBUS_SESSION_BUS_ADDRESS", raising=False)
+        monkeypatch.setattr(pr, "_SYSTEMD_SCOPE_AVAILABLE", None)
+        monkeypatch.setattr(pr, "_default_user_runtime_dir", lambda: runtime_dir)
+        monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/systemd-run")
+        derived = pr.systemd_user_bus_env(
+            {"DBUS_SESSION_BUS_ADDRESS": "unix:path=/tmp/untrusted-bus"}
+        )
+        assert derived["DBUS_SESSION_BUS_ADDRESS"] == f"unix:path={bus_path}"
+        probe_kwargs = []
+
+        def fake_run(*args, **kwargs):
+            probe_kwargs.append(kwargs)
+            return subprocess.CompletedProcess(args=args[0], returncode=0)
+
+        monkeypatch.setattr("subprocess.run", fake_run)
+
+        assert pr._systemd_run_user_scope_available() is True
+        env = probe_kwargs[0]["env"]
+        assert env["XDG_RUNTIME_DIR"] == str(runtime_dir)
+        assert env["DBUS_SESSION_BUS_ADDRESS"] == f"unix:path={bus_path}"
+        assert "XDG_RUNTIME_DIR" not in os.environ
+        assert "DBUS_SESSION_BUS_ADDRESS" not in os.environ
+
+    @pytest.mark.linux_only
+    def test_probe_succeeds_without_bin_true(self, monkeypatch):
+        """An absent ``/bin/true`` must not make a usable scope fail its probe."""
+        import tools.process_registry as pr
+
+        monkeypatch.setattr(pr, "_SYSTEMD_SCOPE_AVAILABLE", None)
+        monkeypatch.setattr(pr, "_SYSTEMD_SCOPE_PROBED_AT", 0.0)
+        real_run = subprocess.run
+        executed = []
+
+        def systemd_run_on_nixos_shaped_root(argv, **kwargs):
+            # Simulate NixOS's missing executable, but run the selected replacement.
+            payload = argv[argv.index("--") + 1 :]
+            if payload[0] == "/bin/true":
+                return subprocess.CompletedProcess(payload, 127, stderr=b"No such file or directory")
+            executed.append(payload)
+            return real_run(payload, **kwargs)
+
+        monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/systemd-run")
+        monkeypatch.setattr("subprocess.run", systemd_run_on_nixos_shaped_root)
+
+        assert pr._systemd_run_user_scope_available() is True
+        assert len(executed) == 1, "payload must really run (exit 0) on the host, not just be spelled right"
+
+    @pytest.mark.linux_only
     def test_systemd_scope_first_probe_is_serialized(self, monkeypatch):
         """Concurrent first-use callers must wait for one definitive probe.
 
@@ -2413,6 +2502,7 @@ class TestSystemdCgroupIsolation:
         assert results == [True, True]
         assert len(probe_calls) == 1
 
+    @pytest.mark.linux_only
     def test_failed_systemd_probe_retries_after_cache_ttl(self, monkeypatch):
         import tools.process_registry as pr
 

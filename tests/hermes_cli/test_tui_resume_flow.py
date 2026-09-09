@@ -283,7 +283,8 @@ def test_run_oneshot_passes_ignore_rules_env(monkeypatch, capsys, env_name):
 
 
 @pytest.mark.parametrize("ignore_rules", [False, True])
-def test_oneshot_wires_session_db_for_recall(monkeypatch, ignore_rules):
+@pytest.mark.parametrize("resume", [None, "previous-session"])
+def test_oneshot_wires_session_db_for_recall(monkeypatch, ignore_rules, resume):
     """hermes -z bypasses HermesCLI, but recall still needs SessionDB."""
     from hermes_cli.oneshot import _run_agent
 
@@ -345,10 +346,17 @@ def test_oneshot_wires_session_db_for_recall(monkeypatch, ignore_rules):
         mod("hermes_cli.tools_config", _get_platform_tools=lambda *_args, **_kwargs: {"session_search"}),
     )
 
-    text, result = _run_agent("recall this", ignore_rules=ignore_rules)
+    def load_resume(db, session_id):
+        assert db is sentinel_db
+        assert session_id == resume
+        return session_id, [], {}
+
+    monkeypatch.setattr("hermes_cli.oneshot._load_resume_target", load_resume)
+    text, result = _run_agent("recall this", ignore_rules=ignore_rules, resume=resume)
     assert text == "ok"
     assert not result.get("failed")
     assert captured["session_db"] is sentinel_db
+    assert captured["session_id"] == resume
     assert captured["enabled_toolsets"] == ["session_search"]
     assert captured["skip_context_files"] is ignore_rules
     assert captured["skip_memory"] is ignore_rules

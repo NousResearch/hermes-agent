@@ -32,6 +32,20 @@ def _clean_env(monkeypatch):
     yield
 
 
+@pytest.fixture(autouse=True)
+def _fake_managed_chromium(monkeypatch):
+    """The local-engine route asks agent-browser for the packaged Chromium's CDP url; never launch
+    a real browser from a unit test. Records every ``get cdp-url`` session key in ``.calls``."""
+    calls = []
+
+    def fake_run(task_id, command, args=None, timeout=None, _engine_override=None):
+        calls.append((task_id, command, tuple(args or [])))
+        return {"success": True, "data": {"cdpUrl": f"ws://127.0.0.1:47000/devtools/browser/{task_id}"}}
+
+    monkeypatch.setattr(bt_session, "_run_browser_command", fake_run)
+    return calls
+
+
 def _fake_cli(tmp_path, body):
     """Write an executable fake browser-use CLI and return its path."""
     script = tmp_path / "browser-use"
@@ -420,12 +434,29 @@ class TestBackendCdpResolution:
         assert bu_cli._resolve_backend_cdp(env, "t1") is None
         assert env["BU_CDP_WS"] == "wss://browser.example/cdp/abc"
 
-    def test_no_provider_leaves_env_untouched(self, monkeypatch):
-
+    def test_no_provider_drives_packaged_chromium_not_user_chrome(self, monkeypatch, _fake_managed_chromium):
+        """Local mode must hand the harness the agent-browser-launched Chromium (same browser the built-in
+        tools use) — never leave BU_CDP_* unset, which makes the harness hunt for the user's installed
+        Chrome (Allow popup, >=136 default-profile block, chrome-not-running on headless hosts)."""
         monkeypatch.setattr("tools.browser_tool_cdp._get_cdp_override", lambda: "")
         monkeypatch.setattr(bt_cloud, "_get_cloud_provider", lambda: None)
         env = self._env()
         assert bu_cli._resolve_backend_cdp(env, "t1") is None
+        assert env["BU_CDP_WS"] == "ws://127.0.0.1:47000/devtools/browser/t1"
+        assert env[bu_cli._PRIVATE_BROWSER_SENTINEL] == "1"
+        assert _fake_managed_chromium == [("t1", "get", ("cdp-url",))]
+        env = self._env()
+        assert bu_cli._resolve_backend_cdp(env, "t1", session_name="r7k2") is None
+        assert _fake_managed_chromium[-1][0] == "bu-named-r7k2"  # named session → its own Chromium
+
+    def test_packaged_chromium_launch_failure_is_an_error(self, monkeypatch):
+        monkeypatch.setattr("tools.browser_tool_cdp._get_cdp_override", lambda: "")
+        monkeypatch.setattr(bt_cloud, "_get_cloud_provider", lambda: None)
+        monkeypatch.setattr(bt_session, "_run_browser_command",
+                            lambda *a, **k: {"success": False, "error": "Chromium browser not installed"})
+        env = self._env()
+        err = bu_cli._resolve_backend_cdp(env, "t1")
+        assert err and "Chromium browser not installed" in err
         assert "BU_CDP_WS" not in env and "BU_CDP_URL" not in env
 
     def test_provider_failure_returns_error(self, monkeypatch):
@@ -511,13 +542,13 @@ class TestBackendCdpResolution:
 
 
 class TestOwnTabPreamble:
-    """Named sessions on SHARED browsers get the own-tab preamble prepended;
-    private per-name browsers and unnamed sessions do not."""
+    """Named sessions on SHARED browsers (a /browser connect CDP override) get the own-tab preamble
+    prepended; private per-name browsers (packaged Chromium, provider) and unnamed sessions do not."""
 
-    def _run(self, tmp_path, monkeypatch, *, session="", private=False, provider=False):
+    def _run(self, tmp_path, monkeypatch, *, session="", private=False, provider=False, shared_cdp=""):
         import tools.browser_tool as bt
 
-        monkeypatch.setattr("tools.browser_tool_cdp._get_cdp_override", lambda: "")
+        monkeypatch.setattr("tools.browser_tool_cdp._get_cdp_override", lambda: shared_cdp)
         if provider:
             monkeypatch.setattr(bt_cloud, "_get_cloud_provider", lambda: object())
             monkeypatch.setattr(
@@ -532,11 +563,17 @@ class TestOwnTabPreamble:
         return json.loads(bu_cli.browser_exec("print('payload')", session=session))
 
     def test_named_shared_browser_gets_preamble(self, tmp_path, monkeypatch):
-        result = self._run(tmp_path, monkeypatch, session="r7k2")
+        result = self._run(tmp_path, monkeypatch, session="r7k2", shared_cdp="http://127.0.0.1:9222")
         assert result["success"] is True
         assert "_hermes_ensure_own_tab" in result["output"]
         # model code still present, after the preamble
         assert result["output"].index("_hermes_ensure_own_tab") < result["output"].index("print('payload')")
+
+    def test_named_packaged_chromium_skips_preamble(self, tmp_path, monkeypatch):
+        """Each named session launches its own packaged Chromium — nothing to share a tab with."""
+        result = self._run(tmp_path, monkeypatch, session="r7k2")
+        assert result["success"] is True
+        assert "_hermes_ensure_own_tab" not in result["output"]
 
     def test_unnamed_session_gets_no_preamble(self, tmp_path, monkeypatch):
         result = self._run(tmp_path, monkeypatch, session="")
@@ -1142,12 +1179,12 @@ class TestLightpandaBackendResolution:
         err = bu_cli._resolve_backend_cdp({}, "t1")
         assert err and "no CDP endpoint" in err
 
-    def test_engine_auto_leaves_env_untouched(self, monkeypatch):
+    def test_engine_auto_falls_through_to_packaged_chromium(self, monkeypatch, _fake_managed_chromium):
         seen = self._setup(monkeypatch, engine=False)
         env = {}
         assert bu_cli._resolve_backend_cdp(env, "t1") is None
-        assert env == {}
-        assert seen == []
+        assert seen == []  # no lightpanda process
+        assert env["BU_CDP_WS"].startswith("ws://") and _fake_managed_chromium[0][1:] == ("get", ("cdp-url",))
 
     def test_bu_env_wins(self, monkeypatch):
         seen = self._setup(monkeypatch)

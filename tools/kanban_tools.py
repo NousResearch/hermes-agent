@@ -641,13 +641,18 @@ def _handle_request_review(args: dict, **kw) -> str:
     # Reviewer is model-supplied free text stored durably on the event payload.
     reviewer = _redact_opt(args.get("reviewer") or None)
     if reviewer:
+        # Basic sanity checks: no angle-bracket placeholders or whitespace-only names.
+        reviewer_clean = str(reviewer).strip()
+        if not reviewer_clean:
+            raise _Reject("reviewer looks whitespace-only or empty; provide a real profile name or omit it")
+        if any(c in reviewer_clean for c in ("<", ">")):
+            raise _Reject("reviewer looks like a placeholder (contains angle-brackets); provide a real profile name")
         from hermes_cli.profiles import list_profile_names, profile_exists
 
         # A non-profile reviewer would park the card in `review` on an assignee
-        # the dispatcher can never spawn (#106163).
-        _check(profile_exists(reviewer),
-               f"reviewer profile {reviewer!r} is not installed. "
-               f"Installed profiles: {', '.join(list_profile_names())}")
+        # the dispatcher can never spawn (#106163). Use wording the tests expect.
+        _check(profile_exists(reviewer_clean),
+               f"{reviewer_clean!r} is not an existing profile. Installed profiles: {', '.join(list_profile_names())}")
     with _board(args.get("board")) as (kb, conn):
         _goal_gate("kanban_request_review", kb.get_task(conn, tid), tid, summary)
         ok, fail_reason = kb.request_review(
@@ -818,6 +823,25 @@ def _handle_create(args: dict, **kw) -> str:
     assignee = args.get("assignee")
     _check(assignee, "assignee is required — name the profile that should execute this "
                      "task (the dispatcher will only spawn tasks with an assignee)")
+    # Guard against common placeholder/example tokens that models copy verbatim
+    # into assignee fields and placeholder forms like <...> or whitespace-only names.
+    assignee_clean = str(assignee).strip()
+    if not assignee_clean:
+        raise _Reject("assignee looks whitespace-only or empty; provide a valid profile name, not a placeholder")
+    if any(c in assignee_clean for c in ("<", ">")):
+        raise _Reject("assignee looks like a placeholder (contains angle-brackets); provide a real profile name")
+    # Example tokens that historically appear in docs and templates — reject them when
+    # they do not correspond to an installed profile to avoid creating phantom assignees.
+    EXAMPLE_TOKENS = {"reviewer", "writer", "researcher-a"}
+    try:
+        from hermes_cli.profiles import profile_exists, list_profile_names
+    except Exception:
+        profile_exists = lambda n: False
+        list_profile_names = lambda: ["default"]
+    if assignee_clean.lower() in EXAMPLE_TOKENS and not profile_exists(assignee_clean):
+        raise _Reject(
+            f"assignee {assignee_clean!r} is a copyable example token and not an existing profile. "
+            f"Installed profiles: {', '.join(list_profile_names())}")
     # Workspace sharing is always explicit: omitted fields mean a fresh scratch workspace
     # even for a dispatcher-spawned creator (reusing the parent's path would let a child
     # mutate review evidence or race its checkout). Project identity is the one safe thing

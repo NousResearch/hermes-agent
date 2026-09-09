@@ -385,8 +385,9 @@ def local_delivery_command(profile: str, query_file: str) -> list[str]:
 
 
 class DeliveryAuthor:
-    """A relayed turn's author as an in-process object. A JSON client cannot build one, so
-    ``prompt.submit`` trusts it the way it trusts a hosted-room callback."""
+    """A relayed turn's author as an in-process object. ``bot_relay.deliver`` builds it from the sender fields
+    an admitted gateway client relays for another connection; nothing verifies the sender itself. A JSON
+    client cannot build one, so ``prompt.submit`` accepts the object and refuses a dict."""
 
     __slots__ = ("author",)
 
@@ -401,9 +402,10 @@ class DeliveryAuthor:
 
 
 def delivery_turn_author(from_profile: Any, from_handle: Any, from_connection: Any = None) -> Optional[dict]:
-    """The author of a relayed DM's recipient turn, built from the envelope's sender fields. A relayed DM always
-    comes from another gateway, so the id carries the Desktop's id for the sender's connection (``local`` included)
-    and only the recipient's own profiles are bare ``bot:<profile>``. None when the envelope names no sender."""
+    """The author of a relayed DM's recipient turn, built from the sender fields as the relaying client reports
+    them. A relayed DM always comes from another gateway, so the id carries the Desktop's id for the sender's
+    connection (``local`` included) and only the recipient's own profiles are bare ``bot:<profile>``. None when
+    the envelope names no sender."""
     from agent.turn_author import bot_author_id
 
     profile = str(from_profile or "").strip()

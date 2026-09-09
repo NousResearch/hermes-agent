@@ -16,6 +16,7 @@ import json
 import pytest
 
 import tui_gateway.server as srv
+from hermes_cli.dashboard_auth.ws_tickets import INTERNAL_PROVIDER, INTERNAL_USER_ID
 from tools import bot_relay
 
 
@@ -235,3 +236,62 @@ def test_deliver_child_env_carries_the_envelope_sender_on_every_attempt(home, mo
     assert len(envs) == 2
     assert [json.loads(e[TURN_AUTHOR_ENV]) if TURN_AUTHOR_ENV in e else None for e in envs] == [expected, expected]
     assert all(e["HERMES_RELAY_TEST_MARKER"] == "kept" for e in envs)
+
+
+class _Client:
+    def __init__(self, auth_identity=None):
+        self.auth_identity = auth_identity
+
+    def write(self, obj):
+        return True
+
+    def close(self):
+        return None
+
+
+@pytest.fixture
+def bound_client(monkeypatch):
+    """Bind a fake calling transport for the handler; yields a setter for its ``auth_identity``."""
+    client = _Client()
+    token = srv.bind_transport(client)
+    try:
+        yield client
+    finally:
+        srv.reset_transport(token)
+
+
+SENDER = {"from_profile": "scout", "from_handle": "scout", "from_connection": "cloud-1"}
+SENDER_AUTHOR = {"id": "bot:cloud-1/scout", "name": "scout", "is_bot": True}
+
+
+@pytest.mark.parametrize("identity", [
+    None,
+    {"user_id": INTERNAL_USER_ID, "provider": INTERNAL_PROVIDER},
+], ids=["no identity", "server-internal identity"])
+def test_deliver_accepts_a_sender_from_an_admitted_non_login_client(home, fake_runs, bound_client, identity):
+    """The Desktop and server-internal callers carry no login identity; their sender fields become the author."""
+    from agent.turn_author import TURN_AUTHOR_ENV
+
+    calls, _outcomes = fake_runs
+    bound_client.auth_identity = identity
+
+    _result(srv._methods["bot_relay.deliver"](1, {"profile": "ops", "message": "ping", **SENDER}))
+
+    assert [json.loads(c["env"][TURN_AUTHOR_ENV]) for c in calls] == [SENDER_AUTHOR]
+
+
+def test_deliver_refuses_a_sender_from_a_logged_in_client(home, fake_runs, bound_client):
+    """A browser login never relays for another connection, so its from_* fields are refused before any turn runs.
+    Without sender fields the same client still delivers, unattributed."""
+    from agent.turn_author import TURN_AUTHOR_ENV
+
+    calls, _outcomes = fake_runs
+    bound_client.auth_identity = {"user_id": "alice", "provider": "google"}
+
+    for sender in ({"from_profile": "scout"}, {"from_connection": "cloud-1"}, SENDER):
+        err = srv._methods["bot_relay.deliver"](1, {"profile": "ops", "message": "ping", **sender})
+        assert err["error"]["code"] == 4095
+    assert not calls
+
+    _result(srv._methods["bot_relay.deliver"](2, {"profile": "ops", "message": "ping"}))
+    assert len(calls) == 1 and TURN_AUTHOR_ENV not in calls[0]["env"]

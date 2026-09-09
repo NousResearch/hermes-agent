@@ -90,9 +90,15 @@ def _(rid, params: dict, _root=_relay_root, _run=_run_delivery) -> dict:
             if isinstance(record, dict) and (record.get("profile_home") or None) == want_home
             and _session_live_title(
                 record, _session_lookup_key(record, fallback=live_sid)) == BOT_CHAT_TITLE), "")
-        # The Desktop forwards the envelope's sender. The author labels memory only and grants nothing.
+        # The sender fields are whatever the relaying client says. The author labels memory only and grants nothing.
         from tools.bot_relay import DeliveryAuthor, delivery_env, delivery_turn_author
-        author = delivery_turn_author(params.get("from_profile"), params.get("from_handle"), params.get("from_connection"))
+        from tui_gateway.methods_browser_control import _is_authenticated_identity
+        sender_fields = ("from_profile", "from_handle", "from_connection")
+        # A logged-in browser never relays for another connection; only the Desktop and server-internal callers do.
+        if (any(params.get(k) for k in sender_fields)
+                and _is_authenticated_identity(getattr(current_transport(), "auth_identity", None))):
+            return _err(rid, 4095, "a logged-in client cannot name the sender of a relayed dm")
+        author = delivery_turn_author(*(params.get(k) for k in sender_fields))
         if live_sid:
             # queued=True: a teammate's DM runs as the NEXT turn and never interrupts or steers a
             # turn in flight (the default busy mode does); arrivals queue in order.

@@ -245,8 +245,10 @@ def _ledger_serve_supervisor(
     """Live Desktop parent, else the same PID classifier gateways use, else cgroup unit, else manual-serve.
 
     ``_get_service_pids`` is gateway-unit only, so a handwritten ``hermes-dashboard.service`` is
-    absent from that set; cgroup recovers it. Classifying those as ``manual-serve`` selects
-    ``respawn-argv`` (stop-before-swap), which ``Restart=always`` beats with the old process.
+    absent from that set; cgroup recovers it. The Linux update path does not consume
+    ``respawn-argv`` as a pre-swap stop (that holder sweep is Windows-only). Classification
+    still has to be ``systemd`` so the plan/receipt names ``systemctl`` instead of
+    ``stop before code swap``.
     """
     if spawner_dead is False:
         return "desktop"
@@ -269,7 +271,7 @@ def _collect_ledger_runtimes(
     (a manual `hermes serve --host <ip>` for a remote Desktop, a long-lived `hermes dashboard`).
     ledger_entries() live-verifies (pid, create_time) so PID reuse never fabricates a row. Desktop-
     supervised backends (spawner still alive) restart via the Desktop's own respawn, not ours.
-    Unit-backed backends restart via ``systemctl`` after the swap — not stop-before-swap."""
+    Unit-backed backends are planned as ``systemd`` (``systemctl``), not ``manual-serve``."""
     if classify_pid is None:
         classify_pid = _supervisor_classifier()
     with _probe("Serve/dashboard ledger inventory"):

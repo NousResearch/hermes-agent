@@ -341,8 +341,9 @@ async def scan_skill_hub(identifier: str = "", profile: Optional[str] = None):
 
 
 @router.get("/api/skills")
-async def get_skills(profile: Optional[str] = None):
+async def get_skills(profile: Optional[str] = None, locale: Optional[str] = None):
     from tools.skills_tool import _find_all_skills
+    from hermes_cli.skill_description_locales import localize_skill_description
     from hermes_cli.skills_config import get_disabled_skills
     from tools.skill_usage import (
         _read_bundled_manifest_names, _read_hub_installed_names, activity_count, load_usage)
@@ -366,6 +367,10 @@ async def get_skills(profile: Optional[str] = None):
                 "hub" if s["name"] in hub_names
                 else "bundled" if s["name"] in bundled_names
                 else "agent")
+            s["description"] = localize_skill_description(
+                s["name"], s.get("description", ""), locale,
+                bundled=s["provenance"] == "bundled",
+            )
         return skills
 
     return await asyncio.to_thread(_run)

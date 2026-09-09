@@ -6,6 +6,7 @@ import type * as ReactRouterDom from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type * as HermesApi from '@/hermes'
+import { I18nProvider } from '@/i18n'
 import { queryClient } from '@/lib/query-client'
 import type * as HubActions from '@/store/hub-actions'
 
@@ -26,7 +27,7 @@ const getOfficialSkills = vi.fn()
 // observable.
 vi.mock('@/hermes', async importOriginal => ({
   ...(await importOriginal<typeof HermesApi>()),
-  getSkills: (profile?: null | string) => getSkills(profile),
+  getSkills: (profile?: null | string, locale?: string) => getSkills(profile, locale),
   getToolsets: (profile?: null | string) => getToolsets(profile),
   setSkillEnabled: (name: string, enabled: boolean, profile?: null | string) => setSkillEnabled(name, enabled, profile),
   setToolsetEnabled: (name: string, enabled: boolean, profile?: null | string) =>
@@ -241,7 +242,7 @@ describe('SkillsView toolset management', { timeout: 60_000 }, () => {
     })
 
     // Skills refetch scoped to the picked profile...
-    await waitFor(() => expect(getSkills).toHaveBeenCalledWith('researcher'))
+    await waitFor(() => expect(getSkills).toHaveBeenCalledWith('researcher', 'en'))
 
     // ...and a toggle routes its write to that profile as well.
     const sw = await screen.findByRole('switch', { name: 'web-research' })
@@ -332,6 +333,7 @@ describe('SkillsView toolset management', { timeout: 60_000 }, () => {
 
     const iframe = document.querySelector('iframe')
     expect(iframe).toBeTruthy()
+    expect(iframe!.getAttribute('src')).toContain('lang=en')
     expect(iframe!.closest('section')!.classList.contains('hidden')).toBe(false)
 
     // Switch to Tools → the iframe STAYS mounted (no docs-site reload on the
@@ -343,6 +345,18 @@ describe('SkillsView toolset management', { timeout: 60_000 }, () => {
     const kept = document.querySelector('iframe')
     expect(kept).toBeTruthy()
     expect(kept!.closest('section')!.classList.contains('hidden')).toBe(true)
+  })
+
+  it('passes the active zh-Hant locale to the embedded Skills Hub', async () => {
+    const { EmbeddedHubPicker } = await import('./embedded-hub-picker')
+
+    render(
+      <I18nProvider configClient={null} initialLocale="zh-hant">
+        <EmbeddedHubPicker installedNames={new Set()} profile={null} />
+      </I18nProvider>
+    )
+
+    expect(document.querySelector('iframe')?.getAttribute('src')).toContain('lang=zh-hant')
   })
 
   it('shows a vision explainer that deep-links to Settings → Models', async () => {
@@ -390,7 +404,7 @@ describe('SkillsView toolset management', { timeout: 60_000 }, () => {
     })
 
     await waitFor(() => expect(getSkills).toHaveBeenCalled())
-    expect(getSkills.mock.calls[0][0]).toEqual({ connectionId: 'homelab', profile: 'inbox-bot' })
+    expect(getSkills.mock.calls[0]).toEqual([{ connectionId: 'homelab', profile: 'inbox-bot' }, 'en'])
     expect(getToolsets.mock.calls[0][0]).toEqual({ connectionId: 'homelab', profile: 'inbox-bot' })
     // Pinned scope → no roster/profiles fetch, selector hidden.
     expect(getProfiles).not.toHaveBeenCalled()

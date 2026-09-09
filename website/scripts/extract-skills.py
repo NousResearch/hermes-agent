@@ -38,6 +38,12 @@ LEGACY_INDEX_CACHE_DIR = os.path.join(REPO_ROOT, "skills", "index-cache")
 # fast and shrinks the JS chunk back to a few hundred KB.
 OUTPUT = os.path.join(REPO_ROOT, "website", "static", "api", "skills.json")
 META_OUTPUT = os.path.join(REPO_ROOT, "website", "static", "api", "skills-meta.json")
+ZH_HANT_DESCRIPTIONS_PATH = os.path.join(
+    REPO_ROOT, "hermes_cli", "data", "skill_descriptions.zh-hant.json"
+)
+ZH_HANT_OUTPUT = os.path.join(
+    REPO_ROOT, "website", "static", "api", "skills.zh-hant.json"
+)
 
 CATEGORY_LABELS = {
     "apple": "Apple",
@@ -107,6 +113,36 @@ LEGACY_SOURCE_LABELS = {
     "openai_skills": "OpenAI",
     "lobehub": "LobeHub",
 }
+
+
+def load_localized_descriptions(locale: str) -> dict[str, str]:
+    """Load the small official-skill description map for a supported locale."""
+    if locale.lower() != "zh-hant":
+        return {}
+    try:
+        with open(ZH_HANT_DESCRIPTIONS_PATH, encoding="utf-8") as f:
+            data = json.load(f)
+    except (json.JSONDecodeError, OSError) as e:
+        print(f"[extract-skills] Failed to read zh-Hant descriptions: {e}")
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    return {
+        name: description
+        for name, description in data.items()
+        if isinstance(name, str) and isinstance(description, str) and description
+    }
+
+
+def localize_skill_row(skill: dict, locale: str) -> dict:
+    """Return a localized copy of a built-in row, preserving all fallbacks."""
+    localized = dict(skill)
+    if skill.get("source") != "built-in":
+        return localized
+    description = load_localized_descriptions(locale).get(str(skill.get("name", "")))
+    if description:
+        localized["description"] = description
+    return localized
 
 
 def _extract_overview(body: str) -> str:
@@ -651,6 +687,17 @@ def main():
         # Minified — file is served over the wire, not read by humans.
         # At 50k+ skills the indented version was ~30% larger.
         json.dump(all_skills, f, separators=(",", ":"), ensure_ascii=False)
+
+    # The browser overlays this small map only on built-in rows. Community
+    # descriptions remain in the English catalog and are not duplicated into
+    # a locale-specific copy of the full index.
+    with open(ZH_HANT_OUTPUT, "w", encoding="utf-8") as f:
+        json.dump(
+            load_localized_descriptions("zh-hant"),
+            f,
+            separators=(",", ":"),
+            ensure_ascii=False,
+        )
 
     # Sidecar meta file so the page can render a "Last refreshed" badge
     # without changing the shape of skills.json.

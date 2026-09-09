@@ -11,10 +11,10 @@ import type { ActionResponse } from '@/types/hermes'
 
 import { capabilityScoped, hermesApi, type ProfileScope, profileScoped } from './client'
 
-export function getSkills(profile?: ProfileScope): Promise<SkillInfo[]> {
+export function getSkills(profile?: ProfileScope, locale = 'en'): Promise<SkillInfo[]> {
   return window.hermesDesktop.api<SkillInfo[]>({
     ...capabilityScoped(profile),
-    path: '/api/skills'
+    path: `/api/skills?locale=${encodeURIComponent(locale)}`
   })
 }
 

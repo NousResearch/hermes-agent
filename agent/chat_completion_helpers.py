@@ -1459,9 +1459,10 @@ def _build_api_kwargs_for_mode(agent, api_messages: list, tools_for_api: list | 
 
     provider_profile = get_provider_profile(agent.provider)
     if provider_profile is not None:
+        _supports_reasoning_fn = getattr(agent, "_supports_reasoning_extra_body", None)
         api_kwargs = provider_profile.sanitize_request_kwargs(
             api_kwargs, agent=agent,
-            supports_reasoning=agent._supports_reasoning_extra_body(),
+            supports_reasoning=_supports_reasoning_fn() if callable(_supports_reasoning_fn) else False,
             base_url=getattr(agent, "base_url", None),
         )
     return _attach_source_provenance_sidecar(agent, api_kwargs, sidecar=_source_sidecar)

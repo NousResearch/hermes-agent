@@ -71,6 +71,8 @@ class HonchoSessionManager(SessionAuthMixin, SessionPeersMixin, SessionContextMi
         self._runtime_user_peer_name = runtime_user_peer_name
         self._runtime_user_peer_name_alt = runtime_user_peer_name_alt
         self._cache: dict[str, HonchoSession] = {}
+        # Sessions whose flush failed after a newer object took their cache key; flush_all() retries them.
+        self._retry_sessions: list[HonchoSession] = []
         self._cache_lock = threading.RLock()
         self._peers_cache: dict[str, Any] = {}
         self._sessions_cache: dict[str, Any] = {}
@@ -442,6 +444,20 @@ class HonchoSessionManager(SessionAuthMixin, SessionPeersMixin, SessionContextMi
             except Exception as e:
                 logger.error("Honcho async writer error: %s", e)
 
+    def _retain_for_retry(self, session: HonchoSession) -> None:
+        """Keep a session with unsynced messages where flush_all() looks. An evicted key takes it back; a key a
+        newer object owns keeps that object, and this one waits in the retry list."""
+        with self._cache_lock:
+            if not self._has_unsynced(session):
+                return
+            current = self._cache.get(session.key)
+            if current is session or any(s is session for s in self._retry_sessions):
+                return
+            if current is None:
+                self._cache[session.key] = session
+            else:
+                self._retry_sessions.append(session)
+
     def _keep_until_flushed(self, session: HonchoSession) -> None:
         """Put an evicted session that still holds unsynced messages back where flush_all() looks. When a
         newer object already owns the key, this one's batch is written now instead."""
@@ -452,7 +468,12 @@ class HonchoSessionManager(SessionAuthMixin, SessionPeersMixin, SessionContextMi
             if current is None:
                 self._cache[session.key] = session
                 return
-        self._flush_session(session)
+        self._flush_now(session)
+
+    def _flush_now(self, session: HonchoSession) -> None:
+        """A save-time flush whose failed batch stays reachable for flush_all(), even after an eviction."""
+        if not self._flush_session(session):
+            self._retain_for_retry(session)
 
     def save(self, session: HonchoSession) -> None:
         """Save messages per write_frequency: "async" enqueues for the background thread, "turn"
@@ -466,9 +487,9 @@ class HonchoSessionManager(SessionAuthMixin, SessionPeersMixin, SessionContextMi
                     self._ensure_async_writer_locked()
                     self._async_queue.put(session)
                     return
-            self._flush_session(session)
+            self._flush_now(session)
         elif self._shutting_down or wf == "turn" or (isinstance(wf, int) and wf > 0 and self._turn_counter % wf == 0):
-            self._flush_session(session)
+            self._flush_now(session)
         else:
             self._keep_until_flushed(session)
 
@@ -478,6 +499,7 @@ class HonchoSessionManager(SessionAuthMixin, SessionPeersMixin, SessionContextMi
         deadline = None if timeout is None else time.monotonic() + timeout
         with self._cache_lock:
             sessions = list(self._cache.values())
+            sessions += [s for s in self._retry_sessions if not any(s is c for c in sessions)]
         skipped: list[HonchoSession] = []
         for session in sessions:
             try:
@@ -485,6 +507,8 @@ class HonchoSessionManager(SessionAuthMixin, SessionPeersMixin, SessionContextMi
                     skipped.append(session)
             except Exception as e:
                 logger.error("Honcho flush_all error for %s: %s", session.key, e)
+        with self._cache_lock:
+            self._retry_sessions = [s for s in self._retry_sessions if self._has_unsynced(s)]
         skipped.extend(self._drain_async_queue(deadline))
         left = [s for s in {id(s): s for s in skipped}.values() if self._has_unsynced(s)]
         if left:

@@ -1,9 +1,11 @@
 """Media targets and receipts must describe the attachment, not a fallback notice."""
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
 from gateway.config import PlatformConfig
+from gateway.platforms.base import SendResult
 from plugins.platforms.discord.adapter import DiscordAdapter
 
 
@@ -61,3 +63,38 @@ async def test_failed_upload_never_becomes_successful_text_notice(tmp_path, meth
     assert not result.success
     assert "upload rejected" in result.error
     assert not client.uploads
+
+
+@pytest.mark.asyncio
+async def test_image_batch_requires_complete_attachment_receipt(tmp_path):
+    adapter = DiscordAdapter(PlatformConfig())
+    adapter._client = client = Client()
+    path = tmp_path / "media.bin"
+    path.write_bytes(b"attachment bytes")
+
+    async def send_without_attachments(**kwargs):
+        client.uploads.extend(kwargs["files"])
+        return SimpleNamespace(id=444, attachments=[])
+
+    client.send = send_without_attachments
+    result = await adapter.send_multiple_images("222", [(f"file://{path}", "caption")])
+
+    assert not result.success
+    assert "attached 0 of 1 files" in result.error
+
+
+@pytest.mark.asyncio
+async def test_image_batch_propagates_failed_forum_receipt(tmp_path):
+    adapter = DiscordAdapter(PlatformConfig())
+    adapter._client = Client()
+    adapter._is_forum_parent = lambda _channel: True
+    adapter._forum_post_file = AsyncMock(
+        return_value=SendResult(success=False, error="Discord forum starter contained no files")
+    )
+    path = tmp_path / "media.bin"
+    path.write_bytes(b"attachment bytes")
+
+    result = await adapter.send_multiple_images("222", [(f"file://{path}", "caption")])
+
+    assert not result.success
+    assert result.error == "Discord forum starter contained no files"

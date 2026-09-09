@@ -698,16 +698,11 @@ class EmailAdapter(BasePlatformAdapter):
         logger.info("[Email] Sent reply to %s (subject: %s)", to_addr, subject)
         return msg_id
 
-    def _send_with_files(self, to_addr: str, body: str, files: List[Tuple[Path, str]], *, lenient: bool) -> str:
-        """Send a reply with attachments; *lenient* logs-and-skips unattachable files instead of raising."""
+    def _send_with_files(self, to_addr: str, body: str, files: List[Tuple[Path, str]]) -> str:
+        """Send a reply with attachments, failing before SMTP if any file cannot be attached."""
         msg, msg_id, _ = self._new_reply(to_addr, body)
         for path, name in files:
-            try:
-                _attach_file(msg, path, name)
-            except Exception as e:
-                if not lenient:
-                    raise
-                logger.warning("[Email] Failed to attach %s: %s", path, e)
+            _attach_file(msg, path, name)
         self._smtp_send(msg)
         return msg_id
 
@@ -743,12 +738,12 @@ class EmailAdapter(BasePlatformAdapter):
                 success=not missing, message_id=message_id,
                 error="Some images were missing" if missing else None)
         except Exception as e:
-            logger.error("[Email] Multi-image send failed, falling back: %s", e, exc_info=True)
-            return await super().send_multiple_images(chat_id, images, metadata, human_delay)
+            logger.error("[Email] Multi-image send failed: %s", e, exc_info=True)
+            return SendResult(success=False, error=str(e))
 
     def _send_email_with_attachments(self, to_addr: str, body: str, file_paths: List[str]) -> str:
-        """Send an email with multiple file attachments via SMTP (unattachable files are skipped)."""
-        msg_id = self._send_with_files(to_addr, body, [(Path(f), Path(f).name) for f in file_paths], lenient=True)
+        """Send an email with multiple file attachments via SMTP."""
+        msg_id = self._send_with_files(to_addr, body, [(Path(f), Path(f).name) for f in file_paths])
         logger.info("[Email] Sent multi-attachment email to %s (%d files)", to_addr, len(file_paths))
         return msg_id
 
@@ -759,7 +754,7 @@ class EmailAdapter(BasePlatformAdapter):
 
     def _send_email_with_attachment(self, to_addr: str, body: str, file_path: str, file_name: Optional[str] = None) -> str:
         """Send an email with a single file attachment via SMTP (raises if unattachable)."""
-        return self._send_with_files(to_addr, body, [(Path(file_path), file_name or Path(file_path).name)], lenient=False)
+        return self._send_with_files(to_addr, body, [(Path(file_path), file_name or Path(file_path).name)])
 
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
         """Return basic info about the email chat."""

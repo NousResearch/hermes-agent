@@ -145,11 +145,23 @@ class DiscordMediaMixin:
                     self.name, len(files), chunk_idx + 1, len(chunks),
                 )
                 if self._is_forum_parent(channel):
-                    await self._forum_post_file(
+                    result = await self._forum_post_file(
                         channel, content=(content or "").strip(), files=files,
                     )
+                    if outcome.success and not result.success:
+                        outcome = result
                 else:
-                    await channel.send(content=content, files=files)
+                    msg = await channel.send(content=content, files=files)
+                    attachments = getattr(msg, "attachments", None) or []
+                    if len(attachments) != len(files) and outcome.success:
+                        outcome = SendResult(
+                            success=False,
+                            error=(
+                                "Discord accepted the message but attached "
+                                f"{len(attachments)} of {len(files)} files"
+                            ),
+                            message_id=str(getattr(msg, "id", "") or "") or None,
+                        )
             except Exception as e:
                 logger.warning(
                     "[%s] Multi-image Discord send failed (chunk %d/%d), falling back to per-image: %s",

@@ -431,6 +431,32 @@ class TestSendMethods(unittest.TestCase):
         finally:
             os.unlink(tmp_path)
 
+    def test_image_batch_fails_when_attachment_construction_fails(self):
+        import asyncio
+        import tempfile
+        adapter = self._make_adapter()
+
+        with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
+            f.write(b"image bytes")
+            tmp_path = f.name
+
+        try:
+            with patch(
+                "plugins.platforms.email.adapter._attach_file",
+                side_effect=OSError("attachment encoder failed"),
+            ), patch.object(adapter, "_smtp_send") as smtp_send:
+                result = asyncio.run(
+                    adapter.send_multiple_images(
+                        "user@test.com", [(f"file://{tmp_path}", "image")]
+                    )
+                )
+
+            self.assertFalse(result.success)
+            self.assertIn("attachment encoder failed", result.error)
+            smtp_send.assert_not_called()
+        finally:
+            os.unlink(tmp_path)
+
 
     def test_get_chat_info(self):
         """get_chat_info should return email address as chat info."""

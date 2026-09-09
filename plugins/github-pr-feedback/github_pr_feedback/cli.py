@@ -561,6 +561,21 @@ def _complete_maintenance(ctx: Any, args: argparse.Namespace) -> int:
             )
         except (TypeError, ValueError, json.JSONDecodeError) as error:
             raise ValueError("maintenance command evidence is invalid") from error
+        configured_commands = [
+            tuple(lane.command) for lane in maintenance.lanes
+        ]
+        observed_commands = [evidence.argv for evidence in command_evidence]
+        expected_commands = (
+            configured_commands
+            if args.lane == FINAL_LANE
+            else [
+                tuple(lane.command)
+                for lane in maintenance.lanes
+                if lane.name == args.lane
+            ]
+        )
+        if not expected_commands or observed_commands != expected_commands:
+            raise ValueError("maintenance command evidence does not match configured commands")
         ledger = FeedbackLedger.for_current_profile()
         try:
             ledger.record_maintenance_receipt(

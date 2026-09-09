@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import types
 
+import pytest
+
 from gateway.run_turn_runner import TurnRunner
 
 
@@ -53,13 +55,9 @@ def _wire(user_config):
     return agent
 
 
-def test_present_but_null_display_falls_back_to_on():
-    agent = _wire({"display": None})
-    assert agent.memory_notifications == "on"
-
-
-def test_missing_display_falls_back_to_on():
-    agent = _wire({})
+@pytest.mark.parametrize("user_config", [{"display": None}, {}])
+def test_null_or_missing_display_falls_back_to_on(user_config):
+    agent = _wire(user_config)
     assert agent.memory_notifications == "on"
 
 

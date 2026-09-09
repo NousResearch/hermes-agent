@@ -349,3 +349,72 @@ def test_deferred_save_flushes_inline_when_a_newer_object_owns_the_key():
 
     assert flushed == [stale]
     assert mgr._cache["k"] is newer
+
+
+def _failing_then_recording_uploads(mgr, session):
+    """The SDK session for ``session`` refuses the first batch; ``restore()`` swaps in one that records."""
+    uploads = []
+
+    def refuse(messages):
+        raise ConnectionError("upload refused")
+
+    mgr._get_or_create_peer = lambda peer_id: SimpleNamespace(message=lambda content: content)
+    mgr._sessions_cache[session.honcho_session_id] = SimpleNamespace(add_messages=refuse)
+
+    def restore():
+        mgr._sessions_cache[session.honcho_session_id] = SimpleNamespace(add_messages=lambda ms: uploads.extend(ms))
+
+    return uploads, restore
+
+
+def test_failed_turn_save_after_an_eviction_is_retried_by_flush_all():
+    """A clean session can be evicted while its caller still holds it. The caller's next save flushes inline in
+    turn mode, and a failed upload used to leave that object nowhere flush_all() could find it."""
+    mgr = _manager()
+    session = _session(key="k")
+    mgr._cache["k"] = session
+    with mgr._cache_lock:
+        mgr._evict_session_locked("k", session)
+    session.add_message("user", "late")
+    uploads, restore = _failing_then_recording_uploads(mgr, session)
+
+    mgr.save(session)
+    assert mgr._cache["k"] is session
+    restore()
+    mgr.flush_all()
+
+    assert uploads == ["late"]
+    assert session.messages[0]["_synced"] is True
+
+
+def test_failed_collision_flush_waits_for_flush_all_without_displacing_the_newer_object():
+    mgr = _manager()
+    mgr._write_frequency = "session"
+    newer = _session(key="k")
+    mgr._cache["k"] = newer
+    stale = _session(key="k")
+    stale.add_message("user", "late")
+    uploads, restore = _failing_then_recording_uploads(mgr, stale)
+
+    mgr.save(stale)
+    assert mgr._cache["k"] is newer
+    assert mgr._retry_sessions == [stale]
+    restore()
+    mgr.flush_all()
+
+    assert uploads == ["late"]
+    assert mgr._retry_sessions == []
+    assert mgr._cache["k"] is newer
+
+
+def test_a_retained_session_is_listed_once_across_repeated_failures():
+    mgr = _manager()
+    mgr._cache["k"] = _session(key="k")
+    stale = _session(key="k")
+    stale.add_message("user", "late")
+    _failing_then_recording_uploads(mgr, stale)
+
+    mgr.save(stale)
+    mgr.save(stale)
+
+    assert mgr._retry_sessions == [stale]

@@ -9,7 +9,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from agent.agent_init import _init_fallback_chain
-from agent.auxiliary_client import _read_codex_access_token
+from agent.auxiliary_client import _resolve_codex_credential_and_base
 
 
 def _make_agent(provider="openai-codex"):
@@ -82,7 +82,18 @@ def test_read_codex_token_uses_pool_entry_in_cooldown():
         patch("agent.auxiliary_client._select_pool_entry", return_value=(True, None)),
         patch("agent.credential_pool.load_pool", return_value=pool),
     ):
-        assert _read_codex_access_token() == "reserve-token"
+        assert _resolve_codex_credential_and_base(allow_cooldown=True)[0] == "reserve-token"
+
+
+def test_read_codex_token_does_not_bypass_cooldown_by_default():
+    """Other callers (image_gen, aux) keep the old behavior: benched → None."""
+    entry = SimpleNamespace(runtime_api_key="reserve-token", access_token="")
+    pool = SimpleNamespace(entries=lambda: [entry])
+    with (
+        patch("agent.auxiliary_client._select_pool_entry", return_value=(True, None)),
+        patch("agent.credential_pool.load_pool", return_value=pool),
+    ):
+        assert _resolve_codex_credential_and_base()[0] is None
 
 
 def test_read_codex_token_skips_dead_pool_entries():
@@ -94,10 +105,10 @@ def test_read_codex_token_skips_dead_pool_entries():
         patch("agent.auxiliary_client._select_pool_entry", return_value=(True, None)),
         patch("agent.credential_pool.load_pool", return_value=pool),
     ):
-        assert _read_codex_access_token() == "live-token"
+        assert _resolve_codex_credential_and_base(allow_cooldown=True)[0] == "live-token"
 
 
 def test_read_codex_token_prefers_available_pool_selection():
     entry = SimpleNamespace(runtime_api_key="selected-token", access_token="")
     with patch("agent.auxiliary_client._select_pool_entry", return_value=(True, entry)):
-        assert _read_codex_access_token() == "selected-token"
+        assert _resolve_codex_credential_and_base()[0] == "selected-token"

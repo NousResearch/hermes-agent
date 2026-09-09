@@ -1,32 +1,13 @@
 """Monitor-mode cron support — hash-suppressed change detection.
 
-A monitor job attaches a cheap *monitor source* (``monitor_script`` or
-``monitor_url``) to an ordinary LLM cron job. Each tick the scheduler runs
-the source FIRST and compares a hash of its exact output bytes against the
-hash stored from the last agent-triggering tick:
-
-* unchanged → the agent run is suppressed entirely (no LLM, no delivery);
-  the tick is recorded as a silent ``no_change`` run.
-* changed (or first run) → a "MONITOR CHANGE DETECTED" context block —
-  unified diff of old vs new output (capped) plus the new output — is
-  injected into the prompt and the agent runs normally.
-* source failure → treated as an ERROR, never as a change. The stored hash
-  is left untouched so a source that recovers to its previous output still
-  suppresses.
-
-Output is compared as EXACT BYTES — no timestamp stripping or whitespace
-normalization. Monitor scripts should emit stable output (sort results,
-omit "generated at" lines) or every tick will look like a change.
-
-State lives in two places, both durable across scheduler restarts:
-
-* ``job["monitor_state"]`` in jobs.json — ``last_output_hash`` +
-  ``last_changed_at`` (additive JSON fields, no migration needed);
-* ``OUTPUT_DIR/<job_id>/monitor_last_output.txt`` — the previous output
-  text, kept only so the next change can render a diff.
-
-Inspired by: ChatGPT Work monitor tasks (idea-level, docs-only);
-enabler: #80774.
+A monitor job attaches a cheap source (``monitor_script`` / ``monitor_url``) to an LLM cron job.
+Each tick runs the source FIRST and hashes its EXACT output bytes (no timestamp/whitespace
+normalization — scripts must emit stable output) against the hash from the last agent-triggering
+tick: unchanged → agent run suppressed (silent ``no_change`` run); changed/first run → a "MONITOR
+CHANGE DETECTED" block (capped unified diff + new output) is injected into the prompt; source
+failure → an ERROR, never a change, and the stored hash is left untouched. State:
+``job["monitor_state"]`` in jobs.json (hash + last_changed_at) and
+``OUTPUT_DIR/<job_id>/monitor_last_output.txt`` (for the diff).
 """
 
 from __future__ import annotations
@@ -39,12 +20,10 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
-# Cap for the unified diff injected into the prompt.
+# Prompt-injection caps: unified diff, and new-output block (mirrors the 8k context_from truncation
+# in cron/scheduler.py). Then bounded-GET limits for monitor_url sources.
 MAX_DIFF_CHARS = 4000
-# Cap for the new-output block injected into the prompt (mirrors the 8k
-# context_from truncation in cron/scheduler.py).
 MAX_OUTPUT_CHARS = 8000
-# Bounded GET limits for monitor_url sources.
 URL_TIMEOUT_SECONDS = 30
 MAX_URL_BYTES = 262_144  # 256 KiB
 
@@ -71,11 +50,7 @@ def build_monitor_diff(old: str, new: str) -> str:
     """Unified diff of old vs new monitor output, capped at MAX_DIFF_CHARS."""
     diff = "\n".join(
         difflib.unified_diff(
-            old.splitlines(),
-            new.splitlines(),
-            fromfile="previous",
-            tofile="current",
-            lineterm="",
+            old.splitlines(), new.splitlines(), fromfile="previous", tofile="current", lineterm="",
         )
     )
     if len(diff) > MAX_DIFF_CHARS:
@@ -101,8 +76,10 @@ def _read_last_output(job_id: str) -> str:
 
 def _write_last_output(job_id: str, output: str) -> None:
     try:
+        from cron.jobs import _ensure_cron_dir
+
         path = _snapshot_path(job_id)
-        path.parent.mkdir(parents=True, exist_ok=True)
+        _ensure_cron_dir(path.parent)
         path.write_text(output, encoding="utf-8")
     except Exception as exc:
         logger.warning("Monitor: failed to persist last output for %r: %s", job_id, exc)
@@ -118,38 +95,38 @@ def _fetch_monitor_url(url: str) -> tuple[bool, str]:
         req = urllib.request.Request(url, headers={"User-Agent": "hermes-cron-monitor"})
         with urllib.request.urlopen(req, timeout=URL_TIMEOUT_SECONDS) as resp:  # nosec B310 — scheme checked above
             body = resp.read(MAX_URL_BYTES + 1)
-        if len(body) > MAX_URL_BYTES:
-            body = body[:MAX_URL_BYTES]
-        return True, body.decode("utf-8", errors="replace")
+        return True, body[:MAX_URL_BYTES].decode("utf-8", errors="replace")
     except Exception as exc:
         return False, f"monitor_url fetch failed: {exc}"
 
 
+def _field(job: dict, key: str) -> str:
+    return (job.get(key) or "").strip()
+
+
 def _run_monitor_source(job: dict) -> tuple[bool, str]:
     """Run the job's monitor source (script or URL). Returns (ok, output)."""
-    monitor_script = (job.get("monitor_script") or "").strip()
+    monitor_script = _field(job, "monitor_script")
     if monitor_script:
         # Same containment + interpreter rules as the existing `script` field.
-        from cron.scheduler import _run_job_script
+        from cron.scheduler_script import _run_job_script
 
-        workdir = (job.get("workdir") or "").strip() or None
-        return _run_job_script(monitor_script, workdir=workdir)
-    monitor_url = (job.get("monitor_url") or "").strip()
+        return _run_job_script(monitor_script, workdir=_field(job, "workdir") or None)
+    monitor_url = _field(job, "monitor_url")
     if monitor_url:
         return _fetch_monitor_url(monitor_url)
     return False, "monitor job has neither monitor_script nor monitor_url"
 
 
 def job_has_monitor(job: dict) -> bool:
-    return bool((job.get("monitor_script") or "").strip() or (job.get("monitor_url") or "").strip())
+    return bool(_field(job, "monitor_script") or _field(job, "monitor_url"))
 
 
 def check_monitor(job: dict) -> MonitorOutcome:
     """Run the monitor source and decide whether the agent should run.
 
-    On change (or first run) the new hash + snapshot are persisted BEFORE
-    the agent runs — detection time is the state boundary, so a failed
-    agent run doesn't re-alert on the same content forever.
+    On change (or first run) the new hash + snapshot are persisted BEFORE the agent runs — detection
+    time is the state boundary, so a failed agent run doesn't re-alert on the same content forever.
     On failure nothing is persisted.
     """
     job_id = str(job.get("id") or "")
@@ -159,8 +136,7 @@ def check_monitor(job: dict) -> MonitorOutcome:
 
     new_hash = hash_monitor_output(output)
     raw_state = job.get("monitor_state")
-    state = raw_state if isinstance(raw_state, dict) else {}
-    last_hash = state.get("last_output_hash")
+    last_hash = raw_state.get("last_output_hash") if isinstance(raw_state, dict) else None
 
     if last_hash is not None and new_hash == last_hash:
         return MonitorOutcome(ok=True, changed=False)
@@ -172,26 +148,23 @@ def check_monitor(job: dict) -> MonitorOutcome:
     if len(shown_output) > MAX_OUTPUT_CHARS:
         shown_output = shown_output[:MAX_OUTPUT_CHARS] + "\n... [output truncated]"
 
+    current = f"### Current output\n\n```\n{shown_output}\n```"
     if first_run:
         context_block = (
             "## Monitor Baseline (first run)\n\n"
             "This is the first observation of the monitored source — there is "
-            "no previous output to diff against.\n\n"
-            f"### Current output\n\n```\n{shown_output}\n```"
+            "no previous output to diff against.\n\n" + current
         )
     else:
         diff = build_monitor_diff(old_output, output)
         context_block = (
             "## MONITOR CHANGE DETECTED\n\n"
             "The monitored source's output changed since the last run.\n\n"
-            f"### Diff (previous → current)\n\n```diff\n{diff}\n```\n\n"
-            f"### Current output\n\n```\n{shown_output}\n```"
+            f"### Diff (previous → current)\n\n```diff\n{diff}\n```\n\n" + current
         )
 
     _persist_monitor_state(job_id, new_hash, output)
-    return MonitorOutcome(
-        ok=True, changed=True, first_run=first_run, context_block=context_block
-    )
+    return MonitorOutcome(ok=True, changed=True, first_run=first_run, context_block=context_block)
 
 
 def _persist_monitor_state(job_id: str, new_hash: str, output: str) -> None:

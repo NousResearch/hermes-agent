@@ -14,6 +14,7 @@ import assert from 'node:assert/strict'
 
 import { test } from 'vitest'
 
+import { makeNousCloudBackendDownError } from './backend-health'
 import {
   apiRequestRegistryConnectionId,
   AT_COOKIE_VARIANTS,
@@ -34,6 +35,7 @@ import {
   normalizeRemoteHeaders,
   normalizeSshConfig,
   normAuthMode,
+  pathForRegistryBackendRequest,
   pathWithGlobalRemoteProfile,
   pathWithProfileScope,
   profileHasRemoteConnection,
@@ -41,12 +43,15 @@ import {
   profileSshOverride,
   remoteRequestMatchesBaseUrl,
   resolveAuthMode,
+  resolveProfileApiRequest,
   resolveProfileBackendRoute,
+  resolveRemoteSshDashboardProfile,
   resolveTestWsUrl,
   RT_COOKIE_VARIANTS,
   savedProfileSsh,
   tokenPreview,
-  translateSelfProfileQuery
+  translateSelfProfileQuery,
+  withTransientRetries
 } from './connection-config'
 
 // --- connectionScopeKey / normAuthMode ---
@@ -56,6 +61,17 @@ test('connectionScopeKey trims to a name or null for the global scope', () => {
   assert.equal(connectionScopeKey(''), null)
   assert.equal(connectionScopeKey(null), null)
   assert.equal(connectionScopeKey(undefined), null)
+})
+
+test('resolveRemoteSshDashboardProfile never sends a conn: pool key to the remote', () => {
+  // Clicking Mac Mini / Spark default used `remoteProfile || poolKey`, which
+  // spawned a dashboard for the fictional profile "conn:mac-mini::default".
+  assert.equal(resolveRemoteSshDashboardProfile('', 'conn:mac-mini::default'), '')
+  assert.equal(resolveRemoteSshDashboardProfile(undefined, 'conn:spark::default'), '')
+  assert.equal(resolveRemoteSshDashboardProfile('', 'conn:mac-mini::dixie'), 'dixie')
+  assert.equal(resolveRemoteSshDashboardProfile('', 'bob'), 'bob')
+  assert.equal(resolveRemoteSshDashboardProfile('', 'default'), '')
+  assert.equal(resolveRemoteSshDashboardProfile('writer', 'conn:mac-mini::default'), 'writer')
 })
 
 test('normAuthMode coerces to token unless explicitly oauth', () => {
@@ -318,10 +334,10 @@ const ROUTES = [
     expected: { backend: 'primary', descriptorProfile: null, scopePath: false }
   },
   {
-    name: 'a renamed primary profile still owns the window backend',
+    name: 'a renamed primary profile on a global remote is still scoped on the wire',
     profile: ' coder ',
     opts: { primaryProfile: 'coder', globalRemote: true },
-    expected: { backend: 'primary', descriptorProfile: null, scopePath: false }
+    expected: { backend: 'primary', descriptorProfile: 'coder', scopePath: true }
   },
   {
     name: 'an unset profile resolves to the primary',
@@ -342,9 +358,77 @@ const ROUTES = [
     expected: { backend: 'pool', descriptorProfile: null, scopePath: false }
   },
   {
-    name: 'a local non-primary profile gets its own pooled backend',
+    name: 'an unscoped local profile request keeps its pooled backend',
     profile: 'coder',
-    opts: { primaryProfile: 'default', globalRemote: false, profileRemoteOverride: false },
+    opts: {
+      primaryProfile: 'default',
+      globalRemote: false,
+      profileRemoteOverride: false,
+      requestMethod: 'POST',
+      requestPath: '/api/memory/reset'
+    },
+    expected: { backend: 'pool', descriptorProfile: null, scopePath: false }
+  },
+  {
+    name: 'a remote sub-profile without a local entry routes through the primary remote gateway',
+    profile: 'pm',
+    opts: {
+      primaryProfile: 'default',
+      globalRemote: false,
+      profileRemoteOverride: false,
+      primaryRemoteActive: true,
+      ownEntry: false
+    },
+    expected: { backend: 'primary', descriptorProfile: 'pm', scopePath: true }
+  },
+  {
+    name: 'a sub-profile with its own local entry still pools locally under a remote primary',
+    profile: 'pm',
+    opts: {
+      primaryProfile: 'default',
+      globalRemote: false,
+      profileRemoteOverride: false,
+      primaryRemoteActive: true,
+      ownEntry: true
+    },
+    expected: { backend: 'pool', descriptorProfile: null, scopePath: false }
+  },
+  {
+    name: 'a profile-aware local REST request reuses the primary backend',
+    profile: 'coder',
+    opts: {
+      primaryProfile: 'default',
+      globalRemote: false,
+      profileRemoteOverride: false,
+      requestMethod: 'GET',
+      requestPath: '/api/config'
+    },
+    expected: { backend: 'primary', descriptorProfile: 'coder', scopePath: true }
+  },
+  {
+    name: 'a profile-management request uses the primary without a query scope',
+    profile: 'coder',
+    opts: {
+      primaryProfile: 'default',
+      globalRemote: false,
+      profileRemoteOverride: false,
+      requestMethod: 'DELETE',
+      requestPath: '/api/profiles/worker'
+    },
+    expected: { backend: 'primary', descriptorProfile: null, scopePath: false }
+  },
+  {
+    name: 'a stored local profile never reuses a remote primary for an eligible REST route',
+    profile: 'coder',
+    opts: {
+      primaryProfile: 'default',
+      globalRemote: false,
+      profileRemoteOverride: false,
+      primaryRemoteActive: true,
+      ownEntry: true,
+      requestMethod: 'GET',
+      requestPath: '/api/config'
+    },
     expected: { backend: 'pool', descriptorProfile: null, scopePath: false }
   }
 ]
@@ -374,10 +458,13 @@ test('apiRequestRegistryConnectionId extracts a genuinely non-local connection i
   assert.equal(apiRequestRegistryConnectionId({ connectionId: '  gw-1  ', path: '/x' }), 'gw-1')
 })
 
-test('apiRequestRegistryConnectionId resolves null for the legacy/local routes', () => {
+test('apiRequestRegistryConnectionId preserves an explicit local registry route', () => {
+  assert.equal(apiRequestRegistryConnectionId({ connectionId: 'local', path: '/x' }), 'local')
+})
+
+test('apiRequestRegistryConnectionId resolves null for unscoped legacy routes', () => {
   assert.equal(apiRequestRegistryConnectionId({ path: '/api/cron/jobs' }), null)
   assert.equal(apiRequestRegistryConnectionId({ connectionId: '', path: '/x' }), null)
-  assert.equal(apiRequestRegistryConnectionId({ connectionId: 'local', path: '/x' }), null)
   assert.equal(apiRequestRegistryConnectionId({ connectionId: null, path: '/x' }), null)
   assert.equal(apiRequestRegistryConnectionId(null), null)
   assert.equal(apiRequestRegistryConnectionId(undefined), null)
@@ -398,6 +485,35 @@ test('pathWithProfileScope keeps an explicit profile query and no-ops on empty p
   assert.equal(pathWithProfileScope('/api/cron/jobs', null), '/api/cron/jobs')
 })
 
+test('pathForRegistryBackendRequest uses the resolved registry backend scope', () => {
+  assert.equal(
+    pathForRegistryBackendRequest('/api/fs/read-data-url?path=%2Fsrv%2Fimage.png', 'research', {
+      sharedRemote: true
+    }),
+    '/api/fs/read-data-url?path=%2Fsrv%2Fimage.png&profile=research'
+  )
+  assert.equal(
+    pathForRegistryBackendRequest('/api/fs/download?path=%2Fsrv%2Freport.pdf&profile=mara', 'mara', {
+      remoteProfile: 'default'
+    }),
+    '/api/fs/download?path=%2Fsrv%2Freport.pdf&profile=default'
+  )
+  assert.equal(
+    pathForRegistryBackendRequest('/api/fs/download?path=%2Fsrv%2Freport.pdf', 'mara', {
+      remoteProfile: 'default'
+    }),
+    '/api/fs/download?path=%2Fsrv%2Freport.pdf'
+  )
+  assert.equal(
+    pathForRegistryBackendRequest(
+      '/api/profiles/sessions/sidebar?recents_profile=research&recents_exclude=cron%2Cdesktop',
+      'research',
+      { remoteProfile: 'remote-research' }
+    ),
+    '/api/profiles/sessions/sidebar?recents_profile=remote-research&recents_exclude=cron%2Cdesktop'
+  )
+})
+
 // --- pathWithGlobalRemoteProfile ---
 
 test('pathWithGlobalRemoteProfile appends profile in global remote mode', () => {
@@ -410,14 +526,14 @@ test('pathWithGlobalRemoteProfile appends profile in global remote mode', () => 
   )
 })
 
-test('pathWithGlobalRemoteProfile skips the primary profile, which the remote already serves', () => {
+test('pathWithGlobalRemoteProfile scopes the primary label because the dashboard launch home may differ', () => {
   assert.equal(
     pathWithGlobalRemoteProfile('/api/model/info', 'coder', {
       globalRemote: true,
       primaryProfile: 'coder',
       profileRemoteOverride: false
     }),
-    '/api/model/info'
+    '/api/model/info?profile=coder'
   )
 })
 
@@ -496,8 +612,23 @@ test('translateSelfProfileQuery rewrites the self-profile filter into the backen
   )
 })
 
+test('translateSelfProfileQuery rewrites sidebar recents_profile aliases for managed SSH', () => {
+  assert.equal(
+    translateSelfProfileQuery(
+      '/api/profiles/sessions/sidebar?recents_profile=research&recents_limit=20&cron_limit=50&messaging_limit=100',
+      'research',
+      'remote-research'
+    ),
+    '/api/profiles/sessions/sidebar?recents_profile=remote-research&recents_limit=20&cron_limit=50&messaging_limit=100'
+  )
+})
+
 test('translateSelfProfileQuery leaves cross-profile and unfiltered paths untouched', () => {
   assert.equal(translateSelfProfileQuery('/api/cron/jobs?profile=all', 'mara', 'default'), '/api/cron/jobs?profile=all')
+  assert.equal(
+    translateSelfProfileQuery('/api/profiles/sessions/sidebar?recents_profile=all', 'mara', 'default'),
+    '/api/profiles/sessions/sidebar?recents_profile=all'
+  )
   assert.equal(
     translateSelfProfileQuery('/api/cron/jobs?profile=worker', 'mara', 'default'),
     '/api/cron/jobs?profile=worker'
@@ -509,6 +640,27 @@ test('translateSelfProfileQuery no-ops when alias and backend profile agree or a
   assert.equal(translateSelfProfileQuery('/api/cron/jobs?profile=mara', 'mara', 'mara'), '/api/cron/jobs?profile=mara')
   assert.equal(translateSelfProfileQuery('/api/cron/jobs?profile=mara', 'mara', ''), '/api/cron/jobs?profile=mara')
   assert.equal(translateSelfProfileQuery('/api/cron/jobs?profile=mara', '', 'default'), '/api/cron/jobs?profile=mara')
+})
+
+test('pathWithGlobalRemoteProfile appends local-primary profile scope only for eligible routes', () => {
+  assert.equal(
+    pathWithGlobalRemoteProfile('/api/config', 'iris', {
+      globalRemote: false,
+      profileRemoteOverride: false,
+      requestMethod: 'GET',
+      requestPath: '/api/config'
+    }),
+    '/api/config?profile=iris'
+  )
+  assert.equal(
+    pathWithGlobalRemoteProfile('/api/memory/reset', 'iris', {
+      globalRemote: false,
+      profileRemoteOverride: false,
+      requestMethod: 'POST',
+      requestPath: '/api/memory/reset'
+    }),
+    '/api/memory/reset'
+  )
 })
 
 test('pathWithGlobalRemoteProfile skips empty profile/path safely', () => {
@@ -525,6 +677,161 @@ test('pathWithGlobalRemoteProfile skips empty profile/path safely', () => {
       profileRemoteOverride: false
     }),
     ''
+  )
+})
+
+// --- resolveProfileApiRequest ---
+
+test('resolveProfileApiRequest keeps eligible local REST on the primary backend', () => {
+  assert.deepEqual(
+    resolveProfileApiRequest('iris', '/api/config?view=desktop', {
+      globalRemote: false,
+      profileRemoteOverride: false,
+      requestMethod: 'GET'
+    }),
+    {
+      backendProfile: null,
+      requestPath: '/api/config?view=desktop&profile=iris'
+    }
+  )
+})
+
+test('resolveProfileApiRequest keeps unscoped destructive routes on the profile backend', () => {
+  for (const [method, path] of [
+    ['POST', '/api/memory/reset'],
+    ['POST', '/api/curator/run'],
+    ['PUT', '/api/curator/paused'],
+    ['POST', '/api/webhooks']
+  ]) {
+    assert.deepEqual(
+      resolveProfileApiRequest('iris', path, {
+        globalRemote: false,
+        profileRemoteOverride: false,
+        requestMethod: method
+      }),
+      { backendProfile: 'iris', requestPath: path }
+    )
+  }
+})
+
+test('resolveProfileApiRequest uses exact method and path eligibility for mixed families', () => {
+  assert.deepEqual(
+    resolveProfileApiRequest('iris', '/api/skills', {
+      requestMethod: 'GET'
+    }),
+    { backendProfile: null, requestPath: '/api/skills?profile=iris' }
+  )
+  assert.deepEqual(
+    resolveProfileApiRequest('iris', '/api/skills', {
+      requestMethod: 'POST'
+    }),
+    { backendProfile: 'iris', requestPath: '/api/skills' }
+  )
+  assert.deepEqual(
+    resolveProfileApiRequest('iris', '/api/config/defaults', {
+      requestMethod: 'GET'
+    }),
+    { backendProfile: 'iris', requestPath: '/api/config/defaults' }
+  )
+  assert.deepEqual(
+    resolveProfileApiRequest('iris', '/api/model/recommended-default?provider=nous', {
+      requestMethod: 'GET'
+    }),
+    {
+      backendProfile: 'iris',
+      requestPath: '/api/model/recommended-default?provider=nous'
+    }
+  )
+})
+
+test('resolveProfileApiRequest scopes complete safe families according to their contracts', () => {
+  assert.deepEqual(
+    resolveProfileApiRequest('iris', '/api/tools/toolsets/image_gen/config', {
+      requestMethod: 'GET'
+    }),
+    {
+      backendProfile: null,
+      requestPath: '/api/tools/toolsets/image_gen/config?profile=iris'
+    }
+  )
+  assert.deepEqual(
+    resolveProfileApiRequest('iris', '/api/profiles/worker', {
+      requestMethod: 'DELETE'
+    }),
+    {
+      backendProfile: null,
+      requestPath: '/api/profiles/worker'
+    }
+  )
+})
+
+test('resolveProfileApiRequest routes action-status polls with the action-spawning routes', () => {
+  // /api/actions/{name}/status must land on the SAME backend as the endpoints
+  // that spawn actions (skills hub install/uninstall/update, mcp catalog
+  // install): _spawn_hermes_action registers the dynamic action name only in
+  // the spawning process. Splitting the pair 404s the poll with
+  // "Unknown action: skills-install-<slug>-<hash>".
+  assert.deepEqual(
+    resolveProfileApiRequest('iris', '/api/actions/skills-install-ascii-art-dd7bccf1/status?lines=200', {
+      requestMethod: 'GET'
+    }),
+    {
+      backendProfile: null,
+      requestPath: '/api/actions/skills-install-ascii-art-dd7bccf1/status?lines=200&profile=iris'
+    }
+  )
+  // The spawn side (hub install) and the poll side must agree on the backend.
+  assert.deepEqual(
+    resolveProfileApiRequest('iris', '/api/skills/hub/install', {
+      requestMethod: 'POST'
+    }),
+    { backendProfile: null, requestPath: '/api/skills/hub/install?profile=iris' }
+  )
+  // MCP catalog installs spawn background actions too — same pairing rule.
+  assert.deepEqual(
+    resolveProfileApiRequest('iris', '/api/mcp/catalog/install', {
+      requestMethod: 'POST'
+    }),
+    { backendProfile: null, requestPath: '/api/mcp/catalog/install?profile=iris' }
+  )
+})
+
+test('resolveProfileApiRequest preserves remote routing precedence', () => {
+  assert.deepEqual(
+    resolveProfileApiRequest('iris', '/api/memory/reset', {
+      globalRemote: true,
+      profileRemoteOverride: false,
+      requestMethod: 'POST'
+    }),
+    {
+      backendProfile: null,
+      requestPath: '/api/memory/reset?profile=iris'
+    }
+  )
+  assert.deepEqual(
+    resolveProfileApiRequest('iris', '/api/config', {
+      globalRemote: true,
+      profileRemoteOverride: true,
+      requestMethod: 'GET'
+    }),
+    {
+      backendProfile: 'iris',
+      requestPath: '/api/config'
+    }
+  )
+})
+
+test('resolveProfileApiRequest keeps a stored local profile off a remote primary', () => {
+  assert.deepEqual(
+    resolveProfileApiRequest('iris', '/api/config', {
+      primaryRemoteActive: true,
+      ownEntry: true,
+      requestMethod: 'GET'
+    }),
+    {
+      backendProfile: 'iris',
+      requestPath: '/api/config'
+    }
   )
 })
 
@@ -873,6 +1180,54 @@ test('gateway ticket failures classify only explicit auth rejection statuses as 
   assert.equal(serverFailure.needsOauthLogin, undefined)
 })
 
+test('withTransientRetries retries transport blips but not auth rejections', async () => {
+  const sleeps: number[] = []
+  let transportAttempts = 0
+
+  const ticket = await withTransientRetries(
+    async () => {
+      transportAttempts += 1
+
+      if (transportAttempts < 3) {
+        throw Object.assign(new Error('500: unavailable'), { statusCode: 500 })
+      }
+
+      return 'tkt-ok'
+    },
+    {
+      delaysMs: [10, 10],
+      sleep: async (ms: number) => {
+        sleeps.push(ms)
+      }
+    }
+  )
+
+  assert.equal(ticket, 'tkt-ok')
+  assert.equal(transportAttempts, 3)
+  assert.deepEqual(sleeps, [10, 10])
+
+  let authAttempts = 0
+  await assert.rejects(
+    () =>
+      withTransientRetries(
+        async () => {
+          authAttempts += 1
+          throw Object.assign(new Error('401: rejected'), { statusCode: 401 })
+        },
+        {
+          delaysMs: [10],
+          sleep: async () => undefined
+        }
+      ),
+    (err: any) => {
+      assert.equal(err.statusCode, 401)
+
+      return true
+    }
+  )
+  assert.equal(authAttempts, 1)
+})
+
 test('gateway WS URL IPC result serializes success and the auth-vs-transport matrix', async () => {
   assert.deepEqual(await gatewayWsUrlIpcResult(async () => 'wss://gateway.example.com/api/ws?ticket=fresh'), {
     ok: true,
@@ -906,4 +1261,84 @@ test('resolveTestWsUrl (oauth) requires a mintTicket function', async () => {
     () => resolveTestWsUrl('https://gw.example.com', 'oauth', null),
     /mintTicket function is required/
   )
+})
+
+test('gatewayTicketFailure preserves a structured 503 statusCode as a transport failure', () => {
+  const source = new Error('upstream unavailable') as any
+  source.statusCode = 503
+
+  const wrapped = gatewayTicketFailure(source, 'auth message', 'transport message')
+
+  assert.equal(wrapped.message, 'transport message')
+  assert.equal((wrapped as any).statusCode, 503)
+  assert.equal((wrapped as any).needsOauthLogin, undefined)
+  assert.equal((wrapped as any).cause, source)
+})
+
+test('gatewayTicketFailure keeps 401 and 403 as reauth with needsOauthLogin', () => {
+  for (const code of [401, 403]) {
+    const source = new Error(`HTTP ${code}`) as any
+    source.statusCode = code
+
+    const wrapped = gatewayTicketFailure(source, 'auth message', 'transport message')
+
+    assert.equal(wrapped.message, 'auth message')
+    assert.equal((wrapped as any).needsOauthLogin, true)
+    assert.equal((wrapped as any).statusCode, code)
+    assert.equal((wrapped as any).cause, source)
+  }
+})
+
+test('gatewayTicketFailure only copies an integer statusCode, not a message prefix', () => {
+  // A legacy "503: ..." message carries no structured statusCode; the Cloud
+  // classifier (makeNousCloudBackendDownError) handles the prefix at the mint
+  // boundary. The wrapper must not invent an integer from the message.
+  const source = new Error('503: Service Unavailable') as any
+
+  const wrapped = gatewayTicketFailure(source, 'auth message', 'transport message')
+
+  assert.equal((wrapped as any).statusCode, undefined)
+  assert.equal((wrapped as any).needsOauthLogin, undefined)
+})
+
+// OAuth integration regression (#85373): the WS-ticket mint boundary runs
+// BEFORE waitForHermesReady. This mirrors main.ts buildRemoteConnection's
+// catch — classify a Nous Cloud server fault via the shared factory, else
+// fall through to gatewayTicketFailure. Proves the production composition:
+//   1. Cloud + OAuth ticket mint + 503  -> actionable Cloud-down error
+//   2. Cloud + OAuth ticket mint + 401  -> reauth (never Cloud-down)
+test('OAuth ticket-mint 503 surfaces the Cloud-down error (startup boundary)', () => {
+  const baseUrl = 'https://ares-3009.agents.nousresearch.com'
+  const ticketErr = new Error('upstream unavailable') as any
+  ticketErr.statusCode = 503
+
+  // The exact production sequence from main.ts.
+  const cloudError = makeNousCloudBackendDownError(baseUrl, ticketErr)
+
+  if (cloudError !== null) {
+    assert.equal((cloudError as any).isCloudBackendDown, true)
+    assert.equal((cloudError as any).statusCode, 503)
+    assert.ok(cloudError.message.includes('Nous Cloud agent ares-3009.agents.nousresearch.com is down'))
+
+    return
+  }
+
+  const wrapped = gatewayTicketFailure(ticketErr, 'auth', 'transport')
+
+  assert.fail(`expected Cloud-down classification, got wrapper: ${wrapped.message}`)
+})
+
+test('OAuth ticket-mint 401 stays on the reauth path (never Cloud-down)', () => {
+  const baseUrl = 'https://ares-3009.agents.nousresearch.com'
+  const ticketErr = new Error('Unauthorized') as any
+  ticketErr.statusCode = 401
+
+  const cloudError = makeNousCloudBackendDownError(baseUrl, ticketErr)
+  assert.equal(cloudError, null, 'a 401 must not become a Cloud-down error')
+
+  const wrapped = gatewayTicketFailure(ticketErr, 'auth message', 'transport message')
+
+  assert.equal(wrapped.message, 'auth message')
+  assert.equal((wrapped as any).needsOauthLogin, true)
+  assert.equal((wrapped as any).statusCode, 401)
 })

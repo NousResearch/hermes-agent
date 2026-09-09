@@ -21,6 +21,7 @@ from gateway.platforms.api_server import APIServerAdapter
 from gateway.run import _INTERRUPT_REASON_GATEWAY_SHUTDOWN
 from hermes_state import SessionDB
 from tests.gateway.restart_test_helpers import make_restart_runner
+from tools import browser_tool_lifecycle as bt_lifecycle
 
 # Safety net so a regression parks the executor thread forever instead of
 # hanging CI.  No assertion below depends on elapsed time.
@@ -520,9 +521,9 @@ class TestShutdownSettleWindow:
         which it always is for API turns — and the post-interrupt tool kill
         lands on a turn that was asked to stop microseconds earlier.
         """
-        import tools.browser_tool as _bt
         import tools.process_registry as _pr
         import tools.terminal_tool as _tt
+        import tools.terminal_tool_lifecycle as terminal_tool_lifecycle
 
         runner, adapter = make_restart_runner()
         runner._restart_drain_timeout = 0.01  # force the drain-timeout path
@@ -538,7 +539,8 @@ class TestShutdownSettleWindow:
 
         monkeypatch.setattr(_pr.process_registry, "kill_all", _spy_kill_all)
         monkeypatch.setattr(_tt, "cleanup_all_environments", lambda: None)
-        monkeypatch.setattr(_bt, "cleanup_all_browsers", lambda: None)
+        monkeypatch.setattr(terminal_tool_lifecycle, "cleanup_all_environments", lambda: None)
+        monkeypatch.setattr(bt_lifecycle, "cleanup_all_browsers", lambda: None)
 
         with patch("gateway.status.remove_pid_file"), \
              patch("gateway.status.write_runtime_status"), \
@@ -564,9 +566,9 @@ class TestShutdownSettleWindow:
         and previously went straight to the tool-subprocess kill. The settle
         loop must re-signal when API work is still live at exit.
         """
-        import tools.browser_tool as _bt
         import tools.process_registry as _pr
         import tools.terminal_tool as _tt
+        import tools.terminal_tool_lifecycle as terminal_tool_lifecycle
 
         runner, adapter = make_restart_runner()
         runner._restart_drain_timeout = 0.01
@@ -576,7 +578,8 @@ class TestShutdownSettleWindow:
 
         monkeypatch.setattr(_pr.process_registry, "kill_all", lambda task_id=None: 0)
         monkeypatch.setattr(_tt, "cleanup_all_environments", lambda: None)
-        monkeypatch.setattr(_bt, "cleanup_all_browsers", lambda: None)
+        monkeypatch.setattr(terminal_tool_lifecycle, "cleanup_all_environments", lambda: None)
+        monkeypatch.setattr(bt_lifecycle, "cleanup_all_browsers", lambda: None)
 
         # Accelerate the loop clock: each time() call advances 1s of virtual
         # time, so the 5s settle deadline expires after a handful of polls

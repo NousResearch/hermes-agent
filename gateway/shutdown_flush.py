@@ -198,10 +198,13 @@ def _serialise_value(value: Any) -> Optional[dict]:
     return {"text": str(value)}
 
 
-def recover_pending_to_db(session_db=None) -> int:
+def recover_pending_to_db(session_db=None, resolve_fallback_session_id=None) -> int:
     """Replay flush-dir ``*.json`` files via ``SessionDB.append_message``, deleting each on success.
 
     ``session_db=None`` opens (and afterwards releases) the shared default ``state.db``.
+    ``resolve_fallback_session_id``, when provided, is a ``(session_key, payload) -> Optional[str]``
+    callback consulted for a payload whose serialised ``data`` carries no ``session_id``; its
+    non-None result routes the message instead of stranding the flush file forever.
     Returns the number of messages recovered.
     """
     flush_files = sorted(_get_flush_dir().glob("*.json"))
@@ -218,7 +221,10 @@ def recover_pending_to_db(session_db=None) -> int:
             # Agent-history snapshots are for manual operator recovery, not automatic DB insertion.
             if payload.get("reason") == "shutdown-with-unpersisted-agent-history":
                 continue
-            if _recover_one_payload(session_db, path, payload):
+            if _recover_one_payload(
+                session_db, path, payload,
+                resolve_fallback_session_id=resolve_fallback_session_id,
+            ):
                 recovered += 1
                 path.unlink(missing_ok=True)
     finally:
@@ -231,7 +237,8 @@ def recover_pending_to_db(session_db=None) -> int:
     return recovered
 
 
-def _recover_one_payload(session_db, path: Path, payload: Dict[str, Any]) -> bool:
+def _recover_one_payload(session_db, path: Path, payload: Dict[str, Any],
+                         resolve_fallback_session_id=None) -> bool:
     """Append one flush payload to ``session_db``; False (file kept) when structurally invalid."""
     # Cap-dropped transcript payloads carry the full message dict keyed by session_id — replay directly
     # (#78182). This handles spool files that were never drained before a restart.
@@ -254,11 +261,14 @@ def _recover_one_payload(session_db, path: Path, payload: Dict[str, Any]) -> boo
                        "the flush file has been preserved", path)
         return False
     # session_key is a gateway routing key (e.g. "agent:main:telegram:..."); appending a row
-    # needs the real session_id, which only the serialised data can supply at this stage.
+    # needs the real session_id, supplied by the serialised data or, failing that, the fallback
+    # resolver (which routes an unresolvable message into the owner's canonical "Bot Chat").
     session_id = data.get("session_id", "")
+    if not session_id and resolve_fallback_session_id is not None:
+        session_id = resolve_fallback_session_id(session_key, payload) or ""
     if not session_id:
         logger.warning("Cannot recover pending message for %s: no session_id in flush file and "
-                       "session_key-to-id resolution is not available at this recovery stage. "
+                       "the fallback session resolver yielded none. "
                        "The message text is preserved in %s", session_key, path)
         return False
     session_db.append_message(session_id=session_id, role="user", content=text,

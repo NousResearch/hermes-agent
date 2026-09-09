@@ -5289,7 +5289,33 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
 
     def _recover_pending() -> None:
         from gateway.shutdown_flush import recover_pending_to_db
-        recovered = recover_pending_to_db()
+
+        def _resolve_bot_chat_fallback(session_key, _payload):
+            # Route an unresolvable flushed message into the owning profile's canonical "Bot Chat"
+            # (the session titled exactly BOT_CHAT_TITLE, per tools/bot_mode_probe). Without a
+            # session the flush file would be stranded and re-warned every restart, so land the
+            # message in a real session instead.
+            store = getattr(runner, "session_store", None)
+            if store is None:
+                return None
+            try:
+                db = store._db_for_key(session_key)
+                if db is None:
+                    return None
+                from tools.bot_mode_probe import BOT_CHAT_TITLE
+                row = db.get_session_by_title(BOT_CHAT_TITLE)
+                if row and row.get("id"):
+                    return str(row["id"])
+                import uuid
+                session_id = f"bot_chat_{uuid.uuid4().hex}"
+                db.create_session(session_id, source="cli")
+                db.set_session_title(session_id, BOT_CHAT_TITLE)
+                return session_id
+            except Exception:
+                logger.exception("Could not resolve Bot Chat fallback session for %s", session_key)
+                return None
+
+        recovered = recover_pending_to_db(resolve_fallback_session_id=_resolve_bot_chat_fallback)
         if recovered:
             logger.info("Recovered %d pending message(s) from shutdown flush", recovered)
 

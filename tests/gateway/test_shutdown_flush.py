@@ -134,6 +134,111 @@ def test_recover_closes_owned_db_when_unexpected_exception_escapes(
     assert db.released is True
 
 
+def test_recover_routes_unresolvable_payload_to_fallback_session(tmp_path, monkeypatch):
+    """A payload whose data has no session_id must be recovered into the fallback-provided
+    session (append_message called with that id) and unlinked, not stranded (#72680)."""
+    flush_dir = _make_flush_dir(tmp_path)
+    monkeypatch.setattr("gateway.shutdown_flush._get_flush_dir", lambda: flush_dir)
+    ts = int(time.time())
+    flush_file = flush_dir / "pending_no_sid.json"
+    flush_file.write_text(
+        json.dumps(
+            {
+                "session_key": "agent:main:telegram:dm:123",
+                "reason": "shutdown",
+                "ts": ts,
+                "data": {"text": "stranded message"},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    mock_db = MagicMock()
+    seen = {}
+
+    def resolve_fallback(session_key, payload):
+        seen["session_key"] = session_key
+        seen["payload"] = payload
+        return "fallback_bot_chat_session"
+
+    count = recover_pending_to_db(mock_db, resolve_fallback_session_id=resolve_fallback)
+
+    assert count == 1
+    assert seen["session_key"] == "agent:main:telegram:dm:123"
+    assert seen["payload"]["data"]["text"] == "stranded message"
+    mock_db.append_message.assert_called_once_with(
+        session_id="fallback_bot_chat_session",
+        role="user",
+        content="stranded message",
+        timestamp=ts,
+    )
+    assert not flush_file.exists()
+
+
+def test_recover_skips_fallback_when_session_id_present(tmp_path, monkeypatch):
+    """The fallback resolver must NOT be consulted when data already carries a session_id."""
+    flush_dir = _make_flush_dir(tmp_path)
+    monkeypatch.setattr("gateway.shutdown_flush._get_flush_dir", lambda: flush_dir)
+    ts = int(time.time())
+    (flush_dir / "pending_with_sid.json").write_text(
+        json.dumps(
+            {
+                "session_key": "agent:main:telegram:dm:123",
+                "reason": "shutdown",
+                "ts": ts,
+                "data": {"text": "normal message", "session_id": "real_session"},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    mock_db = MagicMock()
+    fallback_calls = []
+
+    def resolve_fallback(session_key, payload):
+        fallback_calls.append((session_key, payload))
+        return "should_not_be_used"
+
+    count = recover_pending_to_db(mock_db, resolve_fallback_session_id=resolve_fallback)
+
+    assert count == 1
+    assert fallback_calls == []
+    mock_db.append_message.assert_called_once_with(
+        session_id="real_session",
+        role="user",
+        content="normal message",
+        timestamp=ts,
+    )
+
+
+def test_recover_still_strands_when_fallback_returns_none(tmp_path, monkeypatch):
+    """If the fallback also yields nothing, the file must stay preserved (not falsely unlinked)."""
+    flush_dir = _make_flush_dir(tmp_path)
+    monkeypatch.setattr("gateway.shutdown_flush._get_flush_dir", lambda: flush_dir)
+    flush_file = flush_dir / "pending_unresolvable.json"
+    flush_file.write_text(
+        json.dumps(
+            {
+                "session_key": "agent:main:telegram:dm:123",
+                "reason": "shutdown",
+                "data": {"text": "still stranded"},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    mock_db = MagicMock()
+
+    def resolve_fallback(session_key, payload):
+        return None
+
+    count = recover_pending_to_db(mock_db, resolve_fallback_session_id=resolve_fallback)
+
+    assert count == 0
+    mock_db.append_message.assert_not_called()
+    assert flush_file.exists()
+
+
 def test_serialise_object_with_text():
     obj = MagicMock()
     obj.text = "msg"

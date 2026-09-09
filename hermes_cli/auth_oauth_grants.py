@@ -259,8 +259,14 @@ def heal_forked_single_use_oauth_grants(provider_id: str) -> Optional[Dict[str, 
 
 
 def _heal_forked_provider_block(
-    profile_store: Dict[str, Any], root_store: Dict[str, Any], provider_id: str) -> Optional[bool]:
+    profile_store: Dict[str, Any], root_store: Dict[str, Any], provider_id: str,
+    lineage_proven: bool = False) -> Optional[bool]:
     """Consolidate a forked ``providers.<id>`` device-code block into root.
+
+    *lineage_proven* carries the pool-row verdict: a profile row that matched root by copied id
+    or shared tokens proves the fork even after both sides rotated past token equality. Root's
+    ``load_pool()`` re-seeds its ``device_code`` row FROM this block, so leaving root's block on
+    the spent pair would undo the pool-row heal on the next root load.
 
     Returns None when nothing matched, False when the profile copy was dropped (root already
     newest), True when the profile copy was fresher and was adopted into root.
@@ -278,8 +284,9 @@ def _heal_forked_provider_block(
 
     p_flat, r_flat = _flat(p_block), _flat(r_block)
     # Provider blocks have no stable pool-row ID. Without a shared token pair
-    # component, a common account is insufficient evidence of a copied grant.
-    if not any(
+    # component (or lineage proven by the pool rows), a common account is
+    # insufficient evidence of a copied grant.
+    if not lineage_proven and not any(
         p_flat.get(key) and p_flat.get(key) == r_flat.get(key)
         for key in ("access_token", "refresh_token")
     ):
@@ -321,6 +328,7 @@ class _HealPass:
         self.summary: Dict[str, Any] = {
             "adopted": False, "stripped_ids": [], "files": [], "providers_block": False}
         self.profile_changed = self.root_changed = False
+        self.lineage_proven = False  # a profile pool row matched root by copied id / shared tokens
         self.p_pool, self.p_rows = _pool_rows(profile_store, provider_id)
         self.r_pool, self.r_rows = _pool_rows(root_store, provider_id)
         self.r_oauth = [r for r in self.r_rows if _is_oauth_pool_payload(r)]
@@ -349,6 +357,7 @@ class _HealPass:
                 continue
             match_idx = _find_root_counterpart(row, self.r_rows)
             if match_idx is not None:
+                self.lineage_proven = True
                 self._adopt_root_row(match_idx, row)
             # No root pool counterpart. Root's grant may live only in its .anthropic_oauth.json
             # (the ``hermes auth`` PKCE shape); a profile hermes_pkce-family row is its copy.
@@ -371,7 +380,7 @@ class _HealPass:
         if self.provider_id not in _DEVICE_CODE_BLOCK_PROVIDERS:
             return
         block_result = _heal_forked_provider_block(
-            self.profile_store, self.root_store, self.provider_id)
+            self.profile_store, self.root_store, self.provider_id, self.lineage_proven)
         if block_result is not None:
             self.profile_changed = self.summary["providers_block"] = True
             if block_result:

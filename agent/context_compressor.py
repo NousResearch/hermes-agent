@@ -39,6 +39,7 @@ from agent.context_compressor_retry import retryable_user_text
 from agent.context_compressor_tail import (
     demote_stale_tail_tools, lean_tail_budget, is_demoted_stub, skill_view_names_by_call_id, tail_cut_pricer,
     elide_keeping_skill_safety_rule, with_skill_safety_rule, without_skill_safety_rule, tail_cut_progress_floor,
+    truncate_oversized_tail_assistants,
 )
 from agent.context_compressor_telemetry import CompressionTelemetryMixin
 from agent.error_classifier import FailoverReason, classify_api_error
@@ -2817,7 +2818,7 @@ class ContextCompressor(
         model_thresholds: dict[str, float] | None = None, threshold_tokens_cap: Any = None,
         proactive_prune_tokens: int = 0, proactive_prune_min_result_chars: int = 8000,
         proactive_prune_min_reclaim_tokens: int = 4096, min_tail_user_messages: int = 1, tail_mode: str = "lean",
-        custom_providers: list | None = None,
+        tail_assistant_max_chars: int = 0, custom_providers: list | None = None,
     ):
         self.model, self.base_url, self.api_key, self.provider, self.api_mode = model, base_url, api_key, provider, api_mode
         # "lean" = small clamped tail + verbatim-user summary section; "legacy" = 0.20*window tail.
@@ -2850,6 +2851,8 @@ class ContextCompressor(
         # distinct reason + rearm snapshot instead of every iteration.
         self._last_reclaim_block_warn: tuple[str, int] | None = None
         self.min_tail_user_messages = min_tail_user_messages
+        # Lean tail: cut assistant content longer than this (0 = never cut; the default).
+        self.tail_assistant_max_chars = max(0, int(tail_assistant_max_chars or 0))
         self.summary_target_ratio = max(0.10, min(summary_target_ratio, 0.80))
         self.quiet_mode = quiet_mode
         # Usable input = context_length - max_tokens; only a positive int counts as a reservation.
@@ -3584,6 +3587,18 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
         result, demoted = demote_stale_tail_tools(messages, tail_start, getattr(self, "_session_id", "") or "")
         if demoted and not self.quiet_mode:
             logger.info("Lean tail: demoted %d stale tool result(s)", demoted)
+        return result
+
+    def _truncate_oversized_tail_assistants(self, messages: list[dict[str, Any]], tail_start: int) -> list[dict[str, Any]]:
+        """Lean mode: cut tail assistant content over ``tail_assistant_max_chars`` (``truncate_oversized_tail_assistants``;
+        0 = off, the default)."""
+        limit = int(getattr(self, "tail_assistant_max_chars", 0) or 0)
+        if limit <= 0:
+            return messages
+        result, truncated = truncate_oversized_tail_assistants(
+            messages, tail_start, getattr(self, "_session_id", "") or "", limit)
+        if truncated and not self.quiet_mode:
+            logger.info("Lean tail: truncated %d oversized assistant message(s)", truncated)
         return result
 
     def _augment_summary_lean(self, summary: str, turns_to_summarize: list[dict[str, Any]]) -> str:
@@ -5497,6 +5512,7 @@ Write only the summary body. Do not include any preamble or prefix."""
         # Lean mode demotes stale tail tool results before summary generation so stubs exist even if it aborts.
         if getattr(self, "tail_mode", "lean") == "lean":
             messages = self._demote_stale_tail_tools(messages, compress_end)
+            messages = self._truncate_oversized_tail_assistants(messages, compress_end)
         scan = self._scan_window_handoffs(messages, compress_start, compress_end, turns_to_summarize)
         turns_to_summarize = scan.turns_to_summarize
         self._record_compression_regions(

@@ -6,11 +6,14 @@ import { $subagentsBySession, upsertSubagent } from '@/store/subagents'
 
 import { ComposerStatusStack } from './index'
 
+vi.mock('@/lib/use-enter-animation', () => ({ useEnterAnimation: () => undefined }))
+
 vi.stubGlobal(
   'ResizeObserver',
   class {
     disconnect() {}
     observe() {}
+    unobserve() {}
   }
 )
 
@@ -19,7 +22,7 @@ afterEach(() => {
   $subagentsBySession.set({})
 })
 
-it('automatically previews bounded live work only from the composer session, including queued children', () => {
+it('shows live work only from the composer session and keeps it hidden after collapse and progress', () => {
   for (let i = 0; i < 5; i++) {
     upsertSubagent('owner', { subagent_id: `child-${i}`, goal: `Task ${i}`, status: i ? 'queued' : 'running' })
   }
@@ -35,17 +38,47 @@ it('automatically previews bounded live work only from the composer session, inc
 
   expect(screen.getByText('Task 0')).toBeTruthy()
   expect(screen.getByText('Reading actual source')).toBeTruthy()
-  expect(screen.queryByText('Task 4')).toBeNull()
   expect(screen.queryByText('Private foreign task')).toBeNull()
-  expect(screen.getByRole('button', { name: /5 Subagents/ })).toBeTruthy()
-  fireEvent.click(screen.getByRole('button', { name: /5 Subagents/ }))
+  const header = screen.getByRole('button', { name: /5 Subagents/ })
+  fireEvent.click(header)
+  expect(screen.queryByText('Task 0')).toBeNull()
+  expect(screen.queryByText('Task 4')).toBeNull()
+  expect(header.getAttribute('aria-expanded')).toBe('false')
+  act(() => upsertSubagent('owner', { subagent_id: 'child-0', text: 'More progress' }, false, 'subagent.progress'))
+  expect(screen.queryByText('Task 0')).toBeNull()
+  fireEvent.click(header)
+  expect(screen.getByText('Task 0')).toBeTruthy()
   expect(screen.getByText('Task 4')).toBeTruthy()
+  expect(screen.getByText('More progress')).toBeTruthy()
   view.rerender(
     <MemoryRouter>
       <ComposerStatusStack queue={null} sessionId="empty" />
     </MemoryRouter>
   )
   expect(screen.queryByText('Task 0')).toBeNull()
+})
+
+it('collapses a single worker and its selected detail using the caret, preserving the steering draft', () => {
+  upsertSubagent('owner', { subagent_id: 'child', goal: 'Single task' })
+
+  const view = render(
+    <MemoryRouter>
+      <ComposerStatusStack queue={null} sessionId="owner" />
+    </MemoryRouter>
+  )
+
+  fireEvent.click(screen.getByRole('button', { name: /Single task/ }))
+  expect(view.container.querySelector('[data-slot="composer-subagent-detail"]')).toBeTruthy()
+  const draft = screen.getByRole('textbox')
+  fireEvent.change(draft, { target: { value: 'Keep this draft' } })
+  const header = screen.getByRole('button', { name: /1 Subagent/ })
+  fireEvent.click(header.firstElementChild!)
+  expect(screen.queryByText('Single task')).toBeNull()
+  expect(view.container.querySelector('[data-slot="composer-subagent-detail"]')).toBeNull()
+  expect(header.getAttribute('aria-expanded')).toBe('false')
+  fireEvent.click(header)
+  expect(view.container.querySelector('[data-slot="composer-subagent-detail"]')).toBeTruthy()
+  expect((screen.getByRole('textbox') as HTMLInputElement).value).toBe('Keep this draft')
 })
 
 it('retires the live frame only after every child settles, without depending on the parent busy state', () => {

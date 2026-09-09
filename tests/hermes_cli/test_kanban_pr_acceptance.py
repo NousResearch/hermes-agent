@@ -231,6 +231,31 @@ def test_no_required_checks_is_distinct_from_api_failure(monkeypatch):
     assert denied_receipt["classification"] == "infra"
 
 
+def test_plan_gated_rules_endpoint_falls_back_to_no_required_checks(monkeypatch):
+    sha = "a" * 40
+    responses = iter([
+        {"data": {"repository": {"pullRequest": {
+            "headRefOid": sha, "baseRefName": "main", "state": "MERGED",
+            "baseRef": {"branchProtectionRule": {"requiredStatusChecks": []}},
+        }}}},
+        {"head": {"sha": sha}, "base": {"ref": "main"},
+         "state": "closed", "merged": True, "merge_commit_sha": "b" * 40},
+    ])
+
+    def plan_gated(*args, **kwargs):
+        if "rules/branches" in args[0]:
+            raise acceptance.subprocess.CalledProcessError(
+                1, "gh", stderr="HTTP 403: Upgrade to GitHub Pro to enable this feature")
+        return next(responses)
+
+    monkeypatch.setattr(acceptance, "_api", plan_gated)
+    receipt = acceptance.collect_acceptance(
+        "acme/repo", "https://github.com/acme/repo/pull/7")
+    assert receipt["ok"] is True
+    assert receipt["classification"] == "no_required_checks"
+    assert receipt["merge_sha"] == "b" * 40
+
+
 @pytest.mark.parametrize("mismatch", ["head", "base"])
 def test_no_required_checks_rejects_head_or_base_race(monkeypatch, mismatch):
     sha = "a" * 40

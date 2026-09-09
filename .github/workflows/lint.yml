@@ -2,7 +2,9 @@ name: Lint (ruff + ty)
 
 # Two things here:
 #   1. Advisory diff — ruff + ty diagnostics as a diff vs the target branch.
-#      Writes a Markdown summary to the run page. Exit zero always.
+#      Writes a Markdown summary to the run page. Exit zero, except for NEW
+#      ``ty`` ``invalid-method-override`` diagnostics vs the merge base, which
+#      fail the job (#106192). Every other diagnostic class stays advisory.
 #   2. Blocking ``ruff check .`` — enforces the explicit rules in
 #      ``[tool.ruff.lint.select]`` (currently PLW1514). Failure blocks merge.
 #      Separate job so the advisory diff still runs even when enforcement
@@ -117,6 +119,19 @@ jobs:
             --head-ref  "$HEAD_REF" \
             --output    .lint-reports/summary.md
           cat .lint-reports/summary.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Fail on new invalid-method-override diagnostics
+        # The only blocking part of this job. Reuses the head/base reports
+        # above; every other ty class stays advisory (#106192). Exit code
+        # propagates to the job and therefore to "All required checks pass".
+        run: |
+          python scripts/lint_diff.py \
+            --base-ruff .lint-reports/base/ruff.json \
+            --head-ruff .lint-reports/head/ruff.json \
+            --base-ty   .lint-reports/base/ty.json \
+            --head-ty   .lint-reports/head/ty.json \
+            --output    /dev/null \
+            --fail-on-new invalid-method-override
 
   ruff-blocking:
     # Enforce the rules in pyproject.toml [tool.ruff.lint.select]. Currently

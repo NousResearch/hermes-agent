@@ -2,18 +2,23 @@
 """Diff ruff + ty diagnostic reports between two git refs.
 
 Produces a Markdown summary suitable for `$GITHUB_STEP_SUMMARY` and for PR
-comments. Compares issues by a stable key (file, rule, line) so line-only
+comments. Compares issues by a stable key (path, rule, message) so line-only
 shifts from unrelated edits are treated as the same issue.
 
 Usage:
     lint_diff.py \\
         --base-ruff base/ruff.json --head-ruff head/ruff.json \\
         --base-ty   base/ty.json   --head-ty   head/ty.json \\
-        [--base-ref origin/main] [--head-ref HEAD]
+        [--base-ref origin/main] [--head-ref HEAD] [--fail-on-new RULE,...]
 
 Any of the four --{base,head}-{ruff,ty} files may be missing or empty; in that
 case the tool treats it as "0 diagnostics" (e.g. if base/main doesn't have the
 config yet, or a tool crashed).
+
+With --fail-on-new, ty diagnostics whose rule is listed and that are NEW vs
+base make the tool exit 1 (for a blocking CI gate); without it the tool always
+exits 0 (advisory). When the base ty report is unavailable the gate is skipped
+(exit 0) so a missing base can never block a PR.
 """
 
 from __future__ import annotations
@@ -172,6 +177,13 @@ def main() -> int:
     ap.add_argument(
         "--output", type=Path, help="Write summary to this file instead of stdout"
     )
+    ap.add_argument(
+        "--fail-on-new",
+        default="",
+        help="Comma-separated ty rule names (e.g. invalid-method-override) that "
+        "fail the build when NEW vs base. Empty (default) keeps the advisory "
+        "behavior: always exit 0.",
+    )
     args = ap.parse_args()
 
     base_ruff_raw = _load_json(args.base_ruff)
@@ -192,7 +204,8 @@ def main() -> int:
     buf.append(_tool_report("ruff", base_ruff, head_ruff, base_ruff_avail))
     buf.append(_tool_report("ty (type checker)", base_ty, head_ty, base_ty_avail))
     buf.append(
-        "_Diagnostics are surfaced as warnings — this check never fails the build._\n"
+        "_Diagnostics are advisory; only NEW diagnostics of the rules passed via "
+        "`--fail-on-new` fail the build._\n"
     )
 
     summary = "\n".join(buf)
@@ -200,7 +213,27 @@ def main() -> int:
         args.output.write_text(summary, encoding="utf-8")
     else:
         print(summary)
-    return 0
+    fail_rules = [r.strip() for r in args.fail_on_new.split(",") if r.strip()]
+    if not fail_rules:
+        return 0
+    if not base_ty_avail:
+        print(
+            "gate skipped: base ty report unavailable, "
+            "a missing base never blocks a PR",
+            file=sys.stderr,
+        )
+        return 0
+    new_ty, _, _ = _diff(base_ty, head_ty)
+    gated = [d for d in new_ty if d["rule"] in fail_rules]
+    if not gated:
+        return 0
+    print(
+        f"FAIL: {len(gated)} new {','.join(fail_rules)} diagnostic(s) vs base:",
+        file=sys.stderr,
+    )
+    for d in gated:
+        print(f"{d['path']}:{d['line']}: [{d['rule']}] {d['message']}", file=sys.stderr)
+    return 1
 
 
 if __name__ == "__main__":

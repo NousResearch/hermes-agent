@@ -15,9 +15,19 @@ def picker_env(monkeypatch, tmp_path):
     from providers import get_provider_profile
     profile = get_provider_profile("claude-oauth-directsdk")
     assert profile is not None
-    # Only executable availability is simulated; never run native or paid inference.
+    # A stand-in CLI that reports a login and answers the picker handshake; never native or paid inference.
     import shutil
-    monkeypatch.setattr(shutil, "which", lambda cmd: str(tmp_path / "claude") if cmd == profile.process_command else None)
+    fake = tmp_path / "claude"
+    fake.write_text(
+        "#!/bin/sh\n"
+        "case \"$1\" in auth) echo '{\"loggedIn\": true, \"authMethod\": \"claude.ai\", \"subscriptionType\": \"pro\"}'; exit 0;; esac\n"
+        "read _req\n"
+        "echo '{\"type\": \"control_response\", \"response\": {\"subtype\": \"success\", \"request_id\": \"x\", \"response\": {\"account\": {\"subscriptionType\": \"Claude Pro\"}, \"models\": ["
+        "{\"value\": \"sonnet[1m]\", \"resolvedModel\": \"claude-sonnet-5[1m]\", \"description\": \"Sonnet 5\"},"
+        "{\"value\": \"claude-fable-5-1[1m]\", \"resolvedModel\": \"claude-fable-5-1[1m]\", \"description\": \"Fable 5.1\"},"
+        "{\"value\": \"haiku\", \"resolvedModel\": \"claude-haiku-4-5-20251001\", \"description\": \"Haiku 4.5\"}]}}}'\n")
+    fake.chmod(0o755)
+    monkeypatch.setattr(shutil, "which", lambda cmd, *a, **kw: str(fake) if cmd == profile.process_command else None)
     import agent.models_dev as models_dev
     monkeypatch.setattr(models_dev, "fetch_models_dev", lambda *a, **kw: {})
     import hermes_cli.inventory as inventory
@@ -35,12 +45,14 @@ def test_directsdk_picker_discovers_profile_catalog(picker_env, monkeypatch):
     assert any(row["id"] == profile.name for row in list_available_providers())
     rows, _ = _build_provider_picker_rows({}, "", _PROVIDER_LABELS, {})
     assert any(row[0] == profile.name for row in rows)
-    assert set(profile.fallback_models) <= set(provider_model_ids(profile.name))
+    # The account's live picker (from the CLI handshake) is what the shared pickers list.
+    live = ["claude-sonnet-5[1m]", "claude-fable-5-1[1m]", "claude-haiku-4-5-20251001"]
+    assert provider_model_ids(profile.name) == live
 
     response = server._methods["model.options"](1, {})
     assert "error" not in response, response
     row = next(r for r in response["result"]["providers"] if r["slug"] == profile.name)
-    assert set(profile.fallback_models) <= set(row["models"])
+    assert set(live) <= set(row["models"])
     assert row["authenticated"]
 
     # Both native clients use model.options. The desktop explicit-only view
@@ -50,14 +62,14 @@ def test_directsdk_picker_discovers_profile_catalog(picker_env, monkeypatch):
         response = server._methods["model.options"](1, {"explicit_only": explicit_only})
         assert "error" not in response, response
         row = next(r for r in response["result"]["providers"] if r["slug"] == profile.name)
-        assert set(profile.fallback_models) <= set(row["models"])
+        assert set(live) <= set(row["models"])
         assert row["is_current"]
         assert row["authenticated"]
 
     # The setup picker must actually dispatch the newly visible process row.
     from hermes_cli import main, model_setup_flows
     from hermes_cli.config import load_config
-    selected = profile.fallback_models[-1]
+    selected = "claude-fable-5-1[1m]"
     monkeypatch.setattr(main, "_pick_provider", lambda *a: profile.name)
     monkeypatch.setattr(model_setup_flows, "_pick_model_or_prompt", lambda *a, **kw: selected)
     main.select_provider_and_model()
@@ -70,7 +82,7 @@ def test_directsdk_picker_discovers_profile_catalog(picker_env, monkeypatch):
     # An unavailable process must not overwrite an existing saved selection.
     before = (home / "config.yaml").read_bytes()
     import shutil
-    monkeypatch.setattr(shutil, "which", lambda cmd: None)
+    monkeypatch.setattr(shutil, "which", lambda cmd, *a, **kw: None)
     main.select_provider_and_model()
     assert (home / "config.yaml").read_bytes() == before
 

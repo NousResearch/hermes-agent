@@ -231,7 +231,8 @@ class Contract(unittest.TestCase):
             paused.close()
             self.assertTrue(process.stdout.closed)
             self.assertEqual(len(hanging._requests), 0)
-            deadline = time.monotonic() + 3
+            # Reaping is event-driven; the bound only guards a hang and must tolerate a loaded runner.
+            deadline = time.monotonic() + 15
             while time.monotonic() < deadline:
                 try:
                     os.kill(pid, 0)

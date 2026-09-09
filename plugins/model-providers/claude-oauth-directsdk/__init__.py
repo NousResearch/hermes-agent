@@ -37,6 +37,14 @@ class ClaudeOAuthDirectSDKProfile(ProviderProfile):
     def fetch_models(self, **_):
         return None
 
+    def setup_status(self, **kwargs):
+        from .setup import setup_status
+        return setup_status(**kwargs)
+
+    def discover_models(self, **kwargs):
+        from .setup import discover_models
+        return discover_models(**kwargs)
+
     def build_api_kwargs_extras(self, *, reasoning_config=None, **_):
         return ({'reasoning': dict(reasoning_config)} if reasoning_config else {}), {}
 
@@ -44,7 +52,7 @@ class ClaudeOAuthDirectSDKProfile(ProviderProfile):
 profile = ClaudeOAuthDirectSDKProfile(
     name='claude-oauth-directsdk',
     display_name='Claude OAuth DirectSDK',
-    description='Request-scoped official Claude Code; Hermes owns tool execution',
+    description='Claude OAuth DirectSDK (Claude Pro/Max subscription via your Claude Code login; Hermes owns tools)',
     api_mode='chat_completions',
     auth_type='external_process',
     supports_health_check=False,

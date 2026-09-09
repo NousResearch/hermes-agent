@@ -167,6 +167,8 @@ An agent CLI driven over stdio is not an HTTP endpoint. Set `auth_type="external
 
 The client your `create_client` returns receives `command` and `args` in `client_kwargs`. If it is already complete and async-safe, declare `HERMES_SKIP_TRANSPORT_WRAP = True` / `HERMES_SKIP_ASYNC_WRAP = True` as class attributes so the auxiliary client does not re-dispatch it through an HTTP wire adapter.
 
+External-process profiles may implement `setup_status(**kwargs)` returning `{available, logged_in, plan, detail, login_command}` and `discover_models(**kwargs)` returning `[{id, label, note}]`. `hermes model` gates on `logged_in` (running `login_command` inline on a TTY, printing `detail` otherwise) and lists `discover_models()` when it returns rows; `provider_model_ids()` uses the same rows so every picker agrees. Both must be cheap and must never perform inference; return `None` to fall back to `fallback_models`. `note` renders as a dim per-row annotation (`· usage credits`) and never hides a model.
+
 For interruptible non-HTTP requests, implement a class-declared `cancel(self)` method. Hermes calls it from the interrupting thread after marking the request client unusable. It must return promptly and safely stop its own transport, including cancellation racing process startup; it must not close file descriptors owned by the request thread. The request owner still calls `close()` for cleanup. Clients without this method retain the existing socket-shutdown cancellation path.
 
 Explicit external-process delegation retains the selected provider and its protocol when resolving the child command; an executable override alone does not change an external-process provider into ACP.

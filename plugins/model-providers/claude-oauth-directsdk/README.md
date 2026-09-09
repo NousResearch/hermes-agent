@@ -74,6 +74,16 @@ Supported translation includes text, base64/native images and documents, canonic
 
 Unknown parameters fail explicitly. Unsupported surfaces include assistant prefill, strict function mode, forced tool choice, `parallel_tool_calls=False`, `n>1`, JSON-object-only mode, arbitrary headers/body fields, remote image downloads, non-POSIX cleanup, and cross-model signed-history parity. The read-idle timeout defaults to 180 seconds, resets on native output, and accepts Hermes' finite HTTPX read-timeout shape. Large prompts remain subject to native/OS limits.
 
+## Setup: `hermes model` → Claude OAuth DirectSDK
+
+Selecting the provider asks the Claude CLI itself, never Anthropic, before anything is saved:
+
+1. **Installed?** `claude` must resolve on PATH (or `CLAUDE_OAUTH_DIRECTSDK_COMMAND`). Otherwise one line: install with `npm install -g @anthropic-ai/claude-code`, and the flow stops without touching config.
+2. **Logged in?** `claude auth status` (local credential store, ~0.3s). Logged in shows `credentials: ✓ (Claude Pro)`. Logged out on a terminal starts `claude auth login` inline; it opens the browser and takes the pasted code, then the flow re-checks and continues. Without a TTY it prints the instruction and stops.
+3. **Which models?** The CLI's `initialize` handshake returns the account's own picker (verified through the admission relay: zero upstream requests). Rows are mapped to Hermes route ids and deduplicated (`opus` and `opus[1m]` are one 1M route). Rows the CLI marks "Draws from usage credits", plus Fable on non-Max plans per Anthropic's plan rule, carry a dim `· usage credits` note; nothing is hidden. If the handshake fails the pinned catalog below is used.
+
+The same `discover_models()` feeds `provider_model_ids()`, so the TUI/Desktop pickers and `/model` list the account's picker too.
+
 ## Model metadata and accounting
 
 The picker exposes these explicit native routes:
@@ -90,7 +100,7 @@ Short names `sonnet`, `haiku`, `opus` and `fable` resolve to the corresponding p
 
 The local relay sets `ANTHROPIC_BASE_URL`, which makes Claude Code apply its gateway defaults. Its documented Sonnet 5 gateway default is 200K unless `[1m]` is selected; this was the cause of the earlier downgrade, not evidence of a general subscription limit. Both native argv and Hermes metadata now select the same window. See [Claude Code model configuration](https://code.claude.com/docs/en/model-config#sonnet-5-context-window).
 
-Native initialization can enumerate the current picker without a Messages request, but its returned list did not include Opus 4.8. The plugin therefore keeps the five requested version-pinned entries rather than silently dropping the older model or promoting every unknown future model to 1M. It does not spawn a model or query an HTTP `/models` endpoint when opening Hermes' picker. Existing installations may need **Refresh models** to discard the previous cached list.
+Native initialization can enumerate the current picker without a Messages request, but its returned list did not include Opus 4.8. The plugin therefore keeps the five requested version-pinned entries rather than silently dropping the older model or promoting every unknown future model to 1M. It does not spawn a model or query an HTTP `/models` endpoint when opening Hermes' picker. Existing installations may need **Refresh models** to discard the previous cached list; the live picker above replaces this static list whenever the CLI is logged in.
 
 The follow-up probes used native **2.1.258**. The Sonnet 5 1M route accepted **902,783 actual input tokens** and returned the requested response, with native `contextWindow: 1000000` and exactly one upstream request. Native list-price equivalent was **$3.611238**. A subsequent short `sonnet` request verified automatic routing to `claude-sonnet-5[1m]`; a real `haiku` request resolved to Haiku 4.5 with a 200K window. Opus 5 and Opus 4.8 were then smoke-tested through the integrated relay: each resolved to its `[1m]` route, reported a 1,000,000-token native window, returned the requested reply in exactly one upstream request, and cost $0.001485 list-equivalent each. Fable 5.1 was rejected by the native client on the qualification account: `Fable 5.1 requires usage credits`. That is Anthropic's documented plan rule, not a routing defect: on Pro (and Team standard seats) Fable 5 / 5.1 bill to pay-as-you-go usage credits from the first request, while Max plans include them up to 50% of weekly limits ([Claude Fable models on your plan](https://support.claude.com/en/articles/15424964-claude-fable-models-on-your-plan)). The entry stays in the picker because every paid plan can reach it; the provider surfaces the native error verbatim and never falls back to another model. Native discovery also labels Opus 1M as drawing usage credits on Pro. Plan-aware picker badges from the native `initialize` handshake (which reports `subscriptionType` without an upstream request) are a follow-up.
 

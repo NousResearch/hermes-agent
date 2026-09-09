@@ -285,6 +285,16 @@ class ProviderProfile:
         """
         return None
 
+    def setup_status(self, **kwargs: Any) -> dict[str, Any] | None:
+        """External-process providers: ``{available, logged_in, plan, detail, login_command}`` from the
+        CLI itself so setup can gate on login. ``None`` = nothing to report beyond executable presence."""
+        return None
+
+    def discover_models(self, **kwargs: Any) -> list[dict[str, Any]] | None:
+        """External-process providers: the account's live picker as ``[{id, label, note}]`` without
+        any inference request; ``None`` falls back to ``fallback_models``."""
+        return None
+
     def fetch_models(
         self,
         *,

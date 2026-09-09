@@ -277,6 +277,8 @@ Sizes: `default`, `xs`, `overlay` (titlebar glyph counts).
 
 - Visible windows keep animating when another app takes focus. Hidden/minimized
   windows and inactive panes may pause; background polling stays focus-gated.
+- Animated integer counts reuse `AnimatedInt` in `src/components/ui/diff-count.tsx`.
+  Its spring updates the DOM directly without per-frame React renders.
 - Quick, functional transitions (~100ms on controls). Respect
   `prefers-reduced-motion` for anything beyond a fade.
 - Choreographed exits (e.g. onboarding's "matrix" fade-down) stagger per-element

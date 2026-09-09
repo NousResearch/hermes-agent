@@ -560,29 +560,51 @@ def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT
 
     timeout = _clamp_timeout(timeout_s)
     started = time.time()
+    # Start the CLI in its own process group/session so a timeout can kill the whole
+    # tree. browser-use's CLI spawns a browser_harness daemon grandchild that keeps
+    # the stdout/stderr pipes open after the CLI child is killed; that blocks
+    # communicate() forever, so subprocess.run's TimeoutExpired never surfaces and the
+    # worker thread wedges (#106244). Killing the group closes the grandchild's
+    # inherited pipe fds so the post-timeout communicate() returns.
+    from tools.environments.local import (
+        _IS_WINDOWS, _kill_process_group_posix, _kill_process_windows,
+    )
     try:
-        proc = subprocess.run(
-            cmd, input=code, capture_output=True, text=True, timeout=timeout, env=env,
-            **_windows_popen_kwargs(),
+        proc = subprocess.Popen(
+            cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            text=True, env=env, start_new_session=True, **_windows_popen_kwargs(),
         )
+        stdout, stderr = proc.communicate(input=code, timeout=timeout)
     except subprocess.TimeoutExpired:
+        # Kill the whole process group/tree so grandchildren (browser_harness daemon)
+        # holding the pipes die too — otherwise the communicate() below blocks forever
+        # on their inherited pipe fds (#106244).
+        try:
+            (_kill_process_windows if _IS_WINDOWS else _kill_process_group_posix)(proc)
+        except Exception:
+            with contextlib.suppress(Exception):
+                proc.kill()
+        try:
+            stdout, stderr = proc.communicate(timeout=5)
+        except (subprocess.TimeoutExpired, OSError):
+            stdout, stderr = "", ""
         return tool_error(f"browser-use exec timed out after {timeout}s. The daemon may still be working; retry "
                           f"with a larger timeout_s (max {_MAX_TIMEOUT_S}), or split the work into several calls that "
                           "append to workspace files — anything already written to the workspace is preserved.")
     except OSError as e:
         return tool_error(f"Failed to launch browser-use CLI: {e}")
 
-    result = {"success": proc.returncode == 0, "exit_code": proc.returncode, "output": proc.stdout}
+    result = {"success": proc.returncode == 0, "exit_code": proc.returncode, "output": stdout}
     if workspace:
         result["workspace"] = workspace
     if session:
         result["session"] = session
-    stderr = (proc.stderr or "").strip()
+    stderr = (stderr or "").strip()
     if len(stderr) > _STDERR_CAP_CHARS:
         stderr = stderr[:_STDERR_CAP_CHARS] + "\n… (stderr truncated)"
     if stderr:
         result["stderr"] = stderr
-    screenshot = _find_screenshot(proc.stdout, started)
+    screenshot = _find_screenshot(stdout, started)
     if screenshot:
         result["screenshot_path"] = screenshot
         native = _native_screenshot_result(result, screenshot)

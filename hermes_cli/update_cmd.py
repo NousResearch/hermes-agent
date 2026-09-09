@@ -1322,6 +1322,13 @@ def _cmd_update_impl(args, gateway_mode: bool):
         fetch_result = _git_run(git_cmd, ["fetch", "origin", branch], network=True)
         if fetch_result.returncode != 0:
             _print_fetch_failure(fetch_result.stderr)
+            # Issue #106026: a failed fetch must be unambiguous at the terminal — the
+            # classified diagnosis alone read as a transient warning, and the receipt's
+            # steps had no entry for the failed fetch (only outcome/exit_code).
+            _record_update_step(
+                "fetch", False,
+                _classify_fetch_failure(fetch_result.stderr).removeprefix("✗ ").strip())
+            print("✗ Update not applied — code unchanged (fetch failed)")
             sys.exit(1)
 
         current_branch = _current_branch_name(git_cmd, check=True)

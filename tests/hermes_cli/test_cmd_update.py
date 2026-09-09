@@ -1630,3 +1630,75 @@ class TestGitTrampolineSelfHeal:
         assert candidates[1] == (
             profile_home / "git" / "mingw64" / "libexec" / "git-core" / "git.exe"
         )
+
+
+class TestCmdUpdateFetchFailureSignal:
+    """A failed fetch on the apply path must end with an explicit \"not
+    applied\" trailer and record a ``fetch`` step in the receipt.
+
+    Issue #106026: the fetch step's own log recorded an HTTP 429, yet the
+    run's closing signal was indistinguishable from a silent no-op (and the
+    report read the later ``hermes --version`` line as a success banner).
+    The exit code and receipt outcome were already correct; the missing
+    pieces were a terminal-state line naming the outcome and a step entry
+    for the failed fetch so post-mortems (and the receipt's ``steps``
+    array) reflect reality.
+    """
+
+    RATE_LIMIT_STDERR = (
+        "error: RPC failed; HTTP 429 curl 22 The requested URL returned error: 429\n"
+        "fatal: expected flush after ref listing"
+    )
+
+    def _install_mocks(self, monkeypatch):
+        from hermes_cli import main as hm
+        from hermes_cli import update_receipt
+
+        recorded = []
+        monkeypatch.setattr(
+            update_receipt, "record_step",
+            lambda name, ok, detail="": recorded.append((name, ok, detail)))
+        monkeypatch.setattr(update_cmd, "_begin_update_receipt_and_plan", lambda _args: None)
+        monkeypatch.setattr(update_cmd, "_prepare_git_command", lambda: (False, ["git"], False))
+        from hermes_cli import gitlock
+        monkeypatch.setattr(gitlock, "clear_stale_git_locks", lambda _root: [])
+        monkeypatch.setattr(gitlock, "clear_stale_tmp_packs", lambda _root: [])
+        monkeypatch.setattr(hm, "_run_pre_update_backup", lambda _args: None)
+        monkeypatch.setattr(hm, "_is_windows", lambda: False)
+        monkeypatch.setattr(hm, "_pause_windows_gateways_for_update", lambda: None)
+        monkeypatch.setattr(hm, "_resolve_update_branch", lambda _args: "main")
+        monkeypatch.setattr(hm, "_warn_orphaned_update_autostashes", lambda *_a: None)
+        return recorded
+
+    def _mock_run_fetch_fails(self, command, **_kwargs):
+        joined = " ".join(str(c) for c in command)
+        if "fetch" in joined:
+            return subprocess.CompletedProcess(
+                command, 1, stdout="", stderr=self.RATE_LIMIT_STDERR)
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+    def test_failed_fetch_prints_not_applied_trailer_and_records_step(
+        self, monkeypatch, capsys
+    ):
+        recorded = self._install_mocks(monkeypatch)
+
+        with patch("hermes_cli.update_cmd.subprocess.run", side_effect=self._mock_run_fetch_fails):
+            with pytest.raises(SystemExit) as exit_info:
+                update_cmd._cmd_update_impl(
+                    SimpleNamespace(yes=True, force=True, force_venv=True, branch=None),
+                    gateway_mode=False,
+                )
+        assert exit_info.value.code == 1
+
+        out = capsys.readouterr().out
+        # Diagnosis stays (rate-limit classification), then an unambiguous trailer.
+        assert "rate limiting" in out
+        assert "Update not applied" in out
+        assert "code unchanged (fetch failed)" in out
+
+        # Receipt step records the failed fetch with the classified reason.
+        assert recorded == [
+            ("pre_update_backup", False, "disabled or failed"),
+            ("fetch", False, "GitHub is rate limiting requests or having an outage (HTTP 429)"
+                             " — try again in 5 minutes."),
+        ], recorded

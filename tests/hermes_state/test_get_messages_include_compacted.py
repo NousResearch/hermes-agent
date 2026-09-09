@@ -416,6 +416,7 @@ class TestDisplayDedupe:
         conn.execute("DROP INDEX IF EXISTS idx_messages_display_page")
         conn.execute("DROP INDEX IF EXISTS idx_messages_display_backfill")
         conn.execute("DROP INDEX IF EXISTS idx_messages_display_identity")
+        conn.execute("DROP INDEX IF EXISTS idx_messages_session_id")
         columns = {row[1] for row in conn.execute("PRAGMA table_info(messages)")}
         for column in ("display_order", "display_identity"):
             if column in columns:

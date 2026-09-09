@@ -757,9 +757,14 @@ class SessionMessagesMixin:
         with self._read_ctx() as conn:
             conn.execute("BEGIN")
             try:
+                has_session_index = conn.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = ?",
+                    ("idx_messages_session_id",),
+                ).fetchone() is not None
+                index_hint = "INDEXED BY idx_messages_session_id" if has_session_index else "NOT INDEXED"
                 rows = conn.execute(
                     "SELECT id, role, content, timestamp, tool_call_id, tool_calls, tool_name, active, "
-                    "display_kind, display_metadata FROM messages INDEXED BY idx_messages_session_id "
+                    f"display_kind, display_metadata FROM messages {index_hint} "
                     "WHERE session_id = ? AND (active = 1 OR compacted = 1) ORDER BY id ASC",
                     (session_id,))
                 for row in rows:

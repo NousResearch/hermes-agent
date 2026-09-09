@@ -39,11 +39,11 @@ def _patch_agent_bootstrap(monkeypatch):
     monkeypatch.setattr("model_tools.check_toolset_requirements", lambda: {})
 
 
-def _build_agent(monkeypatch):
+def _build_agent(monkeypatch, *, model="gpt-5-codex"):
     _patch_agent_bootstrap(monkeypatch)
 
     agent = run_agent.AIAgent(
-        model="gpt-5-codex",
+        model=model,
         base_url="https://chatgpt.com/backend-api/codex",
         api_key="codex-token",
         quiet_mode=True,
@@ -1236,14 +1236,17 @@ def test_codex_final_preflight_bounds_middleware_cache_key(monkeypatch):
 def test_codex_middleware_model_rewrite_drops_stale_reasoning_and_stamps_response(
     monkeypatch, middleware_kind,
 ):
-    agent = _build_agent(monkeypatch)
+    agent = _build_agent(monkeypatch, model="gpt-5.6")
     setattr(agent, "_disable_streaming", True)
+    setattr(agent, "codex_responses_native_compaction", True)
+    setattr(agent, "compression_checkpoint_required", False)
     captured = {}
 
     def _rewritten(request):
         assert any(item.get("type") == "reasoning" for item in request["input"])
+        assert "context_management" in request
         replacement = dict(request)
-        replacement["model"] = "gpt-5.6-sol"
+        replacement["model"] = "gpt-5.5"
         return replacement
 
     if middleware_kind == "request":
@@ -1287,7 +1290,7 @@ def test_codex_middleware_model_rewrite_drops_stale_reasoning_and_stamps_respons
             ],
             usage=SimpleNamespace(input_tokens=5, output_tokens=3, total_tokens=8),
             status="completed",
-            model="gpt-5.6-sol",
+            model="gpt-5.5",
         )
 
     monkeypatch.setattr(agent, "_interruptible_api_call", _capture_api_call)
@@ -1300,7 +1303,7 @@ def test_codex_middleware_model_rewrite_drops_stale_reasoning_and_stamps_respons
                 "type": "reasoning",
                 "encrypted_content": "old-model-blob",
                 "_issuer_kind": "codex_backend",
-                "_issuer_model": "gpt-5-codex",
+                "_issuer_model": "gpt-5.6",
             }],
         },
     ]
@@ -1308,13 +1311,14 @@ def test_codex_middleware_model_rewrite_drops_stale_reasoning_and_stamps_respons
     result = agent.run_conversation("Next question", conversation_history=history)
 
     assert result["completed"] is True
-    assert captured["model"] == "gpt-5.6-sol"
+    assert captured["model"] == "gpt-5.5"
+    assert "context_management" not in captured
     assert not any(item.get("type") in {"reasoning", "compaction"} for item in captured["input"])
     assert result["messages"][-1]["codex_reasoning_items"] == [{
         "type": "reasoning",
         "encrypted_content": "new-model-blob",
         "_issuer_kind": "codex_backend",
-        "_issuer_model": "gpt-5.6-sol",
+        "_issuer_model": "gpt-5.5",
         "id": "rs_new_model",
         "summary": [],
     }]

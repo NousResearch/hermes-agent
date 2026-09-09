@@ -51,9 +51,10 @@ def _codex_request_for_dispatch(request: Any, built_model: Any) -> tuple[Any, An
     if dispatched_model == _wire_model_identity(built_model) or not isinstance(request, dict):
         return request, dispatched_model
     input_items = request.get("input")
+    request = dict(request)
+    request.pop("context_management", None)
     if not isinstance(input_items, list):
         return request, dispatched_model
-    request = dict(request)
     request["input"] = [
         item for item in input_items
         if not (

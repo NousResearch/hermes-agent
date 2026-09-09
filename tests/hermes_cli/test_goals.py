@@ -873,3 +873,124 @@ class TestBlockedVerdict:
         assert mgr.state is not None
         assert mgr.state.status == "paused"
         assert "unachievable" in (mgr.state.paused_reason or "").lower()
+
+
+# ──────────────────────────────────────────────────────────────────────
+# No-progress detector — identical responses can't move the judge
+# ──────────────────────────────────────────────────────────────────────
+
+
+class TestNoProgressDetector:
+    """The judge sees ONLY the latest response, so repeating it verbatim can never change the
+    verdict. Without a detector the loop spins to max_turns (observed live: 75 turns of an
+    identical 'all criteria pass' reply against a judge asking for command output)."""
+
+    def test_identical_responses_auto_pause(self, hermes_home):
+        from hermes_cli import goals
+        from hermes_cli.goals import GoalManager, DEFAULT_MAX_IDENTICAL_RESPONSES
+
+        mgr = GoalManager(session_id="np-same", default_max_turns=100)
+        mgr.set("do a thing")
+
+        with patch.object(
+            goals, "judge_goal",
+            return_value=("continue", "no command output backing the claim", False, None, False),
+        ):
+            for i in range(DEFAULT_MAX_IDENTICAL_RESPONSES):
+                d = mgr.evaluate_after_turn("Complete. All criteria pass.")
+                assert d["should_continue"] is True, f"turn {i} should still continue"
+
+            final = mgr.evaluate_after_turn("Complete. All criteria pass.")
+
+        assert final["should_continue"] is False
+        assert final["status"] == "paused"
+        # The judge's own reason names the missing evidence — surface it, don't bury it.
+        assert "no command output backing the claim" in final["message"]
+        # Paused far below the turn budget: the point is to stop early, not at max_turns.
+        assert mgr.state.turns_used < 100
+
+    def test_differing_responses_never_trip_the_detector(self, hermes_home):
+        """Progress = changing output. A working agent must never be paused by this."""
+        from hermes_cli import goals
+        from hermes_cli.goals import GoalManager
+
+        mgr = GoalManager(session_id="np-diff", default_max_turns=100)
+        mgr.set("do a thing")
+
+        with patch.object(
+            goals, "judge_goal", return_value=("continue", "still working", False, None, False)
+        ):
+            for i in range(8):
+                d = mgr.evaluate_after_turn(f"step {i}: ran a command, here is new output")
+                assert d["should_continue"] is True
+                assert mgr.state.consecutive_identical_responses == 0
+
+    def test_whitespace_reflow_counts_as_identical(self, hermes_home):
+        """Re-wrapping the same sentences gives the judge nothing new to read."""
+        from hermes_cli import goals
+        from hermes_cli.goals import GoalManager
+
+        mgr = GoalManager(session_id="np-ws", default_max_turns=100)
+        mgr.set("do a thing")
+
+        with patch.object(
+            goals, "judge_goal", return_value=("continue", "needs evidence", False, None, False)
+        ):
+            mgr.evaluate_after_turn("all seven criteria pass")
+            mgr.evaluate_after_turn("all   seven\ncriteria    pass")
+
+        assert mgr.state.consecutive_identical_responses == 1
+
+    def test_done_verdict_wins_over_repetition(self, hermes_home):
+        """A repeated response that the judge accepts must still complete the goal."""
+        from hermes_cli import goals
+        from hermes_cli.goals import GoalManager, DEFAULT_MAX_IDENTICAL_RESPONSES
+
+        mgr = GoalManager(session_id="np-done", default_max_turns=100)
+        mgr.set("do a thing")
+
+        with patch.object(
+            goals, "judge_goal", return_value=("continue", "not yet", False, None, False)
+        ):
+            for _ in range(DEFAULT_MAX_IDENTICAL_RESPONSES):
+                mgr.evaluate_after_turn("same text")
+
+        with patch.object(
+            goals, "judge_goal", return_value=("done", "deliverable verified", False, None, False)
+        ):
+            d = mgr.evaluate_after_turn("same text")
+
+        assert d["verdict"] == "done"
+        assert mgr.state.status == "done"
+
+    def test_resume_clears_the_streak(self, hermes_home):
+        """Otherwise a resumed goal re-pauses on its very next turn."""
+        from hermes_cli import goals
+        from hermes_cli.goals import GoalManager, DEFAULT_MAX_IDENTICAL_RESPONSES
+
+        mgr = GoalManager(session_id="np-resume", default_max_turns=100)
+        mgr.set("do a thing")
+
+        with patch.object(
+            goals, "judge_goal", return_value=("continue", "needs evidence", False, None, False)
+        ):
+            for _ in range(DEFAULT_MAX_IDENTICAL_RESPONSES + 1):
+                mgr.evaluate_after_turn("same text")
+            assert mgr.state.status == "paused"
+
+            mgr.resume()
+            assert mgr.state.consecutive_identical_responses == 0
+
+            d = mgr.evaluate_after_turn("same text")
+            assert d["should_continue"] is True, "resume must grant a real retry"
+
+    def test_legacy_state_row_without_the_new_fields_loads(self, hermes_home):
+        """Rows serialized before this field existed must round-trip, not crash."""
+        from hermes_cli.goals import GoalState
+
+        legacy = json.dumps({
+            "goal": "do a thing", "status": "active", "turns_used": 2, "max_turns": 20,
+        })
+        st = GoalState.from_json(legacy)
+        assert st.consecutive_identical_responses == 0
+        assert st.last_response_digest is None

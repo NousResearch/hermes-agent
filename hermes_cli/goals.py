@@ -40,6 +40,12 @@ _JUDGE_RESPONSE_SNIPPET_CHARS = 4000
 # the goal_judge config. API/transport errors do NOT count — those are tracked separately below.
 # Guards against small models that cannot follow the strict JSON contract burning the whole budget.
 DEFAULT_MAX_CONSECUTIVE_PARSE_FAILURES = 3
+
+# The judge only ever sees the LAST response, so an agent that keeps replying with the same text
+# (e.g. asserting "done" without the evidence the criteria demand) gets `continue` forever: the
+# judge is right every time and the loop cannot converge. Pause after this many byte-identical
+# replies so the turn budget isn't spent re-sending a response already judged insufficient.
+DEFAULT_MAX_IDENTICAL_RESPONSES = 3
 # Consecutive transport failures (401, timeout, DNS) before auto-pause: a broken API key returns
 # 401 every call and must not spend every turn on an unreachable judge.
 DEFAULT_MAX_CONSECUTIVE_TRANSPORT_FAILURES = 5
@@ -327,6 +333,18 @@ def parse_contract(text: str) -> Tuple[str, GoalContract]:
     return " ".join(headline_parts).strip(), contract
 
 
+def _response_digest(response: str) -> Optional[str]:
+    """Stable hash of an agent response, or None when there's nothing to compare.
+
+    Whitespace-normalized so trivial reflow doesn't read as progress; the judge sees prose, and
+    re-wrapping the same sentences leaves it exactly as unable to change its verdict.
+    """
+    normalized = " ".join((response or "").split())
+    if not normalized:
+        return None
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+
+
 def _render_extra_criteria(subgoals: List[str]) -> str:
     return "\n".join(f"- Extra criterion {i}: {text}" for i, text in enumerate(subgoals, start=1))
 
@@ -428,6 +446,10 @@ class GoalState:
     # Tracked separately from parse failures: a broken API key returns 401 every call and must
     # auto-pause instead of burning the budget on an unreachable judge.
     consecutive_transport_failures: int = 0   # judge API/transport errors in a row
+    # No-progress detector: the judge sees only the latest response, so repeating it verbatim can
+    # never change the verdict. Hash (not the text) keeps the persisted row small.
+    last_response_digest: Optional[str] = None
+    consecutive_identical_responses: int = 0  # byte-identical agent replies in a row
     # User-added criteria (/subgoal). Both the judge and continuation prompts include them.
     subgoals: List[str] = field(default_factory=list)
     # Wait barrier (judge ``wait`` verdict or ``/goal wait``): parks the loop instead of re-poking the
@@ -455,7 +477,7 @@ class GoalState:
     def from_json(cls, raw: str) -> "GoalState":
         data = json.loads(raw)
         raw_subgoals = data.get("subgoals") or []
-        ints = {k: int(data.get(k) or 0) for k in ("turns_used", "consecutive_parse_failures", "consecutive_transport_failures", "waiting_on_delegations")}
+        ints = {k: int(data.get(k) or 0) for k in ("turns_used", "consecutive_parse_failures", "consecutive_transport_failures", "consecutive_identical_responses", "waiting_on_delegations")}
         floats = {k: float(data.get(k) or 0.0) for k in ("created_at", "last_turn_at", "waiting_until", "waiting_since")}
         return cls(
             goal=data.get("goal", ""),
@@ -464,6 +486,7 @@ class GoalState:
             last_verdict=data.get("last_verdict"),
             last_reason=data.get("last_reason"),
             paused_reason=data.get("paused_reason"),
+            last_response_digest=(str(data["last_response_digest"]) if data.get("last_response_digest") else None),
             subgoals=[str(s).strip() for s in raw_subgoals if str(s).strip()] if isinstance(raw_subgoals, list) else [],
             waiting_on_pid=(int(data["waiting_on_pid"]) if data.get("waiting_on_pid") else None),
             waiting_on_session=(str(data["waiting_on_session"]) if data.get("waiting_on_session") else None),
@@ -1167,6 +1190,10 @@ class GoalManager:
         self._state.status = "active"
         self._state.paused_reason = None
         self._state.clear_wait()   # resuming starts fresh
+        # Resuming is an explicit "try again" — clear the no-progress streak, or a goal paused for
+        # repetition would immediately re-pause on its next turn without ever getting a chance.
+        self._state.consecutive_identical_responses = 0
+        self._state.last_response_digest = None
         if reset_budget:
             self._state.turns_used = 0
         return self._save()
@@ -1472,6 +1499,13 @@ class GoalManager:
         # separately because persistent API errors (401, DNS) mean a broken config.
         state.consecutive_parse_failures = state.consecutive_parse_failures + 1 if parse_failed else 0
         state.consecutive_transport_failures = state.consecutive_transport_failures + 1 if transport_failed else 0
+        # Track response repetition regardless of verdict, so the counter is accurate the moment a
+        # judged-insufficient reply starts repeating. Only a `continue` verdict acts on it below.
+        digest = _response_digest(last_response)
+        state.consecutive_identical_responses = (
+            state.consecutive_identical_responses + 1 if digest and digest == state.last_response_digest else 0
+        )
+        state.last_response_digest = digest
 
         if verdict == "wait" and wait_directive:
             return self._apply_wait_directive(wait_directive, reason, active_delegations=active_delegations)
@@ -1507,6 +1541,18 @@ class GoalManager:
                 f"⏸ Goal paused — the judge model ({n_parse} turns) isn't returning the required JSON verdict. "
                 "Route the judge to a stricter model in "
                 + _JUDGE_CONFIG_HINT.format(provider="openrouter", model="google/gemini-3-flash-preview"),
+            )
+
+        # No progress: the judge only ever sees the latest response, so re-sending identical text
+        # cannot change its verdict — every further turn is a guaranteed-identical judge call.
+        # Surface the judge's own reason, which names the evidence it found missing.
+        n_same = state.consecutive_identical_responses
+        if n_same >= DEFAULT_MAX_IDENTICAL_RESPONSES:
+            return self._pause_decision(
+                f"no progress: the same response {n_same + 1} turns in a row ({reason})", "continue", reason,
+                f"⏸ Goal paused — the last {n_same + 1} responses were identical, so the judge's verdict "
+                f"cannot change. It is still asking for: {reason} "
+                "Address that specifically and /goal resume, or /goal clear to stop.",
             )
 
         if state.turns_used >= state.max_turns:

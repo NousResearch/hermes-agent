@@ -376,6 +376,16 @@ _INFLIGHT_TASK_REPLAY_HEADER = (
     "start over.]"
 )
 
+# Replaces the protected-head copy of a task once the restatement below the
+# handoff exists (#106864). The stub keeps the row — role, position and
+# alternation/user-leading contracts — while the restatement becomes the only
+# full copy, so a large request cannot occupy the head AND the tail of the
+# compacted transcript.
+_INFLIGHT_TASK_DISPLACED_STUB = (
+    "[The original request above was moved below the context summary and is "
+    "restated there; act on that copy.]"
+)
+
 _SALVAGE_SUMMARY_MAX_CHARS = 8_000
 _SALVAGE_KEEP_RECENT_TOOLS = 2
 
@@ -4165,10 +4175,42 @@ Write only the summary body. Do not include any preamble or prefix."""
             )
             carrier[_INFLIGHT_REPLAY_MERGED_KEY] = True
             drop_stale_api_content(carrier)
+            self._displace_superseded_head_task(compressed, carrier_idx, inflight)
             return compressed
 
         compressed.append(replay)
+        self._displace_superseded_head_task(compressed, carrier_idx, inflight)
         return compressed
+
+    def _displace_superseded_head_task(
+        self,
+        compressed: List[Dict[str, Any]],
+        carrier_idx: int,
+        inflight: Dict[str, Any],
+    ) -> None:
+        """Stub out the head copy of a task that was just re-stated after the handoff.
+
+        The protected head keeps the original turn verbatim while the
+        restatement below the summary repeats it — two full copies of a large
+        request defeat the compression that was supposed to reclaim space
+        (#106864). Replacing the payload with a short stub keeps the row (and
+        with it the alternation and user-leading layout) while the restatement
+        becomes the only full copy. Text matching is exact and only actionable
+        user rows before the handoff carrier qualify, so a different request
+        that merely shares a prefix is never touched.
+        """
+        original_text = _content_text_for_contains(inflight.get("content")).strip()
+        if not original_text:
+            return
+        for msg in compressed[:carrier_idx]:
+            if (
+                isinstance(msg, dict)
+                and self._is_actionable_user_turn(msg)
+                and not self._is_synthetic_compression_user_turn(msg)
+                and _content_text_for_contains(msg.get("content")).strip() == original_text
+            ):
+                msg["content"] = _INFLIGHT_TASK_DISPLACED_STUB
+                drop_stale_api_content(msg)
 
     def _ensure_last_n_user_messages_in_tail(
         self, messages: List[Dict[str, Any]], cut_idx: int, head_end: int, n: int,

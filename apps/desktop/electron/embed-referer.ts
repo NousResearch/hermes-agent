@@ -36,10 +36,21 @@ function installEmbedRefererForSession(embedSession) {
   })
 }
 
-/** Stamp Referer on YouTube requests in the embed webview partition only. */
+/**
+ * Stamp Referer on YouTube requests in both the embed webview partition and
+ * the default session, since the YouTube iframe embed renders as a plain
+ * iframe in the main window's default session, not a webview on the embed
+ * partition.
+ */
 function installEmbedReferer() {
   try {
     installEmbedRefererForSession(session.fromPartition(EMBED_SESSION_PARTITION))
+  } catch {
+    // Non-fatal: embeds still render; YouTube may show referer errors.
+  }
+
+  try {
+    installEmbedRefererForSession(session.defaultSession)
   } catch {
     // Non-fatal: embeds still render; YouTube may show referer errors.
   }

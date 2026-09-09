@@ -11,6 +11,7 @@ behavior-neutral move that lifts ~1,000 LOC out of run.py.
 from __future__ import annotations
 
 import asyncio
+import importlib.util
 import logging
 import os
 import sqlite3
@@ -23,6 +24,72 @@ from agent.i18n import t
 # Match the logger run.py uses (logging.getLogger(__name__) where __name__ ==
 # "gateway.run") so extracted log records keep their original logger name.
 logger = logging.getLogger("gateway.run")
+
+
+def _fleet_boards_reader_path() -> Path:
+    """Resolve the optional fleet reader from the shared kanban root."""
+    try:
+        from hermes_cli.kanban_db import kanban_home
+
+        return kanban_home() / "scripts" / "fleet_boards.py"
+    except Exception:
+        return Path("~/.hermes/scripts/fleet_boards.py").expanduser()
+
+
+def _list_boards(kb: Any) -> list:
+    """Enumerate live boards; fall back to the default board when listing fails."""
+    try:
+        return kb.list_boards(include_archived=False)
+    except Exception:
+        return [kb.read_board_metadata(kb.DEFAULT_BOARD)]
+
+
+def _manifest_dispatch_boards() -> Optional[list[str]]:
+    """Return manifest dispatch boards, or ``None`` when fleet policy is absent.
+
+    The fleet overlay is intentionally optional for upstream Hermes installs.
+    Once the configured reader exists, errors fail closed to an empty board list
+    rather than silently restoring filesystem enumeration.
+    """
+    reader = _fleet_boards_reader_path()
+    if not reader.is_file():
+        return None
+    try:
+        spec = importlib.util.spec_from_file_location("hermes_fleet_boards", reader)
+        if spec is None or spec.loader is None:
+            raise ImportError(f"cannot load {reader}")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return list(module.boards_for("dispatch", strict=True))
+    except Exception:
+        logger.exception(
+            "kanban dispatcher: cannot read fleet boards manifest via %s; "
+            "refusing to dispatch any board",
+            reader,
+        )
+        return []
+
+
+def _board_slugs(kb: Any) -> list:
+    """Return manifest-authorized boards in manifest order.
+
+    ``kanban_db.list_boards`` is name-sorted, which lets an unrelated board
+    consume the shared spawn budget before a higher-priority board is visited.
+    The fleet manifest is the policy and ordering source; the live board list
+    only supplies the set of existing, non-archived databases.
+    """
+    listed = _list_boards(kb)
+    by_slug = {b.get("slug") or kb.DEFAULT_BOARD: b for b in listed}
+    dispatch_boards = _manifest_dispatch_boards()
+    if dispatch_boards is None:
+        return list(by_slug)
+    missing = [slug for slug in dispatch_boards if slug not in by_slug]
+    if missing:
+        logger.warning(
+            "kanban dispatcher: manifest dispatch board(s) missing from live board list: %s",
+            ", ".join(missing),
+        )
+    return [slug for slug in dispatch_boards if slug in by_slug]
 
 
 def _resolve_auto_decompose_settings(
@@ -1314,13 +1381,8 @@ class GatewayKanbanWatchersMixin:
             when users create a new board mid-run: no restart required,
             the next tick picks it up automatically.
             """
-            try:
-                boards = _kb.list_boards(include_archived=False)
-            except Exception:
-                boards = [_kb.read_board_metadata(_kb.DEFAULT_BOARD)]
             out: list[tuple[str, "Optional[object]"]] = []
-            for b in boards:
-                slug = b.get("slug") or _kb.DEFAULT_BOARD
+            for slug in _board_slugs(_kb):
                 out.append((slug, _tick_once_for_board(slug)))
             return out
 

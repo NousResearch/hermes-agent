@@ -47,8 +47,8 @@ it('keeps hosted, mention and pending-prompt attention independent in the extrac
   view.rerender(
     <RosterGroupRowView
       {...props}
-      groupHostedNeedsYou={{ Other: true }}
       groupClarify={{ 'Other::member': { ...prompt, group: 'Other' } }}
+      groupHostedNeedsYou={{ Other: true }}
     />
   )
   expect(screen.getByTestId('attention').textContent).toBe('false')

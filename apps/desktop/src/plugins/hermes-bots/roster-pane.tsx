@@ -424,8 +424,8 @@ export function BotsPane() {
       b={b}
       group={row.name}
       groupClarify={groupClarify}
-      groupNeedsYou={groupNeedsYou}
       groupHostedNeedsYou={groupHostedNeedsYou}
+      groupNeedsYou={groupNeedsYou}
       groupRooms={groupRooms}
       key={`group:${row.name}`}
       members={row.members}

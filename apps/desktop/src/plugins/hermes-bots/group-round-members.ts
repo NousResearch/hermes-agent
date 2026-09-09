@@ -1,7 +1,5 @@
 import { groupTurnText } from './classic-output'
 import type { GroupTurnReply } from './classic-output'
-import type { GroupCommandFence } from './group-command-fence'
-import { GroupFileDeliveryError } from './group-file-delivery'
 import { clearBotAttention, noteBotAttention } from './data'
 import { recordGroupActivity } from './group-activity'
 import {
@@ -15,6 +13,8 @@ import {
   updateGroupChat
 } from './group-chat'
 import type { GroupChatRoom } from './group-chat'
+import type { GroupCommandFence } from './group-command-fence'
+import { GroupFileDeliveryError } from './group-file-delivery'
 import { groupMemberKey } from './group-membership'
 import { buildGroupChatTurnPrompt, formatGroupChatLine } from './group-round-prompt'
 import { isGroupPassText, runGroupChatMemberTurn } from './group-turns'

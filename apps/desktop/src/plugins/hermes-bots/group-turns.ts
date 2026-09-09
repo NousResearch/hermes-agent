@@ -948,7 +948,9 @@ async function pollGroupMemberTurn(context: GroupTurnPollContext): Promise<null 
     }
   }
 
-  if (!leaseLive()) return null
+  if (!leaseLive()) {
+    return null
+  }
 
   // Timeout — clear any still-mirrored question card (the server-side
   // clarify timeout runs its own course) and read as a pass, but remember the baseline + thread
@@ -1054,7 +1056,9 @@ async function runGroupChatMemberTurnLeased(
       runtime,
       images
     )
-    if (fileRefs === null || !leaseLive()) return null
+    if (fileRefs === null || !leaseLive()) {
+      return null
+    }
 
     let turnText = fileRefs.length
       ? `${prompt}\n\nAttached files staged in your session workspace:\n${fileRefs.join('\n')}`
@@ -1120,7 +1124,9 @@ async function runGroupChatMemberTurnLeased(
     }
 
     runtimeIds.add(liveRuntime)
-    if (!leaseLive()) return null
+    if (!leaseLive()) {
+      return null
+    }
     return await pollGroupMemberTurn({
       get group() {
         return group
@@ -1156,7 +1162,9 @@ export async function harvestStrandedGroupReply(group: string, member: GroupMemb
     const release = await retainGroupTurnRoute(member)
 
     try {
-      if (binding.isLive()) await harvestStrandedGroupReplyLeased(group, member, fence)
+      if (binding.isLive()) {
+        await harvestStrandedGroupReplyLeased(group, member, fence)
+      }
     } finally {
       release()
     }

@@ -29,8 +29,8 @@ import {
 import type { GroupCommandFence } from './group-command-fence'
 import { desktopCommandResult, settleDesktopCommand } from './group-command-receipts'
 import { durableGroupChatMembers, followGroupChat, groupMemberKey } from './group-membership'
-import { harvestStrandedGroupReply } from './group-turns'
 import { runGroupContinuationMembers, runGroupRoundMember } from './group-round-members'
+import { harvestStrandedGroupReply } from './group-turns'
 import {
   beginHostedRoomMutation,
   groupChatContinuityReady,
@@ -1055,7 +1055,9 @@ export function sendToGroupChat(
       })
       void runGroupChatRounds(group, members, existingThread, fence)
         .catch(() => {
-          if (binding.isLive()) updateGroupChat(group, current => ({ ...current, running: false }))
+          if (binding.isLive()) {
+            updateGroupChat(group, current => ({ ...current, running: false }))
+          }
         })
         .finally(binding.dispose)
 

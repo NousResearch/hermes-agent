@@ -251,6 +251,7 @@ jobs:
       - supply-chain
       - review-labels
       - osv-scanner
+      - infographic-check
       # The image build runs in its own workflow (docker.yml) and reports
       # its own check. It was never required here, because it is too slow
       # to block a merge. A separate run also stops it from holding this

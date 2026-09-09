@@ -503,6 +503,15 @@ def _resolve_codex_usage_credentials(
     pool = load_pool("openai-codex")
     entry = pool.select()
     if entry is None:
+        # ``select()`` filters out entries the pool has marked exhausted —
+        # correct for a completion call, wrong here: GET /usage is a
+        # read-only status check, not billed against the same rate-limit
+        # window it reports on, and this is exactly the moment (mid-cooldown)
+        # a user most wants to see the reset countdown. Fall back to the raw
+        # entry so a 429-exhausted credential still answers a usage query.
+        entries = pool.entries()
+        entry = entries[0] if entries else None
+    if entry is None:
         raise RuntimeError("No available openai-codex credential in credential pool")
     return entry.runtime_api_key, str(entry.runtime_base_url or base_url or "").strip(), None
 

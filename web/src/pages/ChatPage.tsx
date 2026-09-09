@@ -32,6 +32,7 @@ import { useSearchParams } from "react-router-dom";
 
 import { ChatSidebar } from "@/components/ChatSidebar";
 import { ChatSessionList } from "@/components/ChatSessionList";
+import { UsageQuotaPanel } from "@/components/UsageQuotaPanel";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { useI18n } from "@/i18n";
 import { api } from "@/lib/api";
@@ -1392,6 +1393,9 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
                 onSessionTitleChange={handleSessionTitleChange}
               />
             </div>
+            <div className="border-b border-current/10 px-1 py-2">
+              <UsageQuotaPanel />
+            </div>
             <ChatSessionList
               activeSessionId={resumeParam}
               profile={scopedProfile}
@@ -1511,6 +1515,11 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
                 onDashboardNewSessionRequest={startFreshDashboardChat}
                 onSessionTitleChange={handleSessionTitleChange}
               />
+            </div>
+
+            {/* Per-provider rate-limit gauges, between the model box and the session switcher. */}
+            <div className="shrink-0">
+              <UsageQuotaPanel />
             </div>
 
             {/* Session switcher fills the remaining height below the model box. */}

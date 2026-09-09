@@ -1237,6 +1237,106 @@ def test_target_major_default_reflects_this_repos_engines_node():
     assert hermes_constants.engines_node_minimum_major() == 22
 
 
+class TestWindowsStagedTargetMajorOverride:
+    def test_stage_windows_node_zip_uses_explicit_target_major(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(hermes_constants, "_HERMES_NODE_TARGET_MAJOR", 22)
+        fetched_urls = []
+
+        def fake_fetch(url, timeout):
+            fetched_urls.append(url)
+            if url.endswith(".x/"):
+                return b"node-v24.9.1-win-x64.zip"
+            return b"not a real zip"  # extraction will fail; that's fine, we only assert the URL
+
+        monkeypatch.setattr(hermes_constants, "_fetch_url", fake_fetch)
+        hermes_constants._stage_windows_node_zip(tmp_path, "x64", target_major=24)
+        assert any("latest-v24.x" in u for u in fetched_urls)
+        assert not any("latest-v22.x" in u for u in fetched_urls)
+
+    def test_stage_windows_node_zip_defaults_to_module_constant(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(hermes_constants, "_HERMES_NODE_TARGET_MAJOR", 22)
+        fetched_urls = []
+        monkeypatch.setattr(
+            hermes_constants, "_fetch_url",
+            lambda url, timeout: fetched_urls.append(url) or None)
+        hermes_constants._stage_windows_node_zip(tmp_path, "x64")
+        assert any("latest-v22.x" in u for u in fetched_urls)
+
+    def test_heal_managed_node_windows_threads_target_major_end_to_end(self, tmp_path, monkeypatch):
+        """The tests above only exercise _stage_windows_node_zip directly; the actual
+        --upgrade-node call site calls _heal_managed_node_windows(target_major=...), so
+        the threading through that outer function needs its own coverage."""
+        import urllib.request
+
+        home = tmp_path / "hermes"
+        old = home / "node"
+        old.mkdir(parents=True)
+        (old / "node.exe").write_text("old", encoding="utf-8")
+        zip_name, zip_bytes = _make_node_zip(24)
+        monkeypatch.setattr(hermes_constants.sys, "platform", "win32")
+        monkeypatch.setenv("PROCESSOR_ARCHITECTURE", "AMD64")
+        monkeypatch.setattr(hermes_constants, "_HERMES_NODE_TARGET_MAJOR", 22)
+        monkeypatch.setattr(hermes_constants, "managed_node_tree_in_use", lambda _home=None: False)
+        monkeypatch.setattr(hermes_constants, "node_tool_runnable", lambda path: True)
+
+        index_html = f'<a href="./{zip_name}">{zip_name}</a>'.encode()
+        fetched_urls = []
+
+        def fake_urlopen(url, timeout=0):
+            fetched_urls.append(str(url))
+            if str(url).endswith(".zip"):
+                return _FakeUrlResponse(zip_bytes)
+            return _FakeUrlResponse(index_html)
+
+        monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+
+        result = hermes_constants._heal_managed_node_windows(home, target_major=24)
+
+        assert result is True
+        assert any("latest-v24.x" in u for u in fetched_urls)
+        assert not any("latest-v22.x" in u for u in fetched_urls)
+
+    def test_corrupt_zip_content_fails_cleanly_without_touching_live_tree(self, tmp_path, monkeypatch):
+        """A downloaded .zip that isn't actually a valid zip (truncated download, HTML error page
+        served with a 200 and a .zip-looking URL, etc.) must be treated as a plain failure, not an
+        uncaught zipfile.BadZipFile crash."""
+        monkeypatch.setattr(hermes_constants, "_HERMES_NODE_TARGET_MAJOR", 22)
+
+        def fake_fetch(url, timeout):
+            if url.endswith(".x/"):
+                return b"node-v22.5.1-win-x64.zip"
+            return b"<html>not a zip, an error page</html>"
+
+        monkeypatch.setattr(hermes_constants, "_fetch_url", fake_fetch)
+
+        result = hermes_constants._stage_windows_node_zip(tmp_path, "x64")
+
+        assert result is None
+        assert list(tmp_path.glob("node.new-*")) == []
+
+    def test_first_matching_index_entry_wins_when_multiple_patches_are_listed(self, tmp_path, monkeypatch):
+        """Documents current (unchanged-by-this-plan) selection behavior: re.search takes the
+        first regex match in listing order, not the numerically highest patch version. Locks in
+        the behavior so a future change to the index-parsing regex doesn't silently start picking
+        a different, unintended patch release without a test noticing."""
+        monkeypatch.setattr(hermes_constants, "_HERMES_NODE_TARGET_MAJOR", 22)
+        fetched_urls = []
+
+        def fake_fetch(url, timeout):
+            fetched_urls.append(url)
+            if url.endswith(".x/"):
+                return (
+                    b"node-v22.9.0-win-x64.zip\n"
+                    b"node-v22.10.0-win-x64.zip\n"
+                )
+            return b"not a real zip"
+
+        monkeypatch.setattr(hermes_constants, "_fetch_url", fake_fetch)
+        hermes_constants._stage_windows_node_zip(tmp_path, "x64")
+        assert any(u.endswith("node-v22.9.0-win-x64.zip") for u in fetched_urls)
+        assert not any(u.endswith("node-v22.10.0-win-x64.zip") for u in fetched_urls)
+
+
 class TestEnginesNodeRangeMalformedInput:
     """Adversarial inputs beyond the happy-path/missing-file tests above: engines.node
     values that are syntactically present but semantically wrong, and I/O edge cases."""

@@ -1456,7 +1456,8 @@ class FeedbackLedger:
                         return None
                 self._connection.execute(
                     "UPDATE worktree_pool_slots SET status = 'leased', owner_pid = ?, "
-                    "head_sha = ?, claimed_at = ?, updated_at = ?, lease_version = ? "
+                    "head_sha = ?, claimed_at = ?, updated_at = ?, lease_version = ?, "
+                    "task_id = NULL, board = NULL "
                     "WHERE slot_id = ?",
                     (owner_pid, head_sha, claimed.isoformat(), claimed.isoformat(), version, slot_id),
                 )
@@ -1478,7 +1479,7 @@ class FeedbackLedger:
 
         with self._transaction():
             self._connection.execute(
-                "UPDATE worktree_pool_slots SET status = 'free', updated_at = ? "
+                "UPDATE worktree_pool_slots SET status = 'free', task_id = NULL, board = NULL, updated_at = ? "
                 "WHERE slot_id = ? AND lease_version = ? AND owner_pid = ? AND status = 'leased'",
                 (
                     _aware_utc(datetime.now(UTC), "updated_at").isoformat(),

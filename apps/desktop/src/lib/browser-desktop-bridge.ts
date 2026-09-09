@@ -10,9 +10,12 @@ import type {
   HermesTerminalExit,
   HermesTerminalSession
 } from '@/global'
+import { translateNow } from '@/i18n'
 import { bytesToBase64 } from '@/lib/base64'
 import { createGitRestBridge } from '@/lib/git-rest'
+import { notifyError } from '@/store/notifications'
 import { $connection } from '@/store/session'
+import { windowProfileOverride } from '@/store/windows'
 
 interface BrowserBootstrapWindow {
   __HERMES_AUTH_REQUIRED__?: boolean
@@ -516,7 +519,9 @@ export function installBrowserDesktopBridge(): boolean {
 
   if (!bootstrap) {return false}
 
-  const getConnection = async (profile?: null | string) => connectionFor(bootstrap, profile)
+  // Reconnect belongs to the window, not whichever secondary profile is active.
+  // Explicit null still selects the default backend.
+  const getConnection = async (profile: null | string = windowProfileOverride()) => connectionFor(bootstrap, profile)
 
   const requireBrowserConnection = (connectionId?: null | string) => {
     const requested = connectionId?.trim() || LOCAL_CONNECTION_ID
@@ -825,8 +830,25 @@ export function installBrowserDesktopBridge(): boolean {
     api<T>({ body, method: 'POST', path: `/api/git/${route}`, profile: browserProfile() })
 
   const downloadUrl = async (url: string, filename = '') => {
+    const target = new URL(url, window.location.href)
+    let downloadHref = target.href
+
+    // Cross-origin anchors ignore download and navigate the current tab.
+    // Fetch without Hermes credentials; CORS denial must not fall back to navigation.
+    if (target.origin !== window.location.origin && !['blob:', 'data:'].includes(target.protocol)) {
+      const response = await fetch(target, { credentials: 'omit', mode: 'cors' })
+
+      if (!response.ok) {throw new Error(`Image download failed (${response.status})`)}
+      downloadHref = URL.createObjectURL(await response.blob())
+      transientObjectUrls.add(downloadHref)
+      window.setTimeout(() => {
+        URL.revokeObjectURL(downloadHref)
+        transientObjectUrls.delete(downloadHref)
+      }, 60_000)
+    }
+
     const anchor = document.createElement('a')
-    anchor.href = url
+    anchor.href = downloadHref
     anchor.download = filename
     anchor.rel = 'noopener'
     anchor.style.display = 'none'
@@ -1122,7 +1144,16 @@ export function installBrowserDesktopBridge(): boolean {
         saved: await downloadUrl(authenticatedEndpointUrl(bootstrap, path, profile).href, payload.suggestedName)
       }
     },
-    saveImageFromUrl: (url: string) => downloadUrl(url),
+    saveImageFromUrl: async (url: string) => {
+      try {
+        return await downloadUrl(url)
+      } catch (error) {
+        // Context-menu consumers fire and forget; surface failures here.
+        notifyError(error, translateNow('fileMenu.downloadFailed'))
+
+        return false
+      }
+    },
     sanitizeWorkspaceCwd: async (cwd?: null | string) => ({ cwd: cwd || '', sanitized: false }),
     selectPaths: options => selectBrowserFiles(bootstrap, options, browserProfile()),
     settings: {

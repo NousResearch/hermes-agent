@@ -70,10 +70,15 @@ def _resolve_configured_cwd(*, override_is_final: bool) -> Path | None:
     """Session override, then TERMINAL_CWD; each validated as a real directory.
 
     ``override_is_final``: a set-but-missing session override yields None
-    instead of falling through to TERMINAL_CWD.
+    instead of falling through to TERMINAL_CWD. Under a Kanban task, the
+    override is constrained to the worker's assigned workspace first — a
+    stale session cwd from a prior worktree must never leak into a new one.
     """
     override = _SESSION_CWD.get()
     override = "" if override is _UNSET else str(override).strip()
+    kanban_scoped = resolve_kanban_worker_cwd(override or None)
+    if kanban_scoped is not None:
+        return _existing_dir(kanban_scoped, "Kanban worker workspace")
     if override:
         p = _existing_dir(override, "configured working directory")
         if p is not None or override_is_final:

@@ -994,7 +994,7 @@ class TestRpcSessionIdForwarding(unittest.TestCase):
                 session_id="session-contract",
             )
 
-        self.assertIsInstance(raw, str)
+        assert isinstance(raw, str), raw
         self.assertEqual(json.loads(raw), {"status": "ok"})
         self.assertEqual(captured, {
             "code": "print('hi')",

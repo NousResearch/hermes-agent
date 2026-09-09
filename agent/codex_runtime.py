@@ -14,6 +14,7 @@ from types import SimpleNamespace
 from typing import Any, Callable, Dict, List
 
 from agent.stream_single_writer import claim_stream_writer, stream_writer_is_current
+from agent.sdk_transform_bypass import bypass_sdk_request_transform
 from agent.usage_anchor import set_usage_anchor
 
 logger = logging.getLogger(__name__)
@@ -828,24 +829,6 @@ def _sanitize_consumer_codex_request(agent: Any, request: dict[str, Any]) -> dic
     return sanitized
 
 
-# The request-transform bypass (#93650) now lives in agent/sdk_transform_bypass
-# so the chat-completions path can share it. Re-exported here under the
-# original names: agent/auxiliary_client.py and
-# tests/run_agent/test_codex_sdk_transform_bypass.py import them from this
-# module, and those import paths stay valid.
-from agent.sdk_transform_bypass import (  # noqa: E402
-    RESPONSES_BYPASS_FIELDS as _SDK_TRANSFORM_BYPASS_FIELDS,
-    _is_plain_json_data,
-    bypass_sdk_request_transform as _bypass_sdk_request_transform,
-)
-
-__all__ = [
-    "_SDK_TRANSFORM_BYPASS_FIELDS",
-    "_is_plain_json_data",
-    "_bypass_sdk_request_transform",
-]
-
-
 def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta=None):
     """One streaming Responses API request over raw ``responses.create(stream=True)`` events."""
     import httpx as _httpx
@@ -902,7 +885,7 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
     def _open_codex_stream(next_api_kwargs: dict[str, Any]):
         stream_kwargs = _sanitize_consumer_codex_request(agent, next_api_kwargs)
         stream_kwargs["stream"] = True
-        return active_client.responses.create(**_bypass_sdk_request_transform(stream_kwargs))
+        return active_client.responses.create(**bypass_sdk_request_transform(stream_kwargs))
 
     def _log_failure(exc: BaseException) -> None:
         request_body_bytes, exception_chain = _codex_request_failure_details(exc)

@@ -200,3 +200,159 @@ def test_fix_review_supports_authorized_claude_and_rejects_blocked(kanban_home, 
         conn.execute("UPDATE tasks SET status = 'blocked' WHERE id = ?", (task_id,))
         conn.commit()
     assert run_fix_review_slash(task_id)["dispatch_status"] == "not_eligible"
+
+
+@pytest.mark.parametrize("status", ["done", "archived", "blocked"])
+def test_fix_review_rejects_terminal_or_blocked_changes_requested_task(kanban_home, monkeypatch, status):
+    from hermes_cli.kanban_fix_review import run_fix_review_slash
+
+    task_id = _task()
+    _enable(monkeypatch)
+    _seed_changes_requested(task_id, monkeypatch)
+    with kbc.connect() as conn:
+        conn.execute("UPDATE tasks SET status = ? WHERE id = ?", (status, task_id))
+        conn.commit()
+    spawned = []
+    monkeypatch.setattr(kbd, "_default_spawn", lambda *_args, **_kwargs: spawned.append(True))
+
+    result = run_fix_review_slash(task_id)
+
+    assert result["dispatch_status"] == "not_eligible"
+    assert spawned == []
+    with kbc.connect() as conn:
+        assert kb.get_task(conn, task_id).status == status
+
+
+def test_fix_review_rejects_running_task_without_active_correction(kanban_home, monkeypatch):
+    from hermes_cli.kanban_fix_review import run_fix_review_slash
+
+    task_id = _task()
+    _enable(monkeypatch)
+    _seed_changes_requested(task_id, monkeypatch)
+    with kbc.connect() as conn:
+        conn.execute("UPDATE tasks SET status = 'running' WHERE id = ?", (task_id,))
+        conn.commit()
+    spawned = []
+    monkeypatch.setattr(kbd, "_default_spawn", lambda *_args, **_kwargs: spawned.append(True))
+
+    result = run_fix_review_slash(task_id)
+
+    assert result["dispatch_status"] == "not_eligible"
+    assert "not an active correction" in result["message"]
+    assert spawned == []
+
+
+def test_fix_review_rejects_unmet_dependency_without_mutation(kanban_home, monkeypatch):
+    from hermes_cli.kanban_fix_review import run_fix_review_slash
+
+    parent_id = _task(title="Parent")
+    task_id = _task(title="Child")
+    _enable(monkeypatch)
+    _seed_changes_requested(task_id, monkeypatch)
+    with kbc.connect() as conn:
+        kb.link_tasks(conn, parent_id, task_id)
+        conn.execute("UPDATE tasks SET status = 'ready' WHERE id = ?", (task_id,))
+        conn.commit()
+        before = len(kb.list_runs(conn, task_id))
+    spawned = []
+    monkeypatch.setattr(kbd, "_default_spawn", lambda *_args, **_kwargs: spawned.append(True))
+
+    result = run_fix_review_slash(task_id)
+
+    assert result["dispatch_status"] == "not_eligible"
+    assert "dependencies" in result["message"]
+    assert spawned == []
+    with kbc.connect() as conn:
+        assert len(kb.list_runs(conn, task_id)) == before
+        assert kb.get_task(conn, task_id).current_run_id is None
+
+
+def test_fix_review_ambiguous_and_missing_references_do_not_mutate(kanban_home, monkeypatch):
+    from hermes_cli.kanban_fix_review import run_fix_review_slash
+
+    _enable(monkeypatch)
+    first, second = _task(title="same"), _task(title="same")
+    ambiguous = run_fix_review_slash("same")
+    missing = run_fix_review_slash("does-not-exist")
+
+    assert ambiguous["dispatch_status"] == "not_eligible"
+    assert missing["dispatch_status"] == "not_eligible"
+    with kbc.connect() as conn:
+        assert kb.get_task(conn, first).status == "ready"
+        assert kb.get_task(conn, second).status == "ready"
+        assert len(kb.list_runs(conn, first)) == 0
+        assert len(kb.list_runs(conn, second)) == 0
+
+
+def test_fix_review_required_human_gate_unsatisfied_is_noop(kanban_home, monkeypatch):
+    from hermes_cli import kanban_implement as implement
+    from hermes_cli.kanban_fix_review import run_fix_review_slash
+
+    task_id = _task()
+    _enable(monkeypatch)
+    _seed_changes_requested(task_id, monkeypatch)
+    monkeypatch.setattr(implement, "_kanban_config", lambda: {
+        "fix_review_command": True, "human_gate_required": True,
+    })
+    spawned = []
+    monkeypatch.setattr(kbd, "_default_spawn", lambda *_args, **_kwargs: spawned.append(True))
+    with kbc.connect() as conn:
+        before = len([event for event in kb.list_events(conn, task_id) if event.kind == "routing_selected"])
+
+    result = run_fix_review_slash(task_id)
+
+    assert result["dispatch_status"] == "not_eligible"
+    assert result["human_gate_required"] is True
+    assert spawned == []
+    with kbc.connect() as conn:
+        assert kb.get_task(conn, task_id).status == "ready"
+        assert len([event for event in kb.list_events(conn, task_id) if event.kind == "routing_selected"]) == before
+
+
+def test_fix_review_required_human_gate_satisfied_starts_correction(kanban_home, monkeypatch):
+    from hermes_cli import kanban_implement as implement
+    from hermes_cli.kanban_fix_review import run_fix_review_slash
+
+    task_id = _task()
+    _enable(monkeypatch)
+    _seed_changes_requested(task_id, monkeypatch)
+    monkeypatch.setattr(implement, "_kanban_config", lambda: {
+        "fix_review_command": True, "human_gate_required": True,
+    })
+    monkeypatch.setattr(kbd, "_default_spawn", lambda *_args, **_kwargs: 707)
+    with kbc.connect() as conn:
+        kb._append_event(conn, task_id, "human_gate_satisfied", {})
+        conn.commit()
+
+    result = run_fix_review_slash(task_id)
+
+    assert result["dispatch_status"] == "started"
+    assert result["human_gate_required"] is True
+
+
+def test_fix_review_second_request_after_completed_correction_is_idempotent(kanban_home, monkeypatch):
+    from hermes_cli.kanban_fix_review import run_fix_review_slash
+
+    task_id = _task()
+    _enable(monkeypatch)
+    _seed_changes_requested(task_id, monkeypatch)
+    spawned = []
+    monkeypatch.setattr(kbd, "_default_spawn", lambda *_args, **_kwargs: spawned.append(True) or 808)
+    first = run_fix_review_slash(task_id)
+    assert first["dispatch_status"] == "started"
+    with kbc.connect() as conn:
+        correction_run_id = kb.get_task(conn, task_id).current_run_id
+        assert kb.complete_task(conn, task_id, result="fixed", expected_run_id=correction_run_id)
+        conn.execute("UPDATE tasks SET status = 'ready' WHERE id = ?", (task_id,))
+        conn.commit()
+        runs_before = len(kb.list_runs(conn, task_id))
+        decisions_before = len([event for event in kb.list_events(conn, task_id) if event.kind == "routing_selected"])
+
+    second = run_fix_review_slash(task_id)
+
+    assert second["dispatch_status"] == "already_completed"
+    assert second["run_id"] == correction_run_id
+    assert len(spawned) == 1
+    with kbc.connect() as conn:
+        assert len(kb.list_runs(conn, task_id)) == runs_before
+        assert len([event for event in kb.list_events(conn, task_id) if event.kind == "routing_selected"]) == decisions_before

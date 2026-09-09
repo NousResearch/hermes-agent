@@ -274,6 +274,19 @@ class TestTableRealignment:
         assert "Before" not in block and "After" not in block
         assert block.startswith("| A")
 
+    def test_table_before_code_block_keeps_code_block_position_correct(self):
+        """A table's realignment can change its own rendered length (column padding).
+        Any style range recorded before the table (e.g. a fenced code block) but that sits
+        *after* it in the document must be rebased by that length delta, or it ends up
+        pointing at a random substring of the table instead of the code block."""
+        md = "| Name | Age |\n|------|-----|\n| Alice | 30 |\n| Bob | 25 |\n\n```\ncode\n```"
+        text, styles = _m2s(md)
+        mono = _find_style(styles, "MONOSPACE")
+        assert len(mono) == 2
+        ranges = [(int(s.split(":")[0]), int(s.split(":")[1])) for s in mono]
+        code_start, code_length = max(ranges, key=lambda r: r[0])
+        assert text[code_start : code_start + code_length] == "code"
+
 
 class TestSignalStreamingPatch:
     """Tests for signal-streaming-patch: cursor suppression and edit support.

@@ -5,6 +5,8 @@ globals at install time (method_ctx.bind_module), so they reference server.py gl
 
 from __future__ import annotations
 
+import logging
+
 import contextlib
 
 from .method_ctx import bind_module
@@ -193,12 +195,30 @@ def _lifecycle_own_sid(session: dict, sid_hint: str = "") -> str:
     return own_sid
 
 
+def _lock_vault_managers(session: dict) -> None:
+    """A per-session unlock ends with the session: forget the profile's manager tokens."""
+    try:
+        from agent.vault_backends import unlock
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+        home = session.get("profile_home")
+        token = set_hermes_home_override(home) if home else None
+        try:
+            unlock.lock()
+        finally:
+            if token is not None:
+                reset_hermes_home_override(token)
+    except Exception:
+        logging.getLogger(__name__).debug("vault manager lock on session end failed", exc_info=True)
+
+
 def _finalize_session(session: dict | None, end_reason: str = "tui_close") -> None:
     """Best-effort finalize hook + memory commit; mirrors the CLI exit path so a force-quit mid-turn (double
     Ctrl-C, terminal close, SIGHUP) loses nothing."""
     if not session or session.get("_finalized"):
         return
     session["_finalized"] = True
+    _lock_vault_managers(session)
     if (history_ready := session.get("resume_history_ready")) is not None and not history_ready.is_set():
         session["resume_history_error"] = "session resume cancelled"
         history_ready.set()

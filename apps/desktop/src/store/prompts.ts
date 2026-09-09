@@ -228,6 +228,7 @@ export const clearSecretRequest = secret.clear
 export const $vaultUnlockRequest = vaultUnlock.$active
 export const setVaultUnlockRequest = vaultUnlock.set
 export const clearVaultUnlockRequest = vaultUnlock.clear
+export const $vaultUnlockRequests = vaultUnlock.$all
 export const sessionVaultUnlockRequest = (sessionId: string | null) =>
   computed(vaultUnlock.$all, all => all[keyFor(sessionId)] ?? null)
 

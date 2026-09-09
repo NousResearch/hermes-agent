@@ -35,8 +35,9 @@ class OnePasswordLoginBackend(LoginBackend):
 
     def __init__(self, cfg: Optional[Dict] = None):
         self.cfg = cfg or {}
+        from agent.secret_scope import get_secret
         env_name = str(self.cfg.get("service_account_token_env") or "OP_SERVICE_ACCOUNT_TOKEN")
-        self._service_token = os.environ.get(env_name, "") or ""
+        self._service_token = get_secret(env_name, "") or ""
 
     # ── auth ────────────────────────────────────────────────────────────────
 

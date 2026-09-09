@@ -1,6 +1,6 @@
 import { useStore } from '@nanostores/react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useSearchParams } from 'react-router'
 
 import { useGatewayRequest } from '@/app/gateway/hooks/use-gateway-request'
@@ -195,9 +195,17 @@ export function VaultSettings() {
     setUnlockError(null)
   }, [])
 
+  // The master password never becomes mutation *variables* (react-query retains those in its
+  // cache after the dialog closes); it lives in a ref that the mutationFn consumes and wipes.
+  const pendingMasterPassword = useRef('')
+
   const unlockSource = useMutation({
-    mutationFn: ({ name, password }: { name: VaultSourceName; password: string }) =>
-      requestGateway<{ unlocked: boolean }>('vault.unlock', { name, password }),
+    mutationFn: ({ name }: { name: VaultSourceName }) => {
+      const password = pendingMasterPassword.current
+      pendingMasterPassword.current = ''
+
+      return requestGateway<{ unlocked: boolean }>('vault.unlock', { name, password })
+    },
     onSuccess: (_result, { name }) => {
       triggerHaptic('submit')
       const source = externalSources.find(s => s.name === name)
@@ -479,7 +487,9 @@ export function VaultSettings() {
               e.preventDefault()
 
               if (unlockTarget && masterPassword) {
-                unlockSource.mutate({ name: unlockTarget.name, password: masterPassword })
+                pendingMasterPassword.current = masterPassword
+                setMasterPassword('')
+                unlockSource.mutate({ name: unlockTarget.name })
               }
             }}
           >

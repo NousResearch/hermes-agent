@@ -28,6 +28,8 @@ import {
   sessionSudoRequest,
   sessionVaultUnlockRequest
 } from '@/store/prompts'
+import { ambientRequestFor } from '@/store/session-gone-latch'
+import { requestForOwnedSession } from '@/store/session-states'
 
 // Renders the modal mid-turn prompts the gateway raises and waits on: sudo
 // password and skill secret capture. Dangerous-command / execute_code approval
@@ -278,10 +280,14 @@ function VaultUnlockDialog({ sessionId }: { sessionId: string | null }) {
       setSubmitting(true)
 
       try {
-        await gateway.request<{ status?: string }>('vault.unlock.respond', {
-          request_id: request.requestId,
-          password
-        })
+        // A master password must reach the backend that raised the prompt, not whatever
+        // gateway is foreground right now (background profile tiles have their own socket).
+        await requestForOwnedSession<{ status?: string }>(
+          request.sessionId,
+          ambientRequestFor(gateway),
+          'vault.unlock.respond',
+          { request_id: request.requestId, password }
+        )
         triggerHaptic('submit')
         clearVaultUnlockRequest(request.sessionId, request.requestId)
       } catch (error) {

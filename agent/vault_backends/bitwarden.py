@@ -2,7 +2,7 @@
 
 This is the personal/org *password* vault (``bw``), distinct from the
 Bitwarden Secrets Manager (``bws``) source that hydrates API keys at startup.
-Unlock: ``bw unlock --raw`` with the master password on stdin mints a
+Unlock: ``bw unlock --raw --passwordenv VAR`` (the CLI rejects a piped password) mints a
 ``BW_SESSION`` token. List: ``bw list items`` filtered to type=1 (login) with
 a URI. Resolve: ``bw get password <id>``.
 """
@@ -19,7 +19,7 @@ from typing import Dict, List, Optional
 
 from agent.secret_sources.base import run_cli, scrub_ansi
 from agent.vault_backends import unlock as _unlock
-from agent.vault_backends.base import LoginBackend, UnlockRequired, run_with_stdin_secret
+from agent.vault_backends.base import LoginBackend, UnlockRequired, run_with_secret_env
 from agent.vault_store import VaultItemMeta, normalize_origin
 
 logger = logging.getLogger(__name__)
@@ -56,8 +56,11 @@ class BitwardenLoginBackend(LoginBackend):
         return _unlock.is_unlocked(self.name)
 
     def unlock(self, master_password: str) -> None:
-        proc = run_with_stdin_secret([str(self._bw()), "unlock", "--raw", "--nointeraction"],
-                                     env=self._env(None), secret=master_password, timeout=_TIMEOUT, label="bw")
+        # bw refuses a piped password ("Master password is required"); its non-interactive contract is
+        # --passwordenv: the variable exists only in the child's environment, never in argv or ours.
+        proc = run_with_secret_env([str(self._bw()), "unlock", "--raw", "--nointeraction", "--passwordenv", "HERMES_BW_MASTER"],
+                                   env=self._env(None), secret_env="HERMES_BW_MASTER", secret=master_password,
+                                   timeout=_TIMEOUT, label="bw")
         token = (proc.stdout or "").strip()
         if proc.returncode != 0 or not token:
             err = scrub_ansi(proc.stderr or "").strip()[:200]

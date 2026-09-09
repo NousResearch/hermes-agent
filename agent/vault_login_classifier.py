@@ -133,9 +133,16 @@ def select_password_fill(
 
 # JS expression evaluated in the page to inspect candidate input controls.
 # Ported from OpenInstinct's nativeLoginControlInspectionExpression.
+# Inspection stamps every input with its index under a per-inspection attribute; the fill script
+# resolves targets by that stamp instead of re-querying by position, so a DOM that reflows between
+# inspect and fill (late-mounted inputs, cookie banners) cannot redirect the password into the wrong field.
+INSPECTION_STAMP_ATTR = "data-hermes-vault-slot"
+
 LOGIN_CONTROL_INSPECTION_JS = """(() => {
   const elements = Array.from(document.querySelectorAll("input"));
   const forms = Array.from(document.forms);
+  document.querySelectorAll("[data-hermes-vault-slot]").forEach((n) => n.removeAttribute("data-hermes-vault-slot"));
+  elements.forEach((element, index) => element.setAttribute("data-hermes-vault-slot", String(index)));
   const out = elements.flatMap((element, index) => {
     if (element.disabled || element.readOnly) return [];
     if (["hidden", "submit", "button", "reset", "file", "image", "checkbox", "radio"].includes(element.type)) return [];
@@ -190,11 +197,10 @@ def build_fill_js(fills: List[Dict[str, Any]], expected_origin: str) -> str:
         "    return JSON.stringify({ refused: \"origin_changed\", found: window.location.origin });\n"
         "  }\n"
         f"  const fills = {payload};\n"
-        "  const elements = Array.from(document.querySelectorAll(\"input\"));\n"
         "  let filled = 0;\n"
         "  for (const f of fills) {\n"
-        "    const el = elements[f.index];\n"
-        "    if (!el) continue;\n"
+        "    const el = document.querySelector('input[data-hermes-vault-slot=\"' + f.index + '\"]');\n"
+        "    if (!el || el.type !== \"password\") continue;\n"
         "    try {\n"
         "      el.focus();\n"
         "      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, \"value\");\n"
@@ -204,6 +210,7 @@ def build_fill_js(fills: List[Dict[str, Any]], expected_origin: str) -> str:
         "      if (el.value.length > 0) filled += 1;\n"
         "    } catch (e) { /* skip */ }\n"
         "  }\n"
+        "  document.querySelectorAll(\"[data-hermes-vault-slot]\").forEach((n) => n.removeAttribute(\"data-hermes-vault-slot\"));\n"
         "  return JSON.stringify({ filled });\n"
         "})()"
     )

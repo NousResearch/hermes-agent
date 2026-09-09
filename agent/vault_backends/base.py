@@ -62,6 +62,22 @@ def run_with_stdin_secret(argv: Sequence[str], *, env: Dict[str, str], secret: s
         raise RuntimeError(f"failed to invoke {label}: {exc}") from exc
 
 
+def run_with_secret_env(argv: Sequence[str], *, env: Dict[str, str], secret_env: str, secret: str, timeout: float,
+                        label: str) -> subprocess.CompletedProcess:
+    """Run a manager CLI whose non-interactive contract reads the secret from a named env var.
+    The variable is set on the child's environment only (never argv, never our process)."""
+    child_env = dict(env)
+    child_env[secret_env] = secret
+    try:
+        return subprocess.run(  # noqa: S603 — argv list, no shell
+            list(argv), env=child_env, stdin=subprocess.DEVNULL, capture_output=True, text=True,
+            encoding="utf-8", errors="replace", timeout=timeout)
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(f"{label} unlock timed out after {timeout:.0f}s") from exc
+    except OSError as exc:
+        raise RuntimeError(f"failed to invoke {label}: {exc}") from exc
+
+
 def _cfg() -> Dict:
     from hermes_cli.config import load_config_readonly
     cfg = load_config_readonly().get("vault") or {}

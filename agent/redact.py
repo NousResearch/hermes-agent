@@ -29,7 +29,6 @@ logger = logging.getLogger(__name__)
 # never logged, cleared with the process.
 _VAULT_REDACTION_VALUES: set = set()
 _VAULT_REDACTION_LOCK = threading.Lock()
-_VAULT_REDACTION_MIN_LEN = 4  # avoid pathological scrubs on 1-3 char values
 
 
 def register_vault_redaction_value(value) -> None:
@@ -37,14 +36,16 @@ def register_vault_redaction_value(value) -> None:
 
     Called by the vault fill path for every secret value it injects into a
     page, BEFORE the injection happens, so no later browser tool result can
-    echo the value back into model context.
+    echo the value back into model context. Also registers the form a text
+    input normalizes it to (CR/LF stripped), since that is what the page holds.
     """
-    if not isinstance(value, str):
-        return
-    if len(value) < _VAULT_REDACTION_MIN_LEN:
+    if not isinstance(value, str) or not value:
         return
     with _VAULT_REDACTION_LOCK:
         _VAULT_REDACTION_VALUES.add(value)
+        normalized = value.replace("\r", "").replace("\n", "")
+        if normalized:
+            _VAULT_REDACTION_VALUES.add(normalized)
 
 
 def redact_registered_vault_values(text: str) -> str:
@@ -52,7 +53,7 @@ def redact_registered_vault_values(text: str) -> str:
     if not isinstance(text, str) or not text:
         return text
     with _VAULT_REDACTION_LOCK:
-        values = list(_VAULT_REDACTION_VALUES)
+        values = sorted(_VAULT_REDACTION_VALUES, key=len, reverse=True)  # longest first: a substring never shadows its superstring
     for value in values:
         if value in text:
             text = text.replace(value, "«redacted-vault-secret»")

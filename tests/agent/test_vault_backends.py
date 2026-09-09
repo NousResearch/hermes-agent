@@ -3,9 +3,10 @@
 Two contracts that must never regress:
 1. A locked manager never prompts where nobody can answer (cron/headless) and never leaks a
    value: browser_vault_list reports it under ``locked``, browser_vault_fill refuses.
-2. The unlock path hands the master password to the manager CLI on stdin only (never argv),
-   keeps just the session token in memory, and a fill then routes by handle prefix through
-   the real subprocess path. Locking forgets the token.
+2. The unlock path hands the master password to the manager CLI through its documented
+   non-interactive channel (bw: ``--passwordenv`` on the CHILD env only — never argv, never our
+   process env), keeps just the session token in memory scoped to the profile, and a fill then
+   routes by handle prefix through the real subprocess path. Locking forgets the token.
 """
 
 from __future__ import annotations
@@ -20,17 +21,22 @@ import pytest
 from agent.vault_backends import unlock as unlock_mod
 from agent.vault_backends.bitwarden import BitwardenLoginBackend
 
-# A stand-in `bw` that mimics the three commands the backend uses. It records argv + stdin so the
-# test can prove the master password travelled on stdin only, and a fake session key gates `list`.
+# A stand-in `bw` that mimics the three commands the backend uses and the real CLI's password contract
+# (bw 2026.x rejects a piped password: "Master password is required"; it reads --passwordenv <VAR>).
+# It records argv + stdin + the named env var so the test can prove where the master password travelled.
 # (No env passthrough: the backend's allowlisted child env is part of what is under test.)
 _FAKE_BW = r'''#!/usr/bin/env python3
 import json, os, sys
 log = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "bw.log"), "a")
 argv = sys.argv[1:]
 stdin = sys.stdin.read() if not sys.stdin.isatty() else ""
-log.write(json.dumps({"argv": argv, "stdin": stdin, "BW_SESSION": os.environ.get("BW_SESSION")}) + "\n")
+pw_env = argv[argv.index("--passwordenv") + 1] if "--passwordenv" in argv else None
+log.write(json.dumps({"argv": argv, "stdin": stdin, "BW_SESSION": os.environ.get("BW_SESSION"),
+                      "pw": os.environ.get(pw_env) if pw_env else None}) + "\n")
 if argv[:2] == ["unlock", "--raw"]:
-    if stdin.strip() != "correct horse":
+    if pw_env is None:
+        sys.stderr.write("Master password is required. Try again in interactive mode or provide a password file or environment variable.\n"); sys.exit(1)
+    if os.environ.get(pw_env) != "correct horse":
         sys.stderr.write("Invalid master password.\n"); sys.exit(1)
     print("SESSION-TOKEN-123"); sys.exit(0)
 if os.environ.get("BW_SESSION") != "SESSION-TOKEN-123":
@@ -88,7 +94,7 @@ def test_locked_manager_is_reported_not_prompted_when_headless(fake_bw, monkeypa
     assert not unlock_mod.is_unlocked("bitwarden")
 
 
-def test_unlock_feeds_stdin_only_then_fill_routes_by_prefix(fake_bw):
+def test_unlock_uses_vendor_passwordenv_contract_then_fill_routes_by_prefix(fake_bw):
     exe, log = fake_bw
     from tools.browser_vault_tool import browser_vault_fill, browser_vault_list
 
@@ -124,9 +130,17 @@ def test_unlock_feeds_stdin_only_then_fill_routes_by_prefix(fake_bw):
 
     calls = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
     unlock_calls = [c for c in calls if c["argv"][:2] == ["unlock", "--raw"]]
-    assert len(unlock_calls) == 1 and unlock_calls[0]["stdin"].strip() == "correct horse"
+    assert len(unlock_calls) == 1 and unlock_calls[0]["pw"] == "correct horse" and unlock_calls[0]["stdin"] == ""
     assert all("correct horse" not in " ".join(c["argv"]) for c in calls), "master password must never be argv"
     assert all(c["BW_SESSION"] == "SESSION-TOKEN-123" for c in calls if c["argv"][0] != "unlock")
+    assert "HERMES_BW_MASTER" not in os.environ, "master password env var is child-only"
+
+    # Tokens are profile-scoped: another HERMES_HOME sees the manager locked and cannot lock ours.
+    other = str(exe.parent / "other-profile")
+    with patch.dict(os.environ, {"HERMES_HOME": other}):
+        assert not backend.is_unlocked()
+        unlock_mod.lock("bitwarden")
+    assert backend.is_unlocked()
 
     unlock_mod.lock("bitwarden")
     assert not backend.is_unlocked()

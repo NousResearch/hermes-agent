@@ -33,10 +33,10 @@ injected directly into the page.
    supervised browser session's direct CDP WebSocket, and returns only
    `{filled_fields, kind, origin, success}`.
 
-The password never appears in tool results, logs, or the session database.
-Its exact bytes are additionally registered with the browser-result
-redaction boundary, so even a later `browser_cdp` read that manages to echo
-the page's DOM cannot return them to the model.
+The password does not appear in the fill's tool result, logs, or the
+session database, and its exact bytes are registered with the browser-result
+redaction boundary so a later `browser_*` read that echoes the page's DOM is
+scrubbed. See *What this does and does not guarantee* below for the limits.
 
 ## CLI
 
@@ -77,11 +77,13 @@ Unlock, Lock).
 A manager starts **locked**. The first time the agent needs one of its
 logins it asks you to unlock: a masked master-password prompt appears in
 the CLI, TUI, or Desktop chat (or you can unlock ahead of time from
-Settings). Hermes hands the master password to `op signin` / `bw unlock` on
-stdin, never as a command-line argument, and keeps only the resulting
-session token in memory. The token expires after 30 minutes idle, when you
-press **Lock**, or when the session ends. The agent never sees the master
-password, the token, or any password.
+Settings). Hermes hands the master password to the manager CLI through its
+non-interactive channel (`op signin` reads stdin; `bw unlock --passwordenv`
+reads a variable set only in the child process) — never as a command-line
+argument, never in Hermes' own environment — and keeps only the resulting
+session token in memory, scoped to the current profile. The token expires
+after 30 minutes idle, when you press **Lock**, or when the session ends.
+The agent never sees the master password, the token, or any password.
 
 `browser_vault_list` reports a locked manager under `locked`, and
 `browser_vault_unlock(backend)` triggers the prompt explicitly.
@@ -168,9 +170,24 @@ Agent: browser_click(<submit>)
 - **Encrypted at rest:** vault file and key are created `0600` in your
   Hermes home; nothing is sent to any server.
 - **Master password never stored:** for 1Password/Bitwarden the master
-  password goes to the manager CLI on stdin and is dropped; only the
-  session token is held, in memory, with an idle timeout. Headless sessions
-  can't prompt and see the manager as locked.
+  password is consumed by the manager CLI and dropped; only the session
+  token is held, in memory, per profile, with an idle timeout. Headless
+  sessions can't prompt and see the manager as locked.
+
+### What this does and does not guarantee
+
+The vault keeps passwords out of the model's *normal* path: list/fill
+results carry metadata only, the fill runs over the supervised CDP socket,
+and every browser tool result is scrubbed for the exact filled bytes
+(including the CR/LF-normalized form a text input stores, and JSON object
+keys). This is accidental-disclosure protection, not an execution sandbox:
+a session that also has arbitrary page JavaScript (`browser_cdp
+Runtime.evaluate`) or host code execution could in principle transform a
+filled value (for example base64-encode it) into a string the redactor does
+not recognize. If that matters for a credential, restrict the session's
+toolset (drop `browser_cdp`/`terminal`/`execute_code`) or use a dedicated
+low-privilege account for agent logins. Treat the filled credential as
+exposed to the same trust boundary as the browser session itself.
 
 ## Notes
 

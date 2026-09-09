@@ -12,7 +12,14 @@ import {
 import { $gateway } from '@/store/gateway'
 import { setMcpSetupRequest } from '@/store/mcp-setup'
 import { dispatchNativeNotification } from '@/store/native-notifications'
-import { receiveApprovalRequest, setSecretRequest, setSudoRequest, setVaultUnlockRequest } from '@/store/prompts'
+import {
+  $vaultUnlockRequests,
+  clearVaultUnlockRequest,
+  receiveApprovalRequest,
+  setSecretRequest,
+  setSudoRequest,
+  setVaultUnlockRequest
+} from '@/store/prompts'
 import { requestScrollToBottom } from '@/store/thread-scroll'
 
 import type { GatewayEventContext } from './types'
@@ -152,6 +159,17 @@ export function handleInputRequestEvent(ctx: GatewayEventContext): boolean {
         sessionId,
         title: translateNow('notifications.native.inputTitle')
       })
+    }
+
+    return true
+  }
+
+  if (event.type === 'vault.unlock.expire') {
+    const requestId = typeof payload?.request_id === 'string' ? payload.request_id : ''
+    const request = sessionId ? $vaultUnlockRequests.get()[sessionId] : undefined
+
+    if (requestId && request && request.requestId === requestId) {
+      clearVaultUnlockRequest(sessionId, requestId)
     }
 
     return true

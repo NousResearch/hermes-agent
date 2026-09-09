@@ -47,9 +47,6 @@ def _(rid, params: dict) -> dict:
         return _err(rid, 5095, str(e))
 
 
-_EXTERNAL_SOURCES = ("onepassword", "bitwarden")
-
-
 @method("vault.sources")
 def _(rid, params: dict) -> dict:
     """Status of every login source: {name, display_name, enabled, needs_unlock, unlocked, installed}."""
@@ -70,11 +67,12 @@ def _(rid, params: dict) -> dict:
 @method("vault.source.set")
 def _(rid, params: dict) -> dict:
     """Enable/disable an external manager: writes ``vault.<name>.enabled`` and locks it when disabling."""
+    from agent.vault_backends.base import external_backend_classes
     from agent.vault_backends.unlock import lock
     from hermes_cli.config import load_config, save_config
 
     name = str(params.get("name") or "")
-    if name not in _EXTERNAL_SOURCES:
+    if name not in {cls.name for cls in external_backend_classes()}:
         return _err(rid, 5095, f"unknown vault source: {name}")
     enabled = bool(params.get("enabled"))
     cfg = load_config()

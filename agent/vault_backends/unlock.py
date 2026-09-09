@@ -22,7 +22,7 @@ from typing import Callable, Dict, Optional
 _IDLE_TTL_S = 30 * 60
 
 _lock = threading.Lock()
-_sessions: Dict[str, tuple[str, float]] = {}   # backend name → (token, last_used)
+_sessions: Dict[tuple[str, str], tuple[str, float]] = {}   # (profile home, backend) → (token, last_used)
 _callback_tls = threading.local()
 
 UnlockPrompt = Callable[[str, str], str]  # (backend_name, display_name) -> master password ("" = cancelled)
@@ -37,35 +37,55 @@ def get_unlock_prompt_callback() -> Optional[UnlockPrompt]:
     return getattr(_callback_tls, "prompt", None)
 
 
-def get_session_token(backend: str) -> Optional[str]:
+def _key(backend: str) -> tuple[str, str]:
+    # Tokens are profile-scoped: a Desktop gateway hosts several profiles in one process and
+    # profile B must never reuse (or lock) profile A's manager session.
+    from hermes_constants import get_hermes_home
+    return (str(get_hermes_home()), backend)
+
+
+def _live(backend: str, *, touch: bool) -> Optional[str]:
+    key = _key(backend)
     with _lock:
-        entry = _sessions.get(backend)
+        entry = _sessions.get(key)
         if entry is None:
             return None
         token, last = entry
         if time.monotonic() - last > _IDLE_TTL_S:
-            del _sessions[backend]
+            del _sessions[key]
             return None
-        _sessions[backend] = (token, time.monotonic())
+        if touch:
+            _sessions[key] = (token, time.monotonic())
         return token
+
+
+def get_session_token(backend: str) -> Optional[str]:
+    """Token for a real manager call; refreshes the idle timer."""
+    return _live(backend, touch=True)
 
 
 def store_session_token(backend: str, token: str) -> None:
     with _lock:
-        _sessions[backend] = (token, time.monotonic())
+        _sessions[_key(backend)] = (token, time.monotonic())
 
 
 def lock(backend: Optional[str] = None) -> None:
-    """Forget one backend's session (or every one when *backend* is None)."""
+    """Forget the current profile's session for one backend (or all of them when None)."""
+    home = _key("")[0]
     with _lock:
-        if backend is None:
-            _sessions.clear()
-        else:
-            _sessions.pop(backend, None)
+        for key in [k for k in _sessions if k[0] == home and (backend is None or k[1] == backend)]:
+            del _sessions[key]
+
+
+def lock_all_profiles() -> None:
+    """Process shutdown: drop every token."""
+    with _lock:
+        _sessions.clear()
 
 
 def is_unlocked(backend: str) -> bool:
-    return get_session_token(backend) is not None
+    """Status probe: does NOT extend the idle TTL (only real manager calls do)."""
+    return _live(backend, touch=False) is not None
 
 
 def can_prompt_here() -> bool:

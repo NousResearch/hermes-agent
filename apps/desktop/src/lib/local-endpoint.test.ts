@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+
 import { isLocalEndpointUrl } from './local-endpoint'
 
 describe('isLocalEndpointUrl', () => {

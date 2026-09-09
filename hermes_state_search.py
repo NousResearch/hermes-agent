@@ -1216,7 +1216,8 @@ class SessionSearchMixin:
 
         Uses the FTS5 ``'rebuild'`` command, which rewrites the internal b-tree segments from the content
         rows. Unlike ``optimize_fts`` (which merges existing segments), ``rebuild`` discards and recreates
-        the index data entirely. See #50502.
+        the index data entirely — the more destructive of the two, so it is quarantined the same way. See
+        #50502.
         A full structural rebuild must never run concurrently in two processes sharing one state.db — that
         interleaving has structurally corrupted the database in production (PR #93200) — so this admits
         through the cross-process ``fts_rebuild_admission`` authority and FAILS CLOSED: if another process
@@ -1225,6 +1226,8 @@ class SessionSearchMixin:
         path, which retries in-process from the gateway housekeeping tick (``retry_deferred_fts_recovery``)
         and at next startup.
         """
+        self._raise_if_db_corrupt()
+        self._raise_if_db_replaced()
         rebuilt = 0
         with fts_rebuild_admission(self.db_path) as admitted:
             if not admitted:

@@ -22,6 +22,20 @@ _OPENROUTER_REASONING_PREFIXES = (
 # for the session nor round-trips every turn.
 _PROBE_TTL_S = 60
 
+_OLLAMA_DEFAULT_PORT = 11434
+
+
+def _looks_like_local_ollama(base_url: str) -> bool:
+    """True for a bare/local endpoint on Ollama's default port (mirrors the same
+    port-11434 heuristic used elsewhere, e.g. hermes_cli.cli_info_mixin)."""
+    from urllib.parse import urlparse
+
+    try:
+        port = urlparse(base_url if "://" in base_url else f"//{base_url}").port
+    except ValueError:
+        return False
+    return port == _OLLAMA_DEFAULT_PORT
+
 
 def _cached_probe(agent, cache_attr: str, probe, unknown, definitive):
     """``probe(model, base_url, api_key)`` once per (model, base_url); ``unknown`` is what a raising probe
@@ -63,8 +77,9 @@ class ReasoningParamsMixin:
         if (self.provider or "").strip().lower() == "lmstudio":
             # "off-only" (or absent) means no real reasoning capability.
             return any(opt and opt != "off" for opt in self._lmstudio_reasoning_options_cached())
-        if base_url_host_matches(url, "ollama.com"):
-            # Ollama Cloud: /api/show capabilities are authoritative.
+        if base_url_host_matches(url, "ollama.com") or _looks_like_local_ollama(url):
+            # Ollama Cloud, or a local Ollama server (default port 11434): /api/show
+            # capabilities are authoritative either way.
             return self._ollama_supports_thinking_cached()
         if not self._is_openrouter_url() or base_url_host_matches(url, "api.mistral.ai"):
             return False

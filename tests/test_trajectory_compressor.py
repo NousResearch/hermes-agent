@@ -342,6 +342,34 @@ class TestGenerateSummary:
 
         assert summary == "[CONTEXT SUMMARY]:"
 
+    def test_generate_summary_with_zero_retries_returns_string_not_none(self):
+        """With max_retries=0 the retry loop never runs.
+
+        Regression guard for issue #32847: previously the function returned
+        implicit None, which was then injected as a conversation "value" and
+        crashed downstream string operations.
+        """
+        from trajectory_compressor import _SUMMARY_FALLBACK
+
+        config = CompressionConfig(max_retries=0)
+        tc = _make_compressor(config)
+        tc.client = MagicMock()
+        # Even if the client somehow returned a value, range(0) is empty,
+        # so the loop body — and this mock — are never reached.
+        tc.client.chat.completions.create.return_value = SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content="unused"))]
+        )
+        metrics = TrajectoryMetrics()
+
+        summary = tc._generate_summary("Turn content", metrics)
+
+        assert summary is not None
+        assert isinstance(summary, str)
+        assert summary == _SUMMARY_FALLBACK
+        # The retry loop did not execute, so no API call was attempted.
+        assert metrics.summarization_api_calls == 0
+        tc.client.chat.completions.create.assert_not_called()
+
 
 
 # ---------------------------------------------------------------------------

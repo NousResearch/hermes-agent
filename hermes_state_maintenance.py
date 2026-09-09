@@ -337,13 +337,11 @@ class SessionMaintenanceMixin:
         Takes an exclusive lock — callers must ensure no other writers are active.  FTS5
         segments are merged first (:meth:`optimize_fts`) so their pages are reclaimed too;
         returns the number of FTS indexes optimized (0 on merge failure / no FTS). A quarantined
-        handle (corrupt image, replaced file, lost WAL generation) never checkpoints or rewrites
-        pages: the halt raised by ``optimize_fts`` would otherwise be swallowed below and the
-        VACUUM would proceed on the split-brain handle (#105670)."""
-        quarantine_reason = self._quarantine_reason()
-        if quarantine_reason is not None:
-            logger.warning("Skipping VACUUM for %s: this handle observed %s.", self.db_path, quarantine_reason)
-            return 0
+        handle (corrupt image, replaced file, lost WAL generation) raises before any rewrite: a
+        VACUUM reads every page and commits the result back, turning contained damage into an
+        amplified one (#105670). Same guard ``_execute_write`` applies to every write."""
+        self._raise_if_db_corrupt()
+        self._raise_if_db_replaced()
         optimized = 0
         try:
             optimized = self.optimize_fts()  # manages its own lock

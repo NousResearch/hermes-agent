@@ -77,7 +77,8 @@ def test_close_after_halt_runs_no_checkpoint(tmp_path, force_wal):
         db._try_wal_checkpoint()
         db._fts_stale = True
         assert db.retry_deferred_fts_recovery() is False
-        assert db.vacuum() == 0
+        with pytest.raises(DeletedWalGenerationError):
+            db.vacuum()
         assert not [c for c in mock_execute.call_args_list if "vacuum" in str(c).lower()], "VACUUM ran on a quarantined handle"
         db.close()
         # No checkpoint call should have been made.

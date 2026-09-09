@@ -1,4 +1,7 @@
-"""AIgateway provider profile."""
+"""AIgateway (aigateway.sh) provider profile.
+
+Not to be confused with the `ai-gateway` plugin, which is Vercel AI Gateway.
+"""
 
 from providers import register_provider
 from providers.base import ProviderProfile

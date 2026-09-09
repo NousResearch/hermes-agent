@@ -1,4 +1,7 @@
-"""Vercel AI Gateway provider profile: attribution headers + reasoning passthrough."""
+"""Vercel AI Gateway provider profile: attribution headers + reasoning passthrough.
+
+Not to be confused with the `aigateway` plugin, which is aigateway.sh.
+"""
 
 from typing import Any
 

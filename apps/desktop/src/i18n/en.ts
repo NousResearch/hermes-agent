@@ -1492,8 +1492,8 @@ export const en: Translations = {
       localOnly: 'Available to share from this device.',
       qualifiedLocally: 'Hermes identified this local skill as a possible contribution.',
       qualificationFirst: organizationName =>
-        `${organizationName ? `Your organisation (${organizationName})` : 'Your organisation'} has enabled Collective Wisdom, a feature designed to automatically detect useful skills across all team members. Congratulations! Hermes detected a skill that could be useful to your team.`,
-      qualificationReturning: 'Hermes detected another skill that could be useful to your team.',
+        `${organizationName ? `Your organization (${organizationName})` : 'Your organization'} has enabled Collective Wisdom, a feature designed to automatically detect and share useful skills across all team members. Congratulations! Hermes detected a skill you created that could be useful to your team!`,
+      qualificationReturning: 'Hermes detected another skill you created that could be useful to your team!',
       savedLocally: 'A private draft is saved on this device.',
       prepare: 'Start contribution',
       continueDraft: 'Continue draft',
@@ -1532,7 +1532,7 @@ export const en: Translations = {
       publishToTeam: 'Publish to team',
       submitForApproval: 'Submit for approval',
       publishLocalNotice: 'Confirming uploads this exact package and publishes it to your team after the required checks.',
-      submitLocalNotice: 'Confirming uploads this exact package for your organisation to approve. It stays unpublished until moderation is complete.',
+      submitLocalNotice: 'Confirming uploads this exact package for your organization to approve. It stays unpublished until moderation is complete.',
       reloadReview: 'Reload review',
       editReview:
         'Edit the description, SKILL.md, or declarative manifest here. Saving creates a new private revision, reruns scans, and returns new hashes; it does not rewrite your local source skill.',
@@ -1551,8 +1551,7 @@ export const en: Translations = {
       localSuggestion: 'Ready for your review',
       preparingLocal: 'Preparing an editable local review…',
       whySuggested: 'Why Hermes suggested this skill',
-      proposalNotice: 'Its qualification reasons stay on this device. Nothing is shared without your approval.',
-      sharePrompt: 'Would you like to share?',
+      sharePrompt: 'Would you like to share it?',
       reviewFirst: 'Review first',
       notNow: 'Not Now',
       yes: 'Yes',
@@ -1565,6 +1564,7 @@ export const en: Translations = {
       openCollective: 'Open Collective',
       prepareExact: 'Review & edit',
       skillName: 'Skill name',
+      whatItDoes: 'What it does',
       editDefaultsNotice:
         'Review the skill name and instructions. Hermes has prefilled compatibility details from this device; expand them only if they need adjustment.',
       detailedRequirements: 'Edit detailed requirements',

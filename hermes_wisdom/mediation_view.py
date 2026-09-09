@@ -6,6 +6,7 @@ from gateway.wisdom_command import WisdomAction, WisdomItem, WisdomView
 from .consent import ConsentActor, WisdomConsent
 from .review_presentation import (
     full_review_text,
+    professionalism_review_text,
     review_check_line,
     review_summary_text,
 )
@@ -23,6 +24,9 @@ def _review_summary(facts: dict, expanded: bool) -> str:
         ("professionalism_check", "Professionalism (advisory)"),
     ):
         check = facts.get(key) or {}
+        if key == "professionalism_check":
+            lines.append(professionalism_review_text(check, status_first=True, include_checks=False))
+            continue
         local = check.get("source") == "local_preflight"
         status = check.get("local_status") if local else check.get("status")
         lines.append(review_check_line(f"{label} (local preflight)" if local else label, status))
@@ -78,11 +82,10 @@ def advice_view(
         item["advice"].get("assessment_status") == "unavailable" for item in items
     )
     view = WisdomView(
-        title="Collective Wisdom",
+        title="Hermes Collective Wisdom",
         summary=(
-            "Your organisation has enabled Collective Wisdom: Hermes can discover "
-            "useful team skills and explain how they fit your setup. Sharing and "
-            "new installations require your approval."
+            "Your organization has enabled Collective Wisdom, a feature designed to "
+            "automatically detect and share useful skills across all team members."
         )
         if introduction
         else "Your skill is ready to review for sharing"
@@ -152,7 +155,7 @@ def advice_view(
                     else "\nNothing is changed by this recommendation."
                 )
             if interaction["operation"] == "share":
-                detail += "\nYou can review the skill before publishing. Nothing is shared without your approval."
+                detail += "\n\nWould you like to share it?"
             actions.append(_checks_action(interaction["id"], checks_expanded))
             labels = {
                 "defer": "Not Now",
@@ -220,15 +223,15 @@ def interaction_view(
             summary, detail = {
                 "published": (
                     "Published",
-                    "Your skill is now shared with your organisation.",
+                    "Your skill is now shared with your organization.",
                 ),
                 "pending_moderation": (
                     "Pending moderation",
-                    "Your skill is awaiting your organisation's approval.",
+                    "Your skill is awaiting your organization's approval.",
                 ),
                 "changes_requested": (
                     "Changes requested",
-                    "Your organisation requested changes. Open the skill review for details.",
+                    "Your organization requested changes. Open the skill review for details.",
                 ),
                 "declined": (
                     "Not published",
@@ -268,7 +271,7 @@ def interaction_view(
             ))
         facts = result["facts"]
         return WisdomView(
-            title="Collective Wisdom",
+            title="Hermes Collective Wisdom",
             summary=summary,
             items=[
                 WisdomItem(
@@ -342,8 +345,6 @@ def interaction_view(
         if result["state"] in {"stale", "expired", "needs_review"}
         else "\nNothing changes until you use the confirmation control."
     )
-    if result["operation"] == "share":
-        detail += "\nYou can review the skill before publishing. Nothing is shared without your approval."
     if (result.get("result") or {}).get("portal_url") and result["state"] == "pending":
         detail += "\nYour private draft is ready in the Portal. You can review and edit it before publishing."
     if (result.get("result") or {}).get("packaging_state") == "queued":
@@ -354,6 +355,12 @@ def interaction_view(
     if facts.get("security_check") or facts.get("professionalism_check"):
         detail += "\n\n" + _review_summary(facts, checks_expanded)
         actions.append(_checks_action(result["id"], checks_expanded))
+    if (
+        result["operation"] == "share"
+        and result["state"] == "pending"
+        and not result.get("deferred")
+    ):
+        detail += "\n\nWould you like to share it?"
     if result["state"] in {"stale", "expired"}:
         actions.append(WisdomAction(
             label="Recheck",
@@ -384,7 +391,7 @@ def interaction_view(
                 )
             )
     return WisdomView(
-        title="Collective Wisdom",
+        title="Hermes Collective Wisdom",
         summary="Deferred on this surface"
         if result.get("deferred")
         else result["state"].replace("_", " ").capitalize(),

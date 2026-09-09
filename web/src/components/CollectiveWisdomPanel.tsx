@@ -1098,7 +1098,7 @@ export function CollectiveWisdomPanel({ profile }: Props) {
           <p className="mt-1 text-xs text-text-secondary">
             {review.publication_mode === 'open'
               ? 'Confirming uploads this exact package and publishes it to your team after the required checks.'
-              : 'Confirming uploads this exact package for your organisation to approve. It stays unpublished until moderation is complete.'}
+              : 'Confirming uploads this exact package for your organization to approve. It stays unpublished until moderation is complete.'}
           </p>
           {reviewCanEdit && <p className="mt-2 text-xs leading-5 text-text-secondary">{copy.editReview}</p>}
           {reviewDirty && (

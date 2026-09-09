@@ -412,7 +412,8 @@ def test_share_copy_and_controls_keep_publication_separate(sharing):
         "Review first",
         "Share",
     ]
-    assert "Nothing is shared without your approval" in view.to_text()
+    assert "Nothing is shared without your approval" not in view.to_text()
+    assert view.items[0].detail.rstrip().endswith("Would you like to share it?")
     view = advice_view([
         {
             "advice": {
@@ -423,7 +424,8 @@ def test_share_copy_and_controls_keep_publication_separate(sharing):
             "interaction": shown,
         }
     ])
-    assert "You can review the skill before publishing" in view.to_text()
+    assert "You can review the skill before publishing" not in view.to_text()
+    assert view.items[0].detail.rstrip().endswith("Would you like to share it?")
     assert "handoff package" not in view.to_text()
     assert "✅ Security check (local preflight)" in view.to_text()
     assert "will be scanned" not in view.to_text()
@@ -452,9 +454,9 @@ def test_checks_toggle_is_read_only_and_preserves_consent(sharing):
             "checks": [
                 {
                     "key": "profanity_or_abuse",
-                    "status": "pass",
-                    "finding_count": 0,
-                    "details": [],
+                    "status": "advisory",
+                    "finding_count": 1,
+                    "details": ["Check the wording."],
                 }
             ],
         }
@@ -475,13 +477,12 @@ def test_checks_toggle_is_read_only_and_preserves_consent(sharing):
 
     expanded = toggle("show")
     assert "Profanity or abusive language" in expanded.to_text()
+    assert "Check the wording." in expanded.to_text()
     assert expanded.items[0].actions[0].label == "Hide checks"
     collapsed = toggle("hide")
     assert "Profanity or abusive language" not in collapsed.to_text()
-    assert (
-        "Advisory" in collapsed.to_text()
-        and "Check the wording." in collapsed.to_text()
-    )
+    assert "Needs a look before sharing at work" in collapsed.to_text()
+    assert "Check the wording." not in collapsed.to_text()
     assert [a.label for a in collapsed.items[0].actions] == [
         "Show checks",
         "Not Now",

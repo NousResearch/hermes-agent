@@ -86,7 +86,6 @@ export interface WisdomTranslations {
   localSuggestion: string
   preparingLocal: string
   whySuggested: string
-  proposalNotice: string
   sharePrompt: string
   reviewFirst: string
   notNow: string
@@ -100,6 +99,7 @@ export interface WisdomTranslations {
   openCollective: string
   prepareExact: string
   skillName: string
+  whatItDoes: string
   editDefaultsNotice: string
   detailedRequirements: string
   hideDetailedRequirements: string

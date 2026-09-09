@@ -140,8 +140,12 @@ def test_qualified_candidate_uses_professionalism_not_installation_assessor(
         "Share",
     ]
     assert view.items[0].actions[-1].primary
-    assert "repeated use" in view.to_text()
-    assert ("✅ Professionalism" if review_status == "pass" else review_status.capitalize()) in view.to_text()
+    assert "consistently across many days" in view.to_text()
+    assert (
+        "Safe to share at work" if review_status == "pass"
+        else "Needs a look before sharing at work" if review_status == "advisory"
+        else review_status.capitalize()
+    ) in view.to_text()
     assert "Hermes recommendation:" not in view.to_text()
     assert "✅ Security check (local preflight)" in view.to_text()
     assert "will be scanned" not in view.to_text()

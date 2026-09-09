@@ -111,3 +111,25 @@ def test_public_review_projection_remains_aggregate_only():
     assert rendered == "Security: ✅ Pass · Professionalism: ➖ Unavailable"
     assert "Private keys" not in rendered
     assert "Hate or harassment" not in rendered
+
+
+@pytest.mark.parametrize("status", ["pass", "advisory"])
+def test_native_and_fixed_professionalism_copy_agree(status):
+    from hermes_wisdom.mediation_view import _review_summary
+    from hermes_wisdom.professionalism import review_text
+
+    review = {
+        "status": status,
+        "checks": [
+            {"key": "profanity_or_abuse", "status": "pass", "finding_count": 0},
+            {"key": "hate_or_harassment", "status": status,
+             "finding_count": 1 if status == "advisory" else 0},
+        ],
+    }
+    for expanded in (False, True):
+        native = _review_summary({
+            "security_check": {"status": "pass"},
+            "professionalism_check": review,
+        }, expanded)
+        assert native.endswith(review_text(review, include_checks=expanded))
+        assert "Profanity or abusive language" not in native

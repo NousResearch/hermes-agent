@@ -29,6 +29,10 @@ CHECK_LABELS = {
     "manipulative_or_spam": "Manipulative, deceptive, or spam-like wording",
 }
 ReviewStatus = Literal["pass", "advisory", "unavailable"]
+PASS_TEXT = "Safe to share at work \u2713 (no inappropriate content found)"
+ADVISORY_TEXT = (
+    "Needs a look before sharing at work (possible inappropriate content)"
+)
 
 
 class ProfessionalismReviewError(RuntimeError):
@@ -165,18 +169,27 @@ def review_text(review: dict[str, Any] | None, *, include_checks: bool) -> str:
     """Return an accessible text rendering for private messaging surfaces."""
 
     status = str((review or {}).get("status") or "pending").replace("_", " ")
-    lines = [f"Professionalism check (agent-assessed): {status.title()}"]
+    if status == "pass":
+        # A passing review is a single reassuring line: no per-check bullets,
+        # and never the bare word "Pass".
+        return PASS_TEXT
+    if status == "advisory":
+        lines = [ADVISORY_TEXT]
+    else:
+        lines = [f"Professionalism check (agent-assessed): {status.title()}"]
     if not include_checks or not isinstance((review or {}).get("checks"), list):
         return "\n".join(lines)
+    # Only the checks that actually flagged something are listed.
     for check in review["checks"]:
         if not isinstance(check, dict):
             continue
+        if str(check.get("status") or "") != "advisory":
+            continue
         key = str(check.get("key") or "")
         label = CHECK_LABELS.get(key, key.replace("_", " ").title())
-        check_status = str(check.get("status") or "unavailable").title()
         count = int(check.get("finding_count") or 0)
         suffix = f" ({count} finding{'s' if count != 1 else ''})" if count else ""
-        lines.append(f"- {label}: {check_status}{suffix}")
+        lines.append(f"- {label}{suffix}")
         for detail in check.get("details") or []:
             lines.append(f"  {str(detail)[:256]}")
     return "\n".join(lines)

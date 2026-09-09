@@ -1432,7 +1432,6 @@ export const ja = defineLocale({
       localSuggestion: 'レビューの準備ができました',
       preparingLocal: '編集可能なローカルレビューを準備中…',
       whySuggested: 'Hermes がこのスキルを提案した理由',
-      proposalNotice: '適格性の理由はこのデバイスだけに残ります。承認なしに共有されることはありません。',
       sharePrompt: '共有しますか？',
       reviewFirst: '先に確認',
       notNow: '後で',

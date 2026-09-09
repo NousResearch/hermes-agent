@@ -9,13 +9,13 @@ def qualification_notice(event: dict[str, Any]) -> str:
     if event.get("notice_variant") == "first":
         organization_name = event.get("organization_name")
         organization = (
-            f"Your organisation ({str(organization_name).strip()})"
+            f"Your organization ({str(organization_name).strip()})"
             if isinstance(organization_name, str) and organization_name.strip()
-            else "Your organisation"
+            else "Your organization"
         )
         return (
             f"{organization} has enabled Collective Wisdom, a feature designed to "
-            "automatically detect useful skills across all team members.\n\n"
-            "Congratulations! Hermes detected a skill that could be useful to your team."
+            "automatically detect and share useful skills across all team members.\n\n"
+            "Congratulations! Hermes detected a skill you created that could be useful to your team!"
         )
-    return "Hermes detected another skill that could be useful to your team."
+    return "Hermes detected another skill you created that could be useful to your team!"

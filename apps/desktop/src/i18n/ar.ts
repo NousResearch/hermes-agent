@@ -1140,7 +1140,6 @@ export const ar = defineLocale({
       publishing: 'جارٍ النشر…',
       proposalTitle: 'النشر في المجموعة — الموافقة مطلوبة',
       localSuggestion: 'اقتراح محلي',
-      proposalNotice: 'تبقى أسباب التأهيل على هذا الجهاز. لا تتم مشاركة أي شيء دون موافقتك.',
       sharePrompt: 'هل ترغب في المشاركة؟',
       reviewFirst: 'المراجعة أولاً',
       notNow: 'ليس الآن',

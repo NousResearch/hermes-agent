@@ -340,8 +340,7 @@ class SlackWisdomMixin:
                 skill_description=skill_description,
                 qualification=qualification,
                 status=(
-                    f"{notice}\n\nNothing is shared without your approval.\n\n"
-                    "Would you like to share?\n"
+                    f"{notice}\n\n"
                     + review_text(professionalism_review, include_checks=True)
                 ),
                 actions=[
@@ -445,12 +444,9 @@ class SlackWisdomMixin:
     @staticmethod
     def _wisdom_candidate_reason(qualification: str) -> str:
         if qualification == "high_usage":
-            return "You used this skill consistently across consecutive business days."
+            return "You used this skill consistently across many days."
         if qualification == "refinement":
-            return (
-                "You refined this skill repeatedly, used it recently, and it "
-                "remained stable."
-            )
+            return "You've really refined this skill."
         return "This skill met your local Collective Wisdom qualification rules."
 
     @classmethod
@@ -465,6 +461,11 @@ class SlackWisdomMixin:
     ):
         from gateway.wisdom_command import WisdomItem, WisdomView
 
+        share_question = (
+            "\n\nWould you like to share it?"
+            if any((action.callback_data or "").startswith("wi:publish:") for action in actions)
+            else ""
+        )
         return WisdomView(
             "Hermes Collective Wisdom",
             status.replace(
@@ -472,11 +473,14 @@ class SlackWisdomMixin:
             ),
             items=[
                 WisdomItem(
-                    skill_name,
+                    f"Skill name: {skill_name}",
                     (
-                        f"{skill_description}\n" if skill_description else ""
+                        f"What it does: {skill_description}\n"
+                        if skill_description
+                        else ""
                     )
-                    + f"Why suggested: {cls._wisdom_candidate_reason(qualification)}",
+                    + f"Why others might benefit: {cls._wisdom_candidate_reason(qualification)}"
+                    + share_question,
                     actions=list(actions),
                 )
             ],

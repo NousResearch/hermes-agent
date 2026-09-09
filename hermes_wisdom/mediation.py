@@ -642,15 +642,15 @@ class WisdomMediation:
             or {}
         )
         reason = {
-            "high_usage": "Hermes detected repeated use of this local skill.",
-            "refinement": "Hermes detected repeated refinement of this local skill.",
+            "high_usage": "You used this skill consistently across many days.",
+            "refinement": "You've really refined this skill.",
         }.get(
             event.get("qualification"),
             "Hermes identified this local skill as a sharing candidate.",
         )
         return {
             "title": editorial.get("editorial_name") or name,
-            "explanation": reason + " Would you like to share it with your team?",
+            "explanation": reason,
             "relevance": "recommend",
             "assessment_kind": "qualification",
         }

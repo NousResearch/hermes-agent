@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from .professionalism import CHECK_LABELS
+from .professionalism import CHECK_LABELS, review_text
 
 _STATUS_PRESENTATION = {
     "pass": ("✅", "Pass"),
@@ -68,19 +68,20 @@ def full_review_text(
             note="No known matches detected is not a security certification.",
             status_first=status_first,
         ),
-        _checklist_text(
-            "Professionalism check (agent-assessed, advisory)",
-            professionalism,
-            labels=CHECK_LABELS,
-            status_first=status_first,
-        ),
+        professionalism_review_text(professionalism, status_first=status_first),
     ]
     return "\n\n".join(sections)
 
 
-def professionalism_review_text(check: dict[str, Any] | None) -> str:
+def professionalism_review_text(
+    check: dict[str, Any] | None, *, status_first: bool = False,
+    include_checks: bool = True,
+) -> str:
+    if (check or {}).get("status") in {"pass", "advisory"}:
+        return review_text(check, include_checks=include_checks)
     return _checklist_text(
-        "Professionalism check (agent-assessed, advisory)", check, labels=CHECK_LABELS
+        "Professionalism check (agent-assessed, advisory)", check,
+        labels=CHECK_LABELS, status_first=status_first, include_checks=include_checks,
     )
 
 
@@ -91,6 +92,7 @@ def _checklist_text(
     labels: dict[str, str],
     note: str | None = None,
     status_first: bool = False,
+    include_checks: bool = True,
 ) -> str:
     value = check or {}
     lines = [review_check_line(title, value.get("status")) if status_first
@@ -98,7 +100,7 @@ def _checklist_text(
     summary = value.get("summary")
     if isinstance(summary, str) and summary.strip():
         lines.append(review_summary_text(summary))
-    rows = value.get("checks")
+    rows = value.get("checks") if include_checks else None
     if isinstance(rows, list):
         for row in rows:
             if not isinstance(row, dict):

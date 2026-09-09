@@ -68,9 +68,7 @@ def test_candidate_card_uses_returning_copy_and_requested_action_order():
         skill_description="Transfer incident context between responders.",
         qualification="high_usage",
         status=(
-            "Hermes detected another skill that could be useful to your team.\n\n"
-            "Nothing is shared without your approval.\n\n"
-            "Would you like to share?"
+            "Hermes detected another skill you created that could be useful to your team!"
         ),
         actions=[
             WisdomAction("Not Now", callback_data="wi:defer:event-2"),
@@ -92,7 +90,14 @@ def test_candidate_card_uses_returning_copy_and_requested_action_order():
     ]
     assert "Hermes detected *another* skill" in wisdom_fallback_text(view)
     assert "Transfer incident context between responders." in wisdom_fallback_text(view)
-    assert "Would you like to share?" in wisdom_fallback_text(view)
+    text = wisdom_fallback_text(view)
+    assert "Would you like to share it?" in text
+    assert "Skill name: Incident Handoff" in text
+    assert "What it does: Transfer incident context between responders." in text
+    assert "Why others might benefit: You used this skill consistently across many days." in text
+    assert "Why suggested" not in text
+    assert text.index("Transfer incident context") < text.index("Would you like to share it?")
+    assert "Nothing is shared without your approval" not in text
 
 
 @pytest.mark.asyncio
@@ -125,6 +130,23 @@ async def test_candidate_not_now_defers_the_slack_prompt_without_declining():
     service.decline_candidate.assert_not_called()
     view = adapter._update_wisdom_interaction.await_args.args[1]
     assert "Not sharing right now" in wisdom_fallback_text(view)
+    assert "Would you like to share it?" not in wisdom_fallback_text(view)
+
+
+@pytest.mark.parametrize("status", [
+    "Published to your collective.",
+    "Sent to your collective administrator for approval.",
+])
+def test_candidate_completion_does_not_ask_to_share_again(status):
+    view = _adapter()._wisdom_candidate_view(
+        skill_name="Incident Handoff",
+        qualification="high_usage",
+        status=status,
+        actions=[WisdomAction("View in Portal", url="https://portal.test/skill")],
+    )
+    assert status in wisdom_fallback_text(view)
+    assert "Would you like to share it?" not in wisdom_fallback_text(view)
+    assert view.items[0].actions[0].url == "https://portal.test/skill"
 
 
 def test_wisdom_blocks_escape_untrusted_skill_text_and_limit_items():

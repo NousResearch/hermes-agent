@@ -167,9 +167,9 @@ class TelegramWisdomMixin:
             action, event_id = parts[1], parts[2]
             await query.answer(
                 text={
-                    "draft": "Creating private draft…",
-                    "publish": "Reviewing and publishing…",
-                    "defer": "Saving for later…",
+                    "draft": "Preparing more details...",
+                    "publish": "Sharing...",
+                    "defer": "Will ask later...",
                     "decline": "Declining…",
                 }[action]
             )
@@ -880,28 +880,31 @@ class TelegramWisdomMixin:
             .replace("\n", "<br/>")
         )
         description_html = (
-            f"{_html.escape(skill_description)}<br/>" if skill_description else ""
+            f"What it does: {_html.escape(skill_description)}<br/>"
+            if skill_description
+            else ""
+        )
+        share_question = (
+            "<br/><br/><b>Would you like to share it?</b>"
+            if any(str(action.get("callback_data") or "").startswith("wi:publish:") for action in actions)
+            else ""
         )
         return (
             "<h3>Hermes Collective Wisdom</h3>"
             f"<p>{status_html}<br/><br/>"
-            "<b>Reusable skill ready to review</b><br/>"
-            f"<b>{_html.escape(skill_name)}</b><br/>"
+            f"Skill name: <b>{_html.escape(skill_name)}</b><br/>"
             f"{description_html}"
-            f"<b>Why suggested:</b> {_html.escape(qualification_reason)}<br/>"
-            f"{review_html}</p>{control_html}"
+            f"<b>Why others might benefit:</b> {_html.escape(qualification_reason)}<br/>"
+            f"{review_html}{share_question}</p>{control_html}"
         )
 
     @staticmethod
     def _wisdom_candidate_qualification_reason(qualification: str) -> str:
         """Explain the local threshold without exposing its evidence ledger."""
         if qualification == "high_usage":
-            return "You used this skill consistently across consecutive business days."
+            return "You used this skill consistently across many days."
         if qualification == "refinement":
-            return (
-                "You refined this skill repeatedly, used it recently, and it "
-                "remained stable."
-            )
+            return "You've really refined this skill."
         return "This skill met your local Collective Wisdom qualification rules."
 
     @staticmethod
@@ -970,8 +973,8 @@ class TelegramWisdomMixin:
             await query.edit_message_text(
                 text=(
                     "<b>Hermes Collective Wisdom</b>\n"
-                    f"<b>{_html.escape(skill_name)}</b>\n{_html.escape(status)}"
-                    "\n<b>Why suggested:</b> "
+                    f"Skill name: <b>{_html.escape(skill_name)}</b>\n{_html.escape(status)}"
+                    "\n<b>Why others might benefit:</b> "
                     f"{_html.escape(qualification_reason)}"
                 ),
                 parse_mode=ParseMode.HTML,
@@ -1083,10 +1086,7 @@ class TelegramWisdomMixin:
                 skill_name=skill_name,
                 skill_description=skill_description,
                 qualification_reason=qualification_reason,
-                status=(
-                    f"{notice}\n\nNothing is shared without your approval.\n\n"
-                    "Would you like to share?"
-                ),
+                status=notice,
                 actions=actions,
                 professionalism_review=professionalism_review,
             )
@@ -1125,19 +1125,17 @@ class TelegramWisdomMixin:
                     "chat_id": normalize_telegram_chat_id(chat_id),
                     "text": (
                         "<b>Hermes Collective Wisdom</b>\n"
-                        "<b>Reusable skill ready to review</b>\n"
                         f"{_html.escape(notice).replace('another', '<b>another</b>')}\n\n"
-                        f"<code>{_html.escape(skill_name)}</code>\n"
+                        f"Skill name: <code>{_html.escape(skill_name)}</code>\n"
                         + (
-                            f"{_html.escape(skill_description)}\n"
+                            f"What it does: {_html.escape(skill_description)}\n"
                             if skill_description
                             else ""
                         )
-                        + "<b>Why suggested:</b> "
+                        + "<b>Why others might benefit:</b> "
                         f"{_html.escape(qualification_reason)}\n"
-                        "Nothing is shared without your approval.\n"
-                        "Would you like to share?\n\n"
-                        f"{_html.escape(review_text(professionalism_review, include_checks=True))}"
+                        f"{_html.escape(review_text(professionalism_review, include_checks=True))}\n\n"
+                        "Would you like to share it?"
                     ),
                     "parse_mode": ParseMode.HTML,
                     "reply_markup": self._wisdom_candidate_keyboard(actions),

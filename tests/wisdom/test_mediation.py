@@ -521,7 +521,7 @@ def test_presentation_keeps_canonical_warnings_and_primary_last(consent):
         "interaction": shown,
     }
     view = advice_view([item], introduction=True)
-    assert "organisation has enabled" in view.summary
+    assert "organization has enabled" in view.summary
     assert "✅ Security check" in view.items[0].detail
     assert [a.label for a in view.items[0].actions] == [
         "View Assessment",

@@ -25,6 +25,9 @@ def action_dicts(event: RecommendationEvent) -> list[dict[str, Any]]:
 def render_plain(event: RecommendationEvent) -> str:
     notice = event.notice
     body = notice.text if notice else f"{event.title}\n{event.explanation}"
+    if event.title == PRODUCT_LABEL:
+        # Share cards already open with the product label; do not repeat it.
+        body = "\n".join(notice.lines) if notice else event.explanation
     return f"{PRODUCT_LABEL}\n\n{body}"
 
 
@@ -51,7 +54,11 @@ def render_telegram_html(event: RecommendationEvent) -> str:
     )
     return (
         f"<h3>{_html.escape(PRODUCT_LABEL)}</h3>"
-        f"<p><b>{_html.escape(event.title)}</b><br/><br/>"
+        + (
+            "<p>"
+            if event.title == PRODUCT_LABEL
+            else f"<p><b>{_html.escape(event.title)}</b><br/><br/>"
+        )
         + "<br/>".join(rendered)
         + (f"<br/>{controls}" if controls else "")
         + "</p>"
@@ -64,7 +71,19 @@ def render_slack_blocks(event: RecommendationEvent) -> list[dict[str, Any]]:
     name = lines[0] if lines else event.skill_id
     body = "\n".join(lines[1:]) if len(lines) > 1 else ""
     blocks: list[dict[str, Any]] = [
-        {"type": "context", "elements": [{"type": "mrkdwn", "text": f"_{PRODUCT_LABEL}_ • {event.title}"}]},
+        {
+            "type": "context",
+            "elements": [
+                {
+                    "type": "mrkdwn",
+                    "text": (
+                        f"_{PRODUCT_LABEL}_"
+                        if event.title == PRODUCT_LABEL
+                        else f"_{PRODUCT_LABEL}_ • {event.title}"
+                    ),
+                }
+            ],
+        },
         {"type": "header", "text": {"type": "plain_text", "text": name[:150], "emoji": True}},
     ]
     if body.strip():

@@ -63,9 +63,10 @@ export function canonicalizeSlashCommandCompletions(
     const command = commandText(item.text).trim()
     const normalizedCommand = command.toLowerCase()
     const canonical = canonicalDesktopSlashCommand(command)
+    const normalizedCanonical = canonical.toLowerCase()
     const matchedAlias =
-      !canonical.startsWith(normalizedQuery) &&
-      normalizedCommand !== canonical &&
+      !normalizedCanonical.startsWith(normalizedQuery) &&
+      normalizedCommand !== normalizedCanonical &&
       normalizedCommand.startsWith(normalizedQuery)
         ? normalizedCommand
         : null
@@ -79,8 +80,8 @@ export function canonicalizeSlashCommandCompletions(
     // A command token resolves to one canonical command in the registry/catalog,
     // so duplicate canonical and alias rows share this key. Prefer the labelled
     // alias row only when the alias itself — not the canonical token — matched.
-    if (!canonicalItems.has(canonical) || matchedAlias) {
-      canonicalItems.set(canonical, canonicalItem)
+    if (!canonicalItems.has(normalizedCanonical) || matchedAlias) {
+      canonicalItems.set(normalizedCanonical, canonicalItem)
     }
   }
 
@@ -246,7 +247,7 @@ export function useSlashCompletions(options: {
         // Start the catalog and completion requests together. Dynamic aliases
         // live in the catalog, so command-row canonicalization gives that
         // shared warm-up a short grace period; otherwise a fast complete.slash
-        // response can briefly render `/btw` instead of `/background (btw)`.
+        // response can briefly render `/tasks` instead of `/agents (tasks)`.
         // The grace is bounded so a stalled catalog cannot withhold ordinary
         // completions until the gateway's request timeout.
         const catalogReady = cachedSlashCompletion('catalog', () =>

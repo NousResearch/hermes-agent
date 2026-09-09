@@ -538,7 +538,8 @@ def _run_cli_killing_process_group(cmd, code, env, timeout):
         stdout, stderr = proc.communicate(input=code, timeout=timeout)
     except subprocess.TimeoutExpired:
         with contextlib.suppress(ProcessLookupError, PermissionError):
-            os.killpg(proc.pid, signal.SIGKILL)  # start_new_session=True: pgid == pid
+            # start_new_session=True: pgid == pid; POSIX-only, browser_exec gates this helper behind os.name != "nt".
+            os.killpg(proc.pid, signal.SIGKILL)  # windows-footgun: ok
         try:
             proc.communicate(timeout=_POST_KILL_DRAIN_S)
         except subprocess.TimeoutExpired:

@@ -4,7 +4,7 @@ description: 'Operate email accounts with the Himalaya CLI: find and read mail, 
   drafts, send authorized messages, manage mailboxes and attachments, and use backend-specific
   email features. Use for terminal-based mailbox work, Gmail, Hotmail/Outlook accounts, or Himalaya setup and troubleshooting.'
 license: MIT
-version: 2.2.0
+version: 2.2.1
 author: community
 platforms:
 - linux
@@ -27,7 +27,7 @@ metadata:
 
 # Himalaya email CLI
 
-**Skill pack version: 2.2.0. CLI example baseline: 2.1.0. These are separate version numbers.**
+**Skill pack version: 2.2.1. CLI example baseline: 2.1.0. These are separate version numbers.**
 
 Use the external `himalaya` executable to operate mail accounts. In Hermes, this is separate from the built-in Email gateway adapter: the gateway receives messages addressed to the agent; this skill operates a mailbox through terminal commands.
 

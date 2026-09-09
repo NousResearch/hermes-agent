@@ -5,12 +5,13 @@ bisected until each leaf is terminal; dense/failed/stopped work stays incomplete
 The callable collector accepts a fake fetch adapter for offline regression tests.
 """
 import argparse
+import hashlib
 import json
 import os
 import signal
 import subprocess
 import tempfile
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -74,6 +75,65 @@ def read_argv(scope, message_id):
                    'message', 'read', '--mailbox', scope.folder, '--raw', '--', message_id]
 
 
+def supported_version(version):
+    """Only the source-verified released CLI, not similarly named dev versions."""
+    return (isinstance(version, str) and version.split()[:2] in
+            (['himalaya', 'v2.1.0'], ['himalaya', '2.1.0']))
+
+
+def snapshot_hash(message):
+    data = json.dumps(message, sort_keys=True, ensure_ascii=False,
+                      separators=(',', ':'), allow_nan=False).encode('utf-8')
+    return hashlib.sha256(data).hexdigest()
+
+
+def _metadata_evidence(scope, lower, upper, message, cli_version):
+    # Captured by the collector after a successful parsed terminal response.
+    # This records a CLI projection, not original HTTP response bytes.
+    return {'schema_version': 1, 'source': 'himalaya-native-msgraph-list',
+            'cli_version': cli_version, 'account': scope.account,
+            'scope': asdict(scope), 'start': iso(lower), 'end_exclusive': iso(upper),
+            'argv': list_argv(scope, lower, upper), 'snapshot_sha256': snapshot_hash(message),
+            'observed_at': iso(datetime.now(timezone.utc))}
+
+
+def _selected_list_evidence_matches(message, evidence, account):
+    if not isinstance(evidence, dict) or not isinstance(account, str) or not account:
+        return False
+    try:
+        scope = Scope(**evidence['scope'])
+        lower, upper = timestamp(evidence['start']), timestamp(evidence['end_exclusive'])
+        timestamp(evidence['observed_at'])
+        return (evidence.get('schema_version') == 1
+                and evidence.get('source') == 'himalaya-native-msgraph-list'
+                and supported_version(evidence.get('cli_version'))
+                and account == evidence.get('account') == scope.account
+                and evidence.get('argv') == list_argv(scope, lower, upper)
+                and isinstance(message.get('id'), str) and bool(message['id'])
+                and isinstance(message.get('parentFolderId'), str) and bool(message['parentFolderId'])
+                and lower <= timestamp(message['receivedDateTime']) < upper
+                and evidence.get('snapshot_sha256') == snapshot_hash(message))
+    except (KeyError, TypeError, ValueError, OverflowError):
+        return False
+
+
+def category_check(message, metadata_evidence=None, account=None):
+    """Separate interpretation; never add categories to the original snapshot.
+
+    Omission is accepted only under the selected-field CLI contract. The hash
+    binds evidence to a snapshot; it is not proof of authenticity or freshness.
+    """
+    if 'categories' in message:
+        value = message['categories']
+        if isinstance(value, list) and all(isinstance(item, str) for item in value):
+            return {'state': 'empty' if not value else 'protected', 'basis': 'explicit_array'}
+        return {'state': 'unknown', 'basis': 'invalid_categories_value'}
+    if _selected_list_evidence_matches(message, metadata_evidence, account):
+        return {'state': 'empty', 'basis': 'selected_cli_contract',
+                'wire_shape': 'unknown'}
+    return {'state': 'unknown', 'basis': 'missing_without_supported_evidence'}
+
+
 def parse_page(payload):
     if not isinstance(payload, dict) or 'error' in payload:
         raise ValueError('Command returned an error or non-object JSON')
@@ -93,7 +153,7 @@ def parse_page(payload):
 
 
 def collect(scope, start, end, fetch, stopped=lambda: False, max_requests=200,
-            checkpoint=lambda result: None):
+            checkpoint=lambda result: None, cli_version=None):
     if start.tzinfo is None or end.tzinfo is None or start >= end:
         raise ValueError('Use an increasing timezone-aware interval')
     if start.microsecond or end.microsecond:
@@ -101,11 +161,14 @@ def collect(scope, start, end, fetch, stopped=lambda: False, max_requests=200,
     if type(max_requests) is not int or max_requests < 1:
         raise ValueError('max_requests must be positive')
     queue = [(start, end)]
-    result = {'schema_version': 1, 'account': scope.account, 'backend': 'msgraph',
+    if cli_version is not None and not supported_version(cli_version):
+        raise ValueError('Metadata evidence requires the supported CLI 2.1.0 version output')
+    result = {'schema_version': 2, 'account': scope.account, 'backend': 'msgraph',
               'folder': scope.folder, 'start': iso(start), 'end_exclusive': iso(end),
               'date_basis': 'receivedDateTime', 'extra_filter': scope.extra_filter,
               'complete': False, 'reason': 'running', 'requests': 0,
-              'terminal_intervals': [], 'unresolved_intervals': [], 'messages': []}
+              'terminal_intervals': [], 'unresolved_intervals': [], 'messages': [],
+              'cli_version': cli_version, 'metadata_evidence': {}}
     by_id = {}
 
     def save(reason):
@@ -129,11 +192,15 @@ def collect(scope, start, end, fetch, stopped=lambda: False, max_requests=200,
                 raise ValueError('Returned message lies outside the requested interval')
             if continuation is None:
                 pending = dict(by_id)
+                pending_evidence = dict(result['metadata_evidence'])
                 for row in rows:
                     if row['id'] in pending and pending[row['id']] != row:
                         raise ValueError('Same ID returned with conflicting records; mailbox may have changed')
                     pending[row['id']] = row
+                    if cli_version is not None:
+                        pending_evidence[row['id']] = _metadata_evidence(scope, lower, upper, row, cli_version)
                 by_id = pending
+                result['metadata_evidence'] = pending_evidence
                 queue.pop(0)
                 result['terminal_intervals'].append([iso(lower), iso(upper)])
             elif not stopped():
@@ -241,7 +308,7 @@ def main():
     runner = Runner(args.timeout, stopped)
     # Version/help checks are local; only this pinned interface is supported here.
     version = runner.run(['himalaya', '--version'], binary=True).decode('utf-8', 'replace')
-    if not version.split() or not any(v in ('2.1.0', 'v2.1.0') for v in version.split()):
+    if not supported_version(version):
         parser.error('This scanner is validated for CLI 2.1.0; inspect/adapt other versions first')
     help_text = runner.run(['himalaya', 'msgraph', 'message', 'list', '--help'], binary=True)
     if not all(flag in help_text for flag in (b'--filter', b'--folder', b'--select', b'--orderby')):
@@ -251,7 +318,7 @@ def main():
         json.dump({'complete': False, 'reason': 'starting'}, stream)
     try:
         result = collect(scope, args.start, args.end, runner.fetch, stopped,
-                         args.max_requests, lambda state: atomic_write(out, state))
+                         args.max_requests, lambda state: atomic_write(out, state), cli_version=version.strip())
     except (ValueError, RuntimeError, OSError) as exc:
         atomic_write(out, {'complete': False, 'reason': 'error', 'error': str(exc)})
         parser.exit(2, 'Scan incomplete; inspect the output file.\n')

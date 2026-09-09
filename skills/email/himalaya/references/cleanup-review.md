@@ -26,7 +26,24 @@ Authentication passing does not establish that branding, links or claims are leg
 | `content_only_removable` | No protected, mixed or unresolved purpose remains under the user's policy. |
 | `reason` | Concrete per-message decision reason. |
 
-The gate also checks `isDraft: false`, `importance: normal`, `flag.flagStatus: notFlagged`, and `categories: []`. Different user-authorized treatment of protected mail belongs in an explicit task-specific operation, not a fabricated passing annotation.
+The gate also checks `isDraft: false`, `importance: normal`, `flag.flagStatus: notFlagged`, and empty categories. An explicit `categories: []` retains its existing behavior. For CLI-omitted categories, use the recorded selected-field evidence from [msgraph-workflows.md](msgraph-workflows.md); never insert an invented empty array into the snapshot. Different user-authorized treatment of protected mail belongs in an explicit task-specific operation, not a fabricated passing annotation.
+
+For a candidate from a new Graph scan, use this integration (the account, candidate ID, assessment and file path must already come from the actual task):
+
+```python
+import json
+from pathlib import Path
+from scripts.cleanup_records import decision_gate
+
+scan = json.loads(Path(scan_path).read_text(encoding="utf-8"))
+assert scan["account"] == account  # explicit task account, not a default
+selected = next(row for row in scan["messages"] if row["id"] == candidate_id)
+evidence = scan.get("metadata_evidence", {}).get(candidate_id)
+verdict, reasons = decision_gate(selected, assessment, "REMOVE",
+                                 metadata_evidence=evidence, account=account)
+```
+
+`assessment` must reflect the actual body review, protection checks and existing authorization; evidence alone does not make a message removable. Keep `selected` unchanged in the registration event, and copy `evidence` into the `decide` event's `metadata_evidence` field. Replay stores the separate `category_check` interpretation (including `basis: selected_cli_contract` and unknown wire shape when applicable). Other callers may omit the new keyword arguments; missing categories then remain REVIEW. Existing journals without evidence are not silently upgraded. Reassess a registered unchanged snapshot with newly captured matching evidence using a new decision event; if the snapshot changed, stop and reconcile the existing logical record instead of duplicating it or altering prior events.
 
 ## One journal, stable records and derived summaries
 
@@ -39,14 +56,14 @@ The helper appends logical events to a JSON array under an exclusive `O_CREAT | 
 | Event | Required task-specific fields / effect |
 | --- | --- |
 | `register` | `account`, `message` with opaque id and verified parentFolderId; initializes REVIEW. |
-| `decide` | `proposed` KEEP/REVIEW/REMOVE and `assessment`; stores gate result and increments decision_revision. Corrections are new events. |
+| `decide` | `proposed` KEEP/REVIEW/REMOVE, `assessment`, and optional `metadata_evidence` from the scan; stores gate result, separate category interpretation/evidence and increments decision_revision. Corrections are new events. |
 | `plan_move` | Unique operation_id, action cleanup/rescue, current decision_revision, source_id, source_folder, destination_folder, membership_evidence and authorized=true. |
 | `submitted` | operation_id; records one execution attempt. Does not prove success. |
 | `unknown` | operation_id; blocks replay or decision changes until verified. |
 | `failed` | operation_id, no_effect_verified=true and evidence; otherwise use unknown. |
 | `confirmed` | operation_id, destination_message, source_absent=true, match_unique=true and evidence. Updates current ID/folder; verifies retained identity fields and matching boolean isRead. |
 
-Write the plan durably **before** the external action, then record the outcome. A crash after execution but before journaling leaves a pending plan; reconcile mailbox evidence before retrying. The helper does not execute actions, verify evidence files, inspect the mailbox, or supply an atomic mail-service transaction.
+Register and journal KEEP or REVIEW decisions, including blocked REMOVE attempts, when recording the task. A passing REMOVE is required for `plan_move` with action `cleanup`, not for `register` or `decide`. Do not withhold a blocked review solely because no move can be planned. Write the plan durably **before** the external action, then record the outcome. A crash after execution but before journaling leaves a pending plan; reconcile mailbox evidence before retrying. The helper does not execute actions, verify evidence files, inspect the mailbox, or supply an atomic mail-service transaction.
 
 Example registration event (replace all synthetic values with verified data):
 

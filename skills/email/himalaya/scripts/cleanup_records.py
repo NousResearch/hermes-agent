@@ -13,15 +13,15 @@ from contextlib import contextmanager
 from pathlib import Path
 
 try:
-    from .graph_scan import atomic_write
+    from .graph_scan import atomic_write, category_check
 except ImportError:
-    from graph_scan import atomic_write
+    from graph_scan import atomic_write, category_check
 
 PROTECTED = {'invoice', 'payment', 'purchase', 'refund', 'security', 'trial_conversion',
              'order_update', 'financial_record', 'commitment'}
 
 
-def decision_gate(message, assessment, proposed):
+def decision_gate(message, assessment, proposed, *, metadata_evidence=None, account=None):
     if proposed not in ('KEEP', 'REVIEW', 'REMOVE'):
         raise ValueError('Unknown decision')
     if proposed != 'REMOVE':
@@ -44,7 +44,7 @@ def decision_gate(message, assessment, proposed):
     flag = message.get('flag')
     if not isinstance(flag, dict) or flag.get('flagStatus') != 'notFlagged':
         reasons.append('Follow-up flag is protected or unknown')
-    if message.get('categories') != []:
+    if category_check(message, metadata_evidence, account)['state'] != 'empty':
         reasons.append('Categories are protected or unknown')
     if assessment.get('protection_fields_verified') is not True:
         reasons.append('Protection field selection/presence has not been verified')
@@ -95,8 +95,12 @@ def replay(events):
         if kind == 'decide':
             if record['pending_operation']:
                 raise ValueError('Resolve pending/unknown operation before revising a decision')
-            verdict, reasons = decision_gate(record['message'], event.get('assessment', {}), event.get('proposed'))
+            evidence = event.get('metadata_evidence')
+            verdict, reasons = decision_gate(record['message'], event.get('assessment', {}), event.get('proposed'),
+                                            metadata_evidence=evidence, account=record['account'])
             record.update(decision=verdict, assessment=copy.deepcopy(event.get('assessment', {})),
+                          metadata_evidence=copy.deepcopy(evidence),
+                          category_check=category_check(record['message'], evidence, record['account']),
                           gate_reasons=reasons, decision_revision=record['decision_revision']+1)
         elif kind == 'plan_move':
             op = event.get('operation_id')

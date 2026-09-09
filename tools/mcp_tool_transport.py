@@ -4,6 +4,7 @@ protocol negotiation and initial tool discovery. Split from tools/mcp_tool.py.""
 
 import logging
 import asyncio
+import json
 import os
 from contextlib import asynccontextmanager
 from typing import Dict, Optional, Set
@@ -33,6 +34,46 @@ def _is_2xx(resp) -> bool:
 def _present(**kwargs) -> dict:
     """*kwargs* minus the ``None`` values (optional httpx client arguments)."""
     return {k: v for k, v in kwargs.items() if v is not None}
+
+
+def _make_method_header_hook():
+    """httpx request hook stamping SEP-2243 routing headers from the JSON-RPC body.
+
+    The SDK stamps ``Mcp-Method``/``Mcp-Name`` only in modern (stateless) mode; the legacy
+    handshake stamp sends just the protocol version, so Hermes' default legacy sessions hide
+    the method from header-routing gateways. This hook closes the gap at the transport layer
+    for both eras: it derives the headers from the outgoing body and never overrides headers
+    already present (the modern stamp wins). The method → name-param mapping and value
+    encoding come from the SDK's own table so both ends agree by construction; without that
+    table (older SDK) there is no hook to install.
+    """
+    try:
+        from mcp.shared.inbound import NAME_BEARING_METHODS, encode_header_value
+    except ImportError:
+        return None
+
+    def _stamp_method_headers(request) -> None:
+        if "mcp-method" in request.headers:
+            return
+        try:
+            body = json.loads(request.content or b"")
+        except (ValueError, TypeError, UnicodeDecodeError):
+            return
+        if not isinstance(body, dict):
+            return  # batches carry several methods; no single header value exists
+        method = body.get("method")
+        if not isinstance(method, str) or not method:
+            return
+        request.headers["mcp-method"] = method
+        name_key = NAME_BEARING_METHODS.get(method)
+        if name_key is None:
+            return
+        params = body.get("params")
+        name = params.get(name_key) if isinstance(params, dict) else None
+        if isinstance(name, str) and name:
+            request.headers["mcp-name"] = encode_header_value(name)
+
+    return _stamp_method_headers
 
 
 def _pgroup_alive(pgid: Optional[int]) -> bool:
@@ -379,8 +420,12 @@ class MCPServerTransportMixin:
             httpx.URL(url), strict=strict_cfg_headers, configured_header_names=configured_header_names)
         client_kwargs: dict = {"follow_redirects": True, "timeout": httpx.Timeout(float(connect_timeout), read=300.0),
                                "verify": ssl_verify, **({"headers": headers} if headers else {}),
-                               "event_hooks": {"response": [_strip_auth_on_cross_origin_redirect]},
                                **_present(auth=oauth_auth, cert=client_cert)}
+        event_hooks: dict = {"response": [_strip_auth_on_cross_origin_redirect]}
+        _method_hook = _make_method_header_hook()
+        if _method_hook is not None:
+            event_hooks["request"] = [_method_hook]
+        client_kwargs["event_hooks"] = event_hooks
 
         @asynccontextmanager
         async def _owned_client_streams():  # the SDK skips cleanup when http_client is provided

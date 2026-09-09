@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
-import { poolBackendAuthorityEnv } from './desktop-pool-cron-authority'
-
 import { test } from 'vitest'
+
+import { poolBackendAuthorityEnv } from './desktop-pool-cron-authority'
 
 test('pooled Desktop profile backends are marked as non-authoritative cron workers', () => {
   assert.deepEqual(poolBackendAuthorityEnv, {

@@ -938,7 +938,7 @@ class TestSandboxRpcAuthorization(unittest.TestCase):
 
             server_thread = threading.Thread(target=run_server, daemon=True)
             server_thread.start()
-            namespace = {"__name__": "hermes_tools"}
+            namespace: dict[str, object] = {"__name__": "hermes_tools"}
             try:
                 with patch.dict(
                     os.environ,

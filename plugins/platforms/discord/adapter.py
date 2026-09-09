@@ -6125,6 +6125,12 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         # Track participation so follow-ups in this thread don't need @mention.
         if thread_id:
             self._threads.mark(thread_id)
+        # Status questions and specialist routing are answered directly, ahead of the normal
+        # agent dispatch/batch path — neither should wait out the text-batch quiet period.
+        if not recovered and await self._maybe_answer_progress_event(event):
+            return True
+        if not recovered and await self._maybe_route_specialist_event(event):
+            return True
         # Only live plain text is batched: recovery candidates are complete; coalescing would replay IDs.
         if (not recovered and msg_type == MessageType.TEXT and self._text_batch_delay_seconds > 0):
             self._enqueue_text_event(event)

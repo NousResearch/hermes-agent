@@ -11,7 +11,7 @@ from unittest.mock import patch
 
 import pytest
 
-from tools import tts_tool
+from tools import tts_tool, tts_tool_openai
 
 
 class TestResolveOpenaiAudioClientConfig:
@@ -25,10 +25,10 @@ class TestResolveOpenaiAudioClientConfig:
         }
 
         with patch.object(tts_tool, "_load_tts_config", return_value=config), \
-             patch.object(tts_tool, "read_selection", return_value="openai"), \
-             patch.object(tts_tool, "resolve_openai_audio_api_key", return_value="env-key"), \
-             patch.object(tts_tool, "resolve_managed_tool_gateway", return_value=None):
-            assert tts_tool._resolve_openai_audio_client_config() == (
+             patch.object(tts_tool_openai, "read_selection", return_value="openai"), \
+             patch.object(tts_tool_openai, "resolve_openai_audio_api_key", return_value="env-key"), \
+             patch.object(tts_tool_openai, "resolve_managed_tool_gateway", return_value=None):
+            assert tts_tool_openai._resolve_openai_audio_client_config() == (
                 "cfg-key",
                 "http://localhost:4003/v1",
                 False,
@@ -38,10 +38,10 @@ class TestResolveOpenaiAudioClientConfig:
         config = {"openai": {"api_key": "cfg-key"}}
 
         with patch.object(tts_tool, "_load_tts_config", return_value=config), \
-             patch.object(tts_tool, "read_selection", return_value=None):
-            assert tts_tool._resolve_openai_audio_client_config() == (
+             patch.object(tts_tool_openai, "read_selection", return_value=None):
+            assert tts_tool_openai._resolve_openai_audio_client_config() == (
                 "cfg-key",
-                tts_tool.DEFAULT_OPENAI_BASE_URL,
+                tts_tool_openai.DEFAULT_OPENAI_BASE_URL,
                 False,
             )
 
@@ -56,10 +56,10 @@ class TestResolveOpenaiAudioClientConfig:
         )
 
         with patch.object(tts_tool, "_load_tts_config", return_value=config), \
-             patch.object(tts_tool, "read_selection", return_value="nous"), \
-             patch.object(tts_tool, "resolve_openai_audio_api_key", return_value="env-key"), \
-             patch.object(tts_tool, "resolve_managed_tool_gateway", return_value=managed):
-            assert tts_tool._resolve_openai_audio_client_config() == (
+             patch.object(tts_tool_openai, "read_selection", return_value="nous"), \
+             patch.object(tts_tool_openai, "resolve_openai_audio_api_key", return_value="env-key"), \
+             patch.object(tts_tool_openai, "resolve_managed_tool_gateway", return_value=managed):
+            assert tts_tool_openai._resolve_openai_audio_client_config() == (
                 "managed-token",
                 "https://openai-audio-gateway.nousresearch.com/v1",
                 True,
@@ -70,11 +70,11 @@ class TestResolveOpenaiAudioClientConfig:
         the selection, never a silent fall back to direct credentials."""
         config = {"openai": {"api_key": "cfg-key"}}
         with patch.object(tts_tool, "_load_tts_config", return_value=config), \
-             patch.object(tts_tool, "read_selection", return_value="nous"), \
-             patch.object(tts_tool, "resolve_openai_audio_api_key", return_value="env-key"), \
-             patch.object(tts_tool, "resolve_managed_tool_gateway", return_value=None):
+             patch.object(tts_tool_openai, "read_selection", return_value="nous"), \
+             patch.object(tts_tool_openai, "resolve_openai_audio_api_key", return_value="env-key"), \
+             patch.object(tts_tool_openai, "resolve_managed_tool_gateway", return_value=None):
             with pytest.raises(ValueError) as exc:
-                tts_tool._resolve_openai_audio_client_config()
+                tts_tool_openai._resolve_openai_audio_client_config()
         assert "nous" in str(exc.value)
         assert "hermes tools" in str(exc.value)
 
@@ -82,23 +82,23 @@ class TestResolveOpenaiAudioClientConfig:
         """A stored vendor selection with no credentials errors by name —
         NO managed gateway call is attempted."""
         with patch.object(tts_tool, "_load_tts_config", return_value={"provider": "openai"}), \
-             patch.object(tts_tool, "read_selection", return_value="openai"), \
-             patch.object(tts_tool, "resolve_openai_audio_api_key", return_value=""), \
-             patch.object(tts_tool, "resolve_managed_tool_gateway") as gateway_mock:
+             patch.object(tts_tool_openai, "read_selection", return_value="openai"), \
+             patch.object(tts_tool_openai, "resolve_openai_audio_api_key", return_value=""), \
+             patch.object(tts_tool_openai, "resolve_managed_tool_gateway") as gateway_mock:
             with pytest.raises(ValueError) as exc:
-                tts_tool._resolve_openai_audio_client_config()
+                tts_tool_openai._resolve_openai_audio_client_config()
         gateway_mock.assert_not_called()
         assert "openai" in str(exc.value)
         assert "hermes tools" in str(exc.value)
 
     def test_missing_config_and_env_raises_updated_error(self):
         with patch.object(tts_tool, "_load_tts_config", return_value={}), \
-             patch.object(tts_tool, "read_selection", return_value=None), \
-             patch.object(tts_tool, "resolve_openai_audio_api_key", return_value=""), \
-             patch.object(tts_tool, "resolve_managed_tool_gateway", return_value=None), \
-             patch.object(tts_tool, "managed_nous_tools_enabled", return_value=False):
+             patch.object(tts_tool_openai, "read_selection", return_value=None), \
+             patch.object(tts_tool_openai, "resolve_openai_audio_api_key", return_value=""), \
+             patch.object(tts_tool_openai, "resolve_managed_tool_gateway", return_value=None), \
+             patch.object(tts_tool_openai, "managed_nous_tools_enabled", return_value=False):
             with pytest.raises(ValueError) as exc:
-                tts_tool._resolve_openai_audio_client_config()
+                tts_tool_openai._resolve_openai_audio_client_config()
 
         assert (
             str(exc.value)
@@ -108,4 +108,4 @@ class TestResolveOpenaiAudioClientConfig:
     def test_config_api_key_counts_as_available_backend(self):
         config = {"openai": {"api_key": "cfg-key"}}
         with patch.object(tts_tool, "_load_tts_config", return_value=config):
-            assert tts_tool._has_openai_audio_backend() is True
+            assert tts_tool_openai._has_openai_audio_backend() is True

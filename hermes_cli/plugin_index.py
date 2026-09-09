@@ -1,16 +1,8 @@
 """Community plugin index — fetch, cache, search, and name resolution.
 
-Mirrors the Skills Hub catalog pattern (``tools/skills_hub.py``): a static
-machine-readable JSON index hosted at a canonical URL, cached locally under
-``HERMES_HOME/cache/`` with a TTL, with a bundled seed file as the offline
-fallback and format reference.
-
-Fallback chain: remote index → cached copy (fresh or stale) → bundled seed.
-
-The index is discovery metadata ONLY.  **Indexed ≠ audited** — inclusion in
-the index means the entry's metadata was reviewed, not that the plugin's code
-was audited.  Install keeps its existing consent/review flow, and index
-entries pin an immutable ref (tag or commit SHA).
+Mirrors the Skills Hub catalog (``tools/skills_hub.py``): a static JSON index at a canonical URL,
+cached under ``HERMES_HOME/cache/`` with a TTL, bundled seed as offline fallback / format reference.
+Fallback chain: fresh cache → remote → stale cache → bundled seed.
 """
 
 from __future__ import annotations
@@ -27,24 +19,15 @@ from hermes_constants import get_hermes_home
 logger = logging.getLogger(__name__)
 
 # Canonical index location. Override via config key ``plugins.index_url``.
-DEFAULT_INDEX_URL = (
-    "https://raw.githubusercontent.com/NousResearch/hermes-plugin-index/main/index.json"
-)
-
-# Cache the fetched index for 24 hours; a stale cache is still preferred over
-# the bundled seed when the remote is unreachable.
-INDEX_CACHE_TTL = 24 * 3600
-
-# Bundled seed — offline fallback and the machine-readable format reference.
+DEFAULT_INDEX_URL = "https://raw.githubusercontent.com/NousResearch/hermes-plugin-index/main/index.json"
+INDEX_CACHE_TTL = 24 * 3600  # a stale cache still beats the bundled seed when remote is unreachable
 SEED_INDEX_PATH = Path(__file__).parent / "data" / "plugin_index.json"
-
 _FETCH_TIMEOUT = 10.0
 _MAX_INDEX_BYTES = 5 * 1024 * 1024  # refuse absurdly large index payloads
 
 SECURITY_FOOTER = (
     "Indexed \u2260 audited: inclusion in the index is a metadata review only, "
-    "not a code audit. Review a plugin before enabling it."
-)
+    "not a code audit. Review a plugin before enabling it.")
 
 
 @dataclass
@@ -70,23 +53,17 @@ class PluginIndexEntry:
 
     def to_dict(self) -> dict[str, Any]:
         d: dict[str, Any] = {
-            "name": self.name,
-            "description": self.description,
-            "author": self.author,
-            "tags": list(self.tags),
-            "repo": self.repo,
-            "ref": self.ref,
+            "name": self.name, "description": self.description, "author": self.author,
+            "tags": list(self.tags), "repo": self.repo, "ref": self.ref,
         }
-        if self.subdir:
-            d["subdir"] = self.subdir
-        if self.homepage:
-            d["homepage"] = self.homepage
-        if self.capabilities:
-            d["capabilities"] = list(self.capabilities)
-        if self.api_version is not None:
-            d["api_version"] = self.api_version
-        if self.added_at:
-            d["added_at"] = self.added_at
+        # Optional keys are emitted only when set (api_version: only when not None).
+        for key, value in (
+            ("subdir", self.subdir), ("homepage", self.homepage),
+            ("capabilities", list(self.capabilities)),
+            ("api_version", self.api_version), ("added_at", self.added_at),
+        ):
+            if value or (key == "api_version" and value is not None):
+                d[key] = value
         return d
 
 
@@ -108,18 +85,16 @@ def get_index_url() -> str:
 
 
 def _parse_entries(raw: Any) -> List[PluginIndexEntry]:
-    """Parse a decoded index document into entries, skipping malformed items."""
+    """Parse a decoded index document (object with ``plugins`` or bare list), skipping malformed items."""
     if isinstance(raw, dict):
-        items = raw.get("plugins", [])
-    elif isinstance(raw, list):  # bare-list form also accepted
-        items = raw
-    else:
+        raw = raw.get("plugins", [])
+        if not isinstance(raw, list):
+            raise ValueError("Plugin index 'plugins' field must be a list.")
+    elif not isinstance(raw, list):
         raise ValueError("Plugin index must be a JSON object or list.")
-    if not isinstance(items, list):
-        raise ValueError("Plugin index 'plugins' field must be a list.")
 
     entries: List[PluginIndexEntry] = []
-    for item in items:
+    for item in raw:
         if not isinstance(item, dict):
             continue
         name = item.get("name")
@@ -131,21 +106,18 @@ def _parse_entries(raw: Any) -> List[PluginIndexEntry]:
             continue
         subdir = item.get("subdir")
         api_version = item.get("api_version")
-        entries.append(
-            PluginIndexEntry(
-                name=name.strip(),
-                description=str(item.get("description") or ""),
-                author=str(item.get("author") or ""),
-                tags=[str(t) for t in item.get("tags") or [] if isinstance(t, (str, int))],
-                repo=repo.strip(),
-                ref=str(item.get("ref") or ""),
-                subdir=str(subdir).strip("/") if isinstance(subdir, str) and subdir.strip("/") else None,
-                homepage=str(item["homepage"]) if item.get("homepage") else None,
-                capabilities=[str(c) for c in item.get("capabilities") or []],
-                api_version=int(api_version) if isinstance(api_version, (int, str)) and str(api_version).isdigit() else None,
-                added_at=str(item["added_at"]) if item.get("added_at") else None,
-            )
-        )
+        entries.append(PluginIndexEntry(
+            name=name.strip(),
+            description=str(item.get("description") or ""),
+            author=str(item.get("author") or ""),
+            tags=[str(t) for t in item.get("tags") or [] if isinstance(t, (str, int))],
+            repo=repo.strip(),
+            ref=str(item.get("ref") or ""),
+            subdir=subdir.strip("/") if isinstance(subdir, str) and subdir.strip("/") else None,
+            homepage=str(item["homepage"]) if item.get("homepage") else None,
+            capabilities=[str(c) for c in item.get("capabilities") or []],
+            api_version=int(api_version) if isinstance(api_version, (int, str)) and str(api_version).isdigit() else None,
+            added_at=str(item["added_at"]) if item.get("added_at") else None))
     return entries
 
 
@@ -163,10 +135,8 @@ def _read_cache(*, max_age: Optional[float]) -> Optional[List[PluginIndexEntry]]
     try:
         if not cache.is_file():
             return None
-        if max_age is not None:
-            age = time.time() - cache.stat().st_mtime
-            if age > max_age:
-                return None
+        if max_age is not None and time.time() - cache.stat().st_mtime > max_age:
+            return None
         return _parse_entries(json.loads(cache.read_text(encoding="utf-8")))
     except (OSError, ValueError) as exc:
         logger.debug("plugin index: cache read failed: %s", exc)
@@ -178,7 +148,6 @@ def _write_cache(text: str) -> None:
         cache = _cache_path()
         cache.parent.mkdir(parents=True, exist_ok=True)
         from utils import atomic_write_text
-
         atomic_write_text(cache, text)
     except OSError as exc:  # pragma: no cover - best effort
         logger.debug("plugin index: cache write failed: %s", exc)
@@ -204,82 +173,49 @@ def _fetch_remote() -> Optional[List[PluginIndexEntry]]:
 
 
 def load_index(*, refresh: bool = False, offline: bool = False) -> tuple[List[PluginIndexEntry], str]:
-    """Load the plugin index.
-
-    Returns ``(entries, source)`` where *source* is one of ``"remote"``,
-    ``"cache"``, or ``"seed"``.
-
-    Order: fresh cache (unless *refresh*) → remote → stale cache → bundled seed.
-    ``offline=True`` skips the network entirely.
-    """
+    """Load the plugin index as ``(entries, source)``; source is ``"remote"``/``"cache"``/``"seed"``.
+    Order: fresh cache (unless *refresh*) → remote (unless *offline*) → stale cache → seed."""
     if not refresh:
         cached = _read_cache(max_age=INDEX_CACHE_TTL)
         if cached is not None:
             return cached, "cache"
-
     if not offline:
         remote = _fetch_remote()
         if remote is not None:
             return remote, "remote"
-
     stale = _read_cache(max_age=None)
     if stale is not None:
         return stale, "cache"
-
     return _load_seed_entries(), "seed"
 
-
-# ---------------------------------------------------------------------------
-# Search
-# ---------------------------------------------------------------------------
 
 def _score_entry(entry: PluginIndexEntry, term: str) -> float:
     """Fuzzy relevance score for *entry* against lowercase *term* (0 = no match)."""
     import difflib
-
     name = entry.name.lower()
-    desc = entry.description.lower()
     tags = [t.lower() for t in entry.tags]
-
     if term == name:
         return 100.0
-    score = 0.0
-    if term in name:
-        score = max(score, 80.0)
-    if any(term == t for t in tags):
-        score = max(score, 70.0)
-    if any(term in t for t in tags):
-        score = max(score, 55.0)
-    if term in desc:
-        score = max(score, 50.0)
-    if term in entry.author.lower():
-        score = max(score, 40.0)
-    # Fuzzy close-match on the name for typo tolerance.
-    ratio = difflib.SequenceMatcher(None, term, name).ratio()
-    if ratio >= 0.6:
-        score = max(score, ratio * 60.0)
-    return score
+    ratio = difflib.SequenceMatcher(None, term, name).ratio()  # typo tolerance on the name
+    signals = (
+        (term in name, 80.0), (term in tags, 70.0), (any(term in t for t in tags), 55.0),
+        (term in entry.description.lower(), 50.0), (term in entry.author.lower(), 40.0),
+        (ratio >= 0.6, ratio * 60.0))
+    return max((points for hit, points in signals if hit), default=0.0)
 
 
 def search_index(
     entries: List[PluginIndexEntry], term: str, *, capability: Optional[str] = None
 ) -> List[PluginIndexEntry]:
-    """Rank *entries* against *term* (fuzzy on name/description/tags/author).
-
-    An empty *term* matches everything (browse mode). ``capability`` filters
-    entries by declared capability.
-    """
+    """Rank *entries* against *term* (fuzzy on name/description/tags/author)."""
     pool = entries
     if capability:
         cap = capability.lower()
-        pool = [e for e in pool if any(cap == c.lower() for c in e.capabilities)]
-
+        pool = [e for e in entries if any(cap == c.lower() for c in e.capabilities)]
     term = (term or "").strip().lower()
     if not term:
         return sorted(pool, key=lambda e: e.name)
-
-    scored = [(e, _score_entry(e, term)) for e in pool]
-    matched = [(e, s) for e, s in scored if s > 0]
+    matched = [(e, s) for e in pool if (s := _score_entry(e, term)) > 0]
     matched.sort(key=lambda pair: (-pair[1], pair[0].name))
     return [e for e, _s in matched]
 
@@ -287,19 +223,9 @@ def search_index(
 def resolve_name(
     entries: List[PluginIndexEntry], name: str
 ) -> tuple[Optional[PluginIndexEntry], List[PluginIndexEntry]]:
-    """Resolve a bare plugin *name* against the index.
-
-    Returns ``(entry, candidates)``: an exact (case-insensitive) unique match
-    in ``entry``, otherwise ``entry is None`` and ``candidates`` holds any
-    partial matches (empty = nothing similar, >1 on exact = ambiguous).
-    """
+    """Resolve a bare *name*: ``(entry, candidates)`` — a unique case-insensitive match in
+    ``entry``, else ``None`` with the partial matches (empty = nothing similar, >1 = ambiguous)."""
     lowered = name.strip().lower()
     exact = [e for e in entries if e.name.lower() == lowered]
-    if len(exact) == 1:
-        return exact[0], exact
-    if len(exact) > 1:
-        return None, exact
-    partial = [e for e in entries if lowered in e.name.lower()]
-    if len(partial) == 1:
-        return partial[0], partial
-    return None, partial
+    matches = exact or [e for e in entries if lowered in e.name.lower()]
+    return (matches[0] if len(matches) == 1 else None), matches

@@ -245,7 +245,8 @@ class TestGetServicePidsScoping:
 
 def _fleet(monkeypatch, tmp_path, *, current, labels, located,
            registered=None, plist_exists=True,
-           drain_results=None, kick_errors=None, wait_results=None):
+           drain_results=None, kick_errors=None, wait_results=None,
+           current_supervised=True):
     """Wire a fake launchd fleet through hermes_cli.gateway seams.
 
     ``located`` maps label -> (domain, pid) as ``_locate_launchd_gateway_service``
@@ -259,7 +260,7 @@ def _fleet(monkeypatch, tmp_path, *, current, labels, located,
 
     rec = SimpleNamespace(
         kickstarts=[], drains=[], current_restarts=[], waits=[],
-        locates=[], registered_checks=[],
+        locates=[], registered_checks=[], current_verifies=[],
     )
 
     plist = tmp_path / f"{current}.plist"
@@ -310,6 +311,18 @@ def _fleet(monkeypatch, tmp_path, *, current, labels, located,
     monkeypatch.setattr(gw, "_wait_for_launchd_service_pid", fake_wait)
     monkeypatch.setattr(
         gw, "launchd_restart", lambda: rec.current_restarts.append(current)
+    )
+
+    # The current profile is now verified the same way siblings are: a
+    # successful launchd_restart() only counts once launchd reports it is
+    # supervising the job (#88848). Stubbed here so the fleet cases keep
+    # asserting on routing rather than on a real launchctl probe.
+    def fake_verify_current(*, label=None, **_kw):
+        rec.current_verifies.append(label)
+        return current_supervised
+
+    monkeypatch.setattr(
+        gw, "wait_for_launchd_gateway_supervision", fake_verify_current
     )
     return rec
 

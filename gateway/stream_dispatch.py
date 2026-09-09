@@ -1,21 +1,9 @@
-"""Adapter-driven dispatch of structured stream events to a delivery sink.
+"""Adapter-driven dispatch of structured stream events (gateway/stream_events.py).
 
-``GatewayEventDispatcher`` is the seam Tobi asked for: the agent emits typed
-events (gateway/stream_events.py), and the *adapter* decides how each one is
-delivered.  The dispatcher holds an adapter + the stream consumer (sink) + the
-resolved per-channel presentation settings (tool-progress mode, preview length)
-and routes each event through the adapter's render hooks.
-
-Message/commentary/segment events flow into the consumer (native draft on
-Telegram DMs, edit-in-place elsewhere).  Tool events are formatted by the
-adapter — which may return None to *eat* the event on platforms that can't
-render tool chrome — and the rendered line is enqueued onto the same tool
-progress queue the gateway already drains, so the two no longer race through
-independent code paths.
-
-This module deliberately has no platform knowledge and no asyncio: it is a thin
-synchronous router callable from the agent's worker thread, exactly like the
-callbacks it replaces.
+Message events flow into the consumer; tool events are formatted by the adapter (None
+= eat it on platforms without tool chrome) and enqueued onto the same tool-progress
+queue the gateway drains, so the two paths never race.  Synchronous: callable from
+the agent's worker thread.
 """
 
 from __future__ import annotations
@@ -24,14 +12,7 @@ import logging
 from typing import Any, Callable, Optional
 
 from gateway.stream_events import (
-    Commentary,
-    GatewayNotice,
-    LongToolHint,
-    MessageChunk,
-    MessageStop,
-    StreamEvent,
-    ToolCallChunk,
-    ToolCallFinished,
+    Commentary, GatewayNotice, LongToolHint, MessageChunk, MessageStop, StreamEvent, ToolCallChunk,
 )
 
 logger = logging.getLogger("gateway.stream_events")
@@ -40,28 +21,11 @@ logger = logging.getLogger("gateway.stream_events")
 class GatewayEventDispatcher:
     """Route typed stream events through an adapter onto a delivery sink.
 
-    Parameters
-    ----------
-    adapter:
-        The platform adapter.  Provides ``render_message_event`` and
-        ``format_tool_event`` (BasePlatformAdapter defaults reproduce today's
-        behavior; adapters may override for native rendering).
-    sink:
-        The GatewayStreamConsumer for assistant-text delivery.  May be None
-        when streaming is disabled, in which case message events are dropped
-        (the final response still goes out via the normal send path).
-    enqueue_tool_line:
-        Callback that places a rendered tool-progress line onto the gateway's
-        progress queue (the same queue ``send_progress_messages`` drains).  May
-        be None when tool progress is disabled for this channel.
-    tool_mode:
-        Resolved tool-progress mode for this channel ("all" / "new" / "verbose"
-        / "off").
-    preview_max_len:
-        Resolved ``tool_preview_length`` (0 = no cap in verbose mode).
-    on_long_tool / on_notice:
-        Optional hooks for LongToolHint / GatewayNotice events, letting the
-        gateway own the "should I surface this here?" decision.
+    sink: the GatewayStreamConsumer, or None when streaming is disabled (message
+    events dropped; the final still goes out normally).  enqueue_tool_line: None
+    when tool progress is disabled.  tool_mode: "all"/"new"/"verbose"/"off";
+    preview_max_len: ``tool_preview_length`` (0 = no cap in verbose).
+    on_long_tool / on_notice: the gateway owns the "surface this here?" decision.
     """
 
     def __init__(
@@ -82,8 +46,7 @@ class GatewayEventDispatcher:
         self.preview_max_len = preview_max_len
         self._on_long_tool = on_long_tool
         self._on_notice = on_notice
-        # "new" mode dedup — only report when the tool changes.
-        self._last_tool: Optional[str] = None
+        self._last_tool: Optional[str] = None  # "new"-mode dedup
 
     def dispatch(self, event: StreamEvent) -> None:
         """Route a single event.  Never raises into the agent's worker thread."""
@@ -93,40 +56,51 @@ class GatewayEventDispatcher:
             logger.debug("stream-event dispatch error", exc_info=True)
 
     def _dispatch(self, event: StreamEvent) -> None:
+        # ToolCallFinished: no chrome on completion (only "started" is rendered);
+        # completion only drives onboarding hints (LongToolHint).
         if isinstance(event, (MessageChunk, MessageStop, Commentary)):
             if self.sink is not None:
                 self.adapter.render_message_event(event, self.sink)
-            return
+        elif isinstance(event, ToolCallChunk):
+            self._dispatch_tool_call(event)
+        elif isinstance(event, LongToolHint) and self._on_long_tool is not None:
+            self._on_long_tool(event)
+        elif isinstance(event, GatewayNotice) and self._on_notice is not None:
+            self._on_notice(event)
 
-        if isinstance(event, ToolCallChunk):
-            if self.tool_mode == "off" or self._enqueue_tool_line is None:
-                return
-            # "new" mode: only emit when the tool changes.
-            if self.tool_mode == "new" and event.tool_name == self._last_tool:
-                return
-            self._last_tool = event.tool_name
-            line = self.adapter.format_tool_event(
-                event, mode=self.tool_mode, preview_max_len=self.preview_max_len,
-            )
-            # None == adapter chose to eat this event (can't render tool chrome).
-            if line:
-                self._enqueue_tool_line(line)
+    def _dispatch_tool_call(self, event: ToolCallChunk) -> None:
+        if self.tool_mode == "off" or self._enqueue_tool_line is None:
             return
-
-        if isinstance(event, ToolCallFinished):
-            # Default: no chrome on completion (matches today — the gateway only
-            # rendered "started" events).  Completion drives onboarding hints.
+        if self.tool_mode == "new" and event.tool_name == self._last_tool:
             return
-
-        if isinstance(event, LongToolHint):
-            if self._on_long_tool is not None:
-                self._on_long_tool(event)
-            return
-
-        if isinstance(event, GatewayNotice):
-            if self._on_notice is not None:
-                self._on_notice(event)
-            return
+        self._last_tool = event.tool_name
+        line = self.adapter.format_tool_event(
+            event, mode=self.tool_mode, preview_max_len=self.preview_max_len,
+        )
+        if line:  # None/"" == adapter chose to eat this event
+            self._enqueue_tool_line(line)
 
 
 __all__ = ["GatewayEventDispatcher"]
+
+
+# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
+# Names external plugins imported from this module before the Sep 2026 decomposition.
+# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
+# The whole block is removed by reverting the commit that added it.
+
+
+_PLUGIN_COMPAT_LAZY = {
+    'ToolCallFinished': ('gateway.stream_events', 'ToolCallFinished'),
+}
+
+
+def __getattr__(name):  # PEP 562 — lazy so no import cycles
+    target = _PLUGIN_COMPAT_LAZY.get(name)
+    if target is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    import importlib
+    from hermes_cli.plugin_compat import warn_once
+    warn_once(__name__, name, *target)
+    return getattr(importlib.import_module(target[0]), target[1])
+# ---- END PLUGIN-COMPAT ----

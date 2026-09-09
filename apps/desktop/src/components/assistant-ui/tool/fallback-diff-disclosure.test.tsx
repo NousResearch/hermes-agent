@@ -5,7 +5,7 @@ import { afterEach, expect, it } from 'vitest'
 import { setCollapseSettledDiffs } from '@/store/diff-disclosure'
 import { $toolDisclosureStates } from '@/store/tool-view'
 
-import { assistantMessage, stubThreadEnvironment, stubThreadViewportSize, ThreadRuntime } from '../test-utils'
+import { createdAt, stubThreadEnvironment, stubThreadViewportSize, ThreadRuntime } from '../test-utils'
 import { Thread } from '../thread'
 
 stubThreadEnvironment()
@@ -13,7 +13,10 @@ stubThreadViewportSize()
 
 function transcript(running: boolean) {
   const message: ThreadMessage = {
-    ...assistantMessage(),
+    id: 'diff-message',
+    createdAt,
+    metadata: { unstable_state: null, unstable_annotations: [], unstable_data: [], steps: [], custom: {} },
+    role: 'assistant',
     content: [
       {
         type: 'tool-call',

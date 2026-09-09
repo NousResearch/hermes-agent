@@ -2829,25 +2829,35 @@ def _reanchor_stale_cron(d: _DueJob) -> bool:
     return False
 
 
-def _fast_forward_missed_recurring(d: _DueJob, grace: int) -> None:
-    """Recurring job past its grace window: skip the accumulated misses, fire once now.
+def _fast_forward_missed_recurring(d: _DueJob, grace: int) -> bool:
+    """Recurring job past its grace window: collapse the accumulated misses.
 
-    The fast-forward is persisted immediately — NOT redundant with advance_next_run/mark_job_run:
-    it
-    protects the crash window before mark_job_run and covers the external fire_due path, which never
-    calls advance_next_run. mark_job_run re-anchors on completion, so the value is provisional.
+    Returns True when the job must NOT fire this tick (misses skipped entirely) and False when
+    it should fire now. With ``cron.skip_missed_runs`` off (default) a job past grace still
+    fires ONCE now (backlog collapsed, pre-#33315 behavior). With it on, a job more than
+    ``grace`` late is fast-forwarded to its next occurrence WITHOUT running — so a long gateway
+    outage can't burst-fire every missed agent job at once on restart and burn the whole day's
+    budget. Within-grace jobs are never skipped either way (normal late dispatch).
     """
     if (d.scan.now - d.next_run_dt).total_seconds() <= grace:
-        return
+        return False
     new_next = d.recompute_next()
     if not new_next:
-        return
+        return False
+    skip_missed = bool(_cron_config_number("skip_missed_runs", False, bool))
+    d.scan.persist(d.job["id"], next_run_at=new_next)
+    record_catch_up_occurrence()
+    if skip_missed:
+        logger.info(
+            "Job '%s' missed its scheduled time (%s, grace=%ds); "
+            "cron.skip_missed_runs is on — skipping to next run %s (no fire this tick)",
+            d.label, d.next_run, grace, new_next)
+        return True
     logger.info(
         "Job '%s' missed its scheduled time (%s, grace=%ds). "
         "Running now; next run provisionally set to: %s (re-anchored on completion)",
         d.label, d.next_run, grace, new_next)
-    d.scan.persist(d.job["id"], next_run_at=new_next)
-    record_catch_up_occurrence()
+    return False
 
 
 def _retire_expired_oneshot(d: _DueJob) -> bool:
@@ -2952,8 +2962,8 @@ def _evaluate_due_job(job: Dict[str, Any], scan: _DueScan, run_claim_ttl: float)
     if not manual_run and kind == "cron" and _reanchor_stale_cron(d):
         return False
     grace = _compute_grace_seconds(d.schedule)
-    if not manual_run and recurring:
-        _fast_forward_missed_recurring(d, grace)
+    if not manual_run and recurring and _fast_forward_missed_recurring(d, grace):
+        return False
     if kind == "once":
         if _retire_expired_oneshot(d) or _oneshot_dispatch_limit_reached(job, scan):
             return False

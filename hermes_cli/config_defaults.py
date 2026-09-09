@@ -1677,6 +1677,13 @@ DEFAULT_CONFIG = {
         # Max due jobs run in parallel per tick. None/0 = unbounded (thread count only); 1 = serial.
         # Env override: HERMES_CRON_MAX_PARALLEL.
         "max_parallel_jobs": None,
+        # After a long downtime (gateway off past the catch-up grace window), a recurring job that
+        # missed its slot would normally still fire ONCE on restart (backlog collapsed, #33315
+        # catch-up). True = instead fast-forward missed recurring jobs to their NEXT occurrence
+        # without firing — so a multi-hour outage can't burst-fire every missed agent job at once
+        # and burn a whole day's spend on return. Within-grace late jobs are unaffected. Default
+        # False preserves stock catch-up behavior. See cron.jobs._fast_forward_missed_recurring.
+        "skip_missed_runs": False,
         # save_job_output keeps the N most recent .md files per job; 0 or negative disables pruning
         # (for externally managed cleanup).
         "output_retention": 50,

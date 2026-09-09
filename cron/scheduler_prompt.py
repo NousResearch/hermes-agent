@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from hermes_time import now as _hermes_now
 from typing import Optional
 
@@ -63,6 +64,25 @@ _UPSTREAM_CONTEXT_INTRO = (
 )
 
 
+def _extract_cron_context_payload(text: str) -> str:
+    """Return a cron artifact's terminal response/error without replaying its prompt."""
+    artifact = (text or "").strip()
+    if not artifact:
+        return ""
+
+    markers = list(re.finditer(r"(?m)^## (Response|Error)\s*$", artifact))
+    if not markers:
+        return artifact
+
+    marker = markers[-1]
+    payload = artifact[marker.end():].strip()
+    if not payload or payload == "(No response generated)":
+        return ""
+    if marker.group(1) == "Error":
+        return f"## Error\n\n{payload}"
+    return payload
+
+
 def _inject_context_from(job: dict, prompt: str) -> tuple[str, bool]:
     """Prepend the latest output of each ``context_from`` job; returns ``(prompt, injected)``."""
     context_from = job.get("context_from")
@@ -93,15 +113,16 @@ def _inject_context_from(job: dict, prompt: str) -> tuple[str, bool]:
             )
             latest_output = ""
             for output_file in output_files:
-                candidate = output_file.read_text(encoding="utf-8").strip()
+                artifact = output_file.read_text(encoding="utf-8").strip()
                 # Only the run header describes suppression; script/agent payloads can
                 # quote these markers. Keep error documents useful for recovery context.
-                header = candidate.split("\n---\n", 1)[0].split("\n## Prompt", 1)[0]
-                silent_audit = candidate.startswith("# Cron Job:") and any(
+                header = artifact.split("\n---\n", 1)[0].split("\n## Prompt", 1)[0]
+                silent_audit = artifact.startswith("# Cron Job:") and any(
                     line.startswith(("**Status:** no_change", "**Status:** silent",
                                      "Script gate returned `wakeAgent=false`"))
                     for line in header.splitlines()
                 )
+                candidate = _extract_cron_context_payload(artifact)
                 if candidate and not silent_audit:
                     latest_output = candidate
                     break

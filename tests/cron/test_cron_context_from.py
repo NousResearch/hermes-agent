@@ -78,6 +78,40 @@ class TestBuildJobPromptContextFrom:
         assert "Today's top story: AI is everywhere." in prompt
         assert f"Output from job '{job_a['id']}'" in prompt
 
+    @pytest.mark.parametrize(
+        ("terminal_heading", "terminal_payload", "expected"),
+        [
+            ("Response", "Useful upstream answer.", "Useful upstream answer."),
+            ("Error", "RuntimeError: provider timeout", "## Error\n\nRuntimeError: provider timeout"),
+        ],
+    )
+    def test_injects_only_terminal_payload_from_cron_artifact(
+        self, cron_env, terminal_heading, terminal_payload, expected
+    ):
+        from cron.jobs import create_job, OUTPUT_DIR
+        from cron.scheduler import _build_job_prompt
+
+        upstream = create_job(prompt="Find news", schedule="every 1h")
+        output_dir = OUTPUT_DIR / upstream["id"]
+        output_dir.mkdir(parents=True, exist_ok=True)
+        (output_dir / "2026-09-08_16-19-01.md").write_text(
+            "# Cron Job: upstream\n\n"
+            "## Prompt\n\nUPSTREAM PROMPT MUST NOT RECURSE\n\n"
+            f"## {terminal_heading}\n\n{terminal_payload}\n",
+            encoding="utf-8",
+        )
+
+        downstream = create_job(
+            prompt="Summarize the result",
+            schedule="every 2h",
+            context_from=upstream["id"],
+        )
+
+        prompt = _build_job_prompt(downstream)
+        assert expected in prompt
+        assert "UPSTREAM PROMPT MUST NOT RECURSE" not in prompt
+        assert "## Prompt" not in prompt
+
     def test_uses_most_recent_output(self, cron_env):
         from cron.jobs import create_job, OUTPUT_DIR
         from cron.scheduler import _build_job_prompt
@@ -438,5 +472,4 @@ class TestContinuityFlag:
         prompt = _build_job_prompt(job)
         assert "Reported: story A" in prompt
         assert "previous run" in prompt.lower()
-
 

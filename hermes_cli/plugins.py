@@ -126,6 +126,13 @@ VALID_HOOKS: Set[str] = {
     "on_session_finalize", "on_session_reset",
     # on_skill_lifecycle: successful skill lifecycle facts (local skill name visible to plugins).
     "on_skill_lifecycle", "subagent_start", "subagent_stop",
+    # Fired by the gateway when an agent turn is interrupted mid-run --
+    # either by /stop or by the running-agent fast-path of /new (see
+    # gateway/run_agent_cache.py::_interrupt_and_clear_session). Lets plugins fail
+    # any per-turn external resources they are holding (e.g. remote tool
+    # calls awaiting a result). Kwargs: session_key, platform, reason,
+    # invalidation_reason. Return values are ignored.
+    "agent_loop_stopped",
     # pre_gateway_dispatch: once per incoming MessageEvent, after the internal-event guard, BEFORE
     # auth/pairing and dispatch. Kwargs: event, gateway, session_store. Return {"action": "skip",
     # "reason"} -> drop; {"action": "rewrite", "text"} -> replace event.text; "allow"/None -> normal.

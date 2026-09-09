@@ -1,6 +1,8 @@
 """Tests for TTS speed configuration across providers."""
 
 import asyncio
+from pathlib import Path
+from subprocess import CompletedProcess
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -78,6 +80,78 @@ class TestOpenaiTtsSpeed:
         create = self._run({"speed": 10.0}, tmp_path, monkeypatch)
         kwargs = create.call_args[1]
         assert kwargs["speed"] == 4.0
+
+    def test_local_mode_synthesizes_at_normal_speed_then_processes(self, tmp_path, monkeypatch):
+        """Local mode omits endpoint speed and post-processes the completed file."""
+        monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+        output = tmp_path / "out.mp3"
+        mock_response = MagicMock()
+        mock_response.stream_to_file.side_effect = lambda path: Path(path).write_bytes(b"audio")
+        mock_client = MagicMock()
+        mock_client.audio.speech.create.return_value = mock_response
+        mock_cls = MagicMock(return_value=mock_client)
+
+        with patch("tools.tts_tool._import_openai_client", return_value=mock_cls), \
+             patch("tools.tts_tool_openai._resolve_openai_audio_client_config",
+                   return_value=("test-key", None, False)), \
+             patch("tools.tts_tool._apply_local_tempo", return_value=str(output)) as apply_tempo:
+            from tools.tts_tool import _generate_openai_tts
+            result = _generate_openai_tts(
+                "Hello", str(output), {"openai": {"speed": 1.5, "speed_mode": "local"}})
+
+        assert result == str(output)
+        assert "speed" not in mock_client.audio.speech.create.call_args.kwargs
+        apply_tempo.assert_called_once_with(str(output), 1.5)
+
+
+class TestLocalOpenaiTempo:
+    @pytest.mark.parametrize(
+        "speed,expected",
+        [
+            (0.25, "atempo=0.5,atempo=0.5"),
+            (0.75, "atempo=0.75"),
+            (1.5, "atempo=1.5"),
+            (2.5, "atempo=2,atempo=1.25"),
+            (4.0, "atempo=2,atempo=2"),
+        ],
+    )
+    def test_filter_stages_stay_in_portable_range(self, speed, expected):
+        from tools.tts_tool_delivery import _build_atempo_filter
+        assert _build_atempo_filter(speed) == expected
+
+    def test_atomic_replace_and_failure_cleanup(self, tmp_path):
+        from tools.tts_tool_delivery import _apply_local_tempo
+
+        output = tmp_path / "out.mp3"
+        output.write_bytes(b"original")
+
+        with patch("tools.tts_tool_delivery.shutil.which", return_value=None), \
+             pytest.raises(RuntimeError, match="requires ffmpeg"):
+            _apply_local_tempo(str(output), 1.5)
+        assert output.read_bytes() == b"original"
+
+        def successful_run(_ffmpeg, args, **_kwargs):
+            Path(args[-1]).write_bytes(b"processed")
+            return CompletedProcess(args, 0, b"", b"")
+
+        with patch("tools.tts_tool_delivery.shutil.which", return_value="/usr/bin/ffmpeg"), \
+             patch("tools.tts_tool_delivery._ffmpeg_run", side_effect=successful_run):
+            assert _apply_local_tempo(str(output), 1.5) == str(output)
+        assert output.read_bytes() == b"processed"
+        assert not list(tmp_path.glob(".*.atempo.mp3"))
+
+        output.write_bytes(b"original")
+
+        def failed_run(_ffmpeg, args, **_kwargs):
+            Path(args[-1]).write_bytes(b"partial")
+            return CompletedProcess(args, 1, b"", b"encoder failed")
+
+        with patch("tools.tts_tool_delivery.shutil.which", return_value="/usr/bin/ffmpeg"), \
+             patch("tools.tts_tool_delivery._ffmpeg_run", side_effect=failed_run), \
+             pytest.raises(RuntimeError, match="encoder failed"):
+            _apply_local_tempo(str(output), 1.5)
+        assert output.read_bytes() == b"original"
+        assert not list(tmp_path.glob(".*.atempo.mp3"))
 
 
 # ---------------------------------------------------------------------------

@@ -11,8 +11,8 @@ Design notes:
   file and vault file are created 0600 under ``<HERMES_HOME>/vault/``.
 - Ported design (opaque-handle vault fill) from Merit-Systems/OpenInstinct
   (MIT): lib/manager/server/secret-store.ts + vault services.
-- Phase 1 supports three item kinds (``login``, ``payment``, ``address``)
-  in the store; browser fill support is login-only.
+- Three item kinds: ``login`` (password-only secret), ``payment`` (card fields) and
+  ``address``; ``PAYMENT_FIELDS`` / ``ADDRESS_FIELDS`` are the canonical payload names.
 """
 
 from __future__ import annotations
@@ -22,6 +22,7 @@ import os
 import re
 import threading
 import uuid
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -34,9 +35,32 @@ VAULT_KINDS = ("login", "payment", "address")
 
 LOGIN_IDENTIFIER_TYPES = ("email", "phone", "username")
 
+# Canonical secret-payload fields per non-login kind. Each maps to the WHATWG autocomplete token the
+# browser fill targets (agent/vault_login_classifier.py); the Desktop Add dialog and `hermes vault add`
+# both write these names, so the fill never has to guess a user's ad-hoc field naming.
+PAYMENT_FIELDS = {
+    "card_number": "cc-number", "cardholder_name": "cc-name", "exp_month": "cc-exp-month",
+    "exp_year": "cc-exp-year", "cvc": "cc-csc", "billing_postal_code": "postal-code",
+}
+ADDRESS_FIELDS = {
+    "address_line1": "address-line1", "address_line2": "address-line2", "city": "address-level2",
+    "state": "address-level1", "postal_code": "postal-code", "country": "country-name",
+}
+REQUIRED_FIELDS = {"payment": ("card_number", "exp_month", "exp_year", "cvc"),
+                   "address": ("address_line1", "city", "postal_code", "country")}
+
 _DEFAULT_PORTS = {"http": 80, "https": 443}
 
 _LOCK = threading.Lock()
+
+# fcntl is Unix-only; Windows locks a byte range with msvcrt (same shape as tools/skill_usage.py).
+msvcrt = None
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - platform-specific fallback
+    fcntl = None
+    with suppress(ImportError):
+        import msvcrt
 
 
 class VaultError(Exception):
@@ -128,6 +152,32 @@ class VaultStore:
             except OSError:
                 pass
 
+    @contextmanager
+    def _locked(self):
+        """Serialize read-modify-write cycles across threads AND processes: the Desktop gateway, a CLI
+        `hermes vault add` and a TUI slash worker all write the same ``vault.json.enc``; two unlocked
+        writers would drop each other's items."""
+        with _LOCK:
+            self._ensure_dir()
+            lock_path = self._base / ".vault.lock"
+            if msvcrt and (not lock_path.exists() or lock_path.stat().st_size == 0):
+                lock_path.write_text(" ", encoding="utf-8")  # msvcrt needs a non-empty byte range to lock
+            with open(lock_path, "r+" if msvcrt else "a+", encoding="utf-8") as fd:
+                if fcntl:
+                    fcntl.flock(fd, fcntl.LOCK_EX)
+                elif msvcrt:
+                    fd.seek(0)
+                    msvcrt.locking(fd.fileno(), msvcrt.LK_LOCK, 1)
+                try:
+                    yield
+                finally:
+                    with suppress(OSError):
+                        if fcntl:
+                            fcntl.flock(fd, fcntl.LOCK_UN)
+                        elif msvcrt:
+                            fd.seek(0)
+                            msvcrt.locking(fd.fileno(), msvcrt.LK_UNLCK, 1)
+
     def _fernet(self):
         from cryptography.fernet import Fernet
 
@@ -177,9 +227,16 @@ class VaultStore:
         fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         try:
             os.write(fd, blob)
+            os.fsync(fd)  # the blob must be on disk before the rename makes it THE vault
         finally:
             os.close(fd)
         os.replace(tmp, self._vault_path)
+        with suppress(OSError):  # directory entry durable too (power loss between rename and next sync)
+            dfd = os.open(self._base, os.O_RDONLY)
+            try:
+                os.fsync(dfd)
+            finally:
+                os.close(dfd)
         try:
             os.chmod(self._vault_path, 0o600)
         except OSError:
@@ -228,8 +285,14 @@ class VaultStore:
             # Login secret payload is password-only; identifier lives in
             # metadata and any stray origin echo is dropped.
             secret = {"password": secret["password"]}
-        elif origin:
-            norm_origin = normalize_origin(origin)
+        else:
+            allowed = PAYMENT_FIELDS if kind == "payment" else ADDRESS_FIELDS
+            secret = {k: str(v) for k, v in secret.items() if k in allowed and str(v or "").strip()}
+            missing = [f for f in REQUIRED_FIELDS[kind] if f not in secret]
+            if missing:
+                raise VaultError(f"{kind} items require {', '.join(missing)}")
+            if origin:
+                norm_origin = normalize_origin(origin)
 
         item_id = f"vault_{uuid.uuid4().hex[:12]}"
         record = {
@@ -242,7 +305,7 @@ class VaultStore:
             "identifier": identifier,
             "secret": dict(secret),
         }
-        with _LOCK:
+        with self._locked():
             items = self._read_all()
             items.append(record)
             self._write_all(items)
@@ -250,18 +313,18 @@ class VaultStore:
 
     def list_items(self) -> List[VaultItemMeta]:
         """Metadata-only listing. Secret payloads are never included."""
-        with _LOCK:
+        with self._locked():
             return [self._meta(rec) for rec in self._read_all()]
 
     def has_items(self) -> bool:
         try:
-            with _LOCK:
+            with self._locked():
                 return bool(self._read_all())
         except Exception:
             return False
 
     def remove_item(self, item_id: str) -> bool:
-        with _LOCK:
+        with self._locked():
             items = self._read_all()
             remaining = [rec for rec in items if rec.get("id") != item_id]
             if len(remaining) == len(items):
@@ -270,7 +333,7 @@ class VaultStore:
             return True
 
     def get_meta(self, item_id: str) -> Optional[VaultItemMeta]:
-        with _LOCK:
+        with self._locked():
             for rec in self._read_all():
                 if rec.get("id") == item_id:
                     return self._meta(rec)
@@ -282,7 +345,7 @@ class VaultStore:
         Callers must never place the returned values into tool results,
         logs, exceptions, or any string that reaches the session DB.
         """
-        with _LOCK:
+        with self._locked():
             for rec in self._read_all():
                 if rec.get("id") == item_id:
                     return dict(rec.get("secret") or {})

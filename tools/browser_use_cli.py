@@ -11,6 +11,7 @@ import logging
 import os
 import re
 import shutil
+import signal
 import subprocess
 import time
 from pathlib import Path
@@ -516,6 +517,36 @@ def _clamp_timeout(timeout_s: Any) -> int:
         return _DEFAULT_TIMEOUT_S
 
 
+# After a whole-group SIGKILL, every pipe holder is dead, so the drain below is normally
+# instant; the deadline only guards against a process outside the group still holding a pipe.
+_POST_KILL_DRAIN_S = 10.0
+
+
+def _run_cli_killing_process_group(cmd, code, env, timeout):
+    """Run the CLI in its own session and SIGKILL the whole process group on timeout.
+
+    ``subprocess.run`` only kills the direct child on ``TimeoutExpired``; a browser_harness
+    daemon / Chrome helper grandchild inherits the stdout/stderr pipes and keeps them open,
+    so the internal ``communicate()`` blocks on pipe EOF forever and the tool call — plus its
+    activity heartbeat — wedges permanently (#106244).
+    """
+    proc = subprocess.Popen(
+        cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        text=True, env=env, start_new_session=True,
+    )
+    try:
+        stdout, stderr = proc.communicate(input=code, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        with contextlib.suppress(ProcessLookupError, PermissionError):
+            os.killpg(proc.pid, signal.SIGKILL)  # start_new_session=True: pgid == pid
+        try:
+            proc.communicate(timeout=_POST_KILL_DRAIN_S)
+        except subprocess.TimeoutExpired:
+            pass
+        raise
+    return subprocess.CompletedProcess(cmd, proc.returncode, stdout, stderr)
+
+
 def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT_S,
                  task_id: Optional[str] = None, local: bool = False):
     """Run Python code through the browser-use CLI, and return its output"""
@@ -561,10 +592,14 @@ def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT
     timeout = _clamp_timeout(timeout_s)
     started = time.time()
     try:
-        proc = subprocess.run(
-            cmd, input=code, capture_output=True, text=True, timeout=timeout, env=env,
-            **_windows_popen_kwargs(),
-        )
+        if os.name == "nt":
+            proc = subprocess.run(
+                cmd, input=code, capture_output=True, text=True, timeout=timeout, env=env,
+                **_windows_popen_kwargs(),
+            )
+        else:
+            # Plain run() strands the pipe-holding grandchildren above (#106244).
+            proc = _run_cli_killing_process_group(cmd, code, env, timeout)
     except subprocess.TimeoutExpired:
         return tool_error(f"browser-use exec timed out after {timeout}s. The daemon may still be working; retry "
                           f"with a larger timeout_s (max {_MAX_TIMEOUT_S}), or split the work into several calls that "

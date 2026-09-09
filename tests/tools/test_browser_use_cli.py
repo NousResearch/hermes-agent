@@ -14,6 +14,8 @@ Covers the three seams the integration relies on:
 import json
 import os
 import stat
+import subprocess
+import sys
 import time
 
 import pytest
@@ -1338,3 +1340,80 @@ class TestLightpandaStatusLine:
         out = self._status(monkeypatch, used=False, reason="cloud provider Browserbase is selected")
         assert "NOT in use" in out
         assert "Browserbase" in out
+
+
+class TestTimeoutProcessGroupKill:
+    """#106244: on timeout the whole CLI process group must die. A pipe-holding
+    grandchild (browser_harness daemon / Chrome helper) otherwise keeps communicate()
+    blocked forever, and the wedged call's activity heartbeat pins the session at
+    "now" in the sidebar indefinitely."""
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX process groups")
+    def test_timeout_kills_grandchild_and_returns_promptly(self, tmp_path, monkeypatch):
+        """A grandchild that outlives the direct child and holds the inherited stdout
+        pipe must not keep browser_exec blocked past the timeout (it wedged permanently
+        before the group kill)."""
+        monkeypatch.setattr("hermes_cli.config.read_raw_config", lambda: {})
+        pid_file = tmp_path / "grandchild.pid"
+        cli = _fake_cli(tmp_path, (
+            "cat > /dev/null\n"
+            "sleep 60 &\n"
+            "echo $! > \"" + str(pid_file) + "\"\n"
+            "sleep 60\n"
+        ))
+        monkeypatch.setattr(bu_cli, "_find_cli", lambda: [cli])
+
+        start = time.time()
+        result = json.loads(bu_cli.browser_exec("print(1)", timeout_s=bu_cli._MIN_TIMEOUT_S))
+        elapsed = time.time() - start
+
+        assert "timed out" in result["error"]
+        # Pre-fix, this hangs until the 60s sleeps expire — and forever with a daemon child.
+        assert elapsed < 30
+        # The pipe-holding grandchild died with the group instead of leaking.
+        pid = int(pid_file.read_text().strip())
+        time.sleep(0.5)
+        with pytest.raises(OSError):
+            os.kill(pid, 0)
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX process groups")
+    def test_gone_group_still_surfaces_timeout(self, monkeypatch):
+        """killpg can race an already-exited group; the timeout must still surface."""
+        waits = []
+
+        class _FakeProc:
+            pid = 424242
+            returncode = None
+
+            def communicate(self, input=None, timeout=None):
+                waits.append(timeout)
+                if input is not None:
+                    raise subprocess.TimeoutExpired("browser-use", timeout)
+                return ("", "")
+
+        monkeypatch.setattr(bu_cli.subprocess, "Popen", lambda *a, **k: _FakeProc())
+
+        def _gone_group(pgid, sig):
+            raise ProcessLookupError()
+
+        monkeypatch.setattr(bu_cli.os, "killpg", _gone_group)
+        with pytest.raises(subprocess.TimeoutExpired):
+            bu_cli._run_cli_killing_process_group(["x"], "code", {}, 5)
+        # First wait is the tool timeout, second is the bounded post-kill drain.
+        assert waits == [5, bu_cli._POST_KILL_DRAIN_S]
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX process groups")
+    def test_post_kill_drain_is_bounded(self, monkeypatch):
+        """If even the post-kill drain misses its deadline, give up instead of wedging."""
+
+        class _StuckProc:
+            pid = 424243
+            returncode = None
+
+            def communicate(self, input=None, timeout=None):
+                raise subprocess.TimeoutExpired("browser-use", timeout)
+
+        monkeypatch.setattr(bu_cli.subprocess, "Popen", lambda *a, **k: _StuckProc())
+        monkeypatch.setattr(bu_cli.os, "killpg", lambda pgid, sig: None)
+        with pytest.raises(subprocess.TimeoutExpired):
+            bu_cli._run_cli_killing_process_group(["x"], "code", {}, 5)

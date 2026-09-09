@@ -46,11 +46,14 @@ else
     }
 fi
 export GH_TOKEN
-export GIT_ASKPASS="${HOME}/.hermes/scripts/git-askpass.sh"
-# Suppress credential helper — force GIT_ASKPASS path (fresh token each run)
+# Use GitHub CLI's credential helper so no token is written to disk or remote
+# config. (Older design used a GIT_ASKPASS helper script at
+# ${HOME}/.hermes/scripts/git-askpass.sh — retired/archived 2026-07; wiki_daily_sync.sh
+# already migrated to this credential-helper pattern.)
+unset GIT_ASKPASS
 export GIT_CONFIG_COUNT=1
 export GIT_CONFIG_KEY_0=credential.helper
-export GIT_CONFIG_VALUE_0=""
+export GIT_CONFIG_VALUE_0="!gh auth git-credential"
 
 # --- Early auth probe ---
 echo "INFO: probing GitHub auth..."

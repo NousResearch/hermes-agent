@@ -379,8 +379,8 @@ class TestEmission:
         for surf in surfaces:
             chain = generator.build_chain(surf, by_id, generator.load_registry(REGISTRY))
             assert len(chain) >= 2
-            assert chain[-1]["provider"] == "custom:turbohaul-local"
-            assert chain[-1]["model"] == "qwen3.8-27b"
+            assert chain[-1]["provider"] == "custom:turbofit-local"
+            assert chain[-1]["model"] == "active:main"
             assert chain[-2]["model"] in {"gpt-5.6-sol", "gpt-5.6-luna"}
             tier_expected = "luna" if surf["tier"] == "LUNA" else "sol"
             assert chain[-2]["model"] == f"gpt-5.6-{tier_expected}"
@@ -620,6 +620,14 @@ class TestPlan:
                     assert not any(c["field"] == "model" for c in entry["changes"])
                 checked += 1
                 continue
+            if entry["surface"] == "sirvir" and main == "active:main":
+                # Turbofit exposes a role alias; cloud fallback slots retain
+                # their physical Qwen model identity. Do not rename cloud slots.
+                assert entry["main_model"] == "qwen3.8-27b"
+                assert doc["model"]["provider"] == "custom:turbofit-local"
+                assert not any(c["field"] == "model" for c in entry["changes"])
+                checked += 1
+                continue
             assert entry["main_model"] == main, (
                 f"{entry['surface']}: registry says {entry['main_model']}, live is {main}"
             )
@@ -721,7 +729,7 @@ class TestPlan:
         providers = [e["provider"] for e in fp]
         assert providers.count("ollama-cloud") == 1  # deduped, single entry
         assert "nous" not in providers
-        assert fp[-1]["model"] == "qwen3.8-27b"
+        assert fp[-1]["model"] == "active:main"
 
     def test_deterministic_plan_across_runs(self, tmp_hermes_home):
         p1 = generator.build_plan(tmp_hermes_home, REGISTRY, SURFACES)
@@ -998,7 +1006,7 @@ class TestApplyGate:
         assert len(data["applied"]) > 0
         doc = yaml.safe_load(
             (tmp_hermes_home / "profiles" / "denji" / "config.yaml").read_text())
-        assert doc["fallback_providers"][-1]["model"] == "qwen3.8-27b"
+        assert doc["fallback_providers"][-1]["model"] == "active:main"
 
     def test_dry_run_reports_blockers_and_exit_zero(self, run_cli, tmp_hermes_home, tmp_path):
         """Dry-run is NEVER gated: it still generates the full plan, reports
@@ -1070,7 +1078,7 @@ class TestCLI:
         cfg = tmp_hermes_home / "profiles" / "denji" / "config.yaml"
         doc = yaml.safe_load(cfg.read_text())
         fp = doc["fallback_providers"]
-        assert fp[-1]["model"] == "qwen3.8-27b"
+        assert fp[-1]["model"] == "active:main"
         assert all(e.get("route_class") == "perm" for e in fp)
         # single ollama-cloud entry with pool metadata
         oc = [e for e in fp if e["provider"] == "ollama-cloud"]

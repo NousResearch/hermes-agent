@@ -622,9 +622,9 @@ codex_fallback:
     base_url: https://chatgpt.com/backend-api/codex
     reasoning_effort: xhigh
 local_final:
-  provider: custom:turbohaul-local
-  model: qwen3.8-27b
-  base_url: http://127.0.0.1:11410/v1
+  provider: custom:turbofit-local
+  model: active:main
+  base_url: http://127.0.0.1:8091/v1
   reasoning_effort: medium
 limits:
   max_same_model_routes_per_surface: 5
@@ -696,6 +696,9 @@ model_capability_matrix:
   openai-codex:
   - gpt-5.6-sol
   - gpt-5.6-luna
+  custom:turbofit-local:
+  - active:main
+  - active:aux
   custom:turbohaul-local:
   - qwen3.8-27b
   ollama-cloud:

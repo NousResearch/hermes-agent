@@ -73,7 +73,7 @@ def test_routing_to_different_model_marks_routed_and_resolves_credentials():
     assert rt["api_key"] == "or-key"
     assert rt["credential_pool"] == "routed-pool"
     assert rt["request_overrides"] == {"extra_body": {"store": False}}
-    assert rt["max_tokens"] == 2048
+    assert rt.get("max_tokens") is None
 
 
 def test_unrouted_runtime_keeps_parent_pool_and_overrides():
@@ -158,3 +158,18 @@ def test_digest_records_tool_names_in_arc():
     digest = out[0]["content"]
     assert "USER: do the thing" in digest
     assert "tools: skill_view, patch" in digest
+
+
+# ---------------------------------------------------------------------------
+# Cost / configurability controls (issue #87250)
+# ---------------------------------------------------------------------------
+
+def test_enabled_defaults_true():
+    with patch("hermes_cli.config.load_config_readonly", return_value={}):
+        assert br.load_background_review_settings()[0] is True
+
+
+def test_enabled_false_disables_automatic_review():
+    cfg = {"auxiliary": {"background_review": {"enabled": False}}}
+    with patch("hermes_cli.config.load_config_readonly", return_value=cfg):
+        assert br.load_background_review_settings()[0] is False

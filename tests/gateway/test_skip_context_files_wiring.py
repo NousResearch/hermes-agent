@@ -72,11 +72,17 @@ class TestSkipContextFilesConfigResolution:
             ({"gateway": {"platforms": {"discord": {"skip_context_files": True}}}}, "telegram", False),
             # Truthy non-bool values coerce.
             ({"gateway": {"platforms": {"telegram": {"skip_context_files": 1}}}}, "telegram", True),
+            # ``hermes gateway setup`` writes platforms as a LIST of enabled
+            # platform names — must not crash and must default to False (#83185).
+            ({"gateway": {"platforms": ["telegram", "discord"]}}, "telegram", False),
+            ({"gateway": {"platforms": []}}, "telegram", False),
         ],
     )
     def test_resolution(self, cfg, platform_key, expected):
         # Mirror the production resolution in TurnRunner exactly.
         _platforms_gw_cfg = (cfg.get("gateway") or {}).get("platforms") or {}
+        if not isinstance(_platforms_gw_cfg, dict):
+            _platforms_gw_cfg = {}
         _plat_gw_cfg = _platforms_gw_cfg.get(platform_key) or {}
         _skip_context = _plat_gw_cfg.get("skip_context_files")
         skip_context_files = bool(_skip_context) if _skip_context is not None else False

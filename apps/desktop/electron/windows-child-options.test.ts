@@ -65,17 +65,34 @@ test('stopBackendChild tree-kills on Windows when the child has a pid', () => {
   assert.deepEqual(calls, [], 'SIGTERM must not be sent when the Windows tree-kill path is taken')
 })
 
-test('stopBackendChild sends SIGTERM on non-Windows platforms', () => {
+test('stopBackendChild group-SIGTERMs on POSIX (negative pgid) when the child has a pid', () => {
   const { child, calls } = makeChild({ pid: 4242 })
   const treeKillCalls: number[] = []
+  const groupKills: Array<[number, string]> = []
 
   stopBackendChild(child, {
     forceKillProcessTree: (pid: number) => treeKillCalls.push(pid),
-    isWindows: false
+    isWindows: false,
+    killGroup: (pgid, signal) => groupKills.push([pgid, signal])
   })
 
-  assert.deepEqual(calls, ['SIGTERM'])
+  assert.deepEqual(groupKills, [[-4242, 'SIGTERM']], 'must signal the whole process group')
+  assert.deepEqual(calls, [], 'direct child.kill must not run when the group send succeeds')
   assert.deepEqual(treeKillCalls, [], 'tree-kill must not run off Windows')
+})
+
+test('stopBackendChild falls back to direct SIGTERM on POSIX when the group send throws', () => {
+  const { child, calls } = makeChild({ pid: 4242 })
+
+  stopBackendChild(child, {
+    forceKillProcessTree: () => {},
+    isWindows: false,
+    killGroup: () => {
+      throw new Error('ESRCH: no such process group')
+    }
+  })
+
+  assert.deepEqual(calls, ['SIGTERM'], 'must fall back to signalling the direct child')
 })
 
 test('stopBackendChild falls back to SIGTERM on Windows when the pid is not an integer', () => {

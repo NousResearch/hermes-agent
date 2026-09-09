@@ -36,6 +36,26 @@ import { detectTrigger, textBeforeCaret, type TriggerState } from '../text-utils
  * prose off and stranded a partial `folder:` in front of the chip, because the
  * window it removed wasn't the token the user was typing.
  */
+/** The keyup half of trigger detection, shared by both composers.
+ *
+ *  If the open popover already consumed this key in keydown (Arrow/Enter/Tab/
+ *  Escape), skip the refresh: those keys never edit text, and for Escape the
+ *  keydown already closed the menu — refreshing here would re-detect the
+ *  still-present `/` and instantly reopen it. It reads a ref set during keydown
+ *  rather than `trigger`, because by keyup time React has re-rendered and
+ *  `trigger` may already be null. */
+export function triggerKeyUpHandler(consumedRef: MutableRefObject<boolean>, refreshTrigger: () => void) {
+  return () => {
+    if (consumedRef.current) {
+      consumedRef.current = false
+
+      return
+    }
+
+    window.setTimeout(refreshTrigger, 0)
+  }
+}
+
 export function rebuildAroundCaret(editor: HTMLDivElement, tokenLength: number, insert: DocumentFragment | string) {
   const current = composerPlainText(editor)
   const caret = caretOffsetInEditor(editor)

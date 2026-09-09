@@ -18,7 +18,7 @@ import type { GroupSetter } from '@/app/shell/group-setter'
 import type { StatusbarItem } from '@/app/shell/statusbar-controls'
 import type { TitlebarTool } from '@/app/shell/titlebar-controls'
 import { DecodeText } from '@/components/ui/decode-text'
-import { ContribBoundary } from '@/contrib/react/boundary'
+import { ContribBoundary, ContribRender } from '@/contrib/react/boundary'
 import { useContributions } from '@/contrib/react/use-contributions'
 import { registry } from '@/contrib/registry'
 import { getLogs } from '@/hermes'
@@ -129,7 +129,7 @@ export function useStatusbarContributions(side: 'left' | 'right'): StatusbarItem
             id: c.id,
             render: () => (
               <ContribBoundary id={c.id} variant="chip">
-                {c.render!()}
+                <ContribRender render={c.render!} />
               </ContribBoundary>
             )
           } satisfies StatusbarItem)

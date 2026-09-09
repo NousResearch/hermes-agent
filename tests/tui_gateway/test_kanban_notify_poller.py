@@ -7,7 +7,7 @@ adapter) and the TUI notification poller only watched process completions.
 ``last_event_id`` stayed 0 forever and no notification was ever delivered.
 
 These tests cover the delivery half that now lives in tui_gateway/server.py:
-``_collect_kanban_notifications`` (cursor claim + formatting + terminal
+``_collect_kanban_notifications`` (cursor claim + formatting + archive-only
 unsubscribe) and ``_format_kanban_event_text``.
 """
 
@@ -15,6 +15,8 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from hermes_cli import kanban_db as kb
+from hermes_cli import kanban_db_connect as kbc
+from hermes_cli import kanban_db_notify as kbn
 from tui_gateway.server import (
     _collect_kanban_notifications,
     _format_kanban_event_text,
@@ -28,17 +30,17 @@ def _session(key: str = SESSION_KEY) -> dict:
 
 
 def _create_subscribed_task(*, chat_id: str = SESSION_KEY, platform: str = "tui"):
-    conn = kb.connect()
+    conn = kbc.connect()
     try:
         tid = kb.create_task(conn, title="notify tui", assignee="worker")
-        kb.add_notify_sub(conn, task_id=tid, platform=platform, chat_id=chat_id)
+        kbn.add_notify_sub(conn, task_id=tid, platform=platform, chat_id=chat_id)
         return tid
     finally:
         conn.close()
 
 
 def _complete(tid: str, summary: str = "all done") -> None:
-    conn = kb.connect()
+    conn = kbc.connect()
     try:
         kb.complete_task(conn, tid, summary=summary)
     finally:
@@ -46,48 +48,84 @@ def _complete(tid: str, summary: str = "all done") -> None:
 
 
 def _sub_rows(tid: str) -> list:
-    conn = kb.connect()
+    conn = kbc.connect()
     try:
-        return kb.list_notify_subs(conn, task_id=tid)
+        return kbn.list_notify_subs(conn, task_id=tid)
     finally:
         conn.close()
 
 
 class TestCollectKanbanNotifications:
     def test_zero_sub_board_is_never_opened_writable(self):
-        conn = kb.connect()
+        conn = kbc.connect()
         conn.close()
         kb.create_board("second-board")
 
-        with patch.object(kb, "connect", wraps=kb.connect) as spy_connect:
+        with patch.object(kbc, "connect", wraps=kbc.connect) as spy_connect:
             texts = _collect_kanban_notifications(_session())
 
         assert texts == []
         spy_connect.assert_not_called()
 
-    def test_delivers_completed_event_and_unsubscribes(self):
+    def test_done_reopen_notifies_once_per_event_until_archive(self):
         tid = _create_subscribed_task()
         _complete(tid, summary="shipped the fix")
 
-        texts = _collect_kanban_notifications(_session())
+        first = _collect_kanban_notifications(_session())
 
-        assert len(texts) == 1
-        assert tid in texts[0]
-        assert "done" in texts[0]
-        assert "shipped the fix" in texts[0]
-        # Task is at a final status -> subscription removed.
+        assert len(first) == 1
+        assert tid in first[0]
+        assert "done" in first[0]
+        assert "shipped the fix" in first[0]
+        rows = _sub_rows(tid)
+        assert len(rows) == 1, "done must retain the originating session"
+        first_cursor = rows[0]["last_event_id"]
+
+        # The retained subscription must not replay the completed event.
+        assert _collect_kanban_notifications(_session()) == []
+
+        conn = kbc.connect()
+        try:
+            with kb.write_txn(conn):
+                conn.execute(
+                    "UPDATE tasks SET status = 'ready' WHERE id = ?", (tid,)
+                )
+                kb._append_event(conn, tid, "status", {"status": "ready"})
+            assert kb.complete_task(conn, tid, summary="review corrections")
+        finally:
+            conn.close()
+
+        reopened = _collect_kanban_notifications(_session())
+
+        assert len(reopened) == 2
+        assert "ready" in reopened[0]
+        assert "review corrections" in reopened[1]
+        rows = _sub_rows(tid)
+        assert len(rows) == 1
+        assert rows[0]["chat_id"] == SESSION_KEY
+        assert rows[0]["last_event_id"] > first_cursor
+        assert _collect_kanban_notifications(_session()) == []
+
+        conn = kbc.connect()
+        try:
+            assert kb.archive_task(conn, tid)
+        finally:
+            conn.close()
+
+        # Archive is notification-terminal and removes the retained route.
+        assert _collect_kanban_notifications(_session()) == []
         assert _sub_rows(tid) == []
 
     def test_matching_tui_sub_delivers_and_advances_cursor(self):
         tid = _create_subscribed_task()
         pre_cursor = _sub_rows(tid)[0]["last_event_id"]
-        conn = kb.connect()
+        conn = kbc.connect()
         try:
             kb.block_task(conn, tid, reason="waiting on review")
         finally:
             conn.close()
 
-        with patch.object(kb, "connect", wraps=kb.connect) as spy_connect:
+        with patch.object(kbc, "connect", wraps=kbc.connect) as spy_connect:
             first = _collect_kanban_notifications(_session())
             second = _collect_kanban_notifications(_session())
 
@@ -109,7 +147,7 @@ class TestCollectKanbanNotifications:
         pre_cursor = _sub_rows(tid)[0]["last_event_id"]
         _complete(tid)
 
-        with patch.object(kb, "connect", wraps=kb.connect) as spy_connect:
+        with patch.object(kbc, "connect", wraps=kbc.connect) as spy_connect:
             texts = _collect_kanban_notifications(_session())
 
         assert texts == []
@@ -123,7 +161,7 @@ class TestCollectKanbanNotifications:
         pre_cursor = _sub_rows(tid)[0]["last_event_id"]
         _complete(tid)
 
-        with patch.object(kb, "connect", wraps=kb.connect) as spy_connect:
+        with patch.object(kbc, "connect", wraps=kbc.connect) as spy_connect:
             texts = _collect_kanban_notifications(_session())
 
         assert texts == []
@@ -139,8 +177,8 @@ class TestCollectKanbanNotifications:
         def fail_probe(*args, **kwargs):
             raise OSError("probe unavailable")
 
-        monkeypatch.setattr(kb, "count_notify_subs", fail_probe)
-        with patch.object(kb, "connect", wraps=kb.connect) as spy_connect:
+        monkeypatch.setattr(kbn, "count_notify_subs", fail_probe)
+        with patch.object(kbc, "connect", wraps=kbc.connect) as spy_connect:
             texts = _collect_kanban_notifications(_session())
 
         assert len(texts) == 1
@@ -189,7 +227,11 @@ class TestCollectKanbanNotifications:
         assert len(texts) == 1
         assert tid in texts[0]
         assert "cross-profile delivery" in texts[0]
-        assert _sub_rows(tid) == []
+        # Completion is reversible, so the shared-board subscription remains
+        # owned by this exact Desktop session until the task is archived.
+        rows = _sub_rows(tid)
+        assert len(rows) == 1
+        assert rows[0]["chat_id"] == SESSION_KEY
 
 
 class TestFormatKanbanEventText:

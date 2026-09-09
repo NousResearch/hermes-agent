@@ -33,34 +33,34 @@ def test_webbrowser_get_controller_is_neutralized(_neutralize_webbrowser):
 
 
 def _isolate_anthropic_credentials(monkeypatch, tmp_path):
-    from agent import anthropic_adapter as aa
+    from agent import anthropic_credentials as ac
 
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     monkeypatch.delenv("ANTHROPIC_TOKEN", raising=False)
     monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
-    monkeypatch.setattr(aa.Path, "home", lambda: tmp_path)
-    monkeypatch.setattr(aa.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(ac.Path, "home", lambda: tmp_path)
+    monkeypatch.setattr(ac.platform, "system", lambda: "Darwin")
 
     def _real_keychain_reached(*_args, **_kwargs):
         raise AssertionError("test reached the real macOS Keychain command")
 
-    monkeypatch.setattr(aa.subprocess, "run", _real_keychain_reached)
-    return aa
+    monkeypatch.setattr(ac.subprocess, "run", _real_keychain_reached)
+    return ac
 
 
 def test_claude_code_credential_read_does_not_touch_macos_keychain(
     monkeypatch, tmp_path
 ):
     """The real credential reader should be safe under the suite guard."""
-    aa = _isolate_anthropic_credentials(monkeypatch, tmp_path)
+    ac = _isolate_anthropic_credentials(monkeypatch, tmp_path)
 
-    assert aa.read_claude_code_credentials() is None
+    assert ac.read_claude_code_credentials() is None
 
 
 def test_anthropic_token_resolution_does_not_touch_macos_keychain(
     monkeypatch, tmp_path
 ):
     """Token resolution should be safe under the same suite guard."""
-    aa = _isolate_anthropic_credentials(monkeypatch, tmp_path)
+    ac = _isolate_anthropic_credentials(monkeypatch, tmp_path)
 
-    assert aa.resolve_anthropic_token() is None
+    assert ac.resolve_anthropic_token() is None

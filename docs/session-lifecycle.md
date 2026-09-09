@@ -1,7 +1,7 @@
 # Session Lifecycle
 
 > **Audience:** Gateway developers and maintainers
-> **Source files:** `gateway/session.py` (~1444 lines), `gateway/run.py` (~16800 lines), `gateway/config.py`
+> **Source files:** `gateway/session.py` (~1200 lines + `session_*.py` siblings), `gateway/run.py` (~5500 lines facade + `run_*.py` phases), `gateway/config.py`
 > **Last updated:** 2026-06-16
 
 ## Overview
@@ -14,9 +14,10 @@ The session system lives primarily in two modules:
 
 - `gateway/session.py` — Data model (`SessionSource`, `SessionEntry`, `SessionContext`),
   key generation (`build_session_key`), and the main store (`SessionStore`).
-- `gateway/run.py` — Gateway runner (`GatewayRunner`) that wires sessions into the message
-  processing pipeline: session expiry watching, agent caching, restart recovery, and message
-  queuing.
+- `gateway/run.py` — Gateway runner (`GatewayRunner`) facade that wires sessions into the message
+  processing pipeline; the phases live in `run_*.py` siblings: session housekeeping
+  (`run_watchers.py`), agent caching (`run_agent_cache.py`), restart recovery
+  (`session_recovery.py`), and message queuing (`run_busy.py`).
 
 ---
 
@@ -65,10 +66,10 @@ incoming `MessageEvent` and used for routing, isolation, and context injection.
 | `session_key` | `str` | *(required)* | Deterministic key identifying the conversation lane (see §4). |
 | `session_id` | `str` | *(required)* | Unique identifier for this specific conversation incarnation. Format: `YYYYMMDD_HHMMSS_<8hex>`. |
 | `created_at` | `datetime` | *(required)* | When this session incarnation was created. |
-| `updated_at` | `datetime` | *(required)* | Last activity timestamp. Used for idle timeout and expiry checks. |
+| `updated_at` | `datetime` | *(required)* | Last activity timestamp used for resource housekeeping. |
 | `origin` | `Optional[SessionSource]` | `None` | The source that created this session, used for delivery routing. |
 | `display_name` | `Optional[str]` | `None` | Chat display name (sourced from `SessionSource.chat_name`). |
-| `platform` | `Optional[Platform]` | `None` | Platform enum, persisted for expiry policy lookup across restarts. |
+| `platform` | `Optional[Platform]` | `None` | Platform enum persisted for routing across restarts. |
 | `chat_type` | `str` | `"dm"` | Chat type, also persisted for policy lookup. |
 | `input_tokens` | `int` | `0` | Cumulative LLM input (prompt) tokens consumed. |
 | `output_tokens` | `int` | `0` | Cumulative LLM output (completion) tokens consumed. |
@@ -86,11 +87,11 @@ behavior on the next access.
 
 | Flag | Type | Default | Description |
 |---|---|---|---|
-| `was_auto_reset` | `bool` | `False` | Set when a session was auto-reset due to policy expiry (idle/daily). Consumed once to inject a context notice. |
-| `auto_reset_reason` | `Optional[str]` | `None` | `"idle"` or `"daily"` — why the previous session was auto-reset. |
-| `reset_had_activity` | `bool` | `False` | Whether the expired session had any messages (`total_tokens > 0`). |
+| `was_auto_reset` | `bool` | `False` | Set when explicit suspension causes a replacement session. Also retained for historical records. |
+| `auto_reset_reason` | `Optional[str]` | `None` | `"suspended"` for explicit suspension; older rows may retain historical reset reasons. |
+| `reset_had_activity` | `bool` | `False` | Whether the replaced session had prior activity. |
 | `is_fresh_reset` | `bool` | `False` | Set by explicit `/new` or `/reset`. Triggers topic/channel skill re-injection on first message. Distinguished from `was_auto_reset` to avoid misleading "session expired" notices. |
-| `expiry_finalized` | `bool` | `False` | Set by background expiry watcher after invoking `on_session_finalize` hooks, cleaning tool resources, and evicting the cached agent. Prevents redundant finalization across restarts. |
+| `expiry_finalized` | `bool` | `False` | Historical finalization fence retained for recovery; no timer writes it. |
 | `suspended` | `bool` | `False` | Hard force-wipe signal. Set by `/stop` or stuck-loop escalation (3+ consecutive restart failures). On next `get_or_create_session()`, forces a new `session_id` regardless of `resume_pending`. |
 | `resume_pending` | `bool` | `False` | Soft recovery marker. Set by `suspend_recently_active()` (crash recovery) or drain timeout. On next access, preserves the existing `session_id` — the user continues on the same transcript. Cleared after the next successful turn completes. |
 | `resume_reason` | `Optional[str]` | `None` | Why resume was marked: `"restart_timeout"`, `"shutdown_timeout"`, `"restart_interrupted"`. |
@@ -136,8 +137,7 @@ behavior on the next access.
 **Priority order in `get_or_create_session()`:**
 1. `suspended=True` → always force-reset (hard wipe)
 2. `resume_pending=True` → preserve session_id (soft recovery)
-3. Policy expiry (idle/daily) → auto-reset
-4. No trigger → return existing entry (bump `updated_at`)
+3. No trigger → return existing entry (bump `updated_at`)
 
 ---
 
@@ -154,15 +154,15 @@ SessionStore(sessions_dir: Path, config: GatewayConfig, has_active_processes_fn=
 ```
 
 - `sessions_dir` — Directory where `sessions.json` lives.
-- `config` — `GatewayConfig` instance for reset policy lookups.
+- `config` — `GatewayConfig` instance for routing and housekeeping settings.
 - `has_active_processes_fn` — Optional callback keyed by `session_key` to check for running
-  background processes. Sessions with active processes are never expired or pruned.
+  background processes. Sessions with active processes are protected from routing-entry pruning.
 
 ### Operations (Methods)
 
 | Method | Description |
 |---|---|
-| `get_or_create_session(source, force_new=False)` | Core entry point. Returns existing or creates new `SessionEntry`. Evaluates `suspended`, `resume_pending`, and reset policy. Creates/ends SQLite records. |
+| `get_or_create_session(source, force_new=False)` | Core entry point. Returns existing or creates new `SessionEntry`. Evaluates explicit suspension and restart recovery state. Creates/ends SQLite records. |
 | `update_session(session_key, last_prompt_tokens=None)` | Lightweight metadata update after an interaction. Bumps `updated_at`, optionally records `last_prompt_tokens`. |
 | `reset_session(session_key, display_name=None)` | Explicit reset (from `/new` or `/reset`). Creates new `session_id`, sets `is_fresh_reset=True`. Ends old SQLite session, creates new one. |
 | `switch_session(session_key, target_session_id)` | Switch to a different existing session ID (from `/resume`). Ends current SQLite session, reopens target. |
@@ -184,9 +184,6 @@ SessionStore(sessions_dir: Path, config: GatewayConfig, has_active_processes_fn=
 - `_ensure_loaded()` / `_ensure_loaded_locked()` — Load `sessions.json` into `_entries` dict.
 - `_save()` — Atomic write to `sessions.json` via temp file + `atomic_replace`.
 - `_generate_session_key(source)` — Delegates to `build_session_key()` with config params.
-- `_is_session_expired(entry)` — Policy check from entry alone (no source needed). Used by
-  background expiry watcher.
-- `_should_reset(entry, source)` — Policy check returning `"idle"`, `"daily"`, or `None`.
 
 ### Storage Layout
 
@@ -291,54 +288,16 @@ gateway at runtime, preserving prompt caching (the system prompt doesn't change 
 
 ---
 
-## 6. Reset Policy
+## 6. Explicit Conversation Boundaries
 
-Reset policies control when a session automatically loses context (gets a new `session_id`).
+Inactivity and wall-clock time never rotate a conversation. `/new` and `/reset`
+create an explicit boundary; context compression continues to manage long histories.
+Legacy timer configuration is ignored. The existing `SessionResetPolicy` datatype
+is inert compatibility data, not a runtime policy.
 
-### Policy Modes (`SessionResetPolicy`)
-
-| Mode | Behavior | Default Config |
-|---|---|---|
-| `"none"` | Never auto-reset. Context managed only by compression. | — |
-| `"idle"` | Reset after N minutes of inactivity from `updated_at`. | `idle_minutes: 1440` (24h) |
-| `"daily"` | Reset at a specific hour each day (local time). | `at_hour: 4` (4 AM) |
-| `"both"` | Whichever triggers first — daily boundary OR idle timeout. | **(default)** |
-
-### Policy Evaluation
-
-```python
-# Idle check
-idle_deadline = entry.updated_at + timedelta(minutes=policy.idle_minutes)
-if now > idle_deadline: return "idle"
-
-# Daily check
-today_reset = now.replace(hour=policy.at_hour, minute=0, second=0, microsecond=0)
-if now.hour < policy.at_hour:
-    today_reset -= timedelta(days=1)  # Reset hasn't happened yet today
-if entry.updated_at < today_reset: return "daily"
-```
-
-### Per-Platform/Per-Type Policies
-
-Reset policies are configurable per platform and session type via `config.get_reset_policy()`.
-This allows different platforms to have different expiry rules (e.g., Telegram DMs reset
-after 24h idle, but Slack groups persist indefinitely).
-
-### Exclusions
-
-Sessions with active background processes are **never** expired or reset. The
-`has_active_processes_fn` callback checks for running processes when evaluating policies.
-
-### Reset Effects
-
-When a reset triggers:
-
-1. Old session is ended in SQLite (with reason `"session_reset"`).
-2. New `session_id` is generated (`YYYYMMDD_HHMMSS_<8hex>`).
-3. New `SessionEntry` is created with `was_auto_reset=True` and the reset reason.
-4. `reset_had_activity` is set if the old session had any turns (`total_tokens > 0`).
-5. The old AIAgent cache entry is evicted on the next expiry watcher pass.
-6. On the first message after reset, a context notice is injected: "Session expired due to inactivity / daily reset."
+Explicit suspension still creates a boundary on the next inbound turn. Recovery
+respects explicit and historical finalized boundaries rather than reopening them.
+Resource-only eviction and WebSocket orphan reaping leave conversations resumable.
 
 ---
 
@@ -536,42 +495,18 @@ operations always use the original values.
 
 ---
 
-## 10. Background Expiry Watcher
+## 10. Background Housekeeping
 
-The `_session_expiry_watcher` task runs in the gateway event loop every 300 seconds (5 min).
+The `_session_housekeeping_watcher` periodically sweeps idle cached agents, sheds
+cache entries under memory pressure, and prunes old routing entries hourly.
+It never ends a transcript because of inactivity or the time of day.
 
-### Responsibilities
-
-1. **Finalize expired sessions** — For each entry where `_is_session_expired()` returns
-   True and `expiry_finalized` is False:
-   - Invoke `on_session_finalize` plugin hooks (cleanup, notifications).
-   - Clean up cached AIAgent resources (close tool resources, shut down memory provider).
-   - Evict the cached agent entry.
-   - Clear per-session overrides (`_session_model_overrides`, reasoning overrides, etc.).
-   - Mark `expiry_finalized=True` and persist (sessions.json + state.db).
-   - Promote the state.db session row to `end_reason='session_reset'` via
-     `promote_to_session_reset()` — conditional: only live rows or rows ended with a
-     recoverable accidental reason (`agent_close`, `ws_orphan_reap`) are promoted, so
-     explicit boundaries (`compression`, `session_switch`, …) are never overwritten. This
-     durably records the reset so stale-route recovery cannot resurrect the expired
-     session with its full history (#61220, #61993, #63539).
-
-2. **Sweep idle cached agents** — Calls `_sweep_idle_cached_agents()` to evict agents that
-   have been idle beyond the idle TTL (3600s / 1h by default), regardless of session
-   reset policy. This prevents unbounded memory growth in gateways with long-lived sessions.
-
-3. **Sweep under memory pressure** — Calls `_sweep_agent_cache_under_pressure()` to shed
-   least-recently-used transcripts once the process's anonymous RSS is over budget. See
-   §11.
-
-4. **Prune stale entries** — Calls `session_store.prune_old_entries()` hourly based on
-   `config.session_store_max_age_days`. Prevents `sessions.json` from growing unbounded.
-
-### Failure Handling
-
-- Per-session retry count: each failed finalize is retried up to 3 consecutive times.
-- After 3 failures, the entry is force-marked `expiry_finalized=True` to prevent infinite
-  retry loops.
+TTL, LRU and pressure eviction commit the live transcript to memory providers before
+soft-releasing clients. Active turns remain protected; terminal, browser and background
+process resources survive soft release. Routing-entry pruning preserves the canonical
+SQLite transcript, and live processes protect their routing entries from pruning.
+Historical `expiry_finalized` flags remain recovery fences but are no longer written
+by a timer watcher.
 
 ---
 
@@ -585,7 +520,7 @@ preserve prompt caching across turns.
 - **Max size:** 128 entries (`agent.agent_cache.max_size`, default `_AGENT_CACHE_MAX_SIZE`).
 - **Eviction policy:** Least-recently-used (LRU via `OrderedDict`).
 - **Idle TTL:** 3600s (1h) — `agent.agent_cache.idle_ttl_secs`, enforced by
-  `_session_expiry_watcher`.
+  `_session_housekeeping_watcher`.
 - **Memory budget:** `agent.agent_cache.memory_high_mb` (default `auto`) — see below.
 - **Lock:** `_agent_cache_lock` (threading) for thread safety.
 
@@ -594,8 +529,7 @@ preserve prompt caching across turns.
 A cached agent pins `_session_messages`, the full live transcript including tool
 outputs — tens of MB on a session with 100+ tool calls. The entry cap and the idle
 TTL are both blind to that: a gateway serving many chats keeps every warm transcript
-resident (agents that took a turn within the TTL are never idle-swept, and the idle
-sweep additionally defers finalizable sessions until they expire), so RSS climbs until
+resident (agents that took a turn within the TTL are never idle-swept), so RSS climbs until
 the cgroup throttles and SIGTERM can no longer flush inside systemd's stop timeout
 (#80764).
 
@@ -640,14 +574,14 @@ Lookup _agent_cache[session_key]
 run_conversation()  →  agent processes message
     │
     ▼
-Session expiry watcher evicts agent when session finalizes
+Housekeeping soft-releases idle agents without ending transcripts
 ```
 
 ### Cleanup Flow
 
-When a session expires:
-1. `_cleanup_agent_resources(agent)` — shuts down memory provider, closes tool resources.
-2. `_evict_cached_agent(key)` — removes from `_agent_cache` so the agent can be GC'd.
+Resource eviction removes the cached agent and commits memory before soft-releasing
+clients. Full `_cleanup_agent_resources(agent)` teardown is reserved for actual
+conversation boundaries and shutdown.
 
 ---
 
@@ -666,14 +600,15 @@ When a session expires:
 | `agent.agent_cache.max_evictions_per_pass` | `int` | `16` | Cap on sessions shed per pressure pass |
 | `agent.agent_cache.protect_recent` | `int` | `8` | MRU sessions the pressure pass never touches |
 
-### Reset Policy (per-platform/type, in config.yaml)
+## State database and FTS recovery
 
-```yaml
-session_reset:
-  mode: none            # none (default) | idle | daily | both
-  at_hour: 4            # daily reset hour (local time)
-  idle_minutes: 1440    # idle timeout (24h)
-  notify: true          # notify user on auto-reset
-```
+The canonical transcript lives in the `sessions` and `messages` tables. FTS5
+tables and their sync triggers are derived indexes that can be detached and
+rebuilt without deleting canonical messages. See
+[`docs/state-db-recovery.md`](state-db-recovery.md) for the bounded live failure
+mode and the explicit repair procedure.
 
-Platform-specific overrides can be set under `platforms.<name>.session_reset`.
+### Conversation lifetime
+
+No idle or daily reset settings are supported. Explicit `/new` and `/reset`,
+compaction, suspension and crash recovery retain their separate lifecycle roles.

@@ -23,7 +23,7 @@ Play Pokemon games via headless emulation using the `pokemon-agent` package.
 The repo is NousResearch/pokemon-agent on GitHub. Clone it, then
 set up a Python 3.10+ virtual environment. Use uv (preferred for speed)
 to create the venv and install the package in editable mode with the
-pyboy extra. If uv is not available, fall back to python3 -m venv + pip.
+pyboy extra. If uv is not available, fall back to python -m venv + pip.
 
 If a checkout already exists (e.g. ~/pokemon-agent with a venv ready),
 just cd there and source .venv/bin/activate instead of recloning.

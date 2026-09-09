@@ -50,8 +50,24 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
   }
 
   componentDidCatch(error: Error, info: ErrorInfo) {
-    const tag = this.props.label ? `[error-boundary:${this.props.label}]` : '[error-boundary]'
+    const label = this.props.label ?? ''
+    const tag = label ? `[error-boundary:${label}]` : '[error-boundary]'
     console.error(tag, error, info.componentStack)
+
+    // Persist to desktop.log via Electron (#79428): console.error only reaches
+    // the main process for windows with a console hook, is minified, and loses
+    // the component stack. This survives the window and names the component.
+    try {
+      window.hermesDesktop?.reportRendererError?.({
+        label: new URLSearchParams(window.location.search).get('win') ?? 'main',
+        boundary: label || 'unlabeled',
+        message: error.message,
+        componentStack: info.componentStack ?? ''
+      })
+    } catch {
+      // Logging must never take the boundary down with it.
+    }
+
     this.props.onError?.(error, info)
 
     if (this.props.label === 'root' && isTransientAssistantUiLookupError(error) && this.takeAutoRecoveryAttempt()) {
@@ -127,7 +143,12 @@ function RootErrorFallback({ error, reset }: ErrorBoundaryFallbackProps) {
   const { t } = useI18n()
 
   return (
-    <div className="fixed inset-0 z-(--z-crash) grid place-items-center bg-(--ui-chat-surface-background) p-6">
+    <div
+      className="fixed inset-0 z-(--z-crash) grid place-items-center bg-(--ui-chat-surface-background) p-6"
+      // Masks a crashed app — must stay filled under window glass. Contract:
+      // `[data-glass-opaque]` in styles.css.
+      data-glass-opaque=""
+    >
       <ErrorState
         className="w-full max-w-[28rem]"
         description={error.message || t.errors.boundaryDesc}

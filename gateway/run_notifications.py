@@ -14,7 +14,7 @@ import logging
 import time
 from contextlib import suppress
 from pathlib import Path
-from typing import Any, Dict, Optional, cast
+from typing import Any, Dict, Optional, Sequence, cast
 
 from gateway.config import Platform, _BUILTIN_PLATFORM_VALUES
 from gateway.platforms.base import BasePlatformAdapter, _mark_notify_metadata
@@ -1005,6 +1005,8 @@ class GatewayNotificationsMixin:
             parent_session_id = str(evt.get("parent_session_id") or "").strip()
             if parent_session_id:
                 metadata["gateway_session_id"] = parent_session_id
+            if evt.get("type") == "completion":
+                metadata["process_completion_entries"] = evt.get("process_completion_entries") or [(synth_text, dict(evt))]
             synth_event = MessageEvent(
                 text=synth_text, message_type=MessageType.TEXT, source=source, internal=True,
                 message_id=str(evt.get("message_id") or "").strip() or None, metadata=metadata,
@@ -1266,7 +1268,50 @@ class GatewayNotificationsMixin:
         return tuple(str(evt.get(field) or "") for field in fields)
 
     @staticmethod
-    def _format_coalesced_process_completions(entries: list[tuple[str, dict, asyncio.Future]]) -> str:
+    def _process_completion_consumed(evt: dict) -> bool:
+        """An ID-only consumed marker is authoritative only for the known spawn incarnation."""
+        from tools.process_registry import process_registry
+        if evt.get("type") != "completion" or not evt.get("started_at") or not evt.get("session_id"):
+            return False
+        try:
+            session = process_registry.get(evt["session_id"])
+            return bool(
+                session is not None and session.id == evt["session_id"]
+                and session.started_at == evt["started_at"] and session.exited
+                and session.session_key == evt.get("session_key")
+                and process_registry.is_completion_consumed(session.id)
+            )
+        except Exception:
+            logger.warning("Could not verify process completion consumption; retaining notification", exc_info=True)
+            return False
+
+    def _refresh_process_completion_event(self, event: MessageEvent) -> bool:
+        """Revalidate admitted producers; retain unknown work and rebuild only changed batches."""
+        metadata = getattr(event, "metadata", None)
+        if not getattr(event, "internal", False) or not isinstance(metadata, dict):
+            return True
+        entries = metadata.get("process_completion_entries")
+        if not entries:
+            return True
+        if not isinstance(entries, (list, tuple)) or any(
+            not isinstance(entry, (list, tuple)) or len(entry) != 2
+            or not isinstance(entry[0], str) or not isinstance(entry[1], dict)
+            for entry in entries
+        ):
+            return True
+        remaining = [(text, evt) for text, evt in entries if not self._process_completion_consumed(evt)]
+        if len(remaining) == len(entries):
+            return True
+        if not remaining:
+            return False
+        event.metadata["process_completion_entries"] = remaining
+        event.text = remaining[0][0] if len(remaining) == 1 else self._format_coalesced_process_completions(
+            [(text, evt, None) for text, evt in remaining]
+        )
+        return True
+
+    @staticmethod
+    def _format_coalesced_process_completions(entries: Sequence[tuple[str, dict, asyncio.Future | None]]) -> str:
         """Build one bounded synthetic event from several redacted completions."""
         from gateway.run import _redact_gateway_user_facing_secrets
         lines = [
@@ -1315,11 +1360,23 @@ class GatewayNotificationsMixin:
                 self._completion_notification_batch_tasks.pop(key, None)
             if not entries:
                 return
+            remaining = []
+            for entry in entries:
+                if self._process_completion_consumed(entry[1]):
+                    self._settle_batch_waiters([entry], None)
+                else:
+                    remaining.append(entry)
+            entries = remaining
+            if not entries:
+                return
             synth_text = entries[0][0] if len(entries) == 1 else self._format_coalesced_process_completions(entries)
             # A duplicate primary returns None from the dedupe seam; try the next identity so a fresh
             # sibling is never discarded with it.
             delivered = None
             for _text, candidate_evt, _future in entries:
+                candidate_evt = dict(candidate_evt, process_completion_entries=[
+                    (text, evt) for text, evt, _future in entries
+                ])
                 delivered = await self._deliver_completion_notification(synth_text, candidate_evt)
                 if delivered is not None:
                     break

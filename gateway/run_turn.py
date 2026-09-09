@@ -3305,6 +3305,11 @@ class GatewayTurnMixin:
             # /queue overflow: promote the next queued event into the consumed "next-up" slot so the
             # recursive drain sees it (keeps FIFO order; a mid-chain /queue can't jump the queue).
             pending_event = self._promote_queued_event(session_key, adapter, pending_event)
+            # A consumed wake must not strand the FIFO sibling behind it.
+            while pending_event and not self._refresh_process_completion_event(pending_event):
+                pending_event = self._promote_queued_event(
+                    session_key, adapter, _dequeue_pending_event(adapter, session_key),
+                )
             if result.get("interrupted") and not pending_event and result.get("interrupt_message"):
                 interrupt_message = result.get("interrupt_message")
                 if _is_control_interrupt_message(interrupt_message):
@@ -3419,6 +3424,12 @@ class GatewayTurnMixin:
         _interrupt_depth, history, _status_thread_metadata = (
             turn_ctx._interrupt_depth, turn_ctx.history, turn_ctx._status_thread_metadata,
         )
+        if pending_event and not self._refresh_process_completion_event(pending_event):
+            pending_event, pending = await self._run_agent_drain_pending(result, adapter, source, session_key)
+            if not pending_event and not pending:
+                return result
+        elif pending_event and (getattr(pending_event, "metadata", None) or {}).get("process_completion_entries"):
+            pending = pending_event.text
         logger.debug("Processing pending message: '%s...'", pending[:40])
 
         # Clear the interrupt event so the recursive _run_agent isn't re-interrupted (infinite loop).

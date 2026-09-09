@@ -7,6 +7,7 @@ import pytest
 from agent.turn_author import (
     TURN_AUTHOR_ENV,
     a2a_key,
+    local_origin,
     parse_turn_author,
     take_turn_author_from_env,
     turn_author_env,
@@ -83,3 +84,21 @@ class TestEnvCarrier:
 ])
 def test_a2a_key_names_a_bot_authors_turns(author, expected):
     assert a2a_key(author) == expected
+
+
+@pytest.mark.parametrize("host, expected", [
+    ("eri-mac.local", "eri-mac.local"),
+    (" eri/mac\x00.local\n", "erimac.local"),
+    ("", ""),
+], ids=["plain", "slash and control characters dropped", "empty"])
+def test_local_origin_is_the_cleaned_hostname(monkeypatch, host, expected):
+    monkeypatch.setattr("socket.gethostname", lambda: host)
+    assert local_origin() == expected
+
+
+def test_local_origin_is_empty_when_the_hostname_lookup_fails(monkeypatch):
+    def _no_host():
+        raise OSError("no hostname")
+
+    monkeypatch.setattr("socket.gethostname", _no_host)
+    assert local_origin() == ""

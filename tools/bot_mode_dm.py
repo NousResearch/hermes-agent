@@ -224,12 +224,15 @@ def message_agent_tool(target: str = "", message: str = "", task_id: Optional[st
         if peer_name not in peers:
             return _roster_err(f"No registered peer named '{peer_name}'.")
         dm_target = f"{peer_name}/{peer_profile}" if peer_profile else peer_name
+        # A peer dm crosses installs: qualify the id with this host so the peer's own '<me>' stays distinct.
+        from agent.turn_author import bot_author_id, local_origin
+        peer_author = {**author, "id": bot_author_id(me, local_origin())}
         # Pin the registry-owning profile: `hermes peer` resolves bot_peers via the profile-scoped
         # load_config(), while the roster above reads the machine-root config — the CLI must run
         # in that same profile or a secondary-profile bot sees an empty registry.
         return _start_delivery(["hermes", "-p", _self_profile_name(root), "peer", "dm", dm_target], content,
                                f"@{peer_profile or peer_name} on peer '{peer_name}'", stdin_file=True,
-                               author=author, **delivery)
+                               author=peer_author, **delivery)
 
     # Local teammate.
     is_local_shape = bool(_LOCAL_TARGET_RE.match(raw_target))

@@ -316,6 +316,7 @@ def test_peer_delivery_command_pins_registry_profile_for_secondary_bots(
 
 def test_peer_delivery_command(tmp_path, monkeypatch):
     calls = _capture_spawn(monkeypatch)
+    monkeypatch.setattr("socket.gethostname", lambda: "eri-mac.local")
     home = _managed_home(tmp_path, peers=("spark",))
     agent = _FakeAgent(home, title="Bot Chat")
 
@@ -328,7 +329,7 @@ def test_peer_delivery_command(tmp_path, monkeypatch):
     assert mode == "stdin"
     assert transport_argv == ["hermes", "-p", "default", "peer", "dm", "spark/researcher"]
     # the peer child reads the author from its env and forwards it in the request body
-    assert _runner_author(calls[0]["command"]) == {"id": "bot:default", "name": "hermes", "is_bot": True}
+    assert _runner_author(calls[0]["command"]) == {"id": "bot:eri-mac.local/default", "name": "hermes", "is_bot": True}
 
     # bare peer name targets the peer's main agent
     result2 = json.loads(
@@ -338,6 +339,35 @@ def test_peer_delivery_command(tmp_path, monkeypatch):
     mode, _dm_file, transport_argv = _runner_parts(calls[1]["command"])
     assert mode == "stdin"
     assert transport_argv == ["hermes", "-p", "default", "peer", "dm", "spark"]
+
+
+def test_peer_delivery_author_carries_the_sender_hostname_and_local_stays_bare(tmp_path, monkeypatch):
+    """A peer dm crosses installs, so its author id is ``bot:<hostname>/<profile>``: the peer's own ``coder`` and a
+    remote ``coder`` must not share one id. A teammate on this install still sees the bare ``bot:coder``."""
+    calls = _capture_spawn(monkeypatch)
+    monkeypatch.setattr("socket.gethostname", lambda: " eri/mac\x00.local ")
+    home = _managed_home(tmp_path, teammates=("researcher", "coder"), peers=("spark",))
+    agent = _FakeAgent(home / "profiles" / "coder", title="Bot Chat")
+
+    assert json.loads(bot_mode_dm.message_agent_tool(target="spark", message="ping", agent=agent))["status"] == "sent"
+    assert json.loads(bot_mode_dm.message_agent_tool(target="researcher", message="ping", agent=agent))["status"] == "sent"
+
+    assert _runner_author(calls[0]["command"]) == {"id": "bot:erimac.local/coder", "name": "coder", "is_bot": True}
+    assert _runner_author(calls[1]["command"]) == {"id": "bot:coder", "name": "coder", "is_bot": True}
+
+
+def test_peer_delivery_author_stays_bare_when_the_hostname_is_unknown(tmp_path, monkeypatch):
+    calls = _capture_spawn(monkeypatch)
+
+    def _no_host():
+        raise OSError("no hostname")
+
+    monkeypatch.setattr("socket.gethostname", _no_host)
+    home = _managed_home(tmp_path, peers=("spark",))
+    agent = _FakeAgent(home, title="Bot Chat")
+
+    assert json.loads(bot_mode_dm.message_agent_tool(target="spark", message="ping", agent=agent))["status"] == "sent"
+    assert _runner_author(calls[0]["command"]) == {"id": "bot:default", "name": "hermes", "is_bot": True}
 
 
 def test_named_profile_sender_prefix(tmp_path, monkeypatch):
@@ -588,7 +618,7 @@ def test_delivery_main_rejects_invalid_cli(args, monkeypatch):
 
 
 @pytest.mark.parametrize("mode, author", [
-    ("stdin", {"id": "bot:coder", "name": "coder", "is_bot": True}),
+    ("stdin", {"id": "bot:eri-mac.local/coder", "name": "coder", "is_bot": True}),
     ("query-file", {"id": "bot:coder", "name": "coder", "is_bot": True}),
     ("query-file", None),
 ], ids=["stdin", "query-file", "no author"])

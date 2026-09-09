@@ -436,10 +436,16 @@ def test_discord_upload_limit_uses_guild_filesize_limit():
     guild_channel = SimpleNamespace(guild=SimpleNamespace(filesize_limit=50 * 1024 * 1024))
     dm_channel = SimpleNamespace(guild=None)
     no_limit_guild = SimpleNamespace(guild=SimpleNamespace(filesize_limit=0))
+    # Stale library constant (discord.py 2.7.1 reports 10 MiB for unboosted
+    # guilds; the platform default is 20 MiB since Sep 3 2026) must not lower
+    # the preflight below the platform default.
+    stale_guild = SimpleNamespace(
+        guild=SimpleNamespace(filesize_limit=_DISCORD_DEFAULT_UPLOAD_LIMIT_BYTES // 2))
 
     assert DiscordAdapter._discord_upload_limit_bytes(guild_channel) == 50 * 1024 * 1024
     assert DiscordAdapter._discord_upload_limit_bytes(dm_channel) == _DISCORD_DEFAULT_UPLOAD_LIMIT_BYTES
     assert DiscordAdapter._discord_upload_limit_bytes(no_limit_guild) == _DISCORD_DEFAULT_UPLOAD_LIMIT_BYTES
+    assert DiscordAdapter._discord_upload_limit_bytes(stale_guild) == _DISCORD_DEFAULT_UPLOAD_LIMIT_BYTES
 
 
 @pytest.mark.asyncio

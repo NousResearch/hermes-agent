@@ -171,9 +171,12 @@ _DISCORD_SELECT_MAX_ROWS = 5
 _DISCORD_MODEL_SELECT_CAPACITY = (_DISCORD_SELECT_MAX_ROWS - 2) * _DISCORD_SELECT_MAX_OPTIONS
 _DISCORD_BUTTON_LABEL_LIMIT = 80
 # Default Discord attachment cap for DMs / channels without a guild boost
-# context. Guild channels expose the effective limit via
-# ``guild.filesize_limit`` (boost tier may raise it). See issue #50846.
-_DISCORD_DEFAULT_UPLOAD_LIMIT_BYTES = 25 * 1024 * 1024
+# context. 20 MiB since the Sep 3 2026 API change (10 MiB before); guild
+# channels expose a boost-raised limit via ``guild.filesize_limit``, but
+# discord.py's fallback constant can lag the platform default, so the
+# effective limit is never taken below this floor. See issue #50846 and
+# https://docs.discord.com/developers/change-log (Sep 3, 2026).
+_DISCORD_DEFAULT_UPLOAD_LIMIT_BYTES = 20 * 1024 * 1024
 _DISCORD_ELLIPSIS = "\u2026"
 _DISCORD_NONCONVERSATIONAL_METADATA_KEYS = frozenset({
     "non_conversational", "non_conversational_history",
@@ -3167,12 +3170,16 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
 
         Prefer the guild's boost-aware ``filesize_limit`` when present; fall
         back to the platform default for DMs / group DMs without a guild.
+        The guild value is floored at the platform default: discord.py's
+        unboosted-tier constant can lag a platform-wide raise (10 MiB in
+        2.7.1 vs the 20 MiB default since Sep 3 2026), and under-reporting
+        makes the preflight reject files Discord would accept.
         """
         guild = getattr(channel, "guild", None)
         if guild is not None:
             limit = getattr(guild, "filesize_limit", None)
             if isinstance(limit, int) and limit > 0:
-                return limit
+                return max(limit, _DISCORD_DEFAULT_UPLOAD_LIMIT_BYTES)
         return _DISCORD_DEFAULT_UPLOAD_LIMIT_BYTES
 
     async def play_tts(self, chat_id: str, audio_path: str, **kwargs) -> SendResult:

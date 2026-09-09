@@ -3,8 +3,8 @@ import json
 import os
 import sys
 
-from tests.providers.test_claude_oauth_directsdk import FAKE
-from tests.providers.test_claude_oauth_directsdk_discovery import profile  # noqa: F401
+from tests.providers.test_claude_subscription_directsdk import FAKE
+from tests.providers.test_claude_subscription_directsdk_discovery import profile  # noqa: F401
 
 EXPECTED = {
     'claude-sonnet-5[1m]': 1_000_000,

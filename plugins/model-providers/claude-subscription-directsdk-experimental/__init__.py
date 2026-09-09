@@ -1,4 +1,4 @@
-"""Claude OAuth DirectSDK — standalone Hermes model-provider registration."""
+"""Claude Subscription DirectSDK (Experimental) — standalone Hermes model-provider registration."""
 from providers import register_provider
 from providers.base import ProviderProfile
 from .model_catalog import ALIASES, MODEL_METADATA, native_model
@@ -50,18 +50,18 @@ class ClaudeOAuthDirectSDKProfile(ProviderProfile):
 
 
 profile = ClaudeOAuthDirectSDKProfile(
-    name='claude-oauth-directsdk',
-    display_name='Claude OAuth DirectSDK',
-    description='Claude OAuth DirectSDK (Claude Pro/Max subscription via your Claude Code login; Hermes owns tools)',
+    name='claude-subscription-directsdk-experimental',
+    display_name='Claude Subscription DirectSDK (Experimental)',
+    description='Claude Subscription DirectSDK (Experimental) (Claude Pro/Max subscription via your Claude Code login; Hermes owns tools)',
     api_mode='chat_completions',
     auth_type='external_process',
     supports_health_check=False,
-    native_reasoning_details_type='claude-oauth-directsdk.native_assistant',
+    native_reasoning_details_type='claude-subscription-directsdk-experimental.native_assistant',
     env_vars=(),
-    base_url='process://claude-oauth-directsdk',
+    base_url='process://claude-subscription-directsdk-experimental',
     process_command='claude',
     process_args=(),
-    process_command_env_vars=('CLAUDE_OAUTH_DIRECTSDK_COMMAND',),
+    process_command_env_vars=('CLAUDE_SUBSCRIPTION_DIRECTSDK_COMMAND',),
     default_aux_model='claude-sonnet-5[1m]',
     fallback_models=tuple(MODEL_METADATA),
     model_aliases={alias: native_model(alias) for alias in ALIASES},

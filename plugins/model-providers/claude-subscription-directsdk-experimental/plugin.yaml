@@ -1,0 +1,5 @@
+name: claude-subscription-directsdk-experimental
+kind: model-provider
+version: 0.1.0
+description: Claude Subscription DirectSDK (Experimental) — official native CLI transport with Hermes-owned tools
+author: Nous Research

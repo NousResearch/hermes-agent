@@ -10,7 +10,7 @@ import threading
 
 import pytest
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'plugins/model-providers/claude-oauth-directsdk'))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'plugins/model-providers/claude-subscription-directsdk-experimental'))
 import directsdk
 
 NATIVE = r'''

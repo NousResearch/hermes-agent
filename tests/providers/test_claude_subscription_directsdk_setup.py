@@ -5,7 +5,7 @@ import os
 import sys
 import textwrap
 
-from tests.providers.test_claude_oauth_directsdk_discovery import profile  # noqa: F401
+from tests.providers.test_claude_subscription_directsdk_discovery import profile  # noqa: F401
 
 FAKE_CLI = textwrap.dedent('''
     import json, os, sys

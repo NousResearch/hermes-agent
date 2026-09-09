@@ -7,7 +7,7 @@ import tempfile
 import unittest
 from types import SimpleNamespace
 
-ROOT = Path(__file__).resolve().parents[2] / "plugins" / "model-providers" / "claude-oauth-directsdk"
+ROOT = Path(__file__).resolve().parents[2] / "plugins" / "model-providers" / "claude-subscription-directsdk-experimental"
 sys.path.insert(0, str(ROOT))
 
 FAKE = r"""
@@ -87,7 +87,7 @@ class Contract(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             client = self.client(tmp)
             self.assertEqual(client.api_key, "external-process")
-            self.assertEqual(client.base_url, "process://claude-oauth-directsdk")
+            self.assertEqual(client.base_url, "process://claude-subscription-directsdk-experimental")
             for streaming in (False, True):
                 req = self.request()
                 req["timeout"] = SimpleNamespace(read=10)
@@ -184,7 +184,7 @@ class Contract(unittest.TestCase):
             {"type": "json_schema", "schema": schema},
         )
         routed = directsdk.Client(
-            env={"CLAUDE_OAUTH_DIRECTSDK_COMMAND": "/native/test"}
+            env={"CLAUDE_SUBSCRIPTION_DIRECTSDK_COMMAND": "/native/test"}
         )
         self.assertEqual(routed.command, ["/native/test"])
         from unittest.mock import patch

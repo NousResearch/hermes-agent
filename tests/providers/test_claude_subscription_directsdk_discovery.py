@@ -20,7 +20,7 @@ def profile(tmp_path, monkeypatch):
     monkeypatch.setattr(providers, "_PROVIDER_LIST_CACHE", None)
     monkeypatch.setattr(providers, "_discovered", False)
     providers._discover_providers()
-    result = providers.get_provider_profile("claude-oauth-directsdk")
+    result = providers.get_provider_profile("claude-subscription-directsdk-experimental")
     assert result is not None
     return result
 

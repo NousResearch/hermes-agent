@@ -19,12 +19,12 @@ except ImportError:
     from model_catalog import CONTEXT_WINDOWS, native_model
 
 INSTALL_HINT = ("Claude Code is not installed (no `claude` on PATH). Install it with "
-                "`npm install -g @anthropic-ai/claude-code` or set CLAUDE_OAUTH_DIRECTSDK_COMMAND to the binary.")
+                "`npm install -g @anthropic-ai/claude-code` or set CLAUDE_SUBSCRIPTION_DIRECTSDK_COMMAND to the binary.")
 LOGIN_HINT = "Claude Code is installed but not logged in. Run `claude auth login`, then select this provider again."
 
 
 def _resolve(command, env):
-    command = list(command) if command else [env.get("CLAUDE_OAUTH_DIRECTSDK_COMMAND") or "claude"]
+    command = list(command) if command else [env.get("CLAUDE_SUBSCRIPTION_DIRECTSDK_COMMAND") or "claude"]
     head = command[0]
     exe = head if os.path.isabs(head) and os.access(head, os.X_OK) else shutil.which(head)
     return ([exe] + command[1:]) if exe else None
@@ -32,7 +32,7 @@ def _resolve(command, env):
 
 def _child_env(env):
     child = dict(env)
-    config = child.pop("CLAUDE_OAUTH_DIRECTSDK_CONFIG_DIR", None)
+    config = child.pop("CLAUDE_SUBSCRIPTION_DIRECTSDK_CONFIG_DIR", None)
     if config:
         child["CLAUDE_CONFIG_DIR"] = config
     child.update(CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC="1", DISABLE_TELEMETRY="1", DISABLE_ERROR_REPORTING="1")

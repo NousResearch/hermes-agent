@@ -25,7 +25,7 @@ except ImportError:
     from admission import Admission
     from model_catalog import native_model
 
-CARRIER = 'claude-oauth-directsdk.native_assistant'
+CARRIER = 'claude-subscription-directsdk-experimental.native_assistant'
 PREFIX = 'mcp__hermes__'
 
 
@@ -305,10 +305,10 @@ class Client:
     def __init__(self, command=None, args=None, env=None, timeout=180, **_):
         # Hermes snapshots routing metadata from client-shaped objects; this is not a credential.
         self.api_key = 'external-process'
-        self.base_url = 'process://claude-oauth-directsdk'
+        self.base_url = 'process://claude-subscription-directsdk-experimental'
         self.env = dict(env) if env is not None else None
         source_env = self.env if self.env is not None else os.environ
-        command = command or source_env.get('CLAUDE_OAUTH_DIRECTSDK_COMMAND') or 'claude'
+        command = command or source_env.get('CLAUDE_SUBSCRIPTION_DIRECTSDK_COMMAND') or 'claude'
         self.command = ([command] if isinstance(command, str) else list(command)) + list(args or [])
         self.timeout = timeout if isinstance(timeout, (int, float)) else 180
         self._lock, self._requests, self._closed = threading.Lock(), set(), False
@@ -392,7 +392,7 @@ class Client:
                     conflicts += [key for key in ('CLAUDE_CODE_USE_BEDROCK', 'CLAUDE_CODE_USE_VERTEX', 'CLAUDE_CODE_USE_FOUNDRY') if env.get(key, '').lower() not in ('', '0', 'false', 'no', 'off')]
                     if conflicts:
                         raise ValueError('OAuth provider refuses conflicting native auth/backend overrides: ' + ', '.join(conflicts))
-                config = env.pop('CLAUDE_OAUTH_DIRECTSDK_CONFIG_DIR', None)
+                config = env.pop('CLAUDE_SUBSCRIPTION_DIRECTSDK_CONFIG_DIR', None)
                 if config:
                     env['CLAUDE_CONFIG_DIR'] = config
                 env.pop('CLAUDE_CODE_EXTRA_BODY', None)

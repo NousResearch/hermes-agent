@@ -101,9 +101,9 @@ class Peer(BaseHTTPRequestHandler):
 
 def run(binary, model):
     root = Path(__file__).resolve().parents[1]
-    sys.path.insert(0, str(root / 'plugins/model-providers/claude-oauth-directsdk'))
+    sys.path.insert(0, str(root / 'plugins/model-providers/claude-subscription-directsdk-experimental'))
     spec = importlib.util.spec_from_file_location(
-        "cache_directsdk", root / "plugins/model-providers/claude-oauth-directsdk/directsdk.py")
+        "cache_directsdk", root / "plugins/model-providers/claude-subscription-directsdk-experimental/directsdk.py")
     native = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(native)
     with tempfile.TemporaryDirectory(prefix="directsdk-cache-") as tmp, ThreadingHTTPServer(("127.0.0.1", 0), Peer) as peer:

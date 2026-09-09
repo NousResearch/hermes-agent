@@ -1,6 +1,6 @@
-# Claude OAuth DirectSDK
+# Claude Subscription DirectSDK (Experimental)
 
-Experimental bundled Hermes provider: `claude-oauth-directsdk`, displayed as **Claude OAuth DirectSDK**. It uses the unmodified official Claude Code executable as a request-scoped model client. Hermes retains its normal agent loop and tool executor. Despite the name, this implementation speaks native stream-json directly and does not require the Python Agent SDK package.
+Experimental bundled Hermes provider: `claude-subscription-directsdk-experimental`, displayed as **Claude Subscription DirectSDK (Experimental)**. It uses the unmodified official Claude Code executable as a request-scoped model client. Hermes retains its normal agent loop and tool executor. Despite the name, this implementation speaks native stream-json directly and does not require the Python Agent SDK package.
 
 ## Status
 
@@ -16,7 +16,7 @@ Requires Python 3.10+, POSIX, and a separately installed official Claude Code CL
 
 ```sh
 claude auth login
-hermes --provider claude-oauth-directsdk -m sonnet
+hermes --provider claude-subscription-directsdk-experimental -m sonnet
 ```
 
 Authentication belongs to the official CLI. The plugin never opens, copies, refreshes, or prints its credential files. No Hermes API key is required or sent by the plugin. The normal Hermes client path rejects inherited API-key, custom Anthropic endpoint, and cloud-backend overrides before spawning; the error names conflicting environment variables without printing their values. Remove those overrides from the launching environment when selecting OAuth. There is no silent HTTP/API-key fallback in this client.
@@ -27,16 +27,16 @@ For a separately CLI-managed auth directory:
 
 ```sh
 CLAUDE_CONFIG_DIR=/path/to/official-cli-config claude auth login
-export CLAUDE_OAUTH_DIRECTSDK_CONFIG_DIR=/path/to/official-cli-config
+export CLAUDE_SUBSCRIPTION_DIRECTSDK_CONFIG_DIR=/path/to/official-cli-config
 ```
 
-An inherited `CLAUDE_CONFIG_DIR` also works. To select an executable outside PATH, set `CLAUDE_OAUTH_DIRECTSDK_COMMAND` to its absolute path. There is no unrestricted public CLI-flags setting; isolation and denial flags are plugin-owned. The low-level Python `Client(env=...)` injection is available for explicitly controlled local fixtures and does not apply the inherited-environment guard. It is not the normal Hermes provider path or an OAuth certification mechanism.
+An inherited `CLAUDE_CONFIG_DIR` also works. To select an executable outside PATH, set `CLAUDE_SUBSCRIPTION_DIRECTSDK_COMMAND` to its absolute path. There is no unrestricted public CLI-flags setting; isolation and denial flags are plugin-owned. The low-level Python `Client(env=...)` injection is available for explicitly controlled local fixtures and does not apply the inherited-environment guard. It is not the normal Hermes provider path or an OAuth certification mechanism.
 
 Persistent configuration:
 
 ```yaml
 model:
-  provider: claude-oauth-directsdk
+  provider: claude-subscription-directsdk-experimental
   default: sonnet
 ```
 
@@ -74,11 +74,11 @@ Supported translation includes text, base64/native images and documents, canonic
 
 Unknown parameters fail explicitly. Unsupported surfaces include assistant prefill, strict function mode, forced tool choice, `parallel_tool_calls=False`, `n>1`, JSON-object-only mode, arbitrary headers/body fields, remote image downloads, non-POSIX cleanup, and cross-model signed-history parity. The read-idle timeout defaults to 180 seconds, resets on native output, and accepts Hermes' finite HTTPX read-timeout shape. Large prompts remain subject to native/OS limits.
 
-## Setup: `hermes model` → Claude OAuth DirectSDK
+## Setup: `hermes model` → Claude Subscription DirectSDK (Experimental)
 
 Selecting the provider asks the Claude CLI itself, never Anthropic, before anything is saved:
 
-1. **Installed?** `claude` must resolve on PATH (or `CLAUDE_OAUTH_DIRECTSDK_COMMAND`). Otherwise one line: install with `npm install -g @anthropic-ai/claude-code`, and the flow stops without touching config.
+1. **Installed?** `claude` must resolve on PATH (or `CLAUDE_SUBSCRIPTION_DIRECTSDK_COMMAND`). Otherwise one line: install with `npm install -g @anthropic-ai/claude-code`, and the flow stops without touching config.
 2. **Logged in?** `claude auth status` (local credential store, ~0.3s). Logged in shows `credentials: ✓ (Claude Pro)`. Logged out on a terminal starts `claude auth login` inline; it opens the browser and takes the pasted code, then the flow re-checks and continues. Without a TTY it prints the instruction and stops.
 3. **Which models?** The CLI's `initialize` handshake returns the account's own picker (verified through the admission relay: zero upstream requests). Rows are mapped to Hermes route ids and deduplicated (`opus` and `opus[1m]` are one 1M route). Rows the CLI marks "Draws from usage credits", plus Fable on non-Max plans per Anthropic's plan rule, carry a dim `· usage credits` note; nothing is hidden. If the handshake fails the pinned catalog below is used.
 

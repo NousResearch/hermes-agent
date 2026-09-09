@@ -13,7 +13,7 @@ def picker_env(monkeypatch, tmp_path):
     home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(home))
     from providers import get_provider_profile
-    profile = get_provider_profile("claude-oauth-directsdk")
+    profile = get_provider_profile("claude-subscription-directsdk-experimental")
     assert profile is not None
     # A stand-in CLI that reports a login and answers the picker handshake; never native or paid inference.
     import shutil

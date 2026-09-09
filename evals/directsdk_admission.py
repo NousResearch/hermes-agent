@@ -16,7 +16,7 @@ import threading
 import time
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / 'plugins/model-providers/claude-oauth-directsdk'))
+sys.path.insert(0, str(ROOT / 'plugins/model-providers/claude-subscription-directsdk-experimental'))
 import directsdk
 
 USAGE = {'input_tokens':101, 'output_tokens':37, 'cache_read_input_tokens':211, 'cache_creation_input_tokens':313}

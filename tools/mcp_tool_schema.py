@@ -73,7 +73,14 @@ def _repair_object_shape(node):
         return [_repair_object_shape(item) for item in node]
     if not isinstance(node, dict):
         return node
-    repaired = {k: _repair_object_shape(v) for k, v in node.items()}
+    # These dictionaries name schemas; a field named "properties" or "required"
+    # must not make its containing name map look like an object schema itself.
+    schema_maps = {"properties", "patternProperties", "$defs", "definitions", "dependentSchemas"}
+    repaired = {
+        k: {name: _repair_object_shape(schema) for name, schema in v.items()}
+        if k in schema_maps and isinstance(v, dict) else _repair_object_shape(v)
+        for k, v in node.items()
+    }
     if not repaired.get("type") and ("properties" in repaired or "required" in repaired):
         repaired["type"] = "object"
     if repaired.get("type") == "object":

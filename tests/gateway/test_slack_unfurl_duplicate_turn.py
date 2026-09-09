@@ -303,3 +303,64 @@ class TestClaimReleasedOnFailure:
 
         asyncio.run(scenario())
         assert len(delivered) == 1
+
+
+@pytest.mark.parametrize("previously_edited", [False, True])
+def test_root_metadata_update_after_restart_does_not_replay_request(previously_edited):
+    """A fresh adapter must not route old root text when Slack updates its metadata."""
+    delivered = []
+    adapter = _make_adapter(delivered)
+    adapter._resolve_user_name = AsyncMock(return_value="test user")
+    update = _unfurl_event()
+    update["message"]["thread_ts"] = ORIGINAL_TS
+    update["message"]["reply_count"] = 2
+    if previously_edited:
+        update["message"]["edited"] = {"user": USER, "ts": "1787365410.000000"}
+    update["previous_message"] = dict(update["message"], reply_count=1)
+
+    asyncio.run(adapter._handle_slack_message(update, _body()))
+
+    assert delivered == [], "root metadata update replayed an old user request after restart"
+
+
+@pytest.mark.parametrize("mention_surface", ["text", "blocks"])
+@pytest.mark.parametrize("sender_policy", ["peer", "blocked", "self"])
+def test_bot_final_update_can_add_a_mention_without_edited_metadata(
+    mention_surface, sender_policy,
+):
+    delivered = []
+    adapter = _make_adapter(delivered)
+    adapter.config.extra["allow_bots"] = "none" if sender_policy == "blocked" else "mentions"
+    adapter._resolve_user_name = AsyncMock(return_value="peer bot")
+    original = _original_event()
+    original.update(text="Working", bot_id="B_PEER", subtype="bot_message")
+    original["user"] = adapter._bot_user_id if sender_policy == "self" else "U_PEER"
+    final = dict(original)
+    mention = f"<@{adapter._bot_user_id}> please continue"
+    if mention_surface == "text":
+        final["text"] = mention
+    else:
+        final["blocks"] = [{"type": "rich_text", "elements": [
+            {"type": "rich_text_section", "elements": [
+                {"type": "user", "user_id": adapter._bot_user_id},
+                {"type": "text", "text": " please continue"},
+            ]},
+        ]}]
+    update = {
+        "type": "message", "subtype": "message_changed", "channel": CHANNEL,
+        "channel_type": "channel", "team": TEAM, "ts": UNFURL_EVENT_TS,
+        "event_ts": UNFURL_EVENT_TS, "message": final, "previous_message": original,
+    }
+
+    async def scenario():
+        await adapter._handle_slack_message(original, _body())
+        await adapter._handle_slack_message(update, _body())
+        await adapter._handle_slack_message(update, _body())
+
+    asyncio.run(scenario())
+    if sender_policy == "peer":
+        assert len(delivered) == 1
+        assert "please continue" in delivered[0].text
+        assert delivered[0].message_id == ORIGINAL_TS
+    else:
+        assert delivered == []

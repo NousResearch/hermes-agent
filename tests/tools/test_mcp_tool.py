@@ -468,6 +468,33 @@ class TestLifecycleConfig:
 # ---------------------------------------------------------------------------
 
 class TestSchemaConversion:
+    @pytest.mark.parametrize("field_name", ["properties", "required"])
+    def test_nested_keyword_named_fields_remain_valid_schemas(self, field_name):
+        from jsonschema import Draft202012Validator
+        from tools.mcp_tool_schema import _convert_mcp_schema
+
+        raw = {
+            "type": "object",
+            "properties": {
+                "pages": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {field_name: {"type": "object"}},
+                        "required": [field_name],
+                    },
+                },
+            },
+        }
+        Draft202012Validator.check_schema(raw)
+        converted = _convert_mcp_schema(
+            "notion", _make_mcp_tool(name="create_pages", input_schema=raw)
+        )["parameters"]
+        Draft202012Validator.check_schema(converted)
+        fields = converted["properties"]["pages"]["items"]["properties"]
+        assert set(fields) == {field_name}
+        assert fields[field_name]["properties"] == {}
+
     def test_converts_mcp_tool_to_hermes_schema(self):
         from tools.mcp_tool_schema import _convert_mcp_schema
 

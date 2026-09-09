@@ -1887,7 +1887,7 @@ class SlackAdapter(BasePlatformAdapter):
     def _native_task_card_key(
         self, chat_id: str, reply_to: Optional[str], metadata: Optional[Dict[str, Any]]
     ) -> Optional[Tuple[str, str, str]]:
-        thread_ts = self._resolve_thread_ts(reply_to, metadata)
+        thread_ts = self._resolve_thread_ts(reply_to, metadata, chat_id=chat_id)
         if not thread_ts:
             return None
         return self._workspace_thread_key(
@@ -2044,7 +2044,7 @@ class SlackAdapter(BasePlatformAdapter):
                 # "(empty)" final responses are filtered upstream), the assistant thread status must not
                 # stay stuck on "is thinking..." (#24117).
                 return SendResult(success=True)
-            thread_ts = self._resolve_thread_ts(reply_to, metadata)
+            thread_ts = self._resolve_thread_ts(reply_to, metadata, chat_id=chat_id)
             last_result = await self._post_chunks(chat_id, team_id, content, formatted, thread_ts)
             # Clear Slack Assistant status as soon as the final message is posted.
             if thread_ts:
@@ -2144,7 +2144,7 @@ class SlackAdapter(BasePlatformAdapter):
             return SendResult(success=False, error="chat_id and user_id are required")
         try:
             formatted = self.format_message(content)
-            thread_ts = self._resolve_thread_ts(reply_to, metadata)
+            thread_ts = self._resolve_thread_ts(reply_to, metadata, chat_id=chat_id)
             kwargs = {"channel": chat_id, "user": user_id, "text": formatted, "mrkdwn": True}
             if thread_ts:
                 kwargs["thread_ts"] = thread_ts
@@ -2168,7 +2168,7 @@ class SlackAdapter(BasePlatformAdapter):
         during long retry loops. The first call posts and the message ts is remembered; subsequent calls
         with the same (channel, thread, status_key) edit that message in place via ``chat.update``.
         """
-        thread_ts = self._resolve_thread_ts(None, metadata) or ""
+        thread_ts = self._resolve_thread_ts(None, metadata, chat_id=chat_id) or ""
         key = (str(chat_id), str(thread_ts), str(status_key))
         cached_id = self._status_message_ids.get(key)
         if cached_id is not None:
@@ -2329,7 +2329,7 @@ class SlackAdapter(BasePlatformAdapter):
         """``chat.startStream`` for the first frame and register the stream. Streams must anchor to
         a thread_ts (the gateway sets metadata.thread_id even for top-level messages, so a miss is
         rare). Channels require recipient team/user; harmless for DMs."""
-        thread_ts = self._resolve_thread_ts(None, metadata)
+        thread_ts = self._resolve_thread_ts(None, metadata, chat_id=chat_id)
         if not thread_ts:
             return SendResult(success=False, error="no thread_ts for native stream")
         start_kwargs: Dict[str, Any] = {"channel": chat_id, "thread_ts": thread_ts}
@@ -2415,7 +2415,7 @@ class SlackAdapter(BasePlatformAdapter):
             # Same synthetic-thread guard as sending: with reply_in_thread=false thread_id is the
             # message's own ts, and setStatus on it would open an assistant thread prematurely.
             thread_ts = self._resolve_thread_ts(
-                reply_to=metadata.get("message_id"), metadata=metadata)
+                reply_to=metadata.get("message_id"), metadata=metadata, chat_id=chat_id)
         if not thread_ts:
             return  # Can only set status in a thread context
         team_id = self._metadata_team_id(metadata) or self._channel_team.get(chat_id, "")
@@ -2581,10 +2581,16 @@ class SlackAdapter(BasePlatformAdapter):
         return False
 
     def _resolve_thread_ts(
-        self, reply_to: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None
+        self, reply_to: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None,
+        *, chat_id: str = "",
     ) -> Optional[str]:
         """thread_ts for an API call: metadata thread_id (parent ts) over reply_to (may be a child
         ts). With ``reply_in_thread: false`` top-level messages get flat replies."""
+        # A shared DM session must not hide replies under each triggering message.
+        # Explicit DM threads still carry their parent in metadata.
+        if chat_id.startswith("D") and not self._dm_top_level_threads_as_sessions():
+            md = metadata or {}
+            return md.get("thread_id") or md.get("thread_ts") or None
         # Inbound sets metadata.thread_id to the message's own ts for top-level messages
         # (session keying), so thread_id == reply_to means a synthetic thread → reply flat.
         if not self.config.extra.get("reply_in_thread", True):
@@ -2630,7 +2636,7 @@ class SlackAdapter(BasePlatformAdapter):
         if not os.path.exists(file_path):
             raise FileNotFoundError(f"File not found: {file_path}")
         chat_id = await self._dm_target(chat_id, metadata)
-        thread_ts = self._resolve_thread_ts(reply_to, metadata)
+        thread_ts = self._resolve_thread_ts(reply_to, metadata, chat_id=chat_id)
         return await self._upload_with_retry(
             chat_id, file_path, os.path.basename(file_path), caption, thread_ts, metadata)
 
@@ -2645,7 +2651,7 @@ class SlackAdapter(BasePlatformAdapter):
             return SendResult(success=False, error=not_found_error)
         chat_id = await self._dm_target(chat_id, metadata)
         try:
-            thread_ts = self._resolve_thread_ts(reply_to, metadata)
+            thread_ts = self._resolve_thread_ts(reply_to, metadata, chat_id=chat_id)
             label = f"{kind.capitalize()} upload"
             return await self._upload_with_retry(
                 chat_id, file_path, filename, caption, thread_ts, metadata, label)
@@ -2673,7 +2679,7 @@ class SlackAdapter(BasePlatformAdapter):
         except Exception:
             await super().send_multiple_images(chat_id, images, metadata, human_delay)
             return
-        thread_ts = self._resolve_thread_ts(None, metadata)
+        thread_ts = self._resolve_thread_ts(None, metadata, chat_id=chat_id)
         CHUNK = 10
         chunks = [images[i : i + CHUNK] for i in range(0, len(images), CHUNK)]
         for chunk_idx, chunk in enumerate(chunks):
@@ -3166,8 +3172,8 @@ class SlackAdapter(BasePlatformAdapter):
                 event_hooks={"response": [_ssrf_redirect_guard]}) as client:
                 response = await client.get(image_url)
                 response.raise_for_status()
-            thread_ts = self._resolve_thread_ts(reply_to, metadata)
             chat_id = await self._dm_target(chat_id, metadata)
+            thread_ts = self._resolve_thread_ts(reply_to, metadata, chat_id=chat_id)
             return await self._upload_with_retry(
                 chat_id, None, "image.png", caption, thread_ts, metadata, content=response.content,
                 attempts=1)
@@ -3908,6 +3914,16 @@ class SlackAdapter(BasePlatformAdapter):
             return None
         edited = updated_message.get("edited")
         edited_ts = str(edited.get("ts") or "") if isinstance(edited, dict) else ""
+        # Unfurls and reply-count updates also emit message_changed. They must not
+        # replay an old request after restart has cleared the in-memory claims.
+        previous_message = event.get("previous_message")
+        if isinstance(previous_message, dict):
+            # Native stream updates can change content without an edited marker.
+            if all(previous_message.get(key) == updated_message.get(key)
+                   for key in ("text", "blocks")):
+                return None
+        elif not edited_ts:
+            return None
         outer_event_ts = str(event.get("ts") or "")
         changed_event_ts = (
             str(event.get("event_ts") or edited_ts or "")
@@ -4546,7 +4562,7 @@ class SlackAdapter(BasePlatformAdapter):
         kwargs: Dict[str, Any] = {
             "channel": chat_id, "text": text,
             "blocks": sanitize_blocks(blocks) if sanitize else blocks}
-        thread_ts = self._resolve_thread_ts(None, metadata)
+        thread_ts = self._resolve_thread_ts(None, metadata, chat_id=chat_id)
         if thread_ts:
             kwargs["thread_ts"] = thread_ts
         team_id = self._metadata_team_id(metadata) if team_scoped else None

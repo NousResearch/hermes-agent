@@ -384,17 +384,18 @@ def _read_session(db, session_id: str, head: int = 20, tail: int = 10, link_prof
 
 
 def _read_with_profile_fallback(db, sid: str, profile: Optional[str]) -> str:
-    """Read shape; on a miss scan every profile (the model may have dropped the owning
-    profile from the link) and tag the result with where it was found."""
+    """Read shape; on a miss, report which profile owns the id but never auto-read it —
+    another profile's transcript is only served when the caller names that profile."""
     result = _read_session(db, sid, link_profile=profile)
-    located, owner = (None, None) if json.loads(result).get("success") else _locate_session_db(sid)
+    if json.loads(result).get("success"):
+        return result
+    located, owner = _locate_session_db(sid)
     if located is None:
         return result
-    try:
-        found = json.loads(_read_session(located, sid, link_profile=owner))
-    finally:
-        located.close()
-    return json.dumps({**found, "profile": owner}, ensure_ascii=False) if found.get("success") else result
+    located.close()
+    return tool_error(
+        f"session_id '{sid}' lives in profile '{owner}'. Reading another profile's "
+        f"session requires naming the profile: re-run with profile='{owner}'.", success=False)
 
 
 def _list_recent_sessions(db, limit: int, current_session_id: str = None, link_profile: str = None) -> str:

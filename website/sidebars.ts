@@ -264,7 +264,6 @@ const sidebars: SidebarsConfig = {
                     'user-guide/skills/bundled/research/research-competitor-news-monitor',
                     'user-guide/skills/bundled/research/research-grounded-citations',
                     'user-guide/skills/bundled/research/research-llm-wiki',
-                    'user-guide/skills/bundled/research/research-rss-feeds',
                   ],
                 },
                 {
@@ -273,7 +272,6 @@ const sidebars: SidebarsConfig = {
                   key: 'skills-bundled-social-media',
                   collapsed: true,
                   items: [
-                    'user-guide/skills/bundled/social-media/social-media-reddit-reading',
                     'user-guide/skills/bundled/social-media/social-media-xurl',
                   ],
                 },
@@ -540,6 +538,7 @@ const sidebars: SidebarsConfig = {
                     'user-guide/skills/optional/productivity/productivity-decision-questionnaire',
                     'user-guide/skills/optional/productivity/productivity-here-now',
                     'user-guide/skills/optional/productivity/productivity-memento-flashcards',
+                    'user-guide/skills/optional/productivity/productivity-property-listings',
                     'user-guide/skills/optional/productivity/productivity-shop',
                     'user-guide/skills/optional/productivity/productivity-shopify',
                     'user-guide/skills/optional/productivity/productivity-siyuan',
@@ -564,6 +563,7 @@ const sidebars: SidebarsConfig = {
                     'user-guide/skills/optional/research/research-pinecone-research',
                     'user-guide/skills/optional/research/research-qmd',
                     'user-guide/skills/optional/research/research-research-paper-writing',
+                    'user-guide/skills/optional/research/research-rss-feeds',
                     'user-guide/skills/optional/research/research-scrapling',
                     'user-guide/skills/optional/research/research-searxng-search',
                   ],
@@ -589,6 +589,15 @@ const sidebars: SidebarsConfig = {
                   collapsed: true,
                   items: [
                     'user-guide/skills/optional/smart-home/smart-home-openhue',
+                  ],
+                },
+                {
+                  type: 'category',
+                  label: 'social-media',
+                  key: 'skills-optional-social-media',
+                  collapsed: true,
+                  items: [
+                    'user-guide/skills/optional/social-media/social-media-reddit-reading',
                   ],
                 },
                 {

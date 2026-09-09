@@ -952,6 +952,7 @@ Create a zip archive of your Hermes configuration, skills, sessions, and data. T
 | `-l`, `--label <name>` | Label for the snapshot (only used with `--quick`). |
 | `--dry-run` | Preview the full-backup selection without writing an archive or changing Hermes state. Cannot be combined with `--quick`. |
 | `--report <path>` | Write the complete machine-readable JSON audit for a full backup or dry run. The parent directory must already exist. Cannot be combined with `--quick`. |
+| `-k`, `--keep <N>` | After a full backup, delete older `hermes-backup-*.zip` files in the output directory beyond the newest N (default 3; `0` keeps everything). Custom-named zips are never touched. |
 
 The backup uses SQLite's `backup()` API for safe copying, so it works correctly even when Hermes is running (WAL-mode safe).
 

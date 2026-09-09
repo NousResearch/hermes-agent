@@ -1,4 +1,4 @@
-"""OpenAI ``gpt-image-2`` at three quality tiers (virtual ids ``gpt-image-2-low/-medium/-high``);
+"""OpenAI GPT Image 2 and 2.5 Flare/Sunburst quality tiers;
 base64 output → image cache. Selection: ``OPENAI_IMAGE_MODEL`` → ``image_gen.openai.model`` →
 ``image_gen.model`` → :data:`DEFAULT_MODEL`."""
 
@@ -18,9 +18,29 @@ from plugins.image_gen._common import (
 
 logger = logging.getLogger(__name__)
 
+# Keep subscription routing independent: Codex does not verify explicit image model selection.
+MODELS = {
+    **{key: {**meta, "api_model": API_MODEL} for key, meta in GPT_IMAGE_2_TIERS.items()},
+    **{
+        model if quality == "auto" else f"{model}-{quality}": {
+            "display": f"GPT Image 2.5 {name} ({quality.title()})",
+            "speed": speed,
+            "strengths": strengths,
+            "api_model": model,
+            "quality": quality,
+        }
+        for model, name, speed, strengths in (
+            ("gpt-image-2.5-flare", "Flare", "Fast", "Everyday image generation and editing"),
+            ("gpt-image-2.5-sunburst", "Sunburst", "Slower", "Precision generation and editing"),
+        )
+        for quality in ("auto", "low", "medium", "high", "xhigh", "max")
+    },
+}
+
+
 def _resolve_model() -> Tuple[str, Dict[str, Any]]:
     return resolve_static_model(
-        GPT_IMAGE_2_TIERS, DEFAULT_MODEL, env_var="OPENAI_IMAGE_MODEL", config_key="openai")
+        MODELS, DEFAULT_MODEL, env_var="OPENAI_IMAGE_MODEL", config_key="openai")
 
 
 def _load_image_bytes(ref: str) -> Tuple[bytes, str]:
@@ -57,16 +77,16 @@ def _named_bytes_io(ref: str) -> io.BytesIO:
 
 
 class OpenAIImageGenProvider(StaticImageGenProvider):
-    """OpenAI ``images.generate`` / ``images.edit`` backend — gpt-image-2."""
+    """OpenAI ``images.generate`` / ``images.edit`` backend with selectable API models."""
 
     provider_id = "openai"
     label = "OpenAI"
-    models = GPT_IMAGE_2_TIERS
+    models = MODELS
     default_model_id = DEFAULT_MODEL
     price = "varies"
     setup = dict(
         name="OpenAI", badge="paid",
-        tag="gpt-image-2 at low/medium/high quality tiers — text-to-image & image editing",
+        tag="GPT Image 2 / 2.5 Flare / 2.5 Sunburst — text-to-image & image editing",
         key="OPENAI_API_KEY", prompt="OpenAI API key", url="https://platform.openai.com/api-keys")
 
     def is_available(self) -> bool:
@@ -106,7 +126,7 @@ class OpenAIImageGenProvider(StaticImageGenProvider):
         # gpt-image-2 returns b64_json unconditionally and REJECTS
         # ``response_format`` as an unknown parameter. Don't send it.
         request: Dict[str, Any] = dict(
-            model=API_MODEL, prompt=prompt, size=size, n=1, quality=meta["quality"])
+            model=meta["api_model"], prompt=prompt, size=size, n=1, quality=meta["quality"])
         if is_edit:
             try:
                 files = [_named_bytes_io(ref) for ref in sources]

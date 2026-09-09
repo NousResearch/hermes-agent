@@ -578,10 +578,13 @@ def _print_capped(header: str, lines: List[str], indent: str) -> None:
 
 # --- Backup ---
 
+_RUN_BACKUP_PREFIX = "hermes-backup-"
+
+
 def _resolve_backup_output_path(output: Optional[str]) -> Path:
     """Resolve the archive destination without creating output directories."""
     out_path = None
-    default_name = f"hermes-backup-{datetime.now().strftime('%Y-%m-%d-%H%M%S')}.zip"
+    default_name = f"{_RUN_BACKUP_PREFIX}{datetime.now().strftime('%Y-%m-%d-%H%M%S')}.zip"
     try:
         if output:
             out_path = Path(output).expanduser().resolve()
@@ -646,7 +649,14 @@ def run_backup(args) -> bool:
         if dry_run:
             return _run_full_backup(hermes_root, out_path, report_path, report)
         with _backup_operation_lock(hermes_root):
-            return _run_full_backup(hermes_root, out_path, report_path, report)
+            complete = _run_full_backup(hermes_root, out_path, report_path, report)
+            # Retain main's --keep pruning for default-named full backups (#81317).
+            keep = getattr(args, "keep", 0)  # 0 / absent: never prune (non-CLI callers)
+            if keep and out_path.is_file() and out_path.name.startswith(_RUN_BACKUP_PREFIX):
+                pruned = _prune_prefixed_zips(out_path.parent, _RUN_BACKUP_PREFIX, keep, "backup")
+                if pruned:
+                    print(f"  Pruned {pruned} older {_RUN_BACKUP_PREFIX}*.zip (keeping {keep}).")
+            return complete
     except BackupInProgressError as exc:
         print(f"Error: {exc}")
         raise SystemExit(2) from exc

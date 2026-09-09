@@ -2041,6 +2041,14 @@ def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:
                 continue
             raw_base_url = str(creds.get("base_url", "")).strip().rstrip("/") or pconfig.inference_base_url
             via = ""
+        # The session's own endpoint wins for its provider: the key was issued for that gateway, and
+        # sending it to the registry default 401s, then quarantines the provider the main model is on.
+        runtime = _normalize_main_runtime(None)
+        if runtime.get("provider") == provider_id and runtime.get("base_url"):
+            raw_base_url = runtime["base_url"].rstrip("/")
+            if isinstance(runtime.get("api_key"), str) and runtime["api_key"]:
+                api_key = runtime["api_key"]
+            via = " (session endpoint)"
         model = _get_aux_model_for_provider(provider_id) or None
         if model is None:
             continue  # skip provider if we don't know a valid aux model
@@ -3284,24 +3292,39 @@ def _provider_for_host(base_url: str, table: Tuple[Tuple[str, str], ...]) -> Opt
 def _recoverable_pool_provider(
     resolved_provider: str, client: Any, main_runtime: Optional[Dict[str, Any]] = None
 ) -> Optional[str]:
-    """Infer which provider pool can recover the current auxiliary client."""
+    """Infer which provider pool can recover the current auxiliary client.
+    None when the client targets a different host than the session's configured endpoint for that
+    provider: a rejection there says nothing about the key, so rotating/quarantining it would kill a
+    working credential (Miho report — proxy users)."""
     normalized = _normalize_aux_provider(resolved_provider)
+    base = str(getattr(client, "base_url", "") or "")
+    runtime = _normalize_main_runtime(main_runtime)
+    rt_base = str(runtime.get("base_url") or "")
+    if (base and rt_base and normalized == runtime.get("provider")
+            and not base_url_host_matches(base, base_url_hostname(rt_base))):
+        logger.info("Auxiliary: %s rejected at %s, but the session's %s endpoint is %s — "
+                    "endpoint mismatch, not a dead key; skipping credential rotation",
+                    normalized, base_url_hostname(base), normalized, base_url_hostname(rt_base))
+        return None
     if normalized not in {"", "auto", "custom"}:
         return normalized
-    base = str(getattr(client, "base_url", "") or "")
     known = _provider_for_host(base, _POOL_PROVIDER_BY_HOST)
     if known is not None:
         return known
     # Providers outside the table (e.g. opencode-go): match base URL against registered
     # api_key providers so pool rotation works for them too.
     if main_runtime:
-        rt_provider = _normalize_main_runtime(main_runtime).get("provider", "")
+        runtime = _normalize_main_runtime(main_runtime)
+        rt_provider = runtime.get("provider", "")
         if rt_provider and rt_provider not in {"", "auto", "custom"}:
             with contextlib.suppress(Exception):
                 from hermes_cli.auth import PROVIDER_REGISTRY
                 pconfig = PROVIDER_REGISTRY.get(rt_provider)
                 if pconfig and getattr(pconfig, "auth_type", None) == "api_key":
-                    rt_base = str(getattr(pconfig, "inference_base_url", "") or "").rstrip("/")
+                    # The pool's key was issued for the endpoint the main runtime actually uses; a
+                    # rejection at any other host (registry default vs configured proxy) says nothing
+                    # about that key, so it must not be marked exhausted.
+                    rt_base = str(runtime.get("base_url") or getattr(pconfig, "inference_base_url", "") or "").rstrip("/")
                     if rt_base and base_url_host_matches(base, base_url_hostname(rt_base)):
                         return rt_provider
     return None
@@ -5476,13 +5499,22 @@ def _unwrap_moa_provider(prov: str, mdl: Optional[str]) -> Tuple[str, Optional[s
 
 
 def _expand_direct_api_alias(prov: Optional[str], existing_base: Optional[str]) -> Tuple[Optional[str], Optional[str]]:
-    """``provider: openai`` → custom + api.openai.com/v1; a user base_url is kept but the provider still becomes custom."""
+    """``provider: openai`` → custom + the user's OpenAI endpoint, api.openai.com/v1 only as the last resort.
+
+    A ``providers.openai`` entry keeps the provider name so the named-custom branch applies its base_url and
+    key; otherwise ``OPENAI_BASE_URL`` (a proxy/gateway the OPENAI_API_KEY was issued for) wins over the
+    public endpoint — sending the proxy key to api.openai.com 401s and then quarantines a valid key.
+    """
     if not prov:
         return prov, existing_base
     target_base = _AUX_DIRECT_API_BASE_URLS.get(prov.strip().lower())
     if target_base is None:
         return prov, existing_base
-    return "custom", existing_base or target_base
+    with contextlib.suppress(Exception):
+        from hermes_cli.runtime_provider import _get_named_custom_provider
+        if _get_named_custom_provider(prov) is not None:
+            return prov, existing_base
+    return "custom", existing_base or os.getenv("OPENAI_BASE_URL", "").strip().rstrip("/") or target_base
 
 
 def _preserve_provider_with_base_url(prov: Optional[str]) -> bool:

@@ -34,6 +34,10 @@ _HERMES_CORE_TOOLS = [
     "kanban_unblock",
     "kanban_attach", "kanban_attach_url", "kanban_attachments",
     "computer_use",
+    # Profile (Bot) creation and configuration — only in schema when the
+    # current profile explicitly enables the `profiles` toolset. Gated via
+    # check_fn in tools/profile_manager_tool.py.
+    "profile_manage",
 ]
 
 # Webhook payloads are untrusted third-party content: no file/system execution.
@@ -150,6 +154,15 @@ TOOLSETS = {
         "block for human input, heartbeat during long ops, comment on threads, attach "
         "files, and (for orchestrators) list, unblock, and fan out tasks.",
         [t for t in _HERMES_CORE_TOOLS if t.startswith("kanban_")],
+    ),
+    "profiles": _ts(
+        "Profile (Bot) management — create, configure, and list Hermes "
+        "profiles from inside a session. Opt-in only: the tool stays out "
+        "of the schema unless the profile lists `profiles` in its "
+        "toolsets, so agents cannot mint profiles by default. Deletion is "
+        "deliberately excluded; it stays behind the CLI and desktop "
+        "destructive-confirmation flows.",
+        ["profile_manage"],
     ),
     "discord": _ts("Discord read and participate tools (fetch messages, search members, create threads)", ["discord"]),
     "discord_admin": _ts("Discord server management (list channels/roles, pin messages, assign roles)", ["discord_admin"]),

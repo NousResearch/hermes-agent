@@ -50,6 +50,21 @@ An **Advanced** disclosure opens the full capabilities surface:
 - **Per-skill, per-toolset, and per-MCP-server enablement** — tick exactly the capabilities this specialist needs.
 - **Shared keys** — by default the new Bot shares one OAuth/token pool with the main profile, so credential refreshes cannot invalidate each other. (Older gateways copy credentials instead — still functional, just forked.)
 
+### Creating Bots from a conversation
+
+You can also ask the agent to create Bots for you: talk a plan through, then say *"make a Bot for each of these"* and it builds the roster in one turn — name, title, description, and a `SOUL.md` written from what you just agreed.
+
+This rides the `profile_manage` tool, which is **off by default**. Turn it on for the profile you drive from by adding the `profiles` toolset to its `config.yaml`:
+
+```yaml
+toolsets:
+  - profiles
+```
+
+The tool's actions are `list`, `create`, and `configure`. It deliberately **cannot delete a profile** — removing one destroys its sessions, memory, and credentials, so that stays behind the confirmation flows in **Delete Profile** and `hermes profile delete`. It is also never handed to `delegate_task` subagents, so a delegated worker can't mint Bots as a side effect of some narrower task.
+
+Bots made this way are ordinary profiles: they show up in the roster, in `hermes profile list`, and answer to `hermes -p <name> chat` like any other.
+
 ### Choosing which machine it lives on ("Create on")
 
 With more than one connection registered in [Settings → Connections](./multi-connection-desktop.md), the New Agent dialog grows a **Create on** picker. Pick a device and the profile is created on **that** machine's backend — your window never switches gateways. The new Bot then appears in the roster as a Connections Bot (with an `@name-device` handle when the name exists on several machines), and chatting with it routes to its own machine.

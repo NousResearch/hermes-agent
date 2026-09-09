@@ -260,6 +260,27 @@ class TestFlushAttributesMessages:
         # Not remembered as joined, so the next write retries the join.
         assert "alice" not in mgr._joined_author_peers.get(session.honcho_session_id, set())
 
+    def test_join_uses_the_sessions_observation_flags(self):
+        """The join reads its flags through _join_observation_flags, the seam #103889 fills per session."""
+        mgr = _manager(_config(user_observe_me=True, user_observe_others=True), runtime_id="7654321")
+        session = self._session(mgr)
+        honcho_session = MagicMock()
+        mgr._sessions_cache[session.honcho_session_id] = honcho_session
+        seen: list[str] = []
+
+        def _flags(honcho_session_id):
+            seen.append(honcho_session_id)
+            return False, False
+
+        mgr._join_observation_flags = _flags
+
+        session.add_message("user", "alice speaking", author_peer_id="alice")
+        assert mgr._flush_session(session) is True
+
+        assert seen == [session.honcho_session_id]
+        (_peer, config), = honcho_session.add_peers.call_args[0][0]
+        assert (config.observe_me, config.observe_others) == (False, False)
+
 
 class TestProviderReadsTheAuthor:
     def _provider(self) -> HonchoMemoryProvider:

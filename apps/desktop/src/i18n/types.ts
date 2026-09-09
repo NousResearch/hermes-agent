@@ -2927,6 +2927,23 @@ export interface Translations {
       off: string
       offDescription: string
     }
+    settingsLock: {
+      title: string
+      locked: string
+      unlocked: string
+      ariaLabel: (state: string) => string
+      lockedDescription: string
+      unlockedDescription: string
+      unusable: string
+      passwordLabel: string
+      passwordPlaceholder: string
+      unlock: string
+      relock: string
+      wrongPassword: string
+      remaining: (left: string) => string
+      lockedPaths: string
+      setupHint: string
+    }
     statusbar: {
       unknown: string
       restart: string

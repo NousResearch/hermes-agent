@@ -3535,6 +3535,23 @@ export const zh: Translations = {
       off: '关闭',
       offDescription: '不显示审批提示，直接运行'
     },
+    settingsLock: {
+      title: '设置锁定',
+      locked: '已锁定',
+      unlocked: '已解锁',
+      ariaLabel: (state: string) => `设置锁定：${state}`,
+      lockedDescription: '在解锁之前，本应用、命令行和智能体都无法更改这些设置。',
+      unlockedDescription: '在窗口关闭之前，可以更改被锁定的设置。',
+      unusable: '锁定已启用，但没有指定要锁定的项。在修正根 config.yaml 中的 settings_lock 之前，所有配置写入都会被拒绝。',
+      passwordLabel: '密码',
+      passwordPlaceholder: '解锁密码',
+      unlock: '解锁 15 分钟',
+      relock: '立即锁定',
+      wrongPassword: '密码错误。',
+      remaining: (left: string) => `已解锁 — 剩余 ${left}`,
+      lockedPaths: '已锁定的路径',
+      setupHint: '使用以下命令设置：hermes config lock approvals.mode yolo'
+    },
     statusbar: {
       unknown: '未知',
       restart: '重启',

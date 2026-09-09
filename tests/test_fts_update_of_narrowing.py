@@ -265,6 +265,33 @@ def test_cjk_broad_trigger_is_restored_as_update_of(
         db.close()
 
 
+def test_cjk_ensure_survives_presence_check_failure_when_tokenizer_unloaded(
+    tmp_path: Path,
+):
+    """``_ensure_fts_cjk_schema`` is documented never to raise (#98834).
+
+    The tokenizer-not-loaded branch runs its sqlite_master presence check
+    and self-heal statements before any try/except guards them; a transient
+    sqlite3.OperationalError there (e.g. "database is locked") must degrade
+    to "no cjk index", not propagate.
+    """
+    db = SessionDB(db_path=tmp_path / "state.db")
+    try:
+        db._fts_cjk_loaded = False
+        db._fts_cjk_available = True
+
+        class _LockedOnMasterCursor:
+            def execute(self, sql, *args, **kwargs):
+                if "sqlite_master" in sql:
+                    raise sqlite3.OperationalError("database is locked")
+                raise AssertionError(f"unexpected query: {sql}")
+
+        db._ensure_fts_cjk_schema(_LockedOnMasterCursor())
+        assert db._fts_cjk_available is False
+    finally:
+        db.close()
+
+
 def test_legacy_migration_does_not_drop_cjk_trigger(tmp_path: Path):
     db = SessionDB(db_path=tmp_path / "state.db")
     try:

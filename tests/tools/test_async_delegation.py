@@ -17,7 +17,8 @@ import time
 import pytest
 
 from tools import async_delegation as ad
-from tools.process_registry import process_registry, format_process_notification
+from tools.process_registry import process_registry
+from tools.process_registry_notifications import format_process_notification
 
 
 @pytest.fixture(autouse=True)
@@ -119,38 +120,6 @@ def test_connect_preserves_wal_and_applies_macos_durability_barriers(
         assert conn.execute("PRAGMA checkpoint_fullfsync").fetchone()[0] == 1
     finally:
         conn.close()
-
-
-def test_active_for_session_counts_every_live_delegation_state():
-    with ad._records_lock:
-        ad._records.update(
-            {
-                "running": {
-                    "status": "running",
-                    "origin_ui_session_id": "desktop-sid",
-                },
-                "stalling": {
-                    "status": "stalling",
-                    "origin_ui_session_id": "desktop-sid",
-                },
-                "finalizing": {
-                    "status": "finalizing",
-                    "origin_ui_session_id": "desktop-sid",
-                },
-                "completed": {
-                    "status": "completed",
-                    "origin_ui_session_id": "desktop-sid",
-                },
-                "other-session": {
-                    "status": "running",
-                    "origin_ui_session_id": "other-sid",
-                },
-            }
-        )
-
-    assert ad.active_for_session("desktop-sid") == 3
-    assert ad.active_for_session("other-sid") == 1
-    assert ad.active_for_session("") == 0
 
 
 def test_dispatch_returns_immediately_without_blocking():
@@ -690,7 +659,7 @@ def test_delegate_task_background_uses_live_tui_agent_session_id(monkeypatch):
     from unittest.mock import MagicMock
     import tools.delegate_tool as dt
     from gateway.session_context import clear_session_vars, set_session_vars
-    from tools.approval import reset_current_session_key, set_current_session_key
+    from tools.approval_context import reset_current_session_key, set_current_session_key
 
     parent = MagicMock()
     parent._delegate_depth = 0
@@ -881,3 +850,279 @@ def test_batch_truncation_banner_marks_only_truncated_task():
     # The header banner for task 2 appears after task 1's summary.
     assert banner_pos > clean_pos
 
+
+def _patch_delegation_cfg(monkeypatch, model="upstage/solar-pro-4", provider="openrouter"):
+    """Pin the delegation config the notice renderer reads (adapts the
+    #97667 tests to the shipped implementation, which reads the configured
+    model from config rather than the event's model field)."""
+    import tools.process_registry_notifications as _prn
+
+    monkeypatch.setattr(
+        _prn, "_delegation_config", lambda: {"model": model, "provider": provider}
+    )
+
+
+def test_batch_model_rejection_notice_prepended(monkeypatch):
+    """A rejected delegation model must surface ONE config-level notice above
+    the per-task blocks instead of staying buried in each summary (#97654)."""
+    rejection = "HTTP 400: upstage/solar-pro-4 is not a valid model ID"
+    _patch_delegation_cfg(monkeypatch)
+    evt = _make_async_evt(
+        is_batch=True,
+        model="upstage/solar-pro-4",
+        goals=["task a", "task b"],
+        results=[
+            {
+                "task_index": 0,
+                "status": "completed",
+                "summary": rejection,
+                "api_calls": 1,
+                "duration_seconds": 0.74,
+                "exit_reason": "max_iterations",
+                "truncated": True,
+            },
+            {
+                "task_index": 1,
+                "status": "completed",
+                "summary": rejection,
+                "api_calls": 1,
+                "duration_seconds": 0.71,
+                "exit_reason": "max_iterations",
+                "truncated": True,
+            },
+        ],
+    )
+    text = format_process_notification(evt)
+    assert text is not None
+    assert "SUBAGENT MODEL REJECTED" in text
+    assert "upstage/solar-pro-4" in text
+    assert "delegation.model" in text
+    # The notice precedes the per-task blocks, not just trails them.
+    assert text.index("SUBAGENT MODEL REJECTED") < text.index("TASK 1/2")
+
+
+def test_batch_model_rejection_notice_absent_when_clean(monkeypatch):
+    """Ordinary summaries must not grow a model-rejection notice."""
+    _patch_delegation_cfg(monkeypatch, model="upstage/solar-pro4")
+    evt = _make_async_evt(
+        is_batch=True,
+        model="upstage/solar-pro4",
+        goals=["task a"],
+        results=[
+            {
+                "task_index": 0,
+                "status": "completed",
+                "summary": "did the work",
+                "api_calls": 3,
+                "exit_reason": "completed",
+                "truncated": False,
+            },
+        ],
+    )
+    text = format_process_notification(evt)
+    assert text is not None
+    assert "SUBAGENT MODEL REJECTED" not in text
+
+
+def test_batch_model_rejection_notice_requires_configured_model_in_text(monkeypatch):
+    """A model_not_found pattern naming a DIFFERENT model than the configured
+    delegation model is task-level noise, not a config-level rejection."""
+    _patch_delegation_cfg(monkeypatch, model="upstage/solar-pro4")
+    evt = _make_async_evt(
+        is_batch=True,
+        model="upstage/solar-pro4",
+        goals=["task a"],
+        results=[
+            {
+                "task_index": 0,
+                "status": "completed",
+                "summary": "HTTP 400: other/model-x is not a valid model ID",
+                "api_calls": 1,
+                "exit_reason": "max_iterations",
+                "truncated": True,
+            },
+        ],
+    )
+    text = format_process_notification(evt)
+    assert text is not None
+    assert "SUBAGENT MODEL REJECTED" not in text
+
+
+# ---------------------------------------------------------------------------
+# Per-group completion units: ungrouped tasks return alone, a `group` returns
+# together, and the units of one call share ONE capacity slot.
+# ---------------------------------------------------------------------------
+
+def _grouped_fanout(monkeypatch, tasks, gates):
+    """delegate_task(tasks) in the background with gated fake children; returns the parsed handle."""
+    from unittest.mock import MagicMock
+    import tools.delegate_tool as dt
+
+    parent = MagicMock()
+    parent._delegate_depth = 0
+    parent.session_id = "sess"
+    parent._interrupt_requested = False
+    parent._active_children = []
+    parent._active_children_lock = None
+
+    def child(task_index, goal, child=None, parent_agent=None, **kw):
+        gates[task_index].wait(timeout=60)
+        return {"task_index": task_index, "status": "completed", "summary": f"done: {goal}", "api_calls": 1,
+                "duration_seconds": 0.1, "model": "m", "exit_reason": "completed"}
+
+    def build(**kw):
+        c = MagicMock()
+        c._delegate_role = "leaf"
+        c._subagent_id = f"s{kw['task_index']}"
+        return c
+
+    creds = {"model": "m", "provider": None, "base_url": None, "api_key": None, "api_mode": None, "command": None,
+             "args": None}
+    monkeypatch.setattr(dt, "_build_child_agent", build)
+    monkeypatch.setattr(dt, "_run_single_child", child)
+    monkeypatch.setattr(dt, "_resolve_delegation_credentials", lambda *a, **k: creds)
+    return json.loads(dt.delegate_task(tasks=tasks, background=True, parent_agent=parent))
+
+
+def test_ungrouped_task_completes_alone_and_group_completes_together(monkeypatch):
+    """With delegation.independent_completions on, a finished ungrouped task must not wait for its siblings;
+    tasks sharing a `group` must."""
+    import tools.delegate_tool as dt
+    monkeypatch.setattr(dt, "_load_config", lambda: {"independent_completions": True})
+    gates = [threading.Event() for _ in range(4)]
+    tasks = [
+        {"goal": "review PR 1 thoroughly and report"},
+        {"goal": "compare approach A in detail", "group": "cmp"},
+        {"goal": "compare approach B in detail", "group": "cmp"},
+        {"goal": "review PR 2 thoroughly and report"},
+    ]
+    handle = _grouped_fanout(monkeypatch, tasks, gates)
+    assert handle["status"] == "dispatched"
+    by_group = {tuple(u["task_indexes"]): u["group"] for u in handle["units"]}
+    assert by_group == {(0,): None, (1, 2): "cmp", (3,): None}
+
+    gates[3].set()
+    evt = _drain_one()
+    assert [r["task_index"] for r in evt["results"]] == [3]  # PR 2 landed while everything else still runs
+    assert "review PR 2" in format_process_notification(evt)
+
+    gates[1].set()
+    assert _drain_one(timeout=0.5) is None  # half a group is not a completion
+    gates[2].set()
+    evt = _drain_one()
+    assert evt["group"] == "cmp" and [r["task_index"] for r in evt["results"]] == [1, 2]
+
+    gates[0].set()
+    assert [r["task_index"] for r in _drain_one()["results"]] == [0]
+
+
+def test_units_of_one_call_share_a_single_capacity_slot():
+    """Splitting a call into per-task completions must not consume more pool capacity than the call did."""
+    gate = threading.Event()
+
+    def blocker():
+        gate.wait(timeout=60)
+        return {"results": [], "total_duration_seconds": 0}
+
+    common = dict(goals=["a", "b"], context=None, toolsets=None, role="leaf", model="m", session_key="",
+                  runner=blocker, max_async_children=1)
+    first = ad.dispatch_async_delegation_batch(delegation_id="deleg_call-1", task_indexes=[0], **common)
+    second = ad.dispatch_async_delegation_batch(delegation_id="deleg_call-2", task_indexes=[1],
+                                                slot_key="deleg_call-1", **common)
+    other = ad.dispatch_async_delegation_batch(delegation_id="deleg_other", **common)
+    assert (first["status"], second["status"], other["status"]) == ("dispatched", "dispatched", "rejected")
+    assert ad.active_task_count() == 2
+    gate.set()
+
+
+def test_multi_task_call_is_one_completion_unless_independent_completions(monkeypatch):
+    """Default: a background fan-out returns as ONE message when every task is done, so an orchestrator
+    is not woken N times per call; `group` is inert until delegation.independent_completions is on."""
+    import tools.delegate_tool as dt
+    monkeypatch.setattr(dt, "_load_config", lambda: {})
+    gates = [threading.Event() for _ in range(3)]
+    tasks = [{"goal": "review PR 1 thoroughly and report"}, {"goal": "review PR 2 thoroughly and report", "group": "g"},
+             {"goal": "review PR 3 thoroughly and report", "group": "g"}]
+    handle = _grouped_fanout(monkeypatch, tasks, gates)
+    assert handle["status"] == "dispatched" and "units" not in handle
+    gates[0].set()
+    gates[1].set()
+    assert _drain_one(timeout=0.5) is None  # two of three done: no message yet
+    gates[2].set()
+    evt = _drain_one()
+    assert sorted(r["task_index"] for r in evt["results"]) == [0, 1, 2]
+
+
+def test_units_beyond_slot_count_still_start_and_are_not_stalled_while_queued(monkeypatch):
+    """Units of one call share a slot, so live units can exceed the slot cap; every unit must still get a worker,
+    and a unit must not be judged stalled for time it spent waiting to start."""
+    _fast_stale_monitor(monkeypatch, idle=0.3, grace=0.2)
+    started, release = [], threading.Event()
+    frozen = lambda: (((0, None, None),), False)  # noqa: E731 - child never progresses => token never changes
+
+    def blocker(uid):
+        def run():
+            started.append(uid)
+            release.wait(timeout=10)
+            return {"results": [{"task_index": 0, "status": "completed"}], "total_duration_seconds": 0}
+        return run
+
+    common = dict(goals=["x"], context=None, toolsets=None, role="leaf", model="m", session_key="", max_async_children=1)
+    ad.dispatch_async_delegation_batch(delegation_id="deleg_c-1", runner=blocker("c-1"), progress_fn=frozen, **common)
+    ad.dispatch_async_delegation_batch(delegation_id="deleg_c-2", runner=blocker("c-2"), slot_key="deleg_c-1", **common)
+    deadline = time.monotonic() + 2.0
+    while len(started) < 2 and time.monotonic() < deadline:
+        time.sleep(0.02)
+    assert sorted(started) == ["c-1", "c-2"]  # second unit started despite a 1-slot pool
+
+    # A unit whose runner has NOT started yet must not accrue stall time: pin the pool so it stays queued.
+    monkeypatch.setattr(ad, "_get_executor", lambda n: ad._executor)
+    ad.dispatch_async_delegation_batch(delegation_id="deleg_q", runner=blocker("q"), progress_fn=frozen,
+                                       **{**common, "max_async_children": 3})
+    time.sleep(0.7)  # > idle + grace with the unit still queued
+    with ad._records_lock:
+        assert ad._records["deleg_q"]["status"] == "running"
+    assert "q" not in started
+    release.set()
+
+
+def test_child_finished_before_crash_is_recovered_with_its_result(tmp_path):
+    """Real-import E2E: a 2-task group unit whose owner dies mid-run replays the finished child's real result
+    and marks only the unfinished sibling unknown — a crash costs the stragglers, never the finished work."""
+    repo = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
+    env = {**os.environ, "HERMES_HOME": str(tmp_path), "PYTHONPATH": repo}
+    producer = r'''
+import os, sys, time
+from unittest.mock import MagicMock
+import tools.delegate_tool as dt
+parent = MagicMock(); parent._delegate_depth = 0; parent.session_id = "sess"; parent._interrupt_requested = False
+parent._active_children = []; parent._active_children_lock = None
+def child(task_index, goal, child=None, parent_agent=None, **kw):
+    if task_index == 1:
+        time.sleep(600)
+    return {"task_index": task_index, "status": "completed", "summary": f"done: {goal}", "api_calls": 1,
+            "duration_seconds": 0.1, "model": "m", "exit_reason": "completed"}
+def build(**kw):
+    c = MagicMock(); c._delegate_role = "leaf"; c._subagent_id = f"s{kw['task_index']}"; return c
+creds = {"model": "m", "provider": None, "base_url": None, "api_key": None, "api_mode": None, "command": None, "args": None}
+dt._build_child_agent = build; dt._run_single_child = child; dt._resolve_delegation_credentials = lambda *a, **k: creds
+dt.delegate_task(tasks=[{"goal": "fast member of the group task", "group": "g"},
+                        {"goal": "slow member of the group task", "group": "g"}], background=True, parent_agent=parent)
+time.sleep(2.0)
+sys.stdout.flush(); os._exit(1)
+'''
+    subprocess.run([sys.executable, "-c", producer], cwd=repo, env=env, text=True, capture_output=True, timeout=30)
+    consumer = r'''
+import json, queue
+from tools import async_delegation as ad
+q = queue.Queue(); ad.restore_undelivered_completions(q)
+print(json.dumps(q.get_nowait(), sort_keys=True))
+'''
+    second = subprocess.run([sys.executable, "-c", consumer], cwd=repo, env=env, text=True, capture_output=True,
+                            timeout=15, check=True)
+    evt = json.loads(second.stdout.strip().splitlines()[-1])
+    by_index = {r["task_index"]: r for r in evt["results"]}
+    assert by_index[0]["status"] == "completed" and by_index[0]["summary"] == "done: fast member of the group task"
+    assert by_index[1]["status"] == "unknown"
+    assert "1/2 child results were recorded" in evt["error"]
+    assert "done: fast member" in format_process_notification(evt)

@@ -13,6 +13,7 @@ complete`` instead of the success line, and gateway mode writes ``1`` to
 import pytest
 
 from hermes_cli import update_cmd
+import hermes_cli.update_cmd_maint as update_cmd_maint
 from hermes_cli.update_cmd import (
     _print_update_summary,
     _rebuild_desktop_after_update,
@@ -137,7 +138,16 @@ def test_summary_keeps_success_banner_when_desktop_ok(capsys, monkeypatch):
     monkeypatch.setattr(
         update_cmd, "_update_complete_message", lambda _v: "✓ Update complete! (v0.20.2)"
     )
+    monkeypatch.setattr(
+        update_cmd_maint, "_update_complete_message", lambda _v: "✓ Update complete! (v0.20.2)"
+    )
     monkeypatch.setattr(update_cmd, "_branch_head_suffix", lambda *a, **k: "")
+    monkeypatch.setattr(
+        update_cmd, "_post_update_sqlite_runtime_status", lambda: (True, None)
+    )
+    monkeypatch.setattr(
+        update_cmd_maint, "_post_update_sqlite_runtime_status", lambda: (True, None)
+    )
     _print_update_summary(
         node_failures=[],
         desktop_build_ok=True,

@@ -1,6 +1,8 @@
 import { useStore } from '@nanostores/react'
 import type * as React from 'react'
 
+import { type NewSessionSplitHandler, startNewProjectDrag, startNewSessionDrag } from '@/app/chat/new-session-drag'
+import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { DisclosureCaret } from '@/components/ui/disclosure-caret'
 import { RowButton } from '@/components/ui/row-button'
@@ -8,6 +10,7 @@ import { Tip } from '@/components/ui/tooltip'
 import { compactNumber } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import { $sidebarRowMeta } from '@/store/layout'
+import type { TileDock } from '@/store/session-states'
 
 import {
   SIDEBAR_ROW_INSET,
@@ -31,6 +34,75 @@ export function SidebarSectionMeta({ children }: { children: React.ReactNode }) 
 // where callers already look for row chrome.
 export { SIDEBAR_LEAD_ICON_SIZE, SIDEBAR_ROW_CARD_MIN_H, SIDEBAR_TRUNCATED_LEADING } from './row-geometry'
 
+// The section header's "+" button, hover-revealed (group/section lives on
+// SidebarSectionHeader), mirroring the artifacts/file browser header
+// affordances. focus-visible keeps them keyboard-reachable.
+const HEADER_ACTION_BTN =
+  'text-(--ui-text-tertiary) opacity-0 transition-opacity hover:bg-(--ui-control-hover-background) hover:text-foreground group-hover/section:opacity-100 focus-visible:opacity-100'
+
+// The sessions section header's "+" — the flat list's top-level new-session
+// control. Also a drag source, the same gesture as the nav's "New session"
+// row: drag it onto a chat zone's tab strip / edge / center to create the
+// session exactly there (stack / split). The pointer drag session owns the
+// gesture — a sub-threshold release falls through to the onClick (ordinary
+// new session), and an engaged drag suppresses that click so it never
+// double-creates. Both paths resolve the session's profile identically: the
+// create path (`openNewSessionTile`) reads `$newChatProfile` at commit, and
+// neither gesture resets it — matching the header "+" click behavior exactly
+// (only the nav "New session" row resets it, since it navigates to the draft
+// composer instead).
+export function SidebarSectionAddButton({
+  ariaLabel,
+  onNewProjectDrag,
+  onNewSessionSplit,
+  onPlainClick
+}: {
+  ariaLabel: string
+  /** Present when this header "+" creates a PROJECT (the project-overview
+   *  mode's "New project" button): dragging it arms where that project should
+   *  start and a valid drop opens the same "New project" dialog. `onArm` also
+   *  receives null so an aborted/deny-zone drag can clear a stale placement. */
+  onNewProjectDrag?: {
+    onArm: (placement: { anchor: string; before?: null | string; cwd?: null | string; dir: TileDock } | null) => void
+  }
+  /** Absent when this header "+" has no session-creating drag semantics
+   *  (e.g. the project-overview mode, where the "+" opens the project
+   *  dialog). Then the button stays click-only unless `onNewProjectDrag` is
+   *  supplied. */
+  onNewSessionSplit?: NewSessionSplitHandler
+  onPlainClick: () => void
+}) {
+  return (
+    <Tip label={ariaLabel}>
+      <Button
+        aria-label={ariaLabel}
+        className={HEADER_ACTION_BTN}
+        onClick={event => {
+          event.stopPropagation()
+          onPlainClick()
+        }}
+        onPointerDown={
+          onNewProjectDrag
+            ? event => {
+                startNewProjectDrag(onNewProjectDrag.onArm, event, { onTap: onPlainClick })
+              }
+            : onNewSessionSplit
+              ? event => {
+                  startNewSessionDrag(placement => {
+                    onNewSessionSplit(placement.dir, { anchor: placement.anchor, before: placement.before })
+                  }, event)
+                }
+              : undefined
+        }
+        size="icon-xs"
+        variant="ghost"
+      >
+        <Codicon name="add" size="0.75rem" />
+      </Button>
+    </Tip>
+  )
+}
+
 /** Vertical stack of rows (gap-px, single column). */
 export function SidebarRowStack({ className, ...props }: React.ComponentProps<'div'>) {
   return <div className={cn('grid grid-cols-[minmax(0,1fr)] gap-px', className)} {...props} />
@@ -43,23 +115,55 @@ export function SidebarRowNest({ className, ...props }: React.ComponentProps<'di
 
 /**
  * Chronological date-bucket separator ("Yesterday" / "Last week" / "June") for
- * the session list. One flat row — a small caption plus a hairline rule — so it
- * groups sessions by recency without adding a level of indentation.
+ * the session list. Caption-shaped — a small label plus a hairline — so it
+ * groups sessions by recency without adding a level of indentation. When
+ * `toggle` is set the whole caption collapses the sessions beneath it, same
+ * gesture as a repo header (the hover caret is the tell).
  */
 export function SidebarDateDivider({
   action,
   className,
   label,
+  toggle,
   ...props
-}: React.ComponentProps<'div'> & { action?: React.ReactNode; label: string }) {
+}: React.ComponentProps<'div'> & {
+  action?: React.ReactNode
+  label: string
+  toggle?: { ariaLabel: string; onToggle: () => void; open: boolean }
+}) {
+  const caption = (
+    <span className="shrink-0 text-[0.64rem] font-semibold uppercase tracking-[0.12em] text-(--ui-text-quaternary)">
+      {label}
+    </span>
+  )
+
+  const rule = <span aria-hidden="true" className="h-px min-w-4 flex-1 bg-(--ui-stroke-tertiary)" />
+
   return (
     // group/workspace: a divider heads a group the same way a repo header does,
     // so it borrows the header's hover-revealed "+" verbatim.
     <div className={cn('group/workspace flex select-none items-center gap-2 px-2 pb-0.5 pt-2', className)} {...props}>
-      <span className="shrink-0 text-[0.64rem] font-semibold uppercase tracking-[0.12em] text-(--ui-text-quaternary)">
-        {label}
-      </span>
-      <span aria-hidden="true" className="h-px flex-1 bg-(--ui-stroke-tertiary)" />
+      {toggle ? (
+        <button
+          aria-expanded={toggle.open}
+          aria-label={toggle.ariaLabel}
+          className="flex min-w-0 flex-1 items-center gap-2 bg-transparent text-left"
+          onClick={toggle.onToggle}
+          type="button"
+        >
+          {caption}
+          <DisclosureCaret
+            className="text-(--ui-text-tertiary) opacity-0 transition group-hover/workspace:opacity-100"
+            open={toggle.open}
+          />
+          {rule}
+        </button>
+      ) : (
+        <>
+          {caption}
+          {rule}
+        </>
+      )}
       {action}
     </div>
   )
@@ -140,8 +244,9 @@ export interface SidebarGroupTotals {
 /**
  * Header for a group of sessions that hangs its rows underneath — a project, a
  * profile. Row-shaped rather than caption-shaped (that's {@link SidebarDateDivider},
- * for groupings that only separate), so a group header lines up with the session
- * rows it heads. `toggle` omitted keeps the caret's space with nothing to reveal.
+ * which still collapses, just without a lead glyph), so a group header lines up
+ * with the session rows it heads. `toggle` omitted keeps the caret's space with
+ * nothing to reveal.
  */
 export function SidebarGroupRow({
   actions,

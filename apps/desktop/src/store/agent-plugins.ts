@@ -26,6 +26,14 @@ export interface AgentPluginRow {
   status: 'enabled' | 'disabled' | 'not enabled'
   /** Agent Plugins v1 package (portable skills/MCP format) vs native Hermes. */
   portable?: boolean
+  /** Curated-catalog provenance (from the install sidecar), when present. */
+  catalog_name?: string
+  catalog_tier?: string
+  installed_sha?: string
+  /** Current catalog pin for this entry (backend-computed). */
+  catalog_sha?: string
+  /** Installed SHA differs from the catalog pin — an update is available. */
+  update_available?: boolean
 }
 
 export type AgentPluginsStatus = 'idle' | 'loading' | 'ready' | 'error'
@@ -179,7 +187,16 @@ export interface AgentPluginInstallResult {
 
 export async function installAgentPlugin(
   request: GatewayRequest,
-  opts: { identifier: string; force?: boolean; enable?: boolean }
+  opts: {
+    identifier: string
+    force?: boolean
+    enable?: boolean
+    /** Curated-catalog install: the backend resolves repo + pinned SHA from
+     *  its own plugin-catalog and records provenance in the sidecar. */
+    catalogName?: string
+    /** Target profile's HERMES_HOME (null/undefined = backend launch profile). */
+    profile?: string | null
+  }
 ): Promise<AgentPluginInstallResult> {
   try {
     const result = await request<{
@@ -188,12 +205,13 @@ export async function installAgentPlugin(
       warnings?: string[]
       missing_env?: string[]
       error?: string
-    }>('plugins.manage', {
+    }>('plugins.manage', withProfile({
       action: 'install',
       identifier: opts.identifier,
       force: Boolean(opts.force),
-      enable: opts.enable ?? true
-    })
+      enable: opts.enable ?? true,
+      ...(opts.catalogName ? { catalog_name: opts.catalogName } : {})
+    }, opts.profile))
 
     if (!result?.ok) {
       return { ok: false, error: result?.error || 'Install failed' }
@@ -207,5 +225,38 @@ export async function installAgentPlugin(
     }
   } catch (e) {
     return { ok: false, error: e instanceof Error ? e.message : String(e) }
+  }
+}
+
+/** Re-pin a catalog-installed plugin to the current catalog SHA (backend
+ *  `plugins.manage update`; catalog installs only). Refreshes the list on
+ *  success. Returns whether the update applied. */
+export async function updateAgentPlugin(
+  request: GatewayRequest,
+  name: string,
+  failMessage: string,
+  profile?: string | null
+): Promise<boolean> {
+  $agentPluginBusy.set(name)
+
+  try {
+    const result = await request<{ ok?: boolean; unchanged?: boolean }>(
+      'plugins.manage',
+      withProfile({ action: 'update', name }, profile)
+    )
+
+    if (!result?.ok) {
+      throw new Error(failMessage)
+    }
+
+    await loadAgentPlugins(request, profile)
+
+    return !result.unchanged
+  } catch (e) {
+    notifyError(e, failMessage)
+
+    return false
+  } finally {
+    $agentPluginBusy.set(null)
   }
 }

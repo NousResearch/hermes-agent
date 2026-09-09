@@ -11,7 +11,8 @@ from types import SimpleNamespace
 import pytest
 
 import hermes_state
-from hermes_state import SessionDB, SessionTurnLeaseLostError
+from hermes_state import SessionDB
+from hermes_state_errors import SessionTurnLeaseLostError
 
 
 def test_turn_lease_serializes_separate_session_db_instances(tmp_path):

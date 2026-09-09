@@ -36,17 +36,27 @@ That uses your current config, keys, sessions, and skills.
 
 The desktop app is organized as a chat-first window with a left sidebar for navigation. It's built to allow managing multiple simultaneous agent conversations, configuring messaging providers, creating artifacts, browsing projects' folder structures, and working on multiple projects at once.
 
+Sidebar selection follows the focused chat pane. Opening or focusing a session tab clears a page's highlight, including contributed pages such as Kanban, even when the workspace retains that page's route.
+
 ### Chat
 
 The center of the app. You get:
 
 - **Streaming responses** with live tool activity and structured tool-call summaries as the agent works.
+- **Markdown line breaks** follow Markdown semantics: two trailing spaces create a hard line break; an ordinary newline stays a soft break. Media and preview extraction preserve text outside removed attachment spans, including first-line code indentation and unfinished fenced-code spacing. Code display and Copy preserve leading blank lines, trailing spaces, and terminal blank lines from the Markdown parser.
 - **The same conversation history** as every other Hermes surface — sessions started here resume in the CLI/TUI and vice versa.
 - **Drag-and-drop files** anywhere in the chat area to attach them to your next message.
+- **Independent background drafts** — hidden chat tabs can update their drafts without moving the caret or selection in the visible composer.
+- **Directive chip actions** — hover an actionable reference (such as a URL) to reveal its action pill. A short grace period lets you move from the chip to the pill before it dismisses. The pill stays available while you move within it; after leaving, unrelated pointer movement does not delay dismissal. Clicking its action preserves the draft selection.
 - **A right-hand preview rail** — render web pages, files, and tool outputs side by side while you keep chatting.
+- **Comment mode in the in-app browser** — click **Annotate** in the preview browser bar, then click any element (or drag a box) on the live page and type a note; each saved comment stays as a numbered pin on the page. Saving a pin never sends a turn — when you're done, **Add N comments** attaches a cropped screenshot per pin and a short prompt naming each comment to the composer, and you still hit send yourself. Each element comment carries its CSS selector, its markup, and the computed styles that matter for layout, so the agent can find the element in your source instead of guessing from the picture. Password and hidden field values, and any attribute that looks like a key or token, are redacted on the page before the markup leaves it. Larger batches arrive grouped by which part of the page each comment sits in, so twenty-odd comments become a handful of pieces of work rather than one task each — and because the groups are separate DOM subtrees they usually touch separate files, which is what makes handing them to parallel workers safe. Pin numbers hold steady if you delete one, and switching chats clears the stack.
 - **Composer history and queue editing** — press the up/down arrow keys in an empty composer to recall and reuse previous prompts, and edit messages you've queued up before they're sent. Pressing Stop (or Esc) while turns are queued pauses the queue and expands it above the composer; resume it from there, or send, edit, and delete individual entries.
+- **Task progress above the composer** — expand the Tasks header to inspect each phase. Long lists stay bounded above the input; scroll inside the expanded list to reach the final tasks without moving the conversation.
 - **A conversation timeline rail** — long chats get a slim rail of markers along the edge of the transcript, one per prompt. Hover it to pop open the list of prompts, click one to jump straight to that point in the conversation. (It appears once the chat has a handful of turns.)
+- **Reading-position memory** — returning to a session restores its saved distance from the bottom instead of always jumping to the latest message. Sessions left at the bottom continue following new output. Use **Scroll to bottom** to return to the live edge. Positions are kept in this Desktop installation's local storage; they are not synchronized through the backend.
 - **Find in page** — press **Cmd/Ctrl+F** to open a find bar that searches the rendered chat transcript. Enter / Shift+Enter (or Cmd/Ctrl+G / Cmd/Ctrl+Shift+G while the bar is open) step through matches; Esc closes it.
+
+Async cron and delegation completions appear as collapsed timeline disclosures. Open the completion label to read the result body (including job output) as Markdown; long reports scroll within the disclosure. Task instructions and delivery envelopes are not shown as report content.
 
 #### Status bar
 
@@ -54,7 +64,8 @@ The bar along the bottom of the chat shows live session state and exposes quick 
 
 - **Per-session YOLO toggle** — flip YOLO on or off for just this session (matching the TUI). YOLO bypasses the dangerous-command approval prompts, so know what you're turning off — see [Security → YOLO Mode](./security.md#yolo-mode).
 - **Context-usage meter** — a live "% full" meter of the session's context window. Click it to open the **Context Usage** popover with a token breakdown by category (system prompt, tool definitions, skills, memory, rules, MCP, subagent definitions, and the conversation itself) so you can see exactly what's eating the window before compression kicks in.
-- **Customizable items** — right-click the status bar (**Show in status bar**) to choose what appears: the context meter, workspace, model, approvals, turn/session timers, terminal, Command Center, backend version, and more — or hide the bar entirely (**Cmd/Ctrl+Shift+S** toggles it).
+- **Cache hit rate and tokens per second** — off by default; turn them on from the right-click menu. Cache hit rate is the share of this session's prompt tokens served from the provider's prompt cache (cached tokens cost less, so higher is cheaper — you can watch a session get cheaper as it warms up). Tokens per second is output throughput averaged over the last 10 model calls. Both update live during a turn.
+- **Customizable items** — right-click the status bar (**Show in status bar**) to choose what appears: the context meter, cache hit rate, tokens per second, workspace, model, approvals, turn/session timers, terminal, Command Center, backend version, and more — or hide the bar entirely (**Cmd/Ctrl+Shift+S** toggles it).
 
 Chatting against a Hermes instance on another machine instead of the bundled local backend? See [Connecting to a remote backend](#connecting-to-a-remote-backend) below — and for the full picture of how the remote-hosted dashboard connection works (the auth gate, the `/api/ws` chat socket, and WebSocket close-code triage), see [Web Dashboard → Connecting Hermes Desktop to a remote backend](./features/web-dashboard.md#connecting-hermes-desktop-to-a-remote-backend).
 
@@ -79,7 +90,7 @@ Changing any of these values invalidates only that profile's disk-discovery cach
 
 The model picker lives in the **composer**, just left of the microphone. Click it to switch the model, reasoning effort, and fast mode from one dropdown.
 
-- **The composer picker is sticky UI state and never touches your default.** It's remembered locally (per device) and **follows** across new chats and restarts instead of snapping back to the default — pick a model once and the next `Cmd/Ctrl+N` opens on it. With a live chat, switching models scopes the change to that **current chat**; either way the selection rides along when the session is created/switched and is **never** written to the profile default. (Switching [profiles](#sessions--profiles) reseeds to that profile's own default.)
+- **The composer picker is sticky UI state and never touches your default.** It's remembered locally (per device) and **follows** across new chats and restarts instead of snapping back to the default — pick a model once and the next `Cmd/Ctrl+N` opens on it. With a live chat, switching models scopes the change to that **current chat**; either way the selection rides along when the session is created/switched and is **never** written to the profile default — with one exception: on a fresh profile that has no `model.default`/`model.provider` configured yet, the first pick is persisted so the app has a real default instead of falling through to a stray API-key env var on restart. Persistence follows the same rule as `/model` (`model.persist_switch_by_default`); use **Settings → Model** to change the default deliberately. (Switching [profiles](#sessions--profiles) reseeds to that profile's own default.)
 - **Set the default in Settings → Model.** That "main" model is your **per-profile global default** — it's what new chats, crons, subagents, and auxiliary tasks start from, and it's the only place that writes it. Each [profile](#sessions--profiles) keeps its own default.
 - **Per-model effort/fast presets.** Each model remembers its own reasoning effort and fast-mode choice in the desktop app, re-applied to the session whenever you pick that model. These presets are a desktop convenience and don't change crons or subagents.
 - **Mid-chat switches reset the prompt cache.** Switching the model inside a live chat means the next message re-reads the whole conversation at full input price (provider prompt caches are keyed to the model). Fine occasionally; on a long chat, a fresh chat on the new model is often cheaper than bouncing back and forth.
@@ -89,6 +100,8 @@ The model picker lives in the **composer**, just left of the microphone. Click i
 Explore and preview the working directory without leaving the app — useful for following along as the agent reads, writes, and edits files. Set the initial project directory with `hermes desktop --cwd <path>` (or the `HERMES_DESKTOP_CWD` environment variable).
 
 ### Artifacts
+
+When connected to a remote gateway, opening a file artifact downloads it through that gateway, using the artifact’s originating profile and session. Relative paths resolve against the session’s saved working directory; home-relative paths use the gateway’s home, never the Desktop machine’s home. Windows-style relative paths are recognized alongside forward-slash paths, and file URIs retain drive and network-share information for the gateway to interpret. Missing sessions or working directories produce an error rather than selecting a different local file.
 
 The **Artifacts** view collects what your sessions generate — **images, files, and links** — into one searchable, browsable gallery. Open it from the sidebar, the command palette (**Artifacts — Browse generated outputs**), or a `nav.artifacts` shortcut you bind yourself. It indexes recent session outputs automatically; every artifact shows which session produced it with a jump back to that chat, and images and files open in a preview with download / open-in-browser / copy actions.
 
@@ -107,6 +120,10 @@ A real terminal lives in the right sidebar, next to the file browser:
 - **Ctrl+`** shows the terminal (opening one if none exist); **Ctrl+Shift+`** spawns an additional one. Multiple terminals stack in a tab rail — **Ctrl+Shift+↓/↑** walk between them, **Ctrl+Shift+W** closes the active one.
 - **Shells persist while hidden.** Closing or hiding the panel doesn't kill your shell — every open terminal stays mounted with its scrollback and running processes intact until you explicitly close it.
 - **Add to chat** — select terminal output and send it into the composer as context for your next message.
+
+### Live subagents
+
+While delegated workers are live, a **Subagents** frame appears above the composer with their count, task names, elapsed time, and latest activity. It previews up to three workers; expand the header for the roster, then select a worker for details and **Steer** / **Stop** controls. Each frame belongs to its chat, including in split panes. Steering acknowledges that guidance is queued for a checkpoint, not that the child has already read it. See [Monitoring subagents](/user-guide/features/delegation#monitoring-running-subagents-agents).
 
 ### Git review & worktrees
 
@@ -156,11 +173,12 @@ That bridges to `ELECTRON_OZONE_PLATFORM_HINT` at launch (an explicit env var st
 
 Manage providers, models, tools, and credentials from a real UI instead of editing YAML. First-run onboarding gets you to your first message in seconds. The settings panes cover providers/keys, model selection, toolset configuration, MCP servers, the gateway, and session management.
 
-- **Providers settings pane** — a dedicated place to manage inference providers, with an Accounts / API-keys UX for signing in and storing credentials per provider.
+- **Providers settings pane** — a dedicated place to manage inference providers, with an Accounts / API-keys UX for signing in and storing credentials per provider. Accounts and API keys share the Settings **Applies to** selection: credential reads and edits, OAuth account removal, and sign-in launched here target the selected profile, not the active chat profile. The sign-in flow keeps that target through credential saving and model selection. Changing **Applies to** discards unsaved credential drafts. Closing sign-in cancels polling and ignores late results; a credential write already sent may still finish in its original profile. Externally managed CLI credentials use their own CLI and are not covered by this profile selector. Its **Local Models** view installs and manages an on-device llama.cpp runtime — see [Local Models](/user-guide/local-models).
 - **Every provider and model in the menus** — the GUI surfaces the full provider list and every model that `hermes model` knows about, so you pick from the same catalog the CLI sees rather than a curated subset.
 - **xAI Grok OAuth** — Grok is a first-class OAuth provider in the launcher; sign in through the browser flow like the other OAuth providers.
 - **Tool-backend installs from the GUI** — run a tool backend's post-setup install steps directly from the app instead of dropping to a terminal.
 - **Terminal font picker** — choose an installed font in **Settings → Appearance**. Nerd Fonts such as `MesloLGS NF` render Powerlevel10k separators and icons in both interactive and agent terminals; the setting is saved per profile.
+- **Reopen Last Chat on Launch** — by default the app picks up where you left off on cold start. Turn it off in **Settings → Appearance** (or set `display.resume_last_session: false` in `config.yaml`) to always begin with a fresh chat. Deep links and explicit destinations are never overridden either way.
 - **Auxiliary-model warning** — if you switch the main model to a new provider while auxiliary tasks (titling, summarization, and similar helpers) are still pinned to another provider, the app warns you so you don't unknowingly split work across two providers.
 - **VS Code Marketplace themes** — beyond the built-in theme presets, the appearance settings include a live VS Code Marketplace search: pick any color theme and the app downloads, converts, and installs it as a desktop theme. The same importer is available from the command palette (*Install theme*), and imported themes can be removed again from the appearance settings.
 - **Keep computer awake** — **Settings → Advanced → Keep computer awake** stops the machine from sleeping so long or overnight agent runs keep going (the display can still dim). This is a per-computer setting.
@@ -182,7 +200,7 @@ When you have two or more [profiles](./profiles.md), the config-backed settings 
 
 The app also surfaces the broader Hermes management surface so you don't have to drop to a terminal:
 
-- **Skills** — browse, install, and manage [skills](./features/skills.md).
+- **Skills** — browse, install, and manage [skills](./features/skills.md). The Skills tab lists your installed skills with enable/disable toggles, and below them the full built-in optional-skills catalog that ships with Hermes — each entry has a one-click **Install** button that flips the row into the installed list once it finishes.
 - **Memory graph (Star Map)** — type `/journey` (aliases `/learning`, `/memory-graph`) in chat to open an interactive constellation of learned skills and memories over time, with a playback scrubber. Nodes can be edited or deleted right from the panel (skills are archived, memories removed). See [Learning Journey](./features/memory.md#learning-journey-journey).
 - **Cron** — view and manage [scheduled jobs](../reference/cli-commands.md#hermes-cron).
 - **Profiles** — switch between [Hermes profiles](./profiles.md) (isolated config/skills/sessions).
@@ -250,7 +268,7 @@ chats decide who replies: [Bot Mode: A Roster of Agents](./bot-mode.md).
 - **Command palette** — press **Cmd+K** or **Cmd+P** (Ctrl+K / Ctrl+P on Windows/Linux) to jump to actions and navigate the app from the keyboard: open any page or settings section, jump to a session by title or id, switch model/theme/color mode, spawn a terminal, restart the gateway, update Hermes, and more.
 - **Rebindable shortcuts** — **Settings → Keyboard Shortcuts** (or **Cmd/Ctrl+/**) opens the shortcuts panel where you can remap almost every binding — profile switching, session navigation, view toggles, and any shortcuts contributed by desktop plugins. Duplicate assignments are flagged as conflicts. A few defaults worth knowing: **Cmd/Ctrl+N** new session, **Cmd/Ctrl+.** Command Center, **Cmd/Ctrl+,** Settings, **Cmd/Ctrl+Shift+F** search sessions, **Cmd/Ctrl+1–9** switch profiles, **Shift+X** toggle light/dark.
 - **Custom zoom shortcuts** — zoom the interface in half-step increments for finer control over text size.
-- **UI language switcher** — change the app's interface language in-app, including Simplified Chinese (zh-Hans).
+- **UI language switcher** — change the app's interface language in-app: English, Simplified Chinese (zh-Hans), Traditional Chinese (zh-Hant), Japanese, Arabic (RTL), and Russian.
 
 ### Sessions & profiles
 
@@ -262,6 +280,13 @@ chats decide who replies: [Bot Mode: A Roster of Agents](./bot-mode.md).
 ## Updating
 
 The app checks for updates in the background and offers a one-click update when one is ready.
+
+During a local update, detailed build output streams into the active profile's
+`logs/update.log`, including detached `--gateway` updates. It stays out of the
+terminal but is available for troubleshooting before the build finishes. The
+Windows hand-off counts new output in this log as progress; a child that produces
+no output is still subject to the idle watchdog. Process liveness alone does not
+reset that watchdog, and cancelling an update does not wait for its build to finish.
 
 The desktop app and the Hermes backend it talks to update on separate clocks — the app package on your machine, the backend wherever it runs. When more than one update target exists (a remote gateway, or several registered gateways), the update affordances (**Update now** on the About panel, the ⌘K **Update Hermes** row, and the update-ready toast) update **everything**: the connected backend first, then every other eligible registered gateway (Hermes Cloud entries are platform-managed and skipped), and the desktop app itself last, since applying the client update relaunches the app. Single-machine installs keep the one-button experience.
 
@@ -288,6 +313,14 @@ Running `hermes uninstall --gui` from a **source checkout** (a `hermes desktop` 
 ## CLI reference: `hermes desktop`
 
 To launch via the CLI, simply run `hermes desktop`. By default it installs workspace Node dependencies, builds the current OS's unpacked Electron app, then launches that packaged artifact.
+
+On Linux, launches refresh `$XDG_DATA_HOME/applications/hermes.desktop` (by default `~/.local/share/applications/hermes.desktop`) so Hermes appears in the application menu. To preserve a hand-edited entry, disable refreshes:
+
+```bash
+hermes config set desktop.manage_launcher_entry false
+```
+
+A missing entry is still created; the flag only stops `hermes desktop` from rewriting an entry that already exists.
 
 | Flag                 | Description                                                                               |
 | -------------------- | ----------------------------------------------------------------------------------------- |
@@ -424,6 +457,10 @@ another profile's agent plugins without switching the whole app (the backend
 `plugins.manage` RPC accepts an optional `profile` parameter for this).
 
 ## Troubleshooting
+
+### Reconnect without restarting the app
+
+If a Desktop chat or bot stops responding while the connection still shows **Connected**, select that bot/profile or gateway, open the status bar's gateway menu, and click **Reconnect gateway**. Reconnect stays available for open, connecting, and disconnected transports. It redials the active route without restarting Desktop or deliberately closing other routes' sockets. In-flight requests on the selected socket can be interrupted; this is an explicit recovery action, not a backend or model restart.
 
 ### Failed turns name the failing layer
 

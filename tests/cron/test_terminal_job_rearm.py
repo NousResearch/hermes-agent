@@ -32,7 +32,7 @@ def tmp_cron_dir(tmp_path, monkeypatch):
 
 
 def test_completed_oneshot_trigger_is_refused_and_disk_record_is_unchanged(tmp_cron_dir):
-    job = create_job("done", "30m", name="done", repeat=1)
+    job = create_job("done", "in 30m", name="done", repeat=1)
     mark_job_run(job["id"], success=True)
     before = copy.deepcopy(load_jobs())
 
@@ -53,7 +53,7 @@ def test_exhausted_recurring_job_trigger_is_refused(tmp_cron_dir):
 
 def test_wedged_claimed_oneshot_remains_triggerable(tmp_cron_dir):
     now = datetime.now(timezone.utc)
-    job = create_job("wedged", "30m", repeat=2)
+    job = create_job("wedged", "in 30m", repeat=2)
     record = get_job(job["id"])
     record.update({
         "run_claim": {"at": now.isoformat(), "by": "dead-worker"},
@@ -89,7 +89,7 @@ def test_terminal_jobs_are_not_due_or_advanced(tmp_cron_dir):
 
 
 def test_terminal_refusal_survives_reload(tmp_cron_dir):
-    job = create_job("done", "30m", repeat=1)
+    job = create_job("done", "in 30m", repeat=1)
     mark_job_run(job["id"], success=True)
     before = copy.deepcopy(load_jobs())
     assert get_job(job["id"])["state"] == "completed"
@@ -100,7 +100,7 @@ def test_terminal_refusal_survives_reload(tmp_cron_dir):
 
 
 def test_update_cannot_reactivate_terminal_record(tmp_cron_dir):
-    job = create_job("done", "30m", repeat=1)
+    job = create_job("done", "in 30m", repeat=1)
     mark_job_run(job["id"], success=True)
     with pytest.raises(ValueError, match="terminal"):
         update_job(job["id"], {"enabled": True})
@@ -111,7 +111,7 @@ def test_update_cannot_reactivate_terminal_record(tmp_cron_dir):
 def test_rearm_completed_oneshot_restores_schedule_and_preserves_history(tmp_cron_dir):
     from cron.jobs import rearm_oneshot
 
-    job = create_job("done", "30m", repeat=3)
+    job = create_job("done", "in 30m", repeat=3)
     mark_job_run(job["id"], success=True)
     finished = get_job(job["id"])
     run_at = (datetime.now(timezone.utc) + timedelta(minutes=5)).isoformat()
@@ -135,7 +135,7 @@ def test_rearm_refuses_recurring_and_live_claim(tmp_cron_dir):
     with pytest.raises(ValueError, match="one-shot"):
         rearm_oneshot(recurring["id"], future)
 
-    oneshot = create_job("claimed", "30m")
+    oneshot = create_job("claimed", "in 30m")
     record = get_job(oneshot["id"])
     record["run_claim"] = {"at": datetime.now(timezone.utc).isoformat(), "by": "live"}
     save_jobs([record])
@@ -234,7 +234,7 @@ class TestRecurringJobStuckInErrorStateIsRecoverable:
         """Control: the fix must not weaken protection for a genuinely
         terminal state=completed job — only state=error recurring jobs are
         exempted."""
-        job = create_job("done", "30m", repeat=1)
+        job = create_job("done", "in 30m", repeat=1)
         mark_job_run(job["id"], success=True)
         assert get_job(job["id"])["state"] == "completed"
 

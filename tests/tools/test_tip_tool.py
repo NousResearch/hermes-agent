@@ -24,18 +24,19 @@ def emitted(monkeypatch):
 def test_lives_in_the_gui_surface_toolset(monkeypatch):
     """Scoped by toolset, not by the backend's env — see AGENTS.md."""
     monkeypatch.delenv("HERMES_DESKTOP", raising=False)
-    entry = registry.get_entry("tip")
+    entry = registry.get_entry("show_tip")
 
     assert entry is not None
     assert entry.toolset == "desktop_ui"
 
 
-def test_is_ungated_like_tour():
-    """The Appearance switch governs the app's idle rotation, not this."""
-    entry = registry.get_entry("tip")
+def test_answers_to_the_appearance_switch():
+    """Tips off has to mean the model never sees the tool. See
+    tests/tools/test_display_toggles.py for the config end of it."""
+    entry = registry.get_entry("show_tip")
 
     assert entry is not None
-    assert entry.check_fn is None
+    assert entry.check_fn is tt.check_tips_enabled
 
 
 def test_requires_the_desktop_bridge(monkeypatch):

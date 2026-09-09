@@ -339,6 +339,106 @@ describe('connection-aware plugin host APIs', () => {
     expect(requestGatewayForProfile).not.toHaveBeenCalled()
   })
 
+  it('forwards an explicit timeout so long-running methods outlive the generic deadline', async () => {
+    // #93911: bot_relay.deliver's backend contract tolerates ~1320s (120s turn
+    // lock + a 600s turn, doubled by the bounded retry). Without a way to pass
+    // that bound through, every such call died at the pool's generic 30s
+    // deadline and surfaced as an unclassified failure.
+    const route = {
+      connectionId: 'source-a',
+      mode: 'remote' as const,
+      profile: 'remote-worker',
+      targetProfile: 'backend-worker'
+    }
+
+    await host.requestProfile(route, 'bot_relay.deliver', { message: 'hi', profile: 'backend-worker' }, 1_320_000)
+
+    expect(requestGatewayForAgent).toHaveBeenCalledWith(
+      'source-a',
+      'remote-worker',
+      'bot_relay.deliver',
+      { message: 'hi', profile: 'backend-worker' },
+      1_320_000
+    )
+  })
+
+  it('survives a backend that settles at its own ceiling, and only fails past the client deadline', async () => {
+    // #93911 review follow-up (adversarial): the failure mode is not "no
+    // timeout" but "a timeout equal to the backend's ceiling". Model the
+    // documented worst case on a virtual clock — the turn lock wait, a full
+    // timed attempt, the policy-gated re-run, and then the settlement the
+    // handler still has to serialize and transport — and assert that a
+    // deadline set AT the ceiling loses that race while one with margin wins.
+    const LOCK_WAIT_MS = 120_000
+    const ATTEMPT_MS = 600_000
+    const ATTEMPTS = 2
+    const CEILING_MS = LOCK_WAIT_MS + ATTEMPT_MS * ATTEMPTS
+    const SETTLEMENT_MS = 1_000
+
+    const route = {
+      connectionId: 'source-a',
+      mode: 'remote' as const,
+      profile: 'remote-worker',
+      targetProfile: 'backend-worker'
+    }
+
+    // A gateway that answers only after the full ceiling plus settlement, and
+    // aborts at whatever deadline the caller handed down.
+    const backendAtItsLimit = async (
+      _connectionId: string,
+      _profile: string,
+      _method: string,
+      _params: Record<string, unknown>,
+      timeoutMs?: number
+    ) =>
+      new Promise((resolve, reject) => {
+        setTimeout(() => resolve({ reply: 'delivered', reason: 'ok' }), CEILING_MS + SETTLEMENT_MS)
+
+        if (timeoutMs !== undefined) {
+          setTimeout(() => reject(new Error('request timed out')), timeoutMs)
+        }
+      })
+
+    vi.useFakeTimers()
+
+    try {
+      vi.mocked(requestGatewayForAgent).mockImplementation(backendAtItsLimit as never)
+
+      // Deadline exactly at the ceiling: the typed settlement loses the race.
+      const atCeiling = host.requestProfile(route, 'bot_relay.deliver', {}, CEILING_MS)
+      const atCeilingSettled = expect(atCeiling).rejects.toThrow(/timed out/)
+      await vi.advanceTimersByTimeAsync(CEILING_MS + SETTLEMENT_MS)
+      await atCeilingSettled
+
+      // Same backend, deadline with settlement margin: the answer gets through.
+      const withMargin = host.requestProfile(route, 'bot_relay.deliver', {}, CEILING_MS + SETTLEMENT_MS * 180)
+
+      const withMarginSettled = expect(withMargin).resolves.toEqual({
+        reason: 'ok',
+        reply: 'delivered'
+      })
+
+      await vi.advanceTimersByTimeAsync(CEILING_MS + SETTLEMENT_MS)
+      await withMarginSettled
+    } finally {
+      vi.useRealTimers()
+      vi.mocked(requestGatewayForAgent).mockReset()
+    }
+  })
+
+  it('leaves callers that pass no timeout on the pool default', async () => {
+    const route = {
+      connectionId: 'source-a',
+      mode: 'remote' as const,
+      profile: 'remote-worker',
+      targetProfile: 'backend-worker'
+    }
+
+    await host.requestProfile(route, 'profiles.list', {})
+
+    expect(requestGatewayForAgent).toHaveBeenCalledWith('source-a', 'remote-worker', 'profiles.list', {})
+  })
+
   it('fails closed when a descriptor omits connection or target profile identity', async () => {
     await expect(
       host.requestProfile(
@@ -507,7 +607,11 @@ describe('profile-aware plugin session opens', () => {
 
     await host.openSession('remote-chat', { route })
 
-    expect(openGatewayForAgent).toHaveBeenCalledWith('source-a', 'default')
+    expect(openGatewayForAgent).toHaveBeenCalledWith(
+      'source-a',
+      'default',
+      expect.objectContaining({ spawnPriority: 'foreground' })
+    )
     expect(ensureGatewayProfile).not.toHaveBeenCalled()
     expect(setShowAllProfiles).toHaveBeenCalledWith(true)
     expect($activeGatewayProfile.get()).toBe('remote-worker')
@@ -1058,7 +1162,10 @@ describe('profile-aware plugin session opens', () => {
     })
 
     expect(ensureGatewayProfile).not.toHaveBeenCalled()
-    expect(openGatewayForProfile).toHaveBeenCalledWith('worker')
+    expect(openGatewayForProfile).toHaveBeenCalledWith(
+      'worker',
+      expect.objectContaining({ spawnPriority: 'foreground' })
+    )
     expect(setShowAllProfiles).toHaveBeenCalledWith(true)
     expect($activeGatewayProfile.get()).toBe('default')
   })
@@ -1069,7 +1176,10 @@ describe('profile-aware plugin session opens', () => {
     await host.openSession('bot-chat', { profile: 'worker' })
 
     expect(ensureGatewayProfile).not.toHaveBeenCalled()
-    expect(openGatewayForProfile).toHaveBeenCalledWith('worker')
+    expect(openGatewayForProfile).toHaveBeenCalledWith(
+      'worker',
+      expect.objectContaining({ spawnPriority: 'foreground' })
+    )
     expect(setShowAllProfiles).toHaveBeenCalledWith(true)
     expect($activeGatewayProfile.get()).toBe('default')
   })

@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { registry } from '@/contrib/registry'
 
 import type { GroupNode } from '../model'
+import { $treeDragging, NEW_SESSION_DRAG, SESSION_TILE_DRAG } from '../store'
 
 import { TreeGroup } from './tree-group'
 
@@ -74,5 +75,79 @@ describe('TreeGroup', () => {
     render(<TreeGroup node={terminalGroup(true)} parentAxis="column" />)
 
     expect(toggle('Restore').querySelector('i')!.className).toContain('codicon-chevron-up')
+  })
+
+  // The invariant behind the shared eligibility predicate
+  // (hostsSessionDropTarget): a session or new-session drag must paint the
+  // SAME zones either drag resolver would accept, and stay dark everywhere
+  // else. Standing chrome (terminal) is always dark; a zone hosting a chat
+  // strip (workspace) paints for both sentinels; with no session-drag active
+  // nothing paints even over an eligible zone.
+  describe('session-drop overlay eligibility (one truth with the resolvers)', () => {
+    const groupFor = (panes: string[], id = 'zone-a'): GroupNode => ({
+      active: panes[0]!,
+      id,
+      minimized: false,
+      panes,
+      type: 'group'
+    })
+
+    const sheet = () => globalThis.document.querySelector('[data-tree-group="zone-a"] .pointer-events-none.absolute')
+
+    async function withDragging(dragging: null | string, run: () => void) {
+      await act(async () => {
+        $treeDragging.set(dragging)
+      })
+
+      try {
+        run()
+      } finally {
+        await act(async () => {
+          $treeDragging.set(null)
+        })
+      }
+    }
+
+    it('stays dark over standing chrome (terminal) during a new-session drag', async () => {
+      disposePane = registry.register({
+        area: 'panes',
+        data: { height: '12rem' },
+        id: 'terminal',
+        render: () => <div>Terminal</div>,
+        title: 'Terminal'
+      })
+      vi.stubGlobal('CSS', { escape: (value: string) => value })
+
+      render(<TreeGroup node={terminalGroup(false)} parentAxis="column" />)
+
+      await withDragging(NEW_SESSION_DRAG, () => {
+        expect(sheet()).toBeNull()
+      })
+    })
+
+    it('lights a chat-strip zone for BOTH session and new-session drags, and only then', async () => {
+      disposePane = registry.register({
+        area: 'panes',
+        data: {},
+        id: 'workspace',
+        render: () => <div>Chat</div>,
+        title: 'Hermes'
+      })
+      vi.stubGlobal('CSS', { escape: (value: string) => value })
+
+      render(<TreeGroup node={groupFor(['workspace'])} parentAxis="column" />)
+
+      await withDragging(null, () => {
+        expect(sheet()).toBeNull()
+      })
+
+      await withDragging(SESSION_TILE_DRAG, () => {
+        expect(sheet()).not.toBeNull()
+      })
+
+      await withDragging(NEW_SESSION_DRAG, () => {
+        expect(sheet()).not.toBeNull()
+      })
+    })
   })
 })

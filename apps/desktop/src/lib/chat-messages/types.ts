@@ -18,6 +18,8 @@ export type ChatMessage = {
   id: string
   role: SessionMessage['role']
   parts: ChatMessagePart[]
+  /** Result body only; the system text remains the compact completion label. */
+  asyncResult?: string
   timestamp?: number
   completedAt?: number
   pending?: boolean
@@ -71,6 +73,7 @@ export type GatewayEventPayload = {
   inline_diff?: string
   duration_s?: number
   todos?: unknown
+  revision?: number
   model?: string
   provider?: string
   reasoning_effort?: string
@@ -93,6 +96,8 @@ export type GatewayEventPayload = {
   // clarify.request
   request_id?: string
   question?: string
+  // btw.complete / background.complete — id of the side/background task
+  task_id?: string
   choices?: string[] | null
   multi_select?: boolean
   // clarify.request batch form: questions replaces question/choices, and

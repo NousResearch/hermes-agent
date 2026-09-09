@@ -133,7 +133,7 @@ def test_full_prompt_scoped_to_bot_on_bare_thread(tmp_path, monkeypatch):
 
     def build():
         with (
-            patch("run_agent.build_environment_hints", return_value=""),
+            patch("agent.prompt_builder.build_environment_hints", return_value=""),
         ):
             result["prompt"] = build_system_prompt(agent)
 

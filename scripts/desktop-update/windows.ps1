@@ -50,7 +50,8 @@ param(
     [switch]$NoMarkerCleanup,
     [switch]$SelfTestUi,
     [switch]$SelfTestPipeDrain,
-    [switch]$SelfTestMarker
+    [switch]$SelfTestMarker,
+    [switch]$SelfTestWorkingDirectory
 )
 
 if (-not $SelfTestUi -and -not $SelfTestPipeDrain -and -not $InstallRoot) {
@@ -108,6 +109,8 @@ $script:UiState = [hashtable]::Synchronized(@{
     status     = "running"      # running | done | manual | error
     message    = $script:UiStage
     clock      = $script:UiStopwatch
+    receipt    = $null
+    acknowledged_receipt = $null
 })
 $script:UiServer = $null     # @{ Listener; Runspace; PowerShell; Port; BrowserProc; Profile }
 
@@ -190,15 +193,26 @@ function Start-UiServer([string]$HtmlPath) {
                     $request = $reader.ReadLine()
                     # Drain headers so the client doesn't see a reset mid-send.
                     while ($true) { $h = $reader.ReadLine(); if ($null -eq $h -or $h -eq "") { break } }
-                    if ($request -match "^GET /progress") {
+                    if ($request -match "^GET /progress HTTP/1\.[01]$") {
                         $elapsed = [Math]::Floor($State.clock.Elapsed.TotalSeconds)
                         $snapshot = @{
                             status          = $State.status
                             message         = $State.message
                             elapsed_seconds = $elapsed
+                            receipt         = $State.receipt
                         } | ConvertTo-Json -Compress
                         Send-Response $stream "200 OK" "application/json; charset=utf-8" ([System.Text.Encoding]::UTF8.GetBytes($snapshot))
-                    } elseif ($request -match "^GET / ") {
+                    } elseif ($request -match "^POST /ack/([^ /?]+) HTTP/1\.[01]$") {
+                        $receipt = $Matches[1]
+                        if ($State.status -in @("done", "manual", "error") -and $State.receipt -and $receipt -ceq $State.receipt) {
+                            # Flush acceptance before waking the owner that will
+                            # close the listener. No request body is needed.
+                            Send-Response $stream "204 No Content" "text/plain" ([byte[]]@())
+                            $State.acknowledged_receipt = $receipt
+                        } else {
+                            Send-Response $stream "409 Conflict" "text/plain" ([System.Text.Encoding]::ASCII.GetBytes("unknown terminal receipt"))
+                        }
+                    } elseif ($request -match "^GET / HTTP/1\.[01]$") {
                         Send-Response $stream "200 OK" "text/html; charset=utf-8" $HtmlBytes
                     } else {
                         Send-Response $stream "404 Not Found" "text/plain" ([System.Text.Encoding]::ASCII.GetBytes("not found"))
@@ -211,6 +225,36 @@ function Start-UiServer([string]$HtmlPath) {
             }
         })
         [void]$ps.BeginInvoke()
+
+        # Readiness handshake. BeginInvoke returns before the runspace has
+        # opened its pipeline and JIT'd the script block — on a loaded machine
+        # that is seconds, during which the kernel ACCEPTS connections into
+        # the listener's backlog and nobody answers them. Anything that
+        # trusted "listener bound" as "server serving" (the browser window
+        # opening to a page that never loads; the -SelfTestUi URL that CI
+        # polls) raced that gap. Prove one /progress round-trip before
+        # handing the port out, so the URL means "serving", not "bound".
+        $ready = $false
+        $readyDeadline = [DateTime]::UtcNow.AddSeconds(15)
+        while (-not $ready -and [DateTime]::UtcNow -lt $readyDeadline) {
+            try {
+                $probe = [System.Net.HttpWebRequest]::Create("http://127.0.0.1:$port/progress")
+                $probe.Timeout = 1000
+                $probe.ReadWriteTimeout = 1000
+                $probe.KeepAlive = $false
+                $resp = $probe.GetResponse()
+                try { $ready = ([int]$resp.StatusCode -eq 200) } finally { $resp.Close() }
+            } catch {
+                Start-Sleep -Milliseconds 100
+            }
+        }
+        if (-not $ready) {
+            Write-HandoffLog "progress server did not answer /progress within 15s; continuing without UI"
+            try { $listener.Stop() } catch {}
+            try { $ps.Stop() } catch {}
+            try { $rs.Close() } catch {}
+            return $null
+        }
 
         return @{ Listener = $listener; Runspace = $rs; PowerShell = $ps; Port = $port; BrowserProc = $null; Profile = $null }
     } catch {
@@ -253,11 +297,25 @@ function Stop-UiServer([switch]$LeaveWindow) {
 }
 
 function Publish-UiEvent([string]$Status, [string]$Message) {
-    # The event the shim listens for. One beat of poll latency (400ms) before
-    # teardown so the page actually renders the terminal state.
+    # A background browser can miss a fixed 900ms delivery window. Retain the
+    # terminal event until the page acknowledges applying this exact receipt.
+    # Older/headless clients cannot acknowledge, so teardown remains bounded.
+    $receipt = [Guid]::NewGuid().ToString('N')
+    $script:UiState.receipt = $receipt
+    $script:UiState.acknowledged_receipt = $null
     $script:UiState.message = $Message
     $script:UiState.status = $Status
-    if ($script:UiServer) { Start-Sleep -Milliseconds 900 }
+    if ($script:UiServer) {
+        $deliveryWait = [System.Diagnostics.Stopwatch]::StartNew()
+        while ($script:UiState.acknowledged_receipt -cne $receipt -and $deliveryWait.Elapsed.TotalSeconds -lt 10) {
+            Start-Sleep -Milliseconds 50
+        }
+        if ($script:UiState.acknowledged_receipt -ceq $receipt) {
+            Write-HandoffLog "shim: terminal state '$Status' acknowledged by the window"
+        } else {
+            Write-HandoffLog "shim: terminal state '$Status' was not acknowledged within 10s; closing the progress server"
+        }
+    }
 }
 
 function Get-UiElapsedText {
@@ -279,6 +337,8 @@ function Publish-UiProgress([string]$Message) {
     $script:UiStage = $Message
     $script:UiState.message = $Message
     $script:UiState.status = "running"
+    $script:UiState.receipt = $null
+    $script:UiState.acknowledged_receipt = $null
     if ($script:Ui) {
         try {
             $script:Ui.Sub.Text = Get-UiProgressLine
@@ -1119,6 +1179,12 @@ function Invoke-HermesStep([string]$Exe, [string[]]$HermesArgs, [string]$Tag) {
     return @{ Code = $code; Output = $all; TreeQuiesced = (-not $stalled -or $proc.HasExited); StartedAfterJobAssignment = $true }
 }
 
+function Set-InstallRootCurrentDirectory([string]$Root) {
+    $resolved = [System.IO.Path]::GetFullPath($Root)
+    [Environment]::CurrentDirectory = $resolved
+    return $resolved
+}
+
 $finalCode = 1
 $finalMsg = "update did not complete"
 $script:TreeSafeToFinalize = $true
@@ -1385,6 +1451,46 @@ try {
         exit 0
     }
 
+    # StartAssigned passes a null CreateProcess currentDirectory, so children
+    # inherit the hand-off process directory rather than PowerShell's $PWD.
+    # Desktop launches us from HERMES_HOME; pin the process directory to the
+    # checkout before any update child can resolve files against the wrong tree.
+    try {
+        $resolvedInstallRoot = Set-InstallRootCurrentDirectory $InstallRoot
+        Write-HandoffLog "process cwd set to install root: $resolvedInstallRoot"
+    } catch {
+        $finalCode = 3
+        $finalMsg = "Update aborted: cannot enter the install root ($InstallRoot). Nothing was changed."
+        Write-HandoffLog $finalMsg
+        exit $finalCode
+    }
+
+    # Exercise the production cwd setup and native launcher without updating.
+    if ($SelfTestWorkingDirectory) {
+        $expectedRoot = [System.IO.Path]::GetFullPath($InstallRoot)
+        $probeExe = Join-Path $PSHOME "powershell.exe"
+        $probe = Invoke-HermesStep $probeExe @("-NoProfile", "-Command", "[Environment]::CurrentDirectory") "cwd"
+        $observed = $probe.Output.Trim()
+        if ($probe.Code -ne 0 -or -not [string]::Equals($observed, $expectedRoot, [StringComparison]::OrdinalIgnoreCase)) {
+            $finalMsg = "WORKING-DIRECTORY SELF-TEST: FAIL expected=$expectedRoot observed=$observed code=$($probe.Code)"
+            Write-Host $finalMsg
+            exit 1
+        }
+        $finalCode = 0
+        $finalMsg = "WORKING-DIRECTORY SELF-TEST: PASS $observed"
+        Write-Host $finalMsg
+        exit 0
+    }
+
+    # Check only the interpreter here: dependency recovery belongs to update.
+    $pythonExe = Join-Path $InstallRoot "venv\Scripts\python.exe"
+    if (-not (Test-Path -LiteralPath $pythonExe -PathType Leaf)) {
+        $finalCode = 3
+        $finalMsg = "Update aborted: $pythonExe is missing. Repair the installation and review antivirus quarantine before retrying."
+        Write-HandoffLog $finalMsg
+        exit $finalCode
+    }
+
     # -- 1. Wait for the Desktop to exit (FAIL CLOSED) ----------------------
     Publish-UiProgress "Waiting for Hermes to close"
     if ($DesktopPid -gt 0) {
@@ -1498,10 +1604,25 @@ try {
     $res = Invoke-HermesStep $pythonExe $updateArgs "update"
     Write-HandoffLog "hermes update exit code: $($res.Code)"
 
-    if ($res.Code -ne 0 -and $res.Code -ne 2) {
-        # One retry for the update-boundary class (fresh code on disk, stale
-        # code in memory). Exit 2 ("close all Hermes windows") is not retryable.
-        Write-HandoffLog "first attempt failed; retrying once (freshly pulled fix loads on the second run)"
+    $retryPolicyPath = Join-Path $PSScriptRoot "retry-policy.ps1"
+    if (Test-Path -LiteralPath $retryPolicyPath) {
+        . $retryPolicyPath
+        $shouldRetry = Test-HermesUpdateShouldRetry -ExitCode $res.Code -InstallRoot $InstallRoot
+    } else {
+        # The child may have swapped to a checkout without the companion policy
+        # while this older script is still running in memory. Preserve the
+        # previous fail-closed behavior instead of calling an undefined function.
+        Write-HandoffLog "retry policy is unavailable after checkout swap; using legacy retry rules"
+        $shouldRetry = $res.Code -ne 0 -and $res.Code -ne 2
+    }
+    if ($shouldRetry) {
+        # One retry for update-boundary failures. Most exit-2 safety refusals
+        # remain terminal, but self-lock deferral also uses exit 2 and writes
+        # .update-incomplete after the code swap. That marker is only a retry
+        # signal here: the fresh process's early-recovery pass finishes core
+        # dependency sync before native modules load, then `update` continues
+        # the remaining Desktop/skills stages of the full pipeline.
+        Write-HandoffLog "first attempt left retryable update state; retrying once in a fresh process"
         Publish-UiProgress "Retrying update"
         $res = Invoke-HermesStep $pythonExe $updateArgs "update"
         Write-HandoffLog "retry exit code: $($res.Code)"
@@ -1519,6 +1640,18 @@ try {
         $rebuild = Invoke-HermesStep $pythonExe @("-m", "hermes_cli.main", "desktop", "--force-build", "--build-only") "rebuild"
         Write-HandoffLog "desktop rebuild exit code: $($rebuild.Code)"
         if ($rebuild.Code -ne 0) { $desktopBuildFailed = $true }
+    }
+
+    # A zero-exit update is not proof that the runtime survived the update.
+    if ($res.Code -eq 0 -and -not $desktopBuildFailed) {
+        $verifyCode = "import hermes_cli.main; from pathlib import Path; from hermes_cli.desktop_update_verify import verify_windows_desktop_update; verify_windows_desktop_update(Path.cwd())"
+        $verify = Invoke-HermesStep $pythonExe @("-c", $verifyCode) "verify"
+        if ($verify.Code -ne 0) {
+            $finalCode = 8
+            $finalMsg = "The updated Hermes runtime or Desktop build failed verification. Repair the installation and review antivirus quarantine before retrying."
+            Write-HandoffLog $finalMsg
+            exit $finalCode
+        }
     }
 
     if ($res.Code -eq 0 -and -not $desktopBuildFailed) {

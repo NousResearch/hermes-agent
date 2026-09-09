@@ -349,6 +349,7 @@ class ClaudeAgentSdkSession(ClaudeSdkTurnMixin, ClaudeSdkPermissionsMixin, Claud
 
     def request_interrupt(self) -> None:
         """Idempotent: signal the active turn loop to interrupt and unwind."""
+        declined = False
         with self._interrupt_commit_lock:
             if self._terminal_result_committed:
                 # Do not disturb a persistent client after terminal commit.
@@ -356,11 +357,23 @@ class ClaudeAgentSdkSession(ClaudeSdkTurnMixin, ClaudeSdkPermissionsMixin, Claud
                 # session caller that leaves it unconsumed gets the signal as
                 # the next turn's ordinary pre-set interrupt.
                 self._post_terminal_interrupt_pending = True
-                logger.info(
-                    "claude-agent-sdk: /stop arrived after terminal commit — "
-                    "queued for the next turn, not sent to the CLI"
-                )
-                return
+                declined = True
+        if declined:
+            # Logged OUTSIDE the lock: this is the same lock the stream
+            # consumer takes once per projected message.
+            #
+            # Deliberately not promised as "queued for the next turn": run_turn
+            # consumes this flag before handing the result back, so under the
+            # runtime the stop is DROPPED here, and the answer it raced is
+            # delivered. Only a direct session caller that never consumes it
+            # sees it re-armed on the next turn.
+            logger.info(
+                "claude-agent-sdk: /stop arrived after this turn committed its "
+                "result — not sent to the CLI; the completed answer is "
+                "delivered and the stop does not carry over"
+            )
+            return
+        with self._interrupt_commit_lock:
             self._interrupt_event.set()
         if self._client is not None and self._loop is not None:
             try:

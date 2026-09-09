@@ -336,10 +336,15 @@ class TestStreamOwnership:
                 session.close()
 
         # The decline is not silent: every other interrupt decline logs, and an
-        # operator whose /stop appeared to do nothing needs a record saying it
-        # was queued rather than dropped.
+        # operator whose /stop appeared to do nothing needs a record of why.
+        # The record says the stop was dropped in favour of the completed
+        # answer, which is what actually happens under the runtime — run_turn
+        # consumes the pending flag before returning (asserted below), so
+        # promising the operator a carry-over would be a promise this path
+        # does not keep.
         assert any(
-            "queued for the next turn" in record.getMessage()
+            "the completed answer is delivered and the stop does not carry over"
+            in record.getMessage()
             for record in caplog.records
         )
         assert turn.error is None

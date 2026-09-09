@@ -1,0 +1,19 @@
+# North Forge edition — field-service.
+# A Hermes profile distribution: `hermes profile install editions/field-service`
+# clones this into <HERMES_HOME>/profiles/field-service/.
+name: field-service
+version: 0.1.0
+description: >-
+  Field-service-flavoured persona overlay: plainer, first-person register written
+  for technicians and sales reps. Voice only — no industry skill content, no
+  access-tier logic.
+author: North Forge
+license: MIT
+hermes_requires: ">=0.12.0"
+
+env_requires: []
+
+distribution_owned:
+  - SOUL.md
+  - distribution.yaml
+  - README.md

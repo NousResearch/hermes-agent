@@ -1,0 +1,24 @@
+# North Forge edition — Penny Pincher.
+# A Hermes profile distribution: `hermes profile install editions/penny-pincher`
+# clones this into <HERMES_HOME>/profiles/penny-pincher/. nf-setup.ps1 installs it
+# automatically when a drive is pinned to `penny-pincher` (CHG-2026-09-08-xxx).
+name: penny-pincher
+version: 0.1.0
+description: >-
+  Warm, plain-language household budgeting assistant — tracks bills and due dates,
+  answers "what's left this month?" and "can we afford it?", flags spending
+  changes. Basic-tier front door; not a power-user finance tool.
+author: North Forge
+license: MIT
+hermes_requires: ">=0.12.0"
+
+# Nothing external is required to use this edition — it works with whatever model
+# and tools the drive is already set up with.
+env_requires: []
+
+# Only these paths are replaced on `hermes profile update`; anything else the
+# recipient adds to the profile (their own MEMORY.md, notes, skills) is left alone.
+distribution_owned:
+  - SOUL.md
+  - distribution.yaml
+  - README.md

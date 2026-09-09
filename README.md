@@ -17,11 +17,11 @@
   <a href="README.es.md"><img src="https://img.shields.io/badge/Lang-Español-orange?style=for-the-badge" alt="Español"></a>
 </p>
 
-**North Forge is an AI agent you can make your own.** It is [Hermes Agent](https://hermes-agent.nousresearch.com/) — the self-improving agent engine by [Nous Research](https://nousresearch.com) — carrying a North Forge identity, voice, and workflow: its own `SOUL.md`, its own conventions, nothing tied to a single industry. The engine underneath is used unmodified, so whatever Hermes Agent does, North Forge does.
+**North Forge is an AI agent you can make your own.** It is [Hermes Agent](https://hermes-agent.nousresearch.com/) — the self-improving agent engine by [Nous Research](https://nousresearch.com) — carrying a North Forge identity, voice, and workflow: its own `SOUL.md`, its own conventions, nothing tied to a single industry. North Forge keeps Hermes Agent's functional engine behavior; its downstream changes are identity, presentation, and workflow only — so whatever Hermes Agent does, North Forge does.
 
 The engine brings a built-in learning loop — it creates skills from experience, improves them during use, nudges itself to persist knowledge, searches its own past conversations, and builds a deepening model of who you are across sessions. Run it on a $5 VPS, a GPU cluster, or serverless infrastructure that costs nearly nothing when idle. It's not tied to your laptop — talk to it from Telegram while it works on a cloud VM.
 
-North Forge is a fork of [`NousResearch/hermes-agent`](https://github.com/NousResearch/hermes-agent), kept rebased on upstream and used here unmodified; the engine — agent loop, memory, skills, model providers, terminal and messaging interfaces — is Nous Research's work, MIT-licensed. What North Forge adds is identity and workflow: this README, `SOUL.md`, packaging metadata, and the project ledger under [`logs/ledger/`](logs/ledger/). Both copyright lines are in [`LICENSE`](LICENSE). Maintained by Kenneth C. Walker Jr.; fork and identity issues → <https://github.com/kwalker7631/north-forge-agent/issues>, engine issues → the upstream project.
+North Forge is a fork of [`NousResearch/hermes-agent`](https://github.com/NousResearch/hermes-agent), kept rebased on upstream; it keeps Hermes Agent's functional engine behavior, and its downstream changes are identity, presentation, and workflow only. The engine — agent loop, memory, skills, model providers, terminal and messaging interfaces — is Nous Research's work, MIT-licensed. What North Forge adds is identity and workflow: this README, `SOUL.md`, packaging metadata, and the project ledger under [`logs/ledger/`](logs/ledger/). Both copyright lines are in [`LICENSE`](LICENSE). Maintained by Kenneth C. Walker Jr.; fork and identity issues → <https://github.com/kwalker7631/north-forge-agent/issues>, engine issues → the upstream project.
 
 Use any model you want — [Nous Portal](https://portal.nousresearch.com), OpenRouter, OpenAI, your own endpoint, and [many others](https://hermes-agent.nousresearch.com/docs/integrations/providers). Switch with `hermes model` — no code changes, no lock-in.
 
@@ -41,19 +41,48 @@ Use any model you want — [Nous Portal](https://portal.nousresearch.com), OpenR
 
 North Forge runs two ways, and the difference matters. **To run _this fork_ — with
 its identity, its project ledger under [`logs/ledger/`](logs/ledger/), and its CLI
-skin — use the drive-native launcher immediately below.** The upstream one-liners
-further down (`curl … | bash`, `iex (irm …)`) install **stock Hermes Agent**, not
-North Forge; reach for those only if plain Hermes is what you want.
+skin — use one of the two drive-native paths immediately below** (the GUI setup, or
+the `north-forge.cmd` launcher). The upstream one-liners further down
+(`curl … | bash`, `iex (irm …)`) install **stock Hermes Agent**, not North Forge;
+reach for those only if plain Hermes is what you want.
 
-### Windows — run North Forge from the drive (recommended)
+Both drive-native paths do the same thing: they run North Forge *in place* from
+wherever the repo folder sits — a USB stick, an external SSD, any local folder. The
+Python venv and the agent's data directory (`HERMES_HOME`) are created as
+**siblings of the checkout, on the same drive**; nothing is written to
+`%LOCALAPPDATA%` or anywhere else on the host, so you can unplug the drive and
+carry it to another machine. You get the North Forge identity, the project ledger
+under [`logs/ledger/`](logs/ledger/), and the North Forge CLI skin — none of which
+the stock Hermes installer below sets up.
 
-**This is the way to run North Forge.** It runs *in place* from wherever the repo
-folder sits — a USB stick, an external SSD, any local folder. The Python venv and
-the agent's data directory (`HERMES_HOME`) are created as **siblings of the
-checkout, on the same drive**; nothing is written to `%LOCALAPPDATA%` or anywhere
-else on the host, so you can unplug the drive and carry it to another machine.
-You get the North Forge identity, the project ledger under [`logs/ledger/`](logs/ledger/),
-and the North Forge CLI skin — none of which the stock Hermes installer below sets up.
+### Windows — North Forge Setup (recommended, no terminal needed)
+
+**If someone handed you a North Forge drive, this is the path to use.**
+Double-click **`North-Forge-Setup.exe`** at the root of the drive. It opens a small
+window that:
+
+1. lets you pick the drive / folder the North Forge repo sits in (it detects it
+   automatically when there's only one, and it will not let you target your
+   system drive);
+2. runs the one-time bootstrap — the Python venv and the `HERMES_HOME` data folder,
+   created as siblings of the checkout on that drive (~1 minute; a progress bar and
+   a log panel show what it's doing);
+3. finishes on a **Launch** button that starts North Forge.
+
+No PowerShell, no `git`, nothing typed. After the first setup, start North Forge
+any time from **`Start North Forge.lnk`** at the drive root — or re-run the setup
+`.exe`, which notices the checkout is already bootstrapped, re-checks the venv
+(leaving your data folder untouched), and ends on the same **Launch** button.
+Under the hood the `.exe` just calls
+[`scripts/bootstrap-north-forge.ps1`](scripts/bootstrap-north-forge.ps1) and then
+`north-forge.cmd`, exactly as the manual path below does. Requires **Windows
+10/11** with **PowerShell 5.1+** (present by default); Python 3.11+ is used if it's
+on `PATH`, otherwise [`uv`](https://docs.astral.sh/uv/) fetches its own.
+
+### Windows — `north-forge.cmd` launcher (advanced / no GUI)
+
+The launcher the GUI wraps. Use it directly if you prefer a terminal, are scripting
+a drive-prep, or are on a machine where the `.exe` won't run.
 
 1. Get the repo onto the drive — clone it, or copy a folder you were handed:
 
@@ -182,7 +211,7 @@ hermes doctor       # Diagnose any issues
 
 ## Drive class
 
-Every deployed North Forge drive carries a short **class label** in its volume name, so a recipient — or anyone helping them troubleshoot — can tell at a glance what kind of drive they're holding.
+A North Forge drive is prepared with a short **class label** in its volume name, so a recipient — or anyone helping them troubleshoot — can tell at a glance what kind of drive they're holding. What the drive is actually provisioned as (its tier and pinned edition) is recorded on the drive itself; check it any time with `scripts\nf-setup.ps1 -Show`.
 
 ---
 

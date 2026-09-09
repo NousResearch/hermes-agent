@@ -64,8 +64,10 @@ completion and triggers a new agent turn. Verbosity: `display.background_process
 tail), `all` (running updates + final raw output), `result` (final raw output only), `error`
 (final raw output only on non-zero exit), `off`.
 
-Cron deliveries are NOT mirrored into the target gateway session — they land in their own cron
-session with a header/footer frame so the main conversation's role alternation stays intact
+Cron execution has its own session. Eligible continuable deliveries may mirror or seed the
+reply-facing conversation: origin, origin-less home fallback, user-written bare-platform home,
+or opted-in explicit targets. `all` expansions do not gain home mirror eligibility. Mirrored
+briefs are labelled user turns appended at a turn boundary, preserving role alternation
 (`cron/AGENTS.md`).
 
 ## Gateway lifecycle vs. the Desktop app

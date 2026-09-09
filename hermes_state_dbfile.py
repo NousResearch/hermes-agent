@@ -165,49 +165,39 @@ def _connect_tracked_db(path, tracking_path=None, **kwargs):
     return connect_tracked(path, tracking_path=tracking_path, connect_fn=sqlite3.connect, **kwargs)
 
 
-def is_zeroed_state_db(path: Path, *, probe_bytes: int = 100, force: bool = False) -> bool:
-    """Detect the zeroed state.db signature (0-byte or NUL header).  Byte-level probe, so only
-    safe BEFORE any connection to *path* exists in this process (``close()`` cancels every POSIX
-    lock, even a running VACUUM's EXCLUSIVE); ``read_header_bytes_preopen`` refuses (-> False)
-    once a connection is live.  Pass ``force=True`` only for offline files (quarantined copies,
-    snapshots).  Prefers ``hermes_cli.backup.is_zeroed_sqlite_file``; this copy keeps SessionDB
-    openable without the CLI package in constrained embed paths.
+def _preopen_header(path: Path, probe_bytes: int, force: bool) -> Optional[bytes]:
+    """First ``probe_bytes`` of *path* read WITHOUT opening a SQLite connection, or None when the probe
+    must not run: special files (a FIFO would block), unreadable paths, or — unless ``force`` — a path
+    this process already has a connection to (``close()`` cancels every POSIX lock, even a running
+    VACUUM's EXCLUSIVE; see #97568).  ``force=True`` only for offline files (quarantined copies, snapshots)."""
+    try:
+        if not path.is_file():
+            return None
+        path.stat()
+        from hermes_cli.sqlite_safe_read import has_live_connection, read_header_bytes_preopen
+        if not force and has_live_connection(path):
+            return None
+        return read_header_bytes_preopen(path, length=max(16, probe_bytes), force=force)
+    except Exception:
+        return None
 
-    See #97568.
-    """
+
+def is_zeroed_state_db(path: Path, *, probe_bytes: int = 100, force: bool = False) -> bool:
+    """Detect the zeroed state.db signature (0-byte or NUL header).  Prefers
+    ``hermes_cli.backup.is_zeroed_sqlite_file``; this copy keeps SessionDB openable without the CLI
+    package in constrained embed paths."""
     with contextlib.suppress(Exception):
         from hermes_cli.backup import is_zeroed_sqlite_file
         return is_zeroed_sqlite_file(path, probe_bytes=probe_bytes, force=force)
-    try:
-        # Special files (FIFO, device, socket) are never "zeroed", and probing
-        # a FIFO would block until a writer appears.
-        if not path.is_file():
-            return False
-        path.stat()
-    except OSError:
-        return False
-    from hermes_cli.sqlite_safe_read import has_live_connection, read_header_bytes_preopen
-    if not force and has_live_connection(path):
-        return False
-    head = read_header_bytes_preopen(path, length=max(16, probe_bytes), force=force)
+    head = _preopen_header(path, probe_bytes, force)
     # b"" (0-byte file) is zeroed; all() over an empty header is True.
     return head is not None and not head.startswith(b"SQLite format 3") and all(b == 0 for b in head)
 
 
 def has_invalid_sqlite_header_preopen(path: Path, *, probe_bytes: int = 100, force: bool = False) -> bool:
-    """Pre-open byte probe: a pre-existing state.db whose first page is not SQLite (0-byte, NUL, or
-    clobbered page 0 as in #102198).  Same live-connection contract as :func:`is_zeroed_state_db`;
-    ``force=True`` only for offline files.  Never raises."""
-    try:
-        if not path.is_file():
-            return False
-        path.stat()
-        from hermes_cli.sqlite_safe_read import has_live_connection, read_header_bytes_preopen
-        if not force and has_live_connection(path):
-            return False
-        head = read_header_bytes_preopen(path, length=max(16, probe_bytes), force=force)
-    except Exception:
-        return False
+    """A pre-existing state.db whose first page is not SQLite: 0-byte, NUL, or clobbered page 0
+    (#102198).  Zeroed files are the subset :func:`is_zeroed_state_db` names."""
+    head = _preopen_header(path, probe_bytes, force)
     return head is not None and not head.startswith(b"SQLite format 3")
 
 

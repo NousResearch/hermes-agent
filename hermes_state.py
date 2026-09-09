@@ -580,7 +580,8 @@ class SessionDB(
             f"state.db has no SQLite header ({zsize} bytes). "
             f"Preserved at {qpath or '(quarantine failed — file left in place)'}. "
             f"Restore from {self.db_path.parent / 'state-snapshots'} via `hermes snapshot list` / "
-            f"`hermes snapshot restore <id>` if available. "
+            f"`hermes snapshot restore <id>` if available, or salvage the preserved bytes with "
+            f"`hermes sessions recover --source {qpath or self.db_path}`. "
             "Opening a fresh empty database so the agent can start."
         )
         logger.error(msg)

@@ -22,6 +22,7 @@ class _PreToolCallDirective:
     action: Optional[str] = None
     message: Optional[str] = None
     rule_key: Optional[str] = None
+    review: str = "human"
     modified_args: Optional[Dict[str, Any]] = None
 
 
@@ -43,9 +44,10 @@ def _get_pre_tool_call_directive_details(
     middleware_trace: Optional[List[Dict[str, Any]]] = None,
 ) -> _PreToolCallDirective:
     """Check ``pre_tool_call`` hooks for ``{"action": "block", "message"}`` (veto; message becomes
-    the tool result) or ``{"action": "approve", "message", "rule_key"?}`` (escalate ANY tool to the
-    human-approval gate; ``rule_key`` picks the ``[a]lways`` allowlist grain). First valid directive
-    wins; irrelevant returns are ignored."""
+    the tool result) or ``{"action": "approve", "message", "rule_key"?, "review"?}`` (escalate ANY
+    tool to the human-approval gate; ``rule_key`` picks the ``[a]lways`` allowlist grain;
+    ``review: "smart"`` lets the smart-approval guardian answer first, default ``"human"``). First
+    valid directive wins; irrelevant returns are ignored."""
     allowed = getattr(_thread_tool_whitelist, "allowed", None)
     if allowed is not None and tool_name not in allowed:
         fmt = getattr(_thread_tool_whitelist, "fmt", "Tool '{tool_name}' denied")
@@ -79,7 +81,11 @@ def _get_pre_tool_call_directive_details(
             continue
         rule_key = result.get("rule_key") if action == "approve" else None
         rule_key = (rule_key.strip() or None) if isinstance(rule_key, str) else None
-        return _PreToolCallDirective(action=action, message=message, rule_key=rule_key, modified_args=modified_args)
+        review = result.get("review") if action == "approve" else None
+        review = review.strip().lower() if isinstance(review, str) else ""
+        return _PreToolCallDirective(action=action, message=message, rule_key=rule_key,
+                                     review="smart" if review == "smart" else "human",
+                                     modified_args=modified_args)
     return _PreToolCallDirective(modified_args=modified_args)
 
 
@@ -126,7 +132,8 @@ def _resolve_block_from_details(
             approval_tokens = set_current_observability_context(
                 turn_id=turn_id, tool_call_id=tool_call_id, session_id=session_id)
         try:
-            result = request_tool_approval(tool_name, details.message or "", rule_key=details.rule_key or tool_name)
+            result = request_tool_approval(tool_name, details.message or "", rule_key=details.rule_key or tool_name,
+                                           review=details.review)
         finally:
             if approval_tokens is not None:
                 with suppress(Exception):

@@ -549,10 +549,10 @@ def my_callback(tool_name: str, args: dict, task_id: str, **kwargs):
 ```python
 return {"action": "block", "message": "Reason the tool call was blocked"}
 # or
-return {"action": "approve", "message": "Why approval is required", "rule_key": "optional:scope"}
+return {"action": "approve", "message": "Why approval is required", "rule_key": "optional:scope", "review": "smart"}
 ```
 
-The first valid directive wins (Python plugins registered first, then shell hooks). `block` requires a non-empty `message` and short-circuits the tool with that text as the error returned to the model. `approve` escalates the call to the existing human-approval gate; `message` and `rule_key` are optional, and denial, timeout, or gate error fails closed. Other return values are ignored, so existing observer-only callbacks keep working unchanged.
+The first valid directive wins (Python plugins registered first, then shell hooks). `block` requires a non-empty `message` and short-circuits the tool with that text as the error returned to the model. `approve` escalates the call to the existing human-approval gate; `message` and `rule_key` are optional, and denial, timeout, or gate error fails closed. `review` is optional too: the default `"human"` always asks a person; `"smart"` lets the Smart Approvals guardian answer first under `approvals.mode: smart` (APPROVE runs the call, DENY or ESCALATE fall through to the human), exactly like a built-in dangerous command. Other return values are ignored, so existing observer-only callbacks keep working unchanged.
 
 **Return value — rewrite the tool's arguments:**
 

@@ -42,6 +42,12 @@ APPROVALS_DEFAULTS = {
     # / mode=off. Quote in YAML when starting with * or containing {}/!/: e.g. "git push
     # --force*".
     "deny": [],
+    # Operator rules that FORCE the approval prompt for commands no built-in pattern flags
+    # (restarting your own gateway, kubectl against prod). Same glob matching as `deny`. A
+    # string entry is reviewed by a human every time (no smart approval, no "Always"); a dict
+    # entry {pattern, description?, review: human|smart} may hand the first look to the smart
+    # guardian instead. See the security guide.
+    "command_approval_required": [],
     # /reload-mcp confirms before rebuilding the MCP tool set (it invalidates the prompt cache,
     # so the next message re-sends full input). "Always Approve" → false.
     "mcp_reload_confirm": True,

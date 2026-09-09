@@ -518,7 +518,18 @@ function clearTimer(entry: Secondary): void {
   }
 }
 
+function currentSecondary(entry: Secondary): boolean {
+  return entry.wantOpen && g.secondaries.get(entry.scope) === entry
+}
+
+function assertCurrentSecondary(entry: Secondary): void {
+  if (!currentSecondary(entry)) {
+    throw new Error('Secondary gateway was disposed')
+  }
+}
+
 async function openSecondary(entry: Secondary, spawnPriority: SpawnPriority = 'background'): Promise<void> {
+  assertCurrentSecondary(entry)
   const desktop = window.hermesDesktop
 
   if (!desktop) {
@@ -562,8 +573,12 @@ async function openSecondary(entry: Secondary, spawnPriority: SpawnPriority = 'b
 
     if (reopening) {
       try {
-        const { reconcileBusyStatesOnReconnect, resetTileRuntimeBindings } = await import('@/store/session-states')
+        const [{ resetTileRuntimeBindings }, { reconcileBusyStatesOnReconnect }] = await Promise.all([
+          import('@/store/session-states'),
+          import('@/store/session-states-reconnect')
+        ])
 
+        assertCurrentSecondary(entry)
         resetTileRuntimeBindings({
           connectionId: entry.connectionId || 'local',
           profile: entry.profile
@@ -583,6 +598,8 @@ async function openSecondary(entry: Secondary, spawnPriority: SpawnPriority = 'b
     // this secondary (SSH terminal, messaging DELETE, session send, …) never
     // settles either. Bound the same way use-gateway-boot.ts bounds the
     // primary's equivalent awaits.
+    assertCurrentSecondary(entry)
+
     const conn =
       entry.connectionId && desktop.getConnectionFor
         ? await withTimeout(
@@ -600,6 +617,7 @@ async function openSecondary(entry: Secondary, spawnPriority: SpawnPriority = 'b
             `Timed out connecting to profile "${entry.profile}"`
           )
 
+    assertCurrentSecondary(entry)
     entry.connection = conn
 
     const wsDeps =
@@ -618,6 +636,8 @@ async function openSecondary(entry: Secondary, spawnPriority: SpawnPriority = 'b
       `Timed out re-minting the gateway WebSocket URL for profile "${entry.profile}"`
     )
 
+    assertCurrentSecondary(entry)
+
     try {
       await entry.gateway.connect(wsUrl)
     } catch (error) {
@@ -629,6 +649,7 @@ async function openSecondary(entry: Secondary, spawnPriority: SpawnPriority = 'b
       throw error
     }
 
+    assertCurrentSecondary(entry)
     entry.openedOnce = true
     openedScopes.add(entry.scope)
 
@@ -639,11 +660,7 @@ async function openSecondary(entry: Secondary, spawnPriority: SpawnPriority = 'b
       // turn that successful transport recovery into a reported dial failure.
     }
 
-    if (!entry.wantOpen) {
-      entry.gateway.close()
-
-      return
-    }
+    assertCurrentSecondary(entry)
 
     if (g.activeKey === entry.scope) {
       publishActiveConnection(conn)
@@ -664,7 +681,7 @@ async function openSecondary(entry: Secondary, spawnPriority: SpawnPriority = 'b
 }
 
 function scheduleReconnect(entry: Secondary): void {
-  if (entry.reconnecting || entry.reconnectTimer !== null || !entry.wantOpen) {
+  if (entry.reconnecting || entry.reconnectTimer !== null || !currentSecondary(entry)) {
     return
   }
 
@@ -679,7 +696,7 @@ function scheduleReconnect(entry: Secondary): void {
 }
 
 async function reconnectSecondary(entry: Secondary): Promise<void> {
-  if (entry.reconnecting || !entry.wantOpen || isOpen(entry.gateway)) {
+  if (entry.reconnecting || !currentSecondary(entry) || isOpen(entry.gateway)) {
     return
   }
 
@@ -689,6 +706,10 @@ async function reconnectSecondary(entry: Secondary): Promise<void> {
     await openSecondary(entry)
     entry.reconnectAttempt = 0
   } catch (error) {
+    if (!currentSecondary(entry)) {
+      return
+    }
+
     // The registry no longer knows this connection (removed while we were
     // backing off), or Electron's deletion guard reports the profile itself
     // gone/mid-delete. Both are permanent for this scoped socket — retrying
@@ -711,7 +732,7 @@ async function reconnectSecondary(entry: Secondary): Promise<void> {
   } finally {
     entry.reconnecting = false
 
-    if (entry.wantOpen && !isOpen(entry.gateway)) {
+    if (currentSecondary(entry) && !isOpen(entry.gateway)) {
       scheduleReconnect(entry)
     }
   }
@@ -778,11 +799,9 @@ function createSecondary(profile: string, connectionId: null | string = null): S
       entry.reconnectAttempt = 0
       clearTimer(entry)
     } else if (state === 'closed' || state === 'error') {
-      // A dead socket cannot emit the terminal event that normally releases
-      // its turn lease. Drop the orphaned lease before deciding whether this
-      // route is still retained/active enough to reconnect.
-      releaseTurnLeasesForScope(scope)
-
+      // A transport drop does not settle a running turn. Its lease must keep
+      // the route alive so reconnect can replay missed events and receive the
+      // terminal event. Actual disposal releases orphaned leases below.
       if (entry.wantOpen) {
         scheduleReconnect(entry)
       }
@@ -1147,6 +1166,13 @@ export function retainGatewayForRelay(connectionId: null | string, profile: stri
  * for the whole sequence. Primary/shared-primary routes return a no-op release.
  */
 export async function retainGatewayForAgent(connectionId: null | string, profile: string): Promise<() => void> {
+  return (await retainGatewayForAgentRoute(connectionId, profile)).release
+}
+
+async function retainGatewayForAgentRoute(
+  connectionId: null | string,
+  profile: string
+): Promise<{ gateway: HermesGateway | null; release: () => void }> {
   const key = normKey(profile)
   const scope = registryBackendScopeKey(connectionId, key)
 
@@ -1155,18 +1181,18 @@ export async function retainGatewayForAgent(connectionId: null | string, profile
     // hold it until the caller releases.
     const route = await gatewayForProfile(key, true)
 
-    return route.release
+    return route
   }
 
   if (isPrimaryRegistryRoute(connectionId, key) || (await isAttachedSharedRemote(connectionId, key))) {
     // Primary socket stays open for the window lifetime — no secondary to hold.
-    return () => undefined
+    return { gateway: g.primaryGateway, release: () => undefined }
   }
 
   if (!window.hermesDesktop?.getConnectionFor) {
     // No registry dialing in this build — nothing to hold; the request path
     // will throw its own actionable error.
-    return () => undefined
+    return { gateway: g.primaryGateway, release: () => undefined }
   }
 
   const entry = g.secondaries.get(scope) ?? createSecondary(key, connectionId)
@@ -1216,16 +1242,26 @@ export async function retainGatewayForAgent(connectionId: null | string, profile
     if (!isOpen(entry.gateway)) {
       await openSecondary(entry)
     }
+
+    assertCurrentSecondary(entry)
   } catch (error) {
     release()
     throw error
   }
 
-  return release
+  return { gateway: entry.gateway, release }
 }
 
 const turnLeaseKey = (scope: string, sessionId: string): string => `${scope}\u0000${sessionId}`
 const TURN_LEASE_SETTLE_DELAY_MS = 500
+
+export function hasGatewaySessionTurn(scope: string, sessionId: string): boolean {
+  return g.turnLeases.has(turnLeaseKey(scope, sessionId))
+}
+
+function hasScopeTurnLease(scope: string): boolean {
+  return [...g.turnLeases.keys()].some(key => key.startsWith(`${scope}\u0000`))
+}
 
 function cancelTurnLeaseRelease(key: string): void {
   const timer = g.turnLeaseReleaseTimers.get(key)
@@ -1277,17 +1313,38 @@ export async function retainGatewayForSessionTurn(
   const scope = registryBackendScopeKey(connectionId, normKey(profile))
   const key = turnLeaseKey(scope, sessionId)
 
+  const { gateway, release: releaseRoute } = await retainGatewayForAgentRoute(connectionId, profile)
+  const entry = g.secondaries.get(scope)
+
+  try {
+    if (!entry || entry.gateway !== gateway) {
+      if (gateway === g.primaryGateway) {
+        return releaseRoute
+      }
+
+      throw new Error('Secondary gateway was replaced during turn acquisition')
+    }
+
+    assertCurrentSecondary(entry)
+    // Old idle replay must precede this acquisition, including when a queue
+    // or direct submit reaches an already-open but still catching-up socket.
+    // Optional for pre-update instances preserved across development HMR.
+    await entry.gateway.waitForReplay?.()
+    assertCurrentSecondary(entry)
+  } catch (error) {
+    releaseRoute()
+    throw error
+  }
+
   cancelTurnLeaseRelease(key)
 
-  // A busy-session redirect/queue can submit again while the original turn is
-  // still retained. The existing lease owns that turn; the extra submit must
-  // not replace or release it. The no-op means "another caller owns the
-  // shared lease", not "this caller acquired a separately releasable lease".
+  // Another caller owns the shared live turn; this submit cannot release it.
   if (g.turnLeases.has(key)) {
+    releaseRoute()
+
     return () => undefined
   }
 
-  const releaseRoute = await retainGatewayForAgent(connectionId, profile)
   let released = false
 
   const release = () => {
@@ -1299,9 +1356,9 @@ export async function retainGatewayForSessionTurn(
 
     if (g.turnLeases.get(key) === release) {
       g.turnLeases.delete(key)
+      cancelTurnLeaseRelease(key)
     }
 
-    cancelTurnLeaseRelease(key)
     releaseRoute()
   }
 
@@ -1339,11 +1396,20 @@ function releaseTerminalTurnLease(scope: string, event: GatewayEvent): void {
     // session.info(false) is the authoritative settled edge, but auto-followup
     // emits message.start immediately after it. A short debounce lets that
     // frame cancel release while still reclaiming ordinary completed turns.
+    const release = g.turnLeases.get(key)
+
+    if (!release) {
+      return
+    }
+
     g.turnLeaseReleaseTimers.set(
       key,
       setTimeout(() => {
         g.turnLeaseReleaseTimers.delete(key)
-        g.turnLeases.get(key)?.()
+
+        if (g.turnLeases.get(key) === release) {
+          release()
+        }
       }, TURN_LEASE_SETTLE_DELAY_MS)
     )
   }
@@ -1678,11 +1744,19 @@ export function touchSecondaryGateways(): void {
 // Tear a secondary down: stop its reconnect loop, detach listeners, close the
 // socket. Caller handles removal from the map.
 function disposeSecondary(entry: Secondary): void {
+  if (!entry.wantOpen) {
+    return
+  }
+
   entry.wantOpen = false
+  entry.pendingConnectionRedial = false
   clearTimer(entry)
   entry.offEvent()
   entry.offState()
   entry.gateway.close()
+  // Release can re-enter disposal at refcount zero. wantOpen is already false,
+  // and listeners are detached, so explicit teardown never rearms reconnect.
+  releaseTurnLeasesForScope(entry.scope)
 }
 
 // Invariant restore for every eviction path: if the active key names a
@@ -1715,7 +1789,7 @@ function restoreActiveToPrimaryIfEvicted(): void {
 // (foregroundPinned), not from `keep`, so every dispose path sees the same
 // pin. `entry.retained` is deliberately NOT consulted here (see the field's
 // doc).
-export function pruneSecondaryGateways(keep: Set<string>): void {
+export function pruneSecondaryGateways(keep: Set<string>, { preserveTurnLeases = false } = {}): void {
   const now = Date.now()
 
   for (const [key, entry] of [...g.secondaries]) {
@@ -1725,6 +1799,7 @@ export function pruneSecondaryGateways(keep: Set<string>): void {
 
     if (
       key === g.activeKey ||
+      (preserveTurnLeases && hasScopeTurnLease(key)) ||
       keep.has(key) ||
       (!entry.connectionId && keep.has(entry.profile)) ||
       // Bot-relay retention (#93594): the relay pins its remote routes for
@@ -1800,6 +1875,9 @@ export function closeLegacySecondaryGateways(): void {
 }
 
 export function closeSecondaryGateways(): void {
+  // Invalidate owners before release callbacks can drain pending redials.
+  closeSecondariesWhere(() => true)
+
   // Full teardown releases every routed-turn lease (class-2 #94284) and the
   // renderer-generation ledger; the predicate close leaves live sources'
   // leases alone (their sockets stay open).
@@ -1814,8 +1892,6 @@ export function closeSecondaryGateways(): void {
   }
 
   g.turnLeases.clear()
-
-  closeSecondariesWhere(() => true)
   openedSecondaryScopes().clear()
 }
 

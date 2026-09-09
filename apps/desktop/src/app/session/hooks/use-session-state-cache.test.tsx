@@ -24,10 +24,10 @@ import {
 import {
   $sessionStates,
   clearAllSessionStates,
-  reconcileBusyStatesOnReconnect,
   type SessionTileDelegate,
   setSessionTileDelegate
 } from '@/store/session-states'
+import { reconcileBusyStatesOnReconnect } from '@/store/session-states-reconnect'
 
 import { useSessionStateCache } from './use-session-state-cache'
 

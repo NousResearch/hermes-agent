@@ -309,57 +309,8 @@ class GatewayInboundMixin:
     async def _hm_clarify_reply(
         self, event: "MessageEvent", source: SessionSource, _quick_key: str
     ) -> Optional[str]:
-        """Intercept a reply to a pending clarify prompt; None when the message falls through.
-        Free text answers open-ended/"Other" prompts; "2" answers a multi-choice one. Resolved/retained
-        replies return "" so adapters don't double-post — the agent produces the next user-facing message."""
-        try:
-            from tools import clarify_gateway as _clarify_mod
-            _pending_clarify = _clarify_mod.get_pending_for_session(_quick_key, include_choice_prompts=True)
-        except Exception:
-            return None
-        if _pending_clarify is None:
-            return None
-        _clarify_has_audio = bool(self._pending_event_audio_paths(event))
-        _raw_clarify_reply = await self._prepare_clarify_reply_text(event)
-
-        def _retain(why: str) -> str:
-            logger.info(
-                "Gateway retained pending clarify after %s (session=%s, id=%s)",
-                why, _quick_key, _pending_clarify.clarify_id,
-            )
-            return ""
-
-        if _clarify_has_audio and not _raw_clarify_reply:
-            return _retain("voice transcription produced no usable text")
-        # Slash commands: the user wanted a command, not to answer the clarify. Leave it pending so
-        # they can retry; on timeout the agent unblocks with an empty response.
-        if not _raw_clarify_reply or _raw_clarify_reply.startswith("/"):
-            return None
-        _text_outcome = _clarify_mod.attempt_text_response_for_session(_quick_key, _raw_clarify_reply)
-        if _text_outcome == _clarify_mod.TEXT_RESOLVED:
-            logger.info(
-                "Gateway intercepted clarify text response (session=%s, id=%s)",
-                _quick_key, _pending_clarify.clarify_id,
-            )
-            # The clarify callback pauses the platform typing/status indicator while waiting so
-            # Slack users can type; the active agent resumes now, so re-enable its indicator.
-            _clarify_adapter = self._adapter_for_source(source)
-            if _clarify_adapter:
-                try:
-                    _clarify_adapter.resume_typing_for_chat(source.chat_id)
-                except Exception:
-                    logger.debug("Failed to resume typing after clarify response", exc_info=True)
-            return ""
-        if _text_outcome == _clarify_mod.TEXT_REJECTED_SELECTION:
-            # Selection-shaped but invalid (out-of-range number, bad comma-list): keep the clarify
-            # armed for retry — don't cancel, don't treat as an unrelated follow-up.
-            return _retain("invalid selection attempt")
-        if _text_outcome == _clarify_mod.TEXT_REJECTED_PROSE:
-            # Native-choice prompts reject unmatched prose so it continues through normal busy
-            # routing. Release this clarify first: redirect() degrades to steer() while tools
-            # execute, and that steer cannot drain until the clarify tool returns.
-            _clarify_mod.resolve_gateway_clarify(_pending_clarify.clarify_id, "")
-        return None
+        from gateway.run_pending_replies import clarify_reply
+        return await clarify_reply(self, event, source, _quick_key)
 
     # Reply → choice for a pending slash-confirm prompt; the command spelling wins over the
     # bang/slash-stripped free-text spelling.
@@ -1118,16 +1069,8 @@ class GatewayInboundMixin:
     async def _hm_pending_reply_intercepts(
         self, event: "MessageEvent", source: SessionSource, _quick_key: str
     ) -> Optional[str]:
-        """Replies owned by in-flight work: pending /update prompt, clarify, slash-confirm.
-        Only events that may control the gateway (``allow_gateway_control``) can answer them."""
-        if not event.allow_gateway_control:
-            return None
-        _reply = self._hm_update_prompt_reply(event, _quick_key)
-        if _reply is None:
-            _reply = await self._hm_clarify_reply(event, source, _quick_key)
-        if _reply is None:
-            _reply = await self._hm_slash_confirm_reply(event, _quick_key)
-        return _reply
+        from gateway.run_pending_replies import pending_reply_intercepts
+        return await pending_reply_intercepts(self, event, source, _quick_key)
 
     async def _hm_dispatch_idle_commands(
         self, event: "MessageEvent", source: SessionSource, _quick_key: str
@@ -1180,6 +1123,7 @@ class GatewayInboundMixin:
         """Handle an incoming message from any platform: auth → command check → running-agent
         interrupt → get/create session → build context → run agent → return response."""
         from gateway.run import _AGENT_PENDING_SENTINEL
+        native_input = getattr(event, "_native_reply_submission", None)
         _admitted = await self._hm_admit_event(event)
         if _admitted is None:
             return None
@@ -1196,6 +1140,11 @@ class GatewayInboundMixin:
         _paused_notice = self._hm_estop_gate(event, source, is_internal)
         if _paused_notice is not None:
             return _paused_notice
+
+        from gateway.native_reply_input import handle_native_reply
+        native_reply = await handle_native_reply(self, event, native_input)
+        if native_reply is not None:
+            return native_reply
 
         _quick_key = self._session_key_for_source(source)
         _reply = await self._hm_pending_reply_intercepts(event, source, _quick_key)

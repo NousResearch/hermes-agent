@@ -52,8 +52,6 @@ import {
   ownerLookupSessionRows,
   sessionMatchesStoredId,
   setActiveSessionStoredIdRotation,
-  setAwaitingResponse,
-  setBusy,
   setSessions
 } from './session'
 import { secondaryProfileOwnerForEvent } from './session-event-provenance'
@@ -84,6 +82,8 @@ export const $sessionStates = atom<Record<string, ClientSessionState>>({})
 // ---------------------------------------------------------------------------
 
 const sessionScopeByRuntimeId = new Map<string, string>()
+export const sessionScopeForRuntimeId = (runtimeId: string): string | undefined =>
+  sessionScopeByRuntimeId.get(runtimeId)
 
 // Structured twin of the scope ledger: inbound events can carry either an
 // exact (connectionId, profile) owner or a producer-proven profile-only pool
@@ -579,71 +579,6 @@ export function clearAllSessionStates() {
   sessionOwnerByRuntimeId.clear()
   $stalledSessionIds.set([])
   $sessionStates.set({})
-}
-
-/** Downgrade cached busy/awaiting states after a gateway reconnect.
- *
- *  A respawned backend re-mints runtime ids (the same fact that drives
- *  resetTileRuntimeBindings), so a pre-reconnect `busy` can never receive its
- *  terminal `busy: false` publish — the runtime id it would arrive under is
- *  dead. Left alone, that state keeps its session in $workingSessionIds
- *  forever: the sidebar running arc and agents-panel "running" chrome lie for
- *  hours after the turn actually ended (#53902, #73082 — stale-flag half).
- *
- *  `scope` picks which socket's sessions to reconcile, keyed by the event-
- *  source scope recorded at fan-in: a SECONDARY (registry) reconnect passes
- *  its composite scope and touches only runtimes that arrived on that socket;
- *  the PRIMARY reconnect passes undefined and touches only scope-less
- *  runtimes (primary/local events record no scope). Neither can clear live
- *  work riding a different, still-healthy connection.
- *
- *  Direction of failure is deliberate: a turn that IS still live (transient
- *  socket blip, same backend) re-asserts busy on its next event or inflight
- *  snapshot within a beat, so at worst its arc blinks once. A dead turn's
- *  state, by contrast, would never clear on its own. `needsInput` is left
- *  untouched — a blocking prompt is the one claim the user must explicitly
- *  answer, and post-reconnect refresh re-asserts or retires it via its own
- *  path. Transition side-effects run through publishSessionState, so
- *  watchdogs disarm, stall hints drop, and settle/unread bookkeeping stays
- *  consistent.
- *
- *  The downgrade goes through the delegate's `retireBusyClaim` (the wiring
- *  cache's updateSessionState), not straight into this mirror: the claim has
- *  four holders — wiring cache, mirror, the focused view's draft latches,
- *  busyRef — and retiring only the mirror left Send silently no-oping behind
- *  a stale busy until restart (#93059). The mirror publish stays as the
- *  fallback for runtimes the cache never held (background-sync rows, no
- *  wiring mounted). A PRIMARY reconcile also clears the focused draft
- *  latches, which outlive the state they mirrored; a scoped one leaves them
- *  alone — a background socket says nothing about the primary composer. */
-export function reconcileBusyStatesOnReconnect(scope?: string) {
-  const states = $sessionStates.get()
-
-  for (const [runtimeId, state] of Object.entries(states)) {
-    if (!state || (!state.busy && !state.awaitingResponse)) {
-      continue
-    }
-
-    const recorded = sessionScopeByRuntimeId.get(runtimeId)
-
-    if (scope === undefined ? recorded !== undefined : recorded !== scope) {
-      continue
-    }
-
-    sessionTileDelegate()?.retireBusyClaim?.(runtimeId)
-
-    // Re-read — the write path may have republished (and released) this entry.
-    const published = $sessionStates.get()[runtimeId]
-
-    if (published?.busy || published?.awaitingResponse) {
-      publishSessionState(runtimeId, { ...published, awaitingResponse: false, busy: false })
-    }
-  }
-
-  if (scope === undefined) {
-    setBusy(false)
-    setAwaitingResponse(false)
-  }
 }
 
 // Derived per-session status sets — pure projections of `$sessionStates` (which

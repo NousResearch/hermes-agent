@@ -71,6 +71,8 @@ class GatewayStartupMixin:
 
     async def _drain_startup_restore_queue(self) -> int:
         """Replay inbound messages queued while startup auto-resume ran."""
+        from gateway.native_reply_input import NativeReplySubmission
+
         drained = 0
         queue = getattr(self, "_startup_restore_queue", None) or []
         while queue:
@@ -86,7 +88,12 @@ class GatewayStartupMixin:
             # Mark the replay so _handle_message does not re-queue it while the restore gate is closed.
             with suppress(Exception):
                 setattr(event, "_hermes_startup_restore_replay", True)
-            await adapter.handle_message(event)
+            if isinstance(getattr(event, "_native_reply_submission", None), NativeReplySubmission):
+                # Keep native replies ahead of restored-session busy guards; the live
+                # adapter's normal handler still supplies authorization and profile scope.
+                await adapter._dispatch_inline_reply(event)
+            else:
+                await adapter.handle_message(event)
             drained += 1
         return drained
 

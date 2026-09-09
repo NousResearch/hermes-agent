@@ -8,16 +8,33 @@
 
 import { host } from '@hermes/plugin-sdk'
 
+import {
+  beginClassicTurn,
+  ClassicTurnEndedError,
+  groupTurnText,
+  readClassicAttachment,
+  readClassicTurn
+} from './classic-output'
+import type { ClassicTurn, GroupTurnReply } from './classic-output'
+import { desktopRoomIdentity } from './desktop-room-command-client'
 import { recordGroupActivity } from './group-activity'
 import { $groupChats, $groupClarify, appendGroupChatEntry, updateGroupChat } from './group-chat'
 import type { GroupChatRoom } from './group-chat'
+import { groupCommandFenceLive, groupCommandFenceMatches } from './group-command-fence'
+import type { GroupCommandFence } from './group-command-fence'
+import { GroupFileDeliveryError } from './group-file-delivery'
 import { followGroupChat, groupMemberKey, groupSessionOwner } from './group-membership'
+import { approveHostedGroupChat } from './hosted-room-runtime'
 import { botConnectionRoute, requestForBot } from './routing'
 import type { Attachment, GroupMember, GroupPrompt, GroupPromptQuestion, ProfileRoute } from './types'
 
 /** "(pass)" (loosely: pass / (pass) / pass.) or empty = the member stayed silent. */
 export function isGroupPassText(text: unknown) {
-  const trimmed = String(text || '').trim()
+  if (text && typeof text === 'object' && 'images' in text && Array.isArray(text.images) && text.images.length) {
+    return false
+  }
+
+  const trimmed = String(text && typeof text === 'object' && 'text' in text ? text.text : text || '').trim()
 
   if (!trimmed) {
     return true
@@ -122,12 +139,24 @@ interface GroupMemberSessionHandle {
  *  title, which also covers rehydrated rooms whose sid was lost — reopens
  *  it after restarts. Cross-connection members route to their OWN source
  *  via requestForBot; the window's gateway never switches. */
-export async function ensureGroupChatSession(group: string, member: GroupMember): Promise<GroupMemberSessionHandle> {
+export async function ensureGroupChatSession(
+  group: string,
+  member: GroupMember,
+  fence?: GroupCommandFence
+): Promise<GroupMemberSessionHandle> {
   const binding = followGroupChat(group, name => {
     group = name
   })
-
   try {
+    const current = () =>
+      binding.isLive() &&
+      groupCommandFenceLive(fence) &&
+      (!fence || fence.roomId === desktopRoomIdentity(group, $groupChats.get()[group]))
+
+    if (!current()) {
+      return { runtime: null }
+    }
+
     const room = $groupChats.get()[group] || {}
     // New rooms title member sessions by their immutable roomId so a
     // same-name recreate never resumes the old room's sessions by title;
@@ -149,6 +178,10 @@ export async function ensureGroupChatSession(group: string, member: GroupMember)
     // room. Only a genuine 4007 on BOTH targets means there truly is nothing
     // to resume yet, so the loop falls through to session.create below.
     for (const target of [known, title]) {
+      if (!current()) {
+        return { runtime: null }
+      }
+
       if (!target || target === true) {
         continue
       }
@@ -160,7 +193,7 @@ export async function ensureGroupChatSession(group: string, member: GroupMember)
           omit_messages: true
         })) as GroupSessionSnapshot
 
-        if (!binding.isLive()) {
+        if (!current()) {
           return { runtime: null }
         }
 
@@ -205,7 +238,7 @@ export async function ensureGroupChatSession(group: string, member: GroupMember)
       }
     }
 
-    if (!binding.isLive()) {
+    if (!current()) {
       return { runtime: null }
     }
 
@@ -222,7 +255,7 @@ export async function ensureGroupChatSession(group: string, member: GroupMember)
       follow_profile_config: true
     })) as { session_id?: string; stored_session_id?: string }
 
-    if (!binding.isLive()) {
+    if (!current()) {
       return { runtime: null }
     }
 
@@ -390,16 +423,36 @@ async function submitGroupTurnPrompt(
   member: GroupMember,
   runtime: string,
   stored: null | string | true | undefined,
-  text: string
+  text: string,
+  classicTurn?: ClassicTurn | null,
+  fence?: GroupCommandFence
 ): Promise<string> {
   try {
     await requestForBot(member, 'prompt.submit', {
       session_id: runtime,
-      text
+      text,
+      ...(classicTurn ? { classic_export: classicTurn.request } : {})
     })
 
     return runtime
   } catch (error: any) {
+    if (classicTurn) {
+      if ([4001, 4091, 4121, 4150].includes(error?.code)) {
+        throw Object.assign(new GroupFileDeliveryError(error.message), { notAdmitted: true })
+      }
+
+      // Unknown transport outcomes are read back, never blindly submitted twice.
+      try {
+        await readClassicTurn(member, runtime, classicTurn)
+
+        return runtime
+      } catch {
+        throw new GroupFileDeliveryError(
+          'File turn outcome is unknown. Reconnect to recover this turn before retrying.'
+        )
+      }
+    }
+
     if (!isSessionGoneError(error) || !stored) {
       throw error
     }
@@ -414,6 +467,10 @@ async function submitGroupTurnPrompt(
 
     if (!fresh) {
       throw error
+    }
+
+    if (!groupCommandFenceLive(fence)) {
+      return fresh
     }
 
     await requestForBot(member, 'prompt.submit', {
@@ -519,20 +576,11 @@ export function syncGroupClarify(group: string, member: GroupMember, state: Grou
   return true
 }
 
-/** Whether `group` has any member currently blocked on a clarify or
- *  approval, given a $groupClarify snapshot. Pure by design: the caller
- *  (roster-pane) subscribes to $groupClarify itself via useValue and passes
- *  the live snapshot in, so the subscription actually drives the
- *  recalculation instead of existing only to force a re-render. $groupClarify
- *  is the single source of truth for this kind of attention — nothing copies
- *  it into a second boolean, so there is nothing to keep in sync when a
- *  prompt resolves, is answered, or the room is disbanded/renamed. */
+/** Drop every mirrored clarify belonging to `group` (disband/rename). */
 export function groupHasPendingClarify(clarifies: Record<string, GroupPrompt>, group: string): boolean {
   return Object.values(clarifies).some(entry => entry?.group === group)
 }
 
-/** Drop every mirrored clarify belonging to `group` (disband — the room is
- *  gone, nothing to move the attention to). */
 export function clearGroupClarify(group: string) {
   const all = $groupClarify.get()
   const next: Record<string, GroupPrompt> = {}
@@ -551,8 +599,6 @@ export function clearGroupClarify(group: string) {
   }
 }
 
-/** Move existing prompts with the renamed room; active operations follow
- * the same room through their scoped followGroupChat binding. */
 export function renameGroupClarify(oldName: string, newName: string) {
   const all = $groupClarify.get()
   const next: Record<string, GroupPrompt> = {}
@@ -608,11 +654,17 @@ export async function answerGroupClarify(
 
   try {
     if (entry.kind === 'approval') {
-      await requestForBot(member, 'approval.respond', {
-        session_id: entry.sessionId || undefined,
-        request_id: entry.requestId,
-        choice: typeof answers === 'string' && answers ? answers : 'deny'
-      })
+      const choice = typeof answers === 'string' && answers ? answers : 'deny'
+
+      if (entry.hostedApproval) {
+        await approveHostedGroupChat(entry, choice)
+      } else {
+        await requestForBot(member, 'approval.respond', {
+          session_id: entry.sessionId || undefined,
+          request_id: entry.requestId,
+          choice
+        })
+      }
     } else if (entry.questions && entry.questions.length) {
       for (const question of entry.questions) {
         // Question ids are opaque on the wire (`GroupPrompt.questions` types
@@ -663,8 +715,9 @@ export async function runGroupChatMemberTurn(
   member: GroupMember,
   prompt: string,
   thread: string,
-  images?: Attachment[]
-): Promise<null | string> {
+  images?: Attachment[],
+  fence?: GroupCommandFence
+): Promise<null | GroupTurnReply> {
   // #93602: hold the member's route socket for the whole turn. Without the
   // lease, every RPC below rides its own request-scoped socket lease; the
   // socket that minted `runtime` can close between RPCs, the gateway reaps
@@ -678,14 +731,22 @@ export async function runGroupChatMemberTurn(
   try {
     releaseTurnLease = await retainGroupTurnRoute(member)
 
-    return binding.isLive() ? await runGroupChatMemberTurnLeased(group, member, prompt, thread, images) : null
+    return binding.isLive() && groupCommandFenceLive(fence)
+      ? await runGroupChatMemberTurnLeased(group, member, prompt, thread, images, fence)
+      : null
   } finally {
     releaseTurnLease?.()
     binding.dispose()
   }
 }
 
-async function stageGroupTurnAttachments(member: GroupMember, runtime: string, images?: Attachment[]) {
+async function stageGroupTurnAttachments(
+  context: { group: string; leaseLive(): boolean },
+  member: GroupMember,
+  runtime: string,
+  images?: Attachment[]
+) {
+  const { leaseLive } = context
   // Stage this delta's attachments into the member's session so the model
   // receives the actual payload with the prompt — the same attach RPCs the
   // 1:1 chat uses (they also work cross-connection, where the member's
@@ -697,7 +758,25 @@ async function stageGroupTurnAttachments(member: GroupMember, runtime: string, i
   // the member knows something was shared.
   const fileRefs: string[] = []
 
-  for (const img of Array.isArray(images) ? images : []) {
+  for (const original of Array.isArray(images) ? images : []) {
+    if (!leaseLive()) {
+      return null
+    }
+
+    let img = original
+
+    if (img?.classicExport) {
+      try {
+        img = await readClassicAttachment(context.group, img, member)
+      } catch {
+        throw new GroupFileDeliveryError()
+      }
+    }
+
+    if (!leaseLive()) {
+      return null
+    }
+
     if (!img || typeof img.data !== 'string' || !img.data) {
       continue
     }
@@ -718,6 +797,8 @@ async function stageGroupTurnAttachments(member: GroupMember, runtime: string, i
 
         if (res?.ref_text) {
           fileRefs.push(`${img.name || 'attachment'} → ${res.ref_text}`)
+        } else {
+          throw new GroupFileDeliveryError()
         }
       } else {
         await requestForBot(member, 'image.attach_bytes', {
@@ -727,6 +808,9 @@ async function stageGroupTurnAttachments(member: GroupMember, runtime: string, i
         })
       }
     } catch {
+      if (img.kind === 'file' || img.kind === 'pdf' || original.classicExport) {
+        throw new GroupFileDeliveryError()
+      }
       /* text-only fallback for this member */
     }
   }
@@ -743,11 +827,14 @@ interface GroupTurnPollContext {
   liveRuntime: string
   runtimeIds: Set<string>
   before: number
-  binding: { isLive(): boolean }
+  leaseLive(): boolean
+  classicTurn: ClassicTurn | null
+  fence?: GroupCommandFence
 }
 
-async function pollGroupMemberTurn(context: GroupTurnPollContext): Promise<null | string> {
-  const { member, thread, dispatchEpoch, stored, liveRuntime, runtimeIds, before, binding } = context
+async function pollGroupMemberTurn(context: GroupTurnPollContext): Promise<null | GroupTurnReply> {
+  const { member, thread, dispatchEpoch, stored, liveRuntime, runtimeIds, before, leaseLive, classicTurn, fence } =
+    context
   const memberKey = groupMemberKey(member)
   const started = Date.now()
   let deadline = started + GROUP_TURN_TIMEOUT_MS
@@ -769,13 +856,9 @@ async function pollGroupMemberTurn(context: GroupTurnPollContext): Promise<null 
     // conditions on purpose: an ordinary newer send bumps the epoch WITHOUT
     // a hold, and that turn must keep polling so finished work can still be
     // delivered (the #93127 commit check decides its fate, not this loop).
-    if (!binding.isLive()) {
-      return null
-    }
-
     const roomDuringPoll = $groupChats.get()[context.group] || {}
 
-    if ((roomDuringPoll.epoch || 0) !== dispatchEpoch && (roomDuringPoll.holds || {})[memberKey]) {
+    if (!leaseLive() || ((roomDuringPoll.epoch || 0) !== dispatchEpoch && (roomDuringPoll.holds || {})[memberKey])) {
       return null
     }
 
@@ -790,7 +873,7 @@ async function pollGroupMemberTurn(context: GroupTurnPollContext): Promise<null 
       continue
     }
 
-    if (!binding.isLive()) {
+    if (!leaseLive()) {
       return null
     }
 
@@ -807,6 +890,35 @@ async function pollGroupMemberTurn(context: GroupTurnPollContext): Promise<null 
     const done = !busy && !awaitingUser
 
     if (messages.length > before && done) {
+      if (classicTurn) {
+        let reply
+
+        try {
+          reply = await readClassicTurn(member, state?.session_id || liveRuntime, classicTurn)
+        } catch (error) {
+          throw error instanceof GroupFileDeliveryError
+            ? error
+            : new GroupFileDeliveryError('Export recovery is pending. Reconnect before retrying.')
+        }
+
+        if (!leaseLive()) {
+          return null
+        }
+
+        if (reply === null) {
+          continue
+        }
+
+        updateGroupChat(context.group, r => {
+          const stranded = { ...(r.stranded || {}) }
+          delete stranded[memberKey]
+
+          return { ...r, stranded }
+        })
+
+        return reply
+      }
+
       const replyText = pickGroupTurnReply(messages, before)
 
       if (replyText !== null) {
@@ -836,7 +948,7 @@ async function pollGroupMemberTurn(context: GroupTurnPollContext): Promise<null 
     }
   }
 
-  if (!binding.isLive()) {
+  if (!leaseLive()) {
     return null
   }
 
@@ -850,12 +962,20 @@ async function pollGroupMemberTurn(context: GroupTurnPollContext): Promise<null 
     thread
   })
   syncGroupClarify(context.group, member, null)
+
+  // Mailbox output must commit under its command lease, never through a later
+  // unleased harvest. Ordinary Desktop turns retain their stranded recovery.
+  if (fence) {
+    return null
+  }
+
   updateGroupChat(context.group, (r: GroupChatRoom) => {
     r.stranded = {
       ...(r.stranded || {}),
       [groupMemberKey(member)]: {
         before,
-        thread
+        thread,
+        ...(classicTurn ? { classicTurn } : {})
       }
     }
 
@@ -899,22 +1019,25 @@ async function runGroupChatMemberTurnLeased(
   member: GroupMember,
   prompt: string,
   thread: string,
-  images?: Attachment[]
-): Promise<null | string> {
+  images?: Attachment[],
+  fence?: GroupCommandFence
+): Promise<null | GroupTurnReply> {
   const binding = followGroupChat(group, name => {
     group = name
   })
-
   try {
-    const { runtime, stored } = await ensureGroupChatSession(group, member)
+    const leaseLive = () =>
+      binding.isLive() && groupCommandFenceMatches(fence, desktopRoomIdentity(group, $groupChats.get()[group]), thread)
+    const { runtime, stored } = await ensureGroupChatSession(group, member, fence)
 
-    if (!runtime || !binding.isLive()) {
+    if (!runtime || !leaseLive()) {
       return null
     }
 
     // #91868/#94569: remember the epoch this turn was dispatched under so the
     // poll loop below can tell an explicit stop from ordinary room churn.
     const dispatchEpoch = ($groupChats.get()[group] || {}).epoch || 0
+    const memberKey = groupMemberKey(member)
     recordGroupActivity(group, {
       kind: 'working',
       member: member.name,
@@ -922,28 +1045,88 @@ async function runGroupChatMemberTurnLeased(
     })
 
     const { before, runtimeIds } = await prepareGroupTurnBaseline(member, runtime, stored)
-
-    const fileRefs = await stageGroupTurnAttachments(member, runtime, images)
-
-    if (!binding.isLive()) {
+    const fileRefs = await stageGroupTurnAttachments(
+      {
+        get group() {
+          return group
+        },
+        leaseLive
+      },
+      member,
+      runtime,
+      images
+    )
+    if (fileRefs === null || !leaseLive()) {
       return null
     }
 
-    const turnText = fileRefs.length
+    let turnText = fileRefs.length
       ? `${prompt}\n\nAttached files staged in your session workspace:\n${fileRefs.join('\n')}`
       : prompt
+
+    if (!leaseLive()) {
+      return null
+    }
+
+    const classicTurn: ClassicTurn | null = await beginClassicTurn(group, member, String(stored || runtime), thread)
+
+    if (!leaseLive()) {
+      return null
+    }
+
+    if (classicTurn) {
+      if (
+        $groupChats.get()[group]?.roomId !== classicTurn.request.group_id ||
+        $groupChats.get()[group]?.tombstone ||
+        ($groupChats.get()[group]?.epoch || 0) !== dispatchEpoch
+      ) {
+        return null
+      }
+
+      turnText +=
+        '\n\nFiles are private until you explicitly call share_group_file. Use it to share output; a pathname is not a shared file.'
+
+      if (fence) {
+        classicTurn.mailboxCommandId = fence.commandId
+      }
+
+      updateGroupChat(group, r => ({
+        ...r,
+        stranded: {
+          ...(r.stranded || {}),
+          [memberKey]: { before, thread, classicTurn }
+        }
+      }))
+    }
 
     // #93602: one-shot recovery when the runtime session was reaped between
     // minting and submitting. Tracks the runtime id the submit landed on so
     // the poll fallback below targets a live session.
-    const liveRuntime = await submitGroupTurnPrompt(member, runtime, stored, turnText)
+    let liveRuntime: string
 
-    if (!binding.isLive()) {
-      return null
+    try {
+      if (!leaseLive()) {
+        return null
+      }
+
+      liveRuntime = await submitGroupTurnPrompt(member, runtime, stored, turnText, classicTurn, fence)
+    } catch (error: any) {
+      if (error?.notAdmitted && leaseLive()) {
+        updateGroupChat(group, r => {
+          const stranded = { ...(r.stranded || {}) }
+          delete stranded[memberKey]
+
+          return { ...r, stranded }
+        })
+      }
+
+      throw error
     }
 
     runtimeIds.add(liveRuntime)
-
+    if (!leaseLive()) {
+      return null
+    }
     return await pollGroupMemberTurn({
       get group() {
         return group
@@ -955,7 +1138,9 @@ async function runGroupChatMemberTurnLeased(
       liveRuntime,
       runtimeIds,
       before,
-      binding
+      leaseLive,
+      classicTurn,
+      fence
     })
   } finally {
     binding.dispose()
@@ -965,20 +1150,51 @@ async function runGroupChatMemberTurnLeased(
 /** Post a timed-out member's finished reply into the room, if it landed
  *  after we stopped waiting. Called at the member's next turn boundary and
  *  on user sends, so long-running work is delivered late rather than lost. */
-export async function harvestStrandedGroupReply(group: string, member: GroupMember) {
+export async function harvestStrandedGroupReply(group: string, member: GroupMember, fence?: GroupCommandFence) {
   const binding = followGroupChat(group, name => {
     group = name
   })
+  try {
+    if ($groupChats.get()[group]?.stranded?.[groupMemberKey(member)] === undefined) {
+      return
+    }
 
+    const release = await retainGroupTurnRoute(member)
+
+    try {
+      if (binding.isLive()) {
+        await harvestStrandedGroupReplyLeased(group, member, fence)
+      }
+    } finally {
+      release()
+    }
+  } finally {
+    binding.dispose()
+  }
+}
+
+async function harvestStrandedGroupReplyLeased(group: string, member: GroupMember, fence?: GroupCommandFence) {
+  const binding = followGroupChat(group, name => {
+    group = name
+  })
   try {
     const memberKey = groupMemberKey(member)
     const room = $groupChats.get()[group] || {}
     const marker = room.stranded?.[memberKey]
+    const mailboxCommandId = typeof marker === 'object' ? marker?.classicTurn?.mailboxCommandId : undefined
+
+    if (mailboxCommandId && mailboxCommandId !== fence?.commandId) {
+      return
+    }
+
     // Markers were a bare number before threads; normalize both shapes.
     const strandedBefore = typeof marker === 'number' ? marker : marker?.before
     const strandedThread = (typeof marker === 'object' && marker?.thread) || 'legacy'
+    const canCommit = () =>
+      binding.isLive() &&
+      groupCommandFenceMatches(fence, desktopRoomIdentity(group, $groupChats.get()[group]), strandedThread)
 
-    if (typeof strandedBefore !== 'number') {
+    if (typeof strandedBefore !== 'number' || !canCommit()) {
       return
     }
 
@@ -994,15 +1210,66 @@ export async function harvestStrandedGroupReply(group: string, member: GroupMemb
       return // source unreachable — leave the marker for the next boundary
     }
 
-    if (!binding.isLive()) {
+    if (!canCommit()) {
       return
     }
 
-    // Pending prompts are authoritative even while the session is running.
+    // A pending prompt is authoritative even while the member is running.
     const awaitingUser = syncGroupClarify(group, member, state)
-
     if (state?.inflight || state?.running || awaitingUser) {
       return
+    }
+
+    const classicTurn = typeof marker === 'object' ? marker.classicTurn : undefined
+    let exported: Awaited<ReturnType<typeof readClassicTurn>> = null
+
+    if (classicTurn) {
+      const current = $groupChats.get()[group]
+
+      const forget = () =>
+        updateGroupChat(group, r => {
+          const stranded = { ...(r.stranded || {}) }
+          delete stranded[memberKey]
+
+          return { ...r, stranded }
+        })
+
+      if (!current || current.tombstone || current.roomId !== classicTurn.request.group_id) {
+        return
+      }
+
+      if (current.holds?.[memberKey] || !(current.members || []).some(m => groupMemberKey(m) === memberKey)) {
+        forget()
+
+        return
+      }
+
+      // A newer user input in this thread invalidates the original pending output.
+      const anchor = current.log.findIndex(entry => entry.id === classicTurn.anchor)
+
+      const newer =
+        anchor < 0 ||
+        current.log.slice(anchor + 1).some(entry => entry.from.kind === 'user' && entry.thread === strandedThread)
+
+      if (newer) {
+        forget()
+
+        return
+      }
+
+      try {
+        exported = await readClassicTurn(member, state?.session_id || '', classicTurn)
+      } catch (error) {
+        if (error instanceof ClassicTurnEndedError) {
+          forget()
+        }
+
+        return
+      }
+
+      if (!exported || !canCommit()) {
+        return
+      }
     }
 
     // Done (or dead): the marker is consumed either way.
@@ -1022,7 +1289,7 @@ export async function harvestStrandedGroupReply(group: string, member: GroupMemb
       return
     }
 
-    const reply = pickGroupTurnReply(messages, strandedBefore)
+    const reply = exported || pickGroupTurnReply(messages, strandedBefore)
 
     if (reply && !isGroupPassText(reply)) {
       recordGroupActivity(group, {
@@ -1041,11 +1308,24 @@ export async function harvestStrandedGroupReply(group: string, member: GroupMemb
               }
             : {})
         },
-        reply,
-        strandedThread
+        groupTurnText(reply),
+        strandedThread,
+        exported?.images,
+        exported?.entryId
       )
       updateGroupChat(group, (r: GroupChatRoom) => {
-        r.watermarks[`${strandedThread}::${memberKey}`] = r.log.length
+        if (classicTurn) {
+          const anchor = r.log.findIndex(entry => entry.id === classicTurn.anchor)
+
+          if (anchor >= 0) {
+            r.watermarks[`${strandedThread}::${memberKey}`] = Math.max(
+              r.watermarks[`${strandedThread}::${memberKey}`] || 0,
+              r.log[anchor + 1]?.id === exported?.entryId ? anchor + 2 : anchor + 1
+            )
+          }
+        } else {
+          r.watermarks[`${strandedThread}::${memberKey}`] = r.log.length
+        }
 
         return r
       })

@@ -8,6 +8,7 @@ import os
 from typing import Any, Dict, List, Optional, Tuple
 
 from gateway.platforms.base import SendResult
+from gateway.native_document_guard import mark_native_document_guard
 
 logger = logging.getLogger("plugins.platforms.discord.adapter")
 
@@ -332,6 +333,7 @@ class DiscordMediaMixin:
         )
 
 
+    @mark_native_document_guard
     async def send_document(
         self, chat_id: str, file_path: str, caption: Optional[str] = None,
         file_name: Optional[str] = None, reply_to: Optional[str] = None,
@@ -342,4 +344,3 @@ class DiscordMediaMixin:
             chat_id, file_path, caption, file_name=file_name, not_found="File not found", kind="document",
             metadata=metadata,
         )
-

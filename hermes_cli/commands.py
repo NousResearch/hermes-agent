@@ -47,6 +47,10 @@ VALID_BUSY_POLICIES: frozenset[str] = frozenset({"dispatch", "reject", "interrup
 
 
 COMMAND_REGISTRY: list[CommandDef] = [
+    CommandDef("group", "List, inspect, or control Bot Group Chats", "Bots",
+               gateway_only=True,
+               args_hint="[list [page] | number | number send message | number retry | number stop]",
+               busy_policy="dispatch"),
     # Session
     CommandDef("start", "Acknowledge platform start pings without a reply", "Session",
                gateway_only=True, busy_policy="dispatch", busy_handler="start"),
@@ -141,7 +145,7 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("whoami", "Show your slash command access (admin / user)", "Info"),
     CommandDef("profile", "Show active profile name and home directory", "Info",
                busy_policy="dispatch", execute="profile"),
-    CommandDef("sethome", "Set this chat as the home channel", "Session",
+    CommandDef("sethome", "Choose a delivery destination; Group Chat control needs separate authorization", "Session",
                gateway_only=True, aliases=("set-home",), desktop="terminal"),
     CommandDef("resume", "Resume a previously-named session", "Session",
                args_hint="[name]", argument_mode="mixed"),

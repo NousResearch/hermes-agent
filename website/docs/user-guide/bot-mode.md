@@ -105,6 +105,39 @@ Use the **Move up** and **Move down** arrows beside a room to choose its positio
 - **Rooms keep running when you close the Desktop.** When every member of a room lives on the same gateway, that gateway owns turn scheduling through a durable driver: closing Hermes Desktop (or losing its connection) does not stop a room mid-discussion, and the Desktop simply catches up from the room's log when it reconnects. `groups.capabilities` on the gateway reports `driver: true` when this applies. Rooms whose members span several machines are different: each member's turns run on its own gateway, and the cross-connection courier described under *Bot-to-bot messaging* still applies to them.
 - **Rooms can span machines.** The New Group Chat picker seats Bots from any registered connection; each member's turns run on its own machine, in its own `Group: <name>` session there. Cross-machine members carry a device badge (`dixie · Mac Mini`) in the room and in other members' transcripts, and the disambiguated `@name-device` handle works in room mentions — so same-named agents on two machines never blur together.
 
+### Check in from a messaging app
+
+On gateways that support Group Chat controls, use `/group` in your authorized Hermes chat to choose a group. Telegram and Discord offer buttons; other clients can use the same text commands. For example, if **Product launch** is group **7**:
+
+- `/group 7`: see its status and recent activity.
+- `/group 7 bots`: see the participating Bots.
+- `/group 7 send @writer Hi!`: send a message to one Bot, using its handle from the list.
+- `/group 7 stop`: request a stop.
+- `/group 7 approvals`: check requests for your approval.
+- `/group 7 permissions`: view or remove remembered approvals.
+
+Use the group's number from your own list in place of `7`. These examples use `/`; in Slack and Matrix, type `!group`, `!sethome`, and `!whoami` instead, or follow the prefix shown by Hermes. `/group help` (or `!group help`) shows the available commands. Some actions depend on the gateway version and how the group runs. A Desktop-driven group still needs its Desktop connected to receive new work; a queued command is not confirmation that a Bot has started or stopped.
+
+Group Chat controls require an authorized account. If Hermes asks you to choose a Home chat, `/sethome` selects where scheduled updates and cross-chat messages arrive; it does not grant access by itself. A shared Home chat also asks you to confirm that its readers, including people added later, can see Group Chat activity posted there. Approve or deny Bot commands only from the owner's authorized main Hermes chat. Before using `Retry`, check the recent activity: an earlier attempt with an unknown outcome may already have acted, and retrying can repeat those actions.
+
+#### Remember an approval
+
+For supported terminal commands, **Always allow in this chat** lets one Bot repeat that exact command in this Group Chat without asking again. Hermes asks you to confirm first. The permission applies only to the same working directory and connection; other Bots, groups, and conversations keep their own approval rules. A repeated command can still affect files or data that have changed, so remember only commands you trust to run again.
+
+Open `/group 7 permissions` to inspect or **Forget this permission**. Requests that have not started being approved will ask again; a command already approved may still finish. Use **Stop** separately to stop current work. A permission waiting for its first approval is shown as inactive and can also be removed.
+
+Without buttons, use `/group 7 remember <approval code>` and follow its confirmation command. Use `/group 7 permissions <page number>` to browse a longer list and `/group 7 forget <permission code>` to remove an entry. Older gateways and commands that cannot be safely identified keep one-time approval and denial. Remembered approvals never enable a gateway-wide bypass or override protected policy denials.
+
+### Get a file or the latest reply
+
+Open a Group Chat from `/group`, choose **Files**, then select a file. The list includes files shared by both people and Bots, newest first. Telegram and Discord offer native choices; text-only clients show a get command beside each result.
+
+- `/group 7 files brief`: find a file by name or by who shared it.
+- `/group 7 file a3f9c2e1`: get the exact file identified in that group's list. Use the ID shown beside your file, not this example ID.
+- `/group 7 reply`: get the latest complete Bot reply as a Markdown document.
+
+Browsing does not run a Bot. Files arrive as normal documents when the messaging app supports them. If delivery cannot be confirmed, check the chat before explicitly retrying: the file may already be there. Files from Desktop-driven groups remain available on their Desktop; they are not a remotely hosted file catalog. Gateways need both Group Chat file browsing and messaging-file support for this workflow.
+
 ## Bot-to-bot messaging
 
 Bots message each other with attribution, and you can hand work off from any chat:

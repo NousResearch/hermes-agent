@@ -32,7 +32,7 @@ import {
   sourceByConnection,
   useRoster
 } from './data'
-import { $groupChats, $groupChatWorkspace, $groupClarify, $groupNeedsYou } from './group-chat'
+import { $groupChats, $groupChatWorkspace, $groupClarify, $groupHostedNeedsYou, $groupNeedsYou } from './group-chat'
 import { GroupChatWorkspace, openGroupChat } from './group-chat-view'
 import { groupChatMemberBots } from './group-membership'
 import { $groupMainTabsRev, shouldRenderGroupChatInPane } from './group-panes'
@@ -264,6 +264,7 @@ export function BotsPane() {
   useValue($groupMainTabsRev)
   const groupNeedsYou = useValue($groupNeedsYou)
   const groupClarify = useValue($groupClarify)
+  const groupHostedNeedsYou = useValue($groupHostedNeedsYou)
   const groupRooms = useValue($groupChats)
   const rememberedSources = useValue($lastSources)
   const rosterHydrated = useValue($rosterHydrated)
@@ -423,6 +424,7 @@ export function BotsPane() {
       b={b}
       group={row.name}
       groupClarify={groupClarify}
+      groupHostedNeedsYou={groupHostedNeedsYou}
       groupNeedsYou={groupNeedsYou}
       groupRooms={groupRooms}
       key={`group:${row.name}`}

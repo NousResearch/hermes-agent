@@ -159,6 +159,7 @@ interface GroupMentionInputProps {
   'aria-label'?: string
   autoFocus?: boolean
   className?: string
+  disabled?: boolean
   members: GroupMember[]
   onChange: (value: string) => void
   onPaste?: (event: ClipboardEvent<HTMLTextAreaElement>) => void
@@ -374,9 +375,11 @@ interface GroupClarifyCardProps {
  *    closed choice. Answer sends via the member's own source. */
 export function GroupClarifyCard({ entry, members }: GroupClarifyCardProps) {
   const b = useBots()
+  const allMeta = useValue($botMeta)
   const { group } = entry
   const isApproval = entry.kind === 'approval'
   const member = members.find(m => groupMemberKey(m) === entry.memberKey) || members.find(m => m.name === entry.member)
+  const approvalLabels = new Map(Object.entries(b.group.approvalChoices))
   const [drafts, setDrafts] = useState<Record<string, string>>({})
   const [picked, setPicked] = useState<Record<string, string[]>>({})
   const [sending, setSending] = useState(false)
@@ -435,19 +438,35 @@ export function GroupClarifyCard({ entry, members }: GroupClarifyCardProps) {
         ? `${answerFor(questions[0])} — ${entry.command || entry.question || b.group.commandApproval}`
         : questions.map(q => (questions.length > 1 ? `${q.question}: ${answerFor(q)}` : answerFor(q))).join('\n')
 
-      appendGroupChatEntry(
-        group,
-        {
-          kind: 'user',
-          name: 'You'
-        },
-        summary,
-        entry.thread || 'legacy'
-      )
+      // Hosted rooms replay one authoritative gateway log. The approval RPC
+      // currently emits no room event, so do not invent a Desktop-only entry
+      // that another client cannot observe or order.
+      if (!entry.hostedApproval) {
+        appendGroupChatEntry(
+          group,
+          {
+            kind: 'user',
+            name: 'You'
+          },
+          summary,
+          entry.thread || 'legacy'
+        )
+      }
     } catch (err: any) {
+      const nested = err?.error && typeof err.error === 'object' ? err.error : null
+      const detail = String(err?.message || nested?.message || '')
+
+      const hostedApprovalStale =
+        Number(err?.code ?? nested?.code) === 5119 &&
+        /fenc|identity is unavailable|no longer pending|not found|stale/i.test(detail)
+
       host.notify({
         kind: 'error',
-        message: b.group.answerFailed(botHandle(entry.member, member), String(err?.message || err))
+        message: entry.hostedApproval
+          ? hostedApprovalStale
+            ? b.group.hostedApprovalFailed
+            : b.group.hostedApprovalRetry
+          : b.group.answerFailed(botHandle(entry.member, member), String(err?.message || err))
       })
     } finally {
       setSending(false)
@@ -459,7 +478,9 @@ export function GroupClarifyCard({ entry, members }: GroupClarifyCardProps) {
       <div className="flex items-center gap-1.5 text-xs font-medium">
         <Codicon className="shrink-0 text-(--ui-accent)" name={isApproval ? 'shield' : 'question'} />
         {isApproval
-          ? b.group.wantsToRunCommand(botHandle(entry.member, member))
+          ? b.group.wantsToRunCommand(
+              member ? displayName(member, botRosterMeta(member, allMeta)) : `@${botHandle(entry.member)}`
+            )
           : b.group.asks(botHandle(entry.member, member))}
       </div>
       {isApproval && entry.command ? (
@@ -507,7 +528,7 @@ export function GroupClarifyCard({ entry, members }: GroupClarifyCardProps) {
                     size="sm"
                     variant={chosen ? 'default' : 'secondary'}
                   >
-                    {choice}
+                    {isApproval ? (approvalLabels.get(choice) ?? choice) : choice}
                   </Button>
                 )
               })}
@@ -549,7 +570,13 @@ export function GroupClarifyCard({ entry, members }: GroupClarifyCardProps) {
       ))}
       <div className="flex justify-end">
         <Button disabled={sending || !allAnswered || !member} onClick={() => void submit()} size="sm">
-          {sending ? 'Sending…' : isApproval ? 'Respond' : 'Answer'}
+          {isApproval
+            ? sending
+              ? b.group.submittingDecision
+              : b.group.submitDecision
+            : sending
+              ? 'Sending…'
+              : 'Answer'}
         </Button>
       </div>
     </div>

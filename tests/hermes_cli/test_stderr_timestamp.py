@@ -3,6 +3,8 @@
 import re
 import sys
 
+import pytest
+
 from gateway.restart import EXTERNAL_GATEWAY_SUPERVISOR_ENV
 from hermes_cli import stderr_timestamp
 

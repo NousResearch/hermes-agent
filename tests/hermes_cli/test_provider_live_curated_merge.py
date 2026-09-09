@@ -16,6 +16,7 @@ from unittest.mock import MagicMock, patch
 
 from hermes_cli.models import (
     _LIVE_FIRST_PICKER_PROVIDERS,
+    _PROVIDER_MODELS,
     provider_model_ids,
 )
 
@@ -85,4 +86,29 @@ class TestGenericProviderLiveCuratedMerge:
         ):
             zen_result = set(provider_model_ids("opencode-zen"))
         assert {"a", "b", "c"} <= zen_result
+
+    def test_opencode_go_merge_does_not_resurrect_delisted_model(self):
+        """#95914 bug class, end-to-end through provider_model_ids with the REAL curated floor:
+        the Go relay (GET /zen/go/v1/models) delisted ox-alpha-free 2026-09-09. The live-first
+        merge must not resurrect it from the curated floor, or the picker keeps offering a model
+        that now 401s (REVERT-PROOF: a stale floor re-adds it and this fails)."""
+        assert "opencode-go" in _LIVE_FIRST_PICKER_PROVIDERS
+        live = ["deepseek-v4-flash", "kimi-k3", "omen-alpha"]  # current Go relay (no ox-alpha-free)
+
+        with (
+            patch("providers.get_provider_profile", return_value=self._make_profile(live)),
+            patch(
+                "hermes_cli.auth.resolve_api_key_provider_credentials",
+                return_value={"api_key": "k", "base_url": ""},
+            ),
+        ):
+            result = provider_model_ids("opencode-go")
+
+        assert "ox-alpha-free" not in result
+        assert {"deepseek-v4-flash", "kimi-k3", "omen-alpha"} <= set(result)
+
+    def test_opencode_go_curated_floor_excludes_delisted_ox_alpha_free(self):
+        """The static floor must not carry a known-delisted Go model (offline fallback must
+        not offer a model that 401s — same policy as opencode-free/x-preview-f-free)."""
+        assert "ox-alpha-free" not in _PROVIDER_MODELS["opencode-go"]
 

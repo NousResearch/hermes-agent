@@ -3275,7 +3275,7 @@ class GatewayTurnMixin:
             _agent_provider = getattr(_agent, 'provider', '') or ''
             if _agent_provider and _agent_provider not in _AGGREGATOR_PROVIDERS:
                 _cfg_model = normalize_model_for_provider(_cfg_model, _agent_provider)
-        if _agent.model != _cfg_model and not self._is_intentional_model_switch(session_key, _agent.model):
+        if _agent.model != _cfg_model and not self._is_intentional_model_switch(session_key, _agent, _cfg_model):
             self._evict_cached_agent(session_key)
 
     async def _run_agent_finalize_streaming_tts(self, turn_ctx: TurnContext, adapter: Any) -> None:

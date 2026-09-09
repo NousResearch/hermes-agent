@@ -586,6 +586,10 @@ def apply_model_switch(agent: Any) -> Optional[str]:
     if str(getattr(agent, "model", "") or "") != requested:
         return None  # the session already moved (a /model, a sign-in sweep)
     agent.model = backing
+    # The gateway's cache check compares agent.model with the config default and evicts on a
+    # mismatch it did not cause; this pair names the move so the check can recognise exactly this
+    # server-driven switch even when the config write below did not land.
+    agent._nous_model_switch = (requested, backing)
     logger.info("Nous gateway asked to switch %s -> %s; applied for this session", requested, backing)
     try:
         from hermes_cli.config import load_config_readonly

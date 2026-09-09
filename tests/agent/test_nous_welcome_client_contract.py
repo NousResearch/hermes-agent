@@ -80,6 +80,7 @@ class TestModelSwitchHeader:
                             lambda provider, url, default_model=None, **kw: writes.append((provider, url, default_model)))
         assert anon_auth.apply_model_switch(agent) == "z-ai/glm-5.3-flash"
         assert agent.model == "z-ai/glm-5.3-flash"
+        assert agent._nous_model_switch == ("nous/welcome", "z-ai/glm-5.3-flash")   # what the gateway cache check reads
         assert writes == [("nous", PAID, "z-ai/glm-5.3-flash")]
         assert agent._nous_pending_model_switch is None
         assert agent.statuses and "z-ai/glm-5.3-flash" in agent.statuses[0]

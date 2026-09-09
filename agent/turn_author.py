@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import socket
 import unicodedata
 from typing import Any, Dict, Mapping, MutableMapping, Optional
 
@@ -38,15 +39,27 @@ def _bot_flag(value: Any) -> bool:
 
 
 def bot_author_id(profile: str, origin: Optional[str] = None) -> str:
-    """``bot:<profile>`` for a bot on this machine, ``bot:<origin>/<profile>`` for one reached through a Desktop connection."""
+    """``bot:<profile>`` for a bot on the recipient's own install, ``bot:<origin>/<profile>`` for one on another
+    install. The origin is the Desktop's connection id on a relayed dm and the sender's hostname on a peer dm."""
     origin = (origin or "").strip()
     return f"bot:{origin}/{profile}" if origin else f"bot:{profile}"
 
 
+def local_origin() -> str:
+    """This machine's hostname as an author-id origin, cleaned like any author field. Empty when unknown."""
+    try:
+        host = socket.gethostname()
+    except Exception:
+        return ""
+    # A slash would split the id into a different origin and profile at parse time.
+    return (_clean_text(host) or "").replace("/", "")
+
+
 def parse_turn_author(raw: Any) -> Optional[Dict[str, Any]]:
     """Normalize a dict or JSON string into ``{"id", "name", "is_bot"}``; None for anything else or without id and name.
-    The id is whatever the transport knows the sender by: ``bot:<profile>`` on bot-mode deliveries,
-    ``bot:<connection>/<profile>`` when the Desktop relayed it from another machine, the platform user id elsewhere.
+    The id is whatever the transport knows the sender by: ``bot:<profile>`` on a bot-mode delivery inside one
+    install, ``bot:<connection>/<profile>`` when the Desktop relayed it from another machine,
+    ``bot:<hostname>/<profile>`` on a peer dm, the platform user id elsewhere.
     An ``origin`` field qualifies a bare ``bot:<profile>`` id the same way."""
     try:
         if isinstance(raw, (str, bytes)):

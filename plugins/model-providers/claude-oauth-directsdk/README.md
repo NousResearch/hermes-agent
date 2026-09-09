@@ -84,9 +84,17 @@ Selecting the provider asks the Claude CLI itself, never Anthropic, before anyth
 
 The same `discover_models()` feeds `provider_model_ids()`, so the TUI/Desktop pickers and `/model` list the account's picker too.
 
-## Subscription usage: same metering as Claude Code
+## Subscription usage: same metering as `claude -p`, ~1.7x the interactive TUI
 
-Measured on a Pro account (Sonnet 5 1M, same 5-hour window): ~566K fresh input tokens through unmodified `claude -p` moved the session bar 6% → 25%; ~590K through this provider moved it 25% → 46%. That is 8.9 session-points per list-dollar on both routes, identical within the bar's integer rounding. On an identical coding task the provider used about 0.6x the input tokens of native Claude Code (smaller fixed prefix; equally good cache reuse; same 1h cache TTL). Anthropic's help center states SDK / `-p` usage draws from the same subscription pool as interactive Claude Code; the June 2026 plan to bill it at API rates was paused before taking effect. If a Hermes session drains a plan faster, look at what it sends per turn (toolsets, memory, thinking effort, auxiliary calls), not the route: compare Hermes `/usage` with Claude Code `/cost` on the same task.
+Measured Sept 9 2026 on a Pro plan (Sonnet 5 1M, ~500K fresh input tokens per arm, output pinned to `Hello!`, session meter read on claude.ai before/after each arm):
+
+| arm | list-$ pushed | session meter Δ | points per $ |
+|---|---|---|---|
+| `claude -p` (two windows) | 2.12 / 1.94 | +19 / +17 | 8.9 / 8.8 |
+| this provider | 2.36 | +21 | 8.9 |
+| Claude Code interactive TUI (two runs) | 2.22 / 2.25 | +12 / +11 | 5.4 / 4.9 |
+
+This provider draws subscription usage at exactly the `claude -p` / Agent SDK rate; there is no Hermes-specific penalty. Interactive Claude Code is metered at roughly 0.58x that rate, so plan for about 60% of the TUI's throughput per 5-hour window (≈ $6.5 vs ≈ $11 list-equivalent of Sonnet 5 on Pro). The wire-level usage buckets are identical across arms, so the weighting is server-side and applies to every `-p`/SDK harness. On identical coding tasks Hermes sent ~0.6x the tokens native Claude Code did; if your drain looks higher, compare Hermes `/usage` with Claude Code `/cost` on the same task.
 
 ## Model metadata and accounting
 

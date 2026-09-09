@@ -3538,8 +3538,8 @@ class FeishuAdapter(BasePlatformAdapter):
             )
             if (resolve_audio_anchor and send_reply_to
                     and not self._response_succeeded(message_response)
-                    and getattr(message_response, "code", None) not in _FEISHU_REPLY_FALLBACK_CODES):
-                # Keep withdrawn/missing roots fail-closed, just like ordinary threaded replies.
+                    and getattr(message_response, "code", None) == 99992402):
+                # Only routing errors permit fallback; rate limits and revoked roots stay in-thread.
                 logger.warning("[Feishu] Audio send failed in thread, retrying with chat_id")
                 message_response = await self._feishu_send_with_retry(
                     chat_id=chat_id, msg_type="audio", payload=json.dumps(key_payload, ensure_ascii=False),

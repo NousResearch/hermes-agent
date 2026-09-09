@@ -14,6 +14,7 @@ import json
 import logging
 import time
 from contextlib import suppress
+from copy import copy
 from pathlib import Path
 from typing import Any, Dict, Optional, cast
 
@@ -896,16 +897,24 @@ class GatewayNotificationsMixin:
         session_key = str(evt.get("session_key") or "").strip()
         derived = {}
         if session_key:
+            source = None
             try:
                 self.session_store._ensure_loaded()
                 entry = self.session_store._entries.get(session_key)
                 if entry and getattr(entry, "origin", None):
-                    return entry.origin
+                    source = entry.origin
             except Exception as exc:
                 logger.debug("Synthetic process-event session-store lookup failed for %s: %s", session_key, exc)
-            cached_source = self._get_cached_session_source(session_key)
-            if cached_source is not None:
-                return cached_source
+            if source is None:
+                source = self._get_cached_session_source(session_key)
+            if source is not None:
+                message_id = str(evt.get("message_id") or "").strip()
+                if message_id and not getattr(source, "message_id", None):
+                    # Legacy origins lack anchors. Keep canonical identity and transport refs without
+                    # mutating shared session/cache state or replacing an existing root.
+                    source = copy(source)
+                    source.message_id = message_id
+                return source
             derived = _parse_session_key(session_key) or {}
         profile = derived.get("profile")
         platform_name = str(evt.get("platform") or derived.get("platform") or "").strip().lower()

@@ -903,7 +903,7 @@ class TestAdapterBehavior(unittest.TestCase):
             (None, None, None, None, ["fetch", "create"]),
             (None, None, "om_last", 99992402, ["fetch", "reply", "create"]),
         ]
-        for code in _FEISHU_REPLY_FALLBACK_CODES:
+        for code in (*_FEISHU_REPLY_FALLBACK_CODES, 99991400, 99991663):
             cases.extend([
                 (None, None, "om_last", code, ["fetch", "reply"]),
                 (None, "om_metadata", None, code, ["reply"]),
@@ -948,7 +948,9 @@ class TestAdapterBehavior(unittest.TestCase):
                         metadata=metadata, outbound_message_type="audio",
                     ))
                 self.assertEqual(calls, expected)
-                self.assertEqual(result.success, code not in _FEISHU_REPLY_FALLBACK_CODES)
+                self.assertEqual(result.success, code is None or code == 99992402)
+                if not result.success:
+                    self.assertIn(str(code), result.error)
 
     def test_captioned_audio_preserves_post_routing(self):
         from gateway.config import PlatformConfig

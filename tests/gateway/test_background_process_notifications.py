@@ -230,6 +230,79 @@ async def test_inject_watch_notification_routes_from_session_store_origin(monkey
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("origin_kind", ["persisted", "cached"])
+@pytest.mark.parametrize("origin_anchor", [None, "", "om_canonical"])
+async def test_legacy_source_anchor_survives_second_detach(monkeypatch, tmp_path, origin_kind, origin_anchor):
+    from gateway.session import SessionContext, SessionSource, SessionStore
+    from tools import async_delegation as ad
+    from tools.process_registry import process_registry
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    runner = _build_runner(monkeypatch, tmp_path, "all")
+    adapter = runner.adapters.pop(Platform.TELEGRAM)
+    runner.adapters[Platform.FEISHU] = adapter
+    origin = SessionSource(
+        platform=Platform.FEISHU, chat_id="oc_canonical", chat_type="group", thread_id="omt_canonical",
+        user_id="ou_canonical", user_name="Canonical", scope_id="scope_canonical",
+        parent_chat_id="oc_parent", profile="default", message_id=origin_anchor,
+    )
+    sessions_dir = tmp_path / "legacy_sessions"
+    store = SessionStore(sessions_dir, runner.config)
+    entry = store.get_or_create_session(origin)
+    if origin_kind == "persisted":
+        # Reload the real persisted origin, including legacy records with no message_id field.
+        runner.session_store = SessionStore(sessions_dir, runner.config)
+        runner.session_store._ensure_loaded()
+        origin = runner.session_store._entries[entry.session_key].origin
+    else:
+        runner.session_store = SessionStore(tmp_path / "empty_sessions", runner.config)
+        monkeypatch.setattr(runner, "_get_cached_session_source", lambda key: origin)
+    transport_marker = object()
+    origin._transport_marker = transport_marker
+    original_identity = origin.to_dict()
+    evt = {
+        "session_key": entry.session_key, "message_id": "om_captured",
+        "platform": "telegram", "chat_id": "wrong_chat", "thread_id": "wrong_thread",
+        "user_id": "wrong_user", "scope_id": "wrong_scope", "profile": "wrong_profile",
+    }
+    assert await runner._inject_watch_notification("first completion", evt) is True
+    first = adapter.handle_message.await_args.args[0]
+    expected_anchor = origin.message_id or "om_captured"
+    assert first.message_id == "om_captured"
+    assert first.source.to_dict() == {**original_identity, "message_id": expected_anchor}
+    assert first.source._transport_marker is transport_marker
+    assert origin.to_dict() == original_identity
+    if not origin.message_id:
+        assert first.source is not origin
+    else:
+        assert first.source is origin
+
+    completions = queue.Queue()
+    monkeypatch.setattr(process_registry, "completion_queue", completions)
+    ad._reset_for_tests()
+    tokens = runner._set_session_env(SessionContext(
+        source=first.source, connected_platforms=[], home_channels={}, session_key=entry.session_key,
+    ))
+    try:
+        dispatched = ad.dispatch_async_delegation(
+            goal="second generation", context=None, toolsets=None, role="leaf", model="m",
+            session_key=entry.session_key, runner=lambda: {"status": "completed", "summary": "ok"},
+        )
+    finally:
+        runner._clear_session_env(tokens)
+    try:
+        assert dispatched["status"] == "dispatched"
+        second = await asyncio.to_thread(completions.get, True, 5)
+        assert second["message_id"] == expected_anchor
+        assert await runner._inject_watch_notification("second completion", second) is True
+        reinjected = adapter.handle_message.await_args.args[0]
+        assert reinjected.message_id == expected_anchor
+        assert reinjected.source.to_dict() == first.source.to_dict()
+    finally:
+        ad._reset_for_tests()
+
+
+@pytest.mark.asyncio
 async def test_post_turn_watch_drain_off_consumes_without_injecting(monkeypatch, tmp_path):
     runner = _build_runner(monkeypatch, tmp_path, "off")
     adapter = runner.adapters[Platform.TELEGRAM]

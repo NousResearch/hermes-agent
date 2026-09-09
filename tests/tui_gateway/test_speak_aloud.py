@@ -163,9 +163,10 @@ def _say_items(text):
     return h._say_completions(text)
 
 
-def test_say_completions_list_options_on_bare_command():
-    texts = [i["text"] for i in _say_items("/say")]
-    assert texts == [" stop", " always", " once"]
+def test_say_completions_leave_bare_command_alone():
+    # Exact `/say` (no space) must keep completing to `/say` itself —
+    # offering options here hijacks Enter into the first one.
+    assert _say_items("/say") is None
 
 
 def test_say_completions_list_options_after_space():

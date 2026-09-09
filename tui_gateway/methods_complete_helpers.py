@@ -179,9 +179,13 @@ def _say_completions(text: str) -> list[dict] | None:
     body = text[len("/say") :].removeprefix(" ")
     parts = body.split()
     trailing = text.endswith(" ")
-    if not body or (not parts and trailing):
-        lead = "" if trailing else " "
-        return [_item(f"{lead}{c}", meta) for c, meta in _SAY_OPTIONS]
+    if not parts and trailing:
+        # Bare `/say ` — offer the subcommands. Exact `/say` (no space)
+        # returns None so normal completion keeps offering `/say` itself;
+        # replacing it would hijack Enter into the first option.
+        return [_item(c, meta) for c, meta in _SAY_OPTIONS]
+    if not body:
+        return None
     if len(parts) == 1 and not trailing:
         prefix = parts[0].lower()
         return [_item(c, meta) for c, meta in _SAY_OPTIONS if c.startswith(prefix) and c != prefix]

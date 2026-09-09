@@ -60,4 +60,15 @@ describe('completionToApplyOnSubmit', () => {
     expect(completionToApplyOnSubmit('/exit', undefined, 1)).toBeNull()
     expect(completionToApplyOnSubmit('/exit', '', 1)).toBeNull()
   })
+
+  it('submits bare /say instead of jumping into its options', () => {
+    // The gateway offers `say ` (trailing space) for exact `/say`; that adds
+    // nothing, so Enter must submit (speak last reply), not accept.
+    expect(completionToApplyOnSubmit('/say', 'say ', 1)).toBeNull()
+  })
+
+  it('accepts a /say option as a real argument completion', () => {
+    expect(completionToApplyOnSubmit('/say ', 'stop', 5)).toBe('/say stop')
+    expect(completionToApplyOnSubmit('/say a', 'always', 5)).toBe('/say always')
+  })
 })

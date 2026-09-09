@@ -8,6 +8,30 @@
       content="width=device-width, initial-scale=1.0, viewport-fit=cover, interactive-widget=resizes-content"
     />
     <title>Hermes Agent - Dashboard</title>
+    <!--
+      Resolves a built asset path against the deploy's path prefix. Emitted
+      into every chunk URL by `experimental.renderBuiltUrl` in vite.config.ts,
+      so it MUST be defined before any bundle code runs. This inline script is
+      parsed before the deferred module scripts execute; it reads
+      `window.__HERMES_BASE_PATH__` (injected by web_server.py at the end of
+      the head) lazily at call time, so the ordering between the two is free.
+
+      Why it exists: Vite bakes `base` into the modulepreload URLs in
+      __vite__mapDeps at BUILD time. Behind a sub-path proxy the server can
+      rewrite index.html, but it cannot reach those baked URLs -- they resolve
+      to /assets/*, escape the mount, 404, and __vitePreload rejects, so the
+      lazily-loaded routes (chat, sessions, ...) never render.
+
+      Do not write a literal closing-head tag in this file's comments:
+      web_server.py injects its bootstrap at the FIRST occurrence, and a
+      comment containing that tag swallows the injection along with every
+      script and stylesheet tag after it.
+    -->
+    <script>
+      window.__hermesAssetUrl = function (filename) {
+        return (window.__HERMES_BASE_PATH__ || "") + "/" + filename;
+      };
+    </script>
   </head>
   <body>
     <div id="root"></div>

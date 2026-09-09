@@ -174,7 +174,9 @@ def _start_upstream_login(request: Request, p, *, audit_failure: bool, extra_pkc
 async def login_page(request: Request) -> HTMLResponse:
     # ``next=`` is set by the gate's redirect but /login is reachable directly.
     next_path = _validate_post_login_target(request.query_params.get("next", ""))
-    return HTMLResponse(render_login_html(next_path=next_path), headers=_NO_STORE)
+    return HTMLResponse(
+        render_login_html(next_path=next_path, prefix=_prefix(request)), headers=_NO_STORE
+    )
 
 
 @router.get("/api/auth/providers", name="auth_providers")

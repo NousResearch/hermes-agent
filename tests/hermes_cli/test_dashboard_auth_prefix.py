@@ -525,3 +525,75 @@ class TestCookiePathRespectsPrefix:
         assert "Path=/hermes" in at_cookies[0]
         assert "Secure" in at_cookies[0]
         assert "HttpOnly" in at_cookies[0]
+
+
+# ---------------------------------------------------------------------------
+# The login page's own URLs (rule 6)
+# ---------------------------------------------------------------------------
+
+
+class _PasswordProvider(StubAuthProvider):
+    """A ``supports_password`` provider, so the page emits the form script."""
+
+    name = "basic"
+    display_name = "Password"
+    supports_password = True
+
+
+class TestLoginPageBodyCarriesPrefix:
+    """The gate redirects to ``/hermes/login`` correctly (rule 1), but the
+    page it lands on builds every URL root-absolute. Behind the proxy those
+    escape the mount: the OAuth button 404s, the fonts fall back silently,
+    and ``fetch('/auth/password-login')`` is handed to whatever owns
+    ``location /`` — which the user only sees as "sign-in failed"."""
+
+    def setup_method(self):
+        clear_providers()
+
+    def teardown_method(self):
+        clear_providers()
+
+    def test_oauth_button_href_carries_prefix(self):
+        from hermes_cli.dashboard_auth.login_page import render_login_html
+        register_provider(StubAuthProvider())
+        out = render_login_html(prefix="/hermes")
+        assert 'href="/hermes/auth/login?provider=stub"' in out
+
+    def test_font_urls_carry_prefix(self):
+        from hermes_cli.dashboard_auth.login_page import render_login_html
+        register_provider(StubAuthProvider())
+        out = render_login_html(prefix="/hermes")
+        assert "url('/fonts/" not in out
+        assert "url('/hermes/fonts/" in out
+
+    def test_password_form_script_posts_under_prefix(self):
+        from hermes_cli.dashboard_auth.login_page import render_login_html
+        register_provider(_PasswordProvider())
+        out = render_login_html(prefix="/hermes")
+        assert '__HERMES_PREFIX_JSON__' not in out
+        assert 'var PREFIX = "/hermes";' in out
+        assert "fetch(PREFIX + '/auth/password-login'" in out
+        assert "window.location.assign(PREFIX + ((data && data.next) || '/'))" in out
+
+    def test_no_provider_page_still_gets_prefixed_fonts(self):
+        from hermes_cli.dashboard_auth.login_page import render_login_html
+        out = render_login_html(prefix="/hermes")
+        assert "url('/fonts/" not in out
+        assert "url('/hermes/fonts/" in out
+
+    def test_direct_deploy_is_unchanged(self):
+        from hermes_cli.dashboard_auth.login_page import render_login_html
+        register_provider(StubAuthProvider())
+        register_provider(_PasswordProvider())
+        out = render_login_html()
+        assert 'href="/auth/login?provider=stub"' in out
+        assert "url('/fonts/" in out
+        assert 'var PREFIX = "";' in out
+
+    def test_login_route_threads_the_request_prefix(self, gated_app_proxied):
+        resp = gated_app_proxied.get(
+            "/login", headers={"X-Forwarded-Prefix": "/hermes"}
+        )
+        assert resp.status_code == 200
+        assert 'href="/hermes/auth/login?provider=stub"' in resp.text
+        assert "url('/hermes/fonts/" in resp.text

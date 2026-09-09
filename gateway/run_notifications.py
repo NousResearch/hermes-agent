@@ -673,6 +673,20 @@ class GatewayNotificationsMixin:
 
     async def _send_home_channel_message(self, platform, home, transport, message: str, failure_fmt: str) -> bool:
         """Best-effort send to one home channel; True on success, failures logged with ``failure_fmt``."""
+        if platform is Platform.TELEGRAM:
+            # Home-channel lifecycle/health notices are operational traffic, not
+            # conversation replies. Never send them through the profile adapter:
+            # that can select Halo credentials or leak a Telegram topic.
+            from tools.operational_sender import send_operational_message
+            try:
+                result = await asyncio.to_thread(send_operational_message, message, str(home.chat_id))
+                if _send_failed(result):
+                    logger.warning(failure_fmt, platform.value, home.chat_id, _send_error(result))
+                    return False
+                return True
+            except Exception as exc:
+                logger.warning(failure_fmt, platform.value, home.chat_id, exc)
+                return False
         from gateway.run import _non_conversational_metadata
         try:
             metadata = self._thread_metadata_for_target(platform, home.chat_id, home.thread_id, adapter=transport.adapter)

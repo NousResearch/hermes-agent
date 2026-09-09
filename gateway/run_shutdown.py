@@ -993,6 +993,19 @@ class GatewayShutdownMixin:
             if dedup_key in notified:
                 continue
             try:
+                if platform is Platform.TELEGRAM:
+                    from tools.operational_sender import send_operational_message
+                    result = await asyncio.to_thread(
+                        send_operational_message, msg, str(home.chat_id)
+                    )
+                    if _send_failed(result):
+                        logger.warning(
+                            "Failed to send shutdown notification to home channel %s:%s: %s",
+                            platform.value, home.chat_id, _send_error(result),
+                        )
+                        continue
+                    notified.add(dedup_key)
+                    continue
                 metadata = self._thread_metadata_for_target(platform, home.chat_id, home.thread_id, adapter=adapter)
             except Exception as e:
                 logger.debug(

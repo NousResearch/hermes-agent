@@ -2,7 +2,7 @@
 
 import json
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, Mock
 
 import pytest
 
@@ -191,20 +191,33 @@ async def test_send_home_channel_startup_notification_preserves_thread_metadata(
             return {"name": "Ops Topic"}
 
     adapter.__class__ = _DmTopicAdapter
-    adapter.send = AsyncMock(return_value=SendResult(success=True, message_id="home"))
+    adapter.send = AsyncMock(side_effect=AssertionError("Halo adapter must not send home lifecycle notices"))
+    sender = Mock(return_value={"ok": True, "result": {"message_id": 7}})
+    monkeypatch.setattr("tools.operational_sender.send_operational_message", sender)
 
     delivered = await runner._send_home_channel_startup_notifications()
 
     assert delivered == {("telegram", "parent-42", "777")}
-    adapter.send.assert_called_once_with(
-        "parent-42",
-        "♻️ Gateway online — Hermes is back and ready.",
-        metadata={
-            "thread_id": "777",
-            "telegram_dm_topic_reply_fallback": True,
-            "direct_messages_topic_id": "777",
-        },
+    sender.assert_called_once_with("♻️ Gateway online — Hermes is back and ready.", "parent-42")
+    adapter.send.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_shutdown_home_channel_uses_operational_sender_without_thread(monkeypatch):
+    runner, adapter = make_restart_runner()
+    runner.config.platforms[Platform.TELEGRAM].home_channel = HomeChannel(
+        platform=Platform.TELEGRAM, chat_id="8148316720", name="Ops Home", thread_id="20197",
     )
+    adapter.send = AsyncMock(side_effect=AssertionError("Halo adapter must not send home lifecycle notices"))
+    sender = Mock(return_value={"ok": True, "result": {"message_id": 8}})
+    monkeypatch.setattr("tools.operational_sender.send_operational_message", sender)
+
+    await runner._notify_active_sessions_of_shutdown()
+
+    sender.assert_called_once_with(
+        "⚠️ Gateway shutting down — Your current task will be interrupted.", "8148316720",
+    )
+    adapter.send.assert_not_awaited()
 
 
 @pytest.mark.asyncio

@@ -6,6 +6,7 @@ is pinned byte-identical when the remote leg fails (D32).
 """
 
 import json
+import logging
 
 import pytest
 
@@ -257,6 +258,37 @@ def test_search_merges_remote_hits_tagged_as_connectors():
     assert record["source"] == "connectors"
     assert record["source_name"] == "gmail"
     assert record["required"] == ["to", "subject"]
+
+
+@pytest.mark.parametrize("order", [("GMAIL_FETCH_PROFILE", "FETCH_PROFILE"), ("FETCH_PROFILE", "GMAIL_FETCH_PROFILE")])
+def test_search_keeps_only_the_twin_a_colliding_name_reaches(order, caplog):
+    """Composition is not injective: GMAIL_FETCH_PROFILE and a literal FETCH_PROFILE on
+    gmail both compose to connectors__gmail__FETCH_PROFILE, and describe/execute decode
+    that name to GMAIL_FETCH_PROFILE. If a vendor ever ships both, search must not
+    describe the literal under a name that runs the prefixed tool, whichever the
+    gateway listed first, and must say so in the log rather than alias silently."""
+    def twins(queries):
+        return {
+            "results": [{"index": 1, "tools": list(order)}],
+            "schemas": {
+                "GMAIL_FETCH_PROFILE": {"connector": "gmail", "tool": "GMAIL_FETCH_PROFILE",
+                                        "description": "prefixed twin", "input_schema": {}},
+                "FETCH_PROFILE": {"connector": "gmail", "tool": "FETCH_PROFILE",
+                                  "description": "literal twin", "input_schema": {}},
+            },
+        }
+
+    with caplog.at_level(logging.WARNING, logger="tools.connector_search"):
+        out = json.loads(dispatch_tool_search(
+            {"queries": ["gmail fetch profile"]},
+            current_tool_defs=_local_defs(),
+            connector_search=twins,
+        ))
+    assert out["results"][0]["matches"] == ["connectors__gmail__FETCH_PROFILE"]
+    assert out["tools"]["connectors__gmail__FETCH_PROFILE"]["description"] == "prefixed twin"
+    warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+    assert len(warnings) == 1
+    assert "GMAIL_FETCH_PROFILE" in warnings[0] and "FETCH_PROFILE" in warnings[0]
 
 
 def test_search_limit_caps_the_group_across_both_legs_and_counts_total():

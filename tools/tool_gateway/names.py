@@ -18,6 +18,14 @@ Parsing rules:
   ``GRANOLA_MCP_GET_MEETINGS``: decoding prepends exactly what encoding cut.
 - :func:`parse_connector_name` returns ``None`` and never raises — a
   malformed name is a per-entry error and sibling calls still run.
+- Composition is deliberately NOT injective: ``GMAIL_X`` and a literal ``X``
+  on connector ``gmail`` both compose to ``connectors__gmail__X``, and that
+  name decodes to the prefixed slug first everywhere (describe, execute), so
+  the literal twin is unreachable. Short names are worth more than a marker
+  for a pair no vendor catalog is known to carry, and the client cannot know
+  a vendor's slug set. Search, the one place that sees both twins, keeps the
+  reachable one and logs a WARNING instead of describing the literal under a
+  name that runs the prefixed tool.
 
 stdlib-only leaf module.
 """

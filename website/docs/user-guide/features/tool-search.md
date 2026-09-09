@@ -150,7 +150,9 @@ results only. `tool_describe` fetches connector schemas from the gateway,
 and `tool_call` sends each connector entry in a batch as its own gateway
 request, in input order (a tool name the gateway does not know under its
 conventional slug is retried once under the literal slug, so an entry can
-cost two requests). Results splice back into the batch's original order
+cost two requests). If a connector ever shipped both `GMAIL_X` and a literal
+`X`, both would compose to `connectors__gmail__X`, which runs `GMAIL_X`;
+search keeps that twin, drops the other, and logs a warning. Results splice back into the batch's original order
 with recomputed counts.
 
 ```yaml

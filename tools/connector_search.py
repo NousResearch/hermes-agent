@@ -12,7 +12,7 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict, Iterable, List, Optional
 
-from tools.tool_gateway.names import format_connector_name, is_connector_name
+from tools.tool_gateway.names import format_connector_name, is_connector_name, vendor_slug_candidates
 from tools.tool_search_catalog import CatalogEntry, _fn, _tokenize
 
 logger = logging.getLogger(__name__)
@@ -67,6 +67,7 @@ def connector_entries_by_group(
             if isinstance(echoed, str) and echoed and echoed != queries[position]:
                 continue
             slugs = group.get("tools") if isinstance(group.get("tools"), list) else []
+            picked: Dict[str, tuple[str, CatalogEntry]] = {}  # name -> (slug, entry), gateway order
             for slug in slugs:
                 schema = schemas.get(slug)
                 if not isinstance(schema, dict) or not schema.get("connector"):
@@ -79,10 +80,25 @@ def connector_entries_by_group(
                 # gateway's policy gates compare case-sensitively against
                 # the lowercase catalog form. Tool slugs stay verbatim.
                 # No-op once the gateway normalizes its own surface.
-                name = format_connector_name(str(schema["connector"]).lower(), str(slug))
-                if all(e.name != name for e in per_query[position]):
-                    per_query[position].append(
-                        _connector_entry(name, str(schema["connector"]), str(slug), schema))
+                slug = str(slug)
+                connector = str(schema["connector"]).lower()
+                name = format_connector_name(connector, slug)
+                prior = picked.get(name)
+                if prior is not None and prior[0] != slug:
+                    # Composition is not injective: GMAIL_X and a literal X on gmail
+                    # both compose to connectors__gmail__X, and describe and execute
+                    # decode that name to GMAIL_X first. Keep the twin the name
+                    # reaches; describing the other under this name would run a
+                    # different tool.
+                    reaches = vendor_slug_candidates(connector, name.split("__", 2)[2])[0]
+                    logger.warning("connector %s: vendor slugs %s and %s both compose to %s, which reaches %s",
+                                   connector, prior[0], slug, name, reaches)
+                    if slug != reaches:
+                        continue
+                elif prior is not None:
+                    continue
+                picked[name] = (slug, _connector_entry(name, str(schema["connector"]), slug, schema))
+            per_query[position] = [entry for _, entry in picked.values()]
     except Exception:
         logger.debug("connector search merge failed silently (D32)", exc_info=True)
         return [[] for _ in queries]

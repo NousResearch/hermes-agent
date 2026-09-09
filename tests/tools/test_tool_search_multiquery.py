@@ -241,7 +241,8 @@ class TestCatalogRanking:
         assert search_catalog(catalog, "list", limit=1) == [catalog[0]]
 
     def test_precomputed_corpus_stats_preserve_results(self, issue_defs):
-        from tools.tool_search import _corpus_stats, build_catalog, search_catalog
+        from tools.tool_search import build_catalog, search_catalog
+        from tools.tool_search_catalog import _corpus_stats
 
         catalog = build_catalog(issue_defs)
         expected = search_catalog(catalog, "create issues", limit=3)

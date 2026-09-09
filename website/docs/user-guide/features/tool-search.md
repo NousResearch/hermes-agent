@@ -134,9 +134,15 @@ tools:
 
 When you are signed in to the Nous Portal, the bridge additionally reaches
 **connectors** — remote tools served by the managed tool gateway. They are
-never registered locally: `tool_search` merges gateway hits into its results
-(tagged `source: "connectors"`, named `connectors__<connector>__<tool>`),
-`tool_describe` fetches their schemas from the gateway, and `tool_call`
+never registered locally: `tool_search` sends each query to the gateway, adds
+the gateway's hits to the local catalog as documents (tagged
+`source: "connectors"`, named `connectors__<connector>__<tool>`), and ranks
+both with the same BM25 pass and the same rarest-token rule, so `limit`
+caps the group as a whole and a connector tool that answers the query is
+never pushed out by local tools that share one word with it. The gateway
+call is bounded at 30 seconds; a slow or dark gateway degrades to local
+results only. `tool_describe` fetches connector schemas from the gateway,
+and `tool_call`
 sends every connector entry in a batch as one gateway request. Results
 splice back into the batch's original order with recomputed counts.
 

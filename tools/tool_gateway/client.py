@@ -52,10 +52,12 @@ DEFAULT_TIMEOUT_SECONDS = 30.0
 # measured batch latency is seconds, not minutes, but give slow tools room.
 EXECUTE_TIMEOUT_SECONDS = 60.0
 # Search rides the availability path of EVERY tool_search once connectors are
-# lit — a hung gateway must degrade silently AND fast, so it gets a short
-# budget and no retry. Schemas (tool_describe) is user-initiated; a short
-# budget with one retry keeps its worst case at 2x this value.
-SEARCH_TIMEOUT_SECONDS = 8.0
+# lit. A hung gateway degrades silently to local-only results, with no retry.
+# Measured: one request with 6 use_cases takes about 7 s, so an 8 s budget sat
+# on the edge and cut real answers off; 30 s tolerates a slow gateway and still
+# bounds the wait. Schemas (tool_describe) is user-initiated; a short budget
+# with one retry keeps its worst case at 2x this value.
+SEARCH_TIMEOUT_SECONDS = 30.0
 SCHEMAS_TIMEOUT_SECONDS = 10.0
 
 _MAX_RETRIES = 1  # D29: at most one retry, same key.

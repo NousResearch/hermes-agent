@@ -19,8 +19,8 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 from tools.registry import tool_error
 from tools.tool_search_catalog import (
     BRIDGE_TOOL_NAMES, CHARS_PER_TOKEN, TOOL_CALL_NAME, TOOL_DESCRIBE_NAME, TOOL_SEARCH_NAME,
-    CatalogEntry, _corpus_stats, _fn, _listing_group_label, _registry_entry, _registry_toolset,
-    build_catalog, build_catalog_listing_with_form, search_catalog)
+    CatalogEntry, _fn, _listing_group_label, _registry_entry, _registry_toolset,
+    _tokenize, build_catalog, build_catalog_listing_with_form, search_catalog)
 from tools.tool_search_validation import validate_deferred_call_args
 from tools.tool_gateway.names import CONNECTOR_BATCH_SENTINEL, is_connector_name
 
@@ -410,20 +410,33 @@ def _string_list_arg(args: Dict[str, Any], key: str, *, dedupe: bool, max_items:
     return out, None
 
 
-def _connector_matches_by_group(
+def _connector_entry(name: str, connector: str, slug: str, schema: Dict[str, Any]) -> CatalogEntry:
+    """A gateway hit as a catalog document, so it ranks in the same BM25 pass as local
+    tools. The search text is the connector name, the slug's words and the description:
+    the same fields a local entry indexes, so the rarest-token gate treats both alike."""
+    description = str(schema.get("description") or "")
+    input_schema = schema.get("input_schema")
+    parameters = input_schema if isinstance(input_schema, dict) else {}
+    tool_def = {"type": "function", "function": {
+        "name": name, "description": description, "parameters": parameters}}
+    text = f"{connector} {slug.replace('_', ' ')} {description}"
+    return CatalogEntry(name=name, description=description, schema=tool_def,
+                        source="connectors", source_name=connector, _tokens=_tokenize(text))
+
+
+def _connector_entries_by_group(
     queries: List[str],
     connector_search: Optional[Any] = None,
-) -> Tuple[List[List[str]], Dict[str, Dict[str, Any]]]:
-    """Remote connector hits for ``dispatch_tool_search``, grouped per query.
+) -> List[List[CatalogEntry]]:
+    """Remote connector hits for ``dispatch_tool_search`` as catalog entries, one list per
+    query, in the gateway's order.
 
-    Returns ``(per_query_match_names, tools_map_records)``. Correlation with
-    the remote response is by ARRAY POSITION only — the wire ``index`` field
+    Correlation with the remote response is by ARRAY POSITION only — the wire ``index`` field
     is 1-based vendor passthrough on the search route and is never read.
     Every failure path (signed out, config off, gateway dark, bad shapes)
     returns empty results so local search behaves exactly as today (D32).
     """
-    per_query: List[List[str]] = [[] for _ in queries]
-    records: Dict[str, Dict[str, Any]] = {}
+    per_query: List[List[CatalogEntry]] = [[] for _ in queries]
     try:
         if connector_search is None:
             from tools.tool_gateway.bridge import connector_search_hits as connector_search
@@ -455,25 +468,13 @@ def _connector_matches_by_group(
                 # the lowercase catalog form. Tool slugs stay verbatim.
                 # No-op once the gateway normalizes its own surface.
                 name = format_connector_name(str(schema["connector"]).lower(), str(slug))
-                per_query[position].append(name)
-                if name not in records:
-                    input_schema = schema.get("input_schema")
-                    required = (
-                        input_schema.get("required")
-                        if isinstance(input_schema, dict) else None
-                    )
-                    if not isinstance(required, list):
-                        required = []
-                    records[name] = {
-                        "source": "connectors",
-                        "source_name": str(schema["connector"]),
-                        "description": _clip_description(str(schema.get("description") or "")),
-                        "required": [r[:64] for r in required if isinstance(r, str)][:32],
-                    }
+                if all(e.name != name for e in per_query[position]):
+                    per_query[position].append(
+                        _connector_entry(name, str(schema["connector"]), str(slug), schema))
     except Exception:
         logger.debug("connector search merge failed silently (D32)", exc_info=True)
-        return [[] for _ in queries], {}
-    return per_query, records
+        return [[] for _ in queries]
+    return per_query
 
 
 def connections_in_scope(tool_defs: List[Dict[str, Any]]) -> bool:
@@ -486,8 +487,11 @@ def dispatch_tool_search(args: Dict[str, Any], *, current_tool_defs: List[Dict[s
                          connector_search: Optional[Any] = None) -> str:
     """Execute the ``tool_search`` bridge tool -> JSON ``{queries, total_available,
     results: [{query, matches: [names]}], tools: {name: {source, source_name, description,
-    required}}}``. ``limit`` applies PER QUERY; empty groups get ``available_sources`` +
-    ``hint`` so a lexical miss is not mistaken for a missing capability."""
+    required}}}``. ``limit`` is the total PER QUERY across local and connector tools: the
+    gateway's hits for a query join the local catalog as documents and one BM25 pass ranks
+    them together, so a connector tool that answers the query is never starved by local
+    tools that share one word with it. Empty groups get ``available_sources`` + ``hint`` so
+    a lexical miss is not mistaken for a missing capability."""
     config = config or load_config()
     queries, err = _string_list_arg(args, "queries", dedupe=False, max_items=_MAX_QUERIES_PER_CALL,
                                     retry_hint="Retry with fewer, more targeted queries.")
@@ -497,25 +501,18 @@ def dispatch_tool_search(args: Dict[str, Any], *, current_tool_defs: List[Dict[s
     limit = (config.search_default_limit if raw_limit is None
              else _clamped_int(raw_limit, config.search_default_limit, 1, config.max_search_limit))
     catalog = build_catalog(_deferrable_in(current_tool_defs))
-    remote_matches, remote_records = ([[] for _ in queries], {})
+    remote_entries: List[List[CatalogEntry]] = [[] for _ in queries]
     if connections_in_scope(current_tool_defs):
-        remote_matches, remote_records = _connector_matches_by_group(
-            queries, connector_search=connector_search)
+        remote_entries = _connector_entries_by_group(queries, connector_search=connector_search)
     results: List[Dict[str, Any]] = []
     tools_map: Dict[str, Dict[str, Any]] = {}
-    corpus_stats = _corpus_stats(catalog)
     available_sources = _available_source_summary(catalog) if catalog else []
     for position, query in enumerate(queries):
-        hits = search_catalog(catalog, query, limit=limit, corpus_stats=corpus_stats)
+        corpus = catalog + remote_entries[position]
+        hits = search_catalog(corpus, query, limit=limit)
         for h in hits:
             tools_map.setdefault(h.name, _shared_tool_record(h))
         matches = [h.name for h in hits]
-        for name in remote_matches[position]:
-            if len(matches) >= limit:
-                break
-            if name not in matches:
-                matches.append(name)
-                tools_map.setdefault(name, remote_records[name])
         group: Dict[str, Any] = {"query": query, "matches": matches}
         if not matches and catalog:
             group["available_sources"] = available_sources

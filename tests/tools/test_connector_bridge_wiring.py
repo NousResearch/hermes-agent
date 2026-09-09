@@ -120,6 +120,72 @@ def _fake_connector_search(queries):
     }
 
 
+def _registered_local_defs():
+    """Deferrable local tools the registry knows, so they enter the BM25 catalog: an issue
+    tracker whose descriptions mention email notifications, and an unrelated tool."""
+    from tools.registry import registry
+
+    specs = [
+        ("mcp__tracker__create_issue", "Create an issue. Sends an email notification to the team."),
+        ("mcp__tracker__list_issues", "List issues in a project. Email digests are optional."),
+        ("mcp__tracker__archive_project", "Archive a project and its issues."),
+    ]
+    defs = []
+    for name, desc in specs:
+        schema = {"name": name, "description": desc,
+                  "parameters": {"type": "object", "properties": {"id": {"type": "string"}}}}
+        registry.register(name=name, handler=lambda a, **k: "{}", schema=schema, toolset="mcp-tracker")
+        defs.append({"type": "function", "function": schema})
+    return [{"type": "function", "function": {"name": "manage_connections", "parameters": {}}}] + defs, [n for n, _ in specs]
+
+
+def test_connector_intent_is_not_starved_by_local_tools_sharing_one_word():
+    """The reported bug: with a large local catalog, tools that merely shared 'email' filled
+    every slot and the gmail connector tool never appeared. Ranked as one corpus with the
+    rarest-token gate ('gmail' is in one document), the connector tool is the only result."""
+    from tools.registry import registry
+
+    defs, names = _registered_local_defs()
+    try:
+        out = json.loads(dispatch_tool_search(
+            {"queries": ["send gmail email"], "limit": 5},
+            current_tool_defs=defs,
+            connector_search=lambda q: {
+                "results": [{"use_case": "send gmail email", "tools": ["GMAIL_SEND_EMAIL"]}],
+                "schemas": {"GMAIL_SEND_EMAIL": {
+                    "connector": "gmail", "tool": "GMAIL_SEND_EMAIL",
+                    "description": "Send an email via gmail", "input_schema": {}}},
+            }))
+        assert out["results"][0]["matches"] == ["connectors__gmail__SEND_EMAIL"]
+    finally:
+        for n in names:
+            registry.deregister(n)
+
+
+def test_both_sources_answer_within_one_limit():
+    """When a local MCP server and a connector both serve the same service, both surface,
+    ranked by the same BM25 pass, and `limit` caps the group as a whole."""
+    from tools.registry import registry
+
+    defs, names = _registered_local_defs()
+    try:
+        out = json.loads(dispatch_tool_search(
+            {"queries": ["tracker create issue"], "limit": 2},
+            current_tool_defs=defs,
+            connector_search=lambda q: {
+                "results": [{"use_case": "tracker create issue", "tools": ["TRACKER_CREATE_ISSUE"]}],
+                "schemas": {"TRACKER_CREATE_ISSUE": {
+                    "connector": "tracker", "tool": "TRACKER_CREATE_ISSUE",
+                    "description": "Create a tracker issue", "input_schema": {}}},
+            }))
+        matches = out["results"][0]["matches"]
+        assert len(matches) == 2
+        assert set(matches) == {"mcp__tracker__create_issue", "connectors__tracker__CREATE_ISSUE"}
+    finally:
+        for n in names:
+            registry.deregister(n)
+
+
 def test_search_composes_lowercase_connector_from_vendor_cased_schema():
     # The gateway search surface leaks vendor-cased connector slugs for
     # custom toolkits; the composed name must carry the lowercase catalog
@@ -139,7 +205,7 @@ def test_search_composes_lowercase_connector_from_vendor_cased_schema():
 
     out = json.loads(
         dispatch_tool_search(
-            {"queries": ["anything"]},
+            {"queries": ["custom_x read"]},
             current_tool_defs=_local_defs(),
             connector_search=cased_search,
         )
@@ -165,20 +231,20 @@ def test_search_merges_remote_hits_tagged_as_connectors():
     assert record["required"] == ["to", "subject"]
 
 
-def test_search_remote_leg_respects_per_query_limit_and_counts_total():
+def test_search_limit_caps_the_group_across_both_legs_and_counts_total():
     def many_hits(queries):
         slugs = [f"CUSTOM_X_TOOL_{i}" for i in range(9)]
         return {
             "results": [{"index": 1, "tools": slugs}],
             "schemas": {
-                s: {"connector": "custom_x", "tool": s, "description": "d", "input_schema": {}}
+                s: {"connector": "custom_x", "tool": s, "description": "widget", "input_schema": {}}
                 for s in slugs
             },
         }
 
     out = json.loads(
         dispatch_tool_search(
-            {"queries": ["anything"], "limit": 3},
+            {"queries": ["custom_x widget"], "limit": 3},
             current_tool_defs=_local_defs(),
             connector_search=many_hits,
         )
@@ -186,7 +252,7 @@ def test_search_remote_leg_respects_per_query_limit_and_counts_total():
     matches = out["results"][0]["matches"]
     assert len(matches) == 3  # limit is the per-query cap across BOTH legs
     assert all(m.startswith("connectors__") for m in matches)
-    # total_available counts merged remote tools on top of the local catalog
+    # total_available counts returned remote tools on top of the local catalog
     # (empty here: the fake def is not registry-backed in this test env).
     assert out["total_available"] == 3
 

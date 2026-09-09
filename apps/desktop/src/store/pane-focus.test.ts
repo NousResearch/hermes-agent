@@ -27,6 +27,7 @@ describe('revealDesktopPane', () => {
     expect(openReview).toHaveBeenCalledOnce()
     revealDesktopPane('sessions')
     expect(setSidebarOpen).toHaveBeenCalledWith(true)
+    expect(revealTreePane).toHaveBeenCalledWith('sessions')
     revealDesktopPane('terminal')
     expect(setTerminalTakeover).toHaveBeenCalledWith(true)
   })

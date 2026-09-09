@@ -1229,7 +1229,8 @@ def _profile_exists_fn() -> Optional[Callable[[str], bool]]:
 def _has_spawnable(conn: sqlite3.Connection, status: str) -> bool:
     rows = conn.execute(
         "SELECT DISTINCT assignee FROM tasks "
-        "WHERE status = ? AND assignee IS NOT NULL AND claim_lock IS NULL",
+        "WHERE status = ? AND execution_mode = 'dispatcher' "
+        "AND assignee IS NOT NULL AND claim_lock IS NULL",
         (status,),
     ).fetchall()
     if not rows:
@@ -1548,7 +1549,10 @@ def _dispatch_lane_task(
         _count_spawn(assignee)
         return True
     claim = _kb.claim_review_task if lane == "review" else _kb.claim_task
-    claimed = claim(conn, task_id, ttl_seconds=ttl_seconds)
+    claimed = claim(
+        conn, task_id, ttl_seconds=ttl_seconds,
+        expected_execution_mode="dispatcher",
+    )
     if claimed is None:
         return False
     try:
@@ -1712,7 +1716,7 @@ def _lane_rows(conn: sqlite3.Connection, status: str) -> list[sqlite3.Row]:
     """Unclaimed rows of one lane in dispatch order."""
     return conn.execute(
         "SELECT id, assignee FROM tasks "
-        f"WHERE status = '{status}' AND claim_lock IS NULL "
+        f"WHERE status = '{status}' AND execution_mode = 'dispatcher' AND claim_lock IS NULL "
         "ORDER BY priority DESC, created_at ASC"
     ).fetchall()
 

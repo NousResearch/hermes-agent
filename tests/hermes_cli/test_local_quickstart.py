@@ -52,7 +52,24 @@ def test_quickstart_refuses_when_nothing_fits(client, monkeypatch):
     assert "Local Models" in r.json()["detail"]
 
 
-def test_quickstart_runs_all_three_legs(client, monkeypatch, tmp_path):
+@pytest.fixture
+def quickstart_model_fits(monkeypatch):
+    """Sequencing tests require a servable model, independently of host RAM.
+
+    The separate rejection contract covers a catalog with no fitting variant.
+    Keep runtime presence and each install/download/activation leg real or
+    independently stubbed by the test below.
+    """
+    from hermes_cli.local_runtime.catalog import VariantChoice
+
+    monkeypatch.setattr(
+        "hermes_cli.local_runtime.catalog.select_variant",
+        lambda entry, budget: VariantChoice(
+            variant=entry.variants[0], zero_spill=True, reason_key="best-fits"),
+    )
+
+
+def test_quickstart_runs_all_three_legs(client, quickstart_model_fits, monkeypatch, tmp_path):
     """Fresh machine: install runtime -> download recommended -> activate.
     Each leg is asserted by its observable call, in order."""
     calls: list[str] = []
@@ -113,7 +130,7 @@ def test_quickstart_runs_all_three_legs(client, monkeypatch, tmp_path):
     assert load_config()["local_runtime"]["enabled"] is True
 
 
-def test_quickstart_skips_satisfied_legs(client, monkeypatch):
+def test_quickstart_skips_satisfied_legs(client, quickstart_model_fits, monkeypatch):
     """Runtime present and model already staged: the response says so and
     the job goes straight to activation."""
     calls: list[str] = []

@@ -26,8 +26,9 @@ _TERMINAL_BLOCKED_PARAMS = {"background", "pty", "notify", "notify_on_complete",
 
 
 def _default_dispatch(task_id):
-    from model_tools import handle_function_call
-    return lambda tool_name, tool_args: handle_function_call(tool_name, tool_args, task_id=task_id)
+    from agent.subagent_lifecycle import dispatch_worker_nested_tool
+    return lambda tool_name, tool_args: dispatch_worker_nested_tool(
+        tool_name, tool_args, task_id=task_id)
 
 
 def _rpc_token_ok(request: dict, rpc_token: str) -> bool:

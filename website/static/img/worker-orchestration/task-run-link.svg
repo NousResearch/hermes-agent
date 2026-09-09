@@ -1,0 +1,85 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 1080" role="img" aria-labelledby="title desc">
+  <title id="title">Connect the assignment before starting the worker</title>
+  <desc id="desc">Planned team admission records a Kanban claim, prepares one pending worker run, attaches its identity to the task, and then schedules execution. Restart finds those same records. Worker results and task acceptance are separate.</desc>
+  <defs>
+    <style>
+      text {font-family:Arial,Helvetica,sans-serif;fill:#e2e8f0}
+      .heading {font-size:21px;font-weight:700}
+      .body {font-size:17px}
+      .muted {font-size:16px;fill:#94a3b8}
+      .small {font-size:15px;fill:#cbd5e1}
+      .step {font-size:21px;font-weight:700;fill:#22d3ee}
+    </style>
+    <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse"><path d="M40 0H0V40" fill="none" stroke="#1e293b" stroke-width=".6"/></pattern>
+    <marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0L8 4L0 8" fill="#94a3b8"/></marker>
+  </defs>
+  <rect width="1200" height="1080" fill="#0f172a"/>
+  <rect width="1200" height="1080" fill="url(#grid)"/>
+  <text x="40" y="48" font-size="28" font-weight="700">Connect the assignment before starting the worker</text>
+  <text x="40" y="79" class="muted">PLANNED TEAM INTEGRATION · each system keeps its own authoritative record</text>
+
+  <text x="60" y="129" class="heading">Normal path</text>
+  <text x="710" y="129" class="heading">If Hermes restarts here…</text>
+
+  <g stroke="#94a3b8" stroke-width="2" fill="none" marker-end="url(#arrow)">
+    <path d="M334 256V301"/><path d="M334 411V456"/><path d="M334 566V611"/><path d="M334 721V766"/>
+  </g>
+  <g stroke="#64748b" stroke-width="2" stroke-dasharray="6 5" marker-end="url(#arrow)">
+    <path d="M615 205H675"/><path d="M615 360H675"/><path d="M615 515H675"/><path d="M615 670H675"/>
+  </g>
+
+  <rect x="50" y="155" width="565" height="100" rx="12" fill="#102d2c" stroke="#34d399" stroke-width="2"/>
+  <text x="70" y="185" class="step">1</text>
+  <text x="105" y="185" class="heading">Claim the task</text>
+  <text x="105" y="215" class="body">Kanban checks dependencies and permission.</text>
+  <text x="105" y="240" class="small">The claim identifies this exact attempt.</text>
+
+  <rect x="50" y="310" width="565" height="100" rx="12" fill="#27204a" stroke="#a78bfa" stroke-width="2"/>
+  <text x="70" y="340" class="step">2</text>
+  <text x="105" y="340" class="heading">Prepare one worker assignment</text>
+  <text x="105" y="370" class="body">WorkerStore saves the worker and pending run.</text>
+  <text x="105" y="395" class="small">A retry must match the same assignment.</text>
+
+  <rect x="50" y="465" width="565" height="100" rx="12" fill="#102d2c" stroke="#34d399" stroke-width="2"/>
+  <text x="70" y="495" class="step">3</text>
+  <text x="105" y="495" class="heading">Attach the worker reference</text>
+  <text x="105" y="525" class="body">Kanban records which run serves this claim.</text>
+  <text x="105" y="550" class="small">The reference does not grant control.</text>
+
+  <rect x="50" y="620" width="565" height="100" rx="12" fill="#27204a" stroke="#a78bfa" stroke-width="2"/>
+  <text x="70" y="650" class="step">4</text>
+  <text x="105" y="650" class="heading">Schedule the recorded run</text>
+  <text x="105" y="680" class="body">Recheck authority, then acquire execution.</text>
+  <text x="105" y="705" class="small">Only now can the worker begin model/tool work.</text>
+
+  <rect x="50" y="775" width="1100" height="105" rx="12" fill="#102d2c" stroke="#34d399" stroke-width="2"/>
+  <text x="70" y="807" class="step">5</text>
+  <text x="105" y="807" class="heading">Collect the result, then review it</text>
+  <text x="105" y="838" class="body">A successful worker run supplies evidence. Kanban separately records review and acceptance.</text>
+  <text x="105" y="864" class="small">A rejected result goes back to the original worker with retained context and a new run.</text>
+
+  <rect x="695" y="155" width="455" height="100" rx="12" fill="#172235" stroke="#64748b"/>
+  <text x="715" y="187" class="heading">Reuse the claimed attempt</text>
+  <text x="715" y="217" class="body">An expired or changed claim cannot</text>
+  <text x="715" y="242" class="body">authorize a new launch.</text>
+
+  <rect x="695" y="310" width="455" height="100" rx="12" fill="#172235" stroke="#64748b"/>
+  <text x="715" y="342" class="heading">Find the existing pending run</text>
+  <text x="715" y="372" class="body">Repair its missing task reference.</text>
+  <text x="715" y="397" class="body">Do not create another worker.</text>
+
+  <rect x="695" y="465" width="455" height="100" rx="12" fill="#172235" stroke="#64748b"/>
+  <text x="715" y="497" class="heading">Schedule that same pending run</text>
+  <text x="715" y="527" class="body">A committed link can be reused.</text>
+  <text x="715" y="552" class="body">Changed assignments fail visibly.</text>
+
+  <rect x="695" y="620" width="455" height="100" rx="12" fill="#371d31" stroke="#fb7185"/>
+  <text x="715" y="652" class="heading">Observe or reconcile execution</text>
+  <text x="715" y="682" class="body">Never relaunch a running assignment.</text>
+  <text x="715" y="707" class="body">An uncertain effect requires a decision.</text>
+
+  <rect x="50" y="920" width="1100" height="120" rx="12" fill="#172235" stroke="#64748b"/>
+  <text x="75" y="952" class="heading">Three identities answer different questions</text>
+  <text x="75" y="984" class="body">Task: What work needs acceptance?   Worker: Which retained conversation is doing it?</text>
+  <text x="75" y="1013" class="body">Run: Which execution attempt produced this result?   None of these IDs grants permission.</text>
+</svg>

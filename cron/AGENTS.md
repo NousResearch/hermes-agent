@@ -23,8 +23,10 @@ Hardening invariants — each guards a real failure; don't weaken without answer
   session with a header/footer frame so the main conversation's role alternation stays intact.
 - The cron ticker runs in the desktop-spawned backend when `HERMES_DESKTOP=1` — that env var means
   "spawned by the app", not "a GUI is watching" (root: capability is a property of the session).
-- Background `delegate_task` is process-local; work that must survive restarts is a cron job or a
-  `terminal(background=True, notify_on_complete=True)` process.
+- With a profile-scoped `SessionDB`, `delegate_task` uses retained workers with durable runs,
+  checkpoints and acknowledgments. Restart continuation obeys worker leases and pauses uncertain
+  tool effects for reconciliation. Sessions without `SessionDB` retain the process-local legacy
+  lifecycle. Cron remains the scheduled-job owner; it does not replace worker recovery.
 
 ## Kanban (multi-agent work queue)
 

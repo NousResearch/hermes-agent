@@ -24,7 +24,7 @@ import time
 from contextvars import ContextVar, Token
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable, Optional
+from typing import Any, Iterable, Mapping, Optional
 
 from toolsets import get_toolset_names
 
@@ -88,6 +88,7 @@ def _git_out(cwd: Path, *args: str, timeout: int = 30) -> Optional[str]:
 
 VALID_STATUSES = {"triage", "todo", "scheduled", "ready", "running", "blocked", "review", "done", "archived"}
 VALID_INITIAL_STATUSES = {"running", "blocked"}
+VALID_EXECUTION_MODES = {"dispatcher", "parent"}
 
 # Typed block reasons (routing in ``_route_block``); ``None`` = legacy un-typed.
 VALID_BLOCK_KINDS = {"dependency", "needs_input", "capability", "transient"}
@@ -698,7 +699,10 @@ class Task:
     max_runtime_seconds: Optional[int] = None
     last_heartbeat_at: Optional[int] = None
     current_run_id: Optional[int] = None
+    execution_mode: str = "dispatcher"
     workflow_template_id: Optional[str] = None
+    workflow_template_version: Optional[int] = None
+    workflow_invocation_id: Optional[str] = None
     current_step_key: Optional[str] = None
     skills: Optional[list] = None            # None = defaults only; [] = explicitly none
     model_override: Optional[str] = None
@@ -729,6 +733,7 @@ class Task:
             # reachable on a DB never opened since the rename migration landed.
             consecutive_failures=g("consecutive_failures", g("spawn_failures", 0)),
             last_failure_error=g("last_failure_error", g("last_spawn_error")),
+            execution_mode=g("execution_mode", "dispatcher") or "dispatcher",
             skills=skills_value,
             goal_mode=bool(g("goal_mode")),
             block_recurrences=int(g("block_recurrences") or 0),
@@ -744,7 +749,8 @@ _TASK_REQUIRED_COLUMNS = (
 _TASK_OPTIONAL_COLUMNS = (
     "branch_name", "project_id", "tenant", "result", "idempotency_key", "worker_pid",
     "max_runtime_seconds", "last_heartbeat_at", "current_run_id", "workflow_template_id",
-    "current_step_key", "max_retries", "session_id", "completion_contract",
+    "workflow_template_version", "workflow_invocation_id", "current_step_key", "max_retries",
+    "session_id", "completion_contract",
 )
 # Text columns where "" is stored/read as "not set".
 _TASK_EMPTY_IS_NULL_COLUMNS = (
@@ -885,10 +891,16 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- Pointer into task_runs for the currently-active run (NULL if no
     -- run is in-flight). Denormalised for cheap reads.
     current_run_id       INTEGER,
+    -- Dispatcher-owned by default. Parent mode is claimed only through the
+    -- session-authorized team service and is never selected by the dispatcher.
+    execution_mode       TEXT NOT NULL DEFAULT 'dispatcher'
+                         CHECK (execution_mode IN ('dispatcher', 'parent')),
     -- Forward-compat for v2 workflow routing. In v1 the kernel writes
     -- these when the task is opted into a template but otherwise ignores
     -- them; the dispatcher doesn't consult them for routing yet.
     workflow_template_id TEXT,
+    workflow_template_version INTEGER,
+    workflow_invocation_id TEXT,
     current_step_key     TEXT,
     -- Force-loaded skills for the worker on this task, stored as JSON.
     -- Passed to the worker via `--skills`. NULL or empty array = no extras.
@@ -965,6 +977,50 @@ CREATE TABLE IF NOT EXISTS task_events (
     kind       TEXT NOT NULL,
     payload    TEXT,
     created_at INTEGER NOT NULL
+);
+
+-- Saved workflow definitions and controller admission live in the board that
+-- owns their tasks. Template versions are immutable; task execution remains
+-- in tasks/task_runs and the durable worker store.
+CREATE TABLE IF NOT EXISTS workflow_templates (
+    template_id     TEXT NOT NULL,
+    version         INTEGER NOT NULL,
+    name            TEXT NOT NULL,
+    definition      TEXT NOT NULL,
+    definition_hash TEXT NOT NULL,
+    created_by      TEXT,
+    created_at      INTEGER NOT NULL,
+    PRIMARY KEY (template_id, version)
+);
+
+CREATE TABLE IF NOT EXISTS workflow_invocations (
+    id                  TEXT PRIMARY KEY,
+    template_id         TEXT NOT NULL,
+    template_version    INTEGER NOT NULL,
+    template_hash       TEXT NOT NULL,
+    owner_session_id    TEXT NOT NULL,
+    admission_key       TEXT NOT NULL,
+    input_payload       TEXT NOT NULL,
+    input_hash          TEXT NOT NULL,
+    graph_hash          TEXT NOT NULL,
+    coordinator_task_id TEXT NOT NULL,
+    control_state       TEXT NOT NULL DEFAULT 'active'
+                        CHECK (control_state IN ('active', 'paused', 'cancelling', 'cancelled')),
+    control_version     INTEGER NOT NULL DEFAULT 1,
+    created_at          INTEGER NOT NULL,
+    updated_at          INTEGER NOT NULL,
+    completed_at        INTEGER,
+    UNIQUE (owner_session_id, admission_key)
+);
+
+CREATE TABLE IF NOT EXISTS workflow_invocation_events (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    invocation_id TEXT NOT NULL,
+    kind          TEXT NOT NULL,
+    subject_key   TEXT NOT NULL DEFAULT '',
+    payload       TEXT,
+    created_at    INTEGER NOT NULL,
+    UNIQUE (invocation_id, kind, subject_key)
 );
 
 -- Historical attempt record. Each time the dispatcher claims a task, a
@@ -1044,6 +1100,8 @@ CREATE INDEX IF NOT EXISTS idx_runs_task             ON task_runs(task_id, start
 CREATE INDEX IF NOT EXISTS idx_runs_status           ON task_runs(status);
 CREATE INDEX IF NOT EXISTS idx_attachments_task      ON task_attachments(task_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_notify_task           ON kanban_notify_subs(task_id);
+CREATE INDEX IF NOT EXISTS idx_workflow_owner        ON workflow_invocations(owner_session_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_workflow_events       ON workflow_invocation_events(invocation_id, id);
 """
 
 
@@ -1232,6 +1290,7 @@ def create_task(
     project_source_task_id: Optional[str] = None,
     creator_task_id: Optional[str] = None,
     completion_contract: Optional[str] = None,
+    execution_mode: str = "dispatcher",
 ) -> str:
     """Create a task (optionally under ``parents``); returns its id.
 
@@ -1254,6 +1313,9 @@ def create_task(
     completion_contract = validate_contract(completion_contract)
     model_override, provider_override = _validate_model_override(model_override, provider_override)
     reasoning_effort = normalize_reasoning_effort(reasoning_effort)
+    execution_mode = str(execution_mode or "").strip().lower()
+    if execution_mode not in VALID_EXECUTION_MODES:
+        raise ValueError(f"execution_mode must be one of {sorted(VALID_EXECUTION_MODES)}")
     assignee = _canonical_assignee(assignee)
     if not title or not title.strip():
         raise ValueError("title is required")
@@ -1331,8 +1393,9 @@ def create_task(
                         max_runtime_seconds,
                         skills, max_retries, model_override, provider_override,
                         reasoning_effort,
-                        goal_mode, goal_max_turns, session_id, completion_contract
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        goal_mode, goal_max_turns, session_id, completion_contract,
+                        execution_mode
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         task_id, title.strip(), body, assignee, task_status, priority,
@@ -1342,6 +1405,7 @@ def create_task(
                         json.dumps(skills_list) if skills_list is not None else None,
                         _opt_int(max_retries), model_override, provider_override, reasoning_effort,
                         1 if goal_mode else 0, _opt_int(goal_max_turns), session_id, completion_contract,
+                        execution_mode,
                     ),
                 )
                 for pid in parents:
@@ -1364,6 +1428,7 @@ def create_task(
                         "goal_mode": bool(goal_mode) or None,
                         "model_override": model_override,
                         "provider_override": provider_override,
+                        "execution_mode": execution_mode,
                     },
                 )
                 # ACK-edge: the originating channel hears a child BLOCK, not just the fan-in.
@@ -1986,6 +2051,167 @@ def _latest_event(
     return conn.execute(sql + " ORDER BY id DESC LIMIT 1", params).fetchone()
 
 
+_EXECUTION_ATTACHMENT_KEYS = {
+    "version", "worker_ref", "run_ref", "admission_hash", "role", "profile",
+}
+_TEAM_INTENT_KINDS = {"review": "team_review_intent", "correction": "team_correction_intent"}
+
+
+def record_team_intent(
+    conn: sqlite3.Connection, task_id: str, run_id: int, *, kind: str,
+    owner_session_id: str, payload: Mapping[str, Any],
+) -> dict:
+    """Persist review/correction intent before the lifecycle transition commits."""
+    event_kind = _TEAM_INTENT_KINDS.get(kind)
+    if event_kind is None:
+        raise ValueError("unsupported team intent kind")
+    value = dict(payload)
+    encoded = json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    with write_txn(conn):
+        task = conn.execute(
+            "SELECT session_id,status,current_run_id,execution_mode FROM tasks WHERE id=?", (task_id,),
+        ).fetchone()
+        if (
+            task is None or task["execution_mode"] != "parent"
+            or task["session_id"] != owner_session_id or task["status"] != "running"
+            or int(task["current_run_id"] or 0) != int(run_id)
+        ):
+            raise PermissionError("Team intent owner or active run is unavailable")
+        existing = conn.execute(
+            "SELECT payload FROM task_events WHERE task_id=? AND run_id=? AND kind=? "
+            "ORDER BY id DESC LIMIT 1", (task_id, int(run_id), event_kind),
+        ).fetchone()
+        if existing is not None:
+            prior = json.dumps(_json_dict(existing["payload"]), sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+            if prior != encoded:
+                raise ValueError("Team intent already exists with different immutable content")
+            return value
+        _append_event(conn, task_id, event_kind, value, run_id=int(run_id))
+    return value
+
+
+def pending_team_intent(
+    conn: sqlite3.Connection, task_id: str, *, kind: str,
+) -> Optional[dict]:
+    event_kind = _TEAM_INTENT_KINDS.get(kind)
+    if event_kind is None:
+        raise ValueError("unsupported team intent kind")
+    row = conn.execute(
+        "SELECT id,payload FROM task_events WHERE task_id=? AND kind=? ORDER BY id DESC LIMIT 1",
+        (task_id, event_kind),
+    ).fetchone()
+    if row is None:
+        return None
+    role = "reviewer" if kind == "review" else "correction"
+    consumed = conn.execute(
+        "SELECT 1 FROM task_events WHERE task_id=? AND kind='execution_attached' "
+        "AND id>? AND json_extract(payload,'$.role')=? LIMIT 1", (task_id, int(row["id"]), role),
+    ).fetchone()
+    return None if consumed else _json_dict(row["payload"])
+
+
+def get_execution_attachment(
+    conn: sqlite3.Connection, task_id: str, run_id: int,
+) -> Optional[dict]:
+    """Return the immutable team execution reference for one exact Kanban run."""
+    row = conn.execute(
+        "SELECT payload FROM task_events WHERE task_id=? AND run_id=? "
+        "AND kind='execution_attached' ORDER BY id DESC LIMIT 1",
+        (task_id, int(run_id)),
+    ).fetchone()
+    value = _json_dict(_row_get(row, "payload"))
+    return value or None
+
+
+def latest_execution_attachment(
+    conn: sqlite3.Connection, task_id: str, *, roles: Iterable[str] = (),
+) -> Optional[tuple[int, dict]]:
+    """Newest immutable execution attachment, optionally restricted by role."""
+    params: list[Any] = [task_id]
+    sql = (
+        "SELECT run_id,payload FROM task_events WHERE task_id=? "
+        "AND kind='execution_attached'"
+    )
+    normalized_roles = tuple(str(role) for role in roles if role)
+    rows = conn.execute(sql + " ORDER BY id DESC", params).fetchall()
+    for row in rows:
+        payload = _json_dict(row["payload"])
+        if payload and (not normalized_roles or payload.get("role") in normalized_roles):
+            return int(row["run_id"]), payload
+    return None
+
+
+def run_claim_source(conn: sqlite3.Connection, task_id: str, run_id: int) -> Optional[str]:
+    row = conn.execute(
+        "SELECT payload FROM task_events WHERE task_id=? AND run_id=? AND kind='claimed' "
+        "ORDER BY id DESC LIMIT 1", (task_id, int(run_id)),
+    ).fetchone()
+    value = _json_dict(_row_get(row, "payload")).get("source_status")
+    return str(value) if value else None
+
+
+def record_execution_cancelled(
+    conn: sqlite3.Connection, task_id: str, run_id: int, *, worker_status: str,
+) -> None:
+    """Record terminal worker evidence after the exact Kanban run is parked."""
+    with write_txn(conn):
+        existing = conn.execute(
+            "SELECT 1 FROM task_events WHERE task_id=? AND run_id=? "
+            "AND kind='execution_cancelled'", (task_id, int(run_id)),
+        ).fetchone()
+        if existing is None:
+            _append_event(
+                conn, task_id, "execution_cancelled",
+                {"worker_status": str(worker_status)}, run_id=int(run_id),
+            )
+
+
+def attach_execution_reference(
+    conn: sqlite3.Connection, task_id: str, run_id: int, *,
+    claim_lock: str, reference: Mapping[str, Any], owner_session_id: Optional[str] = None,
+) -> dict:
+    """Idempotently bind sanitized WorkerStore coordinates to an exact parent run.
+
+    The reference is a coordinate, never a lifecycle capability. A retry with
+    different immutable content fails instead of retargeting the claimed task.
+    """
+    payload = dict(reference or {})
+    if set(payload) - _EXECUTION_ATTACHMENT_KEYS:
+        raise ValueError("execution attachment contains unsupported fields")
+    required = {"version", "worker_ref", "run_ref", "admission_hash", "role"}
+    if not required.issubset(payload):
+        raise ValueError("execution attachment is incomplete")
+    if not str(payload["worker_ref"]).startswith("worker:"):
+        raise ValueError("execution attachment worker_ref is invalid")
+    if not str(payload["run_ref"]).startswith("run:"):
+        raise ValueError("execution attachment run_ref is invalid")
+    if not re.fullmatch(r"[0-9a-f]{64}", str(payload["admission_hash"])):
+        raise ValueError("execution attachment admission_hash is invalid")
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    with write_txn(conn):
+        task = conn.execute(
+            "SELECT status,current_run_id,claim_lock,execution_mode,session_id,claim_expires "
+            "FROM tasks WHERE id=?",
+            (task_id,),
+        ).fetchone()
+        if (
+            task is None or task["status"] != "running"
+            or task["execution_mode"] != "parent"
+            or int(task["current_run_id"] or 0) != int(run_id)
+            or not claim_lock or task["claim_lock"] != claim_lock
+            or (owner_session_id is not None and task["session_id"] != owner_session_id)
+            or int(task["claim_expires"] or 0) <= int(time.time())
+        ):
+            raise PermissionError("Parent execution claim is unavailable or stale")
+        existing = get_execution_attachment(conn, task_id, int(run_id))
+        if existing is not None:
+            if json.dumps(existing, sort_keys=True, separators=(",", ":"), ensure_ascii=False) != encoded:
+                raise ValueError("Kanban run is already attached to a different execution")
+            return existing
+        _append_event(conn, task_id, "execution_attached", payload, run_id=int(run_id))
+    return payload
+
+
 def _resume_status_from_events(conn: sqlite3.Connection, task_id: str) -> str:
     """``review`` when the newest lifecycle event carries a review
     ``resume_status``/``retry_status``/``source_status``, else ``ready`` (legacy)."""
@@ -2082,10 +2308,26 @@ def _parents_satisfied(conn: sqlite3.Connection, task_id: str) -> bool:
 
 def _claim_and_open_run(
     conn: sqlite3.Connection, task_id: str, source_status: str, lock: str, expires: int, now: int,
-    *, event_extra: Optional[dict] = None,
+    *, event_extra: Optional[dict] = None, expected_execution_mode: Optional[str] = None,
+    expected_workflow_invocation_id: Optional[str] = None,
 ) -> Optional[int]:
     """CAS ``source_status -> running``, open a run row, emit ``claimed``; None
     when the CAS lost. Caller holds the txn."""
+    if expected_execution_mode is not None and expected_execution_mode not in VALID_EXECUTION_MODES:
+        raise ValueError(f"expected_execution_mode must be one of {sorted(VALID_EXECUTION_MODES)}")
+    mode_guard = "" if expected_execution_mode is None else " AND execution_mode = ?"
+    workflow_guard = ""
+    if expected_workflow_invocation_id is not None:
+        workflow_guard = (
+            " AND workflow_invocation_id = ? AND EXISTS ("
+            "SELECT 1 FROM workflow_invocations wi "
+            "WHERE wi.id = tasks.workflow_invocation_id AND wi.control_state = 'active')"
+        )
+    params: tuple[Any, ...] = (lock, expires, now, task_id)
+    if expected_execution_mode is not None:
+        params += (expected_execution_mode,)
+    if expected_workflow_invocation_id is not None:
+        params += (expected_workflow_invocation_id,)
     cur = conn.execute(
         f"""
         UPDATE tasks
@@ -2096,8 +2338,10 @@ def _claim_and_open_run(
          WHERE id = ?
            AND status = '{source_status}'
            AND claim_lock IS NULL
+           {mode_guard}
+           {workflow_guard}
         """,
-        (lock, expires, now, task_id),
+        params,
     )
     if cur.rowcount != 1:
         return None
@@ -2129,7 +2373,8 @@ def _claim_and_open_run(
 
 def claim_task(
     conn: sqlite3.Connection, task_id: str, *, ttl_seconds: Optional[int] = None,
-    claimer: Optional[str] = None,
+    claimer: Optional[str] = None, expected_execution_mode: Optional[str] = None,
+    expected_workflow_invocation_id: Optional[str] = None,
 ) -> Optional[Task]:
     """Atomically transition ``ready -> running``.
 
@@ -2154,7 +2399,11 @@ def claim_task(
         _reclaim_dangling_run(
             conn, task_id, statuses=("ready",), now=now, note="invariant recovery on re-claim",
         )
-        run_id = _claim_and_open_run(conn, task_id, "ready", lock, expires, now)
+        run_id = _claim_and_open_run(
+            conn, task_id, "ready", lock, expires, now,
+            expected_execution_mode=expected_execution_mode,
+            expected_workflow_invocation_id=expected_workflow_invocation_id,
+        )
         if run_id is None:
             return None
         claimed = get_task(conn, task_id)
@@ -2164,7 +2413,8 @@ def claim_task(
 
 def claim_review_task(
     conn: sqlite3.Connection, task_id: str, *, ttl_seconds: Optional[int] = None,
-    claimer: Optional[str] = None,
+    claimer: Optional[str] = None, expected_execution_mode: Optional[str] = None,
+    expected_workflow_invocation_id: Optional[str] = None,
 ) -> Optional[Task]:
     """Atomic ``review -> running`` (None when lost). Parents are re-checked
     (one may have reopened meanwhile) and a NEW run tracks the reviewer
@@ -2185,7 +2435,10 @@ def claim_review_task(
                 )
             return None
         run_id = _claim_and_open_run(
-            conn, task_id, "review", lock, expires, now, event_extra={"source_status": "review"},
+            conn, task_id, "review", lock, expires, now,
+            event_extra={"source_status": "review"},
+            expected_execution_mode=expected_execution_mode,
+            expected_workflow_invocation_id=expected_workflow_invocation_id,
         )
         if run_id is None:
             return None
@@ -2559,6 +2812,11 @@ def complete_task(
         # Hard invariant even for human review approval: a parent may have
         # reopened while this task waited.
         if not _parents_satisfied(conn, task_id):
+            return False
+        from hermes_cli import kanban_db_workflows as workflows
+        if not workflows.completion_allowed(
+            conn, task_id, expected_run_id=expected_run_id,
+        ):
             return False
         if acceptance is not None and not record_acceptance(conn, task_id, acceptance):
             return False
@@ -3118,7 +3376,8 @@ def request_changes(
 
     with write_txn(conn):
         task_row = conn.execute(
-            "SELECT status, assignee, current_run_id FROM tasks WHERE id = ?", (task_id,),
+            "SELECT status,assignee,current_run_id,workflow_invocation_id,session_id "
+            "FROM tasks WHERE id = ?", (task_id,),
         ).fetchone()
         if task_row is None:
             return False, "task not found"
@@ -3132,6 +3391,17 @@ def request_changes(
         claimed_payload = _json_dict(_row_get(claimed_event, "payload"))
         if claimed_payload.get("source_status") != "review":
             return False, "active run was not claimed from review"
+
+        if task_row["workflow_invocation_id"]:
+            from hermes_cli import kanban_db_workflows as workflows
+            policy = workflows.correction_policy(
+                conn, task_id, owner_session_id=task_row["session_id"],
+            )
+            if policy is not None and not policy["allowed"]:
+                return False, (
+                    "Workflow correction limit reached "
+                    f"({policy['used']}/{policy['limit']})"
+                )
 
         requested_event = _latest_event(conn, task_id, "review_requested")
         if requested_event is None:

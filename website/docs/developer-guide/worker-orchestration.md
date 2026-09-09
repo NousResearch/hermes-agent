@@ -1,0 +1,327 @@
+---
+title: Worker Orchestration Architecture
+sidebar_label: Worker orchestration
+---
+
+# Worker orchestration
+
+The parent-facing delegation tool and public subagent lifecycle API share worker
+resolution, construction, lifecycle policy, and durable state. Worker profiles are
+configuration in the active Hermes profile, not a process-global team definition.
+The existing provider resolver remains responsible for authentication and runtime
+transport selection.
+
+Start with the [illustrated tour](../user-guide/features/worker-orchestration-tour.md)
+for the user workflow, before/after comparison and visual explanations.
+
+## Identity and authority
+
+A worker ID identifies a retained conversation; a run ID identifies one assignment.
+Parent session ownership is checked independently of knowing either identifier.
+The plugin API's opaque handle remains a capability, rather than making arbitrary
+IDs sufficient authority. Parent lineage, nested-depth policy, and effective tool
+permissions are resolved before execution. Configured instructions do not grant
+permissions, and narrowing a schema alone is not an execution security boundary.
+
+The effective execution catalog is distinct from model-visible schemas. Tool
+Search may replace permitted tools with bridge schemas; that presentation change
+must neither revoke those tools nor grant hidden ones. Compile the executable
+identities from the current user, ancestor, request, profile, and backend limits,
+then apply the same ceiling at native, deferred MCP, and `execute_code` dispatch.
+Explicit denial also applies to `delegate_task`; default worker controls are not
+an exception to an explicit user restriction.
+
+User-enabled model routes govern dynamic routing. A profile may narrow that menu,
+but cannot expand global policy. The resolver validates the complete launch batch
+before it creates children. Per-task settings take precedence only within allowed
+overrides; limits are applied after resolution.
+
+## Cache and conversation boundaries
+
+### Model-facing interfaces
+
+`agent/worker_interfaces.py` selects and binds the model-facing vocabulary.
+The precedence is an explicit `orchestration.interface` setting, a qualified
+automatic provider/model match, then canonical Hermes. The production registry
+starts empty. Entries require recorded live qualification; transport fixtures do
+not establish model usability.
+
+Selection and collision-aware aliases freeze when the agent builds its tool
+catalog. Existing native and MCP names retain their original meaning; colliding
+worker names receive a `hermes_worker_` alias. Refresh, executable-tool admission,
+native dispatch and execute-code/MCP dispatch use that same binding. An alias
+cannot grant an operation denied through the canonical `delegate_task` capability.
+
+`AIAgent._dispatch_worker_interface` translates the advertised request and calls
+`_dispatch_delegate_task`. The adapter owns no worker state or message queue.
+Its receipt records interface version, selection and qualification source,
+advertised name and canonical operation, separately from execution route evidence.
+The legacy dispatcher and plugin lifecycle API remain available.
+
+The shared service distinguishes guidance from `start_turn`. Guidance queues a
+message without waking an idle worker. `start_turn` creates an ordered linked
+run, including when another assignment is active; it does not silently become
+guidance. Exact-run interruption and descendant-tree cancellation are separate.
+Completion acknowledgment and uncertainty reconciliation remain reachable through
+each style. Unsupported transcript forking and graceful process shutdown are
+explicit errors, not inferred vendor behavior.
+
+See [orchestration interfaces](../user-guide/features/orchestration-interfaces.md)
+for configuration and plain-English examples. The adapters provide familiar
+vocabulary over Hermes; they are separate from optional vendor execution backends.
+
+### Discovery and retained conversation
+
+Discovery is an action of the existing delegation tool. The tool schema does not
+grow or change when profile definitions or provider catalogs refresh. The catalog
+reports capability provenance and unknown availability without authenticating or
+probing providers just to list options.
+
+Worker system prompts remain fixed for a conversation. Messages arrive at supported
+tool boundaries or as subsequent conversation turns, not by editing the cached
+system prefix or inserting synthetic user messages into the middle of a tool round.
+Resume rechecks current authority; it must not silently continue with revoked tools
+or rebuild the old conversation under a different permission contract.
+
+Shared discovery extends this same action with stateless typed coordinates. Each
+state owner supplies an existing-schema-only read path: the worker store never
+calls `ensure_schema()` or lease recovery, hosted rooms open the current schema in
+SQLite read-only mode, and Kanban opens the session-pinned board without migration
+or readiness recomputation. Bot references reuse the native Bot Chat roster gate.
+
+The TUI gateway issues room discovery authority in memory during trusted agent
+construction. It binds the runtime SID, exact live session record and agent,
+resolved profile home, current policy digest, exact hosted-room service object,
+room ID, local authority gateway, authority epoch and configured participant
+scope. Every inspection rechecks all of those facts. Ordinary agent rebuilds in
+the same conversation retain the scope; `/new`, cold resume and a new runtime get
+a fresh scope. Internal room and compute-host sessions receive none. The typed
+reference itself carries no authority and no new ACL database exists.
+
+## Parent-managed Kanban teams
+
+`agent/team_orchestration.py` is a thin coordinator over existing Kanban and
+worker ownership. `kanban_team` is service-gated with the existing Kanban
+orchestrator toolset. The selected worker interface projects it as a canonical
+or styled tool; transport aliases do not grant native capabilities. Schemas are
+bound once per conversation, including collision resolution. Retained pre-team
+catalogs are not silently expanded during a worker's next run.
+The service calls the canonical dispatcher-worker exclusion before consulting
+its catalog or opening a board, so a stale canonical or styled registration
+cannot enter parent orchestration.
+
+Kanban tasks gain `execution_mode`, defaulting to `dispatcher`. Team-created
+tasks use `parent`. Dispatcher enumeration and claim CAS both enforce the mode;
+the legacy claim API retains its optional routing predicate. Kanban owns task
+dependencies, review origin, current claims and acceptance. Worker success alone
+does not complete a task. Team acceptance requires a successful attached worker
+on the current review claim. Corrections create a linked run on the original
+implementation worker.
+
+`admit_team_execution` resolves and records an immutable WorkerStore assignment
+without scheduling it. Its owner/board/task/Kanban-run/role-derived identity is
+used to deduplicate admission. The run is marked as a held team admission, so
+ordinary FIFO, wait and exact-run scheduler paths cannot lease it.
+`attach_execution_reference` commits an immutable reference to that exact
+Kanban run. Only then does `schedule_team_execution` enter a trusted team lease
+path that validates the parent, unexpired claim, attachment and native executable
+permissions immediately before and after lease acquisition. WorkerStore remains
+the sole conversation, run, budget, checkpoint and uncertainty owner. Kanban
+events carry references and contract metadata, never a lifecycle capability
+handle or credential values.
+
+The team service renews exact task claims while execution remains active and
+current session authority holds. Cancellation requests exact-run interruption,
+waits for terminal evidence, then fences the Kanban block operation to the
+attached run. It cannot cancel a newer retained run. Requests, execution terminal
+state, task acceptance and completion acknowledgments remain separate.
+
+Guidance returns per-target outcomes. Bots use the existing canonical Bot Chat
+gate and must carry the actual session-injected `message_agent` schema; the tool
+is deliberately absent from the global registry. A stale visible name alone
+does not grant sending. Hosted rooms require a session-bound explicit `message`
+grant and reuse the existing service send contract, with gateway/epoch/participant
+checks. Inspection grants do not authorize sending or room adoption.
+
+Before `request_review` changes Kanban state, the parent uses its authorized
+worker inspection path to collect a forced-redacted, size-bounded result receipt.
+That immutable evidence is stored in the existing review-intent event and copied
+into the reviewer assignment. Worker/run references remain provenance only; a
+reviewer leaf receives no sibling worker inspection authority.
+
+The focused `test_team_orchestration.py` cases cover schema projection, real
+store admission and attachment, held-run scheduler exclusion, crash-boundary
+recovery, a dependency/review/retained-correction sequence, exact cancellation,
+policy/foreign-parent denial and room-grant outcomes. They use the real lifecycle
+and stores with provider execution held at a controlled child boundary; live
+transports and process-level restart still require separate evidence.
+See [Parent-managed teams](../user-guide/features/orchestration-teams.md) for
+the model-facing action sequence and proof boundary.
+
+## Saved bounded workflows
+
+`agent/workflow_orchestration.py` adds repeatable finite graphs without adding
+an executor. A model uses the existing `kanban_team` tool, or its frozen
+`team_task`/`TeamTask` projection, with the `workflow_*` actions. The adapter
+stores definitions and control state in the selected Kanban board and delegates
+every step claim, WorkerStore admission, review, correction and acceptance to
+`TeamOrchestrationService`.
+
+Template versions are immutable. A normalized definition digest identifies one
+version; saving identical content at the same template reference returns the
+existing version. An invocation is unique on originating session and admission
+key. `BEGIN IMMEDIATE` covers the invocation row, coordinator, every finite
+step, dependency link and immutable mapping event. A matching retry returns the
+same graph. A changed template or input digest conflicts, and an exception rolls
+back the whole graph.
+
+Workflow tasks carry template version, invocation and step-key fields. Parallel
+branches and joins remain ordinary Kanban dependencies. The coordinator depends
+on every step and is completed only after every step is accepted. Review uses
+the normal task phase and attached reviewer run. The immutable step definition
+supplies its reviewer and maximum correction count; counting persisted
+`changes_requested` events preserves the bound across process restart. The
+shared Kanban transition enforces that bound for both team actions and native
+`kanban_request_changes`. For a step with an immutable reviewer, team acceptance
+records the exact successful reviewer attachment before `complete_task`; the
+shared completion transition refuses implementation claims, missing evidence
+and mismatched runs, including native `kanban_complete` calls.
+
+Invocation control is a separate CAS record: `active`, `paused`, `cancelling`
+or `cancelled`, with a monotonically increasing control version. Workflow claims
+pass their invocation identity into the existing Kanban claim update, whose SQL
+also requires `active`. Because pause and claim both use the board's immediate
+write transaction, pause prevents later claims while a claim that linearized
+first may finish. Resume starts only ready/review work or a recorded held run.
+An already running or terminal attached worker is observed rather than replayed.
+
+Cancellation discovers persisted `execution_attached` events for every
+unfinished step independently of current task status, then records each exact
+task, Kanban run, worker and worker-run intent. It observes an attachment before
+sending a first interrupt. A lost interrupt receipt leaves the workflow pending;
+retry observes the recorded run without sending again. Native-blocked and
+stale-recovered tasks therefore remain cancellation targets while their attached
+workers are nonterminal. After terminal evidence for every exact attachment, one
+board transaction preserves done steps and sticky-blocks every unfinished step
+and the coordinator. It never
+archives them, because archived Kanban parents satisfy dependencies. A normal
+external dependent therefore remains unclaimable after cancellation.
+
+`workflow_list` and `workflow_inspect` use `connect_existing_readonly`; they do
+not create a board, migrate schema, recover workers or recompute readiness.
+Every action still rechecks the root parent session, frozen profile home, board
+and database path, canonical executable tools, task owner and exact claim.
+Delegated workers and dispatcher-owned children cannot enter the controller.
+
+The focused `test_workflow_orchestration.py` file exercises immutable template
+version advance, concurrent identical admission, changed-input new-key admission,
+changed-content conflict, rollback, parallel review and retained correction,
+native transition guards, join release, restart-safe resume, pause/claim
+serialization, native-blocked and stale-recovered cancellation, uncertain
+interrupt no-replay, sticky external dependency and Hermes/Codex/Claude interface
+gates. It uses real temporary Kanban and
+SessionDB/WorkerStore files with provider execution held at the existing
+controlled child boundary. It does not prove live provider execution,
+subprocess restart, installation, release or customer runtime behavior.
+
+## Database and recovery protocol
+
+`agent/worker_store.py` uses the existing `SessionDB` transaction and read-context
+primitives. It does not open a separate database or resolve credentials. Schema
+creation is additive and idempotent. The tables hold workers, ordered runs, and
+ordered internal messages. The service explicitly initializes them before use.
+Per-run tool-effect records bind admission and settlement to the exact tool-call
+identity, so a blocked call cannot settle a different concurrent action.
+
+Run admission and lease acquisition occur inside `BEGIN IMMEDIATE`. A partial
+unique index allows only one running assignment per worker; admission also counts
+the owner's running assignments to enforce concurrency across nested calls. A
+waiting orchestrator must not strand descendants behind its own capacity slot.
+
+Each explicit root-worker assignment has a durable budget identity. Its nested
+workers inherit the same aggregate iteration and tool-call allocation and absolute
+deadline, in addition to their own profile ceilings. Reserve spending transactionally
+before the corresponding execution boundary. Restart does not erase spending or
+extend the deadline. A subsequent explicit root assignment receives a new budget;
+descendants and nested follow-ups from an older assignment retain the older budget.
+Owner-wide active-run concurrency applies across these assignment trees.
+
+Every launch, including a queued follow-up with an existing process record, passes
+through current-authority admission immediately before execution. Public handles
+and parent-tool controls use the same FIFO recovery path. The triggering actor is
+authorized before any queue mutation; it cannot schedule or fail unrelated owner
+subtrees. Revalidation uses the retained worker's correct parent authority rather
+than whichever actor happened to ask for status.
+
+Each executor receives a unique lease token. Heartbeats, conversation checkpoints,
+message acknowledgments, and completion require a live matching lease. An expired
+executor cannot overwrite state after recovery or a replacement run. Leases fence
+database writes; execution must check the lease at tool boundaries too.
+
+Before a tool action, persist its in-flight state. After a confirmed result, persist
+the conversation checkpoint and clear that state. A crash between those operations
+creates an uncertain side-effect outcome. Recovery marks the run interrupted and
+blocks further work until reconciliation; it does not infer that an external action
+failed merely because Hermes did not record the response.
+
+Run request IDs deduplicate enqueue retries. Reusing an ID with different content
+is an error. Message delivery is acknowledged atomically with the conversation
+checkpoint that includes it. Completions remain available until acknowledged.
+Reconciliation clears the worker's resume barrier while retaining the interrupted
+run's historical uncertainty record.
+
+Messages from a top-level worker to the main parent use the same profile-scoped
+store. Their states distinguish `QUEUED`, `PUBLISHED`, and `ACKNOWLEDGED`.
+Publishing a message makes it durably available to the parent; worker completion
+alone is not proof that the parent consumed it. Unacknowledged messages remain
+available after restart. Nested child-to-parent and policy-enabled sibling
+messages retain their lineage and ownership checks.
+
+The reconciliation annotation records an explicit disposition, nonempty decision
+note, affected tool-call IDs, prior statuses, and time. The top-level uncertainty
+flag indicates a currently unresolved barrier; historical uncertainty remains in
+the annotation. Reconciliation itself performs no provider or tool dispatch.
+
+No recovery protocol here promises exactly-once behavior from external tools or
+message transports. The supported guarantee is one leased executor plus explicit
+handling of uncertain outcomes and deduplicated internal delivery.
+
+## Route receipts
+
+Preserve the distinction between requested, resolved, transmitted, and
+provider-reported settings. A model's self-description is not provider evidence.
+A configured model ID is not proof of which model an upstream router executed.
+Unknown actual model, thinking metadata, and cost remain unknown. Fallback and
+normalization policy must remain visible in the receipt.
+
+Only allowlisted nonsecret policy and receipt fields enter worker metadata.
+Credentials stay in the existing provider subsystem. Conversation checkpoints
+have the same local-state privacy boundary as Hermes session history; they do not
+belong in a public test report or PR artifact.
+
+## Acceptance boundaries
+
+Storage tests exercise real SQLite transactions, ownership, racing claims,
+checkpoint/message atomicity, database reopening, lease fencing, and uncertain
+recovery. Routing and lifecycle tests must also exercise the actual delegation
+dispatch and public plugin APIs using a temporary Hermes home.
+
+A two-provider live test is separate evidence from fixtures. Neither establishes
+customer runtime readiness or complete parity with every Codex feature.
+
+| Capability | Codex comparison reference | Hermes acceptance requirement |
+| --- | --- | --- |
+| Discovery | Agent descriptions and model/effort metadata exposed by the harness | Compact discovery plus on-demand profile details preserve unknown metadata |
+| Custom profiles | Custom agents and descriptions | User-defined profiles appear in discovery and affect execution |
+| Model routing | Per-agent model selection | Different provider requests match selected routes |
+| Per-worker effort | Supported reasoning-effort overrides | Requested, resolved, and transmitted effort agree or show an explicit configured transformation |
+| Permissions | Agent configuration and runtime permission controls | Native/MCP enforcement cannot exceed parent/user/profile authority |
+| Messaging | Parent/child messaging and waiting | Durable message IDs, ownership, and supported delivery boundaries are exercised |
+| Follow-up | Subsequent assignments to retained agents | A new run retains the worker conversation without rebuilding its system prefix |
+| Nested orchestration | Harness limits and role configuration | Tree-wide limits hold without nested-wait deadlock |
+| Cancellation | Cooperative interrupt controls | Cancellation reaches owned active descendants and does not imply external effects stopped |
+| Restart recovery | Deployment-specific; no universal comparison claimed | Conversation, queue, lease and uncertain-action tests pass |
+| Execution evidence | Harness/model metadata | Requested/resolved/transmitted/reported values remain distinct |
+
+Codex reference: [official subagent documentation](https://developers.openai.com/codex/subagents/).
+The matrix defines what to test, not a blanket superiority claim.

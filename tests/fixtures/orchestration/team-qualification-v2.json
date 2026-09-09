@@ -1,0 +1,66 @@
+{
+  "version": "hermes-orchestration-parity/team-qualification-v2",
+  "claim_class": "advisory",
+  "purpose": "Exercise one model-parent workflow through the public Codex team and worker tools with real selected providers.",
+  "required_interface": "codex",
+  "team_contract": "kanban-team-v1",
+  "change_control": {
+    "supersedes_fixture": "team-qualification-v1",
+    "preserved_sample": "The failed v1 live sample remains immutable evidence for the 24-iteration ceiling and ambiguous guide argument shape.",
+    "budget_delta": "Raise only max_parent_iterations from 24 to 32 because the required sequential workflow asks for at least 27 public tool operations.",
+    "prompt_delta": "Specify the existing team_task guide action with a nonempty targets array containing the implementation task reference.",
+    "semantic_assertions": "All eight v1 semantic assertions are unchanged."
+  },
+  "execution_policy": {
+    "opt_in_live_only": true,
+    "credentials": "Resolve existing authorized provider references only after --execute and pass them to an isolated child over stdin.",
+    "home": "One fresh temporary Hermes home; synthetic tasks only and no external recipients.",
+    "max_parent_iterations": 32,
+    "minimum_expected_tool_operations": 27,
+    "max_child_iterations": 3,
+    "max_children": 2,
+    "max_seconds": 360,
+    "max_child_seconds": 90,
+    "child_tools": [],
+    "retry_policy": "Preserve the first result. Do not substitute models, providers, or scripted state transitions."
+  },
+  "scenario": {
+    "id": "two_provider_model_parent_team_workflow",
+    "prompt_template": "Use only the advertised public Codex worker and team tools. First call worker_capabilities and confirm both configured profiles {worker_a_profile} and {worker_b_profile}. Create a parent-managed task assigned to {worker_a_profile} whose synthetic assignment is to return COBALT and the value of 19+23. Create a second parent-managed task assigned to {worker_b_profile}, depending on the first, whose assignment is to return INDIGO and the value of 6*7. Start the first task. While its exact worker run is RUNNING, call team_task with action guide, targets set to a nonempty array containing that first task reference, and a message telling it to retain VIOLET. Wait for and inspect terminal worker evidence, then acknowledge that worker run. Submit the first task for review by {worker_b_profile}, start the review, and wait for and inspect its terminal evidence. The reviewer must assess the actual implementation handoff and mention VIOLET. Acknowledge the review run. Request exactly one correction from the first task's retained implementation worker: add AMBER while preserving COBALT and VIOLET. Wait for and inspect the linked correction run, then acknowledge it. Submit review again, start the second review, wait for and inspect it, and acknowledge it. Accept the first task only after the second reviewer succeeds. Only after acceptance, start the dependent task and wait for and inspect its terminal evidence, then acknowledge it. Do not directly call canonical kanban_team, delegate_task, or Kanban mutation tools. Do not invent success when a tool fails.",
+    "assertions": [
+      "The model parent discovers both configured profiles and uses the advertised team_task plus worker lifecycle tools.",
+      "Exactly two parent-managed tasks are created, the second depends on the first, and it is not started before acceptance.",
+      "Guidance is accepted for the exact attached RUNNING implementation run with a durable running-delivery receipt.",
+      "The initial implementation succeeds and the first reviewer receives enough linked handoff evidence to mention VIOLET.",
+      "Exactly one requested correction reuses the implementation worker, links a new run to its previous run, and retains COBALT, VIOLET, and AMBER.",
+      "Two reviewer runs succeed and only the second review is accepted, leaving the implementation task done.",
+      "The dependent task starts after acceptance and its attached worker succeeds.",
+      "Every run uses its requested, resolved, and transmitted route with no worker tools, duplicate execution, authorization violation, structured tool error, or unacknowledged terminal result."
+    ]
+  },
+  "required_receipt_fields": [
+    "candidate_sha",
+    "scenario_id",
+    "interface",
+    "team_contract",
+    "parent_route",
+    "worker_routes",
+    "tool_calls",
+    "task_lineage",
+    "worker_lineage",
+    "elapsed_seconds",
+    "token_usage",
+    "known_or_unknown_cost",
+    "authorization_violations",
+    "duplicate_owned_executions",
+    "assertions",
+    "scenario_passed"
+  ],
+  "qualification_rule": "All assertions must pass on one committed corrected candidate. Preserve failed assertions and observed errors. This report never changes an interface registry automatically.",
+  "limitations": [
+    "The failed v1 live sample is preserved and is not reclassified by this bounded fixture correction.",
+    "The existing deterministic five-of-five team fixture is source-level coverage, not actual model lifecycle proof.",
+    "Provider-reported model identity is recorded separately and is not independent actual-model verification.",
+    "One bounded synthetic execution does not establish statistical reliability, release, fleet, or customer readiness."
+  ]
+}

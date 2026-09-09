@@ -1,0 +1,115 @@
+{
+  "schema_version": 1,
+  "eval_name": "hermes-orchestration-parity-v2",
+  "claim_class": "advisory",
+  "updated": "2026-09-10",
+  "proof_boundary": "Draft implementation and named fixture/live samples; not merge, installation, release or customer readiness. No external exactly-once or independently verified actual-model claim.",
+  "automatic_registry": {
+    "entries": [],
+    "reason": "Prior live interface samples did not satisfy qualification; explicit styles are experimental."
+  },
+  "receipts": [
+    {
+      "run_id": 34385960828,
+      "url": "https://github.com/100yenadmin/hermes-agent-for-upstream-PR-only/actions/runs/34385960828",
+      "candidate": "c7fb32110494054fe0ed06bb8267b7794dce8c34",
+      "conclusion": "failure",
+      "description": "Both baseline0e9fc2cc and teamc7fb3211 had4passes/2matchingHTTP409failures. Subsequent test-only host-fit fixture correction passed6/6; historical failure retained.",
+      "baseline": "0e9fc2cc152b4a4d9fd736f107412ace2a0c2555"
+    },
+    {
+      "run_id": 34386428723,
+      "url": "https://github.com/100yenadmin/hermes-agent-for-upstream-PR-only/actions/runs/34386428723",
+      "candidate": "1a794994b06fe7f8d9f7da84eaa8f07dced51191",
+      "conclusion": "PASS",
+      "description": "Focused remote file pass; does not change failed historical full-suite result or establish full cumulative candidate CI."
+    },
+    {
+      "run_id": 34387885271,
+      "url": "https://github.com/100yenadmin/hermes-agent-for-upstream-PR-only/actions/runs/34387885271",
+      "candidate": "c1ebd1b30d341eb1e825ab580140293b295dd07b",
+      "conclusion": "success",
+      "description": "Two synthetic-provider actual-process team tests; no live provider or workflow process proof"
+    },
+    {
+      "run_id": 34388691193,
+      "url": "https://github.com/100yenadmin/hermes-agent-for-upstream-PR-only/actions/runs/34388691193",
+      "candidate": "dc65c97176998bd418bef81ada6a192a9b963433",
+      "conclusion": "success",
+      "description": "Focused integrated fixture evidence; initial independent workflow review identified separate native bypass/cancellation defects now in correction"
+    },
+    {
+      "run_id": 34389291000,
+      "url": "https://github.com/100yenadmin/hermes-agent-for-upstream-PR-only/actions/runs/34389291000",
+      "candidate": "0903326f1eb5f160d2ea593d747ffe9e1c04ae8c",
+      "conclusion": "success",
+      "description": "Actual-process team and saved-workflow pause/branch/join/review/retained correction with real temporary stores and synthetic provider"
+    },
+    {
+      "run_id": 34389574810,
+      "url": "https://github.com/100yenadmin/hermes-agent-for-upstream-PR-only/actions/runs/34389574810",
+      "candidate": "f735e0daba739c84eff5bb39f3bf61d8c6169bf2",
+      "upstream": "9678d59c2365681eb309a37847ff133e86a5061a",
+      "conclusion": "success",
+      "description": "38 tests in7files: current upstream API delegation delivery, MCP no-replay and worker/interface/discovery compatibility. Validation-only merge, before workflow review correction."
+    },
+    {
+      "run_id": 34391308460,
+      "url": "https://github.com/100yenadmin/hermes-agent-for-upstream-PR-only/actions/runs/34391308460",
+      "candidate": "279058a864e9f76cc38480c4ea1e033ff339e7d4",
+      "conclusion": "failure",
+      "passed": 40,
+      "failed": 1,
+      "description": "Workflow process fixture assumed left parallel branch always admitted first; failed exact-ref assertion. Same fixture owner correcting order assumption; all other files and two prior team process cases passed."
+    }
+  ],
+  "review": {
+    "original_worker": "Initial and three targeted reviews spent; corrected findings but no final independent PASS. This gap is not waived by newer CI or workflow review.",
+    "interfaces": "Recorded initial plus two targeted coverage and CI pass.",
+    "discovery": "Recorded initial plus two targeted coverage and CI pass.",
+    "teams": "Recorded initial plus two targeted coverage; second targeted review PASS for c7fb3211.",
+    "workflow": "PASS at7068e5814e8bc44ea1465e122882877c836490c3 after one initial and two targeted reviews. W1/W2/W3 and related done-task attachment edge fixed. No new verified blocker in targeted delta2; unchanged foundation budget and gap remain."
+  },
+  "live": {
+    "team_v1": "5/8 failed; preserved in orchestration-team-pilot-c7fb3211.json",
+    "team_v2": "8/8 passed for tested OpenAI-Codex and ZAI profiles; dependent worker completed but dependent task not separately accepted.",
+    "bot_rooms": "No live recipients tested. Synthetic authorization/communication fixtures only.",
+    "cost_actual_model_identity": "Unknown where not reported; configured route is not independent execution verification."
+  },
+  "remaining": [
+    "Final cumulative exact-head hosted CI; read the draft PR validation section for the current result",
+    "Original worker foundation final independent PASS absent; inherited disposition remains explicit",
+    "Upstream PR workflow startup failure is distinct from executed fork exact-target CI"
+  ],
+  "upstream_pr_checks": {
+    "team_pr": 106696,
+    "head": "1dc2c96218e6554617146fddb3f298a815289a6f",
+    "run": 34389094466,
+    "conclusion": "startup_failure",
+    "jobs": 0,
+    "cause": "Not established; no tests ran. Fork exact-target results are separately identified."
+  },
+  "local_correction": {
+    "candidate": "d7335096a872e64afabd4b4a5812b9e3999766a4",
+    "pre_fix_native": "2 failures",
+    "post_fix_native": "2 passes",
+    "pre_fix_cancellation": "1 failure",
+    "post_fix_cancellation": "1 pass",
+    "final_workflow": "8 passes",
+    "team": "9 passes",
+    "runner": "one file worker; zero retries; temporary homes/stores",
+    "scope": "No local live provider or subprocess fault proof; those use separately recorded hosted runs."
+  },
+  "local_correction_v2": {
+    "candidate": "47c64e9a68c23a319ca2330a6f93c180a0b76893",
+    "focused_workflow": "9 passed",
+    "scope": "Optional configured reviewer still permits actual assigned-review acceptance; cancellation observes active attachments on done tasks; real Claude TeamTask workflow invocation."
+  },
+  "process_fixture_correction": {
+    "source": "ce97eaf13df801087050b1ed8d2f2f9eca8ac878",
+    "integrated": "7068e5814e8bc44ea1465e122882877c836490c3",
+    "scope": "Preserve exact held/other branch identities without assuming admission order.",
+    "AST": "pass",
+    "hosted": "pending"
+  }
+}

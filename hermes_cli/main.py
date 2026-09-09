@@ -2630,7 +2630,7 @@ _BUILTIN_SUBCOMMANDS = frozenset(
         "skin", "skills", "slack", "status", "sync", "tools", "uninstall", "update",
         "webhook", "whatsapp", "whatsapp-cloud", "worktree", "chat", "secrets", "security",
         "browser",
-        "verify",
+        "verify", "workers",
         # Plugin commands missing from top-level --help is an accepted trade-off.
         "help",
     }
@@ -3193,6 +3193,8 @@ def _build_cli_parser():
     build_moa_parser(subparsers)
     build_fallback_parser(subparsers)
     build_worktree_parser(subparsers)
+    from hermes_cli.workers import build_workers_parser
+    build_workers_parser(subparsers)
     build_browser_parser(subparsers)
     build_secrets_parser(subparsers)
     # OUTBOUND egress firewall; ``hermes proxy`` (gateway group) is the INBOUND one.

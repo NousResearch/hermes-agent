@@ -549,8 +549,10 @@ def _finish_remote_kernel_result(kernel_result: Dict[str, Any], *,
 
 
 def _sandbox_tools_for(enabled_tools: Optional[List[str]]) -> frozenset:
-    """Enabled ∩ SANDBOX_ALLOWED_TOOLS, or every sandbox tool when the intersection is empty."""
-    return frozenset(SANDBOX_ALLOWED_TOOLS & set(enabled_tools or ())) or SANDBOX_ALLOWED_TOOLS
+    """Enabled ∩ sandbox tools; only an unspecified legacy ceiling exposes the full set."""
+    if enabled_tools is None:
+        return SANDBOX_ALLOWED_TOOLS
+    return frozenset(SANDBOX_ALLOWED_TOOLS & set(enabled_tools))
 
 
 def _run_remote_per_call(env, env_type: str, code: str, effective_task_id: str,
@@ -612,13 +614,20 @@ def _run_remote_per_call(env, env_type: str, code: str, effective_task_id: str,
     return json.dumps(result, ensure_ascii=False)
 
 
-def _execute_remote(code: str, task_id: Optional[str], enabled_tools: Optional[List[str]],
-                    reset: bool = False) -> str:
+def _execute_remote(
+    code: str,
+    task_id: Optional[str],
+    enabled_tools: Optional[List[str]],
+    reset: bool = False,
+    worker_max_tool_calls: Optional[int] = None,
+) -> str:
     """Run code on the remote terminal backend: the owner's persistent remote session kernel
     (tools/code_kernel_remote.py) first, else the per-call script ship — the fail-open route when
     a kernel cannot be spawned and the only route for hosts that cannot sustain a background process."""
     _cfg = _load_config()
     timeout, max_tool_calls = _cfg.get("timeout", DEFAULT_TIMEOUT), _cfg.get("max_tool_calls", DEFAULT_MAX_TOOL_CALLS)
+    if isinstance(worker_max_tool_calls, int) and not isinstance(worker_max_tool_calls, bool):
+        max_tool_calls = min(max_tool_calls, max(0, worker_max_tool_calls))
     sandbox_tools, effective_task_id = _sandbox_tools_for(enabled_tools), task_id or "default"
     env, env_type = _get_or_create_env(effective_task_id)
     exec_start = time.monotonic()
@@ -661,6 +670,7 @@ def execute_code(
     task_id: Optional[str] = None,
     enabled_tools: Optional[List[str]] = None,
     reset: bool = False,
+    worker_max_tool_calls: Optional[int] = None,
 ) -> str:
     """Run Python in the session's persistent kernel (local) or on the remote terminal backend,
     with RPC access to a subset of Hermes tools; returns the JSON result string. "Sandbox" means
@@ -716,19 +726,23 @@ def execute_code(
         from tools.interrupt import clear_current_thread_interrupt
         clear_current_thread_interrupt()
     if env_type != "local":
-        return _execute_remote(code, task_id, enabled_tools, reset=bool(reset))
+        return _execute_remote(
+            code, task_id, enabled_tools, reset=bool(reset), worker_max_tool_calls=worker_max_tool_calls)
     from tools.interrupt import is_interrupted as _is_interrupted
     # Session kernels are always on locally (one interpreter per conversation); the guards above
     # already ran for this cell, and the kernel path shares env builder, RPC server and redaction.
     from tools.code_kernel import execute_in_session_kernel
     _cfg = _load_config()
     _mode = _get_execution_mode()
+    max_tool_calls = _cfg.get("max_tool_calls", DEFAULT_MAX_TOOL_CALLS)
+    if isinstance(worker_max_tool_calls, int) and not isinstance(worker_max_tool_calls, bool):
+        max_tool_calls = min(max_tool_calls, max(0, worker_max_tool_calls))
     return execute_in_session_kernel(
         code, task_id=task_id or "", mode=_mode, child_python=_resolve_child_python(_mode),
         child_cwd=_resolve_child_cwd(_mode, "", task_id=task_id or ""),
         sandbox_tools=frozenset(_sandbox_tools_for(enabled_tools)),
         timeout=_cfg.get("timeout", DEFAULT_TIMEOUT),
-        max_tool_calls=_cfg.get("max_tool_calls", DEFAULT_MAX_TOOL_CALLS),
+        max_tool_calls=max_tool_calls,
         reset=bool(reset), is_interrupted=_is_interrupted,
     )
 
@@ -891,8 +905,13 @@ def _execute_code_handler(args: dict, **kwargs) -> str:
     if code is not None and not isinstance(code, str):
         return tool_error(f"execute_code received a {type(code).__name__} in 'code', but it "
                           "requires Python source as a string. Retry as execute_code(code=\"...\").")
-    return execute_code(code=code or "", task_id=kwargs.get("task_id"),
-                        enabled_tools=kwargs.get("enabled_tools"), reset=bool(args.get("reset", False)))
+    return execute_code(
+        code=code or "",
+        task_id=kwargs.get("task_id"),
+        enabled_tools=kwargs.get("enabled_tools"),
+        reset=bool(args.get("reset", False)),
+        worker_max_tool_calls=kwargs.get("worker_max_tool_calls"),
+    )
 
 
 registry.register(

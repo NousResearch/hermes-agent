@@ -1,0 +1,39 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1100 790" role="img" aria-labelledby="title desc"><title id="title">A restart restores records, not a vanished process</title><desc id="desc">Hermes must know where work stopped before it can safely continue.</desc>
+<defs><pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse"><path d="M40 0H0V40" fill="none" stroke="#1e293b" stroke-width="0.5"/></pattern><marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0L8 4L0 8" fill="#94a3b8"/></marker></defs><style>text{font-family:Arial,Helvetica,sans-serif} .title{font-size:28px;font-weight:700;fill:#f8fafc}.label{font-size:19px;font-weight:600;fill:#f8fafc}.body{font-size:16px;fill:#cbd5e1}.note{font-size:14px;fill:#94a3b8}</style>
+<rect width="1100" height="790" fill="#0f172a"/><rect width="1100" height="790" fill="url(#grid)"/>
+<text x="35" y="48" class="title">A restart restores records, not a vanished process</text>
+<text x="35" y="78" class="body">Hermes must know where work stopped before it can safely continue.</text>
+<rect x="195" y="110" width="710" height="100" rx="12" fill="#0f172a"/><rect x="195" y="110" width="710" height="100" rx="12" fill="#a78bfa" fill-opacity="0.09" stroke="#a78bfa" stroke-width="1.5"/>
+<text x="213" y="141" class="label">PROCESS STOPS</text>
+<text x="213" y="167" class="body">Saved state remains: conversation, queued messages, run IDs and results.</text>
+<path d="M550 210 L550 250" fill="none" stroke="#94a3b8" stroke-width="2" marker-end="url(#arrow)"/>
+<rect x="195" y="250" width="710" height="100" rx="12" fill="#0f172a"/><rect x="195" y="250" width="710" height="100" rx="12" fill="#34d399" fill-opacity="0.09" stroke="#34d399" stroke-width="1.5"/>
+<text x="213" y="281" class="label">RECOVER OWNERSHIP</text>
+<text x="213" y="307" class="body">Expired execution leases are reclaimed; the old executor is fenced out.</text>
+<text x="213" y="331" class="body">Inspect the last committed checkpoint and any in-flight tool action.</text>
+<path d="M370 350 L280 415" fill="none" stroke="#94a3b8" stroke-width="2" marker-end="url(#arrow)"/>
+<path d="M730 350 L820 415" fill="none" stroke="#94a3b8" stroke-width="2" marker-end="url(#arrow)"/>
+<rect x="35" y="415" width="490" height="130" rx="12" fill="#0f172a"/><rect x="35" y="415" width="490" height="130" rx="12" fill="#22d3ee" fill-opacity="0.09" stroke="#22d3ee" stroke-width="1.5"/>
+<text x="53" y="446" class="label">KNOWN CHECKPOINT</text>
+<text x="53" y="472" class="body">Restore Hermes-owned conversation.</text>
+<text x="53" y="496" class="body">Recheck route, credentials, tools and limits.</text>
+<text x="53" y="520" class="body">Resume in a new linked run.</text>
+<rect x="575" y="415" width="490" height="130" rx="12" fill="#0f172a"/><rect x="575" y="415" width="490" height="130" rx="12" fill="#fb7185" fill-opacity="0.09" stroke="#fb7185" stroke-width="1.5"/>
+<text x="593" y="446" class="label">TOOL OUTCOME UNCERTAIN</text>
+<text x="593" y="472" class="body">The external action may already have happened.</text>
+<text x="593" y="496" class="body">Pause for explicit reconciliation.</text>
+<text x="593" y="520" class="body">Never automatically repeat that action.</text>
+<path d="M280 545 L280 595" fill="none" stroke="#94a3b8" stroke-width="2" marker-end="url(#arrow)"/>
+<path d="M820 545 L820 595" fill="none" stroke="#94a3b8" stroke-width="2" marker-end="url(#arrow)"/>
+<rect x="35" y="595" width="490" height="130" rx="12" fill="#0f172a"/><rect x="35" y="595" width="490" height="130" rx="12" fill="#a78bfa" fill-opacity="0.09" stroke="#a78bfa" stroke-width="1.5"/>
+<text x="53" y="626" class="label">PRESERVE DELIVERY STATE</text>
+<text x="53" y="652" class="body">Queued messages stay ordered.</text>
+<text x="53" y="676" class="body">Undelivered completions remain available.</text>
+<text x="53" y="700" class="body">Acknowledgments prevent internal duplicates.</text>
+<rect x="575" y="595" width="490" height="130" rx="12" fill="#0f172a"/><rect x="575" y="595" width="490" height="130" rx="12" fill="#fbbf24" fill-opacity="0.09" stroke="#fbbf24" stroke-width="1.5"/>
+<text x="593" y="626" class="label">RECORD THE DECISION</text>
+<text x="593" y="652" class="body">Confirm applied / confirm not applied /</text>
+<text x="593" y="676" class="body">accept unknown without replay.</text>
+<text x="593" y="700" class="body">Then separately request the next assignment.</text>
+<text x="35" y="760" class="note">External services retain their own delivery guarantees; this is not universal exactly-once execution.</text>
+</svg>

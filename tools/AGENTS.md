@@ -85,17 +85,21 @@ completion by default; with `delegation.independent_completions` it is split int
 task reports alone as it finishes. Units of one call share ONE pool slot (`slot_key` in
 `async_delegation._dispatch`) — never count units against capacity; the executor is sized by live UNITS
 and the stall clock arms when the runner starts, so a queued unit is never judged stalled. Roles: `leaf` (default;
-no `delegate_task`, `clarify`, `memory`, `send_message`, `cronjob`; keeps `execute_code`) and
-`orchestrator` (keeps `delegate_task`; gated by `delegation.orchestrator_enabled`, bounded by
+keeps the control-only `delegate_task` surface but cannot spawn; no `clarify`, `memory`, `send_message`, or
+`cronjob`; keeps `execute_code`) and `orchestrator` (can also spawn through `delegate_task`; gated by
+`delegation.orchestrator_enabled`, bounded by
 `delegation.max_spawn_depth`, default 2). Config knobs under `delegation:`:
 `max_concurrent_children, independent_completions, max_spawn_depth, child_timeout_seconds, orchestrator_enabled,
-subagent_auto_approve, inherit_mcp_toolsets, max_iterations`. **Child processes:** a child's background
+subagent_auto_approve, inherit_mcp_toolsets, max_iterations`, plus named `profiles` for route, prompt, tool,
+workspace-context, and execution ceilings. **Child processes:** a child's background
 processes are killed at its teardown and their notices are suppressed in the parent; `process_manage(action="handoff")`
 (children only) flips `ProcessSession.owner_task_id` to the parent under the registry lock
 (`process_registry.transfer_ownership`) so the completion routes and reaps by the new owner; un-handed leftovers land on
-the result as `orphaned_processes`, exited-but-never-read notify processes as `unread_completions` (`_ChildRun.account_background_processes`, before `cleanup` kills them). **Durability:** background
-delegation is process-local; work that must survive restart uses `cronjob` or
-`terminal(background=True, notify_on_complete=True)`. API: `website/docs/developer-guide/subagent-lifecycle-api.md`.
+the result as `orphaned_processes`, exited-but-never-read notify processes as `unread_completions` (`_ChildRun.account_background_processes`, before `cleanup` kills them). **Durability:** workers use additive tables in the
+parent profile's existing `SessionDB`: stable worker ids, per-turn run ids, FIFO messages, checkpoints, leases,
+completion acknowledgements, and retained history. Restart fences an expired executor as `INTERRUPTED`; an uncertain
+in-flight tool outcome blocks resume until explicit reconciliation and is never replayed automatically. Sessions
+without `SessionDB` retain the legacy process-local lifecycle. API: `website/docs/developer-guide/subagent-lifecycle-api.md`.
 
 ## Tests
 

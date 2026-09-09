@@ -26,7 +26,7 @@ _HERMES_CORE_TOOLS = [
     "execute_code", "delegate_task",
     "cronjob_manage",
     "ha_list_entities", "ha_get_state", "ha_list_services", "ha_call_service",
-    "kanban_show", "kanban_list",
+    "kanban_show", "kanban_list", "kanban_team",
     "kanban_complete", "kanban_block", "kanban_request_review",
     "kanban_request_changes",
     "kanban_heartbeat",

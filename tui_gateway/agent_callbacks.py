@@ -364,6 +364,9 @@ def _rebuild_session_agent(sid: str, session: dict, **kwargs):
     from the profile's replay even though they were successfully written to another database (#104079).
     """
     old_agent = session.get("agent")
+    refresh_discovery_scope = bool(kwargs.pop("refresh_discovery_scope", False))
+    if not refresh_discovery_scope and old_agent is not None:
+        kwargs["discovery_scope"] = getattr(old_agent, "_shared_discovery_scope", None)
     profile_home = session.get("profile_home")
     session_db = getattr(old_agent, "_session_db", None)
     # No live agent to inherit from (rebuild before the deferred build ran): open the profile's store the
@@ -387,7 +390,10 @@ def _rebuild_session_agent(sid: str, session: dict, **kwargs):
     # Only a DEDICATED handle carries ownership; the shared launch handle outlives every agent and
     # _transfer_db_to_agent refuses it.
     with _sessions_lock:
-        session.update(agent=agent, config_model_seen=config_model_seen)
+        session.update(
+            agent=agent, config_model_seen=config_model_seen,
+            discovery_scope=getattr(agent, "_shared_discovery_scope", None),
+        )
         owned = opened or bool(getattr(old_agent, "_owns_session_db", False))
         if owned and _transfer_db_to_agent(agent, session_db):
             if old_agent is not None:
@@ -414,7 +420,8 @@ def _reset_session_agent(sid: str, session: dict) -> dict:
         new_agent = _rebuild_session_agent(
             sid, session, session_id=session["session_key"],
             platform_override=_session_source(session),
-            context_cwd_is_launch_artifact=_context_cwd_is_launch_artifact(session))
+            context_cwd_is_launch_artifact=_context_cwd_is_launch_artifact(session),
+            refresh_discovery_scope=True)
     finally:
         _clear_session_context(tokens)
     session.update(updates)

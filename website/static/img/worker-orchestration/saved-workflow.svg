@@ -1,0 +1,59 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 1160" role="img" aria-labelledby="title desc">
+<title id="title">Save the workflow; retain each task's evidence</title><desc id="desc">Draft saved workflows run independent tasks in parallel, join only accepted results, and bound corrections. Pause blocks new claims. Restart reads recorded identities. Cancellation blocks unfinished work without releasing dependants.</desc>
+<defs><style>text{font-family:Arial,Helvetica,sans-serif;fill:#e2e8f0}.h{font-size:21px;font-weight:700}.b{font-size:18px}.s{font-size:16px;fill:#cbd5e1}.m{font-size:16px;fill:#94a3b8}</style><pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse"><path d="M40 0H0V40" fill="none" stroke="#1e293b" stroke-width=".6"/></pattern><marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0L8 4L0 8" fill="#94a3b8"/></marker></defs>
+<rect width="1200" height="1160" fill="#0f172a"/><rect width="1200" height="1160" fill="url(#grid)"/>
+<text x="40" y="48" font-size="29" font-weight="700">Save the workflow; retain each task's evidence</text>
+<text x="40" y="80" class="m">DRAFT INCREMENT FOUR · a reusable recipe over existing Hermes services</text>
+<g fill="none" stroke="#94a3b8" stroke-width="2" marker-end="url(#arrow)"><path d="M410 245V300H210V335"/><path d="M410 300H610V335"/><path d="M210 450V495H410V535"/><path d="M610 450V495H410"/><path d="M410 650V730"/><path d="M410 845V925"/></g>
+<rect x="50" y="135" width="720" height="110" rx="12" fill="#172235" stroke="#22d3ee" stroke-width="2"/>
+<text x="70" y="169" class="h">1  Save a version; start with new input</text>
+<text x="70" y="200" class="b">Choose profiles, task dependencies and correction limits.</text>
+<text x="70" y="226" class="b">Each invocation gets stable task and execution references.</text>
+<rect x="50" y="335" width="320" height="115" rx="12" fill="#172235" stroke="#34d399" stroke-width="2"/>
+<text x="70" y="369" class="h">2a  Compare options</text>
+<text x="70" y="400" class="b">Worker profile chosen by user.</text>
+<text x="70" y="426" class="b">Runs beside independent work.</text>
+<rect x="450" y="335" width="320" height="115" rx="12" fill="#172235" stroke="#34d399" stroke-width="2"/>
+<text x="470" y="369" class="h">2b  Check constraints</text>
+<text x="470" y="400" class="b">A different profile can help.</text>
+<text x="470" y="426" class="b">Its own model and tools apply.</text>
+<text x="70" y="294" class="m">Independent tasks may run in parallel.</text>
+<rect x="50" y="535" width="720" height="115" rx="12" fill="#172235" stroke="#fbbf24" stroke-width="2"/>
+<text x="70" y="569" class="h">3  Review each result before accepting it</text>
+<text x="70" y="600" class="b">Request changes on the original worker conversation.</text>
+<text x="70" y="626" class="b">Corrections stop at the saved limit; finishing alone is not acceptance.</text>
+<text x="70" y="696" class="m">Join after both tasks are accepted.</text>
+<rect x="50" y="730" width="720" height="115" rx="12" fill="#172235" stroke="#34d399" stroke-width="2"/>
+<text x="70" y="764" class="h">4  Combine the accepted results</text>
+<text x="70" y="795" class="b">The dependent task can now claim work.</text>
+<text x="70" y="821" class="b">Collect task decisions, execution receipts and remaining gaps.</text>
+<rect x="50" y="925" width="720" height="115" rx="12" fill="#172235" stroke="#22d3ee" stroke-width="2"/>
+<text x="70" y="959" class="h">5  Run the saved version again</text>
+<text x="70" y="990" class="b">New input and a new invocation create fresh task identities.</text>
+<text x="70" y="1016" class="b">Retrying the same invocation returns the same recorded work.</text>
+<rect x="825" y="135" width="325" height="150" rx="12" fill="#172235" stroke="#a78bfa" stroke-width="2"/>
+<text x="845" y="169" class="h">Pause</text>
+<text x="845" y="200" class="b">Stop new task claims.</text>
+<text x="845" y="226" class="b">Already claimed work may settle.</text>
+<text x="845" y="252" class="b">Pause is separate from progress.</text>
+<rect x="825" y="345" width="325" height="176" rx="12" fill="#172235" stroke="#a78bfa" stroke-width="2"/>
+<text x="845" y="379" class="h">Restart and resume</text>
+<text x="845" y="410" class="b">Read recorded task/run IDs.</text>
+<text x="845" y="436" class="b">Collect completed results.</text>
+<text x="845" y="462" class="b">Do not repeat completed work.</text>
+<text x="845" y="488" class="b">Recheck current permissions.</text>
+<rect x="825" y="581" width="325" height="150" rx="12" fill="#172235" stroke="#fb7185" stroke-width="2"/>
+<text x="845" y="615" class="h">Unknown tool outcome</text>
+<text x="845" y="646" class="b">Pause for reconciliation.</text>
+<text x="845" y="672" class="b">An external action may be done.</text>
+<text x="845" y="698" class="b">Never replay it automatically.</text>
+<rect x="825" y="791" width="325" height="202" rx="12" fill="#172235" stroke="#fb7185" stroke-width="2"/>
+<text x="845" y="825" class="h">Cancel</text>
+<text x="845" y="856" class="b">Stop owned active executions.</text>
+<text x="845" y="882" class="b">Wait for terminal evidence.</text>
+<text x="845" y="908" class="b">Keep accepted tasks complete.</text>
+<text x="845" y="934" class="b">Block unfinished tasks.</text>
+<text x="845" y="960" class="b">Do not release dependent work.</text>
+<line x1="40" y1="1080" x2="1160" y2="1080" stroke="#334155"/>
+<text x="50" y="1114" class="s">Kanban owns tasks and acceptance. WorkerStore owns conversations and runs. The workflow records control.</text>
+<text x="50" y="1140" class="m">Draft implementation: see the capability guide for exact test evidence and remaining proof gaps.</text></svg>

@@ -1,0 +1,1961 @@
+{
+  "claim_class": "advisory",
+  "runtime_candidate": "c7fb32110494054fe0ed06bb8267b7794dce8c34",
+  "evidence_date_utc": "2026-09-09",
+  "automatic_interface_registry_changed": false,
+  "reports": [
+    {
+      "assertions": [
+        {
+          "assertion": "The model parent discovers both configured profiles and uses the advertised team_task plus worker lifecycle tools.",
+          "id": "TQ-1",
+          "passed": true
+        },
+        {
+          "assertion": "Exactly two parent-managed tasks are created, the second depends on the first, and it is not started before acceptance.",
+          "id": "TQ-2",
+          "passed": false
+        },
+        {
+          "assertion": "Guidance is accepted for the exact attached RUNNING implementation run with a durable running-delivery receipt.",
+          "id": "TQ-3",
+          "passed": true
+        },
+        {
+          "assertion": "The initial implementation succeeds and the first reviewer receives enough linked handoff evidence to mention VIOLET.",
+          "id": "TQ-4",
+          "passed": true
+        },
+        {
+          "assertion": "Exactly one requested correction reuses the implementation worker, links a new run to its previous run, and retains COBALT, VIOLET, and AMBER.",
+          "id": "TQ-5",
+          "passed": true
+        },
+        {
+          "assertion": "Two reviewer runs succeed and only the second review is accepted, leaving the implementation task done.",
+          "id": "TQ-6",
+          "passed": true
+        },
+        {
+          "assertion": "The dependent task starts after acceptance and its attached worker succeeds.",
+          "id": "TQ-7",
+          "passed": false
+        },
+        {
+          "assertion": "Every run uses its requested, resolved, and transmitted route with no worker tools, duplicate execution, authorization violation, structured tool error, or unacknowledged terminal result.",
+          "id": "TQ-8",
+          "passed": false
+        }
+      ],
+      "authorization_violations": 0,
+      "candidate_sha": "eebf756b18e5c592db48905c7214ae4f6fe89275",
+      "claim_class": "advisory",
+      "duplicate_owned_executions": 0,
+      "elapsed_seconds": 221.383,
+      "error_type": null,
+      "interface": {
+        "advertised_tools": [
+          "cancel_agent_tree",
+          "followup_task",
+          "inspect_agent",
+          "interrupt_agent",
+          "list_agents",
+          "send_message",
+          "spawn_agent",
+          "team_task",
+          "wait_agent",
+          "worker_capabilities",
+          "worker_control"
+        ],
+        "requested": "codex",
+        "selected": "codex",
+        "version": "worker-interface-v1"
+      },
+      "known_or_unknown_cost": {
+        "estimated_known_usd": 0.0,
+        "status": "partial"
+      },
+      "limits": {
+        "max_child_iterations": 3,
+        "max_child_seconds": 90,
+        "max_children": 2,
+        "max_parent_iterations": 24,
+        "max_parent_tokens": 4096,
+        "max_seconds": 360
+      },
+      "parent_route": {
+        "provider_reported_model": "gpt-6-astra",
+        "requested_model": "gpt-6-astra",
+        "requested_provider": "openai-codex",
+        "requested_reasoning_effort": "high",
+        "resolved_model": "gpt-6-astra",
+        "resolved_provider": "openai-codex",
+        "resolved_reasoning_effort": "high",
+        "transmitted_model": "gpt-6-astra",
+        "transmitted_provider": "openai-codex",
+        "transmitted_reasoning_effort": "high"
+      },
+      "proof_boundary": "One opt-in synthetic run on this committed candidate and these selected routes only. Provider-reported identity is not independent model verification; this is not release, fleet, customer, or statistical reliability proof.",
+      "scenario_id": "two_provider_model_parent_team_workflow",
+      "scenario_passed": false,
+      "suite": "hermes-orchestration-parity/team-qualification-v1",
+      "task_lineage": [
+        {
+          "assignee": "team-eval-zai",
+          "current_run_id": null,
+          "events": [
+            {
+              "event_id": 1,
+              "kanban_run_id": null,
+              "kind": "created"
+            },
+            {
+              "event_id": 3,
+              "kanban_run_id": 1,
+              "kind": "claimed"
+            },
+            {
+              "event_id": 4,
+              "kanban_run_id": 1,
+              "kind": "execution_attached",
+              "profile": "team-eval-luna",
+              "role": "implementer",
+              "run_ref": "run:run-03a1bcb58b734a818e0d2420a2e51270",
+              "worker_ref": "worker:worker-team-e36286c6a540ba0275ed2dd89ffe99e0"
+            },
+            {
+              "event_id": 5,
+              "kanban_run_id": 1,
+              "kind": "heartbeat"
+            },
+            {
+              "event_id": 6,
+              "kanban_run_id": 1,
+              "kind": "team_review_intent"
+            },
+            {
+              "event_id": 7,
+              "kanban_run_id": 1,
+              "kind": "review_requested"
+            },
+            {
+              "event_id": 8,
+              "kanban_run_id": 2,
+              "kind": "claimed"
+            },
+            {
+              "event_id": 9,
+              "kanban_run_id": 2,
+              "kind": "execution_attached",
+              "profile": "team-eval-zai",
+              "role": "reviewer",
+              "run_ref": "run:run-3e3da9ed66b0474fa03fd8b6bb81fd1f",
+              "worker_ref": "worker:worker-team-8ba7b8bd4631178ea7be6d8afb99bf24"
+            },
+            {
+              "event_id": 10,
+              "kanban_run_id": 2,
+              "kind": "heartbeat"
+            },
+            {
+              "event_id": 11,
+              "kanban_run_id": 2,
+              "kind": "heartbeat"
+            },
+            {
+              "event_id": 12,
+              "kanban_run_id": 2,
+              "kind": "team_correction_intent"
+            },
+            {
+              "event_id": 13,
+              "kanban_run_id": 2,
+              "kind": "changes_requested"
+            },
+            {
+              "event_id": 14,
+              "kanban_run_id": 3,
+              "kind": "claimed"
+            },
+            {
+              "event_id": 15,
+              "kanban_run_id": 3,
+              "kind": "execution_attached",
+              "profile": "team-eval-luna",
+              "role": "correction",
+              "run_ref": "run:run-ccb2bbb5d8c84d9fb1d825a7c692642d",
+              "worker_ref": "worker:worker-team-e36286c6a540ba0275ed2dd89ffe99e0"
+            },
+            {
+              "event_id": 16,
+              "kanban_run_id": 3,
+              "kind": "team_review_intent"
+            },
+            {
+              "event_id": 17,
+              "kanban_run_id": 3,
+              "kind": "review_requested"
+            },
+            {
+              "event_id": 18,
+              "kanban_run_id": 4,
+              "kind": "claimed"
+            },
+            {
+              "event_id": 19,
+              "kanban_run_id": 4,
+              "kind": "execution_attached",
+              "profile": "team-eval-zai",
+              "role": "reviewer",
+              "run_ref": "run:run-3dedf609ca0a464cb85b84119cd743d6",
+              "worker_ref": "worker:worker-team-200c6bf1ef12884835b656d736b51305"
+            },
+            {
+              "event_id": 20,
+              "kanban_run_id": 4,
+              "kind": "heartbeat"
+            },
+            {
+              "event_id": 21,
+              "kanban_run_id": 4,
+              "kind": "completed"
+            }
+          ],
+          "execution_mode": "parent",
+          "parent_refs": [],
+          "runs": [
+            {
+              "kanban_run_id": 1,
+              "outcome": "review_requested",
+              "status": "review",
+              "step_key": null
+            },
+            {
+              "kanban_run_id": 2,
+              "outcome": "changes_requested",
+              "status": "ready",
+              "step_key": null
+            },
+            {
+              "kanban_run_id": 3,
+              "outcome": "review_requested",
+              "status": "review",
+              "step_key": null
+            },
+            {
+              "kanban_run_id": 4,
+              "outcome": "completed",
+              "status": "done",
+              "step_key": null
+            }
+          ],
+          "status": "done",
+          "task_ref": "task:t_f8659066"
+        },
+        {
+          "assignee": "team-eval-zai",
+          "current_run_id": null,
+          "events": [
+            {
+              "event_id": 2,
+              "kanban_run_id": null,
+              "kind": "created"
+            },
+            {
+              "event_id": 22,
+              "kanban_run_id": null,
+              "kind": "promoted"
+            }
+          ],
+          "execution_mode": "parent",
+          "parent_refs": [
+            "task:t_f8659066"
+          ],
+          "runs": [],
+          "status": "ready",
+          "task_ref": "task:t_0102603f"
+        }
+      ],
+      "team_contract": "kanban-team-v1",
+      "token_usage": {
+        "cache_read_tokens": 336896,
+        "cache_write_tokens": 0,
+        "input": 5112,
+        "input_tokens": 24898,
+        "output": 4630,
+        "output_tokens": 2335,
+        "reasoning_tokens": 80,
+        "total_tokens": 364129
+      },
+      "tool_calls": {
+        "counts": {
+          "inspect_agent": 4,
+          "team_task:accept": 1,
+          "team_task:create": 2,
+          "team_task:guide": 2,
+          "team_task:request_changes": 1,
+          "team_task:start": 3,
+          "team_task:submit_review": 2,
+          "wait_agent": 4,
+          "worker_capabilities": 1,
+          "worker_control": 4
+        },
+        "error_count": 1,
+        "events": [
+          {
+            "accepted": true,
+            "advertised_tool": "worker_capabilities",
+            "canonical_tool": "delegate_task",
+            "delivery": null,
+            "effective_action": "discover",
+            "error_classification": null,
+            "kanban_run_id": null,
+            "operation": "capabilities",
+            "run_ref": null,
+            "sequence": 1,
+            "status": null,
+            "target_count": null,
+            "task_ref": null,
+            "team_action": null,
+            "worker_ref": null,
+            "worker_status": null
+          },
+          {
+            "accepted": true,
+            "advertised_tool": "team_task",
+            "canonical_tool": "kanban_team",
+            "delivery": null,
+            "effective_action": "create",
+            "error_classification": null,
+            "kanban_run_id": null,
+            "operation": "team",
+            "run_ref": null,
+            "sequence": 2,
+            "status": "ready",
+            "target_count": null,
+            "task_ref": "task:t_f8659066",
+            "team_action": "create",
+            "worker_ref": null,
+            "worker_status": "ready"
+          },
+          {
+            "accepted": true,
+            "advertised_tool": "team_task",
+            "canonical_tool": "kanban_team",
+            "delivery": null,
+            "effective_action": "create",
+            "error_classification": null,
+            "kanban_run_id": null,
+            "operation": "team",
+            "run_ref": null,
+            "sequence": 3,
+            "status": "todo",
+            "target_count": null,
+            "task_ref": "task:t_0102603f",
+            "team_action": "create",
+            "worker_ref": null,
+            "worker_status": "todo"
+          },
+          {
+            "accepted": true,
+            "advertised_tool": "team_task",
+            "canonical_tool": "kanban_team",
+            "delivery": null,
+            "effective_action": "start",
+            "error_classification": null,
+            "kanban_run_id": 1,
+            "operation": "team",
+            "run_ref": "run:run-03a1bcb58b734a818e0d2420a2e51270",
+            "sequence": 4,
+            "status": null,
+            "target_count": null,
+            "task_ref": "task:t_f8659066",
+            "team_action": "start",
+            "worker_ref": "worker:worker-team-e36286c6a540ba0275ed2dd89ffe99e0",
+            "worker_status": "RUNNING"
+          },
+          {
+            "accepted": false,
+            "advertised_tool": "team_task",
+            "canonical_tool": "kanban_team",
+            "delivery": null,
+            "effective_action": "guide",
+            "error_classification": "SERVICE_ERROR",
+            "kanban_run_id": null,
+            "operation": "team",
+            "run_ref": null,
+            "sequence": 5,
+            "status": null,
+            "target_count": null,
+            "task_ref": "task:t_f8659066",
+            "team_action": "guide",
+            "worker_ref": null,
+            "worker_status": null
+          },
+          {
+            "accepted": true,
+            "advertised_tool": "team_task",
+            "canonical_tool": "kanban_team",
+            "delivery": "RUNNING_STEER_PENDING_CHECKPOINT",
+            "effective_action": "guide",
+            "error_classification": null,
+            "kanban_run_id": null,
+            "operation": "team",
+            "run_ref": null,
+            "sequence": 6,
+            "status": null,
+            "target_count": 1,
+            "task_ref": "task:t_f8659066",
+            "team_action": "guide",
+            "worker_ref": null,
+            "worker_status": null
+          },
+          {
+            "accepted": true,
+            "advertised_tool": "wait_agent",
+            "canonical_tool": "delegate_task",
+            "delivery": null,
+            "effective_action": "wait",
+            "error_classification": null,
+            "kanban_run_id": null,
+            "operation": "wait",
+            "run_ref": "run-03a1bcb58b734a818e0d2420a2e51270",
+            "sequence": 7,
+            "status": "SUCCEEDED",
+            "target_count": null,
+            "task_ref": null,
+            "team_action": null,
+            "worker_ref": null,
+            "worker_status": "SUCCEEDED"
+          },
+          {
+            "accepted": true,
+            "advertised_tool": "inspect_agent",
+            "canonical_tool": "delegate_task",
+            "delivery": null,
+            "effective_action": "inspect",
+            "error_classification": null,
+            "kanban_run_id": null,
+            "operation": "inspect",
+            "run_ref": null,
+            "sequence": 8,
+            "status": null,
+            "target_count": null,
+            "task_ref": null,
+            "team_action": null,
+            "worker_ref": null,
+            "worker_status": null
+          },
+          {
+            "accepted": true,
+            "advertised_tool": "worker_control",
+            "canonical_tool": "delegate_task",
+            "delivery": null,
+            "effective_action": "ack",
+            "error_classification": null,
+            "kanban_run_id": null,
+            "operation": "ack",
+            "run_ref": "run-03a1bcb58b734a818e0d2420a2e51270",
+            "sequence": 9,
+            "status": "SUCCEEDED",
+            "target_count": null,
+            "task_ref": null,
+            "team_action": null,
+            "worker_ref": null,
+            "worker_status": "SUCCEEDED"
+          },
+          {
+            "accepted": true,
+            "advertised_tool": "team_task",
+            "canonical_tool": "kanban_team",
+            "delivery": null,
+            "effective_action": "submit_review",
+            "error_classification": null,
+            "kanban_run_id": null,
+            "operation": "team",
+            "run_ref": null,
+            "sequence": 10,
+            "status": "review",
+            "target_count": null,
+            "task_ref": "task:t_f8659066",
+            "team_action": "submit_review",
+            "worker_ref": null,
+            "worker_status": "review"
+          },
+          {
+            "accepted": true,
+            "advertised_tool": "team_task",
+            "canonical_tool": "kanban_team",
+            "delivery": null,
+            "effective_action": "start",
+            "error_classification": null,
+            "kanban_run_id": 2,
+            "operation": "team",
+            "run_ref": "run:run-3e3da9ed66b0474fa03fd8b6bb81fd1f",
+            "sequence": 11,
+            "status": null,
+            "target_count": null,
+            "task_ref": "task:t_f8659066",
+            "team_action": "start",
+            "worker_ref": "worker:worker-team-8ba7b8bd4631178ea7be6d8afb99bf24",
+            "worker_status": "RUNNING"
+          },
+          {
+            "accepted": true,
+            "advertised_tool": "wait_agent",
+            "canonical_tool": "delegate_task",
+            "delivery": null,
+            "effective_action": "wait",
+            "error_classification": null,
+            "kanban_run_id": null,
+            "operation": "wait",
+            "run_ref": "run-3e3da9ed66b0474fa03fd8b6bb81fd1f",
+            "sequence": 12,
+            "status": "SUCCEEDED",
+            "target_count": null,
+            "task_ref": null,
+            "team_action": null,
+            "worker_ref": null,
+            "worker_status": "SUCCEEDED"
+          },
+          {
+            "accepted": true,
+            "advertised_tool": "inspect_agent",
+            "canonical_tool": "delegate_task",
+            "delivery": null,
+            "effective_action": "inspect",
+            "error_classification": null,
+            "kanban_run_id": null,
+            "operation": "inspect",
+            "run_ref": null,
+            "sequence": 13,
+            "status": null,
+            "target_count": null,
+            "task_ref": null,
+            "team_action": null,
+            "worker_ref": null,
+            "worker_status": null
+          },
+          {
+            "accepted": true,
+            "advertised_tool": "worker_control",
+            "canonical_tool": "delegate_task",
+            "delivery": null,
+            "effective_action": "ack",
+            "error_classification": null,
+            "kanban_run_id": null,
+            "operation": "ack",
+            "run_ref": "run-3e3da9ed66b0474fa03fd8b6bb81fd1f",
+            "sequence": 14,
+            "status": "SUCCEEDED",
+            "target_count": null,
+            "task_ref": null,
+            "team_action": null,
+            "worker_ref": null,
+            "worker_status": "SUCCEEDED"
+          },
+          {
+            "accepted": true,
+            "advertised_tool": "team_task",
+            "canonical_tool": "kanban_team",
+            "delivery": null,
+            "effective_action": "request_changes",
+            "error_classification": null,
+            "kanban_run_id": 3,
+            "operation": "team",
+            "run_ref": "run:run-ccb2bbb5d8c84d9fb1d825a7c692642d",
+            "sequence": 15,
+            "status": null,
+            "target_count": null,
+            "task_ref": "task:t_f8659066",
+            "team_action": "request_changes",
+            "worker_ref": "worker:worker-team-e36286c6a540ba0275ed2dd89ffe99e0",
+            "worker_status": "RUNNING"
+          },
+          {
+            "accepted": true,
+            "advertised_tool": "wait_agent",
+            "canonical_tool": "delegate_task",
+            "delivery": null,
+            "effective_action": "wait",
+            "error_classification": null,
+            "kanban_run_id": null,
+            "operation": "wait",
+            "run_ref": "run-ccb2bbb5d8c84d9fb1d825a7c692642d",
+            "sequence": 16,
+            "status": "SUCCEEDED",
+            "target_count": null,
+            "task_ref": null,
+            "team_action": null,
+            "worker_ref": null,
+            "worker_status": "SUCCEEDED"
+          },
+          {
+            "accepted": true,
+            "advertised_tool": "inspect_agent",
+            "canonical_tool": "delegate_task",
+            "delivery": null,
+            "effective_action": "inspect",
+            "error_classification": null,
+            "kanban_run_id": null,
+            "operation": "inspect",
+            "run_ref": null,
+            "sequence": 17,
+            "status": null,
+            "target_count": null,
+            "task_ref": null,
+            "team_action": null,
+            "worker_ref": null,
+            "worker_status": null
+          },
+          {
+            "accepted": true,
+            "advertised_tool": "worker_control",
+            "canonical_tool": "delegate_task",
+            "delivery": null,
+            "effective_action": "ack",
+            "error_classification": null,
+            "kanban_run_id": null,
+            "operation": "ack",
+            "run_ref": "run-ccb2bbb5d8c84d9fb1d825a7c692642d",
+            "sequence": 18,
+            "status": "SUCCEEDED",
+            "target_count": null,
+            "task_ref": null,
+            "team_action": null,
+            "worker_ref": null,
+            "worker_status": "SUCCEEDED"
+          },
+          {
+            "accepted": true,
+            "advertised_tool": "team_task",
+            "canonical_tool": "kanban_team",
+            "delivery": null,
+            "effective_action": "submit_review",
+            "error_classification": null,
+            "kanban_run_id": null,
+            "operation": "team",
+            "run_ref": null,
+            "sequence": 19,
+            "status": "review",
+            "target_count": null,
+            "task_ref": "task:t_f8659066",
+            "team_action": "submit_review",
+            "worker_ref": null,
+            "worker_status": "review"
+          },
+          {
+            "accepted": true,
+            "advertised_tool": "team_task",
+            "canonical_tool": "kanban_team",
+            "delivery": null,
+            "effective_action": "start",
+            "error_classification": null,
+            "kanban_run_id": 4,
+            "operation": "team",
+            "run_ref": "run:run-3dedf609ca0a464cb85b84119cd743d6",
+            "sequence": 20,
+            "status": null,
+            "target_count": null,
+            "task_ref": "task:t_f8659066",
+            "team_action": "start",
+            "worker_ref": "worker:worker-team-200c6bf1ef12884835b656d736b51305",
+            "worker_status": "RUNNING"
+          },
+          {
+            "accepted": true,
+            "advertised_tool": "wait_agent",
+            "canonical_tool": "delegate_task",
+            "delivery": null,
+            "effective_action": "wait",
+            "error_classification": null,
+            "kanban_run_id": null,
+            "operation": "wait",
+            "run_ref": "run-3dedf609ca0a464cb85b84119cd743d6",
+            "sequence": 21,
+            "status": "SUCCEEDED",
+            "target_count": null,
+            "task_ref": null,
+            "team_action": null,
+            "worker_ref": null,
+            "worker_status": "SUCCEEDED"
+          },
+          {
+            "accepted": true,
+            "advertised_tool": "inspect_agent",
+            "canonical_tool": "delegate_task",
+            "delivery": null,
+            "effective_action": "inspect",
+            "error_classification": null,
+            "kanban_run_id": null,
+            "operation": "inspect",
+            "run_ref": null,
+            "sequence": 22,
+            "status": null,
+            "target_count": null,
+            "task_ref": null,
+            "team_action": null,
+            "worker_ref": null,
+            "worker_status": null
+          },
+          {
+            "accepted": true,
+            "advertised_tool": "worker_control",
+            "canonical_tool": "delegate_task",
+            "delivery": null,
+            "effective_action": "ack",
+            "error_classification": null,
+            "kanban_run_id": null,
+            "operation": "ack",
+            "run_ref": "run-3dedf609ca0a464cb85b84119cd743d6",
+            "sequence": 23,
+            "status": "SUCCEEDED",
+            "target_count": null,
+            "task_ref": null,
+            "team_action": null,
+            "worker_ref": null,
+            "worker_status": "SUCCEEDED"
+          },
+          {
+            "accepted": true,
+            "advertised_tool": "team_task",
+            "canonical_tool": "kanban_team",
+            "delivery": null,
+            "effective_action": "accept",
+            "error_classification": null,
+            "kanban_run_id": null,
+            "operation": "team",
+            "run_ref": null,
+            "sequence": 24,
+            "status": "done",
+            "target_count": null,
+            "task_ref": "task:t_f8659066",
+            "team_action": "accept",
+            "worker_ref": null,
+            "worker_status": "done"
+          }
+        ]
+      },
+      "worker_lineage": [
+        {
+          "profile": "team-eval-luna",
+          "runs": [
+            {
+              "completion_ack": true,
+              "effective_tool_count": 0,
+              "known_or_unknown_cost": {
+                "estimated_usd": 0.0,
+                "status": "included"
+              },
+              "latency_seconds": 23.555,
+              "previous_run_ref": null,
+              "run_ref": "run:run-03a1bcb58b734a818e0d2420a2e51270",
+              "status": "SUCCEEDED",
+              "token_usage": {
+                "input": 776,
+                "output": 595
+              },
+              "uncertain_side_effect": false
+            },
+            {
+              "completion_ack": true,
+              "effective_tool_count": 0,
+              "known_or_unknown_cost": {
+                "estimated_usd": 0.0,
+                "status": "included"
+              },
+              "latency_seconds": 6.303,
+              "previous_run_ref": "run:run-03a1bcb58b734a818e0d2420a2e51270",
+              "run_ref": "run:run-ccb2bbb5d8c84d9fb1d825a7c692642d",
+              "status": "SUCCEEDED",
+              "token_usage": {
+                "input": 1550,
+                "output": 293
+              },
+              "uncertain_side_effect": false
+            }
+          ],
+          "worker_ref": "worker:worker-team-e36286c6a540ba0275ed2dd89ffe99e0"
+        },
+        {
+          "profile": "team-eval-zai",
+          "runs": [
+            {
+              "completion_ack": true,
+              "effective_tool_count": 0,
+              "known_or_unknown_cost": {
+                "estimated_usd": "unknown",
+                "status": "unknown"
+              },
+              "latency_seconds": 39.306,
+              "previous_run_ref": null,
+              "run_ref": "run:run-3e3da9ed66b0474fa03fd8b6bb81fd1f",
+              "status": "SUCCEEDED",
+              "token_usage": {
+                "input": 1342,
+                "output": 2808
+              },
+              "uncertain_side_effect": false
+            }
+          ],
+          "worker_ref": "worker:worker-team-8ba7b8bd4631178ea7be6d8afb99bf24"
+        },
+        {
+          "profile": "team-eval-zai",
+          "runs": [
+            {
+              "completion_ack": true,
+              "effective_tool_count": 0,
+              "known_or_unknown_cost": {
+                "estimated_usd": "unknown",
+                "status": "unknown"
+              },
+              "latency_seconds": 16.076,
+              "previous_run_ref": null,
+              "run_ref": "run:run-3dedf609ca0a464cb85b84119cd743d6",
+              "status": "SUCCEEDED",
+              "token_usage": {
+                "input": 1444,
+                "output": 934
+              },
+              "uncertain_side_effect": false
+            }
+          ],
+          "worker_ref": "worker:worker-team-200c6bf1ef12884835b656d736b51305"
+        }
+      ],
+      "worker_routes": [
+        {
+          "provider_reported_model": "gpt-5.6-luna",
+          "request_evidence_source": "post_middleware_sdk_dispatch",
+          "requested_model": null,
+          "requested_profile": "team-eval-luna",
+          "requested_provider": null,
+          "requested_reasoning_effort": null,
+          "resolved_model": "gpt-5.6-luna",
+          "resolved_provider": "openai-codex",
+          "resolved_reasoning_effort": "xhigh",
+          "response_evidence_source": "provider_response_marker",
+          "run_ref": "run:run-03a1bcb58b734a818e0d2420a2e51270",
+          "transmitted_model": "gpt-5.6-luna",
+          "transmitted_provider": "openai-codex",
+          "transmitted_reasoning_effort": "xhigh",
+          "worker_ref": "worker:worker-team-e36286c6a540ba0275ed2dd89ffe99e0"
+        },
+        {
+          "provider_reported_model": "gpt-5.6-luna",
+          "request_evidence_source": "post_middleware_sdk_dispatch",
+          "requested_model": null,
+          "requested_profile": "team-eval-luna",
+          "requested_provider": null,
+          "requested_reasoning_effort": null,
+          "resolved_model": "gpt-5.6-luna",
+          "resolved_provider": "openai-codex",
+          "resolved_reasoning_effort": "xhigh",
+          "response_evidence_source": "provider_response_marker",
+          "run_ref": "run:run-ccb2bbb5d8c84d9fb1d825a7c692642d",
+          "transmitted_model": "gpt-5.6-luna",
+          "transmitted_provider": "openai-codex",
+          "transmitted_reasoning_effort": "xhigh",
+          "worker_ref": "worker:worker-team-e36286c6a540ba0275ed2dd89ffe99e0"
+        },
+        {
+          "provider_reported_model": "glm-5.3",
+          "request_evidence_source": "post_middleware_sdk_dispatch",
+          "requested_model": null,
+          "requested_profile": "team-eval-zai",
+          "requested_provider": null,
+          "requested_reasoning_effort": null,
+          "resolved_model": "glm-5.3",
+          "resolved_provider": "zai",
+          "resolved_reasoning_effort": "high",
+          "response_evidence_source": "provider_response.model",
+          "run_ref": "run:run-3e3da9ed66b0474fa03fd8b6bb81fd1f",
+          "transmitted_model": "glm-5.3",
+          "transmitted_provider": "zai",
+          "transmitted_reasoning_effort": "high",
+          "worker_ref": "worker:worker-team-8ba7b8bd4631178ea7be6d8afb99bf24"
+        },
+        {
+          "provider_reported_model": "glm-5.3",
+          "request_evidence_source": "post_middleware_sdk_dispatch",
+          "requested_model": null,
+          "requested_profile": "team-eval-zai",
+          "requested_provider": null,
+          "requested_reasoning_effort": null,
+          "resolved_model": "glm-5.3",
+          "resolved_provider": "zai",
+          "resolved_reasoning_effort": "high",
+          "response_evidence_source": "provider_response.model",
+          "run_ref": "run:run-3dedf609ca0a464cb85b84119cd743d6",
+          "transmitted_model": "glm-5.3",
+          "transmitted_provider": "zai",
+          "transmitted_reasoning_effort": "high",
+          "worker_ref": "worker:worker-team-200c6bf1ef12884835b656d736b51305"
+        }
+      ]
+    },
+    {
+      "assertions": [
+        {
+          "assertion": "The model parent discovers both configured profiles and uses the advertised team_task plus worker lifecycle tools.",
+          "id": "TQ-1",
+          "passed": true
+        },
+        {
+          "assertion": "Exactly two parent-managed tasks are created, the second depends on the first, and it is not started before acceptance.",
+          "id": "TQ-2",
+          "passed": true
+        },
+        {
+          "assertion": "Guidance is accepted for the exact attached RUNNING implementation run with a durable running-delivery receipt.",
+          "id": "TQ-3",
+          "passed": true
+        },
+        {
+          "assertion": "The initial implementation succeeds and the first reviewer receives enough linked handoff evidence to mention VIOLET.",
+          "id": "TQ-4",
+          "passed": true
+        },
+        {
+          "assertion": "Exactly one requested correction reuses the implementation worker, links a new run to its previous run, and retains COBALT, VIOLET, and AMBER.",
+          "id": "TQ-5",
+          "passed": true
+        },
+        {
+          "assertion": "Two reviewer runs succeed and only the second review is accepted, leaving the implementation task done.",
+          "id": "TQ-6",
+          "passed": true
+        },
+        {
+          "assertion": "The dependent task starts after acceptance and its attached worker succeeds.",
+          "id": "TQ-7",
+          "passed": true
+        },
+        {
+          "assertion": "Every run uses its requested, resolved, and transmitted route with no worker tools, duplicate execution, authorization violation, structured tool error, or unacknowledged terminal result.",
+          "id": "TQ-8",
+          "passed": true
+        }
+      ],
+      "authorization_violations": 0,
+      "candidate_sha": "f1c1b890ff20ded4086731d242fa10118bfbb705",
+      "claim_class": "advisory",
+      "duplicate_owned_executions": 0,
+      "elapsed_seconds": 301.136,
+      "error_type": null,
+      "interface": {
+        "advertised_tools": [
+          "cancel_agent_tree",
+          "followup_task",
+          "inspect_agent",
+          "interrupt_agent",
+          "list_agents",
+          "send_message",
+          "spawn_agent",
+          "team_task",
+          "wait_agent",
+          "worker_capabilities",
+          "worker_control"
+        ],
+        "requested": "codex",
+        "selected": "codex",
+        "version": "worker-interface-v1"
+      },
+      "known_or_unknown_cost": {
+        "estimated_known_usd": 0.0,
+        "status": "partial"
+      },
+      "limits": {
+        "max_child_iterations": 3,
+        "max_child_seconds": 90,
+        "max_children": 2,
+        "max_parent_iterations": 32,
+        "max_parent_tokens": 4096,
+        "max_seconds": 360
+      },
+      "parent_route": {
+        "provider_reported_model": "gpt-6-astra",
+        "requested_model": "gpt-6-astra",
+        "requested_provider": "openai-codex",
+        "requested_reasoning_effort": "high",
+        "resolved_model": "gpt-6-astra",
+        "resolved_provider": "openai-codex",
+        "resolved_reasoning_effort": "high",
+        "transmitted_model": "gpt-6-astra",
+        "transmitted_provider": "openai-codex",
+        "transmitted_reasoning_effort": "high"
+      },
+      "proof_boundary": "One opt-in synthetic run on this committed candidate and these selected routes only. Provider-reported identity is not independent model verification; this is not release, fleet, customer, or statistical reliability proof.",
+      "scenario_id": "two_provider_model_parent_team_workflow",
+      "scenario_passed": true,
+      "suite": "hermes-orchestration-parity/team-qualification-v2",
+      "task_lineage": [
+        {
+          "assignee": "team-eval-zai",
+          "current_run_id": null,
+          "events": [
+            {
+              "event_id": 1,
+              "kanban_run_id": null,
+              "kind": "created"
+            },
+            {
+              "event_id": 3,
+              "kanban_run_id": 1,
+              "kind": "claimed"
+            },
+            {
+              "event_id": 4,
+              "kanban_run_id": 1,
+              "kind": "execution_attached",
+              "profile": "team-eval-luna",
+              "role": "implementer",
+              "run_ref": "run:run-e0ebd0104bbf4e5b98e16e2e7ecb76eb",
+              "worker_ref": "worker:worker-team-b72ced8e9256de19357877f54fa5198f"
+            },
+            {
+              "event_id": 5,
+              "kanban_run_id": 1,
+              "kind": "heartbeat"
+            },
+            {
+              "event_id": 6,
+              "kanban_run_id": 1,
+              "kind": "heartbeat"
+            },
+            {
+              "event_id": 7,
+              "kanban_run_id": 1,
+              "kind": "heartbeat"
+            },
+            {
+              "event_id": 8,
+              "kanban_run_id": 1,
+              "kind": "heartbeat"
+            },
+            {
+              "event_id": 9,
+              "kanban_run_id": 1,
+              "kind": "team_review_intent"
+            },
+            {
+              "event_id": 10,
+              "kanban_run_id": 1,
+              "kind": "review_requested"
+            },
+            {
+              "event_id": 11,
+              "kanban_run_id": 2,
+              "kind": "claimed"
+            },
+            {
+              "event_id": 12,
+              "kanban_run_id": 2,
+              "kind": "execution_attached",
+              "profile": "team-eval-zai",
+              "role": "reviewer",
+              "run_ref": "run:run-9dcc03ff95e24828aa536338a81c9a15",
+              "worker_ref": "worker:worker-team-c0bbca259a76c0eca5d4d8698983f159"
+            },
+            {
+              "event_id": 13,
+              "kanban_run_id": 2,
+              "kind": "heartbeat"
+            },
+            {
+              "event_id": 14,
+              "kanban_run_id": 2,
+              "kind": "team_correction_intent"
+            },
+            {
+              "event_id": 15,
+              "kanban_run_id": 2,
+              "kind": "changes_requested"
+            },
+            {
+              "event_id": 16,
+              "kanban_run_id": 3,
+              "kind": "claimed"
+            },
+            {
+              "event_id": 17,
+              "kanban_run_id": 3,
+              "kind": "execution_attached",
+              "profile": "team-eval-luna",
+              "role": "correction",
+              "run_ref": "run:run-9ec796b4b1954fc6bdd414c9fc0c3722",
+              "worker_ref": "worker:worker-team-b72ced8e9256de19357877f54fa5198f"
+            },
+            {
+              "event_id": 18,
+              "kanban_run_id": 3,
+              "kind": "team_review_intent"
+            },
+            {
+              "event_id": 19,
+              "kanban_run_id": 3,
+              "kind": "review_requested"
+            },
+            {
+              "event_id": 20,
+              "kanban_run_id": 4,
+              "kind": "claimed"
+            },
+            {
+              "event_id": 21,
+              "kanban_run_id": 4,
+              "kind": "execution_attached",
+              "profile": "team-eval-zai",
+              "role": "reviewer",
+              "run_ref": "run:run-238e3614d96c46dcbf12005811e63c51",
+              "worker_ref": "worker:worker-team-1779267703c95787952ac83dae9cae9f"
+            },
+            {
+              "event_id": 22,
+              "kanban_run_id": 4,
+              "kind": "heartbeat"
+            },
+            {
+              "event_id": 23,
+              "kanban_run_id": 4,
+              "kind": "completed"
+            }
+          ],
+          "execution_mode": "parent",
+          "parent_refs": [],
+          "runs": [
+            {
+              "kanban_run_id": 1,
+              "outcome": "review_requested",
+              "status": "review",
+              "step_key": null
+            },
+            {
+              "kanban_run_id": 2,
+              "outcome": "changes_requested",
+              "status": "ready",
+              "step_key": null
+            },
+            {
+              "kanban_run_id": 3,
+              "outcome": "review_requested",
+              "status": "review",
+              "step_key": null
+            },
+            {
+              "kanban_run_id": 4,
+              "outcome": "completed",
+              "status": "done",
+              "step_key": null
+            }
+          ],
+          "status": "done",
+          "task_ref": "task:t_8e26ac41"
+        },
+        {
+          "assignee": "team-eval-zai",
+          "current_run_id": 5,
+          "events": [
+            {
+              "event_id": 2,
+              "kanban_run_id": null,
+              "kind": "created"
+            },
+            {
+              "event_id": 24,
+              "kanban_run_id": null,
+              "kind": "promoted"
+            },
+            {
+              "event_id": 25,
+              "kanban_run_id": 5,
+              "kind": "claimed"
+            },
+            {
+              "event_id": 26,
+              "kanban_run_id": 5,
+              "kind": "execution_attached",
+              "profile": "team-eval-zai",
+              "role": "implementer",
+              "run_ref": "run:run-3f1b5fcd2b24481da64edf6fe38a2b4f",
+              "worker_ref": "worker:worker-team-11701de37fa783f7275746b031aa1310"
+            }
+          ],
+          "execution_mode": "parent",
+          "parent_refs": [
+            "task:t_8e26ac41"
+          ],
+          "runs": [
+            {
+              "kanban_run_id": 5,
+              "outcome": null,
+              "status": "running",
+              "step_key": null
+            }
+          ],
+          "status": "running",
+          "task_ref": "task:t_9f0715d6"
+        }
+      ],
+      "team_contract": "kanban-team-v1",
+      "token_usage": {
+        "cache_read_tokens": 499968,
+        "cache_write_tokens": 0,
+        "input": 8853,
+        "input_tokens": 25619,
+        "output": 7436,
+        "output_tokens": 2895,
+        "reasoning_tokens": 122,
+        "total_tokens": 528482
+      },
+      "tool_calls": {
+        "counts": {
+          "inspect_agent": 5,
+          "team_task:accept": 1,
+          "team_task:create": 2,
+          "team_task:guide": 1,
+          "team_task:request_changes": 1,
+          "team_task:start": 4,
+          "team_task:submit_review": 2,
+          "wait_agent": 5,
+          "worker_capabilities": 2,
+          "worker_control": 6
+        },
+        "error_count": 0,
+        "events": [
+          {
+            "accepted": true,
+            "advertised_tool": "worker_capabilities",
+            "canonical_tool": "delegate_task",
+            "delivery": null,
+            "effective_action": "discover",
+            "error_classification": null,
+            "kanban_run_id": null,
+            "operation": "capabilities",
+            "run_ref": null,
+            "sequence": 1,
+            "status": null,
+            "target_count": null,
+            "task_ref": null,
+            "team_action": null,
+            "worker_ref": null,
+            "worker_status": null
+          },
+          {
+            "accepted": true,
+            "advertised_tool": "team_task",
+            "canonical_tool": "kanban_team",
+            "delivery": null,
+            "effective_action": "create",
+            "error_classification": null,
+            "kanban_run_id": null,
+            "operation": "team",
+            "run_ref": null,
+            "sequence": 2,
+            "status": "ready",
+            "target_count": null,
+            "task_ref": "task:t_8e26ac41",
+            "team_action": "create",
+            "worker_ref": null,
+            "worker_status": "ready"
+          },
+          {
+            "accepted": true,
+            "advertised_tool": "team_task",
+            "canonical_tool": "kanban_team",
+            "delivery": null,
+            "effective_action": "create",
+            "error_classification": null,
+            "kanban_run_id": null,
+            "operation": "team",
+            "run_ref": null,
+            "sequence": 3,
+            "status": "todo",
+            "target_count": null,
+            "task_ref": "task:t_9f0715d6",
+            "team_action": "create",
+            "worker_ref": null,
+            "worker_status": "todo"
+          },
+          {
+            "accepted": true,
+            "advertised_tool": "team_task",
+            "canonical_tool": "kanban_team",
+            "delivery": null,
+            "effective_action": "start",
+            "error_classification": null,
+            "kanban_run_id": 1,
+            "operation": "team",
+            "run_ref": "run:run-e0ebd0104bbf4e5b98e16e2e7ecb76eb",
+            "sequence": 4,
+            "status": null,
+            "target_count": null,
+            "task_ref": "task:t_8e26ac41",
+            "team_action": "start",
+            "worker_ref": "worker:worker-team-b72ced8e9256de19357877f54fa5198f",
+            "worker_status": "RUNNING"
+          },
+          {
+            "accepted": true,
+            "advertised_tool": "team_task",
+            "canonical_tool": "kanban_team",
+            "delivery": "RUNNING_STEER_PENDING_CHECKPOINT",
+            "effective_action": "guide",
+            "error_classification": null,
+            "kanban_run_id": null,
+            "operation": "team",
+            "run_ref": null,
+            "sequence": 5,
+            "status": null,
+            "target_count": 1,
+            "task_ref": null,
+            "team_action": "guide",
+            "worker_ref": null,
+            "worker_status": null
+          },
+          {
+            "accepted": true,
+            "advertised_tool": "wait_agent",
+            "canonical_tool": "delegate_task",
+            "delivery": null,
+            "effective_action": "wait",
+            "error_classification": null,
+            "kanban_run_id": null,
+            "operation": "wait",
+            "run_ref": "run-e0ebd0104bbf4e5b98e16e2e7ecb76eb",
+            "sequence": 6,
+            "status": "RUNNING",
+            "target_count": null,
+            "task_ref": null,
+            "team_action": null,
+            "worker_ref": null,
+            "worker_status": "RUNNING"
+          },
+          {
+            "accepted": true,
+            "advertised_tool": "inspect_agent",
+            "canonical_tool": "delegate_task",
+            "delivery": null,
+            "effective_action": "inspect",
+            "error_classification": null,
+            "kanban_run_id": null,
+            "operation": "inspect",
+            "run_ref": null,
+            "sequence": 7,
+            "status": null,
+            "target_count": null,
+            "task_ref": null,
+            "team_action": null,
+            "worker_ref": null,
+            "worker_status": null
+          },
+          {
+            "accepted": true,
+            "advertised_tool": "worker_control",
+            "canonical_tool": "delegate_task",
+            "delivery": null,
+            "effective_action": "ack",
+            "error_classification": null,
+            "kanban_run_id": null,
+            "operation": "ack",
+            "run_ref": "run-e0ebd0104bbf4e5b98e16e2e7ecb76eb",
+            "sequence": 8,
+            "status": "SUCCEEDED",
+            "target_count": null,
+            "task_ref": null,
+            "team_action": null,
+            "worker_ref": null,
+            "worker_status": "SUCCEEDED"
+          },
+          {
+            "accepted": true,
+            "advertised_tool": "team_task",
+            "canonical_tool": "kanban_team",
+            "delivery": null,
+            "effective_action": "submit_review",
+            "error_classification": null,
+            "kanban_run_id": null,
+            "operation": "team",
+            "run_ref": null,
+            "sequence": 9,
+            "status": "review",
+            "target_count": null,
+            "task_ref": "task:t_8e26ac41",
+            "team_action": "submit_review",
+            "worker_ref": null,
+            "worker_status": "review"
+          },
+          {
+            "accepted": true,
+            "advertised_tool": "team_task",
+            "canonical_tool": "kanban_team",
+            "delivery": null,
+            "effective_action": "start",
+            "error_classification": null,
+            "kanban_run_id": 2,
+            "operation": "team",
+            "run_ref": "run:run-9dcc03ff95e24828aa536338a81c9a15",
+            "sequence": 10,
+            "status": null,
+            "target_count": null,
+            "task_ref": "task:t_8e26ac41",
+            "team_action": "start",
+            "worker_ref": "worker:worker-team-c0bbca259a76c0eca5d4d8698983f159",
+            "worker_status": "RUNNING"
+          },
+          {
+            "accepted": true,
+            "advertised_tool": "wait_agent",
+            "canonical_tool": "delegate_task",
+            "delivery": null,
+            "effective_action": "wait",
+            "error_classification": null,
+            "kanban_run_id": null,
+            "operation": "wait",
+            "run_ref": "run-9dcc03ff95e24828aa536338a81c9a15",
+            "sequence": 11,
+            "status": "SUCCEEDED",
+            "target_count": null,
+            "task_ref": null,
+            "team_action": null,
+            "worker_ref": null,
+            "worker_status": "SUCCEEDED"
+          },
+          {
+            "accepted": true,
+            "advertised_tool": "inspect_agent",
+            "canonical_tool": "delegate_task",
+            "delivery": null,
+            "effective_action": "inspect",
+            "error_classification": null,
+            "kanban_run_id": null,
+            "operation": "inspect",
+            "run_ref": null,
+            "sequence": 12,
+            "status": null,
+            "target_count": null,
+            "task_ref": null,
+            "team_action": null,
+            "worker_ref": null,
+            "worker_status": null
+          },
+          {
+            "accepted": true,
+            "advertised_tool": "worker_control",
+            "canonical_tool": "delegate_task",
+            "delivery": null,
+            "effective_action": "ack",
+            "error_classification": null,
+            "kanban_run_id": null,
+            "operation": "ack",
+            "run_ref": "run-9dcc03ff95e24828aa536338a81c9a15",
+            "sequence": 13,
+            "status": "SUCCEEDED",
+            "target_count": null,
+            "task_ref": null,
+            "team_action": null,
+            "worker_ref": null,
+            "worker_status": "SUCCEEDED"
+          },
+          {
+            "accepted": true,
+            "advertised_tool": "team_task",
+            "canonical_tool": "kanban_team",
+            "delivery": null,
+            "effective_action": "request_changes",
+            "error_classification": null,
+            "kanban_run_id": 3,
+            "operation": "team",
+            "run_ref": "run:run-9ec796b4b1954fc6bdd414c9fc0c3722",
+            "sequence": 14,
+            "status": null,
+            "target_count": null,
+            "task_ref": "task:t_8e26ac41",
+            "team_action": "request_changes",
+            "worker_ref": "worker:worker-team-b72ced8e9256de19357877f54fa5198f",
+            "worker_status": "RUNNING"
+          },
+          {
+            "accepted": true,
+            "advertised_tool": "wait_agent",
+            "canonical_tool": "delegate_task",
+            "delivery": null,
+            "effective_action": "wait",
+            "error_classification": null,
+            "kanban_run_id": null,
+            "operation": "wait",
+            "run_ref": "run-9ec796b4b1954fc6bdd414c9fc0c3722",
+            "sequence": 15,
+            "status": "SUCCEEDED",
+            "target_count": null,
+            "task_ref": null,
+            "team_action": null,
+            "worker_ref": null,
+            "worker_status": "SUCCEEDED"
+          },
+          {
+            "accepted": true,
+            "advertised_tool": "inspect_agent",
+            "canonical_tool": "delegate_task",
+            "delivery": null,
+            "effective_action": "inspect",
+            "error_classification": null,
+            "kanban_run_id": null,
+            "operation": "inspect",
+            "run_ref": null,
+            "sequence": 16,
+            "status": null,
+            "target_count": null,
+            "task_ref": null,
+            "team_action": null,
+            "worker_ref": null,
+            "worker_status": null
+          },
+          {
+            "accepted": true,
+            "advertised_tool": "worker_control",
+            "canonical_tool": "delegate_task",
+            "delivery": null,
+            "effective_action": "ack",
+            "error_classification": null,
+            "kanban_run_id": null,
+            "operation": "ack",
+            "run_ref": "run-9ec796b4b1954fc6bdd414c9fc0c3722",
+            "sequence": 17,
+            "status": "SUCCEEDED",
+            "target_count": null,
+            "task_ref": null,
+            "team_action": null,
+            "worker_ref": null,
+            "worker_status": "SUCCEEDED"
+          },
+          {
+            "accepted": true,
+            "advertised_tool": "team_task",
+            "canonical_tool": "kanban_team",
+            "delivery": null,
+            "effective_action": "submit_review",
+            "error_classification": null,
+            "kanban_run_id": null,
+            "operation": "team",
+            "run_ref": null,
+            "sequence": 18,
+            "status": "review",
+            "target_count": null,
+            "task_ref": "task:t_8e26ac41",
+            "team_action": "submit_review",
+            "worker_ref": null,
+            "worker_status": "review"
+          },
+          {
+            "accepted": true,
+            "advertised_tool": "team_task",
+            "canonical_tool": "kanban_team",
+            "delivery": null,
+            "effective_action": "start",
+            "error_classification": null,
+            "kanban_run_id": 4,
+            "operation": "team",
+            "run_ref": "run:run-238e3614d96c46dcbf12005811e63c51",
+            "sequence": 19,
+            "status": null,
+            "target_count": null,
+            "task_ref": "task:t_8e26ac41",
+            "team_action": "start",
+            "worker_ref": "worker:worker-team-1779267703c95787952ac83dae9cae9f",
+            "worker_status": "RUNNING"
+          },
+          {
+            "accepted": true,
+            "advertised_tool": "wait_agent",
+            "canonical_tool": "delegate_task",
+            "delivery": null,
+            "effective_action": "wait",
+            "error_classification": null,
+            "kanban_run_id": null,
+            "operation": "wait",
+            "run_ref": "run-238e3614d96c46dcbf12005811e63c51",
+            "sequence": 20,
+            "status": "SUCCEEDED",
+            "target_count": null,
+            "task_ref": null,
+            "team_action": null,
+            "worker_ref": null,
+            "worker_status": "SUCCEEDED"
+          },
+          {
+            "accepted": true,
+            "advertised_tool": "inspect_agent",
+            "canonical_tool": "delegate_task",
+            "delivery": null,
+            "effective_action": "inspect",
+            "error_classification": null,
+            "kanban_run_id": null,
+            "operation": "inspect",
+            "run_ref": null,
+            "sequence": 21,
+            "status": null,
+            "target_count": null,
+            "task_ref": null,
+            "team_action": null,
+            "worker_ref": null,
+            "worker_status": null
+          },
+          {
+            "accepted": true,
+            "advertised_tool": "worker_control",
+            "canonical_tool": "delegate_task",
+            "delivery": null,
+            "effective_action": "ack",
+            "error_classification": null,
+            "kanban_run_id": null,
+            "operation": "ack",
+            "run_ref": "run-238e3614d96c46dcbf12005811e63c51",
+            "sequence": 22,
+            "status": "SUCCEEDED",
+            "target_count": null,
+            "task_ref": null,
+            "team_action": null,
+            "worker_ref": null,
+            "worker_status": "SUCCEEDED"
+          },
+          {
+            "accepted": true,
+            "advertised_tool": "team_task",
+            "canonical_tool": "kanban_team",
+            "delivery": null,
+            "effective_action": "accept",
+            "error_classification": null,
+            "kanban_run_id": null,
+            "operation": "team",
+            "run_ref": null,
+            "sequence": 23,
+            "status": "done",
+            "target_count": null,
+            "task_ref": "task:t_8e26ac41",
+            "team_action": "accept",
+            "worker_ref": null,
+            "worker_status": "done"
+          },
+          {
+            "accepted": true,
+            "advertised_tool": "worker_capabilities",
+            "canonical_tool": "delegate_task",
+            "delivery": null,
+            "effective_action": "discover",
+            "error_classification": null,
+            "kanban_run_id": null,
+            "operation": "capabilities",
+            "run_ref": null,
+            "sequence": 24,
+            "status": null,
+            "target_count": null,
+            "task_ref": null,
+            "team_action": null,
+            "worker_ref": null,
+            "worker_status": null
+          },
+          {
+            "accepted": true,
+            "advertised_tool": "team_task",
+            "canonical_tool": "kanban_team",
+            "delivery": null,
+            "effective_action": "start",
+            "error_classification": null,
+            "kanban_run_id": 5,
+            "operation": "team",
+            "run_ref": "run:run-3f1b5fcd2b24481da64edf6fe38a2b4f",
+            "sequence": 25,
+            "status": null,
+            "target_count": null,
+            "task_ref": "task:t_9f0715d6",
+            "team_action": "start",
+            "worker_ref": "worker:worker-team-11701de37fa783f7275746b031aa1310",
+            "worker_status": "RUNNING"
+          },
+          {
+            "accepted": true,
+            "advertised_tool": "wait_agent",
+            "canonical_tool": "delegate_task",
+            "delivery": null,
+            "effective_action": "wait",
+            "error_classification": null,
+            "kanban_run_id": null,
+            "operation": "wait",
+            "run_ref": "run-3f1b5fcd2b24481da64edf6fe38a2b4f",
+            "sequence": 26,
+            "status": "SUCCEEDED",
+            "target_count": null,
+            "task_ref": null,
+            "team_action": null,
+            "worker_ref": null,
+            "worker_status": "SUCCEEDED"
+          },
+          {
+            "accepted": true,
+            "advertised_tool": "inspect_agent",
+            "canonical_tool": "delegate_task",
+            "delivery": null,
+            "effective_action": "inspect",
+            "error_classification": null,
+            "kanban_run_id": null,
+            "operation": "inspect",
+            "run_ref": null,
+            "sequence": 27,
+            "status": null,
+            "target_count": null,
+            "task_ref": null,
+            "team_action": null,
+            "worker_ref": null,
+            "worker_status": null
+          },
+          {
+            "accepted": true,
+            "advertised_tool": "worker_control",
+            "canonical_tool": "delegate_task",
+            "delivery": null,
+            "effective_action": "ack",
+            "error_classification": null,
+            "kanban_run_id": null,
+            "operation": "ack",
+            "run_ref": "run-3f1b5fcd2b24481da64edf6fe38a2b4f",
+            "sequence": 28,
+            "status": "SUCCEEDED",
+            "target_count": null,
+            "task_ref": null,
+            "team_action": null,
+            "worker_ref": null,
+            "worker_status": "SUCCEEDED"
+          },
+          {
+            "accepted": true,
+            "advertised_tool": "worker_control",
+            "canonical_tool": "delegate_task",
+            "delivery": null,
+            "effective_action": "completions",
+            "error_classification": null,
+            "kanban_run_id": null,
+            "operation": "completions",
+            "run_ref": null,
+            "sequence": 29,
+            "status": null,
+            "target_count": null,
+            "task_ref": null,
+            "team_action": null,
+            "worker_ref": null,
+            "worker_status": null
+          }
+        ]
+      },
+      "worker_lineage": [
+        {
+          "profile": "team-eval-luna",
+          "runs": [
+            {
+              "completion_ack": true,
+              "effective_tool_count": 0,
+              "known_or_unknown_cost": {
+                "estimated_usd": 0.0,
+                "status": "included"
+              },
+              "latency_seconds": 73.137,
+              "previous_run_ref": null,
+              "run_ref": "run:run-e0ebd0104bbf4e5b98e16e2e7ecb76eb",
+              "status": "SUCCEEDED",
+              "token_usage": {
+                "input": 796,
+                "output": 3624
+              },
+              "uncertain_side_effect": false
+            },
+            {
+              "completion_ack": true,
+              "effective_tool_count": 0,
+              "known_or_unknown_cost": {
+                "estimated_usd": 0.0,
+                "status": "included"
+              },
+              "latency_seconds": 7.716,
+              "previous_run_ref": "run:run-e0ebd0104bbf4e5b98e16e2e7ecb76eb",
+              "run_ref": "run:run-9ec796b4b1954fc6bdd414c9fc0c3722",
+              "status": "SUCCEEDED",
+              "token_usage": {
+                "input": 4540,
+                "output": 281
+              },
+              "uncertain_side_effect": false
+            }
+          ],
+          "worker_ref": "worker:worker-team-b72ced8e9256de19357877f54fa5198f"
+        },
+        {
+          "profile": "team-eval-zai",
+          "runs": [
+            {
+              "completion_ack": true,
+              "effective_tool_count": 0,
+              "known_or_unknown_cost": {
+                "estimated_usd": "unknown",
+                "status": "unknown"
+              },
+              "latency_seconds": 15.733,
+              "previous_run_ref": null,
+              "run_ref": "run:run-9dcc03ff95e24828aa536338a81c9a15",
+              "status": "SUCCEEDED",
+              "token_usage": {
+                "input": 1407,
+                "output": 1313
+              },
+              "uncertain_side_effect": false
+            }
+          ],
+          "worker_ref": "worker:worker-team-c0bbca259a76c0eca5d4d8698983f159"
+        },
+        {
+          "profile": "team-eval-zai",
+          "runs": [
+            {
+              "completion_ack": true,
+              "effective_tool_count": 0,
+              "known_or_unknown_cost": {
+                "estimated_usd": "unknown",
+                "status": "unknown"
+              },
+              "latency_seconds": 19.838,
+              "previous_run_ref": null,
+              "run_ref": "run:run-238e3614d96c46dcbf12005811e63c51",
+              "status": "SUCCEEDED",
+              "token_usage": {
+                "input": 1343,
+                "output": 1414
+              },
+              "uncertain_side_effect": false
+            }
+          ],
+          "worker_ref": "worker:worker-team-1779267703c95787952ac83dae9cae9f"
+        },
+        {
+          "profile": "team-eval-zai",
+          "runs": [
+            {
+              "completion_ack": true,
+              "effective_tool_count": 0,
+              "known_or_unknown_cost": {
+                "estimated_usd": "unknown",
+                "status": "unknown"
+              },
+              "latency_seconds": 13.197,
+              "previous_run_ref": null,
+              "run_ref": "run:run-3f1b5fcd2b24481da64edf6fe38a2b4f",
+              "status": "SUCCEEDED",
+              "token_usage": {
+                "input": 767,
+                "output": 804
+              },
+              "uncertain_side_effect": false
+            }
+          ],
+          "worker_ref": "worker:worker-team-11701de37fa783f7275746b031aa1310"
+        }
+      ],
+      "worker_routes": [
+        {
+          "provider_reported_model": "gpt-5.6-luna",
+          "request_evidence_source": "post_middleware_sdk_dispatch",
+          "requested_model": null,
+          "requested_profile": "team-eval-luna",
+          "requested_provider": null,
+          "requested_reasoning_effort": null,
+          "resolved_model": "gpt-5.6-luna",
+          "resolved_provider": "openai-codex",
+          "resolved_reasoning_effort": "xhigh",
+          "response_evidence_source": "provider_response_marker",
+          "run_ref": "run:run-e0ebd0104bbf4e5b98e16e2e7ecb76eb",
+          "transmitted_model": "gpt-5.6-luna",
+          "transmitted_provider": "openai-codex",
+          "transmitted_reasoning_effort": "xhigh",
+          "worker_ref": "worker:worker-team-b72ced8e9256de19357877f54fa5198f"
+        },
+        {
+          "provider_reported_model": "gpt-5.6-luna",
+          "request_evidence_source": "post_middleware_sdk_dispatch",
+          "requested_model": null,
+          "requested_profile": "team-eval-luna",
+          "requested_provider": null,
+          "requested_reasoning_effort": null,
+          "resolved_model": "gpt-5.6-luna",
+          "resolved_provider": "openai-codex",
+          "resolved_reasoning_effort": "xhigh",
+          "response_evidence_source": "provider_response_marker",
+          "run_ref": "run:run-9ec796b4b1954fc6bdd414c9fc0c3722",
+          "transmitted_model": "gpt-5.6-luna",
+          "transmitted_provider": "openai-codex",
+          "transmitted_reasoning_effort": "xhigh",
+          "worker_ref": "worker:worker-team-b72ced8e9256de19357877f54fa5198f"
+        },
+        {
+          "provider_reported_model": "glm-5.3",
+          "request_evidence_source": "post_middleware_sdk_dispatch",
+          "requested_model": null,
+          "requested_profile": "team-eval-zai",
+          "requested_provider": null,
+          "requested_reasoning_effort": null,
+          "resolved_model": "glm-5.3",
+          "resolved_provider": "zai",
+          "resolved_reasoning_effort": "high",
+          "response_evidence_source": "provider_response.model",
+          "run_ref": "run:run-9dcc03ff95e24828aa536338a81c9a15",
+          "transmitted_model": "glm-5.3",
+          "transmitted_provider": "zai",
+          "transmitted_reasoning_effort": "high",
+          "worker_ref": "worker:worker-team-c0bbca259a76c0eca5d4d8698983f159"
+        },
+        {
+          "provider_reported_model": "glm-5.3",
+          "request_evidence_source": "post_middleware_sdk_dispatch",
+          "requested_model": null,
+          "requested_profile": "team-eval-zai",
+          "requested_provider": null,
+          "requested_reasoning_effort": null,
+          "resolved_model": "glm-5.3",
+          "resolved_provider": "zai",
+          "resolved_reasoning_effort": "high",
+          "response_evidence_source": "provider_response.model",
+          "run_ref": "run:run-238e3614d96c46dcbf12005811e63c51",
+          "transmitted_model": "glm-5.3",
+          "transmitted_provider": "zai",
+          "transmitted_reasoning_effort": "high",
+          "worker_ref": "worker:worker-team-1779267703c95787952ac83dae9cae9f"
+        },
+        {
+          "provider_reported_model": "glm-5.3",
+          "request_evidence_source": "post_middleware_sdk_dispatch",
+          "requested_model": null,
+          "requested_profile": "team-eval-zai",
+          "requested_provider": null,
+          "requested_reasoning_effort": null,
+          "resolved_model": "glm-5.3",
+          "resolved_provider": "zai",
+          "resolved_reasoning_effort": "high",
+          "response_evidence_source": "provider_response.model",
+          "run_ref": "run:run-3f1b5fcd2b24481da64edf6fe38a2b4f",
+          "transmitted_model": "glm-5.3",
+          "transmitted_provider": "zai",
+          "transmitted_reasoning_effort": "high",
+          "worker_ref": "worker:worker-team-11701de37fa783f7275746b031aa1310"
+        }
+      ]
+    }
+  ],
+  "interpretation": [
+    "Version1 failed5/8 with24turnlimit andone rejectedguidecall; preserved unchanged.",
+    "Version2 passed8/8 with32turnlimit andexplicitguidetargets; same360secondlimitandsemanticassertions.",
+    "A five-run live workflow is not a statistical reliability benchmark.",
+    "Duplicate-run-ID observations are not external exactly-once delivery proof.",
+    "Configured and provider-reported model identity are not independent model verification.",
+    "Dependent worker succeeded; dependent Kanban task was not separately accepted.",
+    "Worker route override fields may be null when the requested selection was a named profile. Resolved and transmitted profile settings are recorded separately.",
+    "Known cost is partial; ZAI billed cost and complete end-to-end cost remain unknown."
+  ]
+}

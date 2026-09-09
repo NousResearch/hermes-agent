@@ -7,6 +7,7 @@ shlex quoting of JSON metadata, structured-JSON failures). Humans use CLI/dashbo
 """
 from __future__ import annotations
 
+import copy
 import functools
 import json
 import logging
@@ -24,12 +25,81 @@ from tools.kanban_tools_schemas import (
     KANBAN_ATTACH_URL_SCHEMA, KANBAN_ATTACHMENTS_SCHEMA, KANBAN_BLOCK_SCHEMA, KANBAN_COMMENT_SCHEMA,
     KANBAN_COMPLETE_SCHEMA, KANBAN_CREATE_SCHEMA, KANBAN_HEARTBEAT_SCHEMA, KANBAN_LINK_SCHEMA,
     KANBAN_LIST_SCHEMA, KANBAN_REQUEST_CHANGES_SCHEMA, KANBAN_REQUEST_REVIEW_SCHEMA,
+    KANBAN_TEAM_SCHEMA as _BASE_KANBAN_TEAM_SCHEMA,
     KANBAN_SHOW_SCHEMA, KANBAN_UNBLOCK_SCHEMA)
 
 logger = logging.getLogger(__name__)
 
 KANBAN_LIST_DEFAULT_LIMIT = 50
 KANBAN_LIST_MAX_LIMIT = 200
+
+
+def _workflow_team_schema() -> dict[str, Any]:
+    schema = copy.deepcopy(_BASE_KANBAN_TEAM_SCHEMA)
+    params = schema["parameters"]
+    params["properties"]["action"]["enum"].extend([
+        "workflow_save", "workflow_list", "workflow_inspect", "workflow_invoke",
+        "workflow_pause", "workflow_resume", "workflow_cancel",
+    ])
+    params["properties"].update({
+        "template_ref": {
+            "type": "string",
+            "description": "Immutable workflow_template:<id>@<version> reference.",
+        },
+        "workflow_ref": {
+            "type": "string",
+            "description": "Admitted workflow:<id> reference owned by this parent session.",
+        },
+        "definition": {
+            "type": "object",
+            "description": "Finite saved workflow definition.",
+            "properties": {
+                "name": {"type": "string"},
+                "steps": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 64,
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "key": {"type": "string"},
+                            "title": {"type": "string"},
+                            "body": {"type": "string"},
+                            "profile": {"type": "string"},
+                            "reviewer": {"type": "string"},
+                            "depends_on": {"type": "array", "items": {"type": "string"}},
+                            "max_corrections": {"type": "integer", "minimum": 0, "maximum": 8},
+                        },
+                        "required": ["key", "title", "profile"],
+                        "additionalProperties": False,
+                    },
+                },
+            },
+            "required": ["name", "steps"],
+            "additionalProperties": False,
+        },
+        "input": {
+            "type": "object",
+            "description": "Input copied into a fresh immutable invocation.",
+        },
+        "admission_key": {
+            "type": "string",
+            "description": "Stable retry key scoped to the parent session.",
+        },
+        "expected_version": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Exact workflow control version for pause, resume, or cancel.",
+        },
+    })
+    schema["description"] += (
+        " It also saves, lists, inspects, invokes, pauses, resumes, and cancels "
+        "board-owned finite workflows."
+    )
+    return schema
+
+
+KANBAN_TEAM_SCHEMA = _workflow_team_schema()
 
 
 # --- Gating ---
@@ -966,13 +1036,25 @@ def _handle_link(args: dict, **kw) -> str:
         return _ok(parent_id=parent_id, child_id=child_id)
 
 
+@_kanban_handler("kanban_team")
+def _handle_team(args: dict, **kw) -> str:
+    """Route canonical calls through the same service used by styled aliases."""
+    _reject_delegated_child_mutation("kanban_team")
+    _require_orchestrator_tool("kanban_team")
+    agent = kw.get("agent")
+    _check(agent is not None, "kanban_team requires the active agent context")
+    from agent.team_orchestration import TeamOrchestrationService
+    return json.dumps(TeamOrchestrationService(agent).dispatch(args), ensure_ascii=False)
+
+
 # --- Registration (order preserved: it is the order tools appear in the schema) ---
 
 # kanban_list / kanban_unblock route the board and are hidden from task workers.
-_ORCHESTRATOR_TOOLS = frozenset({"kanban_list", "kanban_unblock"})
+_ORCHESTRATOR_TOOLS = frozenset({"kanban_list", "kanban_unblock", "kanban_team"})
 _TOOLS = (
     ("kanban_show", KANBAN_SHOW_SCHEMA, _handle_show, "📋"),
     ("kanban_list", KANBAN_LIST_SCHEMA, _handle_list, "📋"),
+    ("kanban_team", KANBAN_TEAM_SCHEMA, _handle_team, "👥"),
     ("kanban_complete", KANBAN_COMPLETE_SCHEMA, _handle_complete, "✔"),
     ("kanban_block", KANBAN_BLOCK_SCHEMA, _handle_block, "⏸"),
     ("kanban_request_review", KANBAN_REQUEST_REVIEW_SCHEMA, _handle_request_review, "👀"),

@@ -84,7 +84,10 @@ def run_tool_round(
 
     # Post-call guardrails.
     assistant_message.tool_calls = agent._deduplicate_tool_calls(
-        agent._cap_delegate_task_calls(assistant_message.tool_calls)
+        agent._cap_delegate_task_calls(
+            assistant_message.tool_calls,
+            selection=getattr(agent, "_worker_interface_selection", None),
+        )
     )
 
     # Mixed batch: the assistant message keeps EVERY emitted call (each tool_call needs a

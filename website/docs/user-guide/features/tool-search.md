@@ -130,6 +130,39 @@ tools:
   tool_search: true   # equivalent to {enabled: auto}
 ```
 
+## Connectors (remote tools)
+
+When you are signed in to the Nous Portal, the bridge additionally reaches
+**connectors** — remote tools served by the managed tool gateway. They are
+never registered locally: `tool_search` merges gateway hits into its results
+(tagged `source: "connectors"`, named `connectors__<connector>__<tool>`),
+`tool_describe` fetches their schemas from the gateway, and `tool_call`
+sends every connector entry in a batch as one gateway request. Results
+splice back into the batch's original order with recomputed counts.
+
+```yaml
+tools:
+  connectors:
+    enabled: true   # false — never touch connector routes; the bridge
+                    # behaves exactly as if the feature didn't exist
+```
+
+Signed out (or when the gateway does not serve connectors for your
+account), everything above is invisible: local search behaves exactly as
+described in the rest of this page, with no errors shown to the model.
+
+A connector call that needs an account you haven't linked returns a
+`CONNECTION_REQUIRED` error carrying a connect link. The `manage_connections`
+tool (available on the same condition as the connector bridge) lists
+connectors and their connection state, starts an authorization, and can wait
+for the user to finish it; disconnecting an account is done by the user in
+the Portal.
+
+`tool_call` accepts a batch: `calls` is an array of `{name, arguments}`
+entries (a single call is an array of one). A batch of connector entries is
+dispatched as one gateway request; local deferred tools stay one entry per
+`tool_call`. Approvals settle per entry before dispatch.
+
 ## When NOT to use it
 
 Tool Search trades a fixed per-turn token cost (the three bridge tool

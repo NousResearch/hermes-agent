@@ -644,3 +644,30 @@ class TestMultiGenerationTeardownBarrier:
         fresh = registry.acquire(db_path)
         assert fresh is not db
         assert registry.release(fresh) is True
+
+
+class TestCloseAllUnder:
+    def test_closes_connections_inside_directory_only(self, tmp_path):
+        profile_dir = tmp_path / "profiles" / "work"
+        profile_dir.mkdir(parents=True)
+        inside = registry.acquire(profile_dir / "state.db")
+        outside = registry.acquire(tmp_path / "other" / "state.db")
+        assert inside._conn is not None
+        assert outside._conn is not None
+
+        closed = registry.close_all_under(profile_dir)
+        assert closed == 1
+        assert inside._conn is None
+        assert outside._conn is not None
+        assert registry.close_all_under(profile_dir) == 0
+
+        again = registry.acquire(profile_dir / "state.db")
+        assert again._conn is not None
+        assert again is not inside
+        assert registry.release(again) is True
+        assert registry.release(outside) is True
+
+    def test_noop_when_this_process_holds_nothing(self, tmp_path):
+        profile_dir = tmp_path / "profiles" / "empty"
+        profile_dir.mkdir(parents=True)
+        assert registry.close_all_under(profile_dir) == 0

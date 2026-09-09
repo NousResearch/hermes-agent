@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import contextlib
 import logging
+import os
 import threading
 from pathlib import Path
 from typing import TYPE_CHECKING, Dict, Iterator, List, Optional, Tuple
@@ -308,6 +309,40 @@ def release(db: "SessionDB") -> bool:
     return True
 
 
+def _path_is_under(path: Path, root: Path) -> bool:
+    """True when *path* is *root* or a file inside it (normcase, resolved)."""
+    try:
+        path_key = os.path.normcase(str(path.resolve()))
+        root_key = os.path.normcase(str(root.resolve()))
+    except OSError:
+        path_key = os.path.normcase(str(path))
+        root_key = os.path.normcase(str(root))
+    return path_key == root_key or path_key.startswith(root_key + os.sep)
+
+
+def _teardown_swept_generations(
+    generations: List[_Generation],
+    teardown_barriers: Dict[Path, _TeardownBarrier],
+    active_teardowns: List[_TeardownBarrier],
+) -> int:
+    """Close *generations* outside the registry lock; wait for already-admitted teardowns."""
+    by_path: Dict[Path, List[_Generation]] = {}
+    for generation in generations:
+        by_path.setdefault(generation.path, []).append(generation)
+    for path, path_generations in by_path.items():
+        with _lock:
+            lifecycle_lock = _path_lifecycle_lock_locked(path)
+        try:
+            with lifecycle_lock:
+                for generation in path_generations:
+                    _teardown(generation.db)
+        finally:
+            _finish_teardown(path, teardown_barriers[path])
+    for barrier in active_teardowns:
+        barrier.event.wait()
+    return len(generations)
+
+
 def close_all() -> int:
     """Close every shared SessionDB regardless of refcount; returns the count. For gateway
     shutdown, after all agents and cron jobs finished. Idempotent."""
@@ -321,26 +356,41 @@ def close_all() -> int:
         _retired.clear()
         for generation in generations:
             generation.retired = True
-    # Teardown outside the lock, one path at a time. Holding the lifecycle
-    # mutex across all generations for a path prevents an old retired handle
-    # and the current handle from checkpointing the same sidecars concurrently.
-    by_path: Dict[Path, List[_Generation]] = {}
-    for generation in generations:
-        by_path.setdefault(generation.path, []).append(generation)
-    for path, path_generations in by_path.items():
-        with _lock:
-            lifecycle_lock = _path_lifecycle_lock_locked(path)
-        try:
-            with lifecycle_lock:
-                for generation in path_generations:
-                    _teardown(generation.db)
-        finally:
-            _finish_teardown(path, teardown_barriers[path])
-    # A final release that removed its generation before this sweep took _lock still owns
-    # its physical close; wait for it rather than return over a running teardown.
-    for barrier in active_teardowns:
-        barrier.event.wait()
-    return len(generations)
+    return _teardown_swept_generations(generations, teardown_barriers, active_teardowns)
+
+
+def close_all_under(directory: str | Path) -> int:
+    """Force-close every shared SessionDB whose file lives under *directory*; returns the count.
+
+    Profile delete rmtree (and a same-name recreate) fails while this process still holds
+    ``state.db``. Same contract as ``MemoryStore.release_all_under``: a live holder is
+    expected to fail afterward; a process that holds none is a no-op returning 0.
+    """
+    try:
+        root = Path(directory).expanduser().resolve()
+    except OSError:
+        root = Path(directory).expanduser()
+    teardown_barriers: Dict[Path, _TeardownBarrier] = {}
+    with _lock:
+        generations = [
+            generation
+            for generation in list(_generations.values()) + list(_retired.values())
+            if _path_is_under(generation.path, root)
+        ]
+        if not generations:
+            return 0
+        selected_paths = {generation.path for generation in generations}
+        active_teardowns = [
+            barrier for path, barrier in _tearing_down.items() if path in selected_paths
+        ]
+        for path in selected_paths:
+            teardown_barriers[path] = _admit_teardown_locked(path)
+        for generation in generations:
+            generation.retired = True
+            if _generations.get(generation.path) is generation:
+                _generations.pop(generation.path, None)
+            _retired.pop(id(generation.db), None)
+    return _teardown_swept_generations(generations, teardown_barriers, active_teardowns)
 
 
 def live_shared_session_dbs() -> List["SessionDB"]:

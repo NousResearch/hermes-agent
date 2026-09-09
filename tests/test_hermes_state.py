@@ -4448,6 +4448,24 @@ class TestSessionPinAndStaleArchive:
         assert db.set_session_pinned("s1", False) is True
         assert self._pinned(db, "s1") == 0
 
+    def test_pinning_clears_hidden_and_survives_sidebar_filter(self, db):
+        """Pinning a hidden bot-mode session clears hidden and shows in sidebar (issue #106171)."""
+        db.create_session(session_id="bot1", source="cli")
+        db.set_session_hidden("bot1", True)
+        assert db.get_session("bot1")["hidden"] == 1
+
+        # Pinning clears the hidden flag
+        assert db.set_session_pinned("bot1", True) is True
+        assert db.get_session("bot1")["hidden"] == 0
+        assert db.get_session("bot1")["pinned"] == 1
+
+        # Even if a row somehow had both hidden=1 and pinned=1, include_pinned includes it
+        db.set_session_hidden("bot1", True)
+        assert db.get_session("bot1")["hidden"] == 1
+        sessions = db.list_sessions_rich(include_hidden=False, include_pinned=True)
+        session_ids = [s["id"] for s in sessions]
+        assert "bot1" in session_ids
+
 
 
     # ── pinned back-fill past the page window ─────────────────────────────

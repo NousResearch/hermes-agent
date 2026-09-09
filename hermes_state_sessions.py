@@ -877,6 +877,10 @@ class SessionSessionsMixin:
 
     def set_session_pinned(self, session_id: str, pinned: bool) -> bool:
         """Pin/unpin a session and its compression lineage (pins are exempt from the auto_archive sweep)."""
+        if pinned:
+            # Pinning expresses explicit intent to keep/display the session in the sidebar.
+            # Clear hidden so a bot-mode or plumbing session becomes visible (#106171).
+            self._set_lineage_column("hidden", session_id, 0)
         return self._set_lineage_column("pinned", session_id, int(pinned))
 
     def set_session_hidden(self, session_id: str, hidden: bool) -> bool:
@@ -1183,7 +1187,7 @@ class SessionSessionsMixin:
             archived_only=archived_only, include_archived=include_archived,
         )
         if not include_hidden:
-            where_clauses.append("s.hidden = 0")
+            where_clauses.append("(s.hidden = 0 OR s.pinned = 1)" if include_pinned else "s.hidden = 0")
         where_sql = _where_sql(where_clauses)
         base_where_params = list(params)  # pinned back-fill reuses the WHERE before LIMIT/OFFSET
         # Shared projection head of the three list queries (whitespace is part of the SQL text).

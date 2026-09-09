@@ -275,6 +275,22 @@ Both flags fail open: only `true`, `yes`, `on`, or `1` count, and anything else 
 
 This is different from **Hide Bot** in the [desktop](./desktop.md), which only tucks a row away in your own sidebar and changes nothing about what other Bots see.
 
+## Circles: several meshes on one machine
+
+`private` is all-or-nothing. When one machine hosts Bots for two unrelated purposes — say Bots bound to work accounts and hobby Bots — you want each set to work together freely and never see the other. That is a **circle**:
+
+```yaml
+ui_meta:
+  hermes-bots:
+    circle: work
+```
+
+A Bot sees, and can message, only Bots in its own circle — on this machine and across the Desktop relay. Bots with no circle form the shared default circle, so an install that never sets one behaves exactly as before. Circle names are case-insensitive (`Work` and `work` are the same circle), trimmed, and capped at 64 characters; anything that is not a plain name (an empty value, a number, a list) counts as the shared circle rather than isolating the Bot.
+
+From strongest to weakest: `bots.force_private` beats `private`, which beats `circle`, which beats the shared default. A private Bot inside a circle is a circle of one.
+
+Circles govern what Bots do on their own. They do not stop **you** from putting Bots from different circles into one [group chat](#groups-and-group-chats) — that room is the deliberate, human-arranged bridge between circles.
+
 ## Turning it off
 
 Bot Mode is a bundled desktop plugin. Flip it off in **Settings → Plugins → Bots** — the roster, the Routines pane, and the composer middleware unregister live, no restart needed. Your profiles, sessions, and cron jobs are untouched either way; Bot Mode never owns your data, it only renders it.

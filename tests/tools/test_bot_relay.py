@@ -582,3 +582,29 @@ def test_remote_roster_keeps_an_agent_whose_private_flag_is_falsey():
     for value in (False, 0, "false", "no", "0", "", None, "maybe"):
         row = {"profile": "lucky", "handle": "lucky", "connection_id": "mini", "private": value}
         assert _normalize_roster_row(row) is not None, f"private={value!r} should stay visible"
+
+
+def test_remote_roster_row_carries_the_circle():
+    from tools.bot_relay import _normalize_roster_row
+
+    row = _normalize_roster_row({"profile": "lucky", "handle": "lucky", "connection_id": "mini", "circle": " hobby "})
+    assert row is not None and row["circle"] == "hobby"
+
+
+def test_remote_roster_row_circle_defaults_to_shared_and_ignores_garbage():
+    """Non-string or absent -> the shared circle "", never an accidental isolation."""
+    from tools.bot_relay import _normalize_roster_row
+
+    base = {"profile": "lucky", "handle": "lucky", "connection_id": "mini"}
+    assert _normalize_roster_row(base)["circle"] == ""
+    for garbage in (42, True, None, ["work"], {"a": 1}):
+        assert _normalize_roster_row({**base, "circle": garbage})["circle"] == ""
+    assert len(_normalize_roster_row({**base, "circle": "x" * 200})["circle"]) == 64
+
+
+def test_remote_roster_row_circle_is_lower_cased():
+    """Same normalisation as _circle_of, so a peer's `Work` matches our `work`."""
+    from tools.bot_relay import _normalize_roster_row
+
+    base = {"profile": "lucky", "handle": "lucky", "connection_id": "mini"}
+    assert _normalize_roster_row({**base, "circle": "  Work "})["circle"] == "work"

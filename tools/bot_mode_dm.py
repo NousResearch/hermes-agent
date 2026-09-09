@@ -197,7 +197,7 @@ def message_agent_tool(target: str = "", message: str = "", task_id: Optional[st
     # Mesh members only: an agent that went private is neither listed nor resolvable as a
     # target, so `message_agent` reports it the same way it reports a name that does not exist.
     # Keeps main's name -> home mapping (the live-delivery path needs the target's profile dir).
-    roster_homes = dict(_visible_roster(root))
+    roster_homes = dict(_visible_roster(root, viewer=Path(home)))
     roster = list(roster_homes)
     peers = _peers(root)
     teammates = [_handle(n) for n in roster if n != me]
@@ -240,7 +240,7 @@ def message_agent_tool(target: str = "", message: str = "", task_id: Optional[st
         # Unknown locally, or same-name target on ANOTHER connection (this gateway's 'default'
         # messaging the cloud 'default'): every Desktop-connected gateway is reachable via the
         # relay roster, so try that before reporting a resolution failure / self-message.
-        relayed = _try_relay_delivery(root, raw_target, content, me, **delivery)
+        relayed = _try_relay_delivery(root, raw_target, content, me, viewer=Path(home), **delivery)
         if relayed is not None:
             return relayed
         if resolved == me:
@@ -253,7 +253,7 @@ def message_agent_tool(target: str = "", message: str = "", task_id: Optional[st
 
 
 def _try_relay_delivery(root: Path, raw_target: str, content: str, me: str, *,
-                        task_id: Optional[str], agent: Any) -> Optional[str]:
+                        task_id: Optional[str], agent: Any, viewer: Optional[Path] = None) -> Optional[str]:
     """Cross-connection delivery via the Desktop relay; None when the target doesn't
     resolve against the relay roster. The envelope is queued on disk for the Desktop
     to drain; a background waiter is spawned immediately so the relayed reply wakes
@@ -265,6 +265,11 @@ def _try_relay_delivery(root: Path, raw_target: str, content: str, me: str, *,
         )
 
         roster = read_remote_roster(root)
+        if viewer is not None:
+            # Same rule as the local roster: only agents in the caller's circle are reachable.
+            from tools.bot_mode_probe import _circle_of
+            mine = _circle_of(viewer)
+            roster = [row for row in roster if str(row.get("circle") or "") == mine]
         match = resolve_remote_target(raw_target, roster) if roster else None
         if match is None:
             return None

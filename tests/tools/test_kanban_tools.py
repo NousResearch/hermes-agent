@@ -429,6 +429,43 @@ def test_create_happy_path(worker_env):
         conn.close()
 
 
+@pytest.mark.parametrize("explicit", [
+    {"workspace_kind": "scratch"},
+    {"project": ""},
+])
+def test_create_explicit_scratch_ignores_ambient_board_project(
+    worker_env, tmp_path, explicit,
+):
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+    from hermes_cli import projects_db as pdb
+    from tools import kanban_tools as kt
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    with pdb.connect_closing() as pconn:
+        project_id = pdb.create_project(pconn, name="Ambient", primary_path=str(repo))
+
+    kb.write_board_metadata("default", project_id=project_id)
+    kb.create_board("target", name="Target", project_id="")
+
+    result = json.loads(kt._handle_create({
+        "board": "target",
+        "title": "stay scratch",
+        "assignee": "peer",
+        **explicit,
+    }))
+
+    assert result["ok"] is True
+    assert result["project_id"] is None
+    assert result["workspace_kind"] == "scratch"
+
+    with kbc.connect_closing(board="target") as conn:
+        control = kb.create_task(
+            conn, title="direct scratch", board="target", workspace_kind="scratch")
+        assert kb.get_task(conn, control).project_id is None
+
+
 def test_link_happy_path(worker_env):
     from hermes_cli import kanban_db as kb
     from hermes_cli import kanban_db_connect as kbc

@@ -958,8 +958,14 @@ class SessionMessagesMixin:
 
     def get_conversation_root(self, session_id: str) -> str:
         """ROOT id of the lineage: the stable conversation id across compression segments and delegate
-        subagents (Nous Portal usage tagging). Unchanged when there is no recorded parent."""
+        subagents (Nous Portal usage tagging). An explicit copied ``/branch`` is the exception: it
+        carries a parent link for transcript history but starts its own workspace-owning conversation
+        root, so the walk stops there rather than continuing to the branch's own parent. Unchanged
+        when there is no recorded parent."""
         chain = self._session_lineage_root_to_tip(session_id)
+        for lineage_session_id in reversed(chain):
+            if self._is_explicit_branch_session(lineage_session_id):
+                return lineage_session_id
         return chain[0] if chain and chain[0] else session_id
 
     @staticmethod

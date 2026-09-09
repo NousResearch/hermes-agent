@@ -40,7 +40,9 @@ from hermes_state_guard import (
     _set_last_init_error, get_last_init_error,
 )
 from hermes_state_readpool import _READ_POOL_MAX, _proc_fd_targets, _read_budget_for
-from hermes_state_worktrees import SessionWorktreesMixin
+from hermes_state_worktrees import (
+    ConversationWorktreeConflict, ConversationWorktreeRecord, SessionWorktreesMixin,
+)
 from hermes_state_sessions import SessionSessionsMixin
 from hermes_state_fts import SessionFtsSetupMixin, load_fts5_cjk_extension
 from hermes_state_portability import SessionPortabilityMixin
@@ -112,26 +114,6 @@ class SessionExportTooLargeError(ValueError):
             f"session '{session_id}' has at least {message_count} active messages; "
             f"safe in-memory export limit is {limit}"
         )
-
-
-class ConversationWorktreeConflict(RuntimeError):
-    """A conversation root attempted to change its claimed Git identity."""
-
-
-@dataclass(frozen=True)
-class ConversationWorktreeRecord:
-    """Durable Git identity and lifecycle state for one conversation root."""
-
-    root_session_id: str
-    worktree_path: str
-    branch: str
-    base_commit: str
-    repo_common_dir: str
-    state: str
-    failure_phase: Optional[str]
-    failure_message: Optional[str]
-    created_at: float
-    updated_at: float
 
 
 def _compression_lock_holder_process_is_dead(holder: str) -> bool:
@@ -1142,169 +1124,6 @@ class SessionDB(
                     logger.debug("WAL checkpoint: %d/%d pages checkpointed", result[2], result[1])
         except Exception as exc:
             logger.warning("WAL checkpoint (PASSIVE) failed: %s", exc)
-
-    @staticmethod
-    def _conversation_worktree_record(row: sqlite3.Row) -> ConversationWorktreeRecord:
-        return ConversationWorktreeRecord(
-            root_session_id=row["root_session_id"],
-            worktree_path=row["worktree_path"],
-            branch=row["branch"],
-            base_commit=row["base_commit"],
-            repo_common_dir=row["repo_common_dir"],
-            state=row["state"],
-            failure_phase=row["failure_phase"],
-            failure_message=row["failure_message"],
-            created_at=row["created_at"],
-            updated_at=row["updated_at"],
-        )
-
-    @classmethod
-    def _conversation_worktree_record_on_conn(
-        cls, conn: sqlite3.Connection, root_session_id: str
-    ) -> Optional[ConversationWorktreeRecord]:
-        row = conn.execute(
-            "SELECT root_session_id, worktree_path, branch, base_commit, "
-            "repo_common_dir, state, failure_phase, failure_message, created_at, updated_at "
-            "FROM conversation_worktree_bindings WHERE root_session_id = ?",
-            (root_session_id,),
-        ).fetchone()
-        return cls._conversation_worktree_record(row) if row is not None else None
-
-    def get_conversation_worktree(
-        self, root_session_id: str
-    ) -> Optional[ConversationWorktreeRecord]:
-        with self._read_ctx() as conn:
-            return self._conversation_worktree_record_on_conn(conn, root_session_id)
-
-    def claim_conversation_worktree(
-        self, *, root_session_id: str, worktree_path: str, branch: str,
-        base_commit: str, repo_common_dir: str,
-    ) -> ConversationWorktreeRecord:
-        identity = (worktree_path, branch, base_commit, repo_common_dir)
-
-        def _do(conn: sqlite3.Connection) -> ConversationWorktreeRecord:
-            existing = self._conversation_worktree_record_on_conn(conn, root_session_id)
-            if existing is not None:
-                if (existing.worktree_path, existing.branch, existing.base_commit, existing.repo_common_dir) != identity:
-                    raise ConversationWorktreeConflict(
-                        f"conversation worktree identity already claimed for root session {root_session_id!r}"
-                    )
-                return existing
-            now = time.time()
-            conn.execute(
-                "INSERT INTO conversation_worktree_bindings "
-                "(root_session_id, worktree_path, branch, base_commit, repo_common_dir, state, created_at, updated_at) "
-                "VALUES (?, ?, ?, ?, ?, 'creating', ?, ?)",
-                (root_session_id, *identity, now, now),
-            )
-            record = self._conversation_worktree_record_on_conn(conn, root_session_id)
-            if record is None:
-                raise RuntimeError("conversation worktree claim was not persisted")
-            return record
-
-        return self._execute_write(_do)
-
-    def _set_conversation_worktree_state(
-        self, root_session_id: str, *, state: str,
-        allowed_current_states: Tuple[str, ...],
-        failure_phase: Optional[str] = None, failure_message: Optional[str] = None,
-    ) -> ConversationWorktreeRecord:
-        def _do(conn: sqlite3.Connection) -> ConversationWorktreeRecord:
-            existing = self._conversation_worktree_record_on_conn(conn, root_session_id)
-            if existing is None:
-                raise RuntimeError(f"cannot transition an unclaimed conversation worktree for root session {root_session_id!r}")
-            if existing.state == state:
-                return existing
-            if existing.state not in allowed_current_states:
-                raise ConversationWorktreeConflict(
-                    f"cannot transition conversation worktree for root session {root_session_id!r} from {existing.state!r} to {state!r}"
-                )
-            conn.execute(
-                "UPDATE conversation_worktree_bindings SET state = ?, failure_phase = ?, failure_message = ?, updated_at = ? WHERE root_session_id = ?",
-                (state, failure_phase, failure_message, time.time(), root_session_id),
-            )
-            record = self._conversation_worktree_record_on_conn(conn, root_session_id)
-            if record is None:
-                raise RuntimeError("conversation worktree transition was not persisted")
-            return record
-
-        return self._execute_write(_do)
-
-    def mark_conversation_worktree_ready(self, root_session_id: str) -> ConversationWorktreeRecord:
-        return self._set_conversation_worktree_state(root_session_id, state="ready", allowed_current_states=("creating", "creation_failed"))
-
-    def mark_conversation_worktree_failed(self, root_session_id: str, *, failure_phase: str, failure_message: str) -> ConversationWorktreeRecord:
-        return self._set_conversation_worktree_state(root_session_id, state="creation_failed", allowed_current_states=("creating", "creation_failed"), failure_phase=failure_phase, failure_message=failure_message)
-
-    def mark_conversation_worktree_removed(self, root_session_id: str) -> ConversationWorktreeRecord:
-        return self._set_conversation_worktree_state(root_session_id, state="removed", allowed_current_states=("creating", "ready", "creation_failed", "retained"))
-
-    def get_conversation_root(self, session_id: str) -> str:
-        """Return the ROOT id of *session_id*'s lineage chain.
-
-        The root is the stable "conversation id": context compression
-        rotates ``session_id`` to a new segment linked via
-        ``parent_session_id``, and delegate subagents hang off their
-        parent the same way. An explicit copied ``/branch`` is the exception:
-        it carries a parent link for transcript history but starts its own
-        workspace-owning conversation root. Its compression/delegate children
-        inherit that branch root. Returns *session_id* unchanged when it has
-        no recorded parent.
-        """
-        chain = self._session_lineage_root_to_tip(session_id)
-        for lineage_session_id in reversed(chain):
-            if self._is_explicit_branch_session(lineage_session_id):
-                return lineage_session_id
-        return (chain[0] if chain and chain[0] else session_id)
-
-    def _session_lineage_root_to_tip(self, session_id: str) -> List[str]:
-        if not session_id:
-            return [session_id]
-
-        chain = []
-        current = session_id
-        seen = set()
-        with self._read_ctx() as conn:
-            for _ in range(100):
-                if not current or current in seen:
-                    break
-                seen.add(current)
-                chain.append(current)
-                row = conn.execute(
-                    "SELECT parent_session_id FROM sessions WHERE id = ?",
-                    (current,),
-                ).fetchone()
-                if row is None:
-                    break
-                current = row["parent_session_id"] if hasattr(row, "keys") else row[0]
-        return list(reversed(chain)) or [session_id]
-
-    def _is_explicit_branch_session(self, session_id: str) -> bool:
-        """Return whether *session_id* is a copied user-facing branch.
-
-        Branches and compression continuations both use ``parent_session_id``,
-        but they have different history semantics: a branch owns a copied
-        transcript, while a compression continuation needs its ended parent's
-        archived rows for display. The durable ``_branched_from`` marker is the
-        existing discriminator written by all branch creation paths.
-        """
-        if not session_id:
-            return False
-        with self._read_ctx() as conn:
-            row = conn.execute(
-                "SELECT model_config FROM sessions WHERE id = ?",
-                (session_id,),
-            ).fetchone()
-        if row is None:
-            return False
-        raw_config = row["model_config"] if hasattr(row, "keys") else row[0]
-        if not raw_config:
-            return False
-        try:
-            config = json.loads(raw_config) if isinstance(raw_config, str) else raw_config
-        except (json.JSONDecodeError, TypeError):
-            return False
-        return isinstance(config, dict) and bool(config.get("_branched_from"))
 
     def __enter__(self) -> "SessionDB":
         """``with SessionDB(path) as db:`` closes on exit; owners must release deterministically.

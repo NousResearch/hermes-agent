@@ -65,7 +65,7 @@ def _write_token(path: Path, *, token="ya29.test", expiry=None, **extra):
     }
     if expiry is not None:
         data["expiry"] = expiry
-    path.write_text(json.dumps(data))
+    path.write_text(json.dumps(data), encoding="utf-8")
 
 
 def test_bridge_returns_valid_token(bridge_module, tmp_path):
@@ -191,7 +191,81 @@ def test_api_get_credentials_refresh_persists_authorized_user_type(api_module, m
 
     creds = api_module.get_credentials()
 
-    saved = json.loads(token_path.read_text())
+    saved = json.loads(token_path.read_text(encoding="utf-8"))
     assert isinstance(creds, FakeCredentials)
     assert saved["token"] == "ya29.refreshed"
     assert saved["type"] == "authorized_user"
+
+
+def _tabbed_doc():
+    """A Doc with two tabs (one nested), as the Docs API returns with includeTabsContent."""
+    def body(text):
+        return {"content": [
+            {"endIndex": len(text) + 2,
+             "paragraph": {"elements": [{"textRun": {"content": text + "\n"}}]}},
+        ]}
+    return {
+        "title": "Tabbed",
+        "documentId": "doc1",
+        "tabs": [
+            {
+                "tabProperties": {"tabId": "t.0", "title": "First"},
+                "documentTab": {"body": body("alpha")},
+                "childTabs": [
+                    {
+                        "tabProperties": {"tabId": "t.0.a", "title": "Nested"},
+                        "documentTab": {"body": body("beta")},
+                    }
+                ],
+            },
+            {
+                "tabProperties": {"tabId": "t.1", "title": "Second"},
+                "documentTab": {"body": body("gamma")},
+            },
+        ],
+    }
+
+
+def test_docs_get_returns_every_tab_of_a_tabbed_doc(api_module, monkeypatch, capsys):
+    """A multi-tab Doc must not lose tab content: reads traverse the tabs tree
+    (preorder, nested tabs included) instead of only the legacy top-level body."""
+    monkeypatch.setattr(
+        api_module, "_run_gws",
+        lambda parts, params=None, body=None: _tabbed_doc(),
+    )
+    args = types.SimpleNamespace(doc_id="doc1", tab=None)
+    api_module.docs_get(args)
+    result = json.loads(capsys.readouterr().out)
+    tabs = {t["tabId"]: t for t in result["tabs"]}
+    assert set(tabs) == {"t.0", "t.0.a", "t.1"}
+    assert tabs["t.0.a"]["body"] == "beta\n"
+    assert tabs["t.0.a"]["level"] == 1
+    # Multi-tab docs have no single merged "body" — index spaces are independent.
+    assert "body" not in result
+
+
+def test_docs_append_carries_tab_id_and_refuses_ambiguous_writes(api_module, monkeypatch, capsys):
+    """Each tab has its own index space, so a write must target exactly one tab:
+    the insert location carries the tabId, and an un-targeted write against a
+    multi-tab doc errors instead of silently landing in the first tab."""
+    monkeypatch.setattr(
+        api_module, "_run_gws",
+        lambda parts, params=None, body=None: _tabbed_doc(),
+    )
+    sent = {}
+    monkeypatch.setattr(
+        api_module, "_docs_insert_text",
+        lambda doc_id, text, index, tab_id=None: sent.update(
+            {"doc_id": doc_id, "index": index, "tab_id": tab_id}
+        ),
+    )
+
+    api_module.docs_append(types.SimpleNamespace(doc_id="doc1", text="more", tab="t.1"))
+    assert sent["tab_id"] == "t.1"
+    assert sent["index"] == len("gamma") + 1  # endIndex - 1 within THAT tab's space
+    capsys.readouterr()
+
+    with pytest.raises(SystemExit):
+        api_module.docs_append(types.SimpleNamespace(doc_id="doc1", text="more", tab=None))
+    err = json.loads(capsys.readouterr().err)
+    assert "tabs" in err and len(err["tabs"]) == 3

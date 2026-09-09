@@ -461,27 +461,56 @@ def _start_queue_listener_locked() -> None:
     _queue_listener.start()
 
 
-def _register_queued_handler(handler: logging.Handler) -> None:
+def _handler_covers_path(handler: logging.Handler, resolved: Path) -> bool:
+    """True when *handler* already writes *resolved* — attached directly, or via the profile router."""
+    if getattr(handler, "_hermes_routed_log_path", None) == resolved:
+        return True
+    return (
+        isinstance(handler, RotatingFileHandler)
+        and Path(getattr(handler, "baseFilename", "")).resolve() == resolved
+    )
+
+
+def _register_queued_handler(
+    handler: logging.Handler, *, dedup_path: Optional[Path] = None
+) -> None:
     """Route *handler* through the shared async queue instead of attaching it to root.
 
     Emitting threads never block on file I/O or the rotation lock; the ``QueueListener``
     applies each handler's own level and filters on its worker thread.
+
+    *dedup_path* (a resolved log-file path) makes registration idempotent. Two
+    callers can transiently open their own file handler for the same path before
+    either takes ``_queue_state_lock`` (each opened its own fd) — but the
+    register-or-not decision **and** the append happen together inside the lock,
+    so only the first caller into the locked section is registered. The loser's
+    handler is closed afterwards (outside the lock — nothing else can reach it),
+    leaving exactly one live handler, one fd, and no duplicate log lines.
     """
     global _log_queue, _queue_atexit_registered
+    duplicate = False
     with _queue_state_lock:
-        if _log_queue is None:
-            _log_queue = queue.SimpleQueue()
-            qh = _NonFormattingQueueHandler(_log_queue)
-            qh._hermes_queue = True  # type: ignore[attr-defined]
-            # Always on the root logger so records from any logger reach the queue.
-            logging.getLogger().addHandler(qh)
-        _queued_file_handlers.append(handler)
-        _start_queue_listener_locked()
-        if not _queue_atexit_registered:
-            # Runs before logging.shutdown (registered earlier at import time),
-            # so the listener stops before its file handlers are closed.
-            atexit.register(_stop_queue_listener)
-            _queue_atexit_registered = True
+        if dedup_path is not None and any(
+            _handler_covers_path(h, dedup_path) for h in _queued_file_handlers
+        ):
+            duplicate = True
+        else:
+            if _log_queue is None:
+                _log_queue = queue.SimpleQueue()
+                qh = _NonFormattingQueueHandler(_log_queue)
+                qh._hermes_queue = True  # type: ignore[attr-defined]
+                # Always on the root logger so records from any logger reach the queue.
+                logging.getLogger().addHandler(qh)
+            _queued_file_handlers.append(handler)
+            _start_queue_listener_locked()
+            if not _queue_atexit_registered:
+                # Runs before logging.shutdown (registered earlier at import time),
+                # so the listener stops before its file handlers are closed.
+                atexit.register(_stop_queue_listener)
+                _queue_atexit_registered = True
+    if duplicate:
+        _quietly(handler.close)
+        return
 
 
 def flush_log_queue() -> None:
@@ -579,14 +608,19 @@ def _add_rotating_handler(
     formatter: logging.Formatter,
     log_filter: Optional[logging.Filter] = None,
 ) -> None:
-    """Register a queued ``RotatingFileHandler`` for *path*; idempotent per resolved path."""
+    """Register a queued ``RotatingFileHandler`` for *path*; idempotent per resolved path.
+
+    The idempotency check and the append must be atomic: ``setup_logging`` takes no
+    lock and its ``_logging_initialized`` guard runs *after* this, so two threads
+    (gateway init vs a CLI / plugin path) can otherwise both pass the check and each
+    append a live handler for the same file — duplicate lines, two fds racing the
+    same rotation. The pre-check here only avoids opening a file we'd immediately
+    discard on a repeat ``setup_logging`` call; ``_register_queued_handler`` re-checks
+    under ``_queue_state_lock`` and is the authority.
+    """
     resolved = path.resolve()
-    for existing in _queued_file_handlers:
-        # Already attached directly, or already covered by the profile router.
-        if getattr(existing, "_hermes_routed_log_path", None) == resolved or (
-            isinstance(existing, RotatingFileHandler)
-            and Path(getattr(existing, "baseFilename", "")).resolve() == resolved
-        ):
+    with _queue_state_lock:
+        if any(_handler_covers_path(h, resolved) for h in _queued_file_handlers):
             return
     handler = _new_file_handler(
         path, level=level, max_bytes=max_bytes, backup_count=backup_count, formatter=formatter,
@@ -594,7 +628,7 @@ def _add_rotating_handler(
     if log_filter is not None:
         handler.addFilter(log_filter)
     # Queue, not ``addHandler``: the rotation-lock wait never runs on the caller's thread.
-    _register_queued_handler(handler)
+    _register_queued_handler(handler, dedup_path=resolved)
 
 
 def _read_logging_config():

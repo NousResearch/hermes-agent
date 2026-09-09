@@ -5,6 +5,7 @@ import os
 import stat
 import sys
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from unittest.mock import patch
 
@@ -345,6 +346,65 @@ class TestAddRotatingHandler:
         ]
         assert len(rotating_handlers) == 1
         # Clean up
+
+    def test_concurrent_add_for_same_path_registers_one_handler(self, tmp_path, monkeypatch):
+        """Two threads racing _add_rotating_handler() for the same file end up with
+        exactly one live handler. The registration-time re-check under
+        _queue_state_lock in _register_queued_handler() is the final authority:
+        even when both threads clear the pre-check and each opens its own file
+        handler, only the first into the locked section is registered and the
+        loser's handler is closed.
+
+        A threading.Barrier forces that interleaving deterministically; the
+        workers run on a ThreadPoolExecutor so a worker exception surfaces via
+        future.result() as itself, not as a downstream count mismatch.
+        """
+        log_path = tmp_path / "race.log"
+        formatter = logging.Formatter("%(message)s")
+
+        real_new = hermes_logging._new_file_handler
+        both_past_precheck = threading.Barrier(2)
+        closed: list = []
+
+        def _slow_new_file_handler(*args, **kwargs):
+            # Hold both threads here until each has cleared the (locked) pre-check
+            # and is about to open its own handler — the real race window. A
+            # BrokenBarrierError (the other worker died before arriving) is left
+            # to propagate so future.result() reports it.
+            both_past_precheck.wait(timeout=5)
+            handler = real_new(*args, **kwargs)
+            real_close = handler.close
+
+            def _tracking_close():
+                closed.append(handler)
+                real_close()
+
+            handler.close = _tracking_close  # type: ignore[method-assign]
+            return handler
+
+        monkeypatch.setattr(hermes_logging, "_new_file_handler", _slow_new_file_handler)
+
+        def _add():
+            hermes_logging._add_rotating_handler(
+                log_path, level=logging.INFO, max_bytes=1024, backup_count=1,
+                formatter=formatter,
+            )
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            futures = [pool.submit(_add) for _ in range(2)]
+            # .result() re-raises any worker exception here and enforces that
+            # both workers completed within the timeout (no hang).
+            for f in futures:
+                f.result(timeout=10)
+
+        resolved = log_path.resolve()
+        live = [
+            h for h in hermes_logging._queued_file_handlers
+            if isinstance(h, RotatingFileHandler)
+            and Path(h.baseFilename).resolve() == resolved
+        ]
+        assert len(live) == 1, f"race registered {len(live)} handlers for one path"
+        assert len(closed) == 1, "the losing thread must close its unused handler"
 
     def test_no_session_filter_on_handler(self, tmp_path):
         """Handlers rely on record factory, not per-handler _SessionFilter."""

@@ -957,8 +957,8 @@ def _resolve_update_options(args, gateway_mode: bool) -> _UpdateOptions:
     gw_input_fn = (
         (lambda prompt, default="": _gateway_prompt(prompt, default)) if gateway_mode else None)
     assume_yes = bool(getattr(args, "yes", False))
-    # --keep-stash (desktop updater): never re-apply the autostash; only when an update
-    # landed — abort/no-op paths still restore since the tree is unchanged.
+    # --keep-stash (desktop updater): never re-apply the autostash after a successful
+    # update or no-op repair; failed updates leave it preserved without further action.
     keep_stash = bool(getattr(args, "keep_stash", False))
     # --switch-branch: prefer switching over an in-place merge so an update never writes the
     # branch's history; only meaningful with parked_branch_strategy "update_in_place".

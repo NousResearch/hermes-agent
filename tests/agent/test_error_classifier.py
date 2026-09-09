@@ -511,7 +511,7 @@ class TestClassifyApiError:
         assert result.retryable is True
         assert result.should_rotate_credential is False
 
-    def test_429_novita_server_overload_is_overloaded_not_rate_limit(self):
+    def test_429_server_overload_is_overloaded_not_rate_limit(self):
         """Novita returns HTTP 429 with message 'server overload, please try
         again later' and error type 'server_overload' for a genuinely busy
         server (not a credential quota). Neither phrase was in the overload

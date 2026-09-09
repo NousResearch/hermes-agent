@@ -19,15 +19,26 @@ export function normalizeWhatsAppId(value) {
 }
 
 function unwrapMessageEnvelopes(content) {
-  if (content?.ephemeralMessage?.message) return content.ephemeralMessage.message;
-  if (content?.viewOnceMessage?.message) return content.viewOnceMessage.message;
-  if (content?.viewOnceMessageV2?.message) return content.viewOnceMessageV2.message;
-  if (content?.documentWithCaptionMessage?.message) return content.documentWithCaptionMessage.message;
-  return content;
+  let cur = content;
+  // Envelopes nest (ephemeral wrapping viewOnce wrapping the payload); peel
+  // until an inner message is reached so nested quotes resolve too.
+  for (let i = 0; i < 8 && cur; i++) {
+    const next =
+      cur.ephemeralMessage?.message ??
+      cur.viewOnceMessage?.message ??
+      cur.viewOnceMessageV2?.message ??
+      cur.documentWithCaptionMessage?.message;
+    if (next === undefined) break;
+    cur = next;
+  }
+  return cur;
 }
 
 export function getMessageContent(msg) {
   const content = unwrapMessageEnvelopes(msg?.message || {});
+  // A peeled envelope returns its inner message immediately: the payload
+  // shape (template/buttons/list/etc.) applies to unenveloped messages.
+  if (content !== (msg?.message || {})) return content;
   if (content.templateMessage?.hydratedTemplate) return content.templateMessage.hydratedTemplate;
   if (content.buttonsMessage) return content.buttonsMessage;
   if (content.listMessage) return content.listMessage;

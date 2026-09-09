@@ -386,6 +386,10 @@ DEFAULT_CONFIG = {
         "inactivity_timeout": 120,
         "command_timeout": 30,  # seconds per browser command (screenshot, navigate, etc.)
         "snapshot_threshold": 15000,  # max chars before snapshot truncate-and-store (min 1000)
+        # Refuse cold local Chromium starts below this MemAvailable floor in MB.
+        # Zero disables it; reuse and CDP sessions are exempt, and missing
+        # /proc/meminfo fails open.
+        "min_available_mb": 0,
         "record_sessions": False,  # auto-record browser sessions as WebM videos
         # headed: visible Chromium window (local); skips per-turn cleanup, idle reaper still applies
         "headed": False,

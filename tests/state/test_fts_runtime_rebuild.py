@@ -34,7 +34,7 @@ def _deferral_is_futile(record):
     if record.get("futile") is True:
         return True
     kind = str(record.get("kind") or record.get("status") or "").lower()
-    return "futile" in kind or "permanent_holder" in kind
+    return "futile" in kind or "stable_holder" in kind or "permanent_holder" in kind
 
 
 def _doctor_deferral_blob(stats):
@@ -804,10 +804,10 @@ class TestRuntimeFtsRebuild:
         finally:
             reopened.close()
 
-    def test_stable_permanent_holder_marks_futile_deferral(
+    def test_stable_holder_set_marks_futile_deferral(
         self, db, tmp_path, monkeypatch, caplog
     ):
-        """Same supervised holder across the escalate window is futile, not a transient peer."""
+        """Same holder PID set across the escalate window is a stable-set heuristic, not a transient peer."""
         if not db._fts_enabled:
             pytest.skip("FTS5 unavailable in this build")
         db_path = tmp_path / "state.db"
@@ -855,15 +855,19 @@ class TestRuntimeFtsRebuild:
         try:
             record = json.loads(_meta_value(db_path, FTS_REBUILD_DEFERRAL_KEY))
             assert _deferral_is_futile(record), record
+            assert record.get("kind") == "stable_holder"
             assert record.get("holder_pids") == [4242]
             assert reopened._fts_stale is True
             from hermes_cli.doctor_state import _render_state_db_stats
             from hermes_state_dbfile import collect_state_db_stats
 
             blob = _doctor_deferral_blob(collect_state_db_stats(db_path))
+            assert "stable holder" in blob
             assert "stop the other hermes service" in blob
             assert "gateway" in blob
+            assert "permanent holder" not in blob
             assert "canonical writes and like search remain available" not in caplog.text.lower()
+            assert "permanent holder" not in caplog.text.lower()
         finally:
             reopened.close()
 
@@ -982,7 +986,7 @@ class TestRuntimeFtsRebuild:
         finally:
             reopened.close()
 
-    def test_permanent_holder_clear_resets_stale_retry_backoff(
+    def test_stable_holder_clear_resets_stale_retry_backoff(
         self, db, tmp_path, monkeypatch
     ):
         if not db._fts_enabled:

@@ -109,7 +109,7 @@ def test_collect_and_render_stale_fts_holder_deferral(populated_db):
     assert any("4242" in warning and "optimize-storage" in warning for warning in warnings)
 
 
-def test_render_permanent_holder_deferral_is_actionable():
+def test_render_stable_holder_deferral_is_actionable():
     from hermes_cli.doctor_state import _render_state_db_stats
 
     lines = _render_state_db_stats(
@@ -119,7 +119,7 @@ def test_render_permanent_holder_deferral_is_actionable():
                 "holder_pids": [4242],
                 "first_seen": 1.0,
                 "futile": True,
-                "kind": "permanent_holder",
+                "kind": "stable_holder",
             }
         )
     )
@@ -130,6 +130,8 @@ def test_render_permanent_holder_deferral_is_actionable():
     ]
     blob = " ".join(warnings)
     assert "4242" in blob
+    assert "stable holder" in blob
+    assert "permanent holder" not in blob
     assert "stop the other hermes service" in blob
     assert "gateway" in blob
     assert "optimize-storage" not in blob or "leave this gateway" in blob

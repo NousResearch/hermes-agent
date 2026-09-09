@@ -437,8 +437,10 @@ class SessionSchemaMixin:
         """Record a deferral diagnostic for the foreign processes holding the DB; True = defer
         (holders remain). After ``_FTS_HOLDER_ESCALATE_ATTEMPTS`` deferrals spanning
         ``_FTS_HOLDER_ESCALATE_SECONDS``, provably inactive orphan Desktop backends are
-        reaped and the holders re-checked. A stable PID set that survives that reap is
-        recorded as a futile/permanent-holder diagnostic; the orphan predicate is unchanged."""
+        reaped and the holders re-checked. A PID set that survives that reap is recorded
+        as a futile/stable-holder heuristic — evidence the set is stable, not proof the
+        holder is supervised. Classification does not admit rebuild, change the live
+        write path, or loosen the orphan predicate."""
         now = time.time()
         try:
             row = cursor.execute(
@@ -474,8 +476,8 @@ class SessionSchemaMixin:
                     futile = True
                     logger.error(
                         "state.db FTS repair is futile after %d deferrals: the same "
-                        "holder PID set %s is a permanent holder (another Hermes "
-                        "service), not a transient peer. Stop the other Hermes "
+                        "holder PID set %s survived orphan reap (stable holder set, "
+                        "not proof the process is supervised). Stop the other Hermes "
                         "service; leave this gateway running. "
                         "retry_deferred_fts_recovery admits once this process is "
                         "the sole holder. `hermes doctor` reports this degraded state.",
@@ -491,17 +493,17 @@ class SessionSchemaMixin:
             else:
                 self._fts_stale_retry_after = 0.0
                 self._fts_stale_retry_interval = 0.0
-                self._fts_permanent_holder_deferral = False
+                self._fts_stable_holder_deferral = False
         diagnostic = {
             "first_seen": first_seen, "last_seen": now, "attempts": attempts,
             "holder_pids": holder_pids,
         }
         if futile:
             diagnostic["futile"] = True
-            diagnostic["kind"] = "permanent_holder"
-            self._fts_permanent_holder_deferral = True
+            diagnostic["kind"] = "stable_holder"
+            self._fts_stable_holder_deferral = True
         else:
-            self._fts_permanent_holder_deferral = False
+            self._fts_stable_holder_deferral = False
         cursor.execute(
             "INSERT INTO state_meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
             (FTS_REBUILD_DEFERRAL_KEY, json.dumps(diagnostic, sort_keys=True)),
@@ -510,7 +512,7 @@ class SessionSchemaMixin:
             return False
         if futile:
             logger.warning(
-                "Deferred stale state.db FTS rebuild while a permanent foreign holder "
+                "Deferred stale state.db FTS rebuild while a stable foreign holder set "
                 "blocks repair (%s); stop the other Hermes service and leave this "
                 "gateway running (deferral %d).",
                 foreign_holders, attempts,
@@ -521,6 +523,8 @@ class SessionSchemaMixin:
                 "hold the database or WAL sidecars (%s); canonical writes and LIKE search remain available (deferral %d).",
                 foreign_holders, attempts,
             )
+        # Holders remain: keep deferring. futile/stable_holder is diagnostic only —
+        # it must not admit rebuild or change write-path safety (#106393).
         return True
 
     def _recover_stale_fts(self, cursor: sqlite3.Cursor, *, legacy: bool, timeout_seconds=None) -> bool:
@@ -563,11 +567,11 @@ class SessionSchemaMixin:
         if self.read_only or self._conn is None:
             return False
         now = time.monotonic()
-        if getattr(self, "_fts_permanent_holder_deferral", False) and not self._foreign_state_db_holders():
-            # Permanent holder gone: do not wait out a doubled-to-cap backoff (#106393).
+        if getattr(self, "_fts_stable_holder_deferral", False) and not self._foreign_state_db_holders():
+            # Stable holder set gone: do not wait out a doubled-to-cap backoff (#106393).
             self._fts_stale_retry_after = 0.0
             self._fts_stale_retry_interval = 0.0
-            self._fts_permanent_holder_deferral = False
+            self._fts_stable_holder_deferral = False
         if now < getattr(self, "_fts_stale_retry_after", 0.0):
             return False
         interval = float(getattr(self, "_fts_stale_retry_interval", 0.0))

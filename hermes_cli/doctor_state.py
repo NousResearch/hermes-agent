@@ -82,12 +82,14 @@ def _render_state_db_stats(stats: dict, holders=None) -> list:
     if isinstance(deferral, dict):
         pids = deferral.get("holder_pids") or []
         attempts = deferral.get("attempts") or "?"
-        futile = deferral.get("futile") is True or deferral.get("kind") == "permanent_holder"
+        futile = deferral.get("futile") is True or deferral.get("kind") in {
+            "stable_holder", "permanent_holder",
+        }
         if futile:
             lines.append((
                 "warn",
-                f"state.db FTS repair is blocked by a permanent holder "
-                f"(another Hermes service, PID(s) {pids}) after {attempts} futile deferral(s)",
+                f"state.db FTS repair is blocked by a stable holder set "
+                f"(PID(s) {pids}) after {attempts} futile deferral(s)",
                 "(stop the other Hermes service; leave this gateway running — "
                 "retry_deferred_fts_recovery admits once this process is the sole holder)",
             ))

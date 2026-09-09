@@ -293,7 +293,7 @@ def _drain_queued_prompt(rid, sid: str, session: dict) -> bool:
         # whole drained turn. A peer that disconnected while its prompt sat in the queue is skipped: the
         # prompt still runs, only the dead pin is dropped.
         if queued_transport is not None and not _transport_is_dead(queued_transport):
-            _attach_session_transport(session, queued_transport)
+            _rebind_live_transport(sid, session, queued_transport)
     use_compute_host = _session_uses_compute_host(session)
     with session["history_lock"]:
         if int(session.get("_queued_prompt_generation", 0)) != queue_generation:

@@ -224,3 +224,73 @@ def test_reattach_does_not_adopt_foreign_or_retired_generations(runtime):
         assert call("subagent.steer", via=new, subagent_id=sid, text="deny")["result"]["status"] == "rejected"
         assert not call("subagent.interrupt", via=new, subagent_id=sid)["result"]["found"]
     assert effects == []
+
+
+def test_prompt_submit_reattach_transfers_child_ownership(runtime, monkeypatch):
+    """prompt.submit is one of the four reattach sites named by de25545dce ("fan session events out
+    instead of rebinding the transport slot"); only session.resume and session.activate were later
+    taught to carry live subagent ownership across the attach (see _rebind_live_transport). A prompt
+    sent right after a reconnect used to attach the new transport WITHOUT transferring ownership, so
+    subagent.list/steer/interrupt kept authorizing only the stale transport."""
+    from tools.delegate_tool_child_run import _register_child
+
+    server, owner, old, call = runtime
+    new = type("Transport", (), {"write": lambda self, frame: True})()
+    steered, stopped = [], []
+    child = SimpleNamespace(_subagent_id="child", _delegate_depth=1, model="test",
+                            steer=lambda text: steered.append(text) or True,
+                            hard_interrupt=lambda text: stopped.append(text))
+    _register_child(child, None, "owned", owner_session_id="ui-owner",
+                    owner_transport=old, owner_session_record=owner)
+
+    owner["transport"] = server._detached_ws_transport
+    owner["history_lock"] = threading.Lock()
+    owner["running"] = True  # forces the busy-return path immediately after the reattach block
+    monkeypatch.setattr(server, "_ensure_active_session_slot", lambda *a: None)
+    monkeypatch.setattr(server, "_legacy_group_fence_error", lambda *a: None)
+    monkeypatch.setattr(server, "_session_uses_compute_host", lambda *a: False)
+    monkeypatch.setattr(server, "_load_dashboard_process_isolation_config", lambda: {})
+    monkeypatch.setattr(server, "_handle_busy_submit", lambda *a, **kw: {"result": {"status": "queued"}})
+
+    response = call("prompt.submit", text="continue", via=new)
+    assert response["result"]["status"] == "queued"
+    assert server._session_transport_contains(owner, new)
+
+    assert {row["subagent_id"] for row in call("subagent.list", via=new)["result"]["subagents"]} == {"child"}
+    assert call("subagent.steer", via=new, subagent_id="child", text="hi")["result"]["status"] == "queued"
+    assert call("subagent.interrupt", via=new, subagent_id="child")["result"]["found"]
+    assert steered == ["hi"] and len(stopped) == 1
+
+
+def test_queued_prompt_drain_reattach_transfers_child_ownership(runtime, monkeypatch):
+    """The queued-prompt drain is the fourth de25545dce reattach site (see the test above) and was
+    left on the same stale-ownership footing as prompt.submit: _drain_queued_prompt pinned the
+    drained turn's transport with a bare attach, never transferring live subagent ownership."""
+    from tools.delegate_tool_child_run import _register_child
+
+    server, owner, old, call = runtime
+    new = type("Transport", (), {"write": lambda self, frame: True})()
+    steered, stopped = [], []
+    child = SimpleNamespace(_subagent_id="child", _delegate_depth=1, model="test",
+                            steer=lambda text: steered.append(text) or True,
+                            hard_interrupt=lambda text: stopped.append(text))
+    _register_child(child, None, "owned", owner_session_id="ui-owner",
+                    owner_transport=old, owner_session_record=owner)
+
+    owner["transport"] = server._detached_ws_transport
+    owner["history_lock"] = threading.Lock()
+    owner["running"] = False
+    owner["_closing"] = False
+    owner["queued_prompt"] = {"text": "continue", "transport": new}
+    owner["queued_prompts"] = []
+    owner["_queued_prompt_generation"] = 0
+    monkeypatch.setattr(server, "_run_prompt_submit", lambda *a, **kw: None)
+    monkeypatch.setattr(server, "_session_uses_compute_host", lambda *a: False)
+
+    assert server._drain_queued_prompt(1, "ui-owner", owner) is True
+    assert server._session_transport_contains(owner, new)
+
+    assert {row["subagent_id"] for row in call("subagent.list", via=new)["result"]["subagents"]} == {"child"}
+    assert call("subagent.steer", via=new, subagent_id="child", text="hi")["result"]["status"] == "queued"
+    assert call("subagent.interrupt", via=new, subagent_id="child")["result"]["found"]
+    assert steered == ["hi"] and len(stopped) == 1

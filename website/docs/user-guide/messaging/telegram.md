@@ -883,6 +883,54 @@ sqlite3 ~/.hermes/state.db \
 
 If you downgrade to a Hermes version that predates `/topic`, the feature simply stops working — the `telegram_dm_topic_mode` and `telegram_dm_topic_bindings` tables remain in `state.db` but are ignored by older code. DMs revert to the native per-thread isolation (each `message_thread_id` still gets its own session via `build_session_key`), so your existing Telegram topics keep working as parallel sessions. The root DM is no longer a lobby — messages there go into the agent like they used to. Re-upgrading reactivates multi-session mode exactly where it was.
 
+## Auto-topics in group forums (opt-in)
+
+### The Discord gap
+
+On **Discord**, `discord.auto_thread` is **on by default**. Someone `@mention`s Hermes in a channel, and Hermes opens a thread. The channel stays a lobby. Each job has a name.
+
+On **Matrix**, `MATRIX_AUTO_THREAD` does the same, also **on by default**.
+
+**Telegram does not.** Hermes can already *talk inside* a forum topic, and it can auto-create topics in a **1:1 DM** (`/topic`). It does **not** auto-create a topic when the bot is mentioned in a **team group**. So every request lands in **General**, the session mixes with the last job, and the group looks messy.
+
+This flag is that missing Discord/Matrix behaviour — for Telegram **forum groups only**.
+
+### Where it works, and where it cannot
+
+Telegram is not one kind of chat:
+
+| Surface | Can Hermes auto-open a thread? |
+|---|---|
+| **Forum supergroup** (Topics mode on) | **Yes** — this feature. `@mention` in General → new named topic. |
+| **Normal group** (no Topics) | **No.** Telegram has no thread object there. Turn on Topics in group settings first. |
+| **Broadcast channel** | **No.** Channels are one-way posts, not Discord-style threads. |
+| **DM with the bot** | Already covered by [`/topic`](#multi-session-dm-mode-topic). Do not use this flag. |
+
+If the group is not a forum, this setting does nothing. That is Telegram, not a Hermes bug.
+
+### What people see
+
+Someone `@mention`s the bot in **General**:
+
+1. Hermes opens a topic named from the request (`deploy staging`, not `Chat 14:32`)
+2. It copies their message to the top of that topic (so the topic is readable without scrolling General)
+3. It answers **inside the new topic**
+
+Follow-ups in that topic stay there. A mention that was already inside a topic is unchanged. Slash commands in General (`/status`, `/model`) do **not** open a topic.
+
+**Off by default.** Discord can default this on because any member can start a thread. Telegram topics need the bot to be a forum admin with **Manage Topics**. If create fails, Hermes stays in General and logs `Could not create auto-topic`.
+
+```yaml
+telegram:
+  extra:
+    auto_topic_on_mention: true   # default false
+    auto_topic_copy_source: true  # copy the General message into the new topic
+```
+
+Equivalent env: `TELEGRAM_AUTO_TOPIC_ON_MENTION=true`.
+
+This is the Telegram equivalent of `discord.auto_thread` and Matrix `MATRIX_AUTO_THREAD`, with a safer default.
+
 ## Group Forum Topic Skill Binding
 
 Supergroups with **Topics mode** enabled (also called "forum topics") already get session isolation per topic — each `thread_id` maps to its own conversation. But you may want to **auto-load a skill** when messages arrive in a specific group topic, just like DM topic skill binding works.

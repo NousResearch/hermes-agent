@@ -124,6 +124,13 @@ TOOLSETS = {
     "memory": _ts("Persistent memory across sessions (personal notes + user profile)", ["memory"]),
     "context_engine": _ts("Runtime tools exposed by the active context engine"),
     "session_search": _ts("Search and recall past conversations with summarization", ["session_search"]),
+    "peer_messaging": _ts(
+        "Inter-session messaging (inspired by Muse Code): discover the user's other "
+        "live Hermes sessions on this machine and send them messages. Local-only "
+        "mailboxes under the Hermes home; delivery rides the mid-turn steer channel. "
+        "Off by default; enable in `hermes tools` → Peer Messaging.",
+        ["peer_sessions", "peer_send"],
+    ),
     "project": _ts("Desktop Projects — create/switch named workspaces (GUI sessions only)", ["desktop_project"]),
     "bot_room": _ts("Verified text-only Group Chat turn capabilities"),
 

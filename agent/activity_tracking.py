@@ -78,6 +78,11 @@ class ActivityTrackingMixin:
                 heartbeat_current_worker_from_env()
                 # Fold new operator notes into the running turn (OUT-OF-BAND steer).
                 inject_new_comments_from_env(self)
+        # Peer-session messages (tools/peer_messaging_tool.py) ride the same steer
+        # channel. Rate-limited inside; a no-inbox session exits on one is_dir().
+        with suppress(Exception):
+            from tools.peer_messaging_tool import inject_peer_messages
+            inject_peer_messages(self)
         if force_persist:
             reset_session_activity_persist_window(self)
         self._persist_session_activity_if_due()

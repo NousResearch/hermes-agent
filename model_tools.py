@@ -408,12 +408,30 @@ def _rewrite_delegate_task(td: Dict[str, Any], available: set) -> Optional[Dict[
     return {**td, "function": {**fn, "description": desc}}
 
 
+_VAULT_INPUT_TOOL_HINT = "the browser's input tool"
+
+
+def _rewrite_browser_vault(td: Dict[str, Any], available: set) -> Optional[Dict[str, Any]]:
+    """Name the concrete input tool for typing the login identifier: `fill_input` inside browser_exec code, or
+    browser_type on the built-in stack. Resolved here because the two live in different toolsets."""
+    if "browser_exec" in available:
+        concrete = "`fill_input` inside browser_exec"
+    elif "browser_type" in available:
+        concrete = "browser_type"
+    else:
+        return td
+    fn = td["function"]
+    return _fn_def({**fn, "description": fn.get("description", "").replace(_VAULT_INPUT_TOOL_HINT, concrete)})
+
+
 _DYNAMIC_SCHEMA_REWRITERS = {
     "execute_code": _rewrite_execute_code,
     "discord": _discord_rewriter("get_dynamic_schema_core"),
     "discord_admin": _discord_rewriter("get_dynamic_schema_admin"),
     "browser_navigate": _rewrite_browser_navigate,
     "browser_exec": _rewrite_browser_exec,
+    "browser_vault_list": _rewrite_browser_vault,
+    "browser_vault_fill": _rewrite_browser_vault,
     "delegate_task": _rewrite_delegate_task,
 }
 

@@ -315,18 +315,12 @@ class SessionCompressionMixin:
                 "compression_failure_error = ? WHERE id = ?", (deadline, error, session_id))
             return cursor.rowcount == 1
         if not self._execute_write(_do):
-            # The session row was retired/expired (e.g. by the maintenance sweep) between
-            # the snapshot and this compensating write (#106271): a routine race must not
-            # crash the turn dispatcher when the rolled-back state no longer exists.
             logger.warning("compression cooldown rollback session missing: %s", session_id)
             return
         actual = self.get_compression_failure_cooldown_row(session_id)
         expected = _cooldown_row(True, deadline, error)
         if actual != expected:
             if not actual.get("session_exists", False):
-                # The session row vanished between the compensating UPDATE and this
-                # read-back: the same #106271 lifecycle race as the pre-update window
-                # above, and equally nothing left to restore or verify.
                 logger.warning("compression cooldown rollback session missing after restore: %s", session_id)
                 return
             raise RuntimeError(

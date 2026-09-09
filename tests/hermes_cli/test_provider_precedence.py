@@ -90,3 +90,84 @@ class TestProviderPrecedence:
 
         monkeypatch.setattr("agent.credential_pool.load_pool", lambda name: _Pool())
         assert resolve_provider("auto") == "openrouter"
+
+
+def _logged_out(monkeypatch):
+    monkeypatch.setattr("hermes_cli.auth._load_auth_store", lambda: {})
+    monkeypatch.setattr("hermes_cli.auth.get_auth_status", lambda p: {"logged_in": False})
+
+
+def _free_tier(monkeypatch, *, on=True, identity=False):
+    """Free tier switch + whether a free-tier identity already exists; counts mints."""
+    monkeypatch.setattr("hermes_cli.anon_auth.guest_enabled", lambda: on)
+    monkeypatch.setattr("hermes_cli.anon_auth.has_guest", lambda: identity)
+    calls = {"mint": 0}
+
+    def _ensure(*, blocking=True, timeout_seconds=None):
+        calls["mint"] += 1
+        return {"auth_method": "anonymous"} if on else None
+
+    monkeypatch.setattr("hermes_cli.anon_auth.ensure_portal_identity", _ensure)
+    return calls
+
+
+class TestFreeTierBeatsImplicitHostCredentials:
+    """NS-829: a leftover ~/.aws profile must not pre-empt the free tier on a fresh install.
+
+    Explicit intent (config, env keys, a sign-in) still wins; only the implicit Bedrock chain moved
+    below the free tier."""
+
+    def test_existing_free_tier_identity_beats_aws_chain(self, monkeypatch):
+        _clear_provider_env(monkeypatch)
+        _config(monkeypatch, "")
+        _logged_out(monkeypatch)
+        monkeypatch.setattr("agent.bedrock_adapter.has_aws_credentials", lambda: True)
+        calls = _free_tier(monkeypatch, on=True, identity=True)
+        assert resolve_provider("auto") == "nous"
+        assert calls["mint"] == 0
+
+    def test_fresh_install_mints_before_bedrock(self, monkeypatch):
+        _clear_provider_env(monkeypatch)
+        _config(monkeypatch, "")
+        _logged_out(monkeypatch)
+        monkeypatch.setattr("agent.bedrock_adapter.has_aws_credentials", lambda: True)
+        calls = _free_tier(monkeypatch, on=True, identity=False)
+        assert resolve_provider("auto") == "nous"
+        assert calls["mint"] == 1
+
+    def test_bedrock_wins_when_free_tier_is_off(self, monkeypatch):
+        _clear_provider_env(monkeypatch)
+        _config(monkeypatch, "")
+        _logged_out(monkeypatch)
+        monkeypatch.setattr("agent.bedrock_adapter.has_aws_credentials", lambda: True)
+        calls = _free_tier(monkeypatch, on=False)
+        assert resolve_provider("auto") == "bedrock"
+        assert calls["mint"] == 0
+
+    def test_env_key_still_beats_free_tier(self, monkeypatch):
+        _clear_provider_env(monkeypatch)
+        _config(monkeypatch, "")
+        _logged_out(monkeypatch)
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test-key")
+        calls = _free_tier(monkeypatch, on=True, identity=True)
+        assert resolve_provider("auto") == "openrouter"
+        assert calls["mint"] == 0
+
+    def test_signed_in_provider_still_beats_free_tier(self, monkeypatch):
+        _clear_provider_env(monkeypatch)
+        _config(monkeypatch, "")
+        _login(monkeypatch, "anthropic")
+        _no_aws(monkeypatch)
+        calls = _free_tier(monkeypatch, on=True, identity=True)
+        assert resolve_provider("auto") == "anthropic"
+        assert calls["mint"] == 0
+
+    def test_failed_mint_falls_through_to_bedrock(self, monkeypatch):
+        _clear_provider_env(monkeypatch)
+        _config(monkeypatch, "")
+        _logged_out(monkeypatch)
+        monkeypatch.setattr("agent.bedrock_adapter.has_aws_credentials", lambda: True)
+        monkeypatch.setattr("hermes_cli.anon_auth.guest_enabled", lambda: True)
+        monkeypatch.setattr("hermes_cli.anon_auth.has_guest", lambda: False)
+        monkeypatch.setattr("hermes_cli.anon_auth.ensure_portal_identity", lambda **kw: None)
+        assert resolve_provider("auto") == "bedrock"

@@ -1438,7 +1438,8 @@ def resolve_provider(
     "auto" priority (explicit intent beats a stale OAuth login): 1. CLI api_key/base_url ->
     "openrouter"; 2. config.yaml ``model.provider``; 3. OPENAI_API_KEY / OPENROUTER_API_KEY ->
     "openrouter"; 4. OpenRouter pool; 5. provider env keys; 6. auth.json ``active_provider``;
-    7. AWS Bedrock chain; 8. AuthError(no_provider_configured).
+    7. Nous free tier when ``nous.guest`` is on (existing identity, else a blocking mint);
+    8. AWS Bedrock chain; 9. AuthError(no_provider_configured).
 
     1. 3. 4. 5. Provider-specific API keys (GLM, Kimi, MiniMax, ...) -> that provider 7. 8. Error (no
     provider configured) See #29285.
@@ -1486,23 +1487,26 @@ def resolve_provider(
                 _oauth_active)
         return _oauth_active
 
-    # AWS Bedrock via the boto3 credential chain (IAM roles, SSO, env vars); after API-key providers
-    # so explicit keys always win.
+    # Nous free tier, when it is on: an existing free-tier identity, else mint one (blocking, short
+    # timeout). This rung sits ABOVE the Bedrock chain on purpose. Every rung above this line is
+    # explicit user intent (CLI creds, config, env keys, a sign-in); the boto chain below is implicit
+    # host state, and a leftover ~/.aws profile used to win the first turn of a fresh install and
+    # fail 403 while the free tier was being minted in the background (NS-829). ``nous.guest: false``
+    # skips this rung. A failed mint is not an error: it falls through to Bedrock and the guidance.
+    try:
+        from hermes_cli.anon_auth import ensure_portal_identity, guest_enabled, has_guest
+        if guest_enabled() and (has_guest() or ensure_portal_identity(blocking=True) is not None):
+            return "nous"
+    except Exception as exc:
+        logger.debug("free tier setup during provider resolution skipped: %s", exc)
+    # AWS Bedrock via the boto3 credential chain (IAM roles, SSO, env vars): implicit host state,
+    # below explicit keys and below the free tier.
     try:
         from agent.bedrock_adapter import has_aws_credentials
         if has_aws_credentials():
             return "bedrock"
     except ImportError:
         pass  # boto3 not installed
-    # Nothing configured at all: set up the Nous free tier (blocking, short timeout). Success writes
-    # ``active_provider: nous``, which the OAuth rung above then picks up on every later call;
-    # failure of this fallback is not an error and falls through to the guidance below.
-    try:
-        from hermes_cli.anon_auth import ensure_portal_identity
-        if ensure_portal_identity(blocking=True) is not None:
-            return "nous"
-    except Exception as exc:
-        logger.debug("free tier setup during provider resolution skipped: %s", exc)
     raise AuthError(
         "No inference provider configured. Run 'hermes model' to choose a "
         "provider and model, or set an API key (OPENROUTER_API_KEY, "

@@ -150,6 +150,8 @@ class TestIdentityLifecycle:
 
     def test_opt_out_bool_disables_everything(self, portal, monkeypatch):
         _write_config(monkeypatch, guest=False)
+        # A developer machine's ~/.aws would answer the Bedrock rung and hide the AuthError.
+        monkeypatch.setattr("agent.bedrock_adapter.has_aws_credentials", lambda: False)
         assert anon_auth.ensure_portal_identity(blocking=True) is None
         assert portal.calls == []
         with pytest.raises(anon_auth.AuthError):

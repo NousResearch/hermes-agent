@@ -583,8 +583,17 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         chat_guid, chat_identifier, sender = self._resolve_chat_and_sender(payload, record)
         if not sender or not (chat_guid or chat_identifier) or not text:
             return web.json_response({"error": "missing message fields"}, status=400)
-        session_chat_id = chat_guid or chat_identifier
         is_group = bool(record.get("isGroup")) or (";+;" in (chat_guid or ""))
+        if is_group:
+            # Group guids keep their full shape so distinct chats stay distinct.
+            session_chat_id = chat_guid or chat_identifier
+        else:
+            # Canonicalize DM routing to the bare address: payloads vary in
+            # shape for the same DM (full ``service;-;address`` guid vs. bare
+            # identifier only), which would otherwise fork one DM into two
+            # sessions with separate routing keys. Outbound calls already
+            # re-resolve bare addresses via _resolve_chat_guid (#24157).
+            session_chat_id = chat_identifier or chat_guid.split(";-;", 1)[-1]
         if is_group and self.require_mention:
             if not self._message_matches_mention_patterns(text):
                 logger.debug("[bluebubbles] ignoring group message (require_mention=true, no mention pattern matched)")

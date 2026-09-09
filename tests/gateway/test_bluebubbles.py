@@ -175,6 +175,92 @@ class TestBlueBubblesWebhookParsing:
         assert record == payload["data"][0]
 
 
+class TestBlueBubblesDmSessionNormalization:
+    """Regression for #106824: varying webhook payload shapes for the same DM
+    must resolve to a single session id, while group guids keep their full shape.
+    """
+
+    @staticmethod
+    def _capture_adapter(monkeypatch):
+        adapter = _make_adapter(monkeypatch, send_read_receipts=False)
+        handled = []
+
+        async def fake_handle_message(event):
+            handled.append(event)
+
+        monkeypatch.setattr(adapter, "handle_message", fake_handle_message)
+        return adapter, handled
+
+    @pytest.mark.asyncio
+    async def test_dm_payload_shapes_converge_on_one_session_id(self, monkeypatch):
+        adapter, handled = self._capture_adapter(monkeypatch)
+        guid_shape = {
+            "type": "new-message",
+            "data": {
+                "guid": "msg-1",
+                "text": "hello",
+                "handle": {"address": "+15555550100"},
+                "isFromMe": False,
+                "chatGuid": "iMessage;-;+15555550100",
+                "chatIdentifier": "+15555550100",
+            },
+        }
+        bare_shape = {
+            "type": "new-message",
+            "data": {
+                "guid": "msg-2",
+                "text": "hello again",
+                "handle": {"address": "+15555550100"},
+                "isFromMe": False,
+                "chatIdentifier": "+15555550100",
+            },
+        }
+        first = await adapter._handle_webhook(_FakeBlueBubblesRequest(guid_shape))
+        second = await adapter._handle_webhook(_FakeBlueBubblesRequest(bare_shape))
+        await asyncio.sleep(0)
+
+        assert first.status == 200 and second.status == 200
+        assert len(handled) == 2
+        assert {event.source.chat_id for event in handled} == {"+15555550100"}
+
+    @pytest.mark.asyncio
+    async def test_dm_with_guid_only_strips_service_prefix(self, monkeypatch):
+        adapter, handled = self._capture_adapter(monkeypatch)
+        response = await adapter._handle_webhook(_FakeBlueBubblesRequest({
+            "type": "new-message",
+            "data": {
+                "guid": "msg-3",
+                "text": "hello",
+                "handle": {"address": "+15555550100"},
+                "isFromMe": False,
+                "chatGuid": "iMessage;-;+15555550100",
+            },
+        }))
+        await asyncio.sleep(0)
+
+        assert response.status == 200
+        assert handled[0].source.chat_id == "+15555550100"
+
+    @pytest.mark.asyncio
+    async def test_group_guid_keeps_full_shape(self, monkeypatch):
+        adapter, handled = self._capture_adapter(monkeypatch)
+        response = await adapter._handle_webhook(_FakeBlueBubblesRequest({
+            "type": "new-message",
+            "data": {
+                "guid": "msg-4",
+                "text": "hello team",
+                "handle": {"address": "+15555550100"},
+                "isFromMe": False,
+                "chatGuid": "iMessage;+;chat0000000000-family",
+                "chatIdentifier": "chat0000000000",
+            },
+        }))
+        await asyncio.sleep(0)
+
+        assert response.status == 200
+        assert handled[0].source.chat_id == "iMessage;+;chat0000000000-family"
+
+
 class TestBlueBubblesGuidResolution:
 
 

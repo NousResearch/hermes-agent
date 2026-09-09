@@ -2883,17 +2883,19 @@ def _salvage_or_refuse_grown_transcript(
     return compressed, None
 
 
-def _parent_deliberately_ended(session_db: Any, session_id: str, holder: Optional[str] = None) -> bool:
+def _parent_deliberately_ended(
+    session_db: Any, session_id: str, turn_lease_holder: Optional[str] = None,
+) -> bool:
     """True when publish_compression_child() would fail closed on the parent's end stamp, so the
-    durable pre-publish flush is skipped. The store owns the verdict (#106459): an explicit close with
-    no continuation is stale, not deliberate. Fails OPEN: an unreadable row must not turn a cheap
-    guard into a new way to lose compression."""
+    durable pre-publish flush is skipped. The store owns the verdict (#106459): an explicit close is
+    stale only when this turn was admitted after it. Fails OPEN: an unreadable row must not turn a
+    cheap guard into a new way to lose compression."""
     verdict = getattr(session_db, "compression_parent_deliberately_ended", None)
     if callable(verdict):
         try:
-            # *holder* is this attempt's compression-lease holder: the store orders an explicit close
-            # against the lease acquisition to tell a stale stamp from a close made mid-compression.
-            return bool(verdict(session_id, holder=holder))
+            # *turn_lease_holder* is this turn's session-turn lease: the store orders an explicit close
+            # against its admission to tell a stale stamp from a close made during the turn.
+            return bool(verdict(session_id, turn_lease_holder=turn_lease_holder))
         except Exception:
             return False
     # Stores without the verdict (test stand-ins): taxonomy-only fallback.
@@ -2956,7 +2958,8 @@ def _publish_rotated_compaction(
     # The flush is durable and NOT rolled back on abort: a deliberately-ended parent
     # fails publish forever, so check that before writing. Automatic end stamps are
     # healed by publish (don't abort); the lease is re-acquirable (don't check it).
-    if _parent_deliberately_ended(agent._session_db, old_session_id, holder=lease.holder):
+    turn_lease_holder = getattr(agent, "_active_session_turn_lease_holder", None)
+    if _parent_deliberately_ended(agent._session_db, old_session_id, turn_lease_holder=turn_lease_holder):
         raise RuntimeError(f"Compression parent already ended: {old_session_id}")
     # Foreign-tail ceiling: the flush below writes OUR rows (already in handoff);
     # rows above the start watermark up to this MAX(id) are foreign appends.
@@ -2986,7 +2989,7 @@ def _publish_rotated_compaction(
         compression_lock_holder=lease.holder, require_compression_lease=lease.holder is not None,
         require_lease_refresh=lease.holder is not None, lease_ttl_seconds=lease.ttl,
         watermark=(lease.watermark if _foreign_tail_ceiling is not None else None),
-        watermark_ceiling=_foreign_tail_ceiling,
+        watermark_ceiling=_foreign_tail_ceiling, turn_lease_holder=turn_lease_holder,
     )
     # `already_present` stamping is done by run_agent's _sync_persisted_markers;
     # this branch covers inserted/merged only; direct callers must use that wrapper.

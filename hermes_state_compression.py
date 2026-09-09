@@ -12,12 +12,13 @@ import time
 from typing import Any, Dict, List, Optional, Tuple
 
 from hermes_state_common import (
-    _COMPRESSION_LOCK_ROW_SQL as _LOCK_ROW_SQL, _ENDED_ROW_SQL, _RESET_END_REASONS, _ended_by_compression,
-    _sql_session_last_active, is_automatic_end_reason)
+    _BOUNDARY_END_REASONS, _COMPRESSION_LOCK_ROW_SQL as _LOCK_ROW_SQL, _ENDED_ROW_SQL, _RESET_END_REASONS,
+    _ended_by_compression, _sql_session_last_active, is_automatic_end_reason)
 
-# The compression lock row including when it was acquired: the ordering signal that tells a stale
-# end stamp (written before this attempt took the lease) from a deliberate close written during it.
-_LOCK_ROW_WITH_ACQUIRED_SQL = "SELECT holder, acquired_at, expires_at FROM compression_locks WHERE session_id = ?"
+# The conversation's turn lease including when it was admitted (agent/turn_facade_lease.py takes one per
+# turn; refresh only extends expires_at): the ordering signal that tells a stale end stamp (written before
+# this turn was admitted) from a deliberate close written during it.
+_TURN_LEASE_ROW_WITH_ACQUIRED_SQL = "SELECT holder, acquired_at FROM session_turn_leases WHERE conversation_id = ?"
 
 # Log-record parity with the origin module (caplog tests pin "hermes_state").
 logger = logging.getLogger("hermes_state")
@@ -75,23 +76,31 @@ class SessionCompressionMixin:
     """Compression lineage, cooldown/streak counters, locks and turn leases."""
 
     def _compression_parent_obstacle(
-        self, conn, parent_session_id: str, parent, *, lease_acquired_at: Optional[float],
+        self, conn, parent_session_id: str, parent, *, turn_admitted_at: Optional[float],
     ) -> Optional[str]:
         """Why publishing a compression child of *parent* (a row with ``ended_at`` / ``end_reason``) must
         fail closed, or None when the parent is live or its stamp is stale and may be cleared.
 
         Single owner of the verdict for publish_compression_child() and the agent's pre-flush guard
         (#106459). Lineage owned elsewhere fails closed: a ``'compression'`` stamp names a continuation,
-        a reset reason is a deliberate conversation boundary, and an explicit close that already has a
-        continuation child was superseded. An automatic-cleanup stamp is stale by construction (#88197).
-        An explicit close (``tui_close``, ``cli_close``, ``webhook_complete``, ``new_session``, ...) is
-        decided by ORDER against this attempt's compression lease, *lease_acquired_at*: a stamp written
-        before the lease was taken is stale (the writer acquired the lease and has driven the row since;
-        failing closed there made every compression compute its result and discard it, forever), while a
-        close written after it is the user closing the session mid-compression (``session.close`` waits
-        five seconds for the turn thread, then stamps ``tui_close``) and must be preserved. A lease only
-        grants publication ownership; without its ordering (no lease, foreign holder) an explicit close
-        cannot be proven stale and fails closed."""
+        a boundary reason (reset reasons, CLI ``new_session``) is a deliberate end of the conversation,
+        and an explicit close that already has a continuation child was superseded. An automatic-cleanup
+        stamp is stale by construction (#88197).
+
+        An explicit close (``tui_close``, ``cli_close``, ``webhook_complete``, ...) is cleared only on
+        POSITIVE evidence that the session was driven after it: *turn_admitted_at*, when this writer's
+        turn lease on the conversation was admitted (``session_turn_leases.acquired_at``; the façade takes
+        one per turn before loading the transcript). A stamp older than that means a host admitted a new
+        turn on the row with the stamp in place, so the session is still routed and the stamp missed it
+        (the #106459 field shape, where every rotation computed its summary and discarded it, forever).
+        Every sanctioned resume clears the stamp first (``reopen_session``), and a host never admits a
+        turn on a session it is closing, so that order cannot describe a live close. A stamp at or after
+        admission is a close made during this turn (``session.close`` stamps ``tui_close`` after a
+        five-second grace even while the turn thread runs on) and is preserved. The compression lease is
+        no evidence: it is taken inside the turn, after any such close. Without an admitted turn of our
+        own (no lease, foreign holder) an explicit close cannot be proven stale and fails closed; a stamp
+        that lands mid-turn therefore costs that turn's rotation, and the next admitted turn proves it
+        stale."""
         if parent is None or parent["ended_at"] is None:
             return None
         reason = parent["end_reason"]
@@ -99,7 +108,7 @@ class SessionCompressionMixin:
             return None
         if reason == "compression":
             return "closed by compression"
-        if reason in _RESET_END_REASONS:
+        if reason in _BOUNDARY_END_REASONS:
             return f"closed by a {reason} boundary"
         child = conn.execute(
             "SELECT 1 FROM sessions WHERE parent_session_id = ?"
@@ -109,26 +118,31 @@ class SessionCompressionMixin:
         ).fetchone()
         if child is not None:
             return f"closed ({reason}) with a published continuation"
-        if lease_acquired_at is None:
-            return f"closed ({reason}) with no compression-lease ordering to prove the stamp stale"
-        if float(parent["ended_at"]) >= float(lease_acquired_at):
-            return f"closed ({reason}) after this compression attempt acquired its lease"
+        if turn_admitted_at is None:
+            return f"closed ({reason}) with no admitted turn of ours to prove the stamp stale"
+        if float(parent["ended_at"]) >= float(turn_admitted_at):
+            return f"closed ({reason}) after this turn was admitted"
         return None
 
-    def _lease_acquired_at_for(self, conn, session_id: str, holder: Optional[str]) -> Optional[float]:
-        """When *holder*'s live compression lease on *session_id* was acquired, or None."""
+    def _turn_admitted_at_for(self, conn, session_id: str, holder: Optional[str]) -> Optional[float]:
+        """When *holder*'s turn lease on *session_id*'s conversation was admitted, or None. Ownership is
+        by holder, as in the transcript-write guard: an expired row nobody reclaimed is still this turn."""
         if not holder:
             return None
-        row = conn.execute(_LOCK_ROW_WITH_ACQUIRED_SQL, (session_id,)).fetchone()
+        conversation_id = self._session_turn_lease_key_on_conn(conn, session_id)
+        row = conn.execute(_TURN_LEASE_ROW_WITH_ACQUIRED_SQL, (conversation_id,)).fetchone()
         if row is None or row["holder"] != holder or row["acquired_at"] is None:
             return None
         return float(row["acquired_at"])
 
-    def compression_parent_deliberately_ended(self, session_id: str, *, holder: Optional[str] = None) -> bool:
+    def compression_parent_deliberately_ended(
+        self, session_id: str, *, turn_lease_holder: Optional[str] = None,
+    ) -> bool:
         """Read-only twin of publish_compression_child()'s liveness verdict, for the agent's guard that
         runs BEFORE the durable pre-publish flush: True only when publish would fail closed on
-        *session_id*'s end stamp. *holder* is this attempt's compression-lease holder, the ordering
-        signal for explicit closes. A missing row is not an obstacle (publish reports that itself)."""
+        *session_id*'s end stamp. *turn_lease_holder* is this turn's session-turn-lease holder, the
+        ordering signal for explicit closes. A missing row is not an obstacle (publish reports that
+        itself)."""
         if not session_id:
             return False
         # The public reader on purpose: an unreadable row raises to the guard, which fails open
@@ -137,9 +151,9 @@ class SessionCompressionMixin:
         if not parent or parent.get("ended_at") is None:
             return False
         with self._read_ctx() as conn:
-            acquired_at = self._lease_acquired_at_for(conn, session_id, holder)
+            admitted_at = self._turn_admitted_at_for(conn, session_id, turn_lease_holder)
             return self._compression_parent_obstacle(
-                conn, session_id, parent, lease_acquired_at=acquired_at) is not None
+                conn, session_id, parent, turn_admitted_at=admitted_at) is not None
 
     def find_live_compression_child(self, parent_session_id: str) -> Optional[Dict[str, Any]]:
         """The unique live direct child of a compression-ended session, else None. A stale
@@ -255,7 +269,8 @@ class SessionCompressionMixin:
         system_prompt: str = None, cwd: str = None, profile_name: str = None,
         compression_lock_holder: str = None, require_compression_lease: bool = True,
         require_lease_refresh: bool = False, lease_ttl_seconds: float = 300.0,
-        watermark: Optional[int] = None, watermark_ceiling: Optional[int] = None) -> None:
+        watermark: Optional[int] = None, watermark_ceiling: Optional[int] = None,
+        turn_lease_holder: Optional[str] = None) -> None:
         """Atomically close a parent and publish its durable compression child: closure, child row, and
         handoff commit in one transaction, so readers see the live parent or a complete child, never an
         ended parent with a missing/empty child. *watermark* (parent's ``get_active_message_watermark`` at compression start): parent rows with ``id
@@ -265,6 +280,8 @@ class SessionCompressionMixin:
         watermark_ceiling]`` is foreign tail (``None`` = unbounded). *require_lease_refresh* +
         *compression_lock_holder* refreshes the lease on the same ``conn`` before the expiry check (no
         TOCTOU window), so a refresher that died on transient DB errors gets one last chance.
+        *turn_lease_holder* names this turn's session-turn lease; its admission time is the only evidence
+        that lets an explicit-close stamp on the parent be cleared (see ``_compression_parent_obstacle``).
 
         See #75316.
         ``None`` = unbounded (no internal flush happened). See #47202.
@@ -275,7 +292,7 @@ class SessionCompressionMixin:
                 conn.execute(
                     "UPDATE compression_locks SET expires_at = ? WHERE session_id = ? AND holder = ?",
                     (time.time() + lease_ttl_seconds, parent_session_id, compression_lock_holder))
-            lock_row = conn.execute(_LOCK_ROW_WITH_ACQUIRED_SQL, (parent_session_id,)).fetchone()
+            lock_row = conn.execute(_LOCK_ROW_SQL, (parent_session_id,)).fetchone()
             if require_compression_lease and (
                 lock_row is None or not compression_lock_holder
                 or lock_row["holder"] != compression_lock_holder
@@ -293,24 +310,20 @@ class SessionCompressionMixin:
             if parent is None:
                 raise RuntimeError(f"Compression parent not found: {parent_session_id}")
             if parent["ended_at"] is not None:
-                # A stale stamp — automatic cleanup (#88197) or an explicit close with no continuation
-                # (#106459) — is cleared here: this lease holder is still continuing the conversation,
+                # A stale stamp — automatic cleanup (#88197) or an explicit close that a later admitted
+                # turn proves stale (#106459) — is cleared here: the conversation is still being driven,
                 # and left alone the stamp wedges rotation forever. The closure UPDATE below re-stamps
                 # end_reason='compression'. Lineage owned elsewhere fails closed (see the verdict).
-                lease_acquired_at = (
-                    float(lock_row["acquired_at"])
-                    if lock_row is not None and compression_lock_holder
-                    and lock_row["holder"] == compression_lock_holder and lock_row["acquired_at"] is not None
-                    else None)
                 obstacle = self._compression_parent_obstacle(
-                    conn, parent_session_id, parent, lease_acquired_at=lease_acquired_at)
+                    conn, parent_session_id, parent,
+                    turn_admitted_at=self._turn_admitted_at_for(conn, parent_session_id, turn_lease_holder))
                 if obstacle is not None:
                     raise RuntimeError(f"Compression parent already ended: {parent_session_id} ({obstacle})")
                 if not is_automatic_end_reason(parent["end_reason"]):
                     logger.warning(
-                        "Compression parent %s carries a stale %r end stamp written before this compression "
-                        "lease was acquired and with no continuation; clearing it so the rotation can publish "
-                        "(#106459)", parent_session_id, parent["end_reason"])
+                        "Compression parent %s carries a stale %r end stamp: this turn was admitted after it "
+                        "and it has no continuation; clearing it so the rotation can publish (#106459)",
+                        parent_session_id, parent["end_reason"])
                 conn.execute(
                     "UPDATE sessions SET ended_at = NULL, end_reason = NULL WHERE id = ?",
                     (parent_session_id,))

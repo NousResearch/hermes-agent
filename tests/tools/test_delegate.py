@@ -73,6 +73,8 @@ class TestDelegateRequirements(unittest.TestCase):
         self.assertIn("goal", task_props)
         self.assertIn("context", task_props)
         self.assertIn("output_schema", task_props)
+        self.assertIn("context_mode", task_props)
+        self.assertEqual(task_props["context_mode"]["enum"], ["isolated", "fork"])
         # toolsets is intentionally NOT exposed to the model — subagents always
         # inherit the parent's toolsets. Letting the model name toolsets was a
         # capability-selection surface the model should not control.
@@ -510,7 +512,7 @@ class TestToolNamePreservation(unittest.TestCase):
         with patch("run_agent.AIAgent") as MockAgent:
             mock_child = MagicMock()
 
-            def capture_and_return(user_message, task_id=None, stream_callback=None):
+            def capture_and_return(user_message, task_id=None, stream_callback=None, conversation_history=None):
                 captured["saved"] = list(mock_child._delegate_saved_tool_names)
                 return {"final_response": "ok", "completed": True, "api_calls": 1}
 
@@ -2006,7 +2008,7 @@ class TestOrchestratorEndToEnd(unittest.TestCase):
                 m.thinking_callback = None
                 orch_mock["agent"] = m
 
-                def _orchestrator_run(user_message=None, task_id=None, stream_callback=None):
+                def _orchestrator_run(user_message=None, task_id=None, stream_callback=None, conversation_history=None):
                     # Re-entrant: orchestrator spawns two leaves
                     delegate_task(
                         tasks=[
@@ -2231,6 +2233,191 @@ class TestFallbackModelInheritance(unittest.TestCase):
                 with self.assertRaises(ValueError) as ctx:
                     _resolve_delegation_credentials(cfg, parent)
         self.assertIn("missing-acp-binary", str(ctx.exception))
+
+
+if __name__ == "__main__":
+    unittest.main()
+
+
+class TestForkContextMode(unittest.TestCase):
+    """context_mode='fork': child replays the parent's conversation history."""
+
+    def test_fork_passes_history_to_run_conversation(self):
+        import model_tools
+
+        parent = _make_mock_parent(depth=0)
+        parent._session_messages = [
+            {"role": "user", "content": "read foo.py"},
+            {"role": "assistant", "content": "it does X"},
+        ]
+
+        captured = {}
+        with patch("run_agent.AIAgent") as MockAgent:
+            mock_child = MagicMock()
+
+            def capture(user_message, task_id=None, stream_callback=None, conversation_history=None):
+                captured["history"] = conversation_history
+                return {"final_response": "ok", "completed": True, "api_calls": 1}
+
+            mock_child.run_conversation.side_effect = capture
+            MockAgent.return_value = mock_child
+            delegate_task(
+                tasks=[{"goal": "g", "context_mode": "fork"}],
+                parent_agent=parent,
+            )
+        self.assertEqual(captured["history"], parent._session_messages)
+
+    def test_isolated_default_passes_no_history(self):
+        parent = _make_mock_parent(depth=0)
+        parent._session_messages = [{"role": "user", "content": "x"}]
+
+        captured = {}
+        with patch("run_agent.AIAgent") as MockAgent:
+            mock_child = MagicMock()
+
+            def capture(user_message, task_id=None, stream_callback=None, conversation_history=None):
+                captured["history"] = conversation_history
+                return {"final_response": "ok", "completed": True, "api_calls": 1}
+
+            mock_child.run_conversation.side_effect = capture
+            MockAgent.return_value = mock_child
+            delegate_task(goal="g", parent_agent=parent)
+        self.assertIsNone(captured["history"])
+
+    def test_fork_with_empty_parent_falls_back_to_isolated(self):
+        parent = _make_mock_parent(depth=0)
+        parent._session_messages = []
+
+        captured = {}
+        with patch("run_agent.AIAgent") as MockAgent:
+            mock_child = MagicMock()
+
+            def capture(user_message, task_id=None, stream_callback=None, conversation_history=None):
+                captured["history"] = conversation_history
+                return {"final_response": "ok", "completed": True, "api_calls": 1}
+
+            mock_child.run_conversation.side_effect = capture
+            MockAgent.return_value = mock_child
+            delegate_task(
+                tasks=[{"goal": "g", "context_mode": "fork"}],
+                parent_agent=parent,
+            )
+        # Empty snapshot -> clone is [] -> falsy, no history replay; isolated path.
+        self.assertIsNone(captured["history"])
+
+    def test_fork_clone_is_structural_not_aliased(self):
+        """#100795 analog: mutating the replayed history must NOT touch the
+        parent's _session_messages (repair_message_sequence sanitizes in place)."""
+        parent = _make_mock_parent(depth=0)
+        parent._session_messages = [
+            {"role": "user", "content": "read foo.py"},
+            {"role": "assistant", "content": "it does X",
+             "tool_calls": [{"id": "t1", "function": {"name": "f", "arguments": "{}"}}]},
+        ]
+
+        def capture(user_message, task_id=None, stream_callback=None, conversation_history=None):
+            history = conversation_history or []
+            # Simulate the child-side in-place sanitizers (repair pass).
+            history[0]["content"] = "MUTATED"
+            if history[1].get("tool_calls"):
+                history[1]["tool_calls"][0]["id"] = "MUTATED"
+            return {"final_response": "ok", "completed": True, "api_calls": 1}
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            mock_child = MagicMock()
+            mock_child.run_conversation.side_effect = capture
+            MockAgent.return_value = mock_child
+            delegate_task(
+                tasks=[{"goal": "g", "context_mode": "fork"}],
+                parent_agent=parent,
+            )
+        self.assertEqual(parent._session_messages[0]["content"], "read foo.py")
+        self.assertEqual(parent._session_messages[1]["tool_calls"][0]["id"], "t1")
+
+    def test_fork_excises_unanswered_trailing_tool_call(self):
+        """Mid-turn fork: snapshot ends with assistant(tool_calls) — the in-flight
+        delegate_task itself. It must be excised, not replayed unanswered."""
+        parent = _make_mock_parent(depth=0)
+        parent._session_messages = [
+            {"role": "user", "content": "do the thing"},
+            {"role": "assistant", "content": None,
+             "tool_calls": [{"id": "call_99", "function": {"name": "delegate_task", "arguments": "{}"}}]},
+        ]
+
+        captured = {}
+        with patch("run_agent.AIAgent") as MockAgent:
+            mock_child = MagicMock()
+
+            def capture(user_message, task_id=None, stream_callback=None, conversation_history=None):
+                captured["history"] = conversation_history
+                return {"final_response": "ok", "completed": True, "api_calls": 1}
+
+            mock_child.run_conversation.side_effect = capture
+            MockAgent.return_value = mock_child
+            delegate_task(
+                tasks=[{"goal": "g", "context_mode": "fork"}],
+                parent_agent=parent,
+            )
+        replayed = captured["history"]
+        self.assertEqual(len(replayed), 1)  # assistant(tool_calls) excised
+        self.assertEqual(replayed[0]["role"], "user")
+
+    def test_fork_caps_snapshot_at_fork_max_messages(self):
+        """delegation.fork_max_messages caps the snapshot; cut opens on a
+        coherent boundary (leading tool results dropped)."""
+        parent = _make_mock_parent(depth=0)
+        n = 250
+        parent._session_messages = (
+            [{"role": "user", "content": "m"} for _ in range(250)]
+        )
+
+        captured = {}
+        with patch("run_agent.AIAgent") as MockAgent:
+            mock_child = MagicMock()
+
+            def capture(user_message, task_id=None, stream_callback=None, conversation_history=None):
+                captured["history"] = conversation_history
+                return {"final_response": "ok", "completed": True, "api_calls": 1}
+
+            mock_child.run_conversation.side_effect = capture
+            MockAgent.return_value = mock_child
+            with patch("tools.delegate_tool._load_config", return_value={"fork_max_messages": 50}):
+                delegate_task(
+                    tasks=[{"goal": "g", "context_mode": "fork"}],
+                    parent_agent=parent,
+                )
+        self.assertEqual(len(captured["history"]), 50)
+
+    def test_fork_goal_carries_inheritance_notice(self):
+        """Forked child's kickoff goal is framed as inherited reference."""
+        parent = _make_mock_parent(depth=0)
+        parent._session_messages = [{"role": "user", "content": "x"}]
+
+        captured = {}
+        with patch("run_agent.AIAgent") as MockAgent:
+            mock_child = MagicMock()
+
+            def capture(user_message, task_id=None, stream_callback=None, conversation_history=None):
+                captured["goal"] = user_message
+                return {"final_response": "ok", "completed": True, "api_calls": 1}
+
+            mock_child.run_conversation.side_effect = capture
+            MockAgent.return_value = mock_child
+            delegate_task(
+                tasks=[{"goal": "do the thing", "context_mode": "fork"}],
+                parent_agent=parent,
+            )
+        self.assertIn("inherited snapshot", captured["goal"])
+        self.assertIn("do the thing", captured["goal"])
+
+        # Isolated tasks keep the raw goal.
+        captured.clear()
+        with patch("run_agent.AIAgent") as MockAgent:
+            mock_child = MagicMock()
+            mock_child.run_conversation.side_effect = capture
+            MockAgent.return_value = mock_child
+            delegate_task(goal="do the thing", parent_agent=parent)
+        self.assertEqual(captured["goal"], "do the thing")
 
 
 if __name__ == "__main__":

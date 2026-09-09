@@ -2622,6 +2622,7 @@ def _run_single_child(
     owner_session_id: Optional[str] = None,
     owner_transport: Any = None,
     owner_session_record: Any = None,
+    fork_history: Optional[List[Dict[str, Any]]] = None,
     **_kwargs,
 ) -> Dict[str, Any]:
     """
@@ -3006,9 +3007,28 @@ def _run_single_child(
 
             with delegated_child_context(str(getattr(child, "session_id", "") or "")):
                 return child.run_conversation(
-                    user_message=goal,
+                    user_message=(
+                        # Inheritance notice (kimi-port parity): frame the
+                        # replayed snapshot as reference material, not the
+                        # child's own past actions.
+                        "You were forked from your parent agent's conversation. "
+                        "The conversation above is an inherited snapshot of the "
+                        "parent's session — treat it as reference material "
+                        "describing what has already been established, NOT as "
+                        "actions you performed yourself. Tool results in it "
+                        "were produced by the parent.\n\nYOUR TASK:\n" + goal
+                    )
+                    if fork_history
+                    else goal,
                     task_id=child_task_id,
                     stream_callback=_relay_child_text,
+                    # Fork mode: replay the parent's conversation so the child
+                    # skips re-gathering context already established. NOT
+                    # prompt-cache reuse — the child has its own system prompt
+                    # and tool list, so the prefix is cold. run_conversation
+                    # initializes messages=list(conversation_history)
+                    # (turn_context.py).
+                    conversation_history=fork_history,
                 )
 
         _child_context = contextvars.copy_context()
@@ -4180,6 +4200,51 @@ def delegate_task(
         # Per-task role beats top-level; normalise again so unknown
         # per-task values warn and degrade to leaf uniformly.
         effective_role = _normalize_role(t.get("role") or top_role)
+        # Fork mode: capture the parent's live conversation ONCE (structural
+        # clone, same recipe as _spawn_background_review) so every forked
+        # child replays the identical snapshot. Isolated tasks pass
+        # fork_history=None and take no new code paths.
+        fork_history = None
+        if (t.get("context_mode") or "isolated") == "fork":
+            try:
+                from agent.turn_finalizer import _clone_background_review_messages
+
+                fork_history = _clone_background_review_messages(
+                    list(getattr(parent_agent, "_session_messages", None) or [])
+                )
+                # Cap the snapshot (kimi-port parity): delegation.fork_max_messages,
+                # default 200, floor 10. Cut to the most recent messages; never
+                # open on a dangling tool-result boundary after the cut.
+                try:
+                    cap = max(10, int(cfg.get("fork_max_messages", 200)))
+                except (TypeError, ValueError):
+                    cap = 200
+                if len(fork_history) > cap:
+                    fork_history = fork_history[-cap:]
+                    while fork_history and fork_history[0].get("role") == "tool":
+                        fork_history.pop(0)
+                # Excise an in-progress unanswered delegate_task call from the
+                # snapshot tail: replaying it as an unanswered tool_use would
+                # rely on repair_message_sequence's prune, which can merge the
+                # parent's last user text into the child's goal. LangChain's
+                # fork excises the trailing tool call the same way.
+                while fork_history:
+                    last = fork_history[-1]
+                    if isinstance(last, dict) and last.get("role") == "assistant" and last.get("tool_calls"):
+                        fork_history.pop()
+                    else:
+                        break
+            except Exception:
+                logger.warning(
+                    "Task %d context_mode=fork: snapshot failed; falling back to isolated",
+                    i,
+                    exc_info=True,
+                )
+                fork_history = None
+        # Stash on the task dict so both single and batch executors reach it.
+        # Empty snapshot → clone is [] → same as no history (isolated path).
+        if fork_history:
+            t["_fork_history"] = fork_history
         # T1-24: schema'd tasks get the contract appended to their context
         # so the child knows the expected output shape before it starts.
         _task_schema = task_schemas[i] if i < len(task_schemas) else None
@@ -4262,6 +4327,7 @@ def delegate_task(
                 owner_session_id=_origin_ui_session_id or None,
                 owner_transport=_origin_owner_transport,
                 owner_session_record=_origin_owner_session_record,
+                fork_history=_t.get("_fork_history"),
             )
             results.append(result)
         else:
@@ -4287,6 +4353,7 @@ def delegate_task(
                         owner_session_id=_origin_ui_session_id or None,
                         owner_transport=_origin_owner_transport,
                         owner_session_record=_origin_owner_session_record,
+                        fork_history=t.get("_fork_history"),
                     )
                     futures[future] = i
 
@@ -5142,8 +5209,9 @@ def _build_top_level_description() -> str:
         "terminal(background=True, notify=True); /stop, /new, or "
         "process exit discards running subagents.\n\n"
         "RULES:\n"
-        "- Children know nothing of this conversation: pass everything needed "
-        "via 'context', including any required output language, tone, or "
+        "- Children know nothing of this conversation unless you set "
+        "context_mode='fork' on a task: pass everything needed via "
+        "'context', including any required output language, tone, or "
         "style (e.g. \"respond in Chinese\").\n"
         "- Child summaries are SELF-REPORTS, not verified facts: a child "
         "claiming \"uploaded successfully\" or \"file written\" may be wrong. "
@@ -5269,6 +5337,27 @@ DELEGATE_TASK_SCHEMA = {
                                 "schema_valid, plus schema_errors on "
                                 "failure). Keep it forgiving — require only "
                                 "fields you will read."
+                            ),
+                        },
+                        "context_mode": {
+                            "type": "string",
+                            "enum": ["isolated", "fork"],
+                            "description": (
+                                "Default 'isolated': fresh context, only "
+                                "goal+context. 'fork': child replays a "
+                                "snapshot of your conversation so far (this "
+                                "task appended). Use when the child would "
+                                "otherwise re-read files or redo research "
+                                "already in this thread. NOT prompt-cache "
+                                "reuse — the child has a different system "
+                                "prompt, tool list, and cache scope, so its "
+                                "first request is a cold prefix at full "
+                                "input rates; the benefit is skipped "
+                                "re-gathering work only. The child also "
+                                "sees your in-progress reasoning, file "
+                                "contents read this session, and any "
+                                "secrets in tool results. Empty/failed "
+                                "snapshot falls back to isolated."
                             ),
                         },
                     },

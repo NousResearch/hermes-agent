@@ -96,6 +96,7 @@ export function I18nProvider({ children, configClient = defaultConfigClient, ini
   const [locale, setLocaleState] = useState<Locale>(() => normalizeLocale(initialLocale))
   const [isLoadingConfig, setIsLoadingConfig] = useState(false)
   const [isSavingLocale, setIsSavingLocale] = useState(false)
+  const [isLocaleResolved, setIsLocaleResolved] = useState(configClient === null)
   const [configLoadError, setConfigLoadError] = useState<Error | null>(null)
   const [saveError, setSaveError] = useState<Error | null>(null)
   const localeRef = useRef(locale)
@@ -108,12 +109,23 @@ export function I18nProvider({ children, configClient = defaultConfigClient, ini
   }, [locale])
 
   useEffect(() => {
+    if (!isLocaleResolved || typeof window === 'undefined') {
+      return
+    }
+
+    // Electron's application menu must follow Hermes display.language rather
+    // than the OS locale. The bridge is optional during rolling app updates.
+    void window.hermesDesktop?.setApplicationMenuLocale?.(locale).catch(() => undefined)
+  }, [isLocaleResolved, locale])
+
+  useEffect(() => {
     if (!configClient) {
       return
     }
 
     let cancelled = false
 
+    setIsLocaleResolved(false)
     setIsLoadingConfig(true)
     setConfigLoadError(null)
 
@@ -122,12 +134,14 @@ export function I18nProvider({ children, configClient = defaultConfigClient, ini
       .then(config => {
         if (!cancelled) {
           setLocaleState(normalizeLocale(getConfigDisplayLanguage(config)))
+          setIsLocaleResolved(true)
         }
       })
       .catch(error => {
         if (!cancelled) {
           setConfigLoadError(toError(error))
           setLocaleState(DEFAULT_LOCALE)
+          setIsLocaleResolved(true)
         }
       })
       .finally(() => {

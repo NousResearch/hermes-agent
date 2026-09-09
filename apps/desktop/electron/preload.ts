@@ -272,6 +272,7 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   setActiveWork: payload => ipcRenderer.send('hermes:active-work', payload),
   setTitleBarTheme: payload => ipcRenderer.send('hermes:titlebar-theme', payload),
   setNativeTheme: mode => ipcRenderer.send('hermes:native-theme', mode),
+  setApplicationMenuLocale: locale => ipcRenderer.invoke('hermes:application-menu:set-locale', locale),
   setTranslucency: payload => ipcRenderer.send('hermes:translucency', payload),
   setKeepAwake: on => ipcRenderer.send('hermes:keep-awake', on),
   setDisableF12: blocked => ipcRenderer.send('hermes:devtools:disable-f12', blocked),

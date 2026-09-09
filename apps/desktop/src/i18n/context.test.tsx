@@ -24,9 +24,17 @@ function LanguageProbe({ target = 'zh' }: { target?: Locale }) {
   )
 }
 
+function installApplicationMenuBridge(setApplicationMenuLocale: ReturnType<typeof vi.fn>) {
+  Object.defineProperty(window, 'hermesDesktop', {
+    configurable: true,
+    value: { setApplicationMenuLocale }
+  })
+}
+
 describe('I18nProvider', () => {
   afterEach(() => {
     cleanup()
+    Reflect.deleteProperty(window, 'hermesDesktop')
     vi.restoreAllMocks()
   })
 
@@ -246,5 +254,46 @@ describe('I18nProvider', () => {
 
     expect(screen.getByTestId('locale').textContent).toBe('en')
     expect(screen.getByTestId('label').textContent).toBe('Language')
+  })
+
+  it('syncs the native application menu after resolving display.language without an English flash', async () => {
+    const setApplicationMenuLocale = vi.fn().mockResolvedValue({ locale: 'zh-hant', ok: true })
+    const configClient: I18nConfigClient = {
+      getConfig: vi.fn().mockResolvedValue({ display: { language: 'zh-TW' } }),
+      saveConfig: vi.fn()
+    }
+
+    installApplicationMenuBridge(setApplicationMenuLocale)
+
+    render(
+      <I18nProvider configClient={configClient}>
+        <LanguageProbe />
+      </I18nProvider>
+    )
+
+    await waitFor(() => expect(setApplicationMenuLocale).toHaveBeenCalledWith('zh-hant'))
+    expect(setApplicationMenuLocale).toHaveBeenCalledTimes(1)
+  })
+
+  it('syncs runtime locale switches and failed-save rollbacks to the native application menu', async () => {
+    const setApplicationMenuLocale = vi.fn().mockResolvedValue({ locale: 'en', ok: true })
+    const configClient: I18nConfigClient = {
+      getConfig: vi.fn().mockResolvedValue({ display: { language: 'en' } }),
+      saveConfig: vi.fn().mockRejectedValue(new Error('save failed'))
+    }
+
+    installApplicationMenuBridge(setApplicationMenuLocale)
+
+    render(
+      <I18nProvider configClient={configClient}>
+        <LanguageProbe target="ar" />
+      </I18nProvider>
+    )
+
+    await waitFor(() => expect(setApplicationMenuLocale).toHaveBeenCalledWith('en'))
+    fireEvent.click(screen.getByRole('button', { name: 'switch' }))
+    await waitFor(() => expect(screen.getByTestId('save-error').textContent).toBe('save failed'))
+
+    expect(setApplicationMenuLocale.mock.calls.map(call => call[0])).toEqual(['en', 'ar', 'en'])
   })
 })

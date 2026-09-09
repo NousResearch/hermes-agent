@@ -33,6 +33,12 @@ import {
 import { classifyActiveRuntime } from './active-runtime-state'
 import { destroyKeepaliveAgents, downloadAgentFor, jsonAgentFor, withRetry } from './api-transport'
 import { appIconCandidates, resolveAppIcon } from './app-icon'
+import {
+  type ApplicationMenuActions,
+  type ApplicationMenuLocale,
+  buildApplicationMenuTemplate
+} from './application-menu'
+import { registerApplicationMenuIpc } from './application-menu-ipc'
 import { stopBackendChild as stopBackendChildImpl, stopBackendTreesForUpdate } from './backend-child'
 import {
   type BackendOutputTail,
@@ -6895,138 +6901,46 @@ function sendWindowStateChanged(nextIsFullscreen?: boolean, target = mainWindow)
   webContents.send('hermes:window-state-changed', state)
 }
 
+let applicationMenuLocale: ApplicationMenuLocale = 'en'
+
+const applicationMenuActions: ApplicationMenuActions = {
+  checkForUpdates: () => sendOpenUpdatesRequested(),
+  close: () => sendClosePreviewRequested(),
+  createWindow: () => createInstanceWindow(),
+  openFolder: () => sendOpenFolderRequested(),
+  reloadPreview: () => sendPreviewNavCommand('reload'),
+  resetZoom: () => setAndPersistZoomLevel(mainWindow, DEFAULT_ZOOM_LEVEL),
+  showAbout: () => showAboutPanelFresh(),
+  toggleDevTools: browserWindow => toggleDevTools(browserWindow || mainWindow),
+  zoomIn: () => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      setAndPersistZoomLevel(mainWindow, mainWindow.webContents.getZoomLevel() + ZOOM_STEP)
+    }
+  },
+  zoomOut: () => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      setAndPersistZoomLevel(mainWindow, mainWindow.webContents.getZoomLevel() - ZOOM_STEP)
+    }
+  }
+}
+
 function buildApplicationMenu() {
-  const template = []
-
-  const checkForUpdatesItem = {
-    label: 'Check for Updates…',
-    click: () => sendOpenUpdatesRequested()
-  }
-
-  if (IS_MAC) {
-    template.push({
-      label: APP_NAME,
-      submenu: [
-        { label: `About ${APP_NAME}`, click: () => showAboutPanelFresh() },
-        checkForUpdatesItem,
-        { type: 'separator' },
-        { role: 'services' },
-        { type: 'separator' },
-        { role: 'hide' },
-        { role: 'hideOthers' },
-        { role: 'unhide' },
-        { type: 'separator' },
-        { role: 'quit' }
-      ]
+  return Menu.buildFromTemplate(
+    buildApplicationMenuTemplate({
+      actions: applicationMenuActions,
+      appName: APP_NAME,
+      isMac: IS_MAC,
+      locale: applicationMenuLocale
     })
+  )
+}
+
+function setApplicationMenuLocale(locale: ApplicationMenuLocale) {
+  applicationMenuLocale = locale
+
+  if (IS_MAC && app.isReady()) {
+    Menu.setApplicationMenu(buildApplicationMenu())
   }
-
-  template.push({
-    label: 'File',
-    submenu: [
-      // No accelerator: ⌘⇧N is a rebindable renderer keybind (session.newWindow);
-      // a menu accelerator would fight the rebind panel and (on macOS) be
-      // swallowed before the renderer sees it. Here purely for discoverability.
-      { click: () => createInstanceWindow(), label: 'New Window' },
-      // Same no-accelerator rationale: ⌘O is the rebindable renderer keybind
-      // (workspace.openFolder). Clicking runs the same open-folder-as-project
-      // flow through the renderer.
-      { click: () => sendOpenFolderRequested(), label: 'Open Folder…' },
-      { type: 'separator' },
-      IS_MAC
-        ? {
-            // NO accelerator: on macOS a registered ⌘W is consumed by the OS
-            // menu before the web contents ever sees it (and registerAccelerator
-            // false is a no-op on mac — electron#18295). Leaving it off lets the
-            // `before-input-event` handler below intercept ⌘W and route it to the
-            // renderer's close-active-tab. Clicking the item still closes the tab
-            // (or window) via the same request.
-            click: () => sendClosePreviewRequested(),
-            label: 'Close'
-          }
-        : { role: 'quit' }
-    ]
-  })
-  template.push({
-    label: 'Edit',
-    submenu: [
-      { role: 'undo' },
-      { role: 'redo' },
-      { type: 'separator' },
-      { role: 'cut' },
-      { role: 'copy' },
-      { role: 'paste' },
-      // ⌘⇧V is only wired up by this item existing: an accelerator with no menu
-      // entry is never translated into an editor command, so the chord was a
-      // no-op in every input in the app. The composer inserts plain text on
-      // every paste anyway, so this is the same result as ⌘V there — it's the
-      // terminal, preview, and other editable surfaces that need the strip.
-      { role: 'pasteAndMatchStyle' },
-      { role: 'delete' },
-      { role: 'selectAll' }
-    ]
-  })
-  template.push({
-    label: 'View',
-    submenu: [
-      // Not `role: 'reload'`: that hard-reloads the RENDERER (every pane, the
-      // whole shell) and a focused in-app browser needs ⌘R to mean "reload
-      // this page", the way it does in every other browser. ⇧⌘R
-      // (`forceReload`) below stays the unconditional escape hatch.
-      //
-      // No accelerator: ⌘R is claimed in `installPreviewShortcut`, which works
-      // on every platform (this menu exists only on macOS). Declaring it here
-      // too would fire the item and the input hook for one keypress.
-      { click: () => sendPreviewNavCommand('reload'), label: 'Reload' },
-      { role: 'forceReload' },
-      {
-        label: 'Toggle Developer Tools',
-        accelerator: process.platform === 'darwin' ? 'Alt+Cmd+I' : 'Ctrl+Shift+I',
-        click: (_menuItem, browserWindow) => toggleDevTools(browserWindow || mainWindow)
-      },
-      { type: 'separator' },
-      {
-        label: 'Actual Size',
-        accelerator: 'CommandOrControl+0',
-        click: () => {
-          setAndPersistZoomLevel(mainWindow, DEFAULT_ZOOM_LEVEL)
-        }
-      },
-      {
-        label: 'Zoom In',
-        accelerator: 'CommandOrControl+Plus',
-        click: () => {
-          if (mainWindow && !mainWindow.isDestroyed()) {
-            setAndPersistZoomLevel(mainWindow, mainWindow.webContents.getZoomLevel() + ZOOM_STEP)
-          }
-        }
-      },
-      {
-        label: 'Zoom Out',
-        accelerator: 'CommandOrControl+-',
-        click: () => {
-          if (mainWindow && !mainWindow.isDestroyed()) {
-            setAndPersistZoomLevel(mainWindow, mainWindow.webContents.getZoomLevel() - ZOOM_STEP)
-          }
-        }
-      },
-      { type: 'separator' },
-      { role: 'togglefullscreen' }
-    ]
-  })
-  template.push({
-    label: 'Window',
-    submenu: IS_MAC
-      ? [{ role: 'minimize' }, { role: 'zoom' }, { role: 'front' }]
-      : [{ role: 'minimize' }, { role: 'close' }]
-  })
-  template.push({
-    label: 'Help',
-    role: 'help',
-    submenu: [checkForUpdatesItem]
-  })
-
-  return Menu.buildFromTemplate(template)
 }
 
 function toggleDevTools(window) {
@@ -17580,6 +17494,10 @@ registerGitIpc({ resolveGitBinary, resolveGhBinary })
 // Client-side loopback callback for MCP OAuth against remote backends — see
 // mcp-oauth-callback-ipc.ts.
 registerMcpOauthCallbackIpc()
+
+// The renderer owns display.language. Rebuild the native macOS menu whenever
+// that canonical locale changes; malformed bridge payloads are rejected.
+registerApplicationMenuIpc(setApplicationMenuLocale)
 
 // Embedded terminal PTY host (hermes:terminal:*) — see terminal-ipc.ts.
 const terminalIpc = registerTerminalIpc({

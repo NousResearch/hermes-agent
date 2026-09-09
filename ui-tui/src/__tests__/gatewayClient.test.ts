@@ -97,7 +97,13 @@ const { FakeWebSocket } = vi.hoisted(() => {
 
 vi.mock('undici', () => ({ WebSocket: FakeWebSocket }))
 
-import { GatewayClient, RECONNECT_BASE_MS, RECONNECT_MAX_MS, WS_HEARTBEAT_DEAD_MS, WS_HEARTBEAT_INTERVAL_MS } from '../gatewayClient.js'
+import {
+  GatewayClient,
+  RECONNECT_BASE_MS,
+  RECONNECT_MAX_MS,
+  WS_HEARTBEAT_DEAD_MS,
+  WS_HEARTBEAT_INTERVAL_MS
+} from '../gatewayClient.js'
 
 describe('GatewayClient websocket attach mode', () => {
   const originalWebSocket = globalThis.WebSocket

@@ -94,6 +94,9 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
+      - name: Reject profile exports in the build context
+        run: python3 scripts/ci/check_profile_archive_boundary.py
+
       # Retry once on transient Docker Hub / buildkit pull failures
       # (connection reset, auth token timeout, rate limiting). The action
       # generates a unique builder name per invocation so the retry doesn't
@@ -205,6 +208,9 @@ jobs:
     steps:
       - name: Checkout trusted source
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Reject profile exports in the build context
+        run: python3 scripts/ci/check_profile_archive_boundary.py
 
       # Retry once on transient Docker Hub / buildkit pull failures.
       # See build job for rationale; same pattern.

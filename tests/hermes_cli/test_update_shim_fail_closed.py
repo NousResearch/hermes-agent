@@ -23,7 +23,7 @@ from unittest import mock
 
 import pytest
 
-import hermes_cli.main as cli_main
+from hermes_cli import main_install_repair
 import hermes_cli._install_repair as ir
 import hermes_cli.update_cmd as update_cmd
 
@@ -40,7 +40,7 @@ def _make_shims(scripts_dir: Path, names=("hermes", "hermes-gateway")) -> list[P
 
 @pytest.fixture()
 def windows(monkeypatch):
-    monkeypatch.setattr(cli_main, "_is_windows", lambda: True)
+    monkeypatch.setattr(main_install_repair, "_is_windows", lambda: True)
     monkeypatch.setattr(ir, "_is_windows", lambda: True)
 
 
@@ -60,16 +60,16 @@ def test_strict_quarantine_refuses_before_install(windows, tmp_path, monkeypatch
         return real_rename(self, target)
 
     monkeypatch.setattr(Path, "rename", deny_hermes)
-    monkeypatch.setattr(cli_main, "_hermes_exe_shims", lambda d: shims)
+    monkeypatch.setattr(main_install_repair, "_hermes_exe_shims", lambda d: shims)
 
     install_ran = []
     monkeypatch.setattr(
-        cli_main, "_run_install_with_heartbeat",
+        main_install_repair, "_run_install_with_heartbeat",
         lambda cmd, env=None: install_ran.append(cmd),
     )
 
-    with pytest.raises(cli_main.ShimQuarantineError) as exc_info:
-        cli_main._run_quarantined_install(
+    with pytest.raises(main_install_repair.ShimQuarantineError) as exc_info:
+        main_install_repair._run_quarantined_install(
             ["uv", "pip", "install", "-e", "."],
             scripts_dir=scripts,
             strict_quarantine=True,
@@ -90,31 +90,31 @@ def test_non_strict_keeps_warn_and_try(windows, tmp_path, monkeypatch):
         Path, "rename",
         mock.Mock(side_effect=PermissionError(13, "held open")),
     )
-    monkeypatch.setattr(cli_main, "_hermes_exe_shims", lambda d: shims)
+    monkeypatch.setattr(main_install_repair, "_hermes_exe_shims", lambda d: shims)
 
     install_ran = []
     monkeypatch.setattr(
-        cli_main, "_run_install_with_heartbeat",
+        main_install_repair, "_run_install_with_heartbeat",
         lambda cmd, env=None: install_ran.append(cmd),
     )
 
     # Default (non-strict): installer still runs — old behavior for repair
     # paths whose venv is already mutated.
-    cli_main._run_quarantined_install(["fake"], scripts_dir=scripts)
+    main_install_repair._run_quarantined_install(["fake"], scripts_dir=scripts)
     assert install_ran == [["fake"]]
 
 
 def test_strict_all_renames_ok_runs_install(windows, tmp_path, monkeypatch):
     scripts = tmp_path / "venv" / "Scripts"
     shims = _make_shims(scripts)
-    monkeypatch.setattr(cli_main, "_hermes_exe_shims", lambda d: shims)
+    monkeypatch.setattr(main_install_repair, "_hermes_exe_shims", lambda d: shims)
 
     install_ran = []
     monkeypatch.setattr(
-        cli_main, "_run_install_with_heartbeat",
+        main_install_repair, "_run_install_with_heartbeat",
         lambda cmd, env=None: install_ran.append(cmd),
     )
-    cli_main._run_quarantined_install(
+    main_install_repair._run_quarantined_install(
         ["fake"], scripts_dir=scripts, strict_quarantine=True
     )
     assert install_ran == [["fake"]]
@@ -128,17 +128,17 @@ def test_update_sync_installs_are_strict(windows, tmp_path, monkeypatch):
     def spy(cmd, *, env=None, scripts_dir=None, strict_quarantine=False):
         seen["strict"] = strict_quarantine
 
-    monkeypatch.setattr(cli_main, "_run_quarantined_install", spy)
-    monkeypatch.setattr(cli_main, "_venv_scripts_dir", lambda: tmp_path)
+    monkeypatch.setattr(main_install_repair, "_run_quarantined_install", spy)
+    monkeypatch.setattr(main_install_repair, "_venv_scripts_dir", lambda: tmp_path)
     monkeypatch.setattr(
-        cli_main, "_verify_console_scripts_installed",
+        main_install_repair, "_verify_console_scripts_installed",
         lambda prefix, env=None: None,
     )
     monkeypatch.setattr(
-        cli_main, "_verify_core_dependencies_installed",
+        main_install_repair, "_verify_core_dependencies_installed",
         lambda prefix, env=None, group="all": None,
     )
-    cli_main._install_python_dependencies_with_optional_fallback(["uv", "pip"])
+    main_install_repair._install_python_dependencies_with_optional_fallback(["uv", "pip"])
     assert seen["strict"] is True
 
 
@@ -191,7 +191,7 @@ def test_refusal_writes_marker_and_exits_2(monkeypatch, capsys):
     monkeypatch.setattr(
         update_cmd, "_write_update_incomplete_marker", lambda: wrote.append(1)
     )
-    exc = cli_main.ShimQuarantineError(["hermes.exe"])
+    exc = main_install_repair.ShimQuarantineError(["hermes.exe"])
     with pytest.raises(SystemExit) as exit_info:
         update_cmd._refuse_update_for_contended_shims(exc)
     assert exit_info.value.code == 2
@@ -202,9 +202,9 @@ def test_refusal_writes_marker_and_exits_2(monkeypatch, capsys):
 
 
 def test_shim_error_type_resolves_real_class():
-    assert update_cmd._shim_quarantine_error_type() is cli_main.ShimQuarantineError
+    assert update_cmd._shim_quarantine_error_type() is main_install_repair.ShimQuarantineError
 
 
 def test_shim_error_is_not_a_zip_fallback_trigger():
-    exc = cli_main.ShimQuarantineError(["hermes.exe"])
+    exc = main_install_repair.ShimQuarantineError(["hermes.exe"])
     assert update_cmd._should_zip_fallback_on_update_error(exc) is False

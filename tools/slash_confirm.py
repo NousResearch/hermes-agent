@@ -1,29 +1,15 @@
 """Generic slash-command confirmation primitive (gateway-side).
 
-Slash commands that have a non-destructive but expensive side effect worth
-surfacing to the user (currently only ``/reload-mcp``, which invalidates
-the provider prompt cache) route through this module.
-
-Two delivery paths:
-
-  1. Button UI — adapters that override ``send_slash_confirm`` render
-     three inline buttons (Approve Once / Always Approve / Cancel).  The
-     button callback calls ``resolve(session_key, confirm_id, choice)``.
-
-  2. Text fallback — adapters without button UIs get a plain text prompt.
-     Users reply with ``/approve``, ``/always``, or ``/cancel``; the
-     gateway's ``_handle_message`` intercepts those replies and calls
-     ``resolve()`` directly.
-
-State is stored module-level (like ``tools.approval``) so platform
-adapters can resolve callbacks without needing a backreference to the
-``GatewayRunner`` instance.  The CLI path (``cli.py``) uses a local
-synchronous variant — see ``_prompt_slash_confirm`` there.
+Slash commands with an expensive side effect (currently only ``/reload-mcp``, which invalidates
+the provider prompt cache) route through here. Button-UI adapters render Approve Once / Always
+Approve / Cancel and call ``resolve()``; text-only adapters get a prompt and the gateway
+intercepts ``/approve``, ``/always``, ``/cancel``. State is module-level (like ``tools.approval``)
+so adapters can resolve without a ``GatewayRunner`` backreference. The CLI has its own
+synchronous variant (``_prompt_slash_confirm`` in ``cli.py``).
 """
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import threading
 import time
@@ -31,45 +17,25 @@ from typing import Any, Awaitable, Callable, Dict, Optional
 
 logger = logging.getLogger(__name__)
 
-# Pending confirmations keyed by gateway session_key.  Each entry:
-#   {
-#       "confirm_id": str,
-#       "command":    str,                       # e.g. "reload-mcp"
-#       "handler":    Callable[[str], Awaitable[Optional[str]]],
-#       "created_at": float,                     # time.time()
-#   }
+# session_key -> {"confirm_id", "command", "handler", "created_at"}
 _pending: Dict[str, Dict[str, Any]] = {}
 _lock = threading.RLock()
 
-# Default timeout — a pending confirm older than this is discarded when
-# the next message arrives for the same session.  Buttons work up until
-# the adapter drops the callback_data (Telegram: ~48h; Discord: ephemeral;
-# Slack: 3s ack + long-lived actions).
+# Older pending confirms are discarded when the session's next message arrives (buttons live
+# as long as the adapter keeps callback_data).
 DEFAULT_TIMEOUT_SECONDS = 300
 
 
-def register(
-    session_key: str,
-    confirm_id: str,
-    command: str,
-    handler: Callable[[str], Awaitable[Optional[str]]],
-) -> None:
-    """Register a pending slash-command confirmation.
-
-    Overwrites any prior pending confirm for the same ``session_key`` — the
-    user invoking a new confirmable command supersedes the stale one.
-    """
+def register(session_key: str, confirm_id: str, command: str,
+             handler: Callable[[str], Awaitable[Optional[str]]]) -> None:
+    """Register a pending confirm, superseding any prior one for the session."""
     with _lock:
-        _pending[session_key] = {
-            "confirm_id": confirm_id,
-            "command": command,
-            "handler": handler,
-            "created_at": time.time(),
-        }
+        _pending[session_key] = {"confirm_id": confirm_id, "command": command,
+                                 "handler": handler, "created_at": time.time()}
 
 
 def get_pending(session_key: str) -> Optional[Dict[str, Any]]:
-    """Return the pending confirm dict for a session, or None."""
+    """Return a copy of the pending confirm dict for a session, or None."""
     with _lock:
         entry = _pending.get(session_key)
         return dict(entry) if entry else None
@@ -81,48 +47,34 @@ def clear(session_key: str) -> None:
         _pending.pop(session_key, None)
 
 
+def _is_stale(entry: Dict[str, Any], timeout: float) -> bool:
+    return time.time() - float(entry.get("created_at", 0) or 0) > timeout
+
+
 def clear_if_stale(session_key: str, timeout: float = DEFAULT_TIMEOUT_SECONDS) -> bool:
-    """Drop the pending confirm if older than ``timeout`` seconds.
-
-    Returns True if an entry was dropped.
-    """
+    """Drop the pending confirm if older than ``timeout`` seconds; True if dropped."""
     with _lock:
         entry = _pending.get(session_key)
-        if not entry:
-            return False
-        if time.time() - float(entry.get("created_at", 0) or 0) > timeout:
+        stale = bool(entry and _is_stale(entry, timeout))
+        if stale:
             _pending.pop(session_key, None)
-            return True
-        return False
+        return stale
 
 
-async def resolve(
-    session_key: str,
-    confirm_id: str,
-    choice: str,
-    timeout: float = DEFAULT_TIMEOUT_SECONDS,
-) -> Optional[str]:
-    """Resolve a pending confirm.
+async def resolve(session_key: str, confirm_id: str, choice: str,
+                  timeout: float = DEFAULT_TIMEOUT_SECONDS) -> Optional[str]:
+    """Run the pending handler with ``choice`` ("once" / "always" / "cancel").
 
-    ``choice`` must be one of ``"once"``, ``"always"``, or ``"cancel"``.
-    Returns the handler's output string (to be sent as a follow-up
-    message), or ``None`` if the confirm was stale, already resolved, or
-    the confirm_id doesn't match.
-
-    Safe to call from an asyncio callback (button click) or from the
-    gateway's message intercept path.
+    Returns the handler's output string, or None if the confirm was stale, already resolved,
+    or the confirm_id doesn't match (superseded prompt).
     """
     with _lock:
         entry = _pending.get(session_key)
-        if not entry:
+        if not entry or entry.get("confirm_id") != confirm_id:
             return None
-        if entry.get("confirm_id") != confirm_id:
-            # Stale confirm_id — superseded by a newer prompt on the same session.
-            return None
-        # Pop before we run the handler to prevent duplicate callbacks
-        # (e.g. button double-click) from running it twice.
+        # Pop before running so duplicate callbacks (button double-click) cannot run it twice.
         _pending.pop(session_key, None)
-        if time.time() - float(entry.get("created_at", 0) or 0) > timeout:
+        if _is_stale(entry, timeout):
             return None
         handler = entry.get("handler")
         command = entry.get("command", "?")
@@ -132,13 +84,16 @@ async def resolve(
     try:
         result = await handler(choice)
     except Exception as exc:
-        logger.error(
-            "Slash-confirm handler for /%s raised: %s",
-            command, exc, exc_info=True,
-        )
+        logger.error("Slash-confirm handler for /%s raised: %s", command, exc, exc_info=True)
         return f"❌ Error handling confirmation: {exc}"
     return result if isinstance(result, str) else None
 
+
+# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
+# Names external plugins imported from this module before the Sep 2026 decomposition.
+# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
+# The whole block is removed by reverting the commit that added it.
+import asyncio  # noqa: F401,E402
 
 def resolve_sync_compat(
     loop: asyncio.AbstractEventLoop,
@@ -165,3 +120,4 @@ def resolve_sync_compat(
     except Exception as exc:
         logger.error("resolve_sync_compat failed: %s", exc)
         return None
+# ---- END PLUGIN-COMPAT ----

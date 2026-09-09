@@ -1,15 +1,16 @@
 """Tests for state.db health/stats collection (hermes doctor section).
 
 Covers:
-- ``hermes_state.collect_state_db_stats``: read-only, best-effort stats
+- ``hermes_state_dbfile.collect_state_db_stats``: read-only, best-effort stats
   (page_count, freelist, WAL size, journal mode, row counts, FTS presence,
   pending v23 FTS-rebuild bookkeeping).
-- ``hermes_state.count_db_holders``: /proc-based best-effort probe for how
+- ``hermes_state_dbfile.count_db_holders``: /proc-based best-effort probe for how
   many processes hold the DB file open (Linux only; None elsewhere/on error).
-- ``hermes_cli.doctor._render_state_db_stats``: formatting/threshold helper
+- ``hermes_cli.doctor_state._render_state_db_stats``: formatting/threshold helper
   the doctor state.db section prints from.
 """
 
+import hermes_state_dbfile
 import json
 import os
 import sqlite3
@@ -18,7 +19,9 @@ from pathlib import Path
 
 import pytest
 
-from hermes_state import SessionDB, collect_state_db_stats, count_db_holders
+from hermes_state import SessionDB
+from hermes_state_dbfile import collect_state_db_stats, count_db_holders
+import hermes_cli.doctor_state
 
 
 @pytest.fixture()
@@ -95,7 +98,7 @@ def test_collect_and_render_stale_fts_holder_deferral(populated_db):
     assert stats["fts_rebuild_deferral"]["attempts"] == 4
     assert stats["fts_rebuild_deferral"]["holder_pids"] == [4242]
 
-    from hermes_cli.doctor import _render_state_db_stats
+    from hermes_cli.doctor_state import _render_state_db_stats
 
     rendered = _render_state_db_stats(stats)
     warnings = [
@@ -181,7 +184,7 @@ def _base_stats(**overrides):
 
 
 def test_render_healthy_stats_no_warnings():
-    from hermes_cli.doctor import _render_state_db_stats
+    from hermes_cli.doctor_state import _render_state_db_stats
 
     lines = _render_state_db_stats(_base_stats(), holders=2)
     kinds = [k for k, *_ in lines]
@@ -194,10 +197,7 @@ def test_render_healthy_stats_no_warnings():
 
 
 def test_render_warns_on_large_db():
-    from hermes_cli.doctor import (
-        STATE_DB_SIZE_WARN_BYTES,
-        _render_state_db_stats,
-    )
+    from hermes_cli.doctor_state import STATE_DB_SIZE_WARN_BYTES, _render_state_db_stats
 
     big = STATE_DB_SIZE_WARN_BYTES + 1
     lines = _render_state_db_stats(
@@ -213,7 +213,7 @@ def test_render_warns_on_large_db():
 
 
 def test_render_large_db_with_pending_rebuild_suggests_optimize():
-    from hermes_cli.doctor import STATE_DB_SIZE_WARN_BYTES, _render_state_db_stats
+    from hermes_cli.doctor_state import STATE_DB_SIZE_WARN_BYTES, _render_state_db_stats
 
     big = STATE_DB_SIZE_WARN_BYTES + 1
     lines = _render_state_db_stats(
@@ -225,7 +225,7 @@ def test_render_large_db_with_pending_rebuild_suggests_optimize():
 
 
 def test_render_large_db_legacy_trigram_suggests_optimize():
-    from hermes_cli.doctor import STATE_DB_SIZE_WARN_BYTES, _render_state_db_stats
+    from hermes_cli.doctor_state import STATE_DB_SIZE_WARN_BYTES, _render_state_db_stats
 
     big = STATE_DB_SIZE_WARN_BYTES + 1
     lines = _render_state_db_stats(
@@ -236,11 +236,25 @@ def test_render_large_db_legacy_trigram_suggests_optimize():
     assert "optimize-storage" in blob
 
 
+def test_render_large_db_v1_trigram_suggests_optimize():
+    from hermes_cli.doctor_state import STATE_DB_SIZE_WARN_BYTES, _render_state_db_stats
+
+    lines = _render_state_db_stats(
+        _base_stats(
+            logical_size_bytes=STATE_DB_SIZE_WARN_BYTES + 1,
+            fts_storage_version=1,
+        ),
+        holders=None,
+    )
+    blob = " ".join(" ".join(str(p) for p in line) for line in lines)
+    assert "optimize-storage" in blob
+
+
 def test_render_does_not_duplicate_legacy_wal_warning():
     """A large WAL must NOT warn here: doctor's pre-existing WAL check
     (50 MB threshold, with a --fix checkpoint) already covers it, and a
     second warning at a higher threshold would duplicate the output."""
-    from hermes_cli.doctor import _render_state_db_stats
+    from hermes_cli.doctor_state import _render_state_db_stats
 
     lines = _render_state_db_stats(
         _base_stats(wal_size_bytes=256 * 1024 * 1024 + 1), holders=None
@@ -251,7 +265,7 @@ def test_render_does_not_duplicate_legacy_wal_warning():
 
 
 def test_render_handles_all_none_stats():
-    from hermes_cli.doctor import _render_state_db_stats
+    from hermes_cli.doctor_state import _render_state_db_stats
 
     empty = {k: None for k in _base_stats()}
     empty["fts_tables"] = None

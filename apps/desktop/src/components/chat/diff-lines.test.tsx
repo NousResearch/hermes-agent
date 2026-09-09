@@ -7,11 +7,20 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 // covers the *pending* state, so the rejection throws past it to the nearest
 // error boundary — which in production is the whole workspace `ContribBoundary`
 // — and blanks the transcript instead of degrading to the plain colored diff.
-vi.mock('./syntax-diff', () => {
-  throw new Error(
-    'Failed to fetch dynamically imported module: file:///Hermes.app/Contents/Resources/app.asar/dist/assets/syntax-diff-Bo0962zh.js'
-  )
-})
+//
+// The mock resolves to a component that throws the fetch error during render —
+// the same way React surfaces a rejected lazy payload (a rejected import
+// re-throws at render time). Do NOT throw inside the factory itself: a
+// throwing factory leaves rejected promises in the vitest mocker registry,
+// and under CI load one escapes as an "unhandled error during the test run"
+// attributed to whichever sibling test file the worker is running (#94415).
+vi.mock('./syntax-diff', () => ({
+  default: () => {
+    throw new Error(
+      'Failed to fetch dynamically imported module: file:///Hermes.app/Contents/Resources/app.asar/dist/assets/syntax-diff-Bo0962zh.js'
+    )
+  }
+}))
 
 import { ErrorBoundary } from '@/components/error-boundary'
 

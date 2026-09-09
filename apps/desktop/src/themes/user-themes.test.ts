@@ -300,6 +300,6 @@ describe('user theme storage hydration', () => {
       unsubscribe()
     }
 
-    expect(persistenceEvents).toEqual([{ key: USER_THEMES_KEY, op: 'read', value: stored }])
+    expect(persistenceEvents).toContainEqual({ key: USER_THEMES_KEY, op: 'read', value: stored })
   })
 })

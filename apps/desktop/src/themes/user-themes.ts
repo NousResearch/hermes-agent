@@ -18,33 +18,12 @@ import { readKey, writeKey } from '@/lib/storage'
 import { $backendThemes } from './backend-sync'
 import { BUILTIN_THEMES } from './presets'
 import { PROFILE_SKINS_KEY, SKIN_KEY, USER_THEMES_KEY } from './storage-keys'
-import type { DesktopTheme, DesktopThemeColors } from './types'
+import { type DesktopTheme, isValidTheme } from './types'
 
 // Marketplace imports stamp their description "VS Code · <publisher.extension>"
 // (see `convertVscodeColorTheme`). This is the one place that convention is read
 // back out, so every install surface can tell what's already installed.
 const MARKETPLACE_DESC_PREFIX = 'VS Code · '
-
-// The minimal set of color keys a stored theme must carry to be usable. We keep
-// this loose — `applyTheme` tolerates missing optionals via fallbacks — but a
-// theme with no background/foreground/primary is junk and gets dropped.
-const REQUIRED_COLOR_KEYS: ReadonlyArray<keyof DesktopThemeColors> = ['background', 'foreground', 'primary']
-
-function isValidTheme(value: unknown): value is DesktopTheme {
-  if (!value || typeof value !== 'object') {
-    return false
-  }
-
-  const theme = value as Partial<DesktopTheme>
-
-  if (typeof theme.name !== 'string' || typeof theme.label !== 'string' || !theme.colors) {
-    return false
-  }
-
-  const colors = theme.colors as unknown as Record<string, unknown>
-
-  return REQUIRED_COLOR_KEYS.every(key => typeof colors[key] === 'string')
-}
 
 function readStored(): Record<string, DesktopTheme> {
   try {

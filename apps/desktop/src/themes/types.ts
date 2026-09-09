@@ -99,3 +99,25 @@ export interface DesktopTheme {
   /** Dark-variant terminal ANSI palette. Falls back to `terminal`. */
   darkTerminal?: DesktopTerminalPalette
 }
+
+// The minimal set of color keys a stored theme must carry to be usable. We keep
+// this loose — `applyTheme` tolerates missing optionals via fallbacks — but a
+// theme with no background/foreground/primary is junk and gets dropped.
+const REQUIRED_COLOR_KEYS: ReadonlyArray<keyof DesktopThemeColors> = ['background', 'foreground', 'primary']
+
+/** Shape check for a theme read back from storage or a contribution. */
+export function isValidTheme(value: unknown): value is DesktopTheme {
+  if (!value || typeof value !== 'object') {
+    return false
+  }
+
+  const theme = value as Partial<DesktopTheme>
+
+  if (typeof theme.name !== 'string' || typeof theme.label !== 'string' || !theme.colors) {
+    return false
+  }
+
+  const colors = theme.colors as unknown as Record<string, unknown>
+
+  return REQUIRED_COLOR_KEYS.every(key => typeof colors[key] === 'string')
+}

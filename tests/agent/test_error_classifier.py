@@ -61,9 +61,11 @@ class TestFailoverReason:
             "overloaded", "server_error", "timeout",
             "ssl_cert_verification",
             "context_overflow", "payload_too_large", "image_too_large",
+            "image_corrupt",
             "model_not_found", "format_error",
             "invalid_encrypted_content",
             "multimodal_tool_content_unsupported",
+            "reasoning_mandatory",
             "provider_policy_blocked",
             "content_policy_blocked",
             "thinking_signature", "long_context_tier",
@@ -274,6 +276,23 @@ class TestClassifyApiError:
         e = MockAPIError("Too Many Requests", status_code=429)
         result = classify_api_error(e)
         assert result.reason == FailoverReason.rate_limit
+        assert result.should_fallback is True
+
+    @pytest.mark.parametrize("spelling", [
+        "resource exhausted",
+        "RESOURCE_EXHAUSTED",
+        "ResourceExhausted",
+        "resource-exhausted",
+    ])
+    def test_resource_exhausted_separator_variants_without_status(self, spelling):
+        result = classify_api_error(
+            Exception(f"{spelling}: Worker local total request limit reached (32/32)"),
+            provider="nvidia",
+            model="nvidia/nemotron-3-ultra-550b-a55b",
+        )
+        assert result.reason == FailoverReason.rate_limit
+        assert result.retryable is True
+        assert result.should_rotate_credential is True
         assert result.should_fallback is True
 
     def test_anthropic_429_usage_limit_without_reset_is_billing(self):
@@ -662,6 +681,47 @@ class TestClassifyApiError:
 
 
 
+    # ── Local-inference memory ceiling (oMLX/MLX prefill guard, #52261) ──
+
+    @pytest.mark.parametrize("message, status_code, body", [
+        # 0.5.6 prefill guard: a memory peak in BYTES whose remediation tail says "Reduce context
+        # length" — the phrase that used to route it into the compress loop.
+        ("Prefill memory guard rejected request: Prefill would require ~13.87 GB peak, "
+         "dynamic ceiling is 13.50 GB. Reduce context length or lower memory_guard_tier.", 400, None),
+        # 0.5.7 rewording ("predicted peak would require"); cap names survive the verb change.
+        ("process memory limit exceeded: predicted peak would require ~78.57 GB, prefill "
+         "safety cap is 77.76 GB (90% of metal_cap ceiling 86.40 GB). Reduce context size.", 400, None),
+        # Mid-stream the guard exits as a generic 500 (streaming generator drops the code).
+        ("predicted peak would exceed prefill safety cap 77.8GB. Reduce context length.", 500, None),
+        # Status-less: "memory limit exceeded" contains "limit exceeded" and would otherwise read
+        # as billing in the usage-limit disambiguation — the memory rule runs in the message HEAD.
+        ("process memory limit exceeded: predicted peak would require ~78.57 GB. "
+         "Reduce context size.", None, None),
+        # Proxy flattened the wording; only the structured code survives (400 must read it, since
+        # _by_status runs before _by_error_code).
+        ("Request failed.", 400, {"error": {"message": "Request failed.", "code": "prefill_memory_exceeded"}}),
+    ])
+    def test_memory_ceiling_rejection_is_overloaded_not_overflow(self, message, status_code, body):
+        kwargs = {"status_code": status_code} if status_code is not None else {}
+        if body is not None:
+            kwargs["body"] = body
+        result = classify_api_error(MockAPIError(message, **kwargs), provider="omlx")
+        assert result.reason == FailoverReason.overloaded
+        assert result.should_compress is False
+        assert result.should_rotate_credential is False
+
+    def test_genuine_context_overflow_still_compresses(self):
+        """Guard against over-reach: a real window overflow must keep its
+        compression recovery."""
+        e = MockAPIError(
+            "This model's maximum context length is 200000 tokens. However, your "
+            "messages resulted in 250000 tokens.",
+            status_code=400,
+        )
+        result = classify_api_error(e, provider="omlx")
+        assert result.reason == FailoverReason.context_overflow
+        assert result.should_compress is True
+
     # ── Server disconnect + large session ──
 
 
@@ -688,6 +748,46 @@ class TestClassifyApiError:
         assert result.reason == FailoverReason.invalid_encrypted_content
         assert result.retryable is True
         assert result.should_fallback is False
+
+    # ── Codex masked encrypted-reasoning replay rejection (#92353) ──
+
+    _CODEX_MASKED = {"message": "Request blocked.", "type": "invalid_request_error", "param": None, "code": "invalid_prompt"}
+
+    @pytest.mark.parametrize("error", [
+        MockAPIError("Error code: 400 - Request blocked.", status_code=400, body=_CODEX_MASKED),  # SDK unwraps body["error"]
+        MockAPIError("Request blocked.", status_code=None, body={"error": _CODEX_MASKED}),  # SSE ``error`` frame
+        RuntimeError("invalid_prompt: Request blocked."),  # ``response.failed`` terminal frame
+    ], ids=["http400", "sse-frame", "response-failed"])
+    def test_codex_masked_replay_rejection_reaches_replay_strip(self, error):
+        result = classify_api_error(error, provider="openai-codex", model="gpt-5.5")
+        assert result.reason == FailoverReason.invalid_encrypted_content
+        assert result.retryable is False and result.should_fallback is True  # format_error's terminal hints kept
+
+    @pytest.mark.parametrize(("provider", "body", "expected"), [
+        ("custom", _CODEX_MASKED, FailoverReason.format_error),  # same envelope, other provider
+        ("openai-codex", {**_CODEX_MASKED, "message": "Invalid prompt: too long."}, FailoverReason.format_error),
+        ("openai-codex", {**_CODEX_MASKED, "code": "server_error"}, FailoverReason.format_error),
+        ("openai-codex", {**_CODEX_MASKED, "message": "Request blocked. Your request was flagged by our safety system."},
+         FailoverReason.content_policy_blocked),  # #18028 refusal still wins
+    ], ids=["other-provider", "other-message", "other-code", "safety-refusal"])
+    def test_codex_masked_replay_rejection_stays_narrow(self, provider, body, expected):
+        e = MockAPIError("Error code: 400 - " + body["message"], status_code=400, body=body)
+        assert classify_api_error(e, provider=provider, model="gpt-5.5").reason == expected
+
+    # ── Reasoning-mandatory route rejecting a disable ──
+
+    def test_reasoning_mandatory_400_is_retryable_not_format_error(self):
+        e = MockAPIError(
+            "Error code: 400 - This request is not valid. Check the model name "
+            "and other parameters. Additional info: Reasoning is mandatory for "
+            "this endpoint and cannot be disabled.",
+            status_code=400,
+        )
+        result = classify_api_error(e, provider="nous", model="z-ai/glm-5.3-flash")
+        assert result.reason == FailoverReason.reasoning_mandatory
+        assert result.retryable is True
+        assert result.should_fallback is False
+        assert result.should_compress is False
 
     # ── Provider-specific: llama.cpp grammar-parse ──
 

@@ -36,7 +36,7 @@ describe('the stored choice', () => {
 // force-visible rule, so hiding a zone that held only a closeable tile left a
 // surface with no tab, no ✕ and no menu — the "how do I get it back" reports.
 describe('no dead zone', () => {
-  it('keeps the strip for a closeable tile even when the zone says never', () => {
+  it('keeps the strip for a lone closeable tile even when the zone says never', () => {
     expect(resolveTabStripVisible({ mode: 'never', shown: [tile()] })).toBe(true)
   })
 
@@ -45,10 +45,33 @@ describe('no dead zone', () => {
   })
 
   it('still hides a zone that cannot strand anything', () => {
-    // The workspace is uncloseable, and a stack is reachable by tab cycling —
-    // the invariant protects handles, it does not veto hiding as such.
+    // The workspace is uncloseable, a stack is reachable by tab cycling, and
+    // hide-only chrome (sessions / Bots) keeps its panes + ⌘⌥T — the invariant
+    // protects handles, it does not veto hiding as such.
     expect(resolveTabStripVisible({ mode: 'never', shown: [workspace()] })).toBe(false)
     expect(resolveTabStripVisible({ mode: 'never', shown: [toolPanel(), toolPanel()] })).toBe(false)
+    expect(resolveTabStripVisible({ mode: 'never', shown: [sideChrome()] })).toBe(false)
+    expect(resolveTabStripVisible({ mode: 'never', shown: [sideChrome(), sideChrome()] })).toBe(false)
+  })
+})
+
+// The regression the rung above caused on its way to holding that invariant.
+// The stranding check ran over the whole stack, so ONE closeable tile anywhere
+// in a zone pinned the strip on at any tab count — and main is where tabs
+// accumulate. Hide tabs (menu row AND ⌘⌥T) silently did nothing there, which
+// reads as "hide tabs is broken", not as a stranding bug.
+describe('hiding a stack that has other handles', () => {
+  it('honors never once a closeable tile has a neighbor to cycle to', () => {
+    expect(resolveTabStripVisible({ mode: 'never', shown: [workspace(), tile()] })).toBe(false)
+    expect(resolveTabStripVisible({ mode: 'never', shown: [tile(), tile()] })).toBe(false)
+    expect(resolveTabStripVisible({ mode: 'never', shown: [workspace(), tile(), tile()] })).toBe(false)
+  })
+
+  it('leaves those same stacks alone on auto', () => {
+    // The stranding rung is resolved before `mode`, so a stack it no longer
+    // claims must still reach the auto rule and keep its strip.
+    expect(resolveTabStripVisible({ shown: [workspace(), tile()] })).toBe(true)
+    expect(resolveTabStripVisible({ shown: [tile(), tile()] })).toBe(true)
   })
 })
 

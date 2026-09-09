@@ -62,6 +62,25 @@ class NonMcpEndpointError(ConnectionError):
     so broad catches still see a connection problem."""
 
 
+# Streamable-HTTP rejection statuses an SSE-only server (or its load balancer) produces for the
+# chunked ``initialize`` POST: Bad Request, Method Not Allowed, Not Acceptable, Length Required.
+_STREAMABLE_REJECT_STATUSES = (400, 405, 406, 411)
+
+
+def _is_streamable_http_rejection(exc: BaseException) -> bool:
+    """True when a Streamable-HTTP connect failure looks like a transport mismatch rather than a
+    broken server: a 400-family rejection of the initialize POST, or the SDK's opaque INTERNAL_ERROR
+    (-32603 ``Server returned an error response``) it maps such rejections to on mcp >= 2.0 (error
+    class per PR #104363, @RohithPariki). Timeouts and auth errors never qualify — neither carries
+    these markers — so a slow or 401ing server is not retried on the wrong transport.
+    """
+    root = _unwrap_exception_group(exc)
+    if getattr(getattr(root, "response", None), "status_code", None) in _STREAMABLE_REJECT_STATUSES:
+        return True
+    code = getattr(getattr(root, "error", None), "code", None)
+    return code == -32603 and "server returned an error response" in str(root).lower()
+
+
 def _unwrap_exception_group(exc: BaseException) -> BaseException:
     """Root-cause leaf of anyio ``(Base)ExceptionGroup`` wrappers (group ``str()`` is opaque). A
     ``KeyboardInterrupt``/``SystemExit`` leaf anywhere is re-raised, never flattened into a loggable

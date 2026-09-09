@@ -22,6 +22,7 @@ def _make_adapter(
     group_allowed_chats=None,
     guest_mode=None,
     observe_unmentioned_group_messages=None,
+    bots_require_mention=None,
     bot_username="hermes_bot",
 ):
     from plugins.platforms.telegram.adapter import TelegramAdapter
@@ -65,6 +66,8 @@ def _make_adapter(
         extra["guest_mode"] = guest_mode
     if observe_unmentioned_group_messages is not None:
         extra["observe_unmentioned_group_messages"] = observe_unmentioned_group_messages
+    if bots_require_mention is not None:
+        extra["bots_require_mention"] = bots_require_mention
 
     adapter = object.__new__(TelegramAdapter)
     adapter.platform = Platform.TELEGRAM
@@ -883,3 +886,91 @@ def test_identity_freshness_does_not_depend_on_host_uptime(monkeypatch):
 
     adapter._note_bot_username("new_helper_bot")
     assert adapter._bot_identity_is_fresh() is True
+
+
+def _bot_sender_message(
+    text="hello", *, chat_id=-100, sender_id=555, reply_to_bot=False, entities=None
+):
+    """Group message authored by another bot (is_bot=True, id != this bot's 999)."""
+    msg = _group_message(
+        text,
+        chat_id=chat_id,
+        from_user_id=sender_id,
+        reply_to_bot=reply_to_bot,
+        entities=entities,
+    )
+    msg.from_user.is_bot = True
+    return msg
+
+
+def test_bots_require_mention_defaults_off():
+    adapter = _make_adapter(require_mention=True)
+
+    assert adapter._telegram_bots_require_mention() is False
+
+
+def test_bot_quote_reply_loop_is_broken_by_bots_require_mention():
+    """With require_mention alone the quote-reply-to-bot branch returns True unconditionally, so
+    two bots admitting each other's messages answer each other forever. The flag closes exactly
+    that path; a bot message that does @mention this bot still goes through."""
+    loop_adapter = _make_adapter(require_mention=True)
+    assert (
+        loop_adapter._should_process_message(
+            _bot_sender_message("auto-reply", reply_to_bot=True)
+        )
+        is True
+    )
+
+    gated = _make_adapter(require_mention=True, bots_require_mention=True)
+    assert (
+        gated._should_process_message(
+            _bot_sender_message("auto-reply", reply_to_bot=True)
+        )
+        is False
+    )
+
+    text = "@hermes_bot ping"
+    assert (
+        gated._should_process_message(
+            _bot_sender_message(text, entities=[_mention_entity(text)])
+        )
+        is True
+    )
+
+
+def test_bot_command_at_botname_passes_bots_require_mention():
+    gated = _make_adapter(require_mention=True, bots_require_mention=True)
+    text = "/status@hermes_bot"
+    msg = _bot_sender_message(text, entities=[_bot_command_entity(text, text)])
+
+    assert gated._should_process_message(msg, is_command=True) is True
+
+
+def test_bot_chatter_without_mention_dropped_by_bots_require_mention():
+    gated = _make_adapter(require_mention=True, bots_require_mention=True)
+
+    assert (
+        gated._should_process_message(
+            _bot_sender_message("status update, no addressee")
+        )
+        is False
+    )
+
+
+def test_human_reply_unaffected_by_bots_require_mention():
+    gated = _make_adapter(require_mention=True, bots_require_mention=True)
+
+    assert (
+        gated._should_process_message(_group_message("replying", reply_to_bot=True))
+        is True
+    )
+
+
+def test_own_echoes_not_treated_as_other_bot():
+    """This bot's own echoed messages are dropped by _is_own_message before the sender gate; the
+    gate must not re-admit them as another bot even if the echo carries a stale is_bot flag."""
+    gated = _make_adapter(require_mention=True, bots_require_mention=True)
+    own = _bot_sender_message("echo", sender_id=999)
+
+    assert gated._is_own_message(own) is True
+    assert gated._sender_is_other_bot(own) is False

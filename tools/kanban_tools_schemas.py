@@ -362,7 +362,7 @@ KANBAN_CREATE_SCHEMA = _schema(
         "title": _prop("string", "Short task title (required)."),
         "assignee": _prop("string", (
                 "Profile name that should execute this task "
-                "(e.g. 'researcher-a', 'reviewer', 'writer'). "
+                "(e.g. 'researcher-a'). — Do NOT include copyable example profile names in this description to avoid accidental creation of phantom assignees. "
                 "Required — tasks without an assignee are never "
                 "dispatched."
         )),

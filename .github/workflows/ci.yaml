@@ -129,11 +129,25 @@ jobs:
     # single job in the workflow — while still running the full pytest lanes.
     #
     # Re-disabled (Sep 2026): the Sep 1 re-enable is still incredibly flaky.
-    # Keep this a bare `if: false`. The earlier
-    # `${{ false && (... || ...) }}` form on this reusable-workflow job made
-    # GitHub's workflow parser fail at startup ("An unexpected error has
-    # occurred") — every ci.yaml run repo-wide dispatched 0 jobs from
-    # 24f5a60ed1 until this line changed. To re-enable, restore:
+    #
+    # Keep this a bare `if: false` — it is the clearest way to disable a job.
+    # But the Sep 1 outage was NOT caused by putting a `${{ }}` expression on
+    # this reusable-workflow job. The line 24f5a60ed1 shipped transposed its
+    # closing brackets:
+    #
+    #     ${{ false && (... == 'true' || ... == 'true' })}
+    #                                                  ^^^  `}` before `)`
+    #
+    # which leaves `${{` unclosed. GitHub's expression parser rejects that
+    # before it creates any job, so every ci.yaml run repo-wide dispatched
+    # 0 jobs from 24f5a60ed1 until it was fixed. Note how it escaped review:
+    # a workflow GitHub cannot parse produces no run at all, so the required
+    # `CI` check did not go red — it stopped existing, and there was nothing
+    # pending for the gate to block on.
+    #
+    # The balanced form loads fine — #100754 and #100757 restored exactly it
+    # and their ci.yaml runs dispatched 23 and 30 jobs — so the expression
+    # below is safe to restore as-is when re-enabling:
     #   if: ${{ needs.detect.outputs.python_prod == 'true' || needs.detect.outputs.frontend == 'true' }}
     if: false
     uses: ./.github/workflows/e2e-desktop.yml

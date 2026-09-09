@@ -178,6 +178,10 @@ class ToolEntry:
     # Zero-arg callable whose dict is shallow-merged onto the schema at every get_definitions()
     # — for fields tracking runtime config (delegate_task's description reflects limits).
     dynamic_schema_overrides: Optional[Callable] = None
+    # True when this entry was registered with override=True (declarative replacement
+    # intent). A later re-registration without override must not silently clobber it —
+    # otherwise load order decides the winner instead of the explicit opt-in.
+    _override: bool = False
 
 
 class _PluginOverridePolicy:
@@ -612,6 +616,20 @@ class ToolRegistry:
             existing = (self._tools if scope is None else self._merged_tools(scope)).get(name)
             plugin_override_denied = (
                 owner is not None and not self._plugin_override_allowed(scope, owner))
+            if override and plugin_override_denied:
+                # Plugin-first override gate: plugins load before built-ins, so an
+                # unopted plugin calling register(..., override=True) when no entry
+                # exists yet would bypass the existing-entry check below, create the
+                # entry, and then the _override protection would block the built-in
+                # from registering. Gate plugin-originated override=True always.
+                logger.error(
+                    "Tool registration REJECTED: plugin %r attempted to "
+                    "register tool %r with override=True without operator "
+                    "opt-in. Set "
+                    "plugins.entries.<plugin_id>.allow_tool_override: true "
+                    "in config.yaml to allow it.",
+                    owner, name)
+                raise PermissionError(_OVERRIDE_DENIED_MSG.format(owner=owner, name=name))
             shadows_global = (
                 owner is not None and scope is not None
                 and name not in target and name in self._tools)
@@ -623,16 +641,23 @@ class ToolRegistry:
                     return
                 if plugin_override_denied:
                     raise PermissionError(_OVERRIDE_DENIED_MSG.format(owner=owner, name=name))
+            if existing and existing._override and not override:
+                # Existing entry was itself registered with override=True.
+                # Protect it from silent overwrite by a later re-registration that
+                # lacks override (e.g. discover_builtin_tools re-running after a
+                # plugin has already overridden a built-in) — otherwise whichever
+                # side registers last wins and override=True is meaningless.
+                # Logged at INFO so the kept override stays auditable.
+                logger.info(
+                    "Tool '%s': keeping existing override=True entry from "
+                    "toolset '%s' — rejecting re-registration from toolset '%s' "
+                    "without override",
+                    name, existing.toolset, toolset)
+                return
             if existing and existing.toolset != toolset:
                 if override:
-                    if plugin_override_denied:
-                        logger.error(
-                            "Tool registration REJECTED: plugin %r attempted to override built-in "
-                            "tool %r (existing toolset %r) without operator opt-in. Set "
-                            "plugins.entries.<plugin_id>.allow_tool_override: true in config.yaml "
-                            "to allow it.",
-                            owner, name, existing.toolset)
-                        raise PermissionError(_OVERRIDE_DENIED_MSG.format(owner=owner, name=name))
+                    # Plugin policy was already gated above; non-plugin
+                    # override callers reach here legitimately.
                     # Explicit opt-in (or non-plugin caller): INFO so the override is auditable.
                     logger.info(
                         "Tool '%s': toolset '%s' overriding existing toolset '%s' "
@@ -651,7 +676,8 @@ class ToolRegistry:
                 requires_env=requires_env or [], is_async=is_async,
                 description=description or schema.get("description", ""), emoji=emoji,
                 max_result_size_chars=max_result_size_chars,
-                dynamic_schema_overrides=dynamic_schema_overrides)
+                dynamic_schema_overrides=dynamic_schema_overrides,
+                _override=override)
             # Availability is derived per-tool (_toolset_has_exposable_tools), so this map no
             # longer gates a toolset; it still feeds get_toolset_requirements ->
             # TOOLSET_REQUIREMENTS["check_fn"], which banner.py reads (presence only,

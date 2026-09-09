@@ -1369,11 +1369,20 @@ def _is_verification_artifact_cleanup(command: str) -> bool:
     if len(argv) != 3 or argv[0] != "rm" or argv[1] != "-f":
         return False
     operand = argv[2]
+    # Reject any ".." component outright: resolving it away would otherwise let
+    # "/tmp/a/../hermes-verify-x.py" collapse onto the temp dir and slip past this exemption.
+    if ".." in operand.replace("\\", "/").split("/"):
+        return False
+    # The canonical (realpath'd) temp dir, not the operand: verification-script guidance
+    # (agent/verification_stop.py) builds the script path from realpath(gettempdir()), so a
+    # genuine cleanup command's operand is already expressed in that canonical form. Comparing
+    # the operand LITERALLY against it (rather than also realpath-resolving the operand) means an
+    # operand that only reaches the temp dir through some OTHER symlink is rejected, not silently
+    # treated as equivalent.
     temp_dir = os.path.realpath(tempfile.gettempdir())
     basename = os.path.basename(operand)
     return (
-        operand == os.path.join(temp_dir, basename)
-        and os.path.dirname(os.path.realpath(operand)) == temp_dir
+        os.path.dirname(operand) == temp_dir
         and re.fullmatch(r"hermes-(?:verify|ad-hoc)-[A-Za-z0-9_.-]+", basename) is not None
     )
 

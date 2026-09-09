@@ -4,7 +4,7 @@ description: 'Operate email accounts with the Himalaya CLI: find and read mail, 
   drafts, send authorized messages, manage mailboxes and attachments, and use backend-specific
   email features. Use for terminal-based mailbox work, Gmail, Hotmail/Outlook accounts, or Himalaya setup and troubleshooting.'
 license: MIT
-version: 2.2.1
+version: 2.3.0
 author: community
 platforms:
 - linux
@@ -27,7 +27,7 @@ metadata:
 
 # Himalaya email CLI
 
-**Skill pack version: 2.2.1. CLI example baseline: 2.1.0. These are separate version numbers.**
+**Skill pack version: 2.3.0. CLI example baseline: 2.1.0. These are separate version numbers.**
 
 Use the external `himalaya` executable to operate mail accounts. In Hermes, this is separate from the built-in Email gateway adapter: the gateway receives messages addressed to the agent; this skill operates a mailbox through terminal commands.
 
@@ -38,6 +38,8 @@ Confirm the actual loaded `SKILL.md` path and pack version above; do not infer i
 - On **v1.x**, read [legacy-v1.md](references/legacy-v1.md). Do not apply v2 configuration to it.
 - On **v2.1.0**, use the examples below and the task-specific references.
 - On **v2.0, later releases, or development builds**, verify the exact subcommand with `--help`; do not assume all v2.1 features or development-only commands exist.
+
+Choose backend behavior from the configured backend, not the address domain. Share scope, authorization, verified-ID and execution-evidence rules across backends; keep their command syntax, schemas and outcome checks separate. For mutations, load identifiers from verified saved responses and use the shared workflow below; never retype opaque IDs into a plan or command.
 
 Use explicit `--account`, `--backend` and mailbox selection when needed to disambiguate. A backend must be compiled in, configured, and support the operation; installing this skill supplies none of these. Do not upgrade the CLI or rewrite working configuration merely to match these examples.
 
@@ -51,6 +53,7 @@ Use explicit `--account`, `--backend` and mailbox selection when needed to disam
 | Backend-specific operations, full command-family coverage, schemas/manuals, development-only features | [capabilities.md](references/capabilities.md) |
 | Gmail REST search, cursor pagination, body reading, classification or native drafts | [gmail-workflows.md](references/gmail-workflows.md) |
 | Hotmail/Outlook via Graph, native folder IDs, Windows paths, OData and move verification | [msgraph-workflows.md](references/msgraph-workflows.md) |
+| Shared identifier verification, actual execution records, Graph/Gmail adapter boundaries | [shared-operations.md](references/shared-operations.md) |
 | Cleanup candidate protection, decision records, rescue and unsubscribe boundaries | [cleanup-review.md](references/cleanup-review.md) |
 | Long scans, errors, cancellation, result evidence, installation verification or regression checks | [execution-and-validation.md](references/execution-and-validation.md) |
 | Existing v1 installations or migration | [legacy-v1.md](references/legacy-v1.md) |

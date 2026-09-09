@@ -100,6 +100,12 @@ Check success before parsing redirected files. Parse raw mail with a MIME librar
 
 For each selected ID, record body-read success/failure and classification status, with a brief basis and uncertainty when needed. Choose categories from the user's goal. Report total unique IDs found, selected, bodies read, classified, failed/unresolved, and whether pagination was exhausted. A successful ID scan alone does not complete a body-analysis request.
 
+## Shared safeguards, Gmail-specific state
+
+Use [shared-operations.md](shared-operations.md) for the common verified-ID and execution-evidence workflow. `backend_operations.py --backend gmail` selects a label from saved native labels JSON, verifies it with native `gmail labels get`, and retains the exact record/argv/output using the same recorder as Graph. This common layer never turns Gmail labels into Graph folders.
+
+Gmail mailbox organization uses labels: an inbox-cleanup action generally adds the authorized recovery label and removes INBOX, preserving unrelated labels and read state. Verify actual `label-ids` and the chosen policy before and after any authorized change; do not substitute Graph parentFolderId, Graph categories or changed-ID assumptions. Native `gmail messages modify` has repeated `--add-label` and `--remove-label` options; inspect installed help and construct argv from verified IDs. The Graph `cleanup_records.py` gate/journal and `graph_move.py` executor do **not** implement Gmail cleanup. A Gmail orchestrator may use the shared target verifier/recorder but must implement and validate its own decision, planning and outcome semantics.
+
 ## Store a requested draft
 
 Use [message-composition.md](message-composition.md) to build and inspect local MIME, then:

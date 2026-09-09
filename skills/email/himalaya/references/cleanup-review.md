@@ -1,6 +1,8 @@
-# Cleanup protection, operation records and unsubscribe boundaries
+# Graph cleanup protection, operation records and unsubscribe boundaries
 
 Read only for requested mailbox cleanup, bulk moves or rescue. This pack supplies operational support; it does not install or modify another cleanup skill. Follow the user's chosen scope, protected categories, recovery location and existing authorization. The Hotmail incident motivates these checks; its account/folder choices are not defaults for everyone.
+
+The executable gate and journal in this reference implement **Microsoft Graph** fields and move semantics. For common safeguards and Graph/Gmail target verification, read [shared-operations.md](shared-operations.md). Do not send Gmail records through this gate.
 
 Contents: decisions; journal; move/rescue verification; unsubscribe; companion-skill recommendations.
 
@@ -57,8 +59,8 @@ The helper appends logical events to a JSON array under an exclusive `O_CREAT | 
 | --- | --- |
 | `register` | `account`, `message` with opaque id and verified parentFolderId; initializes REVIEW. |
 | `decide` | `proposed` KEEP/REVIEW/REMOVE, `assessment`, and optional `metadata_evidence` from the scan; stores gate result, separate category interpretation/evidence and increments decision_revision. Corrections are new events. |
-| `plan_move` | Unique operation_id, action cleanup/rescue, current decision_revision, source_id, source_folder, destination_folder, membership_evidence and authorized=true. |
-| `submitted` | operation_id; records one execution attempt. Does not prove success. |
+| `plan_move` | New plans require schema 2, created by `graph_move.py plan` from the record, verified target and complete matching scanner preflight. It supplies IDs, runtime and argv without transcription. Legacy plans are replay-only. |
+| `submitted` | operation_id plus actual invocation path/hash/argv/cwd matching the schema-2 plan; recorded by `graph_move.py execute` immediately before launch. Does not prove success. |
 | `unknown` | operation_id; blocks replay or decision changes until verified. |
 | `failed` | operation_id, no_effect_verified=true and evidence; otherwise use unknown. |
 | `confirmed` | operation_id, destination_message, source_absent=true, match_unique=true and evidence. Updates current ID/folder; verifies retained identity fields and matching boolean isRead. |
@@ -78,7 +80,7 @@ python scripts/cleanup_records.py journal.json --event event.json
 python scripts/cleanup_records.py journal.json
 ```
 
-Use verified absolute native paths in Windows/MSYS integrations. `replay(events)` returns current records and operations for detailed exports. The registration example has no protection values; it cannot pass a REMOVE gate as written. Use a full validated message snapshot and actual review assessment for decisions. Tests contain synthetic examples of move/rescue events.
+Use verified absolute native paths in Windows/MSYS integrations. `replay(events)` returns current records and operations for detailed exports. The registration example has no protection values; it cannot pass a REMOVE gate as written. Use a full validated message snapshot and actual review assessment for decisions. Tests contain synthetic examples of move/rescue events. Historical plan examples are not an accepted way to append a new plan; use the schema-2 planner in [shared-operations.md](shared-operations.md).
 
 Report these distinct quantities, not an ambiguous “moves” total: unique messages, KEEP/REVIEW/REMOVE decisions, confirmed cleanup moves, confirmed rescue moves, pending/unknown operations, and current folder counts from the last verified state. Count Junk-origin work separately from Inbox-origin work. Operation counts can exceed unique-message counts; a rescue does not erase the original move event. Current mailbox totals require new complete listings and can differ under concurrent activity.
 

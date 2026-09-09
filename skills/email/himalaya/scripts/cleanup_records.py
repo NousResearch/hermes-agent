@@ -1,4 +1,4 @@
-"""Offline decision gate and append-only logical event journal. No mailbox I/O.
+"""Graph-specific offline cleanup gate and logical event journal. No mailbox I/O.
 
 The journal rewrites its event array atomically under an exclusive lock and
 derives the current view. Inputs are assessments/verification evidence supplied
@@ -14,14 +14,20 @@ from pathlib import Path
 
 try:
     from .graph_scan import atomic_write, category_check
+    from .backend_operations import validate_graph_plan
+    from .operation_support import digest
 except ImportError:
     from graph_scan import atomic_write, category_check
+    from backend_operations import validate_graph_plan
+    from operation_support import digest
 
 PROTECTED = {'invoice', 'payment', 'purchase', 'refund', 'security', 'trial_conversion',
              'order_update', 'financial_record', 'commitment'}
 
 
-def decision_gate(message, assessment, proposed, *, metadata_evidence=None, account=None):
+def decision_gate(message, assessment, proposed, *, metadata_evidence=None, account=None, backend='msgraph'):
+    if backend != 'msgraph':
+        raise ValueError('This cleanup gate implements Graph protections only; do not normalize Gmail into Graph')
     if proposed not in ('KEEP', 'REVIEW', 'REMOVE'):
         raise ValueError('Unknown decision')
     if proposed != 'REMOVE':
@@ -78,6 +84,8 @@ def replay(events):
         if not event.get('at') or not isinstance(rid, str) or not rid:
             raise ValueError('Events need timestamp and stable record_id, never a row index')
         if kind == 'register':
+            if event.get('backend', 'msgraph') != 'msgraph':
+                raise ValueError('This journal implements Graph move semantics only')
             if rid in records:
                 raise ValueError('Record already registered')
             msg = copy.deepcopy(event.get('message'))
@@ -85,7 +93,7 @@ def replay(events):
                 raise ValueError('Register needs a message with an opaque string ID')
             if not event.get('account') or not msg.get('parentFolderId'):
                 raise ValueError('Register needs verified account and parentFolderId')
-            records[rid] = {'account': event['account'], 'message': msg, 'original_id': msg['id'],
+            records[rid] = {'account': event['account'], 'backend': 'msgraph', 'message': msg, 'original_id': msg['id'],
                             'original_folder': msg['parentFolderId'], 'decision': 'REVIEW',
                             'assessment': {}, 'decision_revision': 0, 'pending_operation': None}
             continue
@@ -124,9 +132,12 @@ def replay(events):
                 raise ValueError('Capture the source read state before a move')
             if not event.get('membership_evidence') or event.get('authorized') is not True:
                 raise ValueError('Verify current source membership and existing authorization')
+            if event.get('plan_schema') == 2:
+                validate_graph_plan(event, record)
             operations[op] = dict(record_id=rid, action=action, state='planned',
                                   source_id=event['source_id'], source_folder=event['source_folder'],
-                                  destination_folder=destination)
+                                  destination_folder=destination, plan_schema=event.get('plan_schema', 1),
+                                  plan=copy.deepcopy(event))
             record['pending_operation'] = op
         elif kind in ('submitted', 'unknown', 'failed', 'confirmed'):
             op = event.get('operation_id')
@@ -136,6 +147,13 @@ def replay(events):
             if kind == 'submitted':
                 if operation['state'] != 'planned':
                     raise ValueError('Do not submit an operation twice')
+                if operation['plan_schema'] == 2:
+                    execution = event.get('execution', {})
+                    if (execution.get('argv') != operation['plan']['argv']
+                            or execution.get('cwd') != operation['plan']['runtime']['cwd']
+                            or not execution.get('invocation_path') or not execution.get('invocation_sha256')):
+                        raise ValueError('Submission must reference the actual recorded plan argv/cwd')
+                    operation['execution'] = copy.deepcopy(execution)
                 operation['state'] = 'submitted'
             elif kind == 'unknown':
                 operation['state'] = 'unknown'
@@ -200,7 +218,24 @@ def append_event(path, event):
             raise ValueError('Journal must contain an event array')
         candidate = events + [event]
         replay(candidate)
-        if not any(e['event_id'] == event['event_id'] for e in events):
+        is_new = not any(e['event_id'] == event['event_id'] for e in events)
+        if is_new and event.get('type') in ('plan_move', 'submitted'):
+            records, operations = replay(events)
+            if event['type'] == 'plan_move':
+                validate_graph_plan(event, records[event['record_id']], check_files=True)
+            else:
+                operation = operations[event['operation_id']]
+                if operation['plan_schema'] != 2:
+                    raise ValueError('Legacy plans may be reconciled but not newly submitted')
+                execution = event.get('execution', {})
+                raw = Path(execution['invocation_path']).read_bytes()
+                invocation = json.loads(raw)
+                if (digest(raw) != execution.get('invocation_sha256')
+                        or invocation.get('argv') != operation['plan']['argv']
+                        or invocation.get('cwd') != operation['plan']['runtime']['cwd']
+                        or invocation.get('shell') is not False):
+                    raise ValueError('Submission capture does not match plan')
+        if is_new:
             atomic_write(path, candidate)
         return summary(candidate)
 

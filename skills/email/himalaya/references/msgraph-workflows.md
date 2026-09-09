@@ -116,6 +116,8 @@ It uses Python's MIME parser to unfold/decode headers and select a body, exclude
 
 ## Verify moves using current source and destination evidence
 
+For cleanup/rescue, use the verified-target and journal-integrated planner/executor in [shared-operations.md](shared-operations.md). Its IDs come from parsed records, its destination must match a successful folder get, and it records actual argv/cwd and direct process outputs. New plans cannot contain an unbound manually typed destination. Ordinary command syntax below describes the backend; it is not permission to bypass those plan checks.
+
 Graph message IDs normally change on moves. Never reuse an old ID in the destination or infer loss from its 404. Native v2.1.0 move prints the new message ID in its result message; shared move exposes only the successful count. Capture the new ID where available and independently verify it.
 
 Before moving, verify current `parentFolderId` for each candidate and resolve the destination ID. **Shared Graph move ignores `--from` at the backend.** It is not a source-folder guard. A stale plan can otherwise move an item from a different folder. Recheck protection/decision evidence if the message has changed. There remains a race between preflight and move; no atomic source-condition is promised.

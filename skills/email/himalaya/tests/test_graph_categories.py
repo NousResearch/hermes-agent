@@ -123,13 +123,14 @@ class CategoryIntegrationTests(unittest.TestCase):
         self.assertFalse(result['complete'])
         self.assertEqual(result['metadata_evidence'], {})
 
-    def test_journal_preserves_interpretation_and_allows_plan(self):
+    def test_journal_preserves_interpretation_and_replays_legacy_plan(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / 'journal.json'
-            for event in self.events()+[self.plan()]:
+            for event in self.events():
                 append_event(path, event)
             saved = json.loads(path.read_text())
-            records, operations = replay(saved)
+            # Old plans remain readable, but cannot be newly appended/executed.
+            records, operations = replay(saved+[self.plan()])
             record = records['stable']
             self.assertEqual(record['decision'], 'REMOVE')
             self.assertEqual(record['category_check']['basis'], 'selected_cli_contract')

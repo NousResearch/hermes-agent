@@ -152,6 +152,9 @@ export function useBackgroundQueueDrain({
   )
 
   useEffect(() => {
+    // Preserve the retry budget while session discovery runs at boot, on a
+    // gateway/profile switch, or during a refresh over an empty list.
+    // Once discovery settles, submitText can resume by stored id.
     if (!enabled || sessionsLoading) {
       return
     }
@@ -159,12 +162,6 @@ export function useBackgroundQueueDrain({
     // Queue keys prefer the lineage root (resolveComposerSessionKey) while
     // $workingSessionIds / selection may hold the compression tip. Strict
     // equality then mis-classifies a busy or selected chat as idle/offscreen.
-    //
-    // Boot/reconnect: the composer queue survives in localStorage, but session
-    // runtimes are reaped. Draining before the sidebar list has loaded burns
-    // MAX_AUTO_DRAIN_ATTEMPTS against a backend that cannot resume yet, then
-    // toasts "Queued message not sent" on every launch even when the user has
-    // no visible queue (#98015).
     const sessions = $sessions.get()
     const working = [...workingSessionIds]
 

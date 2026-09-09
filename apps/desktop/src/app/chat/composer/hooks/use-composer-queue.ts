@@ -404,10 +404,8 @@ export function useComposerQueue({
   // strand them. A park (explicit Stop/Esc) is the one gate: those entries wait
   // for the user. To cancel queued turns, the user deletes them from the panel.
   useEffect(() => {
-    // Same gate as the background drainer: while the session list is
-    // unavailable, a restored localStorage entry has no resumable runtime to
-    // target, so draining only burns its retry budget and toasts. Covers app
-    // boot, a gateway/profile switch, and any refresh over an empty list.
+    // Match the background drainer: preserve the retry budget while session
+    // discovery runs at boot, on a gateway/profile switch, or over an empty list.
     if (sessionsLoading) {
       return
     }

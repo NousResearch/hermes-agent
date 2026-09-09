@@ -1,10 +1,10 @@
 ---
 sidebar_position: 3
-title: "Desktop App"
+title: "Hermes Desktop"
 description: "The native Hermes desktop app — a polished experience for chatting with Hermes, with streaming tool output, side-by-side previews, a file browser, voice, cron, profiles, skills, and settings. macOS, Windows, and Linux."
 ---
 
-# Desktop App
+# Hermes Desktop
 
 The Hermes desktop app is a native app built around the **same** agent you get from the CLI and the gateway — same config, same API keys, same sessions, same skills, same memory. It is not a separate product or a lightweight clone; it uses the same Hermes Agent core and settings, and drives it through a modern & thoughtfully designed UI. If you have used `hermes` in a terminal, everything you set up there is already here, and anything you do here shows up there.
 
@@ -22,7 +22,7 @@ Pick whichever fits the moment. They share state, so you can start a session in 
 
 ## Install
 
-Follow the [installation instructions for Hermes Desktop](../getting-started/installation.md).
+Download the app from the [Hermes Desktop product page](https://hermes-agent.nousresearch.com/desktop), or follow the [installation instructions for Hermes Desktop](../getting-started/installation.md).
 
 If you already have Hermes installed, simply run
 
@@ -36,17 +36,27 @@ That uses your current config, keys, sessions, and skills.
 
 The desktop app is organized as a chat-first window with a left sidebar for navigation. It's built to allow managing multiple simultaneous agent conversations, configuring messaging providers, creating artifacts, browsing projects' folder structures, and working on multiple projects at once.
 
+Sidebar selection follows the focused chat pane. Opening or focusing a session tab clears a page's highlight, including contributed pages such as Kanban, even when the workspace retains that page's route.
+
 ### Chat
 
 The center of the app. You get:
 
 - **Streaming responses** with live tool activity and structured tool-call summaries as the agent works.
+- **Markdown line breaks** follow Markdown semantics: two trailing spaces create a hard line break; an ordinary newline stays a soft break. Media and preview extraction preserve text outside removed attachment spans, including first-line code indentation and unfinished fenced-code spacing. Code display and Copy preserve leading blank lines, trailing spaces, and terminal blank lines from the Markdown parser.
 - **The same conversation history** as every other Hermes surface — sessions started here resume in the CLI/TUI and vice versa.
 - **Drag-and-drop files** anywhere in the chat area to attach them to your next message.
+- **Independent background drafts** — hidden chat tabs can update their drafts without moving the caret or selection in the visible composer.
+- **Directive chip actions** — hover an actionable reference (such as a URL) to reveal its action pill. A short grace period lets you move from the chip to the pill before it dismisses. The pill stays available while you move within it; after leaving, unrelated pointer movement does not delay dismissal. Clicking its action preserves the draft selection.
 - **A right-hand preview rail** — render web pages, files, and tool outputs side by side while you keep chatting.
+- **Comment mode in the in-app browser** — click **Annotate** in the preview browser bar, then click any element (or drag a box) on the live page and type a note; each saved comment stays as a numbered pin on the page. Saving a pin never sends a turn — when you're done, **Add N comments** attaches a cropped screenshot per pin and a short prompt naming each comment to the composer, and you still hit send yourself. Each element comment carries its CSS selector, its markup, and the computed styles that matter for layout, so the agent can find the element in your source instead of guessing from the picture. Password and hidden field values, and any attribute that looks like a key or token, are redacted on the page before the markup leaves it. Larger batches arrive grouped by which part of the page each comment sits in, so twenty-odd comments become a handful of pieces of work rather than one task each — and because the groups are separate DOM subtrees they usually touch separate files, which is what makes handing them to parallel workers safe. Pin numbers hold steady if you delete one, and switching chats clears the stack.
 - **Composer history and queue editing** — press the up/down arrow keys in an empty composer to recall and reuse previous prompts, and edit messages you've queued up before they're sent. Pressing Stop (or Esc) while turns are queued pauses the queue and expands it above the composer; resume it from there, or send, edit, and delete individual entries.
+- **Task progress above the composer** — expand the Tasks header to inspect each phase. Long lists stay bounded above the input; scroll inside the expanded list to reach the final tasks without moving the conversation.
 - **A conversation timeline rail** — long chats get a slim rail of markers along the edge of the transcript, one per prompt. Hover it to pop open the list of prompts, click one to jump straight to that point in the conversation. (It appears once the chat has a handful of turns.)
+- **Reading-position memory** — returning to a session restores its saved distance from the bottom instead of always jumping to the latest message. Sessions left at the bottom continue following new output. Use **Scroll to bottom** to return to the live edge. Positions are kept in this Desktop installation's local storage; they are not synchronized through the backend.
 - **Find in page** — press **Cmd/Ctrl+F** to open a find bar that searches the rendered chat transcript. Enter / Shift+Enter (or Cmd/Ctrl+G / Cmd/Ctrl+Shift+G while the bar is open) step through matches; Esc closes it.
+
+Async cron and delegation completions appear as collapsed timeline disclosures. Open the completion label to read the result body (including job output) as Markdown; long reports scroll within the disclosure. Task instructions and delivery envelopes are not shown as report content.
 
 #### Status bar
 
@@ -54,7 +64,8 @@ The bar along the bottom of the chat shows live session state and exposes quick 
 
 - **Per-session YOLO toggle** — flip YOLO on or off for just this session (matching the TUI). YOLO bypasses the dangerous-command approval prompts, so know what you're turning off — see [Security → YOLO Mode](./security.md#yolo-mode).
 - **Context-usage meter** — a live "% full" meter of the session's context window. Click it to open the **Context Usage** popover with a token breakdown by category (system prompt, tool definitions, skills, memory, rules, MCP, subagent definitions, and the conversation itself) so you can see exactly what's eating the window before compression kicks in.
-- **Customizable items** — right-click the status bar (**Show in status bar**) to choose what appears: the context meter, workspace, model, approvals, turn/session timers, terminal, Command Center, backend version, and more — or hide the bar entirely (**Cmd/Ctrl+Shift+S** toggles it).
+- **Cache hit rate and tokens per second** — off by default; turn them on from the right-click menu. Cache hit rate is the share of this session's prompt tokens served from the provider's prompt cache (cached tokens cost less, so higher is cheaper — you can watch a session get cheaper as it warms up). Tokens per second is output throughput averaged over the last 10 model calls. Both update live during a turn.
+- **Customizable items** — right-click the status bar (**Show in status bar**) to choose what appears: the context meter, cache hit rate, tokens per second, workspace, model, approvals, turn/session timers, terminal, Command Center, backend version, and more — or hide the bar entirely (**Cmd/Ctrl+Shift+S** toggles it).
 
 Chatting against a Hermes instance on another machine instead of the bundled local backend? See [Connecting to a remote backend](#connecting-to-a-remote-backend) below — and for the full picture of how the remote-hosted dashboard connection works (the auth gate, the `/api/ws` chat socket, and WebSocket close-code triage), see [Web Dashboard → Connecting Hermes Desktop to a remote backend](./features/web-dashboard.md#connecting-hermes-desktop-to-a-remote-backend).
 
@@ -79,7 +90,7 @@ Changing any of these values invalidates only that profile's disk-discovery cach
 
 The model picker lives in the **composer**, just left of the microphone. Click it to switch the model, reasoning effort, and fast mode from one dropdown.
 
-- **The composer picker is sticky UI state and never touches your default.** It's remembered locally (per device) and **follows** across new chats and restarts instead of snapping back to the default — pick a model once and the next `Cmd/Ctrl+N` opens on it. With a live chat, switching models scopes the change to that **current chat**; either way the selection rides along when the session is created/switched and is **never** written to the profile default. (Switching [profiles](#sessions--profiles) reseeds to that profile's own default.)
+- **The composer picker is sticky UI state and never touches your default.** It's remembered locally (per device) and **follows** across new chats and restarts instead of snapping back to the default — pick a model once and the next `Cmd/Ctrl+N` opens on it. With a live chat, switching models scopes the change to that **current chat**; either way the selection rides along when the session is created/switched and is **never** written to the profile default — with one exception: on a fresh profile that has no `model.default`/`model.provider` configured yet, the first pick is persisted so the app has a real default instead of falling through to a stray API-key env var on restart. Persistence follows the same rule as `/model` (`model.persist_switch_by_default`); use **Settings → Model** to change the default deliberately. (Switching [profiles](#sessions--profiles) reseeds to that profile's own default.)
 - **Set the default in Settings → Model.** That "main" model is your **per-profile global default** — it's what new chats, crons, subagents, and auxiliary tasks start from, and it's the only place that writes it. Each [profile](#sessions--profiles) keeps its own default.
 - **Per-model effort/fast presets.** Each model remembers its own reasoning effort and fast-mode choice in the desktop app, re-applied to the session whenever you pick that model. These presets are a desktop convenience and don't change crons or subagents.
 - **Mid-chat switches reset the prompt cache.** Switching the model inside a live chat means the next message re-reads the whole conversation at full input price (provider prompt caches are keyed to the model). Fine occasionally; on a long chat, a fresh chat on the new model is often cheaper than bouncing back and forth.
@@ -89,6 +100,8 @@ The model picker lives in the **composer**, just left of the microphone. Click i
 Explore and preview the working directory without leaving the app — useful for following along as the agent reads, writes, and edits files. Set the initial project directory with `hermes desktop --cwd <path>` (or the `HERMES_DESKTOP_CWD` environment variable).
 
 ### Artifacts
+
+When connected to a remote gateway, opening a file artifact downloads it through that gateway, using the artifact’s originating profile and session. Relative paths resolve against the session’s saved working directory; home-relative paths use the gateway’s home, never the Desktop machine’s home. Windows-style relative paths are recognized alongside forward-slash paths, and file URIs retain drive and network-share information for the gateway to interpret. Missing sessions or working directories produce an error rather than selecting a different local file.
 
 The **Artifacts** view collects what your sessions generate — **images, files, and links** — into one searchable, browsable gallery. Open it from the sidebar, the command palette (**Artifacts — Browse generated outputs**), or a `nav.artifacts` shortcut you bind yourself. It indexes recent session outputs automatically; every artifact shows which session produced it with a jump back to that chat, and images and files open in a preview with download / open-in-browser / copy actions.
 
@@ -107,6 +120,10 @@ A real terminal lives in the right sidebar, next to the file browser:
 - **Ctrl+`** shows the terminal (opening one if none exist); **Ctrl+Shift+`** spawns an additional one. Multiple terminals stack in a tab rail — **Ctrl+Shift+↓/↑** walk between them, **Ctrl+Shift+W** closes the active one.
 - **Shells persist while hidden.** Closing or hiding the panel doesn't kill your shell — every open terminal stays mounted with its scrollback and running processes intact until you explicitly close it.
 - **Add to chat** — select terminal output and send it into the composer as context for your next message.
+
+### Live subagents
+
+While delegated workers are live, a **Subagents** frame appears above the composer with their count, task names, elapsed time, and latest activity. It previews up to three workers; expand the header for the roster, then select a worker for details and **Steer** / **Stop** controls. Each frame belongs to its chat, including in split panes. Steering acknowledges that guidance is queued for a checkpoint, not that the child has already read it. See [Monitoring subagents](/user-guide/features/delegation#monitoring-running-subagents-agents).
 
 ### Git review & worktrees
 
@@ -131,20 +148,37 @@ Talk to Hermes and hear it back, the same [voice mode](./features/voice-mode.md)
 
 **⌘/Ctrl+Shift+H** (or the titlebar button) detaches the chat into a chrome-free, always-on-top floating bar that sits over whatever you are working in. The app window steps aside; the HUD keeps your live conversation and a composer. Where you park it is context — the bar's position tells Hermes which app and screen you're asking about, so "this", "here", and "that page" resolve to what's underneath it.
 
-- **Moving the bar** — **press and hold** anywhere on the composer for a beat, then drag. A quick press still types; a held press grabs the window. This is the only way to move the HUD — there is no titlebar to drag.
-- **Resizing** — drag the bottom-right corner of the bar.
-- **Snap to pointer** — **⌘/Ctrl+Shift+G** (a global hotkey, works from any app) jumps the HUD to wherever your cursor is.
+- **Moving the bar** — on macOS and Windows, **press and hold** anywhere on the composer for a beat, then drag. On Linux/X11, hold **Ctrl** and drag with the primary mouse button for an immediate grab (including over selected text); press-and-hold remains available too. Keep the grab held while invoking your desktop switch shortcut to carry the HUD onto another virtual desktop. On native Wayland the composer bar is a compositor drag handle (the only way to move it, because an app cannot place its own window).
+- **Resizing** — drag any edge or corner of the bar; the opposite edge stays anchored. Native Wayland exposes the right and bottom edges because the compositor does not allow apps to position top-level windows themselves.
+- **Reset layout** — the discard control on the bar restores the default size and (on X11 / macOS / Windows) position. Use this if a persisted size leaves the HUD unusable.
+- **Snap to pointer** — **⌘/Ctrl+Shift+G** (a global hotkey, works from any app) jumps the HUD to wherever your cursor is. On native Wayland this is a no-op — the compositor owns placement.
 - **Exiting** — click the exit button on the bar, or press **⌘/Ctrl+Shift+H** again. The app window comes back with your session intact.
+
+#### Linux / Wayland
+
+Electron 20+ already runs as a native Wayland client on a Wayland session. Drag, click-through, and resize work on that path.
+
+On **Hyprland** (including Omarchy) the HUD is floated and pinned through the compositor's IPC after it maps — otherwise Hyprland tiles it like any other window, `always-on-top` is ignored, and compositor drag does nothing. No extra window rule is required.
+
+A few compositors (notably COSMIC) ignore `always-on-top` for native Wayland windows. To restore pinning there, run the app under XWayland:
+
+```yaml
+desktop:
+  ozone_platform_hint: x11
+```
+
+That bridges to `ELECTRON_OZONE_PLATFORM_HINT` at launch (an explicit env var still wins). The trade: X11 cannot restore a window that has ignored the mouse, so the HUD stays a solid window instead of click-through. Some KDE setups also report keyboard breakage with the X11 ozone backend — leave the hint on `auto` unless you need always-on-top.
 
 ### Settings & onboarding
 
 Manage providers, models, tools, and credentials from a real UI instead of editing YAML. First-run onboarding gets you to your first message in seconds. The settings panes cover providers/keys, model selection, toolset configuration, MCP servers, the gateway, and session management.
 
-- **Providers settings pane** — a dedicated place to manage inference providers, with an Accounts / API-keys UX for signing in and storing credentials per provider.
+- **Providers settings pane** — a dedicated place to manage inference providers, with an Accounts / API-keys UX for signing in and storing credentials per provider. Accounts and API keys share the Settings **Applies to** selection: credential reads and edits, OAuth account removal, and sign-in launched here target the selected profile, not the active chat profile. The sign-in flow keeps that target through credential saving and model selection. Changing **Applies to** discards unsaved credential drafts. Closing sign-in cancels polling and ignores late results; a credential write already sent may still finish in its original profile. Externally managed CLI credentials use their own CLI and are not covered by this profile selector. Its **Local Models** view installs and manages an on-device llama.cpp runtime — see [Local Models](/user-guide/local-models).
 - **Every provider and model in the menus** — the GUI surfaces the full provider list and every model that `hermes model` knows about, so you pick from the same catalog the CLI sees rather than a curated subset.
 - **xAI Grok OAuth** — Grok is a first-class OAuth provider in the launcher; sign in through the browser flow like the other OAuth providers.
 - **Tool-backend installs from the GUI** — run a tool backend's post-setup install steps directly from the app instead of dropping to a terminal.
 - **Terminal font picker** — choose an installed font in **Settings → Appearance**. Nerd Fonts such as `MesloLGS NF` render Powerlevel10k separators and icons in both interactive and agent terminals; the setting is saved per profile.
+- **Reopen Last Chat on Launch** — by default the app picks up where you left off on cold start. Turn it off in **Settings → Appearance** (or set `display.resume_last_session: false` in `config.yaml`) to always begin with a fresh chat. Deep links and explicit destinations are never overridden either way.
 - **Auxiliary-model warning** — if you switch the main model to a new provider while auxiliary tasks (titling, summarization, and similar helpers) are still pinned to another provider, the app warns you so you don't unknowingly split work across two providers.
 - **VS Code Marketplace themes** — beyond the built-in theme presets, the appearance settings include a live VS Code Marketplace search: pick any color theme and the app downloads, converts, and installs it as a desktop theme. The same importer is available from the command palette (*Install theme*), and imported themes can be removed again from the appearance settings.
 - **Keep computer awake** — **Settings → Advanced → Keep computer awake** stops the machine from sleeping so long or overnight agent runs keep going (the display can still dim). This is a per-computer setting.
@@ -166,7 +200,7 @@ When you have two or more [profiles](./profiles.md), the config-backed settings 
 
 The app also surfaces the broader Hermes management surface so you don't have to drop to a terminal:
 
-- **Skills** — browse, install, and manage [skills](./features/skills.md).
+- **Skills** — browse, install, and manage [skills](./features/skills.md). The Skills tab lists your installed skills with enable/disable toggles, and below them the full built-in optional-skills catalog that ships with Hermes — each entry has a one-click **Install** button that flips the row into the installed list once it finishes.
 - **Memory graph (Star Map)** — type `/journey` (aliases `/learning`, `/memory-graph`) in chat to open an interactive constellation of learned skills and memories over time, with a playback scrubber. Nodes can be edited or deleted right from the panel (skills are archived, memories removed). See [Learning Journey](./features/memory.md#learning-journey-journey).
 - **Cron** — view and manage [scheduled jobs](../reference/cli-commands.md#hermes-cron).
 - **Profiles** — switch between [Hermes profiles](./profiles.md) (isolated config/skills/sessions).
@@ -234,7 +268,7 @@ chats decide who replies: [Bot Mode: A Roster of Agents](./bot-mode.md).
 - **Command palette** — press **Cmd+K** or **Cmd+P** (Ctrl+K / Ctrl+P on Windows/Linux) to jump to actions and navigate the app from the keyboard: open any page or settings section, jump to a session by title or id, switch model/theme/color mode, spawn a terminal, restart the gateway, update Hermes, and more.
 - **Rebindable shortcuts** — **Settings → Keyboard Shortcuts** (or **Cmd/Ctrl+/**) opens the shortcuts panel where you can remap almost every binding — profile switching, session navigation, view toggles, and any shortcuts contributed by desktop plugins. Duplicate assignments are flagged as conflicts. A few defaults worth knowing: **Cmd/Ctrl+N** new session, **Cmd/Ctrl+.** Command Center, **Cmd/Ctrl+,** Settings, **Cmd/Ctrl+Shift+F** search sessions, **Cmd/Ctrl+1–9** switch profiles, **Shift+X** toggle light/dark.
 - **Custom zoom shortcuts** — zoom the interface in half-step increments for finer control over text size.
-- **UI language switcher** — change the app's interface language in-app, including Simplified Chinese (zh-Hans).
+- **UI language switcher** — change the app's interface language in-app: English, Simplified Chinese (zh-Hans), Traditional Chinese (zh-Hant), Japanese, Arabic (RTL), and Russian.
 
 ### Sessions & profiles
 
@@ -246,6 +280,17 @@ chats decide who replies: [Bot Mode: A Roster of Agents](./bot-mode.md).
 ## Updating
 
 The app checks for updates in the background and offers a one-click update when one is ready.
+
+During a local update, detailed build output streams into the active profile's
+`logs/update.log`, including detached `--gateway` updates. It stays out of the
+terminal but is available for troubleshooting before the build finishes. The
+Windows hand-off counts new output in this log as progress; a child that produces
+no output is still subject to the idle watchdog. Process liveness alone does not
+reset that watchdog, and cancelling an update does not wait for its build to finish.
+
+The desktop app and the Hermes backend it talks to update on separate clocks — the app package on your machine, the backend wherever it runs. When more than one update target exists (a remote gateway, or several registered gateways), the update affordances (**Update now** on the About panel, the ⌘K **Update Hermes** row, and the update-ready toast) update **everything**: the connected backend first, then every other eligible registered gateway (Hermes Cloud entries are platform-managed and skipped), and the desktop app itself last, since applying the client update relaunches the app. Single-machine installs keep the one-button experience.
+
+After any backend update, the app also re-checks its own version and warns with a one-click **Update desktop app** action if the GUI is still behind — so updating a remote backend can never silently leave you on a stale desktop build.
 
 The [manual update process](https://hermes-agent.nousresearch.com/docs/getting-started/updating) also works with the GUI.
 
@@ -268,6 +313,14 @@ Running `hermes uninstall --gui` from a **source checkout** (a `hermes desktop` 
 ## CLI reference: `hermes desktop`
 
 To launch via the CLI, simply run `hermes desktop`. By default it installs workspace Node dependencies, builds the current OS's unpacked Electron app, then launches that packaged artifact.
+
+On Linux, launches refresh `$XDG_DATA_HOME/applications/hermes.desktop` (by default `~/.local/share/applications/hermes.desktop`) so Hermes appears in the application menu. To preserve a hand-edited entry, disable refreshes:
+
+```bash
+hermes config set desktop.manage_launcher_entry false
+```
+
+A missing entry is still created; the flag only stops `hermes desktop` from rewriting an entry that already exists.
 
 | Flag                 | Description                                                                               |
 | -------------------- | ----------------------------------------------------------------------------------------- |
@@ -295,19 +348,22 @@ Everything connection-related lives on one settings page: **Settings → Gateway
 - **Remote gateway** — enter the URL of a `hermes serve` backend you run yourself and sign in. This is the mode the rest of this section walks through.
 - **Hermes Cloud** — sign in once to Hermes Cloud and pick from the agents on your account; no URL to paste. The app discovers your agents (with an organization picker if your account spans several orgs), and connecting to one switches the session over automatically. The status bar shows the cloud connection while it's active.
 
-Gateway connections are **machine-level**: the Gateways page manages which gateway backends this desktop can connect to, and profiles are discovered *from* the gateways you connect. Per-profile backend routing continues to work — it lives in the profile rail's connect flow and the session source switcher, not in the settings page.
+Gateway connections are **machine-level**: the Gateways page manages which gateway backends this desktop can connect to, and profiles are discovered *from* the gateways you connect. Sessions select one gateway at a time, while the adjacent profile rail selects a profile discovered on that gateway.
 
 ### The multi-connection registry
 
-Further down the same **Settings → Gateways** page, the connections registry manages a named list of every agent source the app knows about — the local runtime, any number of remote gateways (LAN, Tailscale, internet), Hermes Cloud instances, and SSH hosts — all persisted together in one place. You can jump there from the plug button at the right end of the sidebar profile rail (**Connect another Hermes gateway…**) or via **⌘K → Gateways**. The full guide, including the union agent roster, `@name-device` handles, fleet-wide updates, and the plugin SDK surface, is at [Connecting Desktop to Many Hermes Instances](./multi-connection-desktop.md).
+Further down the same **Settings → Gateways** page, **Registered gateways** manages a named list of every Hermes gateway the app knows about — the local runtime, any number of remote gateways (LAN, Tailscale, internet), Hermes Cloud instances, and SSH hosts — all persisted together in one place. You can jump there from the plug button at the right end of the sidebar profile rail (**Connect another Hermes gateway…**) or via **⌘K → Gateways**. The full guide, including the union agent roster, `@name-device` handles, fleet-wide updates, and the plugin SDK surface, is at [Connecting Desktop to Many Hermes Instances](./multi-connection-desktop.md).
 
-- **Every connection needs a unique name** (a device name such as "Homelab" or "Work laptop"). When the same profile name exists on several registered sources, surfaces disambiguate it as `@profile-device` (e.g. `@research-homelab`).
+- **Every connection needs a unique name** (a device name such as "Homelab" or "Work laptop"). When the same profile name exists on several registered gateways, surfaces disambiguate it as `@profile-device` (e.g. `@research-homelab`).
+- **Switch gateways from the Sessions sidebar.** A named gateway selector appears when more than one gateway is registered and handles any registry size without making gateways look like profiles. The adjacent profile rail then shows only that gateway's agents and remembers the last profile used there; large profile sets condense independently.
+- **Choose what opens after a restart.** **Open on launch** keeps the backward-compatible **Primary gateway** default, or can resume the **Last used** gateway after it connects successfully. This preference is stored outside the application bundle and survives Desktop updates.
 - **Add / edit / remove / test** connections from the panel. The **Add** flow offers all four kinds — **Local**, **Hermes Cloud**, **Remote gateway**, and **SSH** (the Local button is disabled while the app-managed local entry exists, and a hint points cloud adds at the sign-in/discovery flow above). The local entry is managed by the app and cannot be removed. **Test** probes the connection's own HTTP and WebSocket legs directly.
 - **Duplicates are rejected at save time**: only one **local** entry ever; remote and cloud entries are deduplicated on the normalized URL (trimmed, trailing slashes stripped, lowercased — across both kinds); SSH entries on the normalized `user@host:port` plus remote profile.
 - Existing settings are **imported automatically** the first time you run a build with the registry: your current global connection and any legacy per-profile overrides become named entries. The legacy settings file is left untouched, so older builds keep working.
+- Cloud entries come from the Hermes Cloud sign-in/discovery flow above, not from a hand-typed URL.
 - Tokens are stored encrypted with the OS keyring (with an explicit plain-text opt-in on keyring-less Linux).
 
-Side-by-side routing is live: each registered source dials its own backends and sockets on demand (keyed per connection + profile), the plugin SDK exposes the union agent roster (`host.agents()` / `host.ensureAgent()`), and **Update all instances** on the Gateways page dispatches `hermes update` to every eligible source at once — Hermes Cloud entries are skipped (the platform updates them), and each instance reports its own result.
+Side-by-side routing is live: each registered gateway dials its own backends and sockets on demand (keyed per connection + profile), the plugin SDK exposes the union agent roster (`host.agents()` / `host.ensureAgent()`), and **Update all instances** on the Gateways page dispatches `hermes update` to every eligible gateway at once — Hermes Cloud entries are skipped (the platform updates them), and each instance reports its own result.
 
 
 :::info The remote backend is a running `hermes serve` process
@@ -402,6 +458,41 @@ another profile's agent plugins without switching the whole app (the backend
 
 ## Troubleshooting
 
+### Reconnect without restarting the app
+
+If a Desktop chat or bot stops responding while the connection still shows **Connected**, select that bot/profile or gateway, open the status bar's gateway menu, and click **Reconnect gateway**. Reconnect stays available for open, connecting, and disconnected transports. It redials the active route without restarting Desktop or deliberately closing other routes' sockets. In-flight requests on the selected socket can be interrupted; this is an explicit recovery action, not a backend or model restart.
+
+### Failed turns name the failing layer
+
+When a turn fails, the chat renders an error card that names **which layer
+failed** — provider/model, custom endpoint, streaming connection,
+authentication, billing, gateway, local runtime, or disk — instead of a
+generic error toast. The card offers recovery actions matched to the failure:
+
+- **Retry** — re-runs the failed turn in place (hidden when retrying would
+  deterministically reproduce the failure, e.g. a content-policy rejection).
+- **Switch provider** — jumps to Settings → Models for provider, endpoint,
+  auth, and billing failures.
+- **Open logs** — opens `HERMES_HOME/logs` in your file manager. On a remote
+  or Cloud connection the button reads **Open Desktop logs**: it opens the
+  local Desktop-side logs (transport evidence), since the failed turn's
+  gateway/agent logs live on the remote machine.
+- **Send diagnostics** — uploads a redacted debug bundle to Nous-internal
+  storage after an explicit consent prompt (same pipeline as
+  `hermes debug share --nous`; secrets are always redacted, the bundle is
+  viewable by Nous staff only and auto-deletes after 14 days). On success you
+  get a private view link to paste into your support thread, plus quick links
+  to GitHub Issues, Nous Portal Support, and Discord. On a remote or Cloud
+  connection the backend bundles its own agent/gateway logs and the local
+  Desktop log is attached alongside, so support sees both halves.
+- **Copy error details** — copies a compact plain-text summary (layer, code,
+  provider/model, error message) you can paste into a bug report or Discord.
+
+The layer comes from the same error classifier the agent's retry loop uses,
+so it reflects the real failure semantics, not a guess from the message text.
+Older backends that predate the descriptor still render the card with a
+generic title and the Retry / Open logs / Copy error details actions.
+
 Boot logs land in `HERMES_HOME/logs/desktop.log` (it includes backend output and recent Python tracebacks) — check it first if the app reports a boot failure. You can also tail it from the CLI:
 
 ```bash
@@ -420,6 +511,20 @@ rm -rf "$HOME/.hermes/hermes-agent/venv"
 # Reset a stuck macOS microphone prompt
 tccutil reset Microphone com.nousresearch.hermes
 ```
+
+### "The host key has CHANGED since you last connected" (SSH remote)
+
+If your SSH remote was reinstalled or its host key rotated, SSH fails closed
+and Desktop latches an error overlay instead of retrying (retrying can never
+succeed until the stale key is cleared). Verify the change is expected, then
+remove the old entry and retry from the overlay:
+
+```bash
+ssh-keygen -R <host>
+```
+
+Click **Retry** (or re-apply the connection in Settings → Gateway) after
+clearing the entry — the latch resets and the next boot dials fresh.
 
 ### "Build desktop app" stuck on Electron download
 
@@ -472,20 +577,62 @@ macOS/Windows signing and notarization run automatically when the relevant crede
 
 ### macOS permissions and local rebuilds (TCC)
 
+**Silence every folder prompt with one switch.** macOS prompts per-category
+(Desktop, then Downloads, then Documents, ...) as Hermes touches each folder.
+A single **Full Disk Access** grant covers all of them, permanently — and
+with Hermes' stable signing identities it survives every update:
+
+1. System Settings → **Privacy & Security → Full Disk Access** (or run
+   `open "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles"`)
+2. Enable your terminal app — and **Hermes.app** if you use Desktop.
+3. Fully quit and relaunch them once.
+
+`hermes doctor` reports whether the current terminal context already has the
+grant, and `hermes setup` shows this tip on macOS when it doesn't.
+
 macOS remembers permission grants (Full Disk Access, Desktop/Downloads/Documents,
 Accessibility, Automation, microphone) against the app's *code-signing identity*,
 not its path. Locally built and self-updated apps are signed with a stable
-identifier-pinned ad-hoc signature, so grants persist across updates out of the
-box.
+identifier-pinned ad-hoc signature, so grants persist across updates.
+
+One-time note: grants made to builds *before* the identifier-pinned signing
+fix (PR #73681) carry the old cdhash-pinned requirement. macOS keeps showing the
+toggle as ON for those stale grants but still re-prompts, because the stored
+grant no longer matches the rebuilt binary — and the modern prompt has no Allow
+button, so it looks like there is nothing to re-check. If that happens, reset
+the stale grant once and re-grant:
+
+```bash
+tccutil reset ScreenCapture com.nousresearch.hermes   # repeat per service
+```
+
+then toggle the fresh entry ON in System Settings and fully quit & relaunch
+Hermes. Grants are stable from then on.
 
 For the strongest guarantee — a certificate-anchored identity, the same
 mechanism yabai/skhd users rely on — create a self-signed code-signing
-certificate once and tell Hermes to use it:
+certificate once and tell Hermes to use it. The one-shot command does
+everything (creates the certificate in your login keychain, grants `codesign`
+access, writes the config, and re-signs the packaged app):
+
+```bash
+hermes desktop --setup-tcc-identity
+```
+
+Or do it manually:
 
 1. Keychain Access → Certificate Assistant → **Create a Certificate…**
 2. Name: `Hermes Local Signing`, Identity Type: *Self-Signed Root*,
    Certificate Type: **Code Signing**.
-3. `hermes config set desktop.macos_signing_identity "Hermes Local Signing"`
+3. In Keychain Access, double-click the new certificate → **Trust** → set
+   **Code Signing** to *Always Trust* (an imported self-signed certificate is
+   not a valid signing identity until it is trusted for code signing —
+   `security find-identity -v -p codesigning` should list it afterwards).
+4. `hermes config set desktop.macos_signing_identity "Hermes Local Signing"`
+
+Use `--identity <name>` with the command to create/use a differently named
+certificate (default: `Hermes Local Signing`). The command is idempotent —
+re-run it after updates to re-point the config and re-sign the rebuilt app.
 
 The next update re-signs the rebuilt app with that certificate; every TCC grant
 survives. No Apple Developer account is required. Notarized release builds are

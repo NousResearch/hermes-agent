@@ -129,6 +129,134 @@ describe('host.state focused-session atoms', () => {
   })
 })
 
+describe('host.state.focusedSessionProfile', () => {
+  beforeEach(() => {
+    window.localStorage.clear()
+    vi.resetModules()
+  })
+
+  afterEach(() => {
+    vi.resetModules()
+  })
+
+  async function setup() {
+    const { host } = await import('@/sdk/index')
+    const profile = await import('@/store/profile')
+    const session = await import('@/store/session')
+    const states = await import('@/store/session-states')
+
+    return { host, profile, session, states }
+  }
+
+  it('is a readonly atom that falls back to the gateway profile with no focused session', async () => {
+    const { host, profile } = await setup()
+
+    expect(typeof host.state.focusedSessionProfile.get).toBe('function')
+    expect(typeof host.state.focusedSessionProfile.listen).toBe('function')
+
+    profile.$activeGatewayProfile.set('newsanalyst')
+    expect(host.state.focusedSessionProfile.get()).toBe('newsanalyst')
+    profile.$activeGatewayProfile.set('default')
+  })
+
+  it('resolves the focused session to the owner stamped on its session row, not the socket home', async () => {
+    const { host, profile, session } = await setup()
+
+    // The gateway socket is homed on default (e.g. cold start), but the chat
+    // on screen belongs to newsanalyst — the readout must say newsanalyst.
+    profile.$activeGatewayProfile.set('default')
+    session.$sessions.set([{ id: 'news-1', profile: 'newsanalyst' } as never])
+    session.$selectedStoredSessionId.set('news-1')
+
+    expect(host.state.focusedSessionProfile.get()).toBe('newsanalyst')
+
+    // An uncached/unstamped id inherits the gateway profile (the old ladder).
+    session.$selectedStoredSessionId.set('unknown-id')
+    expect(host.state.focusedSessionProfile.get()).toBe('default')
+
+    session.$sessions.set([])
+    session.$selectedStoredSessionId.set(null)
+  })
+
+  it('fails closed when duplicate stored or lineage ids resolve to different connections', async () => {
+    const { host, session } = await setup()
+
+    session.$sessions.set([
+      {
+        connection_id: 'source-a',
+        id: 'shared-tip-a',
+        _lineage_root_id: 'shared-root',
+        profile: 'worker'
+      } as never,
+      {
+        connection_id: 'source-b',
+        id: 'shared-root',
+        profile: 'worker'
+      } as never
+    ])
+    session.$selectedStoredSessionId.set('shared-root')
+
+    expect(host.state.focusedSessionOwner.get()).toBeNull()
+
+    session.$sessions.set([])
+    session.$selectedStoredSessionId.set(null)
+  })
+
+  it('fails closed when the same focused id has ambiguous owner hints', async () => {
+    const { host, session } = await setup()
+
+    session.setSessionOwnerHint('ambiguous-hint', {
+      connectionId: 'source-a',
+      mode: 'remote',
+      profile: 'worker',
+      targetProfile: 'backend-worker-a'
+    })
+    session.setSessionOwnerHint('ambiguous-hint', {
+      connectionId: 'source-b',
+      mode: 'remote',
+      profile: 'worker',
+      targetProfile: 'backend-worker-b'
+    })
+    session.$sessions.set([
+      {
+        connection_id: 'source-a',
+        id: 'ambiguous-hint',
+        profile: 'worker'
+      } as never
+    ])
+    session.$selectedStoredSessionId.set('ambiguous-hint')
+
+    expect(host.state.focusedSessionOwner.get()).toBeNull()
+
+    session.$sessions.set([])
+    session.$selectedStoredSessionId.set(null)
+  })
+
+  it('keeps the focused session connection when same-named profiles share a handle', async () => {
+    const { host, profile, session } = await setup()
+
+    profile.$activeGatewayProfile.set('default')
+    session.setConnection({ connectionId: 'source-a', mode: 'remote' } as never)
+    session.$sessions.set([
+      {
+        connection_id: 'source-b',
+        id: 'shared-default',
+        profile: 'default'
+      } as never
+    ])
+    session.$selectedStoredSessionId.set('shared-default')
+
+    expect(host.state.focusedSessionOwner.get()).toEqual({
+      connectionId: 'source-b',
+      profile: 'default'
+    })
+
+    session.$sessions.set([])
+    session.$selectedStoredSessionId.set(null)
+    session.setConnection(null)
+  })
+})
+
 describe('host.state busy vs gateway', () => {
   afterEach(() => {
     $sessionStates.set({})

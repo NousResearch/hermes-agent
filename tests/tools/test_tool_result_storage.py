@@ -9,12 +9,10 @@ from tools.budget_config import (
     BudgetConfig,
 )
 from tools.tool_result_storage import (
-    HEREDOC_MARKER,
     PERSISTED_OUTPUT_TAG,
     PERSISTED_OUTPUT_CLOSING_TAG,
     STORAGE_DIR,
     _build_persisted_message,
-    _heredoc_marker,
     _resolve_storage_dir,
     _safe_result_filename,
     _write_to_sandbox,
@@ -41,20 +39,6 @@ class TestGeneratePreview:
         preview, has_more = generate_preview(text)
         assert preview == text
         assert has_more is False
-
-
-# ── _heredoc_marker ───────────────────────────────────────────────────
-
-class TestHeredocMarker:
-    def test_default_marker_when_no_collision(self):
-        assert _heredoc_marker("normal content") == HEREDOC_MARKER
-
-    def test_uuid_marker_on_collision(self):
-        content = f"some text with {HEREDOC_MARKER} embedded"
-        marker = _heredoc_marker(content)
-        assert marker != HEREDOC_MARKER
-        assert marker.startswith("HERMES_PERSIST_")
-        assert marker not in content
 
 
 # ── _write_to_sandbox ─────────────────────────────────────────────────
@@ -480,3 +464,22 @@ class TestSpillover:
 
         assert not old.exists()
         assert (spill_dir / "tc_prune_1.txt").exists()
+
+
+# ── recovery hint in the persisted preview ────────────────────────────
+
+class TestRecoveryHint:
+    def test_preview_teaches_recovery_not_refetch(self):
+        msg = _build_persisted_message(
+            preview="preview text",
+            has_more=True,
+            original_size=60_000,
+            file_path="/tmp/hermes-results/r.txt",
+        )
+        assert "Recovery:" in msg
+        assert "execute_code" in msg
+        assert "re-request" in msg
+        # Structure preserved: tag, size, path, read_file guidance all intact.
+        assert msg.startswith(PERSISTED_OUTPUT_TAG)
+        assert msg.endswith(PERSISTED_OUTPUT_CLOSING_TAG)
+        assert "read_file" in msg

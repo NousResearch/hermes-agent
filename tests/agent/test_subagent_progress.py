@@ -132,11 +132,12 @@ class TestBuildChildProgressCallback:
         parent._delegate_spinner = spinner
         parent.tool_progress_callback = None
         
-        # task_index=0 in a batch of 3 → prefix "[1]"
+        # task_index=0 in a batch of 3 → prefix "[1/3]" (batch slot; a
+        # delegation batch tag is prepended when the id is known)
         cb0 = _build_child_progress_callback(0, "test goal", parent, task_count=3)
         cb0("tool.started", "web_search", "test", {})
         output = buf.getvalue()
-        assert "[1]" in output
+        assert "[1/3]" in output
 
         # task_index=2 in a batch of 3 → prefix "[3]"
         buf.truncate(0)
@@ -144,7 +145,7 @@ class TestBuildChildProgressCallback:
         cb2 = _build_child_progress_callback(2, "test goal", parent, task_count=3)
         cb2("tool.started", "web_search", "test", {})
         output = buf.getvalue()
-        assert "[3]" in output
+        assert "[3/3]" in output
 
 
 

@@ -324,8 +324,6 @@ class TestCheckAvailable:
         from agent import secret_scope
         from tools.homeassistant_tool import _get_config
 
-        monkeypatch.setattr("tools.homeassistant_tool._HASS_URL", "")
-        monkeypatch.setattr("tools.homeassistant_tool._HASS_TOKEN", "")
         monkeypatch.setenv("HASS_URL", "http://default-profile:8123")
         monkeypatch.setenv("HASS_TOKEN", "default-profile-token")
         secret_scope.set_multiplex_active(True)
@@ -350,7 +348,8 @@ class TestCheckAvailable:
 
 class TestGetHeaders:
     def test_bearer_token_format(self, monkeypatch):
-        monkeypatch.setattr("tools.homeassistant_tool._HASS_TOKEN", "my-secret-token")
+        monkeypatch.setattr("tools.homeassistant_tool._get_config",
+                            lambda: ("http://ha.local:8123", "my-secret-token"))
         headers = _get_headers()
         assert headers["Authorization"] == "Bearer my-secret-token"
         assert headers["Content-Type"] == "application/json"

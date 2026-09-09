@@ -44,8 +44,8 @@ describe('enforced dock (stacked Bots pane → sessions-zone tab, every boot)', 
     vi.resetModules()
   })
 
-  async function setup() {
-    window.localStorage.setItem(TREE_KEY, JSON.stringify(stackedTree))
+  async function setupTree(initialTree: object, options: { routines?: boolean } = {}) {
+    window.localStorage.setItem(TREE_KEY, JSON.stringify(initialTree))
 
     const tree = await import('@/components/pane-shell/tree/store')
     const model = await import('@/components/pane-shell/tree/model')
@@ -76,7 +76,21 @@ describe('enforced dock (stacked Bots pane → sessions-zone tab, every boot)', 
       render: () => null
     })
 
+    if (options.routines) {
+      registry.register({
+        id: 'hermes-bots:routines',
+        area: 'panes',
+        title: 'Cronjobs',
+        data: { placement: 'main', dock: { pane: 'workspace', pos: 'right', enforce: true } },
+        render: () => null
+      })
+    }
+
     return { model, registry, tree }
+  }
+
+  async function setup() {
+    return setupTree(stackedTree)
   }
 
   it('re-homes a stacked bots pane into the sessions tab strip, keeping sessions active', async () => {
@@ -166,11 +180,12 @@ describe('enforced dock (stacked Bots pane → sessions-zone tab, every boot)', 
     expect(group.panes).toEqual(['sessions', 'hermes-bots:pane'])
   })
 
-  it('forces the tab strip visible when already co-located but hidden with bots active (community "only Bots shows" regression)', async () => {
+  it('shows the tab strip when already co-located but hidden with bots active (community "only Bots shows" regression)', async () => {
     // The Aug 2026 field reports: sessions+bots already share one group, the
-    // strip is hidden (headerHidden), and bots holds the active tab — the
-    // sessions pane exists but is unreachable. The re-home path never runs
-    // (nothing to move), so the enforce must repair reachability directly.
+    // legacy strip flag is set, and bots holds the active tab — the sessions
+    // pane exists but is unreachable. The re-home path never runs (nothing to
+    // move), so reachability has to come from somewhere else: the migration
+    // drops the legacy flag, and a two-pane zone on auto shows its strip.
     const hiddenStackedTree = {
       type: 'split',
       id: 'root',
@@ -188,41 +203,75 @@ describe('enforced dock (stacked Bots pane → sessions-zone tab, every boot)', 
       ]
     }
 
-    window.localStorage.setItem(TREE_KEY, JSON.stringify(hiddenStackedTree))
-
-    const tree = await import('@/components/pane-shell/tree/store')
-    const model = await import('@/components/pane-shell/tree/model')
-    const { registry } = await import('@/contrib/registry')
-
-    registry.register({
-      id: 'workspace',
-      area: 'panes',
-      title: 'chat',
-      data: { placement: 'main' },
-      render: () => null
-    })
-    registry.register({
-      id: 'sessions',
-      area: 'panes',
-      title: 'sessions',
-      data: { placement: 'left' },
-      render: () => null
-    })
-    registry.register({
-      id: 'hermes-bots:pane',
-      area: 'panes',
-      title: 'Bots',
-      data: { placement: 'left', dock: { pane: 'sessions', pos: 'center', enforce: true } },
-      render: () => null
-    })
+    const { model, tree } = await setupTree(hiddenStackedTree)
 
     tree.watchContributedPanes()
 
     const group = model.findGroupOfPane(tree.$layoutTree.get()!, 'hermes-bots:pane')!
 
-    // Both panes stay put — but the strip is forced visible so SESSIONS is
-    // reachable again. The active tab is NOT stolen mid-boot.
+    // Both panes stay put — but the strip is visible so SESSIONS is reachable
+    // again. The active tab is NOT stolen mid-boot.
     expect(group.panes).toEqual(['sessions', 'hermes-bots:pane'])
-    expect(group.headerHidden).not.toBe(true)
+    expect(tree.tabStripVisibleForGroup(group)).toBe(true)
+  })
+
+  it('re-homes an edge-enforced pane stranded in the sessions tab strip', async () => {
+    const staleRoutinesTree = {
+      type: 'split',
+      id: 'root',
+      orientation: 'row',
+      weights: [1, 3],
+      children: [
+        {
+          type: 'group',
+          id: 'g-sessions',
+          panes: ['sessions', 'hermes-bots:pane', 'hermes-bots:routines'],
+          active: 'hermes-bots:pane'
+        },
+        { type: 'group', id: 'g-main', panes: ['workspace'], active: 'workspace' }
+      ]
+    }
+
+    const { model, tree } = await setupTree(staleRoutinesTree, { routines: true })
+
+    tree.watchContributedPanes()
+
+    const botsGroup = model.findGroupOfPane(tree.$layoutTree.get()!, 'hermes-bots:pane')!
+    const routinesGroup = model.findGroupOfPane(tree.$layoutTree.get()!, 'hermes-bots:routines')!
+
+    expect(botsGroup.panes).toEqual(['sessions', 'hermes-bots:pane'])
+    expect(botsGroup.active).toBe('hermes-bots:pane')
+    expect(routinesGroup.panes).toEqual(['hermes-bots:routines'])
+    expect(routinesGroup.id).not.toBe(botsGroup.id)
+  })
+
+  it('leaves an edge-enforced pane alone when it already occupies the declared split', async () => {
+    const dockedRoutinesTree = {
+      type: 'split',
+      id: 'root',
+      orientation: 'row',
+      weights: [1, 3, 1],
+      children: [
+        {
+          type: 'group',
+          id: 'g-sessions',
+          panes: ['sessions', 'hermes-bots:pane'],
+          active: 'hermes-bots:pane'
+        },
+        { type: 'group', id: 'g-main', panes: ['workspace'], active: 'workspace' },
+        {
+          type: 'group',
+          id: 'g-routines',
+          panes: ['hermes-bots:routines'],
+          active: 'hermes-bots:routines'
+        }
+      ]
+    }
+
+    const { tree } = await setupTree(dockedRoutinesTree, { routines: true })
+
+    tree.watchContributedPanes()
+
+    expect(tree.$layoutTree.get()).toEqual(dockedRoutinesTree)
   })
 })

@@ -28,7 +28,13 @@ All of this is available to Hermes itself through the `cronjob` tool, so you can
 - **`cron.model` / `cron.model_provider`** — a cron-fleet default: every unpinned job runs on this model, independent of your chat model. Set it once (`hermes config set cron.model <name>`) and switching your chat model with `hermes model` or `/model` never touches your cron fleet.
 - **Global default** — only when neither of the above is set does a job follow `hermes model`. In this case Hermes **snapshots** the provider and model at creation, and if the global default later changes the job **fails closed**: it skips the run, makes no inference call, and alerts you **once** — the job stays skipped (and silent) on subsequent ticks until you act or the config is restored (#44585). For recurring or otherwise repeatable jobs, pin the provider/model explicitly (`hermes cron edit <job_id> --provider <provider> --model <model>`) to proceed. A consumed finite one-shot cannot be updated; create a new future one-shot with an explicit provider and model instead. This prevents an unattended job from silently inheriting a switch to a paid provider/model. Setting `cron.model` (or a per-job pin) is the deliberate way to route cron spend, and the drift guard does not engage for an axis covered by it. Operators who instead want unpinned jobs to track the changing global default can [disable the drift guard](#letting-unpinned-jobs-track-global-defaults).
 
+Whichever provider a job resolves to, its provider-specific request settings (e.g. `request_overrides` such as `extra_body`/`extra_headers` for custom providers) carry into the scheduled run just like an interactive session.
+
 `hermes setup --portal` is the lowest-friction option for unattended runs since OAuth refresh is automatic. See [Nous Portal](/integrations/nous-portal).
+:::
+
+:::tip
+**Per-job reasoning effort.** A job can pin its own thinking level, independent of the model pin: one of `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`, `ultra`. When set, it overrides both the global `agent.reasoning_effort` and per-model `agent.reasoning_overrides` for that job's runs (`none` disables thinking). Set it via `hermes cron create/edit --reasoning-effort high`; pass an empty string on edit to clear the pin and follow config again. (It is deliberately not exposed on the agent's `cronjob` tool — model configuration stays a user decision.) Levels a model doesn't support are clamped or omitted by the provider at request time — pinning `xhigh` on a model that caps at `high` runs at `high`. The pin has no effect on `no_agent` jobs (there is no LLM call to tune). Use it to run heavy scheduled analyses at `high` while cheap recurring jobs run at `minimal`, without touching your global default.
 :::
 
 :::warning
@@ -40,7 +46,7 @@ Cron-run sessions cannot recursively create more cron jobs. Hermes disables cron
 ### In chat with `/cron`
 
 ```bash
-/cron add 30m "Remind me to check the build"
+/cron add "in 30m" "Remind me to check the build"
 /cron add "every 2h" "Check server status"
 /cron add "every 1h" "Summarize new feed items" --skill blogwatcher
 /cron add "every 1h" "Use both skills and combine the result" --skill blogwatcher --skill maps
@@ -181,8 +187,8 @@ When `workdir` is set:
 - The path must be an absolute directory that exists — relative paths and missing directories are rejected at create / update time
 - Pass `--workdir ""` (or `workdir=""` via the tool) on edit to clear it and restore the old behaviour
 
-:::note Serialization
-Jobs with a `workdir` run sequentially on the scheduler tick, not in the parallel pool. This is deliberate: the cron worker applies the job workdir through process-global terminal state, so two workdir jobs running at the same time would corrupt each other's cwd. Workdir-less jobs still run in parallel as before.
+:::note Isolation
+Each agent run binds its `workdir` to that run's unique task identity. Workdir jobs therefore use the normal parallel pool without mutating process-global terminal state or leaking paths between concurrent runs. Set `cron.max_parallel_jobs` if you want to limit total cron concurrency.
 :::
 
 ## Editing jobs
@@ -258,6 +264,28 @@ What they do:
 
 **Name-based lookup.** All four mutating verbs (`pause`, `resume`, `run`, `remove`, `edit`) plus the agent's `cronjob` tool now accept a job **name** (case-insensitive) in place of the hex ID. The agent and CLI both prefer an exact ID match if one exists; ambiguous name matches (multiple jobs sharing the same name) are refused with the full list of candidate IDs so you can pick one explicitly. Names are not unique, so this guard is load-bearing — it prevents silently mutating the wrong job when two share a name.
 
+### Creating a job paused (safe canary)
+
+Create a canary without a create-then-pause scheduling race:
+
+```bash
+hermes cron create "every 1h" "Post the digest" --paused --paused-reason "Awaiting review"
+hermes cron resume <job_id>
+```
+
+`--paused` stores `enabled: false`, `state: paused`, `next_run_at: null`, a pause
+timestamp and an auditable reason in the first locked write, without registering a
+trigger. Omit the reason to store "Created paused; awaiting operator approval."
+Omit `--paused` to retain normal enabled creation. `--paused-reason` requires
+`--paused`; invalid values are rejected before persistence.
+
+The same `paused` boolean and optional `paused_reason` string are accepted by
+`cron.jobs.create_job`, the cron management tool's `create` action, the gateway
+`POST /api/jobs`, and the dashboard `POST /api/cron/jobs`. Resume schedules the next
+future run. Pausing prevents automatic fires, not operator overrides: existing
+explicit **Run now** / force-run behavior remains available and can resume and run
+the job. It is not a security boundary against an operator who can run jobs.
+
 ## Agent-managed scheduling (cron jobs that manage cron jobs)
 
 By default, agents launched *by* the scheduler cannot use the `cronjob` tool —
@@ -328,20 +356,89 @@ Inspect recent attempts with `hermes cron runs [job-id] --limit 20` (alias:
 `history`). Terminal history is bounded; active attempts are never pruned. The
 ledger is included in quick backups.
 
+Scheduled attempts also record their exact scheduled instant, separately from
+the time they were claimed. If an old `jobs.json` snapshot re-arms an occurrence
+that the retained ledger records as completed, Hermes skips that replay and
+re-anchors recurring jobs. This works even when the snapshot predates the
+dispatch stamp or the original run started late. Explicit manual runs do not
+consume a scheduled occurrence's identity.
+
+This is not an exactly-once side-effect guarantee: legacy rows without an
+identity, pruned history, unavailable ledgers, and interrupted attempts cannot
+prove completion. Restoring the ledger itself to an older backup also removes
+that evidence. External fire callbacks identify the currently accepted store
+claim, not an upstream scheduled slot absent from the callback.
+
 ### Repeated-failure review nudge
 
-Each job tracks a `failure_streak` — consecutive runs where the agent failed
-(delivery failures don't count). When a *recurring* job's streak reaches the
-threshold, the failure message delivered to chat gains a review nudge telling
-you the job has failed N runs in a row and suggesting you fix, pause
-(`hermes cron pause <job>`), or remove it. Any successful run resets the
-streak, and `hermes cron list` shows the streak alongside a failing job's last
-run. One-shot jobs never nudge.
+Each job tracks a `failure_streak` — consecutive failed runs (delivery
+failures don't count). A run that fails before the agent is reached at all —
+a bad import after a half-applied update, a provider client that cannot be
+constructed — counts and alerts the same as one the agent itself failed. When
+a *recurring* job's streak reaches the threshold, the failure message
+delivered to chat gains a review nudge telling you the job has failed N runs
+in a row and suggesting you fix, pause (`hermes cron pause <job>`), or remove
+it. Any successful run resets the streak, and `hermes cron list` shows the
+streak alongside a failing job's last run. One-shot jobs never nudge.
 
 ```yaml
 cron:
   failure_nudge_threshold: 3   # default; 0 disables the nudge
 ```
+
+### Failure incidents: acknowledge a known failure
+
+A recurring job that keeps failing with the *same* error pings you on every
+run. Each failure is also recorded as a durable **incident**, keyed by the
+job plus a normalized signature of the error text, in the same per-profile
+ledger database as the execution history.
+
+```bash
+hermes cron incidents                 # list incidents (newest activity first)
+hermes cron incidents --state alerted # filter: detected | alerted | closed
+hermes cron incidents ack <id>        # acknowledge — stop re-pinging
+```
+
+Acknowledging an incident silences the per-run failure ping for that exact
+signature only. Nothing else changes: the run history still records every
+failure, the failure streak keeps counting, and the moment the job starts
+failing with a *different* error a new incident is minted and alerts fire
+again. A successful run doesn't touch incidents — they are per-signature, not
+per-job.
+
+Incident lifecycle: `detected` (failure recorded) → `alerted` (at least one
+failure ping reached delivery) → `closed` (acknowledged; terminal for that
+signature). Stored error text is secret-redacted and truncated before it is
+written.
+
+Recording is always on and costs nothing to ignore — no ping is ever
+suppressed until you explicitly `ack`.
+
+### Fleet health check: `hermes cron doctor`
+
+`hermes cron doctor` is a read-only health check over every active job. It
+prints grouped, per-job issues and exits `1` when anything actionable is
+found (`0` when healthy), so it works from a terminal, a watchdog script, or
+a CI-style smoke check:
+
+```bash
+hermes cron doctor
+```
+
+Checks per active job:
+
+- last run failed (`last_status` not ok, with the recorded error),
+- last delivery failed (the output was produced but never reached you),
+- `next_run_at` missing, or parked in the past beyond a 15-minute ticker
+  grace window — the "job is silently not firing" signal (scheduler dead,
+  gateway down, or a wedged fire-claim),
+- script missing, not a file, or resolving outside `HERMES_HOME/scripts`,
+- `no_agent` job with no script,
+- configured `workdir` that no longer exists.
+
+Doctor never mutates jobs or state — it only reports. Pair it with
+`hermes cron incidents` (durable failure records) and `hermes cron runs`
+(attempt ledger) when digging into a flagged job.
 
 ## Delivery options
 
@@ -370,11 +467,38 @@ When scheduling jobs, you specify where the output goes:
 | `"weixin"` | Weixin (WeChat) | |
 | `"bluebubbles"` | BlueBubbles (iMessage) | |
 | `"qqbot"` | QQ Bot (Tencent QQ) | |
+| `"bot-chat"` | This profile's canonical Bot Chat — the bot reads the output and responds | Machine-local |
+| `"bot-chat:research"` | Another local profile's Bot Chat | Validated at create time |
 | `"all"` | Fan out to every connected home channel | Resolved at fire time |
 | `"telegram,discord"` | Fan out to a specific set of channels | Comma-separated list |
 | `"origin,all"` | Deliver to the origin **plus** every other connected channel | Combine any tokens |
 
 The agent's final response is automatically delivered to the configured `deliver:` target — the agent does not send messages itself, so there is nothing to call in the cron prompt.
+
+### Delivery failures are a distinct status
+
+Execution and delivery are tracked separately. When the agent run succeeds but
+the output never reaches the target (platform 5xx, rate limit, stale session,
+adapter returned no positive evidence of a send), the job records
+`last_status: delivery_failed` — never a plain `ok` — with the reason in
+`last_delivery_error`. `hermes cron list` shows it in yellow as
+`delivery_failed: <reason>`, `hermes cron doctor` reports it as a delivery
+issue, and a manual `cronjob run` reports `success: false` with the delivery
+error. A delivery failure does not count toward the job's `failure_streak`
+(the agent did its job); the next fully successful run returns the status to
+`ok`.
+
+### Bot Chat delivery (`bot-chat`)
+
+`bot-chat` delivers the output **into a profile's canonical "Bot Chat" session as a real message**. Unlike every other target — where the recipient is a human reading a channel — the recipient here is the bot itself: it receives the output as an incoming message, acts on anything that needs action, and responds in its chat. Use it when scheduled output should be *processed*, not just posted.
+
+- `bot-chat` (bare) targets the job's own profile.
+- `bot-chat:<profile>` targets another profile **on the same machine**. Names are validated against `hermes profile list` when the job is created; profiles on other gateways or machines can never be targeted, so same-named profiles across machines are unambiguous.
+- Each delivery costs the target bot one full agent turn — mind the schedule frequency.
+- Composes with other targets (`bot-chat,telegram`) but is never included in `all`.
+- If the canonical chat is open in a mailbox-capable Desktop/TUI backend, delivery is **durably queued immediately**, whether the bot is idle or busy. Only that live owner runs the incoming turn; cron does not start a competing CLI writer. Without a live mailbox owner, the existing `hermes chat -c "Bot Chat" --create-if-missing` lane remains available (normal session ownership checks still apply).
+- **Queued is not completed.** Cron records receipt IDs and `queued`/`claimed` statuses in `last_delivery_queued`, with delivery outcome `queued` (neither delivered nor failed). A successful job shows `delivery_queued`; genuine errors on other targets still take precedence as delivery failures. The bot may complete later. The durable receipt in the target profile's `runtime/bot_live_delivery/<receipt-id>.json` is authoritative; cron's historical status is not automatically refreshed.
+- Rechecking the same execution inspects its existing receipt, even if the owner has disappeared. It never falls back to another writer after acceptance. `failed`, `cancelled`, or `ambiguous` receipts are not automatically replayed; inspect the chat and receipt before intentionally starting new work. Each new cron execution has a distinct delivery ID.
 
 ### Routing intent (`all`)
 
@@ -416,6 +540,43 @@ cron:
   wrap_response: false
 ```
 
+### Push notifications (`cron.delivery.notify`)
+
+Cron output is a *final* delivery, not a progress message, so by default it is
+sent with the platform's notification flag set — on Telegram this means the
+brief triggers a push even when the adapter's notification mode is `important`
+(which otherwise sends with `disable_notification=true`, and users report the
+silent brief as "never delivered"). To restore silent deliveries:
+
+```yaml
+# ~/.hermes/config.yaml
+cron:
+  delivery:
+    notify: false   # default: true
+```
+
+The flag rides both the text send and any media attachments, so a run never
+pushes for one and stays silent for the other.
+
+### Delivery confirmation and the `UNVERIFIED` state
+
+A live-adapter delivery is logged as delivered only on positive evidence from
+the adapter: an explicit `success` that is not a filtered drop
+(`delivered: false`), plus a `message_id` or `raw_response`. A result carrying
+`success` but neither piece of evidence — the shape Slack, Matrix and
+Mattermost adapters return — is still accepted (it is not proof of failure),
+but the run is recorded on the job as `last_delivery_unverified` and surfaces
+in `hermes cron list`:
+
+```
+⚠ Delivery UNVERIFIED: adapter acked slack:C0123456 without message_id/raw_response
+```
+
+and in `hermes cron doctor` as `last delivery unverified (...)`. The marker is
+cleared by the next run that delivers with evidence. An empty payload (no text
+and no media) is never handed to an adapter; it fails closed and is reported in
+`last_delivery_error` instead of being logged as delivered.
+
 ### Continuable jobs (reply to a cron delivery)
 
 By default a cron delivery is fire-and-forget: the message is sent, but it does
@@ -433,7 +594,7 @@ cron:
   mirror_delivery: false   # set true to make cron deliveries continuable
 ```
 
-Behaviour is **thread-preferred**, scoped to the job's origin chat:
+Behaviour is **thread-preferred**, scoped to the job's own conversation:
 
 - **Thread-capable platforms** (Telegram topics, Discord/Slack threads): each
   delivery opens its own dedicated thread and the brief is seeded into that
@@ -444,8 +605,19 @@ Behaviour is **thread-preferred**, scoped to the job's origin chat:
   is mirrored into the origin DM session instead — the DM itself is the
   continuation surface.
 
-Only the origin chat is ever touched: fan-out / broadcast targets (`all`,
-explicit other-chat deliveries) are never made continuable. The mirror is
+Only the job's **own conversation** is ever touched:
+
+- the **origin chat** the job was created in;
+- the **home-channel fallback** when `deliver: origin` captured no origin (jobs
+  created by scripts or the API rather than from a live gateway chat) — the
+  user's primary conversation standing in for the origin;
+- a job's **single explicit `platform:chat` target**, but only when the job
+  itself opts in with `attach_to_session: true` — the job author declares that
+  target a conversation. The global `mirror_delivery` flag alone never makes an
+  explicitly-addressed chat continuable.
+
+Broadcast / fan-out targets (`all`, bare-platform home channels) are never made
+continuable. The mirror is
 written as a labelled user turn (`[Cron delivery: <task name>]`), which keeps
 the conversation history alternation-safe across all model providers.
 
@@ -553,6 +725,18 @@ cron:
 
 Or set the `HERMES_CRON_MEDIA_SEND_TIMEOUT` environment variable. The resolution order is: env var → config.yaml → 300s default. A timed-out attachment is recorded in the job's run status as a partial delivery failure (the text still delivers).
 
+## Bot Chat delivery timeout
+
+A `bot-chat` delivery runs a full agent turn in the target bot's chat, so its bound is minutes, not seconds — 600s by default:
+
+```yaml
+# ~/.hermes/config.yaml
+cron:
+  bot_chat_delivery_timeout_seconds: 900
+```
+
+A timed-out delivery is recorded in `last_delivery_error`; the bot's turn may still complete on its own.
+
 ## No-agent mode (script-only jobs)
 
 For recurring jobs that don't need LLM reasoning — classic watchdogs, disk/memory alerts, heartbeats, CI pings — pass `no_agent=True` at creation time. The scheduler runs your script on schedule and delivers its stdout directly, skipping the agent entirely:
@@ -658,7 +842,7 @@ cronjob(
 )
 ```
 
-The first run has no previous output, so the prompt runs as-is. On later runs the previous output is prepended with continuity framing ("avoid repeating what was already reported"). It combines freely with upstream jobs (`context_from=["<other_job_id>"]` plus `continuity=true`), and `continuity=false` on update turns it off while preserving other `context_from` entries. Internally the flag is stored as the reserved `self` entry in `context_from`.
+The first run has no previous output, so the prompt runs as-is. Silent monitor ticks (`no_change`), empty output, and `wakeAgent=false` audit records are skipped when selecting context, so a quiet period preserves the latest substantive output. Audit files remain on disk. Error documents remain eligible to give the next run recovery context; this is not a success-only history filter. On later runs the previous output is prepended with continuity framing ("avoid repeating what was already reported"). It combines freely with upstream jobs (`context_from=["<other_job_id>"]` plus `continuity=true`), and `continuity=false` on update turns it off while preserving other `context_from` entries. Internally the flag is stored as the reserved `self` entry in `context_from`.
 
 From the CLI: `hermes cron create "every 6h" "Scan for news" --continuity`, and `hermes cron edit <job_id> --continuity` / `--no-continuity` to toggle it on an existing job. The same toggle appears in the dashboard's cron editor and the desktop Bot Mode routine dialog.
 
@@ -677,6 +861,20 @@ Cron jobs inherit your configured fallback providers and credential pool rotatio
 - **Rotate to the next credential** in your [credential pool](/user-guide/configuration#credential-pool-strategies) for the same provider
 
 This means cron jobs that run at high frequency or during peak hours are more resilient — a single rate-limited key won't fail the entire run.
+
+## Run failures (`last_error`)
+
+A failed agent run records a concise `last_error`, visible in job listings and `/cron list`
+with credential patterns and URL credentials redacted (including previously stored errors).
+This is separate from `last_fire_error` (scheduler handoff) and `last_delivery_error` (delivery).
+Those fields can correctly be empty when the agent itself failed.
+
+For a connection failure, inspect the run document under `cron/output/<job_id>/` in the active
+Hermes home. Its `## Error` section includes the chained traceback, with credential patterns
+and URL credentials redacted. The file uses the existing private output-file permissions;
+traceback locals are not captured. Delivery notices and `last_error` retain the concise error,
+not the full traceback. Review diagnostics before sharing: redaction is not a guarantee that
+arbitrary application data is non-sensitive.
 
 ## Missed scheduled fires (`last_fire_error`)
 
@@ -709,24 +907,40 @@ The agent's final response is automatically delivered to the job's `deliver:` ta
 ### Relative delays (one-shot)
 
 ```text
-30m     → Run once in 30 minutes
-2h      → Run once in 2 hours
-1d      → Run once in 1 day
+in 30m  → Run once in 30 minutes
+in 2h   → Run once in 2 hours
+in 1d   → Run once in 1 day
 ```
 
 ### Intervals (recurring)
 
 ```text
+30m          → Every 30 minutes (bare durations are recurring)
 every 30m    → Every 30 minutes
 every 2h     → Every 2 hours
 every 1d     → Every day
+every hour   → Every hour (bare unit = 1)
 ```
+
+### Natural day/time schedules (recurring)
+
+```text
+every monday 9am         → Weekly, Mondays at 9:00 AM
+every day at 9am         → Daily at 9:00 AM
+weekdays at 9am          → Weekdays at 9:00 AM
+weekends at 10am         → Saturdays and Sundays at 10:00 AM
+daily at 7am             → Daily at 7:00 AM
+monday, wednesday at 9am → Mondays and Wednesdays at 9:00 AM
+```
+
+Times accept `9am`, `9:30pm`, `14:00`, bare 24-hour hours (`at 7`), `noon`, and `midnight`. These forms compile to cron expressions internally (they require the `croniter` package, installed by default).
 
 ### Cron expressions
 
 ```text
 0 9 * * *       → Daily at 9:00 AM
 0 9 * * 1-5     → Weekdays at 9:00 AM
+0 9 * * MON-FRI → Weekdays at 9:00 AM (named weekdays/months accepted)
 0 */6 * * *     → Every 6 hours
 30 8 1 * *      → First of every month at 8:30 AM
 0 0 * * 0       → Every Sunday at midnight
@@ -742,7 +956,7 @@ every 1d     → Every day
 
 | Schedule type | Default repeat | Behavior |
 |--------------|----------------|----------|
-| One-shot (`30m`, timestamp) | 1 | Runs once |
+| One-shot (`in 30m`, timestamp) | 1 | Runs once |
 | Interval (`every 2h`) | forever | Runs until removed |
 | Cron expression | forever | Runs until removed |
 

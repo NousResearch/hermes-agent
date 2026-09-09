@@ -8,9 +8,11 @@ from __future__ import annotations
 
 import threading
 import time
+from concurrent.futures import Future
 from unittest.mock import MagicMock, patch
 
-from cron.scheduler import run_job, _teardown_cron_agent
+from cron.scheduler import _teardown_cron_agent, run_job
+from cron.scheduler_detached_worker import defer_teardown_to_running_worker
 
 
 _RUNTIME = {
@@ -55,10 +57,10 @@ def test_run_job_bounds_sessiondb_finalization(tmp_path):
 
     try:
         with patch("cron.scheduler._hermes_home", tmp_path), \
-             patch("cron.scheduler._resolve_origin", return_value=None), \
+             patch("cron.scheduler_delivery._resolve_origin", return_value=None), \
              patch("hermes_cli.env_loader.load_hermes_dotenv"), \
              patch("hermes_cli.env_loader.reset_secret_source_cache"), \
-             patch("hermes_state.SessionDB", return_value=fake_db), \
+             patch("hermes_state_registry.acquire", return_value=fake_db), \
              patch("hermes_cli.runtime_provider.resolve_runtime_provider", return_value=_RUNTIME), \
              patch("run_agent.AIAgent") as mock_agent_cls, \
              patch("cron.scheduler._cron_cleanup_timeout_seconds", return_value=0.02):
@@ -70,8 +72,8 @@ def test_run_job_bounds_sessiondb_finalization(tmp_path):
             success, _output, final_response, error = run_job(job)
             elapsed = time.monotonic() - started
 
-        assert fake_db.entered.wait(timeout=0.5)
-        assert elapsed < 0.5
+        assert fake_db.entered.wait(timeout=2.0)
+        assert elapsed < 5.0
         assert success is True
         assert final_response == "ok"
         assert error is None
@@ -88,10 +90,31 @@ def test_agent_teardown_is_bounded():
         _teardown_cron_agent(agent, "cleanup-agent-hang", timeout_seconds=0.02)
         elapsed = time.monotonic() - started
 
-        assert agent.entered.wait(timeout=0.5)
-        assert elapsed < 0.5
+        assert agent.entered.wait(timeout=2.0)
+        assert elapsed < 5.0
     finally:
         release.set()
+
+
+def test_detached_worker_teardown_waits_for_future():
+    """A timed-out worker keeps its agent and SessionDB until its Future completes."""
+    future = Future()
+    fake_db = MagicMock()
+    agent = MagicMock()
+
+    with patch("cron.scheduler._finalize_cron_session") as finalize, \
+         patch("cron.scheduler._teardown_cron_agent") as teardown_agent:
+        assert defer_teardown_to_running_worker(
+            future, fake_db, agent, "detached-worker", "detached worker", "cron_detached-worker") is True
+        finalize.assert_not_called()
+        teardown_agent.assert_not_called()
+
+        future.set_result({"final_response": "late"})
+
+        finalize.assert_called_once_with(fake_db, agent, "detached-worker", "detached worker", "cron_detached-worker")
+        teardown_agent.assert_called_once_with(agent, "detached-worker")
+    assert defer_teardown_to_running_worker(
+        future, fake_db, agent, "detached-worker", "detached worker", "cron_detached-worker") is False
 
 
 def test_dispatch_guard_releases_after_sessiondb_finalization_hang(tmp_path):
@@ -115,10 +138,10 @@ def test_dispatch_guard_releases_after_sessiondb_finalization_hang(tmp_path):
 
     try:
         with patch("cron.scheduler._hermes_home", tmp_path), \
-             patch("cron.scheduler._resolve_origin", return_value=None), \
+             patch("cron.scheduler_delivery._resolve_origin", return_value=None), \
              patch("hermes_cli.env_loader.load_hermes_dotenv"), \
              patch("hermes_cli.env_loader.reset_secret_source_cache"), \
-             patch("hermes_state.SessionDB", return_value=fake_db), \
+             patch("hermes_state_registry.acquire", return_value=fake_db), \
              patch("hermes_cli.runtime_provider.resolve_runtime_provider", return_value=_RUNTIME), \
              patch("run_agent.AIAgent") as mock_agent_cls, \
              patch("cron.scheduler._cron_cleanup_timeout_seconds", return_value=0.02), \

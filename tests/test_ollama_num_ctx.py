@@ -187,3 +187,68 @@ class TestCompressorClampsToNumCtx:
         # num_ctx above the resolved window must not RAISE the compressor
         # window: the clamp is one-directional.
         assert agent.context_compressor.context_length == 65536
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# hermes-agent#25629 — explicit api_mode: chat_completions must skip the
+# Ollama-native pre-flight probe (agent_init._configure_ollama_num_ctx),
+# regardless of the base_url being a local/Ollama-shaped endpoint.
+# ═══════════════════════════════════════════════════════════════════════
+
+
+class TestConfigureOllamaNumCtxRespectsExplicitApiMode:
+    def _build_agent(self, *, api_mode=None):
+        with (
+            patch("model_tools.get_tool_definitions", return_value=[]),
+            patch("model_tools.check_toolset_requirements", return_value={}),
+            patch("agent.process_bootstrap.OpenAI"),
+            patch("hermes_cli.config.load_config", return_value={"agent": {}, "model": {}}),
+            patch("hermes_cli.config.load_config_readonly", return_value={"agent": {}, "model": {}}),
+            patch("agent.model_metadata.get_model_context_length", return_value=131072),
+            patch("agent.context_compressor.get_model_context_length", return_value=131072),
+        ):
+            from run_agent import AIAgent
+            return AIAgent(
+                model="llama3.1:8b",
+                api_key="ollama",
+                base_url="http://127.0.0.1:11434/v1",
+                api_mode=api_mode,
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+
+    def test_explicit_chat_completions_skips_ollama_num_ctx_probe(self):
+        """Issue #25629 Option 1: a user who explicitly configures api_mode:
+        chat_completions — typically to route a local Ollama server through an
+        OpenAI-compatible intermediary (LiteLLM) that works around Ollama's
+        stream+tools hang — must not have Hermes probe Ollama-native routes
+        (/api/tags, /api/show, ...) on that intermediary. Those probes 404 on
+        an intermediary that only exposes /v1/chat_completions and previously
+        cost a full waterfall of round trips on every agent init."""
+        with patch(
+            "agent.agent_init.query_ollama_num_ctx"
+        ) as mock_query_num_ctx:
+            agent = self._build_agent(api_mode="chat_completions")
+
+        mock_query_num_ctx.assert_not_called()
+        assert agent._ollama_num_ctx is None
+        assert agent.api_mode == "chat_completions"
+
+    def test_unset_api_mode_still_probes_ollama_num_ctx(self):
+        """Regression guard: the overwhelming majority of existing direct-Ollama
+        setups never set model.api_mode at all (it resolves to "chat_completions"
+        as the ladder default in _resolve_api_mode, but that is NOT the same as
+        the user explicitly opting out) — they must keep getting num_ctx
+        auto-detection exactly as before this fix."""
+        with patch(
+            "agent.agent_init.query_ollama_num_ctx", return_value=65536
+        ) as mock_query_num_ctx:
+            agent = self._build_agent(api_mode=None)
+
+        mock_query_num_ctx.assert_called_once()
+        assert agent._ollama_num_ctx == 65536
+        # Confirms the ladder default really is "chat_completions" — proving the
+        # fix could not have simply gated on agent.api_mode without breaking
+        # this (the common) case.
+        assert agent.api_mode == "chat_completions"

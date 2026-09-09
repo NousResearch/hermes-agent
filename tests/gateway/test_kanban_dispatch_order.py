@@ -7,6 +7,9 @@ from types import SimpleNamespace
 
 import pytest
 
+from hermes_cli import kanban_db_connect as kbc
+from hermes_cli import kanban_db_dispatch as kbd
+
 
 def test_ready_dispatch_precedes_auto_decompose(monkeypatch, tmp_path):
     from gateway.run import GatewayRunner
@@ -36,10 +39,10 @@ def test_ready_dispatch_precedes_auto_decompose(monkeypatch, tmp_path):
         },
     )
     monkeypatch.setattr(kb, "list_boards", lambda include_archived=False: [{"slug": "default"}])
-    monkeypatch.setattr(kb, "reap_worker_zombies", lambda: [])
-    monkeypatch.setattr(kb, "dispatch_once", lambda *args, **kwargs: calls.append("dispatch"))
-    monkeypatch.setattr(kb, "has_spawnable_ready", lambda conn: False)
-    monkeypatch.setattr(kb, "review_dispatch_enabled", lambda: False)
+    monkeypatch.setattr(kbd, "reap_worker_zombies", lambda: [])
+    monkeypatch.setattr(kbd, "dispatch_once", lambda *args, **kwargs: calls.append("dispatch"))
+    monkeypatch.setattr(kbd, "has_spawnable_ready", lambda conn: False)
+    monkeypatch.setattr(kbd, "review_dispatch_enabled", lambda: False)
     monkeypatch.setattr(decomp, "list_triage_ids", lambda: ["t_atomic"])
 
     def _decompose(*args, **kwargs):
@@ -90,10 +93,10 @@ def decomposition_tick(monkeypatch, tmp_path):
                    "auto_decompose": True, "auto_decompose_per_tick": 1},
     })
     monkeypatch.setattr(kb, "list_boards", lambda **kw: [{"slug": "default"}])
-    monkeypatch.setattr(kb, "reap_worker_zombies", lambda: [])
-    monkeypatch.setattr(kb, "dispatch_once", lambda *a, **kw: None)
-    monkeypatch.setattr(kb, "has_spawnable_ready", lambda conn: False)
-    monkeypatch.setattr(kb, "review_dispatch_enabled", lambda: False)
+    monkeypatch.setattr(kbd, "reap_worker_zombies", lambda: [])
+    monkeypatch.setattr(kbd, "dispatch_once", lambda *a, **kw: None)
+    monkeypatch.setattr(kbd, "has_spawnable_ready", lambda conn: False)
+    monkeypatch.setattr(kbd, "review_dispatch_enabled", lambda: False)
 
     requests = []
 
@@ -126,7 +129,7 @@ def test_auto_decompose_allows_undecomposed_task_with_downstream_dependents(deco
     """Dependency children are consumers, not evidence of prior fan-out."""
     from hermes_cli import kanban_db as kb
 
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         tid = kb.create_task(conn, title="structural extraction", triage=True)
         consumer = kb.create_task(conn, title="verify extraction", parents=[tid])
         assert kb.child_ids(conn, tid) == [consumer]
@@ -135,7 +138,7 @@ def test_auto_decompose_allows_undecomposed_task_with_downstream_dependents(deco
     run_tick, _ = decomposition_tick
     run_tick()
 
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         events = [ev for ev in kb.list_events(conn, tid) if ev.kind == "decomposed"]
         assert len(events) == 1
         assert kb.get_task(conn, tid).status == "todo"
@@ -152,7 +155,7 @@ def test_auto_decompose_skips_actual_decomposition_without_spending_budget(
     from hermes_cli import kanban_db as kb
     from hermes_cli import kanban_decompose as decomp
 
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         tid = kb.create_task(conn, title="old root", triage=True)
         if has_downstream:
             kb.create_task(conn, title="downstream consumer", parents=[tid])
@@ -171,7 +174,7 @@ def test_auto_decompose_skips_actual_decomposition_without_spending_budget(
     run_tick, requests = decomposition_tick
     run_tick()
 
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         assert kb.get_task(conn, tid).status == "triage"
         assert kb.parent_ids(conn, tid) == plan
         assert len([ev for ev in kb.list_events(conn, tid) if ev.kind == "decomposed"]) == 1
@@ -188,7 +191,7 @@ def test_auto_decompose_repromotes_existing_spec_without_auxiliary_model(
     from hermes_cli import kanban_db as kb
     from hermes_cli import kanban_decompose as decomp
 
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         tid = kb.create_task(
             conn,
             title="board-record receipt",
@@ -208,7 +211,7 @@ def test_auto_decompose_repromotes_existing_spec_without_auxiliary_model(
     run_tick, requests = decomposition_tick
     run_tick()
 
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         assert kb.get_task(conn, tid).status == "ready"
         assert len([ev for ev in kb.list_events(conn, tid) if ev.kind == "specified"]) == 2
         assert not any(ev.kind == "decomposed" for ev in kb.list_events(conn, tid))
@@ -220,9 +223,9 @@ def test_auto_decompose_fails_closed_when_history_cannot_be_read(decomposition_t
     import sqlite3
     from hermes_cli import kanban_db as kb
 
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         tid = kb.create_task(conn, title="history unavailable", triage=True)
-    real_connect = kb.connect
+    real_connect = kbc.connect
 
     def connect_without_event_reads(*args, **kwargs):
         conn = real_connect(*args, **kwargs)
@@ -235,9 +238,9 @@ def test_auto_decompose_fails_closed_when_history_cannot_be_read(decomposition_t
 
     run_tick, requests = decomposition_tick
     with monkeypatch.context() as scoped:
-        scoped.setattr(kb, "connect", connect_without_event_reads)
+        scoped.setattr(kbc, "connect", connect_without_event_reads)
         run_tick()
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         assert kb.get_task(conn, tid).status == "triage"
         assert len(kb.list_tasks(conn)) == 1
     assert requests == []

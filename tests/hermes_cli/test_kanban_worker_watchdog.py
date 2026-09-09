@@ -7,6 +7,8 @@ from pathlib import Path
 import pytest
 
 from hermes_cli import kanban_db as kb
+from hermes_cli import kanban_db_connect as kbc
+from hermes_cli import kanban_db_dispatch as kbd
 from hermes_cli import projects_db as pdb
 from hermes_cli.kanban_worker_watchdog import (
     WatchdogConfig,
@@ -79,6 +81,18 @@ def test_repeated_failed_tool_call_is_detected() -> None:
     assert finding.category == "tool_failure_loop"
     assert finding.count == 3
     assert len(finding.fingerprint) == 16
+
+
+def test_successful_retry_clears_an_older_failed_tool_sequence() -> None:
+    """A later successful retry is progress, not evidence for suspension."""
+    log = "\n".join([
+        "┊ 💻 $ rg missing.file  0.1s [exit 2]",
+        "┊ 💻 $ rg missing.file  0.1s [exit 2]",
+        "┊ 💻 $ rg missing.file  0.1s [exit 2]",
+        "┊ 💻 $ rg missing.file  0.1s",
+    ])
+
+    assert detect_log_finding(log, _config()) is None
 
 
 def test_repeated_context_compression_is_detected() -> None:
@@ -157,7 +171,7 @@ def test_watchdog_ignores_failure_loop_from_a_previous_task_run(
         repair_profiles={"tool_failure_loop": "tooling-repair"},
     )
 
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         current = _running_task(conn, tmp_path)
         stale_failures = "\n".join(
             ["┊ 💻 $ python /tmp/probe.py 0.1s [exit 1]"] * 3
@@ -196,7 +210,7 @@ def test_watchdog_blocks_worker_and_creates_one_linked_repair(
     )
     unhealthy_log = "\n".join(["┊ 💻 $ rg missing 0.1s [exit 2]"] * 3)
 
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         original = _running_task(conn, tmp_path)
         first = run_watchdog_tick(
             conn,
@@ -241,7 +255,7 @@ def test_repair_borrows_original_workspace_without_owning_cleanup(
     scratch = tmp_path / "original-scratch"
     scratch.mkdir()
 
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         task_id = kb.create_task(
             conn,
             title="Original scratch task",
@@ -283,7 +297,7 @@ def test_compaction_repair_uses_clean_scratch_not_conflicted_original_workspace(
     )
     unhealthy_log = "\n".join(["Compacting context — summarizing"] * 3)
 
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         original = _running_task(conn, tmp_path)
         run_watchdog_tick(
             conn,
@@ -323,7 +337,7 @@ def test_provider_stall_repair_borrows_project_workspace_for_route_diagnosis(
             primary_path=str(workspace),
         )
 
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         task_id = kb.create_task(
             conn,
             title="Original project task",
@@ -367,7 +381,7 @@ def test_watchdog_waits_for_repair_then_restarts_original(
     )
     unhealthy_log = "\n".join(["┊ 💻 $ rg missing 0.1s [exit 2]"] * 3)
 
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         original = _running_task(conn, tmp_path)
         run_watchdog_tick(
             conn,
@@ -398,6 +412,39 @@ def test_watchdog_waits_for_repair_then_restarts_original(
         assert kb.get_task(conn, original.id).status == "ready"
 
 
+def test_watchdog_does_not_restart_when_repair_is_archived(
+    kanban_home: Path, tmp_path: Path
+) -> None:
+    """Archiving an unfinished repair is an operator outcome, not success."""
+    config = WatchdogConfig(
+        enabled=True,
+        grace_seconds=0,
+        repeat_threshold=3,
+        repair_profiles={"tool_failure_loop": "tooling-repair"},
+    )
+    unhealthy_log = "\n".join(["┊ 💻 $ rg missing 0.1s [exit 2]"] * 3)
+
+    with kbc.connect() as conn:
+        original = _running_task(conn, tmp_path)
+        run_watchdog_tick(
+            conn,
+            config=config,
+            now=original.started_at + 1,
+            read_log_fn=lambda *_args, **_kwargs: unhealthy_log,
+            terminate_fn=_verified_termination,
+        )
+        repair_id = conn.execute(
+            "SELECT id FROM tasks WHERE created_by = 'worker-health-watchdog'"
+        ).fetchone()["id"]
+        assert kb.archive_task(conn, repair_id)
+
+        result = run_watchdog_tick(conn, config=config, now=original.started_at + 2)
+
+        assert result.restarted == []
+        assert result.needs_operator == [original.id]
+        assert kb.get_task(conn, original.id).status == "blocked"
+
+
 def test_watchdog_does_not_restart_a_newer_non_watchdog_block(
     kanban_home: Path, tmp_path: Path
 ) -> None:
@@ -410,7 +457,7 @@ def test_watchdog_does_not_restart_a_newer_non_watchdog_block(
     )
     unhealthy_log = "\n".join(["┊ 💻 $ rg missing 0.1s [exit 2]"] * 3)
 
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         original = _running_task(conn, tmp_path)
         run_watchdog_tick(
             conn,
@@ -461,7 +508,7 @@ def test_watchdog_keeps_original_blocked_when_repair_fails(
     )
     unhealthy_log = "\n".join(["┊ 💻 $ rg missing 0.1s [exit 2]"] * 3)
 
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         original = _running_task(conn, tmp_path)
         run_watchdog_tick(
             conn,
@@ -507,7 +554,7 @@ def test_watchdog_refuses_to_release_unterminated_worker(
         "sigkill": True,
     }
 
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         original = _running_task(conn, tmp_path)
         result = run_watchdog_tick(
             conn,
@@ -538,7 +585,7 @@ def test_watchdog_stops_after_recovery_attempt_limit(
     )
     unhealthy_log = "\n".join(["┊ 💻 $ rg missing 0.1s [exit 2]"] * 3)
 
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         original = _running_task(conn, tmp_path)
         with kb.write_txn(conn):
             kb._append_event(
@@ -572,7 +619,7 @@ def test_disabled_watchdog_does_not_read_worker_logs(kanban_home: Path) -> None:
     """Ignoring the feature gate would mutate existing boards on upgrade."""
     reads = []
 
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         result = run_watchdog_tick(
             conn,
             config=WatchdogConfig(enabled=False),
@@ -670,8 +717,8 @@ def test_dispatch_result_surfaces_watchdog_progress(
         ),
     )
 
-    with kb.connect() as conn:
-        result = kb.dispatch_once(conn, max_spawn=0)
+    with kbc.connect() as conn:
+        result = kbd.dispatch_once(conn, max_spawn=0)
 
     assert result.watchdog_blocked == ["t_blocked"]
     assert result.watchdog_restarted == ["t_restarted"]

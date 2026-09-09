@@ -52,7 +52,9 @@ def read_desktop_drain_snapshot(homes: Iterable[Path]) -> tuple[int, int]:
         if identity in seen_paths or not path.exists():
             continue
         seen_paths.add(identity)
-        conn = kb.connect(board=slug)
+        from hermes_cli.kanban_db_connect import connect
+
+        conn = connect(board=slug)
         try:
             rows = conn.execute(
                 "SELECT worker_pid FROM tasks WHERE status = 'running' "

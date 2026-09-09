@@ -540,7 +540,7 @@ def test_review_dispatch_preserves_task_skills_and_adds_reviewer_skill(
         guarded = kbd.dispatch_once(conn, spawn_fn=spawn)
         assert guarded.respawn_guarded == [(task_id, "rate_limit_cooldown")]
         assert not guarded.spawned
-        guarded_again = kb.dispatch_once(conn, spawn_fn=spawn)
+        guarded_again = kbd.dispatch_once(conn, spawn_fn=spawn)
         assert guarded_again.respawn_guarded == [(task_id, "rate_limit_cooldown")]
         guard_events = conn.execute(
             "SELECT COUNT(*) AS n FROM task_events "

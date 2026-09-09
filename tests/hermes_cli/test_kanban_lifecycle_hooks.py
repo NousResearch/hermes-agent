@@ -71,7 +71,7 @@ def test_claim_hook_uses_explicit_connection_board(
 ):
     kb.create_board("alpha")
     kb.create_board("beta")
-    conn = kb.connect(board="alpha")
+    conn = kbc.connect(board="alpha")
     try:
         tid = kb.create_task(conn, title="t", assignee="worker")
         monkeypatch.setattr(kb, "get_current_board", lambda: "beta")

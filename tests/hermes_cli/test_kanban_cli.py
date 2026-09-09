@@ -108,7 +108,7 @@ def test_operator_block_terminates_running_worker_before_releasing_claim(
             "sigkill": False,
         },
     )
-    with kb.connect_closing() as conn:
+    with kbc.connect_closing() as conn:
         task_id = kb.create_task(conn, title="unsafe worker", assignee="alice")
         claimed = kb.claim_task(conn, task_id)
         assert claimed is not None
@@ -125,7 +125,7 @@ def test_operator_block_terminates_running_worker_before_releasing_claim(
 
     assert rc == 0
     assert terminations == [(12345, claimed.claim_lock)]
-    with kb.connect_closing() as conn:
+    with kbc.connect_closing() as conn:
         task = kb.get_task(conn, task_id)
         assert task is not None
         assert task.status == "blocked"
@@ -148,7 +148,7 @@ def test_archive_terminates_running_worker_before_hiding_card(
             "sigkill": False,
         },
     )
-    with kb.connect_closing() as conn:
+    with kbc.connect_closing() as conn:
         task_id = kb.create_task(conn, title="archive worker", assignee="alice")
         claimed = kb.claim_task(conn, task_id)
         assert claimed is not None
@@ -157,7 +157,7 @@ def test_archive_terminates_running_worker_before_hiding_card(
         assert kb.archive_task(conn, task_id)
 
     assert terminations == [(23456, claimed.claim_lock)]
-    with kb.connect_closing() as conn:
+    with kbc.connect_closing() as conn:
         task = kb.get_task(conn, task_id)
         assert task is not None
         assert task.status == "archived"
@@ -180,7 +180,7 @@ def test_operator_stop_fails_closed_when_worker_survives(
             "sigkill": True,
         },
     )
-    with kb.connect_closing() as conn:
+    with kbc.connect_closing() as conn:
         task_id = kb.create_task(conn, title="surviving worker", assignee="alice")
         claimed = kb.claim_task(conn, task_id)
         assert claimed is not None
@@ -197,10 +197,10 @@ def test_operator_stop_fails_closed_when_worker_survives(
         )
         assert rc == 1
     else:
-        with kb.connect_closing() as conn:
+        with kbc.connect_closing() as conn:
             assert not kb.archive_task(conn, task_id)
 
-    with kb.connect_closing() as conn:
+    with kbc.connect_closing() as conn:
         task = kb.get_task(conn, task_id)
         assert task is not None
         assert task.status == "running"
@@ -396,14 +396,14 @@ def test_run_slash_reclaim_running_task(kanban_home, monkeypatch):
 def test_unblock_reason_records_operator_outside_worker(kanban_home, monkeypatch):
     monkeypatch.setenv("HERMES_PROFILE_NAME", "default")
     monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
-    with kb.connect_closing() as conn:
+    with kbc.connect_closing() as conn:
         task_id = kb.create_task(conn, title="validated intake")
         assert kb.block_task(conn, task_id, reason="awaiting operator")
 
     output = kc.run_slash(f"unblock {task_id} --reason 'validated for local repair'")
 
     assert f"Unblocked {task_id}" in output
-    with kb.connect_closing() as conn:
+    with kbc.connect_closing() as conn:
         comments = kb.list_comments(conn, task_id)
     assert [(comment.author, comment.body) for comment in comments] == [
         ("operator", "UNBLOCK: validated for local repair")
@@ -413,14 +413,14 @@ def test_unblock_reason_records_operator_outside_worker(kanban_home, monkeypatch
 def test_unblock_reason_records_profile_inside_worker(kanban_home, monkeypatch):
     monkeypatch.setenv("HERMES_PROFILE_NAME", "repair-worker")
     monkeypatch.setenv("HERMES_KANBAN_TASK", "t_12345678")
-    with kb.connect_closing() as conn:
+    with kbc.connect_closing() as conn:
         task_id = kb.create_task(conn, title="worker retry")
         assert kb.block_task(conn, task_id, reason="transient")
 
     output = kc.run_slash(f"unblock {task_id} --reason 'worker retry'")
 
     assert f"Unblocked {task_id}" in output
-    with kb.connect_closing() as conn:
+    with kbc.connect_closing() as conn:
         comments = kb.list_comments(conn, task_id)
     assert [(comment.author, comment.body) for comment in comments] == [
         ("repair-worker", "UNBLOCK: worker retry")

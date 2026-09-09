@@ -30,6 +30,67 @@ from toolsets import get_toolset_names
 
 _log = logging.getLogger(__name__)
 
+
+def _row_get(row: Any, col: str, default: Any = None) -> Any:
+    return default if row is None or col not in row.keys() else row[col]
+
+
+def _json_or(value: Any, default: Any = None) -> Any:
+    if not value:
+        return default
+    try:
+        return json.loads(value)
+    except Exception:
+        return default
+
+
+def _json_dict(value: Any) -> dict:
+    parsed = _json_or(value, {})
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _env_int(name: str, default: int, *, minimum: int = 0) -> int:
+    raw = os.environ.get(name, "").strip()
+    try:
+        parsed = int(raw) if raw else default
+    except (TypeError, ValueError):
+        return default
+    return parsed if parsed >= minimum else default
+
+
+def _git_out(cwd: Path, *args: str, timeout: int = 30) -> Optional[str]:
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(cwd), *args], capture_output=True, text=True,
+            encoding="utf-8", errors="replace", timeout=timeout, check=False,
+        )
+    except Exception:
+        return None
+    return (result.stdout or "").strip() or None if result.returncode == 0 else None
+
+
+def _host_prefix() -> str:
+    return f"{_claimer_id().split(':', 1)[0]}:"
+
+
+def _pid_alive(pid: Optional[int]) -> bool:
+    from hermes_cli.kanban_db_dispatch import _pid_alive as dispatch_pid_alive
+
+    return dispatch_pid_alive(pid)
+
+
+def _opt_int(value: Any) -> Optional[int]:
+    return int(value) if value is not None else None
+
+
+def _insert_comment(
+    conn: sqlite3.Connection, task_id: str, author: str, body: str, created_at: int,
+) -> None:
+    conn.execute(
+        "INSERT INTO task_comments (task_id, author, body, created_at) VALUES (?, ?, ?, ?)",
+        (task_id, author, body, created_at),
+    )
+
 _GITHUB_PR_FEEDBACK_IDEMPOTENCY_PREFIX = "github-pr-feedback:"
 _GITHUB_PR_INTENT_REVIEW_PREFIX = "github-pr-feedback:intent-review:"
 _RESEARCH_LAB_INTAKE_IDEMPOTENCY_PREFIX = "research-lab-intake-"

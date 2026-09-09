@@ -46,12 +46,23 @@ _INIT_LOCK_TIMEOUT_SECONDS = 10.0
 _INIT_LOCK_POLL_SECONDS = 0.05
 
 
+def _env_int(name: str, default: int, *, minimum: int = 0) -> int:
+    """Read a bounded integer setting used by the connection lifecycle."""
+    import os
+
+    try:
+        value = int(os.environ.get(name, "").strip() or default)
+    except (TypeError, ValueError):
+        return default
+    return max(value, minimum)
+
+
 def _resolve_busy_timeout_ms() -> int:
     """Return the SQLite busy timeout for Kanban connections. Kanban is the
     shared cross-profile dispatch bus, so worker stampedes are expected; a
     long timeout lets WAL serialize writers instead of surfacing transient
     ``database is locked`` failures."""
-    return _kb._env_int("HERMES_KANBAN_BUSY_TIMEOUT_MS", DEFAULT_BUSY_TIMEOUT_MS, minimum=1)
+    return _env_int("HERMES_KANBAN_BUSY_TIMEOUT_MS", DEFAULT_BUSY_TIMEOUT_MS, minimum=1)
 
 
 def _sqlite_connect(path: Path) -> sqlite3.Connection:

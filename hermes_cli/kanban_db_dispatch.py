@@ -266,7 +266,7 @@ def _kill_fn(signal_fn) -> Optional[Callable[[int, int], None]]:
 def _poll_worker_exit(pid: int) -> bool:
     """Poll ~5 s (10 x 0.5 s) for ``pid`` to die; True once it is gone."""
     for _ in range(10):
-        if not _kb._pid_alive(pid):
+        if not _pid_alive(pid):
             return True
         time.sleep(0.5)
     return False
@@ -320,11 +320,11 @@ def _terminate_reclaimed_worker(
     if _poll_worker_exit(pid):
         info["terminated"] = True
         return info
-    if _kb._pid_alive(pid):
+    if _pid_alive(pid):
         if not _sigkill(kill, pid):
             return info
         info["sigkill"] = True
-    info["terminated"] = not _kb._pid_alive(pid)
+    info["terminated"] = not _pid_alive(pid)
     return info
 
 
@@ -458,7 +458,7 @@ def enforce_max_runtime(conn: sqlite3.Connection, *, signal_fn=None) -> list[str
                 kill(pid, signal.SIGTERM)
             # Short polling wait — no time.sleep on the write txn.
             _poll_worker_exit(pid)
-            if _kb._pid_alive(pid):
+            if _pid_alive(pid):
                 killed = _sigkill(kill, pid)
 
         error = f"elapsed {int(elapsed)}s > limit {limit}s"
@@ -622,6 +622,10 @@ def reconcile_orphaned_running(conn: sqlite3.Connection) -> list[str]:
     for row in rows:
         tid = row["id"]
         pid = row["worker_pid"]
+        if row["claim_lock"] and not _kb._claim_is_host_local(
+            row["claim_lock"], pid=pid, task_id=tid,
+        ):
+            continue
         if pid and _kb._pid_alive(pid):
             # Never requeue beside a live process. Retry next tick.
             _kb._log.debug(
@@ -821,7 +825,7 @@ def _reclaim_dead_workers(conn: sqlite3.Connection) -> _CrashSweep:
             started_at = _kb._row_get(row, "started_at")
             if started_at is not None and time.time() - started_at < _kb._resolve_crash_grace_seconds():
                 continue
-            if _kb._pid_alive(row["worker_pid"]):
+            if _pid_alive(row["worker_pid"]):
                 continue
 
             pid = int(row["worker_pid"])

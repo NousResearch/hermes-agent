@@ -135,8 +135,7 @@ def test_touch_activity_hard_interrupts_worker_after_lease_loss(monkeypatch):
         heartbeat,
     )
     monkeypatch.setattr(
-        run_agent,
-        "request_hard_interrupt",
+        "agent.interrupt_compat.request_hard_interrupt",
         lambda target, message, *, tool_reason: interrupted.append(
             (target, message, tool_reason)
         )

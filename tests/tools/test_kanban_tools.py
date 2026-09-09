@@ -350,7 +350,7 @@ def test_verifier_cannot_complete_with_pytest_usage_failure(
     from hermes_cli import kanban_db as kb
     from tools import kanban_tools as kt
 
-    conn = kb.connect()
+    conn = kbc.connect()
     try:
         with kb.write_txn(conn):
             conn.execute(
@@ -378,7 +378,7 @@ def test_verifier_cannot_complete_with_pytest_usage_failure(
     }))
 
     assert "Verifier completion rejected" in out["error"]
-    conn = kb.connect()
+    conn = kbc.connect()
     try:
         assert kb.get_task(conn, worker_env).status == "running"
     finally:
@@ -1573,3 +1573,4 @@ def test_attach_url_happy_path_public_host(worker_env, default_url_guard, monkey
         assert Path(atts[0].stored_path).read_bytes() == payload
     finally:
         conn.close()
+from hermes_cli import kanban_db_connect as kbc

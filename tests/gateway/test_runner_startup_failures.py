@@ -714,7 +714,7 @@ async def test_start_gateway_stderr_handler_level(monkeypatch, tmp_path, platfor
     monkeypatch.setattr("sys.stderr", _FakeStderrStream(tty=tty))
     monkeypatch.setattr("gateway.status.get_running_pid", lambda: None)
     monkeypatch.setattr("tools.skills_sync.sync_skills", lambda quiet=True: None)
-    monkeypatch.setattr("tools.mcp_tool.discover_mcp_tools", lambda: None)
+    monkeypatch.setattr("tools.mcp_tool_discovery.discover_mcp_tools", lambda: None)
     monkeypatch.setattr("hermes_logging.setup_logging", lambda hermes_home, mode: tmp_path)
     monkeypatch.setattr("hermes_logging._add_rotating_handler", lambda *args, **kwargs: None)
     monkeypatch.setattr("gateway.run.GatewayRunner", _StderrCleanExitRunner)

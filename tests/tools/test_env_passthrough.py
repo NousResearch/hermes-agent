@@ -289,6 +289,61 @@ class TestTerminalIntegration:
         assert result["output"] == "token-for-profile-b"
         assert missing["output"] == "unset"
 
+    def test_shared_local_snapshot_re_resolves_profile_runtime_home(
+        self, monkeypatch, tmp_path
+    ):
+        """A routed profile must not inherit another profile's Hermes home."""
+        from hermes_constants import (
+            reset_hermes_home_override,
+            set_hermes_home_override,
+        )
+        from tools.environments.local import LocalEnvironment
+
+        real_home_a = tmp_path / "real-home-a"
+        real_home_b = tmp_path / "real-home-b"
+        profile_a = tmp_path / "profiles" / "a"
+        profile_b = tmp_path / "profiles" / "b"
+        real_home_a.mkdir()
+        real_home_b.mkdir()
+        (profile_a / "home").mkdir(parents=True)
+        (profile_b / "home").mkdir(parents=True)
+        monkeypatch.setenv("HOME", str(real_home_a))
+        monkeypatch.setenv("HERMES_REAL_HOME", str(real_home_a))
+        monkeypatch.setenv("HERMES_HOME", str(profile_a))
+        monkeypatch.setenv("TERMINAL_HOME_MODE", "real")
+        ss.set_multiplex_active(True)
+        env = LocalEnvironment(cwd=str(tmp_path))
+        first = env.execute(
+            "printf '%s\\n%s\\n%s\\n%s\\n' "
+            '"$HOME" "$HERMES_HOME" "$HERMES_REAL_HOME" "$TERMINAL_HOME_MODE"'
+        )
+        monkeypatch.setenv("HOME", str(real_home_b))
+        monkeypatch.setenv("HERMES_REAL_HOME", str(real_home_b))
+        monkeypatch.setenv("TERMINAL_HOME_MODE", "profile")
+        token = set_hermes_home_override(str(profile_b))
+        try:
+            result = env.execute(
+                "printf '%s\\n%s\\n%s\\n%s\\n' "
+                '"$HOME" "$HERMES_HOME" "$HERMES_REAL_HOME" "$TERMINAL_HOME_MODE"'
+            )
+        finally:
+            reset_hermes_home_override(token)
+            ss.set_multiplex_active(False)
+            env.cleanup()
+
+        assert first["output"].splitlines() == [
+            str(real_home_a),
+            str(profile_a),
+            str(real_home_a),
+            "real",
+        ]
+        assert result["output"].splitlines() == [
+            str(profile_b / "home"),
+            str(profile_b),
+            str(real_home_b),
+            "profile",
+        ]
+
     def test_blocklisted_var_blocked_by_default(self):
         from tools.environments.local import _sanitize_subprocess_env
         from tools.environments.local_env_policy import _HERMES_PROVIDER_ENV_BLOCKLIST

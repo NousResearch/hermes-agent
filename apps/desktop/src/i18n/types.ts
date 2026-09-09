@@ -3087,6 +3087,8 @@ export interface Translations {
         streaming: string
       }
       errorRetry: string
+      /** Escape hatch when Retry would only reproduce SESSION_NOT_OWNED (#106217). */
+      errorStartNewSession: string
       errorSwitchProvider: string
       errorOpenLogs: string
       errorOpenLogsFailed: string
@@ -3264,6 +3266,8 @@ export interface Translations {
     resumeStrandedTitle: string
     resumeStrandedBody: string
     resumeRetry: string
+    /** Same escape as errorStartNewSession for the full-window stranded overlay (#106217). */
+    resumeStartNewSession: string
     nothingToBranch: string
     branchNeedsChat: string
     sessionBusy: string

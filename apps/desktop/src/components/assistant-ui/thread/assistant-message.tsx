@@ -43,11 +43,13 @@ import {
   XIcon
 } from '@/lib/icons'
 import { extractPreviewTargets } from '@/lib/preview-targets'
+import { isSessionOwnershipRefusal } from '@/lib/session-ownership-refusal'
 import { markAssistantIdSpoken } from '@/lib/spoken-reply'
 import { useEnterAnimation } from '@/lib/use-enter-animation'
 import { cn } from '@/lib/utils'
 import { playSpeechText, stopVoicePlayback } from '@/lib/voice-playback'
 import { notifyError } from '@/store/notifications'
+import { requestFreshSession } from '@/store/profile'
 import { requestSendDiagnostics } from '@/store/send-diagnostics'
 import { $connection, $currentModel } from '@/store/session'
 import { $voicePlayback } from '@/store/voice-playback'
@@ -511,8 +513,11 @@ const ErrorRecoveryActions: FC = () => {
 
   // Retry = assistant-ui reload (same wiring as the footer's refresh action):
   // re-runs the failed turn's prompt in place. Suppressed when the classifier
-  // says the failure is deterministic (retrying reproduces it).
-  const retryable = !surface || surface.retryable
+  // says the failure is deterministic (retrying reproduces it), and when the
+  // error is a live-owner exclusivity refusal (#106217) — Retry just hits the
+  // same 4090 again.
+  const ownershipRefusal = isSessionOwnershipRefusal(errorText)
+  const retryable = (!surface || surface.retryable) && !ownershipRefusal
 
   // Switch Provider deep-links Settings → Models for the layers where the fix
   // is provider/endpoint/auth config, not a retry.
@@ -548,8 +553,18 @@ const ErrorRecoveryActions: FC = () => {
     [errorText, model, surface]
   )
 
+  const startNewSession = useCallback(() => {
+    triggerHaptic('submit')
+    requestFreshSession()
+  }, [])
+
   return (
     <div className="flex flex-wrap items-center gap-1.5">
+      {ownershipRefusal && (
+        <button className="aui-error-action" onClick={startNewSession} type="button">
+          {copy.errorStartNewSession}
+        </button>
+      )}
       {retryable && (
         <ActionBarPrimitive.Reload asChild>
           <button className="aui-error-action" onClick={() => triggerHaptic('submit')} type="button">

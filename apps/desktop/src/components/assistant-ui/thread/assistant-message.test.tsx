@@ -6,7 +6,7 @@
 // supplied, matching how onDismissError/onRestoreToMessage already behave.
 import { AssistantRuntimeProvider, type ThreadMessage, useExternalStoreRuntime } from '@assistant-ui/react'
 import { cleanup, render, screen } from '@testing-library/react'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { $displayTimestamps } from '@/store/display-timestamps'
 
@@ -15,6 +15,17 @@ import { stubThreadEnvironment } from '../test-utils'
 import { formatTimelineRange, formatTimelineTimestamp } from './timestamp'
 
 import { Thread } from '.'
+
+const requestFreshSession = vi.hoisted(() => vi.fn())
+
+vi.mock('@/store/profile', async importOriginal => {
+  const actual = await importOriginal<typeof import('@/store/profile')>()
+
+  return {
+    ...actual,
+    requestFreshSession: () => requestFreshSession()
+  }
+})
 
 // Timeline timestamps render only when `display.timestamps` is enabled.
 $displayTimestamps.set(true)
@@ -25,6 +36,7 @@ stubThreadEnvironment()
 
 afterEach(() => {
   cleanup()
+  requestFreshSession.mockClear()
 })
 
 function userMessage(): ThreadMessage {
@@ -68,6 +80,29 @@ function assistantMessage(): ThreadMessage {
   } as unknown as ThreadMessage
 }
 
+function ownershipRefusalMessage(): ThreadMessage {
+  return {
+    id: 'assistant-error-1',
+    role: 'assistant',
+    content: [],
+    status: {
+      type: 'incomplete',
+      reason: 'error',
+      error:
+        'Session 20260909_095312_6b93f5 already has a live owner (tui, pid 32977, lease age 22m). ' +
+        'Attach through a compatible owner, or close the session in its owning surface before resuming here.'
+    },
+    createdAt,
+    metadata: {
+      unstable_state: null,
+      unstable_annotations: [],
+      unstable_data: [],
+      steps: [],
+      custom: {}
+    }
+  } as unknown as ThreadMessage
+}
+
 function Harness({
   assistant = assistantMessage(),
   onBranchInNewChat
@@ -104,6 +139,18 @@ describe('AssistantMessage branch button visibility (bug #2 fix)', () => {
     await screen.findByText('done')
 
     expect(screen.queryByRole('button', { name: 'Branch in new chat' })).toBeNull()
+  })
+})
+
+describe('ownership refusal recovery (#106217)', () => {
+  it('offers Start new session and suppresses Retry for live-owner refusals', async () => {
+    render(<Harness assistant={ownershipRefusalMessage()} />)
+
+    expect(await screen.findByRole('button', { name: 'Start new session' })).toBeTruthy()
+    expect(screen.queryByRole('button', { name: 'Retry' })).toBeNull()
+
+    screen.getByRole('button', { name: 'Start new session' }).click()
+    expect(requestFreshSession).toHaveBeenCalledTimes(1)
   })
 })
 

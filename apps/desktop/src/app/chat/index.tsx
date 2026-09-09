@@ -32,7 +32,7 @@ import { $introSplash } from '@/store/intro-splash'
 import { $pinnedSessionIds } from '@/store/layout'
 import { $petActive } from '@/store/pet'
 import { $petOverlayActive } from '@/store/pet-overlay'
-import { $activeGatewayProfile, $gatewaySwapTarget, $hydrationSyncProfile, $profiles } from '@/store/profile'
+import { $activeGatewayProfile, $gatewaySwapTarget, $hydrationSyncProfile, $profiles, requestFreshSession } from '@/store/profile'
 import {
   $connection,
   $contextSuggestions,
@@ -46,6 +46,7 @@ import {
   resolveComposerSessionKey,
   sessionMatchesStoredId,
   sessionPinId,
+  setResumeExhaustedSessionId,
   shouldMigrateComposerScope
 } from '@/store/session'
 import { $focusedStoredSessionId, sessionTileDelegate } from '@/store/session-states'
@@ -705,7 +706,18 @@ const ChatViewContent = memo(function ChatViewContent({
                 description={t.desktop.resumeStrandedBody}
                 title={t.desktop.resumeStrandedTitle}
               >
-                <div className="grid justify-items-center">
+                <div className="flex flex-wrap items-center justify-center gap-2">
+                  <Button
+                    onClick={() => {
+                      // Clear the stranded latch before minting a draft so the
+                      // new session is not immediately covered by this overlay.
+                      setResumeExhaustedSessionId(null)
+                      requestFreshSession()
+                    }}
+                    size="sm"
+                  >
+                    {t.desktop.resumeStartNewSession}
+                  </Button>
                   <Button onClick={() => onRetryResume(routedSessionId)} size="sm" variant="outline">
                     {t.desktop.resumeRetry}
                   </Button>

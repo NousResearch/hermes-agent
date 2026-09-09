@@ -3146,6 +3146,7 @@ export const ja = defineLocale({
         streaming: 'ストリーミング接続のエラー'
       },
       errorRetry: '再試行',
+      errorStartNewSession: '新しいセッションを開始',
       errorSwitchProvider: 'プロバイダーを切り替え',
       errorOpenLogs: 'ログを開く',
       errorOpenLogsFailed: 'ログフォルダを開けませんでした',
@@ -3359,6 +3360,7 @@ export const ja = defineLocale({
     resumeStrandedBody:
       'このセッションへの接続に失敗し、自動再試行も停止しました。ゲートウェイが実行中か確認してから、もう一度お試しください。',
     resumeRetry: '再試行',
+    resumeStartNewSession: '新しいセッションを開始',
     nothingToBranch: 'ブランチするものがありません',
     branchNeedsChat: 'ブランチする前にチャットを開始または再開してください。',
     sessionBusy: 'セッションが使用中',

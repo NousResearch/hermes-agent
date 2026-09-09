@@ -3755,6 +3755,7 @@ export const ru = defineLocale({
     resumeStrandedBody:
       'Соединение с этим сеансом оборвалось, и автоматические повторные попытки исчерпаны. Проверьте, что шлюз работает, и попробуйте снова.',
     resumeRetry: 'Повторить',
+    resumeStartNewSession: 'Начать новую сессию',
     nothingToBranch: 'Нечего ветвить',
     branchNeedsChat: 'Начните или возобновите чат перед ветвлением.',
     sessionBusy: 'Сеанс занят',

@@ -348,8 +348,7 @@ def test_file_operation_refresh_uses_observed_grant_and_exact_cleanup(
 
         monkeypatch.setattr(hosted_room_links, "mark_room_link_status", fail_status)
     tracked = routes.second._tracked_peer_client("room-1", "member-peer", Peer())
-    # The fresh admission fence now detects the replacement before rotation CAS.
-    with pytest.raises(RuntimeError, match="^peer room route changed before admission$"):
+    with pytest.raises(hosted_rooms.HostedRoomError, match="changed during reconnect"):
         getattr(tracked, operation)(grant=routes.tokens["aging"])
     stored = hosted_room_link_records.room_link_record(
         routes.first.db_path, room_id="room-1", member_id="member-peer"

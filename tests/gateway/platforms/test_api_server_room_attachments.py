@@ -825,6 +825,42 @@ async def test_api_requires_scoped_permission_and_completes_batch(
 
 
 @pytest.mark.asyncio
+async def test_status_only_grant_cannot_retire_staged_input(attachment_api, tmp_path):
+    adapter, app = attachment_api
+    manifest = _manifest()
+    dispatch = _dispatch(manifest)
+    normal = _grant(adapter)
+    headers = {"Authorization": f"HermesRoom {normal}"}
+    async with TestClient(TestServer(app)) as client:
+        prepared = await client.post(
+            "/v1/room-members/attachments", headers=headers,
+            json={"hosted_room_dispatch": dispatch.as_mapping(), "attachments": manifest},
+        )
+        assert prepared.status == 201
+        uploaded = await client.put(
+            f"/v1/room-members/attachments/task-1/1/{manifest[0]['attachment_id']}",
+            headers=headers, data=b"hello",
+        )
+        assert uploaded.status == 201
+        spool = room_attachments._default_spool()
+        path = Path(spool.materialize(dispatch)[0]["path"])
+        assert path.is_relative_to(tmp_path)
+        assert path.read_bytes() == b"hello"
+        inspection = _grant(adapter, permissions=("status",))
+        denied = await client.delete(
+            "/v1/room-members/attachments/task-1/1",
+            headers={"Authorization": f"HermesRoom {inspection}"},
+        )
+        assert denied.status == 401, await denied.json()
+        assert path.read_bytes() == b"hello"
+        spool.prepare(dispatch, manifest)
+        removed = await client.delete("/v1/room-members/attachments/task-1/1", headers=headers)
+        assert removed.status == 200
+        assert (await removed.json())["removed"] == 1
+        assert not path.exists()
+
+
+@pytest.mark.asyncio
 async def test_terminal_cleanup_uses_the_longer_status_grant_horizon(attachment_api):
     adapter, app = attachment_api
     manifest = _manifest()

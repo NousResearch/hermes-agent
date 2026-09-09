@@ -273,8 +273,6 @@ def test_target_interruption_history_is_an_exact_truthful_failure(
             "reason_code": "target_interrupted",
         }
     ]
-
-
 @pytest.mark.parametrize("scoped", [False, True])
 def test_named_profile_prefixes_every_roomlink_request(monkeypatch, scoped):
     captured = {}
@@ -1524,3 +1522,34 @@ def test_renewal_requests_and_response_reads_share_one_deadline(monkeypatch):
             client._request("/test")
     assert timeouts == [1, 1, 0.5]
     assert now[0] == 102
+
+
+def test_renewal_redirect_refusal_preserves_installed_transport_policy(monkeypatch):
+    from email.message import Message
+    from urllib.response import addinfourl
+    from hermes_cli import urllib_security
+    from tui_gateway.hosted_room_peer_http import room_grant_request_budget
+
+    requests = []
+
+    class PolicyTransport(urllib.request.BaseHandler):
+        handler_order = 1
+
+        def https_open(self, request):
+            requests.append(request)
+            headers = Message()
+            headers["Location"] = "https://peer.example/redirected"
+            response = addinfourl(io.BytesIO(b""), headers, request.full_url, 302)
+            response.msg = "Found"
+            return response
+
+    policy = urllib.request.build_opener(PolicyTransport())
+    policy._hermes_initial_addheaders = [("X-Installed-Policy", "present")]
+    monkeypatch.setattr(urllib_security, "_secure_opener_from_installed_policy", lambda url: policy)
+    client = PeerRunsHTTPClient(base_url="https://peer.example", api_key="")
+    with room_grant_request_budget(2):
+        with pytest.raises(PeerRunsHTTPError, match="refused an HTTP redirect"):
+            client.probe(grant="synthetic.room.grant")
+    assert len(requests) == 1
+    assert requests[0].get_header("X-installed-policy") == "present"
+    assert requests[0].get_header("Authorization") == "HermesRoom synthetic.room.grant"

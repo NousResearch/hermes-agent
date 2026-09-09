@@ -1214,4 +1214,4 @@ class _RejectAttachmentRedirects(urllib.request.HTTPRedirectHandler):
     handler_order = 100
 
     def redirect_request(self, req, fp, code, msg, headers, newurl):
-        return None
+        raise urllib.error.HTTPError(req.full_url, code, "redirect refused", headers, fp)

@@ -167,3 +167,80 @@ def test_guarded_append_rejects_invalid_cursor_before_writing(tmp_path, expected
             expected_latest_seq=expected,
         )
     assert hosted_rooms.room_state(db, room_id="checkpoint")["latest_seq"] == 2
+
+
+def _late_settlement(db, checkpoint, seen_through_seq):
+    payload = {
+        "thread_id": "work",
+        "discussion_event_id": "user-2",
+        "member_id": "builder",
+        "task_id": "dtask:late",
+    }
+    events = []
+    for event_id, kind, fields in (
+        ("cleanup", "room.activity", {"status": "settled"}),
+        ("dmessage:late", "message.member", {"text": "Reviewed"}),
+        (
+            "dterminal:late",
+            "turn.settled",
+            {"message_event_id": "dmessage:late", "seen_through_seq": seen_through_seq},
+        ),
+    ):
+        event = hosted_rooms.append_event(
+            db,
+            room_id="checkpoint",
+            event_id=event_id,
+            kind=kind,
+            actor=(
+                {"kind": "member", "id": "builder"}
+                if kind == "message.member"
+                else {"kind": "gateway", "id": "home"}
+            ),
+            authority_gateway_id="home",
+            authority_epoch=1,
+            payload={**payload, **fields},
+        )
+        checkpoint.sync(room_id="checkpoint", latest_seq=event["seq"])
+        events.append(event)
+    return events[-2:]
+
+
+@pytest.mark.parametrize("seen_through_seq", [1, 2])
+def test_late_settlement_keeps_partial_file_watermark_after_cleanup(tmp_path, seen_through_seq):
+    db, checkpoint = _checkpoint(tmp_path)
+    message, terminal = _late_settlement(db, checkpoint, seen_through_seq)
+    cold = HostedRoomPolicyCheckpoint(db)
+    assert cold.snapshot(room_id="checkpoint", latest_seq=terminal["seq"]).events == ()
+    assert cold.publication_exists(
+        room_id="checkpoint", task_id="dtask:late", status="settled", execution_generation=1
+    )
+    with sqlite3.connect(db) as conn:
+        assert conn.execute(
+            "SELECT seq FROM hosted_room_policy_events WHERE discussion_event_id='user-2'"
+        ).fetchall() == []
+        assert conn.execute(
+            "SELECT seen_through_seq FROM hosted_room_policy_watermarks WHERE member_id='builder'"
+        ).fetchone()[0] == (1 if seen_through_seq == 1 else message["seq"])
+        assert conn.execute(
+            "SELECT settled_seq FROM hosted_room_policy_transcript WHERE seq=?", (message["seq"],)
+        ).fetchone()[0] == terminal["seq"]
+
+
+def test_legacy_task_keeps_source_and_publication_after_both_projections_age_out(tmp_path):
+    db, checkpoint = _checkpoint(tmp_path)
+    message, terminal = _late_settlement(db, checkpoint, 2)
+    for index in range(3, 33):
+        latest = _append(db, index)
+    checkpoint.sync(room_id="checkpoint", latest_seq=latest["seq"])
+    with sqlite3.connect(db) as conn:
+        for table in ("hosted_room_policy_events", "hosted_room_policy_transcript"):
+            assert conn.execute(f"SELECT seq FROM {table} WHERE seq=2").fetchall() == []
+    events = HostedRoomPolicyCheckpoint(db).events_for_task(
+        room_id="checkpoint", source_event_seq=2, task_id="dtask:late"
+    )
+    by_seq = {event["seq"]: event for event in events}
+    assert by_seq[2]["event_id"] == "user-2"
+    assert by_seq[message["seq"]]["event_id"] == message["event_id"]
+    assert by_seq[terminal["seq"]]["event_id"] == terminal["event_id"]
+    assert by_seq[latest["seq"]]["event_id"] == latest["event_id"]
+    assert [event["seq"] for event in events] == sorted(by_seq)

@@ -105,6 +105,14 @@ _BROWSERS = (
         ("/usr/bin/microsoft-edge", "/usr/bin/microsoft-edge-stable",
          "/opt/microsoft/msedge/microsoft-edge", "/opt/microsoft/msedge/msedge"),
         "microsoft-edge", linux_exec=("microsoft-edge", "microsoft-edge-stable")),
+    _Browser(
+        "arc", "/Applications/Arc.app/Contents/MacOS/Arc",
+        ("Arc", "User Data"), ("Arc.exe", "arc"),
+        (("Arc", "Application", "arc.exe"),),
+        ("Arc", "User Data"),
+        ("arc",),
+        ("/Applications/Arc.app/Contents/MacOS/Arc",),
+        "Arc"),
 )
 _BROWSER_BY_KEY = {b.key: b for b in _BROWSERS}
 
@@ -162,7 +170,8 @@ _LINUX_SNAP_PROFILE_PARTS = {
 _DARWIN_BUNDLE_MAP = (
     ("com.google.chrome", "chrome"), ("com.microsoft.edgemac", "edge"),
     ("com.brave.browser", "brave"), ("com.brave.browser.origin", "brave-origin"),
-    ("org.chromium.chromium", "chromium"))
+    ("org.chromium.chromium", "chromium"),
+    ("company.thebrowser.browser", "arc"))
 
 _DARWIN_CHANNEL_BUNDLES = (
     "com.google.chrome.beta", "com.google.chrome.dev", "com.google.chrome.canary",

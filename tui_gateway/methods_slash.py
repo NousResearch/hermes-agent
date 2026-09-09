@@ -325,7 +325,9 @@ def _mirror_fast(sid, session, agent, arg) -> None:
                         getattr(agent, "model", None), provider=getattr(agent, "provider", None),
                         base_url=getattr(agent, "base_url", None))
                 except Exception:
-                    logger.debug(
+                    import logging
+
+                    logging.getLogger(__name__).debug(
                         "fast-mode override resolution failed for %s",
                         getattr(agent, "model", None), exc_info=True)
                     resolved = None

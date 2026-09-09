@@ -1,7 +1,7 @@
 """Outer-iteration bookkeeping for the conversation turn loop, in call order:
 ``begin_iteration`` (pending redirect, interrupt / review-budget / iteration-budget exits),
-``prepare_iteration`` (``agent:step`` callback, skill-nudge counter, pre-API ``/steer`` drain
-into the newest tool result — never a user message —, run-budget wrap-up notice, tool_call
+``prepare_iteration`` (``agent:step`` callback, skill-nudge counter, pre-API ``/steer`` drain as a
+standalone user row after the newest tool result, run-budget wrap-up notice, tool_call
 argument sanitization, interrupt-scaffold ghost-row drop, role-alternation repair),
 ``announce_api_call`` (verbose summary / quiet spinner) and, after the retry loop,
 ``apply_retry_restarts`` (consumes the ``TurnRetryState`` restart flags). Nothing here
@@ -93,7 +93,7 @@ class IterationPrep:
 
 def prepare_iteration(agent: Any,*, messages: Any, api_call_count: Any) -> IterationPrep:
     """Prepare ``messages`` for this iteration in the original order. Every mutation here is
-    cache-safe by construction: steer text lands in the newest tool result, the ghost-row
+    cache-safe by construction: steer text is appended as a new (not yet persisted) user row, the ghost-row
     filter only drops hidden scaffold placeholders, and repair runs BEFORE the request build."""
     from agent.conversation_loop import (
         _INTERRUPT_SCAFFOLD_MARKER, _maybe_inject_run_budget_wrapup
@@ -125,18 +125,20 @@ def prepare_iteration(agent: Any,*, messages: Any, api_call_count: Any) -> Itera
     except Exception:
         logger.debug("Nous key pre-expiry adoption failed", exc_info=True)
 
-    # Drain a /steer sent during the last API call into the newest tool message so
-    # it lands THIS iteration. Never put in a user message (breaks alternation).
+    # Drain a /steer sent during the last API call so it lands THIS iteration. Delivered as a
+    # standalone user row after the newest tool result (never smeared onto the tool row: that
+    # row is already persisted append-only, so replay would diverge from the live request and
+    # break the prompt cache — same contract as apply_pending_steer_to_tool_results).
     _pre_api_steer = agent._drain_pending_steer()
     if _pre_api_steer:
-        _inject_steer_into_newest_tool_result(agent, messages, _pre_api_steer)
+        _inject_steer_after_newest_tool_result(agent, messages, _pre_api_steer)
 
-    # One-shot run-budget wrap-up notice at 80% of agent.run_budget_seconds, via the
-    # same cache-safe channel as /steer (newest tool result); off with no budget.
+    # One-shot run-budget wrap-up notice at 80% of agent.run_budget_seconds, appended to the
+    # newest tool result; off with no budget.
     if getattr(agent, "run_budget_seconds", None):
         _maybe_inject_run_budget_wrapup(agent, messages)
 
-    # Use the same cache-safe channel as /steer; never add a synthetic user/system row.
+    # Appended to the newest tool result; never a synthetic user/system row.
     _maybe_inject_iteration_budget_warning(agent, messages)
 
     request_logger = getattr(agent, "logger", None) or logger  # same name as the origin module
@@ -208,26 +210,15 @@ def _previous_tool_round(messages: Any) -> list:
     return []
 
 
-def _inject_steer_into_newest_tool_result(agent: Any, messages: Any, steer_text: str) -> None:
-    """Append the steer marker to the newest tool message; with no tool message, put the
-    text back so the post-tool-execution drain delivers it later."""
+def _inject_steer_after_newest_tool_result(agent: Any, messages: Any, steer_text: str) -> None:
+    """Append the steer marker as a standalone user row after the newest tool message; with no
+    tool message, put the text back so the post-tool-execution drain delivers it later."""
     for _si in range(len(messages) - 1, -1, -1):
         _sm = messages[_si]
         if isinstance(_sm, dict) and _sm.get("role") == "tool":
             from agent.prompt_builder import format_steer_marker
-            marker = format_steer_marker(steer_text)
-            existing = _sm.get("content", "")
-            if isinstance(existing, str):
-                _sm["content"] = existing + marker
-            else:
-                # Multimodal content blocks — append a text block.
-                with suppress(Exception):
-                    blocks = list(existing) if existing else []
-                    blocks.append({"type": "text", "text": marker})
-                    _sm["content"] = blocks
-            logger.debug(
-                "Pre-API-call steer drain: injected into tool msg at index %d", _si
-            )
+            messages.insert(_si + 1, {"role": "user", "content": format_steer_marker(steer_text)})
+            logger.debug("Pre-API-call steer drain: appended user row after tool msg at index %d", _si)
             return
     _lock = getattr(agent, "_pending_steer_lock", None)
     if _lock is not None:

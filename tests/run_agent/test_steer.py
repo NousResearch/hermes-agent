@@ -621,29 +621,27 @@ class TestPreApiCallSteerDrain:
     fix for the scenario where /steer sent during model thinking only lands
     after the agent is completely done."""
 
-    def test_pre_api_drain_injects_into_last_tool_result(self):
-        """If a steer is pending when the main loop starts building
-        api_messages, it should be injected into the last tool result
-        in the messages list."""
+    def test_pre_api_drain_appends_user_row_and_leaves_tool_row_untouched(self):
+        """A steer pending when the loop builds api_messages lands THIS iteration as a
+        standalone user row after the newest tool result; the (already persisted, append-only)
+        tool row is byte-identical afterwards so replay cannot diverge from the live request."""
+        from agent.turn_iteration_prep import _inject_steer_after_newest_tool_result
+
         agent = _bare_agent()
-        # Simulate messages after a tool batch completed
+        tool_row = {"role": "tool", "content": "output here", "tool_call_id": "tc1"}
+        before = dict(tool_row)
         messages = [
             {"role": "user", "content": "do something"},
             {"role": "assistant", "content": "ok", "tool_calls": [
                 {"id": "tc1", "function": {"name": "terminal", "arguments": "{}"}}
             ]},
-            {"role": "tool", "content": "output here", "tool_call_id": "tc1"},
+            tool_row,
         ]
-        # Steer arrives during API call (set after tool execution)
         agent.steer("focus on error handling")
-        # Simulate what the pre-API-call drain does:
-        _pre_api_steer = agent._drain_pending_steer()
-        assert _pre_api_steer == "focus on error handling"
-        # Inject into last tool msg (mirrors the new code in run_conversation)
-        for _si in range(len(messages) - 1, -1, -1):
-            if messages[_si].get("role") == "tool":
-                messages[_si]["content"] += format_steer_marker(_pre_api_steer)
-                break
+        _inject_steer_after_newest_tool_result(agent, messages, agent._drain_pending_steer())
+        assert tool_row == before
+        assert messages[-2] is tool_row
+        assert messages[-1]["role"] == "user"
         assert STEER_MARKER_OPEN in messages[-1]["content"]
         assert "focus on error handling" in messages[-1]["content"]
         assert agent._pending_steer is None

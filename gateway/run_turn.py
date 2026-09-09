@@ -2040,7 +2040,13 @@ class GatewayTurnMixin:
         Call via ``asyncio.to_thread``: resolution can block (credential refresh, context-length
         probes), and the scope is entered here so contextvars behave in the worker thread."""
         with self._profile_scope_for_source(source):
-            return self._format_session_info()
+            info = self._format_session_info()
+            try:
+                from gateway.session_banner import format_reset_settings
+                settings = format_reset_settings(self)
+            except Exception:
+                settings = "◆ Session settings: unknown"
+            return f"{info}\n{settings}"
 
     def _format_session_info(self) -> str:
         """Model / provider / context-length / endpoint block so users can spot bad context detection."""

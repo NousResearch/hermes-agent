@@ -22,6 +22,7 @@ from .controller import (
     ScanController,
     _bind_pooled_worktree_task,
     _claim_with_orphan_recovery,
+    _governed_command_prefix,
     _governed_pr_identity_command,
     _prepare_receipt_worktree_with_overflow,
     _receipt_idempotency_key,
@@ -692,9 +693,7 @@ def _repair_task(
         )
     else:
         completion_command = (
-            f"env HERMES_HOME={shlex.quote(str(control_home))} "
-            f"{shlex.quote(sys.executable)} -m hermes_cli.main "
-            "github-pr-feedback complete-feedback "
+            f"{_governed_command_prefix(control_home)} complete-feedback "
             f"--repository {shlex.quote(receipt.repository)} "
             f"--pr-number {receipt.pr_number} "
             f"--feedback-kind {shlex.quote(receipt.feedback_kind)} "

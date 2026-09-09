@@ -1674,6 +1674,27 @@ def _items_by_unique_name(items):
     return indexed
 
 
+def _best_structural_match(item, loaded_expanded, used_loaded):
+    """Find the unused ``loaded_expanded`` index that *item* was most likely edited from.
+
+    Scores each candidate by how many of its top-level dict fields still equal
+    *item*'s; a modified entry keeps most of its unchanged sibling fields, so
+    this reliably beats an unrelated item even when both were reordered.
+    """
+    if not isinstance(item, dict):
+        return None
+    best_index, best_score = None, 0
+    for index, candidate in enumerate(loaded_expanded):
+        if index in used_loaded or not isinstance(candidate, dict):
+            continue
+        score = sum(
+            1 for key, value in candidate.items()
+            if key in item and item[key] == value)
+        if score > best_score:
+            best_index, best_score = index, score
+    return best_index
+
+
 def _preserve_env_ref_templates(current, raw, loaded_expanded=None):
     """Restore raw ``${VAR}`` templates where the value is otherwise unchanged, so persisting a
     loaded (expanded) config never writes the plaintext secret back to ``config.yaml``."""
@@ -1715,10 +1736,18 @@ def _preserve_env_ref_templates(current, raw, loaded_expanded=None):
                 )
                 if match is None:
                     # A modified unnamed object no longer equals its expanded counterpart.
-                    # Keep its positional raw counterpart as a structural fallback so
-                    # unchanged nested template fields are still restored.
-                    index = len(preserved)
+                    # A plain positional fallback misidentifies it whenever the list was
+                    # *both* reordered and edited (e.g. [A, B] -> [modified-B, A]: B's own
+                    # output position is 0, but its loaded counterpart is at index 1) --
+                    # pairing it with whichever raw item currently sits at that output
+                    # position would restore the wrong item's templates, or silently drop
+                    # an unchanged sibling field's ${VAR} template into plaintext. Instead,
+                    # find the still-unused loaded item this one most resembles.
+                    index = _best_structural_match(item, loaded_expanded, used_loaded)
+                    if index is None:
+                        index = len(preserved)
                     if index < len(raw) and index < len(loaded_expanded):
+                        used_loaded.add(index)
                         preserved.append(
                             _preserve_env_ref_templates(item, raw[index], loaded_expanded[index]))
                     else:

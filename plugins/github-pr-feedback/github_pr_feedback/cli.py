@@ -21,6 +21,8 @@ from functools import partial
 from pathlib import Path
 from typing import Any, Callable, Iterator, Protocol
 
+from utils import env_var_enabled
+
 from .cli_audit_task import owns_current_audit_task
 from .worker_contract import configured_assignees, worker_contract_enabled
 from .controller import KanbanTask, LocalGitRepository, PooledLocalGitRepository, ScanController
@@ -265,15 +267,22 @@ class DoctorProbe:
             ),
             "board": self._board_exists(policy.board or ""),
             "assignee": all(self._assignee_exists(name) for name in configured_assignees(policy)),
-            "worker_completion_policy": all(
-                worker_contract_enabled(
-                    self._hermes_root,
-                    name,
-                    project_root=Path(
-                        os.environ.get("HERMES_KANBAN_WORKSPACE", ".")
-                    ),
+            "worker_completion_policy": (
+                # HERMES_SAFE_MODE propagates to dispatched workers, and
+                # PluginManager.discover_and_load() skips all plugin discovery
+                # under it -- so neither completion hook can register there
+                # regardless of what the profile config declares.
+                not env_var_enabled("HERMES_SAFE_MODE")
+                and all(
+                    worker_contract_enabled(
+                        self._hermes_root,
+                        name,
+                        project_root=Path(
+                            os.environ.get("HERMES_KANBAN_WORKSPACE", ".")
+                        ),
+                    )
+                    for name in configured_assignees(policy)
                 )
-                for name in configured_assignees(policy)
             ),
             "ledger_access": self._ledger_access(ledger_path),
             "repository_worktree": self._repositories_ready(

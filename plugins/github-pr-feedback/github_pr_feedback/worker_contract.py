@@ -4,7 +4,7 @@ from pathlib import Path
 
 import yaml
 
-from hermes_cli.config import _expand_env_vars
+from hermes_cli.config import _ENV_REF_RE, _expand_env_vars
 from hermes_cli.managed_scope import apply_managed_overlay
 from utils import env_var_enabled
 
@@ -57,7 +57,9 @@ def _runtime_manifest_present(plugin_dir: Path) -> bool:
             data = yaml.safe_load(manifest.read_text(encoding="utf-8"))
         except (OSError, UnicodeError, ValueError, yaml.YAMLError):
             return False
-        return isinstance(data, dict) and data.get("name") == _PLUGIN_NAME
+        # Matches parse_manifest_file(): a manifest without an explicit `name`
+        # defaults to the plugin directory name at runtime, not to no match.
+        return isinstance(data, dict) and data.get("name", plugin_dir.name) == _PLUGIN_NAME
     return False
 
 
@@ -133,6 +135,17 @@ def worker_contract_enabled(
     try:
         config = yaml.safe_load((home / "config.yaml").read_text())
     except (OSError, UnicodeError, yaml.YAMLError):
+        return False
+    raw_plugins = config.get("plugins") if isinstance(config, dict) else None
+    if isinstance(raw_plugins, dict) and any(
+        isinstance(item, str) and _ENV_REF_RE.search(item)
+        for key in ("enabled", "disabled")
+        for item in (raw_plugins.get(key) or [])
+    ):
+        # A ${VAR} reference here would be expanded against *this* process's
+        # environment, not the dispatched worker's -- doctor cannot know the
+        # worker's actual .env resolves it the same way, so fail closed
+        # rather than trust a possibly-wrong interpolation.
         return False
     config = (
         apply_managed_overlay(_expand_env_vars(config))

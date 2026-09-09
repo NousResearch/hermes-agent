@@ -577,7 +577,11 @@ def _configure_cfg_sections(profile_dir, params, applied) -> None:
                        (key == "toolsets" and isinstance(params.get("enabled_toolsets"), list)) or \
                        (key == "mcp_servers" and want_mcp):
                         applied[key] = True
-            except Exception:
+            except (Exception, SystemExit):
+                # _write_raw_config_values() raises SystemExit (not Exception) when a
+                # requested key is pinned by managed scope -- must still be caught here
+                # so a refused write reports applied=False instead of killing this
+                # shared TUI/Desktop/dashboard RPC backend.
                 for key in ("skills", "toolsets", "mcp_servers"):
                     if (key == "skills" and isinstance(params.get("disabled_skills"), list)) or \
                        (key == "toolsets" and isinstance(params.get("enabled_toolsets"), list)) or \

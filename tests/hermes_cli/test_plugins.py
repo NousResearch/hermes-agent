@@ -2048,6 +2048,26 @@ class TestPluginCommands:
         assert mgr._plugin_commands["lcm"]["argument_mode"] == "text"
         assert mgr._plugin_commands["ping"]["argument_mode"] is None
 
+    def test_get_plugin_command_handler_underscore_hyphen_tolerant(self, monkeypatch):
+        """Lookup resolves the alternate spelling: the gateway hyphen-normalizes
+        typed commands (gateway/run_inbound.py) while a plugin may register
+        underscored names (Discord accepts underscores natively)."""
+        mgr = PluginManager()
+        manifest = PluginManifest(name="test-plugin", source="user")
+        ctx = PluginContext(manifest, mgr)
+        ctx.register_command("ollama_usage", lambda a: "ok", description="Usage")
+
+        mgr._discovered = True  # handler lookup must not re-discover into the mgr
+        monkeypatch.setattr(
+            "hermes_cli.plugins.get_plugin_manager", lambda: mgr
+        )
+
+        assert get_plugin_command_handler("ollama-usage") is not None, (
+            "hyphenated lookup must resolve an underscore-registered plugin command"
+        )
+        assert get_plugin_command_handler("ollama_usage") is not None
+        assert get_plugin_command_handler("gemini-usage") is None
+
 
 
 

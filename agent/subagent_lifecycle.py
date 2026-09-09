@@ -21,6 +21,7 @@ from typing import Any, Callable, Mapping, Optional
 
 from agent.interrupt_compat import request_hard_interrupt
 from agent.worker_contract import (
+    ContractValidationError,
     JobContract,
     WorkforceGovernance,
     WorkerConstitution,
@@ -343,10 +344,17 @@ class SubagentLifecycleService:
         child._job_contract = request.job_contract
         child._workforce_governance = request.governance
         created = time.time()
+        worker_profile = (
+            request.constitution.profile if request.constitution is not None
+            else request.job_contract.worker_profile if request.job_contract is not None
+            else None
+        )
         handle = SubagentHandle(
             PUBLIC_CONTRACT_VERSION, subagent_id, parent_session_id, request.correlation_id, created,
             getattr(child, "provider", None), getattr(child, "model", None), getattr(child, "_delegate_role", request.role),
             int(getattr(child, "_delegate_depth", 1) or 1), self._capability(subagent_id, parent_session_id, created),
+            worker_profile=worker_profile, constitution=request.constitution,
+            job_contract=request.job_contract, governance=request.governance,
         )
         record = _Record(handle, SubagentState.PENDING, created, agent=child)
         with _REGISTRY.lock:
@@ -511,6 +519,24 @@ class SubagentLifecycleService:
             raise SubagentLifecycleError("metadata must be JSON-serializable.") from exc
         if metadata_bytes > _MAX_METADATA_BYTES:
             raise SubagentLifecycleError("metadata exceeds 8192 bytes.")
+        if request.job_contract is not None:
+            if (
+                request.constitution is not None
+                and request.job_contract.worker_profile != request.constitution.profile
+            ):
+                raise SubagentLifecycleError(
+                    "job_contract worker_profile does not match constitution profile.")
+            try:
+                request.job_contract.validate()
+            except ContractValidationError as exc:
+                raise SubagentLifecycleError(str(exc)) from exc
+            if not request.job_contract.is_active():
+                raise SubagentLifecycleError("job_contract is not currently active.")
+        if request.governance is not None:
+            try:
+                request.governance.validate()
+            except ContractValidationError as exc:
+                raise SubagentLifecycleError(str(exc)) from exc
         if not request.allowed_toolsets:
             return
         from toolsets import TOOLSETS

@@ -2668,7 +2668,7 @@ def _compat_runtime_main() -> Optional[Dict[str, Any]]:
               _RUNTIME_MAIN_API_KEY, _RUNTIME_MAIN_API_MODE, _RUNTIME_MAIN_AUTH_MODE)
     if values == _RUNTIME_MAIN_COMPAT_SNAPSHOT:
         return None
-    return changed
+    return dict(zip(_MAIN_RUNTIME_FIELDS, values))
 
 
 def _runtime_main_value(field: str) -> Any:

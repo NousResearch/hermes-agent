@@ -283,7 +283,7 @@ export function GroupMentionInput({ members, onChange, onSubmitDraft, value, ...
         // Input whose form submitted on every Enter — newlines were
         // impossible. Enter (no Shift) still submits via onSubmitDraft;
         // Shift+Enter falls through to the textarea's native newline.
-        className={cn('max-h-40 min-h-9 resize-none', inputProps.className)}
+        className={cn('max-h-[40dvh] min-h-9 resize-y overflow-y-auto', inputProps.className)}
         onBlur={() => setToken(null)}
         onChange={event => {
           onChange(event.target.value)

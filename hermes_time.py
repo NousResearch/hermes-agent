@@ -63,22 +63,31 @@ def _resolve_timezone_name() -> str:
 
 def get_timezone() -> Optional[ZoneInfo]:
     """Return the active profile's configured ZoneInfo, or None (server-local)."""
-    cache_identity = _timezone_cache_identity()
-    with _cache_lock:
-        entry = _tz_cache.get(cache_identity)
-        if entry is not None:
-            return entry[1]
-    # Resolve outside the lock (config file I/O); first writer wins so concurrent resolvers of the
-    # same identity converge on one ZoneInfo object.
-    name = _resolve_timezone_name()
-    tz = None
-    if name:
-        try:
-            tz = ZoneInfo(name)
-        except Exception as exc:
-            logger.warning("Invalid timezone '%s': %s. Falling back to server local time.", name, exc)
-    with _cache_lock:
-        return _tz_cache.setdefault(cache_identity, (name, tz))[1]
+    while True:
+        cache_identity = _timezone_cache_identity()
+        with _cache_lock:
+            entry = _tz_cache.get(cache_identity)
+            if entry is not None:
+                return entry[1]
+        # Resolve outside the lock (config file I/O); first writer wins so concurrent resolvers of
+        # the same identity converge on one ZoneInfo object.
+        name = _resolve_timezone_name()
+        tz = None
+        if name:
+            try:
+                tz = ZoneInfo(name)
+            except Exception as exc:
+                logger.warning("Invalid timezone '%s': %s. Falling back to server local time.", name, exc)
+        # ``_resolve_timezone_name`` re-reads the *current* env / config, so a profile or
+        # HERMES_TIMEZONE switch during that I/O (gateway + dashboard multiplex genuinely
+        # concurrent profile contexts now that tier/pin exists) would have us publish this
+        # profile's zone under the identity captured *before* the switch — poisoning that
+        # slot, or returning it for the wrong profile. If the identity moved, drop this
+        # result and retry against the new one rather than publish a mismatched pair.
+        if _timezone_cache_identity() != cache_identity:
+            continue
+        with _cache_lock:
+            return _tz_cache.setdefault(cache_identity, (name, tz))[1]
 
 
 def reset_cache() -> None:

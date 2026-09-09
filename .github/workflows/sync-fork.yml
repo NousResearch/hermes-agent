@@ -1,0 +1,20 @@
+name: Sync fork with upstream
+
+on:
+  schedule:
+    - cron: '0 12 * * *'
+  workflow_dispatch:
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+      - run: gh repo sync ${{ github.repository }} --source NousResearch/hermes-agent
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

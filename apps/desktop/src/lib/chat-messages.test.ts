@@ -471,6 +471,19 @@ describe('renderMediaTags', () => {
     expect(renderMediaTags('MEDIA:/tmp/demo.mp4')).toBe('[Video: demo.mp4](#media:%2Ftmp%2Fdemo.mp4)')
   })
 
+  it('keeps spaces in an unquoted standalone MEDIA path', () => {
+    expect(renderMediaTags('MEDIA:/Users/example/Team Documents/reports/summary.md')).toBe(
+      '[File: summary.md](#media:%2FUsers%2Fexample%2FTeam%20Documents%2Freports%2Fsummary.md)'
+    )
+    expect(renderMediaTags('"MEDIA:/Users/example/Team Documents/reports/summary.md"')).toBe(
+      '[File: summary.md](#media:%2FUsers%2Fexample%2FTeam%20Documents%2Freports%2Fsummary.md)'
+    )
+  })
+
+  it('does not treat the next line as a MEDIA path', () => {
+    expect(renderMediaTags('MEDIA:\nHeading')).toBe('MEDIA:\nHeading')
+  })
+
   it('renders streamed assistant media once the tag is complete', () => {
     const parts = appendAssistantTextPart(appendAssistantTextPart([], 'ok\nMEDIA:'), '/tmp/voice.mp3')
     const text = chatMessageText({ id: 'a', role: 'assistant', parts })

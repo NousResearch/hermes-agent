@@ -10,9 +10,14 @@ export function reasoningPart(text: string, timestamp?: number): ChatMessagePart
   return { type: 'reasoning', text, ...(timestamp !== undefined ? { timestamp } : {}) }
 }
 
-const MEDIA_LINE_RE = /(^|\n)[\t ]*[`"']?MEDIA:\s*(?<line>`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|\S+)[`"']?[\t ]*(\n|$)/g
+// A MEDIA tag that owns its line owns the rest of that line. Local paths
+// routinely contain spaces (`/Users/example/Team Documents/summary.md`); treating the
+// value as `\S+` truncates the target and leaves preview/download with a path
+// that does not exist. Inline MEDIA tags remain token-shaped below because
+// prose can legitimately follow them on the same line.
+const MEDIA_LINE_RE = /(^|\n)[\t ]*[`"']?MEDIA:[\t ]*(?<line>`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|[^\n]+?)[`"']?[\t ]*(\n|$)/g
 
-const MEDIA_TAG_RE = /[`"']?MEDIA:\s*(?<inline>`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|\S+)[`"']?/g
+const MEDIA_TAG_RE = /[`"']?MEDIA:[\t ]*(?<inline>`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|\S+)[`"']?/g
 
 function unquoteMediaPath(value: string): string {
   const trimmed = value.trim()

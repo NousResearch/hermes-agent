@@ -2849,7 +2849,7 @@ def _try_anthropic(explicit_api_key: str = None) -> Tuple[Optional[Any], Optiona
 
 
 _MAIN_RUNTIME_FIELDS = ("provider", "model", "base_url", "api_key", "api_mode", "auth_mode")
-_MAIN_RUNTIME_CONTEXT_FIELDS = _MAIN_RUNTIME_FIELDS + ("requested_provider",)
+_MAIN_RUNTIME_CONTEXT_FIELDS = _MAIN_RUNTIME_FIELDS + ("requested_provider", "session_id", "cache_scope")
 
 
 def _normalize_main_runtime(main_runtime: Optional[Dict[str, Any]]) -> Dict[str, Any]:
@@ -7012,6 +7012,10 @@ def call_llm(
     if latency_info is not None:
         latency_info["queue_wait_ms"] = _elapsed_ms(queue_started_at, request_started_at)
     prior_progress_hook = getattr(_aux_progress, "hook", None)
+    # When a caller supplies an explicit main_runtime with a session affinity
+    # (e.g. llm.oneshot inheriting the live session's runtime), publish it so
+    # the opencode-affinity header can be derived via _runtime_main_value.
+    _maybe_scoped = scoped_runtime_main(main_runtime) if isinstance(main_runtime, dict) and (main_runtime.get("session_id") or main_runtime.get("cache_scope")) else contextlib.nullcontext()
     try:
         with (
             aux_progress_hook(
@@ -7023,6 +7027,7 @@ def call_llm(
                 _stamp_latency_once, latency_info, "provider_dispatch_ms", request_started_at)),
             _aux_thread_local_hook(_aux_provider_response, functools.partial(
                 _stamp_latency_once, latency_info, "time_to_first_progress_ms", request_started_at)),
+            _maybe_scoped,
         ):
             response = _call_llm_impl(
                 task=task, provider=provider, model=model, base_url=base_url, api_key=api_key,

@@ -13,6 +13,8 @@ _BTF_UNSUPPORTED_MSG = "The connected cua-driver does not advertise the standalo
 _FOREGROUND_UNSUPPORTED_MSG = ("The connected cua-driver action schema does not accept delivery_mode, so foreground "
                                "delivery is unavailable. Use another verified rung without assuming the reported "
                                "package version describes the live schema.")
+_COORDINATE_SCROLL_UNSUPPORTED_MSG = ("The connected cua-driver scroll schema cannot preserve the requested coordinate "
+                                      "target; retry without coordinates only if a window-wide scroll is intended.")
 # (what, extra args) pointer addressing form; ``extra`` is None when the caller did not supply that form and
 # may be a callable when computing it has side effects (capability probes) that must follow the refusal checks.
 _Variant = Tuple[str, Union[None, Dict[str, Any], Callable[[], Dict[str, Any]]]]
@@ -62,7 +64,8 @@ class _InputMixin:
         return None
 
     def _run_input_action(self, action: str, args: Dict[str, Any], delivery_mode: Optional[str],
-                          bring_to_front: bool) -> ActionResult:
+                          bring_to_front: bool,
+                          schema_guard: Optional[tuple[tuple[str, ...], str, str]] = None) -> ActionResult:
         """Apply one delivery rung, optionally focusing via its own tool. ``bring_to_front`` is never an
         input-action property: when requested, the separately approved standalone focus action runs first,
         then the original foreground input runs unchanged."""
@@ -81,7 +84,7 @@ class _InputMixin:
             focused = self.bring_to_front(pid=self._active_pid, window_id=self._active_window_id)
             if not focused.ok:
                 return focused
-        result = self._action(action, args)
+        result = self._action(action, args, schema_guard=schema_guard)
         if bring_to_front:
             result.meta["foreground_focus"] = {"invoked": True, "tool": "bring_to_front"}
         return result
@@ -128,22 +131,33 @@ class _InputMixin:
     def scroll(self, *, direction: str, amount: int = 3, element: Optional[int] = None,
                x: Optional[int] = None, y: Optional[int] = None, modifiers: Optional[List[str]] = None,
                delivery_mode: Optional[str] = None, bring_to_front: bool = False) -> ActionResult:
+        coordinate_target = x is not None or y is not None
         refusal, args = self._target_args("scroll")
         if refusal is not None:
-            return refusal
+            return (_refuse("scroll", "No active window_id for coordinate scroll.",
+                            code="coordinate_scroll_unsupported") if coordinate_target else refusal)
         args.update(direction=direction, amount=max(1, min(50, amount)))
-        # An element without a known window_id is not an addressing form here; scrolling then falls through
-        # to the coordinate form or the bare window. Some driver schemas reject x/y on scroll: only send
-        # coordinates when the driver advertises support; otherwise it scrolls the targeted window
-        # (window_id is still sent for routing).
-        xy = lambda: ({"x": x, "y": y}  # noqa: E731
-                      if self._session.supports_capability("input.scroll.coordinates", tool="scroll") else {})
+        # The raw input schema is authoritative: a capability token cannot make strict schemas accept x/y.
+        # Refuse rather than silently changing an explicit coordinate target into a window-wide scroll (#89527).
+        element_target = element is not None and self._active_window_id is not None
+        xy = None
+        if coordinate_target and not element_target:
+            if self._active_window_id is None:
+                return _refuse("scroll", "No active window_id for coordinate scroll.",
+                               code="coordinate_scroll_unsupported")
+            xy = {}
+            for axis, value in (("x", x), ("y", y)):
+                if value is not None:
+                    xy[axis] = value
         refusal = self._pointer_args("scroll", args, (
             ("element scroll", {"element_index": element}
-             if element is not None and self._active_window_id is not None else None),
-            ("coordinate scroll", xy if x is not None and y is not None else None),
+             if element_target else None),
+            ("coordinate scroll", xy),
         ), None)
-        return refusal if refusal is not None else self._run_input_action("scroll", args, delivery_mode, bring_to_front)
+        schema_guard = ((tuple(xy), "coordinate_scroll_unsupported", _COORDINATE_SCROLL_UNSUPPORTED_MSG)
+                        if xy is not None else None)
+        return refusal if refusal is not None else self._run_input_action(
+            "scroll", args, delivery_mode, bring_to_front, schema_guard=schema_guard)
 
     def type_text(self, text: str, *, delivery_mode: Optional[str] = None, bring_to_front: bool = False) -> ActionResult:
         refusal, args = self._target_args("type_text", need_window=True)

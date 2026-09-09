@@ -1822,9 +1822,7 @@ class TestClickButtonPassthrough:
 
     def test_coordinate_drag_and_scroll_keep_the_captured_window(self):
         backend = self._backend_with_active_target()
-        # Mock the capability check so x/y are included (they're gated
-        # behind the input.scroll.coordinates capability).
-        backend._session.supports_capability.return_value = True
+        cast(MagicMock, backend._session.supports_input_property).return_value = True
 
         backend.drag(from_xy=(10, 20), to_xy=(30, 40))
         drag_name, drag_args = backend._session.call_tool.call_args.args
@@ -1844,6 +1842,125 @@ class TestClickButtonPassthrough:
         assert scroll_name == "scroll"
         assert scroll_args["window_id"] == 222
         assert scroll_args["x"] == 50 and scroll_args["y"] == 60
+
+    def _backend_with_scroll_schema(
+            self, axis_schemas, *, capabilities=(), pid=111, window_id=222, replacement_axis_schemas=None,
+            schema_uri=None):
+        import asyncio
+        from types import SimpleNamespace
+
+        from jsonschema import Draft202012Validator
+        from tools.computer_use.cua_backend_session import _CuaDriverSession
+
+        def scroll_schema(axes):
+            properties = {
+                "pid": {"type": "integer"},
+                "window_id": {"type": "integer"},
+                "direction": {"enum": ["up", "down", "left", "right"]},
+                "amount": {"type": "integer"},
+                "session": {"type": "string"},
+                **axes,
+            }
+            return {**({"$schema": schema_uri} if schema_uri is not None else {}),
+                    "type": "object", "additionalProperties": False, "properties": properties,
+                    "required": ["pid", "window_id", "direction", "amount", "session"]}
+
+        class InlineBridge:
+            @staticmethod
+            def run(coro, timeout=30.0):
+                return asyncio.run(coro)
+
+        backend = self._backend_with_active_target()
+        backend._active_pid = pid
+        backend._active_window_id = window_id
+        session = _CuaDriverSession(cast(Any, InlineBridge()))
+        session._started = True
+        session._timeout_suspect = replacement_axis_schemas is not None
+        session._capabilities = {"scroll": set(capabilities)}
+        session._tool_schemas = {"scroll": scroll_schema(axis_schemas)}
+
+        class StrictMcpSession:
+            def __init__(self):
+                self.calls = []
+
+            async def call_tool(self, name, args):
+                self.calls.append((name, dict(args)))
+                Draft202012Validator(session._tool_schemas[name]).validate(args)
+                return SimpleNamespace(
+                    content=[SimpleNamespace(type="text", text="ok")],
+                    structured_content=None,
+                    is_error=False,
+                )
+
+        transport = StrictMcpSession()
+        session._session = cast(Any, transport)
+        if replacement_axis_schemas is not None:
+            def recreate(name, timeout, log_msg, *, restart=True, clear_timeout_suspect=False):
+                session._tool_schemas = {"scroll": scroll_schema(replacement_axis_schemas)}
+                session._tool_schema_validators = {}
+                session._started = True
+                if clear_timeout_suspect:
+                    session._timeout_suspect = False
+            session._recreate_session = recreate
+        backend._session = session
+        return backend, transport
+
+    @pytest.mark.parametrize(("coordinate", "axis_schemas", "element", "expected"), [
+        ([50, 60], {"x": {"type": "integer"}, "y": {"type": "integer"}}, None, {"x": 50, "y": 60}),
+        ([50, None], {"x": {"type": "integer"}}, None, {"x": 50}),
+        ([None, 60], {"y": {"type": "integer"}}, None, {"y": 60}),
+        ([50, 60], {"element_index": {"type": "integer"}}, 7, {"element_index": 7}),
+    ])
+    def test_scroll_preserves_the_schema_declared_target(self, coordinate, axis_schemas, element, expected):
+        """Use each declared coordinate axis, while a valid element target retains first precedence (#89527)."""
+        from tools.computer_use import tool as cu_tool
+
+        backend, transport = self._backend_with_scroll_schema(axis_schemas)
+        request = {"action": "scroll", "direction": "down", "coordinate": coordinate}
+        if element is not None:
+            request["element"] = element
+
+        with patch.object(cu_tool, "_get_backend", return_value=backend):
+            result = json.loads(cu_tool.handle_computer_use(request))
+
+        assert result["ok"] is True
+        assert len(transport.calls) == 1
+        name, args = transport.calls[0]
+        assert name == "scroll"
+        assert {axis: args[axis] for axis in expected} == expected
+        assert not ({"x", "y"} - set(expected)) & set(args)
+
+    @pytest.mark.parametrize(
+        ("coordinate", "axis_schemas", "pid", "window_id", "capabilities", "replacement_axis_schemas",
+         "schema_uri"), [
+            ([50, 60], {"x": {"type": "integer"}}, 111, 222, {"input.scroll.coordinates"}, None, None),
+            ([50, None], {"x": False}, 111, 222, set(), None, None),
+            ([50, None], {"x": {"type": "integer", "maximum": 10}}, 111, 222, set(), None, None),
+            ([None, 60], {}, 111, 222, set(), None, None),
+            ([50, None], {"x": {"type": "integer"}}, 111, None, set(), None, None),
+            ([None, 60], {"y": {"type": "integer"}}, 111, None, set(), None, None),
+            ([50, None], {"x": {"type": "integer"}}, None, None, set(), None, None),
+            ([50, 60], {"x": {"type": "integer"}, "y": {"type": "integer"}}, 111, 222, set(), {}, None),
+            ([50, None], {"x": {"type": "integer"}}, 111, 222, set(), None,
+             "https://example.invalid/unknown-dialect"),
+        ])
+    def test_coordinate_scroll_refuses_when_target_cannot_be_preserved(
+            self, coordinate, axis_schemas, pid, window_id, capabilities, replacement_axis_schemas, schema_uri):
+        """Unsupported, stale-schema, or untargetable coordinates refuse before transport instead of widening."""
+        from tools.computer_use import tool as cu_tool
+
+        backend, transport = self._backend_with_scroll_schema(
+            axis_schemas, capabilities=capabilities, pid=pid, window_id=window_id,
+            replacement_axis_schemas=replacement_axis_schemas, schema_uri=schema_uri)
+
+        with patch.object(cu_tool, "_get_backend", return_value=backend):
+            result = json.loads(cu_tool.handle_computer_use({"action": "scroll", "direction": "down",
+                                                             "coordinate": coordinate}))
+
+        assert result["ok"] is False
+        assert result["action"] == "scroll"
+        assert result["code"] == "coordinate_scroll_unsupported"
+        assert transport.calls == []
 
     def test_coordinate_actions_without_window_id_fail_closed(self):
         backend = self._backend_with_active_target()

@@ -446,6 +446,21 @@ class PluginContext:
         self._track_mapping_entry("approval_transport", clean, transports, entry, None)
 
     @_serialized_replacement
+    def register_search_backend(
+        self, name: str, callback: Callable,
+    ) -> PluginRegistration:
+        """Register an advisory content-search backend for this profile.
+
+        The callback receives a :class:`hermes_cli.search_backends.SearchBackendRequest` and may
+        return a ``SearchBackendResult``, ``SearchBackendDecline``, or ``None``. Hermes retains
+        path validation, result filtering/redaction, pagination output shaping, and native fallback.
+        """
+        from hermes_cli.search_backends import register_search_backend
+
+        registration = register_search_backend(name, callback, scope=self._manager.scope_key)
+        return self._track("search_backend", name, registration.dispose)
+
+    @_serialized_replacement
     def register_tool(
         self, name: str, toolset: str, schema: dict, handler: Callable,
         check_fn: Callable | None = None, requires_env: list | None = None, is_async: bool = False,

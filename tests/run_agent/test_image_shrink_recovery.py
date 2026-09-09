@@ -107,6 +107,64 @@ class TestImageTooLargeClassification:
         assert result.reason != FailoverReason.image_too_large
 
 
+class TestImagePatchBudgetMaxDimension:
+    """_image_error_max_dimension must derive a tile-aware per-side cap from a
+    Codex patch-budget rejection instead of falling back to the 8000 px default
+    — a 6000 px image exceeds the 30000-patch ceiling yet sails under 8000 px,
+    so the default cap would leave it unshrunk and burn the single retry (#106337).
+    """
+
+    def test_codex_patch_budget_maps_to_tile_aware_cap(self):
+        err = _FakeApiError(
+            status_code=400,
+            message=(
+                "The image you provided requires 33174 patches after processing, "
+                "exceeding the limit of 30000. Please resize the image and try again."
+            ),
+        )
+        # isqrt(30000) = 173 tiles per side → 173*32 = 5536 px; 173² = 29929 ≤ 30000.
+        assert _image_error_max_dimension(err) == 5536
+
+    def test_codex_patch_budget_non_square_worst_case_still_under_budget(self):
+        import math
+        cap = _image_error_max_dimension(_FakeApiError(
+            status_code=400,
+            message="requires 33174 patches after processing, exceeding the limit of 30000",
+        ))
+        tiles = math.ceil(cap / 32)
+        assert tiles * tiles <= 30000
+
+    def test_patch_wording_without_limit_returns_none(self):
+        err = _FakeApiError(
+            status_code=400,
+            message="image patches after processing are too numerous",
+        )
+        assert _image_error_max_dimension(err) is None
+
+    def test_non_patch_limit_of_wording_not_misread(self):
+        """"exceeding the limit of N" without the patch vocabulary must stay None."""
+        err = _FakeApiError(
+            status_code=400,
+            message="request exceeds the limit of 100 images per minute",
+        )
+        assert _image_error_max_dimension(err) is None
+
+    def test_patch_budget_below_floor_returns_none(self):
+        """A pathologically tiny budget maps under the 512 px floor → None (8000 fallback)."""
+        err = _FakeApiError(
+            status_code=400,
+            message="requires 90 patches after processing, exceeding the limit of 81",
+        )
+        assert _image_error_max_dimension(err) is None
+
+    def test_anthropic_pixel_ceiling_path_unchanged(self):
+        err = _FakeApiError(
+            status_code=400,
+            message="image dimensions exceed max allowed size: 8000 pixels per side",
+        )
+        assert _image_error_max_dimension(err) == 8000
+
+
 
 # ─── Shrink helper ───────────────────────────────────────────────────────────
 

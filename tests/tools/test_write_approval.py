@@ -201,6 +201,50 @@ def test_handle_approval_off(hermes_home):
     assert "off" in out
 
 
+def test_memory_state_off_explains_unattended_gate(hermes_home, monkeypatch):
+    # /memory with the general gate off must still explain the unattended background-review
+    # restriction (#106310), or "write_approval = off" reads as a contradiction (#106918).
+    from hermes_cli.write_approval_commands import handle_pending_subcommand
+    from tools import write_approval as wa
+    monkeypatch.setattr(wa, "write_approval_enabled", lambda subsystem: False)
+    out = handle_pending_subcommand(wa.MEMORY, [])
+    assert "memory.write_approval = off" in out
+    assert "replace/remove" in out
+    assert "/refine" in out
+
+
+def test_memory_state_on_has_no_unattended_note(hermes_home, monkeypatch):
+    # With the general gate on, everything is staged anyway — no note needed.
+    from hermes_cli.write_approval_commands import handle_pending_subcommand
+    from tools import write_approval as wa
+    monkeypatch.setattr(wa, "write_approval_enabled", lambda subsystem: True)
+    out = handle_pending_subcommand(wa.MEMORY, [])
+    assert "memory.write_approval = on" in out
+    assert "/refine" not in out
+
+
+def test_skills_state_off_has_no_unattended_note(hermes_home, monkeypatch):
+    # The unattended replace/remove gate is memory-only; /skills must not claim it.
+    from hermes_cli.write_approval_commands import handle_pending_subcommand
+    from tools import write_approval as wa
+    monkeypatch.setattr(wa, "write_approval_enabled", lambda subsystem: False)
+    out = handle_pending_subcommand(wa.SKILLS, [])
+    assert "skills.write_approval = off" in out
+    assert "/refine" not in out
+
+
+def test_memory_approval_off_notes_unattended_gate(hermes_home, monkeypatch):
+    # Turning the general gate off is exactly when the standing background restriction
+    # needs restating (#106918).
+    from hermes_cli.write_approval_commands import handle_pending_subcommand
+    from tools import write_approval as wa
+    monkeypatch.setattr(wa, "write_approval_enabled", lambda subsystem: False)
+    out = handle_pending_subcommand(
+        wa.MEMORY, ["approval", "off"], set_mode_fn=lambda enabled: None)
+    assert "set to 'off'" in out
+    assert "replace/remove" in out
+
+
 # ---------------------------------------------------------------------------
 # Inline (interactive CLI) approval path — regression for the bug where the
 # per-thread approval callback was never passed to prompt_dangerous_approval,

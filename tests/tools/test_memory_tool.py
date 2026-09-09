@@ -849,3 +849,16 @@ class TestBackgroundReviewDeleteGate:
             reset_current_write_origin(token)
         assert result["success"] is True
         assert "rewritten by refine" in store._entries_for("memory")
+
+    def test_staging_message_names_both_operations(self, store, tmp_path, monkeypatch):
+        # The gate covers replace AND remove (whole batches too), so the staging notice must
+        # not name only "delete" (#106918).
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        store.add("memory", "entry the fork must not rewrite")
+        token = set_current_write_origin("background_review")
+        try:
+            result = json.loads(memory_tool(action="remove", old_text="must not rewrite", store=store))
+        finally:
+            reset_current_write_origin(token)
+        assert result["staged"] is True
+        assert "replace or remove" in result["message"]

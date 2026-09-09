@@ -9,9 +9,20 @@ from typing import List, Optional
 from tools import write_approval as wa
 
 
+def _unattended_memory_gate_note() -> str:
+    """One-line effective-policy note for memory: the unattended background-review gate
+    (#106310) stages replace/remove even when the general write-approval gate is off, so
+    ``memory.write_approval = off`` alone reads as a contradiction without it."""
+    return ("Unattended background reviews still stage replace/remove (a whole batch with either) "
+            "for approval; adds apply automatically. Attended /refine is not restricted.")
+
+
 def _fmt_state(subsystem: str) -> str:
     on = wa.write_approval_enabled(subsystem)
-    return f"{subsystem}.write_approval = {'on' if on else 'off'}"
+    lines = [f"{subsystem}.write_approval = {'on' if on else 'off'}"]
+    if subsystem == wa.MEMORY and not on:
+        lines.append(_unattended_memory_gate_note())
+    return "\n".join(lines)
 
 
 def _fmt_pending_list(subsystem: str) -> str:
@@ -149,4 +160,7 @@ def _set_approval(subsystem: str, rest: List[str], set_mode_fn) -> str:
         set_mode_fn(enabled)
     except Exception as e:
         return f"Failed to set {subsystem}.write_approval: {e}"
-    return f"{subsystem}.write_approval set to '{'on' if enabled else 'off'}'."
+    out = f"{subsystem}.write_approval set to '{'on' if enabled else 'off'}'."
+    if subsystem == wa.MEMORY and not enabled:
+        out += "\n" + _unattended_memory_gate_note()
+    return out

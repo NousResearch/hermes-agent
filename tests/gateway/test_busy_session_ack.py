@@ -519,3 +519,45 @@ class TestLongRunningNotificationOwnership:
         ) is False
 
 
+
+@pytest.mark.parametrize('mode, key', [
+    ('steer', 'steer_ack'), ('redirect', 'redirect_ack'), ('queue', 'queue_ack'),
+    ('interrupt', 'interrupt_ack'), ('subagent', 'subagent_queue_ack'), ('compression', 'compression_queue_ack'),
+])
+def test_busy_ack_localizes_at_emission(monkeypatch, mode, key):
+    from agent.i18n import t
+    from agent.onboarding import busy_input_hint_gateway
+    monkeypatch.setattr('agent.onboarding.is_seen', lambda *a: True)
+    runner, _ = _make_runner()
+    for lang in ('en', 'zh'):
+        monkeypatch.setenv('HERMES_LANGUAGE', lang)
+        result = runner._compose_busy_ack_message(
+            _make_event(), time.time(), None, None,
+            is_steer_mode=mode == 'steer', is_redirect_mode=mode == 'redirect',
+            is_queue_mode=mode in ('queue', 'subagent', 'compression'),
+            demoted_for_subagents=mode == 'subagent', demoted_for_compression=mode == 'compression',
+        )
+        assert result == t(f'gateway.busy.{key}', lang=lang, status='')
+        hint_mode = mode if mode in ('queue', 'steer', 'redirect') else 'interrupt'
+        assert busy_input_hint_gateway(mode) == t(f'gateway.busy.first_touch_{hint_mode}', lang=lang)
+        if lang == 'zh':
+            assert 'Queued for' not in result
+            assert 'First-time tip' not in busy_input_hint_gateway(mode)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('queue', [False, True])
+async def test_localized_drain_keeps_queue_behavior(monkeypatch, queue):
+    from agent.i18n import t
+    monkeypatch.setenv('HERMES_LANGUAGE', 'zh')
+    runner, _ = _make_runner()
+    runner._restart_requested = True
+    event = _make_event('keep this')
+    key = build_session_key(event.source)
+    adapter = _make_adapter()
+    runner.adapters[event.source.platform] = adapter
+    await runner._send_busy_drain_notice(event, key, 'queue' if queue else 'interrupt')
+    expected = t('gateway.busy.draining_queued' if queue else 'gateway.busy.draining_reject',
+                 action=t('gateway.busy.action_restarting'))
+    assert adapter._send_with_retry.call_args.kwargs['content'] == expected
+    assert (key in adapter._pending_messages) == queue

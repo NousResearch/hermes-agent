@@ -407,9 +407,9 @@ class GatewayBusySessionMixin:
             return
         if self._queue_during_drain_enabled(effective_mode):
             self._queue_or_replace_pending_event(session_key, event)
-            message = f"⏳ Gateway {self._status_action_gerund()} — queued for the next turn after it comes back."
+            message = t('gateway.busy.draining_queued', action=t("gateway.busy.action_restarting" if self._status_action_gerund() == "restarting" else "gateway.busy.action_shutting_down"))
         else:
-            message = f"⏳ Gateway is {self._status_action_gerund()} and is not accepting another turn right now."
+            message = t('gateway.busy.draining_reject', action=t("gateway.busy.action_restarting" if self._status_action_gerund() == "restarting" else "gateway.busy.action_shutting_down"))
         await self._send_busy_reply(event, adapter, message)
 
     # Bare-word approval replies → (verb, args) for the synthesized slash command.
@@ -574,10 +574,6 @@ class GatewayBusySessionMixin:
             logger.debug("Busy steer ack suppressed for session %s", session_key)
         return steer_ack_enabled
 
-    _BUSY_DEMOTED_TAIL = (
-        " — your message is queued for when it finishes (use /stop to cancel everything)."
-    )
-
     def _compose_busy_ack_message(
         self, event: MessageEvent, now: float, _busy_state, running_agent: Any, *,
         is_steer_mode: bool, is_queue_mode: bool, is_redirect_mode: bool,
@@ -603,7 +599,7 @@ class GatewayBusySessionMixin:
                 if _busy_state and _busy_state.turn.started_ts:
                     elapsed_min = int((now - _busy_state.turn.started_ts) / 60)
                 if elapsed_min > 0:
-                    status_parts.append(f"{elapsed_min} min elapsed")
+                    status_parts.append(t('gateway.busy.status_elapsed_min', minutes=elapsed_min))
                 if summary.get("max_iterations", 0):
                     status_parts.append(
                         format_iteration_progress(
@@ -611,24 +607,17 @@ class GatewayBusySessionMixin:
                         )
                     )
                 if summary.get("current_tool"):
-                    status_parts.append(f"running: {summary.get('current_tool')}")
+                    status_parts.append(t('gateway.busy.status_running_tool', tool=summary.get('current_tool')))
             except Exception:
                 pass
-        status_detail = f" ({', '.join(status_parts)})" if status_parts else ""
-        if is_steer_mode:
-            head, tail = "⏩ Steered into current run", ". Your message arrives after the next tool call."
-        elif is_redirect_mode:
-            head, tail = "↪ Redirected current run", ". I'll adjust using your correction."
-        elif is_queue_mode and demoted_for_subagents:
-            # Explain the demotion: the follow-up didn't kill the subagent; /stop is the escape hatch.
-            head, tail = "⏳ Subagent working", self._BUSY_DEMOTED_TAIL
-        elif is_queue_mode and demoted_for_compression:
-            head, tail = "⏳ Compressing context", self._BUSY_DEMOTED_TAIL
-        elif is_queue_mode:
-            head, tail = "⏳ Queued for the next turn", ". I'll respond once the current task finishes."
-        else:
-            head, tail = "⚡ Interrupting current task", ". I'll respond to your message shortly."
-        message = f"{head}{status_detail}{tail}"
+        status_detail = t('gateway.busy.status_detail', details=', '.join(status_parts)) if status_parts else ""
+        mode = next((key for condition, key in (
+            (is_steer_mode, "steer_ack"), (is_redirect_mode, "redirect_ack"),
+            (is_queue_mode and demoted_for_subagents, "subagent_queue_ack"),
+            (is_queue_mode and demoted_for_compression, "compression_queue_ack"),
+            (is_queue_mode, "queue_ack"),
+        ) if condition), "interrupt_ack")
+        message = t(f"gateway.busy.{mode}", status=status_detail)
 
         # One-time onboarding hint about the queue/interrupt knob (flag persisted to config.yaml).
         try:
@@ -830,8 +819,7 @@ class GatewayBusySessionMixin:
             )
 
         return (
-            f"⏳ Agent is running — `/{name}` can't run "
-            f"mid-turn. Wait for the current response or `/stop` first."
+            t('gateway.busy.command_mid_turn', command=name)
         )
 
     async def _handle_pause_command(self, event: MessageEvent):
@@ -889,7 +877,7 @@ class GatewayBusySessionMixin:
         # A /queue carrying media or reply context is valid with no prompt text (image caption).
         has_media = bool(getattr(event, "media_urls", None))
         if not queued_text and not has_media:
-            return "Usage: /queue <prompt>"
+            return t('gateway.queue.usage')
         adapter = self._adapter_for_source(source)
         if adapter:
             self._enqueue_fifo(quick_key, MessageEvent(
@@ -906,7 +894,7 @@ class GatewayBusySessionMixin:
                 internal=event.internal, timestamp=event.timestamp,
             ), adapter)
         depth = self._queue_depth(quick_key, adapter=adapter)
-        return "Queued for the next turn." + (f" ({depth} queued)" if depth > 1 else "")
+        return t("gateway.queue.queued_with_depth", depth=depth) if depth > 1 else t("gateway.queue.queued")
 
     async def _busy_steer_command(self, event: MessageEvent, quick_key: str, source):
         # /steer lands BETWEEN tool-call iterations of the same run (appended to the last tool
@@ -914,7 +902,7 @@ class GatewayBusySessionMixin:
         from gateway.run import _AGENT_PENDING_SENTINEL
         steer_text = event.get_command_args().strip()
         if not steer_text:
-            return "Usage: /steer <prompt>"
+            return t('gateway.steer.usage')
         _steer_state = self._peek_session_state(quick_key)
         running_agent = _steer_state.turn.agent if _steer_state else None
 
@@ -930,18 +918,18 @@ class GatewayBusySessionMixin:
             return reply
 
         if running_agent is _AGENT_PENDING_SENTINEL:
-            return _queue_fallback("Agent still starting — /steer queued for the next turn.")
+            return _queue_fallback(t('gateway.steer.agent_starting_queued'))
         if not running_agent or not hasattr(running_agent, "steer"):
-            return _queue_fallback("No active agent — /steer queued for the next turn.")
+            return _queue_fallback(t('gateway.steer.no_active_queued'))
         try:
             accepted = running_agent.steer(self._steer_text_with_origin(steer_text, event))
         except Exception as exc:
             logger.warning("Steer failed for session %s: %s", quick_key, exc)
-            return f"⚠️ Steer failed: {exc}"
+            return t('gateway.steer.failed', error=exc)
         if not accepted:
-            return "Steer rejected (empty payload)."
+            return t('gateway.steer.rejected_empty')
         preview = steer_text[:60] + ("..." if len(steer_text) > 60 else "")
-        return f"⏩ Steer queued — arrives after the next tool call: '{preview}'"
+        return t('gateway.steer.queued_after_tool', preview=preview)
 
     async def _busy_goal_command(self, event: MessageEvent, quick_key: str, source):
         # Control verbs are safe mid-run (state only); setting new goal text is rejected so we don't
@@ -950,7 +938,7 @@ class GatewayBusySessionMixin:
 
         if is_goal_control(event.get_command_args() or ""):
             return await self._handle_goal_command(event)
-        return "Agent is running — use /goal status / pause / clear / wait mid-run, or /stop before setting a new goal."
+        return t('gateway.busy.goal_mid_run')
 
     async def _busy_loop_command(self, event: MessageEvent, quick_key: str, source):
         # Mirrors /goal: control verbs are safe mid-run; a new loop is rejected.

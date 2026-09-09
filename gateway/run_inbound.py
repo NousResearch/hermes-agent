@@ -7,6 +7,8 @@ so ``patch("gateway.run.X")`` keeps intercepting them at call time.
 
 from __future__ import annotations
 
+from agent.i18n import t
+
 import logging
 from typing import TYPE_CHECKING
 import asyncio
@@ -625,9 +627,9 @@ class GatewayInboundMixin:
             if queue_during_drain:
                 self._queue_or_replace_pending_event(_quick_key, event)
             return (
-                f"⏳ Gateway {self._status_action_gerund()} — queued for the next turn after it comes back."
+                t('gateway.busy.draining_queued', action=t("gateway.busy.action_restarting" if self._status_action_gerund() == "restarting" else "gateway.busy.action_shutting_down"))
                 if queue_during_drain
-                else f"⏳ Gateway is {self._status_action_gerund()} and is not accepting another turn right now."
+                else t('gateway.busy.draining_reject', action=t("gateway.busy.action_restarting" if self._status_action_gerund() == "restarting" else "gateway.busy.action_shutting_down"))
             )
         if effective_busy_input_mode == "queue":
             logger.debug("PRIORITY queue follow-up for session %s", _quick_key)
@@ -858,11 +860,11 @@ class GatewayInboundMixin:
     # /queue and /steer on the idle path: no agent is running, so strip the prefix and send the
     # payload as a regular user turn; an empty payload surfaces the usage hint.
     async def _hm_cmd_queue(self, event, source, _quick_key):
-        return self._hm_send_payload_as_turn(event, "Usage: /queue <prompt>")
+        return self._hm_send_payload_as_turn(event, t('gateway.queue.usage'))
 
     async def _hm_cmd_steer(self, event, source, _quick_key):
         return self._hm_send_payload_as_turn(
-            event, "Usage: /steer <prompt>  (no agent is running; sending as a normal message)"
+            event, t('gateway.steer.usage_no_agent')
         )
 
     @staticmethod
@@ -951,7 +953,7 @@ class GatewayInboundMixin:
         """Drain gate, user-defined quick commands (exec/alias) and plugin slash commands →
         ``(handled, result, command)``; an alias quick command rewrites ``command``."""
         if self._draining:
-            return True, f"⏳ Gateway is {self._status_action_gerund()} and is not accepting new work right now.", command
+            return True, t('gateway.busy.draining_new_work_reject', action=t("gateway.busy.action_restarting" if self._status_action_gerund() == "restarting" else "gateway.busy.action_shutting_down")), command
 
         # User-defined quick commands (bypass agent loop, no LLM call)
         qcmd = self._hm_quick_commands().get(command) if command else None

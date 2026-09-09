@@ -3,7 +3,7 @@
   scripts\nf-setup.ps1  [-DataDir <path>] [-RepoRoot <path>]
                         [-Tier full|basic] [-Pin <edition>] [-Installed a,b,c]
                         [-Passcode <string>] [-SetPasscode] [-RotatePasscode]
-                        [-Force] [-NonInteractive] [-Show]
+                        [-Force] [-NonInteractive] [-SkipEditionInstall] [-Show]
 
   WHAT IT DOES
     Writes a SIGNED provisioning record that the North Forge runtime reads on every
@@ -14,7 +14,11 @@
         <DataDir>\north-forge\.nf-admin           admin-passcode hash (gates re-provision)
 
     An "edition" is a Hermes profile under <DataDir>\profiles\<name>\ ; the North
-    Forge generic chassis is the root ("default"). Two tiers, no third:
+    Forge generic chassis is the root ("default"). If the pin (or, on Full, a
+    -Installed name) is not a profile yet but editions\<name>\ is in the checkout,
+    it is installed automatically via `hermes profile install` before the record
+    is written. -SkipEditionInstall turns that off (you manage profiles yourself).
+    Two tiers, no third:
 
       full   - the pin is only the default landing edition; every switch path stays
                open (hermes profile use / the dashboard / /edition). Admin + trusted
@@ -48,6 +52,7 @@ param(
     [switch]$RotatePasscode,
     [switch]$Force,
     [switch]$NonInteractive,
+    [switch]$SkipEditionInstall,
     [switch]$Show
 )
 
@@ -172,6 +177,79 @@ if (-not $Pin) {
 }
 Write-Host "  pinned edition : $Pin"
 
+# --- install editions from the repo -----------------------------------------
+# nf_tier records whatever --pin it's given; it does NOT create the profile the
+# pin points at. Close that gap here: for the pin (and, on Full, each -Installed
+# name), if the profile doesn't exist yet but editions\<name>\ is in the checkout,
+# install it with the engine's own `hermes profile install` (a Hermes profile
+# distribution = editions\<name>\ with distribution.yaml + SOUL.md at its root).
+# 'default' / the root aliases are the plain chassis - nothing to install.
+$script:HxExit = 0
+function Invoke-Hermes {
+    param([string[]]$HxArgs)
+    $hx = Join-Path $venvDir 'Scripts\hermes.exe'
+    if (-not (Test-Path -LiteralPath $hx)) { $hx = Join-Path $venvDir 'bin/hermes' }
+    if (-not (Test-Path -LiteralPath $hx)) {
+        # Fall back to the module entrypoint so this still works on a venv layout
+        # without the console script.
+        $prev = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
+        try { $lines = & $pyExe '-m' 'hermes_cli' @HxArgs 2>&1; $script:HxExit = $LASTEXITCODE }
+        finally { $ErrorActionPreference = $prev }
+    } else {
+        $prev = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
+        try { $lines = & $hx @HxArgs 2>&1; $script:HxExit = $LASTEXITCODE }
+        finally { $ErrorActionPreference = $prev }
+    }
+    foreach ($ln in $lines) { Write-Host ("    " + [string]$ln) }
+}
+
+# `powershell -File nf-setup.ps1 -Installed a,b,c` passes "a,b,c" as ONE string
+# (commas are only array separators in -Command mode). Normalise so both
+# `-Installed a,b,c` and `-Installed a b c` yield a clean list.
+if ($Installed) {
+    $Installed = @($Installed | ForEach-Object { $_ -split ',' } |
+        ForEach-Object { $_.Trim() } | Where-Object { $_ })
+}
+
+$rootAliases = @('', 'default', 'north-forge', 'north_forge', 'northforge', 'generic', 'chassis')
+$editionsToInstall = @()
+if ($rootAliases -notcontains $Pin.ToLower()) { $editionsToInstall += $Pin }
+if ($Tier -eq 'full' -and $Installed) {
+    foreach ($e in $Installed) { if ($rootAliases -notcontains $e.ToLower()) { $editionsToInstall += $e } }
+}
+$editionsToInstall = @($editionsToInstall | Select-Object -Unique)
+
+if (-not $SkipEditionInstall -and $editionsToInstall.Count -gt 0) {
+    foreach ($name in $editionsToInstall) {
+        $profileDir = Join-Path $profilesDir ($name.ToLower())
+        if (Test-Path -LiteralPath $profileDir) {
+            Write-Host "  edition        : $name  (already a profile - left as-is)"
+            continue
+        }
+        $srcDir = Join-Path $RepoRoot (Join-Path 'editions' $name)
+        if (-not (Test-Path -LiteralPath (Join-Path $srcDir 'distribution.yaml'))) {
+            Write-Warning ("Pin '$name' has no profile and no editions\$name\distribution.yaml in the checkout. " +
+                "Provisioning will still record the pin, but the drive has nothing to load for it. " +
+                "Install it yourself (hermes profile install <source>) or fix the -Pin name.")
+            continue
+        }
+        Write-Host "  edition        : installing '$name' from editions\$name ..."
+        $instArgs = @('profile', 'install', $srcDir, '-y')
+        if ($Force) { $instArgs += '--force' }
+        Invoke-Hermes $instArgs
+        if ($script:HxExit -ne 0 -or -not (Test-Path -LiteralPath $profileDir)) {
+            Write-Error "Failed to install edition '$name' (hermes profile install exit $script:HxExit)."
+            exit 1
+        }
+        Write-Host "  edition        : '$name' installed -> profiles\$($name.ToLower())" -ForegroundColor Green
+    }
+    # Refresh the on-drive edition list now that installs have happened.
+    if (Test-Path -LiteralPath $profilesDir) {
+        $editionDirs = @(Get-ChildItem -LiteralPath $profilesDir -Directory -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -notmatch '^\.' } | Select-Object -ExpandProperty Name)
+    }
+}
+
 # --- installed editions (Full tier only; Basic records exactly its pin) -------
 $installedArg = ''
 if ($Tier -eq 'full') {
@@ -215,6 +293,42 @@ else {
     }
 }
 if ($script:NfExit -ne 0) { Write-Error "Provisioning failed (exit $script:NfExit)."; exit 1 }
+
+# --- default skin (part of provisioning) --------------------------------------
+# "What does this recipient's drive look like on first launch" is decided HERE,
+# deliberately, alongside tier and pin - not left to engine-default behaviour or
+# to whatever skin was last active during testing. Ship skins\north-forge.yaml
+# into HERMES_HOME\skins\ and make it the active skin, UNLESS the operator has
+# already chosen a non-stock skin (an explicit choice is never overridden; users
+# stay free to switch afterwards). Same rule bootstrap-north-forge.ps1 uses.
+try {
+    $skinSrc = Join-Path $RepoRoot 'skins\north-forge.yaml'
+    $hermesExe = Join-Path $venvDir 'Scripts\hermes.exe'
+    if (-not (Test-Path -LiteralPath $hermesExe)) { $hermesExe = Join-Path $venvDir 'bin/hermes' }
+    if (Test-Path -LiteralPath $skinSrc) {
+        $skinDstDir = Join-Path $DataDir 'skins'
+        New-Item -ItemType Directory -Path $skinDstDir -Force | Out-Null
+        Copy-Item -LiteralPath $skinSrc -Destination (Join-Path $skinDstDir 'north-forge.yaml') -Force
+    }
+    if (Test-Path -LiteralPath $hermesExe) {
+        $prev = $ErrorActionPreference
+        $ErrorActionPreference = 'Continue'
+        try {
+            $curSkin = (& $hermesExe config get display.skin 2>&1 | Out-String).Trim()
+            if (-not $curSkin -or @('default', 'none', 'null') -contains $curSkin.ToLower()) {
+                & $hermesExe config set display.skin north-forge 2>&1 | Out-Null
+                Write-Host "  default skin   : north-forge  (set as the drive's starting skin)"
+            }
+            else {
+                Write-Host "  default skin   : kept your display.skin = '$curSkin' (north-forge available; switch any time)"
+            }
+        }
+        finally { $ErrorActionPreference = $prev }
+    }
+}
+catch {
+    Write-Warning "Default-skin step skipped: $($_.Exception.Message)"
+}
 
 Write-Host ""
 Write-Host "Provisioned." -ForegroundColor Green

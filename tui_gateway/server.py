@@ -34,7 +34,8 @@ from agent.conversation_loop import INTERRUPT_WAITING_FOR_MODEL_PREFIX  # noqa: 
 from tui_gateway import git_probe
 from tui_gateway._env import env_float, env_int
 from tui_gateway.turn_marker import clear_turn_marker, read_turn_marker, record_turn_start  # noqa: F401
-from tui_gateway.transport import (StdioTransport, Transport, bind_transport, current_transport, reset_transport)
+from tui_gateway.transport import (FanoutTransport, StdioTransport, Transport, bind_transport,
+                                   current_transport, reset_transport)
 
 logger = logging.getLogger(__name__)
 
@@ -740,16 +741,20 @@ def handle_request(req: dict) -> dict | None:
 
 def _current_session_steer_authority(session_id: str) -> tuple[Transport | None, dict | None]:
     """Unforgeable steering authority for this RPC context: the public session id is only a lookup
-    hint; authority is the identity of BOTH the ContextVar-bound transport and the live in-memory
-    record under that id, so transport rebinding, removal or id reuse invalidates an earlier generation."""
+    hint; authority requires the ContextVar-bound transport to be ATTACHED to the live in-memory record
+    under that id, so transport detachment, session removal or id reuse invalidates an earlier generation."""
     transport = current_transport()
     if transport is None or not session_id:
         return None, None
     expected_session = _current_runtime_session_record.get()
     with _sessions_lock:
         session = _sessions.get(session_id)
+        # Membership, not slot identity: a mirrored session stores a FanoutTransport in the slot, so slot
+        # identity alone would reject every client, the peer that commissioned the subagent included.
+        # Authority is membership in the slot, which also grants it to any client attached to mirror the
+        # session (see tests/tui_gateway/test_multi_client_fanout.py).
         if (session is None or (expected_session is not None and session is not expected_session)
-                or session.get("transport") is not transport):
+                or not _session_transport_contains(session, transport)):
             return None, None
         return transport, session
 
@@ -3188,22 +3193,23 @@ from . import (  # noqa: E402
     session_compression as _session_compression, model_switch as _model_switch,
     compute_host_bridge as _compute_host_bridge, session_workdir as _session_workdir,
     session_lifecycle as _session_lifecycle, session_reaper as _session_reaper,
+    session_transports as _session_transports,
     methods_browser_control as _methods_browser_control, methods_bot_relay as _methods_bot_relay,
     methods_complete as _methods_complete, methods_config as _methods_config,
     methods_config_set as _methods_config_set, methods_images as _methods_images,
     methods_profiles as _methods_profiles, methods_prompt as _methods_prompt, methods_session as _methods_session,
     methods_tools as _methods_tools, prompt_turn as _prompt_turn, billing_view as _billing_view,
     methods_projects as _methods_projects, methods_session_foreign as _methods_session_foreign,
-    methods_session_control as _methods_session_control)
+    methods_session_control as _methods_session_control, methods_subagents as _methods_subagents)
 
 for _m in (
-    _session_reaper, _session_lifecycle, _session_workdir, _compute_host_bridge, _model_switch,
+    _session_transports, _session_reaper, _session_lifecycle, _session_workdir, _compute_host_bridge, _model_switch,
     _session_compression, _change_watcher, _tool_progress, _session_notifications,
     _prompt_attachments, _session_history, _agent_callbacks, _session_auto_continue,
     _methods_complete_helpers, _methods_slash, _methods_voice, _methods_browser,
     _methods_browser_control, _methods_session, _methods_prompt, _methods_config,
     _methods_config_set, _methods_complete, _methods_tools, _methods_profiles, _methods_images,
     _methods_bot_relay, _prompt_turn, _billing_view, _methods_projects, _methods_session_foreign,
-    _methods_session_control):
+    _methods_session_control, _methods_subagents):
     _m.register(sys.modules[__name__])
 del _m

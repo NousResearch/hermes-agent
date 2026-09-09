@@ -3633,7 +3633,7 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
             self._display_resumed_history()
 
         _welcome_skin = None  # stays None when the skin engine failed
-        _welcome_text = "Welcome to Hermes Agent! Type your message or /help for commands."
+        _welcome_text = "Welcome to North Forge! Type your message or /help for commands."
         _welcome_color = "#FFF8DC"
         try:
             from hermes_cli.skin_engine import get_active_skin

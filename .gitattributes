@@ -17,6 +17,7 @@ docker/entrypoint.sh text eol=lf
 # the index on every platform. PowerShell files are the deliberate
 # exception (PS 5.1 tooling expects CRLF).
 *.py    text eol=lf
+*.rs    text eol=lf
 *.ts    text eol=lf
 *.tsx   text eol=lf
 *.js    text eol=lf

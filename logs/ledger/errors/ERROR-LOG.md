@@ -55,55 +55,161 @@ in [`README.md`](../README.md). Severity: **CRITICAL** · **HIGH** · **MEDIUM**
   4. On a fresh clone, run `sh .githooks/install` to re-arm the guard.
 - **Do NOT** run `git clean -x`/`-X` in this repo — it would delete `.env`.
 
-### ERR-2026-09-07-004 — HIGH — Ledger completeness check compares dates, not RUN IDs
+---
 
-- **Opened:** 2026-09-07 · **Base:** hermes@233757037d (6 behind upstream/main)
-- **Run:** RUN-2026-09-07-006
-- **Source:** Codex audit **F-02** (see `logs/CODEX-AUDIT-2026-09-07.md`).
-- **Confidence:** Confirmed Fact (Codex read the code; not independently re-run this session).
-- **What:** `scripts/collect-logs.sh` (~lines 183–203) and the equivalent
-  PowerShell logic prove only *"a report exists dated ≥ the newest ledger ID's
-  date."* They take the newest date embedded in any top-level report filename and
-  compare it to the newest date in any ledger ID. One unrelated same-day report
-  makes every run that day look covered; a report can also omit its `RUN-` id
-  entirely and still satisfy the check. The deliberately off-date decision id
-  (`DECISION-2026-09-06-003`, opened 2026-09-07) shows date ≠ run identity.
-- **Impact:** the collector does **not** close the evidence gap it was built for —
-  it detects "no report of at least this date," not "every run has a report."
-- **Fix sketch (not done — R-01):** make completeness *relational* — a required
-  `Run:` / `Covers:` header on each report, a `logs/ledger/reports/REPORT-MANIFEST`
-  (basename, sha256, run id, covered ids), both collectors extract every `RUN-*`
-  touched since the last handoff and match against report headers/manifest
-  (missing run ⇒ **FAIL**, not WARN), reject unresolved `[[name]]` links, add
-  parity tests (two runs one date, one report ⇒ flagged).
-- **Status:** OPEN — logged for scheduling; no change this run.
+## Resolved
+
+### ERR-2026-09-08-004 — MEDIUM — `editions/penny-pincher` persona oversells what it does
+
+- **Opened:** 2026-09-08 · **Base:** hermes@c076d653a2 (0 behind upstream/main)
+- **Run:** RUN-2026-09-08-004 (opened + resolved same run)
+- **Source:** Codex progress-check **PC-2026-09-08-005** (report
+  `CODEX-PROGRESS-CHECK-2026-09-08.md` — supplied in the run prompt; not on disk
+  this session).
+- **Confidence:** Confirmed Fact — the phrases were read in `editions/penny-pincher/SOUL.md`.
+- **What:** `SOUL.md` said *"I hold the running picture"* / *"I keep track"* /
+  *"tracking bills and due dates"* — language that implies a maintained structured
+  ledger. The edition has **no ledger mechanism**; it only has the chassis's
+  memory of what the user typed. It also gave affordability answers without
+  naming what the answer omitted.
+- **Impact:** a recipient could over-trust a "what's left this month?" number.
+- **Resolved:** 2026-09-08 (`RUN-2026-09-08-004`, `CHG-2026-09-08-016`). Wording
+  only, no mechanism (per PC-2026-09-08-005's stated scope): "I write it down" /
+  "I work only from what you give me" / "no bank connection, no transaction feed,
+  no ledger of its own"; affordability answers now always name what they leave out.
+  `editions/penny-pincher/README.md` matched.
+- **Status:** RESOLVED.
+
+### ERR-2026-09-08-003 — HIGH — `editions/pine-barron-farms` canon packet is never loaded
+
+- **Opened:** 2026-09-08 · **Base:** hermes@c076d653a2 (0 behind upstream/main)
+- **Run:** RUN-2026-09-08-004 (opened + resolved same run)
+- **Source:** Codex progress-check **PC-2026-09-08-004**.
+- **Confidence:** Confirmed Fact — reproduced this session: `SOUL.md` says *"I
+  follow the loaded canon packet exactly"* but nothing in the edition, the
+  chassis, or the launch path reads `canon/PINE_BARRON_FARMS_CANON.md`. Dropping a
+  packet in did nothing.
+- **Impact:** the edition's core promise (canon consistency for an AI video
+  studio) was unfulfillable — the agent had no studio facts and no way to get
+  them, and no signal that they were missing.
+- **Resolved:** 2026-09-08 (`RUN-2026-09-08-004`, `CHG-2026-09-08-015`). New
+  `editions/pine-barron-farms/canon/load_canon.py` (stdlib, exit 0 always) emits a
+  `canon loaded: <path>, sha256=<hash>, <n> bytes` receipt + the packet between
+  BEGIN/END markers, or a `WARNING: canon packet NOT FOUND` message naming every
+  path checked. Loaded two existing-mechanism ways, **no core engine change**: a
+  session-start command mandated by `SOUL.md`, and the new `skills/pbf-canon/`
+  skill (its body — the loader invocation + how to read the output — assembles
+  into the preloaded-skills system prompt). `distribution.yaml` ships both.
+  `tests/test_pbf_canon_loader.py` (6) — present / absent / truncation / CLI
+  exit-0, and an end-to-end proof that a fact from a test canon file reaches the
+  assembled context.
+- **Status:** RESOLVED.
+
+### ERR-2026-09-08-002 — MEDIUM — Installer trusts frontend `repoRoot`; multi-drive autodetect picks the first
+
+- **Opened:** 2026-09-08 · **Base:** hermes@c076d653a2 (0 behind upstream/main)
+- **Run:** RUN-2026-09-08-004 (opened + resolved same run)
+- **Source:** Codex progress-check **PC-2026-09-08-002** and **-003** (same root
+  cause — validation gaps in `apps/bootstrap-installer`'s Rust backend).
+- **Confidence:** Confirmed Fact — read in `src-tauri/src/{repo,bootstrap}.rs`:
+  `run_bootstrap` fed a frontend-supplied `repo_root` straight to
+  `repo::describe` (which does not re-check `is_checkout()` and never consults
+  `on_system_drive`), and `resolve_checkout`'s drive scan returned the **first**
+  drive with a checkout — so with valid checkouts on two drives it silently picked
+  one instead of asking.
+- **Impact:** a bootstrap could run against a non-checkout or a system-drive path,
+  or against the wrong one of several drives, with no prompt.
+- **Resolved:** 2026-09-08 (`RUN-2026-09-08-004`, `CHG-2026-09-08-014`). One
+  shared `repo::validate_target(&Path)` gate (canonicalize → real checkout
+  [`bootstrap-north-forge.ps1` **and** `pyproject.toml`] → not the system drive),
+  called by **both** `set_repo_root` (the picker) and `run_bootstrap` immediately
+  before spawning PowerShell. `resolve_checkout` now auto-picks **only** when
+  exactly one checkout exists across every visible drive; otherwise `detect_repo`
+  returns `source="ambiguous"` and the location screen forces an explicit choice
+  and disables Install. `+8` Rust unit tests (`src-tauri` 9 → 17).
+- **Status:** RESOLVED. (`tauri build` not re-run — Rust/TS, out of the pytest
+  lane; `cargo test` 17/17, `cargo build`, `tsc`, `eslint` clean.)
+
+### ERR-2026-09-08-001 — HIGH — `nf_tier.load()` can raise on a signed-but-malformed record → enforcement silently off
+
+- **Opened:** 2026-09-08 · **Base:** hermes@c076d653a2 (0 behind upstream/main)
+- **Run:** RUN-2026-09-08-004 (opened + resolved same run)
+- **Source:** Codex progress-check **PC-2026-09-08-001**.
+- **Confidence:** Confirmed Fact — reproduced this session: a correctly-signed
+  record with `"schema": "one"` made `_load_uncached()` hit
+  `int(rec.get("schema", 0))` → `ValueError`, which escaped `load()`;
+  `_nf_tier_gate()`'s broad `except Exception: return None` then treated the drive
+  as un-provisioned — a Basic drive would run `-p <other>` unblocked.
+- **Impact:** a malformed (or forward-incompatible) but genuinely-signed
+  provisioning record turned **off** tier enforcement instead of failing closed.
+- **Resolved:** 2026-09-08 (`RUN-2026-09-08-004`, `CHG-2026-09-08-013`).
+  `_load_uncached()` now validates every signed field's type/bounds explicitly
+  (schema is an `int` and `== SCHEMA`, `bool` rejected; tier/pinned_edition/
+  installed_editions/text fields typed) and every failure — plus a defensive outer
+  `except` — returns `Provisioning(STATE_TAMPERED)`. `load()` is now total over
+  arbitrary signed JSON. `_nf_tier_gate()` additionally fails **closed**
+  (`("block", …)`) when an unexpected error occurs and a provisioning record file
+  is physically present (new import-free `_nf_provisioning_file_present()`).
+  `+11` tests in `tests/test_nf_tier_enforcement.py` (19 → 30) — the exact Codex
+  repro (signed record, non-numeric `schema`) as a unit test **and** an
+  integration test (`hermes -p kyocera` exits non-zero, `HERMES_HOME` unmoved).
+- **Status:** RESOLVED.
 
 ### ERR-2026-09-07-007 — MEDIUM — Secret defenses narrower than "credential protection" implies
 
 - **Opened:** 2026-09-07 · **Base:** hermes@233757037d (6 behind upstream/main)
-- **Run:** RUN-2026-09-07-006
+- **Run:** RUN-2026-09-07-006 (opened) · RUN-2026-09-08-004 (resolved — filename half)
 - **Source:** Codex audit **F-09** (residual scope beyond the `ERR-2026-09-07-005`
   bypass).
 - **Confidence:** Confirmed Fact for implemented coverage; Field-Reasoned for
   residual exposure likelihood.
 - **What:** the secret controls work but are narrow — commit scanning recognizes
-  only selected AWS / GitHub / Slack token shapes; filename blocking is
+  only selected AWS / GitHub / Slack token shapes; filename blocking was
   essentially `.env`-family only (`credentials.json`, `id_rsa`, `*.pfx`, `*.p12`,
-  service-account JSON, arbitrary token exports are not uniformly blocked);
-  `.gitignore` is not a security boundary and `git add -f` bypasses it; the
-  handoff redactor skips binary/large files; both hooks yield to `--no-verify`
-  (CI must stay authoritative).
-- **Impact:** "credential protection" oversells the current net; several common
-  secret-bearing file types can be staged without a hook objecting.
-- **Fix sketch (not done — R-02 steps 4–5):** add a maintained pinned CI scanner
-  (e.g. Gitleaks) for broad provider coverage alongside the fast local hook; add
-  filename policy for private-key / container formats with line-scoped, reviewed
-  allowlists; emit `file:line` + rule name, never the secret text.
-- **Status:** OPEN — logged for scheduling; no change this run.
+  service-account JSON not uniformly blocked); `.gitignore` is not a security
+  boundary and `git add -f` bypasses it; the handoff redactor skips binary/large
+  files; both hooks yield to `--no-verify` (CI must stay authoritative).
+- **Resolved (filename half):** 2026-09-08 (`RUN-2026-09-08-004`,
+  `CHG-2026-09-08-009`). `.githooks/secret-guard` `is_forbidden()` broadened
+  beyond `.env` to SSH private keys (`id_rsa`/`id_dsa`/`id_ecdsa`/`id_ed25519`),
+  `*.p12`/`*.pfx`/`*.pkcs12`/`*.jks`/`*.keystore`, `credentials.json` /
+  service-account JSON, `.netrc`/`_netrc`/`.pgpass`/`.htpasswd`, and PEM/`.key`
+  private keys — with a public-CA-bundle allowlist, a `test/`/`fixtures/` path
+  carve-out, and an explicit `ALLOWLIST` escape hatch. New
+  `.githooks/tests/secret-guard.sh` (31 cases, `sh` + `dash`); `nf-secret-scan.yml`
+  now runs both hook self-test suites and `secret-guard --tree`/`--range` in CI.
+  Verified `--tree HEAD` clean on the current tree.
+- **Not done (out of scope this run):** the maintained pinned CI content scanner
+  (Gitleaks-class) for broad provider coverage — R-02.4. The three-regex
+  `content-scan` still covers only AWS/GitHub/Slack shapes. Track as a follow-up;
+  it is a coverage *addition*, not a regression.
+- **Status:** RESOLVED (filename coverage — the concrete half). Broad-provider
+  content scanning remains a future enhancement, not an open fault.
 
----
+### ERR-2026-09-07-004 — HIGH — Ledger completeness check compares dates, not RUN IDs
 
-## Resolved
+- **Opened:** 2026-09-07 · **Base:** hermes@233757037d (6 behind upstream/main)
+- **Run:** RUN-2026-09-07-006 (opened) · RUN-2026-09-08-004 (resolved)
+- **Source:** Codex audit **F-02** (see `logs/CODEX-AUDIT-2026-09-07.md`).
+- **Confidence:** Confirmed Fact — reproduced and verified fixed this session.
+- **What:** `scripts/collect-logs.sh` (~lines 183–203) and the equivalent
+  PowerShell logic proved only *"a report exists dated ≥ the newest ledger ID's
+  date."* One unrelated same-day report made every run that day look covered; a
+  report could omit its `RUN-` id entirely and still satisfy the check.
+- **Impact:** the collector did **not** close the evidence gap it was built for.
+- **Resolved:** 2026-09-08 (`RUN-2026-09-08-004`, `CHG-2026-09-08-008`). New
+  `scripts/lib/report_completeness.py` — a *relational* check invoked by both
+  collectors: every `RUN-` id in the ledger must have a row in the new
+  `logs/ledger/reports/REPORT-MANIFEST.md` (run id, report basename, covered ids,
+  source-of-truth, sha256), and that row must name a session report that exists in
+  the out-dir and mentions the run id, or be an explicit `ledger-only`
+  disposition. A run with no row, or a row pointing at a missing / wrong report,
+  is now **FAIL** (not WARN). Also: a `Run:` / `Covers:` / `Source-Of-Truth:`
+  header on every report + `templates/SESSION-REPORT-TEMPLATE.md`; unresolved
+  ledger `[[wiki-link]]` warning; a stale-row warning; a sha256-drift warning.
+  The four un-reported recent runs (`RUN-2026-09-07-011`, `RUN-2026-09-08-001/002/003`)
+  were **backfilled** with proper reports so the check comes back clean.
+- **Status:** RESOLVED.
 
 ### ERR-2026-09-07-006 — CRITICAL — Launcher trusts "hermes.exe exists" as environment readiness
 
@@ -395,7 +501,11 @@ in [`README.md`](../README.md). Severity: **CRITICAL** · **HIGH** · **MEDIUM**
 | ERR-2026-09-07-001 | 2026-09-07 | LOW | Bootstrap tooling | `bootstrap-north-forge.ps1` let uv cache sit on `C:` while venv built on the checkout drive → cross-volume full-copy, ~6.5 min first run | RESOLVED | CHG-2026-09-07-008 |
 | ERR-2026-09-07-002 | 2026-09-07 | LOW | Upstream test compat | Upstream test files call `os.geteuid()` in an eager `skipif` decorator arg → `pytest tests/` aborts at collection on Windows. Pre-existing upstream, pulled in by the `CHG-2026-09-07-010` sync; NF touches none of the files; targeted runs green | ACCEPTED-RISK | CHG-2026-09-07-014 (owner: accept as-is, no shim; rely on Linux CI + targeted runs; revisit if upstream fixes or a full local Windows run is needed) |
 | ERR-2026-09-07-003 | 2026-09-07 | HIGH | Bootstrap tooling | Codex F-04 (data-loss): `bootstrap-north-forge.ps1` path guard rejected venv/data *inside* the repo but not *equal to* it → `-VenvDir <repo>` + `-Force` runs `Remove-Item -Recurse` on the checkout. Default `north-forge.cmd` path unaffected (no `-VenvDir` passed). Canonicalize + reject equal/inside/contains for venv AND data | RESOLVED | CHG-2026-09-07-015 (+ `tests/test_bootstrap_north_forge_path_safety.py`) |
-| ERR-2026-09-07-004 | 2026-09-07 | HIGH | Ledger tooling | Codex F-02: `collect-logs.{sh,ps1}` completeness check compares newest report-filename *date* to newest ledger-ID date, not `RUN-` id to report. One same-day report covers every run that day; run id can be absent entirely | OPEN | — (R-01: RUN-to-report manifest + FAIL on missing run) |
+| ERR-2026-09-07-004 | 2026-09-07 | HIGH | Ledger tooling | Codex F-02: `collect-logs.{sh,ps1}` completeness check compares newest report-filename *date* to newest ledger-ID date, not `RUN-` id to report. One same-day report covers every run that day; run id can be absent entirely | RESOLVED | CHG-2026-09-08-008 — `scripts/lib/report_completeness.py` + `logs/ledger/reports/REPORT-MANIFEST.md`: every ledger `RUN-` id must map to a report (or explicit ledger-only); missing/mismatched ⇒ **FAIL**. Both collectors call it. 4 un-reported runs backfilled |
 | ERR-2026-09-07-005 | 2026-09-07 | HIGH | Secret scanning | Codex F-03 (reproduced): `.githooks/content-scan` expands changed paths unquoted → a filename with a space word-splits into non-existent pathspecs; a planted `ghp_` token in `dir/file name.txt` passed `--commits` clean. Pre-push + CI both affected | RESOLVED | CHG-2026-09-07-019 — `--commits` gate now reads `git diff-tree -z` and scans by post-image **blob OID**, never by path string; +7 `run.sh` cases (space/tab/dash/Unicode/rename/add-delete/negative). Verified before/after |
 | ERR-2026-09-07-006 | 2026-09-07 | **CRITICAL** (was MEDIUM) | Launcher / bootstrap tooling | `north-forge.cmd` + `bootstrap-north-forge.ps1` trusted "`hermes.exe` exists" as environment readiness. A venv is **not portable between machines** — a real first handoff failed on this. No readiness check before launch | RESOLVED | CHG-2026-09-07-020 — four-check launch-time probe (`scripts/lib/nf-readiness.ps1`), silent venv-only rebuild on any failure (`scripts/nf-preflight.ps1`), one-line-per-launch launcher log; `bootstrap` early-return now probe-gated. + `tests/test_nf_preflight_readiness.py` (10) |
-| ERR-2026-09-07-007 | 2026-09-07 | MEDIUM | Secret scanning | Codex F-09: coverage is narrow — 3 provider token shapes only; filename block is `.env`-family only (`credentials.json` / `id_rsa` / `*.pfx` / SA-JSON unblocked); redactor skips binary/large; `--no-verify` bypasses hooks | OPEN | — (R-02.4/5: pinned maintained CI scanner + private-key/container filename policy) |
+| ERR-2026-09-07-007 | 2026-09-07 | MEDIUM | Secret scanning | Codex F-09: coverage is narrow — 3 provider token shapes only; filename block is `.env`-family only (`credentials.json` / `id_rsa` / `*.pfx` / SA-JSON unblocked); redactor skips binary/large; `--no-verify` bypasses hooks | RESOLVED | CHG-2026-09-08-009 — `secret-guard` filename blocklist broadened to SSH keys / `*.p12`/`*.pfx`/keystores / `credentials.json` / SA-JSON / `.netrc`·`.pgpass`·`.htpasswd` / PEM·`.key` (public-bundle + `tests/` carve-outs, `ALLOWLIST` hatch); `+31` self-tests; CI runs both hook suites + `secret-guard --tree/--range`. Broad-provider content scanner (Gitleaks-class) still a future add, not an open fault |
+| ERR-2026-09-08-001 | 2026-09-08 | HIGH | Access-tier logic | Codex PC-2026-09-08-001: `nf_tier._load_uncached()` raised `ValueError` on a signed-but-malformed record (`int(schema)` on a non-numeric string); `_nf_tier_gate()`'s broad `except` then returned `None` ⇒ enforcement silently off, Basic drive would run `-p <other>` | RESOLVED | CHG-2026-09-08-013 — `load()` made total: every signed field type/bounds-checked, all failures ⇒ `STATE_TAMPERED`; `_nf_tier_gate` fails **closed** on unexpected error when a record file is present. `+11` tests (exact repro as unit + integration) |
+| ERR-2026-09-08-002 | 2026-09-08 | MEDIUM | Installer / bootstrap tooling | Codex PC-2026-09-08-002/003: `apps/bootstrap-installer` Rust backend fed a frontend `repoRoot` straight to bootstrap (no re-check it's a real checkout, not the system drive); multi-drive autodetect returned the first match | RESOLVED | CHG-2026-09-08-014 — one shared `repo::validate_target` gate used by the picker **and** `run_bootstrap` pre-spawn; autodetect only when the global checkout count is exactly 1, else force a pick + disable Install. `+8` Rust tests |
+| ERR-2026-09-08-003 | 2026-09-08 | HIGH | Edition content | Codex PC-2026-09-08-004: `editions/pine-barron-farms/SOUL.md` says "I follow the loaded canon packet" but nothing loaded `canon/PINE_BARRON_FARMS_CANON.md` | RESOLVED | CHG-2026-09-08-015 — `canon/load_canon.py` (receipt: path + sha256 + bytes, or a not-found warning) loaded via a SOUL-mandated session-start command + the new `skills/pbf-canon/` skill; no engine change. `tests/test_pbf_canon_loader.py` (6, incl. an assembled-context proof) |
+| ERR-2026-09-08-004 | 2026-09-08 | MEDIUM | Edition content | Codex PC-2026-09-08-005: `editions/penny-pincher/SOUL.md` oversells ("I hold the running picture", "tracking bills") — no ledger mechanism exists; affordability answers didn't name what they omit | RESOLVED | CHG-2026-09-08-016 — wording only (per PC scope): "I write it down", "no bank connection / no ledger of its own", affordability answers always state what's missing. README matched |

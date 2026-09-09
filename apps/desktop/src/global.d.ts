@@ -564,7 +564,9 @@ declare global {
       onBootProgress: (callback: (payload: DesktopBootProgress) => void) => () => void
       getBootstrapState: () => Promise<DesktopBootstrapState>
       continueBootstrapLocal: () => Promise<{ ok: boolean }>
-      recycleBackend?: (profile?: null | string) => Promise<{ ok: boolean }>
+      recycleBackend?: (
+        profile?: null | string | { connectionId?: null | string; profile?: null | string }
+      ) => Promise<{ ok: boolean }>
       resetBootstrap: () => Promise<{ ok: boolean }>
       repairBootstrap: () => Promise<{ ok: boolean }>
       cancelBootstrap: () => Promise<{ ok: boolean; cancelled: boolean }>
@@ -857,6 +859,10 @@ export interface HermesConnection {
   // True when `profile` is a request scope on a SHARED registry remote/cloud
   // backend (one host, many profiles) — the registry analogue of sharedPrimary.
   sharedRemote?: boolean
+  // Decrypted extra gateway headers used by Electron for the resolved route.
+  // Kept on the descriptor so delayed owner-pinned requests can detect a
+  // same-URL route whose proxy/tenant credentials changed.
+  headers?: Record<string, string>
   windowButtonPosition: { x: number; y: number } | null
 }
 
@@ -1299,6 +1305,11 @@ export type DesktopBootstrapEvent =
       docsUrl: string
     }
 
+export type LegacyConnectionOwner = Pick<
+  HermesConnection,
+  'baseUrl' | 'token' | 'mode' | 'authMode' | 'remoteIdentity' | 'remoteKind' | 'headers'
+>
+
 export interface HermesApiRequest {
   path: string
   method?: string
@@ -1327,6 +1338,8 @@ export interface HermesApiRequest {
   // Keep that intent separate from passive hydration so the pool can reserve a
   // slot for the user's visible request.
   priority?: 'foreground'
+  // Expected resolved legacy route, not an address the renderer may dial.
+  legacyConnection?: LegacyConnectionOwner
 }
 
 export interface HermesPreviewTarget {

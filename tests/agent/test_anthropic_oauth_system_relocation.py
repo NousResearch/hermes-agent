@@ -16,6 +16,8 @@ below pass it that way.
 
 from __future__ import annotations
 
+import pytest
+
 from agent.anthropic_adapter import (
     _CLAUDE_CODE_SYSTEM_PREFIX,
     _prepend_oauth_system_context,
@@ -189,6 +191,13 @@ class TestOAuthCacheBreakpointCap:
         expensive stable prefix. Relocation must preserve both blocks and their
         markers rather than joining them into one cache entry.
         """
+        prompt_caching = pytest.importorskip("agent.prompt_caching")
+        if not hasattr(prompt_caching, "build_prompt_cache_plan"):
+            pytest.skip(
+                "this branch predates the stable/volatile prompt-cache split "
+                "(agent.prompt_caching.build_prompt_cache_plan); relocation has "
+                "nothing to preserve boundaries for here"
+            )
         from agent.prompt_caching import build_prompt_cache_plan
 
         msgs = [

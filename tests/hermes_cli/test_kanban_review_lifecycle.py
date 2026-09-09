@@ -478,9 +478,9 @@ def test_active_pr_guard_skipped_for_review_lane_but_defers_ready_lane(
             reason="operator requested a fresh verifier pass",
         )
         assert kb.unblock_task(conn, ready_id)
-        assert kb.check_respawn_guard(conn, ready_id) is None
+        assert kbd.check_respawn_guard(conn, ready_id) is None
 
-        rerun = kb.dispatch_once(conn, dry_run=True)
+        rerun = kbd.dispatch_once(conn, dry_run=True)
         assert ready_id in [s[0] for s in rerun.spawned]
 
         # Rate-limit cooldown still defers the review lane.

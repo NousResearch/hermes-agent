@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from hermes_cli import kanban_db as kb
+from hermes_cli import kanban_db_connect as kbc
 
 
 @pytest.fixture
@@ -41,7 +42,7 @@ def test_create_rejects_read_only_owner_for_atomic_pr_repair(kanban_home):
         "Read-only verifier; never edits, pushes, replies, refreshes, or merges.",
     )
 
-    with kb.connect() as conn, pytest.raises(ValueError, match="read-only profile"):
+    with kbc.connect() as conn, pytest.raises(ValueError, match="read-only profile"):
         kb.create_task(
             conn,
             title="Repair and push ExampleApp PR #132",
@@ -63,7 +64,7 @@ def test_reassign_rejects_read_only_owner_and_preserves_current_owner(kanban_hom
         "Repairs pull requests, pushes exact-head fixes, and posts factual replies.",
     )
 
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         tid = kb.create_task(
             conn,
             title="Resolve merge conflict and push PR #132",
@@ -83,7 +84,7 @@ def test_read_only_profile_may_own_exact_head_verification(kanban_home):
         "Read-only verifier; never edits, pushes, replies, refreshes, or merges.",
     )
 
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         tid = kb.create_task(
             conn,
             title="Review exact-head CI evidence for PR #132",
@@ -113,7 +114,7 @@ def test_blocked_intent_review_negative_contract_may_use_read_only_owner(
         "Record only the operator intent decision."
     )
 
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         tid = kb.create_task(
             conn,
             title="Intent review for PR #132",
@@ -131,7 +132,7 @@ def test_intent_review_exception_does_not_allow_runnable_write_task(kanban_home)
         "intent-review-readonly-test",
         "Read-only intent reviewer; never edits, pushes, replies, or merges.",
     )
-    with kb.connect() as conn, pytest.raises(ValueError, match="read-only profile"):
+    with kbc.connect() as conn, pytest.raises(ValueError, match="read-only profile"):
         kb.create_task(
             conn,
             title="Intent review for PR #132",

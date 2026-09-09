@@ -161,12 +161,12 @@ def test_host_capacity_is_reported_when_board_cap_is_checked_first(
 ):
     """A board-local cap must not hide an already-full host cap."""
     spawns: list = []
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         running_id = kb.create_task(conn, title="already-running", assignee="alice")
         assert kb.claim_task(conn, running_id) is not None
         kb.create_task(conn, title="waiting-for-slot", assignee="alice")
 
-        res = kb.dispatch_once(
+        res = kbd.dispatch_once(
             conn,
             spawn_fn=_fake_spawn_factory(spawns),
             max_spawn=1,

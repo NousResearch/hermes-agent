@@ -100,7 +100,7 @@ def test_specify_concrete_recovery_task_skips_auxiliary_llm(kanban_home):
         + "Within 10 minutes, either produce focused verification and complete "
         "or report one exact reproduced command denial."
     )
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         tid = kb.create_task(
             conn,
             title="GitHub PR feedback: acme/widgets#17",
@@ -115,7 +115,7 @@ def test_specify_concrete_recovery_task_skips_auxiliary_llm(kanban_home):
     assert outcome.ok is True
     assert outcome.reason == "already concrete"
     call_llm.assert_not_called()
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         task = kb.get_task(conn, tid)
     assert task.status == "ready"
     assert task.body == body
@@ -129,7 +129,7 @@ def test_specify_concrete_local_ci_receipt_skips_auxiliary_llm(kanban_home):
         + "Authoritative local CI failure receipt (JSON): "
         '{"expected_head_sha":"abc123","failed_command":{"returncode":1}}'
     )
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         tid = kb.create_task(
             conn,
             title="Local CI repair: acme/widgets#17 (ci-static-fixer)",
@@ -147,7 +147,7 @@ def test_specify_concrete_local_ci_receipt_skips_auxiliary_llm(kanban_home):
     assert outcome.ok is True
     assert outcome.reason == "already concrete"
     call_llm.assert_not_called()
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         task = kb.get_task(conn, tid)
     assert task.status == "ready"
     assert task.body == body
@@ -160,7 +160,7 @@ def test_specify_concrete_github_feedback_receipt_skips_auxiliary_llm(kanban_hom
         + "Untrusted evidence (JSON): "
         '{"expected_head_sha":"abc123","feedback_kind":"review_comment"}'
     )
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         tid = kb.create_task(
             conn,
             title="GitHub PR feedback: acme/widgets#17",
@@ -178,7 +178,7 @@ def test_specify_concrete_github_feedback_receipt_skips_auxiliary_llm(kanban_hom
     assert outcome.ok is True
     assert outcome.reason == "already concrete"
     call_llm.assert_not_called()
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         task = kb.get_task(conn, tid)
     assert task.status == "ready"
     assert task.body == body

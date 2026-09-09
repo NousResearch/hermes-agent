@@ -613,7 +613,7 @@ def _cmd_set_reasoning(args: argparse.Namespace) -> int:
         else raw_effort
     )
     try:
-        with kb.connect_closing() as conn:
+        with kbc.connect_closing() as conn:
             ok = kb.set_reasoning_effort(conn, args.task_id, effort)
     except (ValueError, RuntimeError) as exc:
         print(f"kanban: {exc}", file=sys.stderr)

@@ -8,6 +8,8 @@ from pathlib import Path
 import pytest
 
 from hermes_cli import kanban_db as kb
+from hermes_cli import kanban_db_connect as kbc
+from hermes_cli import kanban_db_dispatch as kbd
 
 
 def _guard(
@@ -51,7 +53,7 @@ def test_exact_runtime_snapshot_lowers_configured_performance_cap(tmp_path):
     )
 
     assert (
-        kb.resolve_max_in_progress(
+        kbd.resolve_max_in_progress(
             8,
             priority_runtime_guard=_guard(root),
             process_scan=scan,
@@ -65,7 +67,7 @@ def test_guard_has_explicit_normal_performance_lane_when_runtime_is_absent(tmp_p
     root.mkdir()
 
     assert (
-        kb.resolve_max_in_progress(
+        kbd.resolve_max_in_progress(
             None,
             priority_runtime_guard=_guard(root),
             process_scan=kb.ProcessScan(snapshots=(), complete=True),
@@ -122,7 +124,7 @@ def test_unrelated_main_py_does_not_lower_cap(tmp_path):
     )
 
     assert (
-        kb.resolve_max_in_progress(
+        kbd.resolve_max_in_progress(
             8,
             priority_runtime_guard=_guard(guarded_root),
             process_scan=scan,
@@ -186,7 +188,7 @@ def test_verified_linked_worktree_runtime_lowers_cap_when_enabled(tmp_path):
     )
 
     assert (
-        kb.resolve_max_in_progress(
+        kbd.resolve_max_in_progress(
             8,
             priority_runtime_guard=_guard(root, include_linked_worktrees=True),
             process_scan=scan,
@@ -225,7 +227,7 @@ def test_incomplete_process_scan_fails_safe_to_protected_cap(tmp_path):
     root.mkdir()
 
     assert (
-        kb.resolve_max_in_progress(
+        kbd.resolve_max_in_progress(
             8,
             priority_runtime_guard=_guard(root),
             process_scan=kb.ProcessScan(snapshots=(), complete=False),
@@ -244,7 +246,7 @@ def test_disabled_or_unconfigured_guard_preserves_normal_cap(tmp_path):
     scan = kb.ProcessScan(snapshots=(), complete=False)
 
     assert (
-        kb.resolve_max_in_progress(
+        kbd.resolve_max_in_progress(
             8,
             priority_runtime_guard={"enabled": False},
             process_scan=scan,
@@ -252,7 +254,7 @@ def test_disabled_or_unconfigured_guard_preserves_normal_cap(tmp_path):
         == 8
     )
     assert (
-        kb.resolve_max_in_progress(
+        kbd.resolve_max_in_progress(
             8,
             priority_runtime_guard={"enabled": True, "project_roots": []},
             process_scan=scan,
@@ -266,7 +268,7 @@ def test_protected_cap_never_raises_a_lower_operator_cap(tmp_path):
     root.mkdir()
 
     assert (
-        kb.resolve_max_in_progress(
+        kbd.resolve_max_in_progress(
             1,
             priority_runtime_guard=_guard(root, protected_cap=2),
             process_scan=kb.ProcessScan(snapshots=(), complete=False),
@@ -285,11 +287,11 @@ def test_profile_cap_map_only_limits_selected_profile(
         spawns.append((task.id, task.assignee))
         return 100 + len(spawns)
 
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         for i in range(3):
             kb.create_task(conn, title=f"local-{i}", assignee="local-heavy")
             kb.create_task(conn, title=f"cloud-{i}", assignee="cloud-fast")
-        result = kb.dispatch_once(
+        result = kbd.dispatch_once(
             conn,
             spawn_fn=fake_spawn,
             max_in_progress=8,

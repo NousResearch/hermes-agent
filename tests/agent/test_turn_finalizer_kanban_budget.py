@@ -6,6 +6,7 @@ import logging
 
 from agent.turn_finalizer import _record_kanban_budget_exhausted
 from hermes_cli import kanban_db as kb
+from hermes_cli import kanban_db_connect as kbc
 
 
 def test_budget_exhaustion_parks_task_for_narrower_input(tmp_path, monkeypatch):
@@ -14,7 +15,7 @@ def test_budget_exhaustion_parks_task_for_narrower_input(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
     kb.init_db()
 
-    with kb.connect_closing() as conn:
+    with kbc.connect_closing() as conn:
         task_id = kb.create_task(conn, title="needs evidence", assignee="worker")
         with kb.write_txn(conn):
             conn.execute("UPDATE tasks SET status = 'ready' WHERE id = ?", (task_id,))
@@ -22,7 +23,7 @@ def test_budget_exhaustion_parks_task_for_narrower_input(tmp_path, monkeypatch):
 
     _record_kanban_budget_exhausted(task_id, 18, 18, logging.getLogger(__name__))
 
-    with kb.connect_closing() as conn:
+    with kbc.connect_closing() as conn:
         task = kb.get_task(conn, task_id)
         events = kb.list_events(conn, task_id)
 

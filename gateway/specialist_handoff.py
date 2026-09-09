@@ -87,9 +87,11 @@ def create_specialist_handoff(*, decision: SpecialistRouteDecision, source: Hand
         return HandoffResult(False, reason="empty_request")
     try:
         from hermes_cli import kanban_db as kb
+        from hermes_cli import kanban_db_connect as kbc
+        from hermes_cli import kanban_db_notify as kbn
 
         key = _idempotency_key(source)
-        conn = kb.connect(db_path=configured_board_db_path(board), board=board)
+        conn = kbc.connect(db_path=configured_board_db_path(board), board=board)
         try:
             existing_id = None
             if key:
@@ -109,7 +111,7 @@ def create_specialist_handoff(*, decision: SpecialistRouteDecision, source: Hand
                     goal_max_turns=_ORCHESTRATION_GOAL_MAX_TURNS,
                     skills=_required_skills(board),
                 )
-                kb.add_notify_sub(
+                kbn.add_notify_sub(
                     conn, task_id=task_id, platform=source.platform, chat_id=source.chat_id,
                     chat_type=source.chat_type, thread_id=source.thread_id,
                     user_id=source.user_id, user_id_alt=source.user_id_alt,

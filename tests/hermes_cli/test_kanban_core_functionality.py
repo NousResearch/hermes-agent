@@ -443,7 +443,7 @@ def test_max_runtime_uses_dispatch_default_when_task_has_no_override(kanban_home
     _kb._pid_alive = lambda pid: False
 
     try:
-        conn = kb.connect()
+        conn = kbc.connect()
         try:
             tid = kb.create_task(conn, title="uncapped job", assignee="worker")
             kb.claim_task(conn, tid)
@@ -460,7 +460,7 @@ def test_max_runtime_uses_dispatch_default_when_task_has_no_override(kanban_home
                     (old_started, tid),
                 )
 
-            timed_out = kb.enforce_max_runtime(
+            timed_out = kbd.enforce_max_runtime(
                 conn, default_max_runtime_seconds=1, signal_fn=_signal_fn
             )
 
@@ -1541,7 +1541,7 @@ def test_protocol_violation_gets_one_finalize_retry_despite_retry_limit_one(kanb
     missed only the required terminal receipt.  Blocking it on that first
     exit suppresses the corrective context that lets the next run finalize.
     """
-    conn = kb.connect()
+    conn = kbc.connect()
     try:
         tid = kb.create_task(
             conn,
@@ -1562,7 +1562,7 @@ def test_protocol_violation_gets_one_finalize_retry_despite_retry_limit_one(kanb
 
 def test_worker_context_requires_terminal_kanban_receipt(kanban_home):
     """Detached workers receive a profile-independent terminal-call contract."""
-    conn = kb.connect()
+    conn = kbc.connect()
     try:
         tid = kb.create_task(conn, title="bounded no-op", assignee="worker")
 

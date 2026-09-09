@@ -9,6 +9,9 @@ from pathlib import Path
 import pytest
 
 from hermes_cli import kanban_db as kb
+from hermes_cli import kanban_db_connect as kbc
+from hermes_cli import kanban_db_dispatch as kbd
+from hermes_cli import kanban_db_notify as kbn
 
 
 BOARD = "exampleproject-burndown"
@@ -20,13 +23,13 @@ def kanban_home(tmp_path, monkeypatch):
     home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    with kb.connect(board=BOARD):
+    with kbc.connect(board=BOARD):
         pass
     return home
 
 
 def _sub(conn, task_id, *, chat_id="example-project", thread_id="", delivery_metadata=None):
-    kb.add_notify_sub(
+    kbn.add_notify_sub(
         conn,
         task_id=task_id,
         platform="discord",
@@ -116,7 +119,7 @@ def _source(
 def test_burndown_question_summarizes_graph_receipts_and_remaining_work(kanban_home):
     from gateway.progress_queries import resolve_progress_query
 
-    with kb.connect(board=BOARD) as conn:
+    with kbc.connect(board=BOARD) as conn:
         root = _task(conn, "Exception Burndown")
         done = _task(conn, "Narrow credential exception", parents=[root], status="done")
         failed = _task(conn, "Repair provider exception", parents=[root], status="blocked")
@@ -157,7 +160,7 @@ def test_burndown_question_summarizes_graph_receipts_and_remaining_work(kanban_h
 def test_progress_query_isolated_to_trusted_source_subscription(kanban_home):
     from gateway.progress_queries import resolve_progress_query
 
-    with kb.connect(board=BOARD) as conn:
+    with kbc.connect(board=BOARD) as conn:
         root = _task(conn, "Exception Burndown", status="done")
         _sub(conn, root, chat_id="private-audit")
 
@@ -174,7 +177,7 @@ def test_progress_query_isolated_to_trusted_source_subscription(kanban_home):
 def test_progress_query_uses_explicit_board_not_current_or_other_board(kanban_home):
     from gateway.progress_queries import resolve_progress_query
 
-    with kb.connect(board="other-board") as conn:
+    with kbc.connect(board="other-board") as conn:
         root = _task(conn, "Exception Burndown", status="done")
         _sub(conn, root)
 
@@ -191,7 +194,7 @@ def test_progress_query_uses_explicit_board_not_current_or_other_board(kanban_ho
 def test_progress_query_summarizes_multiple_matching_roots(kanban_home):
     from gateway.progress_queries import resolve_progress_query
 
-    with kb.connect(board=BOARD) as conn:
+    with kbc.connect(board=BOARD) as conn:
         first = _task(conn, "July Exception Burndown")
         second = _task(conn, "August Exception Burndown")
         _sub(conn, first)
@@ -211,7 +214,7 @@ def test_progress_query_summarizes_multiple_matching_roots(kanban_home):
 def test_single_subscribed_root_does_not_override_zero_topic_score(kanban_home):
     from gateway.progress_queries import resolve_progress_query
 
-    with kb.connect(board=BOARD) as conn:
+    with kbc.connect(board=BOARD) as conn:
         root = _task(conn, "Exception Burndown", status="done")
         _sub(conn, root)
 
@@ -228,7 +231,7 @@ def test_single_subscribed_root_does_not_override_zero_topic_score(kanban_home):
 def test_generic_how_did_it_go_requires_trusted_linkage(kanban_home):
     from gateway.progress_queries import resolve_progress_query
 
-    with kb.connect(board=BOARD) as conn:
+    with kbc.connect(board=BOARD) as conn:
         root = _task(conn, "Exception Burndown", status="done")
         _sub(conn, root)
 
@@ -253,7 +256,7 @@ def test_status_topic_requires_every_term_to_be_bound_to_the_subscribed_graph(
 ):
     from gateway.progress_queries import is_progress_query, resolve_progress_query
 
-    with kb.connect(board=BOARD) as conn:
+    with kbc.connect(board=BOARD) as conn:
         root = _task(conn, "ExampleProject Burndown", status="done")
         _task(conn, "Repair remaining failures", parents=[root], status="done")
         _sub(conn, root)
@@ -269,7 +272,7 @@ def test_status_topic_requires_every_term_to_be_bound_to_the_subscribed_graph(
 def test_fully_graph_bound_burndown_topic_is_handled(kanban_home):
     from gateway.progress_queries import resolve_progress_query
 
-    with kb.connect(board=BOARD) as conn:
+    with kbc.connect(board=BOARD) as conn:
         root = _task(conn, "ExampleProject Burndown", status="done")
         _sub(conn, root)
 
@@ -285,7 +288,7 @@ def test_fully_graph_bound_burndown_topic_is_handled(kanban_home):
 def test_generic_how_did_it_go_resolves_one_trusted_reply_linked_root(kanban_home):
     from gateway.progress_queries import resolve_progress_query
 
-    with kb.connect(board=BOARD) as conn:
+    with kbc.connect(board=BOARD) as conn:
         root = _task(
             conn,
             "Exception Burndown",
@@ -307,7 +310,7 @@ def test_generic_how_did_it_go_resolves_one_trusted_reply_linked_root(kanban_hom
 def test_explicit_task_id_selects_one_root_when_topic_is_ambiguous(kanban_home):
     from gateway.progress_queries import resolve_progress_query
 
-    with kb.connect(board=BOARD) as conn:
+    with kbc.connect(board=BOARD) as conn:
         first = _task(conn, "July Exception Burndown")
         second = _task(conn, "August Exception Burndown", status="done")
         _sub(conn, first)
@@ -506,7 +509,7 @@ def test_raw_topic_action_tail_cannot_collapse_to_a_graph_match(kanban_home):
     from gateway.progress_queries import is_progress_query, resolve_progress_query
 
     request = "Give me an update on the nebula burndown and do the work"
-    with kb.connect(board=BOARD) as conn:
+    with kbc.connect(board=BOARD) as conn:
         root = _task(conn, "Nebula Burndown", status="done")
         _sub(conn, root)
 
@@ -535,7 +538,7 @@ def test_status_shaped_structural_topic_tails_are_not_progress_queries(
 ):
     from gateway.progress_queries import is_progress_query, resolve_progress_query
 
-    with kb.connect(board=BOARD) as conn:
+    with kbc.connect(board=BOARD) as conn:
         root = _task(conn, "Exception Burndown", status="done")
         _sub(conn, root)
 
@@ -563,7 +566,7 @@ def test_other_unbound_topic_tails_still_defer_to_graph_authority(
 ):
     from gateway.progress_queries import is_progress_query, resolve_progress_query
 
-    with kb.connect(board=BOARD) as conn:
+    with kbc.connect(board=BOARD) as conn:
         root = _task(conn, "Exception Burndown", status="done")
         _sub(conn, root)
 
@@ -655,7 +658,7 @@ def test_progress_output_is_bounded_and_redacts_secret_and_path_content(kanban_h
 
     secret = "ultra-secret-value"
     path = "/Users/example/ExampleProject/.env"
-    with kb.connect(board=BOARD) as conn:
+    with kbc.connect(board=BOARD) as conn:
         root = _task(conn, "Exception Burndown", status="done")
         _sub(conn, root)
         _run(
@@ -698,7 +701,7 @@ def test_progress_forces_authoritative_redaction_then_applies_local_egress_defen
         f"Inspected {probes['root_path']} and {probes['opt_path']}\n"
         "Acceptance evidence remains visible."
     )
-    with kb.connect(board=BOARD) as conn:
+    with kbc.connect(board=BOARD) as conn:
         root = _task(conn, "Exception Burndown", status="done")
         _sub(conn, root)
         _run(conn, root, status="done", outcome="completed", summary=summary)
@@ -779,7 +782,7 @@ def test_redactor_error_fails_closed_for_text_and_structured_identifiers(monkeyp
 def test_progress_redacts_complete_multiline_secret_values_but_keeps_other_prose(kanban_home):
     from gateway.progress_queries import resolve_progress_query
 
-    with kb.connect(board=BOARD) as conn:
+    with kbc.connect(board=BOARD) as conn:
         root = _task(conn, "Exception Burndown", status="done")
         _sub(conn, root)
         _run(
@@ -815,7 +818,7 @@ def test_progress_redacts_inline_multiword_secret_values_and_preserves_prefix_pr
 ):
     from gateway.progress_queries import resolve_progress_query
 
-    with kb.connect(board=BOARD) as conn:
+    with kbc.connect(board=BOARD) as conn:
         root = _task(conn, "Exception Burndown", status="done")
         _sub(conn, root)
         _run(
@@ -849,7 +852,7 @@ def test_progress_redacts_aws_private_key_and_database_url_credentials(kanban_ho
         "postgres://operator:db-password-sentinel@localhost/trading",
         "connection-sentinel trailing words",
     )
-    with kb.connect(board=BOARD) as conn:
+    with kbc.connect(board=BOARD) as conn:
         root = _task(conn, "Exception Burndown", status="done")
         _sub(conn, root)
         _run(
@@ -878,14 +881,14 @@ def test_progress_redacts_aws_private_key_and_database_url_credentials(kanban_ho
 def test_progress_reads_existing_board_without_using_mutating_connection(kanban_home, monkeypatch):
     from gateway.progress_queries import resolve_progress_query
 
-    with kb.connect(board=BOARD) as conn:
+    with kbc.connect(board=BOARD) as conn:
         root = _task(conn, "Exception Burndown", status="done")
         _sub(conn, root)
 
     def reject_mutating_connect(*args, **kwargs):
         raise AssertionError("progress lookup must not call kanban_db.connect")
 
-    monkeypatch.setattr(kb, "connect", reject_mutating_connect)
+    monkeypatch.setattr(kbc, "connect", reject_mutating_connect)
     result = resolve_progress_query("How did the burndown go?", source=_source(), board=BOARD)
 
     assert result.handled is True
@@ -899,7 +902,7 @@ def test_progress_snapshot_includes_committed_wal_without_touching_source_sideca
     from gateway.progress_queries import resolve_progress_query
 
     source_path = kb.kanban_db_path(board=BOARD)
-    conn = kb.connect(board=BOARD)
+    conn = kbc.connect(board=BOARD)
     try:
         conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
         root = _task(conn, "Exception Burndown", status="done")
@@ -937,7 +940,7 @@ def test_progress_snapshot_includes_committed_wal_without_touching_source_sideca
 def test_progress_snapshot_race_fails_unavailable(kanban_home, monkeypatch):
     import gateway.progress_queries as progress_queries
 
-    with kb.connect(board=BOARD) as conn:
+    with kbc.connect(board=BOARD) as conn:
         root = _task(conn, "Exception Burndown", status="done")
         _sub(conn, root)
 
@@ -994,11 +997,11 @@ def test_progress_explicit_board_ignores_database_environment_override(
 ):
     from gateway.progress_queries import resolve_progress_query
 
-    with kb.connect(board=BOARD) as conn:
+    with kbc.connect(board=BOARD) as conn:
         root = _task(conn, "Exception Burndown", status="done")
         _sub(conn, root)
     override_path = tmp_path / "override" / "kanban.db"
-    with kb.connect(db_path=override_path):
+    with kbc.connect(db_path=override_path):
         pass
     monkeypatch.setenv("HERMES_KANBAN_DB", str(override_path))
 
@@ -1014,14 +1017,14 @@ def test_progress_explicit_board_ignores_database_environment_override(
 def test_progress_counts_each_canonical_failed_run_once_and_labels_attempts(kanban_home):
     from gateway.progress_queries import resolve_progress_query
 
-    with kb.connect(board=BOARD) as conn:
+    with kbc.connect(board=BOARD) as conn:
         root = _task(conn, "Exception Burndown", status="done")
         retrying = _task(conn, "Retry failed patch", parents=[root], status="ready")
         _task(conn, "Running audit", parents=[root], status="running")
         _sub(conn, root)
         for outcome in ("spawn_failed", "failed", "timed_out", "crashed"):
             assert kb.claim_task(conn, retrying, claimer=f"worker:{outcome}") is not None
-            assert kb._record_task_failure(
+            assert kbd._record_task_failure(
                 conn,
                 retrying,
                 f"{outcome} receipt",
@@ -1060,7 +1063,7 @@ def test_progress_counts_each_canonical_failed_run_once_and_labels_attempts(kanb
 def test_progress_includes_root_only_remaining_work_in_next(kanban_home, status):
     from gateway.progress_queries import resolve_progress_query
 
-    with kb.connect(board=BOARD) as conn:
+    with kbc.connect(board=BOARD) as conn:
         root = _task(conn, "Exception Burndown", status=status)
         _sub(conn, root)
 
@@ -1076,7 +1079,7 @@ def test_progress_includes_root_only_remaining_work_in_next(kanban_home, status)
 def test_progress_uses_newest_receipt_across_entire_graph(kanban_home):
     from gateway.progress_queries import resolve_progress_query
 
-    with kb.connect(board=BOARD) as conn:
+    with kbc.connect(board=BOARD) as conn:
         root = _task(conn, "Exception Burndown", status="done")
         child = _task(conn, "Acceptance follow-up", parents=[root], status="done")
         _sub(conn, root)
@@ -1094,7 +1097,7 @@ def test_progress_uses_newest_receipt_across_entire_graph(kanban_home):
 def test_progress_discloses_scope_when_graph_exceeds_task_limit(kanban_home):
     from gateway.progress_queries import resolve_progress_query
 
-    with kb.connect(board=BOARD) as conn:
+    with kbc.connect(board=BOARD) as conn:
         root = _task(conn, "Exception Burndown", status="done")
         _sub(conn, root)
         _run(conn, root, status="done", summary="Root receipt.", started_at=100)
@@ -1128,7 +1131,7 @@ def test_truncated_progress_labels_next_list_as_partial(kanban_home, monkeypatch
     )
     monkeypatch.setattr(kb, "_new_task_id", lambda: next(task_ids))
 
-    with kb.connect(board=BOARD) as conn:
+    with kbc.connect(board=BOARD) as conn:
         root = _task(conn, "Exception Burndown", status="done")
         _sub(conn, root)
         _task(conn, "Ready child", parents=[root], status="ready")
@@ -1165,7 +1168,7 @@ def test_missing_board_is_unavailable_without_creating_files(kanban_home):
 def test_symlink_board_database_is_unavailable(kanban_home):
     from gateway.progress_queries import resolve_progress_query
 
-    with kb.connect(board=BOARD) as conn:
+    with kbc.connect(board=BOARD) as conn:
         root = _task(conn, "Exception Burndown", status="done")
         _sub(conn, root)
     source_path = kb.kanban_db_path(board=BOARD)
@@ -1184,7 +1187,7 @@ def test_symlink_board_database_is_unavailable(kanban_home):
 def test_progress_reply_includes_a_safe_latest_comment_alongside_run_receipt(kanban_home):
     from gateway.progress_queries import resolve_progress_query
 
-    with kb.connect(board=BOARD) as conn:
+    with kbc.connect(board=BOARD) as conn:
         root = _task(conn, "Exception Burndown", status="running")
         _sub(conn, root)
         _run(conn, root, status="running", summary="Worker is checking the failure receipt.")

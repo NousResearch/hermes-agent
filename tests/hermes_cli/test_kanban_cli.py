@@ -61,7 +61,7 @@ def test_kanban_list_json_includes_session_id(kanban_home):
 
 def test_kanban_list_json_includes_worker_execution_settings(kanban_home):
     """JSON output must expose the settings that govern worker safety."""
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         task_id = kb.create_task(
             conn,
             title="local worker",
@@ -250,7 +250,7 @@ def test_dead_worker_is_releasable_despite_hostname_alias_drift(monkeypatch):
 
 def test_run_slash_set_reasoning_pins_task_override(kanban_home):
     """The operator CLI can disable thinking for a task's next dispatch."""
-    with kb.connect_closing() as conn:
+    with kbc.connect_closing() as conn:
         task_id = kb.create_task(conn, title="local model task")
 
     output = kc.run_slash(f"set-reasoning {task_id} none")
@@ -258,7 +258,7 @@ def test_run_slash_set_reasoning_pins_task_override(kanban_home):
     assert output == (
         f"Set reasoning effort on {task_id}: none (applies on next dispatch)"
     )
-    with kb.connect_closing() as conn:
+    with kbc.connect_closing() as conn:
         task = kb.get_task(conn, task_id)
         events = kb.list_events(conn, task_id)
     assert task is not None

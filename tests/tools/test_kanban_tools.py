@@ -57,6 +57,7 @@ def worker_env(monkeypatch, tmp_path):
     monkeypatch.setattr(_Path, "home", lambda: tmp_path)
 
     from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_workspace as kbw
     from hermes_cli import kanban_db_connect as kbc
     kb._INITIALIZED_PATHS.clear()
     kb.init_db()
@@ -85,7 +86,7 @@ def test_protected_show_surfaces_completed_parent_handoff(monkeypatch, worker_en
     from hermes_cli import kanban_db as kb
     from tools import kanban_tools as kt
 
-    conn = kb.connect()
+    conn = kbc.connect()
     try:
         parent_id = kb.create_task(conn, title="Upstream verifier", assignee="verifier")
         assert kb.claim_task(conn, parent_id) is not None
@@ -494,7 +495,7 @@ def test_worker_created_task_rejects_invented_needs_input(monkeypatch, worker_en
     from hermes_cli import kanban_db as kb
     from tools import kanban_tools as kt
 
-    conn = kb.connect()
+    conn = kbc.connect()
     try:
         tid = kb.create_task(
             conn,
@@ -515,7 +516,7 @@ def test_worker_created_task_rejects_invented_needs_input(monkeypatch, worker_en
     assert "error" in json.loads(out)
     assert "worker- and cron-created" in out
 
-    conn = kb.connect()
+    conn = kbc.connect()
     try:
         assert kb.get_task(conn, tid).status == "running"
     finally:
@@ -527,7 +528,7 @@ def test_auto_decomposed_leaf_allows_real_capability_block(monkeypatch, worker_e
     from hermes_cli import kanban_db as kb
     from tools import kanban_tools as kt
 
-    conn = kb.connect()
+    conn = kbc.connect()
     try:
         tid = kb.create_task(
             conn,
@@ -548,7 +549,7 @@ def test_auto_decomposed_leaf_allows_real_capability_block(monkeypatch, worker_e
     })
     assert json.loads(out)["ok"] is True
 
-    conn = kb.connect()
+    conn = kbc.connect()
     try:
         assert kb.get_task(conn, tid).status == "blocked"
     finally:
@@ -567,7 +568,7 @@ def test_capability_block_requires_current_command_evidence(worker_env):
     assert "error" in json.loads(out)
     assert "require command and stderr" in out
 
-    conn = kb.connect()
+    conn = kbc.connect()
     try:
         assert kb.get_task(conn, worker_env).status == "running"
     finally:
@@ -785,12 +786,13 @@ def test_create_normalizes_worker_supplied_scratch_path(worker_env):
     assert result["workspace_path"] is None
 
     from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_workspace as kbw
 
-    conn = kb.connect()
+    conn = kbc.connect()
     try:
         child = kb.get_task(conn, result["task_id"])
         assert child.workspace_path is None
-        resolved = kb.resolve_workspace(child)
+        resolved = kbw.resolve_workspace(child)
         assert kb._is_managed_scratch_path(resolved)
     finally:
         conn.close()

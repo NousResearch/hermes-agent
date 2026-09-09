@@ -78,7 +78,7 @@ def test_worker_block_is_not_auto_promoted_by_recompute_ready(kanban_home: Path)
 
 
 def test_initially_blocked_operator_task_is_sticky(kanban_home: Path) -> None:
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         tid = kb.create_task(
             conn,
             title="operator intent required",

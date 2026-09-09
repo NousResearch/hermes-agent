@@ -97,10 +97,12 @@ def _record_kanban_guardrail_halt(
     error = f"Tool guardrail halted {tool_name}: {code}"
     try:
         from hermes_cli import kanban_db as _kb
+        from hermes_cli import kanban_db_connect as _kbc
+        from hermes_cli import kanban_db_dispatch as _kbd
 
-        _conn = _kb.connect()
+        _conn = _kbc.connect()
         try:
-            _kb._record_task_failure(
+            _kbd._record_task_failure(
                 _conn,
                 kanban_task,
                 error,

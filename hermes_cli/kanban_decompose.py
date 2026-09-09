@@ -332,7 +332,7 @@ def _root_handoff_context(task_id: str) -> str:
     comments cannot silently become policy or bypass worker gates.
     """
     try:
-        with kb.connect_closing() as conn:
+        with kbc.connect_closing() as conn:
             comments = kb.list_comments(conn, task_id)
     except Exception as exc:
         logger.debug("decompose: root comments unavailable for %s: %s", task_id, exc)

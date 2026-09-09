@@ -122,7 +122,7 @@ def test_running_card_clock_uses_current_attempt_start_after_reclaim(client):
         "/api/plugins/kanban/tasks",
         json={"title": "Retry exact work", "assignee": "worker"},
     ).json()["task"]
-    conn = kb.connect()
+    conn = kbc.connect()
     try:
         kb.claim_task(conn, created["id"])
         run = kb.latest_run(conn, created["id"])
@@ -147,7 +147,7 @@ def test_task_drawer_clock_agrees_with_card_after_reclaim(client):
         "/api/plugins/kanban/tasks",
         json={"title": "Retry drawer work", "assignee": "worker"},
     ).json()["task"]
-    conn = kb.connect()
+    conn = kbc.connect()
     try:
         kb.claim_task(conn, created["id"])
         run = kb.latest_run(conn, created["id"])
@@ -1279,5 +1279,4 @@ def test_specify_happy_path(client, monkeypatch):
 # ---------------------------------------------------------------------------
 # Final result visibility for Done cards
 # ---------------------------------------------------------------------------
-
 

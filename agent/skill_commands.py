@@ -201,6 +201,14 @@ def find_triggered_skill_command(
     if not text or text.startswith("/"):
         return None
 
+    # Operator opt-out (`skills.auto_triggers: false`); explicit `/skill`
+    # loads bypass this function entirely and keep working.
+    try:
+        if not _load_skills_config().get("auto_triggers", True):
+            return None
+    except Exception:
+        pass
+
     best_match: tuple[int, int, str, str, Dict[str, Any]] | None = None
     for cmd_key, skill_info in get_skill_commands().items():
         for trigger in skill_info.get("triggers") or []:

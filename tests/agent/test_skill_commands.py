@@ -125,6 +125,27 @@ class TestScanSkillCommands:
                     assert matched is not None
                     assert matched[0] == winner
 
+    @pytest.mark.parametrize("skills_cfg", [{"auto_triggers": False}, {"auto_triggers": 0}])
+    def test_trigger_matching_respects_operator_opt_out(self, tmp_path, skills_cfg):
+        import agent.skill_commands as sc_mod
+
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(tmp_path, "market-watch", frontmatter_extra="metadata:\n  hermes:\n    triggers: [market]\n")
+            scan_skill_commands()
+            with patch.object(sc_mod, "_load_skills_config", return_value=skills_cfg):
+                assert find_triggered_skill_command("What is the market doing today?") is None
+
+    def test_trigger_matching_defaults_to_enabled(self, tmp_path):
+        import agent.skill_commands as sc_mod
+
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(tmp_path, "market-watch", frontmatter_extra="metadata:\n  hermes:\n    triggers: [market]\n")
+            scan_skill_commands()
+            with patch.object(sc_mod, "_load_skills_config", return_value={}):
+                matched = find_triggered_skill_command("What is the market doing today?")
+                assert matched is not None
+                assert matched[0] == "/market-watch"
+
     def test_loads_skill_invocation_from_symlinked_skill_dir(self, tmp_path):
         """Slash commands should load skills symlinked under the local skills dir."""
         external_root = tmp_path / "external"

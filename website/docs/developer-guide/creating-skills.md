@@ -139,7 +139,9 @@ original instruction and session ID. The existing `persist_user_message`
 path keeps the original input in storage. System-prompt state and prior
 conversation messages are unchanged. Explicit slash input, empty input, and
 multimodal content-part lists bypass matching. Trigger edits take effect
-after `/reload-skills` or a fresh session.
+after `/reload-skills` or a fresh session. Operators can switch all matching
+off with `skills.auto_triggers: false` (default `true`); explicit slash
+loads are unaffected.
 
 The [user guide](../user-guide/features/skills.md#automatic-triggers-classic-cli)
 includes setup and matching examples. To validate changes:

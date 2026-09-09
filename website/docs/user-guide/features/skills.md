@@ -227,7 +227,9 @@ still apply. Messages starting with `/`, empty input, and multimodal
 content-part lists are not trigger-matched.
 
 Use specific phrases to avoid accidental activation. Omit `triggers` (or set
-it to `[]`) to leave a skill without deterministic auto-loading. After editing
+it to `[]`) to leave a skill without deterministic auto-loading. Operators
+can disable all trigger matching with `skills.auto_triggers: false` in
+config.yaml; explicit `/skill` loads keep working. After editing
 frontmatter, run `/reload-skills` or start a new session to refresh the scan.
 A matching turn goes through the existing skill invocation loader; it does
 not change the system prompt or rewrite earlier messages. The original user

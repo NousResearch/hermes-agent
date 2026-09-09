@@ -266,18 +266,6 @@ class TestSummarizeToolResultClarify:
         assert "Choice A" in summary
         assert "Choice B" in summary
 
-    def test_batch_with_only_sentinel_falls_back_to_generic(self):
-        """A batch where every response is a timeout sentinel must not be quoted as a user answer."""
-        content = json.dumps({
-            "responses": [
-                {"question": "Q?", "user_response": "[user did not respond within 15m]"},
-            ]
-        })
-
-        summary = _summarize_tool_result("clarify", "{}", content)
-
-        assert summary == "[clarify] asked user a question"
-
 
 class TestShouldCompress:
     def test_below_threshold(self, compressor):

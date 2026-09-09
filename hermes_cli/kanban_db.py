@@ -1115,10 +1115,41 @@ def _resolve_project_link(
             project_obj = _pdb.get_project(_pconn, project_id)
     except Exception:
         project_obj = None
-    if project_obj is None and project_source_task_id:
-        project_obj, project_repo = _project_from_source_task(
-            conn, _pdb, project_id, str(project_source_task_id),
-        )
+    if project_obj is None:
+        source_task_id = project_source_task_id
+        if not source_task_id:
+            source_row = conn.execute(
+                "SELECT id FROM tasks "
+                "WHERE project_id = ? AND workspace_kind = 'worktree' "
+                "  AND workspace_path IS NOT NULL "
+                "ORDER BY created_at ASC, id ASC LIMIT 1",
+                (project_id,),
+            ).fetchone()
+            source_task_id = source_row["id"] if source_row else None
+        if source_task_id:
+            project_obj, project_repo = _project_from_source_task(
+                conn, _pdb, project_id, str(source_task_id),
+            )
+            if project_obj is None:
+                # Worker profiles have independent projects.db files. If the
+                # registry lookup and branch-derived slug recovery both fail,
+                # retain the project link from a canonical absolute worktree
+                # task rather than silently degrading to an unlinked child.
+                source_task = get_task(conn, str(source_task_id))
+                source_path = Path(source_task.workspace_path) if source_task and source_task.workspace_path else None
+                if (
+                    source_path is not None
+                    and source_path.is_absolute()
+                    and source_path.parent.name == ".worktrees"
+                ):
+                    project_repo = str(source_path.parent.parent)
+                    project_obj = _pdb.Project(
+                        id=project_id,
+                        slug=project_id,
+                        name=project_id,
+                        created_at=0,
+                        primary_path=project_repo,
+                    )
         if project_obj is not None and workspace_kind == "scratch":
             workspace_kind = "worktree"
     if project_obj is None:
@@ -3173,20 +3204,26 @@ def request_changes(
 
 def promote_task(
     conn: sqlite3.Connection, task_id: str, *, actor: str, reason: Optional[str] = None,
-    force: bool = False, dry_run: bool = False,
+    force: bool = False, dry_run: bool = False, readiness: bool = False,
 ) -> tuple[bool, Optional[str]]:
-    """Operator promotion ``todo``/``blocked`` -> ``ready`` with an audit event.
-    Refused while a parent is unfinished unless ``force``; ``dry_run`` only
-    validates. Returns ``(ok, reason)``."""
+    """Operator promotion to ``ready`` with an audit event.
+
+    Normal promotion accepts ``todo``/``blocked``. ``readiness=True`` is the
+    explicit triage escape hatch for inspection-only canaries; it requires an
+    audit reason and never changes the normal promotion semantics.
+    """
     cur_status = _task_status(conn, task_id)
     if cur_status is None:
         return False, f"task {task_id} not found"
 
-    if cur_status not in ("todo", "blocked"):
+    allowed_statuses = ("triage",) if readiness else ("todo", "blocked")
+    if cur_status not in allowed_statuses:
         return False, (
             f"task {task_id} is {cur_status!r}; promote only applies to "
-            f"'todo' or 'blocked'"
+            + ("'triage' in readiness mode" if readiness else "'todo' or 'blocked'")
         )
+    if readiness and not (reason or "").strip():
+        return False, "readiness promotion requires a non-empty audit reason"
 
     if not force:
         parents = conn.execute(
@@ -3205,14 +3242,17 @@ def promote_task(
         return True, None
 
     with write_txn(conn):
+        allowed_sql_statuses = "'triage'" if readiness else "'todo', 'blocked'"
         upd = conn.execute(
             "UPDATE tasks SET status = 'ready' "
-            "WHERE id = ? AND status IN ('todo', 'blocked')", (task_id,),
+            f"WHERE id = ? AND status IN ({allowed_sql_statuses})",
+            (task_id,),
         )
         if upd.rowcount != 1:
             return False, f"task {task_id} status changed during promotion"
         _append_event(
-            conn, task_id, "promoted_manual", {"actor": actor, "reason": reason, "forced": force},
+            conn, task_id, "promoted_readiness" if readiness else "promoted_manual",
+            {"actor": actor, "reason": reason, "forced": force, "readiness": readiness},
         )
 
     return True, None
@@ -3478,6 +3518,199 @@ def specify_triage_task(
     # flips to 'ready' now instead of idling until the next tick.
     recompute_ready(conn)
     return True
+
+
+def _validate_children_graph(children: list) -> None:
+    """DB-free shape check + Kahn's cycle check on the sibling graph (a cycle
+    would deadlock every involved child in ``todo`` forever)."""
+    for idx, child in enumerate(children):
+        if not isinstance(child, dict):
+            raise ValueError(f"child[{idx}] is not a dict")
+        title = child.get("title")
+        if not isinstance(title, str) or not title.strip():
+            raise ValueError(f"child[{idx}].title is required")
+        parents_idx = child.get("parents") or []
+        if not isinstance(parents_idx, list):
+            raise ValueError(f"child[{idx}].parents must be a list")
+        for p in parents_idx:
+            if not isinstance(p, int) or p < 0 or p >= len(children):
+                raise ValueError(f"child[{idx}].parents[{p}] is not a valid index into children")
+            if p == idx:
+                raise ValueError(f"child[{idx}] cannot list itself as a parent")
+
+    in_deg = [0] * len(children)
+    adj: list[list[int]] = [[] for _ in children]
+    for i, c in enumerate(children):
+        for p in (c.get("parents") or []):
+            adj[p].append(i)
+            in_deg[i] += 1
+    queue = [i for i in range(len(children)) if in_deg[i] == 0]
+    seen = 0
+    while queue:
+        seen += 1
+        for nb in adj[queue.pop()]:
+            in_deg[nb] -= 1
+            if in_deg[nb] == 0:
+                queue.append(nb)
+    if seen != len(children):
+        raise ValueError("cyclic dependency detected in decomposed children list")
+
+
+def decompose_triage_task(
+    conn: sqlite3.Connection, task_id: str, *, root_assignee: Optional[str], children: list[dict],
+    author: Optional[str] = None, auto_promote: bool = True,
+) -> Optional[list[str]]:
+    """Fan a triage task out into children and move the root to ``todo``; the root
+    waits on every child and wakes (``ready``) when all are done.
+
+    ``children``: dicts of ``title`` (required), ``body``, ``assignee``,
+    ``parents`` (indices into this list), optional workspace overrides.
+    Returns child ids in input order, or None when the root is missing, not
+    in triage, or has already decomposed. Atomic: a malformed entry aborts
+    the whole fan-out.
+    """
+    if not children:
+        return None
+    if root_assignee is not None:
+        root_assignee = _canonical_assignee(root_assignee)
+    _validate_children_graph(children)
+
+    # ONE txn so the fan-out is atomic; helpers that open their own write_txn
+    # (create_task, link_tasks, add_comment) must not be called in here.
+    now = int(time.time())
+    with write_txn(conn):
+        root_row = conn.execute(
+            "SELECT id, status, priority, tenant, workspace_kind, workspace_path, "
+            "project_id, skills, max_runtime_seconds, max_retries, "
+            "model_override, provider_override, reasoning_effort, goal_mode, "
+            "goal_max_turns, session_id "
+            "FROM tasks WHERE id = ?", (task_id,),
+        ).fetchone()
+        if root_row is None or root_row["status"] != "triage":
+            return None
+        # Dependency links alone do not imply lineage. The completion event is
+        # committed with the graph, and survives re-triage or unlinking, so
+        # even a retriaged root cannot be silently re-fanned-out into a
+        # duplicate child graph.
+        if conn.execute(
+            "SELECT 1 FROM task_events WHERE task_id = ? AND kind = 'decomposed' LIMIT 1",
+            (task_id,),
+        ).fetchone():
+            return None
+        child_ids = [
+            _insert_decomposed_child(conn, task_id, root_row, child, idx, author, now)
+            for idx, child in enumerate(children)
+        ]
+        # Sibling edges within the decomposed graph.
+        for idx, child in enumerate(children):
+            for p_idx in child.get("parents") or []:
+                parent_id, child_id = child_ids[p_idx], child_ids[idx]
+                _link(conn, parent_id, child_id)
+                _append_event(conn, child_id, "linked", {"parent": parent_id, "child": child_id})
+        # Root waits for the whole graph: link it under EVERY child (simpler
+        # than computing leaves; cycle-free since the root is only ever a child).
+        for cid in child_ids:
+            _link(conn, cid, task_id)
+        # Flip the root triage -> todo, assignee -> orchestrator.
+        sets = ["status = 'todo'"]
+        params: list[Any] = []
+        if root_assignee is not None:
+            sets.append("assignee = ?")
+            params.append(root_assignee)
+        params.append(task_id)
+        conn.execute(f"UPDATE tasks SET {', '.join(sets)} WHERE id = ?", tuple(params))
+        if author and author.strip():
+            _insert_comment(
+                conn, task_id, author.strip(),
+                "Decomposed into " + ", ".join(child_ids)
+                + ". Root will wake when all children complete.",
+                now,
+            )
+        _append_event(
+            conn, task_id, "decomposed", {"child_ids": child_ids, "root_assignee": root_assignee},
+        )
+    # Outside the txn (own IMMEDIATE txn). ``auto_promote=False`` leaves the
+    # children in ``todo`` for manual-review-first workflows.
+    if auto_promote:
+        recompute_ready(conn)
+    return child_ids
+
+
+def _insert_decomposed_child(
+    conn: sqlite3.Connection, root_id: str, root_row: sqlite3.Row, child: dict,
+    child_index: int, author: Optional[str], now: int,
+) -> str:
+    """Insert one decomposed child as ``todo`` (linked under the root later so
+    the dispatcher only ever sees a coherent graph); returns its id.
+
+    Project, skills, workspace, branch, and idempotency metadata are derived
+    from the root without sharing sibling worktrees or branches. This keeps
+    the atomic fan-out path equivalent to ``create_task`` for execution
+    envelope fields while avoiding nested write transactions.
+    """
+    root_ws_kind = root_row["workspace_kind"] or "scratch"
+    child_ws_kind = child.get("workspace_kind") or root_ws_kind
+    new_id = _new_task_id()
+    child_ws_path = child.get("workspace_path")
+    project_id = root_row["project_id"]
+    project_id, project_obj, project_repo, child_ws_kind = _resolve_project_link(
+        conn, project_id, root_id, child_ws_kind, child_ws_path,
+    )
+    if project_id and project_obj is not None and child_ws_kind == "worktree":
+        if not child_ws_path:
+            child_ws_path = os.path.join(project_repo or str(project_obj.primary_path), ".worktrees", new_id)
+        branch_name = _project_branch_name(project_obj, new_id, child.get("title"))
+        branch_name = branch_name or f"{project_id}/{new_id}"
+    elif child_ws_kind == "worktree":
+        root_path = root_row["workspace_path"]
+        if not child_ws_path and root_path:
+            root_path_obj = Path(str(root_path))
+            if root_path_obj.is_absolute() and root_path_obj.parent.name == ".worktrees":
+                child_ws_path = str(root_path_obj.parent.parent / ".worktrees" / new_id)
+        branch_name = f"wt/{new_id}"
+    else:
+        branch_name = None
+    if child_ws_kind == "worktree" and not child_ws_path:
+        raise ValueError(f"decomposed child {new_id} has no resolvable absolute worktree")
+    if child_ws_path and not os.path.isabs(str(child_ws_path)):
+        raise ValueError(f"decomposed child {new_id} worktree must be absolute")
+    try:
+        root_skills = json.loads(root_row["skills"]) if root_row["skills"] else None
+    except (TypeError, json.JSONDecodeError) as exc:
+        raise ValueError(f"root {root_id} has invalid skills metadata") from exc
+    skills = _normalize_task_skills(root_skills)
+    idempotency_key = f"decompose:{root_id}:{child_index}"
+    body = child.get("body")
+    conn.execute(
+        "INSERT INTO tasks "
+        "(id, title, body, assignee, status, priority, workspace_kind, "
+        " workspace_path, branch_name, project_id, tenant, idempotency_key, "
+        " max_runtime_seconds, skills, max_retries, model_override, "
+        " provider_override, reasoning_effort, goal_mode, goal_max_turns, "
+        " session_id, created_at, created_by) "
+        "VALUES (?, ?, ?, ?, 'todo', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            new_id, child["title"].strip(), body if isinstance(body, str) else None,
+            _canonical_assignee(child.get("assignee")), root_row["priority"], child_ws_kind,
+            child_ws_path, branch_name, project_id, root_row["tenant"], idempotency_key,
+            root_row["max_runtime_seconds"],
+            json.dumps(skills) if skills is not None else None,
+            root_row["max_retries"], root_row["model_override"],
+            root_row["provider_override"], root_row["reasoning_effort"],
+            root_row["goal_mode"], root_row["goal_max_turns"], root_row["session_id"],
+            now, (author or "decomposer"),
+        ),
+    )
+    _append_event(
+        conn, new_id, "created", {
+            "by": author or "decomposer", "from_decompose_of": root_id,
+            "workspace_kind": child_ws_kind, "workspace_path": child_ws_path,
+            "branch_name": branch_name, "project_id": project_id,
+            "skills": skills, "idempotency_key": idempotency_key,
+        },
+    )
+    _inherit_notify_subs(conn, new_id, (root_id,), created_at=now)
+    return new_id
 
 
 def archive_task(conn: sqlite3.Connection, task_id: str) -> bool:
@@ -4112,6 +4345,7 @@ _PLUGIN_COMPAT_LAZY = {
     'rewind_notify_cursor': ('hermes_cli.kanban_db_notify', 'rewind_notify_cursor'),
     'run_daemon': ('hermes_cli.kanban_db_dispatch', 'run_daemon'),
     'set_branch_name': ('hermes_cli.kanban_db_workspace', 'set_branch_name'),
+    'set_project_id': ('hermes_cli.kanban_db_workspace', 'set_project_id'),
     'set_workspace_path': ('hermes_cli.kanban_db_workspace', 'set_workspace_path'),
     'unseen_events_for_sub': ('hermes_cli.kanban_db_notify', 'unseen_events_for_sub'),
     'worker_log_rotation_config': ('hermes_cli.kanban_db_dispatch', 'worker_log_rotation_config'),

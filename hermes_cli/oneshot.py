@@ -29,7 +29,14 @@ _USAGE_KEYS = (
     "estimated_cost_usd", "cost_status", "cost_source", "input_tokens", "output_tokens",
     "cache_read_tokens", "cache_write_tokens", "reasoning_tokens", "total_tokens", "api_calls",
     "model", "provider", "session_id", "completed",
+    # Structured terminal-failure facts from the runtime's error classifier. Pipelines can
+    # distinguish terminal provider-availability/transport classes without parsing message
+    # text. No provider message, body, or prompt content is ever copied here.
+    "failure_reason", "failure_retryable",
 )
+
+# Written only when non-None on a failed run — omitted entirely otherwise.
+_USAGE_FAILURE_DISCRIMINATOR_KEYS = ("failure_status_code", "failure_errno", "failure_provider_code")
 
 
 def _normalize_toolsets(toolsets: object = None) -> list[str] | None:
@@ -153,6 +160,10 @@ def _write_usage_file(path: Optional[str], result: dict, failure: Optional[str] 
         report["service_tier"] = result.get("service_tier")
         if failure is not None:
             report["failure"] = failure
+        for _key in _USAGE_FAILURE_DISCRIMINATOR_KEYS:
+            _value = result.get(_key)
+            if _value is not None:
+                report[_key] = _value
         out = Path(path).expanduser()
         out.parent.mkdir(parents=True, exist_ok=True)
         out.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")

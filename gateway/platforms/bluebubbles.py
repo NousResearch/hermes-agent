@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import re
+import time
 import uuid
 from collections import OrderedDict
 from contextlib import suppress
@@ -63,6 +64,13 @@ _PAGINATION_SUFFIX_RE = re.compile(r"\s*\(\d+/\d+\)$")
 _ADDRESS_RE = re.compile(r"^\+\d+")
 
 _GUID_CACHE_SIZE = 500  # LRU cap for resolved chat-GUID lookups
+
+# BlueBubbles emits both ``new-message`` and ``updated-message`` webhooks for the same
+# iMessage; the two payload shapes often resolve to different session chat IDs (chat GUID
+# vs bare handle), which used to spawn two sessions and double every reply. Drop repeat
+# deliveries of one message GUID inside this window.
+_INBOUND_DEDUP_WINDOW_S = 300.0
+_INBOUND_DEDUP_MAX = 500
 _LOCAL_HOSTS = {"0.0.0.0", "127.0.0.1", "localhost", "::"}
 
 
@@ -134,6 +142,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         self._private_api_enabled: Optional[bool] = None
         self._helper_connected: bool = False
         self._guid_cache: OrderedDict[str, str] = OrderedDict()
+        self._inbound_message_ids: OrderedDict[str, float] = OrderedDict()
 
     # --- API helpers ---
 
@@ -557,6 +566,21 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             chat_identifier = sender
         return chat_guid, chat_identifier, sender
 
+    def _drop_duplicate_inbound(self, message_id: Optional[str]) -> bool:
+        """True when this message GUID was already accepted inside the dedup window."""
+        if not message_id:
+            return False
+        now = time.monotonic()
+        seen = self._inbound_message_ids
+        while seen and next(iter(seen.values())) < now - _INBOUND_DEDUP_WINDOW_S:
+            seen.popitem(last=False)
+        if message_id in seen:
+            return True
+        seen[message_id] = now
+        while len(seen) > _INBOUND_DEDUP_MAX:
+            seen.popitem(last=False)
+        return False
+
     async def _handle_webhook(self, request):
         from aiohttp import web
 
@@ -583,6 +607,10 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         chat_guid, chat_identifier, sender = self._resolve_chat_and_sender(payload, record)
         if not sender or not (chat_guid or chat_identifier) or not text:
             return web.json_response({"error": "missing message fields"}, status=400)
+        message_id = self._value(record.get("guid"), record.get("messageGuid"), record.get("id"))
+        if self._drop_duplicate_inbound(message_id):
+            logger.debug("[bluebubbles] ignoring repeat delivery of message %s", message_id)
+            return _ok()
         session_chat_id = chat_guid or chat_identifier
         is_group = bool(record.get("isGroup")) or (";+;" in (chat_guid or ""))
         if is_group and self.require_mention:

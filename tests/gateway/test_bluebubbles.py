@@ -567,3 +567,76 @@ class TestBlueBubblesTimeoutErrorNormalization:
         assert "500 Internal Server Error" in (result.error or "")
 
 
+class TestBlueBubblesRepeatDeliveryDedup:
+    @pytest.mark.asyncio
+    async def test_updated_message_with_same_guid_is_acknowledged_and_skipped(
+        self, monkeypatch,
+    ):
+        """BlueBubbles fires new-message + updated-message for one iMessage; the
+        second payload shape often resolves to a different session chat ID, which
+        used to spawn a twin session and double every reply."""
+        adapter = _make_adapter(monkeypatch, send_read_receipts=False)
+        handled = []
+
+        async def fake_handle_message(event):
+            handled.append(event)
+
+        monkeypatch.setattr(adapter, "handle_message", fake_handle_message)
+
+        first = await adapter._handle_webhook(_FakeBlueBubblesRequest({
+            "type": "new-message",
+            "data": {
+                "guid": "MSG-DUP-1",
+                "text": "hello",
+                "handle": {"address": "+15550001111"},
+                "isFromMe": False,
+                "chats": [{"guid": "iMessage;-;+15550001111"}],
+            },
+        }))
+        await asyncio.sleep(0)
+        second = await adapter._handle_webhook(_FakeBlueBubblesRequest({
+            "type": "updated-message",
+            "data": {
+                "guid": "MSG-DUP-1",
+                "text": "hello",
+                "handle": {"address": "+15550001111"},
+                "isFromMe": False,
+                "chatIdentifier": "+15550001111",
+            },
+        }))
+        await asyncio.sleep(0)
+
+        assert first.status == 200
+        assert second.status == 200
+        assert len(handled) == 1
+
+    @pytest.mark.asyncio
+    async def test_distinct_messages_with_same_text_both_handled(
+        self, monkeypatch,
+    ):
+        """Dedup keys on the message GUID, so a user repeating the same text
+        still gets both messages processed."""
+        adapter = _make_adapter(monkeypatch, send_read_receipts=False)
+        handled = []
+
+        async def fake_handle_message(event):
+            handled.append(event)
+
+        monkeypatch.setattr(adapter, "handle_message", fake_handle_message)
+
+        for guid in ("MSG-A", "MSG-B"):
+            await adapter._handle_webhook(_FakeBlueBubblesRequest({
+                "type": "new-message",
+                "data": {
+                    "guid": guid,
+                    "text": "same text twice",
+                    "handle": {"address": "+15550001111"},
+                    "isFromMe": False,
+                    "chats": [{"guid": "iMessage;-;+15550001111"}],
+                },
+            }))
+        await asyncio.sleep(0)
+
+        assert len(handled) == 2
+
+

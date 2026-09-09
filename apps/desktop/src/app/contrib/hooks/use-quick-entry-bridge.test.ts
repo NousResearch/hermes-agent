@@ -9,6 +9,7 @@ const registeredSubmitHandler = vi.hoisted(() => ({
 }))
 
 type SubmitTextForBridge = Parameters<typeof useQuickEntryBridge>[0]['submitText']
+type SubmitTextToNewSessionForBridge = Parameters<typeof useQuickEntryBridge>[0]['submitTextToNewSession']
 
 vi.mock('@/store/quick-entry', async importOriginal => {
   const actual = await importOriginal<typeof import('@/store/quick-entry')>()
@@ -57,14 +58,17 @@ describe('useQuickEntryBridge', () => {
     vi.clearAllMocks()
   })
 
-  async function renderBridge(submitText: SubmitTextForBridge = () => true) {
+  async function renderBridge(
+    submitText: SubmitTextForBridge = () => true,
+    submitTextToNewSession: SubmitTextToNewSessionForBridge = async () => ({
+      runtimeSessionId: 'runtime-new',
+      sessionId: 'stored-new'
+    })
+  ) {
     function Harness() {
       useQuickEntryBridge({
         submitText,
-        submitTextToNewSession: async () => ({
-          runtimeSessionId: 'runtime-new',
-          sessionId: 'stored-new'
-        })
+        submitTextToNewSession
       })
 
       return null
@@ -106,6 +110,37 @@ describe('useQuickEntryBridge', () => {
       ok: true,
       runtimeSessionId: 'rt-current-1',
       sessionId: 'st-current-1'
+    })
+
+    container.remove()
+  })
+
+  it('passes the correlation id as the new-session pin owner', async () => {
+    const correlationId = 'new-submit-correlation'
+    const ackSubmit = vi.fn()
+    const submitTextToNewSession = vi.fn(async () => ({
+      runtimeSessionId: 'runtime-new',
+      sessionId: 'stored-new'
+    }))
+    window.hermesDesktop = {
+      quickEntry: {
+        ackSubmit,
+        pushState: vi.fn()
+      }
+    } as unknown as typeof window.hermesDesktop
+
+    const { container, submit } = await renderBridge(vi.fn(async () => true), submitTextToNewSession)
+
+    await act(async () => {
+      await submit({ correlationId, target: 'new', text: 'Send to a new chat' })
+    })
+
+    expect(submitTextToNewSession).toHaveBeenCalledWith('Send to a new chat', correlationId)
+    expect(ackSubmit).toHaveBeenCalledTimes(1)
+    expect(ackSubmit).toHaveBeenCalledWith(correlationId, {
+      ok: true,
+      runtimeSessionId: 'runtime-new',
+      sessionId: 'stored-new'
     })
 
     container.remove()

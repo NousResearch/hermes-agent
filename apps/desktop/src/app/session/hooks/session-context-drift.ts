@@ -56,13 +56,46 @@ interface SessionContextDriftArgs {
    * session that has ever compressed.
    */
   submitTargetComposerScope?: string | null
-  /** Stored ids being re-homed by an atomic submit (#85590). */
-  pinnedStoredSessionIds?: ReadonlySet<string>
+  /**
+   * The owner token of the request this check belongs to. Only pins created by
+   * the SAME owner are honored; omit to ignore pins entirely.
+   */
+  pinOwner?: string
 }
 
-// A short-lived pin marks the session being re-homed by atomic quick submit;
-// keeping it here lets every drift caller share the same narrow exception (#85590).
-export const activePinnedStoredSessionIds = new Set<string>()
+// Pins are OWNED (#85590 review): a drift check honors only pins created by the
+// SAME owner token — the submit/route generation that created them — so an
+// overlapping request can never suppress another request's drift detection.
+const pinnedByOwner = new Map<string, Set<string>>()
+
+/** Shared empty set: a non-owning caller allocates nothing. */
+const NO_PINS: ReadonlySet<string> = new Set()
+
+/** Mark `storedSessionId` as re-homed by `owner` until its terminal release. */
+export function pinStoredSessionForOwner(owner: string, storedSessionId: string): void {
+  const pinned = pinnedByOwner.get(owner)
+
+  if (pinned) {
+    pinned.add(storedSessionId)
+  } else {
+    pinnedByOwner.set(owner, new Set([storedSessionId]))
+  }
+}
+
+/** Terminal release: the owner's request settled (accepted, failed, cancelled).
+ *  Route settlement is evidence, not a tick budget. */
+export function releaseStoredSessionPins(owner: string): void {
+  pinnedByOwner.delete(owner)
+}
+
+export function pinnedStoredSessionIdsForOwner(owner: string): ReadonlySet<string> {
+  return pinnedByOwner.get(owner) ?? NO_PINS
+}
+
+/** Owners still holding a pin. Observability + tests. */
+export function pinnedOwnerCount(): number {
+  return pinnedByOwner.size
+}
 
 /**
  * Decide whether the session context genuinely changed under an in-flight
@@ -84,9 +117,9 @@ export function sessionContextDrift({
   submitTargetStoredId,
   composerScope,
   submitTargetComposerScope,
-  pinnedStoredSessionIds: pinnedIds
+  pinOwner
 }: SessionContextDriftArgs): string | null {
-  const activePins = pinnedIds ?? activePinnedStoredSessionIds
+  const activePins = pinOwner ? pinnedStoredSessionIdsForOwner(pinOwner) : NO_PINS
   // Composer prong: the composer's loaded scope disagrees with the resolved
   // submit target. Not a start/now comparison like the two prongs below — the
   // composer only hands us one snapshot per submit — but it belongs in the

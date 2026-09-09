@@ -17,7 +17,10 @@ interface QuickEntryBridgeParams {
     text: string,
     options?: { onAccepted?: (identity: QuickEntryAcceptedIdentity) => void }
   ) => Promise<boolean> | boolean
-  submitTextToNewSession: (text: string) => Promise<{ runtimeSessionId: string; sessionId: string }>
+  submitTextToNewSession: (
+    text: string,
+    owner?: string
+  ) => Promise<{ runtimeSessionId: string; sessionId: string }>
 }
 
 /** Exact session identity that accepted a prompt (runtime + durable stored id). */
@@ -116,7 +119,7 @@ export function useQuickEntryBridge({
         // Create and submit as one route-neutral operation so drift cannot
         // orphan the new session (#85590).
         try {
-          const created = await submitNewRef.current(text)
+          const created = await submitNewRef.current(text, correlationId)
           ack({ ok: true, runtimeSessionId: created.runtimeSessionId, sessionId: created.sessionId })
         } catch (error) {
           ack({ code: 'submit-failed', message: error instanceof Error ? error.message : String(error), ok: false, retryable: true })

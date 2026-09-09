@@ -155,7 +155,7 @@ import type {
 
 import { navigateToWorkspacePage, NEW_CHAT_ROUTE, sessionRoute, SETTINGS_ROUTE } from '../../../routes'
 import type { ClientSessionState, SidebarNavItem } from '../../../types'
-import { activePinnedStoredSessionIds, sessionContextDrift } from '../session-context-drift'
+import { pinStoredSessionForOwner, releaseStoredSessionPins, sessionContextDrift } from '../session-context-drift'
 import { singleFlightSessionResume } from '../use-prompt-actions/single-flight-resume'
 
 import { sessionCreateOverrideParams, type SessionCreateOverrides, type SessionSeedMessage } from './create-overrides'
@@ -858,14 +858,17 @@ export function useSessionActions({
   )
 
   const submitTextToNewSession = useCallback(
-    async (text: string): Promise<{ runtimeSessionId: string; sessionId: string }> => {
+    async (text: string, owner?: string): Promise<{ runtimeSessionId: string; sessionId: string }> => {
       const params = await desktopSessionCreateParams(resolveNewSessionCwd())
       const created = await requestGateway<SessionCreateResponse>('session.create', params)
       const stored = created.stored_session_id
       if (!stored) {
         throw new Error('The new session did not return a stored id.')
       }
-      activePinnedStoredSessionIds.add(stored)
+      // The owner is the requesting submit's correlation when the caller knows
+      // it (quick entry); otherwise this call owns its own generation.
+      const pinOwner = owner ?? `new-session-${created.session_id}`
+      pinStoredSessionForOwner(pinOwner, stored)
       try {
         markSessionCreatedThisRun(stored)
         runtimeIdByStoredSessionIdRef.current.set(stored, created.session_id)
@@ -875,28 +878,17 @@ export function useSessionActions({
         // atomic path cannot fall back to a route token (#85590).
         await requestGateway('prompt.submit', { session_id: created.session_id, text })
         navigate(sessionRoute(stored), { replace: true })
-        // WHY: An unbounded re-arm becomes a hot loop and leaks the pin when
-        // competing navigation wins before this session reaches the route.
-        // Issue #85590: bound the router settle window to avoid that failure.
-        let releaseAttempts = 60
-        const releasePin = () => {
-          if (getRoutedStoredSessionId() === stored || releaseAttempts === 0) {
-            activePinnedStoredSessionIds.delete(stored)
-          } else {
-            // WHY: 60 ticks is far beyond any real router settle window, so
-            // force-release after it rather than spin forever (issue #85590).
-            releaseAttempts -= 1
-            window.setTimeout(releasePin, 0)
-          }
-        }
-        releasePin()
         return { runtimeSessionId: created.session_id, sessionId: stored }
       } catch (error) {
-        activePinnedStoredSessionIds.delete(stored)
         throw error
+      } finally {
+        // Terminal transition for this owner: accepted, failed, or cancelled.
+        // Owner-scoped pins cannot strand another request, so no tick budget is
+        // needed to force-release.
+        releaseStoredSessionPins(pinOwner)
       }
     },
-    [ensureSessionState, getRoutedStoredSessionId, navigate, requestGateway, runtimeIdByStoredSessionIdRef]
+    [ensureSessionState, navigate, requestGateway, runtimeIdByStoredSessionIdRef]
   )
 
   const selectSidebarItem = useCallback(

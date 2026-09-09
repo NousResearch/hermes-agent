@@ -1,8 +1,15 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it } from 'vitest'
 
 import { NEW_CHAT_ROUTE, sessionRoute, SETTINGS_ROUTE } from '../../routes'
 
-import { routeTargetFromToken, sessionContextDrift } from './session-context-drift'
+import {
+  pinStoredSessionForOwner,
+  pinnedOwnerCount,
+  pinnedStoredSessionIdsForOwner,
+  releaseStoredSessionPins,
+  routeTargetFromToken,
+  sessionContextDrift
+} from './session-context-drift'
 
 const SESS_A = 'sess-a'
 const SESS_B = 'sess-b'
@@ -27,31 +34,47 @@ describe('routeTargetFromToken', () => {
 })
 
 describe('sessionContextDrift', () => {
-  it('keeps a pinned atomic-submit session through drift, then restores normal drift behavior', () => {
-    const pinned = new Set(['sess-b'])
+  afterEach(() => {
+    releaseStoredSessionPins('owner-a')
+    releaseStoredSessionPins('owner-b')
+  })
+
+  it('honors a pin only for its owner', () => {
+    pinStoredSessionForOwner('owner-a', 'sess-b')
+
+    const driftInputs = {
+      nowRouteToken: routeToken(sessionRoute(SESS_B)),
+      nowSelectedStoredId: SESS_B,
+      startRouteToken: routeToken(sessionRoute(SESS_A)),
+      startSelectedStoredId: SESS_A,
+      submitTargetStoredId: null
+    }
 
     expect(
       sessionContextDrift({
-        nowRouteToken: routeToken(sessionRoute(SESS_B)),
-        nowSelectedStoredId: SESS_B,
-        pinnedStoredSessionIds: pinned,
-        startRouteToken: routeToken(sessionRoute(SESS_A)),
-        startSelectedStoredId: SESS_A,
-        submitTargetStoredId: null
+        ...driftInputs,
+        pinOwner: 'owner-a'
       })
     ).toBeNull()
 
-    pinned.delete(SESS_B)
     expect(
       sessionContextDrift({
-        nowRouteToken: routeToken(sessionRoute(SESS_B)),
-        nowSelectedStoredId: SESS_B,
-        pinnedStoredSessionIds: pinned,
-        startRouteToken: routeToken(sessionRoute(SESS_A)),
-        startSelectedStoredId: SESS_A,
-        submitTargetStoredId: null
+        ...driftInputs,
+        pinOwner: 'owner-b'
       })
-    ).toBe('route:sess-a->sess-b')
+    ).toBe(`route:${SESS_A}->${SESS_B}`)
+    expect(sessionContextDrift(driftInputs)).toBe(`route:${SESS_A}->${SESS_B}`)
+  })
+
+  it('releases only the named owner', () => {
+    pinStoredSessionForOwner('owner-a', SESS_A)
+    pinStoredSessionForOwner('owner-b', SESS_B)
+
+    releaseStoredSessionPins('owner-a')
+
+    expect(pinnedStoredSessionIdsForOwner('owner-a').size).toBe(0)
+    expect(pinnedStoredSessionIdsForOwner('owner-b')).toContain(SESS_B)
+    expect(pinnedOwnerCount()).toBe(1)
   })
 
   it('does not drift on search/hash-only route churn', () => {

@@ -108,7 +108,11 @@ import { deferred } from '../../../test/deferred'
 import { NEW_CHAT_ROUTE, sessionRoute } from '../../routes'
 import type { ClientSessionState } from '../../types'
 
-import { activePinnedStoredSessionIds } from './session-context-drift'
+import {
+  pinnedOwnerCount,
+  pinnedStoredSessionIdsForOwner,
+  releaseStoredSessionPins
+} from './session-context-drift'
 import { applySessionInfoStatePatch, sessionInfoStatePatch } from './use-message-stream/utils'
 import { captureSteeringSession } from './use-prompt-actions/steering-session'
 import { useSessionActions } from './use-session-actions'
@@ -1058,17 +1062,21 @@ describe('startFreshSessionDraft', () => {
 })
 
 describe('submitTextToNewSession pin release', () => {
+  beforeEach(() => {
+    releaseStoredSessionPins('corr-1')
+    releaseStoredSessionPins('owner-a')
+    releaseStoredSessionPins('owner-b')
+  })
+
   afterEach(() => {
-    activePinnedStoredSessionIds.clear()
     cleanup()
     vi.restoreAllMocks()
   })
 
-  it('force-releases the pin when competing navigation prevents route settlement', async () => {
-    const stored = 'stored-quick-entry'
+  it('releases the pin at the terminal transition instead of on ticks', async () => {
     const requestGateway = vi.fn(async (method: string) => {
       if (method === 'session.create') {
-        return { session_id: RUNTIME_SESSION_ID, stored_session_id: stored } as never
+        return { session_id: RUNTIME_SESSION_ID, stored_session_id: 'stored-quick-entry' } as never
       }
 
       return {} as never
@@ -1085,23 +1093,91 @@ describe('submitTextToNewSession pin release', () => {
     await waitFor(() => expect(handle).not.toBeNull())
 
     await act(async () => {
-      await handle!.submitTextToNewSession('quick entry')
+      await handle!.submitTextToNewSession('quick entry', 'corr-1')
     })
 
-    await new Promise<void>(resolve => {
-      let ticks = 30
-      const tick = () => {
-        ticks -= 1
-        if (ticks === 0) {
-          resolve()
-        } else {
-          window.setTimeout(tick, 0)
+    expect(pinnedStoredSessionIdsForOwner('corr-1').size).toBe(0)
+  })
+
+  it('concurrent new-session submissions keep distinct owner pins', async () => {
+    const observations: Array<{ promptOwner: 'owner-a' | 'owner-b'; ownerA: string[]; ownerB: string[] }> = []
+    const runtimeOwner = new Map<string, 'owner-a' | 'owner-b'>()
+    const storedByOwner = {
+      'owner-a': 'stored-owner-a',
+      'owner-b': 'stored-owner-b'
+    } as const
+    let createCount = 0
+    const releaseCreates = deferred<void>()
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      if (method === 'session.create') {
+        createCount += 1
+
+        const owner = params?.model === 'model-owner-a' ? 'owner-a' : 'owner-b'
+        const runtimeSessionId = `runtime-${owner}`
+        runtimeOwner.set(runtimeSessionId, owner)
+
+        if (createCount < 2) {
+          await releaseCreates.promise
         }
+
+        return {
+          session_id: runtimeSessionId,
+          stored_session_id: storedByOwner[owner]
+        } as never
       }
-      window.setTimeout(tick, 0)
+
+      if (method === 'prompt.submit') {
+        const promptOwner = runtimeOwner.get(String(params?.session_id)) ?? 'owner-a'
+        observations.push({
+          promptOwner,
+          ownerA: [...pinnedStoredSessionIdsForOwner('owner-a')],
+          ownerB: [...pinnedStoredSessionIdsForOwner('owner-b')]
+        })
+      }
+
+      return {} as never
     })
-    expect(activePinnedStoredSessionIds.has(stored)).toBe(true)
-    await waitFor(() => expect(activePinnedStoredSessionIds.has(stored)).toBe(false), { timeout: 3000 })
+    let handle: HarnessHandle | null = null
+
+    render(
+      <Harness
+        getRoutedStoredSessionId={() => 'stored-other'}
+        onReady={value => (handle = value)}
+        requestGateway={requestGateway}
+      />
+    )
+    await waitFor(() => expect(handle).not.toBeNull())
+
+    let first!: Promise<{ runtimeSessionId: string; sessionId: string }>
+    let second!: Promise<{ runtimeSessionId: string; sessionId: string }>
+    act(() => {
+      setCurrentModel('model-owner-a')
+      first = handle!.submitTextToNewSession('a', 'owner-a')
+      setCurrentModel('model-owner-b')
+      second = handle!.submitTextToNewSession('b', 'owner-b')
+      setCurrentModel('')
+    })
+
+    await waitFor(() => expect(createCount).toBe(2))
+
+    await act(async () => {
+      releaseCreates.resolve()
+      await Promise.all([first, second])
+    })
+
+    expect(observations).toHaveLength(2)
+    expect(observations.map(({ promptOwner }) => promptOwner).sort()).toEqual(['owner-a', 'owner-b'])
+    for (const observation of observations) {
+      const ownPins = observation.promptOwner === 'owner-a' ? observation.ownerA : observation.ownerB
+      const otherPins = observation[observation.promptOwner === 'owner-a' ? 'ownerB' : 'ownerA']
+
+      expect(ownPins).toContain(storedByOwner[observation.promptOwner])
+      expect(ownPins).not.toContain(
+        storedByOwner[observation.promptOwner === 'owner-a' ? 'owner-b' : 'owner-a']
+      )
+      expect(otherPins).not.toContain(storedByOwner[observation.promptOwner])
+    }
+    expect(pinnedOwnerCount()).toBe(0)
   })
 })
 

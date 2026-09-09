@@ -66,7 +66,10 @@ class _RequiredRule:
 
     @property
     def key(self) -> str:
-        return f"approval_required:{self.pattern}"
+        # The review policy is part of the grant's identity: the config is live-reloaded, so a
+        # session grant taken under ``review: smart`` must not satisfy the same pattern once the
+        # operator tightens it to ``review: human`` mid-conversation — the new policy asks again.
+        return f"approval_required:{self.review}:{self.pattern}"
 
     @property
     def prompt_description(self) -> str:

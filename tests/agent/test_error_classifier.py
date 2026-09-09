@@ -511,6 +511,24 @@ class TestClassifyApiError:
         assert result.retryable is True
         assert result.should_rotate_credential is False
 
+    def test_429_novita_server_overload_is_overloaded_not_rate_limit(self):
+        """Novita returns HTTP 429 with message 'server overload, please try
+        again later' and error type 'server_overload' for a genuinely busy
+        server (not a credential quota). Neither phrase was in the overload
+        tuple, so it fell through to rate_limit and would rotate the credential
+        / fall back early instead of retrying the same key. (#106205)"""
+        e = MockAPIError(
+            "server overload, please try again later",
+            status_code=429,
+            body={"error": {"message": "server overload, please try again later",
+                            "type": "server_overload"}},
+        )
+        result = classify_api_error(e, provider="custom:novita")
+        assert result.reason == FailoverReason.overloaded
+        assert result.retryable is True
+        assert result.should_fallback is False
+        assert result.should_rotate_credential is False
+
     def test_429_normal_rate_limit_still_rotates(self):
         """Guard: a genuine 429 rate limit (no overload language) must still
         classify as rate_limit and rotate the credential. (#14038)"""

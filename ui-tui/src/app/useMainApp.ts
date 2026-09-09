@@ -19,6 +19,7 @@ import { SECTION_NAMES, sectionMode } from '../domain/details.js'
 import { composeTabTitle, fmtProjectCwdBranch, shortCwd } from '../domain/paths.js'
 import { sessionScopedModelArg } from '../domain/slash.js'
 import { type GatewayClient } from '../gatewayClient.js'
+import type { SubagentListResponse } from '../gatewayTypes.js'
 import type {
   ClarifyRespondResponse,
   ConfigSetResponse,
@@ -35,11 +36,18 @@ import { DEFAULT_VOICE_RECORD_KEY, isMac, type ParsedVoiceRecordKey } from '../l
 import { createResizeCoalescer } from '../lib/resizeCoalescer.js'
 import { asRpcResult, rpcErrorMessage } from '../lib/rpc.js'
 import { terminalParityHints } from '../lib/terminalParity.js'
-import { buildToolTrailLine, formatAbandonedClarify, sameToolTrailGroup, toolTrailLabel } from '../lib/text.js'
+import {
+  buildToolTrailLine,
+  formatAbandonedClarify,
+  formatAbandonedClarifyBatch,
+  sameToolTrailGroup,
+  toolTrailLabel
+} from '../lib/text.js'
 import { estimatedMsgHeight, messageHeightKey } from '../lib/virtualHeights.js'
 import { onUserWidgets } from '../sdk/userWidgets.js'
 import type { Msg, PanelSection, SlashCatalog } from '../types.js'
 
+import { applyAgentSnapshot } from './agentRoster.js'
 import { createGatewayEventHandler } from './createGatewayEventHandler.js'
 import { createSlashHandler } from './createSlashHandler.js'
 import { planGatewayRecovery } from './gatewayRecovery.js'
@@ -54,7 +62,7 @@ import { $uiState, getUiState, patchUiState } from './uiStore.js'
 import { useBatteryPoll } from './useBatteryPoll.js'
 import { useComposerState } from './useComposerState.js'
 import { useConfigSync } from './useConfigSync.js'
-import { useInputHandlers } from './useInputHandlers.js'
+import { shouldDetachEditedHistoryInput, useInputHandlers } from './useInputHandlers.js'
 import { useLongRunToolCharms } from './useLongRunToolCharms.js'
 import { useSessionLifecycle } from './useSessionLifecycle.js'
 import { useSubmission } from './useSubmission.js'
@@ -201,6 +209,7 @@ export function useMainApp(gw: GatewayClient) {
   // Bumped by the gateway `reaction` event (core-detected affection).
   const goodVibesTick = useStore($goodVibesTick)
   const [bellOnComplete, setBellOnComplete] = useState(false)
+  const [bellOnPrompt, setBellOnPrompt] = useState(false)
 
   const ui = useStore($uiState)
   const overlay = useStore($overlayState)
@@ -225,6 +234,7 @@ export function useMainApp(gw: GatewayClient) {
   const onEventRef = useRef<(ev: GatewayEvent) => void>(() => {})
   const sysRef = useRef<(text: string) => void>(() => {})
   const submitRef = useRef<(value: string) => void>(() => {})
+  const submitLiteralRef = useRef<(value: string) => void>(() => {})
   const terminalHintsShownRef = useRef(new Set<string>())
   const historyItemsRef = useRef(historyItems)
   const lastUserMsgRef = useRef(lastUserMsg)
@@ -571,7 +581,7 @@ export function useMainApp(gw: GatewayClient) {
     }
   }, [ui.busy, turnStartedAt])
 
-  useConfigSync({ gw, setBellOnComplete, setVoiceEnabled, setVoiceRecordKey, sid: ui.sid })
+  useConfigSync({ gw, setBellOnComplete, setBellOnPrompt, setVoiceEnabled, setVoiceRecordKey, sid: ui.sid })
   useBatteryPoll(gw)
 
   useEffect(() => {
@@ -582,8 +592,19 @@ export function useMainApp(gw: GatewayClient) {
     }
 
     let stopped = false
+    applyAgentSnapshot(ui.sid)
 
     const refresh = () => {
+      const sid = ui.sid
+      gw.request<SubagentListResponse>('subagent.list', { session_id: sid })
+        .then(raw => {
+          const result = asRpcResult<SubagentListResponse>(raw)
+
+          if (!stopped && result && getUiState().sid === sid) {
+            applyAgentSnapshot(sid, result)
+          }
+        })
+        .catch(() => {})
       gw.request<SessionActiveListResponse>('session.active_list', { current_session_id: getUiState().sid })
         .then(raw => {
           const result = asRpcResult<SessionActiveListResponse>(raw)
@@ -705,7 +726,9 @@ export function useMainApp(gw: GatewayClient) {
           // survives on screen as standard output, matching the timeout path.
           appendMessage({
             role: 'system',
-            text: formatAbandonedClarify(clarify.question, clarify.choices, 'cancelled')
+            text: clarify.questions?.length
+              ? formatAbandonedClarifyBatch(clarify.questions, clarify.answers ?? {}, 'cancelled')
+              : formatAbandonedClarify(clarify.question, clarify.choices, 'cancelled')
           })
         }
 
@@ -715,9 +738,63 @@ export function useMainApp(gw: GatewayClient) {
     [appendMessage, overlay.clarify, rpc]
   )
 
+  // Lock one answer of a batch clarify (clarify.respond + question_id). The
+  // overlay stays up until the server reports no remaining questions — the
+  // final lock resolves the tool and the turn continues.
+  const answerClarifyQuestion = useCallback(
+    (qid: string, answer: string) => {
+      const clarify = overlay.clarify
+
+      if (!clarify?.questions?.length) {
+        return
+      }
+
+      rpc<ClarifyRespondResponse & { remaining?: string[] }>('clarify.respond', {
+        answer,
+        question_id: qid,
+        request_id: clarify.requestId
+      }).then(r => {
+        if (!r) {
+          return
+        }
+
+        const answers = { ...(clarify.answers ?? {}), [qid]: answer }
+
+        if ((r.remaining ?? []).length > 0) {
+          patchOverlayState({ clarify: { ...clarify, answers } })
+
+          return
+        }
+
+        // Batch complete: persist the whole Q&A set as one user-visible
+        // block (mirrors the single-question trail + answer lines).
+        const label = toolTrailLabel('clarify')
+
+        turnController.turnTools = turnController.turnTools.filter(line => !sameToolTrailGroup(label, line))
+        patchTurnState({ turnTrail: turnController.turnTools })
+        turnController.persistedToolLabels.add(label)
+        appendMessage({
+          kind: 'trail',
+          role: 'system',
+          text: '',
+          tools: [buildToolTrailLine('clarify', `${clarify.questions!.length} questions`)]
+        })
+        appendMessage({
+          role: 'user',
+          text: clarify
+            .questions!.map(q => `${q.question} → ${answers[q.qid]?.trim() ? answers[q.qid] : '(skipped)'}`)
+            .join('\n')
+        })
+        patchUiState({ status: 'running…' })
+        patchOverlayState({ clarify: null })
+      })
+    },
+    [appendMessage, overlay.clarify, rpc]
+  )
+
   sysRef.current = sys
 
-  const { dispatchSubmission, send, sendQueued, submit } = useSubmission({
+  const { dispatchSubmission, send, sendQueued, submit, submitLiteral } = useSubmission({
     appendMessage,
     composerActions,
     composerRefs,
@@ -728,6 +805,8 @@ export function useMainApp(gw: GatewayClient) {
     submitRef,
     sys
   })
+
+  submitLiteralRef.current = submitLiteral
 
   // Drain one queued message whenever the session settles (busy → false):
   // agent turn ends, interrupt, shell.exec finishes, error recovered, or the
@@ -791,8 +870,8 @@ export function useMainApp(gw: GatewayClient) {
           resumeById: session.resumeById,
           setCatalog
         },
-        submission: { submitRef },
-        system: { bellOnComplete, stdout, sys },
+        submission: { submitLiteralRef, submitRef },
+        system: { bellOnComplete, bellOnPrompt, stdout, sys },
         transcript: { appendMessage, panel, setHistoryItems },
         voice: {
           setProcessing: setVoiceProcessing,
@@ -804,6 +883,7 @@ export function useMainApp(gw: GatewayClient) {
     [
       appendMessage,
       bellOnComplete,
+      bellOnPrompt,
       composerActions.setInput,
       gateway,
       panel,
@@ -815,6 +895,7 @@ export function useMainApp(gw: GatewayClient) {
       setVoiceProcessing,
       setVoiceRecording,
       stdout,
+      submitLiteralRef,
       submitRef,
       sys
     ]
@@ -843,7 +924,7 @@ export function useMainApp(gw: GatewayClient) {
       // dead/respawning gateway. recoverSidRef carries the session forward, and
       // resumeById restores sid once the fresh gateway is ready.
       recoveryAtRef.current = plan.attempts
-      patchUiState({ busy: false, sid: null, status: 'gateway exited' })
+      patchUiState({ busy: false, compacting: false, sid: null, status: 'gateway exited' })
 
       if (plan.recover && plan.sid) {
         recoverSidRef.current = plan.sid
@@ -1091,6 +1172,7 @@ export function useMainApp(gw: GatewayClient) {
       closeLiveSession,
       answerApproval,
       answerClarify,
+      answerClarifyQuestion,
       answerSecret,
       answerSudo,
       clearSelection,
@@ -1113,6 +1195,7 @@ export function useMainApp(gw: GatewayClient) {
     [
       answerApproval,
       answerClarify,
+      answerClarifyQuestion,
       answerSecret,
       answerSudo,
       clearSelection,
@@ -1135,10 +1218,15 @@ export function useMainApp(gw: GatewayClient) {
 
         composerActions.syncTokens(value)
 
+        if (shouldDetachEditedHistoryInput(composerState.historyIdx, composerRefs.historyRef.current, value)) {
+          composerRefs.historyDraftRef.current = value
+          composerActions.setHistoryIdx(null)
+        }
+
         return value
       })
     },
-    [composerActions]
+    [composerActions, composerRefs, composerState.historyIdx]
   )
 
   const appComposer = useMemo(

@@ -132,15 +132,12 @@ def perform_api_call(
         response_issuer_model = _wire_model_identity(
             api_kwargs.get("model") if isinstance(api_kwargs, dict) else None
         )
-        built_input = deepcopy(
-            _original_api_kwargs.get("input")
-            if isinstance(_original_api_kwargs, dict)
-            else None
-        )
         built_with_native_compaction = (
             isinstance(_original_api_kwargs, dict)
             and "context_management" in _original_api_kwargs
         )
+        if built_with_native_compaction:
+            built_input = deepcopy(_original_api_kwargs.get("input"))
 
     def _verdict(action: str) -> ApiCallVerdict:
         return ApiCallVerdict(

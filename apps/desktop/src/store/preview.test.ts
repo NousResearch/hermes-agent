@@ -108,6 +108,66 @@ describe('preview store', () => {
     expect(new Set(urlTabs.map(tab => tab.id)).size).toBe(2)
   })
 
+  // A chat click is an explicit ask for that page. It must not replace the
+  // Browser you already have — an unfinished form on that tab would vanish.
+  it('opens an explicit chat URL in its own Browser tab without replacing the vessel', () => {
+    const urlA = 'https://forms.example/dashboard'
+    const urlB = 'https://docs.example/chat-link'
+    const urlC = 'https://agent.example/tool-page'
+
+    openPreview(urlTarget(urlA), 'tool-result')
+    const formTabId = $previewTabs.get()[0].id
+
+    openPreview(urlTarget(urlB), 'explicit-link')
+
+    let urlTabs = $previewTabs.get().filter(tab => tab.target.kind === 'url')
+
+    expect(urlTabs).toHaveLength(2)
+    expect($previewTabs.get().find(tab => tab.id === formTabId)?.target.url).toBe(urlA)
+    expect($previewTarget.get()?.url).toBe(urlB)
+    expect($rightRailActiveTabId.get()).not.toBe(formTabId)
+
+    const clickedTabId = $rightRailActiveTabId.get()
+
+    openPreview(urlTarget(urlB), 'explicit-link')
+
+    urlTabs = $previewTabs.get().filter(tab => tab.target.kind === 'url')
+
+    expect(urlTabs).toHaveLength(2)
+    expect($rightRailActiveTabId.get()).toBe(clickedTabId)
+    expect($previewTabs.get().find(tab => tab.id === formTabId)?.target.url).toBe(urlA)
+
+    openPreview(urlTarget(urlC), 'tool-result')
+
+    urlTabs = $previewTabs.get().filter(tab => tab.target.kind === 'url')
+
+    expect(urlTabs).toHaveLength(2)
+    expect($previewTabs.get().find(tab => tab.id === formTabId)?.target.url).toBe(urlA)
+    expect($previewTarget.get()?.url).toBe(urlC)
+    expect($rightRailActiveTabId.get()).toBe(clickedTabId)
+  })
+
+  it('re-fronts the matching Browser when the same chat URL is clicked again', () => {
+    const urlA = 'https://chat.example/one'
+    const urlB = 'https://chat.example/two'
+
+    openPreview(urlTarget(urlA), 'explicit-link')
+    const first = $rightRailActiveTabId.get()
+
+    openPreview(urlTarget(urlB), 'explicit-link')
+    const second = $rightRailActiveTabId.get()
+
+    expect($previewTabs.get().filter(tab => tab.target.kind === 'url')).toHaveLength(2)
+    expect(second).not.toBe(first)
+
+    openPreview(urlTarget(urlA), 'explicit-link')
+
+    expect($previewTabs.get().filter(tab => tab.target.kind === 'url')).toHaveLength(2)
+    expect($rightRailActiveTabId.get()).toBe(first)
+    expect($previewTabs.get().find(tab => tab.id === first)?.target.url).toBe(urlA)
+    expect($previewTabs.get().find(tab => tab.id === second)?.target.url).toBe(urlB)
+  })
+
   // Which Browser a link lands in: the one on screen. Selecting the older tab
   // must send the next page there, not to whichever was opened most recently.
   it('navigates the Browser you are looking at', () => {

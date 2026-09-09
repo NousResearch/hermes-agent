@@ -352,9 +352,8 @@ function mintBrowserTabId(): RightRailTabId {
 }
 
 /** The Browser a URL should open in: the one you're looking at, else the one
- *  you used last. A link from chat navigates the browser you already have
- *  rather than stacking another identical tab — new tabs are something you
- *  ask for (the strip's "+"), the way they are in a real browser. */
+ *  you used last. Tool/manual navigation uses this vessel rather than stacking
+ *  another tab — explicit chat clicks mint or re-front in `openPreview`. */
 function browserTabId(tabs: PreviewTab[]): RightRailTabId {
   const active = tabs.find(tab => tab.id === $rightRailActiveTabId.get())
 
@@ -363,6 +362,24 @@ function browserTabId(tabs: PreviewTab[]): RightRailTabId {
   }
 
   return tabs.findLast(isBrowserTab)?.id ?? mintBrowserTabId()
+}
+
+/** Compare Browser URLs after a light canonicalize so `https://a.com` and
+ *  `https://a.com/` are the same tab, while still failing open on junk. */
+function canonicalBrowserUrl(url: string): string {
+  const trimmed = url.trim()
+
+  try {
+    return new URL(trimmed).href
+  } catch {
+    return trimmed
+  }
+}
+
+function matchingBrowserTabId(tabs: PreviewTab[], url: string): RightRailTabId | undefined {
+  const canonical = canonicalBrowserUrl(url)
+
+  return tabs.findLast(tab => isBrowserTab(tab) && canonicalBrowserUrl(tab.target.url) === canonical)?.id
 }
 
 // Browsing files is "peek at the source"; a tool or an explicit link handing
@@ -381,11 +398,20 @@ function previewTargetForSource(target: PreviewTarget, source: PreviewRecordSour
 
 /** Open (or re-front) the tab for `target`. Re-opening an existing tab refreshes
  *  its target so a stale label/path can't outlive the thing it points at. The
- *  only way anything reaches a preview. */
+ *  only way anything reaches a preview.
+ *
+ *  An explicit chat URL (`source === 'explicit-link'`) is a user ask for that
+ *  page: re-front a tab already showing it, otherwise mint a new Browser.
+ *  Tool/manual/file-browser URLs still navigate the current vessel. */
 export function openPreview(target: PreviewTarget, source: PreviewRecordSource = 'manual') {
   const resolved = previewTargetForSource(target, source)
   const current = $previewTabs.get()
-  const id = resolved.kind === 'url' ? browserTabId(current) : previewTabId(resolved)
+  const id =
+    resolved.kind === 'url'
+      ? source === 'explicit-link'
+        ? (matchingBrowserTabId(current, resolved.url) ?? mintBrowserTabId())
+        : browserTabId(current)
+      : previewTabId(resolved)
   const index = current.findIndex(tab => tab.id === id)
   const tab: PreviewTab = { id, target: resolved }
 

@@ -223,6 +223,9 @@ class TestCallableKeyGetsBearerAuth:
         monkeypatch.setattr(
             aa, "_build_anthropic_client_with_bearer_hook", _fake_hook
         )
+        # The native Anthropic SDK is an optional provider extra; this test
+        # exercises the dispatch seam, so supply only the presence sentinel.
+        monkeypatch.setattr(aa, "_anthropic_sdk", object())
         aa.build_anthropic_client(
             lambda: "minted-token", "https://gateway.invalid/anthropic"
         )

@@ -118,6 +118,14 @@ class TestInstallCuaDriverUpgrade:
     # ``patch("platform.system", return_value="Darwin")`` bought nothing but a
     # fake host. Dropped, and the names no longer claim macOS.
 
+    @pytest.fixture(autouse=True)
+    def _allow_installer_target_in_unit_tests(self, monkeypatch, request):
+        """Keep installer decision tests independent of /Applications ACLs."""
+        from hermes_cli import tools_config_cua as tools_config
+
+        if request.node.name != "test_install_target_writability_is_probed_for_real_on_macos":
+            monkeypatch.setattr(tools_config, "_cua_install_target_writable", lambda: True)
+
     def test_upgrade_on_unsupported_platform_is_silent_noop(self):
         """The one branch no CI runner can reach for real.
 
@@ -746,8 +754,8 @@ class TestArchProbeRemoval:
     asset names. That was wrong in two ways:
 
     1. cua-driver-rs releases are marked **prerelease** on every cut, so
-       ``/releases/latest`` returns the Python ``cua-agent`` / ``cua-computer``
-       package instead — a release with zero binary assets. The probe then
+    ``/releases/latest`` returns the Python ``cua-agent`` / ``cua-computer``
+    package instead — a release with zero binary assets. The probe then
        reported "no asset for $arch" on Linux x86_64, Windows, macOS Intel,
        Linux arm64 — every non-Apple-Silicon host.
     2. Even with the right endpoint, it duplicated tag-resolution the upstream
@@ -759,6 +767,13 @@ class TestArchProbeRemoval:
     ``cua-driver check-update --json`` MCP-binary native command for the
     upgrade path.
     """
+
+    @pytest.fixture(autouse=True)
+    def _allow_installer_target_in_unit_tests(self, monkeypatch):
+        """The installer decision is under test, not host-level /Applications permissions."""
+        from hermes_cli import tools_config_cua as tools_config
+
+        monkeypatch.setattr(tools_config, "_cua_install_target_writable", lambda: True)
 
     def test_probe_function_is_gone(self):
         from hermes_cli import tools_config_cua as tools_config

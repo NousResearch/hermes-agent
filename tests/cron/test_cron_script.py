@@ -634,6 +634,7 @@ class TestRunJobEnvVarCleanup:
         assert os.environ.get("HERMES_SESSION_CHAT_NAME") is None
 
 
+@pytest.mark.live_system_guard_bypass
 class TestScriptTimeoutTreeKill:
     """Phase 4a (#85125): a script timeout must leave zero living descendants."""
 
@@ -750,6 +751,10 @@ class TestScriptTimeoutTreeKill:
             "psutil",
             reason="kill_process_tree needs psutil to reach own-session descendants",
         )
+        try:
+            psutil.pids()
+        except (OSError, psutil.Error) as exc:
+            pytest.skip(f"process-table enumeration unavailable in this runner: {exc}")
 
         from cron import scheduler as sched
         from cron import scheduler_script as sched_script

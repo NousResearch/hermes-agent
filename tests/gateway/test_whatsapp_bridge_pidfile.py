@@ -32,6 +32,9 @@ from plugins.platforms.whatsapp.adapter import (
 from gateway.status import get_process_start_time, _pid_exists
 
 
+pytestmark = pytest.mark.live_system_guard_bypass
+
+
 def _spawn_sleeper(*extra_argv) -> subprocess.Popen:
     """Spawn a real, short-lived process; optional extra argv shapes its cmdline."""
     return subprocess.Popen(
@@ -125,4 +128,3 @@ class TestKillPortProcess:
             client.kill()
             client.wait()
             srv.close()
-

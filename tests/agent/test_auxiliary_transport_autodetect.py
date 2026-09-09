@@ -132,6 +132,13 @@ def test_resolve_provider_client_kimi_coding_wraps_anthropic(monkeypatch, tmp_pa
 
     client, model = resolve_provider_client("kimi-coding", "kimi-for-coding")
     assert client is not None, "Should resolve a client"
+    from agent.anthropic_adapter import _get_anthropic_sdk
+
+    if not _get_anthropic_sdk():
+        # Anthropic is an optional provider extra. The no-extra environment
+        # must keep the existing graceful OpenAI-wire fallback.
+        assert not isinstance(client, AnthropicAuxiliaryClient)
+        return
     assert isinstance(client, AnthropicAuxiliaryClient), (
         "Kimi Coding Plan endpoint (api.kimi.com/coding) speaks Anthropic "
         "Messages — aux client MUST be AnthropicAuxiliaryClient, got "

@@ -953,7 +953,8 @@ def _warm_turn_machinery_sync() -> int:
     """Synchronously initialize first-turn prerequisites (executor thread); returns the schema count.
 
     Covers the lazy init seen in skeleton turns: ``run_agent`` import graph, tool schemas (+ ``check_fn``
-    TTL cache), context files."""
+    TTL cache), context files, and the default route's context-window metadata — a catalog HTTP probe
+    that must not sit between the first inbound turn and its inference request."""
     import run_agent  # noqa: F401  # heavy import graph, cached in sys.modules
     import model_tools
 
@@ -964,6 +965,10 @@ def _warm_turn_machinery_sync() -> int:
         build_context_files_prompt()
     except Exception:
         logger.debug("context-file warm-up failed (non-fatal)", exc_info=True)
+    try:
+        _resolve_gateway_model_context()
+    except Exception:
+        logger.debug("model-context warm-up failed (non-fatal)", exc_info=True)
     return len(tool_defs)
 
 

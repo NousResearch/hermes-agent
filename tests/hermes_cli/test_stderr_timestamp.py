@@ -80,6 +80,9 @@ def test_prepare_skips_interactive_xpc_zero_even_for_gateway_argv():
     )
 
 
+# The child is ``python -c <record argv>`` carrying a "gateway run" tail as inert data, which is
+# exactly what the guard's real-gateway spawn check matches; it exits at once.
+@pytest.mark.spawns_gateway_lookalike
 def test_main_injects_flag_into_stale_gateway_child(tmp_path, monkeypatch):
     """Stale plist inner argv must grow --external-supervisor in the grandchild."""
     monkeypatch.setenv("XPC_SERVICE_NAME", "ai.hermes.gateway-butler")

@@ -18,6 +18,7 @@ from typing import Any, Dict, List
 from unittest.mock import patch
 
 from agent.context_compressor import (
+    _INFLIGHT_TASK_DISPLACED_STUB,
     _SUMMARY_END_MARKER,
     SUMMARY_PREFIX,
     ContextCompressor,
@@ -153,3 +154,69 @@ def test_zero_protected_head_keeps_one_copy():
     compressed = _compress(messages, protect_first_n=0)
 
     assert _full_copies(compressed) == 1
+
+
+def _head_user_rows(compressed: List[Dict[str, Any]]):
+    idx = _handoff_idx(compressed)
+    assert idx >= 0, "expected a compaction handoff"
+    return [
+        m
+        for m in compressed[:idx]
+        if m.get("role") == "user"
+        and ContextCompressor._is_actionable_user_turn(m)
+        and not ContextCompressor._is_synthetic_compression_user_turn(m)
+    ]
+
+
+def test_completed_same_text_turn_is_not_displaced():
+    """Equal old/active requests: an earlier COMPLETED turn whose text equals
+    the re-stated in-flight request keeps its payload verbatim — displacement
+    must rewrite only the row derived from the active in-flight turn."""
+    messages = [
+        {"role": "system", "content": "You are Hermes."},
+        {"role": "user", "content": TASK},  # earlier completed turn (history)
+        {"role": "assistant", "content": "Done previously."},
+        {"role": "user", "content": TASK},  # re-stated request, still in flight
+        *_tool_pairs(15),
+    ]
+    compressed = _compress(messages, protect_first_n=5)
+
+    user_rows = _head_user_rows(compressed)
+    assert len(user_rows) == 2, "both head user rows must survive"
+    assert TASK_SENTINEL not in _text(user_rows[-1]), (
+        "the in-flight original (newest head user row) must be displaced"
+    )
+    assert TASK_SENTINEL in _text(user_rows[0]), (
+        "the earlier completed turn with identical text must keep its payload"
+    )
+    assert _INFLIGHT_TASK_DISPLACED_STUB in _text(user_rows[-1])
+    assert _full_copies(compressed) == 2, "history copy + restatement"
+
+
+def test_inflight_summarized_away_leaves_head_history_verbatim():
+    """The in-flight row itself is summarized away: the same-text row left in
+    the head is an earlier completed turn, so nothing may be displaced."""
+    messages = [
+        {"role": "system", "content": "You are Hermes."},
+        {"role": "user", "content": TASK},  # earlier completed turn (history)
+        {"role": "assistant", "content": "Done previously."},
+        {"role": "user", "content": TASK},  # in flight, but inside the summary window
+        *_tool_pairs(15),
+    ]
+    compressed = _compress(messages, protect_first_n=2)
+
+    user_rows = _head_user_rows(compressed)
+    assert len(user_rows) == 1, "only the history row survives in the head"
+    assert TASK_SENTINEL in _text(user_rows[0]), (
+        "a summarized-away in-flight task must not displace the history row"
+    )
+    assert _INFLIGHT_TASK_DISPLACED_STUB not in _text(user_rows[0])
+    idx = _handoff_idx(compressed)
+    after_handoff = [
+        _text(compressed[idx]).split(_SUMMARY_END_MARKER, 1)[1],
+        *map(_text, compressed[idx + 1:]),
+    ]
+    assert any(
+        TASK_SENTINEL in t for t in after_handoff
+    ), "the restatement after the handoff must stay actionable (#100818)"
+    assert _full_copies(compressed) == 2, "history copy + restatement"

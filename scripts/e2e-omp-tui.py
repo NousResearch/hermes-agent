@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""E2E harness for OMP-style Hermes TUI first-paint (PR #99776)."""
+"""E2E harness for OMP-style Hermes TUI first-paint (PR #99776).
+
+Linux-only: uses pty, fcntl, os.fork, and os.setsid. Windows footgun
+markers below are intentional — this script is not run on Windows CI.
+"""
 
 from __future__ import annotations
 
@@ -40,7 +44,7 @@ def strip_ansi(text: str) -> str:
 
 def find_hermes() -> str:
     hermes = os.environ.get("HERMES_BIN") or "hermes"
-    which = subprocess.run(["which", hermes], capture_output=True, text=True)
+    which = subprocess.run(["which", hermes], capture_output=True, text=True, encoding="utf-8")
     if which.returncode == 0 and which.stdout.strip():
         return which.stdout.strip()
     local = _PROJECT_ROOT / ".venv" / "bin" / "hermes"
@@ -78,6 +82,7 @@ def _signal_pattern_except_self(pattern: str, sig: signal.Signals = signal.SIGTE
             ["pgrep", "-f", pattern],
             capture_output=True,
             text=True,
+            encoding="utf-8",
             check=False,
         )
     except OSError:
@@ -118,6 +123,7 @@ def cleanup_project_tui_nodes() -> None:
             ["pgrep", "-f", dist],
             capture_output=True,
             text=True,
+            encoding="utf-8",
             check=False,
         )
     except OSError:
@@ -157,10 +163,12 @@ def read_available(fd: int, timeout: float) -> bytes:
 
 
 def terminate_pid(pid: int) -> None:
+    # Linux-only e2e harness (pty/fcntl); SIGKILL/killpg unavailable on Windows.
+    sigkill = getattr(signal, "SIGKILL", signal.SIGTERM)
     try:
         try:
-            os.killpg(pid, signal.SIGTERM)
-        except (ProcessLookupError, PermissionError):
+            os.killpg(pid, signal.SIGTERM)  # windows-footgun: ok — Linux-only e2e
+        except (ProcessLookupError, PermissionError, AttributeError):
             os.kill(pid, signal.SIGTERM)
         for _ in range(30):
             try:
@@ -171,9 +179,9 @@ def terminate_pid(pid: int) -> None:
                 return
             time.sleep(0.1)
         try:
-            os.killpg(pid, signal.SIGKILL)
-        except (ProcessLookupError, PermissionError):
-            os.kill(pid, signal.SIGKILL)
+            os.killpg(pid, sigkill)  # windows-footgun: ok — Linux-only e2e
+        except (ProcessLookupError, PermissionError, AttributeError):
+            os.kill(pid, sigkill)  # windows-footgun: ok — Linux-only e2e
         os.waitpid(pid, 0)
     except ProcessLookupError:
         pass
@@ -208,9 +216,9 @@ def launch_pty(argv: list[str], env: dict[str, str], cols: int, rows: int) -> tu
     import termios
 
     master, slave = pty.openpty()
-    pid = os.fork()
+    pid = os.fork()  # windows-footgun: ok — Linux-only e2e (pty)
     if pid == 0:
-        os.setsid()
+        os.setsid()  # windows-footgun: ok — Linux-only e2e
         os.close(master)
         os.dup2(slave, 0)
         os.dup2(slave, 1)
@@ -357,7 +365,7 @@ def cmd_test(args: argparse.Namespace) -> int:
                         break
                 else:
                     try:
-                        os.kill(pid, 0)
+                        os.kill(pid, 0)  # windows-footgun: ok — Linux liveness probe
                     except OSError:
                         break
                     elapsed = time.monotonic() - started
@@ -396,7 +404,7 @@ def _monitor_worker(argv: list[str], env: dict[str, str], cols: int, rows: int) 
             r, _, _ = select.select([master], [], [], 1.0)
             if not r:
                 try:
-                    os.kill(child, 0)
+                    os.kill(child, 0)  # windows-footgun: ok — Linux liveness probe
                 except OSError:
                     break
                 continue
@@ -417,9 +425,9 @@ def _monitor_worker(argv: list[str], env: dict[str, str], cols: int, rows: int) 
 
 def cmd_monitor(args: argparse.Namespace) -> int:
     if MONITOR_PID.exists():
-        old = int(MONITOR_PID.read_text().strip())
+        old = int(MONITOR_PID.read_text(encoding="utf-8").strip())
         try:
-            os.kill(old, 0)
+            os.kill(old, 0)  # windows-footgun: ok — Linux liveness probe
             print(f"monitor already running (pid {old})")
             print(f"tail -f {MONITOR_LOG}")
             return 0
@@ -438,10 +446,10 @@ def cmd_monitor(args: argparse.Namespace) -> int:
 
     MONITOR_LOG.write_bytes(b"")
 
-    worker = os.fork()
+    worker = os.fork()  # windows-footgun: ok — Linux-only e2e
     if worker == 0:
-        os.setsid()
-        with open(os.devnull, "w") as devnull:
+        os.setsid()  # windows-footgun: ok — Linux-only e2e
+        with open(os.devnull, "w", encoding="utf-8") as devnull:
             os.dup2(devnull.fileno(), 1)
             os.dup2(devnull.fileno(), 2)
         _monitor_worker(argv, env, args.cols, args.rows)
@@ -458,7 +466,7 @@ def cmd_stop(_: argparse.Namespace) -> int:
     if not MONITOR_PID.exists():
         print("no monitor pid file")
         return 0
-    pid = int(MONITOR_PID.read_text().strip())
+    pid = int(MONITOR_PID.read_text(encoding="utf-8").strip())
     terminate_pid(pid)
     MONITOR_PID.unlink(missing_ok=True)
     print(f"stopped monitor pid {pid}")

@@ -467,28 +467,31 @@ def test_make_tui_argv_npm_install_forces_include_dev(
     assert "--include=dev" in install_cmd
 
 
-def test_make_tui_argv_keeps_desktop_always_build_behaviour(
+def test_make_tui_argv_skips_build_when_dist_fresh(
     tmp_path: Path, main_mod, monkeypatch
 ) -> None:
+    """Non-Termux launch skips esbuild when dist is fresher than inputs.
+
+    Intentional PR change in 84d8597fa5: always-rebuild left the PTY blank
+    during captured ``npm run build`` and flaked OMP live acceptance.
+    ``HERMES_TUI_FORCE_BUILD=1`` restores the old always-build behaviour.
+    """
     _touch_tui_entry(tmp_path)
     monkeypatch.delenv("TERMUX_VERSION", raising=False)
     monkeypatch.setenv("PREFIX", "/usr")
     monkeypatch.setattr(main_mod, "_tui_need_npm_install", lambda _root: False)
     monkeypatch.setattr(main_mod, "_tui_need_rebuild", lambda _root: False)
     monkeypatch.setattr(main_mod.shutil, "which", lambda name: f"/bin/{name}")
-    calls = []
 
-    def fake_run(*args, **kwargs):
-        calls.append((args, kwargs))
-        return types.SimpleNamespace(returncode=0, stdout="", stderr="")
+    def fail_run(*_args, **_kwargs):
+        raise AssertionError("fresh TUI launch must not rebuild")
 
-    monkeypatch.setattr(main_mod.subprocess, "run", fake_run)
+    monkeypatch.setattr(main_mod.subprocess, "run", fail_run)
 
-    main_mod._make_tui_argv(tmp_path, tui_dev=False)
+    argv, cwd = main_mod._make_tui_argv(tmp_path, tui_dev=False)
 
-    assert calls
-    assert calls[0][0][0] == ["/bin/npm", "run", "build"]
-    _assert_utf8_replace_capture(calls[0][1])
+    assert argv == ["/bin/node", "--expose-gc", str(tmp_path / "dist" / "entry.js")]
+    assert cwd == tmp_path
 
 
 def test_make_tui_argv_decodes_dev_prebuild_with_utf8_replace(

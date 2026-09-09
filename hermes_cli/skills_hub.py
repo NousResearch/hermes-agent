@@ -341,7 +341,13 @@ def do_search(query: str, source: str = "all", limit: int = 10, console: Optiona
     c.print(table)
     c.print("[dim]Use: hermes skills inspect <identifier> to preview, "
             "hermes skills install <identifier> to install "
-            "(--json for scripting)[/]\n")
+            "(--json for scripting)[/]")
+    if any(r.source in ("skills.sh", "skills-sh") for r in results):
+        c.print("[dim yellow]Note:[/] [dim]skills.sh results may include entries whose "
+                "upstream files were removed or renamed; a 'stale index entry' error "
+                "at install means the skill no longer exists there.[/]\n")
+    else:
+        c.print()
 
 
 def _rank_and_page(all_results, page: int, page_size: int):
@@ -585,7 +591,16 @@ def _pinned_sources(c: Console, sources, source_id: Optional[str], identifier: s
     return None
 
 
-def _print_fetch_failure(c: Console, sources, identifier: str) -> None:
+def _print_fetch_failure(c: Console, sources, identifier: str, meta=None, source=None) -> None:
+    # Index hit but files gone (GitHub 404): a stale index entry, not a user
+    # typo — name it so users stop re-trying spellings (#3259).
+    if meta is not None:
+        src_id = getattr(source, "source_id", lambda: "the registry")()
+        c.print(f"[bold red]Error:[/] '{identifier}' is listed in the {src_id} index, "
+                f"but its files no longer exist upstream.")
+        c.print("[dim]Stale index entry: the skill was likely renamed or removed by "
+                "its author. Try `hermes skills search` for an alternative.[/]\n")
+        return
     rate_limited = any(getattr(src, "is_rate_limited", False)
                        or getattr(getattr(src, "github", None), "is_rate_limited", False)
                        for src in sources)
@@ -663,7 +678,7 @@ def do_install(identifier: str, category: str = "", force: bool = False,
     c.print(f"\n[bold]Fetching:[/] {identifier}")
     meta, bundle, _matched_source = _resolve_source_meta_and_bundle(identifier, sources)
     if not bundle:
-        _print_fetch_failure(c, sources, identifier)
+        _print_fetch_failure(c, sources, identifier, meta=meta, source=_matched_source)
         return
     if not _resolve_url_bundle_name(c, bundle, meta, identifier, name_override, skip_confirm):
         return

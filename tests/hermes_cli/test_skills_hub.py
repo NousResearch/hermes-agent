@@ -496,3 +496,81 @@ def test_do_update_unmodified_skill_updates_normally(monkeypatch, tmp_path):
 
     assert installs == ["someone/hub-skill"]
     assert "Updated 1 skill(s)" in sink.getvalue()
+
+
+# ---------------------------------------------------------------------------
+# Stale index entry messages (#3259)
+# ---------------------------------------------------------------------------
+
+
+def _stale_env(monkeypatch):
+    """do_install where the index has metadata but the files are gone (404)."""
+    import hermes_cli.skills_hub as cli_hub
+    import tools.skills_hub as hub
+
+    class StaleSource:
+        def source_id(self):
+            return "skills-sh"
+
+    meta = type("Meta", (), {"identifier": "skills-sh/org/gone-skill"})()
+    monkeypatch.setattr(hub, "ensure_hub_dirs", lambda: None)
+    monkeypatch.setattr(cli_hub, "_sources", lambda: [StaleSource()])
+    monkeypatch.setattr(
+        cli_hub, "_resolve_source_meta_and_bundle",
+        lambda identifier, sources: (meta, None, sources[0]))
+    sink = StringIO()
+    console = Console(file=sink, force_terminal=False, color_system=None)
+    return console, sink
+
+
+def test_do_install_stale_index_names_the_problem(monkeypatch):
+    """Index hit + missing files reads as a stale entry, not a typo (#3259)."""
+    from hermes_cli.skills_hub import do_install
+
+    console, sink = _stale_env(monkeypatch)
+    do_install("skills-sh/org/gone-skill", console=console, skip_confirm=True)
+
+    out = sink.getvalue()
+    assert "Stale index entry" in out
+    assert "skills-sh" in out
+    assert "Could not fetch" not in out
+
+
+def test_do_install_unknown_identifier_stays_generic(monkeypatch):
+    """No index hit at all keeps the original generic message."""
+    import hermes_cli.skills_hub as cli_hub
+    import tools.skills_hub as hub
+    from hermes_cli.skills_hub import do_install
+
+    monkeypatch.setattr(hub, "ensure_hub_dirs", lambda: None)
+    monkeypatch.setattr(cli_hub, "_sources", lambda: [object()])
+    monkeypatch.setattr(
+        cli_hub, "_resolve_source_meta_and_bundle",
+        lambda identifier, sources: (None, None, None))
+    sink = StringIO()
+    console = Console(file=sink, force_terminal=False, color_system=None)
+    do_install("nobody/nowhere/nothing", console=console, skip_confirm=True)
+
+    out = sink.getvalue()
+    assert "Could not fetch" in out
+    assert "Stale index entry" not in out
+
+
+def test_do_search_warns_about_skills_sh_staleness(monkeypatch):
+    """Search results from skills.sh carry the stale-index caveat."""
+    import tools.skills_hub_search as hub_search
+    from hermes_cli.skills_hub import do_search
+    import hermes_cli.skills_hub as cli_hub
+
+    row = type("Row", (), {
+        "name": "gone-skill", "description": "d", "source": "skills-sh",
+        "trust_level": "community",
+        "identifier": "skills-sh/org/gone-skill"})()
+    monkeypatch.setattr(cli_hub, "_sources", lambda: [])
+    monkeypatch.setattr(hub_search, "unified_search",
+                        lambda query, sources, source_filter, limit: [row])
+    sink = StringIO()
+    console = Console(file=sink, force_terminal=False, color_system=None)
+    do_search("gone", console=console)
+
+    assert "stale index entry" in sink.getvalue()

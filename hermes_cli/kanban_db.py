@@ -21,6 +21,7 @@ import subprocess
 import sys
 import logging
 import time
+from hashlib import sha256
 from contextvars import ContextVar, Token
 from dataclasses import dataclass
 from pathlib import Path
@@ -3312,13 +3313,96 @@ def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
         return True
 
 
-def reopen_review_task(conn: sqlite3.Connection, task_id: str) -> bool:
+def validate_review_feedback(expected_event_id, feedback_id, feedback_comment_id, feedback_comment_sha256):
+    """Validate the all-or-none native reference before opening a CLI connection."""
+    if any(type(value) is not int or value <= 0 for value in (expected_event_id, feedback_comment_id)):
+        raise ValueError("feedback event/comment IDs must be positive integers")
+    if any(
+        not isinstance(value, str) or re.fullmatch(r"[0-9a-f]{64}", value) is None
+        for value in (feedback_id, feedback_comment_sha256)
+    ):
+        raise ValueError("feedback identity/comment digest must be lowercase SHA256")
+
+
+def reopen_review_task(
+    conn: sqlite3.Connection, task_id: str, *, expected_event_id=None,
+    feedback_id=None, feedback_comment_id=None, feedback_comment_sha256=None,
+    with_reason: bool = False,
+):
     """``review`` -> ``ready``/``todo`` so the implementer re-runs on the new
     comments; restores the implementer from the ``review_requested`` event.
     Preserves ``consecutive_failures`` and the block loop counter (review is
-    not a block; only :func:`complete_task` clears them)."""
+    not a block; only :func:`complete_task` clears them).
+
+    Guarded feedback also accepts stopped, previously reviewed blocked/triage
+    tasks. It consumes a caller-authenticated reference once, without reclaiming
+    a run or changing the spec/counters. Core verifies bytes, not the signer.
+    """
+    def result(ok, reason=None):
+        return (ok, reason) if with_reason else ok
+
+    guarded = any(value is not None for value in (
+        expected_event_id, feedback_id, feedback_comment_id, feedback_comment_sha256,
+    ))
+    if guarded:
+        validate_review_feedback(expected_event_id, feedback_id, feedback_comment_id, feedback_comment_sha256)
     now = int(time.time())
     with write_txn(conn):
+        if guarded:
+            # This branch must precede the legacy dangling-run recovery below.
+            for event in conn.execute(
+                "SELECT payload FROM task_events WHERE task_id=? AND kind='review_reopened'", (task_id,),
+            ):
+                receipt = _json_dict(event["payload"])
+                if receipt.get("feedback_id") == feedback_id:
+                    return result(False, "feedback already consumed")
+            task = get_task(conn, task_id)
+            if task is None or task.status not in ("review", "blocked", "triage"):
+                return result(False, "task is not parked for review feedback")
+            if any(getattr(task, name) is not None for name in (
+                "current_run_id", "claim_lock", "claim_expires", "worker_pid",
+            )) or conn.execute(
+                "SELECT 1 FROM task_runs WHERE task_id=? AND ended_at IS NULL LIMIT 1", (task_id,),
+            ).fetchone():
+                return result(False, "task has an active or dangling run/claim")
+            latest = conn.execute(
+                "SELECT MAX(id) FROM task_events WHERE task_id=?", (task_id,),
+            ).fetchone()[0]
+            if latest != expected_event_id:
+                return result(False, "stale feedback event snapshot")
+            review = conn.execute(
+                "SELECT e.payload, r.ended_at, r.outcome FROM task_events e "
+                "LEFT JOIN task_runs r ON r.id=e.run_id AND r.task_id=e.task_id "
+                "WHERE e.task_id=? AND e.kind='review_requested' ORDER BY e.id DESC LIMIT 1",
+                (task_id,),
+            ).fetchone()
+            handoff = _json_dict(_row_get(review, "payload"))
+            implementer = handoff.get("implementer")
+            if (
+                not isinstance(implementer, str) or not implementer.strip()
+                or review["ended_at"] is None or review["outcome"] != "review_requested"
+            ):
+                return result(False, "no valid ended review handoff")
+            comment = conn.execute(
+                "SELECT body FROM task_comments WHERE id=? AND task_id=?", (feedback_comment_id, task_id),
+            ).fetchone()
+            if (
+                comment is None or not isinstance(comment["body"], str)
+                or sha256(comment["body"].encode("utf-8")).hexdigest() != feedback_comment_sha256
+            ):
+                return result(False, "feedback comment reference does not match")
+            new_status = _landing_status_after_parents(conn, task_id)
+            conn.execute(
+                "UPDATE tasks SET status=?, assignee=? WHERE id=?",
+                (new_status, implementer, task_id),
+            )
+            _append_event(conn, task_id, "review_reopened", {
+                "status": new_status, "implementer": implementer,
+                "previous_status": task.status, "expected_event_id": expected_event_id,
+                "feedback_id": feedback_id, "feedback_comment_id": feedback_comment_id,
+                "feedback_comment_sha256": feedback_comment_sha256,
+            })
+            return result(True)
         _reclaim_dangling_run(
             conn, task_id, statuses=("review",), now=now,
             note="invariant recovery on review reopen",

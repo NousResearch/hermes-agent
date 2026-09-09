@@ -37,6 +37,10 @@ from hermes_cli.kanban_parser import build_parser  # noqa: F401  (re-exported: h
 
 # --- Flag parsing helpers ---
 
+_REVIEW_FEEDBACK_FIELDS = (
+    "expected_event_id", "feedback_id", "feedback_comment_id", "feedback_comment_sha256",
+)
+
 def _none_profile(value: str) -> Optional[str]:
     """``none`` / ``-`` / ``null`` mean "unassign"."""
     return None if value.lower() in {"none", "-", "null"} else value
@@ -186,7 +190,10 @@ def kanban_command(args: argparse.Namespace) -> int:
             observational = (
                 action in ("list", "ls") and bool(getattr(args, "no_promote", False))
             ) or (action == "show" and bool(getattr(args, "read_only", False)))
-            if not observational:
+            guarded_reopen = action == "reopen-review" and any(
+                getattr(args, name, None) is not None for name in _REVIEW_FEEDBACK_FIELDS
+            )
+            if not observational and not guarded_reopen:
                 kb.init_db()
         except Exception as exc:
             return _err(f"kanban: could not initialize database: {exc}")
@@ -497,7 +504,7 @@ def _cmd_show(args: argparse.Namespace) -> int:
     if want_json:
         _print_json({
             "task": _task_to_dict(task), "latest_summary": latest_summary, "parents": parents, "children": children,
-            "comments": [_obj_dict(c, ("author", "body", "created_at")) for c in comments],
+            "comments": [_obj_dict(c, ("id", "author", "body", "created_at")) for c in comments],
             "events": [_obj_dict(e, ("id", "kind", "payload", "created_at", "run_id")) for e in events],
             "runs": [_obj_dict(r, _SHOW_RUN_FIELDS) for r in runs],
         })
@@ -996,6 +1003,23 @@ def _cmd_reopen_review(args: argparse.Namespace) -> int:
     ids, rc = _require_ids(args)
     if rc:
         return rc
+    feedback = {name: getattr(args, name, None) for name in _REVIEW_FEEDBACK_FIELDS}
+    if any(value is not None for value in feedback.values()):
+        try:
+            if len(ids) != 1 or getattr(args, "reason", None) is not None:
+                raise ValueError("guarded feedback requires one task and no --reason")
+            kb.validate_review_feedback(**feedback)
+        except ValueError as exc:
+            return _err(f"kanban: {exc}", 2)
+        with kbc.connect_closing() as conn:
+            ok, diagnostic = kb.reopen_review_task(conn, ids[0], **feedback, with_reason=True)
+        if ok:
+            print(f"Reopened {ids[0]}")
+            return 0
+        if diagnostic == "feedback already consumed":
+            print(f"Already consumed feedback for {ids[0]}")
+            return 0
+        return _err(f"cannot reopen {ids[0]}: {diagnostic}")
     reason = getattr(args, "reason", None)
     if reason is not None:
         reason = str(kb.redact_review_value(reason.strip())).strip() or None

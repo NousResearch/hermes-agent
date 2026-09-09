@@ -332,6 +332,10 @@ _SPECS = [
     _cmd("reopen-review", [
         _TASK_IDS,
         _reason("Optional reason/note — recorded as a comment before reopening. Quote multi-word reasons."),
+        _arg("--expected-event-id", type=int, help="Latest native event ID after persisting guarded feedback"),
+        _arg("--feedback-id", help="Stable opaque SHA256 wake identity; consumed only once per task"),
+        _arg("--feedback-comment-id", type=int, help="Stored native comment carrying authenticated feedback"),
+        _arg("--feedback-comment-sha256", help="SHA256 of the exact stored UTF-8 comment body"),
     ], help="Send one or more review tasks back for changes (review -> ready/todo)"),
     _cmd("promote", [
         _TASK_ID,

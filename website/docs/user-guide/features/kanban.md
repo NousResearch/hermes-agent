@@ -897,6 +897,37 @@ hermes kanban gc [--event-retention-days N]            # workspaces + old events
 
 All commands are also available as a slash command in the interactive CLI and in the messaging gateway (see [`/kanban` slash command](#kanban-slash-command) below).
 
+### Guarded feedback recovery
+
+An integration can resume a stopped, previously reviewed Review/Blocked/Triage
+task without rewriting its spec or clearing block/failure counters:
+
+```bash
+hermes kanban --board BOARD reopen-review TASK \
+  --expected-event-id EVENT_ID --feedback-id FEEDBACK_SHA256 \
+  --feedback-comment-id COMMENT_ID --feedback-comment-sha256 BODY_SHA256
+```
+
+The four options are all-or-none, require one task, and cannot accompany
+`--reason`. Read the existing comment's ID/body and latest event ID from native
+`show --read-only --json` after persisting the feedback. Hash the **stored** UTF-8
+body, not pre-write bytes. Choose a stable opaque feedback digest that does not
+change on retry, body edit or a later parked episode.
+
+Core atomically verifies the stopped task, ended review provenance, latest-event
+snapshot and exact comment reference, then records consumption in the existing
+`review_reopened` event. It neither authenticates the comment's external signer
+nor repairs dangling claims. Integrations remain responsible for trusted source,
+freshness and signature verification; a body hash is not authentication.
+
+Successful recovery prints `Reopened TASK` and exits 0. Repeated consumption
+prints `Already consumed feedback for TASK` and exits 0 without another
+transition; integrations should verify the exact native receipt. Other state or
+reference refusals exit 1; invalid guarded arguments exit 2 before opening the
+database. Without these options, ordinary Review batch recovery is unchanged.
+Parent checks and configured preclaim policy still gate the subsequent coding
+claim; reopening allocates no run/lease and never grants merge approval.
+
 `--max-retries` is a per-task circuit-breaker override for the dispatcher. `--max-retries 1` blocks the task on the first non-successful attempt, while `--max-retries 3` allows two retries and blocks on the third failure. Omit it to use `kanban.failure_limit` from `config.yaml`, then the built-in default.
 
 ### Concurrency, scheduling, and child promotion config

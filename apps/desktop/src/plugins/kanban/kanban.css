@@ -39,6 +39,15 @@
   animation-duration: 6s;
 }
 
+.kanban-whiteboard .excalidraw {
+  height: 100%;
+  width: 100%;
+}
+
+.kanban-whiteboard .excalidraw .App-menu_top {
+  z-index: 2;
+}
+
 @keyframes kanban-arc-spin {
   to {
     --kanban-arc-angle: 360deg;

@@ -55,10 +55,15 @@ export const $lanesByProfile = atom<boolean>(false)
  *  auto: empty lanes collapse to a rail, occupied lanes expand. Persisted. */
 export const $collapsedLanes = atom<Record<string, boolean>>({})
 
+/** Last selected Kanban page mode. The drawing itself is server-persisted;
+ * this is only a personal UI preference. */
+export const $kanbanView = atom<'board' | 'whiteboard'>('board')
+
 const BOARD_SLUG_KEY = 'boardSlug'
 const INTRO_KEY = 'introDismissed'
 const LANES_KEY = 'lanesByProfile'
 const COLLAPSED_KEY = 'collapsedLanes'
+const KANBAN_VIEW_KEY = 'kanbanView'
 
 /** One live `task_events` frame → precise cache invalidation: the board, plus
  *  each touched task's detail. The polls (8s board / 4s drawer) stay as the
@@ -116,6 +121,7 @@ export function bindApi(
   persist($introDismissed, INTRO_KEY, false)
   persist($lanesByProfile, LANES_KEY, false)
   persist($collapsedLanes, COLLAPSED_KEY, {})
+  persist($kanbanView, KANBAN_VIEW_KEY, 'board')
 
   let close: (() => void) | null = null
 
@@ -186,6 +192,15 @@ export const fetchProjects = () => call<{ projects: KanbanProject[] }>('/project
 
 export const fetchOrchestration = () => call<OrchestrationSettings>('/orchestration')
 
+export type WhiteboardScene = {
+  elements: readonly Record<string, unknown>[]
+  appState: Record<string, unknown>
+  files: Record<string, unknown>
+}
+
+export const fetchWhiteboard = () =>
+  call<{ scene: WhiteboardScene; updated_at: null | number }>(withBoard('/whiteboard'))
+
 // ── writes ────────────────────────────────────────────────────────────────────
 
 // Every board edit nudges the dispatcher (debounced, fire-and-forget) so the
@@ -217,6 +232,12 @@ function nudged<T>(write: Promise<T>): Promise<T> {
 
 export const patchTask = (id: string, patch: Record<string, unknown>) =>
   nudged(call(withBoard(`/tasks/${id}`), { method: 'PATCH', body: patch }))
+
+export const saveWhiteboard = (scene: WhiteboardScene) =>
+  call<{ scene: WhiteboardScene; size: number; updated_at: number }>(withBoard('/whiteboard'), {
+    method: 'PUT',
+    body: { scene }
+  })
 
 export const createTask = (body: Record<string, unknown>) =>
   nudged(call<{ task: KanbanTask | null; warning?: string }>(withBoard('/tasks'), { method: 'POST', body }))

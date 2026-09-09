@@ -116,6 +116,7 @@ def normalize_reasoning_effort(effort: Optional[str]) -> Optional[str]:
 KNOWN_TOOLSET_NAMES = frozenset(name.casefold() for name in get_toolset_names())
 _IS_WINDOWS = sys.platform == "win32"
 KANBAN_ATTACHMENT_MAX_BYTES = 25 * 1024 * 1024  # one cap for dashboard, tools and CLI
+KANBAN_WHITEBOARD_MAX_BYTES = 20 * 1024 * 1024
 
 
 def _assert_not_delegated_child_mutation() -> None:
@@ -1013,6 +1014,15 @@ CREATE TABLE IF NOT EXISTS task_attachments (
     created_at   INTEGER NOT NULL
 );
 
+-- One free-form drawing surface per board. The scene is opaque JSON owned by
+-- the whiteboard client; living in this DB gives it board isolation and makes
+-- board export/import carry the drawing automatically.
+CREATE TABLE IF NOT EXISTS kanban_whiteboard (
+    id         TEXT PRIMARY KEY CHECK (id = 'default'),
+    scene      TEXT NOT NULL,
+    updated_at INTEGER NOT NULL
+);
+
 -- Subscription from a gateway source (platform + chat + thread) to a
 -- task. The gateway's kanban-notifier watcher tails task_events and
 -- pushes ``completed`` / ``blocked`` / ``spawn_auto_blocked`` events to
@@ -1068,6 +1078,41 @@ def _claimer_id() -> str:
 def _host_prefix() -> str:
     """``"<host>:"`` prefix shared by every claim lock issued from this host."""
     return f"{_claimer_id().split(':', 1)[0]}:"
+
+
+# --- Board whiteboard -------------------------------------------------------
+
+
+def get_whiteboard(conn: sqlite3.Connection) -> dict[str, Any]:
+    """Return the board's saved drawing scene, or an empty scene."""
+    row = conn.execute(
+        "SELECT scene, updated_at FROM kanban_whiteboard WHERE id = 'default'",
+    ).fetchone()
+    if row is None:
+        return {"scene": {"elements": [], "appState": {}, "files": {}}, "updated_at": None}
+    return {"scene": _json_dict(row["scene"]), "updated_at": int(row["updated_at"])}
+
+
+def save_whiteboard(conn: sqlite3.Connection, scene: dict[str, Any]) -> dict[str, Any]:
+    """Persist the board's drawing scene with a bounded payload."""
+    _assert_not_delegated_child_mutation()
+    if not isinstance(scene, dict):
+        raise ValueError("whiteboard scene must be a JSON object")
+    encoded = json.dumps(scene, ensure_ascii=False, separators=(",", ":"))
+    size = len(encoded.encode("utf-8"))
+    if size > KANBAN_WHITEBOARD_MAX_BYTES:
+        raise ValueError(
+            f"whiteboard scene exceeds {KANBAN_WHITEBOARD_MAX_BYTES // (1024 * 1024)} MiB limit"
+        )
+    updated_at = int(time.time())
+    with write_txn(conn):
+        conn.execute(
+            """INSERT INTO kanban_whiteboard(id, scene, updated_at)
+               VALUES ('default', ?, ?)
+               ON CONFLICT(id) DO UPDATE SET scene = excluded.scene, updated_at = excluded.updated_at""",
+            (encoded, updated_at),
+        )
+    return {"scene": scene, "updated_at": updated_at, "size": size}
 
 
 # --- Task creation / mutation ---

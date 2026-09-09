@@ -82,6 +82,45 @@ def test_board_empty(client):
     assert data["latest_event_id"] == 0
 
 
+def test_whiteboard_round_trip_and_board_isolation(client):
+    empty = client.get("/api/plugins/kanban/whiteboard")
+    assert empty.status_code == 200
+    assert empty.json() == {
+        "scene": {"elements": [], "appState": {}, "files": {}},
+        "updated_at": None,
+    }
+
+    scene = {
+        "elements": [{"id": "line-1", "type": "freedraw", "points": [[0, 0], [3, 4]]}],
+        "appState": {"viewBackgroundColor": "#ffffff"},
+        "files": {},
+    }
+    saved = client.put("/api/plugins/kanban/whiteboard", json={"scene": scene})
+    assert saved.status_code == 200
+    assert saved.json()["scene"] == scene
+    assert saved.json()["size"] > 0
+
+    reread = client.get("/api/plugins/kanban/whiteboard")
+    assert reread.status_code == 200
+    assert reread.json()["scene"] == scene
+    assert reread.json()["updated_at"] == saved.json()["updated_at"]
+
+    kb.create_board("other")
+    other = client.get("/api/plugins/kanban/whiteboard?board=other")
+    assert other.status_code == 200
+    assert other.json()["scene"]["elements"] == []
+
+
+def test_whiteboard_rejects_oversized_scene(client, monkeypatch):
+    monkeypatch.setattr(kb, "KANBAN_WHITEBOARD_MAX_BYTES", 32)
+    response = client.put(
+        "/api/plugins/kanban/whiteboard",
+        json={"scene": {"elements": [], "appState": {}, "files": {"blob": "x" * 64}}},
+    )
+    assert response.status_code == 400
+    assert "exceeds" in response.json()["detail"]
+
+
 # ---------------------------------------------------------------------------
 # POST /tasks then GET /board sees it
 # ---------------------------------------------------------------------------

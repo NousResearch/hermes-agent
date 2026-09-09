@@ -336,6 +336,25 @@ async def get_board_endpoint(
     )
 
 
+# --- Board whiteboard -------------------------------------------------------
+
+
+class WhiteboardBody(BaseModel):
+    scene: dict[str, Any]
+
+
+@router.get("/whiteboard")
+def get_whiteboard(board: Optional[str] = Query(None)):
+    with _board_conn(board) as (_board, conn):
+        return kanban_db.get_whiteboard(conn)
+
+
+@router.put("/whiteboard")
+def put_whiteboard(payload: WhiteboardBody, board: Optional[str] = Query(None)):
+    with _board_conn(board) as (_board, conn), _value_error_400():
+        return kanban_db.save_whiteboard(conn, payload.scene)
+
+
 # --- GET /tasks/:id ---------------------------------------------------------
 
 @router.get("/tasks/{task_id}")

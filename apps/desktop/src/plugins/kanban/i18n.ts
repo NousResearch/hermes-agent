@@ -23,6 +23,13 @@ type KanbanMessages = {
   arcRunning: string
   arcStale: string
   title: string
+  boardView: string
+  whiteboardView: string
+  whiteboardLoadError: string
+  whiteboardSaveError: (error: string) => string
+  whiteboardSaved: string
+  whiteboardSaving: string
+  whiteboardUnsaved: string
   orchestrationSettings: string
   newTask: string
   filterCards: string
@@ -235,6 +242,13 @@ export const en: KanbanMessages = {
   arcRunning: 'An agent is working on this now.',
   arcStale: 'Claimed, but no worker heartbeat for 2+ minutes — the dispatcher will reclaim it.',
   title: 'Kanban',
+  boardView: 'Board',
+  whiteboardView: 'Whiteboard',
+  whiteboardLoadError: 'Whiteboard could not be loaded',
+  whiteboardSaveError: error => `Whiteboard was not saved: ${error}`,
+  whiteboardSaved: 'Saved',
+  whiteboardSaving: 'Saving…',
+  whiteboardUnsaved: 'Unsaved changes',
   orchestrationSettings: 'Orchestration settings',
   newTask: 'New task',
   filterCards: 'Filter cards…',
@@ -447,6 +461,13 @@ const ja: KanbanMessages = {
   arcRunning: 'エージェントが現在作業中です。',
   arcStale: '取得済みですが、2分以上ワーカーのハートビートがありません — ディスパッチャが再取得します。',
   title: 'カンバン',
+  boardView: 'ボード',
+  whiteboardView: 'ホワイトボード',
+  whiteboardLoadError: 'ホワイトボードを読み込めませんでした',
+  whiteboardSaveError: error => `ホワイトボードを保存できませんでした: ${error}`,
+  whiteboardSaved: '保存済み',
+  whiteboardSaving: '保存中…',
+  whiteboardUnsaved: '未保存の変更',
   orchestrationSettings: 'オーケストレーション設定',
   newTask: '新しいタスク',
   filterCards: 'カードを絞り込み…',
@@ -658,6 +679,13 @@ const zh: KanbanMessages = {
   arcRunning: '有代理正在处理它。',
   arcStale: '已领取，但超过 2 分钟没有工作单元心跳 — 调度器将重新领取。',
   title: '看板',
+  boardView: '看板',
+  whiteboardView: '白板',
+  whiteboardLoadError: '无法加载白板',
+  whiteboardSaveError: error => `白板未保存：${error}`,
+  whiteboardSaved: '已保存',
+  whiteboardSaving: '正在保存…',
+  whiteboardUnsaved: '有未保存的更改',
   orchestrationSettings: '编排设置',
   newTask: '新建任务',
   filterCards: '筛选卡片…',
@@ -866,6 +894,13 @@ const zhHant: KanbanMessages = {
   arcRunning: '有代理正在處理它。',
   arcStale: '已領取，但超過 2 分鐘沒有工作單元心跳 — 排程器將重新領取。',
   title: '看板',
+  boardView: '看板',
+  whiteboardView: '白板',
+  whiteboardLoadError: '无法加载白板',
+  whiteboardSaveError: error => `白板未保存：${error}`,
+  whiteboardSaved: '已保存',
+  whiteboardSaving: '正在保存…',
+  whiteboardUnsaved: '有未保存的更改',
   orchestrationSettings: '編排設定',
   newTask: '新增任務',
   filterCards: '篩選卡片…',

@@ -35,6 +35,7 @@ import {
   Input,
   Loader,
   SearchField,
+  SegmentedControl,
   Select,
   SelectContent,
   SelectItem,
@@ -52,8 +53,10 @@ import {
 } from '@hermes/plugin-sdk'
 import {
   type CSSProperties,
+  lazy,
   type DragEvent as ReactDragEvent,
   type ReactNode,
+  Suspense,
   useEffect,
   useMemo,
   useRef,
@@ -64,6 +67,7 @@ import {
   $boardSlug,
   $collapsedLanes,
   $introDismissed,
+  $kanbanView,
   $lanesByProfile,
   boardKey,
   BOARDS_KEY,
@@ -100,6 +104,8 @@ import {
   useKanban,
   useOrchestration
 } from './ui'
+
+const WhiteboardView = lazy(() => import('./whiteboard').then(module => ({ default: module.KanbanWhiteboard })))
 
 // ── optimistic board edits (reconciled by the follow-up refresh) ─────────────
 
@@ -1081,6 +1087,7 @@ function SelectionBar({
 
 export function KanbanBoardPage() {
   const k = useKanban()
+  const view = useValue($kanbanView)
   const qc = useQueryClient()
   const slug = useValue($boardSlug)
   const [archived, setArchived] = useState(false)
@@ -1329,10 +1336,20 @@ export function KanbanBoardPage() {
 
       <header className="flex shrink-0 flex-wrap items-center gap-2 px-4 py-2">
         <h1 className="text-sm font-semibold text-foreground">{k.title}</h1>
-        <span className="rounded-full bg-(--ui-bg-quaternary) px-1.5 py-px text-[0.625rem] tabular-nums text-(--ui-text-tertiary)">
-          {total}
-        </span>
-        {board && (
+        <SegmentedControl
+          onChange={id => $kanbanView.set(id as 'board' | 'whiteboard')}
+          options={[
+            { id: 'board', label: k.boardView },
+            { id: 'whiteboard', label: k.whiteboardView }
+          ]}
+          value={view}
+        />
+        {view === 'board' && (
+          <span className="rounded-full bg-(--ui-bg-quaternary) px-1.5 py-px text-[0.625rem] tabular-nums text-(--ui-text-tertiary)">
+            {total}
+          </span>
+        )}
+        {view === 'board' && board && (
           <FilterMenu
             archived={archived}
             assignee={assignee}
@@ -1343,89 +1360,109 @@ export function KanbanBoardPage() {
             tenant={tenant}
           />
         )}
-        <SearchField aria-label={k.filterCards} onChange={setSearch} placeholder={k.filterCards} value={search} />
-        <div className="ml-auto flex items-center gap-1">
-          <Tip label={k.orchestrationSettings}>
-            <Button
-              aria-label={k.orchestrationSettings}
-              className={cn(settingsOpen && 'bg-(--ui-control-active-background) text-foreground')}
-              onClick={() => setSettingsOpen(!settingsOpen)}
-              size="icon-xs"
-              variant="ghost"
-            >
-              <Codicon name="organization" size="0.85rem" />
-            </Button>
-          </Tip>
-          <Button onClick={() => setAddStatus('triage')} size="sm">
-            <Codicon name="add" size="0.8rem" />
-            {k.newTask}
-          </Button>
-        </div>
-      </header>
-
-      {settingsOpen && <OrchestrationPanel />}
-
-      {board && <Intro />}
-
-      {errorMessage && !board ? (
-        <div className="grid flex-1 place-items-center">
-          <ErrorState title={errorMessage} />
-        </div>
-      ) : !filtered ? (
-        <div className="grid flex-1 place-items-center">
-          <Loader type="lemniscate-bloom" />
-        </div>
-      ) : total === 0 ? (
-        <div className="grid flex-1 place-items-center px-4 text-center">
-          <div className="flex flex-col items-center gap-2">
-            <Codicon className="text-(--ui-text-quaternary)" name="project" size="1.25rem" />
-            <p className="text-xs text-(--ui-text-tertiary)">{search || tenant || assignee ? k.noMatch : k.noTasks}</p>
-            <Button className="mt-0.5" onClick={() => setAddStatus('triage')} size="sm" variant="outline">
-              <Codicon name="add" size="0.75rem" />
+        {view === 'board' && (
+          <SearchField aria-label={k.filterCards} onChange={setSearch} placeholder={k.filterCards} value={search} />
+        )}
+        {view === 'board' && (
+          <div className="ml-auto flex items-center gap-1">
+            <Tip label={k.orchestrationSettings}>
+              <Button
+                aria-label={k.orchestrationSettings}
+                className={cn(settingsOpen && 'bg-(--ui-control-active-background) text-foreground')}
+                onClick={() => setSettingsOpen(!settingsOpen)}
+                size="icon-xs"
+                variant="ghost"
+              >
+                <Codicon name="organization" size="0.85rem" />
+              </Button>
+            </Tip>
+            <Button onClick={() => setAddStatus('triage')} size="sm">
+              <Codicon name="add" size="0.8rem" />
               {k.newTask}
             </Button>
           </div>
-        </div>
-      ) : (
-        <div
-          className={cn('flex flex-1 gap-2 overflow-x-auto px-4 pt-1 pb-3', grabbing && 'cursor-grabbing')}
-          onMouseDown={onMouseDown}
-          ref={lanesRef}
+        )}
+      </header>
+
+      {view === 'whiteboard' ? (
+        <Suspense
+          fallback={
+            <div className="grid flex-1 place-items-center">
+              <Loader type="lemniscate-bloom" />
+            </div>
+          }
         >
-          {filtered.columns.map(col => {
-            const auto = boardHasWork && col.tasks.length === 0
+          <WhiteboardView key={slug} />
+        </Suspense>
+      ) : (
+        <>
+          {settingsOpen && <OrchestrationPanel />}
 
-            return (
-              <Column
-                collapsed={laneOverrides[col.name] ?? auto}
-                column={col}
-                columns={columnNames}
-                key={col.name}
-                onAdd={setAddStatus}
-                onDelete={id => deleteMut.mutate(id)}
-                onDropTask={onMove}
-                onMove={onMove}
-                onOpen={setOpenId}
-                onToggle={() => toggleLane(col.name, auto)}
-                onToggleSelect={toggleSelect}
-                selected={selected}
-              />
-            )
-          })}
-        </div>
+          {board && <Intro />}
+
+          {errorMessage && !board ? (
+            <div className="grid flex-1 place-items-center">
+              <ErrorState title={errorMessage} />
+            </div>
+          ) : !filtered ? (
+            <div className="grid flex-1 place-items-center">
+              <Loader type="lemniscate-bloom" />
+            </div>
+          ) : total === 0 ? (
+            <div className="grid flex-1 place-items-center px-4 text-center">
+              <div className="flex flex-col items-center gap-2">
+                <Codicon className="text-(--ui-text-quaternary)" name="project" size="1.25rem" />
+                <p className="text-xs text-(--ui-text-tertiary)">
+                  {search || tenant || assignee ? k.noMatch : k.noTasks}
+                </p>
+                <Button className="mt-0.5" onClick={() => setAddStatus('triage')} size="sm" variant="outline">
+                  <Codicon name="add" size="0.75rem" />
+                  {k.newTask}
+                </Button>
+              </div>
+            </div>
+          ) : (
+            <div
+              className={cn('flex flex-1 gap-2 overflow-x-auto px-4 pt-1 pb-3', grabbing && 'cursor-grabbing')}
+              onMouseDown={onMouseDown}
+              ref={lanesRef}
+            >
+              {filtered.columns.map(col => {
+                const auto = boardHasWork && col.tasks.length === 0
+
+                return (
+                  <Column
+                    collapsed={laneOverrides[col.name] ?? auto}
+                    column={col}
+                    columns={columnNames}
+                    key={col.name}
+                    onAdd={setAddStatus}
+                    onDelete={id => deleteMut.mutate(id)}
+                    onDropTask={onMove}
+                    onMove={onMove}
+                    onOpen={setOpenId}
+                    onToggle={() => toggleLane(col.name, auto)}
+                    onToggleSelect={toggleSelect}
+                    selected={selected}
+                  />
+                )
+              })}
+            </div>
+          )}
+
+          {selected.size > 0 && (
+            <SelectionBar
+              columns={columnNames}
+              onClear={() => setSelected(new Set())}
+              onDone={failed => setSelected(new Set(failed))}
+              selected={selected}
+            />
+          )}
+
+          <NewTaskDialog onClose={() => setAddStatus(null)} parents={parentOptions} target={addStatus} />
+          <TaskDrawer columns={columnNames} id={openId} onClose={() => setOpenId(null)} onOpen={setOpenId} />
+        </>
       )}
-
-      {selected.size > 0 && (
-        <SelectionBar
-          columns={columnNames}
-          onClear={() => setSelected(new Set())}
-          onDone={failed => setSelected(new Set(failed))}
-          selected={selected}
-        />
-      )}
-
-      <NewTaskDialog onClose={() => setAddStatus(null)} parents={parentOptions} target={addStatus} />
-      <TaskDrawer columns={columnNames} id={openId} onClose={() => setOpenId(null)} onOpen={setOpenId} />
     </div>
   )
 }

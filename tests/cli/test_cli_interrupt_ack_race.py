@@ -31,6 +31,8 @@ import time
 import types
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 
 def _make_cli():
     """Build a HermesCLI with prompt_toolkit stubbed (same pattern as
@@ -538,3 +540,18 @@ def test_close_waits_for_atomic_cli_staging_before_snapshot(tmp_path, monkeypatc
         "old answer",
         "new prompt",
     ]
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _restore_clean_cli_module():
+    """Reload ``cli`` cleanly after this module.
+
+    ``_make_cli`` reloads the ``cli`` module while prompt_toolkit is stubbed
+    with MagicMocks; without a follow-up reload, cli's globals stay bound to
+    mocks and every later test touching real prompt_toolkit behaviour fails.
+    Same pattern as ``test_cli_init._make_cli``.
+    """
+    yield
+    import cli as _cli_restore
+
+    importlib.reload(_cli_restore)

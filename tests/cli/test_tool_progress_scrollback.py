@@ -9,6 +9,8 @@ import sys
 import importlib
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 
 # Module-level reference to the cli module (set by _make_cli on first call)
 _cli_mod = None
@@ -202,3 +204,18 @@ class TestMoAReferenceBlocks:
         assert "aggregating" in cli._spinner_text
         # aggregating is a spinner-only transition; no committed scrollback line.
         mock_print.assert_not_called()
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _restore_clean_cli_module():
+    """Reload ``cli`` cleanly after this module.
+
+    The stubbed-prompt_toolkit ``importlib.reload(cli)`` in this module
+    permanently rebinds cli's globals to MagicMocks; without a follow-up
+    clean reload, later tests touching real prompt_toolkit behaviour fail.
+    Same pattern as ``test_cli_init._make_cli``.
+    """
+    yield
+    import cli as _cli_restore
+
+    importlib.reload(_cli_restore)

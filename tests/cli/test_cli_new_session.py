@@ -305,3 +305,16 @@ def test_new_session_with_title(capsys):
     assert "My Test Session" in captured.out
 
 
+@pytest.fixture(scope="module", autouse=True)
+def _restore_clean_cli_module():
+    """Reload ``cli`` cleanly after this module.
+
+    ``_make_cli`` reloads the ``cli`` module while prompt_toolkit is stubbed
+    with MagicMocks; without a follow-up reload, cli's globals stay bound to
+    mocks and every later test touching real prompt_toolkit behaviour fails.
+    Same pattern as ``test_cli_init._make_cli``.
+    """
+    yield
+    import cli as _cli_restore
+
+    importlib.reload(_cli_restore)

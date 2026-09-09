@@ -13,6 +13,7 @@ import importlib
 import sys
 from unittest.mock import MagicMock, patch
 
+import pytest
 from prompt_toolkit.key_binding import KeyBindings
 
 
@@ -136,3 +137,20 @@ class TestExtensionHookSubclass:
         cli._register_extra_tui_keybindings = _custom_hook
         cli._register_extra_tui_keybindings(kb, input_area=None)
         assert len(kb.bindings) == 1
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _restore_clean_cli_module():
+    """Reload ``cli`` cleanly after this module.
+
+    ``_make_cli`` reloads the ``cli`` module with prompt_toolkit replaced by
+    MagicMocks. Without a follow-up reload, every later test in the session
+    that touches real prompt_toolkit behaviour (e.g. building real key
+    bindings) sees MagicMock filters and fails with ``TypeError: Expecting a
+    bool or a Filter instance``. Baseline tests/cli order-pollution evidence:
+    this file's reload used to leak for the rest of the run.
+    """
+    yield
+    import cli as _cli_mod
+
+    importlib.reload(_cli_mod)

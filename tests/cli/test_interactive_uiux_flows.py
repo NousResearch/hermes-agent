@@ -11,6 +11,8 @@ mocked I/O, verifying:
 
 import types
 
+import pytest
+
 
 def _bare_cli():
     from cli import HermesCLI
@@ -115,3 +117,15 @@ def test_repeated_invocations_are_consistent():
     _wire(cli, cli_mod, [1, 0], ["second"], printed2)
     cli._run_interactive_spec(_peers_spec(), "peers")
     assert printed2 == ["Sent to peer-b: second"], printed2
+
+
+@pytest.fixture(autouse=True)
+def _restore_cli_cprint():
+    """``_wire`` assigns ``cli_mod._cprint`` directly (no monkeypatch); restore
+    it after each test so the fake does not leak into later modules that rely
+    on real ``_cprint`` recording."""
+    import cli as cli_mod
+
+    original = cli_mod._cprint
+    yield
+    cli_mod._cprint = original

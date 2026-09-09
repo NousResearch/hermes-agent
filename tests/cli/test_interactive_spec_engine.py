@@ -269,3 +269,16 @@ def test_prompt_actions_route_through_free_text_modal():
     cli._run_interactive_spec(spec, "groups")
     assert called_with.get("prompt") == "New group name:", called_with
     assert any("Created create with modal text" in p for p in printed), printed
+
+
+@pytest.fixture(autouse=True)
+def _restore_cli_cprint():
+    """The tests below assign ``cli_mod._cprint`` directly (no monkeypatch), so
+    the fake leaks past test teardown and silently no-ops later modules that
+    assert on real ``_cprint`` recording (e.g.
+    test_interrupt_output_history_regression). Snapshot and restore."""
+    import cli as cli_mod
+
+    original = cli_mod._cprint
+    yield
+    cli_mod._cprint = original

@@ -2,6 +2,8 @@ import importlib
 import sys
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 
 
 _cli_mod = None
@@ -88,3 +90,18 @@ class TestSubmittedUserMessagePreview:
         assert "line3" in rendered
         assert "line4" in rendered
         assert "(+1 more line)" in rendered
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _restore_clean_cli_module():
+    """Reload ``cli`` cleanly after this module.
+
+    The stubbed-prompt_toolkit ``importlib.reload(cli)`` in this module
+    permanently rebinds cli's globals to MagicMocks; without a follow-up
+    clean reload, later tests touching real prompt_toolkit behaviour fail.
+    Same pattern as ``test_cli_init._make_cli``.
+    """
+    yield
+    import cli as _cli_restore
+
+    importlib.reload(_cli_restore)

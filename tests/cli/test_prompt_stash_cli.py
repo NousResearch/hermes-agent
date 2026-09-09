@@ -287,3 +287,18 @@ class TestFmtStashAge:
         assert cli._fmt_stash_age(now - 30).endswith("s ago")
         assert "min ago" in cli._fmt_stash_age(now - 300)
         assert cli._fmt_stash_age(now - 7200).endswith("h ago")
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _restore_clean_cli_module():
+    """Reload ``cli`` cleanly after this module.
+
+    ``_make_cli`` reloads the ``cli`` module while prompt_toolkit is stubbed
+    with MagicMocks; without a follow-up reload, cli's globals stay bound to
+    mocks and every later test touching real prompt_toolkit behaviour fails.
+    Same pattern as ``test_cli_init._make_cli``.
+    """
+    yield
+    import cli as _cli_restore
+
+    importlib.reload(_cli_restore)

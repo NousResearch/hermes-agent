@@ -164,3 +164,18 @@ def test_show_banner_does_not_print_skills():
     startup_lines = [line for line in print_calls if "Activated skills:" in line]
     assert len(startup_lines) == 0
     assert mock_banner.call_count == 1
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _restore_clean_cli_module():
+    """Reload ``cli`` cleanly after this module.
+
+    The stubbed-prompt_toolkit ``importlib.reload(cli)`` in this module
+    permanently rebinds cli's globals to MagicMocks; without a follow-up
+    clean reload, later tests touching real prompt_toolkit behaviour fail.
+    Same pattern as ``test_cli_init._make_cli``.
+    """
+    yield
+    import cli as _cli_restore
+
+    importlib.reload(_cli_restore)

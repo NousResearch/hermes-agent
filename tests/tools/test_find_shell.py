@@ -155,6 +155,8 @@ class TestGitBashExternalProgramProbe:
 
         assert gitbash_probe._bash_starts(r"C:\Git\bin\bash.exe") is True
         assert calls[0][0][-1] == "/usr/bin/true; /usr/bin/cat --version >/dev/null"
+        # #78820: the probe must not inherit the TUI gateway's stdin pipe (MSYS flips it to PIPE_NOWAIT).
+        assert calls[0][1].get("stdin") is subprocess.DEVNULL
 
     @pytest.mark.windows_only
     def test_aslr_failure_surfaces_targeted_windows_command(

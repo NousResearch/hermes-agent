@@ -35,6 +35,22 @@ def adapter_supports_push(adapter: Any) -> bool:
     return bool(getattr(adapter, "supports_async_delivery", True))
 
 
+class WakeNotAccepted(RuntimeError):
+    """No adapter admission: retry without treating a healthy chat as dead."""
+
+
+async def admit_internal_event(adapter: Any, event: Any) -> None:
+    """Require a concrete adapter admission, not merely a handler returning None.
+
+    The public handler return stays unchanged. This receipt means scheduled/queued,
+    not model execution, authorization of a later turn, or successful outbound delivery.
+    """
+    event._gateway_accepted = False
+    await adapter.handle_message(event)
+    if event._gateway_accepted is not True:
+        raise WakeNotAccepted("internal wake not accepted by adapter")
+
+
 async def deliver_wake(adapter: Any, *, text: str, session_id: str = "", source: Any = None) -> None:
     """Deliver a wake turn to the session behind ``adapter``. ``session_id`` is the RAW session id
     (``X-Hermes-Session-Id`` / state.db key) — required for non-push adapters. ``source`` is the
@@ -45,7 +61,7 @@ async def deliver_wake(adapter: Any, *, text: str, session_id: str = "", source:
             raise ValueError("deliver_wake: push-capable adapter requires a SessionSource")
         from gateway.platforms.event import MessageEvent, MessageType
         synth_event = MessageEvent(text=text, message_type=MessageType.TEXT, source=source, internal=True)
-        await adapter.handle_message(synth_event)
+        await admit_internal_event(adapter, synth_event)
         return
     if not session_id:
         raise ValueError("deliver_wake: non-push adapter (supports_async_delivery=False) "

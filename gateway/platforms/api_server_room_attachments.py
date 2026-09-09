@@ -1160,6 +1160,10 @@ async def _handle_room_attachment_discard(
         # expires.
         claims = self._room_grant_claims(request, permission="status")
         _validate_target_scope(claims, _effective_room_profile(_api_request_profile))
+        # The longer status horizon is valid only for a grant that was allowed
+        # to stage attachments; inspection/replication alone cannot delete them.
+        if "attachment.stage" not in claims["permissions"]:
+            raise HostedRoomGrantError("Room grant does not permit attachment cleanup.")
         generation = int(request.match_info["execution_generation"])
         if generation < 1:
             raise RoomAttachmentSpoolError("execution_generation is invalid")

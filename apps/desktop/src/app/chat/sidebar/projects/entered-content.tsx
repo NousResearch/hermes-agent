@@ -135,7 +135,8 @@ function RepoFlatSection({
   // Discovery may resurrect a removed worktree, never an explicit sidebar hide.
   const ordered = overlaidGroups.filter(
     group =>
-      group.isMain || !dismissedWorktrees.includes(group.id) ||
+      group.isMain ||
+      !dismissedWorktrees.includes(group.id) ||
       (removedWorktrees.includes(group.id) && group.path && discoveredWorktreePaths.has(group.path))
   )
 

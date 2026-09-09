@@ -189,6 +189,91 @@ class TestTodoPanelRendering:
         assert all("\x1b" not in line and "\r" not in line for line in lines)
 
 
+class TestTodoKeybindingsThroughRealBuildPath:
+    """Regression: merge 2efaa643 dropped the _register_todo_tui_keybindings call from
+    _tui_build_key_bindings; helper-direct tests missed it. These go through the REAL
+    production key-binding build path."""
+
+    @staticmethod
+    def _bare_cli() -> HermesCLI:
+        cli = TestCLIIntegrationSeams._bare_cli()
+        cli.config = {}
+        cli._stash_panel_open = lambda: False
+        return cli
+
+    def test_tui_build_key_bindings_registers_ctrl_t_todo_toggle(self):
+        cli = self._bare_cli()
+        kb = cli._tui_build_key_bindings()
+        ctrl_t = [b for b in kb.bindings if b.keys == ('c-t',)]
+        assert len(ctrl_t) == 1, f"expected 1 Ctrl+T binding, got {len(ctrl_t)}"
+        assert ctrl_t[0].filter() is True
+
+    def test_tui_build_key_bindings_keeps_ctrl_p_as_command_palette_only(self):
+        # Decision: Ctrl+P stays command-palette-only; the bundled Ctrl+P registration
+        # inside _register_todo_tui_keybindings must NOT come back with the restore.
+        cli = self._bare_cli()
+        kb = cli._tui_build_key_bindings()
+        ctrl_p = [b for b in kb.bindings if b.keys == ('c-p',)]
+        assert len(ctrl_p) == 1
+        assert ctrl_p[0].handler.__name__ == "_tui_open_command_palette"
+
+    def test_todo_toggle_filter_blocks_when_only_completed_tasks_remain(self):
+        cli = self._bare_cli()
+        kb = cli._tui_build_key_bindings()
+        ctrl_t = next(b for b in kb.bindings if b.keys == ('c-t',))
+
+        cli.agent._todo_store.write([
+            {"id": "done", "content": "Finished", "status": "completed"},
+        ])
+        assert ctrl_t.filter() is False
+
+    def test_todo_toggle_filter_allows_pending_tasks(self):
+        cli = self._bare_cli()
+        kb = cli._tui_build_key_bindings()
+        ctrl_t = next(b for b in kb.bindings if b.keys == ('c-t',))
+        assert ctrl_t.filter() is True
+
+
+class TestTodoVisibilityActiveOnly:
+    def test_all_completed_tasks_hide_the_tray_but_preserve_history(self):
+        cli = TestCLIIntegrationSeams._bare_cli()
+        store = cli.agent._todo_store
+        store.write([
+            {"id": "a", "content": "Task A", "status": "completed"},
+            {"id": "b", "content": "Task B", "status": "completed"},
+        ])
+        cli._todo_panel_state.expanded = True
+
+        assert cli._todo_panel_visible() is False
+        assert cli._todo_panel_state.expanded is False
+        assert len(store.read()) == 2  # history preserved, non-destructive
+
+    def test_partially_completed_tasks_keep_the_tray_visible(self):
+        cli = TestCLIIntegrationSeams._bare_cli()
+        cli.agent._todo_store.write([
+            {"id": "a", "content": "Task A", "status": "completed"},
+            {"id": "b", "content": "Task B", "status": "in_progress"},
+            {"id": "c", "content": "Task C", "status": "pending"},
+        ])
+        assert cli._todo_panel_visible() is True
+
+    def test_ctrl_t_reopens_completed_history_for_inspection(self):
+        cli = TestCLIIntegrationSeams._bare_cli()
+        store = cli.agent._todo_store
+        store.write([
+            {"id": "a", "content": "Task A", "status": "completed"},
+            {"id": "b", "content": "Task B", "status": "completed"},
+        ])
+        assert cli._todo_panel_visible() is False
+
+        # Manual reopen through the toggle path still exposes the stored history.
+        assert cli._toggle_todo_panel() is True
+        assert cli._todo_panel_state.expanded is True
+        from hermes_cli.todo_progress import format_todo_panel_fragments
+        text = "".join(t for _, t in format_todo_panel_fragments(store.read(), cli._todo_panel_state, width=80))
+        assert "Task A" in text and "Task B" in text
+
+
 class TestCLIIntegrationSeams:
     @staticmethod
     def _bare_cli() -> HermesCLI:

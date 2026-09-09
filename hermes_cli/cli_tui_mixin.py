@@ -1891,6 +1891,11 @@ class CLITuiMixin:
             kb.add('c-j')(self._tui_insert_newline)
 
         self._tui_bind_editor_and_stash(kb)
+        # ── KENSEI CUSTOM (restored, lost in merge 2efaa643): Ctrl+T task
+        # inspector toggle + panel navigation. Registration order matches the
+        # pre-merge layout (before the generic Tab binding). Never adopt the
+        # upstream subagent-monitor Ctrl+T binding (b2aa855).
+        self._register_todo_tui_keybindings(kb)
         self._tui_bind_overlay_navigation(kb)
 
         # History: the TextArea is multiline so Up/Down alone only move the cursor;

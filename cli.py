@@ -4041,7 +4041,13 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin, CLITuiMix
             return []
 
     def _todo_panel_visible(self) -> bool:
-        visible = bool(self._todo_items())
+        # KENSEI CUSTOM: the tray shows only while work remains (any pending or
+        # in_progress task). Completed-only history hides the tray — the stored
+        # items stay intact and Ctrl+T can still reopen them for inspection.
+        items = self._todo_items()
+        visible = any(
+            row.get("status") in ("pending", "in_progress") for row in items
+        )
         if not visible and self._todo_panel_state.expanded:
             self._todo_panel_state.close()
         return visible
@@ -4486,24 +4492,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin, CLITuiMix
             self._toggle_todo_panel()
             event.app.invalidate()
 
-        # ── KENSEI CUSTOM (restored): Ctrl+P Control Room home ──
-        # Non-invasive: does not touch the draft buffer or hijack input — it
-        # prints the read-only home through _cprint, so any typed draft
-        # survives untouched. Suppressed while a modal prompt owns the
-        # composer (sudo / secret / approval / clarify / slash confirm).
-        _control_room_filter = Condition(
-            lambda: not self._clarify_state
-            and not self._approval_state
-            and not self._sudo_state
-            and not self._secret_state
-            and not self._slash_confirm_state
-            and not self._model_picker_state
-        )
-
-        @kb.add('c-p', filter=_control_room_filter)
-        def handle_control_room(event):
-            """Ctrl+P: open Control Room home (read-only, draft-preserving)."""
-            self._handle_control_command("/control")
+        # ── KENSEI CUSTOM (dropped during merge 2efaa643, restored): the bundled
+        # Ctrl+P Control Room binding stays REMOVED so Ctrl+P remains
+        # command-palette-only. Only the todo panel bindings below are registered.
 
         @kb.add('up', filter=todo_panel_filter, eager=True)
         @kb.add('k', filter=todo_panel_filter, eager=True)

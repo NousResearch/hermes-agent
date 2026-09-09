@@ -20,8 +20,9 @@ from tools.registry import tool_error
 from tools.tool_search_catalog import (
     BRIDGE_TOOL_NAMES, CHARS_PER_TOKEN, TOOL_CALL_NAME, TOOL_DESCRIBE_NAME, TOOL_SEARCH_NAME,
     CatalogEntry, _fn, _listing_group_label, _registry_entry, _registry_toolset,
-    _tokenize, build_catalog, build_catalog_listing_with_form, search_catalog)
+    build_catalog, build_catalog_listing_with_form, search_catalog)
 from tools.tool_search_validation import validate_deferred_call_args
+from tools.connector_search import connections_in_scope, connector_entries_by_group, remote_schemas_for
 from tools.tool_gateway.names import CONNECTOR_BATCH_SENTINEL, is_connector_name
 
 logger = logging.getLogger("tools.tool_search")
@@ -410,78 +411,6 @@ def _string_list_arg(args: Dict[str, Any], key: str, *, dedupe: bool, max_items:
     return out, None
 
 
-def _connector_entry(name: str, connector: str, slug: str, schema: Dict[str, Any]) -> CatalogEntry:
-    """A gateway hit as a catalog document, so it ranks in the same BM25 pass as local
-    tools. The search text is the connector name, the slug's words and the description:
-    the same fields a local entry indexes, so the rarest-token gate treats both alike."""
-    description = str(schema.get("description") or "")
-    input_schema = schema.get("input_schema")
-    parameters = input_schema if isinstance(input_schema, dict) else {}
-    tool_def = {"type": "function", "function": {
-        "name": name, "description": description, "parameters": parameters}}
-    text = f"{connector} {slug.replace('_', ' ')} {description}"
-    return CatalogEntry(name=name, description=description, schema=tool_def,
-                        source="connectors", source_name=connector, _tokens=_tokenize(text))
-
-
-def _connector_entries_by_group(
-    queries: List[str],
-    connector_search: Optional[Any] = None,
-) -> List[List[CatalogEntry]]:
-    """Remote connector hits for ``dispatch_tool_search`` as catalog entries, one list per
-    query, in the gateway's order.
-
-    Correlation with the remote response is by ARRAY POSITION only — the wire ``index`` field
-    is 1-based vendor passthrough on the search route and is never read.
-    Every failure path (signed out, config off, gateway dark, bad shapes)
-    returns empty results so local search behaves exactly as today (D32).
-    """
-    per_query: List[List[CatalogEntry]] = [[] for _ in queries]
-    try:
-        if connector_search is None:
-            from tools.tool_gateway.bridge import connector_search_hits as connector_search
-        hits = connector_search([{"use_case": q} for q in queries]) or {}
-        schemas = hits.get("schemas") if isinstance(hits.get("schemas"), dict) else {}
-        groups = hits.get("results") if isinstance(hits.get("results"), list) else []
-        from tools.tool_gateway.names import format_connector_name
-        for position, group in enumerate(groups[: len(queries)]):
-            if not isinstance(group, dict):
-                continue
-            # Correlate by position, then verify the echoed use_case when the
-            # gateway provides one — never the wire index (NS-734). A
-            # mismatched echo means the response groups don't line up with
-            # our queries; drop the group rather than mis-attribute hits.
-            echoed = group.get("use_case")
-            if isinstance(echoed, str) and echoed and echoed != queries[position]:
-                continue
-            slugs = group.get("tools") if isinstance(group.get("tools"), list) else []
-            for slug in slugs:
-                schema = schemas.get(slug)
-                if not isinstance(schema, dict) or not schema.get("connector"):
-                    continue  # cannot compose a callable name without its connector
-                # Lowercase the connector half at composition: the search
-                # route leaks vendor-cased connector slugs for custom
-                # toolkits (live-verified 2026-08-25: connections say
-                # custom_nous_lab_deepwiki while schemas say
-                # CUSTOM_NOUS_LAB_DEEPWIKI in the SAME response), and the
-                # gateway's policy gates compare case-sensitively against
-                # the lowercase catalog form. Tool slugs stay verbatim.
-                # No-op once the gateway normalizes its own surface.
-                name = format_connector_name(str(schema["connector"]).lower(), str(slug))
-                if all(e.name != name for e in per_query[position]):
-                    per_query[position].append(
-                        _connector_entry(name, str(schema["connector"]), str(slug), schema))
-    except Exception:
-        logger.debug("connector search merge failed silently (D32)", exc_info=True)
-        return [[] for _ in queries]
-    return per_query
-
-
-def connections_in_scope(tool_defs: List[Dict[str, Any]]) -> bool:
-    """The session granted connections and its availability check passed."""
-    return "manage_connections" in _tool_def_names(tool_defs)
-
-
 def dispatch_tool_search(args: Dict[str, Any], *, current_tool_defs: List[Dict[str, Any]],
                          config: Optional[ToolSearchConfig] = None,
                          connector_search: Optional[Any] = None) -> str:
@@ -503,7 +432,7 @@ def dispatch_tool_search(args: Dict[str, Any], *, current_tool_defs: List[Dict[s
     catalog = build_catalog(_deferrable_in(current_tool_defs))
     remote_entries: List[List[CatalogEntry]] = [[] for _ in queries]
     if connections_in_scope(current_tool_defs):
-        remote_entries = _connector_entries_by_group(queries, connector_search=connector_search)
+        remote_entries = connector_entries_by_group(queries, connector_search=connector_search)
     results: List[Dict[str, Any]] = []
     tools_map: Dict[str, Dict[str, Any]] = {}
     available_sources = _available_source_summary(catalog) if catalog else []
@@ -541,20 +470,7 @@ def dispatch_tool_describe(args: Dict[str, Any], *, current_tool_defs: List[Dict
         return err
     deferrable = _deferrable_in(current_tool_defs)
     by_name = {name: _fn(td) for td, name in zip(deferrable, _tool_def_names(deferrable)) if name}
-    # Remote (connector) leg: schemas for connectors__* names come from the
-    # gateway. Silent degradation (D32): on any failure the remote map is
-    # empty and those names fall through to not_found, exactly as today.
-    remote_schemas: Dict[str, Dict[str, Any]] = {}
-    connector_names = [n for n in names if is_connector_name(n)]
-    if connector_names and connections_in_scope(current_tool_defs):
-        try:
-            if connector_describe is None:
-                from tools.tool_gateway.bridge import connector_describe
-            remote = connector_describe(connector_names)
-            if isinstance(remote, dict) and isinstance(remote.get("tools"), dict):
-                remote_schemas = remote["tools"]
-        except Exception:
-            logger.debug("connector describe merge failed silently (D32)", exc_info=True)
+    remote_schemas = remote_schemas_for(names, current_tool_defs, connector_describe)
 
     tools: Dict[str, Dict[str, Any]] = {}
     not_found: List[str] = []

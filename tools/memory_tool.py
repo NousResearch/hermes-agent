@@ -136,9 +136,9 @@ def _background_delete_gate(action, operations, target="memory", content=None, o
     store instead of merely denied: the fork's own review summary is never published back, so
     a plain denial would drop the consolidation request with no surfacing path at all. A
     staging failure fails closed to a plain denial."""
-    from tools.skill_provenance import is_background_review
+    from tools.skill_provenance import is_unattended_review
 
-    if not is_background_review():
+    if not is_unattended_review():
         return None
     hit = action in _BG_DELETE_ACTIONS or any(
         isinstance(op, dict) and op.get("action") in _BG_DELETE_ACTIONS for op in (operations or []))
@@ -184,12 +184,12 @@ def memory_tool(action: str = None, target: str = "memory", content: str = None,
     target_error = _memory_target_error(store, target)
     if target_error is not None:
         return json.dumps(target_error)
-    denied = _background_delete_gate(action, operations, target, content, old_text)
-    if denied is not None:
-        return denied
     if operations:
         if not isinstance(operations, list):
             return tool_error("operations must be a list of {action, content?, old_text?} objects.", success=False)
+        denied = _background_delete_gate(action, operations, target)
+        if denied is not None:
+            return denied
         # Approval gate: stages (background/gateway) or prompts inline (CLI); off by default.
         gate_result = _apply_write_gate("batch", target, None, None, operations)
         if gate_result is not None:
@@ -198,6 +198,7 @@ def memory_tool(action: str = None, target: str = "memory", content: str = None,
     if action not in _STORE_ACTIONS:
         return tool_error(f"Unknown action '{action}'. Use: add, replace, remove", success=False)
     invalid = (_validate_single_op(store, action, target, content, old_text)
+               or _background_delete_gate(action, None, target, content, old_text)
                or _apply_write_gate(action, target, content, old_text))
     if invalid is not None:
         return invalid

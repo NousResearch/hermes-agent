@@ -1021,11 +1021,11 @@ def _run_review_fork(
     """Fork phase (inside thread-scoped silence): build the fork, run the prompt under the tool
     whitelist, snapshot its messages/usage, release its clients. Partial progress lands on ``st``
     so the caller's error path still sees usage and the fork to clean up. ``explicit`` (/refine)
-    forks under the ``refine_review`` origin: a user-requested review keeps the full memory
-    operation set — the unattended-only delete gate must not treat it as automatic."""
+    keeps the ``background_review`` origin (curator/skill guards still apply) but marks the fork
+    attended, so the unattended-only memory delete gate leaves the full operation set available."""
     st.review_agent, _rt, _routed = build_cache_parity_fork(
-        agent, task_cfg, max_iterations=_REVIEW_MAX_ITERATIONS,
-        write_origin="refine_review" if explicit else "background_review")
+        agent, task_cfg, max_iterations=_REVIEW_MAX_ITERATIONS)
+    st.review_agent._review_attended = explicit
     _track_review_fork(agent, st.review_agent, register=True)
     from hermes_cli.plugins import set_thread_tool_whitelist, clear_thread_tool_whitelist
     review_whitelist, configured_extra_tools = _review_tool_whitelist(st.review_agent, task_cfg, review_memory)

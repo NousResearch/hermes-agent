@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import os
 import sys
+import pytest
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -88,14 +89,17 @@ class TestExplicitRefineOrigin:
             target()
             assert captured["explicit"] is True
 
-    def test_explicit_fork_uses_refine_review_origin(self):
-        captured = {}
+    @pytest.mark.parametrize("explicit", [True, False])
+    def test_fork_keeps_background_review_origin_and_carries_attendedness(self, explicit):
+        """Every curator/skill guard keys on the background_review origin, so an explicit /refine
+        must NOT change the origin; attendedness rides on the fork as its own flag."""
+        forks = []
 
         def fake_build(agent, task_cfg=None, *, max_iterations, write_origin="background_review"):
-            captured["write_origin"] = write_origin
             fork = SimpleNamespace(
-                _memory_enabled=True, _user_profile_enabled=False,
+                _memory_enabled=True, _user_profile_enabled=False, _memory_write_origin=write_origin,
                 run_conversation=lambda **kw: None, _session_messages=[])
+            forks.append(fork)
             return fork, {}, False
 
         noop = lambda *a, **k: None
@@ -105,28 +109,10 @@ class TestExplicitRefineOrigin:
                 patch.object(bg, "_record_review_usage_to_parent", noop), \
                 patch.object(bg, "finish_background_review_run", noop), \
                 patch.object(bg, "_release_fork_clients", noop):
-            bg._run_review_fork(SimpleNamespace(), [], "p", None, None, bg._ReviewForkState(), True, True)
-        assert captured["write_origin"] == "refine_review"
-
-    def test_automatic_fork_keeps_background_review_origin(self):
-        captured = {}
-
-        def fake_build(agent, task_cfg=None, *, max_iterations, write_origin="background_review"):
-            captured["write_origin"] = write_origin
-            fork = SimpleNamespace(
-                _memory_enabled=True, _user_profile_enabled=False,
-                run_conversation=lambda **kw: None, _session_messages=[])
-            return fork, {}, False
-
-        noop = lambda *a, **k: None
-        with patch.object(bg, "build_cache_parity_fork", fake_build), \
-                patch.object(bg, "_track_review_fork", noop), \
-                patch.object(bg, "_snapshot_review_usage", lambda a: {}), \
-                patch.object(bg, "_record_review_usage_to_parent", noop), \
-                patch.object(bg, "finish_background_review_run", noop), \
-                patch.object(bg, "_release_fork_clients", noop):
-            bg._run_review_fork(SimpleNamespace(), [], "p", None, None, bg._ReviewForkState(), True, False)
-        assert captured["write_origin"] == "background_review"
+            bg._run_review_fork(SimpleNamespace(), [], "p", None, None, bg._ReviewForkState(), True, explicit)
+        (fork,) = forks
+        assert fork._memory_write_origin == "background_review"
+        assert fork._review_attended is explicit
 
 
 class TestConsolidationProposalSurfaces:

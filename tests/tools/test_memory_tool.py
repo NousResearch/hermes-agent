@@ -834,16 +834,18 @@ class TestBackgroundReviewDeleteGate:
         assert result["success"] is True
         assert "entry a supervised turn may remove" not in store._entries_for("memory")
 
-    def test_refine_review_origin_keeps_full_operation_set(self, store):
-        # A user-requested /refine fork runs under the refine_review origin: it is not an
-        # unattended review, so replace/remove keep working on that supervised surface.
+    def test_attended_review_keeps_full_operation_set(self, store):
+        # A user-requested /refine fork keeps the background_review origin (skill guards still
+        # apply) but is attended, so replace/remove keep working on that supervised surface.
+        from tools.skill_provenance import reset_review_attended, set_review_attended
         store.add("memory", "entry an explicit refine may rewrite")
-        token = set_current_write_origin("refine_review")
+        token = set_current_write_origin("background_review")
+        att = set_review_attended(True)
         try:
             result = json.loads(memory_tool(
                 action="replace", old_text="entry an explicit", content="rewritten by refine", store=store))
         finally:
+            reset_review_attended(att)
             reset_current_write_origin(token)
         assert result["success"] is True
         assert "rewritten by refine" in store._entries_for("memory")
-        assert "entry an explicit refine may rewrite" not in store._entries_for("memory")

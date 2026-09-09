@@ -193,3 +193,50 @@ def test_owner_events_pagination_gaps_and_rollback(host):
     assert data["events"] == []
     assert data["next_cursor"] == cursor
     assert data["has_more"] is False
+
+
+def test_graph_lineage_and_creator_origin_remain_distinct_after_gc(host):
+    from hermes_cli.kanban_db_graph import decompose_triage_task
+
+    client, _ = host
+    headers = {"Authorization": "Bearer this-host-fixture"}
+    with kbc.connect() as conn:
+        root = kb.create_task(conn, title="root", triage=True, created_by="fixture")
+        peer = kb.create_task(conn, title="peer", creator_task_id=root, created_by="fixture")
+        specs = [{"title": "child", "assignee": "worker"}]
+        children = decompose_triage_task(
+            conn, root, root_assignee="worker", children=specs,
+            author="auto-decomposer", auto_promote=False,
+        )
+        assert children and len(children) == 1
+        child = children[0]
+        before = client.get("/api/plugins/kanban/owner-snapshot", headers=headers)
+        assert before.status_code == 200, before.text
+        receipts = {r["task"]["id"]: r for r in before.json()["receipts"]}
+        assert receipts[peer]["task"]["created_by"] == "fixture"
+        # Native creation records creator_task_id, not a decomposition or by field.
+        assert receipts[peer]["created_event"]["payload"] == {}
+        assert receipts[child]["created_event"]["payload"] == {
+            "by": "auto-decomposer", "from_decompose_of": root,
+        }
+        # Age history without waiting; exercise the real GC and replay guard.
+        with kb.write_txn(conn):
+            conn.execute("UPDATE tasks SET status='done'")
+            conn.execute("UPDATE task_events SET created_at=0")
+        assert kb.gc_events(conn, older_than_seconds=1) > 0
+        with kb.write_txn(conn):
+            conn.execute("UPDATE tasks SET status='triage' WHERE id=?", (root,))
+        assert decompose_triage_task(
+            conn, root, root_assignee="worker", children=specs,
+            author="auto-decomposer", auto_promote=False,
+        ) is None
+    after = client.get("/api/plugins/kanban/owner-snapshot", headers=headers)
+    assert after.status_code == 200, after.text
+    assert after.json() == before.json()
+    drained = client.get("/api/plugins/kanban/owner-events", headers=headers)
+    assert drained.status_code == 200, drained.text
+    events = drained.json()["events"]
+    assert [e["task"]["id"] for e in events] == [root, peer, child]
+    assert [e["payload"] for e in events] == [
+        receipts[tid]["created_event"]["payload"] for tid in (root, peer, child)
+    ]

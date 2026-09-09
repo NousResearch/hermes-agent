@@ -23,6 +23,7 @@ from hermes_cli import kanban_db as kb
 from hermes_cli.dashboard_auth import TokenPrincipal
 from hermes_cli.dashboard_auth.token_auth import is_token_route
 from hermes_cli import kanban_db_connect as kbc
+from hermes_cli.kanban_db_graph import decompose_triage_task
 
 
 # ---------------------------------------------------------------------------
@@ -243,7 +244,7 @@ def test_owner_snapshot_returns_bounded_creation_receipts_with_exact_provenance(
             conn, title="Reviewed semantic root", created_by="agent:main",
             triage=True, board="default", priority=0,
         )
-        child_ids = kb.decompose_triage_task(
+        child_ids = decompose_triage_task(
             conn, root_id, root_assignee="vlad",
             children=[{"title": "Technical child", "assignee": "vlad"}],
             author="auto-decomposer", auto_promote=False,

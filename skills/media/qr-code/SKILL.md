@@ -8,7 +8,6 @@ platforms: [linux, macos, windows]
 metadata:
   hermes:
     tags: [Productivity, QR, Encoding, Media, Utilities]
-    related_skills: [ocr-and-documents]
 ---
 
 # QR Code Skill

@@ -19,6 +19,15 @@ def _result(**overrides):
         "api_calls": 3,
         "model": "openai/gpt-5.5",
         "provider": "openrouter",
+        "routing_provenance": "phase-c-v1",
+        "routing_decision_id": "route_123",
+        "primary_profile": "rozmilo-codex",
+        "initial_provider": "openai-codex",
+        "initial_model": "gpt-5.6-sol",
+        "final_provider": "copilot",
+        "final_model": "gpt-5.6-luna",
+        "fallback_used": True,
+        "fallback_reason": "rate_limit",
         "session_id": "abc123",
         "completed": True,
         "failed": False,
@@ -36,6 +45,14 @@ class TestWriteUsageFile:
         assert report["input_tokens"] == 1000
         assert report["output_tokens"] == 200
         assert report["model"] == "openai/gpt-5.5"
+        assert report["provider"] == "openrouter"
+        assert report["primary_profile"] == "rozmilo-codex"
+        assert report["initial_provider"] == "openai-codex"
+        assert report["initial_model"] == "gpt-5.6-sol"
+        assert report["final_provider"] == "copilot"
+        assert report["final_model"] == "gpt-5.6-luna"
+        assert report["fallback_used"] is True
+        assert report["fallback_reason"] == "rate_limit"
         assert report["api_calls"] == 3
         assert report["failed"] is False
         assert "failure" not in report

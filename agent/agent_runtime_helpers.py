@@ -1179,6 +1179,13 @@ def restore_primary_runtime(agent) -> bool:
         # again (prefix cache match).
         rewrite_prompt_model_identity(agent, rt["model"], rt["provider"])
         logger.info("Primary runtime restored for new turn: %s (%s)", agent.model, agent.provider)
+        if provider_fallback_active:
+            from agent.routing_decision import record_agent_primary_restore
+            record_agent_primary_restore(
+                agent,
+                from_provider=previous_provider,
+                from_model=previous_model,
+            )
         agent._provider_fallback_active = False
         agent._provider_fallback_route = None
         if provider_fallback_active:

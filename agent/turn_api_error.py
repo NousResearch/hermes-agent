@@ -305,7 +305,7 @@ def settle_unrecovered_error(
         if agent._has_pending_fallback():
             _label = _NONRETRYABLE_LABELS.get(classified.reason, f"Non-retryable error (HTTP {status_code})")
             agent._buffer_status(f"⚠️ {_label} — trying fallback...")
-        if agent._try_activate_fallback():
+        if agent._try_activate_fallback(reason=classified.reason):
             # Direct ``return _verdict("break")`` is load-bearing: the restart handler
             # re-runs the pre-API preflight against the fallback's context window.
             active_system_prompt = _arm_fallback_restart(agent, api_messages, active_system_prompt, _retry)
@@ -334,7 +334,7 @@ def settle_unrecovered_error(
             return _verdict("continue")
         if agent._has_pending_fallback():
             agent._buffer_status(f"⚠️ Max retries ({max_retries}) exhausted — trying fallback...")
-        if agent._try_activate_fallback():
+        if agent._try_activate_fallback(reason=classified.reason):
             # Direct ``return _verdict("break")`` is load-bearing: the restart handler
             # re-runs the pre-API preflight against the fallback's context window.
             active_system_prompt = _arm_fallback_restart(agent, api_messages, active_system_prompt, _retry)

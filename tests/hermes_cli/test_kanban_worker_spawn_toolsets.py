@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import subprocess
 
 
@@ -34,7 +35,7 @@ def test_default_spawn_pins_assignee_profile_cli_toolsets(monkeypatch, tmp_path)
     platform_toolsets.cli; model_tools appends task-scoped kanban tools later.
     """
     root = tmp_path / ".hermes"
-    profile = root / "profiles" / "elias"
+    profile = root / "profiles" / "rozmilo-codex"
     profile.mkdir(parents=True)
     profile.joinpath("config.yaml").write_text(
         """
@@ -79,11 +80,29 @@ agent:
 
     workspace = tmp_path / "workspace"
     workspace.mkdir()
-    pid = kbd._default_spawn(_make_task(kb, assignee="elias"), str(workspace))
+    task = _make_task(kb, assignee="rozmilo-codex")
+    pid = kbd._default_spawn(task, str(workspace), lane="implementation")
 
     assert pid == 4242
     assert captured["env"]["HERMES_HOME"] == str(profile)
     assert captured["env"]["HERMES_KANBAN_TASK"] == "t_spawn_tools"
+    assert json.loads(captured["env"]["HERMES_ROUTING_CONTEXT"]) == {
+        "task_id": "t_spawn_tools",
+        "board": "default",
+        "run_id": 7,
+        "task_type": "implementation",
+        "capability": "implement",
+        "risk": None,
+        "code_change": None,
+        "independent_review": None,
+        "preferred_profile": "rozmilo-codex",
+        "reviewer_profile": "rozmilo-claude",
+        "selected_profile": "rozmilo-codex",
+        "human_gate_required": None,
+        "independence_valid": None,
+        "policy_digest": None,
+        "selected_by": "dispatcher",
+    }
     assert "--toolsets" in captured["cmd"]
     pinned = captured["cmd"][captured["cmd"].index("--toolsets") + 1].split(",")
     for required in ("terminal", "web", "file", "skills", "code_execution", "delegation"):

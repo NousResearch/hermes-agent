@@ -8,6 +8,7 @@ late-bound via ``_kb`` (import-cycle breaking) so monkeypatching
 from __future__ import annotations
 
 import contextlib
+import json
 import os
 import re
 import signal
@@ -1474,14 +1475,21 @@ def dispatch_once(
     return result
 
 
-def _call_spawn_fn(spawn_fn, task: Task, workspace: str, board: Optional[str]) -> Optional[int]:
+def _call_spawn_fn(
+    spawn_fn, task: Task, workspace: str, board: Optional[str], lane: str,
+) -> Optional[int]:
     """Back-compat: older spawn_fn signatures (and test stubs) accept only
     ``(task, workspace)``; pass ``board`` only when the callable supports it."""
     import inspect
     try:
         sig = inspect.signature(spawn_fn)
+        kwargs = {}
         if "board" in sig.parameters:
-            return spawn_fn(task, workspace, board=board)
+            kwargs["board"] = board
+        if "lane" in sig.parameters:
+            kwargs["lane"] = lane
+        if kwargs:
+            return spawn_fn(task, workspace, **kwargs)
         return spawn_fn(task, workspace)
     except (TypeError, ValueError):
         return spawn_fn(task, workspace)
@@ -1573,7 +1581,13 @@ def _dispatch_lane_task(
         # worker's system prompt via KANBAN_GUIDANCE.
         claimed.skills = list(dict.fromkeys([*(claimed.skills or []), "sdlc-review"]))
     try:
-        pid = _call_spawn_fn(spawn_fn if spawn_fn is not None else _default_spawn, claimed, str(workspace), board)
+        pid = _call_spawn_fn(
+            spawn_fn if spawn_fn is not None else _default_spawn,
+            claimed,
+            str(workspace),
+            board,
+            lane,
+        )
         if pid:
             _set_worker_pid(conn, claimed.id, int(pid))
         # Fires AFTER the PID (when reported) is durably persisted. Best-effort.
@@ -2160,7 +2174,9 @@ def _restart_safe_worker_argv(task: Task, command: list[str]) -> list[str]:
     )
 
 
-def _default_spawn(task: Task, workspace: str, *, board: Optional[str] = None) -> Optional[int]:
+def _default_spawn(
+    task: Task, workspace: str, *, board: Optional[str] = None, lane: str = "implementation",
+) -> Optional[int]:
     """Fire-and-forget ``hermes -p <profile> chat -q ...`` subprocess.
 
     Returns the child's PID so the dispatcher can detect crashes before the
@@ -2243,6 +2259,13 @@ def _default_spawn(task: Task, workspace: str, *, board: Optional[str] = None) -
     # Board slug — defense-in-depth pin if a path is resolved without the
     # DB / workspaces env vars.
     env["HERMES_KANBAN_BOARD"] = _kb._normalize_board_slug(board) or _kb.get_current_board()
+    from hermes_cli.kanban_db_routing import build_dispatch_routing_context
+    env["HERMES_ROUTING_CONTEXT"] = json.dumps(
+        build_dispatch_routing_context(
+            task, board=env["HERMES_KANBAN_BOARD"], lane=lane,
+        ),
+        separators=(",", ":"),
+    )
     # kanban_comment reads HERMES_PROFILE for its default author; `-p` alone
     # doesn't set the env var.
     env["HERMES_PROFILE"] = profile_arg

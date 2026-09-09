@@ -2301,6 +2301,8 @@ def init_agent(
     _configure_ollama_num_ctx(agent, _model_cfg, _config_context_length)
     _emit_compression_summary(agent, cs)
     _snapshot_primary_runtime(agent)
+    from agent.routing_decision import initialize_agent_routing_decision
+    initialize_agent_routing_decision(agent)
 
 
 __all__ = ["init_agent"]

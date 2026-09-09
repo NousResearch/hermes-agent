@@ -14,6 +14,7 @@ import logging
 import time
 from typing import Any, Dict, Optional
 
+from agent.error_classifier import FailoverReason
 from agent.message_metadata import append_message
 
 logger = logging.getLogger("agent.conversation_loop")
@@ -230,7 +231,7 @@ def nous_rate_limit_guard(
                 )
                 agent._buffer_vprint(f"⏳ {_nous_msg} Trying fallback...")
                 agent._buffer_status(f"⏳ {_nous_msg}")
-                if agent._try_activate_fallback():
+                if agent._try_activate_fallback(reason=FailoverReason.rate_limit):
                     active_system_prompt = _arm_fallback_restart(
                         agent, api_messages, active_system_prompt, _retry)
                     retry_count = 0

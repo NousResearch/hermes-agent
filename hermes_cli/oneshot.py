@@ -22,13 +22,17 @@ from hermes_cli.fallback_config import get_fallback_chain
 
 _ALL_TOOLSETS = {"all", "*"}
 
-# Keys copied from the run result into the ``--usage-file`` report. ``service_tier`` is a
-# billing-audit field: the tier REQUESTED via request_overrides.extra_body (None when unset), so
-# batch pipelines can verify the tier they pay for went out on the wire.
+# Keys copied from the run result into the ``--usage-file`` report. ``provider`` and ``model``
+# retain their existing final-runtime semantics for compatibility; the routing fields distinguish
+# the initial and final routes for mixed-provider runs. ``service_tier`` is a billing-audit field:
+# the tier REQUESTED via request_overrides.extra_body (None when unset), so batch pipelines can
+# verify the tier they pay for went out on the wire.
 _USAGE_KEYS = (
     "estimated_cost_usd", "cost_status", "cost_source", "input_tokens", "output_tokens",
     "cache_read_tokens", "cache_write_tokens", "reasoning_tokens", "total_tokens", "api_calls",
     "model", "provider", "session_id", "completed",
+    "routing_provenance", "routing_decision_id", "primary_profile", "initial_provider",
+    "initial_model", "final_provider", "final_model", "fallback_used", "fallback_reason",
 )
 
 

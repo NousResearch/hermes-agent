@@ -1931,6 +1931,10 @@ def _end_run(
     run_id = _current_run_id(conn, task_id)
     if run_id is None:
         return None
+    from hermes_cli.kanban_db_routing import merged_run_metadata
+    run_metadata = merged_run_metadata(
+        conn, task_id=task_id, run_id=run_id, metadata=metadata,
+    )
     conn.execute(
         """
         UPDATE task_runs
@@ -1946,7 +1950,7 @@ def _end_run(
          WHERE id = ?
            AND ended_at IS NULL
         """,
-        (status or outcome, outcome, summary, error, _json_or_null(metadata), now, run_id),
+        (status or outcome, outcome, summary, error, _json_or_null(run_metadata), now, run_id),
     )
     conn.execute("UPDATE tasks SET current_run_id = NULL WHERE id = ?", (task_id,))
     return run_id

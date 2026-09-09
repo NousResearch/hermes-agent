@@ -139,6 +139,15 @@ moa:
     assert agent.client is not primary_client
     assert hasattr(agent.client.chat, "completions")
     assert getattr(agent, "_fallback_activated") is False
+    assert agent.routing_decision["routing_history"] == [
+        {
+            "phase": "initial",
+            "provider": "moa",
+            "model": "review",
+            "reason": None,
+            "recorded_at": agent.routing_decision["selected_at"],
+        }
+    ]
 
 
 def test_moa_restored_facade_still_emits_reference_events(monkeypatch, tmp_path):

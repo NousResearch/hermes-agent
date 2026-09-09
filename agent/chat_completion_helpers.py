@@ -2100,6 +2100,13 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         # provenance so the restore path only emits a recovery notice after a real fallback.
         agent._provider_fallback_active = True
         agent._provider_fallback_route = (str(fb_model), str(fb_provider))
+        from agent.routing_decision import record_agent_fallback
+        record_agent_fallback(
+            agent,
+            from_provider=old_provider,
+            from_model=old_model,
+            reason=reason,
+        )
         logger.info("Fallback activated: %s → %s (%s)", old_model, fb_model, fb_provider)
         # The stale-call streak measured the OLD provider; carrying it over would
         # short-circuit the fresh fallback before its first stream attempt.

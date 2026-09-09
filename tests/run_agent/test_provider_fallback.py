@@ -130,6 +130,12 @@ class TestFallbackChainAdvancement:
         )
         assert agent._pending_fallback_notice == [expected]
         assert agent._retry_status_buffer[-1] == ("status", expected)
+        assert agent.routing_decision["fallback_used"] is True
+        assert agent.routing_decision["fallback_from_provider"] == "openai-codex"
+        assert agent.routing_decision["fallback_from_model"] == "gpt-5.6-sol"
+        assert agent.routing_decision["selected_provider"] == "zai"
+        assert agent.routing_decision["selected_model"] == "glm-5.2"
+        assert agent.routing_decision["fallback_reason"] == "rate_limit"
 
     def test_records_sequential_switches_in_order(self):
         agent = _make_agent(

@@ -17,7 +17,7 @@ export UV_NO_CONFIG=1
 REPO_URL="${HERMES_REPO_URL:-https://github.com/NousResearch/hermes-agent.git}"
 BRANCH="main"
 INSTALL_COMMIT=""
-INSTALL_DIR="${HERMES_INSTALL_DIR:-$HOME/.hermes/hermes-agent}"
+INSTALL_DIR="${HERMES_INSTALL_DIR:-}"
 HERMES_HOME="${HERMES_HOME:-$HOME/.hermes}"
 STAGE=""
 WANT_MANIFEST=false
@@ -30,6 +30,7 @@ while [ $# -gt 0 ]; do
         --branch|-Branch) BRANCH="$2"; shift 2 ;;
         --commit|-Commit) INSTALL_COMMIT="$2"; shift 2 ;;
         --dir) INSTALL_DIR="$2"; shift 2 ;;
+        --hermes-home|-HermesHome) HERMES_HOME="$2"; shift 2 ;;
         --manifest|-Manifest) WANT_MANIFEST=true; shift ;;
         --stage|-Stage) STAGE="$2"; shift 2 ;;
         --json|-Json) JSON=true; shift ;;
@@ -38,6 +39,7 @@ while [ $# -gt 0 ]; do
         --include-desktop|-IncludeDesktop) INCLUDE_DESKTOP=true; shift ;;
         -h|--help)
             echo "Usage: install.sh [--branch NAME] [--commit SHA] [--dir PATH]"
+            echo "                  [--hermes-home PATH]"
             echo "                  [--manifest] [--stage NAME] [--json]"
             echo "                  [--non-interactive] [--include-desktop]"
             exit 0 ;;
@@ -45,8 +47,11 @@ while [ $# -gt 0 ]; do
     esac
 done
 
+INSTALL_DIR="${INSTALL_DIR:-$HERMES_HOME/hermes-agent}"
+export HERMES_HOME
+
 log() { printf "\033[1;34m[hermes]\033[0m %s\n" "$1"; }
-fail() { printf "\033[1;31m[hermes]\033[0m %s\n" "$1" >&2; exit 1; }
+fail() { STAGE_REASON="$1"; printf "\033[1;31m[hermes]\033[0m %s\n" "$1" >&2; exit 1; }
 
 # --- BEGIN GENERATED: bootstrap pins (scripts/gen-bootstrap-pins.py) ---
 # Derived from pm/lock.json. DO NOT EDIT BY HAND:
@@ -171,12 +176,37 @@ check_platform() {
     esac
 }
 
+json_string() {
+    local value="$1" code char escaped
+    value="${value//\\/\\\\}"
+    value="${value//\"/\\\"}"
+    for ((code = 1; code < 32; code++)); do
+        printf -v char '\\%03o' "$code"
+        printf -v char '%b' "$char"
+        printf -v escaped '\\u%04x' "$code"
+        value="${value//"$char"/$escaped}"
+    done
+    printf '"%s"' "$value"
+}
+
 json_frame() {
     # $1 ok, $2 stage, $3 skipped, $4 reason
     if [ -n "${4:-}" ]; then
-        printf '{"ok":%s,"stage":"%s","skipped":%s,"reason":"%s"}\n' "$1" "$2" "$3" "$4"
+        printf '{"ok":%s,"stage":%s,"skipped":%s,"reason":%s}\n' "$1" "$(json_string "$2")" "$3" "$(json_string "$4")"
     else
-        printf '{"ok":%s,"stage":"%s","skipped":%s}\n' "$1" "$2" "$3"
+        printf '{"ok":%s,"stage":%s,"skipped":%s}\n' "$1" "$(json_string "$2")" "$3"
+    fi
+}
+
+stage_result() {
+    local code="$1" ok=false reason="${STAGE_REASON:-}"
+    if [ "$code" -eq 0 ]; then
+        ok=true
+    else
+        reason="${reason:-stage failed (exit $code)}"
+    fi
+    if [ "$JSON" = true ]; then
+        json_frame "$ok" "$STAGE" "${STAGE_SKIPPED:-false}" "$reason"
     fi
 }
 
@@ -399,7 +429,18 @@ stage_complete() {
     log "install complete. Run: hermes"
 }
 
-run_stage() {
+run_stage() (
+    # Keep failure handling out of conditional calls, which disable errexit.
+    set -e
+    STAGE="$1"
+    STAGE_REASON=""
+    STAGE_SKIPPED=false
+    trap 'stage_result "$?"' EXIT
+    if [ "$NON_INTERACTIVE" = true ] && { [ "$STAGE" = setup ] || [ "$STAGE" = gateway ]; }; then
+        STAGE_SKIPPED=true
+        STAGE_REASON="needs user input"
+        exit 0
+    fi
     case "$1" in
         prerequisites) stage_prerequisites ;;
         repository) stage_repository ;;
@@ -412,9 +453,9 @@ run_stage() {
         gateway) stage_gateway ;;
         desktop) stage_desktop ;;
         complete) stage_complete ;;
-        *) echo "unknown stage: $1" >&2; exit 2 ;;
+        *) STAGE_REASON="unknown stage: $1"; printf '%s\n' "$STAGE_REASON" >&2; exit 2 ;;
     esac
-}
+)
 
 # Main. Guarded so the script can be SOURCED for its functions (the
 # installer-test harness sources it with --manifest, which must define
@@ -425,26 +466,22 @@ if [ "${BASH_SOURCE[0]}" = "$0" ]; then
         exit 0
     fi
 
+    if [ -n "$STAGE" ] && [ "$JSON" = true ]; then
+        trap 'stage_result "$?"' EXIT
+    fi
     check_platform
+    trap - EXIT
 
     if [ -n "$STAGE" ]; then
-        if [ "$NON_INTERACTIVE" = true ] && { [ "$STAGE" = setup ] || [ "$STAGE" = gateway ]; }; then
-            [ "$JSON" = true ] && json_frame true "$STAGE" true "needs user input"
-            exit 0
-        fi
-        if run_stage "$STAGE"; then
-            [ "$JSON" = true ] && json_frame true "$STAGE" false
-            exit 0
-        else
-            rc=$?
-            [ "$JSON" = true ] && json_frame false "$STAGE" false "stage failed"
-            exit "$rc"
-        fi
+        run_stage "$STAGE"
+        exit "$?"
     fi
 
     # No --stage: run the whole ladder — the same authoritative list the
     # manifest prints, so --include-desktop inserts desktop here too.
     for s in $(stage_names); do
         run_stage "$s"
+        rc=$?
+        [ "$rc" -eq 0 ] || exit "$rc"
     done
 fi

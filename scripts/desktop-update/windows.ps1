@@ -1189,25 +1189,6 @@ $finalCode = 1
 $finalMsg = "update did not complete"
 $script:TreeSafeToFinalize = $true
 
-# -SelfTestWorkingDirectory: prove StartAssigned inherits InstallRoot --------
-if ($SelfTestWorkingDirectory) {
-    try {
-        $resolvedInstallRoot = Set-InstallRootCurrentDirectory $InstallRoot
-    } catch {
-        Write-Host "WORKING-DIRECTORY SELF-TEST: FAIL cannot enter the install root ($InstallRoot)"
-        exit 3
-    }
-    $probeExe = Join-Path $PSHOME "powershell.exe"
-    $probe = Invoke-HermesStep $probeExe @("-NoProfile", "-Command", "[Environment]::CurrentDirectory") "cwd"
-    $observed = $probe.Output.Trim()
-    if ($probe.Code -ne 0 -or -not [string]::Equals($observed, $resolvedInstallRoot, [StringComparison]::OrdinalIgnoreCase)) {
-        Write-Host "WORKING-DIRECTORY SELF-TEST: FAIL expected=$resolvedInstallRoot observed=$observed code=$($probe.Code)"
-        exit 1
-    }
-    Write-Host "WORKING-DIRECTORY SELF-TEST: PASS $observed"
-    exit 0
-}
-
 # ── -SelfTestUi: drive the shim to both terminal states, no update ─────────
 # Manual QA for the Edge shell without a checkout or a real update. Exits
 # before the marker/desktop/venv machinery — touches nothing. Off Windows
@@ -1482,6 +1463,23 @@ try {
         $finalMsg = "Update aborted: cannot enter the install root ($InstallRoot). Nothing was changed."
         Write-HandoffLog $finalMsg
         exit $finalCode
+    }
+
+    # Exercise the production cwd setup and native launcher without updating.
+    if ($SelfTestWorkingDirectory) {
+        $expectedRoot = [System.IO.Path]::GetFullPath($InstallRoot)
+        $probeExe = Join-Path $PSHOME "powershell.exe"
+        $probe = Invoke-HermesStep $probeExe @("-NoProfile", "-Command", "[Environment]::CurrentDirectory") "cwd"
+        $observed = $probe.Output.Trim()
+        if ($probe.Code -ne 0 -or -not [string]::Equals($observed, $expectedRoot, [StringComparison]::OrdinalIgnoreCase)) {
+            $finalMsg = "WORKING-DIRECTORY SELF-TEST: FAIL expected=$expectedRoot observed=$observed code=$($probe.Code)"
+            Write-Host $finalMsg
+            exit 1
+        }
+        $finalCode = 0
+        $finalMsg = "WORKING-DIRECTORY SELF-TEST: PASS $observed"
+        Write-Host $finalMsg
+        exit 0
     }
 
     # Check only the interpreter here: dependency recovery belongs to update.

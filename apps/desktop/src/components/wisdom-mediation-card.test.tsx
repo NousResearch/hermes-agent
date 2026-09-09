@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+
 import { WisdomMediationCard } from './wisdom-mediation-card'
 
 const { read, resolve, prepare } = vi.hoisted(() => ({ read: vi.fn(), resolve: vi.fn(), prepare: vi.fn() }))
@@ -32,6 +33,7 @@ const interaction = {
   actions: ['defer', 'inspect', 'confirm'],
   facts: { slug: 'Team Runbook', version: 2, compatibility: { outcome: 'compatible' } }
 }
+
 const activity = {
   mode: 'agent',
   assessments: [
@@ -68,7 +70,7 @@ describe('WisdomMediationCard', () => {
   })
 
   it('keeps other surfaces passive', async () => {
-    render(<WisdomMediationCard sessionId="other" passive />)
+    render(<WisdomMediationCard passive sessionId="other" />)
     await screen.findByText('An updated runbook')
     expect(screen.queryByRole('button', { name: 'Update' })).toBeNull()
   })
@@ -99,7 +101,7 @@ describe('WisdomMediationCard', () => {
     const { rerender } = render(<WisdomMediationCard sessionId="session" />)
     await waitFor(() => expect(read).toHaveBeenCalled())
     expect(screen.queryByText('An updated runbook')).toBeNull()
-    rerender(<WisdomMediationCard sessionId="session" passive />)
+    rerender(<WisdomMediationCard passive sessionId="session" />)
     await screen.findByText('An updated runbook')
   })
 })

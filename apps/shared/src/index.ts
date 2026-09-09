@@ -60,10 +60,6 @@ export {
 } from './json-rpc-gateway'
 export { skillInvocationText } from './skill-scaffold'
 export {
-  createWisdomSyncController, initialWisdomSyncView, wisdomSyncCopy,
-  type WisdomSyncCopy, type WisdomSyncSnapshot, type WisdomSyncState
-} from './wisdom-sync'
-export {
   type HermesSkin,
   SKIN_BRANDING_TOKENS,
   SKIN_COLOR_TOKENS,
@@ -121,3 +117,7 @@ export {
   type WisdomMuteControl, type WisdomMuteCopy, type WisdomMuteDuration,
   type WisdomMuteSnapshot, type WisdomMuteState, type WisdomMuteSync
 } from './wisdom-mute'
+export {
+  createWisdomSyncController, initialWisdomSyncView, wisdomSyncCopy,
+  type WisdomSyncCopy, type WisdomSyncSnapshot, type WisdomSyncState
+} from './wisdom-sync'

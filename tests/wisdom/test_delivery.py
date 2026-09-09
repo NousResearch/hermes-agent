@@ -44,9 +44,8 @@ def delivery(tmp_path):
     return queue, job, now
 
 
-def test_telegram_accepts_raw_envelope_and_sdk_message_without_persisting_body():
-    from telegram import Message
-
+@pytest.mark.parametrize("response_kind", ["raw", "envelope", "sdk"])
+def test_telegram_accepts_raw_envelope_and_sdk_message_without_persisting_body(response_kind):
     data = {
         "message_id": 19,
         "date": 0,
@@ -54,9 +53,13 @@ def test_telegram_accepts_raw_envelope_and_sdk_message_without_persisting_body()
         "text": "PRIVATE BODY",
     }
     expected = receipt()
-    assert telegram_receipt(data, chat_id="42") == expected
-    assert telegram_receipt({"ok": True, "result": data}, chat_id="42") == expected
-    assert telegram_receipt(Message.de_json(data, None), chat_id="42") == expected
+    response = data
+    if response_kind == "envelope":
+        response = {"ok": True, "result": data}
+    elif response_kind == "sdk":
+        telegram = pytest.importorskip("telegram", reason="optional messaging SDK not installed")
+        response = telegram.Message.de_json(data, None)
+    assert telegram_receipt(response, chat_id="42") == expected
     assert "PRIVATE BODY" not in expected.model_dump_json()
 
 

@@ -1,6 +1,8 @@
 """Public auxiliary route contracts; SDK requests never leave the process."""
 
+import io
 import json
+import logging
 from unittest.mock import AsyncMock, MagicMock
 
 import httpx
@@ -18,6 +20,171 @@ def clean_auxiliary_state():
     yield
     aux.shutdown_cached_clients()
     aux.clear_runtime_main()
+
+
+@pytest.fixture
+def nous_wire(tmp_path, monkeypatch):
+    from hermes_cli import models
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / "config.yaml").write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(aux, "_read_nous_auth", lambda: None)
+    monkeypatch.setattr(models, "_nous_recommended_cache", {})
+    catalog_requests = []
+
+    def catalog(request, **_kwargs):
+        assert request.full_url.endswith(models.NOUS_RECOMMENDED_MODELS_PATH)
+        catalog_requests.append(request.full_url)
+        return io.BytesIO(json.dumps({
+            f"{tier}RecommendedCompactionModel": {"modelName": "recommended-model"}
+            for tier in ("free", "paid")
+        }).encode())
+
+    monkeypatch.setattr(models, "_urlopen_model_catalog_request", catalog)
+
+    def install(respond):
+        requests = []
+        clients = []
+
+        def transport_for_url(client, _url):
+            def handle(request):
+                requests.append(request)
+                clients.append(client)
+                return respond(request)
+            return httpx.MockTransport(handle)
+
+        monkeypatch.setattr(httpx.Client, "_transport_for_url", transport_for_url)
+        monkeypatch.setattr(httpx.AsyncClient, "_transport_for_url", transport_for_url)
+        return requests, clients, catalog_requests
+
+    return install
+
+
+def _completion(request):
+    return httpx.Response(200, json={
+        "id": "fixture-response", "object": "chat.completion", "created": 1,
+        "model": json.loads(request.content)["model"],
+        "choices": [{"index": 0, "finish_reason": "stop",
+                     "message": {"role": "assistant", "content": "fixture result"}}],
+    })
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("asynchronous", [False, True])
+@pytest.mark.parametrize("provider", ["nous", "auto"])
+async def test_strict_nous_refresh_changes_destination(nous_wire, monkeypatch, asynchronous, provider):
+    old_base = "https://inference-api.nousresearch.com/v1"
+    fresh_base = "https://refreshed-nous.invalid/inference/v2"
+    credentials = MagicMock(side_effect=[
+        ("stale-fixture-key", old_base), ("fresh-fixture-key", fresh_base),
+    ])
+    monkeypatch.setattr(aux, "_resolve_nous_runtime_api", credentials)
+
+    def respond(request):
+        if request.url.host == "inference-api.nousresearch.com":
+            return httpx.Response(401, json={"error": {"message": "stale credential"}})
+        assert request.url.host == "refreshed-nous.invalid"
+        return _completion(request)
+
+    requests, clients, _catalog = nous_wire(respond)
+    kwargs = dict(
+        task="researcher", provider=provider, model="selected-model", allow_fallback=False,
+        main_runtime={"provider": "nous", "model": "selected-model"},
+        messages=[{"role": "user", "content": "fixture prompt"}],
+    )
+    for _ in range(2):
+        response = await aux.async_call_llm(**kwargs) if asynchronous else aux.call_llm(**kwargs)
+        assert response.choices[0].message.content == "fixture result"
+        assert response.model == "selected-model"
+
+    assert [(str(r.url), r.headers["authorization"], json.loads(r.content)["model"])
+            for r in requests] == [
+        (old_base + "/chat/completions", "Bearer stale-fixture-key", "selected-model"),
+        (fresh_base + "/chat/completions", "Bearer fresh-fixture-key", "selected-model"),
+        (fresh_base + "/chat/completions", "Bearer fresh-fixture-key", "selected-model"),
+    ]
+    assert clients[0] is not clients[1]
+    assert clients[1] is clients[2]
+    assert [call.kwargs["force_refresh"] for call in credentials.call_args_list] == [False, True]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("asynchronous", [False, True])
+@pytest.mark.parametrize("provider", ["nous", "auto"])
+@pytest.mark.parametrize("strict", [False, True], ids=["default", "strict"])
+async def test_public_model_not_found_diagnostic(
+    nous_wire, monkeypatch, caplog, asynchronous, provider, strict,
+):
+    base = "https://inference-api.nousresearch.com/v1"
+    credentials = MagicMock(return_value=("fixture-secret-key", base))
+    monkeypatch.setattr(aux, "_resolve_nous_runtime_api", credentials)
+    details = {"message": "model does not exist; endpoint=https://fixture.invalid/v1?token=private-query",
+               "code": "model_not_found", "param": "model", "detail": "original provider detail"}
+
+    def respond(request):
+        assert request.url.host == "inference-api.nousresearch.com"
+        if json.loads(request.content)["model"] == "selected-model":
+            return httpx.Response(404, json={"error": details}, headers={"x-request-id": "fixture-request"})
+        return _completion(request)
+
+    requests, _clients, catalog = nous_wire(respond)
+    # Observe the SDK-created exception without replacing its construction or propagation.
+    sdk = openai.AsyncOpenAI if asynchronous else openai.OpenAI
+    make_error = sdk._make_status_error
+    errors = []
+
+    def record_error(self, *args, **kwargs):
+        error = make_error(self, *args, **kwargs)
+        errors.append((error, str(error)))
+        return error
+
+    monkeypatch.setattr(sdk, "_make_status_error", record_error)
+    kwargs = dict(
+        task="researcher", provider=provider, model="selected-model",
+        main_runtime={"provider": "nous", "model": "selected-model"},
+        messages=[{"role": "user", "content": "fixture prompt"}],
+    )
+    if strict:
+        kwargs["allow_fallback"] = False
+    with caplog.at_level(logging.WARNING, logger=aux.__name__):
+        if strict:
+            with pytest.raises(openai.NotFoundError) as caught:
+                if asynchronous:
+                    await aux.async_call_llm(**kwargs)
+                else:
+                    aux.call_llm(**kwargs)
+            assert len(errors) == 1
+            assert caught.value is errors[0][0]
+            assert type(caught.value) is openai.NotFoundError
+            assert caught.value.status_code == 404
+            assert str(caught.value) == errors[0][1]
+            assert caught.value.body == details
+            assert caught.value.response.json() == {"error": details}
+            assert caught.value.request_id == "fixture-request"
+        else:
+            response = await aux.async_call_llm(**kwargs) if asynchronous else aux.call_llm(**kwargs)
+            assert response.model == "recommended-model"
+            assert response.choices[0].message.content == "fixture result"
+
+    assert [json.loads(r.content)["model"] for r in requests] == (
+        ["selected-model"] if strict else ["selected-model", "recommended-model"])
+    assert len(catalog) == (1 if strict else 2)  # Initial discovery; only default heals.
+    credentials.assert_called_once_with(force_refresh=False)
+    warnings = [r.getMessage() for r in caplog.records
+                if r.name == aux.__name__ and r.levelno == logging.WARNING]
+    strict_warnings = [message for message in warnings if "allow_fallback=False" in message]
+    if strict:
+        assert len(strict_warnings) == 1
+        hint = strict_warnings[0]
+        assert "selected-model" in hint
+        assert "catalog" in hint
+        assert "Select an available model" in hint
+        assert "allow_fallback=True" in hint
+        assert "fixture-secret-key" not in hint
+        assert "private-query" not in hint
+        assert "https://" not in hint
+    else:
+        assert not strict_warnings
 
 
 @pytest.mark.asyncio

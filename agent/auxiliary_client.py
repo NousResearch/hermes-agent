@@ -6782,6 +6782,13 @@ def _ladder_nous_rungs(
     """Nous-only rungs: stale-model self-heal, paid-account refresh, 401 refresh.
     Returns ``(response, None)`` or ``(None, first_err)`` to fall through."""
     client, task, tag = route.client, route.task, route.tag
+    if not allow_fallback and client_is_nous and _is_model_not_found_error(first_err):
+        logger.warning(
+            "Auxiliary %s%s: selected model %r was not found; allow_fallback=False "
+            "prevents Nous catalog healing. Select an available model or set "
+            "allow_fallback=True to permit a replacement.",
+            task or "call", tag, kwargs.get("model"),
+        )
     # A long-lived process can pin a Portal model since dropped from the catalog (every call
     # 404s); force a fresh Portal fetch and retry once.
     if allow_fallback and _is_model_not_found_error(first_err) and client_is_nous:

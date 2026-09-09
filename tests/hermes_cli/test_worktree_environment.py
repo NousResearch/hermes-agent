@@ -91,3 +91,16 @@ def test_bootstrap_accepts_the_repository_managed_sibling_environment(
 
     assert linked == (".venv",)
     assert (target / ".venv").resolve() == managed.resolve()
+
+
+def test_venv_python_path_recognizes_native_windows_layout(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A native Windows venv exposes Scripts/python.exe, not bin/python (#PR70)."""
+    from hermes_cli.worktree_environment import _venv_python_path
+
+    monkeypatch.setattr("hermes_cli.worktree_environment.os.name", "nt")
+    assert _venv_python_path(tmp_path) == tmp_path / "Scripts" / "python.exe"
+
+    monkeypatch.setattr("hermes_cli.worktree_environment.os.name", "posix")
+    assert _venv_python_path(tmp_path) == tmp_path / "bin" / "python"

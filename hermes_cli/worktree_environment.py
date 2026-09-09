@@ -74,6 +74,17 @@ def _same_repository_environment(
     )
 
 
+def _venv_python_path(resolved_source: Path) -> Path:
+    """The interpreter entrypoint for a virtualenv rooted at *resolved_source*.
+
+    Native Windows virtualenvs use ``Scripts/python.exe`` rather than
+    ``bin/python``; POSIX (incl. WSL) always uses the ``bin/`` layout.
+    """
+    if os.name == "nt":
+        return resolved_source / "Scripts" / "python.exe"
+    return resolved_source / "bin" / "python"
+
+
 def bootstrap_worktree_environments(
     repo_root: Path,
     target: Path,
@@ -136,7 +147,7 @@ def bootstrap_worktree_environments(
                     if not source.exists():
                         continue
                     resolved_source = source.resolve(strict=True)
-                    python = resolved_source / "bin" / "python"
+                    python = _venv_python_path(resolved_source)
                     if not resolved_source.is_dir() or not _same_repository_environment(
                         source_root,
                         resolved_source,

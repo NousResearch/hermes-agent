@@ -319,10 +319,34 @@ _nb_install_bundled_node() {
             ;;
     esac
 
+    # Sweep any staged/backup dirs left by an interrupted previous run (only >10 min old, so a
+    # concurrent in-flight upgrade in another process is never touched). Mirrors the Windows
+    # litter-sweep in _heal_managed_node_windows() (hermes_constants.py).
+    local stale
+    for stale in "$HERMES_HOME"/node.new-* "$HERMES_HOME"/node.old-*; do
+        [ -d "$stale" ] || continue
+        [ -n "$(find "$stale" -maxdepth 0 -mmin +10 2>/dev/null)" ] && rm -rf "$stale"
+    done
+
     mkdir -p "$HERMES_HOME"
-    rm -rf "$HERMES_HOME/node"
-    mv "$extracted" "$HERMES_HOME/node"
+    local staged="$HERMES_HOME/node.new-$$-$(date +%s)"
+    mv "$extracted" "$staged"
     rm -rf "$tmp"
+
+    # Stage-then-swap: the live tree is never removed before its replacement is fully extracted
+    # and probed above, so an interrupted upgrade cannot gut a working install.
+    local backup=""
+    if [ -d "$HERMES_HOME/node" ]; then
+        backup="$HERMES_HOME/node.old-$$-$(date +%s)"
+        mv "$HERMES_HOME/node" "$backup"
+    fi
+    if ! mv "$staged" "$HERMES_HOME/node"; then
+        _nb_warn "Could not move the new Node tree into place"
+        [ -n "$backup" ] && mv "$backup" "$HERMES_HOME/node"
+        rm -rf "$staged"
+        return 1
+    fi
+    [ -n "$backup" ] && rm -rf "$backup"
 
     local _link_dir
     _link_dir="$(_nb_get_link_dir)"

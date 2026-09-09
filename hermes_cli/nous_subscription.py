@@ -242,7 +242,7 @@ _PROVIDER_LABELS = {
     }),
     "stt": ("local", {
         "openai": "OpenAI Whisper", "groq": "Groq Whisper", "mistral": "Mistral Voxtral Transcribe",
-        "local": "Local faster-whisper",
+        "local": "Local faster-whisper", "sensevoice": "SenseVoice local",
     }),
 }
 
@@ -260,6 +260,18 @@ def _local_stt_backend_available() -> bool:
         from tools.transcription_tools import _HAS_FASTER_WHISPER
 
         return bool(_HAS_FASTER_WHISPER)
+    except Exception:
+        return False
+
+
+def _sensevoice_backend_available(stt_cfg: Dict[str, object]) -> bool:
+    """True when the selected SenseVoice binary and GGUF model are usable."""
+    try:
+        from tools.transcription_sensevoice import _configured_file, _sensevoice_binary
+
+        cfg = stt_cfg.get("sensevoice") or {}
+        model = _configured_file(cfg.get("model"))
+        return bool(_sensevoice_binary(cfg.get("binary")) and model and model.is_file())
     except Exception:
         return False
 
@@ -357,6 +369,7 @@ def _audio_features(
     # status never flags it "tool disabled".
     stt_available = bool({
         "local": _local_stt_backend_available() and not stt_gw, "openai": managed["stt"] or direct_openai_stt,
+        "sensevoice": _sensevoice_backend_available(stt_cfg) and not stt_gw,
         "groq": _any_env("GROQ_API_KEY") and not stt_gw, "mistral": _any_env("MISTRAL_API_KEY") and not stt_gw,
     }.get(stt_current, False))
     stt = _state(

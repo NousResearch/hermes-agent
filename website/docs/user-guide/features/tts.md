@@ -460,8 +460,9 @@ See `agent/tts_provider.py` for the full ABC including docstrings.
 Voice messages sent on Telegram, Discord, WhatsApp, Slack, or Signal are automatically transcribed and injected as text into the conversation. The agent sees the transcript as normal text.
 
 | Provider | Quality | Cost | API Key |
-|----------|---------|------|---------| 
+|----------|---------|------|---------|
 | **Local Whisper** (default) | Good | Free | None needed |
+| **SenseVoiceSmall GGUF** | Best for Cantonese + English mixing | Free | None needed |
 | **Groq Whisper API** | Good–Best | Free tier | `GROQ_API_KEY` |
 | **OpenAI Whisper API** | Good–Best | Paid | `VOICE_TOOLS_OPENAI_KEY` or `OPENAI_API_KEY` |
 
@@ -474,11 +475,16 @@ Local transcription works out of the box when `faster-whisper` is installed. If 
 ```yaml
 # In ~/.hermes/config.yaml
 stt:
-  provider: "local"           # "local" | "groq" | "openai" | "mistral" | "xai" | "elevenlabs" | "deepinfra"
+  provider: "local"           # "local" | "sensevoice" | "groq" | "openai" | "mistral" | "xai" | "elevenlabs" | "deepinfra"
   language: "en"              # Global language hint applied to every provider unless a per-provider language overrides it; set "" to restore auto-detect
   local:
     model: "base"             # tiny, base, small, medium, large-v3
-    language: ""              # optional ISO-639-1 hint; blank = use HERMES_LOCAL_STT_LANGUAGE if set, else auto-detect
+    language: ""              # optional ISO 639-1 hint; blank = use HERMES_LOCAL_STT_LANGUAGE if set, else auto-detect
+  sensevoice:
+    binary: "llama-funasr-sensevoice"  # executable on PATH or an absolute path
+    model: "/path/to/sensevoice-small-q8.gguf"
+    vad_model: "/path/to/fsmn-vad.gguf"  # optional; recommended for long audio
+    backend: "cpu"            # cpu, cuda, or vulkan; must match the runtime build
   groq:
     language: ""              # optional ISO-639-1 hint; blank = use HERMES_LOCAL_STT_LANGUAGE if set, else auto-detect
   openai:
@@ -501,6 +507,8 @@ stt:
 | `small` | ~500 MB | Medium | Better |
 | `medium` | ~1.5 GB | Slower | Great |
 | `large-v3` | ~3 GB | Slowest | Best |
+
+**SenseVoiceSmall GGUF** — Runs [SenseVoiceSmall](https://huggingface.co/FunAudioLLM/SenseVoiceSmall-GGUF) fully offline through FunASR's [`llama-funasr-sensevoice`](https://github.com/modelscope/FunASR/tree/main/runtime/llama.cpp) binary. It is optimized for multilingual and code-mixed speech, including Cantonese (`yue`) plus English. Download a matching runtime binary and GGUF model, set `stt.provider: sensevoice`, and configure the paths shown above. The optional FSMN-VAD GGUF segments long recordings. Hermes sends credentials neither to the process nor over the network.
 
 **Groq API** — Requires `GROQ_API_KEY`. Good cloud fallback when you want a free hosted STT option. Set `stt.groq.language` (or the global `HERMES_LOCAL_STT_LANGUAGE` env var) to skip Whisper's auto-detect and reduce latency on known-language audio.
 

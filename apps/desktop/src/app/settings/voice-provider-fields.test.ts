@@ -10,6 +10,13 @@ describe('voiceProviderKeys', () => {
     expect(voiceProviderKeys('tts', 'openai')).toEqual(['tts.openai.model', 'tts.openai.voice'])
     expect(voiceProviderKeys('tts', 'elevenlabs')).toEqual(['tts.elevenlabs.voice_id', 'tts.elevenlabs.model_id'])
     expect(voiceProviderKeys('tts', 'edge')).toEqual(['tts.edge.voice'])
+    expect(voiceProviderKeys('stt', 'sensevoice')).toEqual([
+      'stt.sensevoice.binary',
+      'stt.sensevoice.model',
+      'stt.sensevoice.vad_model',
+      'stt.sensevoice.backend',
+      'stt.sensevoice.timeout_seconds'
+    ])
   })
 
   it('covers every built-in TTS provider the Capabilities picker offers', () => {
@@ -54,7 +61,10 @@ describe('voice field option coverage', () => {
       'tts.elevenlabs.voice_id',
       'tts.edge.voice',
       'tts.xai.voice_id',
-      'tts.piper.voice'
+      'tts.piper.voice',
+      'stt.sensevoice.binary',
+      'stt.sensevoice.model',
+      'stt.sensevoice.vad_model'
     ]) {
       expect(FREE_INPUT_KEYS.has(key), key).toBe(true)
     }

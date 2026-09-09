@@ -75,6 +75,12 @@ class TestConfigWrites:
             apply_provider_selection("stt", "OpenAI", config)
         assert config["stt"]["provider"] == "openai"
 
+    def test_sensevoice_is_selectable_as_local_stt(self):
+        config = {}
+        apply_provider_selection("stt", "SenseVoice", config)
+
+        assert config["stt"]["provider"] == "sensevoice"
+
 
 class TestActiveDetection:
     def test_active_matches_config(self):

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Speech-to-text transcription used by the gateway for voice messages.
 
-Built-in providers: local (faster-whisper, default/free), local_command, groq, openai
+Built-in providers: local (faster-whisper, default/free), local_command, sensevoice, groq, openai
 (also serves the managed ``nous`` selection), mistral, xai, elevenlabs, deepinfra; plus
 user-declared command providers and plugin providers. ``transcribe_audio(path)`` returns
 ``{"success", "transcript", "error"?, "provider"?}``. This module owns provider resolution,
@@ -22,7 +22,7 @@ from utils import is_truthy_value
 from tools.transcription_common import (
     BUILTIN_STT_PROVIDERS, CLOUD_STT_PROVIDERS, DEFAULT_ELEVENLABS_STT_MODEL,
     DEFAULT_GROQ_STT_MODEL, DEFAULT_LOCAL_MODEL, DEFAULT_MISTRAL_STT_MODEL, DEFAULT_PROVIDER,
-    DEFAULT_STT_MODEL, LOCAL_STT_COMMAND_ENV, LOCAL_STT_LANGUAGE_ENV, _error_result,
+    DEFAULT_STT_MODEL, LOCAL_STT_COMMAND_ENV, LOCAL_STT_LANGUAGE_ENV, LOCAL_STT_PROVIDERS, _error_result,
     _get_stt_section, _ok_result)
 from tools.transcription_audio import (
     _convert_caf_to_wav, _prepare_audio_for_transcription, _trim_silence_for_cloud_stt,
@@ -31,6 +31,7 @@ from tools.transcription_local import (
     _get_idle_unload_seconds, _has_local_command, _join_confident_segments,
     _load_local_whisper_model, _looks_like_cuda_lib_error, _normalize_local_model,
     _transcribe_local_command, _try_lazy_install_stt, build_local_transcribe_kwargs)
+from tools.transcription_sensevoice import _transcribe_sensevoice
 # The ``_transcribe_<provider>`` handlers are looked up in this module's globals by _dispatch_stt_provider.
 from tools.transcription_cloud import (  # noqa: F401  (handlers dispatched via globals())
     _has_xai_stt_credentials, _resolve_openai_audio_client_config, _transcribe_deepinfra,
@@ -137,7 +138,7 @@ def _has_openai_audio_backend() -> bool:
 
 def _is_local_stt_provider(provider: str, stt_config: Dict[str, Any]) -> bool:
     """Whether *provider* is exempt from Hermes's remote upload cap."""
-    return (provider or "").lower().strip() in {"local", "local_command"}
+    return (provider or "").lower().strip() in LOCAL_STT_PROVIDERS
 
 
 # ---- Provider resolution ------------------------------------------------
@@ -443,6 +444,7 @@ def _transcribe_prepared_audio(
 _BUILTIN_MODEL_KEYS = {
     "local": ("local", "model", DEFAULT_LOCAL_MODEL, False),
     "local_command": ("local", "model", DEFAULT_LOCAL_MODEL, False),
+    "sensevoice": ("sensevoice", "model", "", False),
     "groq": ("groq", "model", DEFAULT_GROQ_STT_MODEL, True),
     "openai": ("openai", "model", DEFAULT_STT_MODEL, False),
     "mistral": ("mistral", "model", DEFAULT_MISTRAL_STT_MODEL, False),

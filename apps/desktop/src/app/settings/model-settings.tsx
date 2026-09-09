@@ -101,6 +101,46 @@ function isProviderReady(p?: ModelOptionProvider): boolean {
   return !!p && (p.authenticated !== false || (p.models?.length ?? 0) > 0)
 }
 
+
+// A private endpoint is an intentional local auxiliary-model pin, not a stale
+// paid-provider assignment. Keep malformed or public URLs visible so the
+// warning remains conservative.
+export function isPrivateAuxiliaryEndpoint(value?: string): boolean {
+  if (!value?.trim()) {
+    return false
+  }
+
+  try {
+    const hostname = new URL(value).hostname.toLowerCase().replace(/^\[(.*)\]$/, '$1')
+
+    if (hostname === 'localhost' || hostname.endsWith('.localhost') || hostname.endsWith('.local')) {
+      return true
+    }
+
+    if (hostname.includes(':')) {
+      return hostname === '::1' || /^f[cd]/.test(hostname) || /^fe[89ab]/.test(hostname)
+    }
+
+    const octets = hostname.split('.').map(Number)
+
+    if (octets.length !== 4 || octets.some(octet => !Number.isInteger(octet) || octet < 0 || octet > 255)) {
+      return false
+    }
+
+    const [first, second] = octets
+
+    return (
+      first === 10 ||
+      first === 127 ||
+      (first === 169 && second === 254) ||
+      (first === 172 && second >= 16 && second <= 31) ||
+      (first === 192 && second === 168)
+    )
+  } catch {
+    return false
+  }
+}
+
 // Mirrors `_AUX_TASK_SLOTS` in hermes_cli/web_server.py. Friendly labels and
 // hints make the assignments readable; raw task keys (vision, mcp, …) are
 // opaque to most users.
@@ -514,7 +554,7 @@ export function ModelSettings({ onMainModelChanged, scopeProfile }: ModelSetting
       .filter(entry => {
         const p = (entry.provider ?? '').toLowerCase()
 
-        return p && p !== 'auto' && p !== mainProvider
+        return p && p !== 'auto' && p !== mainProvider && !isPrivateAuxiliaryEndpoint(entry.base_url)
       })
       .map(entry => ({ task: entry.task, provider: entry.provider, model: entry.model }))
   }, [auxiliary, mainModel])
@@ -1068,7 +1108,9 @@ export function ModelSettings({ onMainModelChanged, scopeProfile }: ModelSetting
                   }
                   description={
                     <span className="font-mono text-[0.68rem]">
-                      {isAuto ? m.autoUseMain : `${current.provider} · ${current.model || m.providerDefault}`}
+                      {isAuto
+                        ? m.autoUseMain
+                        : `${current.provider} · ${current.model || m.providerDefault}${current.base_url ? ` · ${current.base_url}` : ''}`}
                     </span>
                   }
                   title={

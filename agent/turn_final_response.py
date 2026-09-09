@@ -50,6 +50,7 @@ def finish_text_response(
     _preflight_compression_blocked: Any, codex_ack_continuations: Any,
     truncated_response_parts: Any, length_continue_retries: Any,
     _pending_verification_response: Any, _pending_verification_response_previewed: Any,
+    turn_id: Any = None,
 ) -> FinalResponseVerdict:
     """Finish (or defer) a text-only assistant response in the original guard order. Every
     continuation path sets ``final_response = None`` so an acknowledgment never suppresses
@@ -216,6 +217,7 @@ def finish_text_response(
         conversation_history=conversation_history,
         pending_verification_response=_pending_verification_response,
         pending_verification_response_previewed=_pending_verification_response_previewed,
+        finish_reason=finish_reason, api_call_count=api_call_count, turn_id=turn_id,
     )
     _pending_verification_response = _sg.pending_verification_response
     _pending_verification_response_previewed = _sg.pending_verification_response_previewed

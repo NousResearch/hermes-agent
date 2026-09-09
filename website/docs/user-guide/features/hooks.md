@@ -447,6 +447,7 @@ Payload fields below are the exact event-specific fields supplied by each call s
 | `post_llm_call` | Observer | Successful, non-interrupted turn finalization; return ignored. | `session_id`, `task_id`, `turn_id`, `user_message`, `assistant_response`, `conversation_history`, `model`, `platform` | Full prompt, response, and history. |
 | `transform_llm_output` | Transform | Before `post_llm_call` and final delivery; first non-empty string replaces the response. | `response_text`, `session_id`, `model`, `platform` | Full final assistant text. |
 | `pre_verify` | Directive/control | At the bounded edited-code verify gate; first valid continue/block-stop directive keeps the turn going. | `session_id`, `platform`, `model`, `coding`, `attempt`, `final_response`, `changed_paths` | Draft response and changed paths. |
+| `pre_turn_finalize` | Directive/control | Just before a plain-text final is accepted, after every built-in stop gate; first valid continue/block-stop directive sends the turn back to the loop (max one continuation per turn). Python-plugin-only in v1. | `session_id`, `turn_id`, `platform`, `model`, `provider`, `final_response`, `finish_reason`, `api_call_count`, `attempt` | Draft response text. |
 | `pre_api_request` | Observer | Per provider attempt, immediately before the request; return ignored. | `task_id`, `turn_id`, `api_request_id`, `session_id`, `user_message`, `conversation_history`, `platform`, `model`, `provider`, `base_url`, `api_mode`, `api_call_count`, `retry_count`, `request_messages`, `message_count`, `tool_count`, `approx_input_tokens`, `request_char_count`, `max_tokens`, `started_at`, `middleware_trace`, `request` | High sensitivity: legacy `user_message`, `conversation_history`, and `request_messages` are intentionally raw; prefer sanitized `request`. |
 | `post_api_request` | Observer | After normalized provider success; return ignored. | `task_id`, `turn_id`, `api_request_id`, `session_id`, `platform`, `model`, `provider`, `base_url`, `api_mode`, `api_call_count`, `api_duration`, `started_at`, `ended_at`, `finish_reason`, `message_count`, `response_model`, `response`, `usage`, `assistant_message`, `assistant_content_chars`, `assistant_tool_call_count` | Sanitized `response` is available, but raw normalized `assistant_message` may contain model/user content; `usage` is accounting data. |
 | `api_request_error` | Observer | On each failed provider attempt; return ignored. | `task_id`, `turn_id`, `api_request_id`, `session_id`, `platform`, `model`, `provider`, `base_url`, `api_mode`, `api_call_count`, `api_duration`, `started_at`, `ended_at`, `status_code`, `retry_count`, `max_retries`, `retryable`, `reason`, `error`, `request` | Error text may contain provider/user data; `request` is intended to be sanitized. |
@@ -863,6 +864,66 @@ def register(ctx):
 ```
 
 For standing guidance that should shape the built-in missing-evidence nudge, use `agent.verify_guidance`. For broader coding posture rules that don't need to *gate* verification, prefer `agent.coding_instructions` in `config.yaml` — it rides the coding brief and costs no extra turn.
+
+---
+
+### `pre_turn_finalize`
+
+Fires **once per turn just before a plain-text final would be accepted**, after every built-in stop gate (verify-on-stop, `pre_verify`, kanban terminal guard). This is the generic "this turn is not complete; continue" extension point for plugins: observe the about-to-be-delivered answer and, when your own out-of-tree policy says the work is unfinished, send the turn back to the agent loop with a follow-up instruction.
+
+It carries no detection policy of its own — no provider, language, or length heuristics live in core. It only offers the bounded checkpoint.
+
+**Callback signature:**
+
+```python
+def my_callback(session_id: str, turn_id: str, platform: str, model: str,
+                provider: str, final_response: str, finish_reason: str,
+                api_call_count: int, attempt: int, **kwargs):
+```
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `session_id` | `str` | Unique identifier for the current session |
+| `turn_id` | `str` | Unique identifier for the current turn |
+| `platform` | `str` | Where the session is running (`"cli"`, `"telegram"`, …) |
+| `model` | `str` | The model identifier |
+| `provider` | `str` | The provider identifier |
+| `final_response` | `str` | The answer the agent is about to deliver |
+| `finish_reason` | `str` | The provider finish reason for the final call (`"stop"`, …) |
+| `api_call_count` | `int` | How many provider calls this turn has used so far |
+| `attempt` | `int` | Which finalize attempt this is (`0` on the first; core caps continuations at one, so a second attempt never re-fires) |
+
+**Fires:** In `agent/turn_stop_gates.py`, at the point the agent would accept a final answer, after the verify-on-stop check, the `pre_verify` hook, and the kanban terminal guard — only when at least one `pre_turn_finalize` hook is registered.
+
+**Return value — keep the agent going:**
+
+```python
+return {"action": "continue", "message": "Complete the remaining work before finishing."}
+```
+
+The `message` is appended as a synthetic user turn and a normal agent iteration runs again (not a provider retry — the next model call is a fresh turn-loop iteration). The Claude-Code Stop shape (`{"decision": "block", "reason": "..."}`, where blocking the stop means *keep going*) is accepted too. A directive with no message — or any other return — lets the turn finish.
+
+**Bounded:** at most **one** continuation per turn. A plugin that always returns `continue` still finalizes on the second attempt — no config key, no loop risk.
+
+**Fail-open:** hook exceptions, invalid returns, and empty messages are ignored and the turn finalizes normally.
+
+**Python-plugin-only in v1:** shell hooks cannot return this directive (loudly refused via `SHELL_UNSUPPORTED_HOOKS` — the shell response parser has no channel for it).
+
+**Don't rewrite the answer here:** to change what the user sees, keep using [`transform_llm_output`](#transform_llm_output). `pre_turn_finalize` only decides *whether the turn continues*.
+
+**Example — one-shot local completion guard:**
+
+```python
+def ensure_completion(final_response, attempt, **kwargs):
+    if attempt == 0 and some_local_condition(final_response):
+        return {
+            "action": "continue",
+            "message": "Complete the remaining work before finishing."
+        }
+
+def register(ctx):
+    ctx.register_hook("pre_turn_finalize", ensure_completion)
+```
 
 ---
 

@@ -17,10 +17,13 @@ from agent.message_content import flatten_message_text
 from agent.message_metadata import append_message, stamp_message_timestamp
 from agent.message_sanitization import _sanitize_surrogates
 
-# Verification-continuation nudges (verify-on-stop / pre_verify) must be stripped from
-# returned/live history to avoid role-alternation breaks; the assistant response is
-# real content and is not flagged. (#65919)
-_VERIFICATION_CONTINUATION_FLAGS = ("_verification_stop_synthetic", "_pre_verify_synthetic")
+# Verification/finalize-continuation nudges (verify-on-stop / pre_verify /
+# pre_turn_finalize) must be stripped from returned/live history to avoid
+# role-alternation breaks; the assistant response is real content and is not flagged.
+# (#65919)
+_VERIFICATION_CONTINUATION_FLAGS = (
+    "_verification_stop_synthetic", "_pre_verify_synthetic", "_pre_turn_finalize_synthetic",
+)
 
 _SENTENCE_END = {".", "!", "?", "。", "！", "？", "`", ")"}
 

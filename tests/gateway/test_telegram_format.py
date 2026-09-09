@@ -180,8 +180,8 @@ class TestFormatMessageBoldItalic:
         assert adapter.format_message("*a **b** c*") == "_a *b* c_"
 
     def test_quad_asterisk_bold(self, adapter):
-        """****bold**** is bold twice-nested in, rendered as a valid bold payload."""
-        assert adapter.format_message("****bold****") == "**bold**"
+        """****bold**** collapses to a single valid bold (MarkdownV2 cannot nest bold in bold)."""
+        assert adapter.format_message("****bold****") == "*bold*"
 
     def test_spaced_asterisks_stay_literal(self, adapter):
         """Multiplication-style 'a * b * c' must not become fake italic."""

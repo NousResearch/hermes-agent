@@ -332,9 +332,19 @@ def _resolve_emphasis(text: str, stash, escape) -> str:
                 parts.append("*" * remaining)
                 i += 1
                 continue
-            open_marks = "".join(_mark(kind) for kind, _ in reversed(opens))
+            # MarkdownV2 cannot nest an entity inside itself: ****x**** pairs bold on bold,
+            # so collapse same-kind marks into one instead of emitting an empty entity.
+            open_kinds = []
+            for kind, _ in reversed(opens):
+                if kind not in open_kinds:
+                    open_kinds.append(kind)
+            open_marks = "".join(_mark(kind) for kind in open_kinds)
             outer_close = max(partner for _, partner in opens)
-            close_marks = "".join(_mark(kind) for kind, _ in tokens[outer_close][7])
+            close_kinds = []
+            for kind, _ in tokens[outer_close][7]:
+                if kind not in close_kinds:
+                    close_kinds.append(kind)
+            close_marks = "".join(_mark(kind) for kind in close_kinds)
             inner = render_range(i + 1, outer_close)
             parts.append("*" * remaining)
             parts.append(stash(open_marks + escape(inner) + close_marks))

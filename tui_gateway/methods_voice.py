@@ -5,7 +5,6 @@ per process). Bodies are rebound onto server.py's globals (method_ctx.bind_modul
 from __future__ import annotations
 
 import contextlib
-import shutil
 import subprocess
 import sys
 import threading
@@ -863,7 +862,10 @@ def _say_start(text: str, voice=None, rate=None) -> int:
     global _say_proc
     if sys.platform != "darwin":
         raise RuntimeError("Apple read-aloud needs macOS (/usr/bin/say)")
-    cmd = [shutil.which("say") or "/usr/bin/say"]
+    # Fixed OS path on purpose: imported modules are NOT published onto the
+    # bound server namespace (method_ctx skips ModuleType), so no shutil.which
+    # here — and an absolute path is immune to sparse launchd PATHs anyway.
+    cmd = ["/usr/bin/say"]
     if voice:
         cmd += ["-v", str(voice)]
     if rate:

@@ -26,6 +26,7 @@ export const HOTKEYS: [string, string][] = [
   ['↑/↓', 'completions / queue edit / history'],
   ['Ctrl+X', 'open live session switcher (deletes queued message while editing)'],
   ['Ctrl+O', 'open model picker (keeps your draft; applies to next turn mid-stream)'],
+  ['Ctrl+S', 'read last reply aloud with Apple voice (press again to stop; /say [text|number|stop])'],
   [action + '+A/E', 'home / end of line'],
   [action + '+Z / ' + action + '+Y', 'undo / redo input edits'],
   [action + '+W', 'delete word'],

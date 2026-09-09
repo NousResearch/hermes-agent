@@ -1136,6 +1136,60 @@ describe('createSlashHandler', () => {
       expect(ctx.transcript.sys).toHaveBeenCalledWith('title: demo title')
     })
   })
+
+  it('/say speaks explicit text via speak.say', async () => {
+    patchUiState({ sid: 'sid-abc' })
+    const rpc = vi.fn(() => Promise.resolve({ status: 'speaking', pid: 42 }))
+    const ctx = buildCtx({ gateway: { ...buildGateway(), rpc } })
+
+    expect(createSlashHandler(ctx)('/say hello there')).toBe(true)
+    expect(rpc).toHaveBeenCalledWith('speak.say', { arg: 'hello there', session_id: 'sid-abc' })
+    await vi.waitFor(() => {
+      expect(ctx.transcript.sys).toHaveBeenCalledWith('speaking… (Ctrl+S or /say stop to stop)')
+    })
+  })
+
+  it('/say with no args resolves the last reply server-side', async () => {
+    patchUiState({ sid: 'sid-abc' })
+    const rpc = vi.fn(() => Promise.resolve({ status: 'speaking', pid: 43 }))
+    const ctx = buildCtx({ gateway: { ...buildGateway(), rpc } })
+
+    expect(createSlashHandler(ctx)('/say')).toBe(true)
+    expect(rpc).toHaveBeenCalledWith('speak.say', { arg: '', session_id: 'sid-abc' })
+  })
+
+  it('/say speaks the composer selection without clearing it', async () => {
+    patchUiState({ sid: 'sid-abc' })
+    const rpc = vi.fn(() => Promise.resolve({ status: 'speaking', pid: 44 }))
+    const copySelectionNoClear = vi.fn(async () => 'highlighted words')
+    const ctx = buildCtx({
+      composer: {
+        ...buildComposer(),
+        hasSelection: true,
+        selection: { copySelection: vi.fn(async () => ''), copySelectionNoClear }
+      },
+      gateway: { ...buildGateway(), rpc }
+    })
+
+    expect(createSlashHandler(ctx)('/say')).toBe(true)
+    await vi.waitFor(() => {
+      expect(rpc).toHaveBeenCalledWith('speak.say', { text: 'highlighted words' })
+    })
+    await vi.waitFor(() => {
+      expect(ctx.transcript.sys).toHaveBeenCalledWith('speaking selection… (17 chars, copied)')
+    })
+  })
+
+  it('/say stop calls speak.stop', async () => {
+    const rpc = vi.fn(() => Promise.resolve({ status: 'stopped', stopped: true }))
+    const ctx = buildCtx({ gateway: { ...buildGateway(), rpc } })
+
+    expect(createSlashHandler(ctx)('/say stop')).toBe(true)
+    expect(rpc).toHaveBeenCalledWith('speak.stop', {})
+    await vi.waitFor(() => {
+      expect(ctx.transcript.sys).toHaveBeenCalledWith('stopped.')
+    })
+  })
 })
 
 const buildCtx = (overrides: Partial<Ctx> = {}): Ctx => ({

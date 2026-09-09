@@ -558,3 +558,28 @@ describe('isMacActionFallback', () => {
     expect(isMacActionFallback({ ctrl: true, meta: false, super: false }, 'w', 'w')).toBe(false)
   })
 })
+
+describe('isSpeakAloudKey', () => {
+  it('matches raw Ctrl+S on macOS (Apple read-aloud, no Option/Meta trap)', async () => {
+    const { isSpeakAloudKey } = await importPlatform('darwin')
+
+    expect(isSpeakAloudKey({ ctrl: true, meta: false, super: false }, 's')).toBe(true)
+    expect(isSpeakAloudKey({ ctrl: true, meta: false, super: false }, 'S')).toBe(true)
+  })
+
+  it('matches Ctrl+S on non-macOS too (backend answers macOS-only)', async () => {
+    const { isSpeakAloudKey } = await importPlatform('linux')
+
+    expect(isSpeakAloudKey({ ctrl: true, meta: false, super: false }, 's')).toBe(true)
+  })
+
+  it('does not match Option/Cmd+S shapes, plain s, or other Ctrl combos', async () => {
+    const { isSpeakAloudKey } = await importPlatform('darwin')
+
+    expect(isSpeakAloudKey({ ctrl: false, meta: true, super: false }, 's')).toBe(false)
+    expect(isSpeakAloudKey({ ctrl: false, meta: false, super: true }, 's')).toBe(false)
+    expect(isSpeakAloudKey({ ctrl: true, meta: true, super: false }, 's')).toBe(false)
+    expect(isSpeakAloudKey({ ctrl: true, meta: false, super: false }, 'a')).toBe(false)
+    expect(isSpeakAloudKey({ ctrl: false, meta: false, super: false }, 's')).toBe(false)
+  })
+})

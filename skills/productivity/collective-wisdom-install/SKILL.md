@@ -42,7 +42,13 @@ the existing setup flow; do not create credentials or silently enable sharing.
    receipt through terminal, `clarify`, or another agent tool.
 3. Read the result with `wisdom_inbox`. Changed bytes, local conflicts, expanded
    permissions, or stale plans require renewed review.
-4. Distinguish files installed from setup completed and verification passed.
+4. Inspect `wisdom_inspect` with `kind: installed`, the skill identity and exact
+   installed version to retrieve the hash-checked setup guide and prerequisites.
+   The read-only CLI equivalent is
+   `hermes wisdom installed-setup <skill-id> --version <version> --json`.
+   Re-inspect after an interruption or update; do not reuse an older version's
+   guidance. Missing or invalid guidance requires review, not guessed commands.
+   Distinguish files installed from setup completed and verification passed.
    Explain missing commands, services, permissions, and environment variable
    names without reading or displaying credential values.
 5. Installing files does not authorize running setup or verification commands.

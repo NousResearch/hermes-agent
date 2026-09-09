@@ -240,7 +240,26 @@ class PackagedFile(_Strict):
         return _no_secret_shapes(value)
 
 
-class SharePackage(_Strict):
+class SetupGuidance(_Strict):
+    """Publisher-declared guidance, never execution authority or local evidence."""
+
+    requirements: list[PackagingRequirement] = Field(default_factory=list, max_length=40)
+    setup_instructions: list[str] = Field(default_factory=list, max_length=20)
+    credential_handoff: list[str] = Field(default_factory=list, max_length=20)
+    compatibility_limits: list[str] = Field(default_factory=list, max_length=20)
+    verification_step: str = Field(min_length=1, max_length=400)
+    removed_or_generalized: list[str] = Field(default_factory=list, max_length=40)
+    related_skills: list[str] = Field(default_factory=list, max_length=20)
+
+    @field_validator(
+        "setup_instructions", "credential_handoff", "compatibility_limits", "removed_or_generalized"
+    )
+    @classmethod
+    def _lines_clean(cls, value: list[str]) -> list[str]:
+        return [_no_secret_shapes(line)[:400] for line in value]
+
+
+class SharePackage(SetupGuidance):
     """Output of the structured packaging task in the Share flow."""
 
     schema_version: Literal[1] = SCHEMA_VERSION
@@ -249,13 +268,6 @@ class SharePackage(_Strict):
     editorial_name: str = Field(min_length=1, max_length=80)
     plain_description: str = Field(min_length=1, max_length=400)
     files: list[PackagedFile] = Field(min_length=1, max_length=64)
-    requirements: list[PackagingRequirement] = Field(default_factory=list, max_length=40)
-    setup_instructions: list[str] = Field(default_factory=list, max_length=20)
-    credential_handoff: list[str] = Field(default_factory=list, max_length=20)
-    compatibility_limits: list[str] = Field(default_factory=list, max_length=20)
-    verification_step: str = Field(min_length=1, max_length=400)
-    removed_or_generalized: list[str] = Field(default_factory=list, max_length=40)
-    related_skills: list[str] = Field(default_factory=list, max_length=20)
 
     @field_validator("skill_name")
     @classmethod
@@ -275,14 +287,6 @@ class SharePackage(_Strict):
         if not any(item.path == "SKILL.md" for item in value):
             raise ValueError("package must include SKILL.md")
         return value
-
-    @field_validator(
-        "setup_instructions", "credential_handoff", "compatibility_limits", "removed_or_generalized"
-    )
-    @classmethod
-    def _lines_clean(cls, value: list[str]) -> list[str]:
-        return [_no_secret_shapes(line)[:400] for line in value]
-
 
 # ---------------------------------------------------------------------------
 # Parsing helpers

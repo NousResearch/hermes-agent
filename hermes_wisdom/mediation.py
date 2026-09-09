@@ -810,4 +810,15 @@ class WisdomMediation:
                 if row["reference"]["kind"] != "weekly_review"
             ],
             "interactions": self.consent.pending(org),
+            "installed_setup": [
+                {
+                    "kind": "installed",
+                    "identity": row["skill_id"],
+                    "version": row["version"],
+                    "content_hash": row["content_hash"],
+                    "instruction": "Inspect installed setup; file installation does not establish readiness.",
+                }
+                for row in self.service.store.installations()
+                if row["org_id"] == org and row["state"] == "active"
+            ][:100],
         }

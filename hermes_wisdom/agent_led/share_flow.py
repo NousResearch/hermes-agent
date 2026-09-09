@@ -373,31 +373,11 @@ class ShareFlow:
 def normalize_generated_package(package: SharePackage) -> SharePackage:
     """Materialize the generated metadata as part of the reviewable package."""
     import yaml
+    from .setup_document import SETUP_PATH, render_setup_document
 
     files = []
-    setup_path = "refs/wisdom-setup.md"
-    setup = (
-        "# Setup and portability\n\nInstalling files does not authorize executing these instructions.\n\n```json\n"
-        + canonical_json_bytes({
-            "schema_version": 1,
-            "execution_requires_user_approval": True,
-            **{
-                key: value
-                for key, value in package.model_dump(mode="json").items()
-                if key
-                in {
-                    "requirements",
-                    "setup_instructions",
-                    "credential_handoff",
-                    "compatibility_limits",
-                    "verification_step",
-                    "removed_or_generalized",
-                    "related_skills",
-                }
-            },
-        }).decode("utf-8")
-        + "\n```\n"
-    )
+    setup_path = SETUP_PATH
+    setup = render_setup_document(package)
     for item in package.files:
         if item.path == setup_path:
             if item.content != setup:

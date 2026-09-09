@@ -235,6 +235,7 @@ def _sweep_stale_handshake_files(now: float) -> None:
     accumulate or confuse supervisors. Live records have a future
     ``expires_at`` and are never touched.
     """
+    live_pending = set()
     try:
         for path in approvals_pending_dir().glob("*.json"):
             try:
@@ -243,12 +244,16 @@ def _sweep_stale_handshake_files(now: float) -> None:
                 if not isinstance(expires_at, (int, float)) \
                         or expires_at <= now:
                     path.unlink()
+                else:
+                    live_pending.add(path.name)
             except (OSError, ValueError):
                 try:
                     path.unlink()
                 except OSError:
                     pass
         for path in approvals_responses_dir().glob("*.json"):
+            if path.name in live_pending:
+                continue
             try:
                 if now - path.stat().st_mtime > _RESPONSE_STALE_SECONDS:
                     path.unlink()

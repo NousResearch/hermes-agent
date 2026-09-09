@@ -2967,20 +2967,27 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         thread_channel, thread_id, starter_msg, message_id = self._forum_thread_parts(thread)
         if file is not None or files:
             attachments = getattr(starter_msg, "attachments", None) or []
-            if not attachments:
+            submitted_count = 1 if file is not None else len(files or [])
+            if len(attachments) != submitted_count:
                 filename = ""
                 if file is not None:
                     filename = getattr(file, "filename", "") or ""
                 elif files:
                     filename = getattr(files[0], "filename", "") or ""
+                received_count = len(attachments)
                 logger.warning(
-                    "[%s] Forum thread %s starter has no attachments for %s", self.name, thread_id,
-                    filename or "file",
+                    "[%s] Forum thread %s starter attached %d of %d files for %s", self.name,
+                    thread_id, received_count, submitted_count, filename or "file",
+                )
+                receipt = (
+                    f"attached {received_count} of {submitted_count} files"
+                    if received_count
+                    else f"attached no files (0 of {submitted_count})"
                 )
                 return SendResult(
                     success=False,
                     error=(
-                        "Discord created the forum thread but attached no files"
+                        f"Discord created the forum thread but {receipt}"
                         + (f" ({filename})" if filename else "")
                     ),
                     message_id=message_id or None,

@@ -98,3 +98,34 @@ async def test_image_batch_propagates_failed_forum_receipt(tmp_path):
 
     assert not result.success
     assert result.error == "Discord forum starter contained no files"
+
+
+@pytest.mark.asyncio
+async def test_image_batch_rejects_partial_forum_starter_receipt(tmp_path):
+    adapter = DiscordAdapter(PlatformConfig())
+    adapter._client = Client()
+    adapter._is_forum_parent = lambda _channel: True
+    adapter._resolve_channel = AsyncMock(
+        return_value=SimpleNamespace(
+            id=222,
+            create_thread=AsyncMock(
+                return_value=SimpleNamespace(
+                    id=777,
+                    message=SimpleNamespace(id=800, attachments=[SimpleNamespace()]),
+                    thread=SimpleNamespace(id=777, send=AsyncMock()),
+                )
+            ),
+        )
+    )
+    paths = [tmp_path / "first.png", tmp_path / "second.png"]
+    for path in paths:
+        path.write_bytes(b"attachment bytes")
+
+    result = await adapter.send_multiple_images(
+        "222", [(f"file://{path}", "caption") for path in paths]
+    )
+
+    assert not result.success
+    assert "attached 1 of 2 files" in result.error
+    assert result.message_id == "800"
+    assert result.raw_response == {"thread_id": "777"}

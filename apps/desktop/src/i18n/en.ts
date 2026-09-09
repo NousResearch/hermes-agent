@@ -580,6 +580,9 @@ export const en: Translations = {
       colorModeDesc: 'Pick a fixed mode or let Hermes follow your system setting.',
       toolViewTitle: 'Tool Call Display',
       toolViewDesc: 'Product hides raw tool payloads; Technical shows full input/output.',
+      collapseSettledDiffsTitle: 'Collapse completed code diffs',
+      collapseSettledDiffsDesc:
+        'Automatically collapse inline code diffs when the response finishes. Diffs you open or close manually keep your choice.',
       reasoningCollapsedTitle: 'Collapse thinking by default',
       reasoningCollapsedDesc: 'Keep streamed reasoning available without expanding it until you open it.',
       uiScaleTitle: 'UI Scale',

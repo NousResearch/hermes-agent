@@ -16,6 +16,7 @@ import { normalize } from '@/lib/text'
 import { cn } from '@/lib/utils'
 import { $backdrop, setBackdrop } from '@/store/backdrop'
 import { $composerPopoutGesturesEnabled, setComposerPopoutGesturesEnabled } from '@/store/composer-popout'
+import { $collapseSettledDiffs, setCollapseSettledDiffs } from '@/store/diff-disclosure'
 import { $embedAllowed, $embedMode, clearEmbedAllowed, type EmbedMode, setEmbedMode } from '@/store/embed-consent'
 import { $introSplash, setIntroSplash } from '@/store/intro-splash'
 import { notifyError } from '@/store/notifications'
@@ -395,6 +396,7 @@ export function AppearanceSettings() {
   const { themeName, mode, resolvedMode, availableThemes, setTheme, setMode } = useTheme()
   const toolViewMode = useStore($toolViewMode)
   const reasoningCollapsedByDefault = useStore($reasoningCollapsedByDefault)
+  const collapseSettledDiffs = useStore($collapseSettledDiffs)
   const sessionListDensity = useStore($sessionListDensity)
   const tabStripDefault = useStore($tabStripDefault)
   const zoomPercent = useStore($zoomPercent)
@@ -930,6 +932,25 @@ export function AppearanceSettings() {
             }
             description={a.reasoningCollapsedDesc}
             title={a.reasoningCollapsedTitle}
+          />
+
+          <ListRow
+            action={
+              <SegmentedControl
+                onChange={id => {
+                  triggerHaptic('selection')
+                  setCollapseSettledDiffs(id === 'on')
+                }}
+                options={[
+                  { id: 'off', label: t.common.off },
+                  { id: 'on', label: t.common.on }
+                ]}
+                value={collapseSettledDiffs ? 'on' : 'off'}
+              />
+            }
+            description={a.collapseSettledDiffsDesc}
+            id={appearanceSettingElementId(APPEARANCE_SETTING_IDS.collapseSettledDiffs)}
+            title={a.collapseSettledDiffsTitle}
           />
 
           <ListRow

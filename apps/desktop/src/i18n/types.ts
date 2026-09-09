@@ -475,6 +475,8 @@ export interface Translations {
       toolViewTitle: string
       toolViewDesc: string
       reasoningCollapsedTitle: string
+      collapseSettledDiffsTitle: string
+      collapseSettledDiffsDesc: string
       reasoningCollapsedDesc: string
       uiScaleTitle: string
       uiScaleDesc: (percent: number) => string

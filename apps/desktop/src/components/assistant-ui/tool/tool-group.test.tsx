@@ -443,12 +443,14 @@ describe('a file edit among ordinary activity', () => {
     expect(shape).toEqual(['summary', 'row', 'summary'])
   })
 
-  it('keeps the diff itself on screen rather than behind the summary', async () => {
+  it('keeps the settled diff directly expandable rather than behind the summary', async () => {
     const { container } = render(<GroupHarness message={editBetweenRunsMessage()} />)
 
     await waitFor(() => {
-      expect(container.querySelector('[data-tool-row][data-file-edit]')).not.toBeNull()
+      expect(container.querySelector('[data-tool-row] button[aria-expanded="false"]')).not.toBeNull()
     })
+    fireEvent.click(container.querySelector('[data-tool-row] button[aria-expanded="false"]')!)
+    expect(container.querySelector('[data-tool-row][data-file-edit]')).not.toBeNull()
   })
 })
 

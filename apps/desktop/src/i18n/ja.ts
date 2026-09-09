@@ -407,6 +407,9 @@ export const ja = defineLocale({
       colorModeDesc: '固定モードを選ぶか、Hermes をシステム設定に合わせます。',
       toolViewTitle: 'ツール呼び出しの表示',
       toolViewDesc: 'プロダクト表示は生のツールペイロードを隠し、テクニカル表示は入出力をすべて表示します。',
+      collapseSettledDiffsTitle: '完了したコード差分を折りたたむ',
+      collapseSettledDiffsDesc:
+        '応答が完了するとインラインのコード差分を自動的に折りたたみます。手動で開閉した状態は維持されます。',
       reasoningCollapsedTitle: '思考ブロックをデフォルトで折りたたむ',
       reasoningCollapsedDesc: 'ストリーミング中の推論を、開くまで折りたたんだまま利用できるようにします。',
       uiScaleTitle: 'UI スケール',

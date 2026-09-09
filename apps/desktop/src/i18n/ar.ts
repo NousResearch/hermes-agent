@@ -476,6 +476,9 @@ export const ar = defineLocale({
       colorModeDesc: 'اختر الوضع الفاتح أو الداكن أو اتبع النظام.',
       toolViewTitle: 'عرض الأدوات',
       toolViewDesc: 'تحكم في كيفية عرض نشاط الأدوات داخل المحادثة.',
+      collapseSettledDiffsTitle: 'طي فروق الشيفرة المكتملة',
+      collapseSettledDiffsDesc:
+        'طي فروق الشيفرة المضمنة تلقائيًا عند اكتمال الرد. يُحفظ اختيارك للفروق التي تفتحها أو تغلقها يدويًا.',
       reasoningCollapsedTitle: 'طي التفكير افتراضيًا',
       reasoningCollapsedDesc: 'أبقِ التفكير المتدفق متاحًا دون توسيعه حتى تفتحه.',
       translucencyTitle: 'شفافية النافذة',

@@ -396,6 +396,8 @@ export const zhHant = defineLocale({
       colorModeDesc: '選擇固定模式，或讓 Hermes 跟隨系統設定。',
       toolViewTitle: '工具呼叫顯示',
       toolViewDesc: '產品模式會隱藏原始工具 payload；技術模式會顯示完整輸入/輸出。',
+      collapseSettledDiffsTitle: '摺疊已完成的程式碼差異',
+      collapseSettledDiffsDesc: '回覆結束後自動摺疊行內程式碼差異。手動展開或摺疊的狀態會保留。',
       reasoningCollapsedTitle: '預設摺疊推理過程',
       reasoningCollapsedDesc: '保留串流推理內容，但在您開啟前維持摺疊。',
       uiScaleTitle: '介面縮放',

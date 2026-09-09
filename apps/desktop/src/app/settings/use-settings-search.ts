@@ -189,6 +189,15 @@ export function useSettingsSearchCatalog(enabled: boolean) {
     },
     {
       context: appearanceContext,
+      description: appearance.collapseSettledDiffsDesc,
+      icon: Palette,
+      id: `setting:${APPEARANCE_SETTING_IDS.collapseSettledDiffs}`,
+      keywords: ['diff', 'patch', 'code modifications', 'collapse'],
+      label: appearance.collapseSettledDiffsTitle,
+      target: { setting: APPEARANCE_SETTING_IDS.collapseSettledDiffs, view: 'config:appearance' }
+    },
+    {
+      context: appearanceContext,
       description: appearance.embedsDesc,
       icon: Palette,
       id: `setting:${APPEARANCE_SETTING_IDS.embeds}`,

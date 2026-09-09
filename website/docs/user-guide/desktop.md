@@ -127,6 +127,8 @@ While delegated workers are live, a **Subagents** frame appears above the compos
 
 ### Git review & worktrees
 
+Inline code diffs stay expanded while the assistant is responding and collapse when the response finishes. Click a diff's header to reopen it; diffs you open or close manually keep that choice. To keep all diffs expanded, turn off **Settings → Appearance → Collapse completed code diffs**. This preference is stored locally in Desktop.
+
 For sessions running inside a Git repository, the app has a built-in source-control surface:
 
 - **Review pane** — **Cmd/Ctrl+G** toggles the working-tree review pane: branch and ahead/behind status, changed files (list or tree view), and diffs scoped to **Uncommitted**, **Branch**, or **Last turn** (just what the agent changed in its most recent turn). Stage/unstage files, revert changes, write a commit message (or **Generate commit message**), then **Commit** or **Commit & Push** — and **Create PR** via the GitHub CLI (`gh`), or hand the whole thing to the agent with **Ask Hermes to open PR**. You can also create and switch branches from here.

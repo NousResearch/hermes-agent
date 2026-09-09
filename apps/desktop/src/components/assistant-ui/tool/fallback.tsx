@@ -46,6 +46,7 @@ import { AlertCircle, CheckCircle2 } from '@/lib/icons'
 import { normalize } from '@/lib/text'
 import { useEnterAnimation } from '@/lib/use-enter-animation'
 import { cn } from '@/lib/utils'
+import { $collapseSettledDiffs } from '@/store/diff-disclosure'
 import { recordPreviewArtifact } from '@/store/preview-status'
 import { sessionApprovalRequest } from '@/store/prompts'
 import { $toolInlineDiff } from '@/store/tool-diffs'
@@ -354,6 +355,7 @@ function ToolEntry({ part }: ToolEntryProps) {
   const messageRunning = useAuiState(selectMessageRunning)
   const embedded = useContext(ToolEmbedContext)
   const toolViewMode = useStore($toolViewMode)
+  const collapseSettledDiffs = useStore($collapseSettledDiffs)
 
   // `ToolFallback` rebuilds the `part` wrapper each render, defeating the memos
   // below and re-running buildToolView (full JSON.stringify of result) on every
@@ -374,7 +376,7 @@ function ToolEntry({ part }: ToolEntryProps) {
   const sideDiff = useStore($toolInlineDiff(toolCallId ?? ''))
   const inlineDiff = stripInlineDiffChrome(sideDiff) || inlineDiffFromResult(result)
   const isFileEdit = isFileEditTool(toolName)
-  const defaultOpen = Boolean(inlineDiff)
+  const defaultOpen = Boolean(inlineDiff) && (!collapseSettledDiffs || messageRunning)
   const open = useDisclosureOpen(disclosureId, defaultOpen)
   const canDismiss = !isPending && !embedded
   // Only animate entries that mount while their message is actively

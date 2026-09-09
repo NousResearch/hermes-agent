@@ -129,6 +129,31 @@ def test_turn_route_injects_priority_processing_without_changing_runtime():
     assert route["request_overrides"] == {}
 
 
+def test_turn_route_reports_history_derived_first_turn(monkeypatch):
+    runner = _make_runner()
+    seen = []
+
+    def fake_apply(route, **context):
+        seen.append(context["is_first_turn"])
+        return SimpleNamespace(changed=False, payload=route, trace=[])
+
+    monkeypatch.setattr("hermes_cli.middleware.apply_turn_route_middleware", fake_apply)
+    runtime_kwargs = {
+        "api_key": "***", "base_url": "https://api.openai.com/v1", "provider": "openai",
+        "api_mode": "chat_completions", "command": None, "args": [], "credential_pool": None,
+    }
+
+    gateway_run.GatewayRunner._resolve_turn_agent_config(
+        runner, "first", "gpt-5.4", runtime_kwargs, source=_make_source(), conversation_history=[]
+    )
+    gateway_run.GatewayRunner._resolve_turn_agent_config(
+        runner, "later", "gpt-5.4", runtime_kwargs, source=_make_source(),
+        conversation_history=[{"role": "user", "content": "first"}],
+    )
+
+    assert seen == [True, False]
+
+
 def test_turn_route_resolves_requested_provider_alias(monkeypatch):
     runner = _make_runner()
 

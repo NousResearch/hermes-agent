@@ -189,8 +189,18 @@ class TurnExplainersMixin:
     ) -> None:
         """Record a ``write_file`` / ``patch`` outcome for the turn-end verifier.
 
-        Failures store ``{path: {error_preview, tool}}``; a later success on the same path removes the entry.
-        No-op when the per-turn state dict is not initialised (tool dispatched outside ``run_conversation``).
+        Failures store ``{path: {error_preview, tool}}``; a later success on the same path
+        removes the entry. When a failure is recorded, the path's on-disk fingerprint
+        (mtime_ns, size, inode) is snapshotted into ``_turn_file_mutation_baselines`` so the
+        footer can tell, at turn end, whether the file was modified by an UNTRACKED writer
+        (terminal, MCP tool, editor, watcher) after the tracked failure. The fingerprint is
+        captured at failure time — the model only falls back to an untracked writer after
+        seeing the failure, so a turn-start baseline would observe unrelated earlier writes —
+        and kept first-write-wins, mirroring the keep-first-error rule above: a later
+        retried failure must not re-anchor the baseline to the post-fallback state.
+        ``None`` is the explicit "path did not exist" sentinel, distinct from "no baseline
+        recorded" (unknown). No-op when the per-turn state dict is not initialised (tool
+        dispatched outside ``run_conversation``).
         """
         if tool_name not in _FILE_MUTATING_TOOLS:
             return
@@ -216,11 +226,62 @@ class TurnExplainersMixin:
         if is_error and not landed:
             # Keep the FIRST error per path unless a later success replaces it.
             preview = _extract_error_preview(result)
+            baselines = getattr(self, "_turn_file_mutation_baselines", None)
             for path in targets:
-                state.setdefault(path, {"tool": tool_name, "error_preview": preview})
+                if path not in state:
+                    state[path] = {"tool": tool_name, "error_preview": preview}
+                    if baselines is not None and path not in baselines:
+                        baselines[path] = self._snapshot_file_fingerprint(path)
         else:
+            baselines = getattr(self, "_turn_file_mutation_baselines", None)
             for path in targets:
                 state.pop(path, None)
+                if baselines is not None:
+                    baselines.pop(path, None)
+
+    @staticmethod
+    def _snapshot_file_fingerprint(path: str):
+        """``(st_mtime_ns, st_size, st_ino)`` for *path*, or ``None`` if it does not exist.
+
+        Read-side only: the raw key (possibly ``~``- or relative) is resolved for the stat
+        call, but the baselines dict is keyed by the same raw string the failure dict uses,
+        so footer-time lookups line up. ``None`` is the "confirmed absent" sentinel —
+        distinct from a missing key, which means "never snapshotted" (unknown).
+        Note: a transient OSError at footer time (permission race, not a deletion) is
+        indistinguishable from "deleted" and reads as changed — the safe direction, since
+        the dangerous claim (a changed file rendered "NOT modified") can never result.
+        """
+        try:
+            st = os.stat(os.path.expanduser(path))
+            return (st.st_mtime_ns, st.st_size, st.st_ino)
+        except OSError:
+            return None
+
+    def _reconcile_file_mutation_failures(self, failed: Dict[str, Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+        """Mark failed-mutation entries whose file changed on disk after the tracked failure.
+
+        Compares the footer-time fingerprint against the failure-time baseline in
+        ``_turn_file_mutation_baselines``. Any difference (or absent→present,
+        present→absent) marks the entry with ``external_change: True`` so the footer can
+        reword it — the tracked tool still did not write the file, but the file is no
+        longer "NOT modified", and dropping the entry would also suppress the genuine
+        over-claim case where an unrelated writer happened to touch the same path.
+        Returns a NEW dict; never mutates *failed* or per-turn state. A missing baseline
+        (unknown) leaves the entry unmarked — on ambiguity the warning is preserved.
+        """
+        baselines = getattr(self, "_turn_file_mutation_baselines", None)
+        if not baselines:
+            return failed
+        reconciled: Dict[str, Dict[str, Any]] = {}
+        for path, info in failed.items():
+            entry = dict(info)
+            baseline = baselines.get(path)
+            if baseline is not None or path in baselines:
+                current = self._snapshot_file_fingerprint(path)
+                if current != baseline:
+                    entry["external_change"] = True
+            reconciled[path] = entry
+        return reconciled
 
     def _file_mutation_verifier_enabled(self) -> bool:
         """``display.file_mutation_verifier`` / ``HERMES_FILE_MUTATION_VERIFIER`` (a patchable seam)."""
@@ -262,17 +323,33 @@ class TurnExplainersMixin:
         """
         if not failed:
             return ""
-        lines = [
-            "⚠️ File-mutation verifier: "
-            f"{len(failed)} file(s) were NOT modified this turn despite any "
-            "wording above that may suggest otherwise. Run `git status` or "
-            "`read_file` to confirm."
-        ]
+        changed = [p for p, info in failed.items() if info.get("external_change")]
+        unchanged = [p for p in failed if p not in changed]
+        lines = ["⚠️ File-mutation verifier: "]
+        if unchanged:
+            lines.append(
+                f"{len(unchanged)} file(s) were NOT modified this turn despite any "
+                "wording above that may suggest otherwise"
+            )
+        if changed:
+            if unchanged:
+                lines.append(";")
+            lines.append(
+                f"{len(changed)} file(s) failed but changed on disk through an "
+                "untracked writer after the failure"
+            )
+        lines[-1] += ". Run `git status` or `read_file` to confirm."
         shown = list(failed.items())[:10]
         for path, info in shown:
             preview = (info.get("error_preview") or "").strip()
             tool = info.get("tool") or "patch"
-            lines.append(f"  • `{path}` — [{tool}] {preview or 'failed'}")
+            line = f"  • `{path}` — [{tool}] {preview or 'failed'}"
+            if info.get("external_change"):
+                line += (
+                    " — file changed on disk after this failure via an untracked "
+                    "writer (e.g. a terminal command); the tracked tool still did not write it"
+                )
+            lines.append(line)
         remaining = len(failed) - len(shown)
         if remaining > 0:
             lines.append(f"  • … and {remaining} more")

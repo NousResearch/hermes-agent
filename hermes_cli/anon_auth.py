@@ -3,10 +3,10 @@
 A fresh install mints an anonymous Nous account (``POST /api/anonymous/create``) and exchanges its
 ``anon_`` credential for short-lived JWTs (``POST /api/anonymous/token``). The result is persisted
 through the same ``persist_nous_credentials`` a real login uses, so it is the singleton
-``providers.nous`` *and* ``active_provider`` -- the resolver ladder (``resolve_provider``) is
-untouched; ``active_provider`` is already its last-resort rung, so any explicit provider (env key,
-``model.provider``, OpenRouter pool) beats the guest for inference while the guest keeps carrying the
-tool-gateway JWT for connectors.
+``providers.nous`` *and* ``active_provider``. In the resolver ladder (``resolve_provider``) the free
+tier sits directly above the implicit AWS Bedrock chain (NS-829): any explicit provider (env key,
+``model.provider``, OpenRouter pool, a logged-in ``active_provider``) beats the guest for inference,
+while the guest keeps carrying the tool-gateway JWT for connectors.
 
 Only two mechanics differ from an OAuth login and both are isolated behind ``is_guest_state``:
 token acquisition (re-exchange the ``anon_`` credential; there is no refresh token) and routing

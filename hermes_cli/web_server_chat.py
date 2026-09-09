@@ -17,6 +17,7 @@ import urllib.request
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from pathlib import Path
 from typing import Optional
+from hermes_cli.pty_executor import get_pty_executor
 from hermes_cli.pty_session import PtySessionRegistry
 
 # Same logger the code used before extraction (record parity).
@@ -67,11 +68,15 @@ async def _legacy_pump(ws: "WebSocket", bridge) -> None:
     ``to_thread`` offloads for the blocking ``bridge.close()``.
     """
     loop = asyncio.get_running_loop()
+    # Blocking PTY work lives on the dedicated pool, not the default executor:
+    # a long-lived pump would otherwise hold a default-pool thread and starve
+    # the control-plane routes that offload via ``to_thread`` (#95559).
+    pty_pool = get_pty_executor()
 
     async def pump_pty_to_ws() -> None:
         try:
             while True:
-                chunk = await loop.run_in_executor(None, bridge.read, _PTY_READ_CHUNK_TIMEOUT)
+                chunk = await loop.run_in_executor(pty_pool, bridge.read, _PTY_READ_CHUNK_TIMEOUT)
                 if chunk is None:  # EOF
                     return
                 if not chunk:  # no data this tick; yield control and retry
@@ -90,7 +95,7 @@ async def _legacy_pump(ws: "WebSocket", bridge) -> None:
             with contextlib.suppress(Exception):
                 # The child has exited (EOF) or the send side broke. Closing from the EOF path makes the
                 # reap independent of that cancellation race (#54028).
-                await asyncio.to_thread(bridge.close)
+                await loop.run_in_executor(pty_pool, bridge.close)
             with contextlib.suppress(Exception):
                 await ws.close()
 
@@ -126,7 +131,7 @@ async def _legacy_pump(ws: "WebSocket", bridge) -> None:
         reader_task.cancel()
         with contextlib.suppress(asyncio.CancelledError, Exception):
             await reader_task
-        await asyncio.to_thread(bridge.close)
+        await loop.run_in_executor(pty_pool, bridge.close)
 
 
 # Starlette's TestClient reports the peer as "testclient"; treat it as

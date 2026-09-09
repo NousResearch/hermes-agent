@@ -2,6 +2,14 @@
 
 Resolve provider API keys from [1Password](https://1password.com/) at process startup instead of storing them in plaintext inside `~/.hermes/.env`. You keep your keys as 1Password items and reference them by `op://vault/item/field`; rotating a credential becomes a single change in 1Password.
 
+## The security posture is the feature
+
+The plaintext-secrets vulnerability class does not exist here. Resolved values live in Hermes' process memory and nowhere else; every disclosure path is closed by design:
+
+- **Never persisted as plaintext.** The disk cache is encrypted-only: resolved values are written to `<hermes_home>/cache/op_cache.enc.json` under AES-GCM, and a plaintext cache file is never written. Any legacy plaintext `op_cache.json` from older versions is migrated into the encrypted cache and removed on first read. With `cache_ttl_seconds: 0`, cache reuse is fully disabled — every fetch resolves fresh and nothing touches disk at all.
+- **Never printed.** Resolved values are masked in status lines and logs. Dry-runs and startup summaries show variable names and `op://` references, never the values themselves.
+- **Never inherited by children.** `OP_SERVICE_ACCOUNT_TOKEN`, `OP_CONNECT_TOKEN`, and `OP_SESSION_*` are stripped from every spawned child process; the `op` child gets the credential explicitly through its own minimal allowlisted environment, not by inheritance. Resolved values are never exported into any child's environment.
+
 ## How it works
 
 1. You install the official [1Password CLI](https://developer.1password.com/docs/cli/get-started/) (`op`) and authenticate it — either with a **service-account token** (headless servers) or an **interactive/desktop session** (your laptop).
@@ -127,7 +135,7 @@ secrets:
 | `account` | `""` | Account shorthand / sign-in address passed as `op read --account`. Empty uses `op`'s default account. |
 | `service_account_token_env` | `OP_SERVICE_ACCOUNT_TOKEN` | Env var Hermes reads the service-account token from. Its value is exported to the `op` child as `OP_SERVICE_ACCOUNT_TOKEN` (the name `op` expects). Leave the var unset to use a desktop/interactive session. |
 | `binary_path` | `""` | Absolute path to `op`. When set, it is used verbatim and `PATH` is **not** consulted — pin this to avoid trusting whatever `op` appears first on `PATH`. |
-| `cache_ttl_seconds` | `300` | How long resolved values are reused (in-process and on disk). Set to `0` to disable **both** cache layers — no values are written to disk at all. |
+| `cache_ttl_seconds` | `300` | How long resolved values are reused (in-process and in the encrypted disk cache). Set to `0` to disable fresh-cache reuse — every fetch resolves fresh and no values are written to disk at all. |
 | `override_existing` | `true` | When true, resolved values overwrite anything already in env (so rotation takes effect). Flip to `false` to let `.env` / shell exports win; those references are then skipped *before* `op` is invoked. |
 
 ## Failure modes
@@ -146,18 +154,21 @@ Startup warnings now include a `→` remediation line telling you exactly which 
 
 ## Caching
 
-Successful, complete pulls are cached in-process and on disk under `<hermes_home>/cache/op_cache.json` (written atomically, mode `0600`), so back-to-back short-lived `hermes` invocations don't re-shell `op` for every reference. The cache:
+Successful, complete pulls are cached in-process and on disk so back-to-back short-lived `hermes` invocations don't re-shell `op` for every reference. The disk cache is **encrypted-only**: resolved values are stored under `<hermes_home>/cache/op_cache.enc.json` (written atomically, mode `0600`), encrypted with AES-GCM. A plaintext cache is never written.
 
 - stores only resolved secret **values** — never the service-account token or any raw auth material (auth is fingerprinted into the cache key);
 - is invalidated when the token, account, `OP_SESSION_*` variables, or the set of references change;
 - is **not** written when a pull had any per-reference error, so a transient auth failure isn't frozen in for the TTL;
-- is fully disabled — reads *and* writes — when `cache_ttl_seconds: 0`.
+- **migrates and removes** any legacy plaintext `op_cache.json` left by older versions on first read — after that, only the encrypted cache exists on disk;
+- is fully disabled — reads *and* writes — when `cache_ttl_seconds: 0`: every fetch resolves fresh and nothing is written to disk at all.
 
 ## Security notes
 
 - A 1Password service-account token can read every secret the account has access to. Store it in `~/.hermes/.env` (not `config.yaml`), and revoke + regenerate from 1Password if it leaks.
 - Hermes refuses to let a resolved value overwrite the token env var itself, even with `override_existing: true`.
-- The `op` child process gets a minimal allowlisted environment (auth/session vars + `PATH`/`HOME`), not a copy of the full `os.environ`, so post-dotenv provider credentials aren't all inherited by the child.
+- The disk cache is **never plaintext** — resolved values are AES-GCM encrypted at rest in `op_cache.enc.json`, and the legacy plaintext cache is migrated and removed on first read.
+- `OP_SERVICE_ACCOUNT_TOKEN`, `OP_CONNECT_TOKEN`, and `OP_SESSION_*` are stripped from **every** spawned child process — children never inherit the bootstrap credential, the Connect server token, or the 1Password session. The `op` child gets the credential explicitly: Hermes exports it into the child's own minimal allowlisted environment (auth/session vars + `PATH`/`HOME`), not a copy of the full `os.environ`, so post-dotenv provider credentials aren't inherited either.
+- Resolved values are masked in status lines and logs — dry-runs and summaries show variable names and `op://` references, never the values themselves.
 - References are validated to start with `op://`, and the reference is passed after a `--` option terminator so a crafted value can't be parsed as an `op` flag.
 
 ## When NOT to use this

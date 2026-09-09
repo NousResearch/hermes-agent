@@ -109,3 +109,47 @@ def test_speak_say_rejects_empty_text_without_spawning():
 
     result = server._methods["speak.say"](7, {})
     assert "error" in result
+
+
+def test_speak_mode_defaults_to_once(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    assert m._say_get_mode() == "once"
+
+
+def test_speak_mode_round_trips_to_file(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    assert m._say_set_mode("always")[0] == "always"
+    assert m._say_get_mode() == "always"
+    assert (tmp_path / "speak-aloud.mode").read_text() == "always\n"
+    assert m._say_set_mode("once")[0] == "once"
+    assert m._say_get_mode() == "once"
+
+
+def test_speak_mode_rejects_garbage():
+    with pytest.raises(ValueError):
+        m._say_set_mode("sometimes")
+
+
+@pytest.mark.macos_only
+def test_speak_mode_once_stops_playback(monkeypatch):
+    _FakePopen.instances.clear()
+    monkeypatch.setattr(m.subprocess, "Popen", _FakePopen)
+    m._say_stop_all()
+    m._say_start("first")
+    assert m._say_speaking() is True
+    assert m._say_set_mode("once")[0] == "once"
+    assert m._say_speaking() is False
+    assert _FakePopen.instances[-1].terminated is True
+    m._say_stop_all()
+
+
+def test_speak_mode_rpc_round_trip(tmp_path, monkeypatch):
+    from tui_gateway import server
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    result = server._methods["speak.mode"](11, {"mode": "always"})
+    assert result["result"] == {"ok": True, "mode": "always", "stopped": False}
+    assert server._methods["speak.status"](12, {})["result"]["mode"] == "always"
+    bad = server._methods["speak.mode"](13, {"mode": "sometimes"})
+    assert "error" in bad
+    server._methods["speak.mode"](14, {"mode": "once"})

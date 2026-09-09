@@ -439,7 +439,14 @@ export interface SpeakStopResponse {
   stopped?: boolean
 }
 
+export interface SpeakModeResponse {
+  mode?: string
+  ok?: boolean
+  stopped?: boolean
+}
+
 export interface SpeakStatusResponse {
+  mode?: string
   ok?: boolean
   platform?: string
   speaking?: boolean

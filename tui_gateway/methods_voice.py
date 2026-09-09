@@ -5,6 +5,7 @@ per process). Bodies are rebound onto server.py's globals (method_ctx.bind_modul
 from __future__ import annotations
 
 import contextlib
+import os
 import subprocess
 import sys
 import threading
@@ -930,9 +931,64 @@ def _(rid, params: dict) -> dict:
     return _ok(rid, {"status": "stopped", "stopped": stopped})
 
 
+_SAY_MODE_FILE = "speak-aloud.mode"
+_SAY_MODES = ("once", "always")
+
+
+def _say_home_dir():
+    # Lazy import: module objects are NOT published onto the bound server
+    # namespace, so this must resolve at call time, not module top.
+    try:
+        from hermes_constants import get_hermes_home
+        return str(get_hermes_home())
+    except Exception:
+        return None
+
+
+def _say_get_mode() -> str:
+    """Persisted auto-speak mode ('always' speaks every finished reply)."""
+    try:
+        home = _say_home_dir()
+        if not home:
+            return "once"
+        with open(os.path.join(home, _SAY_MODE_FILE), encoding="utf-8") as f:
+            mode = f.read().strip().lower()
+        return mode if mode in _SAY_MODES else "once"
+    except Exception:
+        return "once"
+
+
+def _say_set_mode(mode) -> tuple:
+    """Persist auto-speak mode. Returns (mode, stopped); setting 'once'
+    silences any current utterance."""
+    mode = str(mode or "").strip().lower()
+    if mode not in _SAY_MODES:
+        raise ValueError("mode must be 'always' or 'once'")
+    stopped = _say_stop_all() if mode == "once" else False
+    home = _say_home_dir()
+    if not home:
+        raise RuntimeError("cannot locate Hermes home to persist speak mode")
+    with open(os.path.join(home, _SAY_MODE_FILE), "w", encoding="utf-8") as f:
+        f.write(mode + "\n")
+    return mode, stopped
+
+
+@method("speak.mode")
+def _(rid, params: dict) -> dict:
+    try:
+        mode, stopped = _say_set_mode(params.get("mode", ""))
+    except ValueError as e:
+        return _err(rid, 4020, str(e))
+    except RuntimeError as e:
+        return _err(rid, 5026, str(e))
+    except Exception as e:
+        return _err(rid, 5026, f"could not persist speak mode: {e}")
+    return _ok(rid, {"ok": True, "mode": mode, "stopped": stopped})
+
+
 @method("speak.status")
 def _(rid, params: dict) -> dict:
-    return _ok(rid, {"ok": True, "speaking": _say_speaking(), "platform": sys.platform})
+    return _ok(rid, {"ok": True, "speaking": _say_speaking(), "platform": sys.platform, "mode": _say_get_mode()})
 
 
 def register(server) -> None:

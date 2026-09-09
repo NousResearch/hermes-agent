@@ -194,6 +194,42 @@ describe('createGatewayEventHandler', () => {
     })
   })
 
+  it('auto-speaks the finished reply when speak mode is always', async () => {
+    const rpc = vi.fn(async (method: string) =>
+      method === 'speak.status' ? { mode: 'always', speaking: false } : { status: 'speaking' }
+    )
+
+    const ctx = buildCtx([])
+    ctx.gateway.rpc = rpc
+
+    const onEvent = createGatewayEventHandler(ctx)
+
+    onEvent({ payload: { text: 'spoken reply' }, type: 'message.complete' } as any)
+
+    await vi.waitFor(() => {
+      expect(rpc).toHaveBeenCalledWith('speak.say', { text: 'spoken reply' })
+    })
+  })
+
+  it('stays silent on completion when speak mode is once', async () => {
+    const rpc = vi.fn(async (method: string) =>
+      method === 'speak.status' ? { mode: 'once', speaking: false } : { status: 'speaking' }
+    )
+
+    const ctx = buildCtx([])
+    ctx.gateway.rpc = rpc
+
+    const onEvent = createGatewayEventHandler(ctx)
+
+    onEvent({ payload: { text: 'quiet reply' }, type: 'message.complete' } as any)
+
+    await vi.waitFor(() => {
+      expect(rpc).toHaveBeenCalledWith('speak.status', {})
+    })
+    await new Promise(resolve => setTimeout(resolve, 50))
+    expect(rpc).not.toHaveBeenCalledWith('speak.say', expect.anything())
+  })
+
   it('keeps the current todo list visible when the next message starts', () => {
     const appended: Msg[] = []
     const todos = [{ content: 'Boil water', id: 'boil', status: 'in_progress' }]

@@ -1190,6 +1190,28 @@ describe('createSlashHandler', () => {
       expect(ctx.transcript.sys).toHaveBeenCalledWith('stopped.')
     })
   })
+
+  it('/say always enables auto read-aloud via speak.mode', async () => {
+    const rpc = vi.fn(() => Promise.resolve({ ok: true, mode: 'always' }))
+    const ctx = buildCtx({ gateway: { ...buildGateway(), rpc } })
+
+    expect(createSlashHandler(ctx)('/say always')).toBe(true)
+    expect(rpc).toHaveBeenCalledWith('speak.mode', { mode: 'always' })
+    await vi.waitFor(() => {
+      expect(ctx.transcript.sys).toHaveBeenCalledWith('auto read-aloud ON — future replies will be spoken. /say once to stop.')
+    })
+  })
+
+  it('/say once disables auto read-aloud via speak.mode', async () => {
+    const rpc = vi.fn(() => Promise.resolve({ ok: true, mode: 'once', stopped: true }))
+    const ctx = buildCtx({ gateway: { ...buildGateway(), rpc } })
+
+    expect(createSlashHandler(ctx)('/say once')).toBe(true)
+    expect(rpc).toHaveBeenCalledWith('speak.mode', { mode: 'once' })
+    await vi.waitFor(() => {
+      expect(ctx.transcript.sys).toHaveBeenCalledWith('auto read-aloud OFF — back to on-demand. (stopped.)')
+    })
+  })
 })
 
 const buildCtx = (overrides: Partial<Ctx> = {}): Ctx => ({

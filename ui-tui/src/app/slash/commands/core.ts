@@ -12,6 +12,7 @@ import type {
   SessionSteerResponse,
   SessionTitleResponse,
   SessionUndoResponse,
+  SpeakModeResponse,
   SpeakSayResponse,
   SpeakStopResponse,
   SystemBatteryResponse
@@ -440,7 +441,7 @@ export const coreCommands: SlashCommand[] = [
   },
 
   {
-    help: 'read aloud with Apple voice: [text|number|stop]',
+    help: 'read aloud with Apple voice: [text|number|stop|always|once]',
     name: 'say',
     run: async (arg, ctx) => {
       const { sys } = ctx.transcript
@@ -452,6 +453,25 @@ export const coreCommands: SlashCommand[] = [
           .then(
             ctx.guarded<SpeakStopResponse>(r => {
               sys(r.stopped ? 'stopped.' : 'nothing playing.')
+            })
+          )
+          .catch(ctx.guardedErr)
+
+        return
+      }
+
+      const mode = text.toLowerCase()
+
+      if (mode === 'always' || mode === 'once') {
+        ctx.gateway
+          .rpc<SpeakModeResponse>('speak.mode', { mode })
+          .then(
+            ctx.guarded<SpeakModeResponse>(r => {
+              if (r.mode === 'always') {
+                sys('auto read-aloud ON — future replies will be spoken. /say once to stop.')
+              } else {
+                sys(`auto read-aloud OFF — back to on-demand.${r.stopped ? ' (stopped.)' : ''}`)
+              }
             })
           )
           .catch(ctx.guardedErr)

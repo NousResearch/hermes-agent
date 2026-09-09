@@ -149,6 +149,19 @@ def test_hermes_server_unit_is_not_serve_or_dashboard():
     assert not update_inventory._is_hermes_serve_or_dashboard_unit("ssh.service")
 
 
+def test_cgroup_v1_name_systemd_and_v2_unified_yield_dashboard_unit():
+    """Classification must not require cgroup v2 ``0::`` — v1 ``name=systemd`` is enough."""
+    v2 = "0::/user.slice/user-1000.slice/user@1000.service/app.slice/hermes-dashboard.service\n"
+    v1 = (
+        "2:cpu:/user.slice\n"
+        "1:name=systemd:/user.slice/user-1000.slice/user@1000.service/"
+        "app.slice/hermes-dashboard.service\n"
+    )
+    assert main_dashboard._systemd_unit_from_cgroup_text(v2) == "hermes-dashboard.service"
+    assert main_dashboard._systemd_unit_from_cgroup_text(v1) == "hermes-dashboard.service"
+    assert main_dashboard._systemd_unit_from_cgroup_text("2:cpu:/user.slice\n") is None
+
+
 def test_inventory_classifies_desktop_owned_serve(monkeypatch):
     entry = _ledger_entry(spawner_pid=999, spawner_create=1.0)
     fake_pi = SimpleNamespace(

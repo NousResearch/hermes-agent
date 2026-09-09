@@ -77,6 +77,10 @@ def isolated_update_runtime(monkeypatch, tmp_path, request):
     monkeypatch.setattr(gateway, "supports_systemd_services", lambda: False)
     monkeypatch.setattr(main, "_pause_windows_gateways_for_update", lambda: None)
     monkeypatch.setattr(main, "_resume_windows_gateways_after_update", lambda *a, **k: None)
+    # Simulated update tests must not inspect or mutate the live Kanban board;
+    # the embedded-dispatcher drain contract has dedicated unit coverage.
+    monkeypatch.setattr(main, "_prepare_kanban_drain_for_update", lambda **_k: None)
+    monkeypatch.setattr(main, "_finish_kanban_drain_for_update", lambda _state: None)
     monkeypatch.setattr(main, "_detect_venv_python_processes", lambda: [])
     monkeypatch.setattr(main, "_restore_active_tool_dependencies", lambda *a, **k: None)
     monkeypatch.setattr(update_cmd, "_clear_windows_venv_holders_or_exit", lambda *a, **k: None)

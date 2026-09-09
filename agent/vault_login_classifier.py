@@ -133,16 +133,21 @@ def select_password_fill(
 
 # JS expression evaluated in the page to inspect candidate input controls.
 # Ported from OpenInstinct's nativeLoginControlInspectionExpression.
-# Inspection stamps every input with its index under a per-inspection attribute; the fill script
-# resolves targets by that stamp instead of re-querying by position, so a DOM that reflows between
-# inspect and fill (late-mounted inputs, cookie banners) cannot redirect the password into the wrong field.
+# Inspection stamps every input with ``<nonce>:<index>`` under a per-inspection attribute; the fill
+# script resolves targets by the stamp of ITS OWN inspection instead of re-querying by position, so
+# neither a DOM reflow nor a second inspection in between can redirect the password into another field.
 INSPECTION_STAMP_ATTR = "data-hermes-vault-slot"
 
-LOGIN_CONTROL_INSPECTION_JS = """(() => {
+
+def build_inspection_js(nonce: str) -> str:
+    return _LOGIN_CONTROL_INSPECTION_JS_TEMPLATE.replace("__NONCE__", json.dumps(nonce))
+
+
+_LOGIN_CONTROL_INSPECTION_JS_TEMPLATE = """(() => {
+  const nonce = __NONCE__;
   const elements = Array.from(document.querySelectorAll("input"));
   const forms = Array.from(document.forms);
-  document.querySelectorAll("[data-hermes-vault-slot]").forEach((n) => n.removeAttribute("data-hermes-vault-slot"));
-  elements.forEach((element, index) => element.setAttribute("data-hermes-vault-slot", String(index)));
+  elements.forEach((element, index) => element.setAttribute("data-hermes-vault-slot", nonce + ":" + index));
   const out = elements.flatMap((element, index) => {
     if (element.disabled || element.readOnly) return [];
     if (["hidden", "submit", "button", "reset", "file", "image", "checkbox", "radio"].includes(element.type)) return [];
@@ -173,7 +178,7 @@ LOGIN_CONTROL_INSPECTION_JS = """(() => {
 })()"""
 
 
-def build_fill_js(fills: List[Dict[str, Any]], expected_origin: str) -> str:
+def build_fill_js(fills: List[Dict[str, Any]], expected_origin: str, nonce: str = "") -> str:
     """Build a JS expression that fills the selected inputs and reports
     only a count. The returned expression never echoes the values back.
 
@@ -197,9 +202,10 @@ def build_fill_js(fills: List[Dict[str, Any]], expected_origin: str) -> str:
         "    return JSON.stringify({ refused: \"origin_changed\", found: window.location.origin });\n"
         "  }\n"
         f"  const fills = {payload};\n"
+        f"  const nonce = {json.dumps(nonce)};\n"
         "  let filled = 0;\n"
         "  for (const f of fills) {\n"
-        "    const el = document.querySelector('input[data-hermes-vault-slot=\"' + f.index + '\"]');\n"
+        "    const el = document.querySelector('input[data-hermes-vault-slot=\"' + nonce + ':' + f.index + '\"]');\n"
         "    if (!el || el.type !== \"password\") continue;\n"
         "    try {\n"
         "      el.focus();\n"

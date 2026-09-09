@@ -215,9 +215,9 @@ class TestClassifier:
 
     def test_build_fill_js_leaves_no_dom_marker_and_binds_target_to_inspection(self):
         # P1-1: no persistent selector for filled controls. The fill targets the input by the
-        # slot stamp the inspection script wrote (a bare index is re-resolved by position and a
-        # DOM reflow between inspect and fill would redirect the password into another field);
-        # the stamps carry no secret and the fill script strips every one before returning.
+        # <nonce>:<index> stamp ITS OWN inspection wrote (a bare index is re-resolved by position,
+        # and a second inspection in between would re-stamp — either way the password could land in
+        # another field); stamps carry no secret and the fill script strips every one before returning.
         js = build_fill_js(
             [{"index": 0, "token": "current-password", "value": "x"}],
             expected_origin="https://example.com",
@@ -225,7 +225,7 @@ class TestClassifier:
         assert "vaultSecret" not in js
         assert "data-vault-secret" not in js
         assert "elements[f.index]" not in js
-        assert "input[data-hermes-vault-slot=" in js and 'el.type !== "password"' in js
+        assert "input[data-hermes-vault-slot=" in js and "nonce + ':' + f.index" in js and 'el.type !== "password"' in js
         assert js.index('removeAttribute("data-hermes-vault-slot")') > js.index("setter.set.call")
 
     def test_build_fill_js_asserts_origin_before_any_write(self):

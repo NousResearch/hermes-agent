@@ -58,6 +58,7 @@ class BitwardenLoginBackend(LoginBackend):
     def unlock(self, master_password: str) -> None:
         # bw refuses a piped password ("Master password is required"); its non-interactive contract is
         # --passwordenv: the variable exists only in the child's environment, never in argv or ours.
+        generation = _unlock.begin_unlock(self.name)
         proc = run_with_secret_env([str(self._bw()), "unlock", "--raw", "--nointeraction", "--passwordenv", "HERMES_BW_MASTER"],
                                    env=self._env(None), secret_env="HERMES_BW_MASTER", secret=master_password,
                                    timeout=_TIMEOUT, label="bw")
@@ -67,7 +68,8 @@ class BitwardenLoginBackend(LoginBackend):
             if "not logged in" in err.lower():
                 err = "not logged in — run `bw login` once in a terminal first"
             raise RuntimeError(f"Bitwarden unlock failed: {err or 'no session key'}")
-        _unlock.store_session_token(self.name, token)
+        if not _unlock.store_session_token(self.name, token, generation):
+            raise RuntimeError("Bitwarden was locked while unlocking; try again")
 
     def _run(self, *args: str) -> str:
         token = _unlock.get_session_token(self.name)

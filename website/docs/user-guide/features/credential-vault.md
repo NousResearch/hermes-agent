@@ -82,8 +82,10 @@ non-interactive channel (`op signin` reads stdin; `bw unlock --passwordenv`
 reads a variable set only in the child process) — never as a command-line
 argument, never in Hermes' own environment — and keeps only the resulting
 session token in memory, scoped to the current profile. The token expires
-after 30 minutes idle, when you press **Lock**, or when the session ends.
-The agent never sees the master password, the token, or any password.
+after 30 minutes idle, when you press **Lock**, or when the chat session that
+unlocked it ends (other sessions in the same profile keep their own unlocks).
+A **Lock** pressed while an unlock is still in flight wins. The agent never
+sees the master password, the token, or any password.
 
 `browser_vault_list` reports a locked manager under `locked`, and
 `browser_vault_unlock(backend)` triggers the prompt explicitly.

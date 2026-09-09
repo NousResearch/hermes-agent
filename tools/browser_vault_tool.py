@@ -26,6 +26,7 @@ autofill (kernel-login-autofill.ts / fill_from_vault.ts).
 from __future__ import annotations
 
 import json
+import secrets
 import logging
 from typing import Any, Dict, Optional
 
@@ -230,10 +231,10 @@ def browser_vault_fill(handle: str, task_id: Optional[str] = None) -> str:
     """
     from agent.redact import register_vault_redaction_value
     from agent.vault_login_classifier import (
-        LOGIN_CONTROL_INSPECTION_JS,
         ClassifiedLoginControl,
         LoginControl,
         build_fill_js,
+        build_inspection_js,
         classify_login_control,
         select_password_fill,
     )
@@ -289,7 +290,8 @@ def browser_vault_fill(handle: str, task_id: Optional[str] = None) -> str:
         )
 
     # ── Inspect + classify page controls ────────────────────────────────────
-    inspect = _eval_js(effective_task_id, LOGIN_CONTROL_INSPECTION_JS)
+    nonce = secrets.token_hex(8)  # binds this fill to THIS inspection's stamps
+    inspect = _eval_js(effective_task_id, build_inspection_js(nonce))
     if not inspect.get("success"):
         return json.dumps(
             {"success": False, "error": f"Could not inspect page inputs: {inspect.get('error', 'eval failed')}"}
@@ -330,7 +332,7 @@ def browser_vault_fill(handle: str, task_id: Optional[str] = None) -> str:
 
     try:
         fill_result = _eval_js_secret(
-            effective_task_id, build_fill_js(fills, expected_origin=str(meta.origin))
+            effective_task_id, build_fill_js(fills, expected_origin=str(meta.origin), nonce=nonce)
         )
     except Exception as exc:
         # Strip any secret material from exception text before surfacing.

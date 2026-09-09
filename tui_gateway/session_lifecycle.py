@@ -196,18 +196,12 @@ def _lifecycle_own_sid(session: dict, sid_hint: str = "") -> str:
 
 
 def _lock_vault_managers(session: dict) -> None:
-    """A per-session unlock ends with the session: forget the profile's manager tokens."""
+    """A per-session unlock ends with the session that made it; siblings in the same profile keep theirs."""
     try:
         from agent.vault_backends import unlock
-        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
-        home = session.get("profile_home")
-        token = set_hermes_home_override(home) if home else None
-        try:
-            unlock.lock()
-        finally:
-            if token is not None:
-                reset_hermes_home_override(token)
+        if sid := session.get("_sid"):
+            unlock.release_session(sid)
     except Exception:
         logging.getLogger(__name__).debug("vault manager lock on session end failed", exc_info=True)
 

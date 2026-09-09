@@ -14,7 +14,12 @@ JSON-RPC channel every other Settings surface uses. Contracts:
 - ``vault.remove`` → {removed: bool}.
 - ``vault.sources`` / ``vault.source.set`` → external password-manager status and enable toggle.
 - ``vault.unlock`` / ``vault.lock`` → per-session unlock of a manager from Settings; the master
-  password is consumed by the manager CLI on stdin and never stored or logged.
+  password is consumed by the manager CLI through its non-interactive channel and never stored
+  or logged.
+
+Every handler honours ``params.profile`` (app-global remote mode serves several profiles from one
+backend): the requested profile's HERMES_HOME and secret scope are bound around the body, so the
+vault file, manager config and manager tokens all resolve to that profile.
 
 Handlers are rebound onto server.py's globals at install time (see
 method_ctx.py) and may reference server module globals (``_ok``, ``_err``).
@@ -23,7 +28,22 @@ method_ctx.py) and may reference server module globals (``_ok``, ``_err``).
 from .method_ctx import HandlerRegistry
 
 _registry = HandlerRegistry()
-method = _registry.method
+
+
+def method(name: str):
+    """``@method(name)`` with ``params.profile`` bound (home + secret scope) around the handler."""
+    def deco(fn):
+        def scoped(rid, params: dict) -> dict:
+            try:
+                home = _profile_home(params.get("profile") if isinstance(params, dict) else None)
+            except FileNotFoundError as e:
+                return _err(rid, 5095, str(e))
+            if home is None:
+                return fn(rid, params)
+            with _session_profile_runtime_scope({"profile_home": str(home)}):
+                return fn(rid, params)
+        return _registry.method(name)(scoped)
+    return deco
 
 # JSON-RPC error code 5095 = vault failure (validation + store errors).
 # Kept as a literal inside handler bodies: handlers are rebound onto

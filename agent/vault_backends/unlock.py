@@ -44,6 +44,21 @@ def _key(backend: str) -> tuple[str, str]:
     return (str(get_hermes_home()), backend)
 
 
+# Lock generation per key: ``lock()`` bumps it, and an unlock that started before the bump must
+# not commit its token afterwards (a slow `bw unlock` child would otherwise silently undo an
+# acknowledged Lock).
+_generation: Dict[tuple[str, str], int] = {}
+# Which gateway session performed the unlock; the token is released when THAT session ends,
+# not when any sibling session in the profile is torn down.
+_owner_session: Dict[tuple[str, str], Optional[str]] = {}
+_current_session_tls = threading.local()
+
+
+def set_current_session_id(session_id: Optional[str]) -> None:
+    """Gateway surfaces bind the session running on this thread so an unlock records its owner."""
+    _current_session_tls.sid = session_id
+
+
 def _live(backend: str, *, touch: bool) -> Optional[str]:
     key = _key(backend)
     with _lock:
@@ -64,23 +79,54 @@ def get_session_token(backend: str) -> Optional[str]:
     return _live(backend, touch=True)
 
 
-def store_session_token(backend: str, token: str) -> None:
+def begin_unlock(backend: str) -> int:
+    """Snapshot the lock generation before spawning the manager CLI; pass it to ``store_session_token``."""
     with _lock:
-        _sessions[_key(backend)] = (token, time.monotonic())
+        return _generation.get(_key(backend), 0)
+
+
+def store_session_token(backend: str, token: str, generation: Optional[int] = None) -> bool:
+    """Commit an unlock. Returns False (and drops the token) when a Lock happened since ``begin_unlock``."""
+    key = _key(backend)
+    with _lock:
+        if generation is not None and generation != _generation.get(key, 0):
+            return False
+        _sessions[key] = (token, time.monotonic())
+        _owner_session[key] = getattr(_current_session_tls, "sid", None)
+        return True
 
 
 def lock(backend: Optional[str] = None) -> None:
     """Forget the current profile's session for one backend (or all of them when None)."""
     home = _key("")[0]
     with _lock:
-        for key in [k for k in _sessions if k[0] == home and (backend is None or k[1] == backend)]:
-            del _sessions[key]
+        # Bump the generation for every key the lock names (not only the ones holding a token):
+        # an unlock that is still running for this backend must see the lock when it returns.
+        keys = {k for k in list(_sessions) + list(_generation) if k[0] == home and (backend is None or k[1] == backend)}
+        if backend is not None:
+            keys.add((home, backend))
+        for key in keys:
+            _forget(key)
+
+
+def release_session(session_id: str) -> None:
+    """A gateway session ended: drop only the tokens that session unlocked."""
+    with _lock:
+        for key in [k for k, sid in _owner_session.items() if sid == session_id]:
+            _forget(key)
+
+
+def _forget(key: tuple[str, str]) -> None:
+    _sessions.pop(key, None)
+    _owner_session.pop(key, None)
+    _generation[key] = _generation.get(key, 0) + 1
 
 
 def lock_all_profiles() -> None:
     """Process shutdown: drop every token."""
     with _lock:
-        _sessions.clear()
+        for key in list(_sessions):
+            _forget(key)
 
 
 def is_unlocked(backend: str) -> bool:

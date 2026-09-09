@@ -48,7 +48,13 @@ class OnePasswordLoginBackend(LoginBackend):
         return op
 
     def _env(self, session_token: Optional[str]) -> Dict[str, str]:
-        env = {k: os.environ[k] for k in _OP_ENV_ALLOWLIST if k in os.environ}
+        from agent.secret_scope import get_secret
+        env = {k: os.environ[k] for k in _OP_ENV_ALLOWLIST if k in os.environ and not k.startswith("OP_CONNECT_")}
+        # Connect credentials outrank OP_SERVICE_ACCOUNT_TOKEN inside op, so they must come from the
+        # profile's own secret scope like the service token does — never from the launch environment.
+        for k in ("OP_CONNECT_HOST", "OP_CONNECT_TOKEN"):
+            if v := get_secret(k, ""):
+                env[k] = v
         env["NO_COLOR"] = "1"
         account = str(self.cfg.get("account") or "")
         if account:
@@ -66,6 +72,7 @@ class OnePasswordLoginBackend(LoginBackend):
 
     def unlock(self, master_password: str) -> None:
         """Mint a session token from the master password (consumed on stdin, never argv)."""
+        generation = _unlock.begin_unlock(self.name)
         cmd = [str(self._op()), "signin", "--raw"]
         if account := str(self.cfg.get("account") or ""):
             cmd += ["--account", account]
@@ -73,7 +80,8 @@ class OnePasswordLoginBackend(LoginBackend):
         token = (proc.stdout or "").strip()
         if proc.returncode != 0 or not token:
             raise RuntimeError(f"1Password unlock failed: {_scrub(proc.stderr or '')[:200] or 'no session token'}")
-        _unlock.store_session_token(self.name, token)
+        if not _unlock.store_session_token(self.name, token, generation):
+            raise RuntimeError("1Password was locked while unlocking; try again")
 
     def _run(self, *args: str) -> str:
         token = None if self._service_token else _unlock.get_session_token(self.name)

@@ -9,8 +9,12 @@ const { requestGateway } = vi.hoisted(() => ({
   requestGateway: vi.fn()
 }))
 
-vi.mock('@/app/gateway/hooks/use-gateway-request', () => ({
-  useGatewayRequest: () => ({ requestGateway })
+// The panel routes every RPC through the owner profile's socket (never the ambient gateway);
+// the mock receives (method, params) after the profile argument.
+vi.mock('@/store/gateway', async importActual => ({
+  ...(await importActual<Record<string, unknown>>()),
+  requestGatewayForProfile: (_profile: string, method: string, params?: Record<string, unknown>) =>
+    requestGateway(method, params ?? {})
 }))
 
 import { queryClient } from '@/lib/query-client'

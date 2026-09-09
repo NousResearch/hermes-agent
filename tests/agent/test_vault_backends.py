@@ -145,3 +145,25 @@ def test_unlock_uses_vendor_passwordenv_contract_then_fill_routes_by_prefix(fake
     unlock_mod.lock("bitwarden")
     assert not backend.is_unlocked()
     assert os.environ.get("BW_SESSION") is None, "session token must never touch the process env"
+
+
+def test_lock_during_unlock_wins_and_only_the_owning_session_release_drops_a_token(fake_bw, monkeypatch):
+    """A Lock acknowledged while `bw unlock` is still running must not be undone when the child returns;
+    a session teardown releases only the tokens that session unlocked."""
+    exe, _log = fake_bw
+    patcher, backend = _enabled(exe)
+    with patcher:
+        # Lock races the in-flight unlock: the generation moved, so the late token is discarded.
+        gen = unlock_mod.begin_unlock("bitwarden")
+        unlock_mod.lock("bitwarden")
+        assert unlock_mod.store_session_token("bitwarden", "LATE-TOKEN", gen) is False
+        assert not backend.is_unlocked()
+
+        unlock_mod.set_current_session_id("sess-A")
+        backend.unlock("correct horse")
+        assert backend.is_unlocked()
+        unlock_mod.release_session("sess-B")  # an unrelated sibling session ends
+        assert backend.is_unlocked()
+        unlock_mod.release_session("sess-A")
+        assert not backend.is_unlocked()
+        unlock_mod.set_current_session_id(None)

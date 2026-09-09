@@ -3,7 +3,6 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useSearchParams } from 'react-router'
 
-import { useGatewayRequest } from '@/app/gateway/hooks/use-gateway-request'
 import { Button } from '@/components/ui/button'
 import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import {
@@ -22,14 +21,19 @@ import { Switch } from '@/components/ui/switch'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { KeyRound, Lock, Plus, ShieldLock, Trash2 } from '@/lib/icons'
+import { $activeConnectionId } from '@/store/connections'
+import { requestGatewayForProfile } from '@/store/gateway'
 import { notify, notifyError } from '@/store/notifications'
 import { $gatewayState } from '@/store/session'
+import { $settingsScopeProfile } from '@/store/settings-scope'
 
 import { CONTROL_TEXT } from './constants'
 import { ListRow, Pill, SectionHeading, SettingsContent } from './primitives'
 
-const VAULT_QUERY_KEY = ['vault-items'] as const
-const VAULT_SOURCES_QUERY_KEY = ['vault-sources'] as const
+// Vault data is private to one (connection, profile); the cache key carries that owner so a
+// late response from profile A can never paint under profile B.
+const vaultQueryKey = (owner: string) => ['vault-items', owner] as const
+const vaultSourcesQueryKey = (owner: string) => ['vault-sources', owner] as const
 
 export type VaultSourceName = 'bitwarden' | 'local' | 'onepassword'
 
@@ -145,9 +149,21 @@ function buildSecret(form: VaultForm): Record<string, string> {
 export function VaultSettings() {
   const { t } = useI18n()
   const v = t.settings.vault
-  const { requestGateway } = useGatewayRequest()
   const gatewayState = useStore($gatewayState)
   const queryClient = useQueryClient()
+  // The owner this panel edits: pinned per render, and every RPC below goes through the owner's
+  // socket with an explicit profile — never the ambient foreground gateway. Changing owner
+  // (profile switch, connection swap) closes every dialog and wipes drafts (see the effect below).
+  const scopeProfile = useStore($settingsScopeProfile)
+  const connectionId = useStore($activeConnectionId)
+  const owner = `${connectionId ?? ''}::${scopeProfile}`
+  const requestGateway = useCallback(
+    <T,>(method: string, params: Record<string, unknown> = {}) =>
+      requestGatewayForProfile<T>(scopeProfile, method, params),
+    [scopeProfile]
+  )
+  const VAULT_QUERY_KEY = useMemo(() => vaultQueryKey(owner), [owner])
+  const VAULT_SOURCES_QUERY_KEY = useMemo(() => vaultSourcesQueryKey(owner), [owner])
   const [searchParams, setSearchParams] = useSearchParams()
 
   const [addOpen, setAddOpen] = useState(false)
@@ -157,6 +173,23 @@ export function VaultSettings() {
   const [unlockTarget, setUnlockTarget] = useState<null | VaultSource>(null)
   const [masterPassword, setMasterPassword] = useState('')
   const [unlockError, setUnlockError] = useState<null | string>(null)
+  // Secrets never become mutation variables (react-query retains those after settle); they live
+  // in refs the mutationFn consumes and wipes.
+  const pendingMasterPassword = useRef('')
+  const pendingSecret = useRef<null | Record<string, string>>(null)
+
+  useEffect(() => {
+    // A draft typed for one owner must not be submitted to another.
+    setAddOpen(false)
+    setForm(EMPTY_FORM)
+    setFormError(null)
+    setPendingDelete(null)
+    setUnlockTarget(null)
+    setMasterPassword('')
+    setUnlockError(null)
+    pendingMasterPassword.current = ''
+    pendingSecret.current = null
+  }, [owner])
 
   const { data: sourcesData } = useQuery({
     enabled: gatewayState === 'open',
@@ -194,10 +227,6 @@ export function VaultSettings() {
     setMasterPassword('')
     setUnlockError(null)
   }, [])
-
-  // The master password never becomes mutation *variables* (react-query retains those in its
-  // cache after the dialog closes); it lives in a ref that the mutationFn consumes and wipes.
-  const pendingMasterPassword = useRef('')
 
   const unlockSource = useMutation({
     mutationFn: ({ name }: { name: VaultSourceName }) => {
@@ -283,8 +312,12 @@ export function VaultSettings() {
   )
 
   const addMutation = useMutation({
-    mutationFn: async (payload: { kind: VaultKind; label: string; origin?: string; secret: Record<string, string> }) =>
-      requestGateway<{ id: string }>('vault.add', payload),
+    mutationFn: async (payload: { kind: VaultKind; label: string; origin?: string }) => {
+      const secret = pendingSecret.current
+      pendingSecret.current = null
+
+      return requestGateway<{ id: string }>('vault.add', { ...payload, secret: secret ?? {} })
+    },
     onSuccess: () => {
       triggerHaptic('success')
       notify({ kind: 'info', message: v.added })
@@ -326,11 +359,11 @@ export function VaultSettings() {
       return
     }
 
+    pendingSecret.current = buildSecret(form)
     addMutation.mutate({
       kind: form.kind,
       label: form.label.trim(),
-      ...(origin ? { origin } : {}),
-      secret: buildSecret(form)
+      ...(origin ? { origin } : {})
     })
   }, [addMutation, form, v.labelRequired, v.loginFieldsRequired, v.originInvalid])
 

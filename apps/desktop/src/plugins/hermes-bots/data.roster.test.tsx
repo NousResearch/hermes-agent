@@ -170,6 +170,7 @@ describe('no union roster', () => {
     await waitFor(() => expect(result.current.data).toBeTruthy())
     expect(hostMock.request).toHaveBeenCalledWith('profiles.list', {})
     expect(hostMock.requestProfile).not.toHaveBeenCalled()
+    expect(hostMock.retainProfileSocket).not.toHaveBeenCalled()
 
     unmount()
   })

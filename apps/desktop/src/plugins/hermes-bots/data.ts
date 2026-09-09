@@ -648,10 +648,11 @@ export function useRoster() {
   // The five-second roster refresh is recurring ownership, not a succession
   // of unrelated one-shot requests. Keep its profile socket leased for this
   // query observer's lifetime so a background profile does not dial and tear
-  // down a fresh WebSocket on every tick. Explicit remote sources retain their
-  // composite route; the local/legacy path uses the bare-profile pool.
+  // down a fresh WebSocket on every tick. Only explicit routes need this:
+  // string routes poll through the ambient active gateway, which is already
+  // held and must not create an unused legacy/profile-keyed secondary.
   useEffect(() => {
-    if (typeof host.retainProfileSocket !== 'function') {
+    if (typeof rosterRoute === 'string' || typeof host.retainProfileSocket !== 'function') {
       return undefined
     }
 

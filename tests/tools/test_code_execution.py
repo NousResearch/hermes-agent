@@ -18,6 +18,7 @@ import pytest
 import json
 import os
 import socket
+import tempfile
 import time
 
 os.environ["TERMINAL_ENV"] = "local"
@@ -63,7 +64,9 @@ from tools.code_execution_tool import (
 from tools.registry import registry
 
 
-def _mock_handle_function_call(function_name, function_args, task_id=None, user_task=None):
+def _mock_handle_function_call(
+    function_name, function_args, task_id=None, user_task=None, programmatic=False,
+):
     """Mock dispatcher that returns canned responses for each tool."""
     if function_name == "terminal":
         cmd = function_args.get("command", "")
@@ -295,6 +298,37 @@ print(result.get("output", ""))
         self.assertIn("mock output for: echo hello", result["output"])
         self.assertEqual(result["tool_calls_made"], 1)
 
+    def test_programmatic_read_returns_content_after_model_facing_read(self):
+        """execute_code reads need data, not the conversational dedup stub."""
+        from model_tools import handle_function_call
+        from tools.file_tools_read_tracking import _read_tracker
+
+        task_id = "test-programmatic-read-contract"
+        fd, path = tempfile.mkstemp(prefix="hermes-programmatic-read-", suffix=".txt")
+        os.write(fd, b"alpha\nbeta\n")
+        os.close(fd)
+        try:
+            first = json.loads(handle_function_call("read_file", {"path": path}, task_id=task_id))
+            self.assertIn("content", first)
+
+            code = f"""
+from hermes_tools import read_file
+result = read_file({path!r})
+print(result["content"])
+"""
+            result = json.loads(execute_code(
+                code=code,
+                task_id=task_id,
+                enabled_tools=["read_file"],
+                reset=True,
+            ))
+
+            self.assertEqual(result["status"], "success", result)
+            self.assertIn("alpha", result["output"])
+        finally:
+            _read_tracker.clear()
+            os.unlink(path)
+
 
     def test_concurrent_tool_calls_match_responses(self):
         """Regression for the UDS RPC race: multiple threads inside the
@@ -331,7 +365,9 @@ else:
     print(f"OK {N}/{N}")
 '''
 
-        def slow_mock(function_name, function_args, task_id=None, user_task=None):
+        def slow_mock(
+            function_name, function_args, task_id=None, user_task=None, programmatic=False,
+        ):
             import time as _t
             if function_name == "terminal":
                 _t.sleep(0.05)  # ensure requests overlap on the socket
@@ -340,7 +376,8 @@ else:
                 out = cmd[5:] if cmd.startswith("echo ") else f"mock: {cmd}"
                 return json.dumps({"output": out, "exit_code": 0})
             return _mock_handle_function_call(
-                function_name, function_args, task_id=task_id, user_task=user_task
+                function_name, function_args, task_id=task_id, user_task=user_task,
+                programmatic=programmatic,
             )
 
         with patch("model_tools.handle_function_call", side_effect=slow_mock):

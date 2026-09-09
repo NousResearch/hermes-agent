@@ -197,5 +197,5 @@ def try_fast_version(argv: list[str] | None = None) -> bool:
             return False
     elif not is_global_fast_version_argv(argv) or container_mode_may_be_active():
         return False
-    print_fast_version_info()
+    print_fast_version_info(check_updates=not local_only)
     return True

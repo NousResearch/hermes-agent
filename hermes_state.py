@@ -1238,6 +1238,73 @@ class SessionDB(
     def mark_conversation_worktree_removed(self, root_session_id: str) -> ConversationWorktreeRecord:
         return self._set_conversation_worktree_state(root_session_id, state="removed", allowed_current_states=("creating", "ready", "creation_failed", "retained"))
 
+    def get_conversation_root(self, session_id: str) -> str:
+        """Return the ROOT id of *session_id*'s lineage chain.
+
+        The root is the stable "conversation id": context compression
+        rotates ``session_id`` to a new segment linked via
+        ``parent_session_id``, and delegate subagents hang off their
+        parent the same way. An explicit copied ``/branch`` is the exception:
+        it carries a parent link for transcript history but starts its own
+        workspace-owning conversation root. Its compression/delegate children
+        inherit that branch root. Returns *session_id* unchanged when it has
+        no recorded parent.
+        """
+        chain = self._session_lineage_root_to_tip(session_id)
+        for lineage_session_id in reversed(chain):
+            if self._is_explicit_branch_session(lineage_session_id):
+                return lineage_session_id
+        return (chain[0] if chain and chain[0] else session_id)
+
+    def _session_lineage_root_to_tip(self, session_id: str) -> List[str]:
+        if not session_id:
+            return [session_id]
+
+        chain = []
+        current = session_id
+        seen = set()
+        with self._read_ctx() as conn:
+            for _ in range(100):
+                if not current or current in seen:
+                    break
+                seen.add(current)
+                chain.append(current)
+                row = conn.execute(
+                    "SELECT parent_session_id FROM sessions WHERE id = ?",
+                    (current,),
+                ).fetchone()
+                if row is None:
+                    break
+                current = row["parent_session_id"] if hasattr(row, "keys") else row[0]
+        return list(reversed(chain)) or [session_id]
+
+    def _is_explicit_branch_session(self, session_id: str) -> bool:
+        """Return whether *session_id* is a copied user-facing branch.
+
+        Branches and compression continuations both use ``parent_session_id``,
+        but they have different history semantics: a branch owns a copied
+        transcript, while a compression continuation needs its ended parent's
+        archived rows for display. The durable ``_branched_from`` marker is the
+        existing discriminator written by all branch creation paths.
+        """
+        if not session_id:
+            return False
+        with self._read_ctx() as conn:
+            row = conn.execute(
+                "SELECT model_config FROM sessions WHERE id = ?",
+                (session_id,),
+            ).fetchone()
+        if row is None:
+            return False
+        raw_config = row["model_config"] if hasattr(row, "keys") else row[0]
+        if not raw_config:
+            return False
+        try:
+            config = json.loads(raw_config) if isinstance(raw_config, str) else raw_config
+        except (json.JSONDecodeError, TypeError):
+            return False
+        return isinstance(config, dict) and bool(config.get("_branched_from"))
+
     def __enter__(self) -> "SessionDB":
         """``with SessionDB(path) as db:`` closes on exit; owners must release deterministically.
 

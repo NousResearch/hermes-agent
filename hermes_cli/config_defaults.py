@@ -1812,6 +1812,14 @@ DEFAULT_CONFIG = {
             # Range 200..60000.
             "listing_max_tokens": 4000,
         },
+        "session_search": {
+            # Scan every profile's state.db when a bare session id misses the current
+            # profile. Off by default: profile isolation must fail closed — a session id
+            # alone (seen in logs and tool output) must not grant cross-profile reads.
+            # `@session:<profile>/<id>` links and an explicit `profile` still cross
+            # profiles; this flag only governs the bare-id fallback scan.
+            "cross_profile_scan": False,
+        },
     },
     "logging": {  # File logging to ~/.hermes/logs/: agent.log captures INFO+, errors.log WARNING+.
         "level": "INFO",       # minimum level for agent.log: DEBUG, INFO, WARNING

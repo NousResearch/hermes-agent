@@ -383,11 +383,27 @@ def _read_session(db, session_id: str, head: int = 20, tail: int = 10, link_prof
                                "Pass around_message_id (any id above) to scroll the middle.")} if truncated else {}))
 
 
+def _cross_profile_scan_enabled() -> bool:
+    """Operator opt-in for scanning other profiles on a bare-id miss; isolation by default."""
+    try:
+        from hermes_cli.config import load_config
+        tools_cfg = (load_config() or {}).get("tools") or {}
+        return bool(
+            tools_cfg.get("session_search", {}).get("cross_profile_scan", False)
+        )
+    except Exception:
+        return False
+
+
 def _read_with_profile_fallback(db, sid: str, profile: Optional[str]) -> str:
     """Read shape; on a miss scan every profile (the model may have dropped the owning
-    profile from the link) and tag the result with where it was found."""
+    profile from the link) and tag the result with where it was found. The scan is an
+    operator opt-in: without it a bare id that misses the current profile stays a plain
+    miss, so profile isolation fails closed."""
     result = _read_session(db, sid, link_profile=profile)
-    located, owner = (None, None) if json.loads(result).get("success") else _locate_session_db(sid)
+    if json.loads(result).get("success") or not _cross_profile_scan_enabled():
+        return result
+    located, owner = _locate_session_db(sid)
     if located is None:
         return result
     try:

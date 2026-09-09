@@ -118,6 +118,15 @@ class TestConfigYamlRouting:
         assert "not a recognized config key" not in capsys.readouterr().out
         assert "nudge_interval: 0" in _read_config(_isolated_hermes_home)
 
+    def test_session_search_cross_profile_scan_is_recognized(
+        self, _isolated_hermes_home, capsys
+    ):
+        """The session_search isolation opt-in is runtime config."""
+        set_config_value("tools.session_search.cross_profile_scan", "true")
+
+        assert "not a recognized config key" not in capsys.readouterr().out
+        assert "cross_profile_scan: true" in _read_config(_isolated_hermes_home)
+
     def test_terminal_docker_cwd_mount_flag_goes_to_config_and_env(self, _isolated_hermes_home):
         set_config_value("terminal.docker_mount_cwd_to_workspace", "true")
         config = _read_config(_isolated_hermes_home)

@@ -523,9 +523,9 @@ class TestCrossProfileRead:
         monkeypatch.setattr(profiles_mod, "profile_exists", lambda n: exists)
         monkeypatch.setattr(profiles_mod, "get_profile_dir", lambda n: home)
 
-    def test_bare_id_locates_across_profiles(self, db, tmp_path, monkeypatch):
-        # The real-world failure: model dropped the owning profile and passed a
-        # bare id. The tool must scan profiles and find it anyway.
+    def test_bare_id_miss_stays_in_current_profile_by_default(self, db, tmp_path, monkeypatch):
+        # Profile isolation fails closed: a bare id that misses the current profile
+        # must not be hunted through other profiles' state.db (#106761).
         other_home = tmp_path / "asdf_home"
         other_home.mkdir()
         other = SessionDB(other_home / "state.db")
@@ -538,12 +538,59 @@ class TestCrossProfileRead:
         Info = namedtuple("Info", "name path")
         monkeypatch.setattr(profiles_mod, "get_profile_dir", lambda n: tmp_path / "default_home")
         monkeypatch.setattr(profiles_mod, "list_profiles", lambda: [Info("asdf", other_home)])
+        monkeypatch.setattr("tools.session_search_tool._cross_profile_scan_enabled", lambda: False)
+
+        result = json.loads(session_search(session_id="s_far", db=db))
+        assert result["success"] is False
+        assert "not found" in result["error"]
+        assert "profile" not in result
+
+    def test_bare_id_locates_across_profiles_when_enabled(self, db, tmp_path, monkeypatch):
+        # Operator opt-in restores the legacy safety net for linked-session reads
+        # where the model dropped the owning profile from the link.
+        other_home = tmp_path / "asdf_home"
+        other_home.mkdir()
+        other = SessionDB(other_home / "state.db")
+        other.create_session("s_far", source="cli")
+        other.append_message("s_far", role="user", content="hi")
+        other._conn.commit()
+
+        from collections import namedtuple
+        from hermes_cli import profiles as profiles_mod
+        Info = namedtuple("Info", "name path")
+        monkeypatch.setattr(profiles_mod, "get_profile_dir", lambda n: tmp_path / "default_home")
+        monkeypatch.setattr(profiles_mod, "list_profiles", lambda: [Info("asdf", other_home)])
+        monkeypatch.setattr("tools.session_search_tool._cross_profile_scan_enabled", lambda: True)
 
         # `db` (current profile) lacks s_far; no profile passed → scan finds it.
         result = json.loads(session_search(session_id="s_far", db=db))
         assert result["success"] is True
         assert result["mode"] == "read"
         assert result["profile"] == "asdf"
+
+    def test_explicit_profile_miss_does_not_scan_other_profiles(self, db, tmp_path, monkeypatch):
+        # A read that names one profile and misses must stay a miss: falling back to a
+        # full-profile scan would leak the session through a different profile.
+        named_home = tmp_path / "named_home"       # the profile the caller named
+        secret_home = tmp_path / "secret_home"     # where the session actually lives
+        for home in (named_home, secret_home):
+            home.mkdir()
+        secret = SessionDB(secret_home / "state.db")
+        secret.create_session("s_secret", source="cli")
+        secret.append_message("s_secret", role="user", content="hi")
+        secret._conn.commit()
+
+        from collections import namedtuple
+        from hermes_cli import profiles as profiles_mod
+        Info = namedtuple("Info", "name path")
+        self._patch_profiles(monkeypatch, named_home)
+        monkeypatch.setattr(profiles_mod, "get_profile_dir",
+                            lambda n: named_home if n == "asdf" else tmp_path / "default_home")
+        monkeypatch.setattr(profiles_mod, "list_profiles", lambda: [Info("elsewhere", secret_home)])
+        monkeypatch.setattr("tools.session_search_tool._cross_profile_scan_enabled", lambda: True)
+
+        result = json.loads(session_search(session_id="s_secret", profile="asdf", db=db))
+        assert result["success"] is False
 
 
     def test_combined_value_autosplits(self, db, tmp_path, monkeypatch):

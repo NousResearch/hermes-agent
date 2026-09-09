@@ -12,8 +12,7 @@ import {
   host,
   RowButton,
   useI18n,
-  useQuery,
-  useValue
+  useQuery
 } from '@hermes/plugin-sdk'
 import { useState } from 'react'
 

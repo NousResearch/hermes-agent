@@ -1,13 +1,12 @@
-import { expect, test, type Page } from '@playwright/test'
+import { expect, type Page, test } from '@playwright/test'
 
 import { waitForAppReady } from './fixtures'
 import {
   ensureActiveSession,
   launchPackagedReal,
   openCreateAutomation,
-  pausePreservesUnsavedDraft,
-  pickAutomationType,
   type PackagedReal,
+  pickAutomationType,
 } from './packaged-automation'
 
 // Durable packaged regression for the session-automation lifecycle.
@@ -19,6 +18,11 @@ import {
 // spec's hardcoded test-build root and missing Python override were the gap.
 
 const GOAL_MARKER = 'E2E_GOAL_DONE_MARKER'
+// The completion criterion is a DISTINCT marker named for the criterion itself.
+// The mock only returns a judge DONE verdict when this text reaches the judge, so
+// the test's completion genuinely depends on the criterion being created in the
+// GUI and committed to the goal — not on the goal prompt alone.
+const GOAL_CRITERION_MARKER = 'E2E_GOAL_CRITERION_MET'
 
 // The goal status bar is a single button whose accessible name carries the
 // status plus turn count (e.g. "Goal done · 1 turn", "Goal active").
@@ -32,6 +36,7 @@ async function bootToChat(fixture: PackagedReal): Promise<void> {
 test('packaged automation injects a real backend and opens the composer', async () => {
   test.setTimeout(180_000)
   const fx = await launchPackagedReal()
+
   try {
     await bootToChat(fx)
     await openCreateAutomation(fx.page)
@@ -45,7 +50,8 @@ test('packaged automation injects a real backend and opens the composer', async 
 
 test('packaged Goal: deterministic criteria completion with no extra continuation', async () => {
   test.setTimeout(240_000)
-  const fx = await launchPackagedReal({ goalJudgeDoneForPrompt: GOAL_MARKER })
+  const fx = await launchPackagedReal({ goalJudgeDoneForPrompt: GOAL_CRITERION_MARKER })
+
   try {
     await bootToChat(fx)
     const { page, mock } = fx
@@ -53,19 +59,34 @@ test('packaged Goal: deterministic criteria completion with no extra continuatio
     await openCreateAutomation(page)
     await pickAutomationType(page, 'Goal')
 
+    // Create a REAL completion criterion in the GUI before Start: type it and
+    // commit it via 'Add criterion'. This is the missing gate the previous
+    // version skipped — it never created any criterion and the mock DONE fire
+    // unconditionally off the goal prompt, so the title overclaimed.
     const goalPrompt = `Write E2E_DONE ${GOAL_MARKER}`
     await page.getByLabel('Goal prompt', { exact: true }).fill(goalPrompt)
+    await page.getByLabel('Completion criteria', { exact: true }).fill(GOAL_CRITERION_MARKER)
+    await page.getByRole('button', { name: 'Add criterion', exact: true }).click()
+    await expect(page.getByText(GOAL_CRITERION_MARKER)).toBeVisible()
     await page.getByRole('button', { name: 'Start goal', exact: true }).click()
     await expect(page.getByRole('dialog')).not.toBeVisible({ timeout: 30_000 })
 
-    // The goal fires its first turn; the mock judge then returns DONE because
-    // the marker goal is present — criteria-driven completion.
+    // The goal fires its first turn: the main model receives the goal prompt.
     await expect.poll(
       () => mock.receivedPrompts.some(text => text.includes(GOAL_MARKER)),
       { timeout: 90_000 },
     ).toBe(true)
 
-    // Criteria-driven completion: the status bar reports done.
+    // The GENERIC judge must have received the committed criterion text before
+    // it can return DONE. Because the mock's DONE tag is the criterion marker —
+    // and that marker lives only in the criterion, not the goal prompt — this
+    // proves the completion is genuinely gated on the criterion the user added.
+    await expect.poll(
+      () => mock.receivedJudgeEvaluations.some(ev => ev.includes(GOAL_CRITERION_MARKER)),
+      { timeout: 90_000 },
+    ).toBe(true)
+
+    // Criteria-driven completion: the status bar reports done (persisted state).
     await expect(GOAL_DONE(page).first()).toBeVisible({ timeout: 90_000 })
 
     // No additional automatic continuation: after the judge verdict, no further
@@ -82,6 +103,7 @@ test('packaged Goal: deterministic criteria completion with no extra continuatio
 test('packaged Goal: pause preserves unsaved edits; clear cancel vs confirm', async () => {
   test.setTimeout(240_000)
   const fx = await launchPackagedReal()
+
   try {
     await bootToChat(fx)
     const { page, mock } = fx
@@ -138,6 +160,7 @@ test('packaged Goal: pause preserves unsaved edits; clear cancel vs confirm', as
 test('packaged Loop: capped at one tick fires exactly once, no extra tick', async () => {
   test.setTimeout(240_000)
   const fx = await launchPackagedReal()
+
   try {
     await bootToChat(fx)
     const { page, mock } = fx
@@ -165,6 +188,7 @@ test('packaged Loop: capped at one tick fires exactly once, no extra tick', asyn
 test('packaged Loop: edit pause preserves draft; cap-clear save/reopen; stop cancel vs confirm', async () => {
   test.setTimeout(240_000)
   const fx = await launchPackagedReal()
+
   try {
     await bootToChat(fx)
     const { page } = fx
@@ -215,6 +239,7 @@ test('packaged Loop: edit pause preserves draft; cap-clear save/reopen; stop can
 test('packaged Heartbeat: pause preserves unsaved edits; clear cancel vs confirm', async () => {
   test.setTimeout(240_000)
   const fx = await launchPackagedReal()
+
   try {
     await bootToChat(fx)
     const { page } = fx

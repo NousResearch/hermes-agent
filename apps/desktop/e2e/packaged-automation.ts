@@ -1,19 +1,20 @@
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 
-import { expect, _electron, type ElectronApplication, type Page } from '@playwright/test'
+import { _electron, type ElectronApplication, expect, type Page } from '@playwright/test'
 
-import { buildAppEnv, createSandbox, PACKAGED_BINARY_PATH, writeEnvFile, writeMockProviderConfig, type Sandbox } from './fixtures'
-import { startMockServer, type MockServer, type MockServerOptions } from './mock-server'
+import { buildAppEnv, createSandbox, PACKAGED_BINARY_PATH, type Sandbox, writeEnvFile, writeMockProviderConfig } from './fixtures'
+import { type MockServer, type MockServerOptions, startMockServer } from './mock-server'
 
 // Durable packaged E2E helpers for automation-packaged.spec.ts.
 //
-// The packaged binary ships no bundled backend: booting it for a REAL
-// regression (not just "the dialog opened") requires pointing it at a hermes
-// source root that can serve the automation lifecycle RPCs and at a Python
-// that can import hermes_cli. Resolve both portably from the environment /
-// venv discovery — never a machine-specific committed path. Every run uses a
-// fresh disposable home + mock inference only.
+// The packaged binary resolves its backend from the canonical install (or
+// bootstraps one), but a deterministic regression can't depend on whatever
+// runtime happens to be installed on the machine. Pointing it at a pinned
+// hermes source root + Python (via HERMES_DESKTOP_HERMES_ROOT /
+// HERMES_DESKTOP_PYTHON or venv discovery) is what makes the boot real and
+// portable — never a machine-specific committed path. Every run uses a fresh
+// disposable home + mock inference only.
 
 export const desktopRoot = path.resolve(import.meta.dirname, '..')
 export const repoRoot = path.resolve(desktopRoot, '..', '..')
@@ -21,6 +22,7 @@ export const repoRoot = path.resolve(desktopRoot, '..', '..')
 /** Portably resolve the hermes source root the packaged backend should use. */
 export function resolveHermesRoot(): string {
   const override = process.env.HERMES_DESKTOP_HERMES_ROOT
+
   return override ? path.resolve(override) : repoRoot
 }
 
@@ -29,16 +31,20 @@ export function resolveHermesRoot(): string {
  * root. The app falls back to system Python itself when both are absent. */
 export function resolvePython(root: string): string | undefined {
   const override = process.env.HERMES_DESKTOP_PYTHON
+
   if (override && fs.existsSync(override)) {
     return override
   }
+
   const winCandidates = ['.venv', 'venv'].map((v) => path.join(root, v, 'Scripts', 'python.exe'))
   const posixCandidates = ['.venv', 'venv'].map((v) => path.join(root, v, 'bin', 'python'))
+
   for (const candidate of [...winCandidates, ...posixCandidates]) {
     if (fs.existsSync(candidate)) {
       return candidate
     }
   }
+
   return undefined
 }
 
@@ -69,12 +75,15 @@ export interface PackagedReal {
  * root + Python (both portable) and mock inference, in a fresh disposable home. */
 export async function launchPackagedReal(mockOptions: MockServerOptions = {}): Promise<PackagedReal> {
   const hermesRoot = resolveHermesRoot()
+
   if (!fs.existsSync(path.join(hermesRoot, 'hermes_cli', 'main.py'))) {
     throw new Error(
       `Packaged backend needs a hermes source root at HERMES_DESKTOP_HERMES_ROOT (resolved ${hermesRoot})`,
     )
   }
+
   const python = resolvePython(hermesRoot)
+
   if (!python) {
     throw new Error(
       `No Python resolved for packaged backend. Set HERMES_DESKTOP_PYTHON or provide a venv under ${hermesRoot}`,
@@ -82,35 +91,59 @@ export async function launchPackagedReal(mockOptions: MockServerOptions = {}): P
   }
 
   const mock = await startMockServer(mockOptions)
-  const sandbox = createSandbox('pkgreal')
-  writeMockProviderConfig(sandbox.hermesHome, mock.url, undefined, PACKAGE_EXTRA_CONFIG)
-  writeEnvFile(sandbox.hermesHome)
 
-  const env = buildAppEnv(sandbox, {
-    HERMES_DESKTOP_HERMES_ROOT: hermesRoot,
-    HERMES_DESKTOP_PYTHON: python,
-  })
-  // The packaged binary must use its own bundled renderer + backend, not a dev checkout.
-  delete (env as Record<string, string | undefined>).HERMES_DESKTOP_DEV_SERVER
-  delete (env as Record<string, string | undefined>).HERMES_DESKTOP_HERMES
+  // Tear down best-effort whatever was acquired if any later step throws: the
+  // mock server is created first so a partial-start failure always has it to
+  // close, and the sandbox + launched app are released if they were reached.
+  let sandbox: Sandbox | undefined
+  let app: ElectronApplication | undefined
+  let page: Page | undefined
 
-  const app = await _electron.launch({
-    executablePath: PACKAGED_BINARY_PATH,
-    args: ['--disable-gpu', '--no-sandbox'],
-    env,
-  })
-  const page = await app.firstWindow()
+  try {
+    sandbox = createSandbox('pkgreal')
+    writeMockProviderConfig(sandbox.hermesHome, mock.url, undefined, PACKAGE_EXTRA_CONFIG)
+    writeEnvFile(sandbox.hermesHome)
+
+    const env = buildAppEnv(sandbox, {
+      HERMES_DESKTOP_HERMES_ROOT: hermesRoot,
+      HERMES_DESKTOP_PYTHON: python,
+    })
+
+    // The packaged binary must use its own bundled renderer and the pinned
+    // source-root backend resolved above — never a dev vite server or a shifted
+    // install picked up from the environment.
+    delete (env as Record<string, string | undefined>).HERMES_DESKTOP_DEV_SERVER
+    delete (env as Record<string, string | undefined>).HERMES_DESKTOP_HERMES
+
+    app = await _electron.launch({
+      executablePath: PACKAGED_BINARY_PATH,
+      args: ['--disable-gpu', '--no-sandbox'],
+      env,
+    })
+    page = await app.firstWindow()
+  } catch (err) {
+    if (app) {
+      await app.close().catch(() => undefined)
+    }
+
+    if (sandbox) {
+      sandbox.cleanup()
+    }
+
+    await mock.close().catch(() => undefined)
+    throw err
+  }
 
   return {
-    app,
-    page,
+    app: app as ElectronApplication,
+    page: page as Page,
     mock,
     mockUrl: mock.url,
-    sandbox,
+    sandbox: sandbox as Sandbox,
     cleanup: async () => {
-      await app.close().catch(() => undefined)
-      await mock.close()
-      sandbox.cleanup()
+      await app?.close().catch(() => undefined)
+      await mock.close().catch(() => undefined)
+      sandbox?.cleanup()
     },
   }
 }

@@ -1634,7 +1634,9 @@ class TestJobsJsonIdKeyedMap:
         assert {j["id"] for j in reloaded} == {"cron1234abcd", "cron5678efgh"}
 
     def test_empty_id_keyed_map_returns_empty_list(self, tmp_cron_dir):
-        """An empty ``jobs`` map must not crash and yields no jobs."""
+        """An empty ``jobs`` map must not crash, yields no jobs, AND is normalized
+        to the canonical ``{"jobs": []}`` shape on disk (the repair persists even
+        though the repaired list is empty)."""
         import json
         from cron.jobs import JOBS_FILE, load_jobs
 
@@ -1642,6 +1644,14 @@ class TestJobsJsonIdKeyedMap:
         JOBS_FILE.write_text(json.dumps({"jobs": {}}), encoding="utf-8")
 
         assert load_jobs() == []
+
+        on_disk = json.loads(JOBS_FILE.read_text(encoding="utf-8"))
+        assert isinstance(on_disk, dict), on_disk
+        assert on_disk["jobs"] == [], "empty id-keyed map must be rewritten as a list"
+
+        # Idempotent: the canonical file is read back unchanged, no re-repair.
+        assert load_jobs() == []
+        assert json.loads(JOBS_FILE.read_text(encoding="utf-8"))["jobs"] == []
 
     def test_map_value_without_inline_id_adopts_key(self, tmp_cron_dir):
         """A value lacking an inline "id" gets the map key as its id."""

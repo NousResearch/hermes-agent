@@ -1276,7 +1276,10 @@ def load_jobs() -> List[Dict[str, Any]]:
     else:
         raise RuntimeError(
             f"Cron database corrupted: expected {{'jobs': [...]}}, got {type(data).__name__}")
-    if jobs and repair:
+    if repair:
+        # Persist whenever a repair happened, even when the repaired list is empty:
+        # an empty legacy id-keyed map / bare list is read fine in memory but, if not
+        # rewritten, stays non-canonical on disk and takes the repair path forever.
         save_jobs(jobs)
         logger.warning("Auto-repaired jobs.json (%s)", repair)
     _record_load_stamp(pre_read_stamp)

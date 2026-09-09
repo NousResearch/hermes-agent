@@ -4,6 +4,8 @@ Split out of ``hermes_cli/main.py``. Names that still live in main (``PROJECT_RO
 are imported lazily inside the functions that use them (avoids an import cycle).
 """
 
+from __future__ import annotations
+
 import logging
 import contextlib
 import argparse

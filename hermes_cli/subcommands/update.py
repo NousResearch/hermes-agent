@@ -66,4 +66,16 @@ def build_update_parser(subparsers, *, cmd_update: Callable) -> None:
         "--force-venv", action="store_true", default=False,
         help="Windows: mutate the venv even while other processes are running from its interpreter (desktop backend, gateway, terminals). Those processes keep native .pyd files locked, so the dependency sync will likely fail partway and strand the install half-updated. Use only if you know the detected holders are false positives.",
     )
+    update_parser.add_argument(
+        "--client-only",
+        action="store_true",
+        default=False,
+        help=(
+            "Update this machine as a runtime-free remote Desktop client: "
+            "advance the git checkout and rebuild the app, but skip venv, "
+            "Python dependency sync, and fleet/gateway restart. A complete "
+            "local runtime uses the normal full update. Refused when "
+            "the missing runtime looks like a broken local install."
+        ),
+    )
     update_parser.set_defaults(func=cmd_update)

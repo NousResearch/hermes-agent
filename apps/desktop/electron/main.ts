@@ -430,6 +430,7 @@ import {
   MIN_HEIGHT as WINDOW_MIN_HEIGHT,
   MIN_WIDTH as WINDOW_MIN_WIDTH
 } from './window-state'
+import { inspectClientOnlyUpdateSurface, isClientOnlyUpdateSurface } from './client-only-update'
 import { hiddenWindowsChildOptions } from './windows-child-options'
 import {
   buildPathExtCandidates,
@@ -4557,6 +4558,11 @@ async function applyUpdatesPosixHandoff(opts: any) {
   }
 
   const args = [...handoff.args, '--install-root', updateRoot, '--branch', branch, '--desktop-pid', String(process.pid)]
+  if (isClientOnlyUpdateSurface(inspectClientOnlyUpdateSurface(updateRoot, primaryBackendIsRemote()))) {
+    args.push('--client-only')
+    rememberLog('[updates] runtime-free remote client: posix hand-off will skip venv/fleet restart')
+  }
+
   const updateStartedAt = Math.floor(Date.now() / 1000)
 
   // Relaunch target: the running .app bundle on mac (script swaps the

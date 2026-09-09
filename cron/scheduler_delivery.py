@@ -1695,13 +1695,13 @@ def _deliver_result(
     unverified_targets: list = []
     if wrap_response:
         task_name = job.get("name", job["id"])
-        delivery_content = (
-            f"Cronjob Response: {task_name}\n"
-            f"(job_id: {job.get('id', '')})\n"
-            f"-------------\n\n"
-            f"{content}\n\n"
-            "To stop or manage this job, send me a new message "
-            f"(e.g. \"stop reminder {task_name}\")."
+        from agent.i18n import t as translate
+
+        display = (user_cfg or {}).get("display") or {}
+        language = os.environ.get("HERMES_LANGUAGE") or display.get("language") or "en"
+        delivery_content = translate(
+            "cron.delivery.wrapper", lang=language, task_name=task_name,
+            job_id=job.get("id", ""), content=content,
         )
     else:
         delivery_content = content
@@ -1760,15 +1760,17 @@ def _deliver_result(
             mirror_enabled=mirror_enabled, mirror_text=mirror_text, delivery_errors=delivery_errors)
         if t is None:
             continue
+        # Yuanbao historically shows the body only; never parse translated wrappers.
+        target_content = mirror_text if t.platform_name == "yuanbao" else cleaned_delivery_content
         target_errors: list = []
         delivered = t.live_adapter_ready and _deliver_via_live_adapter(
-            t, cleaned_delivery_content, media_files,
+            t, target_content, media_files,
             target_errors=target_errors, delivery_errors=delivery_errors,
             unverified_targets=unverified_targets,
         )
         if not delivered:
             _deliver_standalone(
-                t, cleaned_delivery_content, media_files, target_errors, delivery_errors)
+                t, target_content, media_files, target_errors, delivery_errors)
 
     # Filter-time drops apply to every target; report them once.
     delivery_errors.extend(policy_drop_errors)

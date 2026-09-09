@@ -4593,6 +4593,112 @@ def test_make_agent_passes_no_user_id_for_an_unknown_session(monkeypatch):
     assert captured["user_id"] is None
 
 
+class _LoginSocket:
+    """A live WS peer carrying the identity the upgrade auth minted."""
+
+    def __init__(self, user_id="alice", provider="basic"):
+        self.auth_identity = {"provider": provider, "user_id": user_id}
+        self._closed = False
+
+    def write(self, frame):
+        return True
+
+
+def _login_session(monkeypatch, sid, key, transport, **extra) -> dict:
+    """A record the way session.create stamps it: the login lives on the record, not the transport slot."""
+    record = {"session_key": key, "transport": transport,
+              "auth_user_id": server._transport_auth_user_id(transport), **extra}
+    monkeypatch.setitem(server._sessions, sid, record)
+    return record
+
+
+def test_make_agent_keeps_the_login_after_a_second_window_attaches_and_detaches(monkeypatch):
+    """A pop-out turns the transport slot into a FanoutTransport, which names no login. The rebuild must read the
+    login the record was created with, before and after the pop-out goes away."""
+    captured = _capture_make_agent_kwargs(monkeypatch)
+    first, popout = _LoginSocket(), _LoginSocket()
+    record = _login_session(monkeypatch, "sid-popout", "k", first)
+
+    assert server._attach_session_transport(record, popout)
+    server._make_agent("sid-popout", "k")
+    assert captured["user_id"] == "basic:alice"
+
+    server._detach_session_transport(record, popout)
+    server._make_agent("sid-popout", "k")
+    assert captured["user_id"] == "basic:alice"
+
+
+def test_build_branch_agent_carries_the_parent_login(monkeypatch, tmp_path):
+    """The branch agent is built before its record exists, so the parent's login is passed to the build and
+    copied onto the new record."""
+    captured = _capture_make_agent_kwargs(monkeypatch)
+    socket = _LoginSocket()
+    parent = _login_session(monkeypatch, "sid-parent", "parent-key", socket, cwd=str(tmp_path), source="desktop")
+
+    def fake_init_session(sid, key, agent, history, **kwargs):
+        monkeypatch.setitem(server._sessions, sid, {"session_key": key, "transport": server._stdio_transport})
+
+    monkeypatch.setattr(server, "_set_session_context", lambda key: [])
+    monkeypatch.setattr(server, "_clear_session_context", lambda tokens: None)
+    monkeypatch.setattr(server, "_init_session", fake_init_session)
+    monkeypatch.setattr(server, "_transfer_db_to_agent", lambda *args: False)
+    token = bind_transport(socket)
+    try:
+        server._build_branch_agent(parent, "sid-branch", "branch-key", [], "desktop")
+    finally:
+        reset_transport(token)
+
+    assert captured["user_id"] == "basic:alice"
+    assert server._sessions["sid-branch"]["auth_user_id"] == "basic:alice"
+
+
+def test_deferred_session_record_stamps_the_creating_login():
+    token = bind_transport(_LoginSocket("carol", "oidc"))
+    try:
+        record = server._deferred_session_record(
+            "deferred-key", cols=80, cwd="/tmp", history=[], lease=None)
+    finally:
+        reset_transport(token)
+
+    assert record["auth_user_id"] == "oidc:carol"
+    assert server._session_auth_user_id(record) == "oidc:carol"
+
+
+def test_compute_host_turn_frame_carries_the_session_login(monkeypatch):
+    record = _login_session(monkeypatch, "sid-host", "host-key", _LoginSocket(), history=[],
+                            history_lock=threading.Lock(), cwd="/tmp", cols=80)
+    monkeypatch.setattr(server, "_session_cwd", lambda session: "/tmp")
+
+    frame = server._compute_host_turn_frame("rid", "sid-host", record, "hello")
+
+    assert frame["auth_user_id"] == "basic:alice"
+
+
+def test_attaching_a_different_login_keeps_the_creator_and_warns_once(monkeypatch, caplog):
+    """Ownership is not enforced. The record keeps the creator's login, and the attach is logged once with both
+    ids rather than on every prompt the second client sends."""
+    creator, other = _LoginSocket("alice"), _LoginSocket("bob")
+    record = _login_session(monkeypatch, "sid-shared", "shared-key", creator)
+
+    with caplog.at_level(logging.WARNING, logger="tui_gateway.server"):
+        assert server._attach_session_transport(record, other)
+        assert server._attach_session_transport(record, other)
+
+    warnings = [rec.getMessage() for rec in caplog.records if "basic:bob" in rec.getMessage()]
+    assert len(warnings) == 1
+    assert "basic:alice" in warnings[0] and "shared-key" in warnings[0]
+    assert server._session_auth_user_id(record) == "basic:alice"
+
+
+def test_attaching_the_same_login_again_does_not_warn(monkeypatch, caplog):
+    record = _login_session(monkeypatch, "sid-same", "same-key", _LoginSocket("alice"))
+
+    with caplog.at_level(logging.WARNING, logger="tui_gateway.server"):
+        assert server._attach_session_transport(record, _LoginSocket("alice"))
+
+    assert not [rec for rec in caplog.records if "logged in as" in rec.getMessage()]
+
+
 def test_background_agent_kwargs_preserves_full_fallback_chain(monkeypatch):
     chain = [
         {"provider": "openrouter", "model": "openai/gpt-5.5"},

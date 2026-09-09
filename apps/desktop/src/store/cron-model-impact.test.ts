@@ -85,7 +85,7 @@ describe('setMainModelAssignment', () => {
     setModelAssignment.mockResolvedValue(
       response({
         available: true,
-            affected_count: 2,
+        affected_count: 2,
         truncated: false,
         jobs: [{ id: 'job-1', name: 'One', drifted_axes: ['provider'] }]
       })
@@ -112,7 +112,7 @@ describe('setMainModelAssignment', () => {
     setModelAssignment.mockResolvedValueOnce(
       response({
         available: true,
-            affected_count: 0,
+        affected_count: 0,
         truncated: false,
         jobs: []
       })

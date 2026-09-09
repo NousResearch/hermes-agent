@@ -91,6 +91,14 @@ dependencies = [
   # matrix extra's `mautrix`/`python-olm` it's safe to ship everywhere — keeps
   # it out of the lazy-install path that exists only for the heavy matrix deps.
   "Markdown==3.10.2",
+  # CommonMark parser for the WhatsApp AST formatter
+  # (gateway/platforms/whatsapp_renderer.py). Already resolved in every
+  # install as rich's transitive dependency, but the renderer imports it
+  # directly — declare it so the WhatsApp formatting pipeline does not
+  # depend on rich's implementation detail. Pure-Python py3-none-any wheel,
+  # no compiled extensions — safe to ship everywhere. Pinned to the version
+  # already resolved in uv.lock (no resolution churn).
+  "markdown-it-py==4.0.0",
   # Skills Hub (GitHub App JWT auth — optional, only needed for bot identity)
   "PyJWT[crypto]==2.13.0",  # PYSEC-2026-175/177/178/179
   # urllib3 2.7.0 fixes GHSA-mf9v-mfxr-j63j (decompression-bomb bypass)
@@ -500,6 +508,7 @@ huggingface_hub = false
 jinja2 = false
 lark-oapi = false
 markdown = false
+markdown-it-py = false
 maturin = false
 mautrix = false
 mcp = false

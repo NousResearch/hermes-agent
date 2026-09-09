@@ -46,6 +46,7 @@ import {
   mediaPayloadForFile,
   pollCreationMessageFromPayload,
   pollUpdateForAggregation,
+  splitLongMessage,
 } from './bridge_helpers.js';
 
 // Parse CLI args
@@ -117,7 +118,12 @@ const DEFAULT_REPLY_PREFIX = '⚕ *Hermes Agent*\n──────────
 const REPLY_PREFIX = process.env.WHATSAPP_REPLY_PREFIX === undefined
   ? DEFAULT_REPLY_PREFIX
   : process.env.WHATSAPP_REPLY_PREFIX.replace(/\\n/g, '\n');
-const MAX_MESSAGE_LENGTH = parseInt(process.env.WHATSAPP_MAX_MESSAGE_LENGTH || '4096', 10);
+const MAX_MESSAGE_LENGTH = parseInt(process.env.WHATSAPP_MAX_MESSAGE_LENGTH || '65536', 10);
+// Edits share the same cap: WhatsApp's real per-message limit (code points).
+// Both send and edit stay ONE bubble up to this limit — splitting an edit
+// surfaces chunk 2+ as unlinked duplicate bubbles, and a 4096 UX split on
+// send just fragments what WhatsApp renders fine as one message.
+const MAX_EDIT_MESSAGE_LENGTH = MAX_MESSAGE_LENGTH;
 const CHUNK_DELAY_MS = parseInt(process.env.WHATSAPP_CHUNK_DELAY_MS || '300', 10);
 // Per-call timeout for sock.sendMessage(). Baileys occasionally hangs forever
 // when uploading media to WhatsApp servers (and, less often, on text sends),
@@ -162,29 +168,6 @@ function formatOutgoingMessage(message) {
   // self-chat mode where bot and user share the same number.
   if (WHATSAPP_MODE !== 'self-chat') return message;
   return REPLY_PREFIX ? `${REPLY_PREFIX}${message}` : message;
-}
-
-function splitLongMessage(message, maxLength = MAX_MESSAGE_LENGTH) {
-  const text = String(message || '');
-  if (!text) return [];
-  if (!Number.isFinite(maxLength) || maxLength < 1 || text.length <= maxLength) {
-    return [text];
-  }
-
-  const chunks = [];
-  let remaining = text;
-  while (remaining.length > maxLength) {
-    let splitAt = remaining.lastIndexOf('\n', maxLength);
-    if (splitAt < Math.floor(maxLength / 2)) {
-      splitAt = remaining.lastIndexOf(' ', maxLength);
-    }
-    if (splitAt < 1) splitAt = maxLength;
-
-    chunks.push(remaining.slice(0, splitAt).trimEnd());
-    remaining = remaining.slice(splitAt).trimStart();
-  }
-  if (remaining) chunks.push(remaining);
-  return chunks;
 }
 
 function rememberSentMessage(sent, payload) {
@@ -831,7 +814,7 @@ app.post('/send', async (req, res) => {
   }
 
   try {
-    const chunks = splitLongMessage(formatOutgoingMessage(message));
+    const chunks = splitLongMessage(formatOutgoingMessage(message), MAX_MESSAGE_LENGTH);
     const messageIds = [];
     for (let i = 0; i < chunks.length; i += 1) {
       const { content: payload, options } = buildTextSendPayload(chunks[i], {
@@ -871,7 +854,12 @@ app.post('/edit', async (req, res) => {
 
   try {
     const key = { id: messageId, fromMe: true, remoteJid: chatId };
-    const chunks = splitLongMessage(formatOutgoingMessage(message));
+    // Split at WhatsApp's real per-message limit (65,536 code points), NOT a
+    // smaller UX chunk size: the stream consumer keeps edit content well
+    // under the cap, so a realistic edit is always a single chunk and stays
+    // one bubble. Splitting smaller would surface chunk 2+ as brand-new
+    // unlinked messages — the duplicate-bubble regression.
+    const chunks = splitLongMessage(formatOutgoingMessage(message), MAX_EDIT_MESSAGE_LENGTH);
     const messageIds = [];
 
     await sendWithTimeout(chatId, { text: chunks[0], edit: key });

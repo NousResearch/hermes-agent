@@ -2021,6 +2021,9 @@ class GatewayTurnMixin:
         history, message_text = prepared.history, prepared.message_text
 
         try:
+            from gateway.run_heartbeat_acceptance import heartbeat_owner_is_current
+            if not heartbeat_owner_is_current(self, event, session_key):
+                return
             hook_ctx = {
                 "platform": source.platform.value if source.platform else "",
                 "user_id": source.user_id,
@@ -2034,8 +2037,10 @@ class GatewayTurnMixin:
 
             # Capture the launch session id so post-run compression publication is identity-guarded
             # (a /new may move session_entry.session_id while the old run is still unwinding).
-            from gateway.run_heartbeat_acceptance import heartbeat_owner_is_current
             if not heartbeat_owner_is_current(self, event, session_key):
+                await self.hooks.emit("agent:end", {
+                    **hook_ctx, "response": "", "model": "", "provider": "", "cancelled": True,
+                })
                 return
             _run_start_session_id = session_entry.session_id
             _turn_started_monotonic = time.monotonic()

@@ -327,6 +327,72 @@ def test_spawn_failure_reports_error(tmp_path, monkeypatch):
     assert "could not be started" in result["error"]
 
 
+def test_live_dm_admitted_before_waiter_failure(tmp_path, monkeypatch):
+    from tools import bot_live_delivery as live
+
+    home = _managed_home(tmp_path)
+    target = home / "profiles" / "researcher"
+    owner = dict(profile_home=str(target), session_id="bot", lease_id="lease", live_session_id="live")
+    monkeypatch.setattr(live, "find_canonical_live_owner", lambda h: owner if Path(h) == target else None)
+    monkeypatch.setattr(bot_mode_dm, "_dm_dir", lambda: tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "wrong-home"))
+    import tools.terminal_tool as terminal
+    monkeypatch.setattr(terminal, "terminal_tool", lambda *a, **k: json.dumps({"error": "spawn failed"}))
+
+    result = json.loads(bot_mode_dm.message_agent_tool("researcher", "hello", agent=_FakeAgent(home)))
+    assert result["status"] == "queued"
+    record = live.read_delivery_result(target, result["delivery_id"])
+    assert record is not None
+    assert record["owner"] == owner
+    assert record["message"] == "Message from 🤖 hermes (@hermes): hello"
+    assert "notification_error" in result
+
+
+def test_live_dm_runner_retry_never_reexecutes_failed_claim(tmp_path, monkeypatch, capsys):
+    from tools import bot_live_delivery as live
+
+    home = _managed_home(tmp_path)
+    target = home / "profiles" / "researcher"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    owner = dict(profile_home=str(target), session_id="bot", lease_id="lease", live_session_id="live")
+    monkeypatch.setattr(live, "find_canonical_live_owner", lambda h: owner)
+    monkeypatch.setattr(bot_mode_dm, "_LIVE_WAIT_SECONDS", 0)
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: pytest.fail("must not launch a model turn"))
+    dm_file = tmp_path / "message.txt"
+    dm_file.write_text("hello", encoding="utf-8")
+    argv = ["hermes", "-p", "researcher"]
+    queued = bot_mode_dm._admit_live_dm(target, str(dm_file))
+    assert queued["status"] == "queued"
+    claimed = live.claim_pending_delivery(target, owner)
+    assert claimed is not None
+    live.complete_delivery(target, claimed["delivery_id"], status="failed", error="HTTP 429 rate limit")
+    monkeypatch.setattr(live, "find_canonical_live_owner", lambda h: None)
+    assert bot_mode_dm._run_delivery(argv, str(dm_file), stdin_file=False) == 1
+    failed = json.loads(capsys.readouterr().out)
+    assert failed["status"] == "failed"
+    assert failed["delivery_id"] == queued["delivery_id"]
+    assert dm_file.read_text(encoding="utf-8") == "hello"
+
+
+def test_live_waiter_keeps_reply_notification_after_fast_wait_window(tmp_path, monkeypatch, capsys):
+    from tools import bot_live_delivery as live
+
+    owner = dict(profile_home=str(tmp_path.resolve()), session_id="bot",
+                 lease_id="lease", live_session_id="live")
+    queued = live.deliver_to_live_owner(tmp_path, owner, "long task")
+    monkeypatch.setattr(bot_mode_dm, "_LIVE_WAIT_SECONDS", 0)
+
+    def settle_after_wait(_seconds):
+        claimed = live.claim_pending_delivery(tmp_path, owner)
+        live.complete_delivery(tmp_path, claimed["delivery_id"], status="settled", reply="late answer")
+
+    monkeypatch.setattr(bot_mode_dm.time, "sleep", settle_after_wait)
+    assert bot_mode_dm._wait_live_dm(str(tmp_path), queued["delivery_id"]) == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result["status"] == "settled"
+    assert result["reply"] == "late answer"
+
+
 # ── plaintext tempfile lifecycle ─────────────────────────────────────────────
 
 

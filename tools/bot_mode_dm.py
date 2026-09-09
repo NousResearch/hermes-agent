@@ -554,12 +554,118 @@ def _run_delivery(argv: list[str], dm_file: str, *, stdin_file: bool) -> int:
     cross-process lock, so two deliveries into one profile queue instead of
     racing; a bounded wait ends in a structured 'target_busy' refusal.
 
-    Local (query-file) turns get one policy-gated retry (#93091 item 5):
-    transient failures re-run the same session; a context_overflow re-run
-    lets the retried turn's pre-API compaction pass compact the Bot Chat
-    transcript first (agent/conversation_loop.py) — the sanctioned
-    compression lever; no fresh session is ever minted. Auth/quota/config
-    failures never retry. Peer transports (stdin mode) retry on their own
+    proc = _turn()
+    if proc.returncode != 0:
+        from tools.bot_failure_reasons import RETRY_NONE, classify_agent_error, retry_action
+
+        if retry_action(classify_agent_error((proc.stderr or proc.stdout or "").strip()[-500:])) != RETRY_NONE:
+            proc = _turn()
+    stderr_text = proc.stderr or ""
+    reason = next((line.removeprefix("hermes-refusal-reason: ").strip()
+                   for line in stderr_text.splitlines()
+                   if line.startswith("hermes-refusal-reason: ")), None)
+    # A code wins over prose, including unknown codes from newer CLIs.
+    # Only older CLIs without a marker need the historical wording fallback.
+    refused_not_owned = (reason == "SESSION_NOT_OWNED" if reason is not None
+                         else "already has a live owner" in stderr_text)
+    if proc.returncode != 0 and refused_not_owned:
+        # The target's Bot Chat is held live by another surface (Desktop); the turn
+        # never ran — tell the sender plainly instead of leaking a raw lease error.
+        # See #100523.
+        who = argv[argv.index("-p") + 1] if "-p" in argv[:-1] else "the teammate"
+        print(json.dumps({
+            "error": f"Delivery failed: @{who}'s Bot Chat is open on another "
+                     "surface right now, so your message was NOT delivered. Try again later.",
+            "reason": "target_busy",
+        }))
+        return 1
+    # Re-emit the transport's streams: stdout is the reply text the
+    # completion notification carries back to the sending agent.
+    for stream, text in ((sys.stdout, proc.stdout), (sys.stderr, proc.stderr)):
+        if text:
+            stream.write(text)
+            stream.flush()
+    return proc.returncode
+
+
+def _admit_live_dm(profile_home: Path | None, dm_file: str) -> dict | None:
+    """Pin intent before admission; retries may inspect, never change transport."""
+    from tools.bot_live_delivery import (
+        _fsync_dir, deliver_to_live_owner, find_canonical_live_owner, read_delivery_result,
+    )
+
+    intent: dict[str, Any]
+    intent_path = Path(dm_file + ".live.json")
+    if intent_path.exists():
+        intent = json.loads(intent_path.read_text(encoding="utf-8"))
+    else:
+        assert profile_home is not None
+        owner = find_canonical_live_owner(profile_home)
+        if owner is None:
+            return None
+        intent = dict(owner=owner, message=Path(dm_file).read_text(encoding="utf-8"),
+                      delivery_id=hashlib.sha256(str(Path(dm_file).resolve()).encode()).hexdigest())
+        try:
+            fd = os.open(intent_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        except FileExistsError:
+            intent = json.loads(intent_path.read_text(encoding="utf-8"))
+        else:
+            with os.fdopen(fd, "w", encoding="utf-8") as stream:
+                json.dump(intent, stream)
+                stream.flush()
+                os.fsync(stream.fileno())
+            _fsync_dir(intent_path.parent)
+    home = intent["owner"]["profile_home"]
+    record = read_delivery_result(home, intent["delivery_id"])
+    if record is None:
+        record = deliver_to_live_owner(home, intent["owner"], intent["message"],
+                                       delivery_id=intent["delivery_id"])
+    return record
+
+
+def _wait_live_dm(home: str, delivery_id: str) -> int:
+    """Keep the background completion owner alive until its durable receipt settles.
+
+    The initial window bounds fast polling, not notification ownership. A busy
+    Bot Chat can legitimately claim and answer long after that window expires.
+    """
+    from tools.bot_live_delivery import read_delivery_result
+
+    deadline = time.monotonic() + _LIVE_WAIT_SECONDS
+    while True:
+        record = read_delivery_result(home, delivery_id)
+        status = record["status"] if record else "ambiguous"
+        if status not in ("queued", "claimed"):
+            break
+        time.sleep(0.5 if time.monotonic() < deadline else 5.0)
+    payload = {key: record[key] for key in ("reply", "error", "reason") if record and record.get(key)}
+    payload.update(status=status, delivery_id=delivery_id)
+    if status == "ambiguous":
+        payload["detail"] = "Delivery remains pending or its outcome is unknown. Do not resend; receipt is retained."
+    print(json.dumps(payload))
+    return 0 if status == "settled" else 1
+
+
+def _local_delivery_home(argv: list[str]) -> Path | None:
+    cli = (argv[0] if argv else "").rsplit("\\", 1)[-1].rsplit("/", 1)[-1]
+    if len(argv) < 3 or cli not in ("hermes", "hermes.exe") or argv[1] != "-p":
+        return None
+    from tools.bot_mode_probe import _hermes_root, _roster
+
+    return dict(_roster(_hermes_root(Path(_default_home())))).get(argv[2])
+
+
+def _run_delivery(argv: list[str], dm_file: str, *, stdin_file: bool,
+                  profile_home: Path | None = None) -> int:
+    """Route to the live owner before attempting a CLI transport. Live deliveries
+    retain their intent/payload and immutable receipt; only CLI/peer payloads are
+    removed after consumption. The CLI turn window holds the profile lock, so two
+    deliveries into one profile queue; a bounded wait ends in a 'target_busy' refusal.
+
+    Local (query-file) turns get one policy-gated retry (#93091 item 5): transient failures re-run the same
+    session; a context_overflow re-run lets the retried turn's pre-API compaction pass compact the Bot Chat
+    transcript first (agent/conversation_loop.py) — the sanctioned compression lever; no fresh session is
+    ever minted. Auth/quota/config failures never retry. Peer transports (stdin mode) retry on their own
     gateway's deliver path, not here.
     """
     try:

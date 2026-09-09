@@ -27,13 +27,15 @@ _AUTOMATIC_SESSION_END_REASONS = frozenset({"ws_orphan_reap", "ws_disconnect", "
 
 
 def _claim_active_session_slot(
-    session_key: str, *, live_session_id: str, surface: str = "tui", profile_home: str | Path | None = None
+    session_key: str, *, live_session_id: str, surface: str = "tui", profile_home: str | Path | None = None,
+    pending_title: str | None = None,
 ) -> tuple[Any, str | None]:
     try:
         from hermes_cli.active_sessions import try_acquire_active_session
         return try_acquire_active_session(
             session_id=session_key, surface=surface, config=_load_cfg(), registry_home=profile_home,
-            metadata={"live_session_id": live_session_id, "bot_live_delivery_consumer": True},
+            metadata={"live_session_id": live_session_id, "bot_live_delivery_consumer": True,
+                      "pending_title": pending_title},
             track_liveness=str(surface or "").strip().lower() == "desktop")
     except Exception as exc:
         logger.warning("Failed to claim active session slot: %s", exc)
@@ -53,7 +55,8 @@ def _ensure_active_session_slot(sid: str, session: dict) -> str | None:
         return None
     lease, limit_message = _claim_active_session_slot(
         str(session.get("session_key") or ""), live_session_id=sid,
-        surface=_session_source(session), profile_home=session.get("profile_home"))
+        surface=_session_source(session), profile_home=session.get("profile_home"),
+        pending_title=session.get("pending_title"))
     if limit_message is None:
         session["active_session_lease"] = lease
     return limit_message

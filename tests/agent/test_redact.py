@@ -448,6 +448,23 @@ class TestJWTTokens:
         assert result.startswith("before ")
         assert result.endswith(" after")
 
+    def test_sk_prefix_with_embedded_dots(self):
+        """DashScope/Alibaba JWT-format keys (issue #106508): sk-ws-H.EEPXREE.pFau..."""
+        token = "sk-ws-H.EEPXREE.pFau.MEUCIQC6UnD-jj2a" + "X" * 50  # synthetic
+        text = f"DASHSCOPE_API_KEY={token}"
+        result = redact_sensitive_text(text)
+        # The entire token (including embedded dots in the first segment) must be masked
+        assert ".EEPXREE." not in result
+        assert ".pFau." not in result
+        assert token not in result
+
+    def test_jwt_with_embedded_dots_in_sections(self):
+        """Non-standard JWT with dots inside a section (issue #106508)."""
+        # Synthetic JWT-like token: eyJ prefix, but first section has dots
+        token = "eyJfake.dot.embedded" + "A" * 10 + ".part2.part3"
+        result = redact_sensitive_text(token)
+        assert ".dot.embedded" not in result
+        assert token not in result
 
 
 class TestDiscordMentions:

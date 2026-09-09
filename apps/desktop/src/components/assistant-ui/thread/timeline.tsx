@@ -76,17 +76,14 @@ const hoverProps = (index: number, paint: (index: number, on: boolean) => void) 
 
 // Constant-duration jump (eased), NOT native `behavior:'smooth'` — Chromium's
 // smooth scroll animates proportional to distance, so jumping across a long
-// thread crawls for seconds. A fixed ~260ms feels instant near or far. A
-// shared rAF handle cancels a prior jump so rapid tick clicks don't fight.
-let jumpRaf = 0
-
-export function jumpScroll(viewport: HTMLElement, top: number, duration = 170): void {
-  cancelAnimationFrame(jumpRaf)
-
+// thread crawls for seconds. A fixed ~260ms feels instant near or far. The
+// returned cancel function lets the owning timeline stop an in-flight jump on
+// another click, session switch, or unmount.
+export function jumpScroll(viewport: HTMLElement, top: number, duration = 170): () => void {
   if (prefersReducedMotion()) {
     viewport.scrollTop = top
 
-    return
+    return () => {}
   }
 
   const start = viewport.scrollTop
@@ -95,11 +92,12 @@ export function jumpScroll(viewport: HTMLElement, top: number, duration = 170): 
   if (Math.abs(delta) < 2) {
     viewport.scrollTop = top
 
-    return
+    return () => {}
   }
 
   const t0 = performance.now()
   const ease = (t: number) => 1 - (1 - t) ** 3 // easeOutCubic
+  let jumpRaf = 0
 
   const step = (now: number) => {
     const p = Math.min(1, (now - t0) / duration)
@@ -111,6 +109,8 @@ export function jumpScroll(viewport: HTMLElement, top: number, duration = 170): 
   }
 
   jumpRaf = requestAnimationFrame(step)
+
+  return () => cancelAnimationFrame(jumpRaf)
 }
 
 // A timeline belongs to ONE chat surface, and several are mounted at once — side
@@ -120,20 +120,19 @@ export function jumpScroll(viewport: HTMLElement, top: number, duration = 170): 
 export const ownViewport = (root: HTMLElement | null): HTMLElement | null =>
   (root?.closest('[data-session-anchor]') ?? document).querySelector<HTMLElement>(VIEWPORT)
 
-function scrollToPrompt(root: HTMLElement | null, id: string): boolean {
+function scrollToPrompt(root: HTMLElement | null, id: string): (() => void) | null {
   const viewport = ownViewport(root)
   const node = viewport?.querySelector<HTMLElement>(`[data-message-id="${CSS.escape(id)}"]`)
 
   if (!viewport || !node) {
-    return false
+    return null
   }
 
   const top = viewport.scrollTop + (node.getBoundingClientRect().top - viewport.getBoundingClientRect().top) - 8
 
   triggerHaptic('selection')
-  jumpScroll(viewport, Math.max(0, top))
 
-  return true
+  return jumpScroll(viewport, Math.max(0, top))
 }
 
 /**
@@ -232,8 +231,9 @@ const ActiveThreadTimeline: FC = () => {
   const closeTimerRef = useRef<number | undefined>(undefined)
   const rootRef = useRef<HTMLDivElement | null>(null)
   const jumpFrameRef = useRef(0)
+  const scrollCancelRef = useRef<(() => void) | null>(null)
 
-  const cancelPendingJump = useCallback(() => {
+  const cancelPendingReveal = useCallback(() => {
     if (jumpFrameRef.current) {
       window.cancelAnimationFrame(jumpFrameRef.current)
       jumpFrameRef.current = 0
@@ -241,6 +241,12 @@ const ActiveThreadTimeline: FC = () => {
 
     pendingJumpRef.current = null
   }, [])
+
+  const cancelNavigation = useCallback(() => {
+    cancelPendingReveal()
+    scrollCancelRef.current?.()
+    scrollCancelRef.current = null
+  }, [cancelPendingReveal])
 
   const revealScopeRef = useRef(revealScope)
 
@@ -250,15 +256,23 @@ const ActiveThreadTimeline: FC = () => {
     }
 
     revealScopeRef.current = revealScope
-    cancelPendingJump()
-  }, [cancelPendingJump, revealScope])
+    cancelNavigation()
+  }, [cancelNavigation, revealScope])
 
   const jump = useCallback(
     (id: string) => {
-      cancelPendingJump()
+      cancelNavigation()
       cancelReveal?.()
 
-      if (scrollToPrompt(rootRef.current, id)) {
+      if (revealScope) {
+        requestRevealMessage(revealScope, id)
+      }
+
+      const cancelScroll = scrollToPrompt(rootRef.current, id)
+
+      if (cancelScroll) {
+        scrollCancelRef.current = cancelScroll
+
         return
       }
 
@@ -283,9 +297,12 @@ const ActiveThreadTimeline: FC = () => {
           requestRevealMessage(revealScope, id)
         }
 
-        if (scrollToPrompt(rootRef.current, id)) {
+        const retryCancelScroll = scrollToPrompt(rootRef.current, id)
+
+        if (retryCancelScroll) {
           pendingJumpRef.current = null
           jumpFrameRef.current = 0
+          scrollCancelRef.current = retryCancelScroll
 
           return
         }
@@ -293,7 +310,7 @@ const ActiveThreadTimeline: FC = () => {
         frames += 1
 
         if (frames >= 45) {
-          cancelPendingJump()
+          cancelNavigation()
 
           return
         }
@@ -303,7 +320,7 @@ const ActiveThreadTimeline: FC = () => {
 
       jumpFrameRef.current = window.requestAnimationFrame(retry)
     },
-    [cancelPendingJump, cancelReveal, revealMessage, revealScope]
+    [cancelNavigation, cancelReveal, revealMessage, revealScope]
   )
 
   useLayoutEffect(() => {
@@ -317,20 +334,23 @@ const ActiveThreadTimeline: FC = () => {
       requestRevealMessage(revealScope, pendingId)
     }
 
-    if (scrollToPrompt(rootRef.current, pendingId)) {
-      cancelPendingJump()
+    const cancelScroll = scrollToPrompt(rootRef.current, pendingId)
+
+    if (cancelScroll) {
+      cancelPendingReveal()
+      scrollCancelRef.current = cancelScroll
     }
-  }, [cancelPendingJump, promptIds, revealScope, timelineEntries])
+  }, [cancelPendingReveal, promptIds, revealScope, timelineEntries])
 
   useEffect(() => {
     const pendingId = pendingJumpRef.current
 
     if (pendingId && !entries.some(entry => entry.id === pendingId)) {
-      cancelPendingJump()
+      cancelNavigation()
     }
-  }, [cancelPendingJump, entries])
+  }, [cancelNavigation, entries])
 
-  useEffect(() => cancelPendingJump, [cancelPendingJump])
+  useEffect(() => cancelNavigation, [cancelNavigation])
 
   // Hover sync lives on the DOM, not in React state — the tick and its popover
   // row are siblings in different subtrees, so a shared index-keyed paint() lights

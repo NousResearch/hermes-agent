@@ -24,6 +24,21 @@ describe('jumpScroll', () => {
     expect(viewport.scrollTop).toBe(120)
     expect(frame).not.toHaveBeenCalled()
   })
+
+  it('returns a cancellation handle for an animated jump', () => {
+    const viewport = document.createElement('div')
+    const frame = vi.spyOn(window, 'requestAnimationFrame').mockReturnValue(7)
+    const cancelFrame = vi.spyOn(window, 'cancelAnimationFrame')
+
+    vi.stubGlobal('matchMedia', vi.fn().mockReturnValue({ matches: false }))
+
+    const cancel = jumpScroll(viewport, 120)
+
+    cancel()
+
+    expect(frame).toHaveBeenCalledOnce()
+    expect(cancelFrame).toHaveBeenCalledWith(7)
+  })
 })
 
 const surface = (id: string, hidden = false) => `

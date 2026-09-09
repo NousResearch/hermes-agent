@@ -79,7 +79,11 @@ import {
   mergeOlderTranscriptPage,
   transcriptBackfillAvailable
 } from './transcript-backfill'
-import { advanceSessionTranscriptWindow, type SessionWindowMemo } from './transcript-window'
+import {
+  advanceSessionTranscriptWindow,
+  type SessionWindowMemo,
+  transcriptWindowPagesToReveal
+} from './transcript-window'
 
 interface ChatViewProps extends Omit<React.ComponentProps<'div'>, 'onSubmit'> {
   gateway: HermesGateway | null
@@ -291,12 +295,14 @@ function ChatRuntimeBoundary({
 
   const revealMessage = useCallback(
     (messageId: string) => {
-      if (!view.$messages.get().some(message => message.id === messageId)) {
+      const neededPages = transcriptWindowPagesToReveal(view.$messages.get(), messageId)
+
+      if (neededPages == null) {
         return
       }
 
       setRevealTarget(messageId)
-      setWindowPages(pages => pages + 1)
+      setWindowPages(pages => Math.max(pages, neededPages))
     },
     [view]
   )

@@ -107,6 +107,21 @@ export function selectTranscriptWindow(messages: readonly ChatMessage[], pages =
   return { messages: messages.slice(start), windowed: true }
 }
 
+/** Smallest window page count whose weight walk reaches a durable message id. */
+export function transcriptWindowPagesToReveal(messages: readonly ChatMessage[], targetId: string): number | null {
+  let weight = 0
+
+  for (let i = messages.length - 1; i >= 0; i--) {
+    weight += messageStoreWeight(messages[i].parts)
+
+    if (messages[i].id === targetId) {
+      return Math.max(1, Math.ceil(weight / TRANSCRIPT_WINDOW_BUDGET))
+    }
+  }
+
+  return null
+}
+
 /**
  * How far past the budget a window may grow before the cut moves again.
  * Half a page: each re-cut trims about this much, so streaming causes one

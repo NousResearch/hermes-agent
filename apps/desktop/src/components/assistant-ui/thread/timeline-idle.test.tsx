@@ -167,6 +167,44 @@ describe('ThreadTimeline with a bounded runtime window', () => {
     expect(cancelReveal.mock.invocationCallOrder[1]).toBeLessThan(revealMessage.mock.invocationCallOrder[1])
   })
 
+  it('releases the owning scroll controller before jumping to a rendered prompt', () => {
+    messages = transcript(6)
+    const revealDom = vi.fn(() => true)
+    const unsubscribeReveal = onRevealMessageRequest(revealDom)
+    const surface = globalThis.document.createElement('div')
+    const viewport = globalThis.document.createElement('div')
+    const host = globalThis.document.createElement('div')
+    const target = globalThis.document.createElement('div')
+
+    vi.stubGlobal('CSS', { escape: (value: string) => value })
+    vi.stubGlobal('matchMedia', vi.fn().mockReturnValue({ matches: true }))
+    surface.dataset.sessionAnchor = 'timeline-test'
+    viewport.dataset.slot = 'aui_thread-viewport'
+    target.dataset.messageId = 'u0'
+    viewport.append(target)
+    surface.append(viewport, host)
+    globalThis.document.body.append(surface)
+
+    render(
+      <TranscriptWindowProvider
+        value={{
+          olderAvailable: false,
+          expandWindow: vi.fn(),
+          revealScope: 'runtime-1',
+          timelineEntries: transcript(6).map((message, index) => ({ id: message.id, preview: `prompt ${index}` }))
+        }}
+      >
+        <ThreadTimeline />
+      </TranscriptWindowProvider>,
+      { container: host }
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'prompt 0' }))
+
+    expect(revealDom).toHaveBeenCalledWith('runtime-1', 'u0')
+    unsubscribeReveal()
+  })
+
   it('scrolls to the prompt after the window materializes it', () => {
     messages = transcript(6).slice(4)
     const cancelReveal = vi.fn()
@@ -179,11 +217,13 @@ describe('ThreadTimeline with a bounded runtime window', () => {
     vi.stubGlobal('CSS', { escape: (value: string) => value })
 
     const frames: FrameRequestCallback[] = []
+
     const frame = vi.spyOn(window, 'requestAnimationFrame').mockImplementation(callback => {
       frames.push(callback)
 
       return frames.length
     })
+
     const revealDom = vi.fn(() => true)
     const unsubscribeReveal = onRevealMessageRequest(revealDom)
 
@@ -274,12 +314,15 @@ describe('ThreadTimeline with a bounded runtime window', () => {
     messages = transcript(6).slice(4)
     const timelineEntries = transcript(6).map((message, index) => ({ id: message.id, preview: `prompt ${index}` }))
     const frames: FrameRequestCallback[] = []
+
     const frame = vi.spyOn(window, 'requestAnimationFrame').mockImplementation(callback => {
       frames.push(callback)
 
       return frames.length
     })
+
     const cancelFrame = vi.spyOn(window, 'cancelAnimationFrame')
+
     const value = (revealScope: string) => ({
       olderAvailable: true,
       expandWindow: vi.fn(),
@@ -287,6 +330,7 @@ describe('ThreadTimeline with a bounded runtime window', () => {
       revealScope,
       timelineEntries
     })
+
     const { rerender } = renderTimeline(
       <TranscriptWindowProvider value={value('runtime-1')}>
         <ThreadTimeline />

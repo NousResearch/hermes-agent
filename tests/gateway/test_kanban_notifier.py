@@ -7,6 +7,7 @@ import pytest
 
 
 from gateway.config import Platform
+from gateway.platforms.base import BasePlatformAdapter
 from gateway.kanban_watchers_common import (
     _acquire_singleton_lock,
     _release_singleton_lock,
@@ -109,6 +110,19 @@ class LegacyBatchOnlyImageAdapter(RetryingArtifactAdapter):
         self.image_batches.append(list(images))
         # Legacy contract: successful completion returns None.
         return None
+
+
+class InheritedBaseImageAdapter(LegacyBatchOnlyImageAdapter, BasePlatformAdapter):
+    send_image_file = BasePlatformAdapter.send_image_file
+
+    async def connect(self, *, is_reconnect=False):
+        return True
+
+    async def disconnect(self):
+        pass
+
+    async def get_chat_info(self, chat_id):
+        return {}
 
 
 class InvalidArtifactResultAdapter(RetryingArtifactAdapter):
@@ -478,8 +492,9 @@ def test_image_artifact_retry_skips_individually_confirmed_image(tmp_path, monke
     assert sorted(row["message_id"] for row in artifact_receipts) == ["image-1", "image-3"]
 
 
+@pytest.mark.parametrize("adapter_class", [LegacyBatchOnlyImageAdapter, InheritedBaseImageAdapter])
 def test_image_artifact_uses_legacy_batch_fallback_when_per_file_send_missing(
-    tmp_path, monkeypatch,
+    tmp_path, monkeypatch, adapter_class,
 ):
     db_path = tmp_path / "legacy-image-batch.db"
     image = tmp_path / "legacy.png"
@@ -504,7 +519,7 @@ def test_image_artifact_uses_legacy_batch_fallback_when_per_file_send_missing(
     finally:
         conn.close()
 
-    adapter = LegacyBatchOnlyImageAdapter()
+    adapter = adapter_class()
     asyncio.run(_run_one_notifier_tick(monkeypatch, _make_runner(adapter)))
 
     assert adapter.image_batches == [[(image.as_uri(), "")]]

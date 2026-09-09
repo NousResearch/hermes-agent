@@ -295,7 +295,8 @@ class GatewayKanbanWatchersMixin:
 
         async def _send_image_artifact(path: str):
             per_file_send = getattr(adapter, "send_image_file", None)
-            if callable(per_file_send):
+            if (callable(per_file_send)
+                    and getattr(per_file_send, "__func__", None) is not BasePlatformAdapter.send_image_file):
                 return await cast(Any, per_file_send)(
                     chat_id=chat_id, image_path=path, metadata=metadata,
                 )

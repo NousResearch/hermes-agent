@@ -1127,6 +1127,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 )
                 self._prune_stale_dm_topic_binding(
                     send_kwargs.get("chat_id"), send_kwargs.get("message_thread_id"),
+                    metadata=metadata,
                 )
             else:
                 raise

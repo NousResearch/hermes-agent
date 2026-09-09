@@ -418,7 +418,8 @@ def test_unblock_reason_records_operator_outside_worker(kanban_home, monkeypatch
     ]
 
 
-def test_unblock_reason_records_profile_inside_worker(kanban_home, monkeypatch):
+def test_unblock_is_orchestrator_only_inside_worker(kanban_home, monkeypatch):
+    """A Kanban worker cannot self-unblock a task; it must hand off to the orchestrator."""
     import hermes_cli.kanban_db_connect as _hermes_cli_kanban_db_connect
     monkeypatch.setenv("HERMES_PROFILE_NAME", "repair-worker")
     monkeypatch.setenv("HERMES_KANBAN_TASK", "t_12345678")
@@ -428,12 +429,12 @@ def test_unblock_reason_records_profile_inside_worker(kanban_home, monkeypatch):
 
     output = kc.run_slash(f"unblock {task_id} --reason 'worker retry'")
 
-    assert f"Unblocked {task_id}" in output
+    assert "orchestrator-only" in output
     with _hermes_cli_kanban_db_connect.connect_closing() as conn:
+        task = kb.get_task(conn, task_id)
         comments = kb.list_comments(conn, task_id)
-    assert [(comment.author, comment.body) for comment in comments] == [
-        ("repair-worker", "UNBLOCK: worker retry")
-    ]
+    assert task.status == "blocked"
+    assert comments == []
 
 
 

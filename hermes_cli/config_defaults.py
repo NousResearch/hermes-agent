@@ -52,6 +52,10 @@ DEFAULT_CONFIG = {
         "terminal_continue": True,
     },
     "agent": {
+        # Per-profile default reasoning effort ("", "low", "medium", "high", "none"/"off" to disable
+        # thinking). "" defers to the provider/model's own default. model.reasoning_efforts overrides
+        # this per-model-name spelling.
+        "reasoning_effort": "",
         # Turn cap. null = unlimited (default; caps caused silent mid-task truncation). Positive int
         # caps; "none"/"unlimited"/"inf"/0/-1 also mean unlimited (resolve_turn_limit).
         "max_turns": None,

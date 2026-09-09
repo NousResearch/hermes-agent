@@ -913,11 +913,12 @@ class TestSandboxRpcAuthorization(unittest.TestCase):
         tool_call_counter = [0]
         stop_event = threading.Event()
 
-        with tempfile.TemporaryDirectory(prefix="hermes-rpc-") as temp_dir:
-            socket_path = os.path.join(temp_dir, "rpc.sock")
-            server_sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-            server_sock.bind(socket_path)
-            server_sock.listen(1)
+        # A real Unix socket pair avoids sockaddr_un path limits in deeply
+        # nested CI/base checkouts while preserving the RPC authorization loop.
+        server_connection, client_socket = socket.socketpair(socket.AF_UNIX, socket.SOCK_STREAM)
+        with server_connection, client_socket:
+            server_sock = MagicMock(spec=socket.socket)
+            server_sock.accept.return_value = (server_connection, ("peer", 0))
 
             def run_server():
                 with patch(
@@ -942,7 +943,6 @@ class TestSandboxRpcAuthorization(unittest.TestCase):
                 with patch.dict(
                     os.environ,
                     {
-                        "HERMES_RPC_SOCKET": socket_path,
                         "HERMES_RPC_TOKEN": self._RPC_TOKEN,
                     },
                 ):
@@ -953,6 +953,7 @@ class TestSandboxRpcAuthorization(unittest.TestCase):
                         ),
                         namespace,
                     )
+                    namespace["_sock"] = client_socket
                     call = cast(
                         Callable[[str, dict[str, str]], dict[str, Any]],
                         namespace["_call"],

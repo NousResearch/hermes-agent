@@ -52,7 +52,7 @@ def _make_method_header_hook():
     except ImportError:
         return None
 
-    def _stamp_method_headers(request) -> None:
+    async def _stamp_method_headers(request) -> None:
         if "mcp-method" in request.headers:
             return
         try:

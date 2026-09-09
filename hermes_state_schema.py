@@ -288,7 +288,10 @@ class SessionSchemaMixin:
         """Replace FTS triggers without rebuilding historical indexes. Existing rows keep their
         full-content token stream; the durable high-water id makes new tool rows use the bounded
         prefix in INSERT and the matching external-content delete/update. One savepoint, so no
-        concurrent writer lands in a trigger gap."""
+        concurrent writer lands in a trigger gap. A fresh store has no historical index to migrate;
+        its FTS family is created later under rebuild admission."""
+        if not self._sqlite_table_exists(cursor, "messages_fts"):
+            return
         marker = cursor.execute(
             "SELECT 1 FROM state_meta WHERE key = ? LIMIT 1", (FTS_TOOL_FULL_CONTENT_HIGH_WATER_KEY,),
         ).fetchone()
@@ -298,8 +301,7 @@ class SessionSchemaMixin:
         names = _FTS_BASE_TRIGGERS + (_FTS_TRIGRAM_TRIGGERS if legacy and trigram_present else ())
         has_messages = cursor.execute("SELECT 1 FROM messages LIMIT 1").fetchone() is not None
         self._fts_tool_prefix_migration_requires_rebuild = bool(
-            self._sqlite_table_exists(cursor, "messages_fts") and has_messages
-            and self._fts_triggers_missing(cursor, names)
+            has_messages and self._fts_triggers_missing(cursor, names)
         )
         cursor.execute("SAVEPOINT bounded_tool_fts")
         try:
@@ -501,9 +503,10 @@ class SessionSchemaMixin:
         """
         if not self._fts_stale:
             return False
-        if getattr(self, "_db_corrupt", False):
-            # Quarantined: never run FTS DDL/DML against a damaged image (mirrors _try_wal_checkpoint /
-            # close). Reset the backoff so a future un-quarantine starts from the default interval.
+        if self._quarantine_reason() is not None:
+            # Quarantined: never run FTS DDL/DML against a damaged image or a stale/replaced generation
+            # (mirrors _try_wal_checkpoint / close). Reset the backoff so a future un-quarantine starts
+            # from the default interval.
             self._fts_stale_retry_after = 0.0
             self._fts_stale_retry_interval = 0.0
             return False
@@ -544,10 +547,12 @@ class SessionSchemaMixin:
         """Body of :meth:`_recover_stale_fts`; caller holds rebuild authority. One write
         transaction, so no canonical writer slips between rebuild and trigger restoration."""
         try:
-            include_trigram = self._fts_table_probe(cursor, "messages_fts_trigram") is True
+            trigram_present = self._fts_table_probe(cursor, "messages_fts_trigram") is True
         except (sqlite3.DatabaseError, UnicodeDecodeError):
             # A corrupt vtable may fail even a LIMIT 0 probe; still include it in the drop-and-recreate.
             include_trigram = True
+        else:
+            include_trigram = trigram_present or (not legacy and self._trigram_tokenizer_available(cursor))
 
         drop_sql = "".join(f"DROP TRIGGER IF EXISTS {trigger};" for trigger in _FTS_TRIGGERS)
         if include_trigram:
@@ -585,6 +590,21 @@ class SessionSchemaMixin:
         self._fts_enabled = True
         self._trigram_available = include_trigram
         logger.warning("Rebuilt stale state.db FTS indexes from canonical messages and restored sync triggers.")
+        return True
+
+    def _trigram_tokenizer_available(self, cursor: sqlite3.Cursor) -> bool:
+        """Probe trigram support without publishing a persistent FTS object."""
+        probe = "temp.hermes_fts5_trigram_probe"
+        cursor.execute(f"DROP TABLE IF EXISTS {probe}")
+        try:
+            cursor.execute(f"CREATE VIRTUAL TABLE {probe} USING fts5(content, tokenize='trigram')")
+        except sqlite3.OperationalError as exc:
+            if not self._is_trigram_unavailable_error(exc):
+                raise
+            self._warn_trigram_unavailable(exc)
+            return False
+        finally:
+            cursor.execute(f"DROP TABLE IF EXISTS {probe}")
         return True
 
     # ── Declarative column reconciliation ──────────────────────────────────
@@ -1033,38 +1053,58 @@ class SessionSchemaMixin:
                 self._fts_enabled = self._trigram_available = self._fts_cjk_available = False
         else:
             base_sql, trigram_sql = _FTS_DDL[legacy_fts]
-            # Measure BEFORE the DDL below runs (pre-repair state). Whether the trigram half is
-            # creatable is only known AFTER _ensure_fts_schema, hence the halves combine at the `if`.
+            # Measure before any DDL. Publishing missing base triggers before rebuild admission lets
+            # another process write through an index whose bootstrap/repair has no owner (#105790).
             base_triggers_missing = self._fts_triggers_missing(cursor, _FTS_BASE_TRIGGERS) or getattr(
                 self, "_fts_tool_prefix_migration_requires_rebuild", False)
             trigram_triggers_missing = self._fts_triggers_missing(cursor, _FTS_TRIGRAM_TRIGGERS)
-            self._fts_enabled = self._ensure_fts_schema(cursor, "messages_fts", base_sql)
-            if self._fts_enabled:
-                # Trigram is optional; without it CJK search falls back to LIKE.
-                trigram_enabled = self._ensure_fts_schema(cursor, "messages_fts_trigram", trigram_sql)
-                self._trigram_available = trigram_enabled
-                if base_triggers_missing or (trigram_enabled and trigram_triggers_missing):
-                    self._run_admitted_startup_rebuild(
-                        cursor,
-                        lambda: self._rebuild_fts_indexes(cursor, legacy=legacy_fts, include_trigram=trigram_enabled),
-                    )
+
+            def ensure_and_rebuild() -> None:
+                self._fts_enabled = self._ensure_fts_schema(cursor, "messages_fts", base_sql)
+                if not self._fts_enabled:
+                    return
+                self._trigram_available = self._ensure_fts_schema(cursor, "messages_fts_trigram", trigram_sql)
+                self._rebuild_fts_indexes(
+                    cursor, legacy=legacy_fts, include_trigram=self._trigram_available,
+                )
                 if not legacy_fts:
-                    # CJK-bigram index: strictly additive, gated on the loadable tokenizer.
                     self._ensure_fts_cjk_schema(cursor)
+
+            if base_triggers_missing:
+                # The authority covers the whole first-publication sequence, not merely the final rebuild.
+                # ``executescript`` commits DDL statement-by-statement, so acquiring after ensure exposed a
+                # partially initialized FTS family while another opener held the rebuild lock.
+                self._run_admitted_startup_rebuild(cursor, ensure_and_rebuild)
+            else:
+                self._fts_enabled = self._ensure_fts_schema(cursor, "messages_fts", base_sql)
+                if self._fts_enabled:
+                    # Trigram is optional; without it CJK search falls back to LIKE.
+                    trigram_enabled = self._ensure_fts_schema(cursor, "messages_fts_trigram", trigram_sql)
+                    self._trigram_available = trigram_enabled
+                    if trigram_enabled and trigram_triggers_missing:
+                        self._run_admitted_startup_rebuild(
+                            cursor,
+                            lambda: self._rebuild_fts_indexes(
+                                cursor, legacy=legacy_fts, include_trigram=trigram_enabled,
+                            ),
+                        )
+            if self._fts_enabled and not legacy_fts and not base_triggers_missing:
+                # CJK-bigram index: strictly additive, gated on the loadable tokenizer.
+                self._ensure_fts_cjk_schema(cursor)
         # IF NOT EXISTS cannot rewrite pre-existing broad AFTER UPDATE triggers.
         if self._fts_enabled:
             self._migrate_broad_fts_update_triggers(cursor)
 
     def _run_admitted_startup_rebuild(self, cursor, rebuild_fn) -> None:
-        """Run a full trigger-repair FTS rebuild under cross-process admission (the sync triggers
-        were missing and the DDL just recreated them: the index has a gap of unknown
-        extent). Two processes opening the same DB after an update commonly hit this
-        simultaneously (the interleaving that corrupted state.db in production), so this
-        FAILS CLOSED: on deferral the just-repaired triggers are dropped again and the
-        stale breadcrumb persisted — triggers must never be live over an unrebuilt gap
-        (``_enter_fts_fail_open``'s ordering contract); a later recovery path restores both.
+        """Run FTS bootstrap or trigger-repair rebuild under cross-process admission.
+
+        The fresh/base-missing path includes DDL in ``rebuild_fn`` so no process can publish
+        triggers before it owns the rebuild. Other repair paths may already have recreated an
+        optional trigger; deferral therefore still drops every trigger and persists the stale
+        breadcrumb. A later recovery path restores the complete family.
 
         See #93200.
+        See #105790.
         """
         with fts_rebuild_admission(self.db_path) as admitted:
             if admitted:

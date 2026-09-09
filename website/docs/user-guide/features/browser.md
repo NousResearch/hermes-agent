@@ -224,8 +224,13 @@ open — it fails fast with a "fully quit the browser and retry" message rather
 than hang or produce a signed-out session. Real-profile browsing on Windows
 therefore requires the browser **fully quit**, including any background/tray
 instance (Chrome's "continue running background apps when closed" keeps a
-`chrome.exe` alive after you close the window). macOS and Linux can copy the
-profile while the browser is running.
+`chrome.exe` alive after you close the window). macOS and Linux can usually copy
+the profile while the browser is running. On every platform, each authentication
+database backup has a five-second retry budget. If the source or snapshot database
+stays locked, Hermes stops the launch and asks you to close the browser and retry.
+It preserves committed WAL data through SQLite rather than falling back to a raw
+file copy, which could silently lose recent logins. Unreadable or corrupt databases
+also stop the launch.
 
 Set `browser.real_profile_autoclose: true` to let Hermes **offer to close the
 browser for you** when it's holding the profile. Even with this on, Hermes never

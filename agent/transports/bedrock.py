@@ -37,11 +37,11 @@ class BedrockTransport(ProviderTransport):
         self, model: str, messages: List[Dict[str, Any]],
         tools: Optional[List[Dict[str, Any]]] = None, **params,
     ) -> Dict[str, Any]:
-        """Build converse() kwargs; params: max_tokens (4096), temperature, guardrail_config, region ('us-east-1')."""
+        """Build Converse kwargs, leaving the optional output limit to the provider."""
         from agent.bedrock_adapter import build_converse_kwargs
 
         kwargs = build_converse_kwargs(
-            model=model, messages=messages, tools=tools, max_tokens=params.get("max_tokens", 4096),
+            model=model, messages=messages, tools=tools, max_tokens=params.get("max_tokens"),
             temperature=params.get("temperature"), guardrail_config=params.get("guardrail_config"),
         )
         # Sentinel keys for dispatch — agent pops these before the boto3 call

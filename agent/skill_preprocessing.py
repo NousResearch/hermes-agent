@@ -47,6 +47,7 @@ def run_inline_shell(command: str, cwd: Path | None, timeout: int) -> str:
     stdout is empty). Failures return an ``[inline-shell ...]`` marker instead
     of raising, so one bad snippet can't wreck the whole skill message."""
     _popen_kwargs = {"creationflags": windows_hide_flags()} if IS_WINDOWS else {}
+    from agent.delegation_context import delegated_child_subprocess_env
     try:
         completed = subprocess.run(
             ["bash", "-c", command],
@@ -56,6 +57,7 @@ def run_inline_shell(command: str, cwd: Path | None, timeout: int) -> str:
             timeout=max(1, int(timeout)),
             check=False,
             stdin=subprocess.DEVNULL,
+            env=delegated_child_subprocess_env(),
             **_popen_kwargs,
         )
     except subprocess.TimeoutExpired:

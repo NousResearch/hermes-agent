@@ -41,9 +41,18 @@ def _git(args, cwd, env=None):
 
 @pytest.fixture
 def repo(tmp_path, monkeypatch):
-    """origin (bare) + clone with .worktrees/, HOME redirected for archives."""
-    monkeypatch.setenv("HOME", str(tmp_path / "home"))
-    (tmp_path / "home").mkdir()
+    """origin (bare) + clone with .worktrees/.
+
+    HOME and HERMES_HOME point at *different* temp dirs so the archive-location
+    tests can prove the archive follows HERMES_HOME, not ~/.hermes.
+    """
+    home = tmp_path / "home"
+    hermes_home = tmp_path / "hermes-home"
+    home.mkdir()
+    hermes_home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))  # Path.home() on Windows reads this
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
 
     origin = tmp_path / "origin.git"
     origin.mkdir()
@@ -157,12 +166,46 @@ class TestReclaim:
         tree, _ = _add_worktree(repo, "hermes-scratch")
         (tree / "NOTES.md").write_text("important scribbles\n")
         records = worktree_gc.audit_worktrees(str(repo), with_sizes=False)
-        worktree_gc.reclaim_worktrees(str(repo), records=records)
-        assert not tree.exists()
-        archive_root = Path.home() / ".hermes" / "archive" / "worktree-prune"
+        actions = worktree_gc.reclaim_worktrees(str(repo), records=records)
+
+        # Archive lands under HERMES_HOME, not ~/.hermes.
+        hermes_home = Path(os.environ["HERMES_HOME"])
+        archive_root = hermes_home / "archive" / "worktree-prune"
         archived = list(archive_root.rglob("NOTES.md"))
         assert archived, "untracked file must be archived, not destroyed"
-        assert archived[0].read_text() == "important scribbles\n"
+        assert archived[0].read_text() == "important scribbles\n", "contents unchanged"
+
+        # ...and NOT under HOME/.hermes (the old hardcoded location).
+        stray = Path.home() / ".hermes" / "archive" / "worktree-prune"
+        assert not (stray.exists() and list(stray.rglob("NOTES.md"))), \
+            "archive must not land under ~/.hermes"
+
+        # Source worktree is removed only AFTER the archive succeeds.
+        assert not tree.exists()
+        archived_idx = next(i for i, a in enumerate(actions) if a.startswith("archived "))
+        removed_idx = next(i for i, a in enumerate(actions) if a == "removed hermes-scratch")
+        assert archived_idx < removed_idx, "archive action must precede the tree removal"
+
+    def test_archive_failure_keeps_worktree_and_files(self, repo, tmp_path, monkeypatch):
+        """If the archive copy fails, _archive_untracked() returns None,
+        reclaim_worktrees() keeps the tree, and the operator's only copy of the
+        untracked files is not destroyed."""
+        tree, _ = _add_worktree(repo, "hermes-scratch")
+        (tree / "NOTES.md").write_text("irreplaceable\n")
+
+        # Real failure, no mocks: point HERMES_HOME at a regular file, so the
+        # archive dir's mkdir(parents=True) raises NotADirectoryError.
+        broken = tmp_path / "not-a-dir"
+        broken.write_text("x")
+        monkeypatch.setenv("HERMES_HOME", str(broken))
+
+        records = worktree_gc.audit_worktrees(str(repo), with_sizes=False)
+        assert _verdict(records, "hermes-scratch").verdict == "reap-archive"
+        actions = worktree_gc.reclaim_worktrees(str(repo), records=records)
+
+        assert tree.exists(), "tree must be kept when untracked files can't be archived"
+        assert (tree / "NOTES.md").read_text() == "irreplaceable\n"
+        assert any("archive of untracked files failed" in a for a in actions)
 
     def test_dry_run_changes_nothing(self, repo):
         tree, _ = _add_worktree(repo, "hermes-clean")

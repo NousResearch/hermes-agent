@@ -297,6 +297,7 @@ When you ask Hermes to review a PR in a repository that has `.agents/checks/`, t
 - **Discord**: [discord.gg/NousResearch](https://discord.gg/NousResearch)
 - **GitHub Discussions**: For design proposals and architecture discussions
 - **Skills Hub**: Upload specialized skills and share with the community
+- **Contribute compute**: `hermes autodevelop` drains maintainer-curated `agent-ready` issues using your BYOK keys. See [Contribute compute](/docs/user-guide/features/autodevelop).
 
 ## License
 

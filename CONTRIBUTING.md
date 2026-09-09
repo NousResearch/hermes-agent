@@ -994,6 +994,7 @@ test(tools): add unit tests for file_operations
 - **Discord**: [discord.gg/NousResearch](https://discord.gg/NousResearch) — for questions, showcasing projects, and sharing skills
 - **GitHub Discussions**: For design proposals and architecture discussions
 - **Skills Hub**: Upload specialized skills to a registry and share them with the community
+- **Contribute compute**: if you have BYOK tokens and a free evening, `hermes autodevelop` drains maintainer-curated `agent-ready` issues (search-first, draft PRs, your keys). See [Contribute compute](website/docs/user-guide/features/autodevelop.md).
 
 ---
 

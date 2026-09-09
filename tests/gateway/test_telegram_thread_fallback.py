@@ -62,11 +62,9 @@ class _FakeInlineKeyboardMarkup:
         self.inline_keyboard = inline_keyboard
 
 
-class _FakeInputMediaPhoto:
+class _FakeInputMediaPhoto(dict):
     def __init__(self, media, caption=None, **kwargs):
-        self.media = media
-        self.caption = caption
-        self.kwargs = kwargs
+        super().__init__(media=media, caption=caption, **kwargs)
 
 
 _fake_telegram = types.ModuleType("telegram")

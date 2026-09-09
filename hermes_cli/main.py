@@ -2236,11 +2236,76 @@ def _update_preflight_handled(args) -> bool:
     return False
 
 
+def _consume_gateway_update_handoff(stream=None) -> bool:
+    """Consume one messaging handoff token read from an anonymous pipe."""
+    import hashlib
+    import hmac
+    import json
+
+    if stream is None:
+        stream = getattr(sys.stdin, "buffer", sys.stdin)
+    try:
+        raw = stream.readline(4097)
+    except (OSError, ValueError):
+        return False
+    if isinstance(raw, str):
+        raw = raw.encode("utf-8")
+    if not raw or len(raw) > 4096:
+        return False
+    token = raw.rstrip(b"\r\n")
+    if not token:
+        return False
+
+    try:
+        from hermes_cli.active_sessions import _FileLock
+        from hermes_cli.config import get_hermes_home
+        from utils import atomic_json_write
+
+        pending_path = get_hermes_home() / ".update_pending.json"
+        lock_path = pending_path.with_name(".update_pending.lock")
+        with _FileLock(lock_path):
+            pending = json.loads(pending_path.read_text(encoding="utf-8"))
+            expected = pending.get("handoff_token_sha256")
+            actual = hashlib.sha256(token).hexdigest()
+            if not isinstance(expected, str) or not hmac.compare_digest(expected, actual):
+                return False
+
+            # The lock makes verification plus removal one indivisible claim.
+            # atomic_json_write uses mkstemp, avoiding fixed-name temp races.
+            del pending["handoff_token_sha256"]
+            atomic_json_write(pending_path, pending)
+            return True
+    except (OSError, RuntimeError, ValueError, TypeError, KeyError):
+        return False
+
+
+def _authorize_update_from_context(gateway_mode: bool, stream=None) -> bool:
+    """Allow external updates; require one-shot stdin proof inside a gateway tree."""
+    from tools.process_registry import _is_gateway_descendant_process
+
+    if not _is_gateway_descendant_process():
+        return True
+    return gateway_mode and _consume_gateway_update_handoff(stream)
+
+
 def cmd_update(args):
     """Update Hermes Agent: hangup protection + update lock around ``_cmd_update_impl``."""
     if _update_preflight_handled(args):
         return
     gateway_mode = getattr(args, "gateway", False)
+
+    # A normal updater launched by terminal/execute_code is a child of the gateway it
+    # must stop: it dies with that parent before completion and can strand the install.
+    # Gate at the updater entry point so shell wrappers, variables, PowerShell, cmd and
+    # subprocess forms cannot bypass it. The messaging /update hand-off uses --gateway
+    # and owns its own detach/restart protocol, so that path stays open.
+    if not _authorize_update_from_context(gateway_mode):
+        print(
+            "Blocked: cannot update Hermes from a process launched by the "
+            "running gateway.\nRun `hermes update` from a separate shell "
+            "outside the running gateway, or use messaging `/update`."
+        )
+        sys.exit(1)
 
     _update_io_state = _install_hangup_protection(gateway_mode=gateway_mode)
     # Cross-process mutual exclusion: dashboard Update button, Tauri updater

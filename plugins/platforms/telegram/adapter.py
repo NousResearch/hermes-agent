@@ -147,7 +147,23 @@ from gateway.platforms.base import (
     SUPPORTED_DOCUMENT_TYPES, SUPPORTED_IMAGE_DOCUMENT_TYPES, _TEXT_INJECT_EXTENSIONS, utf16_len,
 )
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
-from plugins.platforms.telegram.telegram_ids import normalize_telegram_chat_id
+from plugins.platforms.telegram.telegram_ids import normalize_telegram_chat_id, telegram_chat_id_key
+from plugins.platforms.telegram.outbound_circuit import (
+    GLOBAL_CIRCUIT_KEY,
+    open_circuit as persist_peer_flood_circuit,
+    open_circuit_async as persist_peer_flood_circuit_async,
+    remaining as persistent_peer_flood_remaining,
+    remaining_async as persistent_peer_flood_remaining_async,
+)
+from plugins.platforms.telegram.outbound_policy import (
+    GuardedTelegramTarget,
+    TelegramOutboundGateway,
+    TelegramPeerFloodBlocked,
+    deactivate_coupang_urls as _deactivate_coupang_urls,
+    is_peer_flood,
+    peer_flood_delay,
+    prepare_caption,
+)
 from plugins.platforms.telegram.telegram_network import (
     SEED_FALLBACK_IPS, TelegramFallbackTransport, discover_fallback_ips, parse_fallback_ip_env, tcp_keepalive_socket_options)
 from utils import env_float, env_int
@@ -159,6 +175,37 @@ _TELEGRAM_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
 # machinery (delivery ledger, streaming fallback) owns the wait instead of the coroutine pinning its worker
 # — a 97-minute penalty on the boot path froze inbound on every platform (#91969).
 _FLOOD_INLINE_WAIT_CAP_SECS = 5.0
+_CALLBACK_UNKNOWN_CIRCUIT_KEY = "telegram:callback:unknown"
+
+
+
+class _PeerFloodGuardedCallbackQuery:
+    """Apply the chat circuit to every callback answer/edit write."""
+
+    def __init__(self, adapter, query, chat_id: str):
+        self._adapter = adapter
+        self._query = query
+        self._chat_id = chat_id
+
+    def __getattr__(self, name):
+        return getattr(self._query, name)
+
+    async def _call(self, method: str, *args, **kwargs):
+        outbound = GuardedTelegramTarget(
+            self._query,
+            self._adapter._outbound_gateway,
+            target_key=self._chat_id,
+        )
+        try:
+            return await getattr(outbound, method)(*args, **kwargs)
+        except TelegramPeerFloodBlocked:
+            return None
+
+    async def answer(self, *args, **kwargs):
+        return await self._call("answer", *args, **kwargs)
+
+    async def edit_message_text(self, *args, **kwargs):
+        return await self._call("edit_message_text", *args, **kwargs)
 
 
 def _flood_cap_result(wait: float) -> "SendResult":
@@ -383,9 +430,33 @@ class TelegramAdapter(BasePlatformAdapter):
     _RECONNECT_WAIT_SECONDS = 15.0
     _RECONNECT_POLL_INTERVAL = 0.5
 
+    @property
+    def _outbound_gateway(self) -> TelegramOutboundGateway:
+        gateway = getattr(self, "_telegram_outbound_gateway", None)
+        if gateway is None:
+            gateway = TelegramOutboundGateway()
+            self._telegram_outbound_gateway = gateway
+        return gateway
+
+    @property
+    def _outbound(self) -> GuardedTelegramTarget:
+        """Return the sole Bot API write facade; reads continue to use ``_bot``."""
+        return GuardedTelegramTarget(self._bot, self._outbound_gateway)
+
+    def _guard_callback_query(self, query, chat_id: object):
+        if isinstance(query, _PeerFloodGuardedCallbackQuery):
+            return query
+        return _PeerFloodGuardedCallbackQuery(self, query, str(chat_id))
+
+    async def telegram_write(self, chat_id: object, method: str, **kwargs):
+        """Thin public wrapper for Telegram writes owned by gateway orchestration."""
+        return await getattr(
+            GuardedTelegramTarget(self._bot, self._outbound_gateway, target_key=chat_id),
+            method,
+        )(**kwargs)
+
     # edit_message applies MarkdownV2 only on finalize=True; without this flag stream_consumer skips
     # the final edit when raw text is unchanged.
-    # Fixes #25710.
     REQUIRES_EDIT_FINALIZE: bool = True
     FALLBACK_ON_FINAL_EDIT_FLOOD: bool = True  # retrying a final edit burns the same flood budget
     RESEND_FINAL_ON_EMPTY_STREAM_FALLBACK: bool = True  # a failed final edit may leave a partial preview
@@ -442,6 +513,9 @@ class TelegramAdapter(BasePlatformAdapter):
         self._rich_send_disabled = self._rich_draft_disabled = False  # latched after a capability failure
         # Transient sendChatAction failures recur on every keep-typing tick; back off per chat.
         self._telegram_typing_cooldown_until: Dict[str, float] = {}
+        # Per-chat PEER_FLOOD cooldowns (loop clock); mirrors the process-shared SQLite circuit.
+        self._telegram_peer_flood_until: Dict[str, float] = {}
+        self._telegram_peer_flood_until: Dict[str, float] = {}
         self._telegram_typing_cooldown_seconds: float = self._coerce_float_extra(
             "typing_cooldown_seconds", 30.0, min_value=1.0, max_value=300.0)
         # Buffer album/photo bursts into a single MessageEvent instead of self-interrupting turns.
@@ -1418,8 +1492,10 @@ class TelegramAdapter(BasePlatformAdapter):
         try:
             # Raw Bot API result: return_type=Message would make PTB deserialize a 10.1 shape it doesn't
             # fully model; a post-delivery parse error ≠ send failure.
-            msg = await self._bot.do_api_request("sendRichMessage", api_kwargs=payload)
+            msg = await self._outbound.do_api_request("sendRichMessage", api_kwargs=payload)
         except Exception as exc:
+            if self._is_peer_flood_error(exc):
+                return await self._open_peer_flood_circuit_async(chat_id, exc)
             if self._rich_rejected(exc, "sendRichMessage", "MarkdownV2"):
                 return None
             # Honor Telegram's flood-control retry_after over the base retry schedule.
@@ -1462,8 +1538,10 @@ class TelegramAdapter(BasePlatformAdapter):
         # No topic routing on edits: message_thread_id/direct_messages_topic_id make Telegram reject it.
         payload = {**self._rich_payload_base(chat_id, content), "message_id": int(message_id)}
         try:
-            await self._bot.do_api_request("editMessageText", api_kwargs=payload)
+            await self._outbound.do_api_request("editMessageText", api_kwargs=payload)
         except Exception as exc:
+            if self._is_peer_flood_error(exc):
+                return await self._open_peer_flood_circuit_async(chat_id, exc)
             # "Message is not modified" = successful no-op; skip the redundant legacy edit.
             if "not modified" in str(exc).lower():
                 if self._is_rich_fallback_error(exc) and self._is_rich_capability_error(exc):
@@ -1484,15 +1562,20 @@ class TelegramAdapter(BasePlatformAdapter):
             and not getattr(self, "_rich_draft_disabled", False)
             and self._rich_content_ok(content))
 
-    async def _try_send_rich_draft(self, chat_id: str, draft_id: int, content: str, metadata: Optional[Dict[str, Any]]) -> bool:
+    async def _try_send_rich_draft(
+        self, chat_id: str, draft_id: int, content: str,
+        metadata: Optional[Dict[str, Any]]) -> "bool | SendResult":
         """Emit one ``sendRichMessageDraft`` frame; True on success. Frames are ephemeral, so any failure
-        returns False and the caller renders the legacy draft; capability failures latch off."""
+        returns False and the caller renders the legacy draft; capability failures latch off. PEER_FLOOD
+        returns the typed SendResult instead - the legacy draft would hit the same restricted peer."""
         payload: Dict[str, Any] = {
             "chat_id": normalize_telegram_chat_id(chat_id), "draft_id": int(draft_id), "rich_message": self._rich_message_payload(content)}
         payload.update(self._thread_kwargs_for_draft(chat_id, metadata))
         try:
-            return bool(await self._bot.do_api_request("sendRichMessageDraft", api_kwargs=payload))
+            return bool(await self._outbound.do_api_request("sendRichMessageDraft", api_kwargs=payload))
         except Exception as exc:
+            if self._is_peer_flood_error(exc):
+                return await self._open_peer_flood_circuit_async(chat_id, exc)
             if self._is_rich_capability_error(exc):
                 self._rich_draft_disabled = True
                 logger.debug(
@@ -1778,7 +1861,7 @@ class TelegramAdapter(BasePlatformAdapter):
         partial adapter, while reconnects recover transient errors in background."""
         if not self._bot:
             return False
-        delete_webhook = getattr(self._bot, "delete_webhook", None)
+        delete_webhook = getattr(self._outbound, "delete_webhook", None)
         if not callable(delete_webhook):
             return True
         try:
@@ -2340,17 +2423,22 @@ class TelegramAdapter(BasePlatformAdapter):
         """Create a forum topic in a private (DM) chat (Bot API 9.4+); message_thread_id or None."""
         if not self._bot:
             return None
+        if await self._peer_flood_circuit_result_async(str(chat_id)) is not None:
+            return None
         try:
             kwargs: Dict[str, Any] = {"chat_id": chat_id, "name": name}
             if icon_color is not None:
                 kwargs["icon_color"] = icon_color
             if icon_custom_emoji_id:
                 kwargs["icon_custom_emoji_id"] = icon_custom_emoji_id
-            topic = await self._bot.create_forum_topic(**kwargs)
+            topic = await self._outbound.create_forum_topic(**kwargs)
             thread_id = topic.message_thread_id
             logger.info("[%s] Created DM topic '%s' in chat %s -> thread_id=%s", self.name, name, chat_id, thread_id)
             return thread_id
         except Exception as e:
+            if self._is_peer_flood_error(e):
+                await self._open_peer_flood_circuit_async(str(chat_id), e)
+                return None
             error_text = str(e).lower()
             # Telegram has no "list topics" API: an existing topic is mapped from incoming messages.
             if "topic_name_duplicate" in error_text or "already" in error_text:
@@ -2420,11 +2508,19 @@ class TelegramAdapter(BasePlatformAdapter):
         """Rename a forum topic in a private (DM) chat."""
         if not self._bot:
             return
+        if await self._peer_flood_circuit_result_async(str(chat_id)) is not None:
+            return
         try:
             chat_id_arg = int(chat_id)
         except (TypeError, ValueError):
             chat_id_arg = chat_id
-        await self._bot.edit_forum_topic(chat_id=chat_id_arg, message_thread_id=int(thread_id), name=name)
+        try:
+            await self._outbound.edit_forum_topic(chat_id=chat_id_arg, message_thread_id=int(thread_id), name=name)
+        except Exception as exc:
+            if self._is_peer_flood_error(exc):
+                await self._open_peer_flood_circuit_async(str(chat_id), exc)
+                return
+            raise
         logger.info("[%s] Renamed DM topic in chat %s thread_id=%s -> '%s'", self.name, chat_id, thread_id, name)
 
     def _persist_dm_topic_thread_id(self, chat_id: int, topic_name: str, thread_id: int, replace_existing: bool = False) -> None:
@@ -2495,9 +2591,12 @@ class TelegramAdapter(BasePlatformAdapter):
                 self._persist_dm_topic_thread_id(int(chat_id), topic_name, thread_id)
                 # Seed message: Telegram's client hides empty topics until they contain one.
                 try:
-                    await self._bot.send_message(
+                    await self._outbound.send_message(
                         chat_id=normalize_telegram_chat_id(chat_id), message_thread_id=thread_id, text=f"\U0001f4cc {topic_name}")
                 except Exception as seed_err:
+                    if self._is_peer_flood_error(seed_err):
+                        await self._open_peer_flood_circuit_async(str(chat_id), seed_err)
+                        continue
                     logger.debug("[%s] Could not send seed message to topic '%s': %s", self.name, topic_name, seed_err)
 
     async def _bot_identity_refresh_loop(self) -> None:
@@ -2531,13 +2630,20 @@ class TelegramAdapter(BasePlatformAdapter):
         max_commands = telegram_menu_max_commands()
         menu_commands, hidden_count = telegram_menu_commands(max_commands=max_commands)
         bot_commands = [BotCommand(name, desc) for name, desc in menu_commands]
+        # Bot-wide scopes have no chat: they ride the shared global circuit key.
+        if await self._peer_flood_circuit_result_async(GLOBAL_CIRCUIT_KEY) is not None:
+            return
         for scope_cls in (BotCommandScopeDefault, BotCommandScopeAllPrivateChats, BotCommandScopeAllGroupChats):
             scope_name = getattr(scope_cls, "__name__", str(scope_cls))
             try:
-                await self._bot.set_my_commands(bot_commands, scope=scope_cls())
+                await self._outbound.set_my_commands(bot_commands, scope=scope_cls())
                 logger.info("[%s] set_my_commands OK for scope %s (%d cmds)", self.name, scope_name, len(bot_commands))
             except Exception as scope_err:
-                logger.warning("[%s] set_my_commands FAILED for scope %s: %s", self.name, scope_name, scope_err)
+                if self._is_peer_flood_error(scope_err):
+                    await self._open_peer_flood_circuit_async(GLOBAL_CIRCUIT_KEY, scope_err)
+                    break
+                logger.warning("[%s] set_my_commands FAILED for scope %s: %s", self.name, scope_name,
+                               _redact_telegram_error_text(scope_err))
         if hidden_count:
             logger.info(
                 "[%s] Telegram menu: %d commands registered, %d hidden (over %d limit). Use /commands for full list.",
@@ -2869,11 +2975,18 @@ class TelegramAdapter(BasePlatformAdapter):
                 "Then register it with Telegram when setting the webhook via setWebhook's secret_token parameter.")
         from urllib.parse import urlparse
         webhook_path = urlparse(webhook_url).path or "/telegram"
-        await self._app.updater.start_webhook(
-            listen=webhook_host, port=webhook_port, url_path=webhook_path, webhook_url=webhook_url,
-            secret_token=webhook_secret, allowed_updates=Update.ALL_TYPES,
+        await self._outbound_gateway.write(
+            GLOBAL_CIRCUIT_KEY,
+            "start_webhook",
+            self._app.updater.start_webhook,
+            listen=webhook_host,
+            port=webhook_port,
+            url_path=webhook_path,
+            webhook_url=webhook_url,
+            secret_token=webhook_secret,
+            allowed_updates=Update.ALL_TYPES,
             drop_pending_updates=not is_reconnect,  # push-based ⇒ practically a no-op; mirrors polling
-       )
+        )
         self._webhook_mode = True
         self._polling_progress_accepting = False
         self._send_path_degraded = False
@@ -3007,7 +3120,7 @@ class TelegramAdapter(BasePlatformAdapter):
             return
         text = (self._status_online_text if online else self._status_offline_text)[:120]  # Telegram cap
         try:
-            await bot.set_my_short_description(short_description=text)
+            await self._outbound.set_my_short_description(short_description=text)
             logger.info("[%s] Set bot status indicator to %r", self.name, text)
         except Exception as e:
             logger.debug("[%s] Failed to set bot status indicator to %r: %s", self.name, text, _redact_telegram_error_text(e))
@@ -3204,11 +3317,11 @@ class TelegramAdapter(BasePlatformAdapter):
     async def _send_chunk_markdown_or_plain(self, chunk: str, send_kwargs: Dict[str, Any]):
         """MarkdownV2 first; on a parse/markdown rejection resend as stripped plain text."""
         try:
-            return await self._bot.send_message(text=chunk, parse_mode=ParseMode.MARKDOWN_V2, **send_kwargs)
+            return await self._outbound.send_message(text=chunk, parse_mode=ParseMode.MARKDOWN_V2, **send_kwargs)
         except Exception as md_error:
             if "parse" in str(md_error).lower() or "markdown" in str(md_error).lower():
                 logger.warning("[%s] MarkdownV2 parse failed, falling back to plain text: %s", self.name, md_error)
-                return await self._bot.send_message(text=_strip_mdv2(chunk), parse_mode=None, **send_kwargs)
+                return await self._outbound.send_message(text=_strip_mdv2(chunk), parse_mode=None, **send_kwargs)
             raise
 
     async def _send_chunk_with_retries(
@@ -3284,6 +3397,9 @@ class TelegramAdapter(BasePlatformAdapter):
                                self.name, _send_attempt + 1, wait, _redact_telegram_error_text(send_err))
                 await asyncio.sleep(wait)
             except Exception as send_err:
+                # PEER_FLOOD before the RetryAfter ladder: it is a circuit signal, not a wait-and-retry.
+                if self._is_peer_flood_error(send_err):
+                    return await self._open_peer_flood_circuit_async(chat_id, send_err)
                 retry_after = getattr(send_err, "retry_after", None)
                 if retry_after is not None or "retry after" in str(send_err).lower():
                     wait = float(retry_after) if retry_after is not None else 1.0
@@ -3323,6 +3439,102 @@ class TelegramAdapter(BasePlatformAdapter):
         with contextlib.suppress(Exception):
             await self.send_typing(chat_id, metadata=metadata)
 
+    # --- PEER_FLOOD circuit -----------------------------------------------------------------
+    # PEER_FLOOD is Telegram's per-peer anti-spam verdict, not ordinary flood control: retrying,
+    # falling back to plain text or sending a failure notice all hit the same restricted peer and
+    # extend the ban. Every write path checks the circuit first and opens it on the way out. Local
+    # state is the loop clock; the durable half lives in the profile's state.db so a restart and a
+    # standalone `hermes send` observe the same cooldown.
+
+    @staticmethod
+    def _is_peer_flood_error(error: object) -> bool:
+        """Recognize Telegram's per-peer anti-spam server code."""
+        return is_peer_flood(error)
+
+    def _peer_flood_local_remaining(self, chat_id: str) -> tuple:
+        """``(key, now, local_remaining)`` from the in-process map, expiring stale entries."""
+        store = getattr(self, "_telegram_peer_flood_until", None)
+        if store is None:
+            store = {}
+            self._telegram_peer_flood_until = store
+        key = telegram_chat_id_key(chat_id)
+        now = asyncio.get_running_loop().time()
+        local_remaining = None
+        until = store.get(key)
+        if until is not None:
+            local_remaining = until - now
+            if local_remaining <= 0:
+                store.pop(key, None)
+                local_remaining = None
+        return key, now, local_remaining
+
+    def _peer_flood_merge(self, key: str, now: float, local_remaining, durable_remaining):
+        """Fold a durable cooldown into local state; return the longest remaining wait or None."""
+        store = self._telegram_peer_flood_until
+        if durable_remaining is not None:
+            durable_until = now + durable_remaining
+            store[key] = max(store.get(key, durable_until), durable_until)
+        candidates = [v for v in (local_remaining, durable_remaining) if v is not None]
+        return max(candidates) if candidates else None
+
+    @staticmethod
+    def _peer_flood_result(remaining: float) -> SendResult:
+        return SendResult(
+            success=False, error="peer_flood", retryable=False, retry_after=remaining,
+            error_kind="peer_flood")
+
+    def _peer_flood_remaining(self, chat_id: str) -> Optional[float]:
+        key, now, local_remaining = self._peer_flood_local_remaining(chat_id)
+        return self._peer_flood_merge(
+            key, now, local_remaining, persistent_peer_flood_remaining(chat_id))
+
+    def _peer_flood_circuit_result(self, chat_id: str) -> Optional[SendResult]:
+        remaining = self._peer_flood_remaining(chat_id)
+        return None if remaining is None else self._peer_flood_result(remaining)
+
+    async def _peer_flood_circuit_result_async(self, chat_id: str) -> Optional[SendResult]:
+        """Check process-shared SQLite state without blocking the event loop."""
+        key, now, local_remaining = self._peer_flood_local_remaining(chat_id)
+        remaining = self._peer_flood_merge(
+            key, now, local_remaining, await persistent_peer_flood_remaining_async(chat_id))
+        return None if remaining is None else self._peer_flood_result(remaining)
+
+    def _peer_flood_result_from_error(self, chat_id: str, error: Exception) -> Optional[SendResult]:
+        if not self._is_peer_flood_error(error):
+            return None
+        return self._open_peer_flood_circuit(chat_id, error)
+
+    async def _peer_flood_result_from_error_async(self, chat_id: str, error: Exception) -> Optional[SendResult]:
+        if not self._is_peer_flood_error(error):
+            return None
+        return await self._open_peer_flood_circuit_async(chat_id, error)
+
+    def _record_peer_flood(self, chat_id: str, delay: float, durable_remaining: float) -> SendResult:
+        """Latch the longest of the requested and durable cooldowns, then report it."""
+        if not hasattr(self, "_telegram_peer_flood_until"):
+            self._telegram_peer_flood_until = {}
+        now = asyncio.get_running_loop().time()
+        key = telegram_chat_id_key(chat_id)
+        store = self._telegram_peer_flood_until
+        store[key] = max(store.get(key, now + delay), now + delay, now + durable_remaining)
+        remaining = store[key] - now
+        logger.warning(
+            "[%s] Telegram PEER_FLOOD for chat %s; suppressing outbound calls for %.1fs",
+            self.name, chat_id, remaining)
+        return self._peer_flood_result(remaining)
+
+    def _open_peer_flood_circuit(self, chat_id: str, error: Exception) -> SendResult:
+        delay = peer_flood_delay(error)
+        return self._record_peer_flood(chat_id, delay, persist_peer_flood_circuit(chat_id, delay))
+
+    async def _open_peer_flood_circuit_async(self, chat_id: str, error: Exception) -> SendResult:
+        """Open local state immediately and persist without blocking the loop."""
+        delay = peer_flood_delay(error)
+        # A block raised BY the circuit is already persisted — re-persisting would extend it.
+        durable = delay if isinstance(error, TelegramPeerFloodBlocked) else (
+            await persist_peer_flood_circuit_async(chat_id, delay))
+        return self._record_peer_flood(chat_id, delay, durable)
+
     async def send(
         self, chat_id: str, content: str, reply_to: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None) -> SendResult:
         """Send a message to a Telegram chat."""
@@ -3337,12 +3549,20 @@ class TelegramAdapter(BasePlatformAdapter):
                 return await live.send(chat_id, content, reply_to, metadata)
             if not self._bot:
                 return SendResult(success=False, error="Not connected", retryable=True)
+
+        peer_flood_result = await self._peer_flood_circuit_result_async(chat_id)
+        if peer_flood_result is not None:
+            return peer_flood_result
+
         # getattr() — tests build adapters via object.__new__() (no __init__).
         if getattr(self, "_send_path_degraded", False):
             return SendResult(success=False, error="send_path_degraded", retryable=True)
         # Skip whitespace-only text to prevent Telegram 400 empty-text errors.
         if not content or not content.strip():
             return SendResult(success=True, message_id=None)
+        # Delivery policy: Coupang links must not stay clickable. Applied at the transport
+        # boundary so the rich, legacy and chunked paths all get the same defanged host.
+        content = _deactivate_coupang_urls(content)
         error_types = self._telegram_error_types()
         try:
             # Bot API 10.1 rich fast-path; falls through to legacy MarkdownV2 on permanent/capability
@@ -3377,6 +3597,8 @@ class TelegramAdapter(BasePlatformAdapter):
                 raw_response={
                     "message_ids": message_ids, "requested_thread_id": requested_thread_id, "thread_fallback": used_thread_fallback})
         except Exception as e:
+            if self._is_peer_flood_error(e):
+                return await self._open_peer_flood_circuit_async(chat_id, e)
             safe_error = _redact_telegram_error_text(e)
             logger.error("[%s] Failed to send Telegram message: %s", self.name, safe_error)
             err_str = str(e).lower()
@@ -3422,7 +3644,7 @@ class TelegramAdapter(BasePlatformAdapter):
         kwargs: Dict[str, Any] = {"chat_id": normalize_telegram_chat_id(chat_id), "message_id": int(message_id), "text": text}
         if parse_mode is not None:
             kwargs["parse_mode"] = parse_mode
-        await self._bot.edit_message_text(**kwargs)
+        await self._outbound.edit_message_text(**kwargs)
 
     async def _edit_markdown_or_plain(self, chat_id: str, message_id: str, formatted: str, plain: str, warn_fmt: str) -> bool:
         """MarkdownV2 edit with plain-text fallback. Returns True on a "not modified" no-op (caller may
@@ -3430,6 +3652,8 @@ class TelegramAdapter(BasePlatformAdapter):
         try:
             await self._edit_text(chat_id, message_id, formatted, ParseMode.MARKDOWN_V2)
         except Exception as fmt_err:
+            if self._is_peer_flood_error(fmt_err):
+                raise  # the plain-text retry would hit the same restricted peer
             if "not modified" in str(fmt_err).lower():
                 return True
             logger.warning(warn_fmt, self.name, _redact_telegram_error_text(fmt_err))
@@ -3446,6 +3670,10 @@ class TelegramAdapter(BasePlatformAdapter):
         continuations, and return the final chunk's id as the next edit target."""
         if not self._bot:
             return SendResult(success=False, error="Not connected")
+        peer_flood_result = await self._peer_flood_circuit_result_async(chat_id)
+        if peer_flood_result is not None:
+            return peer_flood_result
+        content = _deactivate_coupang_urls(content)
         # Rich finalize (Bot API 10.1): edit the preview IN PLACE via rich_message — no fresh send + delete.
         # Before the 4,096 pre-flight because the rich cap is 32,768; falls back to legacy on rejection.
         # Rich finalize (Bot API 10.1): when the completed content has constructs the legacy MarkdownV2 edit
@@ -3493,6 +3721,8 @@ class TelegramAdapter(BasePlatformAdapter):
                 "[%s] MarkdownV2 edit failed, falling back to plain text: %s")
             return SendResult(success=True, message_id=message_id)
         except Exception as e:
+            if self._is_peer_flood_error(e):
+                return await self._open_peer_flood_circuit_async(chat_id, e)
             err_str = str(e).lower()
             if "not modified" in err_str:
                 return SendResult(success=True, message_id=message_id)
@@ -3568,17 +3798,19 @@ class TelegramAdapter(BasePlatformAdapter):
                 else:
                     # Degrade to stripped text on finalize (raw ** / ``` would render literally); previews stay raw.
                     text = _strip_mdv2(chunk) if finalize else chunk
-                return await self._bot.send_message(
+                return await self._outbound.send_message(
                     chat_id=normalize_telegram_chat_id(chat_id), text=text, parse_mode=ParseMode.MARKDOWN_V2 if use_markdown else None,
                     reply_to_message_id=reply_to_id, **thread_kwargs, **base)
             except Exception as send_err:
+                if self._is_peer_flood_error(send_err):
+                    raise
                 if "reply message not found" in str(send_err).lower():
                     # Private DM topic fallback needs anchor + topic id together; forum topics keep thread id.
                     retry_thread_kwargs = (
                         {} if self._dm_topic_fallback(metadata)
                         else self._thread_kwargs_for_send(chat_id, thread_id, metadata, reply_to_message_id=None))
                     try:
-                        return await self._bot.send_message(
+                        return await self._outbound.send_message(
                             chat_id=normalize_telegram_chat_id(chat_id), text=_strip_mdv2(chunk) if finalize else chunk,
                             **retry_thread_kwargs, **base)
                     except Exception as _retry_err:
@@ -3608,10 +3840,14 @@ class TelegramAdapter(BasePlatformAdapter):
             else:
                 await self._edit_text(chat_id, message_id, first_chunk)
         except Exception as e:
+            # A flooded peer must surface the typed circuit failure, not a generic edit error:
+            # continuations below would keep writing to the same restricted chat.
+            if self._is_peer_flood_error(e):
+                return await self._open_peer_flood_circuit_async(chat_id, e)
             if "not modified" not in str(e).lower():  # identical first chunk still sends continuations
                 logger.error("[%s] Overflow split: first-chunk edit failed: %s", self.name, _redact_telegram_error_text(e), exc_info=True)
                 return SendResult(success=False, error=_redact_telegram_error_text(e))
-        # Continuations call self._bot.send_message directly to skip self.send's pre-chunking.
+        # Continuations call self._outbound.send_message directly to skip self.send's pre-chunking.
         continuation_ids: list[str] = []
         delivered_chunks = [first_chunk]
         prev_id = message_id
@@ -3619,7 +3855,15 @@ class TelegramAdapter(BasePlatformAdapter):
         for chunk in chunks[1:]:
             reply_to_id = int(prev_id) if prev_id else None
             thread_kwargs = self._thread_kwargs_for_send(chat_id, thread_id, metadata, reply_to_message_id=reply_to_id)
-            sent_msg = await self._send_overflow_continuation(chat_id, chunk, reply_to_id, thread_kwargs, thread_id, metadata, finalize)
+            try:
+                sent_msg = await self._send_overflow_continuation(
+                    chat_id, chunk, reply_to_id, thread_kwargs, thread_id, metadata, finalize)
+            except Exception as cont_err:
+                # PEER_FLOOD propagates out of the continuation sender (no anchorless/plain retry
+                # onto a restricted peer); convert it to the typed circuit failure here.
+                if not self._is_peer_flood_error(cont_err):
+                    raise
+                return await self._open_peer_flood_circuit_async(chat_id, cont_err)
             if sent_msg is None:
                 # Partial delivery: do NOT report success — the consumer would treat it as final delivery.
                 logger.warning("[%s] Overflow split: stopped at %d/%d chunks delivered", self.name, 1 + len(continuation_ids), len(chunks))
@@ -3649,8 +3893,10 @@ class TelegramAdapter(BasePlatformAdapter):
         """
         if not self._bot:
             return False
+        if await self._peer_flood_circuit_result_async(chat_id) is not None:
+            return False
         try:
-            await self._bot.delete_message(chat_id=normalize_telegram_chat_id(chat_id), message_id=int(message_id))
+            await self._outbound.delete_message(chat_id=normalize_telegram_chat_id(chat_id), message_id=int(message_id))
             return True
         except Exception as e:
             logger.debug("[%s] Failed to delete Telegram message %s: %s", self.name, message_id, _redact_telegram_error_text(e))
@@ -3668,9 +3914,18 @@ class TelegramAdapter(BasePlatformAdapter):
         ``sendMessageDraft``; reusing ``draft_id`` animates the preview. The caller sends the final text."""
         if not self._bot:
             return SendResult(success=False, error="not_connected")
+        peer_flood_result = await self._peer_flood_circuit_result_async(chat_id)
+        if peer_flood_result is not None:
+            return peer_flood_result
+        content = _deactivate_coupang_urls(content)
         # Rich draft fast-path; any failure degrades to the plain draft below. Drafts have no message_id.
-        if self._should_attempt_rich_draft(content) and await self._try_send_rich_draft(chat_id, draft_id, content, metadata):
-            return SendResult(success=True, message_id=None)
+        # A SendResult means the circuit opened - do not degrade onto the same restricted peer.
+        if self._should_attempt_rich_draft(content):
+            rich_result = await self._try_send_rich_draft(chat_id, draft_id, content, metadata)
+            if isinstance(rich_result, SendResult):
+                return rich_result
+            if rich_result:
+                return SendResult(success=True, message_id=None)
         if not hasattr(self._bot, "send_message_draft"):
             return SendResult(success=False, error="api_unavailable")
         # Drafts share the regular-send UTF-16 length contract.
@@ -3690,7 +3945,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 kwargs["parse_mode"] = ParseMode.MARKDOWN_V2
             kwargs.update(draft_thread_kwargs)
             try:
-                if await self._bot.send_message_draft(**kwargs):
+                if await self._outbound.send_message_draft(**kwargs):
                     return SendResult(success=True, message_id=None)
                 return SendResult(success=False, error="draft_rejected")
             except Exception as e:
@@ -3717,7 +3972,7 @@ class TelegramAdapter(BasePlatformAdapter):
             raise RuntimeError("Not connected")
         message_thread_id = kwargs.get("message_thread_id")
         try:
-            return await self._bot.send_message(**kwargs)
+            return await self._outbound.send_message(**kwargs)
         except Exception as send_err:
             if (message_thread_id is not None and self._is_bad_request_error(send_err) and self._is_thread_not_found_error(send_err)):
                 logger.warning(
@@ -3726,7 +3981,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 self._prune_stale_dm_topic_binding(kwargs.get("chat_id"), message_thread_id)
                 retry_kwargs = dict(kwargs)
                 retry_kwargs.pop("message_thread_id", None)
-                return await self._bot.send_message(**retry_kwargs)
+                return await self._outbound.send_message(**retry_kwargs)
             raise
 
     async def _send_control_message(
@@ -3749,6 +4004,9 @@ class TelegramAdapter(BasePlatformAdapter):
         SendResult to return as-is), routed send, state hook, redacted failure log."""
         if not self._bot:
             return SendResult(success=False, error="Not connected")
+        peer_flood_result = await self._peer_flood_circuit_result_async(chat_id)
+        if peer_flood_result is not None:
+            return peer_flood_result
         try:
             built = build()
             if isinstance(built, SendResult):
@@ -3761,8 +4019,11 @@ class TelegramAdapter(BasePlatformAdapter):
                 on_sent(msg)
             return SendResult(success=True, message_id=str(msg.message_id))
         except Exception as e:
+            if self._is_peer_flood_error(e):
+                return await self._open_peer_flood_circuit_async(chat_id, e)
             logger.warning("[%s] %s failed: %s", self.name, what, _redact_telegram_error_text(e))
-            return SendResult(success=False, error=_redact_telegram_error_text(e))
+            return SendResult(
+                success=False, error=_redact_telegram_error_text(e), error_kind=classify_send_error(e))
 
     @staticmethod
     def _rows_of_two(buttons: list) -> list:
@@ -4188,6 +4449,12 @@ class TelegramAdapter(BasePlatformAdapter):
             return
         from_user = getattr(inline_query, "from_user", None)
         user_id = str(getattr(from_user, "id", "") or "").strip()
+        circuit_id = telegram_chat_id_key(user_id or "inline:unknown")
+        if await self._peer_flood_circuit_result_async(circuit_id) is not None:
+            return
+        outbound = GuardedTelegramTarget(
+            inline_query, self._outbound_gateway, target_key=circuit_id
+        )
         try:
             # No chat context on inline queries — authorize on user identity alone, DM-shaped.
             authorized = bool(user_id) and self._is_callback_user_authorized(
@@ -4198,8 +4465,11 @@ class TelegramAdapter(BasePlatformAdapter):
         if not authorized:
             try:
                 from plugins.platforms.telegram.inline_picker import CACHE_TIME_SECONDS as _deny_cache
-                await inline_query.answer([], cache_time=_deny_cache, is_personal=True)
-            except Exception:
+                await outbound.answer([], cache_time=_deny_cache, is_personal=True)
+            except Exception as exc:
+                if self._is_peer_flood_error(exc):
+                    await self._open_peer_flood_circuit_async(circuit_id, exc)
+                    return
                 logger.debug("[%s] inline picker empty answer failed", self.name, exc_info=True)
             return
         try:
@@ -4214,8 +4484,11 @@ class TelegramAdapter(BasePlatformAdapter):
                 for r in results
            ]
             # is_personal: catalogs differ per user (auth, disabled skills) — never share cached pages.
-            await inline_query.answer(articles, cache_time=_CACHE, is_personal=True, next_offset=next_offset)
-        except Exception:
+            await outbound.answer(articles, cache_time=_CACHE, is_personal=True, next_offset=next_offset)
+        except Exception as exc:
+            if self._is_peer_flood_error(exc):
+                await self._open_peer_flood_circuit_async(circuit_id, exc)
+                return
             logger.debug("[%s] inline picker answer failed", self.name, exc_info=True)
 
     @staticmethod
@@ -4226,6 +4499,16 @@ class TelegramAdapter(BasePlatformAdapter):
         return {
             "chat_id": getattr(query_message, "chat_id", None), "chat_type": getattr(query_chat, "type", None),
             "thread_id": getattr(query_message, "message_thread_id", None), "user_name": getattr(query.from_user, "first_name", None)}
+
+    @staticmethod
+    def _callback_circuit_key(query) -> str:
+        """PEER_FLOOD circuit key for a button tap: its chat, else the tapping user."""
+        query_message = getattr(query, "message", None)
+        chat_id = getattr(query_message, "chat_id", None)
+        if chat_id is not None:
+            return str(chat_id)
+        user_id = getattr(getattr(query, "from_user", None), "id", None)
+        return str(user_id) if user_id is not None else _CALLBACK_UNKNOWN_CIRCUIT_KEY
 
     async def _callback_authorized(self, query, cb: Dict[str, Any], denial_text: str) -> bool:
         """Gate a button tap on the callback allowlist; answers ``denial_text`` when refused."""
@@ -4243,6 +4526,7 @@ class TelegramAdapter(BasePlatformAdapter):
         if not query or not query.data:
             return
         data = query.data
+        query = self._guard_callback_query(query, self._callback_circuit_key(query))
         cb = self._callback_ctx(query)
         # Model picker / generic choice picker (/reasoning, /fast) need a chat id.
         for prefixes, handler in (
@@ -4558,8 +4842,10 @@ class TelegramAdapter(BasePlatformAdapter):
             send_fn, {**kwargs, **media_kwargs}, metadata, reply_to_id, media_label, reset_media=reset_media)
 
     @staticmethod
-    def _caption_1024(caption: Optional[str]) -> Optional[str]:
-        return caption[:1024] if caption else None
+    def _prepare_caption(caption: Optional[str]) -> Optional[str]:
+        """The single media-caption chokepoint: apply outbound content policy, then Telegram's
+        1024 UTF-16-unit cap (``prepare_caption`` counts units, not codepoints)."""
+        return prepare_caption(caption)
 
     async def _send_voice_bubble(self, audio_file, chat_id, reply_to, metadata, caption, duration_secs):
         """sendVoice with caption variants: MarkdownV2 when it fits 1024 chars, plain fallback when the
@@ -4576,14 +4862,14 @@ class TelegramAdapter(BasePlatformAdapter):
                     _caption_variants.append((_formatted_caption, ParseMode.MARKDOWN_V2))
             except Exception:
                 logger.debug("[%s] voice caption MarkdownV2 formatting failed; sending plain caption", self.name, exc_info=True)
-            _caption_variants.append((caption[:1024], None))
+            _caption_variants.append((caption, None))
         else:
             _caption_variants.append((None, None))
         _last_parse_error: Optional[Exception] = None
         for _cap_text, _cap_parse_mode in _caption_variants:
             try:
                 return await self._send_media(
-                    self._bot.send_voice, chat_id, reply_to, metadata, "voice", reset_media=lambda: audio_file.seek(0),
+                    self._outbound.send_voice, chat_id, reply_to, metadata, "voice", reset_media=lambda: audio_file.seek(0),
                     voice=audio_file, caption=_cap_text, parse_mode=_cap_parse_mode, duration=duration_secs)
             except Exception as _cap_error:
                 err = str(_cap_error).lower()
@@ -4602,6 +4888,11 @@ class TelegramAdapter(BasePlatformAdapter):
         """Send audio as a native Telegram voice message or audio file."""
         if not self._bot:
             return SendResult(success=False, error="Not connected")
+        peer_flood_result = await self._peer_flood_circuit_result_async(chat_id)
+        if peer_flood_result is not None:
+            return peer_flood_result
+        caption = prepare_caption(caption)
+
         _transcoded_voice_path: Optional[str] = None
         try:
             if not os.path.exists(audio_path):
@@ -4625,13 +4916,16 @@ class TelegramAdapter(BasePlatformAdapter):
                     msg = await self._send_voice_bubble(audio_file, chat_id, reply_to, metadata, caption, _duration_secs)
                 elif ext in {".mp3", ".m4a"}:  # Bot API sendAudio only accepts MP3 / M4A
                     msg = await self._send_media(
-                        self._bot.send_audio, chat_id, reply_to, metadata, "audio", reset_media=lambda: audio_file.seek(0),
-                        audio=audio_file, caption=self._caption_1024(caption), duration=_duration_secs)
+                        self._outbound.send_audio, chat_id, reply_to, metadata, "audio", reset_media=lambda: audio_file.seek(0),
+                        audio=audio_file, caption=self._prepare_caption(caption), duration=_duration_secs)
                 else:  # formats Telegram can't play natively (.wav, .flac, ...)
                     return await self.send_document(
                         chat_id=chat_id, file_path=audio_path, caption=caption, reply_to=reply_to, metadata=metadata)
             return SendResult(success=True, message_id=str(msg.message_id))
         except Exception as e:
+            peer_flood_result = await self._peer_flood_result_from_error_async(chat_id, e)
+            if peer_flood_result is not None:
+                return peer_flood_result
             logger.error(
                 "[%s] Failed to send Telegram voice/audio, falling back to base adapter: %s", self.name,
                 _redact_telegram_error_text(e), exc_info=True)
@@ -4647,6 +4941,9 @@ class TelegramAdapter(BasePlatformAdapter):
         media group (need ``send_animation``) so they go via the base per-image path, as does a failed chunk."""
         if not self._bot or not images:
             return
+        if await self._peer_flood_circuit_result_async(chat_id) is not None:
+            return
+
         try:
             from telegram import InputMediaPhoto
         except Exception as exc:  # pragma: no cover - missing SDK
@@ -4678,7 +4975,7 @@ class TelegramAdapter(BasePlatformAdapter):
                             continue
                         source = open(local_path, "rb")
                         opened_files.append(source)
-                    media.append(InputMediaPhoto(media=source, caption=self._caption_1024(alt_text)))
+                    media.append(InputMediaPhoto(media=source, caption=self._prepare_caption(alt_text)))
                 if not media:
                     continue
                 logger.info("[%s] Sending media group of %d photo(s) (chunk %d/%d)", self.name, len(media), chunk_idx + 1, len(chunks))
@@ -4690,9 +4987,11 @@ class TelegramAdapter(BasePlatformAdapter):
                             fh.seek(0)
 
                 await self._send_with_dm_topic_reply_anchor_retry(
-                    self._bot.send_media_group, {**send_kwargs, "media": media}, metadata, reply_to_id,
+                    self._outbound.send_media_group, {**send_kwargs, "media": media}, metadata, reply_to_id,
                     "media group", reset_media=_reset_opened_files)
             except Exception as e:
+                if await self._peer_flood_result_from_error_async(chat_id, e) is not None:
+                    return
                 logger.warning(
                     "[%s] send_media_group failed (chunk %d/%d), falling back to per-image: %s", self.name,
                     chunk_idx + 1, len(chunks), _redact_telegram_error_text(e), exc_info=True)
@@ -4706,6 +5005,10 @@ class TelegramAdapter(BasePlatformAdapter):
         self, chat_id: str, image_path: str, caption: Optional[str] = None, reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None, **kwargs) -> SendResult:
         """Send a local image file natively as a Telegram photo."""
+        peer_flood_result = await self._peer_flood_circuit_result_async(chat_id)
+        if peer_flood_result is not None:
+            return peer_flood_result
+
         async def _photo_failed(e: Exception) -> SendResult:
             error_str = str(e)
             # Dimension errors are expected for valid images Telegram refuses as photos → INFO.
@@ -4727,7 +5030,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 return await super(TelegramAdapter, self).send_image_file(chat_id, image_path, caption, reply_to, metadata=metadata)
         return await self._send_local_file(
             "Image", image_path, chat_id, reply_to, metadata, "photo",
-            lambda f: {"photo": f, "caption": self._caption_1024(caption)}, _photo_failed)
+            lambda f: {"photo": f, "caption": self._prepare_caption(caption)}, _photo_failed)
 
     async def _send_local_file(
         self, label: str, path: str, chat_id, reply_to, metadata, media_key: str, build_kwargs, on_error,
@@ -4736,12 +5039,15 @@ class TelegramAdapter(BasePlatformAdapter):
         ``await on_error(exc)`` on any failure. ``build_kwargs(f)`` supplies the media kwargs."""
         if not self._bot:
             return SendResult(success=False, error="Not connected")
+        peer_flood_result = await self._peer_flood_circuit_result_async(chat_id)
+        if peer_flood_result is not None:
+            return peer_flood_result
         try:
             if not os.path.exists(path):
                 return SendResult(success=False, error=self._missing_media_path_error(label, path))
             with open(path, "rb") as f:
                 msg = await self._send_media(
-                    getattr(self._bot, f"send_{media_key}"), chat_id, reply_to, metadata, media_key,
+                    getattr(self._outbound, f"send_{media_key}"), chat_id, reply_to, metadata, media_key,
                     reset_media=lambda: f.seek(0), **build_kwargs(f))
             return SendResult(success=True, message_id=str(msg.message_id))
         except Exception as e:
@@ -4757,7 +5063,7 @@ class TelegramAdapter(BasePlatformAdapter):
         """Send a document/file natively as a Telegram file attachment."""
         return await self._send_local_file(
             "File", file_path, chat_id, reply_to, metadata, "document",
-            lambda f: {"document": f, "filename": file_name or os.path.basename(file_path), "caption": self._caption_1024(caption)},
+            lambda f: {"document": f, "filename": file_name or os.path.basename(file_path), "caption": self._prepare_caption(caption)},
             lambda e: self._warn_then(
                 "document", e, super(
                     TelegramAdapter, self,
@@ -4769,7 +5075,7 @@ class TelegramAdapter(BasePlatformAdapter):
         """Send a video natively as a Telegram video message."""
         return await self._send_local_file(
             "Video", video_path, chat_id, reply_to, metadata, "video",
-            lambda f: {"video": f, "caption": self._caption_1024(caption)},
+            lambda f: {"video": f, "caption": self._prepare_caption(caption)},
             lambda e: self._warn_then(
                 "video", e, super(TelegramAdapter, self).send_video(chat_id, video_path, caption, reply_to, metadata=metadata),
             ))
@@ -4780,16 +5086,23 @@ class TelegramAdapter(BasePlatformAdapter):
         """Send a URL image as a Telegram photo: URL send (<5MB) → download+upload (≤10MB) → base text."""
         if not self._bot:
             return SendResult(success=False, error="Not connected")
+        peer_flood_result = await self._peer_flood_circuit_result_async(chat_id)
+        if peer_flood_result is not None:
+            return peer_flood_result
+
         from tools.url_safety import is_safe_url
         if not is_safe_url(image_url):
             logger.warning("[%s] Blocked unsafe image URL (SSRF protection)", self.name)
             return await super().send_image(chat_id, image_url, caption, reply_to, metadata=metadata)
-        photo_caption = self._caption_1024(caption)
+        photo_caption = self._prepare_caption(caption)
         try:
             msg = await self._send_media(
-                self._bot.send_photo, chat_id, reply_to, metadata, "URL photo", photo=image_url, caption=photo_caption)
+                self._outbound.send_photo, chat_id, reply_to, metadata, "URL photo", photo=image_url, caption=photo_caption)
             return SendResult(success=True, message_id=str(msg.message_id))
         except Exception as e:
+            peer_flood_result = await self._peer_flood_result_from_error_async(chat_id, e)
+            if peer_flood_result is not None:
+                return peer_flood_result
             logger.warning(
                 "[%s] URL-based send_photo failed, trying file upload: %s", self.name, _redact_telegram_error_text(e), exc_info=True)
             try:
@@ -4800,7 +5113,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     resp.raise_for_status()
                     image_data = resp.content
                 msg = await self._send_media(
-                    self._bot.send_photo, chat_id, reply_to, metadata, "uploaded photo", photo=image_data, caption=photo_caption)
+                    self._outbound.send_photo, chat_id, reply_to, metadata, "uploaded photo", photo=image_data, caption=photo_caption)
                 return SendResult(success=True, message_id=str(msg.message_id))
             except Exception as e2:
                 logger.error("[%s] File upload send_photo also failed: %s", self.name, e2, exc_info=True)
@@ -4812,12 +5125,18 @@ class TelegramAdapter(BasePlatformAdapter):
         """Send an animated GIF natively as a Telegram animation (auto-plays inline)."""
         if not self._bot:
             return SendResult(success=False, error="Not connected")
+        peer_flood_result = await self._peer_flood_circuit_result_async(chat_id)
+        if peer_flood_result is not None:
+            return peer_flood_result
         try:
             msg = await self._send_media(
-                self._bot.send_animation, chat_id, reply_to, metadata, "animation", animation=animation_url,
-                caption=self._caption_1024(caption))
+                self._outbound.send_animation, chat_id, reply_to, metadata, "animation", animation=animation_url,
+                caption=self._prepare_caption(caption))
             return SendResult(success=True, message_id=str(msg.message_id))
         except Exception as e:
+            peer_flood_result = await self._peer_flood_result_from_error_async(chat_id, e)
+            if peer_flood_result is not None:
+                return peer_flood_result
             logger.error(
                 "[%s] Failed to send Telegram animation, falling back to photo: %s", self.name,
                 _redact_telegram_error_text(e), exc_info=True)
@@ -4863,11 +5182,13 @@ class TelegramAdapter(BasePlatformAdapter):
         """Send typing indicator."""
         if not self._bot or self._typing_in_cooldown(chat_id):
             return
+        if await self._peer_flood_circuit_result_async(chat_id) is not None:
+            return
         _is_dm_topic: bool = False
         message_thread_id: Optional[int] = None
 
         async def _action(**kw) -> None:
-            await self._bot.send_chat_action(chat_id=normalize_telegram_chat_id(chat_id), action="typing", **kw)
+            await self._outbound.send_chat_action(chat_id=normalize_telegram_chat_id(chat_id), action="typing", **kw)
             self._telegram_typing_cooldown_until.pop(str(chat_id), None)
         try:
             _is_dm_topic = self._dm_topic_fallback(metadata)
@@ -4881,7 +5202,9 @@ class TelegramAdapter(BasePlatformAdapter):
                     await _action()
                     return
                 except Exception as fallback_exc:
-                    if self._is_transient_typing_error(fallback_exc):
+                    if self._is_peer_flood_error(fallback_exc):
+                        await self._open_peer_flood_circuit_async(chat_id, fallback_exc)
+                    elif self._is_transient_typing_error(fallback_exc):
                         self._record_typing_cooldown(chat_id, fallback_exc)
             elif self._is_transient_typing_error(e):
                 self._record_typing_cooldown(chat_id, e)
@@ -5648,14 +5971,19 @@ class TelegramAdapter(BasePlatformAdapter):
                 chat_id = int(chat.id)
                 if chat_id in self._forum_command_registered:
                     return
+                if await self._peer_flood_circuit_result_async(str(chat_id)) is not None:
+                    return
                 from telegram import BotCommand, BotCommandScopeChat
                 from hermes_cli.commands_platforms import telegram_menu_commands, telegram_menu_max_commands
                 menu_commands, _ = telegram_menu_commands(max_commands=telegram_menu_max_commands())
                 bot_commands = [BotCommand(name, desc) for name, desc in menu_commands]
-                await self._bot.set_my_commands(bot_commands, scope=BotCommandScopeChat(chat_id=chat_id))
+                await self._outbound.set_my_commands(bot_commands, scope=BotCommandScopeChat(chat_id=chat_id))
                 self._forum_command_registered.add(chat_id)
                 logger.info("[%s] Lazy-registered %d commands for forum chat %s", self.name, len(bot_commands), chat_id)
             except Exception as e:
+                if self._is_peer_flood_error(e):
+                    await self._open_peer_flood_circuit_async(str(chat_id), e)
+                    return
                 logger.warning("[%s] Forum command lazy-registration failed: %s", self.name, _redact_telegram_error_text(e))
 
     def _effective_update_message(self, update: Update) -> Optional[Message]:
@@ -6323,8 +6651,10 @@ class TelegramAdapter(BasePlatformAdapter):
         """Set a single emoji reaction (``None`` clears all bot-set reactions, the documented Bot API way)."""
         if not self._bot:
             return False
+        if await self._peer_flood_circuit_result_async(chat_id) is not None:
+            return False
         try:
-            await self._bot.set_message_reaction(chat_id=normalize_telegram_chat_id(chat_id), message_id=int(message_id), reaction=emoji)
+            await self._outbound.set_message_reaction(chat_id=normalize_telegram_chat_id(chat_id), message_id=int(message_id), reaction=emoji)
             return True
         except Exception as e:
             if emoji is None:

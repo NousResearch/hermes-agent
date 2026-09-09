@@ -1874,6 +1874,227 @@ class TestReaderLoopOrphanedPipe:
 # =========================================================================
 # systemd cgroup isolation for gateway-spawned local executors (#70716)
 # =========================================================================
+class TestGatewayRuntimeIdentity:
+    """The terminal safety guard must recognize every real gateway runtime."""
+
+    @pytest.fixture(autouse=True)
+    def _isolate_gateway_environment(self, monkeypatch):
+        monkeypatch.delenv("HERMES_GATEWAY_ORIGIN_PID", raising=False)
+        monkeypatch.delenv("_HERMES_GATEWAY", raising=False)
+
+    def test_direct_spawn_gateway_owns_pid_without_supervisor(self, monkeypatch):
+        """Windows login-item gateways have no systemd/launchd supervisor marker."""
+        from tools import process_registry
+
+        monkeypatch.setenv("_HERMES_GATEWAY", "1")
+        monkeypatch.setattr(
+            "gateway.status.get_running_pid",
+            lambda *, cleanup_stale=False: os.getpid(),
+        )
+
+        assert process_registry._is_gateway_runtime_process() is True
+
+    def test_inherited_marker_without_pid_ownership_is_not_gateway(self, monkeypatch):
+        """A terminal child inherits the marker but must not identify as the gateway."""
+        from tools import process_registry
+
+        monkeypatch.setenv("_HERMES_GATEWAY", "1")
+        monkeypatch.setattr(
+            "gateway.status.get_running_pid",
+            lambda *, cleanup_stale=False: os.getpid() + 1,
+        )
+
+        assert process_registry._is_gateway_runtime_process() is False
+
+    def test_inherited_marker_with_live_gateway_identifies_descendant(self, monkeypatch):
+        """An updater spawned by a gateway inherits the marker and sees its live PID."""
+        import sys
+        from types import SimpleNamespace
+        from tools import process_registry
+
+        live_pid = os.getpid() + 100
+
+        class FakeProcess:
+            def __init__(self, _pid):
+                pass
+
+            def parents(self):
+                return [SimpleNamespace(pid=live_pid, cmdline=lambda: ["opaque"])]
+
+        monkeypatch.setenv("_HERMES_GATEWAY", "1")
+        monkeypatch.setitem(sys.modules, "psutil", SimpleNamespace(Process=FakeProcess))
+        monkeypatch.setattr(
+            "gateway.status.get_running_pid",
+            lambda *, cleanup_stale=False: live_pid,
+        )
+
+        assert process_registry._is_gateway_descendant_process() is True
+
+    def test_gateway_ancestor_identifies_descendant_without_marker(self, monkeypatch):
+        import sys
+        from types import SimpleNamespace
+        from tools import process_registry
+
+        class FakeProcess:
+            def __init__(self, _pid):
+                pass
+
+            def parents(self):
+                return [
+                    SimpleNamespace(
+                        cmdline=lambda: [
+                            "python.exe",
+                            "-m",
+                            "hermes_cli.main",
+                            "--profile",
+                            "quant",
+                            "gateway",
+                            "run",
+                        ]
+                    )
+                ]
+
+        monkeypatch.delenv("_HERMES_GATEWAY", raising=False)
+        monkeypatch.setitem(sys.modules, "psutil", SimpleNamespace(Process=FakeProcess))
+
+        assert process_registry._is_gateway_descendant_process() is True
+
+    @pytest.mark.parametrize(
+        "argv",
+        [
+            ["python", "-m", "gateway.run"],
+            ["python", "cli.py", "--gateway"],
+            ["hermes", "gateway", "run"],
+        ],
+    )
+    def test_gateway_entrypoint_ancestor_shapes(self, monkeypatch, argv):
+        from types import SimpleNamespace
+        from tools import process_registry
+
+        class FakeProcess:
+            def __init__(self, _pid):
+                pass
+
+            def parents(self):
+                return [SimpleNamespace(pid=444, cmdline=lambda: argv)]
+
+        monkeypatch.delenv("_HERMES_GATEWAY", raising=False)
+        monkeypatch.delenv("HERMES_GATEWAY_ORIGIN_PID", raising=False)
+        monkeypatch.setitem(sys.modules, "psutil", SimpleNamespace(Process=FakeProcess))
+
+        assert process_registry._is_gateway_descendant_process() is True
+
+    def test_external_cli_gateway_run_is_not_gateway_ancestor(self, monkeypatch):
+        """An unrelated CLI reusing ``gateway run`` is not a Hermes entrypoint."""
+        import sys
+        from types import SimpleNamespace
+        from tools import process_registry
+
+        class FakeProcess:
+            def __init__(self, _pid):
+                pass
+
+            def parents(self):
+                return [
+                    SimpleNamespace(
+                        pid=445,
+                        cmdline=lambda: ["external-cli", "gateway", "run"],
+                    )
+                ]
+
+        monkeypatch.delenv("_HERMES_GATEWAY", raising=False)
+        monkeypatch.delenv("HERMES_GATEWAY_ORIGIN_PID", raising=False)
+        monkeypatch.setitem(sys.modules, "psutil", SimpleNamespace(Process=FakeProcess))
+
+        assert process_registry._is_gateway_descendant_process() is False
+
+    def test_origin_pid_survives_profile_home_change_and_legacy_env_removal(
+        self, monkeypatch
+    ):
+        from types import SimpleNamespace
+        from tools import process_registry
+
+        class FakeProcess:
+            def __init__(self, _pid):
+                pass
+
+            def parents(self):
+                return [SimpleNamespace(pid=777, cmdline=lambda: ["opaque-launcher"])]
+
+        monkeypatch.delenv("_HERMES_GATEWAY", raising=False)
+        monkeypatch.setenv("HERMES_HOME", "D:/other-profile-home")
+        monkeypatch.setenv("HERMES_PROFILE", "other")
+        monkeypatch.setenv("HERMES_GATEWAY_ORIGIN_PID", "777")
+        monkeypatch.setitem(sys.modules, "psutil", SimpleNamespace(Process=FakeProcess))
+
+        assert process_registry._is_gateway_descendant_process() is True
+
+    def test_import_only_external_cli_is_not_gateway_ancestor(self, monkeypatch):
+        from types import SimpleNamespace
+        from tools import process_registry
+
+        class FakeProcess:
+            def __init__(self, _pid):
+                pass
+
+            def parents(self):
+                return [
+                    SimpleNamespace(
+                        pid=888,
+                        cmdline=lambda: ["python", "external_cli.py", "status"],
+                    )
+                ]
+
+        monkeypatch.setenv("_HERMES_GATEWAY", "1")
+        monkeypatch.delenv("HERMES_GATEWAY_ORIGIN_PID", raising=False)
+        monkeypatch.setitem(sys.modules, "psutil", SimpleNamespace(Process=FakeProcess))
+
+        assert process_registry._is_gateway_descendant_process() is False
+
+    def test_marker_without_live_gateway_is_not_descendant(self, monkeypatch):
+        from types import SimpleNamespace
+        from tools import process_registry
+
+        class FakeProcess:
+            def __init__(self, _pid):
+                pass
+
+            def parents(self):
+                return []
+
+        monkeypatch.setenv("_HERMES_GATEWAY", "1")
+        monkeypatch.delenv("HERMES_GATEWAY_ORIGIN_PID", raising=False)
+        monkeypatch.setitem(sys.modules, "psutil", SimpleNamespace(Process=FakeProcess))
+        monkeypatch.setattr(
+            "gateway.status.get_running_pid",
+            lambda *, cleanup_stale=False: None,
+        )
+
+        assert process_registry._is_gateway_descendant_process() is False
+
+    def test_gateway_marker_fails_closed_when_pid_check_errors(self, monkeypatch):
+        import sys
+        from types import SimpleNamespace
+        from tools import process_registry
+
+        class FakeProcess:
+            def __init__(self, _pid):
+                pass
+
+            def parents(self):
+                return []
+
+        monkeypatch.setenv("_HERMES_GATEWAY", "1")
+        monkeypatch.setitem(sys.modules, "psutil", SimpleNamespace(Process=FakeProcess))
+
+        def _raise(*, cleanup_stale=False):
+            raise OSError("state unreadable")
+
+        monkeypatch.setattr("gateway.status.get_running_pid", _raise)
+
+        assert process_registry._is_gateway_descendant_process() is True
+
+
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only: systemd scopes")
 class TestSystemdCgroupIsolation:
     """Verify spawn_local wraps the worker in ``systemd-run --user --scope``

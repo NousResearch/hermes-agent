@@ -4,7 +4,9 @@ A cron job that restarts/stops the gateway from inside the gateway (``hermes gat
 ``launchctl kickstart ai.hermes.gateway``, ``systemctl restart hermes-gateway``) kills the process,
 the supervisor revives it, auto-resume re-runs the turn: a SIGTERM-respawn loop.
 ``cron.jobs.create_job`` rejects such specs on every creation path. Patterns are command-shaped —
-anchored on concrete command identifiers — so they cannot fire on prose. Defence-in-depth layer.
+anchored on concrete command identifiers — so they cannot fire on prose. Defence-in-depth layer:
+the updater separately rejects ordinary mutating updates at its own entry point when launched from
+a live gateway descendant, independent of shell syntax.
 """
 
 from __future__ import annotations

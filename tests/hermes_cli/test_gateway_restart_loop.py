@@ -8,12 +8,27 @@ Covers:
 
 import json
 import os
+import sys
 from argparse import Namespace
+from pathlib import Path
 
 import pytest
 
 from cron.lifecycle_guard import contains_gateway_lifecycle_command as _contains_gateway_lifecycle_command
 from hermes_cli.cron import cron_command
+
+
+class _ShellPath(type(Path())):
+    """Native test path rendered safely inside POSIX shell command strings."""
+
+    def __str__(self):
+        return super().__str__().replace("\\", "/")
+
+
+@pytest.fixture(name="tmp_path")
+def _shell_tmp_path(tmp_path_factory):
+    """Keep shell-script tests independent of the pytest host platform."""
+    return _ShellPath(tmp_path_factory.mktemp("gateway-restart-loop"))
 
 
 # ---------------------------------------------------------------------------
@@ -516,7 +531,7 @@ class TestTerminalToolGatewayLifecycleGuard:
         monkeypatch.setattr(tt, "_task_env_overrides", {})
         monkeypatch.setattr(tt, "_get_env_config", self._minimal_config)
         monkeypatch.setattr(
-            process_registry, "_is_supervised_gateway_process",
+            process_registry, "_is_gateway_runtime_process",
             lambda: inside_gateway,
         )
 
@@ -554,6 +569,27 @@ class TestTerminalToolGatewayLifecycleGuard:
         assert result["exit_code"] == 1
         assert "Blocked" in result["error"]
 
+    def test_execute_code_uses_gateway_pid_identity(self, monkeypatch):
+        """A direct Windows gateway must get the execute_code lifecycle guard."""
+        import tools.code_execution_tool as code_tool
+        from tools import process_registry
+
+        monkeypatch.setattr(code_tool, "SANDBOX_AVAILABLE", True)
+        monkeypatch.setattr(
+            process_registry, "_is_gateway_runtime_process", lambda: True
+        )
+        monkeypatch.setattr(
+            process_registry, "_is_supervised_gateway_process", lambda: False
+        )
+
+        result = json.loads(
+            code_tool.execute_code(
+                'import subprocess\nsubprocess.run(["hermes", "gateway", "restart"])'
+            )
+        )
+
+        assert "cannot restart or stop" in result["error"]
+
     def test_blocks_lifecycle_command_hidden_in_referenced_script(
         self, monkeypatch, tmp_path
     ):
@@ -567,6 +603,7 @@ class TestTerminalToolGatewayLifecycleGuard:
 
         assert result["exit_code"] == 1
         assert "referenced script" in result["error"]
+
 
     def test_blocks_launchctl_submit_inside_gateway(self, monkeypatch, tmp_path):
         import tools.terminal_tool as tt
@@ -633,9 +670,10 @@ class TestTerminalToolGatewayLifecycleGuard:
     @pytest.mark.parametrize("command", [
         "launchctl submit -l com.foo -- /path/gateway",
         "launchctl bootstrap gui/501 /tmp/com.foo.plist",
+        "hermes update --backup --yes",
     ])
-    def test_submit_and_bootstrap_allowed_outside_gateway(self, monkeypatch, command):
-        """The label-independent block applies only inside the gateway process."""
+    def test_lifecycle_commands_allowed_outside_gateway(self, monkeypatch, command):
+        """The hard block applies only inside the gateway process."""
         import tools.terminal_tool as tt
 
         calls = []
@@ -677,7 +715,7 @@ class TestTerminalToolGatewayLifecycleGuard:
 
         # Simulate a CLI agent session: _HERMES_GATEWAY=1 is in the
         # environment (inherited from the gateway), but
-        # _is_supervised_gateway_process() returns False because the
+        # _is_gateway_runtime_process() returns False because the
         # process does not own the gateway PID file.
         self._patch_env(monkeypatch, _FakeEnv(), inside_gateway=False)
         monkeypatch.setenv("_HERMES_GATEWAY", "1")
@@ -801,6 +839,7 @@ class TestTerminalToolGatewayLifecycleGuard:
 
         assert result["exit_code"] == 1
 
+    @pytest.mark.skipif(sys.platform == "win32", reason="Windows has no os.mkfifo")
     def test_non_regular_referenced_script_fails_closed(self, monkeypatch, tmp_path):
         import tools.terminal_tool as tt
 
@@ -1218,6 +1257,9 @@ class TestLifecycleGuardModule:
         with pytest.raises(GatewayLifecycleBlocked):
             check_gateway_lifecycle("daily ops", str(script))
 
+    @pytest.mark.skipif(
+        sys.platform == "win32", reason="symlink creation requires Windows privilege"
+    )
     def test_cloud_backed_symlink_fails_closed_without_opening_target(
         self, tmp_path, monkeypatch
     ):
@@ -1849,7 +1891,7 @@ class TestTerminalToolGatewayLifecycleGuardRemote:
         monkeypatch.setattr(tt, "_task_env_overrides", {})
         monkeypatch.setattr(tt, "_get_env_config", lambda: {"env_type": "local", "cwd": "/tmp", "timeout": 60, "lifetime_seconds": 3600})
         monkeypatch.setattr(
-            process_registry, "_is_supervised_gateway_process",
+            process_registry, "_is_gateway_runtime_process",
             lambda: inside_gateway,
         )
 
@@ -1858,7 +1900,12 @@ class TestTerminalToolGatewayLifecycleGuardRemote:
 
         # Path only exists on the remote backend; locally it is absent, so the
         # guard must fall back to a bounded env.execute('head -c ...') read.
-        script = "/remote/workspace/remote.sh"
+        script = (
+            "Z:/remote/workspace/remote.sh"
+            if sys.platform == "win32"
+            else "/remote/workspace/remote.sh"
+        )
+        resolved_script = str(Path(script))
         calls = []
 
         class _RemoteEnv:
@@ -1866,7 +1913,7 @@ class TestTerminalToolGatewayLifecycleGuardRemote:
             cwd = str(tmp_path)
             def execute(self, command, **kwargs):
                 calls.append(command)
-                if "head -c" in command and "/remote/workspace/remote.sh" in command:
+                if "head -c" in command and resolved_script in command:
                     return {"output": "#!/bin/bash\nhermes gateway restart\n", "returncode": 0}
                 return {"output": "", "returncode": 0}
 

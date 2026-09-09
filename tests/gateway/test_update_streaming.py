@@ -18,6 +18,7 @@ import pytest
 from gateway.config import Platform
 from gateway.platforms.event import MessageEvent
 from gateway.session import SessionSource
+from gateway.update_contract import UpdateHelperLock
 
 
 def _make_event(text="/update", platform=Platform.TELEGRAM,
@@ -151,13 +152,13 @@ class TestUpdateCommandGatewayFlag:
              patch("subprocess.Popen", mock_popen):
             result = await runner._handle_update_command(event)
 
-        # Check the bash command string contains --gateway and PYTHONUNBUFFERED
+        # The detached Python helper carries --gateway and unbuffered output,
+        # and records every platform's exit code without a shell wrapper.
         call_args = mock_popen.call_args[0][0]
-        cmd_string = call_args[-1] if isinstance(call_args, list) else str(call_args)
-        assert "--gateway" in cmd_string
-        assert "PYTHONUNBUFFERED" in cmd_string
-        assert "rc=$?" in cmd_string
-        assert "status=$?" not in cmd_string
+        assert "--gateway" in call_args
+        helper_source = next(part for part in call_args if "PYTHONUNBUFFERED" in part)
+        assert "proc.returncode" in helper_source
+        assert "TimeoutExpired" in helper_source
         assert "stream progress" in result
 
 
@@ -170,13 +171,122 @@ class TestWatchUpdateProgress:
     """Tests for _watch_update_progress() streaming output."""
 
     @pytest.mark.asyncio
+    async def test_default_watcher_preserves_40_minute_update(self, tmp_path):
+        """The shared one-hour helper budget must not be cut off at 30 minutes."""
+        from gateway.update_contract import UPDATE_TIMEOUT_SECONDS
+
+        assert UPDATE_TIMEOUT_SECONDS == 3600.0
+        runner = _make_runner()
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir()
+        pending_path = hermes_home / ".update_pending.json"
+        output_path = hermes_home / ".update_output.txt"
+        pending_path.write_text(json.dumps({
+            "platform": "telegram",
+            "chat_id": "111",
+            "user_id": "222",
+            "session_key": "agent:main:telegram:dm:111",
+        }))
+        output_path.write_text("still running", encoding="utf-8")
+        runner.adapters = {Platform.TELEGRAM: AsyncMock()}
+
+        class FortyMinutesElapsed(Exception):
+            pass
+
+        class FakeLoop:
+            now = 0.0
+
+            def time(self):
+                return self.now
+
+        loop = FakeLoop()
+
+        async def advance_clock(_seconds):
+            loop.now += 600.0
+            if loop.now >= 2400.0:
+                raise FortyMinutesElapsed
+
+        with patch("gateway.run._hermes_home", hermes_home), \
+             patch("gateway.run.asyncio.get_running_loop", return_value=loop), \
+             patch("gateway.run.asyncio.sleep", side_effect=advance_clock):
+            with pytest.raises(FortyMinutesElapsed):
+                await runner._watch_update_progress()
+
+        assert pending_path.exists()
+        assert output_path.exists()
+        assert not (hermes_home / ".update_exit_code").exists()
+
+        duplicate = _make_event(chat_id="222")
+        with patch("gateway.run._hermes_home", hermes_home), \
+             patch("subprocess.Popen") as popen:
+            result = await runner._handle_update_command(duplicate)
+
+        assert "already" in result.lower()
+        assert json.loads(pending_path.read_text(encoding="utf-8"))["chat_id"] == "111"
+        assert output_path.read_text(encoding="utf-8") == "still running"
+        popen.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_completion_waits_for_helper_process_exit(self, tmp_path):
+        """Matching done is not cleanup authority while the helper lock is held."""
+        runner = _make_runner()
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir()
+        pending_path = hermes_home / ".update_pending.json"
+        output_path = hermes_home / ".update_output.txt"
+        exit_path = hermes_home / ".update_exit_code"
+        done_path = hermes_home / ".update_helper_done.json"
+        helper_lock_path = hermes_home / ".update_helper.lock"
+        request_id = "locked-helper"
+        pending_path.write_text(json.dumps({
+            "request_id": request_id,
+            "platform": "telegram",
+            "chat_id": "111",
+            "user_id": "222",
+            "session_key": "agent:main:telegram:dm:111",
+        }))
+        output_path.write_text("done", encoding="utf-8")
+        exit_path.write_text("0", encoding="utf-8")
+        done_path.write_text(json.dumps({
+            "request_id": request_id, "exit_code": 0,
+        }), encoding="utf-8")
+        adapter = AsyncMock()
+        runner.adapters = {Platform.TELEGRAM: adapter}
+
+        helper_lock = UpdateHelperLock(helper_lock_path).acquire()
+        with patch("gateway.run._hermes_home", hermes_home):
+            watch_task = asyncio.create_task(runner._watch_update_progress(
+                poll_interval=0.001,
+                stream_interval=0.001,
+                timeout=1.0,
+            ))
+            await asyncio.sleep(0.02)
+            sent_while_locked = " ".join(str(call) for call in adapter.send.call_args_list)
+            assert "update finished" not in sent_while_locked.lower()
+            assert pending_path.exists()
+            assert output_path.exists()
+            assert exit_path.exists()
+            assert done_path.exists()
+            helper_lock.release()
+            await watch_task
+
+        adapter.send.assert_called()
+        assert not pending_path.exists()
+        assert not output_path.exists()
+        assert not exit_path.exists()
+        assert not done_path.exists()
+        assert helper_lock_path.exists()
+
+    @pytest.mark.asyncio
     async def test_streams_output_to_adapter(self, tmp_path):
         """New output is sent to the adapter periodically."""
         runner = _make_runner()
         hermes_home = tmp_path / "hermes"
         hermes_home.mkdir()
 
-        pending = {"platform": "telegram", "chat_id": "111", "user_id": "222",
+        request_id = "stream-output"
+        pending = {"request_id": request_id,
+                   "platform": "telegram", "chat_id": "111", "user_id": "222",
                    "session_key": "agent:main:telegram:dm:111"}
         (hermes_home / ".update_pending.json").write_text(json.dumps(pending))
         # Write output
@@ -192,6 +302,10 @@ class TestWatchUpdateProgress:
                 "→ Fetching updates...\n✓ Code updated!\n"
             , encoding="utf-8")
             (hermes_home / ".update_exit_code").write_text("0")
+            (hermes_home / ".update_helper_done.json").write_text(
+                json.dumps({"request_id": request_id, "exit_code": 0}),
+                encoding="utf-8",
+            )
 
         with patch("gateway.run._hermes_home", hermes_home):
             task = asyncio.create_task(write_exit_code())
@@ -221,6 +335,9 @@ class TestWatchUpdateProgress:
 
         mock_adapter = AsyncMock()
         runner.adapters = {Platform.TELEGRAM: mock_adapter}
+        runner._forward_update_prompt = AsyncMock(
+            wraps=runner._forward_update_prompt
+        )
 
         # Write a prompt, then respond and finish
         async def simulate_prompt_cycle():
@@ -247,6 +364,7 @@ class TestWatchUpdateProgress:
         all_sent = [str(c) for c in mock_adapter.send.call_args_list]
         prompt_found = any("Restore local changes" in s for s in all_sent)
         assert prompt_found, f"Prompt not forwarded. Sent: {all_sent}"
+        runner._forward_update_prompt.assert_awaited_once()
         # Check session was marked as having pending prompt
         # (may be cleared by the time we check since update finished)
 
@@ -319,6 +437,91 @@ class TestWatchUpdateProgress:
             if "Restore local changes" in str(call)
         ]
         assert len(prompt_sends) == 1
+
+    @pytest.mark.asyncio
+    async def test_prompt_button_failure_falls_back_to_text(self):
+        """An unsuccessful button result is not treated as delivered."""
+        from gateway.platforms.base import SendResult
+
+        class ButtonAdapter:
+            def __init__(self, text_result):
+                self.send = AsyncMock(return_value=text_result)
+
+            async def send_update_prompt(self, **_kwargs):
+                return SendResult(success=False, error="button send failed")
+
+        runner = _make_runner()
+        adapter = ButtonAdapter(SendResult(success=True))
+        target = runner._UpdateTarget(
+            adapter=adapter,
+            chat_id="111",
+            session_key="agent:main:telegram:dm:111",
+            metadata={},
+            platform=Platform.TELEGRAM,
+        )
+
+        await runner._forward_update_prompt(target, "Continue?", "y")
+
+        adapter.send.assert_awaited_once()
+        assert runner._session_state(target.session_key).persistent.update_prompt_pending is True
+
+    @pytest.mark.asyncio
+    async def test_prompt_all_delivery_failures_do_not_mark_pending(self):
+        """A prompt cannot be pending when no delivery path succeeded."""
+        from gateway.platforms.base import SendResult
+
+        class ButtonAdapter:
+            def __init__(self, text_result):
+                self.send = AsyncMock(return_value=text_result)
+
+            async def send_update_prompt(self, **_kwargs):
+                return SendResult(success=False, error="button send failed")
+
+        runner = _make_runner()
+        adapter = ButtonAdapter(SendResult(success=False, error="text send failed"))
+        target = runner._UpdateTarget(
+            adapter=adapter,
+            chat_id="111",
+            session_key="agent:main:telegram:dm:111",
+            metadata={},
+            platform=Platform.TELEGRAM,
+        )
+
+        await runner._forward_update_prompt(target, "Continue?", "y")
+
+        adapter.send.assert_awaited_once()
+        assert runner._session_state(target.session_key).persistent.update_prompt_pending is False
+
+    @pytest.mark.asyncio
+    async def test_prompt_peer_flood_does_not_attempt_text_fallback(self):
+        """PEER_FLOOD is terminal for the target; never retry via another prompt shape."""
+        from gateway.platforms.base import SendResult
+
+        class ButtonAdapter:
+            def __init__(self):
+                self.send = AsyncMock()
+
+            async def send_update_prompt(self, **_kwargs):
+                return SendResult(
+                    success=False,
+                    error="Telegram PEER_FLOOD",
+                    error_kind="peer_flood",
+                )
+
+        runner = _make_runner()
+        adapter = ButtonAdapter()
+        target = runner._UpdateTarget(
+            adapter=adapter,
+            chat_id="111",
+            session_key="agent:main:telegram:dm:111",
+            metadata={},
+            platform=Platform.TELEGRAM,
+        )
+
+        await runner._forward_update_prompt(target, "Continue?", "y")
+
+        adapter.send.assert_not_awaited()
+        assert runner._session_state(target.session_key).persistent.update_prompt_pending is False
 
 
 # ---------------------------------------------------------------------------

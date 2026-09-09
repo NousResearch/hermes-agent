@@ -2009,7 +2009,7 @@ def opencode_zen_free_headers() -> dict:
         "Authorization": "",
         "HTTP-Referer": "https://hermes-agent.nousresearch.com",
         "X-Title": "Hermes Agent",
-        "User-Agent": f"HermesAgent/{_v}"}
+        "User-Agent": f"opencode/{_v} (HermesAgent/{_v})"}
 
 
 def _fetch_opencode_free_models(

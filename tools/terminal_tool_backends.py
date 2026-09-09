@@ -160,17 +160,12 @@ _SANDBOX_ROWS = {
 }
 
 
-def _build_sandbox_env(env_type, *, image, cwd, timeout, cc, task_id, **_):
+def _build_sandbox_env(*, env_type, image, cwd, timeout, cc, task_id, **_):
     cls, with_image, extra = _SANDBOX_ROWS[env_type]
     kwargs = dict(cwd=cwd, timeout=timeout, task_id=task_id, **_resources(cc),
                   **({"image": image} if with_image else {}))
     kwargs.update(extra(cc, kwargs))
     return cls()(**kwargs)
-
-
-_build_singularity_env = functools.partial(_build_sandbox_env, "singularity")
-_build_daytona_env = functools.partial(_build_sandbox_env, "daytona")
-_build_vercel_env = functools.partial(_build_sandbox_env, "vercel_sandbox")
 
 
 def _build_ssh_env(*, cwd, timeout, ssh_config, probe_only=False, **_):
@@ -202,8 +197,10 @@ def _build_plugin_env(*, env_type, image, cwd, timeout, cc, task_id, **_):
 
 
 # Built-in backend -> builder. Anything else is looked up in the plugin registry.
-_ENV_BUILDERS = {"local": _build_local_env, "docker": _build_docker_env, "singularity": _build_singularity_env,
-                 "modal": _build_modal_env, "daytona": _build_daytona_env, "vercel_sandbox": _build_vercel_env,
+# Sandbox backends (singularity/daytona/vercel_sandbox) share _build_sandbox_env and read their
+# own backend key from the env_type kwarg the dispatcher passes to every builder.
+_ENV_BUILDERS = {"local": _build_local_env, "docker": _build_docker_env, "singularity": _build_sandbox_env,
+                 "modal": _build_modal_env, "daytona": _build_sandbox_env, "vercel_sandbox": _build_sandbox_env,
                  "ssh": _build_ssh_env}
 
 

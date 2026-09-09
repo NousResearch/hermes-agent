@@ -2567,11 +2567,18 @@ class BasePlatformAdapter(ABC):
 
     async def send_multiple_images(
         self, chat_id: str, images: List[Tuple[str, str]],
-        metadata: Optional[Dict[str, Any]] = None, human_delay: float = 0.0) -> None:
+        metadata: Optional[Dict[str, Any]] = None,
+        human_delay: float = 0.0) -> Optional[SendResult]:
         """Send ``(url, alt)`` images (``http(s)://`` or ``file://``) one by one (GIFs via
         ``send_animation``, local files via ``send_image_file``); override to bundle natively
-        (Signal)."""
+        (Signal). Returns an aggregate ``SendResult`` (any image delivered counts as success,
+        mirroring the ``delivery_succeeded or ...`` roll-up) for delivery-outcome accounting, or
+        ``None`` when there was nothing to send; overrides may keep returning ``None`` to opt
+        their platform out of image-delivery accounting."""
         from urllib.parse import unquote as _unquote
+        if not images:
+            return None
+        sent_any = False
         for image_url, alt_text in images:
             if human_delay > 0:
                 await asyncio.sleep(human_delay)
@@ -2588,8 +2595,10 @@ class BasePlatformAdapter(ABC):
                     chat_id=chat_id, **url_kw, caption=alt_text or None, metadata=metadata)
                 if not img_result.success:
                     logger.error("[%s] Failed to send image: %s", self.name, img_result.error)
+                sent_any = sent_any or bool(img_result.success)
             except Exception as img_err:
                 logger.error("[%s] Error sending image: %s", self.name, img_err, exc_info=True)
+        return SendResult(success=sent_any, error=None if sent_any else "no image delivered")
 
     async def send_image(
         self, chat_id: str, image_url: str, caption: Optional[str] = None,
@@ -3698,7 +3707,8 @@ class BasePlatformAdapter(ABC):
 
     async def _deliver_media_attachments(
         self, event: MessageEvent, media_files: list, local_files: list, *,
-        force_document_attachments: bool, human_delay: float, metadata: Dict[str, Any]) -> None:
+        force_document_attachments: bool, human_delay: float, metadata: Dict[str, Any],
+        record_delivery: Optional[Callable] = None) -> None:
         """Deliver MEDIA-tag files and detected local files by type: images batched via
         ``send_multiple_images`` unless ``[[as_document]]``; otherwise audio → send_voice (MEDIA
         tags only, never bare local files), video → send_video, else send_document. Every failure is
@@ -3711,7 +3721,8 @@ class BasePlatformAdapter(ABC):
         _image_paths += [p for p in local_files if _as_image(p)]
         if _image_paths:
             await self._send_image_batch(
-                event, [(f"file://{_quote(p)}", "") for p in _image_paths], metadata, human_delay)
+                event, [(f"file://{_quote(p)}", "") for p in _image_paths], metadata, human_delay,
+                record_delivery=record_delivery)
         chat_id = event.source.chat_id
 
         async def _send_one(path: str, *, is_voice: bool, media_tag: bool) -> None:
@@ -3726,6 +3737,8 @@ class BasePlatformAdapter(ABC):
                 result = await self.send_video(chat_id=chat_id, video_path=path, metadata=metadata)
             else:
                 result = await self.send_document(chat_id=chat_id, file_path=path, metadata=metadata)
+            if record_delivery is not None:
+                record_delivery(result)
             if not result.success:
                 logger.warning("[%s] Failed to send %s (%s): %s", self.name,
                                "media" if media_tag else "local file", ext, result.error)
@@ -3746,13 +3759,20 @@ class BasePlatformAdapter(ABC):
                     logger.error("[%s] Error sending local file %s: %s", self.name, path, err)
 
     async def _send_image_batch(
-        self, event: MessageEvent, images: list, metadata: Dict[str, Any], human_delay: float) -> None:
-        """Batch-send images; a failure is logged (never raised) so other attachments still go."""
+        self, event: MessageEvent, images: list, metadata: Dict[str, Any], human_delay: float,
+        record_delivery: Optional[Callable] = None) -> None:
+        """Batch-send images; a failure is logged (never raised) so other attachments still go.
+        Feeds the platform's aggregate result (``None`` = override opted out) to
+        ``record_delivery`` so media-only turns count as delivered (#106153)."""
         try:
-            await self.send_multiple_images(
+            batch_result = await self.send_multiple_images(
                 chat_id=event.source.chat_id, images=images, metadata=metadata, human_delay=human_delay)
+            if record_delivery is not None and batch_result is not None:
+                record_delivery(batch_result)
         except Exception as batch_err:
             logger.warning("[%s] Error batching images: %s", self.name, batch_err, exc_info=True)
+            if record_delivery is not None:
+                record_delivery(SendResult(success=False, error=str(batch_err)))
 
     async def _send_final_text(
         self, event: MessageEvent, session_key: str, text_content: str, metadata: Dict[str, Any],
@@ -3791,18 +3811,21 @@ class BasePlatformAdapter(ABC):
         return _thread_metadata
 
     async def _deliver_attachments(self, event: MessageEvent, extracted: "_ExtractedResponse",
-                                   metadata: Dict[str, Any], *, anything_sent: bool) -> None:
+                                   metadata: Dict[str, Any], *, anything_sent: bool,
+                                   record_delivery: Optional[Callable] = None) -> None:
         """Send extracted image URLs, MEDIA files and bare local files (human-paced),
-        then fail loudly if a non-empty response produced nothing deliverable."""
+        then fail loudly if a non-empty response produced nothing deliverable. Attachment
+        sends feed ``record_delivery`` so the processing outcome reflects them (#106153)."""
         human_delay = self._get_human_delay()
         images, media_files, local_files = extracted.images, extracted.media_files, extracted.local_files
         if images:
             logger.info("[%s] Extracted %d image(s) to send as attachments", self.name, len(images))
-            await self._send_image_batch(event, images, metadata, human_delay)
+            await self._send_image_batch(event, images, metadata, human_delay,
+                                         record_delivery=record_delivery)
         await self._deliver_media_attachments(
             event, media_files, local_files,
             force_document_attachments=extracted.force_document_attachments,
-            human_delay=human_delay, metadata=metadata)
+            human_delay=human_delay, metadata=metadata, record_delivery=record_delivery)
         if not (anything_sent or images or local_files or media_files) and extracted.pre_extract.strip():
             logger.error("[%s] response_delivery_dropped: non-empty response "
                          "(%d chars) produced no delivered message or attachment "
@@ -3960,7 +3983,8 @@ class BasePlatformAdapter(ABC):
                         is_ephemeral_response, _ephemeral_ttl, _record_delivery)
                 await self._deliver_attachments(
                     event, extracted, _final_thread_metadata,
-                    anything_sent=delivery_attempted or _tts_caption_delivered)
+                    anything_sent=delivery_attempted or _tts_caption_delivered,
+                    record_delivery=_record_delivery)
             processing_ok = delivery_succeeded if delivery_attempted else not bool(response)
             # Clean up the per-turn streaming-TTS flag.
             self._streaming_tts_completed_turns.discard(self._streaming_tts_turn_key(

@@ -233,16 +233,18 @@ class TestMcpToolLayer:
         pytest.importorskip("mcp", reason="MCP SDK not installed")
         import asyncio
 
+        from mcp.server.mcpserver.context import Context
         from mcp_serve import EventBridge, create_mcp_server
 
         _place_pending(tmp_path, APPROVAL_ID)
         bridge = EventBridge()
         server = create_mcp_server(event_bridge=bridge)
+        context = Context(mcp_server=server)
 
         loop = asyncio.new_event_loop()
         try:
             listed = json.loads(loop.run_until_complete(
-                server._tool_manager.call_tool("permissions_list_open", {}, None)))
+                server._tool_manager.call_tool("permissions_list_open", {}, context)))
             assert listed["count"] == 1
             assert listed["approvals"][0]["id"] == APPROVAL_ID
 
@@ -250,7 +252,7 @@ class TestMcpToolLayer:
                 server._tool_manager.call_tool(
                     "permissions_respond",
                     {"id": APPROVAL_ID, "decision": "allow-always"},
-                    None,
+                    context,
                 )))
             # No gateway is running in this test, so the decision is written
             # but unconfirmed — the mapped native choice must be reported.
@@ -261,7 +263,7 @@ class TestMcpToolLayer:
                 server._tool_manager.call_tool(
                     "permissions_respond",
                     {"id": APPROVAL_ID, "decision": "approve"},
-                    None,
+                    context,
                 )))
             assert "error" in invalid
         finally:

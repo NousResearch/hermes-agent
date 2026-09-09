@@ -28,8 +28,14 @@ import run_agent
 import tui_gateway.server as server
 
 
-def _build(tier: str | None, model: str = "gpt-5.4"):
-    """Call _make_agent with the runtime stubbed out, returning AIAgent kwargs."""
+def _build(tier: str | None, model: str = "gpt-5.4", provider: str = "openai",
+           base_url: str = "https://api.openai.com/v1"):
+    """Call _make_agent with the runtime stubbed out, returning AIAgent kwargs.
+
+    The default runtime is a first-party OpenAI route: tier params are gated to the
+    first-party endpoint that bills for them (``_fast_mode_route_supported``), so an
+    aggregator runtime deliberately yields no overrides — pinned by the gate test below.
+    """
     captured = {}
 
     class _Agent:
@@ -40,8 +46,8 @@ def _build(tier: str | None, model: str = "gpt-5.4"):
     resolution.used_fallback = False
     resolution.selected_model = model
     resolution.runtime = {
-        "provider": "openrouter",
-        "base_url": "https://openrouter.ai/api/v1",
+        "provider": provider,
+        "base_url": base_url,
         "api_key": "***",
         "api_mode": "chat_completions",
         "command": None,
@@ -56,7 +62,7 @@ def _build(tier: str | None, model: str = "gpt-5.4"):
         # HERMES_HOME and pollute later profile-scoped discovery tests.
         patch("hermes_cli.mcp_startup.wait_for_mcp_discovery"),
         patch.object(server, "_load_service_tier", return_value=tier),
-        patch.object(server, "_resolve_startup_runtime", return_value=(model, "openrouter")),
+        patch.object(server, "_resolve_startup_runtime", return_value=(model, provider)),
         patch.object(server, "_resolve_runtime_with_fallback", return_value=resolution),
         patch.object(server, "_resolve_model", return_value=model),
         patch.object(server, "_agent_cbs", return_value={}),
@@ -93,7 +99,18 @@ def test_no_tier_sends_no_overrides():
 
 def test_anthropic_flex_sends_nothing():
     """Anthropic has no flex equivalent — must not fall back to speed=fast."""
-    kwargs = _build("flex", model="claude-opus-4-8")
+    kwargs = _build("flex", model="claude-opus-4-8",
+                    provider="anthropic", base_url="https://api.anthropic.com")
+
+    assert not kwargs.get("request_overrides")
+
+
+def test_aggregator_route_gates_the_tier():
+    """First-party tier params never ride aggregator routes: OpenRouter strips
+    ``service_tier`` (charging nothing) or 400s on it, so the route gate drops
+    the override instead of pinning it (parity with the gateway/CLI builders)."""
+    kwargs = _build("flex", model="openrouter/openai/gpt-4.1",
+                    provider="openrouter", base_url="https://openrouter.ai/api/v1")
 
     assert not kwargs.get("request_overrides")
 

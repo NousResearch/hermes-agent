@@ -137,8 +137,9 @@ def _install_stub_server(name: str = "wpcom"):
     ],
     ids=["stdio", "http"],
 )
+@pytest.mark.parametrize("application_error", [False, True], ids=["success", "application-error"])
 def test_call_tool_handler_rebuilds_configured_server_transport(
-    monkeypatch, tmp_path, transport_config, expected_route
+    monkeypatch, tmp_path, transport_config, expected_route, application_error
 ):
     """The real server run loop selects and rebuilds its configured transport."""
     from anyio import ClosedResourceError
@@ -160,7 +161,7 @@ def test_call_tool_handler_rebuilds_configured_server_transport(
             if call_count["n"] == 1:
                 raise ClosedResourceError
             result = MagicMock()
-            result.is_error = False
+            result.is_error = application_error
             result.content = [MagicMock(type="text", text="reconnected")]
             result.structured_content = None
             return result
@@ -202,7 +203,7 @@ def test_call_tool_handler_rebuilds_configured_server_transport(
             assert parsed["outcome_uncertain"] is True, parsed
             assert call_count["n"] == 1
         else:
-            assert parsed == {"result": "reconnected"}
+            assert parsed == {"error" if application_error else "result": "reconnected"}
             assert call_count["n"] == 2
         assert routes == [expected_route, expected_route]
         assert configs == [transport_config, transport_config]

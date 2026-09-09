@@ -133,14 +133,13 @@ def _lookup_reconnectable_server(server_name: str, require_loop: bool = False):
 
 def _retry_once(server_name: str, retry_call, op_description: str, what: str):
     """Re-run ``retry_call`` after a recovery step. Returns the result (closing the breaker)
-    when it is not an error payload; None when the retry raised or errored (caller falls through)."""
+    when the RPC completed; None when the retry raised (caller falls through)."""
     try:
         result = retry_call()
     except Exception as retry_exc:
         logger.warning("MCP %s/%s retry after %s failed: %s", server_name, op_description, what, retry_exc)
         return None
-    if _result_is_error(result):
-        return None
+    # An application error still proves the recovered transport completed a round-trip.
     _core._reset_server_error(server_name)
     return result
 

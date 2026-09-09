@@ -120,11 +120,13 @@ def _restart_managed_dashboard_service(reason: str, unit: str = _DASHBOARD_SYSTE
     print(f"\n⟲ Restarting managed dashboard service ({reason})")
 
     scope_label = "systemctl --user" if scope else "sudo systemctl"
-    commands = [("systemctl", *scope, "restart", unit)]
+    commands = [("systemctl", *scope, "--no-ask-password", "restart", unit)]
     if not scope:
         # System units may require privilege escalation; user units must use
         # the user manager directly and never prompt for sudo.
-        commands.append(("sudo", "-n", "systemctl", "restart", unit))
+        commands.append(
+            ("sudo", "-n", "systemctl", "--no-ask-password", "restart", unit)
+        )
 
     errors: list[str] = []
     for command in commands:
@@ -195,13 +197,19 @@ def _get_pid_cgroup_path(pid: int) -> str | None:
 def _try_restart_systemd_service(svc_name: str, cgroup_path: str | None = None) -> bool:
     """Restart *svc_name* via systemctl (``--user`` for user-scope units). True on success.
 
-    Unknown scope tries system first, then user.
+    System units use non-interactive sudo for non-root callers, and every command
+    disables polkit prompts. Unknown scope tries system first, then user.
     """
+    from hermes_cli.update_cmd_fleet import _needs_sudo
+
     scope = _extract_scope_from_cgroup(cgroup_path) if cgroup_path else None
-    system_cmd = ["systemctl", "restart", svc_name]
-    user_cmd = ["systemctl", "--user", "restart", svc_name]
+    system_cmd = ("system", ["systemctl"])
+    user_cmd = ("user", ["systemctl", "--user"])
     candidates = {"user": [user_cmd], "system": [system_cmd]}.get(scope, [system_cmd, user_cmd])
-    for cmd in candidates:
+    for candidate_scope, prefix in candidates:
+        cmd = [*prefix, "--no-ask-password", "restart", svc_name]
+        if _needs_sudo(candidate_scope):
+            cmd = ["sudo", "-n", *cmd]
         try:
             if _run_probe(cmd, timeout=15).returncode == 0:
                 return True

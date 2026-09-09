@@ -4559,6 +4559,32 @@ def _resolve_xai_oauth_branch(req: _ResolveRequest) -> _ResolveResult:
                           "OAuth token found (run: hermes model -> xAI Grok OAuth — SuperGrok / Premium+)")
 
 
+def _named_custom_key_for_base_url(req: _ResolveRequest, custom_base: str) -> Any:
+    """Credential for the configured custom-provider entry whose endpoint equals ``custom_base``.
+
+    Closes the #34651 credential gap: a named custom provider pinned in ``auxiliary.<task>`` alongside a
+    task-level ``base_url`` (the shape the desktop GUI persists, #65254) is flattened to bare ``custom``
+    before ``_resolve_named_custom_branch`` can read the entry's own key — the entry is only reachable
+    from its URL here. Honors ``req.api_mode`` (skip when the caller already pinned a transport), and
+    never returns a key for an entry whose own ``api_mode`` contradicts the requested one (an
+    anthropic_messages entry must not donate a key to a chat_completions request and vice versa).
+    """
+    if not custom_base:
+        return ""
+    try:
+        from hermes_cli.runtime_provider import find_custom_provider_entry
+        entry = find_custom_provider_entry(custom_base)
+    except ImportError:
+        return ""
+    if not entry:
+        return ""
+    if req.api_mode:
+        entry_mode = str(entry.get("api_mode") or "").strip().lower()
+        if entry_mode and entry_mode != str(req.api_mode).strip().lower():
+            return ""
+    return _named_custom_api_key(entry, str(entry.get("name") or "custom"), custom_base) or ""
+
+
 def _resolve_custom_branch(req: _ResolveRequest) -> _ResolveResult:
     """Custom endpoint (OPENAI_BASE_URL + OPENAI_API_KEY)."""
     provider, model, main_runtime = req.provider, req.model, req.main_runtime
@@ -4572,6 +4598,7 @@ def _resolve_custom_branch(req: _ResolveRequest) -> _ResolveResult:
             wrap_base = (req.explicit_base_url or "").strip().rstrip("/")
         custom_key = (
             (req.explicit_api_key or "").strip()
+            or _named_custom_key_for_base_url(req, custom_base)
             or _scoped_key_env("OPENAI_API_KEY")
             or _read_main_api_key_if_same_host(custom_base)
             or "no-key-required"  # local servers don't need auth
@@ -4643,7 +4670,14 @@ def _resolve_named_custom_branch(req: _ResolveRequest) -> Optional[_ResolveResul
     if not custom_entry:
         return None
     custom_base = (custom_entry.get("base_url") or "").strip()
-    custom_key = _named_custom_api_key(custom_entry, provider, custom_base)
+    # Explicit per-task api_key (e.g. auxiliary.vision.api_key) outranks the entry's stored key —
+    # #96232: the entry may deliberately leave api_key empty and carry credentials elsewhere.
+    custom_key = _named_custom_api_key(custom_entry, provider, custom_base) if req.explicit_api_key is None \
+        else ((req.explicit_api_key or "").strip() or _named_custom_api_key(custom_entry, provider, custom_base))
+    if custom_key == "no-key-required" and req.explicit_api_key:
+        # An explicit key that failed to parse as a string (callable) or came back empty must not
+        # degrade to the placeholder while the caller supplied a real credential.
+        custom_key = req.explicit_api_key
     if custom_key == "no-key-required":
         logger.warning("resolve_provider_client: named custom provider %r has no resolvable "
                        "api_key — request will be sent with placeholder no-key-required "
@@ -5147,7 +5181,8 @@ def resolve_vision_provider_client(
                 return _finalize_vision_client(requested, client, final_model, resolved_model, async_mode)
         # Fallback: try without explicit base_url (old behavior)
     client, final_model = _get_cached_client(
-        requested, resolved_model, async_mode, api_mode=resolved_api_mode, main_runtime=runtime, is_vision=True,
+        requested, resolved_model, async_mode, api_key=resolved_api_key or None,
+        api_mode=resolved_api_mode, main_runtime=runtime, is_vision=True,
     )
     return requested, client, (final_model if client is not None else None)
 

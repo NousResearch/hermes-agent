@@ -14,6 +14,7 @@ job of ``include_inactive`` (audit / debug reads).
 
 import json
 import sqlite3
+import threading
 import tracemalloc
 
 import pytest
@@ -224,6 +225,49 @@ class TestDisplayDedupe:
 
         assert page[0]["content"] == "L" * payload_size
         assert peak < payload_size * 5
+
+    def test_read_only_legacy_page_uses_one_snapshot(self, tmp_path):
+        path = tmp_path / "read-only-legacy-snapshot.db"
+        writer = SessionDB(path)
+        sid = "read-only-legacy-snapshot"
+        writer.create_session(sid, source="desktop")
+        writer.append_message(sid, "assistant", "visible-at-scan")
+        writer._execute_write(lambda conn: conn.execute(
+            "UPDATE messages SET display_order = NULL, display_identity = NULL WHERE session_id = ?",
+            (sid,),
+        ))
+        reader = SessionDB(path, read_only=True)
+        scanned = threading.Event()
+        written = threading.Event()
+        display_identity = reader._display_identity
+
+        def pause_after_scan(key):
+            identity = display_identity(key)
+            scanned.set()
+            assert written.wait(5)
+            return identity
+
+        reader._display_identity = pause_after_scan
+
+        def rewind_selected_row():
+            assert scanned.wait(5)
+            writer._execute_write(lambda conn: conn.execute(
+                "UPDATE messages SET content = ?, active = 0, compacted = 0 WHERE session_id = ?",
+                ("hidden-after-scan", sid),
+            ))
+            written.set()
+
+        mutation = threading.Thread(target=rewind_selected_row)
+        mutation.start()
+        try:
+            page = reader.get_messages(sid, include_compacted=True, latest=True, limit=1)
+        finally:
+            mutation.join(timeout=5)
+            reader.close()
+            writer.close()
+
+        assert not mutation.is_alive()
+        assert [(row["active"], row["content"]) for row in page] == [(1, "visible-at-scan")]
 
     def test_display_paging_and_append_work_is_bounded(self, db):
         """Page and identity-lookup work scale with the page, not the transcript: 10x rows

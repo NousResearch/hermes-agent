@@ -755,36 +755,39 @@ class SessionMessagesMixin:
         """Project a legacy read-only display page without retaining transcript payloads."""
         representatives: Dict[bytes, Tuple[int, int]] = {}
         with self._read_ctx() as conn:
-            rows = conn.execute(
-                "SELECT id, role, content, timestamp, tool_call_id, tool_calls, tool_name, active, "
-                "display_kind, display_metadata FROM messages INDEXED BY idx_messages_session_id "
-                "WHERE session_id = ? AND (active = 1 OR compacted = 1) ORDER BY id ASC",
-                (session_id,))
-            for row in rows:
-                identity = self._display_identity(self._display_dedupe_key(row))
-                current = representatives.get(identity)
-                candidate = (row["active"], row["id"])
-                if current is None or candidate > current:
-                    representatives[identity] = candidate
-            rows.close()
+            conn.execute("BEGIN")
+            try:
+                rows = conn.execute(
+                    "SELECT id, role, content, timestamp, tool_call_id, tool_calls, tool_name, active, "
+                    "display_kind, display_metadata FROM messages INDEXED BY idx_messages_session_id "
+                    "WHERE session_id = ? AND (active = 1 OR compacted = 1) ORDER BY id ASC",
+                    (session_id,))
+                for row in rows:
+                    identity = self._display_identity(self._display_dedupe_key(row))
+                    current = representatives.get(identity)
+                    candidate = (row["active"], row["id"])
+                    if current is None or candidate > current:
+                        representatives[identity] = candidate
+                rows.close()
 
-        identities = list(representatives)
-        if latest:
-            end = max(0, len(identities) - offset)
-            start = 0 if limit is None else max(0, end - limit)
-            identities = identities[start:end]
-        else:
-            identities = identities[offset:] if limit is None else identities[offset:offset + limit]
-        selected_ids = [representatives[identity][1] for identity in identities]
-        if not selected_ids:
-            return []
-
-        selected = {}
-        for start in range(0, len(selected_ids), 900):
-            chunk = selected_ids[start:start + 900]
-            selected.update({row["id"]: row for row in self._read_all(
-                f"SELECT * FROM messages WHERE id IN ({_placeholders(chunk)})", chunk)})
-        return [selected[row_id] for row_id in selected_ids]
+                identities = list(representatives)
+                if latest:
+                    end = max(0, len(identities) - offset)
+                    start = 0 if limit is None else max(0, end - limit)
+                    identities = identities[start:end]
+                else:
+                    identities = identities[offset:] if limit is None else identities[offset:offset + limit]
+                selected_ids = [representatives[identity][1] for identity in identities]
+                selected = {}
+                for start in range(0, len(selected_ids), 900):
+                    chunk = selected_ids[start:start + 900]
+                    selected.update({row["id"]: row for row in conn.execute(
+                        f"SELECT * FROM messages WHERE session_id = ? "
+                        f"AND (active = 1 OR compacted = 1) AND id IN ({_placeholders(chunk)})",
+                        (session_id, *chunk))})
+                return [selected[row_id] for row_id in selected_ids if row_id in selected]
+            finally:
+                conn.execute("ROLLBACK")
 
     def _row_to_message_dict(self, row, *, warn_context: str, summary_flag: bool) -> Dict[str, Any]:
         """``dict(row)`` with content/tool_calls/display_metadata decoded; *summary_flag* keeps

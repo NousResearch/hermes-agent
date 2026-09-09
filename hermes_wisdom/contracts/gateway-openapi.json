@@ -32,6 +32,12 @@
         "in": "query",
         "name": "token",
         "description": "Short-lived agent-aud token authenticating the instance."
+      },
+      "WisdomManagerEmailBearer": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "JWT",
+        "description": "Portal service JWT only: RS256, pinned Portal issuer/JWKS, aud wisdom:manager-email, sub service:wisdom-manager-email, purpose wisdom_manager_email, maximum lifetime 120 seconds. User, agent and connector-admin tokens are not accepted."
       }
     },
     "schemas": {
@@ -569,6 +575,282 @@
           "outcome",
           "attestation",
           "duplicate"
+        ],
+        "additionalProperties": false
+      },
+      "WisdomManagerEmailContextRequest": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 256
+                },
+                "org_id": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 256
+                }
+              },
+              "required": [
+                "id",
+                "org_id"
+              ],
+              "additionalProperties": false
+            },
+            "minItems": 1,
+            "maxItems": 10
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "additionalProperties": false
+      },
+      "WisdomManagerEmailContextResponse": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "oneOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 256
+                    },
+                    "org_id": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 256
+                    },
+                    "state": {
+                      "type": "string",
+                      "enum": [
+                        "pending"
+                      ]
+                    },
+                    "proposal_n": {
+                      "type": "integer",
+                      "exclusiveMinimum": 0
+                    },
+                    "skill_slug": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 256
+                    },
+                    "draft_id": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 256
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "org_id",
+                    "state",
+                    "proposal_n",
+                    "skill_slug",
+                    "draft_id"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 256
+                    },
+                    "org_id": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 256
+                    },
+                    "state": {
+                      "type": "string",
+                      "enum": [
+                        "resolved"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "org_id",
+                    "state"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 256
+                    },
+                    "org_id": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 256
+                    },
+                    "state": {
+                      "type": "string",
+                      "enum": [
+                        "unavailable"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "org_id",
+                    "state"
+                  ],
+                  "additionalProperties": false
+                }
+              ]
+            },
+            "maxItems": 10
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "additionalProperties": false
+      },
+      "WisdomManagerEmailClaimRequest": {
+        "type": "object",
+        "properties": {
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100
+          }
+        },
+        "required": [
+          "limit"
+        ],
+        "additionalProperties": false
+      },
+      "WisdomManagerEmailClaimResponse": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "org_id": {
+                  "type": "string"
+                },
+                "proposal_n": {
+                  "type": "integer",
+                  "exclusiveMinimum": 0
+                },
+                "skill_slug": {
+                  "type": "string"
+                },
+                "cadence": {
+                  "type": "string",
+                  "enum": [
+                    "immediate",
+                    "daily"
+                  ]
+                },
+                "batch_key": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "created_at": {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                "claim_token": {
+                  "type": "string"
+                },
+                "expires_at": {
+                  "type": "string",
+                  "format": "date-time"
+                }
+              },
+              "required": [
+                "id",
+                "org_id",
+                "proposal_n",
+                "skill_slug",
+                "cadence",
+                "batch_key",
+                "created_at",
+                "claim_token",
+                "expires_at"
+              ],
+              "additionalProperties": false
+            },
+            "maxItems": 100
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "additionalProperties": false
+      },
+      "WisdomManagerEmailAckRequest": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "org_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "claim_token": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "intake_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          }
+        },
+        "required": [
+          "id",
+          "org_id",
+          "claim_token",
+          "intake_id"
+        ],
+        "additionalProperties": false
+      },
+      "WisdomManagerEmailAckResponse": {
+        "type": "object",
+        "properties": {
+          "state": {
+            "type": "string",
+            "enum": [
+              "forwarded"
+            ]
+          }
+        },
+        "required": [
+          "state"
         ],
         "additionalProperties": false
       },
@@ -12964,6 +13246,247 @@
           },
           "503": {
             "description": "Agent-led surface not configured on this deployment.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/sync/wisdom/manager-email/review-context": {
+      "post": {
+        "operationId": "resolveWisdomManagerEmailReviewContext",
+        "tags": [
+          "wisdom"
+        ],
+        "security": [
+          {
+            "WisdomManagerEmailBearer": []
+          }
+        ],
+        "summary": "Resolve current review state for acknowledged Portal notices.",
+        "description": "Read-only, service-only snapshot for 1-10 notification IDs and their organizations. Only forwarded receipts can resolve a proposal; callers cannot select a proposal, owner or draft. Pending results include the authoritative proposal number, skill slug and owner-consented draft ID, never historical prose, addresses, raw tokens or private content. Resolved means a terminal proposal decision. Missing, mismatched or transitional provenance is unavailable, not resolved. This is not authorization to publish and does not guarantee state remains unchanged after the read. Portal must resolve current eligible recipients and its own organization slug before rendering links. Responses are no-store.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WisdomManagerEmailContextRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Ordered current review results; unavailable items must not be treated as resolved.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WisdomManagerEmailContextResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Malformed or unsupported request; no client clock accepted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid service authority.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Body exceeds 4096 bytes.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Handoff unavailable. No receipt established; retry through the lease/receipt contract.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/sync/wisdom/manager-email/claim": {
+      "post": {
+        "operationId": "claimWisdomManagerEmailIntake",
+        "tags": [
+          "wisdom"
+        ],
+        "security": [
+          {
+            "WisdomManagerEmailBearer": []
+          }
+        ],
+        "summary": "Claim manager notifications for durable Portal intake.",
+        "description": "Mounted only with WISDOM_REGISTRY=1, configured sync storage and WISDOM_MANAGER_EMAIL_HANDOFF=1 plus NOUS_PORTAL_URL. Claims span organizations for the dedicated Portal worker. Bounded oldest-first leases last 120 seconds; concurrency can return fewer than limit. Retry lost responses after expiry. Persist each intake under its notification ID before acknowledgement. Daily cadence is retained for Portal grouping, not delayed here. No email is sent. Responses are no-store and omit historical prose, recipient addresses and token hashes.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WisdomManagerEmailClaimRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Leased notifications; not proof of email delivery.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WisdomManagerEmailClaimResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Malformed or unsupported request; no client clock accepted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid service authority.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Body exceeds 4096 bytes.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Handoff unavailable. No receipt established; retry through the lease/receipt contract.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/sync/wisdom/manager-email/acknowledge": {
+      "post": {
+        "operationId": "acknowledgeWisdomManagerEmailIntake",
+        "tags": [
+          "wisdom"
+        ],
+        "security": [
+          {
+            "WisdomManagerEmailBearer": []
+          }
+        ],
+        "summary": "Acknowledge durable Portal intake, not email delivery.",
+        "description": "intake_id must equal id and identify an already committed Portal intake. Requires the exact organization and latest claim token. Idempotent for that owner after forwarding. Expiry alone does not reject a late acknowledgement, but ownership rotation does. On conflict, re-claim and replay intake idempotently; never blindly resend email.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WisdomManagerEmailAckRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Forwarded to Portal; email outcome remains separate.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WisdomManagerEmailAckResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Malformed or unsupported request; no client clock accepted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid service authority.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Unknown or mismatched receipt/organization/claim owner.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Body exceeds 4096 bytes.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Handoff unavailable. No receipt established; retry through the lease/receipt contract.",
             "content": {
               "application/json": {
                 "schema": {

@@ -1,4 +1,9 @@
-import { isGatewayReauthRequired, isGatewayWebSocketUrl, JsonRpcGatewayError, resolveGatewayWsUrl } from '@hermes/shared'
+import {
+  isGatewayReauthRequired,
+  isGatewayWebSocketUrl,
+  JsonRpcGatewayError,
+  resolveGatewayWsUrl
+} from '@hermes/shared'
 import { useEffect, useRef } from 'react'
 
 import { shouldApplyPostBootProgressError } from '@/components/boot-failure-reauth'
@@ -1077,7 +1082,9 @@ export function useGatewayBoot({
         // Only a valid WebSocket dial against a remote descriptor counts as a
         // transient renderer-side failure; URL and capability failures stay
         // terminal at their own boundaries.
-        if (conn.mode === 'remote' && isGatewayWebSocketUrl(wsUrl)) {stage = 'dialing'}
+        if (conn.mode === 'remote' && isGatewayWebSocketUrl(wsUrl)) {
+          stage = 'dialing'
+        }
         await gateway.connect(wsUrl)
         stage = 'connected'
 

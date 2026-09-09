@@ -2341,8 +2341,7 @@ export const zh: Translations = {
     count: count => `${count} 个任务`,
     modelImpact: {
       title: '定时任务将继续使用原模型',
-      message: count =>
-        `${count} 个未固定的定时任务将继续使用创建时的模型运行。固定它们或设置 cron.model 以迁移。`,
+      message: count => `${count} 个未固定的定时任务将继续使用创建时的模型运行。固定它们或设置 cron.model 以迁移。`,
       detailMore: (names, remaining) => `${names}，以及另外 ${remaining} 个`,
       review: '检查定时任务',
       saveFailed: 'Hermes 未保存该模型更改。',

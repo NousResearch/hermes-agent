@@ -22,6 +22,7 @@ vi.mock('@/hermes', async () => ({
   getHermesConfigSchema: () => getHermesConfigSchema(),
   saveHermesConfig: (config: unknown, profile?: string) => saveHermesConfig(config, profile),
   getElevenLabsVoices: () => getElevenLabsVoices(),
+  profileScopeKey: (scope: { connectionId: string; profile: string }) => `${scope.connectionId}::${scope.profile}`,
   setApiRequestProfile: () => {}
 }))
 
@@ -35,6 +36,7 @@ vi.mock('../hooks/use-on-profile-switch', () => ({
 // scope chip it renders also reads the selected profile and the loud-note
 // selector, so those are stubbed to the single-profile default shape.
 vi.mock('@/store/settings-scope', () => ({
+  $settingsOwner: atom({ connectionId: 'local', profile: 'default' }),
   $settingsRequestProfile: atom<string | undefined>(undefined),
   $settingsScopeEditsNonDefault: atom(false),
   $settingsScopeOverride: atom<null | string>(null),

@@ -162,16 +162,16 @@ export function getHermesConfigRecord(
   })
 }
 
-export function getHermesConfigDefaults(): Promise<HermesConfigRecord> {
-  return fetchBoundConfigRecord(undefined, {
+export function getHermesConfigDefaults(profile?: ProfileScope): Promise<HermesConfigRecord> {
+  return fetchBoundConfigRecord(profile, {
     path: '/api/config/defaults',
     timeoutMs: STARTUP_REQUEST_TIMEOUT_MS
   })
 }
 
-export function getHermesConfigSchema(profile?: null | string): Promise<ConfigSchemaResponse> {
+export function getHermesConfigSchema(profile?: ProfileScope): Promise<ConfigSchemaResponse> {
   return hermesApi<ConfigSchemaResponse>({
-    ...profileScoped(profile),
+    ...capabilityScoped(profile),
     path: '/api/config/schema'
   })
 }

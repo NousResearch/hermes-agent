@@ -23,6 +23,7 @@ import type {
   AuxiliaryTaskAssignment,
   MoaConfigResponse,
   MoaModelSlot,
+  ProfileScope,
   StaleAuxAssignment
 } from '@/hermes'
 import { useI18n } from '@/i18n'
@@ -222,11 +223,8 @@ interface ModelSettingsProps {
   subpage?: string
   /** Notified after the main model is applied, so live UI stores can sync. */
   onMainModelChanged?: (provider: string, model: string) => void
-  /** Shared settings "Applies to" scope: a concrete profile to edit instead of
-   *  the app's active one, or undefined to follow the active profile (default).
-   *  Request-shaped on purpose — the API helpers treat `null` as "deliberately
-   *  target the primary/default backend", so this prop never carries null. */
-  scopeProfile?: string
+  /** ConfigSettings supplies a frozen connection/profile pin for this mount. */
+  scopeProfile?: ProfileScope
 }
 
 export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: ModelSettingsProps) {
@@ -343,13 +341,22 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
     [m.loadFailed, scopeProfile, setCaughtError]
   )
 
+  // eslint-disable-next-line no-restricted-syntax -- invalidate async work on unmount, not an atom mirror
   useEffect(() => {
     void refresh()
+
+    return () => {
+      profileEpoch.current += 1
+    }
   }, [refresh])
 
   // A profile switch swaps the backend under the mounted panel — reload for the
   // new profile (bumping the epoch first so any in-flight A request is discarded).
   useOnProfileSwitch(() => {
+    if (scopeProfile && typeof scopeProfile === 'object') {
+      return
+    }
+
     profileEpoch.current += 1
     // The panel stays mounted across profile switches, so clear the previous
     // profile's draft selection before loading the new profile's source of
@@ -705,7 +712,7 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
 
       // Live UI stores mirror the ACTIVE profile's model; a scoped apply
       // changed a different profile and must not repaint them.
-      if (scopeProfile == null) {
+      if (scopeProfile == null || typeof scopeProfile === 'object') {
         onMainModelChanged?.(provider, model)
       }
 

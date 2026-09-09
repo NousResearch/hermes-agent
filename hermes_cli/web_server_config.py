@@ -74,6 +74,11 @@ _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
         "description": "Context window override (0 = auto-detect from model metadata)",
         "category": "general",
     },
+    "models.openrouter.free_only": {
+        "type": "boolean",
+        "description": "Show only free OpenRouter model choices. Keeps the active model and explicit model IDs unchanged; this is not a billing limit.",
+        "category": "general",
+    },
     "terminal.backend": _select(
         "Terminal execution backend",
         "local", "docker", "ssh", "modal", "daytona", "vercel_sandbox", "singularity",

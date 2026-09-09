@@ -67,6 +67,63 @@ def _env_field(platform, key):
     return next(f for f in platform["env_vars"] if f["key"] == key)
 
 
+def test_scoped_platform_without_required_env_is_configured_when_declared(
+    client, isolated_profiles, monkeypatch
+):
+    """QR/onboarding platforms with no required env must use their config declaration."""
+    import hermes_cli.web_routers.messaging as messaging
+
+    worker_home = isolated_profiles["worker_alpha"]
+    (worker_home / "config.yaml").write_text(
+        yaml.safe_dump({"platforms": {"whatsapp": {"enabled": True}}}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(messaging, "load_env", lambda: {})
+    monkeypatch.setattr(messaging, "load_config", lambda: {"platforms": {"whatsapp": {"enabled": True}}})
+
+    resp = client.get(
+        "/api/messaging/platforms", params={"profile": "worker_alpha"}
+    )
+
+    assert resp.status_code == 200
+    whatsapp = next(p for p in resp.json()["platforms"] if p["id"] == "whatsapp")
+    assert whatsapp["configured"] is True
+
+
+def test_scoped_platform_with_onepassword_mapping_is_configured(
+    client, isolated_profiles, monkeypatch
+):
+    """Profile-scoped dashboard reads must recognize secret-source mappings."""
+    import hermes_cli.web_routers.messaging as messaging
+
+    worker_home = isolated_profiles["worker_alpha"]
+    (worker_home / "config.yaml").write_text(
+        yaml.safe_dump({
+            "platforms": {"telegram": {"enabled": True}},
+            "secrets": {"onepassword": {"env": {"TELEGRAM_BOT_TOKEN": "op://vault/item/credential"}}},
+        }),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(messaging, "load_env", lambda: {})
+    monkeypatch.setattr(
+        messaging,
+        "load_config",
+        lambda: {
+            "platforms": {"telegram": {"enabled": True}},
+            "secrets": {"onepassword": {"env": {"TELEGRAM_BOT_TOKEN": "op://vault/item/credential"}}},
+        },
+    )
+
+    resp = client.get(
+        "/api/messaging/platforms", params={"profile": "worker_alpha"}
+    )
+
+    assert resp.status_code == 200
+    telegram = _telegram(resp.json())
+    assert telegram["configured"] is True
+    assert _env_field(telegram, "TELEGRAM_BOT_TOKEN")["is_set"] is True
+
+
 class TestProfileScopedMessagingReads:
     def test_scoped_read_does_not_show_root_credentials(
         self, client, isolated_profiles

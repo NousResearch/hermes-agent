@@ -48,11 +48,11 @@ def test_telegram_rich_and_fallback_have_same_scoped_choices(mute_view, monkeypa
 
     # The shared gateway fixture stubs the optional Telegram SDK.
     monkeypatch.setattr(
-        "plugins.platforms.telegram.adapter.InlineKeyboardButton",
+        "telegram.InlineKeyboardButton",
         lambda text, **kwargs: SimpleNamespace(text=text, **kwargs),
     )
     monkeypatch.setattr(
-        "plugins.platforms.telegram.adapter.InlineKeyboardMarkup",
+        "telegram.InlineKeyboardMarkup",
         lambda rows: SimpleNamespace(inline_keyboard=rows),
     )
 

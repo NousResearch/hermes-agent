@@ -7,7 +7,7 @@ from types import SimpleNamespace
 import pytest
 from fastapi import HTTPException
 
-from hermes_cli import web_server
+from hermes_cli.web_routers import wisdom as wisdom_routes
 from hermes_cli.web_models import (
     WisdomSyncRetryRequest,
     WisdomPublicationRequest,
@@ -37,10 +37,10 @@ def test_sync_status_bff_is_read_only_and_retry_is_explicit(monkeypatch):
     async def run(profile, fn):
         assert profile == 'research'
         return fn(Service())
-    monkeypatch.setattr(web_server, '_run_wisdom', run)
-    assert asyncio.run(web_server.get_wisdom_sync('research')) == {'can_retry': True}
+    monkeypatch.setattr(wisdom_routes, '_run_wisdom', run)
+    assert asyncio.run(wisdom_routes.get_wisdom_sync('research')) == {'can_retry': True}
     assert calls == ['read']
-    assert asyncio.run(web_server.post_wisdom_sync_retry(WisdomSyncRetryRequest(profile='research'))) == {'can_retry': False}
+    assert asyncio.run(wisdom_routes.post_wisdom_sync_retry(WisdomSyncRetryRequest(profile='research'))) == {'can_retry': False}
     assert calls == ['read', 'retry']
     from pydantic import ValidationError
     with pytest.raises(ValidationError):
@@ -59,31 +59,31 @@ def test_local_publication_bff_separates_read_from_hash_bound_confirmation(monke
     async def run(profile, fn):
         assert profile == "research"
         return fn(Service())
-    monkeypatch.setattr(web_server, "_run_wisdom", run)
-    asyncio.run(web_server.post_wisdom_publication_review(WisdomDecisionRequest(draft_id="local:1", profile="research")))
+    monkeypatch.setattr(wisdom_routes, "_run_wisdom", run)
+    asyncio.run(wisdom_routes.post_wisdom_publication_review(WisdomDecisionRequest(draft_id="local:1", profile="research")))
     assert calls == [("review", "local:1")]
     hashes = {"content": "content", "author_description": "copy", "package_manifest": "manifest"}
-    result = asyncio.run(web_server.post_wisdom_publication_submit(WisdomPublicationRequest(draft_id="local:1", profile="research", expected_hashes=hashes, publication_mode="moderated")))
+    result = asyncio.run(wisdom_routes.post_wisdom_publication_submit(WisdomPublicationRequest(draft_id="local:1", profile="research", expected_hashes=hashes, publication_mode="moderated")))
     assert result["publication_state"] == "pending_moderation"
     assert calls[-1] == ("submit", "local:1", {"expected_hashes": hashes, "publication_mode": "moderated"})
     with pytest.raises(HTTPException) as error:
-        asyncio.run(web_server.post_wisdom_publication_submit(WisdomPublicationRequest(draft_id="local:1", profile="research", expected_hashes={"content": "content"}, publication_mode="moderated")))
+        asyncio.run(wisdom_routes.post_wisdom_publication_submit(WisdomPublicationRequest(draft_id="local:1", profile="research", expected_hashes={"content": "content"}, publication_mode="moderated")))
     assert error.value.status_code == 422
 
 
 def test_setup_bff_forwards_explicit_disclosure_with_profile_scope(monkeypatch):
     calls = []
     monkeypatch.setattr(
-        web_server, "_profile_cli_args", lambda profile: ["-p", str(profile)]
+        wisdom_routes, "_profile_cli_args", lambda profile: ["-p", str(profile)]
     )
 
     def spawn(command, name):
         calls.append((command, name))
         return SimpleNamespace(pid=123)
 
-    monkeypatch.setattr(web_server, "_spawn_hermes_action", spawn)
+    monkeypatch.setattr(wisdom_routes, "_spawn_hermes_action", spawn)
     result = asyncio.run(
-        web_server.post_wisdom_setup(
+        wisdom_routes.post_wisdom_setup(
             WisdomSetupRequest(accept_disclosure=True, profile="research")
         )
     )
@@ -105,7 +105,7 @@ def test_setup_bff_forwards_explicit_disclosure_with_profile_scope(monkeypatch):
 
     with pytest.raises(HTTPException) as rejected:
         asyncio.run(
-            web_server.post_wisdom_setup(
+            wisdom_routes.post_wisdom_setup(
                 WisdomSetupRequest(accept_disclosure=False, profile="research")
             )
         )
@@ -124,10 +124,10 @@ def test_skill_detail_bff_resolves_command_slug_with_profile_scope(monkeypatch):
         calls.append(("profile", profile))
         return fn(Service())
 
-    monkeypatch.setattr(web_server, "_run_wisdom", run)
+    monkeypatch.setattr(wisdom_routes, "_run_wisdom", run)
 
     result = asyncio.run(
-        web_server.get_wisdom_skill("collective-wisdom-canary", profile="research")
+        wisdom_routes.get_wisdom_skill("collective-wisdom-canary", profile="research")
     )
 
     assert result == {"skill": {"id": "skill-1", "slug": "collective-wisdom-canary"}}
@@ -152,10 +152,10 @@ def test_version_detail_bff_preserves_skill_version_and_profile_scope(monkeypatc
         calls.append(("profile", profile))
         return fn(Service())
 
-    monkeypatch.setattr(web_server, "_run_wisdom", run)
+    monkeypatch.setattr(wisdom_routes, "_run_wisdom", run)
 
     result = asyncio.run(
-        web_server.get_wisdom_version("collective-wisdom-canary", 2, profile="research")
+        wisdom_routes.get_wisdom_version("collective-wisdom-canary", 2, profile="research")
     )
 
     assert result["version"] == {"version": 2, "explanation": "Reviewed release"}
@@ -177,7 +177,7 @@ def test_suggest_bff_preserves_profile_and_owner_approved_fields(monkeypatch) ->
         calls.append((profile, (), {}))
         return fn(Service())
 
-    monkeypatch.setattr(web_server, "_run_wisdom", run)
+    monkeypatch.setattr(wisdom_routes, "_run_wisdom", run)
     body = WisdomSuggestRequest(
         skill="work",
         local_skill_id="local-1",
@@ -187,7 +187,7 @@ def test_suggest_bff_preserves_profile_and_owner_approved_fields(monkeypatch) ->
         profile="customer-a",
     )
 
-    result = asyncio.run(web_server.post_wisdom_suggest(body))
+    result = asyncio.run(wisdom_routes.post_wisdom_suggest(body))
 
     assert result == {"network_submission": True}
     assert calls == [
@@ -219,7 +219,7 @@ def test_revise_bff_forwards_complete_content_and_hash_preconditions(
         calls.append(profile)
         return fn(Service())
 
-    monkeypatch.setattr(web_server, "_run_wisdom", run)
+    monkeypatch.setattr(wisdom_routes, "_run_wisdom", run)
     body = WisdomReviseRequest(
         draft_id="draft-1",
         author_description="Updated owner copy",
@@ -236,7 +236,7 @@ def test_revise_bff_forwards_complete_content_and_hash_preconditions(
         profile="research",
     )
 
-    result = asyncio.run(web_server.post_wisdom_revise(body))
+    result = asyncio.run(wisdom_routes.post_wisdom_revise(body))
 
     assert result == {"draft": {"id": "draft-2"}}
     assert calls == [
@@ -289,9 +289,9 @@ def test_prepared_save_and_candidate_actions_remain_profile_scoped(monkeypatch) 
         calls.append(("profile", profile))
         return fn(Service())
 
-    monkeypatch.setattr(web_server, "_run_wisdom", run)
+    monkeypatch.setattr(wisdom_routes, "_run_wisdom", run)
     monkeypatch.setattr(
-        web_server,
+        wisdom_routes,
         "_schedule_wisdom_professionalism_reviews",
         lambda profile: calls.append(("schedule", profile)),
     )
@@ -302,7 +302,7 @@ def test_prepared_save_and_candidate_actions_remain_profile_scoped(monkeypatch) 
         ),
     ]
     saved = asyncio.run(
-        web_server.post_wisdom_prepared_save(
+        wisdom_routes.post_wisdom_prepared_save(
             WisdomPreparedSaveRequest(
                 draft_id="local:1",
                 author_description="Owner copy",
@@ -312,7 +312,7 @@ def test_prepared_save_and_candidate_actions_remain_profile_scoped(monkeypatch) 
         )
     )
     dismissed = asyncio.run(
-        web_server.post_wisdom_candidate_dismiss(
+        wisdom_routes.post_wisdom_candidate_dismiss(
             WisdomCandidateDismissRequest(
                 local_skill_id="skill-1",
                 content_hash="sha256:content",
@@ -321,17 +321,17 @@ def test_prepared_save_and_candidate_actions_remain_profile_scoped(monkeypatch) 
         )
     )
     deferred = asyncio.run(
-        web_server.post_wisdom_candidate_defer(
+        wisdom_routes.post_wisdom_candidate_defer(
             WisdomCandidateEventRequest(event_id="event-1", profile="research")
         )
     )
     prepared = asyncio.run(
-        web_server.post_wisdom_candidate_prepare(
+        wisdom_routes.post_wisdom_candidate_prepare(
             WisdomCandidateEventRequest(event_id="event-1", profile="research")
         )
     )
     approved = asyncio.run(
-        web_server.post_wisdom_candidate_approve(
+        wisdom_routes.post_wisdom_candidate_approve(
             WisdomCandidateEventRequest(event_id="event-1", profile="research")
         )
     )
@@ -378,10 +378,10 @@ def test_candidate_event_feed_is_scoped_to_undelivered_desktop_events(
         calls.append(profile)
         return fn(Service())
 
-    monkeypatch.setattr(web_server, "_run_wisdom", run)
+    monkeypatch.setattr(wisdom_routes, "_run_wisdom", run)
 
     result = asyncio.run(
-        web_server.get_wisdom_events(profile="research", session_id="session-1")
+        wisdom_routes.get_wisdom_events(profile="research", session_id="session-1")
     )
 
     assert result == {"events": [{"id": "event-1"}]}
@@ -401,12 +401,12 @@ def test_install_apply_bff_requires_a_plan_receipt(monkeypatch) -> None:
         calls[0] = (profile, calls[0][1], calls[0][2])
         return result
 
-    monkeypatch.setattr(web_server, "_run_wisdom", run)
+    monkeypatch.setattr(wisdom_routes, "_run_wisdom", run)
     body = WisdomInstallApplyRequest(
         receipt="receipt-123", accept_partial=True, profile="customer-b"
     )
 
-    result = asyncio.run(web_server.post_wisdom_install_apply(body))
+    result = asyncio.run(wisdom_routes.post_wisdom_install_apply(body))
 
     assert result == {"state": "installed"}
     assert calls == [("customer-b", "receipt-123", True)]
@@ -425,12 +425,12 @@ def test_install_plan_bff_forwards_validated_update_mode(monkeypatch) -> None:
         calls[0] = (profile, calls[0][1], calls[0][2])
         return result
 
-    monkeypatch.setattr(web_server, "_run_wisdom", run)
+    monkeypatch.setattr(wisdom_routes, "_run_wisdom", run)
     body = WisdomInstallPlanRequest(
         reference="skill-1", update_mode="AUTO_WITH_NOTICE", profile="customer-b"
     )
 
-    result = asyncio.run(web_server.post_wisdom_install_plan(body))
+    result = asyncio.run(wisdom_routes.post_wisdom_install_plan(body))
 
     assert result == {"state": "planned", "update_mode": "AUTO_WITH_NOTICE"}
     assert calls == [("customer-b", "skill-1", "AUTO_WITH_NOTICE")]
@@ -444,8 +444,8 @@ def test_install_plan_request_rejects_unknown_update_mode() -> None:
 def test_wisdom_error_mapping_is_opaque_and_bounded() -> None:
     from hermes_wisdom.client import WisdomError, WisdomNotFound
 
-    assert web_server._wisdom_http_error(WisdomNotFound("not found")).status_code == 404
-    assert web_server._wisdom_http_error(WisdomError("retry")).status_code == 503
+    assert wisdom_routes._wisdom_http_error(WisdomNotFound("not found")).status_code == 404
+    assert wisdom_routes._wisdom_http_error(WisdomError("retry")).status_code == 503
 
 
 def test_profile_bff_requires_setup_before_running_an_operation(monkeypatch) -> None:
@@ -455,11 +455,11 @@ def test_profile_bff_requires_setup_before_running_an_operation(monkeypatch) -> 
         def require_setup(self):
             calls.append("setup")
 
-    monkeypatch.setattr(web_server, "_profile_scope", lambda _profile: nullcontext())
+    monkeypatch.setattr(wisdom_routes, "_profile_scope", lambda _profile: nullcontext())
     monkeypatch.setattr("hermes_wisdom.service.WisdomService", Service)
 
     result = asyncio.run(
-        web_server._run_wisdom("research", lambda _service: calls.append("work"))
+        wisdom_routes._run_wisdom("research", lambda _service: calls.append("work"))
     )
 
     assert result is None
@@ -472,9 +472,9 @@ def test_status_bff_is_available_before_setup(monkeypatch) -> None:
         assert require_setup is False
         return {"configured": False}
 
-    monkeypatch.setattr(web_server, "_run_wisdom", run)
+    monkeypatch.setattr(wisdom_routes, "_run_wisdom", run)
 
-    assert asyncio.run(web_server.get_wisdom_status(profile="research")) == {
+    assert asyncio.run(wisdom_routes.get_wisdom_status(profile="research")) == {
         "configured": False
     }
 
@@ -491,7 +491,7 @@ def test_update_bff_forwards_only_explicit_confirmation_flags(monkeypatch) -> No
         calls.append(profile)
         return fn(Service())
 
-    monkeypatch.setattr(web_server, "_run_wisdom", run)
+    monkeypatch.setattr(wisdom_routes, "_run_wisdom", run)
     body = WisdomUpdateApplyRequest(
         receipt="wup_123",
         accept_sensitive=True,
@@ -499,7 +499,7 @@ def test_update_bff_forwards_only_explicit_confirmation_flags(monkeypatch) -> No
         preserve_modified=True,
         profile="research",
     )
-    result = asyncio.run(web_server.post_wisdom_update_apply(body))
+    result = asyncio.run(wisdom_routes.post_wisdom_update_apply(body))
     assert result == {"updated": True}
     assert calls == [
         "research",

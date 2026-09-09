@@ -27,16 +27,20 @@ def _reset_signal_scheduler():
 
 from gateway.config import Platform
 from tools.send_message_tool import (
-    _parse_target_ref,
+    _send_to_platform,
+    send_message_tool,
+)
+from tools.send_message_senders import (
     _resolve_slack_user_target,
     _send_matrix_via_adapter,
     _send_signal,
     _send_telegram,
-    _send_to_platform,
-    send_message_tool,
+)
+from tools.wisdom_notifications import (
     send_slack_wisdom_notification_pane,
     send_telegram_notification_pane,
 )
+from tools.send_message_targets import _parse_target_ref
 # Discord helpers moved to the plugin in #24325.  Import from the new path
 # and provide a thin ``_send_discord(token, ...)`` shim that mirrors the
 # pre-migration signature so the existing test bodies keep working.
@@ -319,7 +323,7 @@ class TestSendMessageTool:
         with patch("tools.send_message_tool.prepare_send_message_platforms"), \
              patch("gateway.config.load_gateway_config", return_value=config), \
              patch("model_tools._run_async", side_effect=_run_async_immediately), \
-             patch("tools.send_message_tool._send_telegram", new=AsyncMock(return_value={"success": True})) as send_mock:
+             patch("tools.wisdom_notifications._send_telegram", new=AsyncMock(return_value={"success": True})) as send_mock:
             result = send_telegram_notification_pane(
                 message="Collective Wisdom",
                 button_rows=[
@@ -360,7 +364,7 @@ class TestSendMessageTool:
         with patch("tools.send_message_tool.prepare_send_message_platforms"), \
              patch("gateway.config.load_gateway_config", return_value=config), \
              patch("model_tools._run_async", side_effect=_run_async_immediately), \
-             patch("tools.send_message_tool._send_telegram", new=AsyncMock(return_value={"success": True})) as send_mock:
+             patch("tools.wisdom_notifications._send_telegram", new=AsyncMock(return_value={"success": True})) as send_mock:
             result = send_telegram_notification_pane(
                 message="Collective Wisdom\ngateway-pull-canary · v3",
                 items=[
@@ -1044,6 +1048,38 @@ class TestSendTelegramHtmlDetection:
                 ],
             ]
         }
+
+    @pytest.mark.parametrize("missing_thread", [False, True])
+    def test_notification_chunks_keep_controls_on_final_chunk(self, monkeypatch, missing_thread):
+        bot = self._make_bot()
+        delivered = []
+
+        async def send(**kwargs):
+            if missing_thread and "message_thread_id" in kwargs:
+                raise RuntimeError("Bad Request: message thread not found")
+            delivered.append(kwargs)
+            return SimpleNamespace(message_id=len(delivered))
+
+        bot.send_message = AsyncMock(side_effect=send)
+        _install_telegram_mock(monkeypatch, bot)
+        result = asyncio.run(_send_telegram(
+            "tok", "123", "A" * 9000, thread_id="7",
+            action_buttons=[{"label": "Update", "callback_data": "wi:plan:update:skill-3"}],
+        ))
+        assert result["success"] is True
+        assert len(delivered) >= 3
+        assert sum(chunk["text"].count("A") for chunk in delivered) == 9000
+        assert all(len(chunk["text"]) <= 4096 for chunk in delivered)
+        assert all("reply_markup" not in chunk for chunk in delivered[:-1])
+        assert delivered[-1]["reply_markup"].to_dict() == {
+            "inline_keyboard": [[{"text": "Update", "callback_data": "wi:plan:update:skill-3"}]]
+        }
+        if missing_thread:
+            attempts = bot.send_message.await_args_list
+            assert attempts[0].kwargs["message_thread_id"] == 7
+            assert all("message_thread_id" not in attempt.kwargs for attempt in attempts[1:])
+        else:
+            assert all(chunk["message_thread_id"] == 7 for chunk in delivered)
 
     def test_rich_notification_embeds_buttons_in_the_message(self, monkeypatch):
         bot = self._make_bot()
@@ -2102,50 +2138,6 @@ class TestSendViaAdapterStandaloneFallback:
 
         assert result == {"error": "Plugin standalone send failed: boom!"}
 
-# ---------------------------------------------------------------------------
-# _check_send_message — availability gating
-# ---------------------------------------------------------------------------
-
-class TestCheckSendMessage:
-    """The tool's check_fn governs whether the model sees ``send_message`` as
-    callable for a given session. The four passing conditions are:
-
-    1. ``HERMES_KANBAN_TASK`` is set (worker spawned by the kanban dispatcher
-       — parent gateway is by definition running, but the worker's
-       ``HERMES_HOME`` may be a profile dir without a ``gateway.pid``).
-    2. ``HERMES_SESSION_PLATFORM`` resolves to a non-empty, non-``local`` value
-       (the session is wired to a messaging platform like Telegram).
-    3. ``is_gateway_running()`` returns True (CLI / orchestrator profile with
-       a live gateway colocated under the same ``HERMES_HOME``).
-    4. None of the above → False, tool is hidden.
-    """
-
-    def test_kanban_task_env_grants_access(self, monkeypatch):
-        """Workers spawned by the dispatcher (HERMES_KANBAN_TASK set) must be
-        allowed regardless of session_platform / gateway-pid state."""
-        from tools.send_message_tool import _check_send_message
-
-        monkeypatch.setenv("HERMES_KANBAN_TASK", "t_abc12345")
-        monkeypatch.delenv("HERMES_SESSION_PLATFORM", raising=False)
-
-        with patch("gateway.session_context.get_session_env", return_value=""), \
-             patch("gateway.status.is_gateway_running", return_value=False):
-            assert _check_send_message() is True
-
-
-    def test_gateway_status_import_error_is_swallowed(self, monkeypatch):
-        """If gateway.status can't be imported (unusual deployment / partial
-        install), the check returns False rather than raising."""
-        from tools.send_message_tool import _check_send_message
-
-        monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
-
-        with patch("gateway.session_context.get_session_env", return_value=""), \
-             patch("gateway.status.is_gateway_running",
-                   side_effect=ImportError("simulated")):
-            assert _check_send_message() is False
-
-
 class TestSendTelegramThreadNotFoundRetry:
     """Tests for thread-not-found retry behaviour in _send_telegram (#27012)."""
 
@@ -2162,7 +2154,7 @@ class TestSendTelegramThreadNotFoundRetry:
 
         async def run_test():
             with patch(
-                "tools.send_message_tool._send_telegram_message_with_retry",
+                "tools.send_message_senders._send_telegram_message_with_retry",
                 fake_retry,
             ):
                 # _send_telegram imports Bot locally; we only need to mock

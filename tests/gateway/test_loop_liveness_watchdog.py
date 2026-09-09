@@ -292,10 +292,10 @@ def test_gateway_runner_liveness_guards_start_and_stop():
 
     with (
         patch(
-            "gateway.run._arm_loop_floor_timer", return_value=floor_timer
+            "gateway.shutdown_watchdog._arm_loop_floor_timer", return_value=floor_timer
         ) as arm_floor,
         patch(
-            "gateway.run.start_loop_liveness_watchdog", return_value=watchdog
+            "gateway.shutdown_watchdog.start_loop_liveness_watchdog", return_value=watchdog
         ) as start_watchdog,
     ):
         runner._start_loop_liveness_guards(loop)

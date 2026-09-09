@@ -15,17 +15,14 @@ import requests
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError, model_validator
 
 from tools.skills_sync_client import (
-    KIND_BLOB,
-    KIND_COMMIT,
-    KIND_TREE,
     ObjectSet,
     SyncClient,
 )
 from tools.skills_sync_client import (
     resolve_identity,
     resolve_sync_base_url,
-    wire_address,
 )
+from tools.skills_sync_client_wire import KIND_BLOB, KIND_COMMIT, KIND_TREE, wire_address
 
 from .contract import ContentFile, SystemSpecification, parse_manifest_bytes
 from .package import PackagePolicyError, verify_content_files

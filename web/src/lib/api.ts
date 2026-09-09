@@ -2667,33 +2667,28 @@ export interface MoaModelSlot {
 }
 
 export interface MoaConfigResponse {
-  default_preset: string
-  active_preset: string
-  presets: Record<
-    string,
-    {
-      reference_models: MoaModelSlot[]
-      aggregator: MoaModelSlot
-      reference_temperature: number
-      aggregator_temperature: number
-      reference_timeout: number | null
-      degraded_reference_policy: 'loud' | 'silent'
-      max_tokens: number
-      /** Optional advisor output cap — round-tripped, not edited here. */
-      reference_max_tokens?: number | null
-      /** Fan-out cadence (user_turn default | per_iteration | every_n:N) — round-tripped. */
-      fanout?: string
-      enabled: boolean
-    }
-  >
-  reference_models: MoaModelSlot[]
-  aggregator: MoaModelSlot
-  reference_temperature: number
-  aggregator_temperature: number
-  reference_timeout: number | null
-  degraded_reference_policy: 'loud' | 'silent'
-  max_tokens: number
-  enabled: boolean
+  default_preset: string;
+  active_preset: string;
+  presets: Record<string, {
+    reference_models: MoaModelSlot[];
+    aggregator: MoaModelSlot;
+    reference_temperature: number;
+    aggregator_temperature: number;
+    reference_timeout: number | null;
+    degraded_reference_policy: "loud" | "silent";
+
+    /** Fan-out cadence (user_turn default | per_iteration | every_n:N) — round-tripped. */
+    fanout?: string;
+    enabled: boolean;
+  }>;
+  reference_models: MoaModelSlot[];
+  aggregator: MoaModelSlot;
+  reference_temperature: number;
+  aggregator_temperature: number;
+  reference_timeout: number | null;
+  degraded_reference_policy: "loud" | "silent";
+
+  enabled: boolean;
 }
 
 export interface ModelAssignmentRequest {

@@ -202,7 +202,8 @@ class TestPeerResolutionRecency:
 
 class TestLoadTranscriptReroutes:
     def test_load_transcript_raises_when_message_read_fails(self, tmp_path, monkeypatch):
-        from gateway.session import SessionStore, TranscriptReadError
+        from gateway.session import SessionStore
+        from gateway.session_transcript import TranscriptReadError
 
         from gateway.config import GatewayConfig
 

@@ -15,6 +15,9 @@ const getWisdomInstallations = vi.fn()
 const getWisdomVersionContent = vi.fn()
 const suggestWisdomSkill = vi.fn()
 const reviewWisdomDraft = vi.fn()
+const reviewWisdomPublication = vi.fn()
+const saveWisdomPreparedDraft = vi.fn()
+const submitWisdomPublication = vi.fn()
 const reviseWisdomDraft = vi.fn()
 const decideWisdomDraft = vi.fn()
 const planWisdomInstall = vi.fn()
@@ -36,6 +39,9 @@ vi.mock('@/hermes', async importOriginal => ({
   getWisdomVersionContent,
   getWisdomStatus,
   reviewWisdomDraft,
+  reviewWisdomPublication,
+  saveWisdomPreparedDraft,
+  submitWisdomPublication,
   reviseWisdomDraft,
   suggestWisdomSkill,
   planWisdomInstall,
@@ -286,7 +292,7 @@ describe('CollectiveTab', () => {
     expect(await screen.findByRole('button', { name: 'Review update' })).toBeTruthy()
   })
 
-  it('prepares locally, accepts explicit owner fields, then submits without local evidence', async () => {
+  it.each(['open', 'moderated'] as const)('reviews and rescans locally before one final %s submission', async publicationMode => {
     mockInstallations()
     getWisdomStatus.mockResolvedValue({ configured: true, verified_org_id: 'org-1' })
     getWisdomDiscovery.mockResolvedValue({ next_cursor: null, skills: [] })
@@ -303,8 +309,7 @@ describe('CollectiveTab', () => {
       ]
     })
     getWisdomDrafts.mockResolvedValue({ drafts: [] })
-    suggestWisdomSkill
-      .mockResolvedValueOnce({
+    suggestWisdomSkill.mockResolvedValueOnce({
         network_submission: false,
         local_draft_id: 'local:draft',
         overlay_path: '/private/overlay',
@@ -312,24 +317,55 @@ describe('CollectiveTab', () => {
         system_specification: systemSpecification,
         next_step: 'review'
       })
-      .mockResolvedValueOnce({ draft: { id: 'draft-1' } })
+    const manifest = JSON.stringify({ schema_version: 1, name: 'candidate-skill', requirements: systemSpecification })
+
+    const initialReview = {
+      draft: { id: 'local:draft', slug: 'candidate-skill', state: 'prepared', authorDescription: 'Drafted copy' },
+      publication_mode: publicationMode,
+      effective_policy: {},
+      files: [
+        { path: 'SKILL.md', mode: 'file', hash: 'sha256:skill', content_utf8: '# Candidate\n' },
+        { path: 'skill.manifest.json', mode: 'file', hash: 'sha256:manifest', content_utf8: manifest }
+      ],
+      hashes: { content: 'sha256:content', author_description: 'sha256:description', package_manifest: 'sha256:manifest' },
+      receipt: null
+    }
+
+    const rescannedReview = {
+      ...initialReview,
+      draft: { ...initialReview.draft, authorDescription: 'Approved owner copy' },
+      hashes: { ...initialReview.hashes, author_description: 'sha256:revised' }
+    }
+
+    reviewWisdomPublication.mockResolvedValueOnce(initialReview).mockResolvedValueOnce(rescannedReview)
+    saveWisdomPreparedDraft.mockResolvedValue({ local_draft_id: 'local:draft' })
+    submitWisdomPublication.mockResolvedValue({
+      draft_id: 'draft-1',
+      publication_state: publicationMode === 'open' ? 'published' : 'pending_moderation',
+      portal_url: 'https://portal.example/skill/draft-1'
+    })
 
     await renderTab()
     fireEvent.click(await screen.findByText('View all local skills (1)'))
     fireEvent.click(await screen.findByRole('button', { name: 'Start contribution' }))
     const description = await screen.findByLabelText('Owner-authored description')
     fireEvent.change(description, { target: { value: 'Approved owner copy' } })
-    fireEvent.click(screen.getByRole('button', { name: 'Submit draft' }))
-
-    await waitFor(() => expect(suggestWisdomSkill).toHaveBeenCalledTimes(2))
-    const payload = suggestWisdomSkill.mock.calls[1][2]
-    expect(payload).toEqual({
-      description: 'Approved owner copy',
-      systemSpecification
-    })
+    const action = publicationMode === 'open' ? 'Publish to team' : 'Submit for approval'
+    expect(screen.getByRole('button', { name: action })).toHaveProperty('disabled', true)
+    expect(submitWisdomPublication).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes & rescan' }))
+    await waitFor(() => expect(screen.getByRole('button', { name: action })).toHaveProperty('disabled', false))
+    expect(saveWisdomPreparedDraft).toHaveBeenCalledWith(
+      'local:draft', 'Approved owner copy',
+      initialReview.files.map(({ path, content_utf8 }) => ({ path, content_utf8 })), scope
+    )
+    fireEvent.click(screen.getByRole('button', { name: action }))
+    await waitFor(() => expect(submitWisdomPublication).toHaveBeenCalledExactlyOnceWith(rescannedReview, scope, undefined))
+    expect(suggestWisdomSkill).toHaveBeenCalledTimes(1)
     expect(suggestWisdomSkill.mock.calls[0][3]).toBe('local-1')
-    expect(suggestWisdomSkill.mock.calls[1][3]).toBe('local-1')
-    expect(JSON.stringify(payload)).not.toMatch(/usage|refinement|candidate|ranking|stability/)
+    expect((await screen.findByRole('link', { name: 'View in Portal' })).getAttribute('href')).toBe(
+      'https://portal.example/skill/draft-1'
+    )
   })
 
   it('separates qualified suggestions, manual inventory, and submissions waiting on collective approval', async () => {
@@ -404,6 +440,7 @@ describe('CollectiveTab', () => {
         scanVerdict: 'PASS'
       },
       effective_policy: {},
+      publication_mode: 'moderated',
       files: [
         { path: 'SKILL.md', mode: 'file', hash: 'sha256:skill', content_utf8: '# Original\n' },
         { path: 'skill.manifest.json', mode: 'file', hash: 'sha256:manifest', content_utf8: manifest }
@@ -423,16 +460,16 @@ describe('CollectiveTab', () => {
       hashes: { ...initialReview.hashes, content: 'sha256:revised' }
     }
 
-    reviewWisdomDraft.mockResolvedValueOnce(initialReview).mockResolvedValueOnce(revisedReview)
+    reviewWisdomPublication.mockResolvedValueOnce(initialReview).mockResolvedValueOnce(revisedReview)
     reviseWisdomDraft.mockResolvedValue({ draft: revisedReview.draft, local_scan: {}, notice: 'rescanned' })
 
     await renderTab()
     fireEvent.click(await screen.findByRole('button', { name: /editable-skill.*View details/ }))
-    fireEvent.change(await screen.findByLabelText('Edit owner-authored description'), {
+    fireEvent.change(await screen.findByLabelText('Owner-authored description'), {
       target: { value: 'Revised copy' }
     })
     fireEvent.change(screen.getByLabelText('Edit SKILL.md'), { target: { value: '# Revised\n' } })
-    expect(screen.getByRole('button', { name: 'Approve exact content & publish' })).toHaveProperty('disabled', true)
+    expect(screen.getByRole('button', { name: 'Submit for approval' })).toHaveProperty('disabled', true)
     fireEvent.click(screen.getByRole('button', { name: 'Save changes & rescan' }))
 
     await waitFor(() => expect(reviseWisdomDraft).toHaveBeenCalledTimes(1))
@@ -447,7 +484,7 @@ describe('CollectiveTab', () => {
       scope
     )
     await waitFor(() =>
-      expect(screen.getByRole('button', { name: 'Approve exact content & publish' })).toHaveProperty('disabled', false)
+      expect(screen.getByRole('button', { name: 'Submit for approval' })).toHaveProperty('disabled', false)
     )
   })
 

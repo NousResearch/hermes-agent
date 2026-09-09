@@ -629,7 +629,7 @@ def test_feed_cursor_is_durable_deduplicated_and_telegram_uses_home_target(
 
     calls = []
     monkeypatch.setattr(
-        "tools.send_message_tool.send_telegram_notification_pane",
+        "tools.wisdom_notifications.send_telegram_notification_pane",
         lambda **kwargs: calls.append(kwargs) or {"success": True},
     )
     delivered = manager.dispatch_telegram()
@@ -686,7 +686,7 @@ def test_telegram_update_available_offers_verified_update_action(
 
     calls = []
     monkeypatch.setattr(
-        "tools.send_message_tool.send_telegram_notification_pane",
+        "tools.wisdom_notifications.send_telegram_notification_pane",
         lambda **kwargs: calls.append(kwargs) or {"success": True},
     )
 
@@ -742,7 +742,7 @@ def test_uninstalled_org_skill_update_remains_an_installable_notification(
     _telegram_home(monkeypatch, "123456")
     calls = []
     monkeypatch.setattr(
-        "tools.send_message_tool.send_telegram_notification_pane",
+        "tools.wisdom_notifications.send_telegram_notification_pane",
         lambda **kwargs: calls.append(kwargs) or {"success": True},
     )
 
@@ -854,7 +854,7 @@ def test_notifications_resolve_org_skill_names_filter_noise_and_deep_link(
 
     calls = []
     monkeypatch.setattr(
-        "tools.send_message_tool.send_telegram_notification_pane",
+        "tools.wisdom_notifications.send_telegram_notification_pane",
         lambda **kwargs: calls.append(kwargs) or {"success": True},
     )
     assert manager.dispatch_telegram() == {"attempted": True, "delivered": 1}
@@ -923,7 +923,7 @@ def test_telegram_public_home_excludes_device_state_and_mutation_controls(
     _telegram_home(monkeypatch, "-100123456")
     calls = []
     monkeypatch.setattr(
-        "tools.send_message_tool.send_telegram_notification_pane",
+        "tools.wisdom_notifications.send_telegram_notification_pane",
         lambda **kwargs: calls.append(kwargs) or {"success": True},
     )
 
@@ -1043,7 +1043,7 @@ def test_slack_public_home_only_emits_collective_publication_links(
     monkeypatch.setattr("gateway.config.load_gateway_config", lambda: config)
     calls = []
     monkeypatch.setattr(
-        "tools.send_message_tool.send_slack_wisdom_notification_pane",
+        "tools.wisdom_notifications.send_slack_wisdom_notification_pane",
         lambda **kwargs: calls.append(kwargs) or {"success": True},
     )
 
@@ -1078,7 +1078,7 @@ def test_slack_dm_home_offers_verified_update_action(monkeypatch, tmp_path: Path
     monkeypatch.setattr("gateway.config.load_gateway_config", lambda: config)
     calls = []
     monkeypatch.setattr(
-        "tools.send_message_tool.send_slack_wisdom_notification_pane",
+        "tools.wisdom_notifications.send_slack_wisdom_notification_pane",
         lambda **kwargs: calls.append(kwargs) or {"success": True},
     )
 

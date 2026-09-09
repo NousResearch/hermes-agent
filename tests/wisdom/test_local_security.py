@@ -59,8 +59,8 @@ def test_approval_card_surfaces_local_results_and_preserves_blocking(allowed):
     }
     compact = advice_view([item]).items[0]
     assert check["summary"] in compact.detail
-    assert "Private keys:" not in compact.detail
+    assert "Private keys" not in compact.detail
     expanded = advice_view([item], checks_expanded=True).items[0]
-    assert "Private keys: ✅ Pass" in expanded.detail
-    assert "Organization policy: ⏳ Pending" in expanded.detail
+    assert "✅ Private keys" in expanded.detail
+    assert "⏳ Organization policy: Pending" in expanded.detail
     assert ("confirm" in interaction["actions"]) is allowed

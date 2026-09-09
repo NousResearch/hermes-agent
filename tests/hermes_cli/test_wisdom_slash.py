@@ -47,8 +47,9 @@ def test_cli_wisdom_dispatches_shared_controller(
     monkeypatch.setattr("hermes_constants.get_hermes_home", lambda: tmp_path)
     monkeypatch.setattr(wisdom_command.WisdomCommandController, "execute", execute)
 
-    cli = SimpleNamespace(session_id="session-1")
-    HermesCLI._handle_wisdom_command(cli, command)
+    cli = object.__new__(HermesCLI)
+    cli.session_id = "session-1"
+    assert cli.process_command(command) is True
 
     assert seen == [expected_args]
     output = capsys.readouterr().out

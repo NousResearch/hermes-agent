@@ -172,6 +172,34 @@ def test_bump_use_associates_wisdom_candidate_with_task_session(
         "session_id": "session-1",
     }
 
+def test_wisdom_qualification_follows_only_committed_use_and_mutation(skills_home, monkeypatch):
+    from hermes_wisdom import qualification
+    from tools import skill_usage
+
+    events = []
+    monkeypatch.setattr(qualification, "record_mutation_async",
+                        lambda name, **context: events.append(("mutation", name, context)))
+    monkeypatch.setattr(qualification, "record_successful_use_async",
+                        lambda name, **context: events.append(("use", name, context)))
+    context = {"task_id": "task-1", "session_id": "session-1"}
+    skill_usage.record_created("candidate", agent_created=True, **context)
+    skill_usage.bump_patch("candidate", **context)
+    skill_usage.bump_patch("candidate", action="edit", **context)
+    skill_usage.bump_use("candidate", **context)
+    skill_usage.record_installed("installed-skill")
+    skill_usage.bump_view("candidate")
+    assert events == [(action, "candidate", context)
+                      for action in ("mutation", "mutation", "mutation", "use")]
+    assert skill_usage.get_record("candidate")["use_count"] == 1
+
+    # A failed persistence write cannot manufacture qualification evidence.
+    monkeypatch.setattr(skill_usage, "_mutate", lambda *_args, **_kwargs: None)
+    skill_usage.bump_use("candidate", **context)
+    skill_usage.bump_patch("candidate", **context)
+    skill_usage.record_created("candidate", agent_created=True, **context)
+    assert len(events) == 4
+
+
 def test_skill_state_events_emit_only_for_real_transitions(skills_home, monkeypatch):
     from hermes_cli import lifecycle
     from tools.skill_usage import (

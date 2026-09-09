@@ -2,7 +2,7 @@ import asyncio
 
 import pytest
 
-from hermes_cli import web_server
+from hermes_cli.web_routers import wisdom as wisdom_routes
 from hermes_cli.web_models import WisdomMuteChooseRequest, WisdomMutePrepareRequest
 from tests.wisdom.test_mute_controls import controls  # noqa: F401
 from tests.wisdom.test_preferences import preferences  # noqa: F401
@@ -17,16 +17,16 @@ def test_native_mute_routes_keep_profile_scope_and_exact_choice(controls, monkey
         service.require_setup()
         return fn(service)
 
-    monkeypatch.setattr(web_server, "_run_wisdom", run)
+    monkeypatch.setattr(wisdom_routes, "_run_wisdom", run)
     monkeypatch.setattr("hermes_wisdom.preferences.WisdomPreferences", lambda service: p)
-    initial = asyncio.run(web_server.get_wisdom_mute(profile="demo"))
+    initial = asyncio.run(wisdom_routes.get_wisdom_mute(profile="demo"))
     assert initial["mute"]["muted"] is False
-    control = asyncio.run(web_server.post_wisdom_mute_prepare(WisdomMutePrepareRequest(profile="demo")))
+    control = asyncio.run(wisdom_routes.post_wisdom_mute_prepare(WisdomMutePrepareRequest(profile="demo")))
     service.client.set_recommendation_mute.assert_not_called()
     assert control["organization_id"] == "org"
     body = WisdomMuteChooseRequest(profile="demo", control_id=control["id"], duration="1_day")
-    first = asyncio.run(web_server.post_wisdom_mute_choose(body))
-    second = asyncio.run(web_server.post_wisdom_mute_choose(body))
+    first = asyncio.run(wisdom_routes.post_wisdom_mute_choose(body))
+    second = asyncio.run(wisdom_routes.post_wisdom_mute_choose(body))
     assert first["sync"] == second["sync"]
     assert first["sync"]["preference_sync"] == "synced"
     service.client.set_recommendation_mute.assert_called_once()

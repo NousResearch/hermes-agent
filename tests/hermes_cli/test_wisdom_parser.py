@@ -9,6 +9,22 @@ def parser():
     return value
 
 
+def test_real_cli_parser_registers_wisdom_without_plugin_discovery(monkeypatch):
+    from hermes_cli import main, plugins
+    from hermes_cli.subcommands.wisdom import cmd_wisdom
+
+    def unexpected_discovery():
+        raise AssertionError("A built-in Wisdom command must not discover plugins")
+
+    monkeypatch.setattr(main.sys, "argv", ["hermes", "wisdom", "sync", "--json"])
+    monkeypatch.setattr(plugins, "discover_plugins", unexpected_discovery)
+    value, _subparsers = main._build_cli_parser()
+    args = value.parse_args(main.sys.argv[1:])
+    assert args.func is cmd_wisdom
+    assert args.wisdom_command == "sync"
+    assert args.action == "status"
+
+
 def test_all_foundation_commands_are_registered():
     value = parser()
     commands = {

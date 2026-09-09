@@ -465,11 +465,11 @@ class TestTelegramApprovalCallback:
 
         captured_rows = []
         monkeypatch.setattr(
-            "plugins.platforms.telegram.adapter.InlineKeyboardButton",
+            "telegram.InlineKeyboardButton",
             lambda text, **kwargs: text,
         )
         monkeypatch.setattr(
-            "plugins.platforms.telegram.adapter.InlineKeyboardMarkup",
+            "telegram.InlineKeyboardMarkup",
             lambda rows: captured_rows.extend(rows) or rows,
         )
         notice = qualification_notice({"notice_variant": "returning"})

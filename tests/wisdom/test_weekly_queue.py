@@ -292,6 +292,10 @@ def test_prepare_reuses_weekly_advice_and_native_exact_plan(weekly, monkeypatch)
         return event, event["skill_id"], event["content_hash"], "release-notes"
 
     service._candidate_event_context.side_effect = context
+    service.candidate_local_version.return_value = "1.0.0"
+    service.candidate_security_check.return_value = {
+        "status": "pass", "upload_allowed": True, "checks": [],
+    }
     service.prepare_candidate.return_value = {
         "stage": "review",
         "review": {

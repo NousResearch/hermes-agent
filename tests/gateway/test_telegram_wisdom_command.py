@@ -219,11 +219,11 @@ def test_wisdom_back_control_is_separate_and_first():
     rendered = TelegramAdapter._wisdom_command_html(view)
     with (
         patch(
-            "plugins.platforms.telegram.adapter.InlineKeyboardButton",
+            "telegram.InlineKeyboardButton",
             side_effect=lambda text, **kwargs: SimpleNamespace(text=text, **kwargs),
         ),
         patch(
-            "plugins.platforms.telegram.adapter.InlineKeyboardMarkup",
+            "telegram.InlineKeyboardMarkup",
             side_effect=lambda rows: SimpleNamespace(inline_keyboard=rows),
         ),
     ):
@@ -252,11 +252,11 @@ def test_wisdom_telegram_url_controls_drop_redundant_arrow():
     rendered = TelegramAdapter._wisdom_command_html(view)
     with (
         patch(
-            "plugins.platforms.telegram.adapter.InlineKeyboardButton",
+            "telegram.InlineKeyboardButton",
             side_effect=lambda text, **kwargs: SimpleNamespace(text=text, **kwargs),
         ),
         patch(
-            "plugins.platforms.telegram.adapter.InlineKeyboardMarkup",
+            "telegram.InlineKeyboardMarkup",
             side_effect=lambda rows: SimpleNamespace(inline_keyboard=rows),
         ),
     ):

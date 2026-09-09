@@ -1362,7 +1362,7 @@ class WisdomConsumption:
             # so rich-message controls cannot drift onto the next skill.
             button_rows.append(row)
         try:
-            from tools.send_message_tool import send_telegram_notification_pane
+            from tools.wisdom_notifications import send_telegram_notification_pane
 
             raw = send_telegram_notification_pane(
                 message="\n".join(lines),
@@ -1470,7 +1470,7 @@ class WisdomConsumption:
                 })
             button_rows.append(row)
         try:
-            from tools.send_message_tool import send_slack_wisdom_notification_pane
+            from tools.wisdom_notifications import send_slack_wisdom_notification_pane
 
             result = send_slack_wisdom_notification_pane(
                 message="\n".join(lines),

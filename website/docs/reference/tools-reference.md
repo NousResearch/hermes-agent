@@ -102,6 +102,26 @@ Scoped to the Feishu document-comment handler. Drives comment read/write operati
 | `search_files` | Search file contents or find files by name. Use this instead of grep/rg/find/ls in terminal. Ripgrep-backed, faster than shell equivalents. Content search (target='content'): Regex search inside files. Output modes: full matches with line… | — |
 | `write_file` | Write content to a file, completely replacing existing content. Use this instead of echo/cat heredoc in terminal. Creates parent directories automatically. OVERWRITES the entire file — use 'patch' for targeted edits. Auto-runs syntax checks on .py/.json/.yaml/.toml and other linted languages; only NEW errors introduced by the write are surfaced. | — |
 
+## `dsh` toolset
+
+Runs one-shot agent tasks on a local [DeepSeek Harness (dsh)](https://github.com/deepseek-ai/dsh) — DeepSeek's own agent harness with its own tools, sessions, and agent presets. The `dsh` toolset is **off by default**: add `dsh` to the platform's toolset list (`platform_toolsets.cli: [hermes-cli, dsh]`) or enable it via `hermes tools` → DeepSeek Harness. The tool then only becomes visible once a `dsh:` block exists in config.yaml:
+
+```yaml
+dsh:
+  url: "http://127.0.0.1:3080"   # dsh web JSON-RPC base URL (action=list only)
+  command: ["dsh"]               # CLI argv for action=run; [] disables run
+  profile: "headless"            # dsh profile tasks run under
+  cwd: ""                        # working dir for dsh (sessions group by cwd)
+  timeout: 900                   # hard deadline; process tree killed on expiry
+  bash_dir: ""                   # Windows: dir containing the real Git Bash
+```
+
+`action=run` starts a fresh headless dsh agent (blocking; bounded by `dsh.timeout` or the per-call `timeout`) and returns the final assistant summary — the full session persists under `~/.dsh/sessions/<cwd>`. `action=list` reads the session inventory from the dsh *web* profile at `dsh.url`; the web process is managed externally (e.g. `start-harness.ps1`) and this tool never launches it. dsh keeps its own upstream model credentials (e.g. a `DEEPSEEK_API_KEY`) in `~/.dsh/.credentials.yaml` — Hermes never stores or forwards them; `DSH_HOME` overrides the `~/.dsh` home.
+
+| Tool | Description | Requires environment |
+|------|-------------|----------------------|
+| `dsh_task` | Run an agent task on the local DeepSeek Harness: `action=run` submits `goal` to a fresh headless dsh agent and waits (default 900s, per-call `timeout` overrides; the process tree is killed on expiry); `action=list` returns the recent session inventory from the dsh web profile (`limit`, default 20). | `dsh:` block in config.yaml + `dsh` on the platform toolset list; `command` for `run`, a running dsh web at `url` for `list` |
+
 ## `homeassistant` toolset
 
 | Tool | Description | Requires environment |

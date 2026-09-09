@@ -58,6 +58,7 @@ Or in-session:
 | `coding` | composite (`file` + `terminal` + `search` + `web` + `skills` + `browser` + `todo` + `memory` + `session_search` + `clarify` + `code_execution` + `delegation` + `vision`) | Coding-focused bundle for software work: file editing, terminal, search, web docs, skills, browser, delegate, and code execution. |
 | `cronjob` | `cronjob` | Schedule and manage recurring tasks. |
 | `debugging` | composite (`file` + `terminal` + `web`) | Debug bundle — file, process/terminal, web extract/search. |
+| `dsh` | `dsh_task` | Run agent tasks on a local DeepSeek Harness (dsh) — one-shot headless runs via `action=run` plus session inventory from the dsh web profile via `action=list`. Off by default: add `dsh` to the platform's toolset list and configure a `dsh:` block in config.yaml (see [Tools Reference](tools-reference.md)). |
 | `delegation` | `delegate_task` | Spawn isolated subagent instances for parallel work. |
 | `discord` | `discord` | Core Discord text/embed/DM actions (gateway-only). Active on the `hermes-discord` toolset. |
 | `discord_admin` | `discord_admin` | Discord moderation (bans, role changes, channel management). Active on the `hermes-discord` toolset; requires the bot to hold the relevant Discord permissions. |

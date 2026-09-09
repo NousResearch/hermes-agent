@@ -90,6 +90,26 @@ description: "Hermes 内置工具权威参考，按工具集分组"
 | `search_files` | 搜索文件内容或按名称查找文件。用于替代终端中的 `grep`/`rg`/`find`/`ls`。基于 Ripgrep，比 shell 等效命令更快。内容搜索（`target='content'`）：在文件内进行正则搜索。输出模式：带行号的完整匹配… | — |
 | `write_file` | 将内容写入文件，完全替换现有内容。用于替代终端中的 `echo`/`cat heredoc`。自动创建父目录。**覆盖整个文件** —— 精准编辑请使用 `patch`。 | — |
 
+## `dsh` 工具集
+
+在本地 [DeepSeek Harness（dsh）](https://github.com/deepseek-ai/dsh) 上运行一次性 agent 任务——dsh 是 DeepSeek 自有的 agent harness，带自己的工具、会话与 agent preset。`dsh` 工具集**默认关闭**：把 `dsh` 加入平台的工具集列表（`platform_toolsets.cli: [hermes-cli, dsh]`），或通过 `hermes tools` → DeepSeek Harness 启用。之后只有当 config.yaml 中存在 `dsh:` 段时该工具才可见：
+
+```yaml
+dsh:
+  url: "http://127.0.0.1:3080"   # dsh web JSON-RPC 基础 URL（仅 action=list 使用）
+  command: ["dsh"]               # action=run 的 CLI argv；[] 表示禁用 run
+  profile: "headless"            # 任务使用的 dsh profile
+  cwd: ""                        # dsh 的工作目录（会话按 cwd 归组）
+  timeout: 900                   # 硬性截止时间；超时后杀进程树
+  bash_dir: ""                   # Windows：包含真实 Git Bash 的目录
+```
+
+`action=run` 启动一个全新的 headless dsh agent（阻塞；受 `dsh.timeout` 或每次调用的 `timeout` 限制）并返回最终助手摘要——完整会话持久化在 `~/.dsh/sessions/<cwd>`。`action=list` 从 `dsh.url` 的 dsh *web* profile 读取会话清单；web 进程由外部管理（如 `start-harness.ps1`），本工具从不自行拉起。dsh 自带的上游模型凭据（如 `DEEPSEEK_API_KEY`）存放在 `~/.dsh/.credentials.yaml`——Hermes 既不存储也不转发；`DSH_HOME` 可覆盖 `~/.dsh` 家目录。
+
+| 工具 | 描述 | 所需环境 |
+|------|------|----------|
+| `dsh_task` | 在本地 DeepSeek Harness 上运行 agent 任务：`action=run` 把 `goal` 提交给全新 headless dsh agent 并等待（默认 900s，可用每次调用的 `timeout` 覆盖；超时后杀进程树）；`action=list` 返回 dsh web profile 的近期会话清单（`limit`，默认 20）。 | config.yaml 的 `dsh:` 段 + 平台工具集列表含 `dsh`；`run` 需 `command`，`list` 需 `url` 处 dsh web 在运行 |
+
 ## `homeassistant` 工具集
 
 | 工具 | 描述 | 所需环境 |

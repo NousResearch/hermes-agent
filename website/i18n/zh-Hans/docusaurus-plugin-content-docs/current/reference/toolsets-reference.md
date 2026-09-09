@@ -57,6 +57,7 @@ hermes tools                            # curses UI to enable/disable per platfo
 | `code_execution` | `execute_code` | 运行以编程方式调用 Hermes 工具的 Python 脚本。 |
 | `cronjob` | `cronjob` | 调度和管理周期性任务。 |
 | `debugging` | 复合（`file` + `terminal` + `web`） | 调试套件——文件、进程/终端、网页提取/搜索。 |
+| `dsh` | `dsh_task` | 在本地 DeepSeek Harness（dsh）上运行 agent 任务——`action=run` 执行一次性 headless 任务，`action=list` 从 dsh web profile 获取会话清单。默认关闭：需将 `dsh` 加入平台工具集列表，并在 config.yaml 配置 `dsh:` 段（见[工具参考](tools-reference.md)）。 |
 | `delegation` | `delegate_task` | 生成隔离的子 agent 实例以并行执行工作。 |
 | `discord` | `discord` | 核心 Discord 文本/嵌入/私信操作（仅限 gateway）。在 `hermes-discord` 工具集上激活。 |
 | `discord_admin` | `discord_admin` | Discord 管理操作（封禁、角色变更、频道管理）。在 `hermes-discord` 工具集上激活；需要 bot 持有相关 Discord 权限。 |

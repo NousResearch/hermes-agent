@@ -192,6 +192,100 @@ class TestFirecrawlClientConfig:
         assert "Authorization" not in captured["headers"]
 
 
+class TestFirecrawlScrapeWaitFor:
+    """Scrape ``wait_for`` (#106904): a non-zero default lets lazily-loaded content
+    (comments, collapsed sections, paged lists) render before the snapshot instead
+    of returning a partial result that reads as complete; ``FIRECRAWL_WAIT_MS``
+    overrides; 0 disables."""
+
+    def test_resolve_scrape_wait_ms_default_when_unset(self, monkeypatch):
+        monkeypatch.delenv("FIRECRAWL_WAIT_MS", raising=False)
+        from plugins.web.firecrawl import provider as p
+        assert p._resolve_scrape_wait_ms() == p._DEFAULT_SCRAPE_WAIT_MS == 3000
+
+    def test_resolve_scrape_wait_ms_env_override(self, monkeypatch):
+        monkeypatch.setenv("FIRECRAWL_WAIT_MS", "5000")
+        from plugins.web.firecrawl import provider as p
+        assert p._resolve_scrape_wait_ms() == 5000
+
+    def test_resolve_scrape_wait_ms_invalid_falls_back_to_default(self, monkeypatch):
+        monkeypatch.setenv("FIRECRAWL_WAIT_MS", "not-a-number")
+        from plugins.web.firecrawl import provider as p
+        assert p._resolve_scrape_wait_ms() == 3000
+
+    def test_resolve_scrape_wait_ms_zero_disables_wait(self, monkeypatch):
+        monkeypatch.setenv("FIRECRAWL_WAIT_MS", "0")
+        from plugins.web.firecrawl import provider as p
+        assert p._resolve_scrape_wait_ms() == 0
+
+    def test_keyless_scrape_forwards_wait_for_to_payload(self, monkeypatch):
+        """Keyless scrape with wait_for>0 must include ``waitFor`` in the REST payload."""
+        from plugins.web.firecrawl import provider as firecrawl_provider
+
+        captured = {}
+
+        class _Response:
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                return {"success": True, "data": {"markdown": "# ok"}}
+
+        def _fake_post(url, *, json, headers, timeout):
+            captured["json"] = json
+            return _Response()
+
+        monkeypatch.setattr(firecrawl_provider.httpx, "post", _fake_post)
+        client = firecrawl_provider._KeylessFirecrawlClient()
+        client.scrape(url="https://example.com", formats=["markdown"], wait_for=3000)
+        assert captured["json"] == {"url": "https://example.com", "formats": ["markdown"], "waitFor": 3000}
+
+    def test_keyless_scrape_without_wait_for_omits_field(self, monkeypatch):
+        """Keyless scrape with the default (wait_for=0) must omit ``waitFor`` (back-compat)."""
+        from plugins.web.firecrawl import provider as firecrawl_provider
+
+        captured = {}
+
+        class _Response:
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                return {"success": True, "data": {"markdown": "# ok"}}
+
+        def _fake_post(url, *, json, headers, timeout):
+            captured["json"] = json
+            return _Response()
+
+        monkeypatch.setattr(firecrawl_provider.httpx, "post", _fake_post)
+        client = firecrawl_provider._KeylessFirecrawlClient()
+        client.scrape(url="https://example.com", formats=["markdown"])
+        assert captured["json"] == {"url": "https://example.com", "formats": ["markdown"]}
+
+    def test_scrape_one_passes_wait_for_to_client(self, monkeypatch):
+        """_scrape_one must forward _resolve_scrape_wait_ms() to the client's scrape call."""
+        import asyncio
+        from plugins.web.firecrawl import provider as p
+
+        monkeypatch.delenv("FIRECRAWL_WAIT_MS", raising=False)
+        monkeypatch.setattr(p, "check_website_access", lambda url: None)
+        monkeypatch.setattr(p, "is_safe_url", lambda url: True)
+        monkeypatch.setattr(p, "_extract_scrape_payload", lambda r: {"markdown": "# ok", "metadata": {}})
+
+        captured = {}
+
+        class _FakeClient:
+            def scrape(self, *, url, formats, wait_for=0):
+                captured["wait_for"] = wait_for
+                captured["formats"] = formats
+                return {"success": True, "data": {"markdown": "# ok", "metadata": {}}}
+
+        monkeypatch.setattr(p, "_get_firecrawl_client", lambda: _FakeClient())
+        result = asyncio.run(p._scrape_one("https://example.com", ["markdown"], "markdown"))
+        assert captured["wait_for"] == 3000
+        assert result["content"] == "# ok"
+
+
 class TestBackendSelection:
     """Test suite for _get_backend() backend selection logic.
 

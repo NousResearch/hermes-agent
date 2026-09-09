@@ -114,7 +114,7 @@ class _KeylessFirecrawlClient:
         return response.json()
 
     search = lambda self, *, query, limit=5: self._post("/v2/search", {"query": query, "limit": limit})  # noqa: E731
-    scrape = lambda self, *, url, formats: self._post("/v2/scrape", {"url": url, "formats": formats})  # noqa: E731
+    scrape = lambda self, *, url, formats, wait_for=0: self._post("/v2/scrape", {"url": url, "formats": formats, **({"waitFor": wait_for} if wait_for else {})})  # noqa: E731
 
 
 def _get_firecrawl_gateway_url() -> str:
@@ -238,6 +238,27 @@ def _error_entry(url: str, error: str, *, title: str = "", raw: bool = False, bl
 _SCRAPE_TIMEOUT_MSG = "Scrape timed out after 60s — page may be too large or unresponsive. Try browser_navigate instead."
 _UNSAFE_REDIRECT_MSG = "Blocked: URL targets a private or internal network address"
 
+# Non-zero default so pages whose substance arrives after first render (discussions,
+# collapsed sections, paged lists, dashboards) aren't silently snapshotted incomplete;
+# 3s was sufficient in every measured case. Override with ``FIRECRAWL_WAIT_MS`` (0 disables). See #106904.
+_DEFAULT_SCRAPE_WAIT_MS = 3000
+
+
+def _resolve_scrape_wait_ms() -> int:
+    """Scrape ``wait_for`` in ms (see ``_DEFAULT_SCRAPE_WAIT_MS``); ``FIRECRAWL_WAIT_MS``
+    overrides the default, invalid values fall back to it, 0 disables the wait."""
+    import os
+
+    raw = os.environ.get("FIRECRAWL_WAIT_MS")
+    if not raw:
+        return _DEFAULT_SCRAPE_WAIT_MS
+    try:
+        value = int(raw)
+    except ValueError:
+        logger.warning("FIRECRAWL_WAIT_MS=%r is not an int; using default %dms", raw, _DEFAULT_SCRAPE_WAIT_MS)
+        return _DEFAULT_SCRAPE_WAIT_MS
+    return max(value, 0)
+
 
 async def _scrape_one(url: str, formats: List[str], format: Optional[str]) -> Dict[str, Any]:
     """Scrape one URL (60s timeout) and re-check SSRF + website policy against the
@@ -248,7 +269,7 @@ async def _scrape_one(url: str, formats: List[str], format: Optional[str]) -> Di
     try:
         logger.info("Firecrawl scraping: %s", url)
         try:
-            scrape_result = await asyncio.wait_for(asyncio.to_thread(_get_firecrawl_client().scrape, url=url, formats=formats), timeout=60)
+            scrape_result = await asyncio.wait_for(asyncio.to_thread(_get_firecrawl_client().scrape, url=url, formats=formats, wait_for=_resolve_scrape_wait_ms()), timeout=60)
         except asyncio.TimeoutError:
             logger.warning("Firecrawl scrape timed out for %s", url)
             return _error_entry(url, _SCRAPE_TIMEOUT_MSG)

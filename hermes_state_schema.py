@@ -443,7 +443,9 @@ class SessionSchemaMixin:
 
     # ── Stale-FTS recovery ─────────────────────────────────────────────────
 
-    def _defer_stale_fts_for_holders(self, cursor: sqlite3.Cursor, foreign_holders) -> bool:
+    def _defer_stale_fts_for_holders(
+        self, cursor: sqlite3.Cursor, foreign_holders, remaining=None
+    ) -> bool:
         """Record a deferral diagnostic for the foreign processes holding the DB; True = defer
         (holders remain). After ``_FTS_HOLDER_ESCALATE_ATTEMPTS`` deferrals spanning
         ``_FTS_HOLDER_ESCALATE_SECONDS``, provably inactive orphan Desktop backends are
@@ -468,24 +470,29 @@ class SessionSchemaMixin:
         # If the set changed, the previous history describes different processes
         # and must not be inherited -- otherwise holder A's accrued hour lets a
         # freshly-arrived holder B skip the wait entirely.
-        holder_pids = sorted({pid for pid, _path in foreign_holders if pid > 0})
-        previous_pids = record.get("holder_pids")
-        if not isinstance(previous_pids, list):
-            previous_pids = None
-        else:
-            try:
-                previous_pids = sorted({int(p) for p in previous_pids})
-            except (TypeError, ValueError):
-                previous_pids = None
-        holder_set_changed = (
-            previous_pids is not None
-            and previous_pids != holder_pids
-            # Two empty sets are not a change. An unprovable scan filters to an
-            # empty holder_pids, so treating empty-vs-empty as a change would
-            # silently reset the history of a genuinely stuck holder on every
-            # single deferral.
-            and not (not previous_pids and not holder_pids)
-        )
+        def _identity(holders):
+            """Positive-PID identity of a holder list, plus whether it moved."""
+            pids = sorted({pid for pid, _path in holders if pid > 0})
+            prev = record.get("holder_pids")
+            if not isinstance(prev, list):
+                prev = None
+            else:
+                try:
+                    prev = sorted({int(p) for p in prev})
+                except (TypeError, ValueError):
+                    prev = None
+            changed = (
+                prev is not None
+                and prev != pids
+                # Two empty sets are not a change. An unprovable scan filters to
+                # an empty pid set, so treating empty-vs-empty as a change would
+                # silently reset the history of a genuinely stuck holder on
+                # every single deferral.
+                and not (not prev and not pids)
+            )
+            return pids, changed
+
+        holder_pids, holder_set_changed = _identity(foreign_holders)
         try:
             first_seen = float(record.get("first_seen", now))
             attempts = int(record.get("attempts", 0)) + 1
@@ -513,6 +520,27 @@ class SessionSchemaMixin:
                     "state.db FTS rebuild deferrals; checking holders again.", reaped, attempts,
                 )
                 foreign_holders = self._foreign_state_db_holders()
+                # The rescan may describe a different process than the one the
+                # window was accrued against: A reaped, restarted B present. Re-
+                # derive the identity and restart the window if it moved, or B
+                # inherits A's hour and is authorized on its first deferral.
+                holder_pids, rescan_changed = _identity(foreign_holders)
+                if rescan_changed:
+                    first_seen, attempts = now, 1
+                cursor.execute(
+                    "INSERT INTO state_meta (key, value) VALUES (?, ?) "
+                    "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                    (
+                        FTS_REBUILD_DEFERRAL_KEY,
+                        json.dumps(
+                            {
+                                "first_seen": first_seen, "last_seen": now,
+                                "attempts": attempts, "holder_pids": holder_pids,
+                            },
+                            sort_keys=True,
+                        ),
+                    ),
+                )
             # Suppressed once the futility exit takes over, since that path logs
             # its own ERROR -- but an unprovable holder never reaches that exit,
             # so it must keep getting the actionable message.
@@ -522,12 +550,20 @@ class SessionSchemaMixin:
             ):
                 logger.error(
                     "state.db FTS repair remains blocked after %d deferrals "
-                    "by holder(s) %s. Stopping the Desktop backend "
-                    "(`systemctl --user stop hermes-serve`) leaves the gateway as the sole "
-                    "holder and lets its own retry tick rebuild without gateway downtime; "
-                    "note that tick backs off to hourly, so allow up to an hour. "
+                    "by holder(s) %s. Stop the listed holder(s) through whatever "
+                    "supervisor launched them (on a default Linux install the "
+                    "Desktop backend is `systemctl --user stop hermes-serve`); "
+                    "this process then becomes the sole holder and its own retry "
+                    "tick rebuilds without stopping the gateway. Note that tick "
+                    "backs off to hourly, so allow up to an hour. "
                     "`hermes doctor` reports this degraded state.", attempts, foreign_holders,
                 )
+        if remaining is not None:
+            # Hand the caller the holder list as it stands AFTER any reap, so it
+            # can distinguish "blocker is gone" from "blocker is permanent"
+            # without a third scan (an extra scan also breaks callers that stub
+            # _foreign_state_db_holders with a finite sequence).
+            remaining[:] = list(foreign_holders)
         if not foreign_holders:
             return False
         # An unknown holder (pid < 0) is the "could not prove quiescence"
@@ -573,7 +609,8 @@ class SessionSchemaMixin:
         Fails closed: holders or a lost admission race leave the breadcrumb set."""
         foreign_holders = self._foreign_state_db_holders()
         if foreign_holders:
-            if self._defer_stale_fts_for_holders(cursor, foreign_holders):
+            remaining = []
+            if self._defer_stale_fts_for_holders(cursor, foreign_holders, remaining):
                 return False
             # Proceeding past a proven-permanent holder (see
             # _defer_stale_fts_for_holders): probe the rebuild authority instead
@@ -581,7 +618,14 @@ class SessionSchemaMixin:
             # acquire here would add the full admission budget to every startup
             # of a database in this state -- and the stale breadcrumb already
             # guarantees the retry, so waiting buys nothing.
-            timeout_seconds = 0.0
+            #
+            # But that method also returns False after a successful reap, where
+            # the blocker is simply gone. Re-scan to tell the two apart: giving
+            # up the startup budget there would let transient lock contention
+            # postpone a repair that could have completed now, extending the
+            # write-loss window for no reason.
+            if remaining:
+                timeout_seconds = 0.0
         with fts_rebuild_admission(self.db_path, timeout_seconds=timeout_seconds) as admitted:
             if not admitted:
                 logger.warning(

@@ -222,6 +222,112 @@ class TestUnprovableHolderStaysFailClosed:
             reopened.close()
 
 
+class TestReapRescanReestablishesIdentity:
+    """A reap that swaps the holder must not hand its window to the newcomer.
+
+    The A->B protection runs before the orphan reap. If the reap removes A and
+    the rescan returns a different positive-PID B, every downstream variable
+    still describes A -- so the futility check can authorize B on its first
+    deferral using A's accrued hour.
+    """
+
+    def test_holder_swapped_by_the_reap_restarts_the_window(self, tmp_path, monkeypatch):
+        db_path = _seed_stale_db(tmp_path, monkeypatch)
+        now = 1_000_000.0
+        # A has earned the full futility window.
+        _write_deferral(
+            db_path,
+            attempts=FUTILE_ATTEMPTS * 5,
+            age_seconds=FUTILE_SECONDS * 5,
+            now=now,
+            holder_pids=(4242,),
+        )
+        monkeypatch.setattr(hermes_state_schema.time, "time", lambda: now)
+
+        scans = iter([
+            [(4242, str(db_path) + "-wal")],   # pre-reap: A
+            [(7777, str(db_path) + "-wal")],   # post-reap rescan: B, a different process
+        ])
+        monkeypatch.setattr(
+            SessionDB, "_foreign_state_db_holders",
+            lambda self: next(scans, [(7777, str(db_path) + "-wal")]),
+            raising=False,
+        )
+        monkeypatch.setattr(
+            SessionDB, "_reap_inactive_orphan_desktop_holders",
+            lambda self, holders, *, min_age_seconds: [4242],
+            raising=False,
+        )
+
+        reopened = SessionDB(db_path=db_path)
+        try:
+            assert reopened._fts_stale is True, (
+                "B inherited A's window and was authorized on its first deferral"
+            )
+            raw = _meta_value(db_path, FTS_REBUILD_DEFERRAL_KEY)
+            assert raw is not None
+            record = json.loads(raw)
+            assert record["holder_pids"] == [7777], (
+                "the persisted identity must describe the post-reap holder"
+            )
+            assert record["attempts"] == 1, (
+                f"the window must restart for B (attempts={record['attempts']})"
+            )
+            assert record["first_seen"] == now
+        finally:
+            reopened.close()
+
+
+class TestReapClearedKeepsTheStartupBudget:
+    """`_defer_stale_fts_for_holders` returns False for two different outcomes.
+
+    Proven permanence means the holder is staying, so probing the rebuild lock
+    non-blocking is right. A successful reap means the blocker is gone -- there
+    the startup admission budget must survive, or transient contention postpones
+    a repair that could have finished now.
+    """
+
+    def test_reap_cleared_holders_still_waits_for_admission(self, tmp_path, monkeypatch):
+        db_path = _seed_stale_db(tmp_path, monkeypatch)
+        now = 1_000_000.0
+        _write_deferral(
+            db_path, attempts=3, age_seconds=120.0, now=now, holder_pids=(4242,),
+        )
+        monkeypatch.setattr(hermes_state_schema.time, "time", lambda: now)
+
+        scans = iter([
+            [(4242, str(db_path) + "-wal")],   # pre-reap
+            [],                                # post-reap rescan: gone
+        ])
+        monkeypatch.setattr(
+            SessionDB, "_foreign_state_db_holders",
+            lambda self: next(scans, []), raising=False,
+        )
+        monkeypatch.setattr(
+            SessionDB, "_reap_inactive_orphan_desktop_holders",
+            lambda self, holders, *, min_age_seconds: [4242],
+            raising=False,
+        )
+
+        seen = {}
+        real = hermes_state_schema.fts_rebuild_admission
+
+        def spy(db, *, timeout_seconds=None):
+            seen["timeout"] = timeout_seconds
+            return real(db, timeout_seconds=timeout_seconds)
+
+        monkeypatch.setattr(hermes_state_schema, "fts_rebuild_admission", spy)
+
+        reopened = SessionDB(db_path=db_path)
+        try:
+            assert seen.get("timeout") != 0.0, (
+                "the reap-cleared path must keep the startup admission budget, "
+                f"got timeout_seconds={seen.get('timeout')!r}"
+            )
+        finally:
+            reopened.close()
+
+
 class TestPermanenceBelongsToAHolderSet:
     """Accrued futility must not transfer from one holder to another.
 

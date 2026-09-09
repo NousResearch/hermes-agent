@@ -1243,7 +1243,7 @@ def test_codex_middleware_model_rewrite_drops_stale_reasoning_and_stamps_respons
     captured = {}
 
     def _rewritten(request):
-        assert any(item.get("type") == "reasoning" for item in request["input"])
+        assert any(item.get("type") == "compaction" for item in request["input"])
         assert "context_management" in request
         replacement = dict(request)
         replacement["model"] = "gpt-5.5"
@@ -1306,6 +1306,17 @@ def test_codex_middleware_model_rewrite_drops_stale_reasoning_and_stamps_respons
                 "_issuer_model": "gpt-5.6",
             }],
         },
+        {"role": "user", "content": "Question before checkpoint"},
+        {
+            "role": "assistant",
+            "content": "Checkpointed answer",
+            "codex_reasoning_items": [{
+                "type": "compaction",
+                "encrypted_content": "old-model-checkpoint",
+                "_issuer_kind": "codex_backend",
+                "_issuer_model": "gpt-5.6",
+            }],
+        },
     ]
 
     result = agent.run_conversation("Next question", conversation_history=history)
@@ -1314,6 +1325,10 @@ def test_codex_middleware_model_rewrite_drops_stale_reasoning_and_stamps_respons
     assert captured["model"] == "gpt-5.5"
     assert "context_management" not in captured
     assert not any(item.get("type") in {"reasoning", "compaction"} for item in captured["input"])
+    assert any(
+        item.get("role") == "assistant" and item.get("content") == "Earlier answer"
+        for item in captured["input"]
+    )
     assert result["messages"][-1]["codex_reasoning_items"] == [{
         "type": "reasoning",
         "encrypted_content": "new-model-blob",

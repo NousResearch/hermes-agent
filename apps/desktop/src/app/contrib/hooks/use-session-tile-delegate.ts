@@ -520,7 +520,12 @@ export function useSessionTileDelegate({
           }
         )
 
-        return acceptedRuntimeId
+        return {
+          runtimeSessionId: acceptedRuntimeId,
+          // The durable binding for the accepted runtime — the only proof the
+          // requested stored session is what actually took the prompt.
+          storedSessionId: storedSessionIdForRuntime(acceptedRuntimeId) ?? null
+        }
       },
       updateSession: (runtimeId, updater) => updateSessionState(runtimeId, updater)
     })

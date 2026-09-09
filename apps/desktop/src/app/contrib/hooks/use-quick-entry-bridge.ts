@@ -136,9 +136,24 @@ export function useQuickEntryBridge({
           try {
             const runtimeId = await delegate.resumeTile(target)
             promptDispatched = true
-            const acceptedRuntimeId = await delegate.submitToSession(runtimeId, text)
+            const accepted = await delegate.submitToSession(runtimeId, text)
 
-            ack({ ok: true, runtimeSessionId: acceptedRuntimeId, sessionId: target })
+            if (accepted.storedSessionId !== target) {
+              // The backend accepted the prompt, but the accepted runtime is not
+              // bound to the requested stored session (or the binding is
+              // unprovable). Never report success for a session this request
+              // did not prove it used.
+              ack({
+                code: 'submit-identity-mismatch',
+                message: 'The prompt was accepted by a different session than the one requested.',
+                ok: false,
+                retryable: false
+              })
+
+              return
+            }
+
+            ack({ ok: true, runtimeSessionId: accepted.runtimeSessionId, sessionId: accepted.storedSessionId })
           } catch (error) {
             if (promptDispatched) {
               ack({

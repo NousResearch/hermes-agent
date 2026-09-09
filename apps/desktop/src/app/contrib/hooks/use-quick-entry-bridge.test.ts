@@ -191,7 +191,7 @@ describe('useQuickEntryBridge', () => {
     container.remove()
   })
 
-  it('acknowledges an accepted selected-session submit with exact identity', async () => {
+  it('acknowledges with the proven identity when the accepted stored id matches', async () => {
     const correlationId = 'selected-submit-correlation'
     const ackSubmit = vi.fn()
     ackSubmit.mockImplementationOnce(() => {
@@ -205,7 +205,10 @@ describe('useQuickEntryBridge', () => {
     } as unknown as typeof window.hermesDesktop
 
     const resumeTile = vi.fn(async () => 'runtime-session-1')
-    const submitToSession = vi.fn(async () => 'runtime-session-1')
+    const submitToSession = vi.fn(async () => ({
+      runtimeSessionId: 'runtime-session-1',
+      storedSessionId: 'stored-session-1'
+    }))
     vi.mocked(sessionTileDelegate).mockReturnValue({
       resumeTile,
       submitToSession
@@ -246,7 +249,10 @@ describe('useQuickEntryBridge', () => {
     } as unknown as typeof window.hermesDesktop
 
     const resumeTile = vi.fn(async () => 'runtime-session-before-recovery')
-    const submitToSession = vi.fn(async () => 'runtime-session-recovered')
+    const submitToSession = vi.fn(async () => ({
+      runtimeSessionId: 'runtime-session-recovered',
+      storedSessionId: 'stored-session-1'
+    }))
     vi.mocked(sessionTileDelegate).mockReturnValue({
       resumeTile,
       submitToSession
@@ -263,6 +269,80 @@ describe('useQuickEntryBridge', () => {
       ok: true,
       runtimeSessionId: 'runtime-session-recovered',
       sessionId: 'stored-session-1'
+    })
+
+    container.remove()
+  })
+
+  it('refuses to acknowledge success when the accepted stored id differs from the requested target', async () => {
+    const correlationId = 'selected-submit-identity-mismatch'
+    const ackSubmit = vi.fn()
+    window.hermesDesktop = {
+      quickEntry: {
+        ackSubmit,
+        pushState: vi.fn()
+      }
+    } as unknown as typeof window.hermesDesktop
+
+    const resumeTile = vi.fn(async () => 'runtime-session-1')
+    const submitToSession = vi.fn(async () => ({
+      runtimeSessionId: 'runtime-session-1',
+      storedSessionId: 'other-session'
+    }))
+    vi.mocked(sessionTileDelegate).mockReturnValue({
+      resumeTile,
+      submitToSession
+    } as unknown as ReturnType<typeof sessionTileDelegate>)
+
+    const { container, submit } = await renderBridge()
+
+    await act(async () => {
+      await submit({ correlationId, target: 'stored-session-1', text: 'Wrong target' })
+    })
+
+    expect(ackSubmit).toHaveBeenCalledTimes(1)
+    expect(ackSubmit).toHaveBeenCalledWith(correlationId, {
+      code: 'submit-identity-mismatch',
+      message: 'The prompt was accepted by a different session than the one requested.',
+      ok: false,
+      retryable: false
+    })
+
+    container.remove()
+  })
+
+  it('refuses to acknowledge success when the accepted stored id is unknown', async () => {
+    const correlationId = 'selected-submit-unknown-identity'
+    const ackSubmit = vi.fn()
+    window.hermesDesktop = {
+      quickEntry: {
+        ackSubmit,
+        pushState: vi.fn()
+      }
+    } as unknown as typeof window.hermesDesktop
+
+    const resumeTile = vi.fn(async () => 'runtime-session-1')
+    const submitToSession = vi.fn(async () => ({
+      runtimeSessionId: 'runtime-session-1',
+      storedSessionId: null
+    }))
+    vi.mocked(sessionTileDelegate).mockReturnValue({
+      resumeTile,
+      submitToSession
+    } as unknown as ReturnType<typeof sessionTileDelegate>)
+
+    const { container, submit } = await renderBridge()
+
+    await act(async () => {
+      await submit({ correlationId, target: 'stored-session-1', text: 'Unknown target' })
+    })
+
+    expect(ackSubmit).toHaveBeenCalledTimes(1)
+    expect(ackSubmit).toHaveBeenCalledWith(correlationId, {
+      code: 'submit-identity-mismatch',
+      message: 'The prompt was accepted by a different session than the one requested.',
+      ok: false,
+      retryable: false
     })
 
     container.remove()
@@ -317,7 +397,10 @@ describe('useQuickEntryBridge', () => {
     const resumeTile = vi.fn(async () => {
       throw new Error('resume failed')
     })
-    const submitToSession = vi.fn(async () => 'runtime-session-1')
+    const submitToSession = vi.fn(async () => ({
+      runtimeSessionId: 'runtime-session-1',
+      storedSessionId: 'stored-session-1'
+    }))
     vi.mocked(sessionTileDelegate).mockReturnValue({
       resumeTile,
       submitToSession

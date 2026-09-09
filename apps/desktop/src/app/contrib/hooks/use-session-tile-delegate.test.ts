@@ -768,7 +768,7 @@ describe('useSessionTileDelegate submitToSession', () => {
     setSessions([])
   })
 
-  it('returns the accepting runtime id on both the happy and recovered paths', async () => {
+  it('returns the accepted runtime and its stored binding', async () => {
     setSessions([row({ id: 'stored-submit', profile: 'default' })])
 
     const state = { busy: false, messages: [{ id: 'm1' }], storedSessionId: 'stored-submit' }
@@ -795,11 +795,17 @@ describe('useSessionTileDelegate submitToSession', () => {
     renderTile(requestGateway, { runtimeIdByStoredSessionIdRef, sessionStateByRuntimeIdRef })
     const delegate = sessionTileDelegate()!
 
-    const recoveredId = await delegate.submitToSession('runtime-dead', 'Send from Quick Entry')
-    expect(recoveredId).toBe('runtime-recovered')
+    const recovered = await delegate.submitToSession('runtime-dead', 'Send from Quick Entry')
+    expect(recovered).toEqual({
+      runtimeSessionId: 'runtime-recovered',
+      storedSessionId: 'stored-submit'
+    })
 
-    const acceptedId = await delegate.submitToSession('runtime-recovered', 'Send again')
-    expect(acceptedId).toBe('runtime-recovered')
+    const accepted = await delegate.submitToSession('runtime-recovered', 'Send again')
+    expect(accepted).toEqual({
+      runtimeSessionId: 'runtime-recovered',
+      storedSessionId: 'stored-submit'
+    })
     expect(promptAttempts).toBe(1)
     expect(runtimeIdByStoredSessionIdRef.current.get('stored-submit')).toBe('runtime-recovered')
     expect(requestGateway).toHaveBeenNthCalledWith(

@@ -2306,14 +2306,22 @@ export interface SessionTileDelegate {
    *  caller writes the mirror itself. */
   updateHeldSession?(runtimeId: string, updater: (state: ClientSessionState) => ClientSessionState): boolean
   /**
-   * Resolves with the live runtime session id that ACCEPTED the prompt. A
-   * session-not-found recovery can rebind the runtime, so the accepted id may
-   * differ from the input id; callers that report delivery must use this value.
+   * Resolves with the EXACT identity that ACCEPTED the prompt. A
+   * session-not-found recovery can rebind the runtime, so the accepted runtime
+   * id may differ from the input id; `storedSessionId` is the durable session
+   * the accepted runtime is bound to, or null when that binding is unknown. A
+   * caller that reports delivery must prove the requested target from this.
    */
-  submitToSession(runtimeId: string, text: string): Promise<string>
+  submitToSession(runtimeId: string, text: string): Promise<AcceptedSessionIdentity>
   /** THE session-state write path — routes through the wiring cache so the
    *  cache, the primary view (when active), and every tile mirror agree. */
   updateSession(runtimeId: string, updater: (state: ClientSessionState) => ClientSessionState): ClientSessionState
+}
+
+/** Exact identity a prompt was accepted into: live runtime id + durable stored id. */
+export interface AcceptedSessionIdentity {
+  runtimeSessionId: string
+  storedSessionId: null | string
 }
 
 let delegate: SessionTileDelegate | null = null

@@ -1884,6 +1884,7 @@ def _build_context_engine(agent, _agent_cfg, cs, _custom_providers, _effective_c
     agent.runtime_capabilities = resolve_native_compaction_capabilities(
         model=agent.model, base_url=agent.base_url, provider=agent.provider,
         is_codex_backend=(agent.provider or "").strip().lower() == "openai-codex",
+        provider_capabilities=agent.capabilities,
     )
     agent.max_compression_attempts = cs.max_attempts
     agent.compression_idle_compact_after_seconds = cs.idle_compact_after_seconds

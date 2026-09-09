@@ -28,6 +28,47 @@ database:
   # synchronous: FULL
 
 # =============================================================================
+# DeepSeek Harness (dsh)
+# =============================================================================
+# Lets the dsh_task model tool run agent tasks on a local DeepSeek Harness
+# (https://github.com/deepseek-ai/dsh). The "dsh" toolset is OFF by default:
+# enable it by adding `dsh` to platform_toolsets.<platform> (e.g.
+# `cli: [hermes-cli, dsh]`) or via `hermes tools` -> DeepSeek Harness.
+#
+# dsh keeps its own upstream model credentials in ~/.dsh/.credentials.yaml;
+# Hermes never stores or forwards them. The dsh web process is managed
+# externally (start-harness.ps1 / scheduled task) -- nothing here launches it.
+dsh:
+  # dsh web JSON-RPC base URL, used by dsh_task action=list for session
+  # inventory. Loopback needs no auth.
+  url: "http://127.0.0.1:3080"
+  # dsh CLI launch command for action=run (one-shot headless tasks), in argv
+  # form so paths with spaces need no shell quoting. Source checkout example:
+  #   command: ["C:/Users/g/tools/node-v22.19.0-win-x64/node.exe", "--import", "tsx/esm", "D:/5.ai/deeseek harness/deepseek-harness-master/apps/cli/src/bin.ts"]
+  # npm-installed CLI example:
+  #   command: ["dsh"]
+  # Empty = action=run unavailable (action=list still works if url is up).
+  command: []
+  # dsh profile tasks run under. "headless" is the built-in one-shot profile:
+  # final assistant text on stdout, exit 0/1, no port, no interaction.
+  profile: "headless"
+  # Working directory for action=run. dsh groups its persisted sessions by
+  # cwd (~/.dsh/sessions/<cwd>), so pin this to where dsh should work.
+  # Empty = inherit Hermes' own working directory (callers may also pass a
+  # per-call cwd to the tool).
+  cwd: ""
+  # Hard deadline for action=run, in seconds. dsh headless has no internal
+  # timeout -- the process tree is killed when this expires. 900s default.
+  timeout: 900
+  # Windows only: directory whose bash.exe is the REAL Git Bash (e.g.
+  # "D:/Program Files/Git/bin"), prepended to PATH for the dsh child so it
+  # never resolves the WSL shim at C:\Windows\System32\bash.exe. Leave empty
+  # on Linux/macOS where bash is already on PATH.
+  bash_dir: ""
+
+
+
+# =============================================================================
 # Runtime Limits
 # =============================================================================
 # Long-running Hermes server processes raise their RLIMIT_NOFILE soft limit to

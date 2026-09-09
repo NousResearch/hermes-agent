@@ -416,7 +416,9 @@ def _nous_picker_model_ids(curated: dict, force_fresh_nous_tier: bool) -> list:
             union_with_portal_paid_recommendations,
         )
         from hermes_cli.auth import get_provider_auth_state
-        pricing = get_pricing_for_provider("nous") or {}
+        # Cache-only: both Portal unions below discard the pricing map (``model_ids, _ = ...``);
+        # only the appended ids matter, so a live catalog fetch here buys nothing but latency.
+        pricing = get_pricing_for_provider("nous", cached_only=True) or {}
         try:
             portal = (get_provider_auth_state("nous") or {}).get("portal_base_url", "") or ""
         except Exception:

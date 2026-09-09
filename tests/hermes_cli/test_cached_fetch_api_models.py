@@ -378,3 +378,75 @@ class TestSalvageFollowups:
             out = mod.cached_fetch_api_models("sk-key", "https://gw.example.com/v1")
         assert out == ["live-models"]
         live.assert_called_once()
+
+
+class TestProbeApiModelsNegativeCache:
+    """#81123: a fully-failed /models probe must degrade fast, not re-burn
+    connect timeouts per URL candidate on every picker open."""
+
+    @pytest.fixture(autouse=True)
+    def _clear_probe_neg_cache(self):
+        import hermes_cli.models as mod
+
+        mod._probe_neg_cache.clear()
+        yield
+        mod._probe_neg_cache.clear()
+
+    def _fail(self, req, **kw):
+        raise TimeoutError("connect timed out")
+
+    def test_repeat_failure_within_ttl_skips_network(self, monkeypatch):
+        import hermes_cli.models as mod
+
+        monkeypatch.setattr(mod, "_urlopen_model_catalog_request", self._fail)
+        r1 = mod.probe_api_models("", "https://blackhole.invalid/v1", timeout=1.0)
+        calls = []
+        monkeypatch.setattr(
+            mod, "_urlopen_model_catalog_request",
+            lambda req, **kw: calls.append(req.full_url) or self._fail(req, **kw),
+        )
+        r2 = mod.probe_api_models("", "https://blackhole.invalid/v1/", timeout=1.0)
+        assert (r1["models"], r2["models"]) == (None, None)
+        assert calls == []  # /v1 + root share one host:port entry
+        assert r2["probed_url"] == "https://blackhole.invalid/v1/models"
+
+    def test_http_error_from_a_reachable_host_is_not_cached_as_unreachable(self, monkeypatch):
+        import urllib.error
+
+        import hermes_cli.models as mod
+
+        def _unauthorized(req, **kw):
+            raise urllib.error.HTTPError(req.full_url, 401, "Unauthorized", {}, None)
+
+        monkeypatch.setattr(mod, "_urlopen_model_catalog_request", _unauthorized)
+        assert mod.probe_api_models("bad-key", "https://reachable.invalid/v1", timeout=1.0)["models"] is None
+        # The host answered; a corrected key must probe again immediately.
+        assert "reachable.invalid:443" not in mod._probe_neg_cache
+
+    def test_expired_entry_reprobes_and_success_clears_it(self, monkeypatch):
+        import hermes_cli.models as mod
+
+        key = "blackhole.invalid:443"
+        old = time.monotonic() - mod._PROBE_NEG_TTL - 1
+        mod._probe_neg_cache[key] = old
+        monkeypatch.setattr(mod, "_urlopen_model_catalog_request", self._fail)
+        out = mod.probe_api_models("", "https://blackhole.invalid/v1", timeout=1.0)
+        assert out["models"] is None
+        assert mod._probe_neg_cache[key] > old  # expiry re-probed and re-recorded
+
+        mod._probe_neg_cache[key] = old  # expired again: the real probe runs
+
+        class _Resp:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def read(self):
+                return b'{"data": [{"id": "m1"}]}'
+
+        monkeypatch.setattr(mod, "_urlopen_model_catalog_request", lambda req, **kw: _Resp())
+        ok = mod.probe_api_models("", "https://blackhole.invalid/v1", timeout=1.0)
+        assert ok["models"] == ["m1"]
+        assert key not in mod._probe_neg_cache  # recovery is not masked by the stale entry

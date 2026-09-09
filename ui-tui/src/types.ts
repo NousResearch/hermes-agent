@@ -197,6 +197,7 @@ export interface SessionInfo {
   profile_name?: string
   project?: null | ProjectInfo
   reasoning_effort?: string
+  running?: boolean
   release_date?: string
   service_tier?: string
   skills: Record<string, string[]>

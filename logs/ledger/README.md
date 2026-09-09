@@ -100,8 +100,12 @@ Hermes' own versioning.
 | **MINOR** | A new north-forge capability, integration, tool, skill, or workflow added on top of upstream. |
 | **PATCH** | Fixes, housekeeping, dependency/upstream syncs, docs, and ledger-only changes. |
 
-- Current line: **`NF-v0.1.0`** (ledger established + baseline repo cleanup).
-- `0.y.z` = pre-identity. The first real rebrand/identity commit cuts **`NF-v0.2.0`**;
+- **The current version is always the newest `## [NF-vX.Y.Z]` heading in
+  [`CHANGELOG.md`](./CHANGELOG.md)** — and `INDEX.md`'s "Current coordinates" row
+  mirrors it. Do not restate a number in this rules file; a hardcoded one here
+  has gone stale before.
+- The line opened at **`NF-v0.1.0`** (ledger established + baseline repo cleanup).
+- `0.y.z` = pre-stable. **`NF-v0.2.0`** was the first rebrand/identity commit;
   declaring the fork stable cuts **`NF-v1.0.0`**.
 - One version = one dated block in `CHANGELOG.md`. Accumulate `CHG-` bullets under an
   `## [NF-vX.Y.Z] — Unreleased` block, then stamp the date when you cut it.

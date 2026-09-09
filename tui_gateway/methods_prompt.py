@@ -578,7 +578,7 @@ def _(rid, params: dict) -> dict:
         if (refusal := _reattach_refusal(rid, sid, session)) is not None:
             return refusal
         if (t := current_transport()) is not None:
-            session["transport"] = t
+            _attach_session_transport(session, t)
             _cancel_ws_orphan_reap(sid)
     # Claim the turn against a possibly-running session (busy/queued reply, else fall
     # through once ``running`` is observed False).  The provider interrupt happens after

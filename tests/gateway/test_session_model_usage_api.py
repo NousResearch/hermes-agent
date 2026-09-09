@@ -18,6 +18,7 @@ async def test_detail_pages_raw_main_and_auxiliary_usage_without_claiming_actual
     app.router.add_get("/api/sessions/{session_id}", adapter._handle_get_session)
     try:
         db.create_session("subject", "api_server")
+        db.create_session("empty", "api_server")
         db.update_token_counts("subject", input_tokens=101, output_tokens=7, model="main-model",
                                estimated_cost_usd=0.2, actual_cost_usd=0.03,
                                billing_base_url="https://private.invalid/secret", cost_status="estimated")
@@ -55,6 +56,9 @@ async def test_detail_pages_raw_main_and_auxiliary_usage_without_claiming_actual
             assert (await empty.json())["model_usage"]["data"] == []
             bounded = await client.get("/api/sessions/subject?include_usage=true&usage_limit=999999", headers=headers)
             assert (await bounded.json())["model_usage"]["pagination"]["limit"] == 500
+            no_ledger = await client.get("/api/sessions/empty?include_usage=true", headers=headers)
+            assert no_ledger.status == 200
+            assert (await no_ledger.json())["model_usage"]["data"] == []
             missing = await client.get("/api/sessions/missing?include_usage=true", headers=headers)
             assert missing.status == 404
             rejected = await client.get("/api/sessions/subject?include_usage=true")
@@ -64,28 +68,46 @@ async def test_detail_pages_raw_main_and_auxiliary_usage_without_claiming_actual
 
 
 @pytest.mark.asyncio
-async def test_detail_usage_reads_only_the_selected_profile_database(tmp_path, monkeypatch):
+async def test_detail_usage_reads_only_the_authenticated_profile_database(tmp_path, monkeypatch):
+    from agent import secret_scope
+    from gateway.config import GatewayConfig
+
     default_home = tmp_path / "default"
     worker_home = tmp_path / "worker"
     default_home.mkdir()
     worker_home.mkdir()
+    default_key, worker_key = "d" * 32, "w" * 32
+    (default_home / ".env").write_text(f"API_SERVER_KEY={default_key}\n", encoding="utf-8")
+    (worker_home / ".env").write_text(f"API_SERVER_KEY={worker_key}\n", encoding="utf-8")
     monkeypatch.setenv("HERMES_HOME", str(default_home))
-    adapter = APIServerAdapter(PlatformConfig(enabled=True))
+    monkeypatch.setattr("hermes_cli.profiles.get_profile_dir", lambda name: worker_home if name == "worker" else default_home)
+    monkeypatch.setattr("hermes_cli.profiles.profiles_to_serve",
+                        lambda **kwargs: [("default", default_home), ("worker", worker_home)])
+    adapter = APIServerAdapter(PlatformConfig(enabled=True, extra={"key": default_key}))
+    adapter.gateway_runner = type("Runner", (), {"config": GatewayConfig(multiplex_profiles=True)})()
     databases = [SessionDB(home / "state.db") for home in (default_home, worker_home)]
+    secret_scope.set_multiplex_active(True)
     try:
         for db, model in zip(databases, ("default-model", "worker-model")):
             db.create_session("same-id", "api_server")
             db.record_auxiliary_usage("same-id", "title_generation", model=model, input_tokens=5)
-        for home, expected in ((default_home, "default-model"), (worker_home, "worker-model")):
-            monkeypatch.setenv("HERMES_HOME", str(home))
-            app = web.Application()
-            app.router.add_get("/api/sessions/{session_id}", adapter._handle_get_session)
-            async with TestClient(TestServer(app)) as client:
-                response = await client.get("/api/sessions/same-id?include_usage=true")
+        app = web.Application(middlewares=[adapter._make_profile_prefix_middleware()])
+        app.router.add_get("/api/sessions/{session_id}", adapter._handle_get_session)
+        app.router.add_get("/p/{profile}/api/sessions/{session_id}", adapter._handle_get_session)
+        async with TestClient(TestServer(app)) as client:
+            for prefix, key, expected in (("", default_key, "default-model"),
+                                          ("/p/worker", worker_key, "worker-model"),
+                                          ("", default_key, "default-model")):
+                response = await client.get(f"{prefix}/api/sessions/same-id?include_usage=true",
+                                            headers={"Authorization": f"Bearer {key}"})
                 assert response.status == 200
                 rows = (await response.json())["model_usage"]["data"]
                 assert [row["model"] for row in rows] == [expected]
+            rejected = await client.get("/p/worker/api/sessions/same-id?include_usage=true",
+                                        headers={"Authorization": f"Bearer {default_key}"})
+            assert rejected.status == 401
     finally:
+        secret_scope.set_multiplex_active(False)
         adapter._close_cached_session_dbs()
         for db in databases:
             db.close()

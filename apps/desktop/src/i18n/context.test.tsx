@@ -310,4 +310,41 @@ describe('I18nProvider', () => {
 
     vi.useRealTimers()
   })
+
+  it('a late startup read never overrides a language the user picked mid-retry', async () => {
+    vi.useFakeTimers()
+
+    const getConfig = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('backend not ready yet'))
+      .mockResolvedValue({ display: { language: 'en' } })
+
+    const configClient: I18nConfigClient = {
+      getConfig,
+      saveConfig: vi.fn().mockResolvedValue({ ok: true })
+    }
+
+    render(
+      <I18nProvider configClient={configClient}>
+        <LanguageProbe target="ja" />
+      </I18nProvider>
+    )
+
+    await act(async () => {})
+    expect(screen.getByTestId('locale').textContent).toBe('en')
+
+    // User picks Japanese while the startup retry is still pending.
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'switch' }))
+    })
+    expect(screen.getByTestId('locale').textContent).toBe('ja')
+
+    // The retry resolves with the stale on-disk value; the explicit pick wins.
+    await act(async () => {
+      vi.advanceTimersByTime(3_000)
+    })
+    expect(screen.getByTestId('locale').textContent).toBe('ja')
+
+    vi.useRealTimers()
+  })
 })

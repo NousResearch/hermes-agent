@@ -99,6 +99,9 @@ export function I18nProvider({ children, configClient = defaultConfigClient, ini
   const [configLoadError, setConfigLoadError] = useState<Error | null>(null)
   const [saveError, setSaveError] = useState<Error | null>(null)
   const localeRef = useRef(locale)
+  // Set once the user picks a language through setLocale: a startup read that
+  // resolves (or fails) after that must never overwrite an explicit choice.
+  const userLocaleRef = useRef(false)
 
   // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
   useEffect(() => {
@@ -132,12 +135,12 @@ export function I18nProvider({ children, configClient = defaultConfigClient, ini
       return configClient
         .getConfig()
         .then(config => {
-          if (!cancelled) {
+          if (!cancelled && !userLocaleRef.current) {
             setLocaleState(normalizeLocale(getConfigDisplayLanguage(config)))
           }
         })
         .catch(error => {
-          if (cancelled) {
+          if (cancelled || userLocaleRef.current) {
             return
           }
 
@@ -173,6 +176,7 @@ export function I18nProvider({ children, configClient = defaultConfigClient, ini
     async (next: Locale) => {
       const previousLocale = localeRef.current
 
+      userLocaleRef.current = true
       setSaveError(null)
       setLocaleState(next)
 

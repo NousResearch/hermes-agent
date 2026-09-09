@@ -468,4 +468,43 @@ import {
   console.log('  ✓ quoted message text survives ephemeral/view-once/document envelopes');
 }
 
+{
+  // Nested envelopes (ephemeral wrapping viewOnce wrapping the payload) and
+  // the second envelope position: quoted text must resolve there as well.
+  const quotedMessage = {
+    ephemeralMessage: {
+      message: {
+        viewOnceMessageV2: {
+          message: { extendedTextMessage: { text: 'Example appointment at 11:40' } },
+        },
+      },
+    },
+  };
+  const event = await extractBridgeEvent({
+    msg: {
+      key: { id: 'reply-nested', remoteJid: '15551234567@s.whatsapp.net', fromMe: false },
+      messageTimestamp: 123,
+      message: {
+        ephemeralMessage: {
+          message: {
+            extendedTextMessage: {
+              text: 'confirmed',
+              contextInfo: { stanzaId: 'original-id', participant: '15559998888@s.whatsapp.net', quotedMessage },
+            },
+          },
+        },
+      },
+    },
+    chatId: '15551234567@s.whatsapp.net',
+    senderId: '15550001111@s.whatsapp.net',
+    senderNumber: '15550001111',
+    botIds: ['15559998888@s.whatsapp.net'],
+    downloadMedia: async () => Buffer.from(''),
+  });
+  assert.equal(event.quotedMessageId, 'original-id');
+  assert.equal(event.hasQuotedMessage, true);
+  assert.equal(event.quotedText, 'Example appointment at 11:40');
+  console.log('  ✓ nested envelopes: quote text resolves through both layers');
+}
+
 console.log('\n✅ All WhatsApp native bridge helper tests passed.');

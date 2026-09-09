@@ -6,7 +6,7 @@ import path from 'node:path'
 
 import { afterEach, test } from 'vitest'
 
-import { gitFor, repoStatus, resolveRenamePath, REVIEW_FILE_CAP, reviewList } from './git-review-ops'
+import { SIMPLE_GIT_UNSAFE_BINARY_WARN, gitFor, repoStatus, resolveRenamePath, REVIEW_FILE_CAP, reviewList } from './git-review-ops'
 
 const tempDirs: string[] = []
 
@@ -56,6 +56,38 @@ test('gitFor runs git through a spaced binary path', async () => {
   const status = await gitFor(repo, gitBin).status()
 
   assert.equal(status.not_added.includes('changed.txt'), true)
+})
+
+test('gitFor with a spaced Windows git path does not emit the simple-git custom-binary warning', async () => {
+  if (process.platform !== 'win32') {
+    return
+  }
+
+  const gitBin = path.join(process.env.ProgramFiles || String.raw`C:\Program Files`, 'Git', 'cmd', 'git.exe')
+
+  if (!fs.existsSync(gitBin)) {
+    return
+  }
+
+  const customBinaryWarnings: string[] = []
+  const originalWarn = console.warn
+
+  console.warn = (...args: unknown[]) => {
+    const first = String(args[0] ?? '')
+
+    if (first.startsWith(SIMPLE_GIT_UNSAFE_BINARY_WARN)) {
+      customBinaryWarnings.push(first)
+    }
+  }
+
+  try {
+    const repo = makeRepo()
+    await gitFor(repo, gitBin).status()
+  } finally {
+    console.warn = originalWarn
+  }
+
+  assert.equal(customBinaryWarnings.length, 0)
 })
 
 test('resolveRenamePath: simple rename resolves to the new path', () => {

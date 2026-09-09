@@ -160,8 +160,8 @@ import { adoptServedDashboardToken } from './dashboard-token'
 import { stopDesktopBackgroundServices } from './desktop-background-shutdown'
 import { loadOrCreateInstallationId, sshOwnershipId } from './desktop-installation'
 import { formatDesktopLogLine } from './desktop-log-line'
-import { resolveDesktopRemoteRoute, v1SshTerminalPoolKey } from './desktop-remote-route'
 import { poolBackendAuthorityEnv } from './desktop-pool-cron-authority'
+import { resolveDesktopRemoteRoute, v1SshTerminalPoolKey } from './desktop-remote-route'
 import {
   buildPosixCleanupScript,
   buildWindowsCleanupScript,

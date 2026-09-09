@@ -89,6 +89,8 @@ For trusted session proxies such as Sirup, IMAP/SMTP accept `unix:///path/to/soc
 
 ## Diagnose failures
 
+For Hotmail/Outlook with the Graph backend, read [msgraph-workflows.md](msgraph-workflows.md), especially native folder IDs, Windows/MSYS path handling, ID argument preservation and OData filtering. Do not attribute malformed-ID errors to quoting without reproducing the actual argument path.
+
 - Unknown command/option: compare version and exact `--help` first.
 - Missing backend: distinguish an omitted build feature from a missing account block or unsupported operation.
 - Authentication: check the selected account, secret command, token validity/scopes, advertised mechanism, host and TLS mode. Keep command output containing credentials private.

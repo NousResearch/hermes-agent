@@ -1,0 +1,7 @@
+{
+  "description": "Synthetic CLI v2.1.0 Graph responses; no user mail or live API capture",
+  "parent": {"messages": [{"id": "A+/=opaque", "receivedDateTime": "2026-01-01T12:00:00Z", "parentFolderId": "folder-id"}], "next_page": "https://graph.microsoft.com/v1.0/me/messages?$skip=987"},
+  "left": {"messages": [{"id": "A+/=opaque", "receivedDateTime": "2026-01-01T12:00:00Z", "parentFolderId": "folder-id"}]},
+  "right": {"messages": [{"id": "B", "receivedDateTime": "2026-01-02T12:00:00Z", "parentFolderId": "folder-id"}]},
+  "error": {"error": "Invalid filter clause", "sources": [], "backtrace": null}
+}

@@ -4,7 +4,7 @@ Read for long scans, automation, troubleshooting, stop handling, installation ve
 
 ## Verify the loaded pack
 
-After installing or replacing the pack in the target host, start a fresh skill load if the host caches instructions. Inspect the actual loaded `SKILL.md` and linked references. For this pack, the body marker and `metadata.version` must both be **2.1.0**. An archive filename, a previous assistant's claim, or `himalaya --version` does not identify the loaded skill revision.
+After installing or replacing the pack in the target host, start a fresh skill load if the host caches instructions. Inspect the actual loaded `SKILL.md` and linked references. For this pack, the body marker and `metadata.version` must both be **2.2.0**. An archive filename, a previous assistant's claim, or `himalaya --version` does not identify the loaded skill revision.
 
 Record a short task note: loaded pack path/version; CLI version and enabled features; chosen account/backend; exact help inspected. Report a mismatch rather than claiming the new revision is active. Do not automatically install, upgrade or change account configuration to make the versions match. The external executable and the skill pack have independent versions.
 
@@ -49,6 +49,8 @@ Run from the unpacked skill root with Python 3.9+ (IANA timezone data is needed 
 python3 -m unittest discover -s tests -v
 python3 scripts/scan_support.py windows --start 2024-02-01 --end 2024-03-01 --timezone UTC
 ```
+
+For Graph/Windows behavior, use [msgraph-workflows.md](msgraph-workflows.md); for removal gates and move/rescue journals, use [cleanup-review.md](cleanup-review.md). The full suite also exercises process argument preservation, bounded timeouts, Graph date partitioning, MIME decoding, protected content, unknown outcomes, exclusive locks and journal reconciliation.
 
 Fixtures are synthetic Himalaya-shaped pages. Tests cover cursor exhaustion, duplicate IDs, empty/short pages with tokens, page limits, errors, schema drift, repeated cursors, stop during a request, scope-preserving argv, leap years, year rollover and half-open date filtering. Helpers make no mailbox calls and do not classify or send messages.
 

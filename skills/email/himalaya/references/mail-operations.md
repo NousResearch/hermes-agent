@@ -20,7 +20,7 @@ Use `--json` for machine output. Generate schemas into a new directory with `him
 
 ## Search and pagination
 
-**Backend gate:** v2.1.0 Gmail REST and Graph reject shared `envelope search` entirely. This is not a quoting or authentication error. Use [Gmail workflows](gmail-workflows.md) or the native Graph command help. Gmail accessed over IMAP uses the IMAP backend.
+**Backend gate:** v2.1.0 Gmail REST and Graph reject shared `envelope search` entirely. This is not a quoting or authentication error. Use [Gmail workflows](gmail-workflows.md) or [Graph workflows](msgraph-workflows.md). Gmail accessed over IMAP uses the IMAP backend.
 
 V2 filtering and sorting belong to `envelope search`; `envelope list` lists newest first. Page numbering begins at 1 and the default size falls back to 25. Set page size explicitly for bounded retrieval. Shared results use `envelopes` and numeric pages, not Gmail cursor fields. For a complete scan, continue until an empty successful page; do not treat a nonempty short page or a page budget as proof of exhaustion. A repeated page or failure means incomplete. A bounded request can finish at its requested limit without exhausting the mailbox. Mailbox updates can change page boundaries, so deduplicate by scoped ID during long scans.
 
@@ -39,6 +39,8 @@ Quote the whole query for the shell; keep options before the trailing query. Use
 `--has-attachment` on list/search populates attachment information; it is not a filter that returns only messages with attachments. `--recipient` displays To instead of From. Native IMAP/JMAP/Gmail/Graph searches expose additional features and different grammars; see capabilities. Preserve every scope constraint when translating: `--mailbox inbox` does not carry into native Gmail; pass the resolved label, such as `--label INBOX`, on every page. See [Gmail workflows](gmail-workflows.md) for exact output shapes, dates and body access, and [execution and validation](execution-and-validation.md) for progress and count evidence.
 
 ## Move, copy and delete
+
+For Graph, recheck the actual parent folder before moving: the shared adapter ignores `--from`. Capture/resolve the new message ID and verify both source absence and destination presence; see [Graph workflows](msgraph-workflows.md). Cleanup candidates and rescues also require the [cleanup review](cleanup-review.md).
 
 ```bash
 himalaya --account work message move --from inbox --to archive 42 43

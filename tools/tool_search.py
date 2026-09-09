@@ -26,7 +26,12 @@ from tools.connector_search import connections_in_scope, connector_entries_by_gr
 from tools.tool_gateway.names import CONNECTOR_BATCH_SENTINEL, is_connector_name
 
 logger = logging.getLogger("tools.tool_search")
-_MAX_QUERIES_PER_CALL = _MAX_DESCRIBE_NAMES_PER_CALL = 10  # bound the work one bridge call requests
+# Bound the work one bridge call requests. Search is capped at the gateway's
+# own limit: the connector search route answers 7 use_cases per request and
+# returns HTTP 502 for 8 or more (measured 2026-09-09), and one local call
+# maps to one gateway request. Describe has no such remote limit.
+_MAX_QUERIES_PER_CALL = 7
+_MAX_DESCRIBE_NAMES_PER_CALL = 10
 
 
 @dataclass(frozen=True)

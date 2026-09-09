@@ -293,6 +293,31 @@ def test_search_identical_to_local_only_when_remote_leg_fails():
     assert local_only == with_failure  # byte-identical: D32
 
 
+def test_search_never_sends_the_gateway_more_use_cases_than_it_accepts():
+    """The gateway's search route returns HTTP 502 above 7 use_cases per request, and one
+    tool_search call maps to one gateway request. Seven queries reach it in one request;
+    eight are refused before any request is made, so the model gets a retry hint and the
+    gateway never sees a request it cannot answer."""
+    sent = []
+
+    def recording_search(use_cases):
+        sent.append(use_cases)
+        return {}
+
+    seven = [f"query {i}" for i in range(7)]
+    parsed = json.loads(dispatch_tool_search(
+        {"queries": seven}, current_tool_defs=_local_defs(), connector_search=recording_search))
+    assert "error" not in parsed
+    assert sent == [[{"use_case": q} for q in seven]]
+
+    sent.clear()
+    parsed = json.loads(dispatch_tool_search(
+        {"queries": seven + ["query 7"]}, current_tool_defs=_local_defs(),
+        connector_search=recording_search))
+    assert "too many queries" in parsed["error"]
+    assert sent == []
+
+
 # ---------------------------------------------------------------------------
 # dispatch_tool_describe: remote merge
 # ---------------------------------------------------------------------------

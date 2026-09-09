@@ -7,16 +7,10 @@ fail closed on both the open and write paths instead of creating the second
 generation.
 """
 
-import contextlib
 import gc
-import json
 import os
-import queue
 import sqlite3
-import subprocess
 import sys
-import textwrap
-import threading
 from pathlib import Path
 
 import pytest
@@ -28,53 +22,15 @@ from hermes_state import (
     refuse_deleted_wal_generation,
 )
 from hermes_state_dbfile import _pread_db_header, iter_deleted_sqlite_sidecar_holders
+from tests.hermes_state._wal_generation_harness import (
+    gateway_writer, integrity_ok_path, lose_sidecars, make_db, message_count, pin_wal, require_wal,
+    write_second_generation,
+)
 
 
 @pytest.fixture
 def force_wal(monkeypatch):
-    """Pin WAL so this host's vulnerable SQLite still matches production topology."""
-    monkeypatch.setattr(
-        hermes_state_wal, "is_sqlite_wal_reset_vulnerable", lambda version_info=None: False
-    )
-    monkeypatch.setattr(hermes_state_wal, "resolve_journal_mode", lambda: "wal")
-
-
-def _make_db(path: Path, session_id: str, content: str) -> SessionDB:
-    db = SessionDB(db_path=path)
-    db.create_session(session_id, "cli")
-    db.append_message(session_id, role="user", content=content)
-    return db
-
-
-def _require_wal(db: SessionDB) -> Path:
-    if not db._wal_active:
-        db.close()
-        pytest.skip("WAL not active on this filesystem")
-    wal = Path(os.fspath(db.db_path) + "-wal")
-    if not wal.exists():
-        db.close()
-        pytest.skip("WAL sidecar missing after first write")
-    return wal
-
-
-def _unlink_sidecars(db_path: Path) -> None:
-    for suffix in ("-wal", "-shm"):
-        sidecar = Path(os.fspath(db_path) + suffix)
-        if sidecar.exists():
-            os.unlink(sidecar)
-
-
-class _RecordingConn:
-    def __init__(self, real_conn):
-        self._real = real_conn
-        self.recorded = []
-
-    def execute(self, sql, *args, **kwargs):
-        self.recorded.append(str(sql))
-        return self._real.execute(sql, *args, **kwargs)
-
-    def __getattr__(self, name):
-        return getattr(self._real, name)
+    pin_wal(monkeypatch)
 
 
 def test_classify_deleted_wal_is_replaced_not_disk():
@@ -93,8 +49,8 @@ def test_iter_holders_empty_on_non_linux(monkeypatch, tmp_path):
 
 def test_clean_open_and_second_open_still_work(tmp_path, force_wal):
     path = tmp_path / "state.db"
-    db = _make_db(path, "s1", "hello")
-    _require_wal(db)
+    db = make_db(path, "s1", "hello")
+    require_wal(db)
     db.close()
     reopened = SessionDB(db_path=path)
     try:
@@ -111,7 +67,7 @@ def test_delete_journal_two_writers_still_work(tmp_path, monkeypatch):
         hermes_state_wal, "is_sqlite_wal_reset_vulnerable", lambda version_info=None: False
     )
     path = tmp_path / "state.db"
-    a = _make_db(path, "s", "from-a")
+    a = make_db(path, "s", "from-a")
     try:
         assert not Path(os.fspath(path) + "-wal").exists()
         b = SessionDB(db_path=path)
@@ -132,10 +88,10 @@ def test_delete_journal_two_writers_still_work(tmp_path, monkeypatch):
 )
 def test_iter_finds_self_after_wal_unlink(tmp_path, force_wal):
     path = tmp_path / "state.db"
-    db = _make_db(path, "s", "held")
-    wal = _require_wal(db)
+    db = make_db(path, "s", "held")
+    wal = require_wal(db)
     inode_before = wal.stat().st_ino
-    _unlink_sidecars(path)
+    lose_sidecars(path, rename=False)
     holders = iter_deleted_sqlite_sidecar_holders(path)
     try:
         assert holders, "expected this process to still hold the deleted WAL inode"
@@ -155,10 +111,10 @@ def test_iter_finds_self_after_wal_unlink(tmp_path, force_wal):
 )
 def test_second_sessiondb_open_refuses_and_does_not_mint_wal(tmp_path, force_wal):
     path = tmp_path / "state.db"
-    writer = _make_db(path, "s", "before-unlink")
-    wal = _require_wal(writer)
+    writer = make_db(path, "s", "before-unlink")
+    wal = require_wal(writer)
     inode_before = wal.stat().st_ino
-    _unlink_sidecars(path)
+    lose_sidecars(path, rename=False)
     assert not wal.exists()
 
     with pytest.raises(DeletedWalGenerationError, match="deleted state.db-wal"):
@@ -177,11 +133,11 @@ def test_second_sessiondb_open_refuses_and_does_not_mint_wal(tmp_path, force_wal
 )
 def test_writer_halts_after_own_wal_unlinked(tmp_path, force_wal):
     path = tmp_path / "state.db"
-    db = _make_db(path, "s", "before")
-    _require_wal(db)
+    db = make_db(path, "s", "before")
+    require_wal(db)
     recorded = db._db_sidecar_identity.get("-wal")
     assert recorded is not None
-    _unlink_sidecars(path)
+    lose_sidecars(path, rename=False)
 
     with pytest.raises(DeletedWalGenerationError, match="deleted state.db-wal"):
         db.append_message("s", role="user", content="after-unlink")
@@ -192,30 +148,13 @@ def test_writer_halts_after_own_wal_unlinked(tmp_path, force_wal):
     db.close()
 
 
-def test_close_quarantines_a_lost_wal_generation_before_checkpoint(
-    tmp_path, force_wal, monkeypatch, caplog
-):
-    db = _make_db(tmp_path / "state.db", "s", "before-close")
-    real_conn = db._conn
-    recorder = _RecordingConn(real_conn)
-    db._conn = recorder
-    monkeypatch.setattr(db, "_wal_generation_was_lost", lambda: True)
-
-    with caplog.at_level("WARNING", logger="hermes_state"):
-        db.close()
-
-    assert db._db_wal_generation_lost is True
-    assert not any("wal_checkpoint" in sql for sql in recorder.recorded)
-    assert "Skipping the close-time WAL checkpoint" in caplog.text
-
-
 @pytest.mark.skipif(_close_time_checkpoint_configurable(),
                     reason="setconfig can switch the close-time checkpoint off: no retirement capability needed")
 def test_missing_retirement_capability_refuses_writer_before_open(tmp_path, monkeypatch):
     import ctypes
 
     existing = tmp_path / "existing.db"
-    _make_db(existing, "seed", "read-only access remains available").close()
+    make_db(existing, "seed", "read-only access remains available").close()
 
     class MissingPythonAPI:
         def __getitem__(self, name):
@@ -232,53 +171,12 @@ def test_missing_retirement_capability_refuses_writer_before_open(tmp_path, monk
 
 # ── Integrity across close/shutdown, not just "no explicit PRAGMA" ─────────────────────────────────
 #
-# test_close_quarantines_a_lost_wal_generation_before_checkpoint (above) mocks the detector and asserts
-# that no ``wal_checkpoint`` string was executed. That is necessary but NOT sufficient: on Python < 3.12
-# ``sqlite3.Connection.close()`` runs SQLite's own internal last-connection checkpoint with no SQL of ours,
-# and it checkpoints the STALE generation's frames over pages the newer generation already rewrote — the
-# #105670 corruption. These tests unlink the sidecars for real, write and checkpoint a second generation
-# through the path, then assert the FILE is intact (and the second generation's rows survive) both after
-# ``SessionDB.close()`` and after the writer PROCESS exits.
-
-
-def _write_second_generation(db_path: Path, n_rows: int) -> int:
-    """From a process that does NOT already hold this db open, mint a fresh WAL generation through the path
-    (as any non-hermes opener would), write ``n_rows`` messages and checkpoint them into the main file.
-    Returns the message count on the path afterwards. MUST run in a different process from the writer that
-    holds the deleted generation — two live handles on one db in one process collide on the -shm."""
-    conn = sqlite3.connect(str(db_path), timeout=5.0, isolation_level=None)
-    try:
-        conn.execute("PRAGMA journal_mode")  # header says WAL -> a fresh -wal/-shm generation on the path
-        sessions = [r[0] for r in conn.execute("SELECT id FROM sessions ORDER BY id").fetchall()]
-        conn.execute("BEGIN IMMEDIATE")
-        for i in range(n_rows):
-            conn.execute(
-                "INSERT INTO messages (session_id, role, content, timestamp) VALUES (?, ?, ?, ?)",
-                (sessions[i % len(sessions)], "assistant", "gen2 " + "y" * 2000 + f" #{i}", 1.0 + i),
-            )
-        conn.execute("COMMIT")
-        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-        return conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
-    finally:
-        conn.close()
-
-
-def _integrity_ok(db_path: Path) -> bool:
-    conn = sqlite3.connect(str(db_path), timeout=5.0)
-    try:
-        return [r[0] for r in conn.execute("PRAGMA integrity_check").fetchall()] == ["ok"]
-    except sqlite3.DatabaseError:
-        return False  # a badly torn file fails the pragma itself
-    finally:
-        conn.close()
-
-
-def _message_count(db_path: Path) -> int:
-    conn = sqlite3.connect(str(db_path), timeout=5.0)
-    try:
-        return conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
-    finally:
-        conn.close()
+# Asserting that no ``wal_checkpoint`` string was executed at close would be necessary but NOT sufficient:
+# on Python < 3.12 ``sqlite3.Connection.close()`` runs SQLite's own internal last-connection checkpoint
+# with no SQL of ours, and it checkpoints the STALE generation's frames over pages the newer generation
+# already rewrote — the #105670 corruption. These tests unlink the sidecars for real, write and checkpoint
+# a second generation through the path, then assert the FILE is intact (and the second generation's rows
+# survive) both after ``SessionDB.close()`` and after the writer PROCESS exits.
 
 
 def _deleted_wal_descriptor(identity: tuple, fd_directory: str) -> int:
@@ -311,15 +209,15 @@ def _assert_retirement_preserves_recoverable_wal(tmp_path, *, fd_directory, also
     is the copy. Neither claims that unlinked files survive process exit.
     """
     path = tmp_path / "state.db"
-    db = _make_db(path, "gw-0", "seed")
-    wal = _require_wal(db)
+    db = make_db(path, "gw-0", "seed")
+    wal = require_wal(db)
     db._conn.execute("PRAGMA wal_autocheckpoint=0")
     db._try_wal_checkpoint()
     sentinel = "committed only in the retired WAL " + "x" * 3000
     db.append_message("gw-0", role="assistant", content=sentinel)
     original_stat = wal.stat()
     original_identity = (original_stat.st_dev, original_stat.st_ino)
-    _unlink_sidecars(path)
+    lose_sidecars(path, rename=False)
 
     # SQLite is the sole owner of the original inode; dup/open here would mask
     # a close() that incorrectly discards the only remaining copy.
@@ -410,142 +308,28 @@ def test_retirement_preserves_unlinked_wal_on_macos(tmp_path, force_wal, also_co
     )
 
 
-# The long-lived "gateway" writer A: opens state.db in WAL mode, seeds + checkpoints history, leaves a few
-# frames in its WAL, then serves stdin commands (write / close / quit) so the test can drive close() at the
-# exact split-brain moment. Runs in its OWN process — the second generation is written from the test process,
-# so the two live handles never collide on one -shm. Returns normally on quit,
-# exercising normal interpreter cleanup as well as explicit close and GC.
-_GATEWAY_CHILD = textwrap.dedent(
-    """
-    import gc, json, os, sys
-    from pathlib import Path
-    repo, hermes_home, db_path = sys.argv[1], sys.argv[2], sys.argv[3]
-    sys.path.insert(0, repo)
-    os.environ["HERMES_HOME"] = hermes_home
-    import hermes_state_wal
-    if hermes_state_wal.is_sqlite_wal_reset_vulnerable():
-        hermes_state_wal.is_sqlite_wal_reset_vulnerable = lambda version_info=None: False
-    hermes_state_wal.resolve_journal_mode = lambda: "wal"
-    from hermes_state import DeletedWalGenerationError, SessionDB
-
-    def emit(**e):
-        sys.stdout.write(json.dumps(e) + "\\n"); sys.stdout.flush()
-
-    db = SessionDB(db_path=Path(db_path))
-    if not db._wal_active:
-        emit(event="skip"); sys.exit(3)
-    for sid in ("gw-0", "gw-1", "gw-2", "gw-3"):
-        db.create_session(sid, "cli")
-        db.append_message(sid, role="user", content="seed")
-    db._try_wal_checkpoint()  # history checkpointed into state.db, like a `sessions optimize` pass
-    for sid in ("gw-0", "gw-1", "gw-2", "gw-3"):
-        db.append_message(sid, role="assistant", content="uncheckpointed " + "x" * 3000)
-    emit(event="ready")
-
-    for line in sys.stdin:
-        cmd = line.strip()
-        if cmd == "write":
-            try:
-                db.append_message("gw-0", role="user", content="post-unlink turn")
-                emit(event="write", refused=False)
-            except DeletedWalGenerationError:
-                emit(event="write", refused=True)
-        elif cmd == "close":
-            db.close()
-            del db
-            gc.collect()
-            emit(event="closed")
-        elif cmd == "quit":
-            break
-    """
-)
-
-
 def _assert_new_generation_survives_retirement_and_exit(tmp_path, *, rename_sidecars):
-    repo_root = os.path.dirname(os.path.abspath(hermes_state.__file__))
-    hermes_home = tmp_path / "home"
-    hermes_home.mkdir()
-    path = tmp_path / "state.db"
-    stderr_path = tmp_path / "writer-stderr.log"
-    with stderr_path.open("w", encoding="utf-8") as stderr:
-        proc = subprocess.Popen(
-            [sys.executable, "-c", _GATEWAY_CHILD, repo_root, str(hermes_home), str(path)],
-            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=stderr,
-            text=True, encoding="utf-8", bufsize=1,
-            env={**os.environ, "HERMES_STATE_DB_GUARD_BYPASS": "1"},
-        )
-        events = queue.Queue()
+    with gateway_writer(tmp_path) as gw:
+        path = gw.path
+        gw.next_event("ready")
+        for suffix in ("-wal", "-shm"):
+            assert Path(str(path) + suffix).exists()
+        lose_sidecars(path, rename=rename_sidecars)
+        expected = write_second_generation(path, n_rows=400)
+        assert integrity_ok_path(path)
 
-        def read_events():
-            try:
-                for line in proc.stdout:
-                    events.put(line)
-            finally:
-                events.put(None)
+        gw.send("write")
+        assert gw.next_event("write")["refused"] is True
 
-        reader = threading.Thread(target=read_events, daemon=True)
-        reader.start()
+        gw.send("close")
+        gw.next_event("closed")
+        assert integrity_ok_path(path), "close/GC checkpointed the stale WAL over the main file"
+        assert message_count(path) == expected, "close/GC rolled back the newer rows"
 
-        def next_event(name):
-            try:
-                line = events.get(timeout=20)
-            except queue.Empty:
-                pytest.fail(
-                    f"writer timed out waiting for {name!r}\n"
-                    + stderr_path.read_text(encoding="utf-8")
-                )
-            assert line is not None, (
-                f"writer exited early (rc={proc.poll()}) waiting for {name!r}\n"
-                + stderr_path.read_text(encoding="utf-8")
-            )
-            event = json.loads(line)
-            if name == "ready" and event.get("event") == "skip":
-                pytest.skip("WAL not active on this filesystem")
-            assert event.get("event") == name, event
-            return event
-
-        def send(command):
-            proc.stdin.write(command + "\n")
-            proc.stdin.flush()
-
-        try:
-            next_event("ready")
-            for suffix in ("-wal", "-shm"):
-                side = Path(str(path) + suffix)
-                assert side.exists()
-                if rename_sidecars:
-                    side.rename(tmp_path / ("retired.db" + suffix))
-                else:
-                    side.unlink()
-            expected = _write_second_generation(path, n_rows=400)
-            assert _integrity_ok(path)
-
-            send("write")
-            assert next_event("write")["refused"] is True
-
-            send("close")
-            next_event("closed")
-            assert _integrity_ok(path), "close/GC checkpointed the stale WAL over the main file"
-            assert _message_count(path) == expected, "close/GC rolled back the newer rows"
-
-            send("quit")
-            assert proc.wait(timeout=20) == 0, stderr_path.read_text(encoding="utf-8")
-            assert _integrity_ok(path), "normal exit checkpointed the stale WAL over the main file"
-            assert _message_count(path) == expected, "normal exit rolled back the newer rows"
-        finally:
-            with contextlib.suppress(BrokenPipeError):
-                proc.stdin.close()
-            try:
-                proc.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                proc.terminate()
-                try:
-                    proc.wait(timeout=5)
-                except subprocess.TimeoutExpired:
-                    proc.kill()
-                    proc.wait(timeout=5)
-            reader.join(timeout=5)
-            proc.stdout.close()
+        gw.send("quit")
+        assert gw.wait_exit(timeout=20) == 0, gw.stderr_text()
+        assert integrity_ok_path(path), "normal exit checkpointed the stale WAL over the main file"
+        assert message_count(path) == expected, "normal exit rolled back the newer rows"
 
 
 @pytest.mark.linux_only

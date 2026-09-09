@@ -8,26 +8,23 @@ transaction committed only in the retired WAL is recoverable from the capture al
 the writer process has exited.
 """
 
-import contextlib
 import hashlib
 import json
 import os
-import queue
 import shutil
 import sqlite3
-import subprocess
 import sys
-import textwrap
-import threading
 from pathlib import Path
 
 import pytest
 
 import hermes_state
-import hermes_state_wal
 from hermes_state import DeletedWalGenerationError, SessionDB
 from hermes_state_dbfile import (
     RETIRED_GENERATION_MANIFEST, RetiredGenerationCaptureError, capture_retired_wal_generation,
+)
+from tests.hermes_state._wal_generation_harness import (
+    gateway_writer, integrity_ok_conn, lose_sidecars, make_db, pin_wal, require_wal, write_second_generation,
 )
 
 FD_DIRECTORY = "/proc/self/fd" if sys.platform.startswith("linux") else "/dev/fd"
@@ -36,39 +33,7 @@ not_windows = pytest.mark.skipif(sys.platform == "win32", reason="a held sidecar
 
 @pytest.fixture
 def force_wal(monkeypatch):
-    """Pin WAL so this host's vulnerable SQLite still matches production topology."""
-    monkeypatch.setattr(hermes_state_wal, "is_sqlite_wal_reset_vulnerable", lambda version_info=None: False)
-    monkeypatch.setattr(hermes_state_wal, "resolve_journal_mode", lambda: "wal")
-
-
-def _make_db(path: Path, session_id: str, content: str) -> SessionDB:
-    db = SessionDB(db_path=path)
-    db.create_session(session_id, "cli")
-    db.append_message(session_id, role="user", content=content)
-    return db
-
-
-def _require_wal(db: SessionDB) -> Path:
-    if not db._wal_active:
-        db.close()
-        pytest.skip("WAL not active on this filesystem")
-    wal = Path(str(db.db_path) + "-wal")
-    if not wal.exists():
-        db.close()
-        pytest.skip("WAL sidecar missing after first write")
-    return wal
-
-
-def _lose_sidecars(db_path: Path, *, rename: bool) -> None:
-    """Take the -wal/-shm generation away from the writer, as the field incident did."""
-    for suffix in ("-wal", "-shm"):
-        side = Path(str(db_path) + suffix)
-        if not side.exists():
-            continue
-        if rename:
-            side.rename(db_path.with_name("retired" + side.name))
-        else:
-            side.unlink()
+    pin_wal(monkeypatch)
 
 
 def _descriptor_for(identity: tuple) -> int:
@@ -112,13 +77,6 @@ def _count(conn: sqlite3.Connection, content_like: str) -> int:
     return conn.execute("SELECT COUNT(*) FROM messages WHERE content LIKE ?", (content_like,)).fetchone()[0]
 
 
-def _integrity_ok(conn: sqlite3.Connection) -> bool:
-    try:
-        return [r[0] for r in conn.execute("PRAGMA integrity_check").fetchall()] == ["ok"]
-    except sqlite3.DatabaseError:
-        return False
-
-
 # ── Capture at the first halt ───────────────────────────────────────────────────────────────────────
 
 
@@ -126,11 +84,11 @@ def _integrity_ok(conn: sqlite3.Connection) -> bool:
 @pytest.mark.parametrize("rename", [False, True], ids=["unlink", "rename"])
 def test_halt_captures_the_exact_retired_generation(tmp_path, force_wal, rename):
     path = tmp_path / "state.db"
-    db = _make_db(path, "gw-0", "seed")
-    _require_wal(db)
+    db = make_db(path, "gw-0", "seed")
+    require_wal(db)
     sentinel = _wal_only_sentinel(db, "gw-0")
     identity = db._db_sidecar_identity["-wal"]
-    _lose_sidecars(path, rename=rename)
+    lose_sidecars(path, rename=rename)
     original = _descriptor_contents(_descriptor_for(identity))
 
     with pytest.raises(DeletedWalGenerationError):
@@ -150,7 +108,7 @@ def test_halt_captures_the_exact_retired_generation(tmp_path, force_wal, rename)
     recovered = _recover(artifact, "state.db", tmp_path / "recovered")
     try:
         assert _count(recovered, sentinel) == 1
-        assert _integrity_ok(recovered)
+        assert integrity_ok_conn(recovered)
     finally:
         recovered.close()
 
@@ -162,10 +120,10 @@ def test_halt_captures_the_exact_retired_generation(tmp_path, force_wal, rename)
 @not_windows
 def test_close_captures_when_the_loss_is_first_seen_at_close(tmp_path, force_wal):
     path = tmp_path / "state.db"
-    db = _make_db(path, "gw-0", "seed")
-    _require_wal(db)
+    db = make_db(path, "gw-0", "seed")
+    require_wal(db)
     sentinel = _wal_only_sentinel(db, "gw-0")
-    _lose_sidecars(path, rename=False)
+    lose_sidecars(path, rename=False)
 
     db.close()  # no write in between: close() itself must notice the loss and capture
 
@@ -182,10 +140,10 @@ def test_close_captures_when_the_loss_is_first_seen_at_close(tmp_path, force_wal
 @not_windows
 def test_close_refuses_to_settle_without_a_capture(tmp_path, force_wal, monkeypatch):
     path = tmp_path / "state.db"
-    db = _make_db(path, "gw-0", "seed")
-    _require_wal(db)
+    db = make_db(path, "gw-0", "seed")
+    require_wal(db)
     sentinel = _wal_only_sentinel(db, "gw-0")
-    _lose_sidecars(path, rename=False)
+    lose_sidecars(path, rename=False)
 
     def refuse(*args, **kwargs):
         raise RetiredGenerationCaptureError("no space left on device")
@@ -215,10 +173,10 @@ def test_failed_capture_still_pins_the_handle_and_surfaces_through_the_registry(
     from hermes_state_registry import release_or_close
 
     path = tmp_path / "state.db"
-    db = _make_db(path, "gw-0", "seed")
-    _require_wal(db)
+    db = make_db(path, "gw-0", "seed")
+    require_wal(db)
     _wal_only_sentinel(db, "gw-0")
-    _lose_sidecars(path, rename=False)
+    lose_sidecars(path, rename=False)
     pins = []
     if db._retire_connection is not None:
         monkeypatch.setattr(db, "_retire_connection", pins.append)
@@ -248,11 +206,11 @@ def test_capture_selects_the_recorded_inode_not_the_pathname(tmp_path, force_wal
     """A second deleted WAL under the same pathname belongs to another owner: it must be neither
     captured as ours nor touched."""
     path = tmp_path / "state.db"
-    db = _make_db(path, "gw-0", "seed")
-    wal = _require_wal(db)
+    db = make_db(path, "gw-0", "seed")
+    wal = require_wal(db)
     sentinel = _wal_only_sentinel(db, "gw-0")
     identity = db._db_sidecar_identity["-wal"]
-    _lose_sidecars(path, rename=False)
+    lose_sidecars(path, rename=False)
     original = _descriptor_contents(_descriptor_for(identity))
 
     other = sqlite3.connect(str(tmp_path / "other.db"))
@@ -286,7 +244,7 @@ def test_capture_selects_the_recorded_inode_not_the_pathname(tmp_path, force_wal
 
 def test_capture_refuses_to_guess_by_pathname(tmp_path, force_wal):
     path = tmp_path / "state.db"
-    db = _make_db(path, "gw-0", "seed")
+    db = make_db(path, "gw-0", "seed")
     try:
         with pytest.raises(RetiredGenerationCaptureError, match="pathname"):
             capture_retired_wal_generation(path, sidecar_identity={}, trigger="test")
@@ -304,150 +262,31 @@ def test_capture_refuses_to_guess_by_pathname(tmp_path, force_wal):
 # capture), mints and checkpoints a newer generation through the path from THIS process, then has A
 # close and exit normally. The retired rows must be recoverable from the capture alone afterwards.
 
-_GATEWAY_CHILD = textwrap.dedent(
-    """
-    import gc, json, os, sys
-    from pathlib import Path
-    repo, hermes_home, db_path = sys.argv[1], sys.argv[2], sys.argv[3]
-    sys.path.insert(0, repo)
-    os.environ["HERMES_HOME"] = hermes_home
-    import hermes_state_wal
-    if hermes_state_wal.is_sqlite_wal_reset_vulnerable():
-        hermes_state_wal.is_sqlite_wal_reset_vulnerable = lambda version_info=None: False
-    hermes_state_wal.resolve_journal_mode = lambda: "wal"
-    from hermes_state import DeletedWalGenerationError, SessionDB
-
-    def emit(**e):
-        sys.stdout.write(json.dumps(e) + "\\n"); sys.stdout.flush()
-
-    db = SessionDB(db_path=Path(db_path))
-    if not db._wal_active:
-        emit(event="skip"); sys.exit(3)
-    for sid in ("gw-0", "gw-1", "gw-2", "gw-3"):
-        db.create_session(sid, "cli")
-        db.append_message(sid, role="user", content="seed")
-    db._try_wal_checkpoint()  # history checkpointed into state.db, like a `sessions optimize` pass
-    db._conn.execute("PRAGMA wal_autocheckpoint=0")
-    for sid in ("gw-0", "gw-1", "gw-2", "gw-3"):
-        db.append_message(sid, role="assistant", content="uncheckpointed " + "x" * 3000)
-    emit(event="ready")
-
-    for line in sys.stdin:
-        cmd = line.strip()
-        if cmd == "write":
-            try:
-                db.append_message("gw-0", role="user", content="post-loss turn")
-                emit(event="write", refused=False, artifact=None)
-            except DeletedWalGenerationError:
-                capture = db._retired_generation_capture
-                emit(event="write", refused=True, artifact=None if capture is None else str(capture))
-        elif cmd == "close":
-            try:
-                db.close()
-                emit(event="closed", error=None)
-            except Exception as exc:
-                emit(event="closed", error=repr(exc))
-            del db
-            gc.collect()
-        elif cmd == "quit":
-            break
-    """
-)
-
-
-def _write_second_generation(db_path: Path, n_rows: int) -> int:
-    """From a process that does NOT hold this db open, mint a fresh WAL generation through the path,
-    write ``n_rows`` messages and checkpoint them into the main file."""
-    conn = sqlite3.connect(str(db_path), timeout=5.0, isolation_level=None)
-    try:
-        conn.execute("PRAGMA journal_mode")
-        sessions = [r[0] for r in conn.execute("SELECT id FROM sessions ORDER BY id").fetchall()]
-        conn.execute("BEGIN IMMEDIATE")
-        for i in range(n_rows):
-            conn.execute(
-                "INSERT INTO messages (session_id, role, content, timestamp) VALUES (?, ?, ?, ?)",
-                (sessions[i % len(sessions)], "assistant", "gen2 " + "y" * 2000 + f" #{i}", 1.0 + i),
-            )
-        conn.execute("COMMIT")
-        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-        return conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
-    finally:
-        conn.close()
-
 
 def _assert_retired_rows_recoverable_after_exit(tmp_path, *, rename):
-    repo_root = os.path.dirname(os.path.abspath(hermes_state.__file__))
-    hermes_home = tmp_path / "home"
-    hermes_home.mkdir()
-    path = tmp_path / "state.db"
-    stderr_path = tmp_path / "writer-stderr.log"
-    with stderr_path.open("w", encoding="utf-8") as stderr:
-        proc = subprocess.Popen(
-            [sys.executable, "-c", _GATEWAY_CHILD, repo_root, str(hermes_home), str(path)],
-            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=stderr,
-            text=True, encoding="utf-8", bufsize=1,
-            env={**os.environ, "HERMES_STATE_DB_GUARD_BYPASS": "1"},
-        )
-        events: "queue.Queue[str | None]" = queue.Queue()
+    with gateway_writer(tmp_path) as gw:
+        path = gw.path
+        gw.next_event("ready")
+        lose_sidecars(path, rename=rename)
 
-        def read_events():
-            try:
-                for line in proc.stdout:
-                    events.put(line)
-            finally:
-                events.put(None)
+        gw.send("write")
+        refused = gw.next_event("write")
+        assert refused["refused"] is True
+        artifact = Path(refused["artifact"])
+        assert artifact.is_dir() and _manifest(artifact)["trigger"] == "halt"
 
-        threading.Thread(target=read_events, daemon=True).start()
+        expected = write_second_generation(path, n_rows=400)
 
-        def next_event(name):
-            try:
-                line = events.get(timeout=20)
-            except queue.Empty:
-                pytest.fail(f"writer timed out waiting for {name!r}\n" + stderr_path.read_text(encoding="utf-8"))
-            assert line is not None, (
-                f"writer exited early (rc={proc.poll()}) waiting for {name!r}\n"
-                + stderr_path.read_text(encoding="utf-8"))
-            event = json.loads(line)
-            if name == "ready" and event.get("event") == "skip":
-                pytest.skip("WAL not active on this filesystem")
-            assert event.get("event") == name, event
-            return event
-
-        def send(command):
-            proc.stdin.write(command + "\n")
-            proc.stdin.flush()
-
-        try:
-            next_event("ready")
-            _lose_sidecars(path, rename=rename)
-
-            send("write")
-            refused = next_event("write")
-            assert refused["refused"] is True
-            artifact = Path(refused["artifact"])
-            assert artifact.is_dir() and _manifest(artifact)["trigger"] == "halt"
-
-            expected = _write_second_generation(path, n_rows=400)
-
-            send("close")
-            assert next_event("closed")["error"] is None
-            send("quit")
-            assert proc.wait(timeout=20) == 0, stderr_path.read_text(encoding="utf-8")
-        finally:
-            with contextlib.suppress(BrokenPipeError):
-                proc.stdin.close()
-            try:
-                proc.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                proc.kill()
-                proc.wait(timeout=5)
-            proc.stdout.close()
+        gw.send("close")
+        assert gw.next_event("closed")["error"] is None
+        gw.send("quit")
+        assert gw.wait_exit(timeout=20) == 0, gw.stderr_text()
 
     # The writer is gone and its unlinked WAL inode with it. Recovery must come from the capture alone.
     recovered = _recover(artifact, "state.db", tmp_path / "recovered")
     try:
         assert _count(recovered, "uncheckpointed %") == 4, "retired WAL-only rows lost across process exit"
-        assert _integrity_ok(recovered), "captured image + WAL do not form a consistent database"
+        assert integrity_ok_conn(recovered), "captured image + WAL do not form a consistent database"
     finally:
         recovered.close()
 
@@ -455,7 +294,7 @@ def _assert_retired_rows_recoverable_after_exit(tmp_path, *, rename):
     # checkpoint off, or the handle was retired unclosed where it could not be.
     live = sqlite3.connect(str(path))
     try:
-        assert _integrity_ok(live) and live.execute("SELECT COUNT(*) FROM messages").fetchone()[0] == expected
+        assert integrity_ok_conn(live) and live.execute("SELECT COUNT(*) FROM messages").fetchone()[0] == expected
     finally:
         live.close()
 

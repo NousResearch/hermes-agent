@@ -20,6 +20,7 @@ _env_path = get_env_path()
 load_hermes_dotenv(hermes_home=_env_path.parent, project_env=PROJECT_ROOT / ".env")
 
 from hermes_cli.colors import Colors, color
+from hermes_cli.doctor_node_upgrade import upgrade_node
 from hermes_cli.doctor_report import Finding, _section, check_bool, check_info, doctor_check, warn_on_error
 from hermes_cli.doctor_connectivity import _has_healthy_oauth_fallback_for_apikey_provider, build_probes, run_probes
 from hermes_cli.doctor_tools import _safe_which
@@ -167,6 +168,8 @@ def run_doctor(args):
     os.environ.setdefault("HERMES_INTERACTIVE", "1")
     if getattr(args, 'ack', None):
         return _ack_advisory(args.ack)
+    if getattr(args, 'upgrade_node', None) is not None:
+        return upgrade_node(args.upgrade_node)
     print()
     for line in ("┌─────────────────────────────────────────────────────────┐",
                  "│                 🩺 Hermes Doctor                        │",

@@ -2,6 +2,7 @@
 
 import json
 import os
+import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -1405,3 +1406,41 @@ class TestEnginesNodeRangeMalformedInput:
         p = _write_engines_node(tmp_path, "22.22.0")
         assert hermes_constants.engines_node_allows_major(22, p) is True
         assert hermes_constants.engines_node_allows_major(23, p) is False
+
+
+class TestManagedNodeMajor:
+    """managed_node_major() — shared by hermes doctor's freshness note (doctor_tools.py) and
+    hermes doctor --upgrade-node's current-version check (doctor_node_upgrade.py)."""
+
+    def test_no_managed_node_found_returns_none(self, monkeypatch):
+        monkeypatch.setattr(hermes_constants, "find_hermes_node_executable", lambda name: None)
+        assert hermes_constants.managed_node_major() is None
+
+    def test_nonzero_returncode_returns_none(self, monkeypatch):
+        monkeypatch.setattr(
+            hermes_constants, "find_hermes_node_executable", lambda name: "/opt/hermes/node/bin/node")
+        monkeypatch.setattr(
+            subprocess, "run", lambda *a, **k: SimpleNamespace(returncode=1, stdout=""))
+        assert hermes_constants.managed_node_major() is None
+
+    def test_subprocess_exception_returns_none(self, monkeypatch):
+        def raise_it(*a, **k):
+            raise OSError("no such file")
+        monkeypatch.setattr(
+            hermes_constants, "find_hermes_node_executable", lambda name: "/opt/hermes/node/bin/node")
+        monkeypatch.setattr(subprocess, "run", raise_it)
+        assert hermes_constants.managed_node_major() is None
+
+    def test_unparsable_version_output_returns_none(self, monkeypatch):
+        monkeypatch.setattr(
+            hermes_constants, "find_hermes_node_executable", lambda name: "/opt/hermes/node/bin/node")
+        monkeypatch.setattr(
+            subprocess, "run", lambda *a, **k: SimpleNamespace(returncode=0, stdout="not a version\n"))
+        assert hermes_constants.managed_node_major() is None
+
+    def test_happy_path_parses_the_major(self, monkeypatch):
+        monkeypatch.setattr(
+            hermes_constants, "find_hermes_node_executable", lambda name: "/opt/hermes/node/bin/node")
+        monkeypatch.setattr(
+            subprocess, "run", lambda *a, **k: SimpleNamespace(returncode=0, stdout="v22.9.0\n"))
+        assert hermes_constants.managed_node_major() == 22

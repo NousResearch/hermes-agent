@@ -761,6 +761,28 @@ def find_hermes_node_executable(command: str) -> str | None:
     return resolved
 
 
+def managed_node_major() -> int | None:
+    """Major version of the Hermes-managed Node tree specifically (not whatever's on PATH), or
+    None if there is no managed install or it's unparsable/broken. Shared by ``hermes doctor``'s
+    freshness note and ``hermes doctor --upgrade-node``'s current-version check."""
+    import subprocess
+
+    node_bin = find_hermes_node_executable("node")
+    if not node_bin:
+        return None
+    try:
+        result = subprocess.run(
+            [node_bin, "--version"], capture_output=True, text=True, timeout=10, check=False)
+    except Exception:
+        return None
+    if result.returncode != 0:
+        return None
+    try:
+        return int(result.stdout.strip().lstrip("v").split(".")[0])
+    except (ValueError, IndexError):
+        return None
+
+
 def find_node_executable_on_path(command: str) -> str | None:
     """Node/npm from PATH; on Windows prefer ``.cmd``/``.exe`` (CreateProcess cannot run the bare shim)."""
     if sys.platform != "win32":

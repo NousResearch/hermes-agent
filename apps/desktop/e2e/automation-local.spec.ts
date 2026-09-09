@@ -1,13 +1,15 @@
-import { test, expect } from '@playwright/test'
+import { expect, test } from '@playwright/test'
+
 import { setupMockBackend, waitForAppReady } from './fixtures'
 
 test('automation creation is reachable through composer plus', async () => {
   test.setTimeout(180_000)
   const fixture = await setupMockBackend()
+
   try {
     await waitForAppReady(fixture, 120_000)
     const { page } = fixture
-    page.on('console', msg => { if (msg.type() === 'error' || msg.type() === 'warning') console.log('RENDER:', msg.text()) })
+    page.on('console', msg => { if (msg.type() === 'error' || msg.type() === 'warning') {console.log('RENDER:', msg.text())} })
     page.on('pageerror', error => console.log('PAGE:', error.stack))
     const input = page.locator('[data-slot="composer-rich-input"]').first()
     await input.fill('Hello. This is a local automation test.')

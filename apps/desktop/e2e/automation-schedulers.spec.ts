@@ -1,6 +1,8 @@
-import { test, expect } from '@playwright/test'
 import fs from 'node:fs'
 import path from 'node:path'
+
+import { expect, test } from '@playwright/test'
+
 import { setupMockBackend, waitForAppReady } from './fixtures'
 
 for (const type of ['Loop', 'Heartbeat'] as const) {
@@ -10,6 +12,7 @@ for (const type of ['Loop', 'Heartbeat'] as const) {
     fixture.app.process().on('exit', (code, signal) => console.log('APP EXIT', type, code, signal))
     fixture.page.on('crash', () => console.log('RENDERER CRASH', type))
     fixture.page.on('close', () => console.log('PAGE CLOSED', type))
+
     try {
       await waitForAppReady(fixture, 90000)
       const page = fixture.page
@@ -23,7 +26,8 @@ for (const type of ['Loop', 'Heartbeat'] as const) {
       const prompt = `Respond with a greeting for the ${type} automation test`
       await page.getByLabel(`${type} prompt`, {exact:true}).fill(prompt)
       await page.getByLabel('Interval', {exact:true}).fill('60')
-      if(type === 'Loop') await page.getByLabel(/Run limit/).fill('1')
+
+      if(type === 'Loop') {await page.getByLabel(/Run limit/).fill('1')}
       await page.screenshot({path:`../../.automation-evidence/${type.toLowerCase()}-form.png`})
       await page.getByRole('button', {name:type==='Loop'?'Start loop':'Create heartbeat', exact:true}).click()
       await expect(page.getByRole('dialog')).not.toBeVisible({timeout:15000})
@@ -37,6 +41,7 @@ for (const type of ['Loop', 'Heartbeat'] as const) {
       const evidenceDir=path.resolve('../../.automation-evidence', `${type.toLowerCase()}-failure-${Date.now()}`)
       fs.mkdirSync(evidenceDir,{recursive:true})
       console.log('ORIGINAL FAILURE', String(error))
+
       try { fs.cpSync(fixture.sandbox.hermesHome,path.join(evidenceDir,'agent-home'),{recursive:true}) } catch (copyError) { console.log('Evidence copy failed', String(copyError)) }
       console.log('FAILURE SANDBOX',evidenceDir)
       console.log('AUTOMATION FAILURE UI', await fixture.page.locator('body').innerText().catch(()=>'<page unavailable>'))

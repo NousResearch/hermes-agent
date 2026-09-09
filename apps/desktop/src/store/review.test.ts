@@ -794,6 +794,50 @@ describe('revert confirm dialog', () => {
   })
 })
 
+// The PR review asked for read-only to be enforced at the store action layer,
+// not just hidden in the UI: even if a keyboard shortcut, command palette entry,
+// or stray caller reaches a mutation action while the pane shows a read-only
+// tool-diff snapshot, no IPC mutation may fire.
+describe('read-only store-layer guard', () => {
+  it('every mutation action is a no-op while $reviewReadOnly is set', async () => {
+    const review = stubReview()
+    $reviewReadOnly.set(true)
+
+    await stageReviewFile('a.ts')
+    await unstageReviewFile('a.ts')
+    await revertReviewFile('a.ts')
+    requestRevert('a.ts')
+    await commitChanges('msg', { push: true })
+    await pushChanges()
+    await createOrOpenPr()
+    const generated = await generateCommitMessage()
+
+    expect(review.stage).not.toHaveBeenCalled()
+    expect(review.unstage).not.toHaveBeenCalled()
+    expect(review.revert).not.toHaveBeenCalled()
+    expect($reviewRevertTarget.get()).toBeUndefined()
+    expect(review.commit).not.toHaveBeenCalled()
+    expect(review.push).not.toHaveBeenCalled()
+    expect(review.createPr).not.toHaveBeenCalled()
+    expect(review.commitContext).not.toHaveBeenCalled()
+    expect(requestOneShot).not.toHaveBeenCalled()
+    expect(generated).toBe('')
+    expect($reviewShipBusy.get()).toBe(false)
+    expect($reviewCommitMsgBusy.get()).toBe(false)
+  })
+
+  it('confirmRevert refuses a pending revert if read-only flipped on after the request', async () => {
+    const review = stubReview()
+    requestRevert('a.ts')
+    $reviewReadOnly.set(true)
+
+    await confirmRevert()
+
+    expect($reviewRevertTarget.get()).toBeUndefined()
+    expect(review.revert).not.toHaveBeenCalled()
+  })
+})
+
 describe('ship flow', () => {
   it('commitChanges commits the trimmed message and toggles the busy flag', async () => {
     const review = stubReview()

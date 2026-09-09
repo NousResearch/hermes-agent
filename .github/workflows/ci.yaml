@@ -244,6 +244,7 @@ jobs:
       - profile-artifact-check
       - supply-chain
       - review-labels
+      - infographic-check
       # OSV runs weekly against main (osv-scanner.yml schedule), not per PR:
       # every PR was reporting the same repo-wide baseline of pinned-dep CVEs
       # in its review comment, and the SARIF upload tripped GitHub's

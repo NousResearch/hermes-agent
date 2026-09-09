@@ -414,6 +414,17 @@ KANBAN_CREATE_SCHEMA = _schema(
                 "— a specifier profile is expected to flesh out "
                 "the body before work starts."
         )),
+        "role": {
+            "type": "string",
+            "enum": ["ordinary", "implementation", "review", "finalize"],
+            "description": (
+                "Workflow role for this card. ordinary (default) is "
+                "normal work. implementation / review / finalize mark "
+                "separate-card Impulse graphs so a review child can "
+                "request_changes onto the implementation parent. Do not "
+                "infer this from titles or graph shape."
+            ),
+        },
         "idempotency_key": _prop("string", (
                 "If a non-archived task with this key already "
                 "exists, return that task's id instead of creating "

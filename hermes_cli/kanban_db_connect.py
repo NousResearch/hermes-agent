@@ -813,6 +813,7 @@ _LATER_TASK_COLUMNS = (
     # Typed block reason (VALID_BLOCK_KINDS); NULL = generic human blocker.
     ("block_kind", "block_kind TEXT"),
     ("block_recurrences", "block_recurrences INTEGER NOT NULL DEFAULT 0"),
+    ("workflow_role", "workflow_role TEXT NOT NULL DEFAULT 'ordinary'"),
 )
 
 _NOTIFY_SUB_COLUMNS = (

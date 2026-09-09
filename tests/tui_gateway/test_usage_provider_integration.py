@@ -78,6 +78,33 @@ def usage_runtime(tmp_path, monkeypatch):
         server._close_session_by_id("usage-integration", end_reason="test_cleanup")
 
 
+@pytest.mark.parametrize("multiplex", [False, True])
+def test_quota_worker_binds_and_resets_selected_profile_secrets(tmp_path, monkeypatch, multiplex):
+    from concurrent.futures import ThreadPoolExecutor
+    from agent import account_usage, secret_scope
+    from tui_gateway import usage_provider
+
+    profile = tmp_path / "quota-profile"
+    profile.mkdir()
+    (profile / ".env").write_text("OPENROUTER_API_KEY=profile-only-key\n")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "wrong-launch-key")
+    monkeypatch.setattr(secret_scope, "_MULTIPLEX_ACTIVE", multiplex)
+    seen = []
+
+    def fetch(*args, **kwargs):
+        seen.append(secret_scope.get_secret("OPENROUTER_API_KEY"))
+        raise RuntimeError("quota endpoint unavailable")
+
+    monkeypatch.setattr(account_usage, "fetch_account_usage", fetch)
+    session = {"profile_home": str(profile), "agent": SimpleNamespace(
+        provider="openrouter", base_url="https://openrouter.ai/api/v1", api_key=None)}
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        monkeypatch.setattr(usage_provider, "_account_usage_pool", pool)
+        assert usage_provider._usage_provider_lines(session) == ([], [])
+        assert seen == ["profile-only-key"]
+        assert pool.submit(secret_scope.current_secret_scope).result(timeout=5) is None
+
+
 @pytest.mark.parametrize("identity", ["live", "mirror", "config"])
 def test_usage_windows_resolve_real_profile_credentials(usage_runtime, identity):
     runtime = usage_runtime

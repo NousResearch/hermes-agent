@@ -1978,18 +1978,23 @@ def _resolve_xai_oauth_for_aux() -> Optional[Tuple[str, str]]:
     return _creds_pair(creds)
 
 
-def _read_codex_access_token() -> Optional[str]:
-    """Valid, non-expired Codex OAuth access token; an exhausted pool falls back to the profile's auth.json token."""
+def _read_codex_access_token(allow_cooldown: bool = False) -> Optional[str]:
+    """Valid, non-expired Codex OAuth access token; an exhausted pool falls back to the profile's auth.json token.
+
+    ``allow_cooldown`` bypasses pool cooldown for the Luna Reserve path only: gpt-reserve
+    is a separate metered model on the SAME credential, so a cooldown on the regular
+    allowance must not block it. Other callers (image_gen, aux tasks) keep the old
+    behavior — a benched credential resolves to None and fails clean.
+    """
     pool_present, entry = _select_pool_entry("openai-codex")
     if pool_present:
         token = _pool_runtime_api_key(entry)
         if token:
             return token
     # Pool entries in cooldown (regular quota exhausted) still carry the SAME credential
-    # that serves Luna Reserve (gpt-reserve) — the reserve is a separate metered model on
-    # the same OAuth account, so a cooldown on the regular allowance must not block it.
-    # DEAD entries (revoked/re-authed) are skipped: their tokens are unusable.
-    if pool_present:
+    # that serves Luna Reserve (gpt-reserve). DEAD entries (revoked/re-authed) are
+    # skipped: their tokens are unusable.
+    if pool_present and allow_cooldown:
         try:
             from agent.credential_pool import STATUS_DEAD, load_pool
             pool = load_pool("openai-codex")
@@ -4529,7 +4534,11 @@ def _resolve_openai_codex_branch(req: _ResolveRequest) -> _ResolveResult:
     no_token_msg = "resolve_provider_client: openai-codex requested but no Codex OAuth token found (run: hermes model)"
     if req.raw_codex:
         # Raw OpenAI client for callers needing responses.stream() (main agent loop).
-        codex_token = _read_codex_access_token()
+        # allow_cooldown only for the Luna Reserve model: gpt-reserve shares the
+        # credential with the benched regular allowance.
+        codex_token = _read_codex_access_token(
+            allow_cooldown=(model or "").strip().lower() == "gpt-reserve"
+        )
         if not codex_token:
             logger.warning(no_token_msg)
             return None, None

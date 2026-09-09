@@ -82,7 +82,18 @@ def test_read_codex_token_uses_pool_entry_in_cooldown():
         patch("agent.auxiliary_client._select_pool_entry", return_value=(True, None)),
         patch("agent.credential_pool.load_pool", return_value=pool),
     ):
-        assert _read_codex_access_token() == "reserve-token"
+        assert _read_codex_access_token(allow_cooldown=True) == "reserve-token"
+
+
+def test_read_codex_token_does_not_bypass_cooldown_by_default():
+    """Other callers (image_gen, aux) keep the old behavior: benched → None."""
+    entry = SimpleNamespace(runtime_api_key="reserve-token", access_token="")
+    pool = SimpleNamespace(entries=lambda: [entry])
+    with (
+        patch("agent.auxiliary_client._select_pool_entry", return_value=(True, None)),
+        patch("agent.credential_pool.load_pool", return_value=pool),
+    ):
+        assert _read_codex_access_token() is None
 
 
 def test_read_codex_token_skips_dead_pool_entries():
@@ -94,7 +105,7 @@ def test_read_codex_token_skips_dead_pool_entries():
         patch("agent.auxiliary_client._select_pool_entry", return_value=(True, None)),
         patch("agent.credential_pool.load_pool", return_value=pool),
     ):
-        assert _read_codex_access_token() == "live-token"
+        assert _read_codex_access_token(allow_cooldown=True) == "live-token"
 
 
 def test_read_codex_token_prefers_available_pool_selection():

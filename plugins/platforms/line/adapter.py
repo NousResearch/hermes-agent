@@ -317,7 +317,15 @@ def build_postback_button_message(text: str, button_label: str, request_id: str)
 
 # Gateway busy-ack prefixes (interrupting / queued / steered / background review);
 # these bypass a PENDING postback cache so they land as visible bubbles.
-_SYSTEM_BYPASS_PREFIXES: Tuple[str, ...] = ("⚡ Interrupting", "⏳ Queued", "⏩ Steered", "💾")
+_SYSTEM_BYPASS_PREFIXES: Tuple[str, ...] = (
+    "⚡ Interrupting",
+    "⏳ Queued",
+    "⏩ Steered",
+    "💾",
+    # The periodic slow-LLM heartbeat must land as a visible bubble, not consume the
+    # postback cache slot (PENDING→READY) and shadow the real answer (#106446).
+    "⏳ Working",
+)
 
 
 def _is_system_bypass(content: str) -> bool:
@@ -578,6 +586,11 @@ class LineAdapter(BasePlatformAdapter):
         request_id = parsed.get("request_id", "") if parsed.get("action") == "show_response" else ""
         entry = self._cache.get(request_id) if request_id else None
         if not self._client or not reply_token or not entry:
+            # Entry evicted/missing: if the stale postback mapping still points at this
+            # request, clear it so subsequent sends don't keep routing through the dead
+            # cache path (#106446).
+            if request_id and self._pending_buttons.get(chat_id) == request_id:
+                self._pending_buttons.pop(chat_id, None)
             return
         state = entry.state
         if state is State.READY:
@@ -634,8 +647,16 @@ class LineAdapter(BasePlatformAdapter):
         # busy-acks, which must land as visible bubbles.
         pending_rid = self._pending_buttons.get(chat_id)
         if pending_rid and not _is_system_bypass(content):
-            self._cache.set_ready(pending_rid, content)
-            return SendResult(success=True, message_id=pending_rid)
+            entry = self._cache.get(pending_rid)
+            # Only cache while the request is still PENDING. A non-PENDING slot — a
+            # prior heartbeat already latched READY, the answer was already delivered
+            # (DELIVERED), or the entry was evicted — means set_ready is a silent no-op,
+            # so caching here would drop the real payload while reporting success (#106446).
+            # Deliver directly as a visible bubble and clear the stale postback mapping.
+            if entry is not None and entry.state is State.PENDING:
+                self._cache.set_ready(pending_rid, content)
+                return SendResult(success=True, message_id=pending_rid)
+            self._pending_buttons.pop(chat_id, None)
         # System busy-acks (interrupting / queued / steered) bypass the postback cache and route directly to
         # LINE so they reach the user as visible bubbles. Source: PR #18153.
         return await self._send_text_chunks(chat_id, content, force_push=False)

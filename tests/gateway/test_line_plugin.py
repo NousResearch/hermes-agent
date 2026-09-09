@@ -270,6 +270,105 @@ class TestSendRouting:
 
 
 # ---------------------------------------------------------------------------
+# 8b. Postback cache integrity: heartbeats must not shadow the real answer,
+#     and stale mappings must not swallow later sends (#106446).
+# ---------------------------------------------------------------------------
+
+class TestPostbackCacheIntegrity:
+
+    @pytest.fixture
+    def adapter(self, monkeypatch):
+        monkeypatch.delenv("LINE_CHANNEL_ACCESS_TOKEN", raising=False)
+        monkeypatch.delenv("LINE_CHANNEL_SECRET", raising=False)
+        from gateway.config import PlatformConfig
+
+        cfg = PlatformConfig(enabled=True, extra={
+            "channel_access_token": "tok",
+            "channel_secret": "sec",
+        })
+        ad = LineAdapter(cfg)
+        ad._client = MagicMock()
+        ad._client.reply = AsyncMock()
+        ad._client.push = AsyncMock()
+        return ad
+
+    def test_working_heartbeat_is_a_system_bypass(self):
+        # The periodic slow-LLM heartbeat must bypass the postback cache so it
+        # lands as a visible bubble instead of latching READY and shadowing
+        # the real answer (#106446).
+        assert _is_system_bypass("⏳ Working — 3 min — iteration 1/60, research_market")
+        assert _is_system_bypass("⏳ Working")
+
+    def test_heartbeat_does_not_shadow_the_real_answer(self, adapter):
+        # Repro A from #106446: the heartbeat cached as the READY payload caused
+        # the final answer's set_ready to no-op (READY) and be silently dropped.
+        rid = adapter._cache.register_pending("Uchat")
+        adapter._pending_buttons["Uchat"] = rid
+
+        heartbeat = asyncio.run(adapter.send("Uchat", "⏳ Working — 3 min — iteration 1/60"))
+        answer = asyncio.run(adapter.send("Uchat", "Final answer: task completed"))
+
+        # Both sends succeed; the heartbeat was delivered directly as a bubble...
+        assert heartbeat.success and answer.success
+        adapter._client.push.assert_called()
+        # ...so the postback slot stayed PENDING and the real answer cached for the tap.
+        cached = adapter._cache.get(rid)
+        assert cached.state is State.PENDING or cached.state is State.READY
+        assert cached.payload == "Final answer: task completed"
+
+    def test_stale_delivered_mapping_does_not_swallow_later_send(self, adapter):
+        # Repro B from #106446: after the postback answer was delivered, a stale
+        # _pending_buttons mapping routed later sends through the dead cache path
+        # (set_ready no-op on DELIVERED) and silently dropped the content.
+        rid = adapter._cache.register_pending("Uchat")
+        adapter._cache.set_ready(rid, "previous answer")
+        adapter._cache.mark_delivered(rid)  # user tapped; entry is DELIVERED
+        adapter._pending_buttons["Uchat"] = rid  # stale mapping not yet cleared
+
+        result = asyncio.run(adapter.send("Uchat", "a later message"))
+
+        # The later message is delivered directly (not swallowed)...
+        assert result.success
+        adapter._client.push.assert_called()
+        sent = adapter._client.push.call_args.args[1]
+        assert any(m.get("text") == "a later message" for m in sent)
+        # ...and the stale mapping is cleared so the next send routes normally.
+        assert "Uchat" not in adapter._pending_buttons
+
+    def test_pending_answer_caches_for_postback_tap(self, adapter):
+        # Regression guard: the happy path — first answer caches while PENDING.
+        rid = adapter._cache.register_pending("Uchat")
+        adapter._pending_buttons["Uchat"] = rid
+
+        result = asyncio.run(adapter.send("Uchat", "the real answer"))
+
+        assert result.success and result.message_id == rid
+        cached = adapter._cache.get(rid)
+        assert cached.state is State.READY
+        assert cached.payload == "the real answer"
+        # Nothing pushed — the answer is cached for the postback tap, not sent now.
+        adapter._client.push.assert_not_called()
+
+    def test_postback_for_evicted_entry_clears_stale_mapping(self, adapter):
+        # A postback whose cache entry was evicted must still clear the stale
+        # _pending_buttons mapping so subsequent sends route normally (#106446).
+        rid = adapter._cache.register_pending("Uchat")
+        adapter._pending_buttons["Uchat"] = rid
+        adapter._cache._entries.pop(rid)  # simulate eviction
+
+        event = {
+            "replyToken": "rt",
+            "source": {"type": "user", "userId": "Uchat"},
+            "postback": {"data": json.dumps({"action": "show_response", "request_id": rid})},
+        }
+        asyncio.run(adapter._handle_postback_event(event))
+
+        # Nothing to deliver (entry gone) so no reply, but the stale mapping is cleared.
+        adapter._client.reply.assert_not_called()
+        assert "Uchat" not in adapter._pending_buttons
+
+
+# ---------------------------------------------------------------------------
 # 9. Register() metadata + plugin entry points
 # ---------------------------------------------------------------------------
 

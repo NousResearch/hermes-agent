@@ -93,6 +93,26 @@ def test_exact_id_dispatches_and_persists_route_before_spawn(kanban_home, monkey
         assert len([e for e in kb.list_events(conn, task_id) if e.kind == "routing_selected"]) == 2
 
 
+def test_claude_implementation_routes_to_codex_through_review_adapter(kanban_home, monkeypatch):
+    from hermes_cli.kanban_review import run_review_slash
+
+    task_id = _task(assignee="rozmilo-claude")
+    _seed_implementation_route(task_id, profile="rozmilo-claude", provider="anthropic")
+    _enable(monkeypatch)
+    monkeypatch.setattr("hermes_cli.kanban_review._profile_runtime_identity", lambda profile: {
+        "rozmilo-claude": ("anthropic", "claude-model"),
+        "rozmilo-codex": ("openai-codex", "codex-model"),
+    }[profile])
+    monkeypatch.setattr(kbd, "_default_spawn", lambda *_args, **_kwargs: 123)
+
+    result = run_review_slash(task_id)
+
+    assert result["dispatch_status"] == "started"
+    assert result["implementation_profile"] == "rozmilo-claude"
+    assert result["reviewer_profile"] == "rozmilo-codex"
+    assert result["reviewer_provider"] == "openai-codex"
+
+
 def test_ambiguous_or_missing_reference_does_not_mutate(kanban_home, monkeypatch):
     from hermes_cli.kanban_review import run_review_slash
     _enable(monkeypatch)
@@ -195,3 +215,107 @@ def test_structured_result_has_required_fields(kanban_home):
             "implementation_profile", "implementation_provider", "implementation_model", "reviewer_profile",
             "reviewer_provider", "reviewer_model", "independence_valid", "dispatch_status",
             "human_gate_required", "message"} <= result.keys()
+
+
+def _request_changes(task_id: str) -> None:
+    with kbc.connect() as conn:
+        review = kb.get_task(conn, task_id)
+        assert review is not None and review.current_run_id is not None
+        assert kb.request_changes(conn, task_id, reason="fix it", expected_run_id=review.current_run_id) == (
+            True, "rozmilo-codex"
+        )
+
+
+def test_changes_requested_blocks_rereview_until_new_implementation_cycle(kanban_home, monkeypatch):
+    from hermes_cli.kanban_review import run_review_slash
+
+    task_id = _task()
+    _seed_implementation_route(task_id)
+    _enable(monkeypatch)
+    monkeypatch.setattr(kbd, "_default_spawn", lambda *_args, **_kwargs: 123)
+    assert run_review_slash(task_id)["dispatch_status"] == "started"
+    _request_changes(task_id)
+
+    spawned = []
+    monkeypatch.setattr(kbd, "_default_spawn", lambda *_args, **_kwargs: spawned.append(True))
+    result = run_review_slash(task_id)
+    assert result["dispatch_status"] == "not_eligible"
+    assert "newer implementation cycle" in result["message"]
+    assert spawned == []
+    with kbc.connect() as conn:
+        task = kb.get_task(conn, task_id)
+        assert task.status == "ready"
+        assert task.current_run_id is None
+
+
+def test_new_implementation_cycle_reenables_review(kanban_home, monkeypatch):
+    from hermes_cli.kanban_review import run_review_slash
+
+    task_id = _task()
+    _seed_implementation_route(task_id)
+    _enable(monkeypatch)
+    monkeypatch.setattr(kbd, "_default_spawn", lambda *_args, **_kwargs: 123)
+    assert run_review_slash(task_id)["dispatch_status"] == "started"
+    _request_changes(task_id)
+    _seed_implementation_route(task_id)
+
+    result = run_review_slash(task_id)
+    assert result["dispatch_status"] == "started"
+
+
+def test_review_adapter_rejects_same_provider(kanban_home, monkeypatch):
+    from hermes_cli.kanban_review import run_review_slash
+
+    task_id = _task()
+    _seed_implementation_route(task_id)
+    _enable(monkeypatch)
+    monkeypatch.setattr("hermes_cli.kanban_review._profile_runtime_identity", lambda _profile: ("openai-codex", "review"))
+    result = run_review_slash(task_id)
+    assert result["dispatch_status"] == "routing_failed"
+
+
+def test_review_adapter_rejects_missing_reviewer_identity(kanban_home, monkeypatch):
+    from hermes_cli.kanban_review import run_review_slash
+
+    task_id = _task()
+    _seed_implementation_route(task_id)
+    _enable(monkeypatch)
+    monkeypatch.setattr("hermes_cli.kanban_review._profile_runtime_identity", lambda _profile: (None, None))
+    result = run_review_slash(task_id)
+    assert result["dispatch_status"] == "routing_failed"
+
+
+def test_review_human_gate_required_unsatisfied_is_noop(kanban_home, monkeypatch):
+    from hermes_cli.kanban_review import run_review_slash
+
+    task_id = _task()
+    _seed_implementation_route(task_id)
+    _enable(monkeypatch)
+    monkeypatch.setattr("hermes_cli.kanban_implement._kanban_config", lambda: {
+        "review_command": True, "human_gate_required": True,
+    })
+    spawned = []
+    monkeypatch.setattr(kbd, "_default_spawn", lambda *_args, **_kwargs: spawned.append(True))
+    result = run_review_slash(task_id)
+    assert result["dispatch_status"] == "not_eligible"
+    assert result["human_gate_required"] is True
+    assert spawned == []
+    with kbc.connect() as conn:
+        assert kb.get_task(conn, task_id).status == "ready"
+
+
+def test_review_human_gate_satisfied_permits_dispatch(kanban_home, monkeypatch):
+    from hermes_cli.kanban_review import run_review_slash
+
+    task_id = _task()
+    _seed_implementation_route(task_id)
+    _enable(monkeypatch)
+    monkeypatch.setattr("hermes_cli.kanban_implement._kanban_config", lambda: {
+        "review_command": True, "human_gate_required": True,
+    })
+    with kbc.connect() as conn:
+        kb._append_event(conn, task_id, "human_gate_satisfied")
+        conn.commit()
+    monkeypatch.setattr(kbd, "_default_spawn", lambda *_args, **_kwargs: 123)
+    result = run_review_slash(task_id)
+    assert result["dispatch_status"] == "started"

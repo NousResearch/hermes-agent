@@ -117,6 +117,30 @@ def _latest_implementation_route(conn, task_id: str) -> Optional[dict[str, Any]]
     return None
 
 
+def _has_implementation_after_latest_changes(conn, task_id: str) -> bool:
+    """Require a newer authoritative implementation cycle after requested changes."""
+    changes = conn.execute(
+        "SELECT id FROM task_runs WHERE task_id = ? AND outcome = 'changes_requested' "
+        "ORDER BY id DESC LIMIT 1",
+        (task_id,),
+    ).fetchone()
+    if changes is None:
+        return True
+    return conn.execute(
+        """
+        SELECT 1
+          FROM task_runs
+         WHERE task_id = ?
+           AND id > ?
+           AND outcome IN ('completed', 'review_requested')
+           AND metadata IS NOT NULL
+           AND json_extract(metadata, '$.routing_decision.task_type') = 'implementation'
+         LIMIT 1
+        """,
+        (task_id, int(changes["id"])),
+    ).fetchone() is not None
+
+
 def _route_from_implementation(conn, task_id: str) -> Optional[dict[str, Any]]:
     decision = _latest_implementation_route(conn, task_id)
     if not decision:
@@ -203,6 +227,12 @@ def run_review_slash(text: str) -> dict[str, Any]:
             return _result(**base, dispatch_status="not_eligible", message=f"task is {task.status}; it will not be restarted")
         if task.status not in {"ready", "review"} or task.claim_lock is not None:
             return _result(**base, dispatch_status="not_eligible", message="task is not eligible for review")
+        if task.status == "ready" and not _has_implementation_after_latest_changes(conn, task.id):
+            return _result(
+                **base,
+                dispatch_status="not_eligible",
+                message="a newer implementation cycle is required after changes were requested",
+            )
         graph = kb.task_graph_context(conn, task.id)
         if not all(parent.get("status") in {"done", "archived"} for parent in graph.get("parents", [])):
             return _result(**base, dispatch_status="not_eligible", message="dependencies do not permit review")

@@ -2188,23 +2188,6 @@ class CLICommandsMixin:
         _cp(f"  ⚗ Reviewing this conversation in the background{tail} — "
             f"any memory/skill updates will be reported when done.")
 
-    def _handle_review_command(self, cmd: str) -> None:
-        """Dispatch /review — snapshot the last N messages (+ argument text as instructions) and
-        spawn an independent reviewer subagent via async delegation; the review re-enters this
-        session as a normal delegation completion."""
-        prompt = _command_arg(cmd)
-        agent = getattr(self, "agent", None)
-        if agent is None:
-            return _cp(_dim_line('Nothing to review yet — send a message first.'))
-        snapshot = list(getattr(self, "conversation_history", None) or [])
-        try:
-            from agent.review_engine import format_dispatch_note, start_review
-            result = start_review(agent, snapshot, prompt)
-        except ValueError as exc:
-            return _cp(_dim_line(str(exc)))
-        except Exception as exc:
-            return _cp(f"  /review failed to start: {exc}")
-        _cp(f"  {format_dispatch_note(result, prompt)}")
 
     # ---- /goal, /loop, /subgoal -----------------------------------------------------------
     def _handle_goal_command(self, cmd: str) -> None:

@@ -147,49 +147,46 @@ def _custom_provider_ssl_context(base_url: str):
 # Process-lifetime picker lists refreshed from the live catalogs (see fetch_*_models).
 _openrouter_catalog_cache: list[tuple[str, str]] | None = None
 
-# On-disk TTL for the curated OpenRouter picker catalog. The in-memory
-# ``_openrouter_catalog_cache`` is per-process, so without a disk cache every
-# cold picker open re-downloads the full ~686KB /api/v1/models catalog
-# (~1.4-7s). Persisting the *curated* result (post-filter) lets fresh
-# processes serve the picker from disk within the TTL instead.
-_OPENROUTER_CATALOG_DISK_TTL = 3600.0  # 1h, matches provider-models cache
+# The in-memory ``_openrouter_catalog_cache`` is per-process, so without a disk cache every cold
+# picker open re-downloads the full ~686KB /api/v1/models catalog. The *curated* result
+# (post-filter) is persisted under the same TTL the catalog manifest uses, so both layers go
+# stale together.
 
 
-def _openrouter_catalog_disk_path() -> "Path":
-    """Disk path for the persisted curated OpenRouter catalog."""
+def _openrouter_catalog_disk_ttl() -> float:
+    from hermes_cli.model_catalog import DEFAULT_TTL_MINUTES
+
+    return DEFAULT_TTL_MINUTES * 60.0
+
+
+def _openrouter_catalog_disk_path() -> Path:
     from hermes_constants import get_hermes_home
+
     return get_hermes_home() / "cache" / "openrouter_curated_catalog.json"
 
 
 def _read_openrouter_catalog_disk() -> list[tuple[str, str]] | None:
-    """Return the last-known-good curated catalog from disk if fresh, else None."""
-    try:
-        path = _openrouter_catalog_disk_path()
-        with open(path, encoding="utf-8") as fh:
-            obj = json.load(fh)
-        if time.time() - float(obj.get("fetched_at", 0)) > _OPENROUTER_CATALOG_DISK_TTL:
-            return None
-        items = obj.get("curated")
-        if not isinstance(items, list):
-            return None
-        out: list[tuple[str, str]] = []
-        for it in items:
-            if isinstance(it, (list, tuple)) and len(it) == 2:
-                out.append((str(it[0]), str(it[1])))
-        return out or None
-    except Exception:
+    """Fresh curated catalog from disk, or None (missing, corrupt, expired, or empty)."""
+    obj = _read_json_cache(_openrouter_catalog_disk_path())
+    if obj is None:
         return None
+    try:
+        if time.time() - float(obj.get("fetched_at", 0)) > _openrouter_catalog_disk_ttl():
+            return None
+    except (TypeError, ValueError):
+        return None
+    items = obj.get("curated")
+    if not isinstance(items, list):
+        return None
+    out = [(str(it[0]), str(it[1])) for it in items if isinstance(it, (list, tuple)) and len(it) == 2]
+    return out or None
 
 
 def _write_openrouter_catalog_disk(curated: list[tuple[str, str]]) -> None:
-    """Persist the curated catalog so the next cold picker open is instant."""
     try:
-        path = _openrouter_catalog_disk_path()
-        path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_suffix(".tmp")
-        with open(tmp, "w", encoding="utf-8") as fh:
-            json.dump({"fetched_at": time.time(), "curated": [list(c) for c in curated]}, fh)
-        os.replace(tmp, path)
+        _write_json_cache(
+            _openrouter_catalog_disk_path(),
+            {"fetched_at": time.time(), "curated": [list(c) for c in curated]})
     except Exception as exc:
         logger.debug("openrouter curated catalog disk write failed: %s", exc)
 _ai_gateway_catalog_cache: list[tuple[str, str]] | None = None

@@ -19,8 +19,11 @@ Layers (same split as ``test_nf_preflight_readiness.py``):
   * unit — ``hermes_cli.nf_tier`` in-process, every platform.
   * integration — a real ``python -c "import hermes_cli.main"`` subprocess with a
     crafted ``sys.argv`` / ``HERMES_HOME``, so the actual pre-argparse gate runs.
-  * ``_WINDOWS_ONLY`` — drive ``scripts/nf-setup.ps1`` and confirm the PS 5.1
-    stderr-abort trap does not bite and the passcode gate holds.
+  * ``@pytest.mark.windows_only`` — drive ``scripts/nf-setup.ps1`` and confirm the
+    PS 5.1 stderr-abort trap does not bite and the passcode gate holds. The marker
+    (not a bare ``skipif``) is what puts this file in the CI Windows lane's import
+    set — see ``scripts/ci/list_os_marked_tests.py`` — and ``tests/conftest.py``
+    still skips it on every non-``win32`` host.
 """
 
 from __future__ import annotations
@@ -34,8 +37,9 @@ from pathlib import Path
 
 import pytest
 
+from tests._windows_env import minimal_windows_subprocess_env
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
-_WINDOWS_ONLY = pytest.mark.skipif(sys.platform != "win32", reason="drives a .ps1 script")
 
 
 # --------------------------------------------------------------------------- fixtures
@@ -384,31 +388,35 @@ def test_edition_executor(drive):
 # ------------------------------------------------------------------- nf-setup.ps1
 
 
-@_WINDOWS_ONLY
+@pytest.mark.windows_only
 def test_nf_setup_ps1_provisions_and_survives_stderr(drive, tmp_path):
     script = REPO_ROOT / "scripts" / "nf-setup.ps1"
     common = ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(script),
               "-RepoRoot", str(REPO_ROOT), "-DataDir", str(drive), "-NonInteractive"]
+    # Explicit env: nf-setup.ps1 must be able to spawn `python` — the canonical
+    # runner's `env -i` otherwise leaves PowerShell unable to launch any child.
+    env = minimal_windows_subprocess_env()
 
     r = subprocess.run(common + ["-Tier", "basic", "-Pin", "penny-pincher"],
-                       capture_output=True, text=True)
+                       capture_output=True, text=True, env=env)
     assert r.returncode == 0, r.stdout + r.stderr
     rec = json.loads((drive / "north-forge" / "provisioning.json").read_text())
     assert rec["tier"] == "basic" and rec["pinned_edition"] == "penny-pincher" and rec["sig"]
 
     # re-provision without -Force is refused
-    r = subprocess.run(common + ["-Tier", "full", "-Pin", "kyocera"], capture_output=True, text=True)
+    r = subprocess.run(common + ["-Tier", "full", "-Pin", "kyocera"],
+                       capture_output=True, text=True, env=env)
     assert r.returncode == 1
 
     # set a passcode, then a wrong one is rejected and the right one works
     r = subprocess.run(common + ["-SetPasscode", "-Passcode", "forge-master-9"],
-                       capture_output=True, text=True)
+                       capture_output=True, text=True, env=env)
     assert r.returncode == 0, r.stdout + r.stderr
     r = subprocess.run(common + ["-Tier", "full", "-Pin", "kyocera", "-Force", "-Passcode", "nope123"],
-                       capture_output=True, text=True)
+                       capture_output=True, text=True, env=env)
     assert r.returncode == 1
     r = subprocess.run(common + ["-Tier", "full", "-Pin", "kyocera", "-Installed", "kyocera",
                                  "-Force", "-Passcode", "forge-master-9"],
-                       capture_output=True, text=True)
+                       capture_output=True, text=True, env=env)
     assert r.returncode == 0, r.stdout + r.stderr
     assert json.loads((drive / "north-forge" / "provisioning.json").read_text())["tier"] == "full"

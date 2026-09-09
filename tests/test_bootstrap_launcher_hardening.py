@@ -24,7 +24,6 @@ Layers, per test_nf_preflight_readiness.py:
 
 from __future__ import annotations
 
-import os
 import re
 import subprocess
 import sys
@@ -33,6 +32,8 @@ from pathlib import Path
 
 import pytest
 
+from tests._windows_env import minimal_windows_subprocess_env
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 BOOTSTRAP = REPO_ROOT / "scripts" / "bootstrap-north-forge.ps1"
 LAUNCHER = REPO_ROOT / "north-forge.cmd"
@@ -40,17 +41,6 @@ _WINDOWS_ONLY = pytest.mark.skipif(sys.platform != "win32", reason="drives a .ps
 
 
 # --------------------------------------------------------------------------- Fix 1 (source)
-
-
-def test_bootstrap_defines_relaxed_native_helpers_source():
-    src = BOOTSTRAP.read_text(encoding="utf-8")
-    assert "function Invoke-Native" in src
-    assert "function Get-NativeText" in src
-    # each helper relaxes then restores EAP
-    for fn in ("Invoke-Native", "Get-NativeText"):
-        body = src.split(f"function {fn}", 1)[1].split("\nfunction ", 1)[0]
-        assert "$ErrorActionPreference = 'Continue'" in body
-        assert "finally { $ErrorActionPreference = $prev }" in body
 
 
 def test_bootstrap_native_calls_go_through_a_helper_source():
@@ -165,6 +155,80 @@ def _extract_helpers() -> str:
     return "\n".join(out)
 
 
+@pytest.fixture
+def run_native_helpers_probe(tmp_path):
+    """Run a probe ``.ps1`` that defines ONLY the two bootstrap native helpers
+    (lifted verbatim) plus *body*, under a minimal but VALID Windows environment.
+
+    The probe gets an explicit clean env rather than inheriting the test runner's:
+    the canonical runner executes under Git-Bash ``env -i``, which leaves
+    ``PATHEXT`` / ``ComSpec`` / the env block in a state where a PowerShell
+    subprocess there cannot spawn ANY child process (silent exit 0, no output).
+    A behavioural test of native-command handling must not be hostage to that.
+    Its own ``tmp_path`` probe — no sibling ``*-venv`` / bootstrapped checkout
+    assumed."""
+
+    def _run(body: str) -> subprocess.CompletedProcess:
+        probe = tmp_path / "native_probe.ps1"
+        probe.write_text(
+            "$ErrorActionPreference = 'Stop'\n"
+            + _extract_helpers()
+            + "\n"
+            + textwrap.dedent(body)
+            + "\n",
+            encoding="utf-8",
+        )
+        return subprocess.run(
+            ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(probe)],
+            capture_output=True, text=True, env=minimal_windows_subprocess_env(),
+        )
+
+    return _run
+
+
+@pytest.mark.windows_only
+def test_native_helpers_preserve_streams_exit_code_and_restore_eap(run_native_helpers_probe):
+    """Behavioural (replaces the old source-grep): a child that writes BOTH stdout
+    and stderr and exits non-zero keeps all three intact through the helpers, and
+    ``$ErrorActionPreference`` is back to its prior value afterward."""
+    r = run_native_helpers_probe(
+        r"""
+        $before = $ErrorActionPreference
+
+        # Invoke-Native: streams pass straight through untouched; the verdict is
+        # $LASTEXITCODE on the very next line.
+        $LASTEXITCODE = 0
+        Invoke-Native { & cmd /c 'echo out-line & echo err-line 1>&2 & exit 7' }
+        "INVOKE_CODE=$LASTEXITCODE"
+        "INVOKE_EAP_RESTORED=$($ErrorActionPreference -eq $before)"
+
+        # Get-NativeText: merged stdout+stderr is RETURNED; exit code still readable.
+        $LASTEXITCODE = 0
+        $merged = Get-NativeText { & cmd /c 'echo cap-out & echo cap-err 1>&2 & exit 4' }
+        "TEXT_CODE=$LASTEXITCODE"
+        "TEXT_EAP_RESTORED=$($ErrorActionPreference -eq $before)"
+        "TEXT_HAS_OUT=$($merged -match 'cap-out')"
+        "TEXT_HAS_ERR=$($merged -match 'cap-err')"
+        """
+    )
+    combined = r.stdout + r.stderr
+    assert r.returncode == 0, combined
+
+    # Invoke-Native: stdout stayed on stdout, stderr stayed on stderr (no redirect,
+    # no merge), the non-zero exit survived, and EAP was restored.
+    assert "out-line" in r.stdout, combined
+    assert "err-line" in r.stderr, combined
+    assert "INVOKE_CODE=7" in r.stdout, combined
+    assert "INVOKE_EAP_RESTORED=True" in r.stdout, combined
+
+    # Get-NativeText: both streams captured into the return value, exit code kept,
+    # EAP restored.
+    assert "TEXT_CODE=4" in r.stdout, combined
+    assert "TEXT_HAS_OUT=True" in r.stdout, combined
+    assert "TEXT_HAS_ERR=True" in r.stdout, combined
+    assert "TEXT_EAP_RESTORED=True" in r.stdout, combined
+
+
 @_WINDOWS_ONLY
 def test_invoke_native_survives_stderr_and_preserves_exit_code(tmp_path):
     harness = _PS_HELPER_HARNESS.replace("__HELPERS__", _extract_helpers())
@@ -172,7 +236,7 @@ def test_invoke_native_survives_stderr_and_preserves_exit_code(tmp_path):
     script.write_text(harness, encoding="utf-8")
     r = subprocess.run(
         ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(script)],
-        capture_output=True, text=True)
+        capture_output=True, text=True, env=minimal_windows_subprocess_env())
     out = r.stdout + r.stderr
     assert "info_stderr" in out and "warn_stderr" in out, out
     assert "FAIL" not in out, out

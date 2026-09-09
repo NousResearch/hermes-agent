@@ -1774,9 +1774,11 @@ export const zhHant = defineLocale({
     count: count => `${count} 個工作`,
     modelImpact: {
       title: '排程工作將繼續使用原模型',
-      message: count => `${count} 個未固定的排程工作將繼續使用建立時的模型執行。固定它們或設定 cron.model 以遷移。`,
+      message: count => `${count} 個未固定的排程工作仍在使用之前的模型。使用新模型，或關閉此訊息以保持不變。`,
       detailMore: (names, remaining) => `${names}，以及另外 ${remaining} 個`,
-      review: '檢查排程工作',
+      adopt: '使用新的預設值',
+      adopted: count => `${count} 個排程工作現已使用新的預設值。`,
+      adoptFailed: '無法更新排程工作。',
       saveFailed: 'Hermes 未儲存該模型變更。',
       confirmTitle: '模型選擇警告',
       confirmDetail: '僅在你接受此權衡時確認。',

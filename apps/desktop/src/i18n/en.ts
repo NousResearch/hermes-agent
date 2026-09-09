@@ -2176,9 +2176,11 @@ export const en: Translations = {
     modelImpact: {
       title: 'Scheduled jobs stay on their original model',
       message: count =>
-        `${count} unpinned scheduled ${count === 1 ? 'job keeps' : 'jobs keep'} running on the model ${count === 1 ? 'it was' : 'they were'} created under. Pin ${count === 1 ? 'it' : 'them'} or set cron.model to move ${count === 1 ? 'it' : 'them'}.`,
+        `${count} unpinned scheduled ${count === 1 ? 'job is' : 'jobs are'} still using ${count === 1 ? 'its' : 'their'} previous model. Use the new model, or dismiss this message to keep ${count === 1 ? 'it' : 'them'} unchanged.`,
       detailMore: (names, remaining) => `${names} and ${remaining} more`,
-      review: 'Review scheduled jobs',
+      adopt: 'Use new default',
+      adopted: count => `${count} scheduled ${count === 1 ? 'job now uses' : 'jobs now use'} the new default.`,
+      adoptFailed: 'Could not update scheduled jobs.',
       saveFailed: 'Hermes did not save that model change.',
       confirmTitle: 'Model Selection Warning',
       confirmDetail: 'Confirm only if you accept this trade-off.',

@@ -654,7 +654,7 @@ class TestLocalDeliveryNotice:
     def test_resnap_single_job(self, monkeypatch, tmp_path):
         from unittest.mock import patch as _patch
         # Deterministic global resolution for the snapshot recompute.
-        (tmp_path / "config.yaml").write_text("model:\n  default: new-model\n")
+        (tmp_path / "config.yaml").write_text("model:\n  default: new-model\n", encoding="utf-8")
         monkeypatch.setattr("cron.jobs.get_hermes_home", lambda: tmp_path, raising=True)
         with _patch(
             "hermes_cli.runtime_provider.resolve_runtime_provider",
@@ -666,12 +666,32 @@ class TestLocalDeliveryNotice:
             job_id = created["job_id"]
             result = json.loads(cronjob(action="resnap", job_id=job_id))
         assert result["success"] is True
-        assert "remains unpinned" in result["message"]
+        assert "Existing explicit pins were kept" in result["message"]
         assert result["job"]["job_id"] == job_id
+
+    @pytest.mark.parametrize(
+        ("job_kwargs", "error"),
+        [
+            ({"prompt": "Pinned", "provider": "nous", "model": "model-a"}, "fully pinned"),
+            ({"prompt": None, "script": "collect.py", "no_agent": True}, "script-only"),
+        ],
+    )
+    def test_resnap_rejects_jobs_without_an_unpinned_agent_axis(
+        self, monkeypatch, tmp_path, job_kwargs, error
+    ):
+        from cron.jobs import create_job
+
+        monkeypatch.setattr("cron.jobs.get_hermes_home", lambda: tmp_path, raising=True)
+        created = create_job(schedule="every 1h", **job_kwargs)
+
+        result = json.loads(cronjob(action="resnap", job_id=created["id"]))
+
+        assert result["success"] is False
+        assert error in result["error"]
 
     def test_resnap_all(self, monkeypatch, tmp_path):
         from unittest.mock import patch as _patch
-        (tmp_path / "config.yaml").write_text("model:\n  default: new-model\n")
+        (tmp_path / "config.yaml").write_text("model:\n  default: new-model\n", encoding="utf-8")
         monkeypatch.setattr("cron.jobs.get_hermes_home", lambda: tmp_path, raising=True)
         with _patch(
             "hermes_cli.runtime_provider.resolve_runtime_provider",

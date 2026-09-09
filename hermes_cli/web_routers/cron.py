@@ -19,7 +19,7 @@ from hermes_cli.config import cfg_get
 from hermes_cli.web_server_cron import (
     _create_cron_job_sync, _cron_optional_text, _cron_string_list, _mutate_cron_for_profile, _normalize_dashboard_cron_script, _raise_if_cron_registration_error, _run_cron_dashboard_io, _validate_dashboard_cron_context_from, _validate_dashboard_cron_effective_job,
 )
-from hermes_cli.web_models import AutomationBlueprintInstantiate, CronJobCreate, CronJobUpdate
+from hermes_cli.web_models import AutomationBlueprintInstantiate, CronJobCreate, CronJobUpdate, CronModelResnapshot
 from hermes_cli.web_routers._common import log as _log
 
 router = APIRouter()
@@ -202,6 +202,20 @@ def _delete_cron_job_sync(job_id: str, profile: Optional[str] = None):
     return {"ok": True}
 
 
+def _resnapshot_cron_jobs_sync(body: CronModelResnapshot, profile: Optional[str] = None):
+    try:
+        updated = _call_cron_for_profile(
+            profile,
+            "resnapshot_all_unpinned",
+            expected_provider=body.provider.strip(),
+            expected_model=body.model.strip(),
+            drifted_only=True,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return {"updated_count": len(updated)}
+
+
 # Retry-After (seconds) on retryable cron-fire 503s: sized to clear a
 # scale-to-zero wake or gateway restart so a scheduler that honors it spaces its
 # next attempt past the outage instead of burning its retry budget in it.
@@ -226,6 +240,11 @@ async def list_cron_job_runs(job_id: str, profile: Optional[str] = None, limit: 
 @router.post("/api/cron/jobs")
 async def create_cron_job(body: CronJobCreate, profile: Optional[str] = None):
     return await _run_cron_dashboard_io(_create_cron_job_sync, body, profile)
+
+
+@router.post("/api/cron/jobs/resnapshot")
+async def resnapshot_cron_jobs(body: CronModelResnapshot, profile: Optional[str] = None):
+    return await _run_cron_dashboard_io(_resnapshot_cron_jobs_sync, body, profile)
 
 
 @router.get("/api/cron/delivery-targets")

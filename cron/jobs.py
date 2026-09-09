@@ -1975,11 +1975,10 @@ def resnapshot_job(job_id: str) -> Optional[Dict[str, Any]]:
     """Refresh provider/model snapshots for a job's UNPINNED axes to the
     current global resolution.
 
-    This is the "adopt the current global default" companion to pinning
-    (#44585). Where pinning a job (``provider=... model=...``) makes it stop
-    tracking the global default forever, ``resnapshot_job`` re-captures the
-    current resolution so an unpinned job follows the user's deliberately
-    changed default — while remaining unpinned and tracking future changes.
+    This is the "adopt the current global default" companion to explicit
+    pinning (#44585). ``resnapshot_job`` re-captures the current resolution
+    while leaving the job without a user-owned pin. The refreshed snapshot is
+    the job's effective pin until the user moves it again.
 
     Semantics:
       - Pinned axes (job has an explicit provider/model) keep their snapshot
@@ -1991,27 +1990,39 @@ def resnapshot_job(job_id: str) -> Optional[Dict[str, Any]]:
     Makes no inference call — it only recomputes the snapshot string from
     config. Returns the normalized updated job, or None if not found.
     """
-    job = resolve_job_ref(job_id)
-    if not job:
-        return None
-    provider_snapshot, model_snapshot = _compute_provider_model_snapshots(
-        provider=job.get("provider"),
-        model=job.get("model"),
-        base_url=job.get("base_url"),
-        no_agent=job.get("no_agent"),
-    )
-    jobs = load_jobs()
-    for i, stored in enumerate(jobs):
-        if stored["id"] != job["id"]:
-            continue
-        jobs[i]["provider_snapshot"] = provider_snapshot
-        jobs[i]["model_snapshot"] = model_snapshot
-        save_jobs(jobs)
-        return _normalize_job_record(jobs[i])
+    with _jobs_lock():
+        job = resolve_job_ref(job_id)
+        if not job:
+            return None
+        if job.get("no_agent"):
+            raise ValueError("Cannot resnap a script-only job")
+        if job.get("provider") and job.get("model"):
+            raise ValueError("Cannot resnap a fully pinned job")
+        provider_snapshot, model_snapshot = _compute_provider_model_snapshots(
+            provider=job.get("provider"),
+            model=job.get("model"),
+            base_url=job.get("base_url"),
+            no_agent=job.get("no_agent"),
+        )
+        if not job.get("provider") and provider_snapshot is None:
+            provider_snapshot = job.get("provider_snapshot")
+        if not job.get("model") and model_snapshot is None:
+            model_snapshot = job.get("model_snapshot")
+        jobs = load_jobs()
+        for i, stored in enumerate(jobs):
+            if stored["id"] != job["id"]:
+                continue
+            jobs[i]["provider_snapshot"] = provider_snapshot
+            jobs[i]["model_snapshot"] = model_snapshot
+            save_jobs(jobs)
+            return _normalize_job_record(jobs[i])
     return None
 
 
-def resnapshot_all_unpinned() -> List[Dict[str, Any]]:
+def resnapshot_all_unpinned(
+    *, expected_provider: Optional[str] = None, expected_model: Optional[str] = None,
+    drifted_only: bool = False,
+) -> List[Dict[str, Any]]:
     """Refresh provider/model snapshots for every job that has any unpinned
     axis, adopting the current global resolution for each.
 
@@ -2019,28 +2030,59 @@ def resnapshot_all_unpinned() -> List[Dict[str, Any]]:
     unpinned to refresh). Equivalent to calling ``resnapshot_job`` for each
     eligible job. Returns the list of updated jobs.
     """
-    updated: List[Dict[str, Any]] = []
-    jobs = load_jobs()
-    changed = False
-    for job in jobs:
-        if bool(job.get("no_agent")):
-            continue
-        if job.get("provider") and job.get("model"):
-            # Pinned on every axis — nothing unpinned to refresh.
-            continue
-        provider_snapshot, model_snapshot = _compute_provider_model_snapshots(
-            provider=job.get("provider"),
-            model=job.get("model"),
-            base_url=job.get("base_url"),
-            no_agent=job.get("no_agent"),
-        )
-        job["provider_snapshot"] = provider_snapshot
-        job["model_snapshot"] = model_snapshot
-        changed = True
-        updated.append(_normalize_job_record(job))
-    if changed:
-        save_jobs(jobs)
-    return updated
+    from hermes_cli.config import (
+        cron_model_drift_axes, load_config, resolve_cron_model_drift_defaults)
+
+    with _jobs_lock():
+        config = None
+        current_provider = current_model = ""
+        if drifted_only:
+            config = load_config()
+            current_provider, current_model = resolve_cron_model_drift_defaults(config)
+        elif expected_provider is not None or expected_model is not None:
+            current_provider, current_model = _compute_provider_model_snapshots(
+                provider=None, model=None, base_url=None, no_agent=False)
+
+        if expected_provider is not None and (current_provider or "").lower() != expected_provider.lower():
+            raise ValueError("Global provider changed; apply the model choice again")
+        if expected_model is not None and (current_model or "").lower() != expected_model.lower():
+            raise ValueError("Global model changed; apply the model choice again")
+
+        updated: List[Dict[str, Any]] = []
+        jobs = load_jobs()
+        for job in jobs:
+            if (
+                bool(job.get("no_agent"))
+                or (job.get("provider") and job.get("model"))
+                or (drifted_only and not is_job_runnable(job))
+            ):
+                continue
+            drifted_axes = cron_model_drift_axes(
+                job, current_provider=current_provider, current_model=current_model, config=config
+            ) if drifted_only else []
+            if drifted_only and not drifted_axes:
+                continue
+            if drifted_only:
+                provider_snapshot = (
+                    expected_provider if "provider" in drifted_axes else job.get("provider_snapshot"))
+                model_snapshot = expected_model if "model" in drifted_axes else job.get("model_snapshot")
+            else:
+                provider_snapshot, model_snapshot = _compute_provider_model_snapshots(
+                    provider=job.get("provider"),
+                    model=job.get("model"),
+                    base_url=job.get("base_url"),
+                    no_agent=job.get("no_agent"),
+                )
+                if not job.get("provider") and provider_snapshot is None:
+                    provider_snapshot = job.get("provider_snapshot")
+                if not job.get("model") and model_snapshot is None:
+                    model_snapshot = job.get("model_snapshot")
+            job["provider_snapshot"] = provider_snapshot
+            job["model_snapshot"] = model_snapshot
+            updated.append(_normalize_job_record(job))
+        if updated:
+            save_jobs(jobs)
+        return updated
 
 
 def pause_job(job_id: str, reason: Optional[str] = None) -> Optional[Dict[str, Any]]:

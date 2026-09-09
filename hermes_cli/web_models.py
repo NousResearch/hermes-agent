@@ -105,6 +105,11 @@ class ModelAssignment(BaseModel):
     confirm_expensive_model: bool = False
     profile: Optional[str] = None
 
+class CronModelResnapshot(BaseModel):
+    """Expected global assignment for an explicit bulk snapshot refresh."""
+    provider: str
+    model: str
+
 class MoaModelSlot(BaseModel):
     provider: str = ""
     model: str = ""

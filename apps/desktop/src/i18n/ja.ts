@@ -1848,9 +1848,11 @@ export const ja = defineLocale({
     modelImpact: {
       title: 'スケジュール済みジョブは元のモデルで実行されます',
       message: count =>
-        `ピン留めされていない ${count} 件のスケジュール済みジョブは、作成時のモデルで引き続き実行されます。移行するにはピン留めするか cron.model を設定してください。`,
+        `ピン留めされていない ${count} 件のスケジュール済みジョブは以前のモデルを使用しています。新しいモデルを使用するか、このメッセージを閉じて変更せずに保持してください。`,
       detailMore: (names, remaining) => `${names}、ほか ${remaining} 件`,
-      review: 'スケジュール済みジョブを確認',
+      adopt: '新しい既定値を使用',
+      adopted: count => `${count} 件のスケジュール済みジョブが新しい既定値を使用するようになりました。`,
+      adoptFailed: 'スケジュール済みジョブを更新できませんでした。',
       saveFailed: 'Hermes はモデルの変更を保存しませんでした。',
       confirmTitle: 'モデル選択の警告',
       confirmDetail: 'このトレードオフを受け入れる場合のみ確認してください。',

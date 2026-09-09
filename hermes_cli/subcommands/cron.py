@@ -158,8 +158,8 @@ def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
         "resnap",
         help=(
             "Adopt the current global inference resolution for unpinned jobs "
-            "without pinning them (they keep tracking future global changes). "
-            "Use after deliberately changing the default model."
+            "without adding user-owned pins. Use after deliberately changing "
+            "the default model."
         ),
     )
     cron_resnap.add_argument(

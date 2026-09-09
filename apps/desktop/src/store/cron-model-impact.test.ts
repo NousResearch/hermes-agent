@@ -5,10 +5,12 @@ import { $notifications, clearNotifications, dismissNotification } from '@/store
 import type { ModelAssignmentResponse } from '@/types/hermes'
 
 const setModelAssignment = vi.fn()
+const resnapshotCronJobs = vi.fn()
 const getApiRequestProfile = vi.fn<() => string | null>(() => 'default')
 
 vi.mock('@/hermes', () => ({
   setModelAssignment: (...args: unknown[]) => setModelAssignment(...args),
+  resnapshotCronJobs: (...args: unknown[]) => resnapshotCronJobs(...args),
   getApiRequestProfile: () => getApiRequestProfile()
 }))
 
@@ -51,6 +53,8 @@ function positive(name = 'Morning summary'): ModelAssignmentResponse['cron_model
 
 beforeEach(() => {
   setModelAssignment.mockReset()
+  resnapshotCronJobs.mockReset()
+  resnapshotCronJobs.mockResolvedValue({ updated_count: 1 })
   getApiRequestProfile.mockReset()
   getApiRequestProfile.mockReturnValue('default')
   clearNotifications()
@@ -58,9 +62,8 @@ beforeEach(() => {
 })
 
 describe('setMainModelAssignment', () => {
-  it('shows one consumer warning and routes via a read-only review action', async () => {
+  it('lets the user move affected jobs to the new model', async () => {
     setModelAssignment.mockResolvedValue(response(positive()))
-    const requestCount = $cronReviewRequest.get()
 
     await setMainModelAssignment({ provider: 'nous', model: 'new/model' })
 
@@ -72,13 +75,26 @@ describe('setMainModelAssignment', () => {
     const notification = $notifications.get().find(item => item.id === CRON_MODEL_IMPACT_NOTIFICATION_ID)
     expect(notification?.kind).toBe('info')
     expect(notification?.title).toBe('Scheduled jobs stay on their original model')
-    expect(notification?.message).toContain('1 unpinned scheduled job keeps running on the model it was created under')
+    expect(notification?.message).toContain('1 unpinned scheduled job is still using its previous model')
     expect(notification?.detail).toContain('Morning summary')
-    expect(notification?.action?.label).toBe('Review scheduled jobs')
+    expect(notification?.action?.label).toBe('Use new default')
 
     notification?.action?.onClick()
-    expect($cronReviewRequest.get()).toBe(requestCount + 1)
+    await vi.waitFor(() => expect(resnapshotCronJobs).toHaveBeenCalledWith({ provider: 'nous', model: 'new/model' }))
     expect(setModelAssignment).toHaveBeenCalledTimes(1)
+    expect($notifications.get()[0].message).toBe('1 scheduled job now uses the new default.')
+  })
+
+  it('opens cron review when the connected backend lacks the resnapshot endpoint', async () => {
+    setModelAssignment.mockResolvedValue(response(positive()))
+    resnapshotCronJobs.mockRejectedValue(new Error('HTTP 404: Not Found'))
+    const reviewCount = $cronReviewRequest.get()
+
+    await setMainModelAssignment({ provider: 'nous', model: 'new/model' })
+    $notifications.get()[0].action?.onClick()
+
+    await vi.waitFor(() => expect($cronReviewRequest.get()).toBe(reviewCount + 1))
+    expect($notifications.get()).toEqual([])
   })
 
   it('ignores malformed untrusted impact data', async () => {
@@ -96,18 +112,15 @@ describe('setMainModelAssignment', () => {
     expect($notifications.get()).toEqual([])
   })
 
-  it('keeps an existing warning for an older backend but clears it on explicit zero impact', async () => {
+  it('clears the previous action before assigning through an older backend', async () => {
     setModelAssignment.mockResolvedValueOnce(response(positive()))
     await setMainModelAssignment({ provider: 'nous', model: 'one' })
     expect($notifications.get()).toHaveLength(1)
 
     setModelAssignment.mockResolvedValueOnce(response(undefined))
     await setMainModelAssignment({ provider: 'nous', model: 'two' })
-    expect($notifications.get()).toHaveLength(1)
-    const retainedAction = $notifications.get()[0].action
-    const reviewCount = $cronReviewRequest.get()
-    retainedAction?.onClick()
-    expect($cronReviewRequest.get()).toBe(reviewCount + 1)
+    expect($notifications.get()).toEqual([])
+    expect(resnapshotCronJobs).not.toHaveBeenCalled()
 
     setModelAssignment.mockResolvedValueOnce(
       response({
@@ -178,10 +191,8 @@ describe('setMainModelAssignment', () => {
     await expect(pending).rejects.toThrow('Model change cancelled')
     expect(setModelAssignment.mock.calls).toHaveLength(2)
 
-    const impact = $notifications.get().find(item => item.id === CRON_MODEL_IMPACT_NOTIFICATION_ID)
-    const reviewCount = $cronReviewRequest.get()
-    impact?.action?.onClick()
-    expect($cronReviewRequest.get()).toBe(reviewCount + 1)
+    expect($notifications.get().find(item => item.id === CRON_MODEL_IMPACT_NOTIFICATION_ID)).toBeUndefined()
+    expect(resnapshotCronJobs).not.toHaveBeenCalled()
   })
 
   it('fails closed without a prompt when skipConfirmPrompt is set', async () => {
@@ -255,11 +266,10 @@ describe('setMainModelAssignment', () => {
     setModelAssignment.mockResolvedValueOnce(response(positive('Current job')))
     await setMainModelAssignment({ provider: 'nous', model: 'current' })
     const action = $notifications.get()[0].action
-    const requestCount = $cronReviewRequest.get()
     getApiRequestProfile.mockReturnValue('other')
     invalidateCronModelImpactScope({ clearNotification: false })
     action?.onClick()
-    expect($cronReviewRequest.get()).toBe(requestCount)
+    expect(resnapshotCronJobs).not.toHaveBeenCalled()
   })
 
   it('does not let a dismissed notification mutate cron configuration', async () => {
@@ -270,5 +280,6 @@ describe('setMainModelAssignment', () => {
 
     expect($notifications.get()).toEqual([])
     expect(setModelAssignment).toHaveBeenCalledTimes(1)
+    expect(resnapshotCronJobs).not.toHaveBeenCalled()
   })
 })

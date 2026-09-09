@@ -488,6 +488,93 @@ async def test_dashboard_cron_mutations_notify_selected_profile_provider(
 
 
 @pytest.mark.asyncio
+async def test_dashboard_resnapshot_adopts_expected_model_in_selected_profile(
+    isolated_profiles,
+    monkeypatch,
+):
+    from hermes_cli import runtime_provider, web_server
+
+    monkeypatch.setattr(
+        runtime_provider,
+        "resolve_runtime_provider",
+        lambda **kwargs: {"provider": "worker-provider"},
+    )
+    job = _web_server_cron._call_cron_for_profile(
+        "worker_alpha",
+        "create_job",
+        prompt="adopt model",
+        schedule="every 1h",
+        name="resnapshot-model",
+    )
+    assert isinstance(job, dict)
+    assert job["model_snapshot"] == "test-model"
+    pinned = _web_server_cron._call_cron_for_profile(
+        "worker_alpha",
+        "create_job",
+        prompt="keep explicit model",
+        schedule="every 1h",
+        name="pinned-model",
+        model="explicit-model",
+    )
+    assert isinstance(pinned, dict)
+    paused = _web_server_cron._call_cron_for_profile(
+        "worker_alpha",
+        "create_job",
+        prompt="stay paused",
+        schedule="every 1h",
+        name="paused-model",
+    )
+    assert isinstance(paused, dict)
+    _web_server_cron._call_cron_for_profile(
+        "worker_alpha", "pause_job", paused["id"], "user requested")
+
+    (isolated_profiles["worker_alpha"] / "config.yaml").write_text(
+        "model:\n  provider: worker-provider\n  default: changed-model\n",
+        encoding="utf-8",
+    )
+    result = await _rt_cron.resnapshot_cron_jobs(
+        _web_models.CronModelResnapshot(
+            provider="worker-provider",
+            model="changed-model",
+        ),
+        profile="worker_alpha",
+    )
+    assert result == {"updated_count": 1}
+    adopted = _web_server_cron._call_cron_for_profile(
+        "worker_alpha", "get_job", job["id"])
+    assert isinstance(adopted, dict)
+    assert adopted["model_snapshot"] == "changed-model"
+    preserved = _web_server_cron._call_cron_for_profile(
+        "worker_alpha", "get_job", pinned["id"])
+    assert isinstance(preserved, dict)
+    assert preserved["model"] == "explicit-model"
+    assert preserved["model_snapshot"] is None
+    paused_after = _web_server_cron._call_cron_for_profile(
+        "worker_alpha", "get_job", paused["id"])
+    assert isinstance(paused_after, dict)
+    assert paused_after["state"] == "paused"
+    assert paused_after["model_snapshot"] == "test-model"
+
+    (isolated_profiles["worker_alpha"] / "config.yaml").write_text(
+        "model:\n  provider: worker-provider\n  default: newer-model\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(HTTPException) as stale:
+        await _rt_cron.resnapshot_cron_jobs(
+            _web_models.CronModelResnapshot(
+                provider="worker-provider",
+                model="changed-model",
+            ),
+            profile="worker_alpha",
+        )
+    assert stale.value.status_code == 409
+    unchanged = _web_server_cron._call_cron_for_profile(
+        "worker_alpha", "get_job", job["id"])
+    assert isinstance(unchanged, dict)
+    assert unchanged["model_snapshot"] == "changed-model"
+
+
+@pytest.mark.asyncio
 async def test_blueprint_instantiation_notifies_selected_profile_provider(
     isolated_profiles,
     monkeypatch,

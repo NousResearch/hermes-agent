@@ -3111,8 +3111,9 @@ def warn_unpinned_cron_jobs_after_model_config_change(
     print(
         f"ℹ️  {affected} unpinned cron {noun} {verb} running on the {axis} it was created under "
         f"(its {axis}_snapshot), not the new global {axis}. To move it, pin it with "
-        "`hermes cron edit <job_id> --provider <provider> --model <model>` or set a fleet default "
-        "with `hermes config set cron.model <model>`.")
+        "`hermes cron edit <job_id> --provider <provider> --model <model>`, adopt the new default "
+        "with `hermes cron resnap <job_id>` / `--all`, or set a fleet default with "
+        "`hermes config set cron.model <model>`.")
 
 
 def _default_value_for_key(dotted_key: str):

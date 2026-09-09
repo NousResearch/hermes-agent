@@ -1,4 +1,4 @@
-import { getApiRequestProfile, setModelAssignment } from '@/hermes'
+import { getApiRequestProfile, resnapshotCronJobs, setModelAssignment } from '@/hermes'
 import { translateNow } from '@/i18n'
 import { requestCronReview } from '@/store/cron'
 import {
@@ -7,7 +7,7 @@ import {
   invalidateCronModelImpactScopeState,
   onCronModelImpactScopeInvalidated
 } from '@/store/cron-model-impact-scope'
-import { dismissNotification, notify } from '@/store/notifications'
+import { dismissNotification, notify, notifyError } from '@/store/notifications'
 import type {
   CronModelDriftAxis,
   CronModelImpact,
@@ -104,10 +104,6 @@ function currentResponseScope(profile: string, connection: string, generation: n
   return profileIdentity() === profile && scope.connection === connection && scope.generation === generation
 }
 
-function currentActionScope(profile: string, connection: string): boolean {
-  return profileIdentity() === profile && getCronModelImpactScope().connection === connection
-}
-
 function detailFor(impact: CronModelImpact): string {
   const visible = impact.jobs.slice(0, 3).map(job => job.name)
   const remaining = impact.affected_count - visible.length
@@ -115,7 +111,19 @@ function detailFor(impact: CronModelImpact): string {
   return remaining > 0 ? translateNow('cron.modelImpact.detailMore', visible.join(', '), remaining) : visible.join(', ')
 }
 
-function publishImpact(impact: CronModelImpact, profile: string, connection: string, generation: number): void {
+function missingResnapshotEndpoint(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error)
+
+  return /\b(?:404|405)\b/.test(message)
+}
+
+function publishImpact(
+  impact: CronModelImpact,
+  profile: string,
+  connection: string,
+  generation: number,
+  assignment: { model: string; provider: string }
+): void {
   if (!impact.available) {
     return
   }
@@ -126,20 +134,45 @@ function publishImpact(impact: CronModelImpact, profile: string, connection: str
     return
   }
 
-  // Informational: these jobs keep running on the model they were created under; nothing is
-  // skipped. The action is a read-only review so the user can pin or move them deliberately.
+  // Informational: these jobs keep running on their snapshots unless the user explicitly moves them.
   notify({
     id: CRON_MODEL_IMPACT_NOTIFICATION_ID,
     kind: 'info',
     title: translateNow('cron.modelImpact.title'),
     message: translateNow('cron.modelImpact.message', impact.affected_count),
     detail: detailFor(impact),
+    durationMs: 0,
     action: {
-      label: translateNow('cron.modelImpact.review'),
+      label: translateNow('cron.modelImpact.adopt'),
       onClick: () => {
-        if (currentActionScope(profile, connection)) {
-          requestCronReview()
+        if (!currentResponseScope(profile, connection, generation)) {
+          return
         }
+
+        void resnapshotCronJobs(assignment)
+          .then(({ updated_count: count }) => {
+            if (!currentResponseScope(profile, connection, generation)) {
+              return
+            }
+
+            dismissNotification(CRON_MODEL_IMPACT_NOTIFICATION_ID)
+
+            notify({ kind: 'success', message: translateNow('cron.modelImpact.adopted', count) })
+          })
+          .catch(error => {
+            if (!currentResponseScope(profile, connection, generation)) {
+              return
+            }
+
+            if (missingResnapshotEndpoint(error)) {
+              dismissNotification(CRON_MODEL_IMPACT_NOTIFICATION_ID)
+              requestCronReview()
+
+              return
+            }
+
+            notifyError(error, translateNow('cron.modelImpact.adoptFailed'))
+          })
       }
     }
   })
@@ -151,6 +184,7 @@ export async function setMainModelAssignment(
   options?: { skipConfirmPrompt?: boolean }
 ): Promise<ModelAssignmentResponse> {
   const { connection, generation } = beginCronModelImpactAssignment()
+  dismissNotification(CRON_MODEL_IMPACT_NOTIFICATION_ID)
   const profile = profileIdentity()
 
   // Only pass the extra arg when a scope override exists, so unscoped callers
@@ -205,7 +239,10 @@ export async function setMainModelAssignment(
     const impact = parseCronModelImpact(result.cron_model_impact)
 
     if (impact) {
-      publishImpact(impact, profile, connection, generation)
+      publishImpact(impact, profile, connection, generation, {
+        model: result.model ?? request.model,
+        provider: result.provider ?? request.provider
+      })
     }
   }
 

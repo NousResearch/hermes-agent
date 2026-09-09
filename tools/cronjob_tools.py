@@ -837,7 +837,7 @@ def _action_resnap(a: Dict[str, Any]) -> str:
             "message": (
                 f"Refreshed inference snapshots on {len(updated)} unpinned "
                 "job(s) to the current global resolution. Jobs remain "
-                "unpinned and will track future global changes."),
+                "unpinned and keep these snapshots until moved again."),
             "updated_jobs": [_format_job(j) for j in updated],
         })
     job_id = a["job_id"]
@@ -859,8 +859,8 @@ def _action_resnap(a: Dict[str, Any]) -> str:
         "success": True,
         "message": (
             f"Cron job '{updated['name']}' refreshed to the current "
-            "global inference resolution. It remains unpinned and will "
-            "track future global changes."),
+            "global inference resolution. Existing explicit pins were kept; "
+            "the refreshed snapshot stays effective until moved again."),
         "job": _format_job(updated),
     })
 
@@ -953,7 +953,7 @@ CRONJOB_SCHEMA = {
     "name": "cronjob_manage",
     "description": """Manage scheduled cron jobs: action='create' schedules a job from a prompt and/or skills; 'list' inspects jobs; 'update'/'pause'/'resume'/'remove' manage one by job_id (always list first — never guess job IDs); 'run' fires a job immediately in the BACKGROUND (returns a handle at once, outcome re-enters the conversation when done — do not wait or poll; optional 'prompt' adds transient context for that fire only).
 
-'resnap' adopts the CURRENT global inference resolution for an unpinned job (job_id) or all unpinned jobs (all=true) WITHOUT pinning it, so it keeps tracking future global changes — use after deliberately changing the default model.
+'resnap' adopts the CURRENT global inference resolution for an unpinned job (job_id) or all unpinned jobs (all=true) WITHOUT adding user-owned pins; the refreshed snapshot stays effective until moved again.
 
 Jobs run in a fresh session with no current-chat context, so prompts must be self-contained, and the agent's FINAL RESPONSE is what gets delivered — cron runs are autonomous and cannot ask questions. Prefer updating an existing job over creating near-duplicates.""",
     "parameters": {
@@ -971,7 +971,7 @@ Jobs run in a fresh session with no current-chat context, so prompts must be sel
             },
             "all": {
                 "type": "boolean",
-                "description": "Only for action='resnap'. all=true refreshes the inference snapshot of EVERY unpinned agent job to the current global resolution (bulk 'make everything follow my new default'). Must be explicitly set to true — never implied. Omit (or false) to resnap a single job via job_id."
+                "description": "Only for action='resnap'. all=true refreshes the inference snapshot of EVERY unpinned agent job to the current global resolution. Must be explicitly set to true — never implied. Omit (or false) to resnap a single job via job_id."
             },
             "prompt": {
                 "type": "string",

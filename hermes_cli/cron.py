@@ -809,5 +809,5 @@ def _cron_resnap(args) -> int:
         return 1
     job = result.get("job", {})
     print(color(f"Resnapped job: {job.get('name', job_id)} ({job.get('job_id', job_id)})", Colors.GREEN))
-    print("  Adopted the current global inference resolution; the job remains unpinned and will track future global changes.")
+    print("  Adopted the current global inference resolution; the job remains unpinned and keeps this snapshot until moved again.")
     return 0

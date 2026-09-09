@@ -727,6 +727,8 @@ const ChatViewContent = memo(function ChatViewContent({
     () => ({
       model: {
         model: currentModel,
+        ownerConnectionId: modelOptionsOwnerConnectionId,
+        ownerProfile: modelOptionsProfile || activeGatewayProfile,
         provider: currentProvider,
         canSwitch: gatewayOpen,
         loading: !gatewayOpen || (!currentModel && !currentProvider),
@@ -746,11 +748,14 @@ const ChatViewContent = memo(function ChatViewContent({
       }
     }),
     [
+      activeGatewayProfile,
       contextSuggestions,
       currentModel,
       currentProvider,
       gatewayOpen,
       modelMenuContent,
+      modelOptionsOwnerConnectionId,
+      modelOptionsProfile,
       quickModels,
       reasoningMenuContent,
       supportsReasoning

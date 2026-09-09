@@ -1,6 +1,12 @@
 """Tests for hermes_cli.relaunch — unified self-relaunch utility."""
 
+import json
+import os
+from pathlib import Path
+import shlex
+import subprocess
 import sys
+import venv
 
 import pytest
 
@@ -68,10 +74,16 @@ class TestInheritedFlagTable:
 
 
 class TestBuildRelaunchArgv:
-    def test_uses_bin_when_available(self, monkeypatch):
-        monkeypatch.setattr(relaunch_mod, "resolve_hermes_bin", lambda: "/usr/bin/hermes")
-        argv = relaunch_mod.build_relaunch_argv(["--resume", "abc"])
-        assert argv[0] == "/usr/bin/hermes"
+    @pytest.mark.parametrize("header", [
+        b"#!/bin/sh\n", b"#!/usr/bin/env bash\n",
+        b"#!/opt/hermes/venv/bin/python3\n", b"\x7fELF\x00\xff",
+    ])
+    def test_uses_bin_when_available(self, monkeypatch, tmp_path, header):
+        launcher = tmp_path / "hermes"
+        launcher.write_bytes(header)
+        monkeypatch.setattr(relaunch_mod, "resolve_hermes_bin", lambda: str(launcher))
+        argv = relaunch_mod.build_relaunch_argv(["--resume", "abc"], original_argv=[])
+        assert argv == [str(launcher), "--resume", "abc"]
 
 
     def test_preserves_inherited_flags(self, monkeypatch):
@@ -99,6 +111,53 @@ class TestBuildRelaunchArgv:
 
 
 class TestRelaunch:
+    @pytest.mark.linux_only
+    @pytest.mark.parametrize("env_command", ["python3", "-S python3 -u"])
+    def test_env_python_relaunch_keeps_venv_dependencies(self, tmp_path, env_command):
+        """The installer wrapper must survive a real exec with a non-venv PATH."""
+        root = Path(__file__).resolve().parents[2]
+        env_dir = tmp_path / "venv"
+        venv.EnvBuilder(with_pip=False).create(env_dir)
+        python = env_dir / "bin" / "python"
+        purelib = subprocess.check_output(
+            [str(python), "-c", "import sysconfig; print(sysconfig.get_path('purelib'))"],
+            text=True,
+        ).strip()
+        (Path(purelib) / "relaunch_venv_dependency.py").write_text("VALUE = 'venv-only'\n")
+        path_bin = tmp_path / "path-bin"
+        path_bin.mkdir()
+        (path_bin / "python3").symlink_to(Path(sys.executable).resolve())
+        launcher = tmp_path / "hermes"
+        launcher.write_text(
+            f"#!/usr/bin/env {env_command}\n"
+            "import json, sys\n"
+            "from hermes_cli.relaunch import relaunch\n"
+            "if '--resume' not in sys.argv:\n"
+            "    relaunch(['--resume', 'test-session'])\n"
+            "else:\n"
+            "    import relaunch_venv_dependency as dependency\n"
+            "    print(json.dumps([sys.executable, dependency.VALUE, sys.argv[1:],\n"
+            "                      sys.stdout.write_through]))\n"
+        )
+        launcher.chmod(0o755)
+        wrapper = tmp_path / "wrapper"
+        wrapper.write_text(
+            f"#!/bin/sh\nexec {shlex.quote(str(python))} {shlex.quote(str(launcher))} \"$@\"\n"
+        )
+        wrapper.chmod(0o755)
+        env = dict(os.environ, PATH=str(path_bin), PYTHONPATH=str(root))
+        env.pop("PYTHONHOME", None)
+        env.pop("PYTHONUNBUFFERED", None)
+        result = subprocess.run(
+            [str(wrapper), "--tui", "sessions", "browse"],
+            env=env, capture_output=True, text=True, timeout=20,
+        )
+        assert result.returncode == 0, result.stderr
+        assert json.loads(result.stdout) == [
+            str(python), "venv-only", ["--tui", "--resume", "test-session"],
+            "-u" in shlex.split(env_command),
+        ]
+
     def test_calls_execvp(self, monkeypatch):
         calls = []
 

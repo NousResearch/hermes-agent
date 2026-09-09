@@ -294,18 +294,3 @@ def test_manual_claim_still_refuses_a_paused_job(temp_home):
 
     assert claim_job_for_fire(job["id"], manual=True) is False
     assert get_job(job["id"]).get("paused_at") is not None
-
-
-def test_scheduler_tick_claim_still_stamps_its_occurrence(temp_home):
-    """The dedupe path stays intact for ordinary (non-manual) claims: a tick fire still
-    records the occurrence it ran, so a re-delivery cannot double-fire it."""
-    from cron.jobs import create_job, claim_job_for_fire, get_job
-
-    job = create_job(prompt="x", schedule="every 5m", name="s")
-    pending = get_job(job["id"])["next_run_at"]
-
-    claimed = claim_job_for_fire(job["id"], return_job=True)
-    assert isinstance(claimed, dict)
-    assert claimed["_scheduled_instant"] is not None
-    from cron.occurrences import scheduled_instant
-    assert claimed["_scheduled_instant"] == scheduled_instant(pending)

@@ -2498,7 +2498,8 @@ def claim_job_for_fire(
     caller won (``CronScheduler.fire_due``: exactly one of N replicas runs a job). Under the
     fence + file lock: reject missing/terminal/paused jobs unless ``force`` (explicit manual
     fire, which also resumes the job atomically; external callbacks must leave it false so a
-    stale callback cannot resurrect a paused job). Lose if a claim younger than
+    stale callback cannot resurrect a paused job). ``manual`` = off-tick run-now without the
+    resume: no occurrence stamp, so the still-pending ``next_run_at`` slot is not skipped. Lose if a claim younger than
     ``claim_ttl_seconds`` exists (the TTL lets another fire reclaim after a crash; mark_job_run
     clears the claim). Otherwise stamp ``fire_claim`` and, for recurring jobs, advance
     ``next_run_at`` so a stale re-delivery cannot re-fire."""

@@ -250,6 +250,24 @@ class TestExternalDecision:
 
 
 class TestStaleSweep:
+    def test_live_pending_preserves_old_response_until_expiry(self, tmp_path):
+        from tools import approval as mod
+
+        approval_id = "abc123def456"
+        mod._publish_pending_approval(
+            approval_id, SESSION_KEY, dict(APPROVAL_DATA), 10800, "gateway")
+        _write_response(tmp_path, approval_id, {"decision": "deny"})
+        response = _responses_dir(tmp_path) / f"{approval_id}.json"
+        now = time.time()
+        os.utime(response, (now - 7200, now - 7200))
+
+        mod._sweep_stale_handshake_files(now)
+
+        assert mod._consume_external_decision(approval_id) == "deny"
+        mod._sweep_stale_handshake_files(now + 10801)
+        assert not response.exists()
+        assert not _pending_files(tmp_path)
+
     def test_publish_sweeps_expired_garbage_and_old_responses(self, tmp_path):
         from tools import approval as mod
 

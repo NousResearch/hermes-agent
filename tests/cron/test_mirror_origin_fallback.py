@@ -18,7 +18,8 @@ Design under test:
   * origin-fallback (deliver=origin, no origin) -> eligible (NEW)
   * explicit platform:chat  -> eligible ONLY with per-job attach_to_session
     (NEW, opt-in; the global flag never activates explicit targets)
-  * `all` / bare-platform expansion -> never eligible (unchanged invariant)
+  * user-written bare platform -> home conversation, same flags as origin-fallback
+  * `all` broadcast expansion -> never eligible (unchanged invariant)
 - Dedup across tokens (e.g. "origin,all" hitting the same chat) OR-merges
   eligibility so token order cannot strip it.
 - The in_channel flat-session seed requires a DM-shaped target or a known
@@ -63,8 +64,16 @@ class TestMirrorEligibilityResolution:
         job = {"deliver": "all", "origin": None}
         targets = _resolve_delivery_targets(job)
         assert targets, "home channel should expand from 'all'"
+        from cron.scheduler_delivery import _expand_routing_tokens
+
+        # Expansion is string-only routing, independent of mirror eligibility.
+        assert "slack" in _expand_routing_tokens("ALL")
+        assert _expand_routing_tokens("slack") == ["slack"]
         for t in targets:
             assert not _target_mirror_eligible(job, t, global_mirror=True)
+            assert not _target_mirror_eligible(
+                {**job, "attach_to_session": True}, t, global_mirror=True
+            )
 
     def test_bare_platform_target_is_eligible_as_home(self):
         """A user-WRITTEN bare-platform token deliberately addresses the
@@ -78,6 +87,21 @@ class TestMirrorEligibilityResolution:
         assert len(targets) == 1
         assert _target_mirror_eligible(job, targets[0], global_mirror=True)
         assert not _target_mirror_eligible(job, targets[0], global_mirror=False)
+        assert _target_mirror_eligible(
+            {**job, "attach_to_session": True}, targets[0], global_mirror=False
+        )
+        assert not _target_mirror_eligible(
+            {**job, "attach_to_session": False}, targets[0], global_mirror=True
+        )
+
+    @pytest.mark.parametrize("deliver", ["slack,all", "all,slack", " ALL , slack "])
+    def test_dedup_bare_and_all_keeps_home_eligibility(self, deliver):
+        """An explicit home address stays continuable regardless of broadcast token order."""
+        job = {"deliver": deliver, "origin": None}
+        targets = _resolve_delivery_targets(job)
+        slack_targets = [t for t in targets if t["platform"].lower() == "slack"]
+        assert len(slack_targets) == 1
+        assert _target_mirror_eligible(job, slack_targets[0], global_mirror=True)
 
     def test_explicit_target_not_eligible_under_global_flag(self):
         """Global mirror_delivery must not write sessions into arbitrary
@@ -174,8 +198,9 @@ class TestFallbackMirrorEndToEnd:
 
         import gateway.mirror as mirror_mod
 
+        real_mirror = mirror_mod.mirror_to_session
         monkeypatch.setattr(mirror_mod, "mirror_to_session", fake_mirror)
-        return {"send": send_calls, "mirror": mirror_calls}
+        return {"send": send_calls, "mirror": mirror_calls, "real_mirror": real_mirror, "home": home}
 
     def test_origin_fallback_job_mirrors_brief(self, slack_env):
         """The field repro: managed cron, deliver=origin, no origin captured.
@@ -197,6 +222,27 @@ class TestFallbackMirrorEndToEnd:
         assert err is None
         assert len(slack_env["send"]) == 1
         assert len(slack_env["mirror"]) == 0
+
+    def test_managed_bare_platform_job_mirrors_brief(self, slack_env, monkeypatch):
+        """The managed-cron shape delivers into the session a home-channel reply resumes."""
+        import gateway.mirror as mirror_mod
+        from gateway.config import GatewayConfig, Platform
+        from gateway.session import SessionSource, SessionStore
+
+        monkeypatch.setattr(mirror_mod, "mirror_to_session", slack_env["real_mirror"])
+        store = SessionStore(slack_env["home"] / "sessions", GatewayConfig())
+        source = SessionSource(platform=Platform.SLACK, chat_id="D0HOME", chat_type="dm")
+        session = store.get_or_create_session(source)
+        job = {"id": "h1", "name": "managed", "deliver": "slack", "origin": None}
+        err = _deliver_result(job, "morning brief", adapters=None, loop=None)
+        assert err is None
+        assert len(slack_env["send"]) == 1
+        reply_session = store.get_or_create_session(source)
+        assert reply_session.session_id == session.session_id
+        messages = store.load_transcript(reply_session.session_id)
+        assert [(m["role"], m["content"]) for m in messages] == [
+            ("user", "[Cron delivery: managed]\nmorning brief")
+        ]
 
     def test_explicit_target_with_attach_mirrors(self, slack_env):
         job = {

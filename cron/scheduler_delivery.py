@@ -18,7 +18,7 @@ import shutil
 import subprocess
 import sys
 from dataclasses import dataclass
-from typing import Any, List, Optional, Tuple
+from typing import Any, List, Optional
 
 from hermes_cli._subprocess_compat import windows_hide_flags
 
@@ -785,15 +785,12 @@ def _resolve_bot_chat_target(job: dict, profile_arg: str) -> Optional[dict]:
         return None
 
 
-def _expand_routing_tokens(part: str) -> List[Tuple[str, bool]]:
+def _expand_routing_tokens(part: str) -> List[str]:
     """Expand ``all`` to every home-target platform with a configured chat_id; non-tokens pass
-    through as a single-element list. Each entry is ``(token, from_broadcast)`` — the flag marks
-    tokens produced by a broadcast expansion so the resolver can withhold mirror provenance from
-    them (a user-WRITTEN bare platform token gets the ``home`` tag; an ``all`` expansion of the
-    same platform never does)."""
+    through as a single-element list."""
     if part.lower() not in _ROUTING_TOKENS:
-        return [(part, False)]
-    return [(p, True) for p in _iter_home_target_platforms() if _get_home_target_chat_id(p)]
+        return [part]
+    return [p for p in _iter_home_target_platforms() if _get_home_target_chat_id(p)]
 
 
 def _delivery_lane_value(job: dict, *, for_failure: bool = False):
@@ -817,29 +814,28 @@ def _resolve_delivery_targets(job: dict, *, for_failure: bool = False) -> List[d
     if deliver == "local":
         return []
 
-    parts: List[Tuple[str, bool]] = []
-    for raw in deliver.split(","):
-        if raw.strip():
-            parts.extend(_expand_routing_tokens(raw.strip()))
-
     seen = {}
     targets = []
-    for part, from_broadcast in parts:
-        target = _resolve_single_delivery_target(job, part, from_broadcast=from_broadcast)
-        if not target:
+    for raw in deliver.split(","):
+        raw = raw.strip()
+        if not raw:
             continue
-        key = (target["platform"].lower(), str(target["chat_id"]), target.get("thread_id"))
-        kept = seen.get(key)
-        if kept is None:
-            seen[key] = target
-            targets.append(target)
-        elif (
-            # OR-merge provenance on dedup: "origin,all" in either order must keep the
-            # origin/origin_fallback tag or mirror eligibility would depend on token order.
-            _MIRROR_PROVENANCE_RANK.get(str(target.get("_resolved_from") or ""), 0)
-            > _MIRROR_PROVENANCE_RANK.get(str(kept.get("_resolved_from") or ""), 0)
-        ):
-            kept["_resolved_from"] = target.get("_resolved_from")
+        from_broadcast = raw.lower() in _ROUTING_TOKENS
+        for part in _expand_routing_tokens(raw):
+            target = _resolve_single_delivery_target(job, part, from_broadcast=from_broadcast)
+            if not target:
+                continue
+            key = (target["platform"].lower(), str(target["chat_id"]), target.get("thread_id"))
+            kept = seen.get(key)
+            if kept is None:
+                seen[key] = target
+                targets.append(target)
+            elif (
+                # Keep origin/origin_fallback/home provenance regardless of broadcast token order.
+                _MIRROR_PROVENANCE_RANK.get(str(target.get("_resolved_from") or ""), 0)
+                > _MIRROR_PROVENANCE_RANK.get(str(kept.get("_resolved_from") or ""), 0)
+            ):
+                kept["_resolved_from"] = target.get("_resolved_from")
     return targets
 
 
@@ -1499,7 +1495,7 @@ def _prepare_target_delivery(
             "Job '%s': delivering to %s:%s thread_id=%s",
             job["id"], platform_name, chat_id, thread_id)
 
-    # Mirror: origin, home FALLBACK for origin-less deliver=origin, or attach_to_session opt-in.
+    # Mirror: origin, origin-less home fallback, user-written home, or explicit-target opt-in.
     origin_target = _target_matches_origin(origin, platform_name, chat_id, thread_id)
     mirror_this_target = mirror_enabled and _target_mirror_eligible(
         job, target, global_mirror=mirror_enabled, origin_match=origin_target)

@@ -581,8 +581,11 @@ Only the job's **own conversation** is ever touched:
 Broadcast expansions (`all`) are never made continuable. A user-written bare
 platform name (`deliver: slack`) addresses that platform's home channel
 deliberately and follows the same rules as the home-channel fallback above.
-The mirror is
-written as a labelled user turn (`[Cron delivery: <task name>]`), which keeps
+After upgrading, existing `deliver: <platform>` jobs with `cron.mirror_delivery: true`
+can open a new thread per run on thread-capable platforms. Set `attach_to_session: false`
+on a job to opt out of this thread-per-run behaviour.
+
+The mirror is written as a labelled user turn (`[Cron delivery: <task name>]`), which keeps
 the conversation history alternation-safe across all model providers.
 
 #### Flat, in-channel continuation (Slack)

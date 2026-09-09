@@ -405,8 +405,12 @@ the stop wins, and it wins as an *interruption* rather than a failure — a turn
 with no terminal result, a terminal result carrying an error (max-turns, budget,
 HTTP or auth), and a session that raised during teardown all report
 `interrupted`, retire the live session, and consume the agent-level stop, so the
-gateway discards the abandoned turn's error text instead of delivering it and a
-one-shot run exits zero. Both halves of the agent stop are consumed together:
+gateway discards the abandoned turn's error text instead of delivering it. A
+one-shot run then exits zero for the recoverable classes (max-turns, budget,
+transient HTTP) — but **not** for auth failures or a billing-guard refusal:
+those carry a `fatal_reason`, which re-asserts `failed` after the interrupt
+classification, so they keep their nonzero exit even under a raced stop. Both
+halves of the agent stop are consumed together:
 the request flag and the hard-interrupt event that compaction reads as a live
 cancel.
 

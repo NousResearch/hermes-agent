@@ -538,9 +538,9 @@ def _run_sdk_attempts(agent, state: _SdkTurnState) -> Optional[Dict[str, Any]]:
             # run_turn, so a workspace that moved mid-turn would be sampled
             # post-move and the binding would always match itself. Sampling at
             # turn start is what makes the check able to fail.
-            from agent.runtime_cwd import resolve_agent_cwd
-
             try:
+                from agent.runtime_cwd import resolve_agent_cwd
+
                 turn_session_cwd = str(resolve_agent_cwd())
             except Exception:
                 logger.debug(

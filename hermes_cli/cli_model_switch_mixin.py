@@ -80,8 +80,15 @@ def _print_switch_summary(cli, result, old_model, *, one_turn: bool, strict_cont
         f"via {result.provider_label or result.target_provider}. "
         f"{'This override applies to the next turn only. ' if one_turn else ''}"
         f"Adjust your self-identification accordingly.]")
-    _cprint(f"  ✓ Model switched: {_display_new}")
-    _cprint(f"    Provider: {result.provider_label or result.target_provider}")
+    from hermes_cli.picker_presentation import route_fields
+    rows = getattr(cli, '_picker_display_rows', [])
+    row = next((r for r in rows if r.get('slug') == result.target_provider
+                and (r.get('api_url') or r.get('base_url')) == result.base_url), {})
+    fields = route_fields(row, result.new_model)
+    _cprint(f"  ✓ Model switched: {fields[1] if fields else _display_new}")
+    _cprint(f"    Provider: {fields[0] if fields else (result.provider_label or result.target_provider)}")
+    if fields:
+        _cprint(f"    Status: {fields[2]}")
 
     # Provider-aware context chain: Codex OAuth / Copilot / Nous caps win over the raw
     # models.dev entry (gpt-5.5 is 1.05M on openai but 272K on Codex OAuth).
@@ -205,8 +212,13 @@ def _show_model_picker(cli, ctx, force_refresh: bool) -> None:
         _cprint("  /model --provider <slug>             switch provider")
         _cprint("  /model --refresh                     re-fetch live model lists")
         return
+    from hermes_cli.picker_presentation import attach_picker_presentation
+    attach_picker_presentation(providers, ctx.user_providers, ctx.custom_providers,
+                               invalidate=lambda: cli._invalidate(min_interval=0.0))
+    cli._picker_display_rows = providers
+    current = next((row for row in providers if row.get("is_current")), {})
     cli._open_model_picker(
-        providers, cli.model or "unknown", get_label(cli.provider) if cli.provider else "unknown",
+        providers, cli.model or "unknown", current.get("name") or (get_label(cli.provider) if cli.provider else "unknown"),
         user_provs=ctx.user_providers if ctx is not None else None,
         custom_provs=ctx.custom_providers if ctx is not None else None)
 

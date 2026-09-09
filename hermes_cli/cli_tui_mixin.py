@@ -651,7 +651,7 @@ class CLITuiMixin:
         the terminal rows or the bottom border and trailing items get clipped on long lists
         (e.g. Ollama Cloud's 36+ models). ``state["_scroll_offset"]`` is updated in place.
         """
-        from cli import HermesCLI, _panel_box_width, _wrap_panel_text
+        from cli import HermesCLI, _panel_box_width
         box_width = _panel_box_width(title, [hint] + labels, min_width=min_width, max_width=max_width)
         inner_text_width = max(8, box_width - 6)
         selected = state.get("selected", 0)
@@ -662,16 +662,34 @@ class CLITuiMixin:
             term_rows = _term_rows()
         scroll_offset, visible = HermesCLI._compute_model_picker_viewport(
             selected, state.get("_scroll_offset", 0), len(labels), term_rows)
+        import textwrap
+        wrap = lambda text, width, **kw: textwrap.wrap(text, width=width, break_long_words=True,
+                                                      break_on_hyphens=False, **kw) or ['']
+        hint_lines = wrap(hint, inner_text_width)
+        wrapped_labels = [wrap(('❯ ' if i == selected else '  ') + label,
+                                           inner_text_width, subsequent_indent=indent)
+                          for i, label in enumerate(labels)]
+        budget = max(1, term_rows - _PANEL_RESERVED_BELOW - 5 - len(hint_lines))
+        # Count physical rows, not items: metadata labels wrap on narrow terminals.
+        while scroll_offset < selected and sum(len(lines) for lines in wrapped_labels[scroll_offset:selected + 1]) > budget:
+            scroll_offset += 1
+        end, used = scroll_offset, 0
+        while end < min(scroll_offset + visible, len(labels)):
+            cost = len(wrapped_labels[end])
+            if used and used + cost > budget:
+                break
+            used += cost
+            end += 1
         state["_scroll_offset"] = scroll_offset
 
         panel = _Panel('class:clarify-border', box_width, title, 'class:clarify-title')
         panel.blank()
-        panel.row('class:clarify-hint', hint)
+        for line in hint_lines:
+            panel.row('class:clarify-hint', line)
         panel.blank()
-        for idx in range(scroll_offset, min(scroll_offset + visible, len(labels))):
+        for idx in range(scroll_offset, end):
             style = 'class:clarify-selected' if idx == selected else 'class:clarify-choice'
-            prefix = '❯ ' if idx == selected else '  '
-            for wrapped in _wrap_panel_text(prefix + labels[idx], inner_text_width, subsequent_indent=indent):
+            for wrapped in wrapped_labels[idx]:
                 panel.row(style, wrapped)
         panel.blank()
         return panel.close()
@@ -691,7 +709,10 @@ class CLITuiMixin:
                     label += "  ← current"
                 choices.append(label)
             choices.append("Cancel")
-            hint = (
+            from hermes_cli.picker_presentation import route_fields
+            current = next((p for p in state.get('providers', []) if p.get('is_current')), {})
+            fields = route_fields(current, state.get('current_model', 'unknown'))
+            hint = ('Provider: ' + fields[0] + ' · Model: ' + fields[1] + ' · ' + fields[2]) if fields else (
                 f"Current: {state.get('current_model', 'unknown')} "
                 f"on {state.get('current_provider', 'unknown')}")
         else:
@@ -701,9 +722,12 @@ class CLITuiMixin:
             # Fuzzy filter narrows the concrete list; selection still resolves to a real entry via
             # the filtered_pairs index mapping, so this never makes model resolution ambiguous.
             _query = state.get("filter", "") or ""
-            filtered_pairs = self._filter_model_picker_entries(model_list, _query)
+            from hermes_cli.picker_presentation import model_label
+            display_labels = [model_label(provider_data, model) for model in model_list]
+            display_pairs = self._filter_model_picker_entries(display_labels, _query)
+            filtered_pairs = [(i, model_list[i]) for i, _label in display_pairs]
             state["_filtered_pairs"] = filtered_pairs
-            model_labels = [e for (_i, e) in filtered_pairs]
+            model_labels = [label for _i, label in display_pairs]
             choices = list(model_labels) + ["← Back", "Cancel"]
             if _query:
                 hint = (

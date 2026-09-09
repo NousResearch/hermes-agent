@@ -63,6 +63,24 @@ def test_local_main_provider_keeps_zero_firewall_overhead(tmp_path):
     callback.assert_called_once_with(request)
 
 
+def test_unknown_remote_provider_still_uses_firewall(tmp_path):
+    agent = _agent(tmp_path, provider="custom-provider")
+    agent.base_url = "https://custom.example.test/v1"
+    callback = MagicMock()
+
+    with pytest.raises(EgressBlocked):
+        _dispatch_provider_request(
+            agent,
+            {
+                "model": "test-model",
+                "messages": [{"role": "user", "content": "/Users/private/file.py"}],
+            },
+            callback,
+        )
+
+    callback.assert_not_called()
+
+
 def test_nous_chat_completions_entrypoint_uses_firewall(tmp_path):
     agent = _agent(tmp_path)
     client = MagicMock()

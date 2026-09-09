@@ -675,18 +675,19 @@ def _bedrock_converse_call(api_kwargs: dict, *, stream: bool, on_stream_denied=N
     return finish(raw_response)
 
 
-_EGRESS_PROTECTED_PROVIDERS = frozenset(
-    {"anthropic", "openai-codex", "nous", "nous-portal", "nousresearch"}
-)
-
-
 def _attach_source_provenance_sidecar(
     agent, kwargs: dict, messages: list | None = None, *, sidecar: list | None = None
 ) -> dict:
     """Carry internal read proofs around strict wire-message conversion."""
 
-    provider = str(getattr(agent, "provider", "") or "").strip().lower()
-    if provider not in _EGRESS_PROTECTED_PROVIDERS:
+    from agent.llm_egress_firewall import DestinationClass, classify_destination
+
+    destination = classify_destination(
+        str(getattr(agent, "provider", "") or ""),
+        getattr(agent, "base_url", None),
+        getattr(agent, "api_mode", None),
+    )
+    if destination in {DestinationClass.LOCAL_PROCESS, DestinationClass.LOOPBACK}:
         return kwargs
     from agent.source_provenance_tools import build_source_provenance_sidecar
 
@@ -700,9 +701,6 @@ def _attach_source_provenance_sidecar(
 def _dispatch_provider_request(agent, request, callback):
     """Apply the exact provider-bound egress policy at a physical call site."""
 
-    provider = str(getattr(agent, "provider", "") or "").strip().lower()
-    if provider not in _EGRESS_PROTECTED_PROVIDERS:
-        return callback(request)
     from agent.llm_egress_runtime import dispatch_authorized_agent_request
 
     return dispatch_authorized_agent_request(agent, request, callback)
@@ -2075,6 +2073,8 @@ def _iteration_summary_api_messages(agent, messages: list) -> list:
 
 def _managed_summary_call(agent, api_request_id: str, request, callback, *, retry_count: int):
     from agent import relay_llm
+    raw_callback = callback
+    callback = lambda authorized: _dispatch_provider_request(agent, authorized, raw_callback)
     return relay_llm.execute_current(
         request, callback,
         name=str(getattr(agent, "provider", "") or "provider"), model_name=str(getattr(agent, "model", "") or ""),
@@ -2769,7 +2769,11 @@ class _StreamingCall(StreamingWaitMonitor):
             self.agent._create_request_openai_client(reason="chat_completion_stream_request", api_kwargs=stream_kwargs))
         self.last_chunk_time["t"] = time.time()
         self.agent._touch_activity("waiting for provider response (streaming)")
-        return request_client.chat.completions.create(**stream_kwargs)
+        return _dispatch_provider_request(
+            self.agent,
+            stream_kwargs,
+            lambda authorized: request_client.chat.completions.create(**authorized),
+        )
 
     def _chat_stream_created(self, raw_stream: Any) -> None:
         response = self._attempt_stream_response = getattr(raw_stream, "response", None)

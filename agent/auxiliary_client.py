@@ -2379,9 +2379,6 @@ _RELAY_AUX_CALL_CONTEXT: contextvars.ContextVar[Optional[Dict[str, Any]]] = (
     contextvars.ContextVar("auxiliary_relay_call", default=None)
 )
 
-_AUX_EGRESS_PROVIDERS = frozenset({"anthropic", "openai-codex", "nous"})
-
-
 def _auxiliary_egress_binding(
     client: Any,
     *,
@@ -2389,10 +2386,8 @@ def _auxiliary_egress_binding(
     model: str | None,
     api_mode: str | None,
 ) -> tuple[Any, Any] | None:
-    """Build the complete identity and route for protected auxiliary calls."""
+    """Build the complete identity and route for every remote auxiliary call."""
     normalized_provider = _normalize_aux_provider(provider)
-    if normalized_provider not in _AUX_EGRESS_PROVIDERS:
-        return None
     from agent.source_provenance import DEFAULT_POLICY_DIGEST
 
     runtime = _normalize_main_runtime(None)
@@ -2643,13 +2638,21 @@ def _relay_sync_stream(
     from agent.auxiliary_wire import prepare_chat_messages
 
     kwargs = prepare_chat_messages(client, kwargs)
+    callback = lambda request: _dispatch_auxiliary_request(
+        client,
+        request,
+        lambda authorized: client.chat.completions.create(**authorized),
+        provider=provider,
+        model=request.get("model"),
+        api_mode=api_mode,
+    )
     route = _relay_auxiliary_metadata(provider=provider, api_mode=api_mode)
     if route is None:
         return callback(kwargs)
     provider_name, fallback_model, metadata = route
     from agent import relay_llm
     return relay_llm.stream_current(
-        kwargs, lambda request: client.chat.completions.create(**request), name=provider_name,
+        kwargs, callback, name=provider_name,
         model_name=str(kwargs.get("model") or fallback_model), finalizer=dict, metadata=metadata,
         completed_response_predicate=lambda value: hasattr(value, "choices"),
     )

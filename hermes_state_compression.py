@@ -300,9 +300,9 @@ class SessionCompressionMixin:
     def restore_compression_failure_cooldown_row(self, session_id: str, snapshot: Dict[str, Any]) -> None:
         """Restore and verify an exact cooldown-row snapshot. Unlike record/clear this
         rollback API propagates write and verification failures: cancellation must not be
-        reported mutation-free when compensation failed. The one tolerated exception is a
-        session row that vanished mid-attempt: its cooldown died with it, so there is
-        nothing left to restore (#106271)."""
+        reported mutation-free when compensation failed. The tolerated exception is a
+        session row that vanished mid-attempt — before or after the compensating write —
+        since its cooldown died with it and there is nothing left to restore (#106271)."""
         if not snapshot.get("session_exists", False):
             if self.get_compression_failure_cooldown_row(session_id).get("session_exists", False):
                 raise RuntimeError("cannot restore absent compression cooldown row: session now exists")
@@ -323,6 +323,12 @@ class SessionCompressionMixin:
         actual = self.get_compression_failure_cooldown_row(session_id)
         expected = _cooldown_row(True, deadline, error)
         if actual != expected:
+            if not actual.get("session_exists", False):
+                # The session row vanished between the compensating UPDATE and this
+                # read-back: the same #106271 lifecycle race as the pre-update window
+                # above, and equally nothing left to restore or verify.
+                logger.warning("compression cooldown rollback session missing after restore: %s", session_id)
+                return
             raise RuntimeError(
                 f"compression cooldown rollback verification failed: expected={expected!r}, actual={actual!r}")
 

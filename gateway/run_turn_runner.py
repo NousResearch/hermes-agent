@@ -1249,9 +1249,9 @@ class TurnRunner:
             with suppress(Exception):
                 ctx._status_adapter.pause_typing_for_chat(ctx._status_chat_id)
             batch_metadata = dict(ctx._status_thread_metadata or {})
-            batch_metadata["_clarify_initiator_user_id"] = getattr(ctx.source, "user_id", None)
-            batch_metadata["_clarify_initiator_chat_id"] = getattr(ctx.source, "chat_id", None)
-            batch_metadata["_clarify_initiator_thread_id"] = getattr(ctx.source, "thread_id", None)
+            initiator = getattr(ctx, "source", None)
+            for attr in ("user_id", "chat_id", "thread_id"):
+                batch_metadata[f"_clarify_initiator_{attr}"] = getattr(initiator, attr, None)
             fut = self._schedule(
                 send_batch(chat_id=ctx._status_chat_id, questions=questions, clarify_ids=clarify_ids,
                            batch_id=batch_id, session_key=session_key, metadata=batch_metadata),

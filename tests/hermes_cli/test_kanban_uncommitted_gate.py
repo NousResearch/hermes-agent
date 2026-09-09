@@ -104,11 +104,56 @@ import importlib.util as _ilu
 from pathlib import Path as _P
 
 
+# conftest redirects HERMES_HOME to a tempdir (prefix ``hermes-test-home-``)
+# before any test module is imported, so pytest can never write into the
+# operator's live root (#69385). That makes HERMES_HOME the wrong place to look
+# for an INSTALLED plugin: on 2026-09-09 all six tests below skipped for a whole
+# regression run because of it, and a skip nobody reads is not coverage.
+# Reading one source file out of the real root does not weaken that sandbox.
+_TEST_HOME_MARKER = "hermes-test-home-"
+
+
+def _gate_path():
+    """Where the plugin actually lives, most specific first.
+
+    A genuinely custom HERMES_HOME wins, so the staging tree tests ITS OWN
+    plugin rather than the live one. The pytest sandbox tempdir is skipped by
+    name, and the real root is the fallback.
+    """
+    roots = []
+    env = os.environ.get("HERMES_HOME", "")
+    if env and _TEST_HOME_MARKER not in env:
+        roots.append(_P(env))
+    roots.append(_P.home() / ".hermes")
+    for r in roots:
+        p = r / "plugins" / "kanban-completion-gate" / "__init__.py"
+        if p.exists():
+            return p
+    return None
+
+
+def test_gate_plugin_is_discoverable():
+    """CANARY — fails, never skips, when a Hermes root exists but the plugin does not.
+
+    The six tests below are only meaningful if the plugin was found. Letting
+    them skip silently is exactly how this control lost its regression coverage
+    on 2026-09-09. On a machine with no Hermes install at all there is nothing
+    to test and a skip is honest; anywhere else, absence is a FAILURE.
+    """
+    if not (_P.home() / ".hermes").is_dir():
+        pytest.skip("no Hermes root on this machine — nothing to discover")
+    assert _gate_path() is not None, (
+        "kanban-completion-gate is not installed under any candidate root "
+        "(HERMES_HOME=%r, ~/.hermes). The gate tests below would SKIP, leaving "
+        "charter rule 3 with no regression coverage."
+        % os.environ.get("HERMES_HOME", "")
+    )
+
+
 def _gate():
-    home = os.environ.get("HERMES_HOME") or os.path.expanduser("~/.hermes")
-    p = _P(home) / "plugins" / "kanban-completion-gate" / "__init__.py"
-    if not p.exists():
-        pytest.skip(f"kanban-completion-gate not installed at {p}")
+    p = _gate_path()
+    if p is None:
+        pytest.skip("kanban-completion-gate not installed under any candidate root")
     spec = _ilu.spec_from_file_location("_kcg_under_test", p)
     m = _ilu.module_from_spec(spec)
     spec.loader.exec_module(m)

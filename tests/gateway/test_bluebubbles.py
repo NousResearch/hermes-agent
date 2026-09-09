@@ -640,3 +640,61 @@ class TestBlueBubblesRepeatDeliveryDedup:
         assert len(handled) == 2
 
 
+class TestBlueBubblesDmSessionCanonicalization:
+    """One DM, one session regardless of webhook payload shape (#106824).
+
+    BlueBubbles emits varying shapes per event for the same DM (full
+    ``service;-;address`` guid vs bare identifier fallback). Without
+    canonicalization each shape opens its own session and both reply in
+    the same chat.
+    """
+
+    async def _chat_id_for(self, monkeypatch, adapter, payload):
+        seen = []
+
+        async def fake_handle_message(event):
+            seen.append(event.source.chat_id)
+
+        monkeypatch.setattr(adapter, "handle_message", fake_handle_message)
+        response = await adapter._handle_webhook(_FakeBlueBubblesRequest(payload))
+        assert response.status == 200
+        await asyncio.sleep(0)
+        assert len(seen) == 1
+        return seen[0]
+
+    @pytest.mark.asyncio
+    async def test_dm_shapes_share_one_session_id(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch, send_read_receipts=False)
+        base = {
+            "text": "hello",
+            "handle": {"address": "+155****0100"},
+            "isFromMe": False,
+        }
+        shapes = [
+            {"type": "new-message",
+             "data": {**base, "guid": "msg-shape-guid", "chatGuid": "iMessage;-;+155****0100",
+                      "chatIdentifier": "+155****0100"}},
+            {"type": "new-message",
+             "data": {**base, "guid": "msg-shape-ident", "chatIdentifier": "+155****0100"}},
+            {"type": "new-message",
+             "data": {**base, "guid": "msg-shape-bare", "chatGuid": "iMessage;-;+155****0100"}},
+        ]
+        assert {await self._chat_id_for(monkeypatch, adapter, p) for p in shapes} == {"+155****0100"}
+
+    @pytest.mark.asyncio
+    async def test_group_guid_is_preserved_whole(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch, send_read_receipts=False)
+        chat_id = await self._chat_id_for(monkeypatch, adapter, {
+            "type": "new-message",
+            "data": {
+                "guid": "msg-2",
+                "text": "hello all",
+                "handle": {"address": "+155****0100"},
+                "isFromMe": False,
+                "isGroup": True,
+                "chats": [{"guid": "iMessage;+;group-chat"}],
+            },
+        })
+        assert chat_id == "iMessage;+;group-chat"
+
+

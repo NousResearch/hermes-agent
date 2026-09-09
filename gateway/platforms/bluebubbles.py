@@ -63,6 +63,19 @@ _EMAIL_RE = re.compile(r"[\w.+-]+@[\w-]+\.[\w.]+")
 _PAGINATION_SUFFIX_RE = re.compile(r"\s*\(\d+/\d+\)$")
 _ADDRESS_RE = re.compile(r"^\+\d+")
 
+
+def _canonical_dm_chat_id(chat_guid: Optional[str], chat_identifier: Optional[str]) -> Optional[str]:
+    """Bare address for a 1:1 DM so every BlueBubbles payload shape for the same chat
+    resolves to one session. ``chatGuid`` varies per event (full ``service;-;address``
+    guid vs absent); ``chatIdentifier`` is the stable bare address. Without this the
+    same DM fans out to two sessions (#106824). Group GUIDs are never passed here —
+    collapsing them would merge distinct group chats."""
+    if chat_identifier:
+        return chat_identifier
+    if chat_guid and ";-;" in chat_guid:
+        return chat_guid.split(";-;")[-1] or chat_guid
+    return chat_guid or chat_identifier
+
 _GUID_CACHE_SIZE = 500  # LRU cap for resolved chat-GUID lookups
 
 # BlueBubbles emits both ``new-message`` and ``updated-message`` webhooks for the same
@@ -613,6 +626,9 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             return _ok()
         session_chat_id = chat_guid or chat_identifier
         is_group = bool(record.get("isGroup")) or (";+;" in (chat_guid or ""))
+        if not is_group:  # one DM, one session regardless of payload shape (#106824)
+            if canonical := _canonical_dm_chat_id(chat_guid, chat_identifier):
+                session_chat_id = canonical
         if is_group and self.require_mention:
             if not self._message_matches_mention_patterns(text):
                 logger.debug("[bluebubbles] ignoring group message (require_mention=true, no mention pattern matched)")

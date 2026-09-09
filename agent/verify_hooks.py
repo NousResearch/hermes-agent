@@ -1,10 +1,13 @@
-"""Verification-loop helpers for the ``pre_verify`` round-end gate.
+"""Round-end gate helpers for ``pre_verify`` and ``pre_finish``.
 
 After code edits the loop fires ``pre_verify`` (directives resolved by
-:func:`hermes_cli.plugins.get_pre_verify_continue_message`). The shipped coding
-guidance rides on the evidence-based verification-stop nudge rather than a second
-default stop gate, so default token cost stays tied to the "missing verification
-evidence" decision while ``pre_verify`` remains free for user/plugin policy.
+:func:`hermes_cli.plugins.get_pre_verify_continue_message`). After those verify
+gates settle, ``pre_finish`` fires on every ordinary text finish (directives
+resolved by :func:`hermes_cli.plugins.get_pre_finish_continue_message`). The
+shipped coding guidance rides on the evidence-based verification-stop nudge
+rather than a second default stop gate, so default token cost stays tied to the
+"missing verification evidence" decision while ``pre_verify`` remains free for
+user/plugin policy.
 """
 
 from __future__ import annotations
@@ -14,6 +17,7 @@ from typing import Any, Optional
 from utils import is_truthy_value
 
 DEFAULT_MAX_VERIFY_NUDGES = 3
+DEFAULT_MAX_FINISH_NUDGES = 3
 
 # Appended to the verification-stop nudge when code lacks fresh evidence. Mirrors
 # the user-facing "clean your work" workflow without adding its own model turn.
@@ -32,6 +36,14 @@ def max_verify_nudges(config: Optional[dict[str, Any]] = None) -> int:
         return max(0, int(_agent_cfg(config).get("max_verify_nudges")))
     except (TypeError, ValueError):
         return DEFAULT_MAX_VERIFY_NUDGES
+
+
+def max_finish_nudges(config: Optional[dict[str, Any]] = None) -> int:
+    """Bound on consecutive ``pre_finish`` continue directives per turn (>= 0)."""
+    try:
+        return max(0, int(_agent_cfg(config).get("max_finish_nudges")))
+    except (TypeError, ValueError):
+        return DEFAULT_MAX_FINISH_NUDGES
 
 
 def coding_verify_guidance(config: Optional[dict[str, Any]] = None) -> Optional[str]:
@@ -53,4 +65,7 @@ def _agent_cfg(config: Optional[dict[str, Any]]) -> dict[str, Any]:
     return agent_cfg if isinstance(agent_cfg, dict) else {}
 
 
-__all__ = ["CODING_VERIFY_GUIDANCE", "DEFAULT_MAX_VERIFY_NUDGES", "coding_verify_guidance", "max_verify_nudges"]
+__all__ = [
+    "CODING_VERIFY_GUIDANCE", "DEFAULT_MAX_FINISH_NUDGES", "DEFAULT_MAX_VERIFY_NUDGES",
+    "coding_verify_guidance", "max_finish_nudges", "max_verify_nudges",
+]

@@ -114,7 +114,10 @@ VALID_HOOKS: Set[str] = {
     # pre_verify: once per turn when the agent edited code and is about to verify/finish. Return
     # {"action": "continue", "message"} (or Claude-Code Stop {"decision": "block", "reason"}) to keep
     # going; anything else finishes. Bounded by agent.max_verify_nudges.
-    "pre_verify", "pre_api_request", "post_api_request", "api_request_error",
+    # pre_finish: once per ordinary text finish after verify-on-stop and pre_verify have both
+    # declined. Same continue/block-stop directive. Fires whether or not files were edited.
+    # Bounded by agent.max_finish_nudges (separate from the verify budget).
+    "pre_verify", "pre_finish", "pre_api_request", "post_api_request", "api_request_error",
     # transform_api_error_classification: once per failed API call BEFORE
     # agent/error_classifier.classify_api_error(). Kwargs: provider, model, status_code, error_type,
     # error_code, error_message, error_body, error, approx_tokens, context_length, num_messages.
@@ -1882,15 +1885,14 @@ def _dispatch_pre_tool_call_hooks(
     return (block_msg, details.modified_args)
 
 
-def get_pre_verify_continue_message(
-    *, session_id: str = "", platform: str = "", model: str = "", coding: bool = False,
-    attempt: int = 0, final_response: str = "", changed_paths: Optional[List[str]] = None,
+def _continue_message_from_hook(
+    hook_name: str, *, session_id: str = "", platform: str = "", model: str = "",
+    coding: bool = False, attempt: int = 0, final_response: str = "",
+    changed_paths: Optional[List[str]] = None,
 ) -> Optional[str]:
-    """Check ``pre_verify`` hooks for ``{"action": "continue", "message"}`` (or Claude-Code Stop
-    ``{"decision": "block", "reason"}``) to keep the turn going; first non-empty message wins, any
-    other return lets the turn finish. ``coding``/``attempt`` let hooks scope and self-throttle."""
+    """First valid continue/block-stop directive from *hook_name*, else None."""
     hook_results = invoke_hook(
-        "pre_verify", session_id=session_id, platform=platform, model=model, coding=coding,
+        hook_name, session_id=session_id, platform=platform, model=model, coding=coding,
         attempt=attempt, final_response=final_response, changed_paths=list(changed_paths or []),
     )
     for result in hook_results:
@@ -1901,6 +1903,33 @@ def get_pre_verify_continue_message(
         if action in ("continue", "block") and isinstance(message, str) and message.strip():
             return message.strip()
     return None
+
+
+def get_pre_verify_continue_message(
+    *, session_id: str = "", platform: str = "", model: str = "", coding: bool = False,
+    attempt: int = 0, final_response: str = "", changed_paths: Optional[List[str]] = None,
+) -> Optional[str]:
+    """Check ``pre_verify`` hooks for ``{"action": "continue", "message"}`` (or Claude-Code Stop
+    ``{"decision": "block", "reason"}``) to keep the turn going; first non-empty message wins, any
+    other return lets the turn finish. ``coding``/``attempt`` let hooks scope and self-throttle."""
+    return _continue_message_from_hook(
+        "pre_verify", session_id=session_id, platform=platform, model=model, coding=coding,
+        attempt=attempt, final_response=final_response, changed_paths=changed_paths,
+    )
+
+
+def get_pre_finish_continue_message(
+    *, session_id: str = "", platform: str = "", model: str = "", coding: bool = False,
+    attempt: int = 0, final_response: str = "", changed_paths: Optional[List[str]] = None,
+) -> Optional[str]:
+    """Check ``pre_finish`` hooks for the same continue/block-stop directive as ``pre_verify``.
+
+    Fires on every ordinary text finish after the verify gates have settled. ``changed_paths``
+    may be empty. First non-empty message wins. Bounded by ``agent.max_finish_nudges``."""
+    return _continue_message_from_hook(
+        "pre_finish", session_id=session_id, platform=platform, model=model, coding=coding,
+        attempt=attempt, final_response=final_response, changed_paths=changed_paths,
+    )
 
 
 def get_plugin_error_classification(

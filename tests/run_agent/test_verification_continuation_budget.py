@@ -105,6 +105,28 @@ def test_pre_verify_preserves_composed_report_at_budget_limit(agent, monkeypatch
     assert not result["messages"][1].get("_pre_verify_synthetic")
 
 
+def test_pre_finish_preserves_composed_report_at_budget_limit(agent, monkeypatch):
+    """pre_finish continues a no-edit turn and keeps the candidate at the iteration cap."""
+
+    agent._interruptible_api_call = lambda _kwargs: _response()
+    agent._handle_max_iterations = MagicMock(return_value="replacement summary")
+    monkeypatch.setenv("HERMES_VERIFY_ON_STOP", "0")
+
+    with (
+        patch("hermes_cli.lifecycle.has_hook", side_effect=lambda name: name == "pre_finish"),
+        patch(
+            "hermes_cli.plugins.get_pre_finish_continue_message",
+            return_value="confirm the remote write",
+        ),
+        patch("agent.verify_hooks.max_finish_nudges", return_value=2),
+        patch("hermes_cli.plugins.invoke_hook", return_value=[]),
+    ):
+        result = agent.run_conversation("deploy the config")
+
+    _assert_pending_response_survives(agent, result)
+    assert not result["messages"][1].get("_pre_finish_synthetic")
+
+
 def test_intermediate_ack_uses_summary_instead_of_premature_text(agent, monkeypatch):
     agent.valid_tool_names = ["web_search"]
     agent._intent_ack_continuation = True

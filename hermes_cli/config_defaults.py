@@ -175,6 +175,9 @@ DEFAULT_CONFIG = {
         "verify_guidance": True,
         # Max consecutive `pre_verify` "continue" nudges per turn (hooks can't trap the loop).
         "max_verify_nudges": 3,
+        # Max consecutive `pre_finish` "continue" nudges per turn. Separate from the verify
+        # budget so a finish-gate plugin cannot starve or be starved by pre_verify.
+        "max_finish_nudges": 3,
         # Verification closure: after code edits in a workspace, refuse a final answer until fresh
         # verification evidence exists or the agent explains why it can't check (bounded loop,
         # passive ledger). False (default) because the nudges proved more noise than signal; true =

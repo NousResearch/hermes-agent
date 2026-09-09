@@ -1,8 +1,9 @@
 """Text-response stop gates for the conversation turn loop.
 
-When the model stops with a text answer, three gates may instead append the answer as an
+When the model stops with a text answer, four gates may instead append the answer as an
 interim row plus a synthetic user-role nudge and continue the turn: verify-on-stop (#65919),
-the ``pre_verify`` plugin hook after code edits, and the kanban worker terminal-tool guard.
+the ``pre_verify`` plugin hook after code edits, the ``pre_finish`` plugin hook on every
+ordinary text finish, and the kanban worker terminal-tool guard.
 Each keeps the candidate answer as a budget-exhaustion fallback
 (``pending_verification_response``) and clears ``final_response`` so the finalizer can tell
 this gate from error exits (#61631). Nothing here imports ``agent.conversation_loop`` at
@@ -76,6 +77,32 @@ def _pre_verify_nudge(agent, final_response, attempt: int) -> Optional[str]:
     return None
 
 
+def _pre_finish_nudge(agent, final_response, attempt: int) -> Optional[str]:
+    """After verify gates have settled, a registered ``pre_finish`` hook may keep the
+    agent going one more turn. Fires whether or not files were edited this turn."""
+    try:
+        from agent.verify_hooks import max_finish_nudges
+        from hermes_cli.lifecycle import has_hook
+        from hermes_cli.plugins import get_pre_finish_continue_message
+
+        if has_hook("pre_finish") and attempt < max_finish_nudges():
+            coding = getattr(agent, "_resolved_is_coding", None)
+            if coding is None:
+                from agent.coding_context import is_coding_context
+                coding = bool(is_coding_context(platform=getattr(agent, "platform", "") or ""))
+                agent._resolved_is_coding = coding
+            changed = sorted(getattr(agent, "_turn_file_mutation_paths", set()) or [])
+            return get_pre_finish_continue_message(
+                session_id=getattr(agent, "session_id", None) or "",
+                platform=getattr(agent, "platform", "") or "",
+                model=getattr(agent, "model", "") or "", coding=coding, attempt=attempt,
+                final_response=final_response, changed_paths=changed,
+            )
+    except Exception:
+        logger.debug("pre_finish hook check failed", exc_info=True)
+    return None
+
+
 def _kanban_stop_nudge(agent, messages) -> Optional[str]:
     """Workers must end with kanban_complete / kanban_block; a narrated stop is recorded
     as protocol_violation, so nudge once or twice first."""
@@ -106,10 +133,10 @@ def apply_stop_gates(
     conversation_history: Any, pending_verification_response: Any,
     pending_verification_response_previewed: Any,
 ) -> StopGateVerdict:
-    """Run verify-on-stop → pre_verify hook → kanban stop guard, in that order. Nudges
-    are user-role rows appended only after the assistant answer row, so role alternation
-    holds. Hook lookups are imported lazily from their origin modules (tests patch them
-    there)."""
+    """Run verify-on-stop → pre_verify → pre_finish → kanban stop guard, in that order.
+    Nudges are user-role rows appended only after the assistant answer row, so role
+    alternation holds. Hook lookups are imported lazily from their origin modules
+    (tests patch them there)."""
 
     def _continue(nudge: str, flag: str) -> StopGateVerdict:
         """Append the synthetic nudge row and hand the turn back to the loop."""
@@ -148,6 +175,18 @@ def apply_stop_gates(
         )
         verdict = _continue(_verify_nudge2, "_pre_verify_synthetic")
         logger.debug("pre_verify nudge issued (attempt %d)", agent._pre_verify_nudges)
+        return verdict
+
+    _finish_attempt = getattr(agent, "_pre_finish_nudges", 0)
+    _finish_nudge = _pre_finish_nudge(agent, final_response, _finish_attempt)
+    if _finish_nudge:
+        agent._pre_finish_nudges = _finish_attempt + 1
+        final_msg["finish_reason"] = "finish_hook_continue"
+        _append_interim_answer(
+            agent, final_msg, messages, conversation_history, "pre_finish interim flush failed"
+        )
+        verdict = _continue(_finish_nudge, "_pre_finish_synthetic")
+        logger.debug("pre_finish nudge issued (attempt %d)", agent._pre_finish_nudges)
         return verdict
 
     _kanban_nudge = _kanban_stop_nudge(agent, messages)

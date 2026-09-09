@@ -447,6 +447,7 @@ Payload fields below are the exact event-specific fields supplied by each call s
 | `post_llm_call` | Observer | Successful, non-interrupted turn finalization; return ignored. | `session_id`, `task_id`, `turn_id`, `user_message`, `assistant_response`, `conversation_history`, `model`, `platform` | Full prompt, response, and history. |
 | `transform_llm_output` | Transform | Before `post_llm_call` and final delivery; first non-empty string replaces the response. | `response_text`, `session_id`, `model`, `platform` | Full final assistant text. |
 | `pre_verify` | Directive/control | At the bounded edited-code verify gate; first valid continue/block-stop directive keeps the turn going. | `session_id`, `platform`, `model`, `coding`, `attempt`, `final_response`, `changed_paths` | Draft response and changed paths. |
+| [`pre_finish`](#pre_finish) | Directive/control | After verify-on-stop and `pre_verify` have both declined, on every ordinary text finish (edits or not); first valid continue/block-stop directive keeps the turn going. Bounded by `agent.max_finish_nudges`. | `session_id`, `platform`, `model`, `coding`, `attempt`, `final_response`, `changed_paths` | Draft response and changed paths (paths may be empty). |
 | `pre_api_request` | Observer | Per provider attempt, immediately before the request; return ignored. | `task_id`, `turn_id`, `api_request_id`, `session_id`, `user_message`, `conversation_history`, `platform`, `model`, `provider`, `base_url`, `api_mode`, `api_call_count`, `retry_count`, `request_messages`, `message_count`, `tool_count`, `approx_input_tokens`, `request_char_count`, `max_tokens`, `started_at`, `middleware_trace`, `request` | High sensitivity: legacy `user_message`, `conversation_history`, and `request_messages` are intentionally raw; prefer sanitized `request`. |
 | `post_api_request` | Observer | After normalized provider success; return ignored. | `task_id`, `turn_id`, `api_request_id`, `session_id`, `platform`, `model`, `provider`, `base_url`, `api_mode`, `api_call_count`, `api_duration`, `started_at`, `ended_at`, `finish_reason`, `message_count`, `response_model`, `response`, `usage`, `assistant_message`, `assistant_content_chars`, `assistant_tool_call_count` | Sanitized `response` is available, but raw normalized `assistant_message` may contain model/user content; `usage` is accounting data. |
 | `api_request_error` | Observer | On each failed provider attempt; return ignored. | `task_id`, `turn_id`, `api_request_id`, `session_id`, `platform`, `model`, `provider`, `base_url`, `api_mode`, `api_call_count`, `api_duration`, `started_at`, `ended_at`, `status_code`, `retry_count`, `max_retries`, `retryable`, `reason`, `error`, `request` | Error text may contain provider/user data; `request` is intended to be sanitized. |
@@ -863,6 +864,58 @@ def register(ctx):
 ```
 
 For standing guidance that should shape the built-in missing-evidence nudge, use `agent.verify_guidance`. For broader coding posture rules that don't need to *gate* verification, prefer `agent.coding_instructions` in `config.yaml` — it rides the coding brief and costs no extra turn.
+
+---
+
+### `pre_finish`
+
+Fires **once per ordinary text finish**, after verify-on-stop and `pre_verify` have both let the turn go. File edits do not gate this hook. A local write, a `git push`, and an API deploy all reach the same finish attempt, so a plugin that cares about durable impact is not skipped just because nothing landed on disk.
+
+This is not a wider `pre_verify`. Verify hooks keep the edit-only budget (`agent.max_verify_nudges`). `pre_finish` has its own cap (`agent.max_finish_nudges`, default 3) so the two cannot starve each other.
+
+**Callback signature:**
+
+```python
+def my_callback(session_id: str, platform: str, model: str, coding: bool,
+                attempt: int, final_response: str, changed_paths: list, **kwargs):
+```
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `session_id` | `str` | Unique identifier for the current session |
+| `platform` | `str` | Where the session is running (`"cli"`, `"telegram"`, …) |
+| `model` | `str` | The model identifier |
+| `coding` | `bool` | Whether the turn is in the coding posture |
+| `attempt` | `int` | How many times this turn has already been nudged by `pre_finish` (0 on the first) |
+| `final_response` | `str` | The answer the agent is about to deliver |
+| `changed_paths` | `list` | Files the agent edited this turn (sorted, **may be empty**) |
+
+**Fires:** In `agent/turn_stop_gates.py`, on the text-response exit, after verify-on-stop and `pre_verify` declined to continue, before the kanban worker stop guard. Interrupted, error, and session-end paths do not fire it. If this hook continues, the next loop iteration runs the verify gates again before `pre_finish` gets another shot.
+
+**Return value — keep the agent going:**
+
+```python
+return {"action": "continue", "message": "You changed a remote system. Confirm it before finishing."}
+```
+
+Same shapes as `pre_verify`: `{"action": "continue", "message"}` or Claude-Code Stop `{"decision": "block", "reason"}`. A directive with no message, or any other return, lets the turn finish.
+
+**Bounded:** consecutive continue directives in one turn are capped by `agent.max_finish_nudges` (default 3). Gate on `attempt` if you want a one-shot.
+
+**Use cases:** gate commits, config pushes, or other durable side effects that are not local file edits. `changed_paths` is an input your callback can read, not the condition for the gate existing.
+
+```python
+def gate_remote_changes(attempt, final_response, changed_paths, **kwargs):
+    if attempt:
+        return None
+    return {
+        "action": "continue",
+        "message": "Before you stop, confirm any remote or config change actually landed.",
+    }
+
+def register(ctx):
+    ctx.register_hook("pre_finish", gate_remote_changes)
+```
 
 ---
 
@@ -1653,7 +1706,8 @@ Each time the event fires, Hermes spawns a subprocess for every matching hook (m
 // Inject context for pre_llm_call:
 {"context": "Today is Friday, 2026-04-17"}
 
-// Keep the agent going at the verify gate (pre_verify); both shapes accepted:
+// Keep the agent going at the verify gate (pre_verify) or the finish gate
+// (pre_finish); both shapes accepted:
 {"action": "continue", "message": "Run the formatter, then finish."}
 {"decision": "block",  "reason":  "Run the formatter, then finish."}
 

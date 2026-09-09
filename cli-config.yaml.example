@@ -1169,6 +1169,11 @@ agent:
   # Default 3.
   # max_verify_nudges: 3
 
+  # A `pre_finish` hook fires on every ordinary text finish after verify gates
+  # have settled, including turns with no local file edits. Separate cap so a
+  # finish-gate plugin cannot starve or be starved by pre_verify. Default 3.
+  # max_finish_nudges: 3
+
   # Enable verbose logging
   verbose: false
   

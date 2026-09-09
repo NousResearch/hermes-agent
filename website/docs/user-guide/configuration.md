@@ -1174,12 +1174,13 @@ agent:
   verify_on_stop: false        # true | false | "auto" (surface-aware: on for CLI/TUI/desktop, off for messaging)
   verify_guidance: true        # Append creative-UI / clean-diff guidance to the missing-evidence nudge
   max_verify_nudges: 3         # Cap on consecutive continue nudges per turn (built-in + pre_verify hooks)
+  max_finish_nudges: 3         # Cap on consecutive pre_finish continue nudges per turn (separate budget)
   coding_instructions: ""      # Standing project-wide coding rules appended to the coding brief
 ```
 
 `verify_on_stop` accepts `true` (on everywhere), `false` (off — the default), or `"auto"` (legacy surface-aware behavior: on for interactive coding surfaces — CLI, TUI, desktop — and programmatic callers; off for messaging surfaces like Telegram/Discord where the verification narrative reads as chat noise). Off is the default everywhere: fresh installs ship `false` and the config migration turned it off on existing installs, so enabling it is an explicit opt-in. The `HERMES_VERIFY_ON_STOP` env var overrides the config value when set.
 
-For a user/plugin policy gate at the same point — keep the agent going with your own checks — see the [`pre_verify` hook](/user-guide/features/hooks#pre_verify).
+For a user/plugin policy gate at the same point — keep the agent going with your own checks after code edits — see the [`pre_verify` hook](/user-guide/features/hooks#pre_verify). For a finish gate on every ordinary text turn, including turns that only changed a remote system, see [`pre_finish`](/user-guide/features/hooks#pre_finish).
 
 ## Standing Goals (`/goal`)
 

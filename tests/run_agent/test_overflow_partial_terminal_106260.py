@@ -86,6 +86,36 @@ class TestOverflowTerminalStub:
         assert response.choices[0].message.content is None
 
 
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
+    def test_payload_too_large_partial_is_not_made_terminal(
+        self, _mock_close, mock_create, monkeypatch,
+    ):
+        """Review P1 (andrexibiza): payload_too_large (413) has its own byte-scored
+        recovery owner and must NOT be collapsed into the context-overflow terminal
+        contract — the partial keeps its normal continuation stub."""
+        def _overflowing_stream():
+            yield _make_stream_chunk(content="some media-heavy partial output ...")
+            raise RuntimeError(
+                "Request payload too large (413): 5MB exceeds the 4MB limit"
+            )
+
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.side_effect = lambda *a, **kw: _overflowing_stream()
+        mock_create.return_value = mock_client
+
+        agent = _make_agent()
+        agent._current_streamed_assistant_text = "some media-heavy partial output ..."
+
+        monkeypatch.setenv("HERMES_STREAM_RETRIES", "0")
+        response = agent._interruptible_streaming_api_call({})
+
+        assert response.id == PARTIAL_STREAM_STUB_ID
+        assert getattr(response, "_overflow_terminal", False) is False
+        # The recovered text is preserved for the normal continuation path.
+        assert response.choices[0].message.content == "some media-heavy partial output ..."
+
+
 class TestRecoverFromTruncationOverflowTerminal:
     def _mock_agent(self):
         agent = MagicMock()
@@ -127,6 +157,9 @@ class TestRecoverFromTruncationOverflowTerminal:
         result = verdict.result or {}
         assert result.get("failed") is True
         assert result.get("final_response") == _CONTEXT_OVERFLOW_PARTIAL_FINAL
+        # #98722 typed bit: the gateway consumes this to reset/move future input
+        # to a clean session instead of leaving the bloated one authoritative.
+        assert result.get("compression_exhausted") is True
         # No fragment or nudge was appended to the transcript.
         assert result.get("messages") == []
 

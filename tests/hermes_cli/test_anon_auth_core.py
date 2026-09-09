@@ -166,34 +166,12 @@ class TestIdentityLifecycle:
         assert portal.minted == 2
 
 
-class TestSetupPolicy:
-    """``nous.guest_setup: explicit``: nothing creates the identity on its own — not the resolver's
-    last rung, not a ``nous/welcome`` request, not a sign-in. Only :func:`provision_free_tier` (the
-    guided setup's ``free_tier.provision``) does; every implicit caller then adopts it."""
+class TestExplicitProvision:
+    """:func:`provision_free_tier` is the guided setup's "set up now" entry point. It mints once;
+    every implicit caller afterwards adopts that identity through the shared store, so setup and a
+    concurrent first-run check never create two identities. ``nous.guest: false`` still wins."""
 
-    def test_explicit_implicit_callers_never_mint(self, portal, monkeypatch):
-        _write_config(monkeypatch, guest_setup="explicit")
-        assert anon_auth.guest_setup_policy() == anon_auth.GUEST_SETUP_EXPLICIT
-        assert anon_auth.ensure_portal_identity(blocking=True) is None
-        with pytest.raises(anon_auth.AuthError):
-            resolve_provider("auto")               # the resolver's last rung is implicit
-        assert portal.minted == 0 and portal.calls == []
-
-    def test_explicit_welcome_model_on_the_nous_route_does_not_mint(self, portal, monkeypatch):
-        _write_config(monkeypatch, guest_setup="explicit")
-        from hermes_cli.runtime_provider import resolve_runtime_provider
-        with pytest.raises(anon_auth.AuthError):
-            resolve_runtime_provider(requested="nous", target_model=anon_auth.GUEST_MODEL)
-        assert portal.minted == 0
-
-    def test_explicit_sign_in_has_nothing_to_sign_in_from(self, portal, monkeypatch):
-        _write_config(monkeypatch, guest_setup="explicit")
-        states = list(anon_auth.run_sign_in(timeout_seconds=1.0))
-        assert len(states) == 1 and states[0].kind == "unavailable"
-        assert portal.minted == 0
-
-    def test_explicit_provision_mints_once_then_everything_adopts(self, portal, monkeypatch, tmp_path):
-        _write_config(monkeypatch, guest_setup="explicit")
+    def test_provision_mints_once_then_everything_adopts(self, portal, monkeypatch, tmp_path):
         assert anon_auth.is_guest_state(anon_auth.provision_free_tier())
         assert portal.minted == 1
         token = _load_auth_store()["providers"]["nous"]["anon_token"]
@@ -207,13 +185,11 @@ class TestSetupPolicy:
         sibling = tmp_path / "sibling-profile"
         sibling.mkdir()
         monkeypatch.setenv("HERMES_HOME", str(sibling))
-        _write_config(monkeypatch, guest_setup="explicit")
         adopted = anon_auth.ensure_portal_identity(blocking=True)
         assert adopted and adopted["anon_token"] == token
         assert portal.minted == 1
 
-    def test_explicit_retired_identity_is_replaced(self, portal, monkeypatch):
-        _write_config(monkeypatch, guest_setup="explicit")
+    def test_retired_identity_is_replaced(self, portal, monkeypatch):
         anon_auth.provision_free_tier()
         first = _load_auth_store()["providers"]["nous"]["anon_token"]
         portal.dead_tokens.add(first)
@@ -222,13 +198,8 @@ class TestSetupPolicy:
         assert _load_auth_store()["providers"]["nous"]["anon_token"] != first
         assert portal.minted == 2
 
-    def test_auto_policy_keeps_todays_first_use_mint(self, portal, monkeypatch):
-        _write_config(monkeypatch, guest_setup="auto")
-        assert resolve_provider("auto") == "nous"
-        assert portal.minted == 1
-
     def test_guest_off_beats_an_explicit_provision(self, portal, monkeypatch):
-        _write_config(monkeypatch, guest=False, guest_setup="explicit")
+        _write_config(monkeypatch, guest=False)
         assert anon_auth.provision_free_tier() is None
         assert portal.minted == 0
 

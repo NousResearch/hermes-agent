@@ -49,9 +49,8 @@ def _(rid, params: dict) -> dict:
 def _(rid, params: dict) -> dict:
     """Set the free tier up NOW for the focused profile: adopt the shared store's identity, else mint
     one (blocking, short timeout). The guided setup on Hermes Desktop calls this before creating its
-    first chat, so the identity exists before any session asks for ``nous/welcome``. This is the
-    explicit provisioning request: under ``nous.guest_setup: explicit`` it is the only way an
-    identity ever gets created. ``{has_guest, enabled}``; ``error`` when the portal refused."""
+    first chat, so the identity exists before any session asks for ``nous/welcome``.
+    ``{has_guest, enabled}``; ``error`` when the portal refused."""
     try:
         from hermes_cli import anon_auth
         enabled = anon_auth.guest_enabled()

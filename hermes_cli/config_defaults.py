@@ -2340,12 +2340,6 @@ DEFAULT_CONFIG = {
         # `hermes auth upgrade`) to sign in. false turns the free tier off entirely: nothing is set
         # up and nothing is used.
         "guest": True,
-        # Who may CREATE the free-tier identity (using one that exists is never gated here).
-        # "auto": Hermes creates it on its own on first use, wherever nothing else is configured.
-        # "explicit": Hermes never creates one on its own; only the guided setup on Hermes Desktop
-        # does (it provisions the free tier as its first step). Every profile then follows that one
-        # identity, and an expired one is replaced, but nothing is ever created quietly.
-        "guest_setup": "auto",
     },
     # Google Vertex AI (Gemini). Auth is OAuth2 from a service-account JSON or ADC, NOT an API key;
     # the credential path lives in .env (VERTEX_CREDENTIALS_PATH / GOOGLE_APPLICATION_CREDENTIALS).

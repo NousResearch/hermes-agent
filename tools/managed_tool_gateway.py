@@ -140,8 +140,7 @@ def _replace_dead_guest_token(dead_state: dict) -> Optional[str]:
 
     clear_dead_guest("anon_credential_dead", dead_token=dead_state.get("anon_token"))
     try:
-        # A replacement continues the identity the user already had: explicit under every policy.
-        if ensure_portal_identity(blocking=True, explicit=True) is None:
+        if ensure_portal_identity(blocking=True) is None:
             return None
         return _clean(resolve_nous_access_token(refresh_skew_seconds=_NOUS_ACCESS_TOKEN_REFRESH_SKEW_SECONDS))
     except Exception as exc:

@@ -1245,7 +1245,6 @@ check_network_prerequisites() {
     # Informational web-search probe (duckduckgo.com) — never gates the warning:
     # on networks where it is policy-blocked, everything the installer needs can
     # still be reachable, so its failure is only mentioned, never counted.
-    local web_search_reachable=true
     (
         if ! curl -fsSI --max-time 8 "https://duckduckgo.com/" >/dev/null 2>&1; then
             : > "$tmpdir/web_search_blocked"

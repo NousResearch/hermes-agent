@@ -443,8 +443,9 @@ export const en: Translations = {
       plugins: 'Plugins'
     },
     plugins: {
-      title: 'Desktop plugins',
-      blurb: 'Bundled or dropped into the desktop-plugins folder. Disable to unload live.',
+      title: 'Desktop UI plugins',
+      blurb:
+        'Interface features across this app, not agent tools. Changes apply immediately. Plugins with both parts also need to be enabled for each agent profile below.',
       count: n => `${n} installed`,
       openFolder: 'Open plugins folder',
       rescan: 'Rescan',
@@ -457,7 +458,7 @@ export const en: Translations = {
       agent: {
         title: 'Agent plugins',
         blurb:
-          'Plugins you installed into the Hermes backend — tools, skills, MCP servers, hooks, and slash commands. Portable ones are Agent Plugins packages (skills + MCP bundles that work in other agents too). Toggles apply to new sessions.',
+          'Tools, skills and hooks for the selected profile only. Changes are saved immediately; restart this profile’s backend to apply them.',
         appliesTo: 'Applies to:',
         empty: 'No agent plugins installed yet.',
         loadFailed: 'Could not load agent plugins',
@@ -466,6 +467,28 @@ export const en: Translations = {
         noMatches: 'No plugins match your search.',
         toggleFailed: (name: string) => `Could not toggle ${name}`,
         updateBackendToManage: 'Update the Hermes backend to manage this plugin from Desktop.',
+        thisDevice: 'This device',
+        remoteGateway: 'Remote gateway',
+        scope: (profile, gateway) => `${profile} · ${gateway} — profile only`,
+        restartRequired: 'Restart required',
+        restartUnknown:
+          'This backend cannot report pending plugin changes. Restart its Hermes serve process after changing a plugin.',
+        restartNotice: 'Changes saved. Restart this profile’s backend to apply them. Nothing restarts automatically.',
+        restartBackend: 'Restart backend…',
+        restartConfirm: 'Restart backend',
+        restartTitle: profile => `Restart backend for ${profile}?`,
+        restartDescription: (profile, gateway) =>
+          `This restarts the Desktop backend for ${profile} on ${gateway}. Active runs in this backend will be interrupted. The app and other profiles stay open.`,
+        restarting: 'Restarting backend…',
+        restarted: 'Changes applied',
+        restartUnverified: 'Could not confirm that the plugin changes are applied. Check the backend and try again.',
+        restartUnavailable: 'Restart on the host',
+        restartInstructions: profile =>
+          `Desktop cannot safely restart this connection. Restart the Hermes serve process for ${profile} on its host, then check again. Reconnecting alone does not reload plugins.`,
+        checkAgain: 'Check again',
+        activeRuns: count =>
+          `${count} active run(s) will be interrupted. Finish or stop them first if you want to keep their work.`,
+        activityUnknown: 'Could not check active runs. They may be interrupted if you restart now.',
         sources: { bundled: 'bundled', user: 'user', git: 'git', project: 'project', entrypoint: 'pip' }
       },
       installModal: {

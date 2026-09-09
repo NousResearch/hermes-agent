@@ -518,7 +518,11 @@ function clearTimer(entry: Secondary): void {
   }
 }
 
-async function openSecondary(entry: Secondary, spawnPriority: SpawnPriority = 'background'): Promise<void> {
+async function openSecondary(
+  entry: Secondary,
+  spawnPriority: SpawnPriority = 'background',
+  restartedConnection?: HermesConnection
+): Promise<void> {
   const desktop = window.hermesDesktop
 
   if (!desktop) {
@@ -584,7 +588,8 @@ async function openSecondary(entry: Secondary, spawnPriority: SpawnPriority = 'b
     // settles either. Bound the same way use-gateway-boot.ts bounds the
     // primary's equivalent awaits.
     const conn =
-      entry.connectionId && desktop.getConnectionFor
+      restartedConnection ??
+      (entry.connectionId && desktop.getConnectionFor
         ? await withTimeout(
             desktop.getConnectionFor({
               connectionId: entry.connectionId,
@@ -598,12 +603,13 @@ async function openSecondary(entry: Secondary, spawnPriority: SpawnPriority = 'b
             dialProfile(desktop, entry.profile, spawnPriority),
             RECONNECT_ATTEMPT_TIMEOUT_MS,
             `Timed out connecting to profile "${entry.profile}"`
-          )
+          ))
 
     entry.connection = conn
 
-    const wsDeps =
-      entry.connectionId && desktop.getGatewayWsUrlFor
+    const wsDeps = restartedConnection
+      ? {}
+      : entry.connectionId && desktop.getGatewayWsUrlFor
         ? {
             getGatewayWsUrl: () =>
               desktop.getGatewayWsUrlFor!({ connectionId: entry.connectionId, profile: entry.profile })
@@ -1018,6 +1024,64 @@ export async function requestGatewayForAgent<T>(
       }
     }
   }
+}
+
+/** Replace only the restarted owner's transport; never activate it or fan out. */
+export async function reconnectGatewayForAgent(
+  connectionId: string,
+  profile: string,
+  connection: HermesConnection
+): Promise<void> {
+  if (
+    connectionId !== 'local' ||
+    !profile ||
+    connection.connectionId !== connectionId ||
+    connection.profile !== profile ||
+    connection.mode !== 'local'
+  ) {
+    throw new Error('Restarted backend does not match the requested local owner.')
+  }
+
+  if (isPrimaryRegistryRoute(connectionId, profile) && g.primaryGateway) {
+    const primary = g.primaryGateway
+    const { resetTileRuntimeBindings, reconcileBusyStatesOnReconnect } = await import('@/store/session-states')
+    const wsUrl = await resolveGatewayWsUrl({}, connection)
+
+    if (g.primaryGateway !== primary || !isPrimaryRegistryRoute(connectionId, profile)) {
+      throw new Error('Primary gateway owner changed during restart.')
+    }
+
+    resetTileRuntimeBindings({ connectionId, profile })
+    primary.close()
+    await withTimeout(primary.connect(wsUrl), RECONNECT_ATTEMPT_TIMEOUT_MS, 'Timed out reconnecting restarted backend')
+
+    if (g.primaryGateway !== primary || !isPrimaryRegistryRoute(connectionId, profile)) {
+      throw new Error('Primary gateway owner changed during restart.')
+    }
+
+    reconcileBusyStatesOnReconnect(profile)
+
+    if (isActivePrimary()) {
+      publishActiveConnection(connection)
+    }
+
+    return
+  }
+
+  const scope = registryBackendScopeKey(connectionId, profile)
+  const entry = g.secondaries.get(scope) ?? createSecondary(profile, connectionId)
+
+  // Let any pre-restart dial settle before replacing its stale endpoint.
+  await entry.connectPromise?.catch(() => undefined)
+
+  if (g.secondaries.get(scope) !== entry) {
+    throw new Error('Gateway owner changed during restart.')
+  }
+
+  entry.wantOpen = true
+  entry.gateway.close()
+  clearTimer(entry)
+  await openSecondary(entry, 'foreground', connection)
 }
 
 // ── Bot-relay socket retention (#93594) ─────────────────────────────────────

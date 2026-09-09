@@ -27,6 +27,22 @@ function startupOptions(overrides: Record<string, unknown> = {}) {
   }
 }
 
+test('an owned local restart never consults remote routes or a setup decision', async () => {
+  const options = startupOptions({
+    localOnly: true,
+    resolveRemote: vi.fn(async () => ({ baseUrl: 'https://other.invalid' })),
+    waitForDecision: vi.fn(async () => 'remote-applied')
+  })
+
+  const result = await runPrimaryBackendStartup(options)
+
+  assert.equal(result.kind, 'local')
+  assert.equal(options.resolveRemote.mock.calls.length, 0)
+  assert.equal(options.connectRemote.mock.calls.length, 0)
+  assert.equal(options.waitForDecision.mock.calls.length, 0)
+  assert.equal(options.ensureLocalRuntime.mock.calls.length, 1)
+})
+
 test('primary remote descriptor preserves a resolved registry connection id', () => {
   const connection = createPrimaryRemoteConnection(
     {

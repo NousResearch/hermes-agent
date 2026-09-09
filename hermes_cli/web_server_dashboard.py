@@ -779,6 +779,8 @@ def _mount_plugin_api_routes():
         enabled_set = set()
         disabled_set = set()
 
+    from hermes_cli.plugins_restart import record_plugin_config
+    record_plugin_config("dashboard", enabled_set, disabled_set)
     for plugin in _get_dashboard_plugins():
         api_file_name = plugin.get("_api_file")
         if not api_file_name:

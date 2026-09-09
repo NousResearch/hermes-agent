@@ -407,6 +407,24 @@ export interface Translations {
         noMatches: string
         toggleFailed: (name: string) => string
         updateBackendToManage: string
+        thisDevice: string
+        remoteGateway: string
+        scope: (profile: string, gateway: string) => string
+        restartRequired: string
+        restartUnknown: string
+        restartNotice: string
+        restartBackend: string
+        restartConfirm: string
+        restartTitle: (profile: string) => string
+        restartDescription: (profile: string, gateway: string) => string
+        restarting: string
+        restarted: string
+        restartUnverified: string
+        restartUnavailable: string
+        restartInstructions: (profile: string) => string
+        checkAgain: string
+        activeRuns: (count: number) => string
+        activityUnknown: string
         sources: Record<string, string>
       }
       installModal: {

@@ -429,9 +429,9 @@ export const zh: Translations = {
       plugins: '插件'
     },
     plugins: {
-      title: '桌面插件',
+      title: '桌面界面插件',
       blurb:
-        '加载到此应用中的界面扩展——随构建捆绑，或放入 desktop-plugins 文件夹（包括 Hermes 编写的插件）。禁用会即时卸载插件并在重启后保持。',
+        '适用于整个应用的界面功能，而非智能体工具。更改立即生效。同时包含这两部分的插件，还需在下方为每个智能体配置单独启用。',
       count: n => `已安装 ${n} 个`,
       openFolder: '打开插件文件夹',
       rescan: '重新扫描',
@@ -443,8 +443,7 @@ export const zh: Translations = {
       kinds: { bundled: '内置', disk: '磁盘', runtime: '运行时' },
       agent: {
         title: '智能体插件',
-        blurb:
-          '你安装到 Hermes 后端的插件——工具、技能、MCP 服务器、钩子和斜杠命令。「便携」插件是 Agent Plugins 标准包（技能 + MCP 组合，也可在其他智能体中使用）。开关在新会话中生效。',
+        blurb: '仅适用于所选配置的工具、技能和钩子。更改会立即保存；请重启此配置的后端以应用更改。',
         appliesTo: '应用于：',
         empty: '尚未安装智能体插件。',
         loadFailed: '无法加载智能体插件',
@@ -453,6 +452,26 @@ export const zh: Translations = {
         noMatches: '没有匹配的插件。',
         toggleFailed: (name: string) => `无法切换 ${name}`,
         updateBackendToManage: '请更新 Hermes 后端以便在桌面端管理此插件。',
+        thisDevice: '此设备',
+        remoteGateway: '远程网关',
+        scope: (profile, gateway) => `${profile} · ${gateway} — 仅此配置`,
+        restartRequired: '需要重启',
+        restartUnknown: '此后端无法报告待应用的插件更改。更改插件后，请重启其 Hermes serve 进程。',
+        restartNotice: '更改已保存。请重启此配置的后端以应用更改。不会自动重启任何服务。',
+        restartBackend: '重启后端…',
+        restartConfirm: '重启后端',
+        restartTitle: profile => `重启 ${profile} 的后端？`,
+        restartDescription: (profile, gateway) =>
+          `这将重启 ${gateway} 上 ${profile} 的桌面端后端。此后端中正在运行的任务将被中断。应用和其他配置将保持打开。`,
+        restarting: '正在重启后端…',
+        restarted: '更改已应用',
+        restartUnverified: '无法确认插件更改已应用。请检查后端后重试。',
+        restartUnavailable: '在主机上重启',
+        restartInstructions: profile =>
+          `桌面端无法安全重启此连接的后端。请在 ${profile} 所在的主机上重启该配置的 Hermes serve 进程，然后再次检查。仅重新连接不会重新加载插件。`,
+        checkAgain: '再次检查',
+        activeRuns: count => `${count} 个正在运行的任务将被中断。如需保留其工作成果，请先完成或停止这些任务。`,
+        activityUnknown: '无法检查正在运行的任务。如果现在重启，这些任务可能会被中断。',
         sources: { bundled: '内置', user: '用户', git: 'git', project: '项目', entrypoint: 'pip' }
       },
       installModal: {

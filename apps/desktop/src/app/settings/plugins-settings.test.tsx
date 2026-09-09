@@ -10,7 +10,7 @@ const { requestGateway, getProfiles } = vi.hoisted(() => ({
 }))
 
 vi.mock('@/app/gateway/hooks/use-gateway-request', () => ({
-  useGatewayRequest: () => ({ requestGateway })
+  useGatewayRequest: () => ({ requestGateway, gateway: { request: requestGateway } })
 }))
 
 vi.mock('@/hermes', async importOriginal => ({
@@ -18,7 +18,15 @@ vi.mock('@/hermes', async importOriginal => ({
   getProfiles
 }))
 
+vi.mock('@/store/gateway', async importOriginal => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  reconnectGatewayForAgent: vi.fn(async () => undefined),
+  requestGatewayForAgent: (_connection: string, _profile: string, method: string, params: Record<string, unknown>) =>
+    requestGateway(method, params)
+}))
+
 import { $pluginRecords } from '@/contrib/plugins-store'
+import type { HermesConnection } from '@/global'
 import { queryClient } from '@/lib/query-client'
 import {
   $agentPluginBusy,
@@ -40,12 +48,18 @@ const legacyRow = {
   status: 'disabled'
 } satisfies AgentPluginRow
 
-const renderSettings = () =>
-  render(
+const renderSettings = () => {
+  queryClient.setQueryData(['agent-plugin-settings', null, $activeGatewayProfile.get()], {
+    plugins: $agentPlugins.get(),
+    restart_required: false
+  })
+
+  return render(
     <QueryClientProvider client={queryClient}>
       <PluginsSettings />
     </QueryClientProvider>
   )
+}
 
 beforeEach(() => {
   requestGateway.mockReset()
@@ -68,6 +82,67 @@ afterEach(() => {
 })
 
 describe('PluginsSettings', () => {
+  it.each([true, null])(
+    'shows backend activation state %s after saving without restarting automatically',
+    async restartState => {
+      const row = { ...legacyRow, key: 'optional-native', portable: false }
+      const restart = vi.fn()
+      Object.defineProperty(window, 'hermesDesktop', {
+        configurable: true,
+        value: { ...window.hermesDesktop, restartBackendFor: restart }
+      })
+      requestGateway.mockImplementation(async (_method: string, params?: Record<string, unknown>) =>
+        params?.action === 'toggle'
+          ? { ok: true, plugin: { ...row, status: 'enabled' }, restart_required: restartState }
+          : { plugins: [row], restart_required: false }
+      )
+      $agentPlugins.set([row])
+      $gatewayState.set('open')
+      renderSettings()
+      fireEvent.click(await screen.findByRole('switch', { name: 'Enable Legacy plugin' }))
+      await screen.findByText(
+        restartState === true ? 'Restart required' : /This backend cannot report pending plugin changes/
+      )
+      expect(restart).not.toHaveBeenCalled()
+    }
+  )
+
+  it('requires confirmation and runtime read-back before clearing the selected backend notice', async () => {
+    const row = { ...legacyRow, key: 'optional-native', portable: false }
+    let pending = true
+
+    const restart = vi.fn(async () => {
+      pending = false
+    })
+
+    Object.defineProperty(window, 'hermesDesktop', {
+      configurable: true,
+      value: {
+        ...window.hermesDesktop,
+        backendRestartStatus: vi.fn(async () => ({ supported: true })),
+        restartBackendFor: restart
+      }
+    })
+    $connection.set({ connectionId: 'local', profile: 'default', mode: 'local' } as HermesConnection)
+    $gatewayState.set('open')
+    requestGateway.mockImplementation(async (method: string) =>
+      method === 'session.active_list'
+        ? { sessions: [{ status: 'working' }] }
+        : { plugins: [row], restart_required: pending }
+    )
+    renderSettings()
+    fireEvent.click(await screen.findByRole('button', { name: 'Restart backend…' }))
+    await screen.findByText(/1 active run/)
+    expect(restart).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    expect(screen.getByText('Restart required')).toBeTruthy()
+    expect(restart).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', { name: 'Restart backend…' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Restart backend' }))
+    await waitFor(() => expect(restart).toHaveBeenCalledExactlyOnceWith({ connectionId: 'local', profile: 'default' }))
+    await waitFor(() => expect(screen.queryByText('Restart required')).toBeNull())
+  })
+
   it('renders and searches plugin rows returned without a canonical key', () => {
     renderSettings()
 
@@ -219,7 +294,7 @@ describe('PluginsSettings', () => {
       expect(requestGateway).toHaveBeenCalledWith('plugins.manage', { action: 'list', profile: 'work' })
     )
 
-    fireEvent.click(screen.getByRole('switch', { name: 'Enable Legacy plugin' }))
+    fireEvent.click(await screen.findByRole('switch', { name: 'Enable Legacy plugin' }))
 
     await waitFor(() =>
       expect(requestGateway).toHaveBeenCalledWith('plugins.manage', {

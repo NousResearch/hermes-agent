@@ -1,6 +1,8 @@
 import type { FirstRunSetupDecision } from './first-run-setup-gate'
 
 export interface PrimaryBackendStartupOptions<Backend, RuntimeBackend, Remote, Connection> {
+  /** An explicit restart must not retarget through mutable remote configuration. */
+  localOnly?: boolean
   connectRemote: (remote: Remote) => Promise<Connection>
   ensureLocalRuntime: (backend: Backend) => Promise<RuntimeBackend>
   prepareLocalBackend: () => Backend | Promise<Backend>
@@ -76,6 +78,7 @@ export class FirstRunSetupResetError extends Error {
 // re-resolves persisted config without ever entering ensureRuntime/bootstrap.
 export async function runPrimaryBackendStartup<Backend, RuntimeBackend, Remote, Connection>({
   connectRemote,
+  localOnly = false,
   ensureLocalRuntime,
   prepareLocalBackend,
   resolveRemote,
@@ -84,7 +87,7 @@ export async function runPrimaryBackendStartup<Backend, RuntimeBackend, Remote, 
 }: PrimaryBackendStartupOptions<Backend, RuntimeBackend, Remote, Connection>): Promise<
   PrimaryBackendStartupResult<RuntimeBackend, Connection>
 > {
-  const savedRemote = await resolveRemote()
+  const savedRemote = localOnly ? null : await resolveRemote()
 
   if (savedRemote) {
     return { kind: 'remote', connection: await connectRemote(savedRemote) }
@@ -93,7 +96,7 @@ export async function runPrimaryBackendStartup<Backend, RuntimeBackend, Remote, 
   await waitForLocalStart()
 
   const backend = await prepareLocalBackend()
-  const decision = await waitForDecision(backend)
+  const decision = localOnly ? 'continue-local' : await waitForDecision(backend)
 
   if (decision === 'remote-applied') {
     const appliedRemote = await resolveRemote()

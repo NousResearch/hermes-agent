@@ -1967,6 +1967,200 @@ class TestReconcileColumnsErrorHandling:
         assert "last_read_at" in cols
 
 
+class TestReconcileNotNullWithoutDefault:
+    """A NOT NULL column SCHEMA_SQL declares without a DEFAULT is ADDable only by policy.
+
+    SQLite rejects ``ALTER TABLE ... ADD COLUMN x TEXT NOT NULL`` outright
+    ("Cannot add a NOT NULL column with default value NULL"), so a store whose
+    table predates such a column could never be reconciled: the reconciler
+    warned on every open and the store stayed behind SCHEMA_SQL. The fix is
+    explicit per column (``_NOT_NULL_BACKFILL``): a column with a declared,
+    domain-valid legacy value is ADDed with that value as DEFAULT so existing
+    rows are filled in the same DDL; a column without one stays unreconciled
+    and keeps the loud WARNING (fail closed, no value is manufactured from the
+    SQL type).
+    """
+
+    # NOT NULL / no-DEFAULT columns that predate this policy. None has a declared legacy value: a
+    # store missing one stays behind SCHEMA_SQL with the WARNING rather than receiving a made-up
+    # timestamp, heartbeat, holder, role or state. Adding a NOT NULL column to SCHEMA_SQL without a
+    # DEFAULT must either declare its backfill in _NOT_NULL_BACKFILL or be added here knowingly.
+    _FAIL_CLOSED = frozenset({
+        ("schema_version", "version"),
+        ("system_prompts", "prompt"),
+        ("sessions", "started_at"),
+        ("messages", "session_id"), ("messages", "role"), ("messages", "timestamp"),
+        ("gateway_routing", "entry_json"), ("gateway_routing", "updated_at"),
+        ("gateway_heartbeats", "pid"), ("gateway_heartbeats", "started_at"),
+        ("gateway_heartbeats", "last_heartbeat"),
+        ("compression_locks", "holder"), ("compression_locks", "acquired_at"),
+        ("compression_locks", "expires_at"),
+        ("session_turn_leases", "holder"), ("session_turn_leases", "acquired_at"),
+        ("session_turn_leases", "expires_at"),
+        ("async_delegations", "origin_session"), ("async_delegations", "state"),
+        ("async_delegations", "dispatched_at"), ("async_delegations", "updated_at"),
+    })
+
+    @staticmethod
+    def _strip_column(db_path, table, column):
+        """Rebuild *table* without *column* (DROP COLUMN refuses indexed columns).
+
+        legacy_alter_table keeps views/triggers pointing at the original table
+        name, mirroring a store whose CREATE TABLE simply predates the column.
+        Indexes on the column go with the old table, as on such a store.
+        """
+        conn = sqlite3.connect(str(db_path))
+        try:
+            conn.execute("PRAGMA foreign_keys=OFF")
+            conn.execute("PRAGMA legacy_alter_table=ON")
+            keep = [
+                r[1] for r in conn.execute(f'PRAGMA table_info("{table}")').fetchall()
+                if r[1] != column
+            ]
+            ddl = conn.execute(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name=?", (table,)
+            ).fetchone()[0]
+            legacy_ddl = "\n".join(
+                line for line in ddl.splitlines()
+                if not line.strip().startswith(f"{column} ")
+            )
+            cols = ", ".join(f'"{c}"' for c in keep)
+            conn.execute(f'ALTER TABLE "{table}" RENAME TO "{table}_legacy"')
+            conn.execute(legacy_ddl)
+            conn.execute(f'INSERT INTO "{table}" ({cols}) SELECT {cols} FROM "{table}_legacy"')
+            conn.execute(f'DROP TABLE "{table}_legacy"')
+            conn.commit()
+        finally:
+            conn.close()
+
+    @staticmethod
+    def _column_info(conn, table, column):
+        for row in conn.execute(f'PRAGMA table_info("{table}")').fetchall():
+            if row[1] == column:
+                return row  # (cid, name, type, notnull, dflt_value, pk)
+        return None
+
+    def test_store_lacking_sessions_source_heals_on_open_as_unknown(self, tmp_path, caplog):
+        """The allowlisted column, end to end through the public open path.
+
+        On base the plain ``SessionDB(db_path)`` open of such a store never
+        reaches the reconciler: ``executescript(SCHEMA_SQL)`` fails first on
+        ``idx_sessions_source`` ("no such column: source"). Those indexes now
+        live in DEFERRED_INDEX_SQL, the column is re-ADDed NOT NULL with
+        ``'unknown'`` for every legacy row, and the negative control shows
+        those rows stay outside state-owned stale-open reaping (they are
+        unrecorded provenance, not a promoted lifecycle owner).
+        """
+        import logging
+
+        from hermes_state_schema import schema_read_probe_statements
+
+        db_path = tmp_path / "state.db"
+        seed = SessionDB(db_path=db_path)
+        seed.create_session("legacy-cli", source="cli")
+        seed.create_session("legacy-telegram", source="telegram")
+        seed._conn.execute("UPDATE sessions SET started_at = 1.0, last_activity_at = 1.0")
+        seed._conn.commit()
+        seed.close()
+        self._strip_column(db_path, "sessions", "source")
+        probe = sqlite3.connect(str(db_path))
+        try:
+            assert self._column_info(probe, "sessions", "source") is None
+        finally:
+            probe.close()
+
+        with caplog.at_level(logging.WARNING, logger="hermes_state"):
+            healed = SessionDB(db_path=db_path)
+        try:
+            conn = healed._conn
+            info = self._column_info(conn, "sessions", "source")
+            assert info is not None, "sessions.source must be ADDed by the open"
+            assert info[3] == 1, "sessions.source must stay NOT NULL"
+            assert {r[0] for r in conn.execute("SELECT source FROM sessions")} == {"unknown"}
+            # The deferred indexes on the healed column exist, and the read probe passes.
+            live_indexes = {
+                r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='index'")
+            }
+            assert {"idx_sessions_source", "idx_sessions_source_id"} <= live_indexes
+            for statement in schema_read_probe_statements():
+                conn.execute(statement).fetchone()
+
+            # Negative control: legacy rows are old enough to reap, but 'unknown' is not a
+            # state-owned source, so the automatic sweep leaves them open while it closes a
+            # genuinely CLI-owned row of the same age.
+            assert "unknown" not in SessionDB._AUTO_PRUNE_STALE_OPEN_SOURCES
+            healed.create_session("owned-cli", source="cli")
+            conn.execute(
+                "UPDATE sessions SET started_at = 1.0, last_activity_at = 1.0 WHERE id = 'owned-cli'"
+            )
+            conn.commit()
+            closed = healed.sweep_orphaned_sessions(
+                max_idle_seconds=60.0, sources=SessionDB._AUTO_PRUNE_STALE_OPEN_SOURCES,
+                exclude_pinned=True, respect_gateway_heartbeats=False,
+            )
+            assert closed == ["owned-cli"]
+            assert healed.get_session("legacy-telegram")["ended_at"] is None
+            assert healed.get_session("legacy-cli")["ended_at"] is None
+        finally:
+            healed.close()
+        assert not [
+            r for r in caplog.records
+            if r.levelno >= logging.WARNING and "reconcile" in r.getMessage()
+        ], "an allowlisted NOT NULL column must heal without a WARNING"
+
+    def test_not_null_columns_without_default_need_a_declared_policy(self):
+        """Census of SCHEMA_SQL: every NOT NULL/no-DEFAULT column is either allowlisted or
+        knowingly fail-closed; a new one with neither fails here instead of silently
+        inheriting a manufactured value.
+
+        Allowlisted entries must be real SCHEMA_SQL columns of that shape and must
+        produce DDL SQLite accepts on a populated table, backfilling exactly the
+        declared literal. Fail-closed entries pass through unchanged, and SQLite
+        rejects that ALTER, which is what routes them to the reconciler's WARNING.
+        """
+        expected = SessionDB._parse_schema_columns(SCHEMA_SQL)
+        not_null_no_default = {
+            (table, col): col_type
+            for table, cols in expected.items()
+            for col, col_type in cols.items()
+            if "NOT NULL" in col_type and "DEFAULT" not in col_type
+        }
+        allowlist = SessionDB._NOT_NULL_BACKFILL
+        stale = set(allowlist) - set(not_null_no_default)
+        assert not stale, f"_NOT_NULL_BACKFILL names columns that are not NOT NULL/no-DEFAULT: {stale}"
+        undeclared = set(not_null_no_default) - set(allowlist) - self._FAIL_CLOSED
+        assert not undeclared, (
+            f"{sorted(undeclared)}: NOT NULL without DEFAULT in SCHEMA_SQL but no policy. Give it a "
+            "DEFAULT in SCHEMA_SQL, declare a domain-valid legacy value in _NOT_NULL_BACKFILL, or add "
+            "it to _FAIL_CLOSED knowing a store that lacks it will stay unreconciled."
+        )
+        assert set(allowlist) == {("sessions", "source")}
+        assert not (set(allowlist) & self._FAIL_CLOSED)
+
+        for (table, col), col_type in sorted(not_null_no_default.items()):
+            ddl = SessionDB._addable_column_ddl(table, col, col_type)
+            ref = sqlite3.connect(":memory:")
+            try:
+                ref.execute("CREATE TABLE t (id INTEGER PRIMARY KEY)")
+                ref.execute("INSERT INTO t DEFAULT VALUES")
+                if (table, col) in allowlist:
+                    literal = allowlist[(table, col)]
+                    assert ddl == f"{col_type} DEFAULT {literal}", (table, col, ddl)
+                    ref.execute(f'ALTER TABLE t ADD COLUMN "{col}" {ddl}')
+                    assert ref.execute(f'SELECT "{col}" FROM t').fetchone()[0] == literal.strip("'")
+                else:
+                    assert ddl == col_type, f"{table}.{col}: no policy, must pass through unchanged"
+                    with pytest.raises(sqlite3.OperationalError, match="NOT NULL"):
+                        ref.execute(f'ALTER TABLE t ADD COLUMN "{col}" {ddl}')
+            finally:
+                ref.close()
+
+        # Columns the policy does not concern are never rewritten.
+        assert SessionDB._addable_column_ddl("sessions", "title", "TEXT") == "TEXT"
+        assert SessionDB._addable_column_ddl(
+            "messages", "active", "INTEGER NOT NULL DEFAULT 1") == "INTEGER NOT NULL DEFAULT 1"
+
+
 class TestFtsRebuildLoopWithoutTrigram:
     """A trigram-less SQLite build must not re-index the store on every open.
 

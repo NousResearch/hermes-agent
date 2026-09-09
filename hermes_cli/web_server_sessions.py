@@ -84,9 +84,11 @@ def _session_db_read_probe_statements() -> tuple:
 
 
 # Stores where a heal WRITABLE OPEN SUCCEEDED but the read probe still failed:
-# one reconciliation cannot fix them (e.g. a NOT-NULL-without-default column),
-# so they fall back to the raw read-only open until restart instead of paying
-# a writable init per poll. A FAILED writable open (transient lock) is NOT
+# one reconciliation cannot fix them (e.g. a NOT-NULL-without-DEFAULT column
+# with no SessionSchemaMixin._NOT_NULL_BACKFILL entry, which SQLite refuses to
+# ADD), so they fall back to the raw read-only open until restart instead of
+# paying a writable init per poll. A FAILED writable open (transient lock, or
+# an executescript(SCHEMA_SQL) error before the reconciler runs) is NOT
 # recorded — the next poll retries the heal.
 _session_db_heal_exhausted: set = set()
 

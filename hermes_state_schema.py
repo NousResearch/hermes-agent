@@ -14,7 +14,7 @@ import sqlite3
 import tempfile
 import time
 import uuid
-from typing import Dict, List, Optional, Sequence
+from typing import Dict, List, Optional, Sequence, Tuple
 
 
 from hermes_constants import get_hermes_home
@@ -658,6 +658,39 @@ class SessionSchemaMixin:
                 os.replace(tmp, cache_path)
         return table_columns
 
+    # Legacy-row literals for NOT NULL columns SCHEMA_SQL declares without a DEFAULT. SQLite refuses
+    # ``ADD COLUMN x TEXT NOT NULL`` outright ("Cannot add a NOT NULL column with default value
+    # NULL"), so a table that predates such a column can only be reconciled when a domain-valid
+    # value for rows written before the column existed is declared HERE, per column. Nothing is
+    # derived from the SQL type: '' / 0 are not valid history for timestamps, heartbeat liveness,
+    # lease holders/expiry, routing JSON or message roles, and a value SQLite accepts is no
+    # evidence the row is semantically right (#101409). A column without an entry stays
+    # unreconciled and the WARNING in _reconcile_columns fires (fail closed).
+    #
+    # sessions.source: 'unknown' is ensure_session's default for an unrecorded origin and is
+    # deliberately absent from SessionDB._AUTO_PRUNE_STALE_OPEN_SOURCES (#60609), so legacy rows
+    # stay outside state-owned stale-open reaping instead of being promoted to a lifecycle owner
+    # such as 'cli'. Any index on an allowlisted column belongs in DEFERRED_INDEX_SQL, not
+    # SCHEMA_SQL, or executescript fails on the legacy store before this code runs.
+    _NOT_NULL_BACKFILL: Dict[Tuple[str, str], str] = {
+        ("sessions", "source"): "'unknown'",
+    }
+
+    @classmethod
+    def _addable_column_ddl(cls, table: str, column: str, col_type: str) -> str:
+        """*col_type* as reconstructed by ``_parse_schema_columns`` (``TEXT NOT NULL``), made
+        ADDable when a legacy value is declared: a NOT NULL column without a DEFAULT that has a
+        ``_NOT_NULL_BACKFILL`` entry gets ``DEFAULT <literal>`` so SQLite accepts the ALTER and
+        backfills existing rows in the same statement. Nullable columns, columns that already
+        carry a DEFAULT, and NOT NULL columns with no declared backfill are returned unchanged
+        (the latter still fail the ALTER, which _reconcile_columns reports)."""
+        if "NOT NULL" not in col_type or "DEFAULT" in col_type:
+            return col_type
+        literal = cls._NOT_NULL_BACKFILL.get((table, column))
+        if literal is None:
+            return col_type
+        return f"{col_type} DEFAULT {literal}"
+
     def _reconcile_columns(self, cursor: sqlite3.Cursor) -> None:
         """ADD every SCHEMA_SQL column missing from the live tables (SCHEMA_SQL is the single
         source of truth; column additions need no version-gated migration)."""
@@ -672,8 +705,9 @@ class SessionSchemaMixin:
             for col_name, col_type in declared_cols.items():
                 if col_name in live_cols:
                     continue
+                col_ddl = self._addable_column_ddl(table_name, col_name, col_type)
                 try:
-                    cursor.execute(f'ALTER TABLE "{table_name}" ADD COLUMN {_q(col_name)} {col_type}')
+                    cursor.execute(f'ALTER TABLE "{table_name}" ADD COLUMN {_q(col_name)} {col_ddl}')
                 except sqlite3.OperationalError as exc:
                     message = str(exc).lower()
                     if "duplicate column" in message:

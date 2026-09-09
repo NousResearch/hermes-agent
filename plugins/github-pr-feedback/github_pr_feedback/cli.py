@@ -5,6 +5,7 @@ from __future__ import annotations
 from .ci_contract import manifest_path as ci_manifest_path
 
 import argparse
+import os
 import fcntl
 import hashlib
 import json
@@ -21,6 +22,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterator, Protocol
 
 from .cli_audit_task import owns_current_audit_task
+from .worker_contract import configured_assignees, worker_contract_enabled
 from .controller import KanbanTask, LocalGitRepository, PooledLocalGitRepository, ScanController
 from .ci_coordinator import CIAuditJob, GroupedCICoordinator
 from .ci_runner import (
@@ -262,34 +264,16 @@ class DoctorProbe:
                 hermes and self._hermes_executable_ready(hermes)
             ),
             "board": self._board_exists(policy.board or ""),
-            "assignee": all(
-                self._assignee_exists(assignee)
-                for assignee in {
-                    policy.assignee or "",
-                    *(rule.assignee for rule in policy.assignee_rules),
-                    *(rule.assignee for rule in policy.routing_rules),
-                    *(
-                        [policy.local_ci_audit.assignee]
-                        if policy.local_ci_audit is not None
-                        else []
+            "assignee": all(self._assignee_exists(name) for name in configured_assignees(policy)),
+            "worker_completion_policy": all(
+                worker_contract_enabled(
+                    self._hermes_root,
+                    name,
+                    project_root=Path(
+                        os.environ.get("HERMES_KANBAN_WORKSPACE", ".")
                     ),
-                    *(item.assignee for item in policy.merge_policies()),
-                    *(
-                        [policy.repair_steward.assignee]
-                        if policy.repair_steward is not None
-                        else []
-                    ),
-                    *(
-                        [
-                            assignee
-                            for maintenance in policy.release_policies()
-                            for assignee in (
-                                maintenance.assignee,
-                                *(lane.assignee for lane in maintenance.lanes),
-                            )
-                        ]
-                    ),
-                }
+                )
+                for name in configured_assignees(policy)
             ),
             "ledger_access": self._ledger_access(ledger_path),
             "repository_worktree": self._repositories_ready(

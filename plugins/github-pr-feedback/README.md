@@ -575,3 +575,15 @@ completion comment nor claims passing CI. Open, changed-head, and raced PRs keep
 their pending gate. Protected terminal replay preserves the lifecycle result.
 
 Repair completion policies also gate the shared `request_review` transition. A worker must finish its durable push/reply/acknowledgement contract before handing the implementation to an independent reviewer; review and CI still remain separate requirements. Original dispatch identities remain provenance, not evidence that the published repair still has its original head.
+
+### Worker completion-policy readiness
+
+Each configured assignee profile must explicitly enable `github-pr-feedback`.
+Profiles have independent plugin opt-in lists: enabling it in the control profile
+alone does not load completion hooks in a worker. `doctor` reports
+`worker_completion_policy: failed` when a configured worker lacks this opt-in or
+explicitly disables it. Enable it through that profile's `hermes -p <profile>
+plugins enable github-pr-feedback` command before dispatch. The worker still
+uses its own model configuration; its completion hook reads the task's trusted
+control-home ledger. Real-discovery tests cover both the missing-hook failure
+and the enabled policy, rather than manually registering a test callback.

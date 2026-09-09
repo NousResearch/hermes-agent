@@ -114,8 +114,10 @@ class TurnFacadeMixin:
                 getattr(self, "_session_db", None), getattr(self, "session_id", None)
             )
 
+            from agent.stay_awake import turn_scope
+
             # Keep the ContextVar scope local (agent tokens may be observed from another thread).
-            with bind_subagent_parent(self), scoped_runtime_main({}):
+            with bind_subagent_parent(self), scoped_runtime_main({}), turn_scope():
                 try:
                     if lease is not None:
                         lease.start()

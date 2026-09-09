@@ -1027,6 +1027,23 @@ Points at a custom OpenAI-compatible endpoint. Uses `OPENAI_API_KEY` for auth.
 The summary model **must** have a context window at least as large as your main agent model's. The compressor sends the full middle section of the conversation to the summary model — if that model's context window is smaller than the main model's, the summarization call will fail with a context length error. When this happens, the middle turns are **dropped without a summary**, losing conversation context silently. If you override the model, verify its context length meets or exceeds your main model's.
 :::
 
+## Stay Awake
+
+Prevent the OS from sleeping while the agent is running a turn — useful for
+long-running tasks on a laptop (a machine that sleeps mid-turn drops the API
+call and halts tool execution):
+
+```yaml
+agent:
+  stay_awake: true   # default: false
+```
+
+Only system/idle sleep is inhibited; the display may still dim. Implementations:
+`caffeinate -i` (macOS), `systemd-inhibit` (Linux), `SetThreadExecutionState`
+(Windows). Where no inhibitor is available (containers, headless servers,
+non-systemd distros) the setting degrades to a no-op. Applies to every surface
+that runs agent turns (CLI, gateway, TUI, Desktop, cron, subagents).
+
 ## Gateway Turn Lease Timeout
 
 The gateway serializes turns by their resolved session ID so two routing keys

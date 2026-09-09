@@ -238,6 +238,11 @@ DEFAULT_CONFIG = {
         # provider or get a last-chance text fallback); "text" = always pre-analyze with
         # vision_analyze and prepend the description. vision_analyze stays a tool regardless.
         "image_input_mode": "auto",
+        # Stay-awake inhibitor: prevent OS system/idle sleep while a turn is running
+        # (macOS caffeinate -i, Linux systemd-inhibit, Windows SetThreadExecutionState).
+        # Display sleep is untouched; no-op where the inhibitor is unavailable
+        # (containers, headless servers). Applies to every surface that runs turns.
+        "stay_awake": False,
         "disabled_toolsets": [],
         # Model name (any reasonable spelling) -> effort level; overrides agent.reasoning_effort
         # when the current model matches. Edit in config.yaml (no CLI support: dots in keys).

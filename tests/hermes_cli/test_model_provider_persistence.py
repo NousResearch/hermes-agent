@@ -92,7 +92,7 @@ class TestProviderPersistsAfterModelSave:
         # Simulate: user has a Kimi API key, model was a string
         monkeypatch.setenv("KIMI_API_KEY", "sk-kimi-test-key")
 
-        from hermes_cli.main import _model_flow_api_key_provider
+        from hermes_cli.model_setup_flows import _model_flow_api_key_provider
         from hermes_cli.config import load_config
 
         # Mock the model selection prompt to return "kimi-k2.5"
@@ -138,7 +138,7 @@ class TestBaseUrlValidation:
         monkeypatch.setenv("MINIMAX_API_KEY", "test-key")
         monkeypatch.delenv("MINIMAX_BASE_URL", raising=False)
 
-        from hermes_cli.main import _model_flow_api_key_provider
+        from hermes_cli.model_setup_flows import _model_flow_api_key_provider
         from hermes_cli.config import load_config, get_env_value
 
         with patch("hermes_cli.auth._prompt_model_selection", return_value="MiniMax-M2"), \
@@ -157,7 +157,7 @@ class TestZaiEndpointPicker:
 
     def test_custom_proxy_rejects_invalid_url(self, config_home, monkeypatch, capsys):
         """Custom proxy must start with http:// or https://."""
-        from hermes_cli.main import _model_flow_api_key_provider
+        from hermes_cli.model_setup_flows import _model_flow_api_key_provider
         from hermes_cli.config import load_config
 
         monkeypatch.setenv("GLM_API_KEY", "test-key")
@@ -165,7 +165,7 @@ class TestZaiEndpointPicker:
         from hermes_cli.auth import ZAI_ENDPOINTS
         custom_idx = len(ZAI_ENDPOINTS)
 
-        with patch("hermes_cli.main._prompt_provider_choice", return_value=custom_idx), \
+        with patch("hermes_cli.main_provider_setup._prompt_provider_choice", return_value=custom_idx), \
              patch("hermes_cli.auth._prompt_model_selection", return_value="glm-5"), \
              patch("hermes_cli.auth.deactivate_provider"), \
              patch("builtins.input", return_value="not-a-url"):
@@ -192,7 +192,7 @@ class TestZaiEndpointPicker:
             captured["choices"] = choices
             return default
 
-        with patch("hermes_cli.main._prompt_provider_choice", side_effect=fake_choice):
+        with patch("hermes_cli.main_provider_setup._prompt_provider_choice", side_effect=fake_choice):
             result = _select_zai_endpoint(coding_url)
 
         # Default should point at index 2 (coding-global)

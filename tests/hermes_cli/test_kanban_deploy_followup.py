@@ -13,11 +13,12 @@ from pathlib import Path
 import pytest
 
 from hermes_cli import kanban_db as kb
+from hermes_cli import kanban_db_connect as kbc
 
 
 @pytest.fixture
 def conn(tmp_path: Path):
-    db = kb.connect(tmp_path / "kanban.db")
+    db = kbc.connect(tmp_path / "kanban.db")
     try:
         yield db
     finally:

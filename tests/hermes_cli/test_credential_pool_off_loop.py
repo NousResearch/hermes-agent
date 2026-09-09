@@ -17,6 +17,7 @@ from unittest.mock import patch
 import pytest
 
 from hermes_cli import copilot_auth
+import hermes_cli.web_routers.ops as _rt_ops
 
 
 # ---------------------------------------------------------------------------
@@ -189,7 +190,7 @@ async def test_list_credential_pool_runs_off_event_loop(monkeypatch):
         return {}
 
     monkeypatch.setattr(auth_mod, "read_credential_pool", fake_read_pool)
-    result = await web_server.list_credential_pool()
+    result = await _rt_ops.list_credential_pool()
 
     assert result == {"providers": []}
     assert seen["thread"] != loop_thread
@@ -219,7 +220,7 @@ async def test_list_credential_pool_keeps_loop_responsive(monkeypatch):
             last = now
 
     t = asyncio.create_task(ticker())
-    await web_server.list_credential_pool()
+    await _rt_ops.list_credential_pool()
     stop.set()
     await t
     # 0.25 s threshold vs a 0.5 s blocking read: a regression (read on the

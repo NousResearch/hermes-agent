@@ -27,6 +27,8 @@ from pathlib import Path
 import pytest
 
 import hermes_cli.kanban_db as kb
+from hermes_cli import kanban_db_connect as kbc
+from hermes_cli import kanban_db_dispatch as kbd
 
 
 @pytest.fixture
@@ -103,7 +105,7 @@ def test_fast_clean_exit_with_provider_error_trips_breaker(
     monkeypatch.setattr(_kb, "_pid_alive", lambda _pid: False)
     monkeypatch.setenv("HERMES_KANBAN_CRASH_GRACE_SECONDS", "0")
 
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         tid = kb.create_task(conn, title="outage", assignee="a")
         pid = 50000
         started_at = _claim_dead_worker(conn, tid, pid)
@@ -126,7 +128,7 @@ def test_fast_clean_exit_with_provider_error_trips_breaker(
             ),
         )
 
-        crashed = kb.detect_crashed_workers(conn)
+        crashed = kbd.detect_crashed_workers(conn)
         status = _kb._circuit_status(conn)
 
         task = kb.get_task(conn, tid)
@@ -157,7 +159,7 @@ def test_fast_clean_exit_without_provider_error_does_not_trip(
     monkeypatch.setattr(_kb, "_pid_alive", lambda _pid: False)
     monkeypatch.setenv("HERMES_KANBAN_CRASH_GRACE_SECONDS", "0")
 
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         tid = kb.create_task(conn, title="noerr", assignee="a")
         pid = 50001
         started_at = _claim_dead_worker(conn, tid, pid)
@@ -168,7 +170,7 @@ def test_fast_clean_exit_without_provider_error_does_not_trip(
         # No log file at all — detection requires a grounded log signal.
         (circuit_home / "kanban" / "logs").mkdir(parents=True, exist_ok=True)
 
-        kb.detect_crashed_workers(conn)
+        kbd.detect_crashed_workers(conn)
         status = _kb._circuit_status(conn)
         assert status["state"] == "closed", \
             "clean exit WITHOUT a provider error is a protocol violation, " \
@@ -193,13 +195,13 @@ def test_pause_spawns_nothing_while_circuit_open(
         spawns.append(task.id)
         return 42
 
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         # Open the breaker directly (simulate a prior detection).
         _kb._circuit_trip(conn, "test outage", board="default")
         tid = kb.create_task(conn, title="queued", assignee="alice")
         monkeypatch.setenv("HERMES_KANBAN_BOARD", "default")
 
-        res = kb.dispatch_once(conn, spawn_fn=fake_spawn, board="default")
+        res = kbd.dispatch_once(conn, spawn_fn=fake_spawn, board="default")
 
         assert res.frozen_by_circuit, \
             "an open breaker must freeze the tick"
@@ -238,14 +240,14 @@ def test_trip_queues_exactly_one_alert(circuit_home, monkeypatch):
             ),
         )
 
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         # Two separate outage detections, back to back. The FIRST opens the
         # breaker and queues the 'tripped' alert; the second (same kind, same
         # board) must NOT append a duplicate.
         for n in range(2):
             tid = kb.create_task(conn, title=f"outage{n}", assignee="a")
             _simulate_outage(tid, 50000 + n)
-            crashed = _kb.detect_crashed_workers(conn, board="default")
+            crashed = kbd.detect_crashed_workers(conn, board="default")
             assert tid not in crashed, \
                 "an outage-backed spawn bounce must not count as a crash"
 
@@ -264,7 +266,7 @@ def test_paused_probe_failure_keeps_breaker_open_and_no_resume_alert(
 
     monkeypatch.setenv("HERMES_KANBAN_CIRCUIT_PROBE_INTERVAL_SECONDS", "1")
 
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         _kb._circuit_trip(conn, "outage", board="default")
         # Force due-for-probe: clear last_probe_at.
         _kb._ensure_dispatch_circuit_row(conn)
@@ -298,7 +300,7 @@ def test_successful_probe_closes_breaker_and_queues_resume_alert(
 
     monkeypatch.setenv("HERMES_KANBAN_CIRCUIT_PROBE_INTERVAL_SECONDS", "1")
 
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         _kb._circuit_trip(conn, "outage", board="default")
         _kb._ensure_dispatch_circuit_row(conn)
         conn.execute(
@@ -341,7 +343,7 @@ def test_resume_then_dispatch_spawns_pending_card(circuit_home, monkeypatch):
         spawns.append(task.id)
         return 42
 
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         _kb._circuit_trip(conn, "outage", board="default")
         tid = kb.create_task(conn, title="pending", assignee="alice")
 
@@ -356,7 +358,7 @@ def test_resume_then_dispatch_spawns_pending_card(circuit_home, monkeypatch):
         # First tick: breaker open. Probe suture returns True so the probe
         # closes the circuit — but THIS tick still reports frozen (the probe
         # outcome is only visible to the NEXT tick).
-        paused = kb.dispatch_once(
+        paused = kbd.dispatch_once(
             conn, spawn_fn=fake_spawn, board="default",
             circuit_probe_fn=lambda: True,
         )
@@ -364,7 +366,7 @@ def test_resume_then_dispatch_spawns_pending_card(circuit_home, monkeypatch):
 
         # The breaker is now closed (probe succeeded during the paused tick),
         # so the NEXT tick spawns the pending card normally.
-        resumed = kb.dispatch_once(
+        resumed = kbd.dispatch_once(
             conn, spawn_fn=fake_spawn, board="default",
             circuit_probe_fn=lambda: True,
         )

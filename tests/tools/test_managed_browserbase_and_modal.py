@@ -96,14 +96,13 @@ def _install_fake_tools_package():
     sys.modules["tools.environments"] = env_package
 
     agent_package = types.ModuleType("agent")
-    agent_package.__path__ = []  # type: ignore[attr-defined]
+    agent_package.__path__ = [str(REPO_ROOT / "agent")]  # type: ignore[attr-defined]
     sys.modules["agent"] = agent_package
     sys.modules["agent.auxiliary_client"] = types.SimpleNamespace(
         call_llm=lambda *args, **kwargs: "",
     )
-    # The fake `agent` package has an empty __path__, so every real
-    # agent.* submodule that production code imports needs an explicit
-    # stand-in here. tools.browser_tool imports redact_cdp_url;
+    # Keep unrelated imports real; only replace the collaborators this fixture
+    # isolates. tools.browser_tool imports redact_cdp_url;
     # hermes_cli.auth (imported transitively by nous_account /
     # tool_backend_helpers) imports sanitize_borrowed_credential_payload.
     sys.modules["agent.redact"] = types.SimpleNamespace(
@@ -114,8 +113,7 @@ def _install_fake_tools_package():
     )
 
     # Stubs for the browser-provider plugin layer introduced in PR #25214.
-    # The fake `agent` package has an empty __path__ so real submodules
-    # aren't reachable; we install just enough stand-ins to satisfy
+    # Install just enough stand-ins to isolate
     # ``tools.browser_tool``'s top-level imports. The actual lifecycle
     # tests instantiate the real plugin classes via _load_tool_module
     # below, so the stubs only need to satisfy import + isinstance.
@@ -154,6 +152,9 @@ def _install_fake_tools_package():
         sys.modules[f"plugins.browser.{_name}.provider"] = types.SimpleNamespace(
             **{_classname: _provider_stub_cls},
         )
+    # The fake ``plugins.browser`` package has an empty __path__, so the shared
+    # base the real vendor modules import must be loaded by path as well.
+    _load_plugin_module("plugins.browser._common", "browser/_common.py")
 
     sys.modules["tools.managed_tool_gateway"] = _load_tool_module(
         "tools.managed_tool_gateway",
@@ -225,10 +226,11 @@ def test_browser_use_explicit_local_mode_stays_local_even_when_managed_gateway_i
     })
 
     with patch.dict(os.environ, env, clear=True):
-        browser_tool = _load_tool_module("tools.browser_tool", "browser_tool.py")
+        _load_tool_module("tools.browser_tool", "browser_tool.py")
+        browser_tool_cloud = sys.modules["tools.browser_tool_cloud"]
 
-        local_mode = browser_tool._is_local_mode()
-        provider = browser_tool._get_cloud_provider()
+        local_mode = browser_tool_cloud._is_local_mode()
+        provider = browser_tool_cloud._get_cloud_provider()
 
     assert local_mode is True
     assert provider is None
@@ -261,14 +263,15 @@ def test_terminal_tool_respects_direct_modal_mode_without_falling_back_to_manage
     env.pop("MODAL_TOKEN_SECRET", None)
 
     with patch.dict(os.environ, env, clear=True):
-        terminal_tool = _load_tool_module("tools.terminal_tool", "terminal_tool.py")
+        _load_tool_module("tools.terminal_tool", "terminal_tool.py")
+        terminal_tool_backends = sys.modules["tools.terminal_tool_backends"]
 
         with (
-            patch.object(terminal_tool, "is_managed_tool_gateway_ready", return_value=True),
+            patch.object(terminal_tool_backends, "is_managed_tool_gateway_ready", return_value=True),
             patch.object(Path, "exists", return_value=False),
         ):
             with pytest.raises(ValueError, match="direct Modal credentials"):
-                terminal_tool._create_environment(
+                terminal_tool_backends._create_environment(
                     env_type="modal",
                     image="python:3.11",
                     cwd="/root",

@@ -232,7 +232,16 @@ def _mark_ceiling(task_id: str, reason: str | None, why: str) -> None:
     try:
         from hermes_cli import kanban_db  # type: ignore
 
-        with kanban_db.connect_closing(_board_db_path()) as con:  # type: ignore[attr-defined]
+        try:
+            # Upstream moved connection handling into kanban_db_connect and the
+            # kanban_db pointer is revert-scheduled; prefer the defining module
+            # and fall back so the plugin loads on either shape. The fallback
+            # goes through getattr so no static pointer reference remains.
+            from hermes_cli.kanban_db_connect import connect_closing  # type: ignore
+        except ImportError:
+            connect_closing = getattr(kanban_db, "connect_closing")
+
+        with connect_closing(_board_db_path()) as con:
             kanban_db.add_comment(
                 con, task_id, "kanban-block-escalator",
                 f"{CEILING_MARKER}: hard stop — {why}. Staying blocked for Richie. "

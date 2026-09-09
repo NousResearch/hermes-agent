@@ -26,6 +26,7 @@ from pathlib import Path
 import pytest
 
 from hermes_cli import kanban_db as kb
+from hermes_cli import kanban_db_connect as kbc
 
 
 @pytest.fixture
@@ -84,7 +85,7 @@ def _make_task(
     monkeypatch.setattr(Path, "home", lambda: kanban_home)
     kb._INITIALIZED_PATHS.clear()
     kb.init_db()
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         tid = kb.create_task(
             conn,
             title="worktree build gate",
@@ -120,7 +121,7 @@ def test_gate_green_path_proceeds_to_review(
 
     resp = json.loads(tools._handle_request_review({"summary": "works"}))
     assert resp.get("ok") is True, resp
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         assert kb.get_task(conn, tid).status == "review"
 
 
@@ -138,7 +139,7 @@ def test_gate_failing_build_bounces_card(
     assert "error" in resp
     assert "Pre-review gate failed" in resp["error"]
 
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         # Card never left the builder lane.
         assert kb.get_task(conn, tid).status == "running"
         # No failure counted against the card.
@@ -179,7 +180,7 @@ def test_gate_skips_browser_ui_test_when_dist_absent(
     tid = _make_task(tmp_path / ".hermes", monkeypatch, ws)
     resp = json.loads(tools._handle_request_review({"summary": "ui ship"}))
     assert resp.get("ok") is True, resp
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         assert kb.get_task(conn, tid).status == "review"
 
 
@@ -199,7 +200,7 @@ def test_gate_runs_non_ui_test_even_without_dist(
     resp = json.loads(tools._handle_request_review({"summary": "plain fail"}))
     # The non-UI focused test failing must still bounce the card.
     assert "error" in resp
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         assert kb.get_task(conn, tid).status == "running"
 
 
@@ -217,7 +218,7 @@ def test_gate_comment_carries_output_tail(
 
     resp = json.loads(tools._handle_request_review({"summary": "flaky"}))
     assert "error" in resp
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         comments = kb.list_comments(conn, tid)
         assert len(comments) == 1
         body = comments[0].body
@@ -258,7 +259,7 @@ def test_gate_import_ok_for_relative_import_module(
 
     resp = json.loads(tools._handle_request_review({"summary": "rel import ok"}))
     assert resp.get("ok") is True, resp
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         assert kb.get_task(conn, tid).status == "review"
 
 
@@ -281,7 +282,7 @@ def test_gate_missing_import_bounces_card(
     assert "error" in resp
     assert "Pre-review gate failed" in resp["error"]
 
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         assert kb.get_task(conn, tid).status == "running"
         assert kb.get_task(conn, tid).consecutive_failures == 0
         comments = kb.list_comments(conn, tid)
@@ -303,7 +304,7 @@ def test_gate_import_ok_when_sibling_module_resolves(
 
     resp = json.loads(tools._handle_request_review({"summary": "ok import"}))
     assert resp.get("ok") is True, resp
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         assert kb.get_task(conn, tid).status == "review"
 
 
@@ -416,7 +417,7 @@ def test_gate_skipped_for_non_worktree_card(
 
     resp = json.loads(tools._handle_request_review({"summary": "dir card"}))
     assert resp.get("ok") is True, resp
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         assert kb.get_task(conn, tid).status == "review"
 
 
@@ -523,7 +524,7 @@ def test_base_ref_guard_ignores_diverged_remote(
     tid = _make_task(tmp_path / ".hermes", monkeypatch, ws)
     resp = json.loads(tools._handle_request_review({"summary": "diff vs unfair base"}))
     assert resp.get("ok") is True, resp
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         assert kb.get_task(conn, tid).status == "review"
 
 
@@ -594,7 +595,7 @@ def test_ladder_lint_fail_bounces_before_typecheck(
     assert "LINT PROBLEM" in resp["error"]  # carries lint's tail
     assert "TYPECHECK PROBLEM" not in resp["error"]  # typecheck never ran
 
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         assert kb.get_task(conn, tid).status == "running"
         assert kb.get_task(conn, tid).consecutive_failures == 0
         comments = kb.list_comments(conn, tid)
@@ -636,7 +637,7 @@ def test_ladder_missing_linter_skipped_not_failed(
     assert "'typecheck'" in resp["error"]
     assert "TYPECHECK PROBLEM" in resp["error"]
 
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         comments = kb.list_comments(conn, tid)
         assert len(comments) == 1
         assert "FAILED on the 'typecheck' rung" in comments[0].body
@@ -666,7 +667,7 @@ def test_ladder_all_green_proceeds_to_review(
 
     resp = json.loads(tools._handle_request_review({"summary": "all green"}))
     assert resp.get("ok") is True, resp
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         assert kb.get_task(conn, tid).status == "review"
 
 
@@ -694,7 +695,7 @@ def test_ladder_tool_detection_is_venv_scoped(
     # The full gate still proceeds to review (skipped rungs are not failures).
     resp = json.loads(tools._handle_request_review({"summary": "no tools, no override"}))
     assert resp.get("ok") is True, resp
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         assert kb.get_task(conn, tid).status == "review"
 
 
@@ -750,7 +751,7 @@ def test_ladder_standalone_binary_gates(
     assert "error" in resp
     assert "on the 'lint' rung" in resp["error"]
     assert "STANDALONE-RUFF-RAN" in resp["error"]  # the binary itself ran
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         assert kb.get_task(conn, tid).status == "running"
         assert kb.get_task(conn, tid).consecutive_failures == 0
 
@@ -786,7 +787,7 @@ def test_gate_preexisting_failure_passes_baseline_aware(
     tools._BASE_ARCHIVE_CACHE.clear()
     resp = json.loads(tools._handle_request_review({"summary": "only pre-existing failure"}))
     assert resp.get("ok") is True, resp
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         assert kb.get_task(conn, tid).status == "review"
 
 
@@ -816,7 +817,7 @@ def test_gate_new_failure_still_bounces_baseline_aware(
     resp = json.loads(tools._handle_request_review({"summary": "introduced failure"}))
     assert "error" in resp
     assert "Pre-review gate failed" in resp["error"]
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         assert kb.get_task(conn, tid).status == "running"
         comments = kb.list_comments(conn, tid)
         assert len(comments) == 1
@@ -868,7 +869,7 @@ def test_worktree_venv_without_pytest_passes_import_rung(
     assert tools._pytest_importable(str(repo / "venv" / "bin" / "python"), str(ws)) is False
     resp = json.loads(tools._handle_request_review({"summary": "venv has no pytest"}))
     assert resp.get("ok") is True, resp
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         assert kb.get_task(conn, tid).status == "review"
 
 
@@ -1048,5 +1049,5 @@ def test_gate_runs_nothing_when_body_names_no_command(
     tools._BASE_ARCHIVE_CACHE.clear()
     resp = json.loads(tools._handle_request_review({"summary": "no command in body"}))
     assert resp.get("ok") is True, resp
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         assert kb.get_task(conn, tid).status == "review"

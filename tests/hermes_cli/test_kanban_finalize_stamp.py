@@ -13,6 +13,7 @@ import json
 import pytest
 
 import hermes_cli.kanban_db as kb
+from hermes_cli import kanban_db_connect as kbc
 
 
 @pytest.fixture
@@ -30,7 +31,7 @@ def _new_task(conn):
 
 
 def test_stamp_merges_into_active_run_metadata(kanban_home):
-    conn = kb.connect()
+    conn = kbc.connect()
     try:
         tid = _new_task(conn)
         kb.claim_task(conn, tid)
@@ -53,7 +54,7 @@ def test_stamp_merges_into_active_run_metadata(kanban_home):
 
 
 def test_stamp_preserves_existing_metadata(kanban_home):
-    conn = kb.connect()
+    conn = kbc.connect()
     try:
         tid = _new_task(conn)
         kb.claim_task(conn, tid)
@@ -77,7 +78,7 @@ def test_stamp_preserves_existing_metadata(kanban_home):
 
 
 def test_stamp_ignored_when_empty_extra(kanban_home):
-    conn = kb.connect()
+    conn = kbc.connect()
     try:
         tid = _new_task(conn)
         assert kb.stamp_worker_run_metadata(conn, tid, extra={}) is False
@@ -86,7 +87,7 @@ def test_stamp_ignored_when_empty_extra(kanban_home):
 
 
 def test_stamp_missing_run_is_safe(kanban_home):
-    conn = kb.connect()
+    conn = kbc.connect()
     try:
         tid = _new_task(conn)
         # No claim → no active run row → returns False, no error.
@@ -98,7 +99,7 @@ def test_stamp_missing_run_is_safe(kanban_home):
 
 
 def test_stamp_stale_run_pinned_rejected(kanban_home):
-    conn = kb.connect()
+    conn = kbc.connect()
     try:
         tid = _new_task(conn)
         kb.claim_task(conn, tid)
@@ -131,7 +132,7 @@ def test_stamp_stale_run_pinned_rejected(kanban_home):
 
 def test_stamp_foreign_run_rejected_even_if_id_exists(kanban_home):
     """A pinned run id belonging to a DIFFERENT task must not be merged onto."""
-    conn = kb.connect()
+    conn = kbc.connect()
     try:
         tid_a = _new_task(conn)
         tid_b = _new_task(conn)

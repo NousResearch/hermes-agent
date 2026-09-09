@@ -20,6 +20,7 @@ from pathlib import Path
 import pytest
 
 from hermes_cli import kanban_db as kb
+from hermes_cli import kanban_db_connect as kbc
 
 
 @pytest.fixture
@@ -112,7 +113,7 @@ def _workspace(kanban_home, suffix):
 
 
 def test_cost_cap_trip_blocks_without_retry(kanban_home):
-    conn = kb.connect()
+    conn = kbc.connect()
     W = _workspace(kanban_home, "cap")
     tid = kb.create_task(
         conn, title="x", assignee="bob", max_cost=0.01, workspace_path=W
@@ -154,7 +155,7 @@ def test_cost_cap_trip_blocks_without_retry(kanban_home):
 
 
 def test_cost_cap_block_comment_records_both_numbers(kanban_home):
-    conn = kb.connect()
+    conn = kbc.connect()
     W = _workspace(kanban_home, "capc")
     tid = kb.create_task(
         conn, title="x", assignee="bob", max_cost=0.01, workspace_path=W
@@ -178,7 +179,7 @@ def test_cost_cap_block_comment_records_both_numbers(kanban_home):
 
 
 def test_cost_cap_unset_does_not_block(kanban_home):
-    conn = kb.connect()
+    conn = kbc.connect()
     W = _workspace(kanban_home, "nocap")
     tid = kb.create_task(conn, title="x", assignee="bob", workspace_path=W)
     _claim_running(conn, tid)
@@ -199,7 +200,7 @@ def test_cost_cap_unset_does_not_block(kanban_home):
 
 
 def test_cost_cap_cumulative_across_run_sessions(kanban_home):
-    conn = kb.connect()
+    conn = kbc.connect()
     W = _workspace(kanban_home, "cumulative")
     tid = kb.create_task(
         conn, title="x", assignee="bob", max_cost=0.50, workspace_path=W
@@ -225,7 +226,7 @@ def test_cost_cap_below_cap_cumulative_not_blocked(kanban_home):
     # This used to request max_cost=2.50 against 2.20 of spend; the cost policy
     # clamps the cap to 1.00, so 2.20 was over it and the card was correctly
     # blocked — the test was asserting pre-policy behaviour, not a code fault.
-    conn = kb.connect()
+    conn = kbc.connect()
     W = _workspace(kanban_home, "below")
     tid = kb.create_task(
         conn, title="x", assignee="bob", max_cost=0.90, workspace_path=W
@@ -270,7 +271,7 @@ def test_create_task_persists_max_cost(kanban_home):
     code rather than of itself. Assert the storage contract with a value the
     policy allows, and pin the clamp separately below.
     """
-    conn = kb.connect()
+    conn = kbc.connect()
     tid = kb.create_task(conn, title="x", assignee="bob", max_cost=0.75)
     t = kb.get_task(conn, tid)
     assert t.max_cost == 0.75
@@ -289,7 +290,7 @@ def test_create_task_clamps_max_cost_to_ceiling(kanban_home):
     above the ceiling. This is the assertion the old
     ``test_create_task_persists_max_cost`` was accidentally inverting.
     """
-    conn = kb.connect()
+    conn = kbc.connect()
     ceiling = kb.resolve_max_cost_ceiling()
     assert ceiling is not None and ceiling > 0
     tid = kb.create_task(conn, title="x", assignee="bob", max_cost=ceiling * 3)
@@ -298,14 +299,14 @@ def test_create_task_clamps_max_cost_to_ceiling(kanban_home):
 
 
 def test_create_task_rejects_negative_max_cost(kanban_home):
-    conn = kb.connect()
+    conn = kbc.connect()
     with pytest.raises(ValueError):
         kb.create_task(conn, title="x", assignee="bob", max_cost=-1.0)
     conn.close()
 
 
 def test_create_task_without_max_cost_stays_uncapped(kanban_home):
-    conn = kb.connect()
+    conn = kbc.connect()
     tid = kb.create_task(conn, title="x", assignee="bob")
     assert kb.get_task(conn, tid).max_cost is None
     conn.close()

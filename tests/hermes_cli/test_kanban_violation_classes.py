@@ -26,6 +26,8 @@ from pathlib import Path
 import pytest
 
 import hermes_cli.kanban_db as kb
+from hermes_cli import kanban_db_connect as kbc
+from hermes_cli import kanban_db_dispatch as kbd
 
 
 @pytest.fixture
@@ -80,12 +82,12 @@ def _trigger(isolated_home, monkeypatch, *, log_text):
     monkeypatch.setattr(_kb, "_pid_alive", lambda _pid: False)
     monkeypatch.setenv("HERMES_KANBAN_CRASH_GRACE_SECONDS", "0")
 
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         tid = kb.create_task(conn, title="cls", assignee="a")
         _dead_worker(conn, tid, pid=50500, runtime=1)
         if log_text is not None:
             _write_log(isolated_home, tid, log_text)
-        crashed = kb.detect_crashed_workers(conn)
+        crashed = kbd.detect_crashed_workers(conn)
         run = kb.latest_run(conn, tid)
         task = kb.get_task(conn, tid)
         circuit = kb._circuit_status(conn).get("state")

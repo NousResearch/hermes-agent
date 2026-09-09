@@ -14,6 +14,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from hermes_cli import kanban_db as kb
+from hermes_cli import kanban_db_connect as kbc
 from hermes_cli import kanban_decompose as decomp
 
 
@@ -76,7 +77,7 @@ def _patch_list_profiles(names: list[str]):
 
 
 def test_decompose_with_fanout_creates_children(kanban_home):
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         tid = kb.create_task(conn, title="ship a feature", triage=True)
 
     llm_payload = jsonlib.dumps({
@@ -102,7 +103,7 @@ def test_decompose_with_fanout_creates_children(kanban_home):
     assert outcome.fanout is True
     assert outcome.child_ids and len(outcome.child_ids) == 2
 
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         root = kb.get_task(conn, tid)
         c0 = kb.get_task(conn, outcome.child_ids[0])
         c1 = kb.get_task(conn, outcome.child_ids[1])
@@ -114,7 +115,7 @@ def test_decompose_with_fanout_creates_children(kanban_home):
 
 
 def test_decompose_fanout_false_invalid_llm_assignee_uses_default(kanban_home):
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         tid = kb.create_task(conn, title="route me safely", triage=True)
 
     llm_payload = jsonlib.dumps({
@@ -139,14 +140,14 @@ def test_decompose_fanout_false_invalid_llm_assignee_uses_default(kanban_home):
             p.stop()
 
     assert outcome.ok, outcome.reason
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         task = kb.get_task(conn, tid)
     assert task is not None
     assert task.assignee == "fallback"
 
 
 def test_decompose_returns_false_when_task_not_triage(kanban_home):
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         tid = kb.create_task(conn, title="x")  # ready, not triage
 
     patches = _patch_list_profiles(["orchestrator"])
@@ -163,7 +164,7 @@ def test_decompose_returns_false_when_task_not_triage(kanban_home):
 
 def test_decompose_false_when_task_not_triage_or_blocked(kanban_home):
     """A card in a non-fanoutable status (here: done) is rejected at entry."""
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         tid = kb.create_task(conn, title="x")
         with conn:
             conn.execute(
@@ -190,7 +191,7 @@ def test_decompose_blocked_resume_fanout_via_entry_path(kanban_home):
     exercised end-to-end through ``decompose_task`` (which previously rejected
     any non-triage task and made the blocked branch unreachable dead code).
     """
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         tid = kb.create_task(
             conn, title="stuck card", assignee="orchestrator",
             initial_status="blocked",
@@ -220,7 +221,7 @@ def test_decompose_blocked_resume_fanout_via_entry_path(kanban_home):
     assert outcome.fanout is True
     assert outcome.child_ids and len(outcome.child_ids) == 3
 
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         root = kb.get_task(conn, tid)
         kids = [kb.get_task(conn, cid) for cid in outcome.child_ids]
         # At least one child is immediately claimable.
@@ -262,7 +263,7 @@ def test_decompose_refuses_when_review_cycle_change_requested(kanban_home):
     out. decompose_task must refuse the split BEFORE calling the aux LLM (no
     fan-out choreography at all).
     """
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         tid = kb.create_task(
             conn, title="mid-review card", assignee="orchestrator",
             initial_status="blocked",
@@ -286,7 +287,7 @@ def test_decompose_refuses_when_review_cycle_change_requested(kanban_home):
 
     assert outcome.ok is False
     assert "review cycle" in outcome.reason or "resuming" in outcome.reason
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         root = kb.get_task(conn, tid)
         assert root.status == "blocked"  # card untouched — not fanned out
         # No children were created.
@@ -311,7 +312,7 @@ def _auto_decompose(llm_payload, *, tid, profiles):
 
 def test_auto_decompose_decision_child_lands_in_triage(kanban_home):
     """AC1: a decision-shaped auto-decomposer child lands in triage, not ready."""
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         tid = kb.create_task(conn, title="analyze the People flow", triage=True)
 
     llm_payload = jsonlib.dumps({
@@ -330,7 +331,7 @@ def test_auto_decompose_decision_child_lands_in_triage(kanban_home):
     assert outcome.ok, outcome.reason
     assert outcome.fanout is True and len(outcome.child_ids) == 2
 
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         root = kb.get_task(conn, tid)
         c0 = kb.get_task(conn, outcome.child_ids[0])  # decision card
         c1 = kb.get_task(conn, outcome.child_ids[1])   # downstream impl
@@ -348,7 +349,7 @@ def test_auto_decompose_decision_child_lands_in_triage(kanban_home):
 
 def test_auto_decompose_decision_child_does_not_auto_promote_on_recompute(kanban_home):
     """AC2: recompute_ready never promotes a triage card to ready."""
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         tid = kb.create_task(conn, title="parallel decision fan", triage=True)
         child_ids = kb.decompose_triage_task(
             conn, tid,
@@ -363,7 +364,7 @@ def test_auto_decompose_decision_child_does_not_auto_promote_on_recompute(kanban
         )
     assert child_ids is not None and len(child_ids) == 2
 
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         decision = kb.get_task(conn, child_ids[0])
         downstream = kb.get_task(conn, child_ids[1])
     # Decision parked; never upgraded by recompute_ready (only 'todo'/'blocked' do).
@@ -374,7 +375,7 @@ def test_auto_decompose_decision_child_does_not_auto_promote_on_recompute(kanban
 
 def test_auto_decompose_non_decision_child_still_promotes(kanban_home):
     """AC5: a non-decision auto-decomposer child keeps current behavior (ready)."""
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         tid = kb.create_task(conn, title="feature build", triage=True)
         child_ids = kb.decompose_triage_task(
             conn, tid,
@@ -386,7 +387,7 @@ def test_auto_decompose_non_decision_child_still_promotes(kanban_home):
             author=decomp.AUTO_DECOMPOSER_AUTHOR,
         )
     assert child_ids is not None
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         c0 = kb.get_task(conn, child_ids[0])
     assert c0.status == "ready"
     assert c0.created_by == decomp.AUTO_DECOMPOSER_AUTHOR
@@ -394,7 +395,7 @@ def test_auto_decompose_non_decision_child_still_promotes(kanban_home):
 
 def test_list_triage_ids_excludes_auto_decomposer_created(kanban_home):
     """Re-entry guard: auto-decomposer-created triage is not re-decomposed."""
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         user_triage = kb.create_task(conn, title="user dropped", triage=True, assignee="someone")
         park_root = kb.create_task(conn, title="park me", triage=True)
         decision = kb.decompose_triage_task(
@@ -413,7 +414,7 @@ def test_list_triage_ids_excludes_loop_breaker_triage(kanban_home):
     it re-blocked for the same kind (the loop breaker) is parked for a HUMAN.
     The auto-decomposer must not pick it up and re-run it without Richie.
     """
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         looped = kb.create_task(conn, title="keeps failing", assignee="bob")
         conn.execute(
             "UPDATE tasks SET status='triage', block_kind='transient', block_recurrences=? WHERE id=?",
@@ -458,7 +459,7 @@ def test_decision_regex_matches_only_decision_shaped_titles():
 
 def test_dry_run_fanout_writes_nothing(kanban_home):
     """--dry-run computes children + routing decisions but performs no DB write."""
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         tid = kb.create_task(conn, title="ship a feature", triage=True)
 
     llm_payload = jsonlib.dumps({
@@ -498,20 +499,20 @@ def test_dry_run_fanout_writes_nothing(kanban_home):
     assert outcome.dry_run_plan[1]["triage"] is False
 
     # The board is untouched: the root is still triage, and no children exist.
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         root = kb.get_task(conn, tid)
         remaining = kb.list_tasks(conn, status="triage")
     assert root.status == "triage"
     assert all(r.id != tid for r in remaining) is False  # root still in triage set
     # Only the root task was ever created.
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         all_tasks = kb.list_tasks(conn, limit=1000)
     assert len(all_tasks) == 1
 
 
 def test_dry_run_single_task_writes_nothing(kanban_home):
     """--dry-run on a fanout=false response returns the spec but writes nothing."""
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         tid = kb.create_task(conn, title="single thing", triage=True)
 
     llm_payload = jsonlib.dumps({
@@ -537,7 +538,7 @@ def test_dry_run_single_task_writes_nothing(kanban_home):
     assert outcome.dry_run_plan is not None
     assert outcome.dry_run_plan[0]["title"] == "Tightened title"
 
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         root = kb.get_task(conn, tid)
         all_tasks = kb.list_tasks(conn, limit=1000)
     assert root.status == "triage"
@@ -578,7 +579,7 @@ def test_auto_decompose_deploy_child_forced_hold(kanban_home):
     real operator_hold downstream and can never auto-promote past approval.
     A manually-fan-out (non-auto) deploy child keeps ``hold=False`` unless the
     caller explicitly flags it."""
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         tid = kb.create_task(conn, title="ship feature", triage=True)
 
     llm_payload = jsonlib.dumps({
@@ -622,7 +623,7 @@ def test_manual_decompose_deploy_child_not_forced(kanban_home):
     be force-held — the caller (owner/PM) is already committed, mirroring the
     AC1 decision-shaped asymmetry. Only auto-decomposer children get the
     backstop hold."""
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         tid = kb.create_task(conn, title="release feature", triage=True)
 
     llm_payload = jsonlib.dumps({
@@ -654,7 +655,7 @@ def test_auto_decompose_explicit_hold_respected(kanban_home):
     """When the LLM explicitly sets hold:true on a non-deploy-shaped child, it
     is honoured (terminal children like 'release to human' that don't match the
     deploy regex are still held by explicit intent)."""
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         tid = kb.create_task(conn, title="publish", triage=True)
 
     llm_payload = jsonlib.dumps({

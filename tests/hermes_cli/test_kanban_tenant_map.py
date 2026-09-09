@@ -8,11 +8,12 @@ import os
 import pytest
 
 from hermes_cli import kanban_db as kb
+from hermes_cli import kanban_db_connect as kbc
 
 
 @pytest.fixture
 def kanban_conn(tmp_path):
-    c = kb.connect(db_path=tmp_path / "kanban.db")
+    c = kbc.connect(db_path=tmp_path / "kanban.db")
     try:
         yield c
     finally:

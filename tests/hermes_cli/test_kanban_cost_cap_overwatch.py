@@ -10,6 +10,7 @@ from hermes_cli import kanban_db as kb
 from tests.hermes_cli.test_kanban_cost_cap import (  # noqa: F401  (fixtures)
     kanban_home, _claim_running, _make_state_db, _noop_signal, _workspace,
 )
+from hermes_cli import kanban_db_connect as kbc
 
 
 def _add_session(db_path, cwd, cost, task_id, sid):
@@ -25,7 +26,7 @@ def _add_session(db_path, cwd, cost, task_id, sid):
 def test_reviewer_ledger_does_not_count_against_the_builder(kanban_home):
     """A $0.60 build plus a $0.50 review in ANOTHER profile's ledger must not
     breach a $1.00 cap: reviewer spend is measured on the review card."""
-    conn = kb.connect()
+    conn = kbc.connect()
     W = _workspace(kanban_home, "asg")
     tid = kb.create_task(conn, title="x", assignee="bob", max_cost=1.00, workspace_path=W)
     _claim_running(conn, tid)
@@ -46,7 +47,7 @@ def test_reviewer_ledger_does_not_count_against_the_builder(kanban_home):
 
 
 def test_set_cap_once_and_never_past_hard_ceiling(kanban_home):
-    conn = kb.connect()
+    conn = kbc.connect()
     tid = kb.create_task(conn, title="x", assignee="bob", max_cost=1.00)
     # +0.50 is allowed once.
     assert kb.set_task_max_cost(conn, tid, 1.50, by="default", reason="large but legitimate") == 1.50
@@ -60,7 +61,7 @@ def test_set_cap_once_and_never_past_hard_ceiling(kanban_home):
 
 
 def test_set_cap_refuses_above_hard_ceiling_and_non_increase(kanban_home):
-    conn = kb.connect()
+    conn = kbc.connect()
     tid = kb.create_task(conn, title="x", assignee="bob", max_cost=1.00)
     with pytest.raises(ValueError, match="hard ceiling"):
         kb.set_task_max_cost(conn, tid, 2.00, by="default")

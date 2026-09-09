@@ -65,9 +65,8 @@ optional_env:
 
 ```python
 import os
-from gateway.platforms.base import (
-    BasePlatformAdapter, SendResult, MessageEvent, MessageType,
-)
+from gateway.platforms.base import BasePlatformAdapter, SendResult
+from gateway.platforms.event import MessageEvent, MessageType
 from gateway.config import Platform, PlatformConfig
 
 
@@ -476,9 +475,8 @@ class Platform(str, Enum):
 
 ```python
 from gateway.config import Platform, PlatformConfig
-from gateway.platforms.base import (
-    BasePlatformAdapter, MessageEvent, MessageType, SendResult,
-)
+from gateway.platforms.base import BasePlatformAdapter, SendResult
+from gateway.platforms.event import MessageEvent, MessageType
 
 def check_newplat_requirements() -> bool:
     """如果依赖可用则返回 True。"""

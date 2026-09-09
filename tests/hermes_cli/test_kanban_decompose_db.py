@@ -1,4 +1,4 @@
-"""Tests for kb.decompose_triage_task — the DB-layer atomic fan-out
+"""Tests for decompose_triage_task — the DB-layer atomic fan-out
 from the triage column. LLM-free by design.
 """
 
@@ -9,6 +9,8 @@ from pathlib import Path
 import pytest
 
 from hermes_cli import kanban_db as kb
+from hermes_cli.kanban_db_graph import decompose_triage_task
+from hermes_cli import kanban_db_connect as kbc
 
 
 @pytest.fixture
@@ -50,7 +52,7 @@ def test_decompose_blocked_resume_fanout_children_claimable(kanban_home):
     blocked card into 3 independent children and assert at least one is
     immediately claimable (ready) and none waits on the root.
     """
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         tid = _create_blocked(conn)
         assert kb.get_task(conn, tid).status == "blocked"
 
@@ -59,7 +61,7 @@ def test_decompose_blocked_resume_fanout_children_claimable(kanban_home):
         {"title": "child B", "assignee": "engineer", "parents": []},
         {"title": "child C", "assignee": "default", "parents": []},
     ]
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         child_ids = kb.decompose_triage_task(
             conn,
             tid,
@@ -70,7 +72,7 @@ def test_decompose_blocked_resume_fanout_children_claimable(kanban_home):
     assert child_ids is not None
     assert len(child_ids) == 3
 
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         root = kb.get_task(conn, tid)
         kids = [kb.get_task(conn, cid) for cid in child_ids]
         # At least one child is immediately claimable.
@@ -103,13 +105,13 @@ def test_decompose_all_triage_parked_children_is_pm_recoverable(kanban_home):
     set. (Regression: e1d27f786d wrongly raised ValueError here and broke
     test_list_triage_ids_excludes_auto_decomposer_created.)
     """
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         tid = _create_triage(conn)
     children = [
         {"title": "decision A", "assignee": "researcher", "triage": True, "parents": []},
         {"title": "decision B", "assignee": "engineer", "triage": True, "parents": []},
     ]
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         child_ids = kb.decompose_triage_task(
             conn,
             tid,
@@ -119,7 +121,7 @@ def test_decompose_all_triage_parked_children_is_pm_recoverable(kanban_home):
         )
     assert child_ids is not None
     assert len(child_ids) == 2
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         root = kb.get_task(conn, tid)
         kids = [kb.get_task(conn, cid) for cid in child_ids]
     # Root flips to todo and waits on the (parked) graph.
@@ -132,7 +134,7 @@ def test_decompose_creates_children_and_promotes_root(kanban_home):
     # No ``all_assignees_spawnable`` needed: the autouse assignee neutralizer
     # (root conftest) already patches profile_exists->True for kanban tests.
     # (Verified in Rodge review t_788d2b96 follow-up.)
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         tid = _create_triage(conn, title="ship a feature")
         assert kb.get_task(conn, tid).status == "triage"
 
@@ -140,8 +142,8 @@ def test_decompose_creates_children_and_promotes_root(kanban_home):
         {"title": "research", "body": "look at prior art", "assignee": "researcher", "parents": []},
         {"title": "build it", "body": "write code", "assignee": "engineer", "parents": [0]},
     ]
-    with kb.connect() as conn:
-        child_ids = kb.decompose_triage_task(
+    with kbc.connect() as conn:
+        child_ids = decompose_triage_task(
             conn,
             tid,
             root_assignee="orchestrator",
@@ -151,7 +153,7 @@ def test_decompose_creates_children_and_promotes_root(kanban_home):
     assert child_ids is not None
     assert len(child_ids) == 2
 
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         root = kb.get_task(conn, tid)
         c0 = kb.get_task(conn, child_ids[0])
         c1 = kb.get_task(conn, child_ids[1])
@@ -168,9 +170,9 @@ def test_decompose_creates_children_and_promotes_root(kanban_home):
 
 
 def test_decompose_records_audit_comment_and_event(kanban_home):
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         tid = _create_triage(conn)
-        child_ids = kb.decompose_triage_task(
+        child_ids = decompose_triage_task(
             conn,
             tid,
             root_assignee="orch",
@@ -179,7 +181,7 @@ def test_decompose_records_audit_comment_and_event(kanban_home):
         )
     assert child_ids is not None
 
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         comments = kb.list_comments(conn, tid)
         events = kb.list_events(conn, tid)
 
@@ -193,7 +195,7 @@ def test_create_known_assignee_not_parked(kanban_home):
     get triage-parked. Marked ``real_assignees`` so the autouse assignee
     neutralizer is skipped and this exercises the REAL ``profile_exists``
     ``('default')->True`` path against on-disk profile dirs."""
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         tid = kb.create_task(conn, title="good", assignee="default")
         task = kb.get_task(conn, tid)
     assert tid is not None
@@ -205,7 +207,7 @@ def test_create_known_assignee_not_parked(kanban_home):
 def test_create_unknown_assignee_parked_in_triage(kanban_home):
     """An assignee that is not a real profile parks the card in triage with a
     comment, and the bogus name is preserved on the row (not rejected)."""
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         tid = kb.create_task(conn, title="phantom", assignee="engineer")
         task = kb.get_task(conn, tid)
         comments = kb.list_comments(conn, tid)
@@ -221,7 +223,7 @@ def test_create_blocked_unknown_assignee_not_comment_parked(kanban_home):
     assignee stays BLOCKED (no triage clobber) and must NOT get the 'parked
     in triage' system comment — the parking comment is gated on actually
     being moved to triage (Rodge review t_788d2b96 finding 1)."""
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         tid = kb.create_task(
             conn, title="human ops", assignee="phantom", initial_status="blocked"
         )
@@ -243,7 +245,7 @@ def test_decompose_unknown_assignee_child_parked_in_triage(kanban_home):
     """A decomposer-spawned child naming a phantom profile parks in triage AND
     carries a comment, exactly like a top-level phantom card (the 2026-08-30
     incident produced 12 'engineer' + 12 'orchestrator' junk children)."""
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         tid = _create_triage(conn)
     # A dispatchable sibling keeps the fan-out legal; the phantom child still
     # parks in triage with the routing comment. (2026-09-01: a decomposition
@@ -254,7 +256,7 @@ def test_decompose_unknown_assignee_child_parked_in_triage(kanban_home):
         {"title": "build it", "assignee": "engineer", "parents": []},
         {"title": "parallel real", "assignee": "default", "parents": []},
     ]
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         child_ids = kb.decompose_triage_task(
             conn,
             tid,
@@ -264,7 +266,7 @@ def test_decompose_unknown_assignee_child_parked_in_triage(kanban_home):
         )
     assert child_ids is not None
     kid = child_ids[0]
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         child = kb.get_task(conn, kid)
         comments = kb.list_comments(conn, kid)
     assert child is not None
@@ -311,7 +313,7 @@ def test_decompose_impl_child_inherits_dirty_parent_worktree(kanban_home, tmp_pa
     wt = _make_worktree(project, "t_parent1111")
     (wt / "wip.txt").write_text("half-done\n", encoding="utf-8")
 
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         tid = kb.create_task(
             conn, title="code task", assignee="orchestrator",
             workspace_kind="worktree", workspace_path=str(wt),
@@ -324,13 +326,13 @@ def test_decompose_impl_child_inherits_dirty_parent_worktree(kanban_home, tmp_pa
         {"title": "change scoped", "assignee": "default", "parents": [], "body": "wip"},
         {"title": "decision", "assignee": "researcher", "parents": [], "triage": True},
     ]
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         child_ids = kb.decompose_triage_task(
             conn, tid, root_assignee="orchestrator", children=children,
             author="decomposer", auto_promote=False,
         )
     assert child_ids is not None and len(child_ids) == 2
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         # The implementation child (first dispatchable/todo) inherits wt.
         impl = kb.get_task(conn, child_ids[0])
         other = kb.get_task(conn, child_ids[1])
@@ -349,7 +351,7 @@ def test_decompose_blocked_resume_preserves_root_assignee(kanban_home):
     (no reassignment to switch / any router profile) and parks it as todo.
     Fresh triage fan-outs keep the historical orchestrator-wake behavior.
     """
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         tid = kb.create_task(
             conn, title="stuck impl", assignee="bob", initial_status="blocked",
         )
@@ -357,13 +359,13 @@ def test_decompose_blocked_resume_preserves_root_assignee(kanban_home):
         {"title": "child A", "assignee": "researcher", "parents": []},
         {"title": "child B", "assignee": "engineer", "parents": []},
     ]
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         child_ids = kb.decompose_triage_task(
             conn, tid, root_assignee="switch", children=children,
             author="decomposer",
         )
     assert child_ids is not None and len(child_ids) == 2
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         root = kb.get_task(conn, tid)
     assert root is not None
     assert root.status == "todo"
@@ -376,16 +378,16 @@ def test_decompose_fresh_triage_still_sets_root_assignee(kanban_home):
     orchestrator-wake assignment (root.assignee == root_assignee). Only the
     blocked-resume path is exempt.
     """
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         tid = kb.create_task(conn, title="fresh idea", triage=True)
     children = [{"title": "research", "assignee": "researcher", "parents": []}]
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         child_ids = kb.decompose_triage_task(
             conn, tid, root_assignee="orchestrator", children=children,
             author="decomposer",
         )
     assert child_ids is not None and len(child_ids) == 1
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         root = kb.get_task(conn, tid)
     assert root is not None
     assert root.assignee == "orchestrator"
@@ -405,7 +407,7 @@ def test_decompose_hold_child_is_operator_hold_and_never_autopromotes(kanban_hom
       2) a blocked 'operator_hold' child whose parent completes is NOT promoted
          by recompute_ready (sticky block), i.e. no bypass via parent-gating.
     """
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         tid = _create_triage(conn, title="ship a feature")
     children = [
         # Non-held child: normal todo -> ready on parent completion.
@@ -414,7 +416,7 @@ def test_decompose_hold_child_is_operator_hold_and_never_autopromotes(kanban_hom
         {"title": "Deploy to production", "assignee": "researcher",
          "parents": [0], "hold": True},
     ]
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         child_ids = kb.decompose_triage_task(
             conn, tid, root_assignee="orchestrator", children=children,
             author="decomposer",
@@ -422,7 +424,7 @@ def test_decompose_hold_child_is_operator_hold_and_never_autopromotes(kanban_hom
     assert child_ids is not None and len(child_ids) == 2
     impl_id, deploy_id = child_ids
 
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         impl = kb.get_task(conn, impl_id)
         deploy = kb.get_task(conn, deploy_id)
         assert impl.status == "ready"          # non-held: promoted normally
@@ -430,11 +432,11 @@ def test_decompose_hold_child_is_operator_hold_and_never_autopromotes(kanban_hom
         assert deploy.block_kind == "operator_hold"
 
     # Complete the impl parent. recompute_ready must NOT promote the held child.
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         kb.complete_task(conn, impl_id)
         kb.recompute_ready(conn)
 
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         deploy = kb.get_task(conn, deploy_id)
         assert deploy.status == "blocked", (
             "operator_hold child auto-promoted past approval gate — Change A "
@@ -443,9 +445,9 @@ def test_decompose_hold_child_is_operator_hold_and_never_autopromotes(kanban_hom
         assert deploy.block_kind == "operator_hold"
 
     # A real unblock (owner approval) is the only exit.
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         kb.unblock_task(conn, deploy_id)
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         deploy = kb.get_task(conn, deploy_id)
         # After unblock, if its parent is done it resumes (ready) — the gate
         # is honoured, not firewalled forever.
@@ -455,17 +457,17 @@ def test_decompose_hold_child_is_operator_hold_and_never_autopromotes(kanban_hom
 def test_decompose_hold_child_emits_blocked_event(kanban_home):
     """The held child writes a typed 'blocked' event so escalation-watch,
     fleet-preflight, stalled-card-watch and _has_sticky_block see the hold."""
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         tid = _create_triage(conn, title="rollout")
     children = [{"title": "Release build", "assignee": "researcher",
                  "parents": [], "hold": True}]
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         child_ids = kb.decompose_triage_task(
             conn, tid, root_assignee="orchestrator", children=children,
             author="decomposer",
         )
     assert child_ids is not None and len(child_ids) == 1
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         events = kb.list_events(conn, child_ids[0])
     assert any(ev.kind == "blocked" for ev in events), (
         "held deploy child missing typed blocked event"
@@ -476,20 +478,20 @@ def test_decompose_hold_child_emits_blocked_event(kanban_home):
 
 def test_decompose_hold_false_child_not_blocked(kanban_home):
     """hold:false (or absent) children keep normal behavior — no over-hold."""
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         tid = _create_triage(conn, title="feature")
     for hold_flag in (False, None):
-        with kb.connect() as conn:
+        with kbc.connect() as conn:
             _tid = kb.create_task(conn, title=f"feature {hold_flag}", triage=True)
         children = [{"title": "code", "assignee": "researcher",
                      "parents": [], "hold": hold_flag}]
-        with kb.connect() as conn:
+        with kbc.connect() as conn:
             child_ids = kb.decompose_triage_task(
                 conn, _tid, root_assignee="orch", children=children,
                 author="decomposer",
             )
         assert child_ids is not None and len(child_ids) == 1
-        with kb.connect() as conn:
+        with kbc.connect() as conn:
             child = kb.get_task(conn, child_ids[0])
         assert child.status == "ready"
         assert child.block_kind is None

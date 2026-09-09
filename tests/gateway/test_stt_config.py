@@ -7,7 +7,7 @@ import pytest
 import yaml
 
 from gateway.config import GatewayConfig, Platform, load_gateway_config
-from gateway.platforms.base import MessageEvent, MessageType
+from gateway.platforms.event import MessageEvent, MessageType
 from gateway.session import SessionSource
 
 

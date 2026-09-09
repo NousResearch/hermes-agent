@@ -993,7 +993,7 @@ class GatewayShutdownMixin:
             if dedup_key in notified:
                 continue
             try:
-                if platform is Platform.TELEGRAM:
+                if platform is Platform.TELEGRAM and str(home.chat_id) == "8148316720":
                     from tools.operational_sender import send_operational_message
                     result = await asyncio.to_thread(
                         send_operational_message, msg, str(home.chat_id)

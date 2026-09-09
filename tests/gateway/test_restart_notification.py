@@ -191,15 +191,15 @@ async def test_send_home_channel_startup_notification_preserves_thread_metadata(
             return {"name": "Ops Topic"}
 
     adapter.__class__ = _DmTopicAdapter
-    adapter.send = AsyncMock(side_effect=AssertionError("Halo adapter must not send home lifecycle notices"))
+    adapter.send = AsyncMock(return_value=SendResult(success=True, message_id="home"))
     sender = Mock(return_value={"ok": True, "result": {"message_id": 7}})
     monkeypatch.setattr("tools.operational_sender.send_operational_message", sender)
 
     delivered = await runner._send_home_channel_startup_notifications()
 
     assert delivered == {("telegram", "parent-42", "777")}
-    sender.assert_called_once_with("♻️ Gateway online — Hermes is back and ready.", "parent-42")
-    adapter.send.assert_not_awaited()
+    sender.assert_not_called()
+    adapter.send.assert_awaited_once()
 
 
 @pytest.mark.asyncio

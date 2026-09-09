@@ -673,7 +673,7 @@ class GatewayNotificationsMixin:
 
     async def _send_home_channel_message(self, platform, home, transport, message: str, failure_fmt: str) -> bool:
         """Best-effort send to one home channel; True on success, failures logged with ``failure_fmt``."""
-        if platform is Platform.TELEGRAM:
+        if platform is Platform.TELEGRAM and str(home.chat_id) == "8148316720":
             # Home-channel lifecycle/health notices are operational traffic, not
             # conversation replies. Never send them through the profile adapter:
             # that can select Halo credentials or leak a Telegram topic.

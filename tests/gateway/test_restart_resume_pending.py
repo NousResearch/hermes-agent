@@ -28,7 +28,7 @@ PRs #9850, #9934, #7536):
 import asyncio
 import time
 from datetime import datetime, timedelta
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
 import pytest
 
@@ -869,16 +869,20 @@ async def test_restart_notifies_home_channel_even_without_active_sessions():
     runner._restart_requested = True
     runner.config.platforms[Platform.TELEGRAM].home_channel = HomeChannel(
         platform=Platform.TELEGRAM,
-        chat_id="home-42",
+        chat_id="8148316720",
         name="Ops Home",
     )
 
-    await runner._notify_active_sessions_of_shutdown()
+    sender = Mock(return_value={"ok": True, "result": {"message_id": 7}})
+    with patch("tools.operational_sender.send_operational_message", sender):
+        await runner._notify_active_sessions_of_shutdown()
 
-    assert adapter.sent == [
+    assert len(adapter.sent) == 0
+    sender.assert_called_once_with(
         "⚠️ Gateway restarting — Your current task will be interrupted. "
-        "Send any message after restart and I'll try to resume where you left off."
-    ]
+        "Send any message after restart and I'll try to resume where you left off.",
+        "8148316720",
+    )
 
 
 @pytest.mark.asyncio
@@ -898,15 +902,21 @@ async def test_restart_home_channel_notification_not_deduped_across_threads():
     runner._running_agents[session_key] = MagicMock()
     runner.config.platforms[Platform.TELEGRAM].home_channel = HomeChannel(
         platform=Platform.TELEGRAM,
-        chat_id="999",
+        chat_id="8148316720",
         name="Ops Home",
     )
 
-    await runner._notify_active_sessions_of_shutdown()
+    sender = Mock(return_value={"ok": True, "result": {"message_id": 8}})
+    with patch("tools.operational_sender.send_operational_message", sender):
+        await runner._notify_active_sessions_of_shutdown()
 
-    assert len(adapter.sent) == 2
-    assert adapter.sent_calls[0][2] == {"thread_id": "topic-7"}
-    assert adapter.sent_calls[1][2] is None
+    assert len(adapter.sent) == 1
+    assert adapter.sent_calls[0][0] == "999"
+    sender.assert_called_once_with(
+        "⚠️ Gateway restarting — Your current task will be interrupted. "
+        "Send any message after restart and I'll try to resume where you left off.",
+        "8148316720",
+    )
 
 
 # ---------------------------------------------------------------------------

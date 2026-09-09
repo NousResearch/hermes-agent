@@ -38,14 +38,9 @@ def send_operational_message(message: str, chat_id: str = DEFAULT_CHAT_ID) -> di
     There is deliberately no fallback to TELEGRAM_BOT_TOKEN or a gateway
     adapter: operational notifications must never silently use a profile bot.
     """
-    try:
-        from agent.secret_scope import get_secret
-    except Exception:
-        get_secret = None
-    token = (get_secret("SOLO_HERMES_BOT_TOKEN", "") if get_secret else "") or os.environ.get(
-        "SOLO_HERMES_BOT_TOKEN", ""
-    )
-    token = token.strip()
+    # This credential is intentionally process-global: lifecycle notifications run
+    # outside any routed profile scope and must not inherit another profile's bot.
+    token = os.environ.get("SOLO_HERMES_BOT_TOKEN", "").strip()
     if not token:
         raise RuntimeError("SOLO_HERMES_BOT_TOKEN is not configured")
     identity = _api_call(token, "getMe", {})
@@ -70,12 +65,7 @@ def send_operational_message(message: str, chat_id: str = DEFAULT_CHAT_ID) -> di
 
 def send_operational_document(file_path: str) -> dict:
     """Send one artifact to the verified operational DM, without a topic."""
-    try:
-        from agent.secret_scope import get_secret
-    except Exception:
-        get_secret = None
-    token = (get_secret("SOLO_HERMES_BOT_TOKEN", "") if get_secret else "") or os.environ.get("SOLO_HERMES_BOT_TOKEN", "")
-    token = token.strip()
+    token = os.environ.get("SOLO_HERMES_BOT_TOKEN", "").strip()
     if not token:
         raise RuntimeError("SOLO_HERMES_BOT_TOKEN is not configured")
     identity = _api_call(token, "getMe", {})

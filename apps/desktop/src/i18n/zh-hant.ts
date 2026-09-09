@@ -1329,6 +1329,10 @@ export const zhHant = defineLocale({
       prepare: '開始貢獻',
       continueDraft: '繼續編輯草稿',
       reviewExact: '檢視詳細資料',
+      runSetupStep: '執行此步驟',
+      confirmSetupPrerequisite: '確認前提條件',
+      setupCommand: '建議的命令（本機終端機）',
+      setupStepApprovalNotice: '確認僅授權此步驟。請勿在聊天中輸入憑證。',
       openDraft: '檢視詳細資料',
       draftState: state => {
         const labels: Record<string, string> = {

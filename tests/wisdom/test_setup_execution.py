@@ -93,6 +93,89 @@ def _settle(consent, actor, identity):
     pytest.fail(f"setup did not finish: {result}")
 
 
+@pytest.mark.parametrize("path", ["complete", "expired", "interrupted"])
+def test_desktop_api_uses_native_setup_review_and_authority(setup, monkeypatch, path):
+    import asyncio
+    from hermes_cli.web_models import WisdomConsentRequest
+    from hermes_cli.web_routers import wisdom as routes
+    from tools.terminal_tool import terminal_tool
+
+    service, original_actor, root = setup
+    actor = ConsentActor(original_actor.session_key, "local", "local-user", f"local:{original_actor.session_key}")
+    tokens = set_session_vars(platform="desktop", session_key=actor.session_key)
+    marker = root / "desktop-marker"
+    command = _python(f"from pathlib import Path; Path({str(marker)!r}).open('a').write('once')")
+    async def run(profile, fn):
+        assert profile == "research"
+        return fn(service)
+    monkeypatch.setattr(routes, "_run_wisdom", run)
+
+    def action(card, verb, session_id=actor.session_key):
+        return asyncio.run(routes.post_wisdom_consent(WisdomConsentRequest(
+            interaction_id=card["id"], session_id=session_id, action=verb, profile="research",
+        )))
+
+    def codes(card):
+        return [item["action"] for item in card["setup_review"]["actions"]]
+
+    try:
+        card = _present("setup", command)
+        activity = asyncio.run(routes.get_wisdom_mediation("research"))
+        displayed = next(item for item in activity["interactions"] if item["id"] == card["id"])
+        assert displayed["setup_review"]["command"] == command
+        assert card["facts"]["setup_instruction"] in displayed["setup_review"]["detail"]
+        assert codes(displayed) == ["defer", "confirm"]
+        assert not marker.exists()
+        with pytest.raises(WisdomNotFound):
+            action(card, "confirm", "another-session")
+
+        if path == "expired":
+            with service.store.transaction() as db:
+                db.execute("UPDATE wisdom_consent SET expires_at=? WHERE id=?", (time.time() - 1, card["id"]))
+            activity = asyncio.run(routes.get_wisdom_mediation("research"))
+            expired = next(item for item in activity["interactions"] if item["id"] == card["id"])
+            assert codes(expired) == ["recheck"]
+            assert expired["state"] == "expired"
+            successor = action(card, "recheck")
+            assert successor["id"] != card["id"]
+            assert codes(successor) == ["defer", "confirm"]
+            assert not marker.exists()
+            action(card, "confirm")
+            assert not marker.exists()
+            card = successor
+        elif path == "interrupted":
+            def interrupted(**kwargs):
+                raise RuntimeError("spawn acknowledgement lost")
+            monkeypatch.setattr("tools.terminal_tool.terminal_tool", interrupted)
+            unknown = action(card, "confirm")
+            assert codes(unknown) == ["inspect", "setup.recover"]
+            preview = action(card, "setup.recover")
+            assert "child processes" in preview["setup_review"]["detail"]
+            assert codes(preview) == ["inspect", "setup.clear"]
+            cleared = action(card, "setup.clear")
+            assert codes(cleared) == ["recheck"]
+            card = action(card, "recheck")
+            assert not marker.exists()
+            monkeypatch.setattr("tools.terminal_tool.terminal_tool", terminal_tool)
+
+        action(card, "confirm")
+        consent = WisdomConsent(service)
+        _settle(consent, actor, card["id"])
+        completed = action(card, "inspect")
+        assert codes(completed) == ["setup.status"]
+        assert marker.read_text() == "once"
+        prerequisite = _present("prerequisite")
+        linked = action(card, "setup.status")
+        assert linked["id"] == prerequisite["id"]
+        assert linked["setup_review"]["actions"][-1]["label"] == "Confirm prerequisite"
+        assert linked["setup_review"]["command"] == ""
+        assert marker.read_text() == "once"
+        with pytest.raises(WisdomNotFound):
+            action(card, "setup.status", "another-session")
+    finally:
+        clear_session_vars(tokens)
+
+
 def test_native_setup_runs_once_and_verifies_after_prerequisites(setup):
     service, actor, root = setup
     consent = WisdomConsent(service)

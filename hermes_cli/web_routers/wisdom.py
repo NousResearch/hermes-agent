@@ -449,8 +449,13 @@ async def post_wisdom_notifications(body: WisdomNotificationRequest):
 @router.get("/api/wisdom/mediation")
 async def get_wisdom_mediation(profile: Optional[str] = None):
     from hermes_wisdom.mediation import WisdomMediation
+    from hermes_wisdom.mediation_view import desktop_interaction
 
-    return await _run_wisdom(profile, lambda service: WisdomMediation(service).activity())
+    def activity(service):
+        value = WisdomMediation(service).activity()
+        return {**value, "interactions": [desktop_interaction(item) for item in value["interactions"]]}
+
+    return await _run_wisdom(profile, activity)
 
 
 @router.get("/api/wisdom/mute")
@@ -489,11 +494,12 @@ async def post_wisdom_mute_choose(body: WisdomMuteChooseRequest):
 async def post_wisdom_consent(body: WisdomConsentRequest):
     def resolve(service):
         from hermes_wisdom.consent import ConsentActor, WisdomConsent
+        from hermes_wisdom.mediation_view import desktop_interaction
 
         actor = ConsentActor(body.session_id, "local", "local-user", f"local:{body.session_id}")
-        return WisdomConsent(service).resolve(
+        return desktop_interaction(WisdomConsent(service).resolve(
             service.store.active_org_id(), body.interaction_id, actor, body.action
-        )
+        ))
     return await _run_wisdom(body.profile, resolve)
 
 

@@ -260,18 +260,31 @@ export interface WisdomInstallations {
   notifications: WisdomNotification[]
 }
 
+export type WisdomConsentAction =
+  'inspect' | `inspect.${number}` | 'defer' | 'confirm' | 'recheck' | 'setup.status' | 'setup.recover' | 'setup.clear'
+
 export interface WisdomConsentInteraction {
   id: string
   assessment_id: string
   state: string
-  operation: 'share' | 'install' | 'update' | 'publish'
+  operation: 'share' | 'install' | 'update' | 'publish' | 'setup'
   expires_at: number
   actions: ('defer' | 'inspect' | 'confirm')[]
   deferred?: boolean
   deferred_surfaces?: string[]
   inspection?: { path: string; content: string; hash: string; description: string; page: number; page_count: number }
   result?: { packaging_state?: 'queued' | 'ready' | 'failed' }
+  setup_review?: {
+    summary: string
+    detail: string
+    command: string
+    command_label: string
+    actions: { action: WisdomConsentAction; label: string; primary: boolean }[]
+  }
   facts: {
+    step?: { phase: 'prerequisite' | 'setup' | 'verify'; index: number; command: string }
+    setup_instruction?: string
+    setup_explanation?: string
     slug?: string
     version?: number
     editorial_name?: string | null
@@ -363,7 +376,7 @@ export const getWisdomMediation = (profile?: ProfileScope): Promise<WisdomMediat
 export const resolveWisdomConsent = (
   interactionId: string,
   sessionId: string,
-  action: 'inspect' | `inspect.${number}` | 'defer' | 'confirm',
+  action: WisdomConsentAction,
   profile?: ProfileScope
 ): Promise<WisdomConsentInteraction> =>
   request('/api/wisdom/consent', profile, {

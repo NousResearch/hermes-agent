@@ -1,18 +1,20 @@
 import { useEffect, useRef, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
-import { WisdomReviewTables } from '@/components/wisdom-checks'
+import { WisdomConsentDetails } from '@/components/wisdom-consent-details'
 import { WisdomPublicationReview } from '@/components/wisdom-publication-review'
+import { legacySetupReview, WisdomSetupReview } from '@/components/wisdom-setup-review'
 import {
   getWisdomMediation,
   prepareWisdomConsentPublication,
   type ProfileScope,
   resolveWisdomConsent,
+  type WisdomConsentAction,
   type WisdomConsentInteraction,
   type WisdomMediationActivity
 } from '@/hermes'
 import { useI18n } from '@/i18n'
-import { ChevronLeft, ChevronRight, Loader2 } from '@/lib/icons'
+import { Loader2 } from '@/lib/icons'
 
 export function WisdomMediationCard({
   profile,
@@ -32,6 +34,7 @@ export function WisdomMediationCard({
   const [publication, setPublication] = useState<{ draft_id: string; interaction_id: string } | null>(null)
   const [reviews, setReviews] = useState<Record<string, WisdomConsentInteraction['inspection']>>({})
   const [deferred, setDeferred] = useState<Set<string>>(() => new Set())
+  const [opened, setOpened] = useState<{ entryId: string; interaction: WisdomConsentInteraction } | null>(null)
   const revision = useRef(0)
   const acting = useRef(false)
 
@@ -43,6 +46,7 @@ export function WisdomMediationCard({
     setError(null)
     setReviews({})
     setPublication(null)
+    setOpened(null)
 
     const refresh = async () => {
       if (acting.current) {
@@ -56,6 +60,18 @@ export function WisdomMediationCard({
 
         if (active && request === revision.current) {
           setActivity(next)
+          setOpened(current => {
+            const fresh = next.interactions.find(item => item.id === current?.interaction.id)
+
+            if (!current || !fresh) {
+              return null
+            }
+
+            // Keep explicit status/recovery review open, but never retain an old approval state.
+            return fresh.state !== current.interaction.state || fresh.expires_at !== current.interaction.expires_at
+              ? { ...current, interaction: fresh }
+              : current
+          })
         }
       } catch {
         // Keep the last known valid advice through transient outages.
@@ -72,10 +88,7 @@ export function WisdomMediationCard({
     }
   }, [profile, sessionId])
 
-  const act = async (
-    interaction: WisdomConsentInteraction,
-    action: 'inspect' | `inspect.${number}` | 'defer' | 'confirm'
-  ) => {
+  const act = async (interaction: WisdomConsentInteraction, action: WisdomConsentAction) => {
     if (!sessionId || acting.current) {
       return
     }
@@ -110,6 +123,13 @@ export function WisdomMediationCard({
             }
           : current
       )
+
+      if (result.setup_review) {
+        setOpened(current => ({
+          entryId: current?.interaction.id === interaction.id ? current.entryId : interaction.assessment_id,
+          interaction: result
+        }))
+      }
 
       if (action.startsWith('inspect')) {
         setExpanded(result.id)
@@ -163,7 +183,14 @@ export function WisdomMediationCard({
         </p>
       )}
       {entries.map(entry => {
-        const interaction = activity.interactions.find(item => item.assessment_id === entry.id)
+        const interaction =
+          opened?.entryId === entry.id
+            ? opened.interaction
+            : activity.interactions.find(item => item.assessment_id === entry.id)
+
+        if (opened && opened.entryId !== entry.id && interaction?.id === opened.interaction.id) {
+          return null
+        }
 
         if (
           !passive &&
@@ -173,9 +200,10 @@ export function WisdomMediationCard({
           return null
         }
 
-        const own = !!sessionId && entry.owner_session === sessionId
+        const own = !passive && !!sessionId && entry.owner_session === sessionId
         const pending = interaction?.state === 'pending' && interaction.expires_at * 1000 > Date.now()
         const review = interaction ? reviews[interaction.id] : undefined
+        const setupReview = interaction ? (interaction.setup_review ?? legacySetupReview(interaction, copy)) : undefined
 
         if (publication?.interaction_id === interaction?.id) {
           return null
@@ -205,60 +233,25 @@ export function WisdomMediationCard({
                 {interaction.operation === 'share' && (
                   <p className="mt-2 text-xs text-(--ui-text-secondary)">{copy.sharePreparationNotice}</p>
                 )}
-                <details
-                  className="mt-2"
-                  onToggle={event => {
-                    const open = event.currentTarget.open
+                <WisdomConsentDetails
+                  active={own}
+                  busy={busy !== null}
+                  expanded={expanded === interaction.id}
+                  interaction={interaction}
+                  onAction={action => void act(interaction, action)}
+                  onToggle={open => {
                     setExpanded(current => (open ? interaction.id : current === interaction.id ? null : current))
                   }}
-                  open={expanded === interaction.id}
-                >
-                  <summary className="cursor-pointer text-xs">{copy.reviewExact}</summary>
-                  <WisdomReviewTables
-                    professionalism={interaction.facts.professionalism_check}
-                    security={interaction.facts.security_check}
+                  review={review}
+                />
+                {setupReview ? (
+                  <WisdomSetupReview
+                    active={own}
+                    busy={busy !== null}
+                    onAction={action => void act(interaction, action)}
+                    review={setupReview}
                   />
-                  {interaction.facts.file_names?.map(name => (
-                    <p className="break-words font-mono text-xs" key={name}>
-                      {name}
-                    </p>
-                  ))}
-                  {review && (
-                    <div className="mt-3 min-w-0">
-                      <p className="whitespace-pre-wrap break-words text-xs">{review.description}</p>
-                      <p className="mt-2 break-words font-mono text-xs">{review.path}</p>
-                      <pre className="my-2 max-h-80 overflow-auto whitespace-pre-wrap break-words border border-(--ui-stroke-tertiary) p-2 text-xs">
-                        {review.content}
-                      </pre>
-                      <div className="flex items-center gap-2">
-                        <Button
-                          aria-label={t.skills.collective.reviewPreviousPage}
-                          disabled={busy !== null || review.page === 0}
-                          onClick={() => void act(interaction, `inspect.${review.page - 1}`)}
-                          size="icon"
-                          title={t.skills.collective.reviewPreviousPage}
-                          variant="outline"
-                        >
-                          <ChevronLeft aria-hidden />
-                        </Button>
-                        <span className="text-xs tabular-nums">
-                          {review.page + 1}/{review.page_count}
-                        </span>
-                        <Button
-                          aria-label={t.skills.collective.reviewNextPage}
-                          disabled={busy !== null || review.page + 1 >= review.page_count}
-                          onClick={() => void act(interaction, `inspect.${review.page + 1}`)}
-                          size="icon"
-                          title={t.skills.collective.reviewNextPage}
-                          variant="outline"
-                        >
-                          <ChevronRight aria-hidden />
-                        </Button>
-                      </div>
-                    </div>
-                  )}
-                </details>
-                {own && pending ? (
+                ) : own && pending && interaction.operation !== 'setup' ? (
                   <div className="mt-3 grid grid-cols-3 items-start gap-2 [&>button]:h-auto [&>button]:min-h-8 [&>button]:min-w-0 [&>button]:whitespace-normal [&>button]:break-words">
                     <Button
                       disabled={busy !== null}

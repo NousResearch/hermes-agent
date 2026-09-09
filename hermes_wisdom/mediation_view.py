@@ -11,6 +11,8 @@ from .review_presentation import (
     review_summary_text,
 )
 
+_SETUP_COMMAND_LABEL = "Proposed command (local terminal)"
+
 
 def _review_summary(facts: dict, expanded: bool) -> str:
     if expanded:
@@ -196,7 +198,7 @@ def advice_view(
     return view
 
 
-def _setup_view(result: dict) -> WisdomView:
+def _setup_view(result: dict, *, include_command: bool = True) -> WisdomView:
     facts = result["facts"]
     step = facts["step"]
     state = ((result.get("result") or {}).get("setup") or {}).get("state", result["state"])
@@ -212,8 +214,8 @@ def _setup_view(result: dict) -> WisdomView:
     detail = facts["setup_instruction"]
     if facts.get("setup_explanation"):
         detail = facts["setup_explanation"] + "\n\n" + detail
-    if step["command"]:
-        detail += "\n\nProposed command (local terminal):\n" + step["command"]
+    if step["command"] and include_command:
+        detail += f"\n\n{_SETUP_COMMAND_LABEL}:\n" + step["command"]
     if state == "pending":
         detail += "\n\nOnly this step is authorized by confirming. Do not enter credentials in chat."
     elif state == "unknown":
@@ -259,6 +261,44 @@ def _setup_view(result: dict) -> WisdomView:
         items=[WisdomItem(title=f"{facts['slug']} · v{facts['version']}", detail=detail)],
         actions=actions,
     )
+
+
+def desktop_interaction(result: dict) -> dict:
+    """Project existing setup controls without moving their state machine into JS."""
+    import time
+
+    is_step = result["operation"] == "setup"
+    if not (is_step or result.get("setup_continuation") or (
+        result["operation"] in {"install", "update"} and result["state"] == "completed"
+    )):
+        return result
+    if result["state"] == "pending" and result["expires_at"] <= time.time():
+        result = {**result, "state": "expired"}
+    view = (
+        _setup_view(result, include_command=False)
+        if is_step and not result.get("setup_continuation") else interaction_view(result)
+    )
+    prefix = "wi:agent:"
+    suffix = ":" + result["id"]
+    actions = []
+    for action in view.actions:
+        callback = action.callback_data or ""
+        if not callback.startswith(prefix) or not callback.endswith(suffix):
+            continue
+        code = callback[len(prefix):-len(suffix)]
+        if code not in {"defer", "inspect", "confirm", "recheck", "setup.status", "setup.recover", "setup.clear"}:
+            continue
+        actions.append({"action": code, "label": action.label, "primary": action.primary})
+    return {
+        **result,
+        "setup_review": {
+            "summary": view.summary,
+            "detail": "\n\n".join(item.detail for item in view.items),
+            "command": result["facts"]["step"]["command"] if is_step and not result.get("setup_continuation") else "",
+            "command_label": _SETUP_COMMAND_LABEL,
+            "actions": actions,
+        },
+    }
 
 
 def interaction_view(

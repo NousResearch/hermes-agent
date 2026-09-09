@@ -45,6 +45,10 @@ export interface WisdomTranslations {
   prepare: string
   continueDraft: string
   reviewExact: string
+  runSetupStep: string
+  confirmSetupPrerequisite: string
+  setupCommand: string
+  setupStepApprovalNotice: string
   openDraft: string
   draftState: (state: string) => string
   authoritative: string

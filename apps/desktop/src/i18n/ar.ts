@@ -1089,6 +1089,10 @@ export const ar = defineLocale({
       prepare: 'بدء المساهمة',
       continueDraft: 'متابعة المسودة',
       reviewExact: 'عرض التفاصيل',
+      runSetupStep: 'تشغيل هذه الخطوة',
+      confirmSetupPrerequisite: 'تأكيد المتطلب المسبق',
+      setupCommand: 'الأمر المقترح (الطرفية المحلية)',
+      setupStepApprovalNotice: 'يمنح التأكيد الإذن لهذه الخطوة فقط. لا تدخل بيانات الاعتماد في الدردشة.',
       openDraft: 'عرض التفاصيل',
       draftState: state => {
         const labels: Record<string, string> = {

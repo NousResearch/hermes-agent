@@ -1378,6 +1378,10 @@ export const ja = defineLocale({
       prepare: '貢献を開始',
       continueDraft: 'ドラフトを続ける',
       reviewExact: '詳細を表示',
+      runSetupStep: 'この手順を実行',
+      confirmSetupPrerequisite: '前提条件を確認',
+      setupCommand: '提案されたコマンド（ローカルターミナル）',
+      setupStepApprovalNotice: '確認すると、この手順のみが許可されます。認証情報をチャットに入力しないでください。',
       openDraft: '詳細を表示',
       draftState: state => {
         const labels: Record<string, string> = {

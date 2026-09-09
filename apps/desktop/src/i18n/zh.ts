@@ -1676,6 +1676,10 @@ export const zh: Translations = {
       prepare: '开始贡献',
       continueDraft: '继续编辑草稿',
       reviewExact: '查看详情',
+      runSetupStep: '运行此步骤',
+      confirmSetupPrerequisite: '确认前提条件',
+      setupCommand: '建议的命令（本地终端）',
+      setupStepApprovalNotice: '确认仅授权此步骤。请勿在聊天中输入凭据。',
       openDraft: '查看详情',
       draftState: state => {
         const labels: Record<string, string> = {

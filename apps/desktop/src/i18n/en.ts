@@ -1498,6 +1498,10 @@ export const en: Translations = {
       prepare: 'Start contribution',
       continueDraft: 'Continue draft',
       reviewExact: 'View details',
+      runSetupStep: 'Run this step',
+      confirmSetupPrerequisite: 'Confirm prerequisite',
+      setupCommand: 'Proposed command (local terminal)',
+      setupStepApprovalNotice: 'Only this step is authorized by confirming. Do not enter credentials in chat.',
       openDraft: 'View details',
       draftState: state => {
         const labels: Record<string, string> = {

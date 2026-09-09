@@ -1457,7 +1457,8 @@ def get_running_pid(
     An explicit ``pid_path`` is a scoped query into that home's identity files: records are
     validated against the probed home (not the serve process's), and a live record is never
     cleanup-unlinked, so polling another profile must not delete its gateway.pid/gateway.lock
-    (#106406)."""
+    (#106406). The unscoped path keeps main's poison-file housekeeping: a live record owned by
+    another home inside this home's gateway.pid is unlinked on refusal (#89315)."""
     resolved_pid_path = pid_path or _get_pid_path()
     resolved_lock_path = _get_gateway_lock_path(resolved_pid_path)
     if is_gateway_runtime_lock_active(resolved_lock_path):
@@ -1478,11 +1479,11 @@ def get_running_pid(
                 record, pid, expected_home=expected_home
             ):
                 return pid
-            # A live record we could not adopt may still be a real gateway: unlinking its
-            # identity files would break that home's double-run protection while the PID
-            # is alive, so leave cleanup to a poll after it dies.
+            # Scoped only: a live record we could not adopt may still be a real gateway;
+            # unlinking its identity files would break that home's double-run protection
+            # while the PID is alive. Unscoped keeps the #89315 poison-file cleanup.
             saw_live_pid = True
-        if not saw_live_pid:
+        if expected_home is None or not saw_live_pid:
             _cleanup_invalid_pid_path(resolved_pid_path, cleanup_stale=cleanup_stale)
         return get_runtime_status_running_pid() if pid_path is None else None
     # Lock inactive: the runtime-status fallback runs BEFORE cleanup here.

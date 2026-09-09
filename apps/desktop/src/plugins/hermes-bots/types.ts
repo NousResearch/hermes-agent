@@ -163,6 +163,8 @@ export interface GroupChat {
   holds?: Record<string, GroupHold>
   image?: null | string
   log: GroupMessage[]
+  /** Per-room member cap. Missing keeps the shipped default. */
+  memberLimit?: number
   members?: GroupMember[]
   /** Immutable identity, so a rename doesn't fork the room. */
   roomId?: null | string

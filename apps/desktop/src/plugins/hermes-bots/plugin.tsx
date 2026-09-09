@@ -47,6 +47,7 @@ import {
   $groupChats,
   $groupChatWorkspace,
   assignLegacyThreads,
+  durableGroupChatMemberLimit,
   handleSessionsGatewayTransition,
   pullGroupChatServerState,
   scheduleGroupChatServerSync,
@@ -244,6 +245,7 @@ export default {
                   // window restarts until explicitly released.
                   holds: room.holds && typeof room.holds === 'object' ? room.holds : {},
                   members: Array.isArray(room.members) ? room.members : [],
+                  memberLimit: durableGroupChatMemberLimit(room.memberLimit),
                   roomId: typeof room.roomId === 'string' && room.roomId ? room.roomId : null,
                   image: typeof room.image === 'string' && room.image ? room.image : null,
                   rosterOrder: Number.isFinite(room.rosterOrder) ? room.rosterOrder : undefined,

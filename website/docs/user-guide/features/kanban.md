@@ -61,9 +61,10 @@ dashboard completion. It reads classic branch protection and active ruleset
 required contexts, paginates exact-head check runs and legacy statuses, then
 re-reads the PR head/base. Optional failed/skipped telemetry does not veto accepted
 required checks. Missing, pending, failed, cancelled, timed-out, stale, skipped or
-neutral **required** evidence cannot complete the card. Neither can zero-run
-acceptance, unreadable policy or GitHub API failures. A repository without required
-checks needs a local-only contract. `gh` must be authenticated with read access to
+neutral **required** evidence cannot complete the card. A merged PR from a repository
+with no required-check policy is accepted with explicit `no_required_checks` evidence;
+an open PR still cannot complete without required checks. Unreadable policy, auth
+failures, and other GitHub API failures remain infrastructure failures. `gh` must be authenticated with read access to
 the repository's checks and rules; no remote writes are performed by this gate.
 
 Rejection retains the active card and workspace. Durable `pr_acceptance` events

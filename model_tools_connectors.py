@@ -5,7 +5,7 @@ from dataclasses import asdict
 
 from tools.registry import tool_error
 from tools.tool_gateway.config import MAX_CALLS_PER_DISPATCH
-from tools.tool_gateway.merge import assemble_results, partition_calls
+from tools.tool_gateway.merge import assemble_results, fill_remote_failure, partition_calls
 
 
 def dispatch_connector_call(name, arguments, tool_call_id):
@@ -26,6 +26,7 @@ def dispatch_connector_call(name, arguments, tool_call_id):
 def dispatch_connector_batch(calls, ids, *, user_task, enabled_tools,
                              middleware_trace, enabled_toolsets, disabled_toolsets):
     from model_tools import handle_function_call
+    from tools.interrupt import is_interrupted
 
     if len(calls) > MAX_CALLS_PER_DISPATCH:
         return tool_error(f"too many calls: {len(calls)} > max {MAX_CALLS_PER_DISPATCH}. "
@@ -34,7 +35,15 @@ def dispatch_connector_batch(calls, ids, *, user_task, enabled_tools,
     if partition.local:
         return tool_error("Local tools require one entry per tool_call; mixed and multi-local batches are not supported.")
     entries = list(partition.errors)
-    for plan in partition.remote:
+    for offset, plan in enumerate(partition.remote):
+        if is_interrupted():
+            # The executor only checks for /stop between tools, and this whole batch
+            # is one tool to it: unstarted entries stay unsent, or a stop landing on
+            # entry 1 of 20 would still fire 19 remote side effects.
+            entries.extend(fill_remote_failure(
+                partition.remote[offset:], "Stopped by the user before this call was made.",
+                code="INTERRUPTED"))
+            break
         # Wrapper-level skip flags describe only the wrapper, never its entries.
         payload = handle_function_call(
             plan.name, plan.arguments, **asdict(ids), user_task=user_task,

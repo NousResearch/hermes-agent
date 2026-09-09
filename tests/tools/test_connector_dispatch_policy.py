@@ -77,6 +77,40 @@ def test_remote_entries_run_request_hook_and_execution_policies(monkeypatch, blo
     assert not wire  # An entirely blocked batch never constructs/sends an execute request.
 
 
+def test_stop_during_a_connector_batch_leaves_unstarted_entries_unsent(monkeypatch):
+    import model_tools
+    from tools.interrupt import set_interrupt
+    from tools.registry import invalidate_check_fn_cache
+    from tools.tool_gateway import bridge, config
+
+    monkeypatch.setattr(config, "connectors_available", lambda: True)
+    monkeypatch.setattr(bridge, "connectors_available", lambda: True)
+    invalidate_check_fn_cache()
+    wire = []
+
+    class Client:
+        def execute(self, planned):
+            wire.extend(planned)
+            set_interrupt(True)  # /stop lands while the first entry is on the wire.
+            return [{"data": "remote-ok", "error": None} for _ in planned]
+
+    monkeypatch.setattr(bridge, "_default_client_factory", Client)
+    calls = [{"name": f"connectors__gmail__{tool}", "arguments": {}}
+             for tool in ("FETCH_EMAILS", "SEND_EMAIL", "CREATE_DRAFT")]
+    try:
+        result = json.loads(model_tools.handle_function_call(
+            "tool_call", {"calls": calls}, enabled_toolsets=["connections"], session_id="stop-session",
+            skip_pre_tool_call_hook=True, skip_tool_request_middleware=True,
+            skip_tool_execution_middleware=True))
+    finally:
+        set_interrupt(False)
+    assert [p.name for p in wire] == [calls[0]["name"]]
+    assert result["results"][0]["response"] == "remote-ok"
+    assert [(e["index"], e["name"], e["error"]["code"]) for e in result["results"][1:]] == [
+        (1, calls[1]["name"], "INTERRUPTED"), (2, calls[2]["name"], "INTERRUPTED")]
+    assert result["total_count"] == 3 and result["success_count"] == 1 and result["error_count"] == 2
+
+
 def test_disabled_connections_cannot_be_called_through_a_stale_schema(monkeypatch):
     from tools import connections_tool
     from tools.registry import registry

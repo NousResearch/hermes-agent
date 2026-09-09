@@ -695,16 +695,46 @@ def _handle_show(args: dict, **kw) -> str:
     tid = _require_task_id(args)
     with _board(args.get("board")) as (kb, conn):
         task = _existing_task(kb, conn, tid)
-        return json.dumps({
+        payload = {
             "task": _fields(task, _TASK_FIELDS),
-            "parents": kb.parent_ids(conn, tid),
+            "parents": [
+                row["parent_id"]
+                for row in conn.execute(
+                    "SELECT parent_id FROM task_links WHERE child_id = ? ORDER BY parent_id",
+                    (tid,),
+                ).fetchall()
+            ],
             "children": kb.child_ids(conn, tid),
             "comments": [_fields(c, _COMMENT_FIELDS) for c in kb.list_comments(conn, tid)],
             # Capped; full log via CLI.
             "events": [_fields(e, _EVENT_FIELDS) for e in kb.list_events(conn, tid)[-50:]],
             "runs": [_fields(r, _RUN_FIELDS) for r in kb.list_runs(conn, tid)],
             # Same string build_worker_context hands the dispatcher at spawn time.
-            "worker_context": kb.build_worker_context(conn, tid)})
+            "worker_context": kb.build_worker_context(conn, tid),
+        }
+        if os.environ.get("HERMES_KANBAN_PROTECTED_REMOTE"):
+            handoffs = []
+            for parent_id in payload["parents"]:
+                parent = kb.get_task(conn, parent_id)
+                if not parent or parent.status != "done":
+                    continue
+                completed = [r for r in kb.list_runs(conn, parent_id) if r.outcome == "completed"]
+                completed.sort(key=lambda r: r.ended_at or 0, reverse=True)
+                run = completed[0] if completed else None
+                handoffs.append({
+                    "id": parent.id,
+                    "title": parent.title,
+                    "status": "done",
+                    "completed_at": run.ended_at if run and run.ended_at else parent.completed_at,
+                    "summary": run.summary if run else parent.result,
+                    "metadata": run.metadata if run else {},
+                })
+            # Keep the internal completion marker until the protected projection
+            # applies its bounded public shape; the projection uses it to exclude
+            # incomplete parent state.
+            payload["parent_handoffs"] = handoffs
+            return json.dumps(_project_remote_worker_state(payload, current_run_id=None))
+        return json.dumps(payload)
 
 
 @_kanban_handler("kanban_list")
@@ -760,6 +790,12 @@ def _handle_complete(args: dict, **kw) -> str:
         # judge by calling kanban_complete before acceptance criteria are met. Only enforce when a judge is
         # actually reachable — see _goal_judge_available for why an unavailable judge fails open.
         task = kb.get_task(conn, tid)
+        if task and ("verifier" in (task.assignee or "").lower() or "verify" in task.title.lower()):
+            lowered = f"{summary or result or ''}".lower()
+            _check(
+                not ("pytest" in lowered and ("exit 4" in lowered or "no test" in lowered or "unavailable" in lowered)),
+                "Verifier completion rejected: behavioral verification is unavailable; do not complete until pytest evidence is available.",
+            )
         _goal_gate("kanban_complete", task, tid, (summary or result or "").strip())
         try:
             ok = kb.complete_task(
@@ -803,6 +839,9 @@ def _handle_block(args: dict, **kw) -> str:
     with _board(args.get("board")) as (kb, conn):
         _check(kind is None or kind in kb.VALID_BLOCK_KINDS,
                f"kind must be one of {sorted(kb.VALID_BLOCK_KINDS)} (or omit it)")
+        if kind == "capability":
+            _check(args.get("command") and args.get("stderr"),
+                   "capability blocks require command and stderr from a current failed invocation")
         # The goal loop treats ANY blocked status as terminal, so kanban_block
         # would be an escape hatch around the completion judge: goal_mode tasks
         # may only block on genuine external blockers.
@@ -814,6 +853,10 @@ def _handle_block(args: dict, **kw) -> str:
         # worker cannot resolve itself; `capability` and `transient` (or an unset kind) route back through
         # kanban_complete, which the judge now gates.
         task = kb.get_task(conn, tid)
+        _check(
+            not (kind == "needs_input" and task and task.created_by not in _NEEDS_INPUT_ROOT_CREATORS),
+            "worker- and cron-created tasks have a fixed scope; only human or dashboard roots may request input",
+        )
         _check(not (task and task.goal_mode and kind not in _GOAL_MODE_BLOCK_ALLOWED_KINDS),
                f"goal_mode tasks can only block with kind in "
                f"{sorted(_GOAL_MODE_BLOCK_ALLOWED_KINDS)} (got {kind!r}). If the task is actually "
@@ -1014,6 +1057,8 @@ def _handle_create(args: dict, **kw) -> str:
     # mutate review evidence or race its checkout). Project identity is the one safe thing
     # to inherit implicitly (the DB turns it into a fresh per-task worktree).
     workspace_kind, workspace_path = args.get("workspace_kind"), args.get("workspace_path")
+    if workspace_kind == "scratch":
+        workspace_path = None
     # See #67567.
     project_id = args.get("project") or args.get("project_id")
     project_source_task_id = None

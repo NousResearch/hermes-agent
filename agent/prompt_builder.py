@@ -262,7 +262,7 @@ KANBAN_GUIDANCE = (
     "For GitHub PR intake use host Hermes: `hermes github-pr-feedback inspect-pr --repository OWNER/REPO "
     "--pr-number N`; paginate issue comments, review comments, and reviews; do not use raw `gh pr view`, `gh api`, or curl. "
     "`board-record-only`/`no-op` tasks use Kanban as source of truth: call `kanban_show`, Never search the checkout for board records, "
-    "and investigate missing task output before blocking; "
+    "and investigate missing task output before blocking; the producer has already fixed the scope; only then block; "
     "and complete with a no-op receipt when no work exists. A capability block requires literal argv and redacted stderr.\n"
     "5. **Finish with the review model encoded by the task graph.** Always include the structured handoff (`summary`, "
     "`metadata`) on the lifecycle transition itself; never put secrets, tokens, or raw PII in these durable fields. If "

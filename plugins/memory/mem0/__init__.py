@@ -15,6 +15,8 @@ import logging
 import os
 import threading
 import time
+import urllib.parse
+import urllib.request
 from contextlib import suppress
 from pathlib import Path
 from typing import Any, Dict, List
@@ -38,7 +40,24 @@ _DEFAULT_USER_ID = "hermes-user"
 # jina-embeddings-v3: 8192), and oversized turns make backend.add() raise — Ollama
 # answers HTTP 500, hosted APIs return INPUT_TOKEN_LIMIT_EXCEEDED — which _try only
 # logs, silently dropping the turn's memory extraction. Cap each message up front.
+# The cap itself is model-aware (Mem0MemoryProvider._sync_max_chars): a flat 450
+# fits 512-token embedders but would waste ~90% of the window on 8192-token models.
 _SYNC_MSG_MAX_CHARS = 450
+
+# Official token limits for common embedding models, consulted when the running
+# Ollama server can't be probed. For these BERT/BPE tokenizers a character is a
+# reasonable proxy for a token on mixed English/CJK text, so the same window sizes
+# drive the sync char cap with a safety margin (see _chars_for_context).
+_KNOWN_EMBEDDING_CONTEXT = {
+    "text-embedding-3-small": 8191,
+    "text-embedding-3-large": 8191,
+    "text-embedding-ada-002": 8191,
+    "jina-embeddings-v3": 8192,
+    "bge-m3": 8192,
+    "nomic-embed-text": 8192,
+    "mxbai-embed-large": 512,
+    "all-minilm": 512,
+}
 
 
 def _truncate_for_sync(text: str, max_len: int = _SYNC_MSG_MAX_CHARS) -> str:
@@ -56,6 +75,48 @@ def _truncate_for_sync(text: str, max_len: int = _SYNC_MSG_MAX_CHARS) -> str:
         if cut > max_len // 3:
             return text[:cut + 1]
     return text[:max_len]
+
+
+def _chars_for_context(ctx_tokens: int) -> int:
+    """Convert an embedding context window (tokens) into a sync char cap.
+
+    Keeps ~15% headroom for tokenizer drift, rounds down to a multiple of 50,
+    and never goes below the conservative default.
+    """
+    return max(_SYNC_MSG_MAX_CHARS, int(ctx_tokens * 0.85) // 50 * 50)
+
+
+def _probe_ollama_context(base_url: str, model: str):
+    """Best-effort read of the embedding context window from a local Ollama server.
+
+    The URL comes from the user's own mem0.json - the same one the embedder
+    itself uses - so this probes the already-configured server, never an
+    arbitrary host. Returns the token limit, or None when unreachable or the
+    model info carries no context field. Never raises.
+    """
+    if not base_url or not model:
+        return None
+    parsed = urllib.parse.urlparse(base_url)
+    if parsed.scheme not in ("http", "https") or not parsed.netloc:
+        return None
+    try:
+        req = urllib.request.Request(
+            base_url.rstrip("/") + "/api/show",
+            data=json.dumps({"model": model}).encode(),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            info = json.load(resp).get("model_info") or {}
+    except Exception:
+        return None
+    arch = info.get("general.architecture")
+    for key in filter(None, (f"{arch}.context_length" if arch else None, "context_length")):
+        val = info.get(key)
+        if val:
+            with suppress(ValueError, TypeError):
+                return int(val)
+    return None
 
 
 def _is_client_error(exc: Exception) -> bool:
@@ -118,6 +179,7 @@ class Mem0MemoryProvider(MemoryProvider):
         self._prefetch_query = self._prefetch_result = ""
         self._prefetch_done = self._atexit_registered = False
         self._consecutive_failures, self._breaker_open_until = 0, 0.0  # circuit breaker state
+        self._sync_cap = None  # resolved once on first sync_turn (see _sync_max_chars)
         self._breaker_lock, self._sync_lock, self._prefetch_lock = threading.Lock(), threading.Lock(), threading.Lock()
 
     @property
@@ -283,6 +345,38 @@ class Mem0MemoryProvider(MemoryProvider):
             thread.join(timeout=_PREFETCH_WAIT_SECS)
         return self._consume_prefetch_result(query) or ""  # slow backend: skip injection; mem0_search remains the backstop
 
+    def _sync_max_chars(self) -> int:
+        """Char cap for sync_turn messages, resolved once and cached (a probe is a network call).
+
+        Resolution order: an explicit ``sync_max_chars`` in mem0.json wins; OSS
+        mode otherwise probes the configured Ollama server for the embedder's
+        context window; a table of known models is the next fallback; the safe
+        default that fits 512-token embedders is the floor.
+        """
+        if self._sync_cap is None:
+            self._sync_cap = self._resolve_sync_cap()
+        return self._sync_cap
+
+    def _resolve_sync_cap(self) -> int:
+        cfg = self._config or {}
+        with suppress(ValueError, TypeError):
+            explicit = int(cfg.get("sync_max_chars") or 0)
+            if explicit > 0:
+                return explicit
+        embedder_cfg = {}
+        if self._mode == "oss":
+            embedder_cfg = ((cfg.get("oss") or {}).get("embedder") or {}).get("config") or {}
+        if embedder_cfg:
+            base_url = str(embedder_cfg.get("ollama_base_url") or "http://localhost:11434")
+            model = str(embedder_cfg.get("model") or "")
+            ctx = _probe_ollama_context(base_url, model)
+            if ctx:
+                return _chars_for_context(ctx)
+            known = _KNOWN_EMBEDDING_CONTEXT.get(model.split(":")[0])
+            if known:
+                return _chars_for_context(known)
+        return _SYNC_MSG_MAX_CHARS
+
     def sync_turn(self, user_content: str, assistant_content: str, *, session_id: str = "") -> None:
         """Send the turn to Mem0 for server-side fact extraction (non-blocking)."""
         if self._backend is None or self._is_breaker_open():
@@ -290,9 +384,10 @@ class Mem0MemoryProvider(MemoryProvider):
 
         def _sync():
             if self._backend is not None:
+                cap = self._sync_max_chars()
                 messages = [
-                    {"role": "user", "content": _truncate_for_sync(user_content)},
-                    {"role": "assistant", "content": _truncate_for_sync(assistant_content)},
+                    {"role": "user", "content": _truncate_for_sync(user_content, cap)},
+                    {"role": "assistant", "content": _truncate_for_sync(assistant_content, cap)},
                 ]
                 self._try(lambda: self._add(messages, infer=True), logger.warning, "Mem0 sync failed: %s")
 

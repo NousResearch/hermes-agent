@@ -1,5 +1,6 @@
 """Tests for Mem0 v3 API — new tool names, paginated responses, update/delete tools."""
 
+import io
 import json
 import threading
 import time
@@ -154,6 +155,8 @@ class TestSyncTurnTruncation:
     def _make_provider(self, monkeypatch, backend):
         provider = Mem0MemoryProvider()
         provider.initialize("test-session")
+        provider._config = {"mode": "platform", "oss": {}}  # pin config so a local mem0.json can't skew caps
+        provider._mode = "platform"
         provider._user_id = "u123"
         provider._agent_id = "hermes"
         provider._backend = backend
@@ -223,6 +226,149 @@ class TestSyncTurnTruncation:
         assert out.startswith("Sentence 0. ")
         # boundary only inside the first third of the window: hard cut instead
         assert mem0_plugin._truncate_for_sync("One. " + "x" * 600) == ("One. " + "x" * 600)[:max_len]
+
+
+class TestSyncCapResolution:
+    """The cap is model-aware: explicit config → Ollama probe → known-model table
+    → conservative default, resolved once and cached (the probe is a network call)."""
+
+    def _make_provider(self, monkeypatch, backend):
+        provider = Mem0MemoryProvider()
+        provider.initialize("test-session")
+        provider._config = {"mode": "platform", "oss": {}}
+        provider._mode = "platform"
+        provider._user_id = "u123"
+        provider._agent_id = "hermes"
+        provider._backend = backend
+        return provider
+
+    def _oss(self, provider, embedder_cfg):
+        provider._mode = "oss"
+        provider._config["oss"] = {"embedder": {"config": embedder_cfg}}
+
+    def test_explicit_config_overrides_everything(self, monkeypatch):
+        provider = self._make_provider(monkeypatch, FakeBackend())
+        self._oss(provider, {"model": "jina-embeddings-v3"})
+        provider._config["sync_max_chars"] = 100
+        assert provider._sync_max_chars() == 100
+
+    def test_invalid_config_value_falls_through(self, monkeypatch):
+        provider = self._make_provider(monkeypatch, FakeBackend())
+        provider._config["sync_max_chars"] = "not-a-number"
+        assert provider._sync_max_chars() == mem0_plugin._SYNC_MSG_MAX_CHARS
+
+    def test_oss_probe_large_context_lifts_cap(self, monkeypatch):
+        provider = self._make_provider(monkeypatch, FakeBackend())
+        self._oss(provider, {"model": "bge-m3:latest", "ollama_base_url": "http://127.0.0.1:11434"})
+        monkeypatch.setattr(mem0_plugin, "_probe_ollama_context", lambda b, m: 8192)
+        assert provider._sync_max_chars() == mem0_plugin._chars_for_context(8192)
+        assert provider._sync_max_chars() > 6900  # 8192-token models must not be stuck at the 450 default
+
+    def test_oss_probe_small_context_keeps_default(self, monkeypatch):
+        # szicely's measurement on bge-small-zh-v1.5:f16 (512 tokens): 450 chars OK, 600 → HTTP 500
+        provider = self._make_provider(monkeypatch, FakeBackend())
+        self._oss(provider, {"model": "bge-small-zh-v1.5:f16"})
+        monkeypatch.setattr(mem0_plugin, "_probe_ollama_context", lambda b, m: 512)
+        assert provider._sync_max_chars() == mem0_plugin._SYNC_MSG_MAX_CHARS
+
+    def test_known_model_table_when_probe_fails(self, monkeypatch):
+        provider = self._make_provider(monkeypatch, FakeBackend())
+        self._oss(provider, {"model": "jina-embeddings-v3:latest"})
+        monkeypatch.setattr(mem0_plugin, "_probe_ollama_context", lambda b, m: None)
+        assert provider._sync_max_chars() == mem0_plugin._chars_for_context(8192)
+
+    def test_unknown_model_falls_back_to_default(self, monkeypatch):
+        provider = self._make_provider(monkeypatch, FakeBackend())
+        self._oss(provider, {"model": "custom-finetune:q4"})
+        monkeypatch.setattr(mem0_plugin, "_probe_ollama_context", lambda b, m: None)
+        assert provider._sync_max_chars() == mem0_plugin._SYNC_MSG_MAX_CHARS
+
+    def test_platform_mode_never_probes(self, monkeypatch):
+        calls = []
+        monkeypatch.setattr(mem0_plugin, "_probe_ollama_context", lambda b, m: calls.append((b, m)) or 8192)
+        provider = self._make_provider(monkeypatch, FakeBackend())
+        assert provider._sync_max_chars() == mem0_plugin._SYNC_MSG_MAX_CHARS
+        assert calls == []
+
+    def test_probe_resolved_once_and_cached_across_syncs(self, monkeypatch):
+        calls = []
+
+        def fake_probe(base_url, model):
+            calls.append((base_url, model))
+            return 8192
+
+        monkeypatch.setattr(mem0_plugin, "_probe_ollama_context", fake_probe)
+        backend = FakeBackend()
+        provider = self._make_provider(monkeypatch, backend)
+        self._oss(provider, {"model": "bge-m3", "ollama_base_url": "http://127.0.0.1:11434"})
+        provider.sync_turn("x" * 9000, "y" * 9000, session_id="s1")
+        provider._sync_thread.join(timeout=2)
+        provider.sync_turn("x" * 9000, "y" * 9000, session_id="s1")
+        provider._sync_thread.join(timeout=2)
+        assert len(calls) == 1  # cached: the second sync must not re-probe
+        cap = mem0_plugin._chars_for_context(8192)
+        assert all(len(m["content"]) <= cap for m in backend.captured[0][1])
+
+    def test_sync_turn_uses_resolved_cap(self, monkeypatch):
+        backend = FakeBackend()
+        provider = self._make_provider(monkeypatch, backend)
+        provider._config["sync_max_chars"] = 120
+        provider.sync_turn("Sentence one. " * 30, "ok", session_id="s1")
+        provider._sync_thread.join(timeout=2)
+        assert len(backend.captured[0][1][0]["content"]) <= 120
+
+
+class TestProbeOllamaContext:
+    """The probe reads the context window from Ollama's /api/show payload and
+    fails soft on any error (it runs inside the sync path)."""
+
+    def _fake_urlopen(self, monkeypatch, payload, sent=None):
+        class _Resp(io.BytesIO):
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+        def fake_open(req, timeout=5):
+            if sent is not None:
+                sent.append((req.full_url, json.loads(req.data.decode())))
+            return _Resp(json.dumps(payload).encode())
+
+        monkeypatch.setattr(mem0_plugin.urllib.request, "urlopen", fake_open)
+
+    def test_reads_bert_context_length(self, monkeypatch):
+        sent = []
+        self._fake_urlopen(monkeypatch, {"model_info": {"general.architecture": "bert", "bert.context_length": 512}}, sent)
+        assert mem0_plugin._probe_ollama_context("http://localhost:11434/", "bge-small-zh-v1.5:f16") == 512
+        url, body = sent[0]
+        assert url == "http://localhost:11434/api/show"  # trailing slash normalized
+        assert body == {"model": "bge-small-zh-v1.5:f16"}
+
+    def test_reads_arch_prefixed_and_bare_context_length(self, monkeypatch):
+        self._fake_urlopen(monkeypatch, {"model_info": {"general.architecture": "jina", "jina.context_length": 8192}})
+        assert mem0_plugin._probe_ollama_context("http://127.0.0.1:11434", "jina-embeddings-v3") == 8192
+        self._fake_urlopen(monkeypatch, {"model_info": {"context_length": 4096}})
+        assert mem0_plugin._probe_ollama_context("http://127.0.0.1:11434", "weird-model") == 4096
+
+    def test_rejects_non_http_schemes_and_empty_inputs(self, monkeypatch):
+        opened = []
+        monkeypatch.setattr(mem0_plugin.urllib.request, "urlopen", lambda req, timeout=5: opened.append(req))
+        assert mem0_plugin._probe_ollama_context("ftp://host", "m") is None
+        assert mem0_plugin._probe_ollama_context("http://127.0.0.1:11434", "") is None
+        assert mem0_plugin._probe_ollama_context("", "m") is None
+        assert opened == []  # the scheme/netloc guard fires before any request
+
+    def test_returns_none_on_errors_and_garbage_payloads(self, monkeypatch):
+        def boom(req, timeout=5):
+            raise OSError("connection refused")
+
+        monkeypatch.setattr(mem0_plugin.urllib.request, "urlopen", boom)
+        assert mem0_plugin._probe_ollama_context("http://127.0.0.1:11434", "m") is None
+        self._fake_urlopen(monkeypatch, {"model_info": {"general.architecture": "bert", "bert.context_length": "bogus"}})
+        assert mem0_plugin._probe_ollama_context("http://127.0.0.1:11434", "m") is None
+        self._fake_urlopen(monkeypatch, {})  # no model_info at all
+        assert mem0_plugin._probe_ollama_context("http://127.0.0.1:11434", "m") is None
 
 
 class TestMem0Prefetch:

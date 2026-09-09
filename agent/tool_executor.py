@@ -1044,6 +1044,15 @@ def _finalize_tool_batch(agent, messages: list, effective_task_id: str, num_tool
     if num_tools <= 0:
         return
     enforce_turn_budget(messages[-num_tools:], env=get_active_env(effective_task_id), config=budget)
+    # Batching-score notice (single authoritative call site per tool turn): appended after the
+    # LAST tool result of the turn, so it rides the tail — cache-safe (never in the system prompt).
+    with contextlib.suppress(Exception):
+        notice = agent._tool_guardrails.batching_notice(num_tools)
+        if notice and messages:
+            last = messages[-1]
+            content = getattr(last, "content", None)
+            if isinstance(content, str):
+                last.content = content + "\n\n" + notice
     agent._apply_pending_steer_to_tool_results(messages, num_tools)
 
 

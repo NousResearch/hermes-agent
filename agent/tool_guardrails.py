@@ -66,6 +66,12 @@ _THRESHOLD_SOURCES: dict[str, tuple[str, str]] = {
     "no_progress_block_after": ("hard_stop_after", "idempotent_no_progress"),
 }
 
+# Batching-score notice: emitted when the cross-session single-call share is high enough to matter.
+# Cross-turn counters live OUTSIDE reset_for_turn so the score spans the whole conversation.
+BATCHING_NOTICE_MIN_TURNS = 6           # don't score before the sample is meaningful
+BATCHING_NOTICE_EVERY_N = 10            # re-emit only every N tool turns (not every turn — noise)
+BATCHING_NOTICE_SINGLE_SHARE = 0.6     # emit when >60% of tool turns carried a single call
+
 # Per-turn caps on runaway-prone tools (counters reset in reset_for_turn).
 _DEFAULT_MAX_WEB_SEARCHES_PER_TURN = 50
 _DEFAULT_MAX_SUBAGENTS_PER_TURN = 50
@@ -278,6 +284,11 @@ class ToolCallGuardrailController:
 
     def __init__(self, config: ToolCallGuardrailConfig | None = None):
         self.config = config or ToolCallGuardrailConfig()
+        # Cross-conversation batching scoreboard (NOT reset by reset_for_turn): each tool turn's
+        # call count feeds the batching notice, which nags only when single-call turns dominate.
+        self._batch_tool_turns = 0
+        self._batch_single_turns = 0
+        self._batch_notice_last_turn = 0
         self.reset_for_turn()
 
     def reset_for_turn(self) -> None:
@@ -443,6 +454,36 @@ class ToolCallGuardrailController:
         """Remember the spillover path a persisted result was saved to."""
         if tool_call_id and file_path:
             self._persisted_result_paths[tool_call_id] = file_path
+
+    def batching_notice(self, turn_call_count: int) -> str | None:
+        """Score this tool turn's batching and return a nudge when single-call turns dominate.
+
+        Called once per tool turn (from the sequential executor's commit path or the concurrent
+        executor's batch completion). Persistent counters span the conversation so the score is
+        a real trend, not one turn's noise. The notice lands in the stall-notice channel
+        (appended after a tool result) — never in the system prompt, which would break the
+        prefix cache whenever the score changed.
+        """
+        self._batch_tool_turns += 1
+        if turn_call_count <= 1:
+            self._batch_single_turns += 1
+        if self._batch_tool_turns < BATCHING_NOTICE_MIN_TURNS:
+            return None
+        # One notice per window; the cooldown only applies AFTER the first notice
+        # (a first notice on turn 6 must not wait for turn 10).
+        if self._batch_notice_last_turn and self._batch_tool_turns - self._batch_notice_last_turn < BATCHING_NOTICE_EVERY_N:
+            return None
+        single_share = self._batch_single_turns / self._batch_tool_turns
+        if single_share <= BATCHING_NOTICE_SINGLE_SHARE:
+            return None
+        self._batch_notice_last_turn = self._batch_tool_turns
+        batched = self._batch_tool_turns - self._batch_single_turns
+        return (
+            f"[hermes note: your batching score is {int(round(single_share * 100))}% single-call tool turns "
+            f"({self._batch_single_turns} of {self._batch_tool_turns}; {batched} batched). Every single-call "
+            "turn costs a full round-trip that re-sends the whole conversation. Batch the independent reads "
+            "you already know you need next into the SAME turn — the runtime runs them concurrently.]"
+        )
 
     def _build_result_reference_stub(self, tool_name: str, args: Mapping[str, Any] | None) -> str:
         """Reference stub for a byte-identical duplicate result (tool + args preview)."""

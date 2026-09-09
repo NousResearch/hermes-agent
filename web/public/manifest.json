@@ -1,0 +1,16 @@
+{
+  "short_name": "Hermes",
+  "name": "Hermes Agent Cross-Platform",
+  "icons": [
+    {
+      "src": "favicon.ico",
+      "sizes": "64x64 32x32 24x24 16x16",
+      "type": "image/x-icon"
+    }
+  ],
+  "start_url": ".",
+  "display": "standalone",
+  "theme_color": "#09090b",
+  "background_color": "#09090b",
+  "description": "Cross-Platform Hermes AI Agent Web Client and PWA"
+}

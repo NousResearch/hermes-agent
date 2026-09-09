@@ -559,6 +559,7 @@ export function useTerminalSession({
     }
 
     let disposed = false
+    let retrySession: (() => void) | null = null
     const cleanup: Array<() => void> = []
     let lastSentSize: { cols: number; rows: number } | null = null
 
@@ -916,6 +917,15 @@ export function useTerminalSession({
     const dataDisposable = term.onData(data => {
       const id = sessionIdRef.current
 
+      if (!id && retrySession && data === '\r') {
+        const retry = retrySession
+        retrySession = null
+        setStatus('starting')
+        retry()
+
+        return
+      }
+
       if (id) {
         void terminalApi.write(id, data)
       }
@@ -998,19 +1008,43 @@ export function useTerminalSession({
       return false
     })
 
-    const startSession = () =>
+    let cleanupAttempt: (() => void) | null = null
+
+    const startSession = () => {
+      cleanupAttempt?.()
+      let current = true
+      let attemptSessionId: string | null = null
+      const subscriptions: Array<() => void> = []
+
+      const release = () => {
+        current = false
+        subscriptions.splice(0).forEach(unsubscribe => unsubscribe())
+
+        if (attemptSessionId) {
+          const sid = attemptSessionId
+          attemptSessionId = null
+
+          if (sessionIdRef.current === sid) {
+            sessionIdRef.current = null
+          }
+
+          void terminalApi.dispose(sid)
+        }
+      }
+
+      cleanupAttempt = release
+
       void terminalApi
-        // Prefer the prior session's last cwd so a reopened tab lands where the
-        // user last `cd`'d; the main side falls back to the launch cwd (then
-        // home) if that dir no longer exists.
-        .start({ cols: term.cols, cwd: initialRestoreCwdRef.current || cwd, rows: term.rows })
+        // Prefer the last observed cwd so retry/relaunch stays in the same directory.
+        .start({ cols: term.cols, cwd: lastObservedCwdRef.current || initialRestoreCwdRef.current || cwd, rows: term.rows })
         .then(async session => {
-          if (disposed) {
+          if (disposed || !current) {
             void terminalApi.dispose(session.id)
 
             return
           }
 
+          attemptSessionId = session.id
           sessionIdRef.current = session.id
           lastSentSize = { cols: term.cols, rows: term.rows }
           shellNameRef.current = session.shell || 'shell'
@@ -1021,26 +1055,39 @@ export function useTerminalSession({
           selectionRef.current = initial
           selectionLabelRef.current = initial ? terminalSelectionLabel(term, shellNameRef.current, initial) : ''
 
-          cleanup.push(
+          subscriptions.push(
             terminalApi.onData(session.id, data => {
-              // xterm parses writes asynchronously. Serialize only after this
-              // chunk reached its buffer; scheduling at delivery time can save
-              // the previous frame and lose a single-chunk command result.
-              armedWrite(data, scheduleSnapshot)
-            }),
-            terminalApi.onExit(session.id, () => {
-              // Shell exited (`exit` / Ctrl-D / crash) — drop the tab like a real
-              // terminal. closeTerminal hides the pane when it's the last one.
-              // Skip if we're tearing down (cleanup disposes the PTY) OR the app
-              // is quitting/reloading: on quit the main process kills every PTY,
-              // firing this exit, but React skips the cleanup so `disposed` stays
-              // false — running closeTerminal here would wipe the persisted tabs
-              // right before relaunch restores them.
-              if (!disposed && !appTearingDown) {
-                closeTerminal(id)
+              // Serialize only after xterm has parsed the current chunk.
+              if (current && !disposed) {
+                armedWrite(data, scheduleSnapshot)
               }
+            }),
+            terminalApi.onExit(session.id, exit => {
+              if (!current || disposed || appTearingDown) {
+                return
+              }
+
+              release()
+
+              if (exit.signal === 'disconnected') {
+                setStatus('closed')
+                retrySession = startSession
+                term.write('\r\nTerminal disconnected. Press Enter to start a new shell; scrollback is preserved.\r\n')
+
+                return
+              }
+
+              // Only a current process exit removes the persisted tab.
+              closeTerminal(id)
             })
           )
+
+          // onExit may replay a buffered exit before returning its unsubscribe.
+          if (!current) {
+            release()
+
+            return
+          }
 
           const attached = await terminalApi.attach(session.id)
 
@@ -1048,16 +1095,29 @@ export function useTerminalSession({
             throw new Error('Terminal session disappeared before its output stream attached')
           }
 
+          if (disposed || !current) {
+            return
+          }
+
           setStatus('open')
 
           window.requestAnimationFrame(() => {
-            term.clearSelection() // drop any selection painted over transient boot rows
+            if (current && !disposed) {
+              term.clearSelection()
+            }
           })
         })
         .catch(error => {
+          if (disposed || !current) {
+            return
+          }
+
+          release()
+          retrySession = startSession
           setStatus('closed')
-          term.write(`Terminal failed to start: ${error instanceof Error ? error.message : String(error)}\r\n`)
+          term.write(`Terminal failed to start: ${error instanceof Error ? error.message : String(error)}. Press Enter to retry.\r\n`)
         })
+    }
 
     // Open + fit + start only once webfonts settle. Fitting with fallback metrics
     // picks the wrong row count, the shell boots at that size, then the real font
@@ -1110,15 +1170,9 @@ export function useTerminalSession({
     return () => {
       disposed = true
       mountedRef.current = false
+      cleanupAttempt?.()
       cleanup.forEach(run => run())
       fitRef.current = null
-
-      const id = sessionIdRef.current
-      sessionIdRef.current = null
-
-      if (id) {
-        void terminalApi.dispose(id)
-      }
 
       term.dispose()
       termRef.current = null

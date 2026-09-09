@@ -648,13 +648,13 @@ export function installBrowserDesktopBridge(): boolean {
     state.dataListeners.forEach(listener => listener(data))
   }
 
-  const emitTerminalExit = (state: BrowserTerminalState) => {
+  const emitTerminalExit = (state: BrowserTerminalState, signal: string | null = null) => {
     if (state.closed) {
       return
     }
 
     state.closed = true
-    state.exit = { code: null, signal: null }
+    state.exit = { code: null, signal }
     state.exitListeners.forEach(listener => listener(state.exit!))
   }
 
@@ -800,7 +800,8 @@ export function installBrowserDesktopBridge(): boolean {
           rejectStart(event.reason || `Host terminal closed before startup (${event.code})`)
         }
 
-        emitTerminalExit(state)
+        // A socket disappearing is not evidence that its shell exited.
+        emitTerminalExit(state, event.code === 4410 ? null : 'disconnected')
       }
     })
   }

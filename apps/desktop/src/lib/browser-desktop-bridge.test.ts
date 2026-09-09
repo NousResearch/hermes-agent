@@ -452,9 +452,11 @@ describe('browser-hosted Desktop bridge', () => {
 
     expect(installBrowserDesktopBridge()).toBe(true)
     $connection.set(await win.hermesDesktop!.getConnectionFor!({ connectionId: 'local', profile: 'research' }))
+
     const pending = downloadGatewayMediaFile('file:///srv/reports/a%20b.pdf', {
       sessionId: 'origin-session', profile: 'research'
     })
+
     $connection.set({ mode: 'remote', profile: 'switched-profile' } as never)
     await expect(pending).resolves.toMatchObject({ saved: true })
 
@@ -750,7 +752,7 @@ describe('browser-hosted Desktop bridge', () => {
     expect(socket.sent).toEqual(['hello\r', '\u001b[RESIZE:80;24]'])
     await expect(win.hermesDesktop!.terminal.cwd(session.id)).resolves.toBeNull()
 
-    socket.close(1000, 'shell exited')
+    socket.close(4410, 'shell exited')
     expect(exited).toHaveBeenCalledWith({ code: null, signal: null })
     stopData()
     stopExit()

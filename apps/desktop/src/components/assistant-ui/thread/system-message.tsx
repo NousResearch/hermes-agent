@@ -1,9 +1,10 @@
 import { MessagePrimitive, useAuiState } from '@assistant-ui/react'
-import { type FC } from 'react'
+import { type FC, useState } from 'react'
 
+import { MarkdownTextContent } from '@/components/assistant-ui/markdown-text'
 import { messageContentText } from '@/components/assistant-ui/thread/content'
 import { MessageTimelineTimestamp } from '@/components/assistant-ui/thread/timeline-timestamp'
-import { SCAFFOLD_LABEL_CLASS } from '@/components/chat/scaffold-row'
+import { SCAFFOLD_LABEL_CLASS, ScaffoldRow } from '@/components/chat/scaffold-row'
 import { Codicon } from '@/components/ui/codicon'
 import { ToolIcon } from '@/components/ui/tool-icon'
 import { LinkifiedText } from '@/lib/external-link'
@@ -15,9 +16,41 @@ const REVIEW_NOTE_RE = /^review:(?<label>[^:\n]+):?\s*(?<detail>[\s\S]*)$/
 
 export const SystemMessage: FC = () => {
   const text = useAuiState(s => messageContentText(s.message.content))
+  const asyncResult = useAuiState(s => s.message.metadata.custom?.asyncResult)
+  const [reportOpen, setReportOpen] = useState(false)
 
   if (!text) {
     return null
+  }
+
+  if (typeof asyncResult === 'string' && asyncResult) {
+    return (
+      <MessagePrimitive.Root
+        className="flex w-full min-w-0 flex-col self-start py-1"
+        data-role="system"
+        data-slot="aui_system-message-root"
+      >
+        <div data-conversation-scaffold="">
+          <ScaffoldRow
+            onToggle={() => setReportOpen(!reportOpen)}
+            open={reportOpen}
+            trailing={
+              <>
+                {' '}
+                <MessageTimelineTimestamp />
+              </>
+            }
+          >
+            <span className={SCAFFOLD_LABEL_CLASS}>{text}</span>
+          </ScaffoldRow>
+        </div>
+        {reportOpen && (
+          <div className="mt-2 max-h-80 min-w-0 max-w-full overflow-auto overscroll-contain wrap-anywhere">
+            <MarkdownTextContent isRunning={false} text={asyncResult} />
+          </div>
+        )}
+      </MessagePrimitive.Root>
+    )
   }
 
   // The self-improvement review saved something to memory/skills — the same

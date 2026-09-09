@@ -28,6 +28,7 @@ from unittest.mock import MagicMock
 import pytest
 
 pytest.importorskip("mcp")
+from tools import mcp_tool_loop as _mcp_loop  # noqa: E402
 
 
 def _success_result():
@@ -94,7 +95,7 @@ def test_precall_dead_children_respawn_and_retry(monkeypatch, tmp_path):
     retry once, and hand the model a normal result — no error at all."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     from tools import mcp_tool
-    from tools.mcp_tool import _make_tool_handler
+    from tools.mcp_tool_handlers import _make_tool_handler
 
     called = {"n": 0}
     alive = {"v": False}
@@ -117,7 +118,7 @@ def test_precall_dead_children_respawn_and_retry(monkeypatch, tmp_path):
         children_dead=lambda: not alive["v"],
         on_reconnect=_respawn,
     )
-    mcp_tool._ensure_mcp_loop()
+    _mcp_loop._ensure_mcp_loop()
     try:
         handler = _make_tool_handler("srv-dead", "tool1", 10.0)
         parsed = json.loads(handler({}))
@@ -135,7 +136,7 @@ def test_midcall_child_exit_respawn_and_retry(monkeypatch, tmp_path):
     so the caller still gets its result."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     from tools import mcp_tool
-    from tools.mcp_tool import _make_tool_handler
+    from tools.mcp_tool_handlers import _make_tool_handler
 
     alive = {"v": True}
 
@@ -163,7 +164,7 @@ def test_midcall_child_exit_respawn_and_retry(monkeypatch, tmp_path):
         on_reconnect=_respawn,
     )
     server._watch_stdio_children = _watch_children
-    mcp_tool._ensure_mcp_loop()
+    _mcp_loop._ensure_mcp_loop()
     try:
         handler = _make_tool_handler("srv-midcall", "tool1", 10.0)
         # The child dies once the RPC is in flight.
@@ -185,7 +186,7 @@ def test_dead_child_never_returning_is_not_reported_as_a_timeout(
     investigation into a healthy remote backend)."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     from tools import mcp_tool
-    from tools.mcp_tool import _make_tool_handler
+    from tools.mcp_tool_handlers import _make_tool_handler
 
     monkeypatch.setattr(mcp_tool, "_STDIO_RESPAWN_WAIT_SEC", 1.0)
     called = {"n": 0}
@@ -197,7 +198,7 @@ def test_dead_child_never_returning_is_not_reported_as_a_timeout(
     server = _install_stub_server(
         mcp_tool, "srv-gone", _call_tool, children_dead=lambda: True,
     )
-    mcp_tool._ensure_mcp_loop()
+    _mcp_loop._ensure_mcp_loop()
     try:
         handler = _make_tool_handler("srv-gone", "tool1", 300.0)
         parsed = json.loads(handler({}))
@@ -221,7 +222,8 @@ def test_child_dying_again_after_respawn_does_not_hot_cycle(
     is what parks it, and this path must not fight that."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     from tools import mcp_tool
-    from tools.mcp_tool import _make_tool_handler
+    from tools import mcp_tool_loop as _mcp_loop
+    from tools.mcp_tool_handlers import _make_tool_handler
 
     monkeypatch.setattr(mcp_tool, "_STDIO_RESPAWN_WAIT_SEC", 1.0)
     called = {"n": 0}
@@ -243,7 +245,7 @@ def test_child_dying_again_after_respawn_does_not_hot_cycle(
         children_dead=lambda: True,
         on_reconnect=_respawn_then_die,
     )
-    mcp_tool._ensure_mcp_loop()
+    _mcp_loop._ensure_mcp_loop()
     try:
         handler = _make_tool_handler("srv-flap", "tool1", 10.0)
         parsed = json.loads(handler({}))

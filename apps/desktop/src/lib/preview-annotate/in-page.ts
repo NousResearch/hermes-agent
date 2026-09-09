@@ -40,6 +40,8 @@ export interface AnnotatePinChrome {
 }
 
 export interface AnnotateInPage {
+  beginCapture: () => Promise<boolean>
+  endCapture: () => void
   getMarkerNumbers: () => number[]
   getOutlineColor: () => string
   hideDraft: () => void
@@ -732,6 +734,58 @@ export function annotateInPage(doc: Document): AnnotateInPage {
     }
   }
 
+  /**
+   * Two frames. `executeJavaScript` resolving only means the style property is
+   * set — the compositor has not drawn it yet, and `capturePage` grabs whatever
+   * is on screen. Capturing straight after `showDraft` therefore photographs
+   * the page one frame before the marker exists, which is why saved crops came
+   * back outlined but unnumbered. One rAF schedules us before the next paint;
+   * the second lands after it.
+   */
+  const afterPaint = (): Promise<void> =>
+    new Promise(resolve => {
+      if (!win) {
+        resolve()
+
+        return
+      }
+
+      win.requestAnimationFrame(() => win.requestAnimationFrame(() => resolve()))
+    })
+
+  /**
+   * Dress the page for one crop: the draft's own marker, nothing else.
+   *
+   * Saved pins live in the page, so a neighbour's marker lands inside this
+   * crop whenever the two elements sit within the crop padding of each other —
+   * a comment on a heading came back carrying the marker of the comment on the
+   * paragraph below it, and "Image 2 marks the target in blue" then pointed at
+   * a 1. Hover chrome is transient but would be captured just the same.
+   */
+  const beginCapture = async (): Promise<boolean> => {
+    if (!host || !host.isConnected) {
+      return false
+    }
+
+    if (pinsLayer) {
+      style(pinsLayer, { display: 'none' })
+    }
+
+    if (hoverBox) {
+      style(hoverBox, { display: 'none' })
+    }
+
+    await afterPaint()
+
+    return true
+  }
+
+  const endCapture = () => {
+    if (pinsLayer) {
+      style(pinsLayer, { display: 'block' })
+    }
+  }
+
   const teardown = () => {
     unbind()
     emit({ type: 'end' })
@@ -750,6 +804,8 @@ export function annotateInPage(doc: Document): AnnotateInPage {
   }
 
   return {
+    beginCapture,
+    endCapture,
     getMarkerNumbers: () => {
       if (!shadow) {
         return []

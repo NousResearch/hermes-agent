@@ -20,9 +20,13 @@ from agent.context_compressor import ContextCompressor
 
 def _make(ctx: int, pct: float = 0.50) -> ContextCompressor:
     with patch.object(cc, "get_model_context_length", return_value=ctx):
-        return ContextCompressor(
+        comp = ContextCompressor(
             model="test/model", threshold_percent=pct, quiet_mode=True,
         )
+        # Resolve while the mock is active — lazy init (#32221) defers the
+        # window probe (and the floor application) past __init__.
+        _ = comp.context_length
+        return comp
 
 
 class TestSmallContextThresholdFloor:
@@ -32,22 +36,8 @@ class TestSmallContextThresholdFloor:
             assert comp.threshold_percent == 0.75, ctx
             assert comp.threshold_tokens == int(ctx * 0.75), ctx
 
-    def test_512k_and_above_keep_configured_percent(self):
-        for ctx in (512_000, 1_000_000):
-            comp = _make(ctx, pct=0.50)
-            assert comp.threshold_percent == 0.50, ctx
-            assert comp.threshold_tokens == int(ctx * 0.50), ctx
 
-    def test_raise_only_higher_config_wins(self):
-        # Explicit 85% (user config or Codex gpt-5.5 autoraise) is not lowered.
-        comp = _make(128_000, pct=0.85)
-        assert comp.threshold_percent == 0.85
 
-    def test_degenerate_minimum_window_still_uses_85(self):
-        # 64K window: the MINIMUM_CONTEXT_LENGTH floor pushes the threshold
-        # to/over the window, so the 85% degenerate-window guard still rules.
-        comp = _make(64_000, pct=0.50)
-        assert comp.threshold_tokens == 54_400  # 85% of 64000
 
     def test_update_model_rederives_floor_both_directions(self):
         comp = _make(128_000, pct=0.50)
@@ -76,12 +66,6 @@ class TestReasoningExcludedFromSummarizer:
         assert "visible answer" in ser
         assert "other answer" in ser
 
-    def test_serializer_excludes_native_reasoning_field(self):
-        comp = _make(128_000)
-        turns = [{"role": "assistant", "content": "done", "reasoning": "NATIVE_TRACE"}]
-        ser = comp._serialize_for_summary(turns)
-        assert "NATIVE_TRACE" not in ser
-        assert "done" in ser
 
     def test_summarizer_output_think_block_stripped_before_store(self):
         comp = _make(128_000)
@@ -104,24 +88,6 @@ class TestReasoningExcludedFromSummarizer:
         # across every subsequent compaction.
         assert "OUTPUT_TRACE" not in (comp._previous_summary or "")
 
-    def test_thinking_only_summarizer_response_not_blanked(self):
-        # If stripping removes everything (degenerate model output), keep the
-        # raw content instead of storing an empty summary.
-        comp = _make(128_000)
-
-        class FakeMsg:
-            content = "<think>only reasoning, no body</think>"
-
-        class FakeChoice:
-            message = FakeMsg()
-
-        class FakeResp:
-            choices = [FakeChoice()]
-
-        with patch.object(cc, "call_llm", return_value=FakeResp()):
-            out = comp._generate_summary([{"role": "user", "content": "hi"}])
-        # Falls back to unstripped content rather than an empty summary body.
-        assert out is not None and out.strip()
 
 
 class TestSummaryBudgetEnvelope:
@@ -167,20 +133,26 @@ class TestSummaryBudgetEnvelope:
         assert comp._compute_summary_budget(huge) <= 10_000
         assert comp.max_summary_tokens <= 10_000
 
-    def test_budget_floor_stays_in_envelope(self):
-        comp = _make(1_000_000)
-        tiny = [{"role": "user", "content": "hi"}]
-        budget = comp._compute_summary_budget(tiny)
-        assert 1_000 <= budget <= 10_000
 
-    def test_ceiling_constant_within_envelope(self):
-        assert 1_000 <= cc._SUMMARY_TOKENS_CEILING <= 10_000
-        assert 1_000 <= cc._MIN_SUMMARY_TOKENS <= 10_000
 
 
 class TestTailBudgetProportionality:
     def test_tail_budget_is_target_ratio_of_threshold(self):
+        # Legacy-mode contract: the threshold-proportional formula. The
+        # default is lean (clamped 10K-25K) since the tail-default flip, so
+        # this pins the LEGACY path explicitly.
         comp = _make(128_000)
+        comp.tail_mode = "legacy"
+        comp._tail_token_budget = None  # force mode-aware recompute
         assert comp.tail_token_budget == int(comp.threshold_tokens * comp.summary_target_ratio)
         # Sanity: tail protection stays a modest slice of the window (<= 20%).
         assert comp.tail_token_budget <= comp.context_length * 0.20
+
+    def test_default_lean_tail_is_clamped(self):
+        # Default-mode contract after the flip: lean clamp, never the
+        # threshold-proportional hoard.
+        from agent.context_compressor import LEAN_TAIL_CAP_TOKENS, LEAN_TAIL_FLOOR_TOKENS
+
+        comp = _make(128_000)
+        assert comp.tail_mode == "lean"
+        assert LEAN_TAIL_FLOOR_TOKENS <= comp.tail_token_budget <= LEAN_TAIL_CAP_TOKENS

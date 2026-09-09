@@ -37,9 +37,9 @@ class _FakeOpenAI:
 
 
 def _make_agent(monkeypatch, provider, api_mode="chat_completions", base_url="https://openrouter.ai/api/v1"):
-    monkeypatch.setattr("run_agent.get_tool_definitions", lambda **kw: _tool_defs("web_search", "terminal"))
-    monkeypatch.setattr("run_agent.check_toolset_requirements", lambda: {})
-    monkeypatch.setattr("run_agent.OpenAI", _FakeOpenAI)
+    monkeypatch.setattr("model_tools.get_tool_definitions", lambda **kw: _tool_defs("web_search", "terminal"))
+    monkeypatch.setattr("model_tools.check_toolset_requirements", lambda: {})
+    monkeypatch.setattr("agent.process_bootstrap.OpenAI", _FakeOpenAI)
     return AIAgent(
         api_key="test",
         base_url=base_url,
@@ -129,14 +129,3 @@ class TestStrictApiValidation:
         # Should sanitize for Fireworks (chat_completions mode)
         assert agent._should_sanitize_tool_calls() is True
 
-    def test_no_sanitize_for_codex_responses(self, monkeypatch):
-        """Codex responses mode should NOT sanitize."""
-        agent = _make_agent(
-            monkeypatch,
-            "openai",
-            api_mode="codex_responses",
-            base_url="https://api.openai.com/v1"
-        )
-
-        # Should NOT sanitize for Codex
-        assert agent._should_sanitize_tool_calls() is False

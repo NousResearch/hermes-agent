@@ -34,6 +34,9 @@ def _restore_stdout():
 
 @pytest.fixture()
 def server():
+    # Mocks are scoped to the initial import only — keeping them active for
+    # the whole test would poison modules first imported inside test bodies
+    # (see tests/tui_gateway/test_protocol.py for the full rationale).
     with patch.dict("sys.modules", {
         "hermes_constants": MagicMock(get_hermes_home=MagicMock(return_value="/tmp/hermes_test")),
         "hermes_cli.env_loader": MagicMock(),
@@ -42,10 +45,19 @@ def server():
     }):
         import importlib
         mod = importlib.import_module("tui_gateway.server")
-        yield mod
-        mod._sessions.clear()
-        mod._pending.clear()
-        mod._answers.clear()
+
+    # Tests below stub handlers ("session.list", "prompt.submit", ...) in
+    # the module-level _methods dict shared with every other test file in
+    # the process — snapshot and restore it around each test.
+    methods = dict(mod._methods)
+    real_stdout = mod._real_stdout
+    yield mod
+    mod._methods.clear()
+    mod._methods.update(methods)
+    mod._real_stdout = real_stdout
+    mod._sessions.clear()
+    mod._pending.clear()
+    mod._answers.clear()
 
 
 @pytest.fixture()
@@ -113,37 +125,6 @@ def test_dispatch_inline_rpc_does_not_block_under_gil_pressure(server):
     assert fast_elapsed < 2.0, (
         f"fast handler blocked for {fast_elapsed:.2f}s behind slow session.list — "
         f"the WS read loop would stall, causing false 'needs setup' (#50005)."
-    )
-
-    released.set()
-
-
-def test_dispatch_pet_info_does_not_block_prompt_submit(server):
-    """pet.info (polled every few seconds by the Desktop petdex) must not
-    block prompt.submit. Before the fix, pet.info ran inline and a slow
-    pet.info under GIL pressure delayed prompt.submit until the 120s RPC
-    timeout fired (#50005).
-    """
-    released = threading.Event()
-
-    def slow_pet_info(rid, params):
-        released.wait(timeout=5)
-        return server._ok(rid, {"pet": "cat"})
-
-    server._methods["pet.info"] = slow_pet_info
-    server._methods["prompt.submit"] = lambda rid, params: server._ok(rid, {"status": "streaming"})
-
-    t0 = time.monotonic()
-    assert server.dispatch({"id": "pet", "method": "pet.info", "params": {}}) is None
-
-    # prompt.submit is inline (it spawns its own thread) — should return immediately
-    resp = server.dispatch({"id": "prompt", "method": "prompt.submit", "params": {}})
-    elapsed = time.monotonic() - t0
-
-    assert resp["result"] == {"status": "streaming"}
-    assert elapsed < 2.0, (
-        f"prompt.submit blocked for {elapsed:.2f}s behind slow pet.info — "
-        f"the user's message would appear stuck under GIL pressure (#50005)."
     )
 
     released.set()

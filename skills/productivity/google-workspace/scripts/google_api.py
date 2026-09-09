@@ -70,7 +70,7 @@ def _ensure_authenticated():
 
 def _stored_token_scopes() -> list[str]:
     try:
-        data = json.loads(TOKEN_PATH.read_text())
+        data = json.loads(TOKEN_PATH.read_text(encoding="utf-8"))
     except Exception:
         return list(SCOPES)
     scopes = data.get("scopes")
@@ -108,7 +108,7 @@ def _run_gws(parts: list[str], *, params: dict | None = None, body: dict | None 
     result = subprocess.run(
         cmd,
         capture_output=True,
-        text=True,
+        text=True, encoding='utf-8', errors='replace',
         env=_gws_env(),
     )
     if result.returncode != 0:
@@ -192,7 +192,7 @@ def get_credentials():
             json.dumps(
                 _normalize_authorized_user_payload(json.loads(creds.to_json())),
                 indent=2,
-            )
+            ), encoding="utf-8"
         )
     if not creds.valid:
         print("Token is invalid. Re-run setup.", file=sys.stderr)

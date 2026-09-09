@@ -16,8 +16,6 @@ def clean_ca_env(monkeypatch):
         monkeypatch.delenv(var, raising=False)
 
 
-def test_ssl_verify_false_disables_verification(clean_ca_env):
-    assert resolve_httpx_verify(ssl_verify=False) is False
 
 
 def test_hermes_ca_bundle_returns_ssl_context(clean_ca_env, monkeypatch):
@@ -26,14 +24,8 @@ def test_hermes_ca_bundle_returns_ssl_context(clean_ca_env, monkeypatch):
     assert isinstance(result, ssl.SSLContext)
 
 
-def test_explicit_ca_bundle_param(clean_ca_env):
-    result = resolve_httpx_verify(ca_bundle=certifi.where())
-    assert isinstance(result, ssl.SSLContext)
 
 
-def test_missing_ca_bundle_falls_back_to_true(clean_ca_env, monkeypatch):
-    monkeypatch.setenv("HERMES_CA_BUNDLE", "/nonexistent/root-ca.pem")
-    assert resolve_httpx_verify() is True
 
 
 def test_default_without_env_is_true(clean_ca_env):

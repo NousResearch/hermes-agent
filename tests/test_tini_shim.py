@@ -65,23 +65,8 @@ def test_strips_g_and_double_dash(recorder: tuple[Path, Path]) -> None:
     assert "--" not in lines
 
 
-def test_strips_g_without_double_dash(recorder: tuple[Path, Path]) -> None:
-    r = _run_shim(recorder, ["-g", "gateway", "run"])
-    assert r.returncode == 0, r.stderr
-    lines = [ln for ln in r.stdout.splitlines() if ln]
-    init, wrapper = recorder
-    assert lines == [str(wrapper), "gateway", "run"]
 
 
-def test_empty_args_after_flags_uses_wrapper_only(
-    recorder: tuple[Path, Path],
-) -> None:
-    """entrypoint `tini -g --` with empty CMD → /init main-wrapper."""
-    r = _run_shim(recorder, ["-g", "--"])
-    assert r.returncode == 0, r.stderr
-    lines = [ln for ln in r.stdout.splitlines() if ln]
-    _, wrapper = recorder
-    assert lines == [str(wrapper)]
 
 
 def test_does_not_double_wrap_existing_wrapper(

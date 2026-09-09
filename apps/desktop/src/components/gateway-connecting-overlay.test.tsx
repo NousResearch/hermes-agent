@@ -10,7 +10,7 @@ import { BootFailureOverlay } from './boot-failure-overlay'
 import { GatewayConnectingOverlay } from './gateway-connecting-overlay'
 
 // Repro for the "remote gateway → stuck on CONNECTING, no way to settings"
-// report. The connecting overlay (z-1200, full-screen, pointer-events on) used
+// report. The connecting overlay (full-screen, pointer-events on) used
 // to be shown whenever `gatewayState !== 'open' && !boot.error`. The ONLY escape
 // hatch — BootFailureOverlay, which has "Use local gateway" / "Sign in" /
 // "Retry" — only renders when `boot.error` is set.
@@ -170,14 +170,14 @@ describe('connecting overlay vs recovery surface', () => {
     expect(isRecoveryShown()).toBe(false)
   })
 
-  it('FIX: once the prolonged reconnect raises a recoverable boot error, the recovery overlay takes over', async () => {
-    // Mirrors what useGatewayBoot.scheduleReconnect() now does after ~45s of
-    // failed post-boot reconnects: it calls failDesktopBoot(), flipping the UI
-    // from the dead-end CONNECTING overlay to the recovery surface.
+  it('FIX: confirmed reauth boot.error still surfaces the recovery overlay (not CONNECTING)', async () => {
+    // Transport blips no longer set boot.error (toast + background retry).
+    // Confirmed OAuth reauth still does — and that recovery surface must win
+    // over any residual connecting state so Sign-in / Gateway settings stay reachable.
     setGatewayState('error')
     $desktopBoot.set({
       ...$desktopBoot.get(),
-      error: 'Lost connection to the Hermes gateway and could not reconnect.',
+      error: 'Your remote gateway session has expired. Sign in again.',
       running: false,
       visible: true
     })
@@ -191,7 +191,7 @@ describe('connecting overlay vs recovery surface', () => {
       )
     })
 
-    // Escape hatch is now reachable; the connecting overlay bows out.
+    // Escape hatch is reachable; the connecting overlay bows out.
     expect(isRecoveryShown()).toBe(true)
     expect(screen.getByRole('button', { name: /gateway settings/i })).toBeTruthy()
     expect(isConnectingShown()).toBe(false)

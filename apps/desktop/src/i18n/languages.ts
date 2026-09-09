@@ -28,6 +28,18 @@ export const LOCALE_OPTIONS = [
     name: '日本語',
     englishName: 'Japanese',
     configValue: 'ja'
+  },
+  {
+    id: 'ar',
+    name: 'العربية',
+    englishName: 'Arabic',
+    configValue: 'ar'
+  },
+  {
+    id: 'ru',
+    name: 'Русский',
+    englishName: 'Russian',
+    configValue: 'ru'
   }
 ] as const satisfies readonly { configValue: string; englishName: string; id: Locale; name: string }[]
 
@@ -64,7 +76,25 @@ const LOCALE_ALIASES: Record<string, Locale> = {
   zh_hant_hk: 'zh-hant',
   ja: 'ja',
   'ja-jp': 'ja',
-  ja_jp: 'ja'
+  ja_jp: 'ja',
+  ar: 'ar',
+  'ar-sa': 'ar',
+  ar_sa: 'ar',
+  'ar-ae': 'ar',
+  ar_ae: 'ar',
+  'ar-eg': 'ar',
+  ar_eg: 'ar',
+  arabic: 'ar',
+  العربية: 'ar',
+  ru: 'ru',
+  'ru-ru': 'ru',
+  ru_ru: 'ru',
+  'ru-by': 'ru',
+  'ru-kz': 'ru',
+  russian: 'ru',
+  'russian-russian': 'ru',
+  русский: 'ru',
+  руский: 'ru'
 }
 
 export function isLocale(value: unknown): value is Locale {

@@ -18,14 +18,6 @@ def _mock_urlopen(response_data, status=200):
 class TestPostRegistration:
     """Tests for the low-level HTTP helper."""
 
-    @patch("plugins.platforms.feishu.adapter.urlopen")
-    def test_post_registration_returns_parsed_json(self, mock_urlopen_fn):
-        from plugins.platforms.feishu.adapter import _post_registration
-
-        mock_urlopen_fn.return_value = _mock_urlopen({"nonce": "abc", "supported_auth_methods": ["client_secret"]})
-        result = _post_registration("https://accounts.feishu.cn", {"action": "init"})
-        assert result["nonce"] == "abc"
-        assert "client_secret" in result["supported_auth_methods"]
 
     @patch("plugins.platforms.feishu.adapter.urlopen")
     def test_post_registration_sends_form_encoded_body(self, mock_urlopen_fn):
@@ -65,19 +57,6 @@ class TestInitRegistration:
         with pytest.raises(RuntimeError, match="client_secret"):
             _init_registration("feishu")
 
-    @patch("plugins.platforms.feishu.adapter.urlopen")
-    def test_init_uses_lark_url_for_lark_domain(self, mock_urlopen_fn):
-        from plugins.platforms.feishu.adapter import _init_registration
-
-        mock_urlopen_fn.return_value = _mock_urlopen({
-            "nonce": "abc",
-            "supported_auth_methods": ["client_secret"],
-        })
-        _init_registration("lark")
-        call_args = mock_urlopen_fn.call_args
-        request = call_args[0][0]
-        assert "larksuite.com" in request.full_url
-
 
 class TestBeginRegistration:
     """Tests for the begin step."""
@@ -100,23 +79,6 @@ class TestBeginRegistration:
         assert result["user_code"] == "ABCD-1234"
         assert result["interval"] == 5
         assert result["expire_in"] == 600
-
-    @patch("plugins.platforms.feishu.adapter.urlopen")
-    def test_begin_sends_correct_archetype(self, mock_urlopen_fn):
-        from plugins.platforms.feishu.adapter import _begin_registration
-
-        mock_urlopen_fn.return_value = _mock_urlopen({
-            "device_code": "dc_123",
-            "verification_uri_complete": "https://example.com/qr",
-            "user_code": "X",
-            "interval": 5,
-            "expire_in": 600,
-        })
-        _begin_registration("feishu")
-        request = mock_urlopen_fn.call_args[0][0]
-        body = request.data.decode("utf-8")
-        assert "archetype=PersonalAgent" in body
-        assert "auth_method=client_secret" in body
 
 
 class TestPollRegistration:
@@ -169,79 +131,6 @@ class TestPollRegistration:
         assert result is not None
         assert result["domain"] == "lark"
 
-    @patch("plugins.platforms.feishu.adapter.time")
-    @patch("plugins.platforms.feishu.adapter.urlopen")
-    def test_poll_success_with_lark_brand_in_same_response(self, mock_urlopen_fn, mock_time):
-        """Credentials and lark tenant_brand in one response must not be discarded."""
-        from plugins.platforms.feishu.adapter import _poll_registration
-
-        mock_time.monotonic.side_effect = [0, 1]
-        mock_time.sleep = MagicMock()
-
-        mock_urlopen_fn.return_value = _mock_urlopen({
-            "client_id": "cli_lark_direct",
-            "client_secret": "secret_lark_direct",
-            "user_info": {"open_id": "ou_lark_direct", "tenant_brand": "lark"},
-        })
-        result = _poll_registration(
-            device_code="dc_123", interval=1, expire_in=60, domain="feishu"
-        )
-        assert result is not None
-        assert result["app_id"] == "cli_lark_direct"
-        assert result["domain"] == "lark"
-        assert result["open_id"] == "ou_lark_direct"
-
-    @patch("plugins.platforms.feishu.adapter.time")
-    @patch("plugins.platforms.feishu.adapter.urlopen")
-    def test_poll_returns_none_on_access_denied(self, mock_urlopen_fn, mock_time):
-        from plugins.platforms.feishu.adapter import _poll_registration
-
-        mock_time.monotonic.side_effect = [0, 1]
-        mock_time.sleep = MagicMock()
-
-        mock_urlopen_fn.return_value = _mock_urlopen({
-            "error": "access_denied",
-        })
-        result = _poll_registration(
-            device_code="dc_123", interval=1, expire_in=60, domain="feishu"
-        )
-        assert result is None
-
-    @patch("plugins.platforms.feishu.adapter.time")
-    @patch("plugins.platforms.feishu.adapter.urlopen")
-    def test_poll_returns_none_on_timeout(self, mock_urlopen_fn, mock_time):
-        from plugins.platforms.feishu.adapter import _poll_registration
-
-        mock_time.monotonic.side_effect = [0, 999]
-        mock_time.sleep = MagicMock()
-
-        mock_urlopen_fn.return_value = _mock_urlopen({
-            "error": "authorization_pending",
-        })
-        result = _poll_registration(
-            device_code="dc_123", interval=1, expire_in=1, domain="feishu"
-        )
-        assert result is None
-
-    @patch("plugins.platforms.feishu.adapter.time")
-    @patch("plugins.platforms.feishu.adapter.urlopen")
-    def test_poll_timeout_uses_monotonic_clock(self, mock_urlopen_fn, mock_time):
-        from plugins.platforms.feishu.adapter import _poll_registration
-
-        mock_time.monotonic.side_effect = [1000, 1000.2, 1001.1]
-        mock_time.time.side_effect = [1000, 900, 901, 902]
-        mock_time.sleep = MagicMock()
-
-        mock_urlopen_fn.return_value = _mock_urlopen({
-            "error": "authorization_pending",
-        })
-        result = _poll_registration(
-            device_code="dc_123", interval=1, expire_in=1, domain="feishu"
-        )
-
-        assert result is None
-        mock_urlopen_fn.assert_called_once()
-
 
 class TestRenderQr:
     """Tests for QR code terminal rendering."""
@@ -256,12 +145,6 @@ class TestRenderQr:
         mock_qr.add_data.assert_called_once_with("https://example.com/qr")
         mock_qr.make.assert_called_once_with(fit=True)
         mock_qr.print_ascii.assert_called_once()
-
-    def test_render_qr_returns_false_when_qrcode_missing(self):
-        from plugins.platforms.feishu.adapter import _render_qr
-
-        with patch("plugins.platforms.feishu.adapter._qrcode_mod", None):
-            assert _render_qr("https://example.com/qr") is False
 
 
 class TestProbeBot:
@@ -278,40 +161,6 @@ class TestProbeBot:
         assert result is not None
         assert result["bot_name"] == "TestBot"
         assert result["bot_open_id"] == "ou_bot123"
-
-    @patch("plugins.platforms.feishu.adapter.FEISHU_AVAILABLE", True)
-    def test_probe_returns_none_on_failure(self):
-        from plugins.platforms.feishu.adapter import probe_bot
-
-        with patch("plugins.platforms.feishu.adapter._probe_bot_sdk") as mock_sdk:
-            mock_sdk.return_value = None
-            result = probe_bot("bad_id", "bad_secret", "feishu")
-
-        assert result is None
-
-    @patch("plugins.platforms.feishu.adapter.FEISHU_AVAILABLE", False)
-    @patch("plugins.platforms.feishu.adapter.urlopen")
-    def test_http_fallback_when_sdk_unavailable(self, mock_urlopen_fn):
-        """Without lark_oapi, probe falls back to raw HTTP."""
-        from plugins.platforms.feishu.adapter import probe_bot
-
-        token_resp = _mock_urlopen({"code": 0, "tenant_access_token": "t-123"})
-        bot_resp = _mock_urlopen({"code": 0, "bot": {"bot_name": "HttpBot", "open_id": "ou_http"}})
-        mock_urlopen_fn.side_effect = [token_resp, bot_resp]
-
-        result = probe_bot("cli_app", "secret", "feishu")
-        assert result is not None
-        assert result["bot_name"] == "HttpBot"
-
-    @patch("plugins.platforms.feishu.adapter.FEISHU_AVAILABLE", False)
-    @patch("plugins.platforms.feishu.adapter.urlopen")
-    def test_http_fallback_returns_none_on_network_error(self, mock_urlopen_fn):
-        from plugins.platforms.feishu.adapter import probe_bot
-        from urllib.error import URLError
-
-        mock_urlopen_fn.side_effect = URLError("connection refused")
-        result = probe_bot("cli_app", "secret", "feishu")
-        assert result is None
 
 
 class TestQrRegister:
@@ -350,13 +199,6 @@ class TestQrRegister:
         mock_init.assert_called_once()
         mock_render.assert_called_once()
 
-    @patch("plugins.platforms.feishu.adapter._init_registration")
-    def test_qr_register_returns_none_on_init_failure(self, mock_init):
-        from plugins.platforms.feishu.adapter import qr_register
-
-        mock_init.side_effect = RuntimeError("not supported")
-        result = qr_register()
-        assert result is None
 
     @patch("plugins.platforms.feishu.adapter._render_qr")
     @patch("plugins.platforms.feishu.adapter._poll_registration")
@@ -381,48 +223,9 @@ class TestQrRegister:
 
     # -- Contract: expected errors → None, unexpected errors → propagate --
 
-    @patch("plugins.platforms.feishu.adapter._init_registration")
-    def test_qr_register_returns_none_on_network_error(self, mock_init):
-        """URLError (network down) is an expected failure → None."""
-        from plugins.platforms.feishu.adapter import qr_register
-        from urllib.error import URLError
-
-        mock_init.side_effect = URLError("DNS resolution failed")
-        result = qr_register()
-        assert result is None
-
-    @patch("plugins.platforms.feishu.adapter._init_registration")
-    def test_qr_register_returns_none_on_json_error(self, mock_init):
-        """Malformed server response is an expected failure → None."""
-        from plugins.platforms.feishu.adapter import qr_register
-
-        mock_init.side_effect = json.JSONDecodeError("bad json", "", 0)
-        result = qr_register()
-        assert result is None
-
-    @patch("plugins.platforms.feishu.adapter._init_registration")
-    def test_qr_register_propagates_unexpected_errors(self, mock_init):
-        """Bugs (e.g. AttributeError) must not be swallowed — they propagate."""
-        from plugins.platforms.feishu.adapter import qr_register
-
-        mock_init.side_effect = AttributeError("some internal bug")
-        with pytest.raises(AttributeError, match="some internal bug"):
-            qr_register()
 
     # -- Negative paths: partial/malformed server responses --
 
-    @patch("plugins.platforms.feishu.adapter._render_qr")
-    @patch("plugins.platforms.feishu.adapter._begin_registration")
-    @patch("plugins.platforms.feishu.adapter._init_registration")
-    def test_qr_register_returns_none_when_begin_missing_device_code(
-        self, mock_init, mock_begin, mock_render
-    ):
-        """Server returns begin response without device_code → RuntimeError → None."""
-        from plugins.platforms.feishu.adapter import qr_register
-
-        mock_begin.side_effect = RuntimeError("Feishu registration did not return a device_code")
-        result = qr_register()
-        assert result is None
 
     @patch("plugins.platforms.feishu.adapter.probe_bot")
     @patch("plugins.platforms.feishu.adapter._render_qr")

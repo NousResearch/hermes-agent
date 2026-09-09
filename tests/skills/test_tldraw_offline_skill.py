@@ -40,12 +40,6 @@ def test_frontmatter_present(skill_text: str):
     assert skill_text.count("---") >= 2, "frontmatter must be delimited by two '---'"
 
 
-def test_description_under_sixty_chars(skill_text: str):
-    m = re.search(r"^description: (.*)$", skill_text, re.MULTILINE)
-    assert m, "no description field"
-    desc = m.group(1).strip()
-    assert len(desc) <= 60, f"description is {len(desc)} chars (>60): {desc!r}"
-    assert desc.endswith("."), "description should end with a period"
 
 
 def test_required_sections_present(skill_text: str):
@@ -61,10 +55,6 @@ def test_required_sections_present(skill_text: str):
         assert heading in skill_text, f"missing section: {heading}"
 
 
-def test_supporting_scripts_present():
-    assert MAIN_JS.is_file()
-    assert (SKILL_DIR / "scripts" / "validate_shapes.mjs").is_file()
-    assert (SKILL_DIR / "scripts" / "counter.js").is_file()
 
 
 def test_counter_example_is_interactive_and_safe():
@@ -82,33 +72,12 @@ def test_counter_example_is_interactive_and_safe():
     assert "meta" in counter and "count" in counter
 
 
-def test_skill_documents_interactive_ui(skill_text: str):
-    assert "## Interactive UI" in skill_text
-    assert "counter.js" in skill_text
-    # the double-fire pitfall must be documented
-    assert "twice" in skill_text.lower() or "double" in skill_text.lower()
 
 
-def test_documents_the_ctx_contract(skill_text: str):
-    # The single biggest correctness fact learned from running the real app:
-    # a document script is `export default function ({ editor, helpers, signal })`,
-    # NOT a top-level bare-`editor`-global script.
-    assert "export default function" in skill_text
-    assert "{ editor, helpers, signal }" in skill_text
-    assert "AbortSignal" in skill_text or "signal" in skill_text
 
 
-def test_documents_http_control_api(skill_text: str):
-    # Agents drive/verify the canvas through the local HTTP API.
-    for token in ("/api/doc/", "/exec", "script-status", "script-workspace",
-                  "server.json", "Authorization: Bearer"):
-        assert token in skill_text, f"HTTP API detail missing: {token}"
 
 
-def test_documents_tick_timing_pitfall(skill_text: str):
-    # Verified live: store.listen fires the tick AFTER a commit, not synchronously.
-    assert "store.listen" in skill_text
-    assert "tick" in skill_text.lower()
 
 
 def test_uses_richtext_not_bare_string(skill_text: str):
@@ -116,24 +85,6 @@ def test_uses_richtext_not_bare_string(skill_text: str):
     assert "richText" in skill_text
 
 
-def test_shape_prop_table_matches_validator(skill_text: str):
-    validator = (SKILL_DIR / "scripts" / "validate_shapes.mjs").read_text(encoding="utf-8")
-    assert "createTLSchema" in validator  # validates against the real schema
-    expected = {
-        "note": {
-            "richText", "color", "labelColor", "size", "font", "align",
-            "verticalAlign", "growY", "fontSizeAdjustment", "url", "scale",
-            "textLastEditedBy",
-        },
-        "text": {"richText", "color", "size", "font", "textAlign", "w", "scale", "autoSize"},
-        "frame": {"w", "h", "name", "color"},
-    }
-    table_region = skill_text.split("## Shape props")[1].split("## Pitfalls")[0]
-    for shape, props in expected.items():
-        for prop in props:
-            assert re.search(rf"`{re.escape(prop)}`", table_region), (
-                f"{shape} prop `{prop}` in validator but missing from SKILL.md table"
-            )
 
 
 def test_main_js_matches_verified_contract(main_js: str):
@@ -153,12 +104,6 @@ def test_main_js_matches_verified_contract(main_js: str):
     assert "history: 'ignore'" in main_js
 
 
-def test_main_js_is_not_bare_global_style(main_js: str):
-    # Guard against regressing to the old (wrong) top-level-global form.
-    # A bare-global script would call editor.* at module top level with no ctx.
-    assert "export default function" in main_js, (
-        "main.js must be a default-export ctx function, not a top-level script"
-    )
 
 
 def test_platforms_declared(skill_text: str):

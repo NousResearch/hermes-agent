@@ -13,6 +13,7 @@ import {
 import { triggerHaptic } from '@/lib/haptics'
 import { Check, Globe, Loader2, Plus, Save, Trash2, Zap } from '@/lib/icons'
 import { cn } from '@/lib/utils'
+import { confirm } from '@/store/confirm'
 import { notify, notifyError } from '@/store/notifications'
 import type { CustomEndpoint, CustomEndpointUpdate } from '@/types/hermes'
 
@@ -58,7 +59,7 @@ function formFromEndpoint(endpoint: CustomEndpoint): EndpointForm {
   }
 }
 
-function toPayload(form: EndpointForm): CustomEndpointUpdate {
+function toPayload(form: EndpointForm, models?: string[]): CustomEndpointUpdate {
   const contextLength = Number.parseInt(form.contextLength, 10)
 
   return {
@@ -69,7 +70,8 @@ function toPayload(form: EndpointForm): CustomEndpointUpdate {
     api_key: form.apiKey.trim() || undefined,
     context_length: Number.isFinite(contextLength) && contextLength > 0 ? contextLength : undefined,
     discover_models: form.discoverModels,
-    make_default: form.makeDefault
+    make_default: form.makeDefault,
+    models: models?.length ? models : undefined
   }
 }
 
@@ -125,7 +127,7 @@ export function CustomEndpointsSettings({ onConfigSaved, onMainModelChanged }: C
   async function handleSave() {
     try {
       setSaving(true)
-      const response = await saveCustomEndpoint(toPayload(form))
+      const response = await saveCustomEndpoint(toPayload(form, discoveredModels))
       setEndpoints(response.endpoints)
       const saved = response.endpoints.find(endpoint => endpoint.id === response.id)
 
@@ -194,7 +196,8 @@ export function CustomEndpointsSettings({ onConfigSaved, onMainModelChanged }: C
   }
 
   async function handleDelete(endpoint: CustomEndpoint) {
-    if (!window.confirm(`Delete ${endpoint.name}?`)) {
+    // This panel is not internationalized at all — keep the literal it had.
+    if (!(await confirm({ destructive: true, title: `Delete ${endpoint.name}?` }))) {
       return
     }
 

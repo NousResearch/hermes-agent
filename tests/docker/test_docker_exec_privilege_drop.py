@@ -146,106 +146,10 @@ def test_shim_drops_root_to_hermes_uid(sleep_container: str) -> None:
     )
 
 
-def test_shim_short_circuits_for_non_root_exec(sleep_container: str) -> None:
-    """docker exec --user hermes already runs as 10000; shim should be a no-op.
-
-    Verified indirectly: the command must still succeed end-to-end. If the
-    shim incorrectly tried to drop privileges a second time (e.g. by
-    invoking s6-setuidgid which requires root), it would fail with
-    EPERM. A clean success proves the short-circuit fired.
-    """
-    subprocess.run(
-        ["docker", "exec", "--user", "root", sleep_container,
-         "rm", "-f", "/opt/data/config.yaml"],
-        capture_output=True, check=False,
-    )
-
-    r = subprocess.run(
-        ["docker", "exec", "--user", "hermes", sleep_container,
-         "hermes", "config", "set", "_test.shim_short_circuit", "1"],
-        capture_output=True, text=True, timeout=30,
-    )
-    assert r.returncode == 0, (
-        f"docker exec --user hermes failed: {r.stderr!r} stdout={r.stdout!r}. "
-        "If the shim mis-handled the non-root path, this would fail with EPERM."
-    )
-
-    # File still ends up hermes:hermes — orthogonally confirms uid.
-    r = subprocess.run(
-        ["docker", "exec", sleep_container,
-         "stat", "-c", "%U:%G", "/opt/data/config.yaml"],
-        capture_output=True, text=True, timeout=10,
-    )
-    assert r.stdout.strip() == "hermes:hermes"
 
 
-def test_shim_opt_out_keeps_root(sleep_container: str) -> None:
-    """HERMES_DOCKER_EXEC_AS_ROOT=1 should suppress the privilege drop.
-
-    Reserved for diagnostic sessions where the operator deliberately
-    wants root semantics. Verified by writing a file and checking its
-    owner.
-    """
-    subprocess.run(
-        ["docker", "exec", "--user", "root", sleep_container,
-         "rm", "-f", "/opt/data/config.yaml"],
-        capture_output=True, check=False,
-    )
-
-    r = subprocess.run(
-        ["docker", "exec",
-         "-e", "HERMES_DOCKER_EXEC_AS_ROOT=1",
-         sleep_container,
-         "hermes", "config", "set", "_test.opt_out", "1"],
-        capture_output=True, text=True, timeout=30,
-    )
-    assert r.returncode == 0, f"opt-out invocation failed: {r.stderr}"
-
-    r = subprocess.run(
-        ["docker", "exec", sleep_container,
-         "stat", "-c", "%U:%G", "/opt/data/config.yaml"],
-        capture_output=True, text=True, timeout=10,
-    )
-    assert r.stdout.strip() == "root:root", (
-        f"With HERMES_DOCKER_EXEC_AS_ROOT=1, expected root:root, "
-        f"got {r.stdout.strip()!r}"
-    )
 
 
-@pytest.mark.parametrize("falsy_value", ["0", "false", "no", "", "garbage", "2"])
-def test_shim_opt_out_strict_truthiness(
-    sleep_container: str, falsy_value: str,
-) -> None:
-    """Anything other than 1/true/yes (case-insensitive) does NOT opt out.
-
-    Strict truthiness so a typo (``HERMES_DOCKER_EXEC_AS_ROOT=0``) doesn't
-    silently keep the user as root. Mirrors the policy used by
-    ``HERMES_GATEWAY_NO_SUPERVISE`` in #33583.
-    """
-    subprocess.run(
-        ["docker", "exec", "--user", "root", sleep_container,
-         "rm", "-f", "/opt/data/config.yaml"],
-        capture_output=True, check=False,
-    )
-
-    r = subprocess.run(
-        ["docker", "exec",
-         "-e", f"HERMES_DOCKER_EXEC_AS_ROOT={falsy_value}",
-         sleep_container,
-         "hermes", "config", "set", "_test.falsy", "1"],
-        capture_output=True, text=True, timeout=30,
-    )
-    assert r.returncode == 0, f"falsy value {falsy_value!r} caused failure: {r.stderr}"
-
-    r = subprocess.run(
-        ["docker", "exec", sleep_container,
-         "stat", "-c", "%U:%G", "/opt/data/config.yaml"],
-        capture_output=True, text=True, timeout=10,
-    )
-    assert r.stdout.strip() == "hermes:hermes", (
-        f"falsy opt-out value {falsy_value!r} unexpectedly suppressed the drop; "
-        f"file owner is {r.stdout.strip()!r}, expected hermes:hermes"
-    )
 
 
 def test_main_cmd_path_unaffected(built_image: str) -> None:

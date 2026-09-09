@@ -1,10 +1,12 @@
 import { type ToolTitleKey, translateNow } from '@/i18n'
 import { normalizeExternalUrl } from '@/lib/external-link'
 import { summarizeShellCommand } from '@/lib/summarize-command'
-import { capitalize, normalize } from '@/lib/text'
+import { capitalize, firstStringField, normalize } from '@/lib/text'
+import { isCardTool, isFileEditTool, isSilentTool } from '@/lib/tool-render-class'
 import { extractToolErrorMessage, formatToolResultSummary } from '@/lib/tool-result-summary'
 
 import {
+  browserExecStepLabel,
   compactPreview,
   contextValue,
   formatDurationSeconds,
@@ -31,11 +33,10 @@ export * from './format'
 export * from './targets'
 export * from './types'
 
-const FILE_EDIT_TOOL_NAMES = new Set(['edit_file', 'patch', 'write_file'])
-
-export function isFileEditTool(toolName: string): boolean {
-  return FILE_EDIT_TOOL_NAMES.has(toolName)
-}
+// The transcript's render budget prices a turn by the same classification, so
+// it lives in `@/lib/tool-render-class` where both sides can reach it without
+// pulling this module's formatting/i18n weight into the cost path.
+export { isCardTool, isFileEditTool, isSilentTool }
 
 export interface DiffLineStats {
   added: number
@@ -57,7 +58,7 @@ export function countDiffLineStats(diff: string): DiffLineStats {
   return { added, removed }
 }
 
-function fileEditPath(args: Record<string, unknown>, result: Record<string, unknown>): string {
+export function fileEditPath(args: Record<string, unknown>, result: Record<string, unknown>): string {
   return (
     firstStringField(args, ['path', 'file', 'filepath']) ||
     firstStringField(result, ['path', 'file', 'filepath', 'resolved_path']) ||
@@ -65,7 +66,7 @@ function fileEditPath(args: Record<string, unknown>, result: Record<string, unkn
   )
 }
 
-function fileEditBasename(path: string): string {
+export function fileEditBasename(path: string): string {
   const normalized = path.replace(/\\/g, '/').trim()
 
   return normalized.split('/').filter(Boolean).pop() || normalized
@@ -128,9 +129,14 @@ function readFileDisplayTarget(args: Record<string, unknown>, result: Record<str
   return [fileEditBasename(path), lineLabel].filter(Boolean).join(' ')
 }
 
+// The real command, preferring the actual argument over the backend's
+// display preview. `context` is a *summarized* preview ("sleep 70 + 2
+// commands") the gateway sends on tool.start before real args arrive — fine
+// as a placeholder for the live title, wrong for the `$` transcript, which
+// must show what actually ran.
 function shellCommand(args: Record<string, unknown>): string {
   return (
-    firstStringField(args, ['context', 'preview']) || firstStringField(args, ['command', 'code']) || contextValue(args)
+    firstStringField(args, ['command', 'code']) || firstStringField(args, ['context', 'preview']) || contextValue(args)
   )
 }
 
@@ -179,6 +185,10 @@ const TOOL_META: Record<ToolTitleKey, ToolMetaSpec> = {
   list_files: {
     icon: 'files',
     tone: 'file'
+  },
+  memory: {
+    icon: 'brain',
+    tone: 'agent'
   },
   patch: { icon: 'edit', tone: 'file' },
   read_file: { icon: 'file', tone: 'file' },
@@ -338,6 +348,7 @@ const DEFAULT_COUNT_NOUN_BY_TOOL: Record<string, string> = {
   search_files: 'result',
   session_search_recall: 'result',
   todo: 'todo',
+  todo_list: 'todo',
   web_search: 'result'
 }
 
@@ -507,6 +518,16 @@ function toolResultCount(
     }
   }
 
+  // Memory success payloads put the live total on `entry_count` — keep the noun
+  // as entry/entries instead of falling through the generic `*_count` path.
+  if (part.toolName === 'memory') {
+    const entryTotal = countFromUnknown(resultRecord.entry_count)
+
+    if (entryTotal !== null) {
+      return countMetric(entryTotal, 'entry')
+    }
+  }
+
   const directCount = countFromRecord(resultRecord, fallbackNounByTool)
 
   if (directCount !== null) {
@@ -574,18 +595,6 @@ function summarizeBrowserSnapshot(snapshot: string): string {
     .slice(0, 4)
 
   return labels.length ? `${stats}\nTop controls: ${labels.join(', ')}` : stats
-}
-
-function firstStringField(record: Record<string, unknown>, keys: readonly string[]): string {
-  for (const key of keys) {
-    const value = record[key]
-
-    if (typeof value === 'string' && value.trim()) {
-      return value.trim()
-    }
-  }
-
-  return ''
 }
 
 function collectResultItems(value: unknown): unknown[] {
@@ -672,10 +681,12 @@ function toolErrorText(part: ToolPart, result: Record<string, unknown>): string 
   // stage's code, etc. — all routinely produce useful output and aren't
   // failures. Only treat it as an error when the command produced no real
   // output to show; otherwise render the output normally (not red).
+  // `output_preview` counts as output: background-process polls report their
+  // text under that name, so omitting it painted healthy `process` rows red.
   const exit = numberValue(result.exit_code)
 
   if (exit !== null && exit !== 0) {
-    const hasOutput = Boolean(firstStringField(result, ['output', 'stdout', 'stderr'])?.trim())
+    const hasOutput = Boolean(firstStringField(result, ['output', 'stdout', 'stderr', 'output_preview'])?.trim())
 
     return hasOutput ? '' : `Command failed with exit code ${exit}.`
   }
@@ -688,7 +699,21 @@ function toolStatus(part: ToolPart, resultRecord: Record<string, unknown>): Tool
     return 'running'
   }
 
-  return toolErrorText(part, resultRecord) ? 'error' : 'success'
+  // Explicit success wins over isError / nested-error heuristics. Memory writes
+  // return `{ success: true }` when the batch landed; a stale outer `isError`
+  // envelope must not paint a real save amber.
+  if (resultRecord.success === true || resultRecord.ok === true) {
+    return 'success'
+  }
+
+  if (!toolErrorText(part, resultRecord)) {
+    return 'success'
+  }
+
+  // A rejected memory write is a budget negotiation, not a failure: the store
+  // refuses an over-limit batch and the agent retries smaller. Soft warning —
+  // never destructive-red beside routine bookkeeping.
+  return part.toolName === 'memory' ? 'warning' : 'error'
 }
 
 function durationLabel(resultRecord: Record<string, unknown>): string | undefined {
@@ -1009,6 +1034,13 @@ function toolSubtitle(
     return url ? hostnameOf(url) : 'Fetched webpage'
   }
 
+  if (toolName === 'memory') {
+    // The raw payload is bookkeeping the user never needs: usage counters, a
+    // note telling the model not to retry, and the full operations array. The
+    // human-readable line is the only part worth showing.
+    return firstStringField(resultRecord, ['message', 'error'])
+  }
+
   if (toolName === 'cronjob') {
     return cronjobSubtitle(argsRecord, resultRecord)
   }
@@ -1058,6 +1090,13 @@ function toolDetailText(
     if (output || lines) {
       return [output, lines].filter(Boolean).join('\n')
     }
+
+    // A terminal row with no output already shows its command in the `$`
+    // transcript above; the generic fallback would print the same string a
+    // second time. `execute_code` has no transcript, so it keeps the fallback.
+    if (part.toolName === 'terminal') {
+      return ''
+    }
   }
 
   if (part.toolName === 'web_extract') {
@@ -1089,6 +1128,12 @@ function toolDetailText(
     if (content) {
       return content
     }
+  }
+
+  if (part.toolName === 'memory') {
+    // Same reasoning as toolSubtitle: without this the generic fallback dumps
+    // the whole args + result payload into the expanded row.
+    return firstStringField(resultRecord, ['message', 'error'])
   }
 
   if (isFileEditTool(part.toolName)) {
@@ -1340,6 +1385,19 @@ function dynamicTitle(
     }
   }
 
+  if (part.toolName === 'browser_exec') {
+    // The browser_exec schema asks the model to open `code` with a one-line
+    // `# …` comment describing the step in plain language; the CLI/TUI
+    // already surface it (agent/display.py). Mirror that here so desktop
+    // rows read "Searching Amazon for paper towels" instead of the generic
+    // "Browser Exec".
+    const label = browserExecStepLabel(firstStringField(args, ['code']))
+
+    if (label) {
+      return { title: label }
+    }
+  }
+
   if (isFileEditTool(part.toolName)) {
     const path = fileEditPath(args, result)
 
@@ -1356,8 +1414,18 @@ export function buildToolView(part: ToolPart, inlineDiff: string): ToolView {
   const resultRecord = parseMaybeObject(part.result)
   const meta = toolMeta(part.toolName)
   const status = toolStatus(part, resultRecord)
-  const error = toolErrorText(part, resultRecord)
-  const baseTitle = part.result === undefined ? meta.pending : meta.done
+  // Skip residual error-heuristic text once status is success (stale isError
+  // envelope over a landed memory write would otherwise foul the subtitle).
+  const error = status === 'success' ? '' : toolErrorText(part, resultRecord)
+  // Over-budget memory refusals stay amber — don't claim "Saved".
+  const memoryMissed = part.toolName === 'memory' && part.result !== undefined && status !== 'success'
+
+  const baseTitle =
+    part.result === undefined
+      ? meta.pending
+      : memoryMissed
+        ? translateNow('assistant.tool.memoryWriteNoted')
+        : meta.done
 
   const titleParts = dynamicTitle(
     part,

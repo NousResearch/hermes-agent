@@ -1,21 +1,21 @@
 ---
-title: "One Three One Rule — Structured decision-making framework for technical proposals and trade-off analysis"
+title: "One Three One Rule — 1-3-1 decision briefs: problem, three options, one pick"
 sidebar_label: "One Three One Rule"
-description: "Structured decision-making framework for technical proposals and trade-off analysis"
+description: "1-3-1 decision briefs: problem, three options, one pick"
 ---
 
 {/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
 
 # One Three One Rule
 
-Structured decision-making framework for technical proposals and trade-off analysis. When the user faces a choice between multiple approaches (architecture decisions, tool selection, refactoring strategies, migration paths), this skill produces a 1-3-1 format: one clear problem statement, three distinct options with pros/cons, and one concrete recommendation with definition of done and implementation plan. Use when the user asks for a "1-3-1", says "give me options", or needs help choosing between competing approaches.
+1-3-1 decision briefs: problem, three options, one pick.
 
 ## Skill metadata
 
 | | |
 |---|---|
 | Source | Optional — install with `hermes skills install official/communication/one-three-one-rule` |
-| Path | `optional-skills/communication/one-three-one-rule` |
+| Path | `optional-skills/communication\one-three-one-rule` |
 | Version | `1.0.0` |
 | Author | Willard Moore |
 | License | MIT |

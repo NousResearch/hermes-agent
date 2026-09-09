@@ -2,7 +2,7 @@ import { Box, Link, stringWidth, Text } from '@hermes/ink'
 import { Fragment, memo, type ReactNode, useMemo } from 'react'
 
 import { ensureEmojiPresentation } from '../lib/emoji.js'
-import { normalizeExternalUrl, urlSlugTitleLabel, useLinkTitle } from '../lib/externalLink.js'
+import { normalizeExternalUrl } from '../lib/externalLink.js'
 import { BOX_CLOSE, BOX_OPEN, texToUnicode } from '../lib/mathUnicode.js'
 import { highlightLine, isHighlightable } from '../lib/syntax.js'
 import type { Theme } from '../theme.js'
@@ -150,42 +150,32 @@ const isTableDivider = (row: string) => {
 const autolinkUrl = (raw: string) =>
   raw.startsWith('mailto:') || raw.startsWith('http') || !raw.includes('@') ? raw : `mailto:${raw}`
 
-const defaultLinkLabel = (url: string) =>
-  url.startsWith('mailto:') ? url.replace(/^mailto:/, '') : /^https?:\/\//i.test(url) ? urlSlugTitleLabel(url) : url
+// A bare URL renders as itself. The target IS the message for connect links,
+// one-time tokens and signed URLs, so a derived slug label or a fetched page
+// title ("Composio") hides the only string the reader has to copy — and a
+// terminal that ignores OSC 8 leaves nothing behind at all. `mailto:` is the
+// one scheme whose useful text is the address, not the URL.
+const urlAsText = (url: string) => (url.startsWith('mailto:') ? url.replace(/^mailto:/, '') : url)
 
-const pickFallbackLabel = (label: string | undefined, target: string): string | undefined => {
-  const trimmed = label?.trim()
+// An authored markdown label may stand in for the URL, because the OSC 8
+// wrapper below keeps the target reachable by click. A blank label
+// (`[](url)`) says nothing, so the URL itself becomes the text.
+const authoredLabel = (label: string | undefined): string | undefined => label?.trim() || undefined
 
-  if (!trimmed) {
-    return undefined
-  }
-
-  return normalizeExternalUrl(trimmed) === target ? undefined : trimmed
-}
-
-interface ResolvedLinkProps {
-  fallbackLabel?: string
-  t: Theme
-  url: string
-}
-
-function ResolvedLink({ fallbackLabel, t, url }: ResolvedLinkProps) {
-  const fetched = useLinkTitle(url)
-  const display = fetched || fallbackLabel || defaultLinkLabel(url)
+// `Link` emits the OSC 8 hyperlink unconditionally and the renderer also
+// records it per cell, so a label never strands its target: terminals that
+// speak OSC 8 make it clickable, and the in-process click dispatcher covers
+// the ones that don't.
+const renderLink = (k: number, t: Theme, rawUrl: string, label?: string) => {
+  const target = normalizeExternalUrl(rawUrl)
 
   return (
-    <Link url={url}>
+    <Link key={k} url={target}>
       <Text color={t.color.accent} underline>
-        {display}
+        {authoredLabel(label) ?? urlAsText(target)}
       </Text>
     </Link>
   )
-}
-
-const renderResolvedLink = (k: number, t: Theme, rawUrl: string, label?: string) => {
-  const target = normalizeExternalUrl(rawUrl)
-
-  return <ResolvedLink fallbackLabel={pickFallbackLabel(label, target)} key={k} t={t} url={target} />
 }
 
 export const stripInlineMarkup = (v: string) =>
@@ -539,7 +529,14 @@ const renderTable = (k: number, rows: string[][], t: Theme, cols?: number) => {
   )
 }
 
-function MdInline({ t, text }: { t: Theme; text: string }) {
+// `color` anchors the prose runs to a palette tone. Block callers that
+// already wrap MdInline in a colored <Text> (headings, quotes, footnotes)
+// leave it unset and inherit that parent; body-prose callers pass
+// `t.color.text` so plain words are themed instead of falling through to
+// the terminal's default foreground. Without it a single line mixes
+// themed spans (code, links, math) with unthemed prose — and because an
+// inline token can match mid-word, so can a single word.
+function MdInline({ color, t, text }: { color?: string; t: Theme; text: string }) {
   const parts: ReactNode[] = []
 
   let last = 0
@@ -559,9 +556,9 @@ function MdInline({ t, text }: { t: Theme; text: string }) {
         </Text>
       )
     } else if (m[3] && m[4]) {
-      parts.push(renderResolvedLink(parts.length, t, m[4], m[3]))
+      parts.push(renderLink(parts.length, t, m[4], m[3]))
     } else if (m[5]) {
-      parts.push(renderResolvedLink(parts.length, t, autolinkUrl(m[5]), m[5].replace(/^mailto:/, '')))
+      parts.push(renderLink(parts.length, t, autolinkUrl(m[5]), m[5].replace(/^mailto:/, '')))
     } else if (m[6]) {
       parts.push(
         <Text key={parts.length} strikethrough>
@@ -623,7 +620,7 @@ function MdInline({ t, text }: { t: Theme; text: string }) {
       // so `see https://x.com/, which…` keeps the comma outside the link.
       const url = m[16].replace(/[),.;:!?]+$/g, '')
 
-      parts.push(renderResolvedLink(parts.length, t, url))
+      parts.push(renderLink(parts.length, t, url))
 
       if (url.length < m[16].length) {
         parts.push(<Text key={parts.length}>{m[16].slice(url.length)}</Text>)
@@ -650,7 +647,11 @@ function MdInline({ t, text }: { t: Theme; text: string }) {
     parts.push(<Text key={parts.length}>{text.slice(last)}</Text>)
   }
 
-  return <Text wrap="wrap-trim">{parts.length ? parts : text}</Text>
+  return (
+    <Text {...(color ? { color } : {})} wrap="wrap-trim">
+      {parts.length ? parts : text}
+    </Text>
+  )
 }
 
 // Cross-instance parsed-children cache: useMemo's per-instance cache dies
@@ -881,7 +882,7 @@ function MdImpl({ cols, compact, t, text }: MdProps) {
 
         if (closeIdx < 0) {
           start('paragraph')
-          nodes.push(<MdInline key={key} t={t} text={line} />)
+          nodes.push(<MdInline color={t.color.text} key={key} t={t} text={line} />)
           i++
 
           continue
@@ -998,7 +999,7 @@ function MdImpl({ cols, compact, t, text }: MdProps) {
           nodes.push(
             <Text key={`${key}-def-${i}`} wrap="wrap-trim">
               <Text color={t.color.muted}> · </Text>
-              <MdInline t={t} text={def} />
+              <MdInline color={t.color.text} t={t} text={def} />
             </Text>
           )
           i++
@@ -1019,7 +1020,7 @@ function MdImpl({ cols, compact, t, text }: MdProps) {
           <Box key={key} paddingLeft={indentDepth(bullet[1]!) * 2}>
             <Text wrap="wrap-trim">
               <Text color={t.color.muted}>{marker} </Text>
-              <MdInline t={t} text={task ? task[2]! : bullet[2]!} />
+              <MdInline color={t.color.text} t={t} text={task ? task[2]! : bullet[2]!} />
             </Text>
           </Box>
         )
@@ -1036,7 +1037,7 @@ function MdImpl({ cols, compact, t, text }: MdProps) {
           <Box key={key} paddingLeft={indentDepth(numbered[1]!) * 2}>
             <Text wrap="wrap-trim">
               <Text color={t.color.muted}>{numbered[2]}. </Text>
-              <MdInline t={t} text={numbered[3]!} />
+              <MdInline color={t.color.text} t={t} text={numbered[3]!} />
             </Text>
           </Box>
         )
@@ -1141,7 +1142,7 @@ function MdImpl({ cols, compact, t, text }: MdProps) {
       }
 
       start('paragraph')
-      nodes.push(<MdInline key={key} t={t} text={line} />)
+      nodes.push(<MdInline color={t.color.text} key={key} t={t} text={line} />)
       i++
     }
 

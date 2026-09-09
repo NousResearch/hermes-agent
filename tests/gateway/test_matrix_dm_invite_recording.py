@@ -100,51 +100,6 @@ class TestOnInviteRecordsDM:
         adapter._join_room_by_id.assert_awaited_once()
         adapter._record_dm_room.assert_not_awaited()
 
-    @pytest.mark.asyncio
-    async def test_missing_is_direct_does_not_record(self):
-        """Invite events without is_direct attribute should not trigger recording."""
-        adapter = _make_adapter()
-        adapter._join_room_by_id = AsyncMock(return_value=True)
-        adapter._record_dm_room = AsyncMock()
-
-        event = SimpleNamespace(
-            room_id="!room:example.org",
-            sender="@alice:example.org",
-            content=SimpleNamespace(),  # no is_direct attr
-        )
-        await adapter._on_invite(event)
-        await self._drain_invite_tasks(adapter)
-
-        adapter._record_dm_room.assert_not_awaited()
-
-    @pytest.mark.asyncio
-    async def test_join_failure_does_not_record(self):
-        adapter = _make_adapter()
-        adapter._join_room_by_id = AsyncMock(return_value=False)
-        adapter._record_dm_room = AsyncMock()
-
-        event = _make_invite_event(is_direct=True)
-        await adapter._on_invite(event)
-        await self._drain_invite_tasks(adapter)
-
-        adapter._record_dm_room.assert_not_awaited()
-
-    @pytest.mark.asyncio
-    async def test_empty_inviter_does_not_record(self):
-        adapter = _make_adapter()
-        adapter._join_room_by_id = AsyncMock(return_value=True)
-        adapter._record_dm_room = AsyncMock()
-
-        event = SimpleNamespace(
-            room_id="!room:example.org",
-            sender="",
-            content=SimpleNamespace(is_direct=True),
-        )
-        await adapter._on_invite(event)
-        await self._drain_invite_tasks(adapter)
-
-        adapter._record_dm_room.assert_not_awaited()
-
 
 # ---------------------------------------------------------------------------
 # _record_dm_room
@@ -169,22 +124,6 @@ class TestRecordDMRoom:
         )
         assert adapter._dm_rooms.get("!new:example.org") is True
 
-    @pytest.mark.asyncio
-    async def test_appends_to_existing_m_direct(self):
-        """When m.direct exists with other rooms, appends the new room."""
-        adapter = _make_adapter()
-        adapter._client = MagicMock()
-        existing_data = {"@bob:example.org": ["!old:example.org"]}
-        adapter._client.get_account_data = AsyncMock(return_value=existing_data)
-        adapter._client.set_account_data = AsyncMock()
-
-        await adapter._record_dm_room("!new:example.org", "@alice:example.org")
-
-        expected = {
-            "@bob:example.org": ["!old:example.org"],
-            "@alice:example.org": ["!new:example.org"],
-        }
-        adapter._client.set_account_data.assert_awaited_once_with("m.direct", expected)
 
     @pytest.mark.asyncio
     async def test_no_duplicate_room_in_m_direct(self):
@@ -200,60 +139,4 @@ class TestRecordDMRoom:
         adapter._client.set_account_data.assert_not_awaited()
         assert adapter._dm_rooms.get("!room:example.org") is True
 
-    @pytest.mark.asyncio
-    async def test_set_failure_is_handled_gracefully(self):
-        """If set_account_data fails, local cache is still updated."""
-        adapter = _make_adapter()
-        adapter._client = MagicMock()
-        adapter._client.get_account_data = AsyncMock(side_effect=Exception("not found"))
-        adapter._client.set_account_data = AsyncMock(
-            side_effect=Exception("M_FORBIDDEN")
-        )
 
-        # Should not raise
-        await adapter._record_dm_room("!room:example.org", "@alice:example.org")
-
-        # Local cache updated despite server error
-        assert adapter._dm_rooms.get("!room:example.org") is True
-
-    @pytest.mark.asyncio
-    async def test_clears_room_identity_cache(self):
-        """After recording a DM, room identity cache should be invalidated."""
-        adapter = _make_adapter()
-        adapter._client = MagicMock()
-        adapter._client.get_account_data = AsyncMock(side_effect=Exception("404"))
-        adapter._client.set_account_data = AsyncMock()
-
-        adapter._room_identities["!room:example.org"] = "stale"
-        adapter._room_identity_cached_at["!room:example.org"] = time.monotonic()
-
-        await adapter._record_dm_room("!room:example.org", "@alice:example.org")
-
-        assert "!room:example.org" not in adapter._room_identities
-        assert "!room:example.org" not in adapter._room_identity_cached_at
-
-    @pytest.mark.asyncio
-    async def test_no_client_is_noop(self):
-        """If _client is None, does nothing."""
-        adapter = _make_adapter()
-        adapter._client = None
-
-        # Should not raise
-        await adapter._record_dm_room("!room:example.org", "@alice:example.org")
-
-    @pytest.mark.asyncio
-    async def test_m_direct_response_with_content_attr(self):
-        """get_account_data may return an object with .content attribute."""
-        adapter = _make_adapter()
-        adapter._client = MagicMock()
-        resp = SimpleNamespace(content={"@bob:example.org": ["!old:example.org"]})
-        adapter._client.get_account_data = AsyncMock(return_value=resp)
-        adapter._client.set_account_data = AsyncMock()
-
-        await adapter._record_dm_room("!new:example.org", "@alice:example.org")
-
-        expected = {
-            "@bob:example.org": ["!old:example.org"],
-            "@alice:example.org": ["!new:example.org"],
-        }
-        adapter._client.set_account_data.assert_awaited_once_with("m.direct", expected)

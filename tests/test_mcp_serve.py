@@ -4,7 +4,7 @@ Tests for mcp_serve — Hermes MCP server.
 Three layers of tests:
 1. Unit tests — helpers, content extraction, attachment parsing
 2. EventBridge tests — queue mechanics, cursors, waiters, concurrency
-3. End-to-end tests — call actual MCP tools through FastMCP's tool manager
+3. End-to-end tests — call actual MCP tools through the MCPServer's public API
    with real session data in SQLite and sessions.json
 """
 
@@ -228,7 +228,9 @@ class _FakeToolManager:
         return list(self._tools.values())
 
 
-class _FakeFastMCP:
+class _FakeMCPServer:
+    """Stand-in for ``mcp.server.MCPServer`` (``FastMCP`` before mcp 2.0)."""
+
     def __init__(self, *args, **kwargs):
         self._tool_manager = _FakeToolManager()
 
@@ -239,6 +241,17 @@ class _FakeFastMCP:
 
         return decorator
 
+    async def call_tool(self, name, args=None):
+        """Dispatch straight to the handler, with no schema validation.
+
+        Mirrors ``MCPServer.call_tool``'s name so ``_run_tool`` works against
+        either server, but deliberately skips the SDK's pydantic coercion:
+        the parameter-coercion tests exist to prove the handlers' own
+        ``_coerce_int`` guards hold when a client sends a wrongly-typed value,
+        which the real server would reject before the handler ever ran.
+        """
+        return await self._tool_manager.call_tool(name, args)
+
 
 @pytest.fixture
 def fake_mcp_server(populated_sessions_dir, mock_session_db, monkeypatch):
@@ -248,7 +261,7 @@ def fake_mcp_server(populated_sessions_dir, mock_session_db, monkeypatch):
     monkeypatch.setattr(mcp_serve, "_get_session_db", lambda: mock_session_db)
     monkeypatch.setattr(mcp_serve, "_load_channel_directory", lambda: {})
     monkeypatch.setattr(mcp_serve, "_MCP_SERVER_AVAILABLE", True)
-    monkeypatch.setattr(mcp_serve, "FastMCP", _FakeFastMCP)
+    monkeypatch.setattr(mcp_serve, "MCPServer", _FakeMCPServer)
 
     bridge = mcp_serve.EventBridge()
     server = mcp_serve.create_mcp_server(event_bridge=bridge)
@@ -272,6 +285,19 @@ class TestImports:
 
 
 class TestHelpers:
+    def test_load_session_messages_closes_database_on_error(self, monkeypatch):
+        import mcp_serve
+
+        db = MagicMock()
+        db.get_messages.side_effect = RuntimeError("read failed")
+        monkeypatch.setattr(mcp_serve, "_get_session_db", lambda: db)
+
+        messages, error = mcp_serve._load_session_messages("s1")
+
+        assert messages is None
+        assert "read failed" in error
+        db.close.assert_called_once()
+
     def test_get_sessions_dir(self, tmp_path):
         from mcp_serve import _get_sessions_dir
         result = _get_sessions_dir()
@@ -492,7 +518,7 @@ class TestEventBridge:
 
 
 # ---------------------------------------------------------------------------
-# 3. END-TO-END TESTS — call MCP tools through FastMCP server
+# 3. END-TO-END TESTS — call MCP tools through the MCP server
 # ---------------------------------------------------------------------------
 
 @pytest.fixture
@@ -510,11 +536,24 @@ def mcp_server_e2e(populated_sessions_dir, mock_session_db, monkeypatch):
 
 
 def _run_tool(server, name, args=None):
-    """Call an MCP tool through FastMCP's tool manager and return parsed JSON."""
+    """Call an MCP tool through the server's public API and return parsed JSON.
+
+    Goes through ``MCPServer.call_tool`` rather than the private
+    ``_tool_manager`` the FastMCP-era version reached into: mcp 2.0's
+    ``ToolManager.call_tool`` gained a required ``context`` argument, and the
+    public method is what an actual MCP client exercises anyway. It returns a
+    ``CallToolResult``, so unwrap the text content block our tools produce.
+    """
     result = asyncio.get_event_loop().run_until_complete(
-        server._tool_manager.call_tool(name, args or {})
+        server.call_tool(name, args or {})
     )
-    return json.loads(result) if isinstance(result, str) else result
+    if isinstance(result, str):  # FastMCP-era shape
+        return json.loads(result)
+    text = "".join(
+        block.text for block in (getattr(result, "content", None) or [])
+        if getattr(block, "text", None)
+    )
+    return json.loads(text) if text else result
 
 
 @pytest.fixture
@@ -1294,6 +1333,92 @@ class TestEventBridgePollE2E:
         assert len(result["events"]) == 1
         assert result["events"][0]["session_key"] == "agent:main:telegram:dm:late"
         assert result["events"][0]["content"].startswith("Hello from a freshly")
+
+    def test_startup_baseline_suppresses_historical_replay(self, tmp_path, monkeypatch):
+        """start()'s baseline records existing history without emitting it, so a
+        fresh EventBridge does not replay stored messages on startup; only
+        messages written after the baseline are delivered."""
+        import mcp_serve
+
+        db_path = tmp_path / "state.db"
+        db_path.write_text("placeholder")
+        session_id = "20260329_150000_history"
+        monkeypatch.setattr(
+            mcp_serve, "_load_sessions_index",
+            lambda: {
+                "agent:main:telegram:dm:hist": {
+                    "session_id": session_id,
+                    "platform": "telegram",
+                    "origin": {"platform": "telegram", "chat_id": "hist"},
+                }
+            },
+        )
+        store = [{
+            "id": 1, "role": "user", "content": "pre-existing history",
+            "timestamp": "2026-03-29T15:00:00",
+        }]
+
+        class DB:
+            def get_messages(self, sid):
+                return list(store)
+
+        monkeypatch.setattr(mcp_serve, "_get_session_db", lambda: DB())
+
+        bridge = mcp_serve.EventBridge()
+        bridge._establish_baseline()
+        # Messages that existed before start() are not replayed.
+        assert bridge.poll_events(after_cursor=0)["events"] == []
+
+        # A message written after the baseline IS delivered on the next tick.
+        store.append({
+            "id": 2, "role": "assistant", "content": "arrived after start",
+            "timestamp": "2026-03-29T15:05:00",
+        })
+        os.utime(db_path, None)  # bump mtime so the poll gate opens
+        bridge._poll_once(DB())
+        events = bridge.poll_events(after_cursor=0)["events"]
+        assert len(events) == 1
+        assert events[0]["content"] == "arrived after start"
+
+    def test_new_conversation_after_baseline_is_delivered(self, tmp_path, monkeypatch):
+        """A conversation that first appears AFTER the startup baseline is still
+        delivered on its state.db-change tick — sessions absent from the
+        baseline default to last_seen=0.0."""
+        import mcp_serve
+
+        db_path = tmp_path / "state.db"
+        db_path.write_text("placeholder")
+        index: dict = {}
+        messages: dict = {}
+        monkeypatch.setattr(mcp_serve, "_load_sessions_index", lambda: dict(index))
+
+        class DB:
+            def get_messages(self, sid):
+                return list(messages.get(sid, []))
+
+        monkeypatch.setattr(mcp_serve, "_get_session_db", lambda: DB())
+
+        bridge = mcp_serve.EventBridge()
+        bridge._establish_baseline()  # no conversations exist yet
+
+        # The gateway registers a brand-new conversation + its first message.
+        sid = "20260329_150000_fresh"
+        index["agent:main:telegram:dm:fresh"] = {
+            "session_id": sid,
+            "platform": "telegram",
+            "origin": {"platform": "telegram", "chat_id": "fresh"},
+        }
+        messages[sid] = [{
+            "id": 1, "role": "user", "content": "hello after baseline",
+            "timestamp": "2026-03-29T15:10:00",
+        }]
+        os.utime(db_path, None)
+        bridge._poll_once(DB())
+
+        events = bridge.poll_events(after_cursor=0)["events"]
+        assert len(events) == 1
+        assert events[0]["session_key"] == "agent:main:telegram:dm:fresh"
+        assert events[0]["content"] == "hello after baseline"
 
     def test_poll_interval_is_200ms(self):
         """Verify the poll interval constant."""

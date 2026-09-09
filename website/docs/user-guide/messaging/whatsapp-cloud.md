@@ -225,7 +225,7 @@ All settings live in `~/.hermes/.env`.  Required values are in **bold**.
 | `WHATSAPP_CLOUD_ALLOW_ALL_USERS` | `false` | Set to `true` to bypass the allowlist. |
 | `WHATSAPP_CLOUD_APP_ID` | — | Optional, for future analytics integration. |
 | `WHATSAPP_CLOUD_WABA_ID` | — | Optional, for future analytics integration. |
-| `WHATSAPP_CLOUD_WEBHOOK_HOST` | `0.0.0.0` | Interface the webhook server binds to. |
+| `WHATSAPP_CLOUD_WEBHOOK_HOST` | unset (dual-stack: all interfaces, IPv4+IPv6) | Interface the webhook server binds to. |
 | `WHATSAPP_CLOUD_WEBHOOK_PORT` | `8090` | Port the webhook server binds to.  Must match the port your tunnel forwards. |
 | `WHATSAPP_CLOUD_WEBHOOK_PATH` | `/whatsapp/webhook` | URL path Meta posts to. |
 | `WHATSAPP_CLOUD_API_VERSION` | `v20.0` | Meta Graph API version. Only override if a newer version is recommended in Meta's docs. |
@@ -252,7 +252,7 @@ You can have **both** the Baileys (`whatsapp`) and Cloud (`whatsapp_cloud`) adap
 - **Images** — agent-generated images and local image files both supported, delivered as native photo attachments.
 - **Voice messages** — text-to-speech output is converted via ffmpeg into the native WhatsApp voice-note bubble (green waveform). Without ffmpeg installed, falls back to an MP3 audio attachment. See "Voice messages" below.
 - **Video / documents** — both supported, sent as native attachments.
-- **Approved message templates** — use the `send_message` tool's `send_template` action for proactive delivery outside Meta's 24-hour conversation window.
+- **Approved message templates** — use `hermes send --template-name` for proactive delivery outside Meta's 24-hour conversation window.
 
 ### Interactive UX
 
@@ -299,22 +299,11 @@ curl http://localhost:8090/health
 
 Meta only allows **free-form messages** within a 24-hour window after the user's last inbound message. Outside that window, send a template that Meta has already approved:
 
-```json
-{
-  "action": "send_template",
-  "target": "whatsapp_cloud:15551234567",
-  "template_name": "quote_follow_up",
-  "template_language": "es_MX",
-  "template_components": [
-    {
-      "type": "body",
-      "parameters": [
-        {"type": "text", "text": "Juan"},
-        {"type": "text", "text": "MXN 12,500"}
-      ]
-    }
-  ]
-}
+```bash
+hermes send --to whatsapp_cloud:15551234567 \
+  --template-name quote_follow_up --template-language es_MX \
+  --template-components '[{"type":"body","parameters":[{"type":"text","text":"Juan"},{"type":"text","text":"MXN 12,500"}]}]' \
+  --json
 ```
 
 The target is the recipient's `wa_id`: country code and phone number, with no spaces or punctuation. The template name, language, and component order must match the approved Meta template exactly.
@@ -327,7 +316,7 @@ Hermes accepts this typed subset:
 
 Hermes rejects unknown fields rather than forwarding an arbitrary Graph API payload. It does not create or approve templates, track the 24-hour window, or switch a failed free-form message to a template automatically.
 
-For a cron job that calls `send_template` on its own delivery target, finish the job with `[SILENT]`. The tool returns this reminder after a successful send so the scheduler does not follow the template with a second free-form message.
+For a cron job that sends a template to its own delivery target, finish the job with `[SILENT]`. The command returns this reminder after a successful send so the scheduler does not follow the template with a second free-form message. Template options cannot be combined with free-form text, `--file`, or `--subject`; template sends do not read stdin.
 
 ---
 
@@ -344,7 +333,7 @@ Meta only allows **free-form messages** within a 24-hour window after the user's
 - **Long-running `delegate_task` async results** that take longer than 24h fail the same way.
 - **Webhook subscribers** that route external events to WhatsApp fail when the user hasn't DM'd the bot recently.
 
-Hermes warns the agent about this window in its system prompt. Scheduled jobs can use the explicit `send_template` action above, but Hermes does not choose a template or track the window for you.
+Hermes warns the agent about this window in its system prompt. Scheduled jobs can use the `hermes send` template options above, but Hermes does not choose a template or track the window for you.
 
 ### Group chats
 
@@ -386,7 +375,7 @@ Your access token is invalid.  Subcodes:
 The 24-hour conversation window expired (see "Known limitations").  Either:
 
 - Ask the user to DM the bot first to reopen the window.
-- Send a Meta-approved template with `send_message(action="send_template", ...)`.
+- Send a Meta-approved template with `hermes send --template-name NAME --template-language CODE --to whatsapp_cloud:RECIPIENT`.
 
 ### Inbound message: `media metadata fetch failed (status=401)`
 
@@ -400,15 +389,14 @@ If the model emits tool-call-shaped text instead of a structured call, it usuall
 
 ### STT (voice note transcription) returns empty / "could not transcribe"
 
-The default `stt.provider: local` requires `pip install faster-whisper`.  If you're a Nous subscriber, you can route STT through Meta's managed audio gateway instead:
+The default `stt.provider: local` requires `pip install faster-whisper`.  If you're a Nous subscriber, you can route STT through the managed gateway instead — select **Nous Subscription** for speech-to-text in `hermes tools`, or set it directly:
 
 ```bash
-hermes config set stt.provider openai
-hermes config set stt.use_gateway true
+hermes config set stt.provider nous
 hermes gateway restart
 ```
 
-This uses your Nous Portal access token instead of needing a separate OpenAI key.
+This uses your Nous Portal access token instead of needing a separate OpenAI key. (Older docs suggested `stt.use_gateway true` — that flag is legacy; the provider selection alone controls routing now.)
 
 ---
 

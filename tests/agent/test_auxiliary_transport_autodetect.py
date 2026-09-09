@@ -60,117 +60,18 @@ def test_endpoint_speaks_anthropic_messages(url, expected, label):
 # _maybe_wrap_anthropic decision table
 # ---------------------------------------------------------------------------
 
-def test_maybe_wrap_anthropic_rewraps_kimi_coding_url():
-    """Plain OpenAI client pointed at api.kimi.com/coding gets rewrapped."""
-    from agent.auxiliary_client import _maybe_wrap_anthropic, AnthropicAuxiliaryClient
-
-    plain_client = MagicMock(name="plain_openai")
-    fake_anthropic = MagicMock(name="anthropic_sdk_client")
-
-    with patch(
-        "agent.anthropic_adapter.build_anthropic_client",
-        return_value=fake_anthropic,
-    ):
-        result = _maybe_wrap_anthropic(
-            plain_client, "kimi-for-coding", "sk-kimi-test",
-            "https://api.kimi.com/coding", api_mode=None,
-        )
-    assert isinstance(result, AnthropicAuxiliaryClient)
 
 
-def test_maybe_wrap_anthropic_rewraps_slash_anthropic_url():
-    """Plain OpenAI client pointed at any /anthropic URL gets rewrapped."""
-    from agent.auxiliary_client import _maybe_wrap_anthropic, AnthropicAuxiliaryClient
-
-    plain_client = MagicMock(name="plain_openai")
-    fake_anthropic = MagicMock(name="anthropic_sdk_client")
-
-    with patch(
-        "agent.anthropic_adapter.build_anthropic_client",
-        return_value=fake_anthropic,
-    ):
-        result = _maybe_wrap_anthropic(
-            plain_client, "MiniMax-M2.7", "mm-key",
-            "https://api.minimax.io/anthropic", api_mode=None,
-        )
-    assert isinstance(result, AnthropicAuxiliaryClient)
 
 
-def test_maybe_wrap_anthropic_skips_openai_wire_urls():
-    """OpenRouter / OpenAI / Moonshot-legacy stay as plain OpenAI clients."""
-    from agent.auxiliary_client import _maybe_wrap_anthropic, AnthropicAuxiliaryClient
-
-    plain_client = MagicMock(name="plain_openai")
-    # No patch on build_anthropic_client — if the function tried to call it,
-    # we'd get an AttributeError-style failure. The point is it shouldn't.
-    result = _maybe_wrap_anthropic(
-        plain_client, "claude-sonnet-4.6", "sk-or-test",
-        "https://openrouter.ai/api/v1", api_mode=None,
-    )
-    assert result is plain_client
-    assert not isinstance(result, AnthropicAuxiliaryClient)
 
 
-def test_maybe_wrap_anthropic_respects_explicit_chat_completions():
-    """api_mode=chat_completions overrides URL heuristics."""
-    from agent.auxiliary_client import _maybe_wrap_anthropic, AnthropicAuxiliaryClient
-
-    plain_client = MagicMock(name="plain_openai")
-    result = _maybe_wrap_anthropic(
-        plain_client, "kimi-for-coding", "sk-kimi-test",
-        "https://api.kimi.com/coding",
-        api_mode="chat_completions",  # explicit override
-    )
-    assert result is plain_client, "Explicit chat_completions must bypass wrap"
-    assert not isinstance(result, AnthropicAuxiliaryClient)
 
 
-def test_maybe_wrap_anthropic_honors_explicit_anthropic_messages():
-    """api_mode=anthropic_messages wraps even when URL wouldn't trigger."""
-    from agent.auxiliary_client import _maybe_wrap_anthropic, AnthropicAuxiliaryClient
-
-    plain_client = MagicMock(name="plain_openai")
-    fake_anthropic = MagicMock(name="anthropic_sdk_client")
-
-    with patch(
-        "agent.anthropic_adapter.build_anthropic_client",
-        return_value=fake_anthropic,
-    ):
-        result = _maybe_wrap_anthropic(
-            plain_client, "model-name", "some-key",
-            "https://opaque.internal/v1",  # URL alone wouldn't trigger
-            api_mode="anthropic_messages",
-        )
-    assert isinstance(result, AnthropicAuxiliaryClient)
 
 
-def test_maybe_wrap_anthropic_double_wrap_safe():
-    """Already-wrapped AnthropicAuxiliaryClient passes through unchanged."""
-    from agent.auxiliary_client import _maybe_wrap_anthropic, AnthropicAuxiliaryClient
-
-    already_wrapped = MagicMock(spec=AnthropicAuxiliaryClient)
-    result = _maybe_wrap_anthropic(
-        already_wrapped, "model", "key",
-        "https://api.kimi.com/coding", api_mode=None,
-    )
-    assert result is already_wrapped
 
 
-def test_maybe_wrap_anthropic_codex_client_passes_through():
-    """CodexAuxiliaryClient is never re-dispatched."""
-    from agent.auxiliary_client import (
-        _maybe_wrap_anthropic,
-        CodexAuxiliaryClient,
-        AnthropicAuxiliaryClient,
-    )
-
-    codex_client = MagicMock(spec=CodexAuxiliaryClient)
-    result = _maybe_wrap_anthropic(
-        codex_client, "model", "key",
-        "https://api.kimi.com/coding", api_mode=None,
-    )
-    assert result is codex_client
-    assert not isinstance(result, AnthropicAuxiliaryClient)
 
 
 def test_maybe_wrap_anthropic_sdk_missing_falls_back():

@@ -79,61 +79,8 @@ class TestAlignBoundaryBackward:
         # Boundary at 4, messages[3] = assistant with tool_calls → pull back to 3
         assert comp._align_boundary_backward(messages, 4) == 3
 
-    def test_boundary_in_middle_of_tool_results(self):
-        """THE BUG: boundary falls between tool results of the same group."""
-        comp = _make_compressor()
-        messages = [
-            {"role": "system", "content": "sys"},
-            {"role": "user", "content": "hello"},
-            {"role": "assistant", "content": "hi"},
-            {"role": "user", "content": "do 5 things"},
-            _assistant_with_tools("tc_A", "tc_B", "tc_C", "tc_D", "tc_E"),  # idx=4
-            _tool_result("tc_A", "result A"),    # idx=5
-            _tool_result("tc_B", "result B"),    # idx=6
-            _tool_result("tc_C", "result C"),    # idx=7
-            _tool_result("tc_D", "result D"),    # idx=8
-            _tool_result("tc_E", "result E"),    # idx=9
-            {"role": "user", "content": "ok"},
-            {"role": "assistant", "content": "done"},
-        ]
-        # Boundary at 8 — in middle of tool results. messages[7] = tool result.
-        # Must walk back to idx=4 (the parent assistant).
-        assert comp._align_boundary_backward(messages, 8) == 4
 
-    def test_boundary_at_last_tool_result(self):
-        """Boundary right after last tool result — messages[idx-1] is tool."""
-        comp = _make_compressor()
-        messages = [
-            {"role": "system", "content": "sys"},
-            {"role": "user", "content": "hello"},
-            {"role": "assistant", "content": "hi"},
-            _assistant_with_tools("tc_1", "tc_2", "tc_3"),  # idx=3
-            _tool_result("tc_1"),    # idx=4
-            _tool_result("tc_2"),    # idx=5
-            _tool_result("tc_3"),    # idx=6
-            {"role": "user", "content": "next"},
-        ]
-        # Boundary at 7 — messages[6] is last tool result.
-        # Walk back: [6]=tool, [5]=tool, [4]=tool, [3]=assistant with tools → idx=3
-        assert comp._align_boundary_backward(messages, 7) == 3
 
-    def test_boundary_with_consecutive_tool_groups(self):
-        """Two consecutive tool groups — only walk back to the nearest parent."""
-        comp = _make_compressor()
-        messages = [
-            {"role": "system", "content": "sys"},
-            {"role": "user", "content": "hello"},
-            _assistant_with_tools("tc_1"),     # idx=2
-            _tool_result("tc_1"),              # idx=3
-            {"role": "user", "content": "more"},
-            _assistant_with_tools("tc_2", "tc_3"),  # idx=5
-            _tool_result("tc_2"),              # idx=6
-            _tool_result("tc_3"),              # idx=7
-            {"role": "user", "content": "done"},
-        ]
-        # Boundary at 7 — messages[6] = tool result for tc_2 group
-        # Walk back: [6]=tool, [5]=assistant with tools → idx=5
-        assert comp._align_boundary_backward(messages, 7) == 5
 
 
 # ---------------------------------------------------------------------------

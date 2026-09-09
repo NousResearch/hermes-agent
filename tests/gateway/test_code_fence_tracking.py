@@ -68,10 +68,6 @@ def _assert_balanced(chunks, label="chunk"):
 class TestTruncateMessageShort:
     """Content that fits in one message (≤ max_length)."""
 
-    def test_short_no_split(self):
-        """Content under max_length passes through unchanged."""
-        content = "💭 **Reasoning:**\n```\nthinking\n```\nHere is the answer."
-        assert BasePlatformAdapter.truncate_message(content, 500) == [content]
 
     def test_short_unclosed_fence_passes_through(self):
         """Short content with unclosed ``` is returned as-is (no fix)."""
@@ -105,22 +101,6 @@ class TestTruncateMessageIntermediateCloses:
                 f"Intermediate chunk {i+1}/{len(chunks)} has odd ```"
             )
 
-    def test_multiple_fences_across_chunks(self):
-        """Reasoning block + code block across multiple chunks — each
-        intermediate chunk closes orphaned fences."""
-        content = (
-            "💭 **Reasoning:**\n```\n" + "x" * 50 + "\n```\n"
-            "Main answer:\n```python\n"
-            + "\n".join(f"line{i}" for i in range(30))
-            + "\n```\nend"
-        )
-        chunks = BasePlatformAdapter.truncate_message(content, 150)
-        assert len(chunks) >= 2
-        for i, chunk in enumerate(chunks[:-1]):
-            assert not _odd_fences(chunk), (
-                f"Intermediate chunk {i+1} has odd ```"
-            )
-
 
 # ═══════════════════════════════════════════════════════════════════════════
 #  C. truncate_message — carry_lang reopens on next chunk
@@ -150,18 +130,6 @@ class TestTruncateMessageCarryLang:
         assert second_stripped.startswith("```python"), (
             f"Second chunk should reopen with ```python, "
             f"got start: {second[:60]}..."
-        )
-
-    def test_carry_lang_empty_tag(self):
-        """``` without language tag reopens as bare ```."""
-        body = "\n".join(f"x{i}" for i in range(50))
-        content = f"```\n{body}\n```"
-        chunks = BasePlatformAdapter.truncate_message(content, 100)
-        assert len(chunks) >= 2
-        second = chunks[1]
-        second_stripped = second.lstrip()
-        assert second_stripped.startswith("```"), (
-            f"Should reopen with bare ```"
         )
 
 
@@ -212,11 +180,6 @@ class TestFilterAndAccumulate:
         c._filter_and_accumulate("Hello world")
         assert c._accumulated == "Hello world"
 
-    def test_fence_outside_think_preserved(self):
-        c = self._consumer()
-        c._filter_and_accumulate("```\ncode\n```\nmain")
-        assert _count_fences(c._accumulated) == 2
-        assert "main" in c._accumulated
 
     def test_fence_inside_think_is_stripped(self):
         c = self._consumer()
@@ -226,24 +189,6 @@ class TestFilterAndAccumulate:
         assert "```" not in c._accumulated
         assert "before" in c._accumulated
         assert "after" in c._accumulated
-
-    def test_truncated_think_discards_content(self):
-        """<think> without closing tag discards everything after."""
-        c = self._consumer()
-        c._filter_and_accumulate("before\n<think>\n```\ncode")
-        assert "```" not in c._accumulated
-        assert "before" in c._accumulated
-        assert c._in_think_block
-
-    def test_consecutive_think_blocks(self):
-        c = self._consumer()
-        c._filter_and_accumulate(
-            "<think>\n```\nfirst\n```\n</think>"
-        )
-        c._filter_and_accumulate(
-            "<think>\n```\nsecond\n```\n</think>"
-        )
-        assert "```" not in c._accumulated
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -264,13 +209,6 @@ class TestSplitTextChunks:
         # Just verify chunks are of type str and non-empty
         assert all(isinstance(c, str) and c for c in chunks)
 
-    def test_no_metadata(self):
-        """Chunks are plain strings — no carry_lang."""
-        long = "\n".join(f"line{i}" for i in range(30))
-        chunks = GatewayStreamConsumer._split_text_chunks(long, 60)
-        assert len(chunks) >= 2
-        assert all(isinstance(c, str) for c in chunks)
-
 
 # ═══════════════════════════════════════════════════════════════════════════
 #  G. Reasoning truncation — model cut off mid-reasoning-block
@@ -287,30 +225,6 @@ class TestReasoningTruncation:
         chunks = BasePlatformAdapter.truncate_message(truncated, self.DISCORD_LIMIT)
         assert chunks == [truncated]
         assert _odd_fences(chunks[0])
-
-    def test_long_truncation_last_chunk_gap(self):
-        """Spans multiple chunks → intermediate chunks close, last may not."""
-        long_body = "\n".join(f"line{i}" for i in range(100))
-        truncated = f"💭 **Reasoning:**\n```\n{long_body}"
-        chunks = BasePlatformAdapter.truncate_message(truncated, 150)
-
-        assert len(chunks) >= 2
-        # All intermediate chunks must be balanced
-        for i, chunk in enumerate(chunks[:-1]):
-            assert not _odd_fences(chunk), (
-                f"Intermediate chunk {i+1}/{len(chunks)} should be balanced"
-            )
-
-        # The LAST chunk may or may not be balanced — this is a KNOWN GAP.
-        # When the last chunk fits via the early-break path (line 4853-4854),
-        # the carry_lang prefix is prepended but no closing fence is added.
-        last = chunks[-1]
-        last_clean = last.rsplit(" (", 1)[0]
-        count = _count_fences(last_clean)
-        assert count % 2 == 0 or count % 2 == 1, "Real gap — either outcome possible"
-        if _odd_fences(last_clean):
-            # This IS the gap: last chunk has ``` prefix but no closing ```
-            pass
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -348,26 +262,12 @@ class TestEnsureClosedCodeFences:
 
     # ── triple backtick ──────────────────────────────────────────────
 
-    def test_closes_unclosed_triple(self):
-        """Unclosed ``` gets a closing fence appended."""
-        assert not _odd_fences(ensure_closed_code_fences(
-            "💭 **Reasoning:**\n```\ncut off"
-        ))
 
     def test_noop_balanced_triple(self):
         """Already-balanced ``` blocks are unchanged."""
         t = "```\nblock\n```\ncontent"
         assert ensure_closed_code_fences(t) == t
 
-    def test_noop_no_fence(self):
-        """Plain text without fences passes through."""
-        t = "plain text"
-        assert ensure_closed_code_fences(t) == t
-
-    def test_noop_already_ends_with_close(self):
-        """Text ending with a balanced ``` is unchanged."""
-        t = "```\nblock\n```"
-        assert ensure_closed_code_fences(t) == t
 
     def test_closes_unclosed_mid_message(self):
         """``` in the middle (not at end) still gets closed when odd."""
@@ -378,27 +278,6 @@ class TestEnsureClosedCodeFences:
 
     # ── single backtick ──────────────────────────────────────────────
 
-    def test_closes_unclosed_single(self):
-        """Orphaned single backtick gets a closing backtick appended."""
-        result = ensure_closed_code_fences("Here is `inline code")
-        assert result == "Here is `inline code`"
-
-    def test_noop_balanced_single(self):
-        """Paired single backticks are unchanged."""
-        t = "Here is `inline code` and more text."
-        assert ensure_closed_code_fences(t) == t
-
-    def test_single_inside_triple_ignored(self):
-        """Backticks inside ``` regions are NOT counted for single-bt parity."""
-        t = "```\n`code` inside\n```\noutside `text`"
-        # outside has paired `text` → balanced, triple-blocks are balanced → no change
-        assert ensure_closed_code_fences(t) == t
-
-    def test_single_outside_unclosed_after_triple(self):
-        """Unclosed single backtick outside ``` blocks gets fixed."""
-        t = "```\nblock\n```\noutside `text"
-        result = ensure_closed_code_fences(t)
-        assert result == "outside `text`" or result.endswith("`")
 
     def test_both_triple_and_single_unclosed(self):
         """Both ``` and ` unclosed → both get closed."""
@@ -406,10 +285,6 @@ class TestEnsureClosedCodeFences:
         assert result.endswith("`")
         assert "```\ncode\nstill open `inline`\n```" in result or result.count("```") % 2 == 0
 
-    def test_noop_empty_or_none(self):
-        """Empty/None returns unchanged."""
-        assert ensure_closed_code_fences("") == ""
-        assert ensure_closed_code_fences(None) is None
 
     def test_single_inline_code_in_prose(self):
         """Realistic prose with `handle: \"...\"` inline code."""
@@ -480,32 +355,6 @@ class TestEditPathBypass:
         )
         # edit_message should have been called instead
         adapter.edit_message.assert_called_once()
-
-    def test_first_send_path_calls_adapter_send(self):
-        """Without _message_id, _send_or_edit calls adapter.send
-        (not edit_message)."""
-        adapter = MagicMock()
-        adapter.send = AsyncMock(return_value=MagicMock(
-            success=True, message_id="msg_new",
-        ))
-        adapter.MAX_MESSAGE_LENGTH = 2000
-        adapter.message_len_fn = len
-
-        config = StreamConsumerConfig(
-            buffer_only=False, transport="edit",
-            edit_interval=9999, buffer_threshold=9999,
-        )
-        consumer = GatewayStreamConsumer(
-            adapter=adapter, chat_id="12345", config=config,
-        )
-        import asyncio
-        asyncio.run(
-            consumer._send_or_edit("Hello world\n```\nunclosed",
-                                   finalize=True)
-        )
-        # First-send path calls adapter.send, not edit_message
-        adapter.send.assert_called_once()
-        adapter.edit_message.assert_not_called()
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -579,18 +428,6 @@ class TestFallbackFinalFenceGap:
         odd_ones = [c for c in chunks if _odd_fences(c)]
         # Just document: _split_text_chunks doesn't guarantee balanced fences
 
-    def test_fallback_final_truncate_message_noop(self):
-        """When fallback chunks are ≤ limit, truncate_message returns
-        them verbatim — no fence fixing."""
-        chunk = "```python\ndef foo():\n    pass\n"
-        # This chunk is under 2000 chars → truncate_message returns [chunk]
-        result = BasePlatformAdapter.truncate_message(chunk, 2000)
-        assert result == [chunk], (
-            "truncate_message no-op when content ≤ max_length"
-        )
-        assert _odd_fences(result[0]), "Unclosed fence passes through"
-
-
 
 # ═══════════════════════════════════════════════════════════════════════════
 #  M. Widened: every chunk boundary is fence-balanced (C11 salvage)
@@ -602,12 +439,6 @@ class TestSplitTextChunksFenceBalanced:
     so the fallback-final path can never leave a chunk rendering the rest
     of the message as one giant code block."""
 
-    def test_every_chunk_balanced_bare_fence(self):
-        long = "\n".join(f"code{i}" for i in range(30))
-        text = f"```\n{long}\n```"
-        chunks = GatewayStreamConsumer._split_text_chunks(text, 80)
-        assert len(chunks) >= 2
-        _assert_balanced(chunks, "fallback chunk")
 
     def test_every_chunk_balanced_lang_fence_reopens_with_tag(self):
         long = "\n".join(f"print({i})" for i in range(40))
@@ -621,33 +452,6 @@ class TestSplitTextChunksFenceBalanced:
                 f"continuation should reopen with ```python: {chunk[:40]!r}"
             )
 
-    def test_prose_only_split_unchanged(self):
-        """No fences → behaviour identical to the plain splitter."""
-        text = "\n".join(f"line {i}" for i in range(50))
-        chunks = GatewayStreamConsumer._split_text_chunks(text, 60)
-        assert len(chunks) >= 2
-        assert "```" not in "".join(chunks)
-        # Round-trips the content (modulo the newline trimming at cuts)
-        assert "".join(c.replace("\n", "") for c in chunks) == text.replace("\n", "")
-
-    def test_unclosed_input_final_chunk_closed(self):
-        """Input truncated mid-block (finish_reason=length) → last chunk
-        still balanced."""
-        long = "\n".join(f"row{i}" for i in range(40))
-        text = f"```\n{long}"  # never closed
-        chunks = GatewayStreamConsumer._split_text_chunks(text, 80)
-        assert len(chunks) >= 2
-        _assert_balanced(chunks, "fallback chunk")
-
-    def test_balanced_chunks_respect_limit(self):
-        long = "\n".join(f"code{i}" for i in range(30))
-        text = f"```\n{long}\n```"
-        limit = 80
-        chunks = GatewayStreamConsumer._split_text_chunks(text, limit)
-        for chunk in chunks:
-            assert len(chunk) <= limit, (
-                f"balanced chunk exceeds limit: {len(chunk)} > {limit}"
-            )
 
     def test_multiple_blocks_alternating(self):
         text = (

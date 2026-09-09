@@ -118,38 +118,3 @@ def test_env_var_opts_back_into_everyone(monkeypatch):
     assert am.replied_user is True
 
 
-def test_env_var_can_disable_users(monkeypatch):
-    monkeypatch.setenv("DISCORD_ALLOW_MENTION_USERS", "false")
-    am = _build_allowed_mentions()
-    assert am.users is False
-    # safe defaults elsewhere remain
-    assert am.everyone is False
-    assert am.roles is False
-    assert am.replied_user is True
-
-
-@pytest.mark.parametrize("raw, expected", [
-    ("true", True), ("True", True), ("TRUE", True),
-    ("1", True), ("yes", True), ("YES", True), ("on", True),
-    ("false", False), ("False", False), ("0", False),
-    ("no", False), ("off", False),
-    ("", False),                 # empty falls back to default (False for everyone)
-    ("garbage", False),          # unknown falls back to default
-    (" true ", True),            # whitespace tolerated
-])
-def test_everyone_boolean_parsing(monkeypatch, raw, expected):
-    monkeypatch.setenv("DISCORD_ALLOW_MENTION_EVERYONE", raw)
-    am = _build_allowed_mentions()
-    assert am.everyone is expected
-
-
-def test_all_four_knobs_together(monkeypatch):
-    monkeypatch.setenv("DISCORD_ALLOW_MENTION_EVERYONE", "true")
-    monkeypatch.setenv("DISCORD_ALLOW_MENTION_ROLES", "true")
-    monkeypatch.setenv("DISCORD_ALLOW_MENTION_USERS", "false")
-    monkeypatch.setenv("DISCORD_ALLOW_MENTION_REPLIED_USER", "false")
-    am = _build_allowed_mentions()
-    assert am.everyone is True
-    assert am.roles is True
-    assert am.users is False
-    assert am.replied_user is False

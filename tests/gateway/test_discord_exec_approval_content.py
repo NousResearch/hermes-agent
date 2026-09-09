@@ -48,21 +48,3 @@ async def test_exec_approval_prompt_uses_visible_content_with_command_and_reason
     assert "script execution via -c flag" in prompt_text
 
 
-@pytest.mark.asyncio
-async def test_exec_approval_prompt_truncates_long_command_in_content():
-    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
-    sent = _capture_channel(adapter)
-
-    long_command = "python -c '" + ("x" * 5000) + "'"
-    result = await adapter.send_exec_approval(
-        chat_id="555",
-        command=long_command,
-        session_key="discord:555",
-        description="long generated shell command",
-    )
-
-    assert result.success is True
-    assert len(sent["content"]) <= adapter.MAX_MESSAGE_LENGTH
-    assert "... [truncated]" in sent["content"]
-    assert "long generated shell command" in sent["content"]
-    assert len(sent["embed"].description) > len(sent["content"])

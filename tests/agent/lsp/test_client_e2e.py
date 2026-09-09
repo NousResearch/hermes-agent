@@ -15,6 +15,7 @@ from pathlib import Path
 import pytest
 
 from agent.lsp.client import LSPClient
+from agent.lsp.protocol import LSPProtocolError
 
 
 MOCK_SERVER = str(Path(__file__).parent / "_mock_lsp_server.py")
@@ -73,71 +74,53 @@ async def test_client_receives_published_errors(tmp_path: Path):
 
 
 @pytest.mark.asyncio
-async def test_client_didchange_bumps_version(tmp_path: Path):
+async def test_reader_exit_at_end_of_initialization_retires_client(tmp_path: Path):
+    client = _client(tmp_path, "crash")
+
+    try:
+        await client.start()
+    except LSPProtocolError:
+        pass
+    else:
+        reader_task = client._reader_task
+        if reader_task is not None:
+            await asyncio.wait_for(asyncio.shield(reader_task), timeout=3.0)
+
+    assert client.state == "error"
+    assert not client.is_running
+    assert client._proc is None
+    await client.shutdown()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("script", ["clean_eof", "malformed_frame"])
+async def test_reader_failure_retires_client_and_rejects_later_work(
+    tmp_path: Path, script: str
+):
     f = tmp_path / "x.py"
     f.write_text("print('hi')\n")
 
-    client = _client(tmp_path, "errors")
+    client = _client(tmp_path, script)
     await client.start()
+    proc = client._proc
+    reader_task = client._reader_task
+    assert proc is not None
+    assert reader_task is not None
     try:
-        v0 = await client.open_file(str(f), language_id="python")
-        f.write_text("print('hi 2')\n")
-        v1 = await client.open_file(str(f), language_id="python")  # re-open path = didChange
-        assert v1 == v0 + 1
-        await client.wait_for_diagnostics(str(f), v1, mode="document")
-        # Mock pushed a diagnostic for both events; merged view has one
-        # entry (push store keyed by file path).
-        diags = client.diagnostics_for(str(f))
-        assert len(diags) == 1
-    finally:
-        await client.shutdown()
+        version = await client.open_file(str(f), language_id="python")
+        await asyncio.wait_for(asyncio.shield(reader_task), timeout=3.0)
 
-
-@pytest.mark.asyncio
-async def test_client_handles_crashing_server(tmp_path: Path):
-    """When the server exits right after initialize, subsequent requests
-    fail gracefully (not hang)."""
-    f = tmp_path / "x.py"
-    f.write_text("")
-
-    client = _client(tmp_path, "crash")
-    await client.start()  # should succeed (mock answers initialize before crashing)
-    # Give the OS a moment to deliver the EOF.
-    await asyncio.sleep(0.2)
-    # The reader loop should detect EOF and mark pending requests as failed.
-    try:
-        await asyncio.wait_for(
-            client.open_file(str(f), language_id="python"), timeout=2.0
-        )
-    except Exception:
-        pass  # any exception is acceptable; the contract is "doesn't hang"
-    await client.shutdown()
-
-
-@pytest.mark.asyncio
-async def test_client_shutdown_idempotent(tmp_path: Path):
-    """Calling shutdown twice must be safe."""
-    f = tmp_path / "x.py"
-    f.write_text("")
-    client = _client(tmp_path, "clean")
-    await client.start()
-    await client.shutdown()
-    await client.shutdown()  # must not raise
-
-
-@pytest.mark.asyncio
-async def test_client_diagnostics_are_deduped(tmp_path: Path):
-    """Repeated identical pushes must not produce duplicate diagnostics."""
-    f = tmp_path / "x.py"
-    f.write_text("")
-    client = _client(tmp_path, "errors")
-    await client.start()
-    try:
-        for _ in range(3):
-            v = await client.open_file(str(f), language_id="python")
-            await client.wait_for_diagnostics(str(f), v, mode="document")
-        diags = client.diagnostics_for(str(f))
-        # Push store overwrites on every notification — should have 1.
-        assert len(diags) == 1
+        assert not client.is_running
+        await asyncio.wait_for(proc.wait(), timeout=3.0)
+        with pytest.raises(LSPProtocolError):
+            await asyncio.wait_for(
+                client.wait_for_diagnostics(str(f), version, timeout=3.0),
+                timeout=0.5,
+            )
+        with pytest.raises(LSPProtocolError):
+            await asyncio.wait_for(
+                client.open_file(str(f), language_id="python"),
+                timeout=0.5,
+            )
     finally:
         await client.shutdown()

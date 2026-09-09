@@ -1,21 +1,21 @@
 ---
-title: "Excel Author"
+title: "Excel Author — Build auditable financial workbooks headless via openpyxl"
 sidebar_label: "Excel Author"
-description: "Build auditable Excel workbooks headless with openpyxl — blue/black/green cell conventions, formulas over hardcodes, named ranges, balance checks, sensitivit..."
+description: "Build auditable financial workbooks headless via openpyxl"
 ---
 
 {/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
 
 # Excel Author
 
-Build auditable Excel workbooks headless with openpyxl — blue/black/green cell conventions, formulas over hardcodes, named ranges, balance checks, sensitivity tables. Use for financial models, audit outputs, reconciliations.
+Build auditable financial workbooks headless via openpyxl.
 
 ## Skill metadata
 
 | | |
 |---|---|
 | Source | Optional — install with `hermes skills install official/finance/excel-author` |
-| Path | `optional-skills/finance/excel-author` |
+| Path | `optional-skills/finance\excel-author` |
 | Version | `1.0.0` |
 | Author | Anthropic (adapted by Nous Research) |
 | License | Apache-2.0 |

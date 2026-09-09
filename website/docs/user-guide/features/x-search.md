@@ -11,6 +11,17 @@ The `x_search` tool lets the agent search X (Twitter) posts, profiles, and threa
 
 **Use this instead of `web_search`** when you specifically want current discussion, reactions, or claims **on X**. For general web pages, keep using `web_search` / `web_extract`.
 
+## `x_search` vs `xurl`
+
+Hermes can expose two different X surfaces:
+
+| Surface | Use it for | Do not use it for |
+|---------|------------|-------------------|
+| `x_search` | Read-only public X discovery: current discussion, reactions, claims, profiles, threads, and synthesized answers with citations. | Posting, replying, liking, DMs, media upload, deleting, or proving that an authenticated X account changed state. |
+| `xurl` skill | Exact or authenticated X API work: `post`, `reply`, `read`, `like`, `dm`, timelines, mentions, media upload, account-specific reads, and raw v2 endpoints. | Broad Grok-synthesized public X research when `x_search` is available and no authenticated account context is needed. |
+
+For mixed workflows, use `x_search` to discover candidate public posts, then switch to `xurl read` or another exact `xurl` command after the target post/user/action is clear. Any state-changing X action must be confirmed by `xurl` output or the X API response; an `x_search` answer is never evidence that a write happened.
+
 :::tip
 If you're paying Portal for an xAI model anyway, Live Search calls bill against the same xAI key configured for chat. See [Nous Portal](/integrations/nous-portal).
 :::
@@ -21,10 +32,10 @@ If you're paying Portal for an xAI model anyway, Live Search calls bill against 
 
 | Credential | Source | Setup |
 |------------|--------|-------|
-| **SuperGrok / X Premium+ OAuth** (preferred) | Browser login at `accounts.x.ai`, refreshed automatically | `hermes auth add xai-oauth` — see [xAI Grok OAuth (SuperGrok / X Premium+)](../../guides/xai-grok-oauth.md) |
-| **`XAI_API_KEY`** | Paid xAI API key | Set in `~/.hermes/.env` |
+| **SuperGrok / X Premium+ OAuth** | Browser login at `accounts.x.ai`, refreshed automatically | `hermes auth add xai-oauth` — see [xAI Grok OAuth (SuperGrok / X Premium+)](../../guides/xai-grok-oauth.md) |
+| **`XAI_API_KEY`** (preferred) | Paid xAI API key | Set in `~/.hermes/.env` |
 
-Both hit the same endpoint with the same payload — the only difference is the bearer token. **When both are configured, SuperGrok OAuth wins** so x_search runs against your subscription quota instead of paid API spend.
+Both hit the same endpoint with the same payload — the only difference is the bearer token. **When both are configured, the explicit `XAI_API_KEY` wins** — the subscription OAuth bearer authorizes `/v1/responses` but answers x_search in a degraded Grok explanatory mode with no citations, while the API key returns real posts. Note this means x_search runs against metered API billing when a key is set; remove `XAI_API_KEY` to fall back to your subscription quota (with the degraded-answer caveat).
 
 The tool's `check_fn` runs the xAI credential resolver every time the model's tool list is rebuilt. A `True` return means the bearer is fetchable AND non-empty AND (if it had expired) successfully refreshed. Revoked tokens with a failed refresh hide the tool from the schema; the model simply can't see it.
 
@@ -119,6 +130,8 @@ The agent will:
 2. Get back a synthesized answer plus a list of citations linking to specific posts
 3. Reply with the answer and references
 
+If the next user request is "reply to the best one" or "like that post", the agent should switch to the `xurl` skill, confirm the exact target post, and use the X API action. `x_search` remains a discovery tool.
+
 ## Troubleshooting
 
 ### "No xAI credentials available"
@@ -149,5 +162,6 @@ Causes worth checking:
 ## See Also
 
 - [xAI Grok OAuth (SuperGrok / Premium+)](../../guides/xai-grok-oauth.md) — the OAuth setup guide
+- [xurl skill](../skills/bundled/social-media/social-media-xurl.md) — official X API CLI for authenticated account actions
 - [Web Search & Extract](web-search.md) — for general (non-X) web search
 - [Tools Reference](../../reference/tools-reference.md) — full tool catalog

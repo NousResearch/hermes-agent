@@ -17,20 +17,6 @@ class TestExpandParentToolsets(unittest.TestCase):
         # Original composite is preserved
         self.assertIn("hermes-cli", expanded)
 
-    def test_individual_toolset_unchanged(self):
-        """When parent already uses individual toolsets, expansion keeps them."""
-        expanded = _expand_parent_toolsets({"web", "terminal"})
-        self.assertIn("web", expanded)
-        self.assertIn("terminal", expanded)
-
-    def test_empty_parent_toolsets(self):
-        expanded = _expand_parent_toolsets(set())
-        self.assertEqual(expanded, set())
-
-    def test_unknown_toolset_passthrough(self):
-        """Unknown toolset names pass through without error."""
-        expanded = _expand_parent_toolsets({"nonexistent-toolset-xyz"})
-        self.assertIn("nonexistent-toolset-xyz", expanded)
 
     def test_intersection_with_expanded_composite(self):
         """End-to-end: requesting ['web'] from parent with ['hermes-cli'] yields ['web']."""

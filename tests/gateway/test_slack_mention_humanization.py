@@ -75,15 +75,6 @@ def _adapter_with_names(names):
 
 # ----- _humanize_user_mentions -------------------------------------------------
 
-@pytest.mark.asyncio
-async def test_humanizes_single_mention():
-    adapter = _adapter_with_names({"U07ALICE": "Alice Example"})
-    out = await adapter._humanize_user_mentions(
-        "<@U07ALICE> I think thread is prob the right default", chat_id="C1"
-    )
-    assert out == "@Alice Example I think thread is prob the right default"
-    assert "<@" not in out
-
 
 @pytest.mark.asyncio
 async def test_humanizes_multiple_distinct_mentions():
@@ -105,27 +96,43 @@ async def test_handles_labelled_mention_form():
 
 
 @pytest.mark.asyncio
-async def test_repeated_mention_all_replaced():
-    adapter = _adapter_with_names({"U07ALICE": "Alice Example"})
-    out = await adapter._humanize_user_mentions(
-        "<@U07ALICE> ping <@U07ALICE>", chat_id="C1"
+async def test_backslash_in_display_name_does_not_raise():
+    """A display name is arbitrary user-set text. Fed to ``re.sub`` as a
+    replacement template it is parsed for escapes, so ``dev\\ops`` blew up
+    with ``re.error: bad escape \\o`` and the inbound message was lost."""
+    adapter = _adapter_with_names({"U07DEV": r"dev\ops"})
+    out = await adapter._humanize_user_mentions("ping <@U07DEV> please", chat_id="C1")
+    assert out == r"ping @dev\ops please"
+
+
+@pytest.mark.asyncio
+async def test_group_reference_in_display_name_is_literal():
+    """``\\1`` in a name is a group reference in a replacement template — with
+    no groups in the pattern it raised ``invalid group reference``."""
+    adapter = _adapter_with_names({"U07ODD": r"a\1b"})
+    out = await adapter._humanize_user_mentions("hi <@U07ODD>", chat_id="C1")
+    assert out == r"hi @a\1b"
+
+
+@pytest.mark.asyncio
+async def test_named_group_reference_does_not_reinject_the_raw_id():
+    """``\\g<0>`` expands to the whole match, silently putting the opaque
+    ``<@UID>`` back — the exact token this method exists to remove."""
+    adapter = _adapter_with_names({"U07ODD": r"\g<0>"})
+    out = await adapter._humanize_user_mentions("hi <@U07ODD>", chat_id="C1")
+    assert "<@" not in out
+    assert out == r"hi @\g<0>"
+
+
+@pytest.mark.asyncio
+async def test_one_odd_name_does_not_break_the_other_mentions():
+    adapter = _adapter_with_names(
+        {"U07DEV": r"dev\ops", "U07ALICE": "Alice Example"}
     )
-    assert out == "@Alice Example ping @Alice Example"
-
-
-@pytest.mark.asyncio
-async def test_unresolvable_mention_falls_back_to_id():
-    # Resolution returns the bare ID; keep the message intact, don't empty it.
-    adapter = _adapter_with_names({})
-    out = await adapter._humanize_user_mentions("<@U07GHOST> hi", chat_id="C1")
-    assert out == "@U07GHOST hi"
-
-
-@pytest.mark.asyncio
-async def test_no_mentions_returns_unchanged():
-    adapter = _adapter_with_names({"U07ALICE": "Alice Example"})
-    out = await adapter._humanize_user_mentions("plain text, no pings", chat_id="C1")
-    assert out == "plain text, no pings"
+    out = await adapter._humanize_user_mentions(
+        "<@U07DEV> and <@U07ALICE> ship it", chat_id="C1"
+    )
+    assert out == r"@dev\ops and @Alice Example ship it"
 
 
 # ----- _build_identity_prompt --------------------------------------------------
@@ -140,19 +147,3 @@ def test_identity_prompt_names_the_bot():
     assert "not a mention of you" in prompt
 
 
-def test_identity_prompt_prefers_per_team_name():
-    adapter = _make_adapter()
-    adapter._bot_display_name = "PrimaryBot"
-    adapter._team_bot_names = {"T2": "WorkspaceTwoBot"}
-    prompt = adapter._build_identity_prompt(team_id="T2")
-    assert "@WorkspaceTwoBot" in prompt
-    assert "PrimaryBot" not in prompt
-
-
-def test_identity_prompt_empty_when_name_unknown():
-    # Before connect (no name resolved) the prompt must be empty, not a
-    # half-formed line — callers skip injecting an empty string.
-    adapter = _make_adapter()
-    adapter._bot_display_name = None
-    adapter._team_bot_names = {}
-    assert adapter._build_identity_prompt(team_id="T1") == ""

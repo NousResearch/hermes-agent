@@ -1,9 +1,40 @@
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { Dialog, DialogContent, DialogTitle, preventCloseButtonAutoFocus } from './dialog'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './select'
 
 afterEach(cleanup)
+
+describe('Select portalled inside a Dialog', () => {
+  it('renders the open dropdown inside the dialog DOM subtree, not document.body', () => {
+    // Force the Select open (defaultOpen) to sidestep jsdom's missing
+    // hasPointerCapture on the trigger. The dropdown content must land inside the
+    // dialog content node — that DOM nesting is what keeps focus in the dialog so
+    // dismissing the dropdown no longer closes the dialog.
+    render(
+      <Dialog open>
+        <DialogContent>
+          <DialogTitle>Test dialog</DialogTitle>
+          <Select defaultOpen>
+            <SelectTrigger aria-label="picker">
+              <SelectValue placeholder="pick" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="a">Option A</SelectItem>
+            </SelectContent>
+          </Select>
+        </DialogContent>
+      </Dialog>
+    )
+
+    const dialog = screen.getByRole('dialog')
+    const option = screen.getByText('Option A')
+
+    // The dropdown item is a descendant of the dialog, i.e. portalled into it.
+    expect(dialog.contains(option)).toBe(true)
+  })
+})
 
 describe('DialogContent close button', () => {
   it('closes the dialog when clicked', () => {
@@ -20,7 +51,7 @@ describe('DialogContent close button', () => {
     expect(onOpenChange).toHaveBeenCalledWith(false)
   })
 
-  it('does not show the tooltip immediately on open when the dialog opts out of autofocus (no hover/focus yet)', async () => {
+  it('close button has no tip (X is the label)', () => {
     render(
       <Dialog open>
         <DialogContent onOpenAutoFocus={preventCloseButtonAutoFocus}>
@@ -29,11 +60,8 @@ describe('DialogContent close button', () => {
       </Dialog>
     )
 
-    // Radix would otherwise autofocus the close button on open (this dialog has
-    // no input), which also triggers the tooltip via focus. Dialogs with no
-    // input (e.g. the updates overlay) opt into `preventCloseButtonAutoFocus`
-    // explicitly — this is no longer dialog.tsx's default for every dialog.
-    expect(screen.getByRole('button')).toBeTruthy()
+    const close = screen.getByRole('button', { name: /close/i })
+    expect(close.closest('[data-slot="tooltip-trigger"]')).toBeNull()
     expect(screen.queryByRole('tooltip')).toBeNull()
   })
 
@@ -72,37 +100,5 @@ describe('DialogContent close button', () => {
     const event = new Event('focus', { cancelable: true })
     preventCloseButtonAutoFocus(event)
     expect(event.defaultPrevented).toBe(true)
-  })
-
-  // Skipped: pre-existing test, unrelated to the onOpenAutoFocus scoping this
-  // file is actually about (that's fully covered by the three tests above).
-  // The tooltip's open transition is driven by a real, un-act()-wrapped timer
-  // inside Radix/Tip, and on the Linux CI runner it consistently never fires
-  // within any timeout tried (1000ms/3000ms), while passing reliably in a full
-  // local run on Windows — an environment-specific flake, not a regression
-  // from this change. Needs its own investigation (e.g. Radix/jsdom version
-  // pinning, timer/act handling) rather than a timeout bump.
-  it.skip('shows the tooltip on focus (Radix opens on focus as well as hover; jsdom cannot reliably simulate real pointer hover)', async () => {
-    render(
-      <Dialog open>
-        {/* No input here, so without this opt-out Radix's real autofocus would
-            land on the close button on mount and race with the manual
-            fireEvent.focus below (same reason updates-overlay.tsx opts out). */}
-        <DialogContent onOpenAutoFocus={preventCloseButtonAutoFocus}>
-          <DialogTitle>Test dialog</DialogTitle>
-        </DialogContent>
-      </Dialog>
-    )
-
-    const closeButton = screen.getByRole('button', { name: /close/i })
-    closeButton.focus()
-
-    await waitFor(
-      () => {
-        const tooltip = screen.getByRole('tooltip')
-        expect(tooltip.textContent).toMatch(/close/i)
-      },
-      { timeout: 3000 }
-    )
   })
 })

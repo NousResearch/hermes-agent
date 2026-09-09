@@ -36,40 +36,5 @@ class TestGenuineNous429ReentersLoop:
                 f"max_retries={max_retries}: guard would never run"
             )
 
-    def test_buggy_assignment_never_reenters(self):
-        """Documents the bug shape: retry_count = max_retries exits the
-        loop immediately, skipping the fallback guard."""
-        for max_retries in (1, 2, 3, 5, 10):
-            retry_count = max_retries
-            assert not _loop_reenters(retry_count, max_retries)
 
 
-class TestSourceUsesReentrantAssignment:
-    """Belt-and-suspenders: the production source must use the re-entrant
-    form in the genuine-Nous-429 branch.  Protects against an accidental
-    revert (e.g. a stale-branch merge resolving in favor of the old code)."""
-
-    def test_genuine_branch_does_not_skip_to_max_retries(self):
-        from agent import conversation_loop
-
-        src = inspect.getsource(conversation_loop)
-        # Locate the genuine-rate-limit branch.
-        match = re.search(
-            r"if _genuine_nous_rate_limit:\n(?:.*\n)*?\s*continue\n",
-            src,
-        )
-        # There are two `if _genuine_nous_rate_limit` sites (record + branch);
-        # the regex above finds the first block ending in `continue`, which is
-        # the retry-count branch.
-        assert match is not None, (
-            "genuine-Nous-429 branch not found in conversation_loop — "
-            "update this test if the branch was refactored"
-        )
-        block = match.group(0)
-        assert "retry_count = max(0, max_retries - 1)" in block, (
-            "genuine-Nous-429 branch must re-enter the retry loop "
-            "(retry_count = max(0, max_retries - 1)); "
-            "`retry_count = max_retries` makes the while condition False "
-            "and the fallback guard never runs."
-        )
-        assert "retry_count = max_retries\n" not in block

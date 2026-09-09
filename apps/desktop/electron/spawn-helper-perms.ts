@@ -18,6 +18,14 @@ import { join } from 'node:path'
 
 const EXEC_BITS = 0o111
 
+// Electron exposes module paths inside app.asar even when electron-builder has
+// unpacked the native payload beside it. `stat` can read an archived path, but
+// chmod cannot mutate it (ENOTDIR). Native node-pty helpers belong in the
+// writable app.asar.unpacked tree; leave an already-unpacked path unchanged.
+export function writableNodePtyRoot(nodePtyRoot: string): string {
+  return nodePtyRoot.replace(/app\.asar(?!\.unpacked)/, 'app.asar.unpacked')
+}
+
 export interface SpawnHelperFs {
   existsSync(path: string): boolean
   readdirSync(path: string): string[]
@@ -81,8 +89,9 @@ export function ensureSpawnHelperExecutable(
   fs: SpawnHelperFs = defaultFs
 ): EnsureSpawnHelperResult {
   const result: EnsureSpawnHelperResult = { fixed: [], errors: [] }
+  const writableRoot = writableNodePtyRoot(nodePtyRoot)
 
-  for (const path of spawnHelperCandidates(nodePtyRoot, fs)) {
+  for (const path of spawnHelperCandidates(writableRoot, fs)) {
     if (!fs.existsSync(path)) {
       continue
     }

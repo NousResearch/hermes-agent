@@ -99,17 +99,6 @@ def test_flush_empty_buffer_is_noop():
     assert emitted == []
 
 
-def test_re_buffer_after_flush_works():
-    agent = _make_bare_agent()
-    emitted = []
-    agent._emit_status = lambda msg: emitted.append(msg)
-
-    agent._buffer_status("first")
-    agent._flush_status_buffer()
-    agent._buffer_status("second")
-    agent._flush_status_buffer()
-
-    assert emitted == ["first", "second"]
 
 
 def test_mixed_kinds_replay_through_correct_channels():
@@ -163,6 +152,35 @@ def test_pending_fallback_notice_emitted_once_on_success():
     assert emitted == ["🔄 Switched to fallback model: m1 via p1 → m2 via p2"]
 
 
+def test_pending_fallback_notice_emits_all_switches_in_order():
+    agent = _make_bare_agent()
+    emitted = []
+    agent._emit_status = emitted.append
+    agent._pending_fallback_notice = ["primary → fallback-1", "fallback-1 → fallback-2"]
+
+    agent._emit_pending_fallback_notice()
+
+    assert emitted == ["primary → fallback-1", "fallback-1 → fallback-2"]
+    assert agent._pending_fallback_notice is None
+
+
+def test_pending_fallback_notice_continues_after_callback_error():
+    agent = _make_bare_agent()
+    attempted = []
+    agent._pending_fallback_notice = ["first", "second"]
+
+    def emit(message):
+        attempted.append(message)
+        if message == "first":
+            raise RuntimeError("surface unavailable")
+
+    agent._emit_status = emit
+    agent._emit_pending_fallback_notice()
+
+    assert attempted == ["first", "second"]
+    assert agent._pending_fallback_notice is None
+
+
 def test_pending_fallback_notice_noop_when_unset():
     """No fallback this turn → no notice emitted on the success path."""
     agent = _make_bare_agent()
@@ -195,24 +213,6 @@ def test_flush_discards_pending_fallback_notice():
     assert emitted == []
 
 
-def test_pending_fallback_notice_survives_emit_callback_error():
-    """A failing status callback must not leave the notice set for a stale
-    re-emit, and must not raise."""
-    agent = _make_bare_agent()
-    seen = []
-
-    def boom(msg):
-        seen.append(msg)
-        raise RuntimeError("simulated callback failure")
-
-    agent._emit_status = boom
-    agent._pending_fallback_notice = "🔄 Switched to fallback model: m1 via p1 → m2 via p2"
-
-    # Should not raise.
-    agent._emit_pending_fallback_notice()
-    # Attempt was made and the notice is cleared regardless.
-    assert seen == ["🔄 Switched to fallback model: m1 via p1 → m2 via p2"]
-    assert agent._pending_fallback_notice is None
 
 
 def test_flush_swallows_callback_exceptions():

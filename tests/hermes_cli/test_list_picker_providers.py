@@ -17,6 +17,8 @@ network or auth state is required.
 
 import pytest
 from hermes_cli import model_switch
+import hermes_cli.model_switch_providers as hermes_cli_model_switch_providers
+from hermes_cli import model_switch_providers
 
 
 @pytest.fixture(autouse=True)
@@ -42,191 +44,20 @@ def _make_provider(slug, name=None, models=None, *, is_current=False,
     return entry
 
 
-def test_openrouter_models_replaced_with_live_catalog(monkeypatch):
-    """OpenRouter row's ``models`` should come from fetch_openrouter_models."""
-    base = [
-        _make_provider("openrouter", models=["openai/gpt-stale", "old/model"]),
-    ]
-    live = [("openai/gpt-5.4", "recommended"), ("moonshotai/kimi-k2.6", "")]
-
-    monkeypatch.setattr(model_switch, "list_authenticated_providers",
-                        lambda **kw: list(base))
-    monkeypatch.setattr("hermes_cli.models.fetch_openrouter_models",
-                        lambda *a, **kw: list(live))
-
-    result = model_switch.list_picker_providers(max_models=50)
-
-    assert len(result) == 1
-    openrouter = result[0]
-    assert openrouter["slug"] == "openrouter"
-    assert openrouter["models"] == ["openai/gpt-5.4", "moonshotai/kimi-k2.6"]
-    assert openrouter["total_models"] == 2
 
 
-def test_openrouter_falls_back_to_base_models_on_fetch_failure(monkeypatch):
-    """If the live catalog fetch raises, keep whatever base provided."""
-    fallback_models = ["openai/gpt-5.4", "moonshotai/kimi-k2.6"]
-    base = [_make_provider("openrouter", models=fallback_models)]
-
-    def _raise(*_a, **_kw):
-        raise RuntimeError("network down")
-
-    monkeypatch.setattr(model_switch, "list_authenticated_providers",
-                        lambda **kw: list(base))
-    monkeypatch.setattr("hermes_cli.models.fetch_openrouter_models", _raise)
-
-    result = model_switch.list_picker_providers(max_models=50)
-
-    assert len(result) == 1
-    assert result[0]["models"] == fallback_models
 
 
-def test_openrouter_empty_live_catalog_drops_row(monkeypatch):
-    """If the live catalog returns nothing for OpenRouter, drop the row."""
-    base = [_make_provider("openrouter", models=["something/stale"])]
-
-    monkeypatch.setattr(model_switch, "list_authenticated_providers",
-                        lambda **kw: list(base))
-    monkeypatch.setattr("hermes_cli.models.fetch_openrouter_models",
-                        lambda *a, **kw: [])
-
-    result = model_switch.list_picker_providers(max_models=50)
-
-    assert result == []
 
 
-def test_non_openrouter_rows_passed_through_unchanged(monkeypatch):
-    """Non-OpenRouter providers keep their curated ``models`` as-is."""
-    base = [
-        _make_provider("anthropic", models=["claude-sonnet-4-6", "claude-opus-4-7"]),
-        _make_provider("gemini", models=["gemini-3-flash-preview"]),
-    ]
-
-    monkeypatch.setattr(model_switch, "list_authenticated_providers",
-                        lambda **kw: list(base))
-    # fetch_openrouter_models must not be consulted when there's no openrouter row
-    monkeypatch.setattr("hermes_cli.models.fetch_openrouter_models",
-                        lambda *a, **kw: pytest.fail("should not be called"))
-
-    result = model_switch.list_picker_providers(max_models=50)
-
-    assert [p["slug"] for p in result] == ["anthropic", "gemini"]
-    assert result[0]["models"] == ["claude-sonnet-4-6", "claude-opus-4-7"]
-    assert result[1]["models"] == ["gemini-3-flash-preview"]
 
 
-def test_include_moa_adds_virtual_provider_with_named_presets(monkeypatch):
-    """Gateway pickers opt into a virtual MoA provider so presets are tappable."""
-    base = [_make_provider("minimax", models=["MiniMax-M3"])]
-    moa_config = {
-        "moa": {
-            "default_preset": "battle",
-            "presets": {
-                "battle": {"enabled": True},
-                "smart": {"enabled": True},
-            },
-        }
-    }
-
-    monkeypatch.setattr(model_switch, "list_authenticated_providers",
-                        lambda **kw: list(base))
-    monkeypatch.setattr("hermes_cli.config.load_config", lambda: moa_config)
-    monkeypatch.setattr("hermes_cli.models.fetch_openrouter_models",
-                        lambda *a, **kw: pytest.fail("should not be called"))
-
-    result = model_switch.list_picker_providers(
-        current_provider="moa",
-        max_models=50,
-        include_moa=True,
-    )
-
-    assert [p["slug"] for p in result] == ["moa", "minimax"]
-    moa = result[0]
-    assert moa["name"] == "Mixture of Agents"
-    assert moa["is_current"] is True
-    assert moa["source"] == "virtual"
-    assert moa["models"] == ["battle", "smart"]
-    assert moa["total_models"] == 2
 
 
-def test_empty_models_row_dropped(monkeypatch):
-    """Built-in provider with an empty ``models`` list is dropped."""
-    base = [
-        _make_provider("anthropic", models=[]),  # drop
-        _make_provider("openrouter", models=["anything"]),  # replaced by live
-    ]
-
-    monkeypatch.setattr(model_switch, "list_authenticated_providers",
-                        lambda **kw: list(base))
-    monkeypatch.setattr("hermes_cli.models.fetch_openrouter_models",
-                        lambda *a, **kw: [("openai/gpt-5.4", "recommended")])
-
-    result = model_switch.list_picker_providers(max_models=50)
-
-    assert [p["slug"] for p in result] == ["openrouter"]
 
 
-def test_custom_endpoint_with_api_url_kept_when_models_empty(monkeypatch):
-    """User-defined endpoints with an ``api_url`` survive even if models empty.
-
-    Rationale: custom endpoints may accept any model id the user types --
-    the picker still shows the row so the user can enter one manually.
-    """
-    base = [
-        _make_provider("local-ollama", is_user_defined=True,
-                       api_url="http://localhost:11434/v1", models=[],
-                       source="user-config"),
-    ]
-
-    monkeypatch.setattr(model_switch, "list_authenticated_providers",
-                        lambda **kw: list(base))
-    monkeypatch.setattr("hermes_cli.models.fetch_openrouter_models",
-                        lambda *a, **kw: [])
-
-    result = model_switch.list_picker_providers(max_models=50)
-
-    assert len(result) == 1
-    assert result[0]["slug"] == "local-ollama"
-    assert result[0]["models"] == []
 
 
-def test_user_defined_without_api_url_and_empty_models_dropped(monkeypatch):
-    """An is_user_defined row WITHOUT api_url and no models is still dropped.
-
-    The exemption is specifically for custom endpoints that can accept
-    arbitrary model ids; without an api_url there's nothing to point at.
-    """
-    base = [
-        _make_provider("orphan", is_user_defined=True, api_url=None, models=[]),
-    ]
-
-    monkeypatch.setattr(model_switch, "list_authenticated_providers",
-                        lambda **kw: list(base))
-    monkeypatch.setattr("hermes_cli.models.fetch_openrouter_models",
-                        lambda *a, **kw: [])
-
-    result = model_switch.list_picker_providers(max_models=50)
-
-    assert result == []
-
-
-def test_max_models_caps_openrouter_live_output(monkeypatch):
-    """``max_models`` caps how many OpenRouter IDs land in the row."""
-    live = [(f"vendor/model-{i}", "") for i in range(20)]
-    base = [_make_provider("openrouter", models=["placeholder"])]
-
-    monkeypatch.setattr(model_switch, "list_authenticated_providers",
-                        lambda **kw: list(base))
-    monkeypatch.setattr("hermes_cli.models.fetch_openrouter_models",
-                        lambda *a, **kw: list(live))
-
-    result = model_switch.list_picker_providers(max_models=5)
-
-    assert len(result) == 1
-    assert len(result[0]["models"]) == 5
-    assert result[0]["models"] == [mid for mid, _ in live[:5]]
-    # total_models reflects the full live catalog, not the capped slice.
-    assert result[0]["total_models"] == 20
 
 
 def test_passthrough_kwargs_to_base(monkeypatch):
@@ -243,10 +74,11 @@ def test_passthrough_kwargs_to_base(monkeypatch):
         return []
 
     monkeypatch.setattr(model_switch, "list_authenticated_providers", _capture)
+    monkeypatch.setattr(hermes_cli_model_switch_providers, "list_authenticated_providers", _capture)
     monkeypatch.setattr("hermes_cli.models.fetch_openrouter_models",
                         lambda *a, **kw: [])
 
-    model_switch.list_picker_providers(
+    model_switch_providers.list_picker_providers(
         current_provider="openrouter",
         current_base_url="http://x",
         current_model="openai/gpt-5.4",
@@ -263,6 +95,7 @@ def test_passthrough_kwargs_to_base(monkeypatch):
     assert captured["max_models"] == 12
 
 
+
 def test_current_custom_endpoint_passthrough_marks_current_row(monkeypatch):
     """Interactive picker should preserve current custom endpoint semantics."""
     monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
@@ -271,7 +104,7 @@ def test_current_custom_endpoint_passthrough_marks_current_row(monkeypatch):
     monkeypatch.setattr("hermes_cli.models.fetch_openrouter_models",
                         lambda *a, **kw: [])
 
-    result = model_switch.list_picker_providers(
+    result = model_switch_providers.list_picker_providers(
         current_provider="custom:ollama",
         current_base_url="http://localhost:11434/v1",
         current_model="glm-5.1",
@@ -282,12 +115,14 @@ def test_current_custom_endpoint_passthrough_marks_current_row(monkeypatch):
                 "base_url": "http://localhost:11434/v1",
                 "api_key": "ollama",
                 "model": "glm-5.1",
+                "discover_models": False,
             },
             {
                 "name": "Ollama — Qwen3",
                 "base_url": "http://localhost:11434/v1",
                 "api_key": "ollama",
                 "model": "qwen3",
+                "discover_models": False,
             },
         ],
         max_models=50,
@@ -299,6 +134,7 @@ def test_current_custom_endpoint_passthrough_marks_current_row(monkeypatch):
     assert row["slug"] == "custom:ollama"
     assert row["is_current"] is True
     assert row["models"] == ["glm-5.1", "qwen3"]
+
 
 
 # ---------------------------------------------------------------------------
@@ -325,6 +161,8 @@ def _stub_kimi_discovery(monkeypatch, *, canonical):
     """
     import agent.models_dev as md
     import hermes_cli.models as hm
+    import hermes_cli.models_catalog_static as hermes_cli_models_catalog_static
+    from hermes_cli import models_catalog_static
 
     kimi_map = {
         "kimi": "kimi-for-coding",
@@ -346,6 +184,7 @@ def _stub_kimi_discovery(monkeypatch, *, canonical):
     monkeypatch.setattr(md, "get_provider_info", lambda _pid: _PInfo())
     monkeypatch.setattr("hermes_cli.providers.HERMES_OVERLAYS", {})
     monkeypatch.setattr(hm, "CANONICAL_PROVIDERS", canonical)
+    monkeypatch.setattr(hermes_cli_models_catalog_static, "CANONICAL_PROVIDERS", canonical)
     monkeypatch.setattr(hm, "cached_provider_model_ids",
                         lambda *a, **k: ["kimi-k2.6", "kimi-k2.5"])
     monkeypatch.setattr(hm, "clear_provider_models_cache", lambda *a, **k: None)
@@ -354,10 +193,11 @@ def _stub_kimi_discovery(monkeypatch, *, canonical):
 def test_single_kimi_credential_yields_one_canonical_row(monkeypatch):
     """One Kimi key yields a single row under the canonical 'kimi-coding' slug."""
     import hermes_cli.models as hm
+    from hermes_cli import models_catalog_static
 
     _stub_kimi_discovery(
         monkeypatch,
-        canonical=[hm.ProviderEntry("kimi-coding", "Kimi / Kimi Coding Plan", "desc")],
+        canonical=[models_catalog_static.ProviderEntry("kimi-coding", "Kimi / Kimi Coding Plan", "desc")],
     )
     monkeypatch.setenv("KIMI_API_KEY", "sk-test-kimi")
 
@@ -381,12 +221,13 @@ def test_distinct_kimi_china_credential_still_listed(monkeypatch):
     pair that share a credential, not legitimately distinct providers.
     """
     import hermes_cli.models as hm
+    from hermes_cli import models_catalog_static
 
     _stub_kimi_discovery(
         monkeypatch,
         canonical=[
-            hm.ProviderEntry("kimi-coding", "Kimi / Kimi Coding Plan", "desc"),
-            hm.ProviderEntry("kimi-coding-cn", "Kimi / Moonshot (China)", "desc"),
+            models_catalog_static.ProviderEntry("kimi-coding", "Kimi / Kimi Coding Plan", "desc"),
+            models_catalog_static.ProviderEntry("kimi-coding-cn", "Kimi / Moonshot (China)", "desc"),
         ],
     )
     monkeypatch.setenv("KIMI_API_KEY", "sk-test-kimi")

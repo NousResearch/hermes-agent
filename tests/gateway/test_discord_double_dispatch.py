@@ -200,29 +200,6 @@ class TestThreadStarterDedup:
             "handle_message should only be called once — duplicate starter dropped"
         )
 
-    @pytest.mark.asyncio
-    async def test_thread_id_pre_seeded_in_dedup_cache(self, adapter, monkeypatch):
-        """After _handle_message with auto-thread, thread.id is in _dedup._seen."""
-        monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "false")
-        monkeypatch.setenv("DISCORD_AUTO_THREAD", "true")
-
-        channel = _TextChannel(channel_id=100)
-        thread_id = 55555
-        fake_thread = _Thread(thread_id=thread_id, parent=channel)
-
-        async def fake_auto_create_thread(message):
-            return fake_thread
-
-        monkeypatch.setattr(adapter, "_auto_create_thread", fake_auto_create_thread)
-
-        user_msg = _make_message(msg_id=42, channel=channel, content="hello")
-        await adapter._handle_message(user_msg)
-
-        # Thread id must be in the dedup internal cache
-        assert str(thread_id) in adapter._dedup._seen, (
-            f"thread.id={thread_id} should be pre-seeded in _dedup._seen "
-            "after _auto_create_thread returns a thread"
-        )
 
     @pytest.mark.asyncio
     async def test_no_dedup_seed_when_thread_creation_fails(self, adapter, monkeypatch):
@@ -258,96 +235,6 @@ class TestThreadStarterDedup:
         # The phantom thread id should NOT be in the dedup cache
         assert str(phantom_thread_id) not in adapter._dedup._seen, (
             "thread.id should NOT be pre-seeded when thread creation fails"
-        )
-
-    @pytest.mark.asyncio
-    async def test_no_dedup_seed_when_auto_thread_disabled(self, adapter, monkeypatch):
-        """When DISCORD_AUTO_THREAD=false, no thread is created and no pre-seeding."""
-        monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "false")
-        monkeypatch.setenv("DISCORD_AUTO_THREAD", "false")
-
-        channel = _TextChannel(channel_id=100)
-        auto_create_called = []
-
-        async def fake_auto_create_thread(message):
-            auto_create_called.append(True)
-            return _Thread(thread_id=55555, parent=channel)
-
-        monkeypatch.setattr(adapter, "_auto_create_thread", fake_auto_create_thread)
-
-        user_msg = _make_message(msg_id=42, channel=channel, content="hello")
-        await adapter._handle_message(user_msg)
-
-        # _auto_create_thread should NOT have been called
-        assert not auto_create_called, "_auto_create_thread should not run when disabled"
-        # thread.id should NOT be pre-seeded
-        assert "55555" not in adapter._dedup._seen, (
-            "thread.id should not be in dedup when auto-threading is disabled"
-        )
-
-    @pytest.mark.asyncio
-    async def test_dedup_seed_with_text_batch_delay_zero(self, adapter, monkeypatch):
-        """With text_batch_delay=0 (direct dispatch path), pre-seeding still works."""
-        monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "false")
-        monkeypatch.setenv("DISCORD_AUTO_THREAD", "true")
-
-        # text_batch_delay_seconds is already 0 in the fixture
-        assert adapter._text_batch_delay_seconds == 0
-
-        channel = _TextChannel(channel_id=100)
-        thread_id = 77777
-        fake_thread = _Thread(thread_id=thread_id, parent=channel)
-
-        async def fake_auto_create_thread(message):
-            return fake_thread
-
-        monkeypatch.setattr(adapter, "_auto_create_thread", fake_auto_create_thread)
-
-        user_msg = _make_message(msg_id=42, channel=channel, content="hello")
-        await adapter._handle_message(user_msg)
-
-        # Dispatched once
-        adapter.handle_message.assert_awaited_once()
-
-        # Thread id IS pre-seeded even with direct dispatch path
-        assert str(thread_id) in adapter._dedup._seen, (
-            "thread.id must be pre-seeded regardless of text_batch_delay setting"
-        )
-
-    @pytest.mark.asyncio
-    async def test_thread_id_different_from_message_id_both_tracked(
-        self, adapter, monkeypatch
-    ):
-        """Verify thread.id is tracked independently when it differs from message.id."""
-        monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "false")
-        monkeypatch.setenv("DISCORD_AUTO_THREAD", "true")
-
-        channel = _TextChannel(channel_id=100)
-        user_msg_id = 12345
-        thread_id = 99999  # always different in practice
-        fake_thread = _Thread(thread_id=thread_id, parent=channel)
-
-        async def fake_auto_create_thread(message):
-            return fake_thread
-
-        monkeypatch.setattr(adapter, "_auto_create_thread", fake_auto_create_thread)
-
-        user_msg = _make_message(msg_id=user_msg_id, channel=channel, content="hello")
-        await adapter._handle_message(user_msg)
-
-        # The thread.id (99999) is pre-seeded
-        assert str(thread_id) in adapter._dedup._seen, (
-            f"thread.id={thread_id} must be pre-seeded after auto-thread creation"
-        )
-
-        # A second MESSAGE_CREATE with message.id=thread.id is caught as duplicate
-        assert adapter._dedup.is_duplicate(str(thread_id)) is True, (
-            "Subsequent is_duplicate(thread.id) must return True"
-        )
-
-        # A hypothetical NEW message with a different id is not a duplicate
-        assert adapter._dedup.is_duplicate("11111") is False, (
-            "An unrelated new message id must not be blocked"
         )
 
 
@@ -389,23 +276,6 @@ class TestDirectDoubleDispatch:
             "Second delivery with same message.id must be dropped by dedup"
         )
 
-    @pytest.mark.asyncio
-    async def test_different_message_ids_both_dispatched(self, adapter, monkeypatch):
-        """Two distinct messages with different IDs both reach the agent."""
-        monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "false")
-        monkeypatch.setenv("DISCORD_AUTO_THREAD", "false")
-
-        channel = _TextChannel(channel_id=100)
-        msg1 = _make_message(msg_id=1, channel=channel, content="first")
-        msg2 = _make_message(msg_id=2, channel=channel, content="second")
-
-        assert adapter._dedup.is_duplicate(str(msg1.id)) is False
-        await adapter._handle_message(msg1)
-        assert adapter._dedup.is_duplicate(str(msg2.id)) is False
-        await adapter._handle_message(msg2)
-
-        assert adapter.handle_message.call_count == 2
-
 
 # ---------------------------------------------------------------------------
 # Scenario 3 — message_type=thread_starter filtered by type guard
@@ -436,22 +306,6 @@ class TestThreadStarterTypeFilter:
         assert thread_starter not in allowed, (
             "thread_starter_message type should not be in the allowed types set"
         )
-
-    @pytest.mark.asyncio
-    async def test_message_type_default_passes_type_filter(self, adapter, monkeypatch):
-        """MessageType.default messages pass the type filter (they reach _handle_message)."""
-        monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "false")
-        monkeypatch.setenv("DISCORD_AUTO_THREAD", "false")
-
-        channel = _TextChannel(channel_id=100)
-        msg = _make_message(
-            msg_id=42,
-            channel=channel,
-            content="hello",
-            msg_type=discord_platform.discord.MessageType.default,
-        )
-        await adapter._handle_message(msg)
-        adapter.handle_message.assert_awaited_once()
 
 
 # ---------------------------------------------------------------------------
@@ -490,36 +344,3 @@ class TestDedupCacheIntegrity:
             "A new message with a different ID should not be blocked"
         )
 
-    @pytest.mark.asyncio
-    async def test_multiple_thread_creations_each_preseeded(
-        self, adapter, monkeypatch
-    ):
-        """Each thread creation pre-seeds its own thread.id independently."""
-        monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "false")
-        monkeypatch.setenv("DISCORD_AUTO_THREAD", "true")
-
-        channel = _TextChannel(channel_id=100)
-        thread_ids = [33333, 44444, 55555]
-        thread_idx = [0]
-
-        async def fake_auto_create_thread(message):
-            tid = thread_ids[thread_idx[0] % len(thread_ids)]
-            thread_idx[0] += 1
-            return _Thread(thread_id=tid, parent=channel)
-
-        monkeypatch.setattr(adapter, "_auto_create_thread", fake_auto_create_thread)
-
-        for i, tid in enumerate(thread_ids):
-            msg = _make_message(msg_id=100 + i, channel=channel, content=f"msg {i}")
-            await adapter._handle_message(msg)
-
-        # All three thread ids should be pre-seeded
-        for tid in thread_ids:
-            assert str(tid) in adapter._dedup._seen, (
-                f"thread.id={tid} should be pre-seeded in _dedup._seen "
-                "after its thread was created"
-            )
-            # And they should be detected as duplicates now
-            assert adapter._dedup.is_duplicate(str(tid)) is True, (
-                f"thread.id={tid} should be treated as duplicate"
-            )

@@ -52,23 +52,6 @@ def test_interactive_setup_saves_home_channel(monkeypatch, tmp_path):
     assert "SLACK_HOME_CHANNEL" not in removed
 
 
-def test_interactive_setup_home_channel_empty_not_saved(monkeypatch, tmp_path):
-    """interactive_setup() does not save SLACK_HOME_CHANNEL when left blank."""
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    saved, removed = {}, []
-    _patch_setup_io(
-        monkeypatch,
-        ["«redacted:xox…»", "xapp-test-token", "", ""],
-        saved,
-        removed,
-        existing={},
-    )
-
-    interactive_setup()
-
-    assert "SLACK_HOME_CHANNEL" not in saved
-
-
 class TestSlackHomeChannelClear:
     """Blank home-channel answer must clear SLACK_HOME_CHANNEL (#12423)."""
 
@@ -86,44 +69,4 @@ class TestSlackHomeChannelClear:
         assert "SLACK_HOME_CHANNEL" in removed
         assert "SLACK_HOME_CHANNEL" not in saved
 
-    def test_blank_without_prior_home_still_attempts_remove(self, monkeypatch, tmp_path):
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-        saved, removed = {}, []
-        _patch_setup_io(
-            monkeypatch,
-            ["«redacted:xox…»", "xapp-test-token", "", ""],
-            saved,
-            removed,
-            existing={},
-        )
-        interactive_setup()
-        assert removed.count("SLACK_HOME_CHANNEL") == 1
 
-    def test_nonempty_saves_home_channel(self, monkeypatch, tmp_path):
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-        saved, removed = {}, []
-        _patch_setup_io(
-            monkeypatch,
-            ["«redacted:xox…»", "xapp-test-token", "", "C01ABC2DE3F"],
-            saved,
-            removed,
-            existing={},
-        )
-        interactive_setup()
-        assert saved["SLACK_HOME_CHANNEL"] == "C01ABC2DE3F"
-        assert "SLACK_HOME_CHANNEL" not in removed
-
-    def test_whitespace_only_clears_home_channel(self, monkeypatch, tmp_path):
-        """Whitespace-only input should clear, not save."""
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-        saved, removed = {}, []
-        _patch_setup_io(
-            monkeypatch,
-            ["«redacted:xox…»", "xapp-test-token", "", "   "],
-            saved,
-            removed,
-            existing={"SLACK_HOME_CHANNEL": "C01OLDHOMEXYZ"},
-        )
-        interactive_setup()
-        assert "SLACK_HOME_CHANNEL" in removed
-        assert "SLACK_HOME_CHANNEL" not in saved

@@ -61,7 +61,7 @@ All settings go under `platforms.msgraph_webhook.extra`:
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| `host` | `0.0.0.0` | Bind address for the HTTP listener. Non-loopback binds require `allowed_source_cidrs`; loopback (`127.0.0.1` / `::1`) is the easiest dev-tunnel / reverse-proxy setup. |
+| `host` | unset (dual-stack: all interfaces, IPv4+IPv6) | Bind address for the HTTP listener. Non-loopback binds require `allowed_source_cidrs`; loopback (`127.0.0.1` / `::1`) is the easiest dev-tunnel / reverse-proxy setup. |
 | `port` | `8646` | Bind port. |
 | `webhook_path` | `/msgraph/webhook` | URL path Graph POSTs to. |
 | `health_path` | `/health` | Readiness endpoint. |

@@ -1,0 +1,110 @@
+name: E2E screen recording
+description: >
+  One screen-recording mechanism for every install-e2e runner. mode=start
+  installs what the OS needs (ffmpeg everywhere; Xvfb on headless linux),
+  starts the recorder, and exports DISPLAY for later steps. mode=stop
+  finalizes the recording and fails on a zero-frame file. A missing ffmpeg
+  is a hard error - a graceful skip makes the missing tool invisible and
+  the artifact silently loses its recording.
+
+inputs:
+  mode:
+    description: start | stop
+    required: true
+  output:
+    description: Path of the recording (mkv).
+    required: true
+
+runs:
+  using: composite
+  steps:
+    # ---- setup + start ------------------------------------------------------
+    - name: Install ffmpeg + Xvfb (linux)
+      if: inputs.mode == 'start' && runner.os == 'Linux'
+      shell: bash
+      run: |
+        set -euo pipefail
+        if ! command -v ffmpeg >/dev/null 2>&1 || ! command -v Xvfb >/dev/null 2>&1; then
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends ffmpeg xvfb
+        fi
+
+    - name: Start Xvfb (linux, headless)
+      if: inputs.mode == 'start' && runner.os == 'Linux'
+      shell: bash
+      run: |
+        set -euo pipefail
+        # A dedicated display rather than xvfb-run-wrapping each command, so
+        # ONE display serves both the app under test and the recorder.
+        if [ -z "${DISPLAY:-}" ]; then
+          Xvfb :99 -screen 0 1920x1080x24 &
+          echo "$!" > "$RUNNER_TEMP/xvfb.pid"
+          echo "DISPLAY=:99" >> "$GITHUB_ENV"
+          export DISPLAY=:99
+        fi
+        # Wait until the display accepts connections; xdpyinfo may not be
+        # installed, so probe with the X socket.
+        for _ in $(seq 1 50); do
+          [ -S "/tmp/.X11-unix/X99" ] && break
+          sleep 0.2
+        done
+        [ -S "/tmp/.X11-unix/X99" ] || { echo "Xvfb :99 did not come up" >&2; exit 1; }
+
+    - name: Verify ffmpeg (macos)
+      if: inputs.mode == 'start' && runner.os == 'macOS'
+      shell: bash
+      run: |
+        set -euo pipefail
+        # Do not trust "preinstalled" claims - verify, install on miss.
+        command -v ffmpeg >/dev/null 2>&1 || brew install --quiet ffmpeg
+
+        # until new runner image is published by github, we have to hack on screen record approvals
+        # see https://github.com/actions/runner-images/issues/14474 - as of this hermes agent commit,
+        # it's merged but the image isn't updated.
+        approvalsPlist="$HOME/Library/Group Containers/group.com.apple.replayd/ScreenCaptureApprovals.plist"
+        mkdir -p "$(dirname "$approvalsPlist")"
+        defaults write "$approvalsPlist" "/opt/hca/hosted-compute-agent" -date "3024-01-01 00:00:00 +0000"
+        killall cfprefsd 2>/dev/null || true
+
+    - name: Restore cached ffmpeg (windows)
+      if: inputs.mode == 'start' && runner.os == 'Windows'
+      id: ffmpeg-cache
+      uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5
+      with:
+        path: ${{ runner.temp }}\test-bins\ffmpeg
+        key: e2e-ffmpeg-${{ runner.os }}-v1
+
+    - name: Install ffmpeg (windows)
+      if: inputs.mode == 'start' && runner.os == 'Windows' && steps.ffmpeg-cache.outputs.cache-hit != 'true'
+      shell: pwsh
+      run: |
+        $bins = "$env:RUNNER_TEMP\test-bins\ffmpeg"
+        New-Item -ItemType Directory -Path $bins -Force | Out-Null
+        winget install -e --id Gyan.FFmpeg --silent --accept-source-agreements --accept-package-agreements --disable-interactivity --location "$env:RUNNER_TEMP\ffmpeg_dir"
+        Copy-Item -Path "$env:RUNNER_TEMP\ffmpeg_dir\*\*" -Destination $bins -Recurse -Force
+
+    - name: Add ffmpeg to PATH (windows)
+      if: inputs.mode == 'start' && runner.os == 'Windows'
+      shell: pwsh
+      run: Add-Content -Path $env:GITHUB_PATH -Value "$env:RUNNER_TEMP\test-bins\ffmpeg\bin"
+
+    - name: Start recording (posix)
+      if: inputs.mode == 'start' && runner.os != 'Windows'
+      shell: bash
+      run: bash "$GITHUB_ACTION_PATH/../../../tests/install/e2e-assets/record-start.sh" '${{ inputs.output }}'
+
+    - name: Start recording (windows)
+      if: inputs.mode == 'start' && runner.os == 'Windows'
+      shell: powershell
+      run: powershell -NoProfile -ExecutionPolicy Bypass -File "$env:GITHUB_ACTION_PATH\..\..\..\tests\install\e2e-assets\record-start.ps1" -OutFile "${{ inputs.output }}"
+
+    # ---- stop ---------------------------------------------------------------
+    - name: Stop recording (posix)
+      if: inputs.mode == 'stop' && runner.os != 'Windows'
+      shell: bash
+      run: bash "$GITHUB_ACTION_PATH/../../../tests/install/e2e-assets/record-stop.sh" '${{ inputs.output }}'
+
+    - name: Stop recording (windows)
+      if: inputs.mode == 'stop' && runner.os == 'Windows'
+      shell: powershell
+      run: powershell -NoProfile -ExecutionPolicy Bypass -File "$env:GITHUB_ACTION_PATH\..\..\..\tests\install\e2e-assets\record-stop.ps1" -OutFile "${{ inputs.output }}"

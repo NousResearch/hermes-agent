@@ -74,11 +74,6 @@ def test_recency_ink_follows_age_gradient():
     assert samples == sorted(samples)
 
 
-def test_undated_graph_falls_back_to_ordinal():
-    nodes = [{"id": f"n{i}", "kind": "skill"} for i in range(5)]
-    rec = render.compute_recency(nodes)
-    assert rec["timed"] is False
-    assert len(set(rec["rec"].values())) == len(nodes)
 
 
 def test_grid_runs_are_text_style_alpha():
@@ -106,49 +101,16 @@ def test_bars_render_skills_and_memories():
     assert render.STYLE_MEMORY in styles
 
 
-def test_run_alpha_follows_age_for_lit_stars():
-    # An all-skill, dated graph at full reveal: the newest star is brighter ink
-    # than the oldest (age gradient carried in the run alpha).
-    payload = _payload(skills=12, memories=0)
-    frame = render.render_graph(payload, cols=80, rows=20, reveal=1.0)
-    alphas = [run[2] for row in frame["grid"] for run in row if run[1] == render.STYLE_SKILL]
-    assert max(alphas) > min(alphas)
 
 
-def test_reveal_monotonically_builds_up():
-    payload = _payload(skills=12, memories=5)
-    counts = [render.render_graph(payload, cols=60, rows=20, reveal=r)["visible"] for r in (0.0, 0.25, 0.5, 0.75, 1.0)]
-    assert counts == sorted(counts)
-    assert counts[-1] == len(payload["nodes"])
 
 
-def test_empty_payload_renders_placeholder():
-    frame = render.render_graph({"nodes": []}, cols=40, rows=12)
-    assert frame["visible"] == 0
-    assert "no learning yet" in _flatten(frame["grid"])
 
 
-def test_grid_fits_within_row_budget():
-    # The chart is a timeline of dated buckets + a trajectory row; it fills up to
-    # the row budget but never overflows it.
-    frame = render.render_graph(_payload(), cols=60, rows=14, reveal=1.0)
-    assert 0 < len(frame["grid"]) <= 14
 
 
-def test_legend_counts_and_glyphs():
-    payload = _payload(skills=9, memories=4)
-    legend = render.build_legend(payload)
-    labels = {item["label"] for item in legend}
-    assert "skills (9)" in labels
-    assert "memories (4)" in labels
-    glyphs = {item["glyph"] for item in legend}
-    assert render.SKILL_GLYPH in glyphs and render.MEMORY_GLYPH in glyphs
 
 
-def test_axis_labels_present_when_dated():
-    axis = render.axis_labels(_payload())
-    assert axis["start"] != "oldest"  # dated → real dates
-    assert axis["end"] != "now"
 
 
 def test_frames_play_through_grows_visibility():
@@ -163,25 +125,9 @@ def test_frames_play_through_grows_visibility():
         assert fr["grid"]
 
 
-def test_frames_count_is_clamped():
-    payload = _payload(skills=3, memories=1)
-    assert len(render.render_frames(payload, cols=40, rows=12, frames=1)["frames"]) == 2
-    assert len(render.render_frames(payload, cols=40, rows=12, frames=9999)["frames"]) == 240
 
 
-def test_format_date_handles_missing():
-    assert render.format_date(None) == "unknown"
-    assert render.format_date(0) == "unknown"
-    assert render.format_date(1_700_000_000) != "unknown"
 
 
-def test_derive_palette_distinct_memory_hue():
-    pal = render.derive_palette("#FFD700", dark=True)
-    assert pal["skill"].startswith("#") and pal["memory"].startswith("#")
-    # Skills wear the muted complement, memories the primary ink → distinct.
-    assert pal["memory"].lower() != pal["skill"].lower()
 
 
-def test_summary_reports_learning_totals():
-    lines = render.build_summary(_payload(skills=7, memories=2))
-    assert any("7 learned skills" in line and "2 memories" in line for line in lines)

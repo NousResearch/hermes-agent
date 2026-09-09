@@ -1,22 +1,29 @@
 import { useStore } from '@nanostores/react'
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 
 import { useSessionView } from '@/app/chat/session-view'
+import { useTourMarker } from '@/app/chat/tour-marker'
 import { ModelMenuCloseContext } from '@/app/shell/model-menu-panel'
 import { Button } from '@/components/ui/button'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
 import { GlyphSpinner } from '@/components/ui/glyph-spinner'
+import { releaseTypingFocus } from '@/components/ui/keyboard-first'
 import { Tip } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
 import { ChevronDown } from '@/lib/icons'
 import { formatModelStatusLabel } from '@/lib/model-status-label'
 import { cn } from '@/lib/utils'
-import { $currentModelSource, setModelPickerOpen } from '@/store/session'
+import { $currentModelSource, $defaultReasoningEffort, setModelPickerOpen } from '@/store/session'
 
+import { onComposerModelMenuRequest } from './focus'
+import { useComposerScope } from './scope'
 import type { ChatBarState } from './types'
 
+// `shrink` (not `shrink-0`) with a truncating label: the pill is the one
+// control in the row that can give width back continuously, so it absorbs the
+// squeeze between collapse stages instead of pushing Send past the edge.
 const PILL = cn(
-  'h-(--composer-control-size) max-w-40 shrink-0 gap-1 rounded-md px-2 text-xs font-normal',
+  'h-(--composer-control-size) min-w-0 max-w-40 shrink gap-1 rounded-md px-2 text-xs font-normal',
   'text-(--ui-text-tertiary) hover:bg-(--chrome-action-hover) hover:text-foreground'
 )
 
@@ -38,6 +45,8 @@ export function ModelPill({
   model: ChatBarState['model']
 }) {
   const copy = useI18n().t.shell.statusbar
+  // Two return branches below, one handle: only ever one of them mounts.
+  const tourMarker = useTourMarker('model-pill')
   const view = useSessionView()
   // Prefer the chat-bar snapshot (already view-scoped by ChatView); fall back
   // to the live SessionView atoms so a mid-flight session.info still paints.
@@ -48,8 +57,31 @@ export function ModelPill({
   const fastMode = useStore(view.$fast)
   const reasoningEffort = useStore(view.$reasoningEffort)
   const modelSource = useStore($currentModelSource)
+  const defaultEffort = useStore($defaultReasoningEffort)
   const runtimeId = useStore(view.$runtimeId)
   const [open, setOpen] = useState(false)
+  const scope = useComposerScope()
+  const hasLiveMenu = Boolean(model.modelMenuContent)
+
+  // The `composer.modelPicker` hotkey, routed to exactly one surface (the pane
+  // under the pointer, else the active composer — see requestModelMenuToggle).
+  // Toggles the live dropdown; with no live menu (gateway closed) it opens the
+  // full picker dialog, same as clicking the pill.
+  useEffect(
+    () =>
+      onComposerModelMenuRequest(target => {
+        if (target !== scope.target || disabled) {
+          return
+        }
+
+        if (hasLiveMenu) {
+          setOpen(prev => !prev)
+        } else {
+          setModelPickerOpen(true)
+        }
+      }),
+    [scope.target, disabled, hasLiveMenu]
+  )
 
   // The composer pick is sticky: a manual selection is pinned and every NEW
   // chat uses it instead of the Settings → Model default — silently, which has
@@ -68,7 +100,9 @@ export function ModelPill({
   ) : (
     <>
       {currentModel.trim() ? (
-        <span className="truncate">{formatModelStatusLabel(currentModel, { fastMode, reasoningEffort })}</span>
+        <span className="truncate">
+          {formatModelStatusLabel(currentModel, { defaultEffort, fastMode, reasoningEffort })}
+        </span>
       ) : (
         <GlyphSpinner className="opacity-50" spinner="braille" />
       )}
@@ -105,6 +139,7 @@ export function ModelPill({
         <Button
           aria-label={copy.openModelPicker}
           className={pillClass}
+          data-tour={tourMarker}
           disabled={disabled}
           onClick={() => setModelPickerOpen(true)}
           type="button"
@@ -116,17 +151,35 @@ export function ModelPill({
     )
   }
 
+  // Closing the menu ends its claim on the keyboard: Radix restores focus to
+  // this pill (a toolbar button), so without the release the Enter that
+  // committed a model also swallows whatever you type next.
+  const setMenuOpen = (next: boolean) => {
+    setOpen(next)
+
+    if (!next) {
+      releaseTypingFocus()
+    }
+  }
+
   return (
-    <DropdownMenu onOpenChange={setOpen} open={open}>
+    <DropdownMenu onOpenChange={setMenuOpen} open={open}>
       <Tip label={title} side="top">
         <DropdownMenuTrigger asChild>
-          <Button aria-label={title} className={pillClass} disabled={disabled} type="button" variant="ghost">
+          <Button
+            aria-label={title}
+            className={pillClass}
+            data-tour={tourMarker}
+            disabled={disabled}
+            type="button"
+            variant="ghost"
+          >
             {label}
           </Button>
         </DropdownMenuTrigger>
       </Tip>
       <DropdownMenuContent align="end" className="w-64 p-0" side="top" sideOffset={8}>
-        <ModelMenuCloseContext.Provider value={() => setOpen(false)}>
+        <ModelMenuCloseContext.Provider value={() => setMenuOpen(false)}>
           {model.modelMenuContent}
         </ModelMenuCloseContext.Provider>
       </DropdownMenuContent>

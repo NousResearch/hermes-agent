@@ -118,6 +118,7 @@ function PlanCard({ flow, tier }: { flow: DowngradeFlow; tier: BillingPlanTierVi
 
   // When the confirm panel closes (cancel / scheduled), return focus to this tile
   // so keyboard focus is never left detached on the removed panel.
+  // eslint-disable-next-line no-restricted-syntax -- tracks previous confirming state for focus return, not an atom mirror
   useEffect(() => {
     if (wasConfirming.current && !confirming) {
       cardRef.current?.focus()

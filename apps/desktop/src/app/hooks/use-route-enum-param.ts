@@ -1,5 +1,5 @@
 import { useCallback, useMemo } from 'react'
-import { useLocation, useNavigate } from 'react-router-dom'
+import { useLocation, useNavigate } from 'react-router'
 
 // Read/write an enum-shaped URL search param (e.g. ?tab=foo). Used to make
 // tabbed views survive a refresh. Always navigates with replace so tab clicks

@@ -43,7 +43,6 @@ def _egress_proxy_args_for_docker() -> tuple[list[str], dict[str, str], list[str
     if not proxy_cfg.get("enabled"):
         return ([], {}, [])
 
-    status = ip.get_status()
     enforce = bool(proxy_cfg.get("enforce_on_docker", True))
 
     def _degraded(msg: str):
@@ -52,6 +51,12 @@ def _egress_proxy_args_for_docker() -> tuple[list[str], dict[str, str], list[str
         logger.warning("%s — continuing without proxy (enforce_on_docker=false).", msg)
         return ([], {}, [])
 
+    try:
+        ip.ensure_docker_proxy_reachable()
+    except RuntimeError as exc:
+        return _degraded(str(exc))
+
+    status = ip.get_status()
     if not status.configured:
         return _degraded(
             "proxy.enabled is true but iron-proxy is not configured. "

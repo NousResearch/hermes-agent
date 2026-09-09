@@ -478,12 +478,51 @@ def _default_http_listen(tunnel_port: int) -> List[str]:
     unreachable from containers), loopback on Docker Desktop (VPNkit).  NEVER 0.0.0.0: a LAN peer with a leaked
     sandbox token could spend the operator's API quota."""
     if platform.system() == "Linux":
+        ensure_docker_proxy_reachable()
         if (bridge_ip := _detect_docker_bridge_ip()) and bridge_ip != "127.0.0.1":
             return [f"{bridge_ip}:{tunnel_port}"]
         logger.warning(
             "No docker bridge (docker0) detected — binding iron-proxy to loopback only.  Docker sandboxes will NOT be able to reach the proxy until it is restarted with docker running."
         )
     return [f"127.0.0.1:{tunnel_port}"]
+
+
+def _docker_daemon_is_rootless() -> bool:
+    """Whether the reachable Linux Docker daemon explicitly reports rootless mode."""
+    if platform.system() != "Linux":
+        return False
+    try:
+        result = _run(
+            ["docker", "info", "--format", "{{json .SecurityOptions}}"],
+            timeout=2,
+            text=True,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    if result.returncode != 0:
+        return False
+    try:
+        options = json.loads(result.stdout or "")
+    except (json.JSONDecodeError, TypeError):
+        return False
+    return isinstance(options, list) and any(
+        isinstance(option, str)
+        and option.split(",", 1)[0] in {"rootless", "name=rootless"}
+        for option in options
+    )
+
+
+def ensure_docker_proxy_reachable() -> None:
+    """Reject a topology where host iron-proxy cannot safely serve Docker sandboxes."""
+    if not _docker_daemon_is_rootless():
+        return
+    raise RuntimeError(
+        "iron-proxy cannot safely serve rootless Docker: its bridge address "
+        "exists only inside RootlessKit, while Docker disables access to "
+        "host loopback by default. Hermes refuses to configure an endpoint "
+        "that sandboxes cannot reach. Use a rootful Docker daemon for "
+        "proxy.enforce_on_docker, or disable the egress proxy for this backend."
+    )
 
 
 def _detect_docker_bridge_ip() -> Optional[str]:
@@ -733,6 +772,7 @@ def start_proxy(
     """Spawn iron-proxy as a managed background subprocess (idempotent if already running).  ``refresh_secrets_from_bitwarden``
     re-fetches secrets from BWS — the ``credential_source: bitwarden`` rotation promise."""
     global _proxy_nonce
+    ensure_docker_proxy_reachable()
     if (existing := _read_pid()) and _pid_alive(existing):
         return get_status()
     if (bin_path := binary or find_iron_proxy(install_if_missing=install_if_missing)) is None:

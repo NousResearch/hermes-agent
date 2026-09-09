@@ -109,6 +109,75 @@ def test_build_proxy_config_custom_allowed_hosts(tmp_path):
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.parametrize(
+    ("security_options", "expected"),
+    [
+        ('["name=seccomp,profile=builtin", "name=rootless"]', True),
+        ('["name=seccomp,profile=builtin", "name=cgroupns"]', False),
+        ("not-json", False),
+    ],
+)
+def test_detect_rootless_docker_from_security_options(
+    monkeypatch, security_options, expected,
+):
+    result = MagicMock(returncode=0, stdout=security_options)
+    monkeypatch.setattr(ip.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(ip, "_run", lambda *args, **kwargs: result)
+
+    assert ip._docker_daemon_is_rootless() is expected
+
+
+def test_rootless_docker_fails_closed_at_config_start_and_sandbox(
+    hermes_home, tmp_path, monkeypatch, capsys,
+):
+    from hermes_cli.config import load_config, save_config
+    from hermes_cli import proxy_cli
+    from tools.environments import docker_egress
+
+    monkeypatch.setattr(ip.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(ip, "_detect_docker_bridge_ip", lambda: None)
+    monkeypatch.setattr(ip, "_docker_daemon_is_rootless", lambda: True)
+    monkeypatch.setattr(ip, "ensure_audit_log", lambda path: None)
+
+    with pytest.raises(RuntimeError, match="rootless Docker"):
+        ip.build_proxy_config(
+            mappings=[_sample_mapping()],
+            ca_cert=tmp_path / "ca.crt",
+            ca_key=tmp_path / "ca.key",
+        )
+
+    result = proxy_cli._setup_write_config(
+        proxy_cli.Console(),
+        proxy_cli.argparse.Namespace(tunnel_port=None, from_bitwarden=False),
+        [_sample_mapping()],
+        tmp_path / "ca.crt",
+        tmp_path / "ca.key",
+    )
+    assert result is None
+    assert "rootless Docker" in capsys.readouterr().out
+
+    state = ip._proxy_state_dir()
+    config_path = state / "proxy.yaml"
+    config_path.write_text(
+        "proxy:\n  tunnel_listen: 127.0.0.1:9090\n", encoding="utf-8",
+    )
+    binary = hermes_home / "iron-proxy"
+    binary.write_text("synthetic", encoding="utf-8")
+    with pytest.raises(RuntimeError, match="rootless Docker"):
+        ip.start_proxy(binary=binary, config_path=config_path)
+
+    (state / "ca.crt").write_text("synthetic", encoding="utf-8")
+    cfg = load_config()
+    cfg.setdefault("proxy", {})["enabled"] = True
+    save_config(cfg)
+    with pytest.raises(RuntimeError, match="rootless Docker"):
+        docker_egress._egress_proxy_args_for_docker()
+
+    cfg["proxy"]["enforce_on_docker"] = False
+    save_config(cfg)
+    assert docker_egress._egress_proxy_args_for_docker() == ([], {}, [])
+
+
 
 
 

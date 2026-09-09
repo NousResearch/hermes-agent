@@ -243,15 +243,19 @@ def _setup_write_config(console: Console, args: argparse.Namespace, mappings, ca
         console.print(f"  [yellow]⚠ {exc}[/yellow]")
     # ``proxy.upstream_deny_cidrs`` overrides the deny list; None yields the documented safe
     # default-deny set (loopback, IMDS, RFC1918).
-    iron_cfg = ip.build_proxy_config(
-        mappings=mappings,
-        ca_cert=ca_crt,
-        ca_key=ca_key,
-        tunnel_port=tunnel_port,
-        audit_log=audit_log_path,
-        allowed_hosts=allowed,
-        upstream_deny_cidrs=proxy_cfg.get("upstream_deny_cidrs"),
-    )
+    try:
+        iron_cfg = ip.build_proxy_config(
+            mappings=mappings,
+            ca_cert=ca_crt,
+            ca_key=ca_key,
+            tunnel_port=tunnel_port,
+            audit_log=audit_log_path,
+            allowed_hosts=allowed,
+            upstream_deny_cidrs=proxy_cfg.get("upstream_deny_cidrs"),
+        )
+    except RuntimeError as exc:
+        console.print(f"  [red]✗ config not written: {exc}[/red]")
+        return None
     cfg_path = ip.write_proxy_config(iron_cfg)
     mappings_path = ip.write_mappings(mappings)
     # The generated config enables a loopback management listener (used by ``egress reload``);

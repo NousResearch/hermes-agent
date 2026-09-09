@@ -169,7 +169,7 @@ Regression: `test_subprocess_env_strips_unrelated_secrets`, `test_subprocess_env
 
 ### Bind policy
 
-`_default_http_listen` returns a single-element list: on Linux the docker bridge gateway IP (containers reach the proxy via `host.docker.internal:host-gateway`, which resolves to the bridge gateway — a loopback bind is unreachable from inside containers there); on macOS/Windows Docker Desktop, loopback (VPNkit routes `host.docker.internal` to the host).  Linux without a detectable docker0 bridge falls back to loopback with a warning.  Never `0.0.0.0`, never `:PORT` (INADDR_ANY).
+`_default_http_listen` returns a single-element list: on rootful Linux the docker bridge gateway IP (containers reach the proxy via `host.docker.internal:host-gateway`, which resolves to the bridge gateway — a loopback bind is unreachable from inside containers there); on macOS/Windows Docker Desktop, loopback (VPNkit routes `host.docker.internal` to the host). Linux without a running Docker daemon falls back to loopback with a warning. A confirmed rootless Linux daemon fails closed during setup, start, and sandbox creation: its bridge gateway belongs to RootlessKit's namespace rather than the host process, while Docker disables host-loopback access by default. Never `0.0.0.0`, never `:PORT` (INADDR_ANY).
 
 `_detect_docker_bridge_ip` validates via `ipaddress.IPv4Address` and rejects `is_unspecified` / `is_loopback` / `is_multicast` / `is_reserved` / `is_link_local` / `is_global`.  A hostile `ip` shim on PATH cannot inject `0.0.0.0`.
 

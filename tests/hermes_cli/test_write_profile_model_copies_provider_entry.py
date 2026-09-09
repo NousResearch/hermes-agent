@@ -72,6 +72,37 @@ def test_copies_config_map_provider_from_outer_home(_isolate_hermes_home):
     assert "other" not in (written.get("providers") or {})
 
 
+def test_copies_literal_inline_api_key_without_key_env(_isolate_hermes_home):
+    """A raw inline ``api_key`` (no key_env) is a documented config-map form; copy it as-is."""
+    outer = get_hermes_home()
+    _write_yaml(
+        outer / "config.yaml",
+        {
+            "providers": {
+                "scnet": {
+                    "name": "scnet",
+                    "base_url": "https://api.scnet.cn/api/llm/v1",
+                    "api_key": "sk-test-literal",
+                    "discover_models": True,
+                }
+            }
+        },
+    )
+    profile_dir = _empty_profile_dir(outer)
+
+    _write_profile_model(profile_dir, "scnet", "GLM-5.3-Flash")
+
+    written = _read_yaml(profile_dir / "config.yaml")
+    scnet = (written.get("providers") or {}).get("scnet")
+    assert isinstance(scnet, dict), "target profile must contain providers.scnet"
+    assert scnet.get("api_key") == "sk-test-literal"
+    assert "key_env" not in scnet
+    assert scnet.get("base_url") == "https://api.scnet.cn/api/llm/v1"
+    model = written.get("model") or {}
+    assert isinstance(model, dict)
+    assert model.get("provider") == "scnet"
+
+
 def test_builtin_assignment_does_not_invent_providers_block(_isolate_hermes_home):
     """Built-in registry providers have no config-map entry; do not invent one."""
     outer = get_hermes_home()

@@ -132,7 +132,9 @@ def _ensure_profile_provider_entry(
 
     Fail-open: no source dict, empty provider, or a same-named dest entry already
     present (keep the profile's local customization). Never invents a built-in
-    ``providers.<name>`` block. Returns the dest entry (existing or copied).
+    ``providers.<name>`` block. ``source_entry`` must be raw yaml (not
+    ``load_config`` expansion) and is deep-copied as-is. Returns the dest entry
+    (existing or copied).
     """
     from hermes_cli.config import find_provider_entry
 
@@ -148,14 +150,9 @@ def _ensure_profile_provider_entry(
         dest_providers = {}
         cfg["providers"] = dest_providers
     stored = source_key if source_key not in (None, "") else provider
-    copied = copy.deepcopy(source_entry)
-    # Raw yaml is preferred, but never persist an expanded secret if one slipped in.
-    api_key = copied.get("api_key")
-    if isinstance(api_key, str):
-        raw_key = api_key.strip()
-        if raw_key and not (raw_key.startswith("${") and raw_key.endswith("}")):
-            copied.pop("api_key", None)
-    dest_providers[stored] = copied
+    # Source is a raw-config snapshot (not load_config expansion): copy as-is,
+    # including inline api_key literals and ${VAR} templates (#88990).
+    dest_providers[stored] = copy.deepcopy(source_entry)
     return dest_providers[stored]
 
 

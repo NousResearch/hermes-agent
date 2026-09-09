@@ -892,6 +892,18 @@ class TestWriteConfigMergesOntoDisk:
         honcho_cli._write_config(cfg)
         assert json.loads(cfg_path.read_text())["hosts"]["hermes"] == {"apiKey": "hch-v3-pasted"}
 
+    def test_a_second_write_on_the_same_read_applies_only_the_edits_made_since_the_first(self, monkeypatch, tmp_path):
+        disk = {"hosts": {"hermes": {"apiKey": "hch-at-old", "oauth": {"refreshToken": "hch-rt-old"}, "workspace": "A"}}}
+        honcho_cli, cfg_path = self._paths(monkeypatch, tmp_path, disk)
+        cfg = honcho_cli._read_config()
+        cfg["hosts"]["hermes"]["workspace"] = "B"
+        honcho_cli._write_config(cfg)
+        self._rotate_on_disk(cfg_path)
+        cfg["hosts"]["hermes"]["workspace"] = "A"
+        honcho_cli._write_config(cfg)
+        out = json.loads(cfg_path.read_text())["hosts"]["hermes"]
+        assert out == {"apiKey": "hch-at-new", "oauth": {"refreshToken": "hch-rt-new"}, "workspace": "A"}
+
     def test_a_grant_the_login_installed_yields_to_a_later_rotation(self, monkeypatch, tmp_path):
         import plugins.memory.honcho.oauth as oauth
         honcho_cli, cfg_path = self._paths(monkeypatch, tmp_path, {"hosts": {"hermes": {"peerName": "alice"}}})

@@ -224,6 +224,51 @@ def find_custom_provider_identity(base_url: str) -> Optional[str]:
     return _find_custom_identity(lambda entry: _normalize_base_url_for_match(_entry_url(entry)) == target)
 
 
+def find_custom_provider_entry(base_url: str) -> Optional[Dict[str, Any]]:
+    """Map an endpoint URL back to its full ``providers`` / ``custom_providers`` entry (not just
+    the identity slug), so callers can lift the entry's own ``api_key``/``api_mode``.
+
+    ``find_custom_provider_identity`` loses the entry (and its credential) by design —
+    persistence paths must not persist keys. Aux resolution is NOT a persistence path: a named
+    custom provider arriving with a task-level ``base_url`` (the desktop GUI writes this shape,
+    #65254/#34651) gets flattened to bare ``custom`` before ``_resolve_named_custom_branch`` can
+    read the entry's key, so the key must be recovered from the URL here. Normalization mirrors
+    the identity lookup exactly (same ``_entry_url``/``_normalize_base_url_for_match`` pair) so
+    the entry found here always matches the slug that helper returns.
+    """
+    target = _normalize_base_url_for_match(base_url)
+    if not target:
+        return None
+
+    def _matches(entry: Dict[str, Any]) -> bool:
+        return _normalize_base_url_for_match(_entry_url(entry)) == target
+
+    rp = _rp()
+    try:
+        config = rp.load_config()
+    except Exception:
+        return None
+    providers = config.get("providers")
+    if isinstance(providers, dict):
+        for ep_name, entry in providers.items():
+            if isinstance(entry, dict) and _matches(entry):
+                result = _match_new_style_provider(str(ep_name), {str(ep_name): entry})
+                if result is not None:
+                    return result
+    try:
+        custom_providers = rp.get_compatible_custom_providers(config)
+    except Exception:
+        custom_providers = None
+    for entry in custom_providers or []:
+        if isinstance(entry, dict) and _matches(entry):
+            name = str(entry.get("name") or "").strip()
+            base = _clean(entry.get("base_url"))
+            if not name or not base:
+                continue
+            return dict(entry)
+    return None
+
+
 def _model_id_matches(value: Any, target: str) -> bool:
     return isinstance(value, str) and value.strip().lower() == target
 

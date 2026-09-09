@@ -942,6 +942,40 @@ class TestContinuity:
         assert agent._claude_sdk_session is not None
 
 
+    def test_unresolvable_workspace_at_turn_start_skips_the_binding(self, monkeypatch):
+        """The turn-start sample is guarded, and its failure declines the write.
+
+        With no usable `_cwd` on the session the fallback resolves the workspace
+        itself, and that resolution can raise (deleted launch directory, refusal
+        terminal scope). The turn must still complete; the resume id is then not
+        persisted at all, rather than persisted bound to a workspace nobody
+        observed.
+        """
+        import agent.runtime_cwd as runtime_cwd
+
+        def _unresolvable():
+            raise FileNotFoundError("launch directory was removed")
+
+        monkeypatch.setattr(runtime_cwd, "resolve_agent_cwd", _unresolvable)
+
+        agent = _make_agent()
+        db = MagicMock()
+        db.get_session.return_value = {}
+        agent._session_db = db
+        agent._claude_sdk_session.run_turn.return_value = _make_turn()
+
+        result = run_claude_agent_sdk_turn(
+            agent,
+            user_message="hi",
+            original_user_message="hi",
+            messages=[{"role": "user", "content": "hi"}],
+            effective_task_id="task-1",
+        )
+
+        assert result["final_response"] == "SDK_ASSISTANT"
+        db.update_claude_sdk_session_id.assert_not_called()
+
+
 class TestSessionResumeField:
     def test_resume_rides_options_when_set(self):
         session, holder = _make_session(

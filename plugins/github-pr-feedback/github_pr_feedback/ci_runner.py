@@ -461,14 +461,9 @@ class LocalCIRunner:
 
 def _pid_is_alive(pid: int) -> bool:
     """Read-only liveness check for a ledger-recorded OS process identity."""
-
-    if pid < 2:
-        return False
-    # Use Hermes' cross-platform probe: on Windows ``os.kill(pid, 0)`` can
-    # deliver CTRL_C_EVENT to the target's console process group.
     from gateway.status import _pid_exists
 
-    return _pid_exists(pid)
+    return bool(pid >= 2 and _pid_exists(pid))
 
 
 def _lane_argv(

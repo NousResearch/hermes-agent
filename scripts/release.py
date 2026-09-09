@@ -2288,8 +2288,8 @@ def categorize_commit(subject: str) -> str:
 
 def clean_subject(subject: str) -> str:
     """Clean up a commit subject for display."""
-    # Remove conventional commit prefix
-    cleaned = re.sub(r"^(feat|fix|docs|chore|refactor|test|perf|ci|build|improve|add|update|cleanup|hotfix|breaking|enhance|optimize|bugfix|bug|feature|tests|deps|bump)[\s:(!]+\s*", "", subject, flags=re.IGNORECASE)
+    # Remove conventional commit prefix (handles scoped prefixes like feat(scope):, feat!:, feat(scope)!:)
+    cleaned = re.sub(r"^(feat|fix|docs?|chore|refactor|test|tests|perf|ci|build|improve|add|update|clean|cleanup|hotfix|breaking|enhance|optimize|bugfix|bug|feature|deps|bump)(\([^)]*\))?!?[:\s]+", "", subject, flags=re.IGNORECASE)
     # Remove trailing issue refs that are redundant with PR links
     cleaned = cleaned.strip()
     # Capitalize first letter

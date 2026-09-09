@@ -6,8 +6,10 @@ Split out of :mod:`hermes_cli.plugins`; validation warns and never fails a load.
 from __future__ import annotations
 
 import hashlib
+import importlib.metadata
 import importlib.util
 import logging
+import re
 from contextlib import suppress
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -34,6 +36,7 @@ _KNOWN_MANIFEST_FIELDS: Set[str] = {
     "pip_dependencies", "provides_browser_providers", "provides_web_providers",
     "manifest_version", "api_version", "requires_plugins", "python_dependencies", "config_schema",
     "license", "homepage", "tags", "capabilities", "emits", "listens", "hermes", "depends",
+    "requires_hermes",
 }
 
 # Highest manifest schema version this Hermes understands.
@@ -336,6 +339,9 @@ class PluginManifest:
     # Path-derived registry key used by plugins.enabled/disabled and `hermes plugins list`: ``disk-cleanup``
     # for a flat plugin, ``image_gen/openai`` for a category plugin. Empty -> name.
     key: str = ""
+    # Hermes version requirement (``">=0.19"``, comma-separated clauses allowed). Unsatisfied plugins are
+    # recorded with an error and skipped before import — see ``requires_hermes_error``.
+    requires_hermes: str = ""
     portable: bool = False
     skill_namespace: str = ""
     # Declared capability ids, normalized to KNOWN ids. Declaration is consent metadata, NOT a grant: live
@@ -362,6 +368,55 @@ class PluginManifest:
     # ``<key>:``; ``listens`` fully-qualified ``<plugin>:<event>`` names.
     emits: List[str] = field(default_factory=list)
     listens: List[str] = field(default_factory=list)
+
+
+# ── requires_hermes version gate ─────────────────────────────────────────────
+_VERSION_COMPARATOR_RE = re.compile(r"^\s*(>=|<=|==|!=|>|<)\s*(.+?)\s*$")
+
+
+def running_hermes_version() -> str:
+    """Installed ``hermes-agent`` distribution version, else ``hermes_cli.__version__`` (source checkout)."""
+    try:
+        return importlib.metadata.version("hermes-agent")
+    except Exception:
+        from hermes_cli import __version__
+        return __version__
+
+
+def _version_tuple(v: str) -> Optional[tuple]:
+    """``v1.2.3-rc1`` → ``(1, 2, 3)``; ``None`` when a segment is non-numeric."""
+    parts = re.split(r"[-+]", str(v).strip().lstrip("v"), 1)[0].split(".")
+    parts += ["0"] * (3 - len(parts))
+    try:
+        return tuple(int(x) for x in parts[:3])
+    except ValueError:
+        return None
+
+
+def version_satisfies(spec: str, current: str) -> bool:
+    """``>=``/``>``/``<=``/``<``/``==``/``!=`` clauses (comma = AND; bare version = ``>=``). Unparseable
+    versions are permissive — no PEP 440 dependency for a one-field manifest gate."""
+    cur = _version_tuple(current)
+    if cur is None:
+        return True
+    ops = {">=": cur.__ge__, "<=": cur.__le__, "==": cur.__eq__, "!=": cur.__ne__, ">": cur.__gt__, "<": cur.__lt__}
+    for clause in filter(None, (c.strip() for c in spec.split(","))):
+        m = _VERSION_COMPARATOR_RE.match(clause)
+        op, target = (m.group(1), m.group(2)) if m else (">=", clause)
+        tgt = _version_tuple(target)
+        if tgt is not None and not ops[op](tgt):
+            return False
+    return True
+
+
+def requires_hermes_error(manifest: "PluginManifest") -> Optional[str]:
+    """Load-blocking reason when the manifest's ``requires_hermes`` rejects the running version."""
+    if not manifest.requires_hermes:
+        return None
+    current = running_hermes_version()
+    if version_satisfies(manifest.requires_hermes, current):
+        return None
+    return f"requires hermes {manifest.requires_hermes}, running {current}"
 
 
 def portable_plugin_manifest(child: Path, source: str, prefix: str) -> PluginManifest:
@@ -420,7 +475,7 @@ def parse_manifest_file(
             requires_env=data.get("requires_env", []),
             provides_tools=data.get("provides_tools", []),
             provides_hooks=data.get("provides_hooks", []), source=source, path=str(plugin_dir),
-            kind=kind, key=key,
+            kind=kind, key=key, requires_hermes=str(data.get("requires_hermes") or "").strip(),
             capabilities=_parse_declared_capabilities(data.get("capabilities"), name),
             **_parse_manifest_v2_fields(data, key), emits=data.get("emits") or [],
             listens=data.get("listens") or [],

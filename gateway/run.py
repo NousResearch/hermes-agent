@@ -953,7 +953,7 @@ def _warm_turn_machinery_sync() -> int:
     """Synchronously initialize first-turn prerequisites (executor thread); returns the schema count.
 
     Covers the lazy init seen in skeleton turns: ``run_agent`` import graph, tool schemas (+ ``check_fn``
-    TTL cache), context files."""
+    TTL cache), context files, the local Python toolchain probe (#106064)."""
     import run_agent  # noqa: F401  # heavy import graph, cached in sys.modules
     import model_tools
 
@@ -964,6 +964,15 @@ def _warm_turn_machinery_sync() -> int:
         build_context_files_prompt()
     except Exception:
         logger.debug("context-file warm-up failed (non-fatal)", exc_info=True)
+    from hermes_cli.config import load_config_readonly
+
+    agent_cfg = load_config_readonly().get("agent")
+    if not isinstance(agent_cfg, dict) or agent_cfg.get("environment_probe", True):
+        # The resolver owns remote-backend omission, the single worker, its cache and the bounded
+        # wait; calling it here is what the first prompt build would otherwise do on the hot path.
+        from tools.env_probe import get_environment_probe_line
+
+        get_environment_probe_line()
     return len(tool_defs)
 
 

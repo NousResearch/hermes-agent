@@ -340,8 +340,8 @@ Declarative plugins are symlinked with a `nix-managed-` prefix — they coexist 
 ```bash
 hermes plugins                               # unified interactive UI
 hermes plugins list                          # table: enabled / disabled / not enabled
-hermes plugins search <term>                 # search the community plugin index
-hermes plugins install <name>                # install by index name (resolved to repo @ pinned ref)
+hermes plugins search <term>                 # search the Hermes plugin catalog
+hermes plugins install <name>                # install a catalog entry (repo @ reviewed pinned SHA)
 hermes plugins install user/repo             # install from Git, then prompt Enable? [y/N]
 hermes plugins install user/repo --enable    # install AND enable (no prompt)
 hermes plugins install user/repo --no-enable # install but leave disabled (no prompt)
@@ -494,73 +494,40 @@ capability (`gateway.raw_events`) with a "no stability guarantee" label and a
 separate design, and has not shipped.
 :::
 
-### Discovering community plugins
+### Discovering plugins — the Hermes plugin catalog
 
-`hermes plugins search <term>` searches the **community plugin index** — a
-static, machine-readable JSON catalog of community plugins. Matching is fuzzy
-across name, description, and tags:
-
-```bash
-hermes plugins search telegram               # fuzzy search
-hermes plugins search                        # browse the whole index
-hermes plugins search --capability platform  # filter by declared capability
-hermes plugins search media --json           # machine-readable output
-hermes plugins search --refresh              # bypass the 24h local cache
-```
-
-Once you've found a plugin, install it by bare name — the name is resolved
-through the index to its `owner/repo` plus the index-pinned commit:
+`hermes plugins search <term>` searches the **Hermes plugin catalog** — the
+curated, SHA-pinned catalog maintained in the hermes-agent repository
+(`plugin-catalog/`). Matching covers entry names, descriptions, and declared
+tools:
 
 ```bash
-hermes plugins install hermes-media-studio
+hermes plugins search telegram    # search the catalog
+hermes plugins browse             # browse every entry
+hermes plugins info <name>        # full details for one entry
 ```
 
-If a name matches more than one entry, the candidates are listed and nothing
-is installed. Explicit `owner/repo` or Git-URL identifiers never touch the
-index and keep working exactly as before. An explicit `--ref <sha>` always
-overrides the index pin.
+Once you've found a plugin, install it by bare name — the name resolves to
+the entry's repository at its **pinned commit SHA**, and catalog provenance is
+recorded so `hermes plugins update` can re-pin when the catalog moves:
 
-**How the index is fetched.** The index lives at a canonical URL
-(`https://raw.githubusercontent.com/NousResearch/hermes-plugin-index/main/index.json`,
-overridable via `hermes config set plugins.index_url <url>`). Fetches are
-cached under `~/.hermes/cache/plugin_index.json` for 24 hours; when the
-remote is unreachable the stale cache is used, and when there is no cache at
-all a bundled seed copy ships with Hermes — so search works fully offline.
-
-**Index entry format.** Each entry is a JSON object:
-
-```json
-{
-  "name": "hermes-media-studio",
-  "description": "Generative media workspace plugin.",
-  "author": "NousResearch",
-  "tags": ["media", "image-gen"],
-  "repo": "NousResearch/hermes-media-studio",
-  "ref": "<40-char commit SHA>",
-  "subdir": null,
-  "homepage": "https://github.com/NousResearch/hermes-media-studio",
-  "capabilities": ["tools", "dashboard"],
-  "api_version": 1,
-  "added_at": "2026-08-12"
-}
+```bash
+hermes plugins install <catalog-name>
 ```
 
-`repo` is the `owner/name` GitHub identifier, `ref` pins an immutable commit
-SHA, and optional `subdir` supports monorepos. The bundled seed file
-(`hermes_cli/data/plugin_index.json` in the repo) is the format reference.
+Explicit `owner/repo` or Git-URL identifiers never touch the catalog and are
+flagged as custom (unreviewed) sources. An explicit
+`--ref <40-char commit SHA>` pins a custom install.
 
-**Submitting a plugin.** The index is maintained as a plain JSON file —
-submit a pull request to the
-[hermes-plugin-index](https://github.com/NousResearch/hermes-plugin-index)
-repository adding your entry (name, description, author, tags, `owner/repo`,
-and a pinned commit SHA). Review covers the entry's *metadata* only.
+See [Plugin Catalog](./plugin-catalog.md) for the full trust model, admission
+CI, and submission workflow.
 
-:::warning Indexed ≠ audited
-Inclusion in the community index means the entry's metadata was reviewed —
-**it is not a code audit**. Installing still goes through the normal
-consent/review flow (plugins install disabled by default, enabling is an
-explicit step, and tool-override rights require a separate grant). Review a
-plugin's source before enabling it.
+:::warning Cataloged ≠ audited
+A catalog entry means the entry's metadata and declared capabilities were
+reviewed at admission — **it is not a code audit**. Installing still goes
+through the normal consent flow (plugins install disabled by default,
+enabling is an explicit step, and tool-override rights require a separate
+grant). Review a plugin's source before enabling it.
 :::
 
 ### Plugin packs
@@ -575,8 +542,8 @@ description: STT + streaming TTS + approval relay
 author: hyper
 version: 1.0.0
 plugins:
-  - name: hermes-media-studio            # bare community-index name…
-    ref: e8d59971d2b7901405b39dac7b03bdd616272d0d
+  - name: hermes-telegram-business       # bare plugin-catalog name…
+    ref: e905f3bc5eeaa5a9dab9bc5155601b3ebec75757
   - repo: owner/approval-relay           # …or explicit owner/repo (or git URL)
     ref: 8f3c2d1a9b4e5f6071829304a5b6c7d8e9f00112
     subdir: plugins/relay                # optional monorepo path
@@ -595,7 +562,7 @@ hermes plugins pack export --enabled-only       # only plugins.enabled
 
 **Supply-chain posture.** Every entry's `ref` must be an exact 40-character
 commit SHA — tags and branch names are rejected with an error naming the
-entry, the same rule as the community index. Pack installs ride the exact
+entry, the same rule as the plugin catalog. Pack installs ride the exact
 same pinned install path as `hermes plugins install --ref <sha>` and record
 the same provenance in `plugins/.install-metadata.json`, so two installs of
 the same pack resolve identically. Packs build on the

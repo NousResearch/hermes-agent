@@ -146,6 +146,50 @@ def _custom_provider_ssl_context(base_url: str):
 
 # Process-lifetime picker lists refreshed from the live catalogs (see fetch_*_models).
 _openrouter_catalog_cache: list[tuple[str, str]] | None = None
+
+# The in-memory ``_openrouter_catalog_cache`` is per-process, so without a disk cache every cold
+# picker open re-downloads the full ~686KB /api/v1/models catalog. The *curated* result
+# (post-filter) is persisted under the same TTL the catalog manifest uses, so both layers go
+# stale together.
+
+
+def _openrouter_catalog_disk_ttl() -> float:
+    """Same TTL as the catalog manifest this list is filtered from (honours ``model_catalog.ttl_minutes``)."""
+    from hermes_cli.model_catalog import refresh_interval_seconds
+
+    return refresh_interval_seconds()
+
+
+def _openrouter_catalog_disk_path() -> Path:
+    from hermes_constants import get_hermes_home
+
+    return get_hermes_home() / "cache" / "openrouter_curated_catalog.json"
+
+
+def _read_openrouter_catalog_disk() -> list[tuple[str, str]] | None:
+    """Fresh curated catalog from disk, or None (missing, corrupt, expired, or empty)."""
+    obj = _read_json_cache(_openrouter_catalog_disk_path())
+    if obj is None:
+        return None
+    try:
+        if time.time() - float(obj.get("fetched_at", 0)) > _openrouter_catalog_disk_ttl():
+            return None
+    except (TypeError, ValueError):
+        return None
+    items = obj.get("curated")
+    if not isinstance(items, list):
+        return None
+    out = [(str(it[0]), str(it[1])) for it in items if isinstance(it, (list, tuple)) and len(it) == 2]
+    return out or None
+
+
+def _write_openrouter_catalog_disk(curated: list[tuple[str, str]]) -> None:
+    try:
+        _write_json_cache(
+            _openrouter_catalog_disk_path(),
+            {"fetched_at": time.time(), "curated": [list(c) for c in curated]})
+    except Exception as exc:
+        logger.debug("openrouter curated catalog disk write failed: %s", exc)
 _ai_gateway_catalog_cache: list[tuple[str, str]] | None = None
 
 
@@ -473,6 +517,14 @@ def fetch_openrouter_models(
     if _openrouter_catalog_cache is not None and not force_refresh:
         return list(_openrouter_catalog_cache)
 
+    # Cold process: serve from the persisted disk cache when fresh so the
+    # picker doesn't re-download the full ~686KB catalog on every open.
+    if not force_refresh:
+        disk = _read_openrouter_catalog_disk()
+        if disk:
+            _openrouter_catalog_cache = disk
+            return list(disk)
+
     # Remote catalog manifest first, in-repo snapshot when unreachable; the live /v1/models filter
     # (tool support, free pricing) is applied on top either way.
     try:
@@ -514,6 +566,7 @@ def fetch_openrouter_models(
     if not curated[0][1]:
         curated[0] = (curated[0][0], "recommended")
     _openrouter_catalog_cache = curated
+    _write_openrouter_catalog_disk(curated)
     return list(curated)
 
 
@@ -1932,6 +1985,9 @@ _OPENCODE_ZEN_FREE_BASE_URL = "https://opencode.ai/zen/v1"
 
 # ``-free``-suffixed slugs that are KEYED (Go-subscription) models, NOT anonymous-servable —
 # excluded from the keyless catalog despite the suffix (ox-alpha-free is Ox Alpha's Go twin).
+# The Go relay delisted ox-alpha-free (2026-09-09; GET /zen/go/v1/models omits it, POST → 401),
+# so it is gone from the opencode-go curated floor too — the exclusion stays so a stale live
+# list can never route it into the keyless catalog.
 _OPENCODE_FREE_KEYED_SUFFIX_MODELS = frozenset({"ox-alpha-free"})
 
 # In-process memo for _fetch_opencode_free_models(): (fetched_at, ids-or-None). Validation and
@@ -2106,6 +2162,26 @@ def github_model_reasoning_efforts(
     return _github_reasoning_efforts_for_model_id(str(model_id or normalized))
 
 
+# Negative cache: monotonic timestamp of the last fully-failed probe, keyed
+# by ``host:port`` so both URL candidates (``/v1`` + root) share one entry.
+# Without this, an unreachable endpoint (TCP blackhole — SYN draws no reply,
+# so every attempt burns its full connect timeout) makes every picker open /
+# chat turn re-pay the timeout per candidate, and the sequential stalls stack
+# past 10s while the Desktop sits on a spinner with no error (#81123). Short
+# TTL collapses the burst but still picks up recovery without a restart.
+# Mirrors _deepinfra_catalog_neg_cache.
+_probe_neg_cache: dict[str, float] = {}
+_PROBE_NEG_TTL = 60.0  # seconds
+
+
+def _probe_neg_key(base_url: str) -> Optional[str]:
+    """``host:port`` for *base_url* (both URL candidates share one entry), or None without a host."""
+    from utils import base_url_origin
+
+    _, host, port = base_url_origin(base_url)
+    return f"{host}:{port}" if host else None
+
+
 def _probe_result(
     models, probed_url, resolved_base_url, suggested_base_url=None, used_fallback=False
 ) -> dict[str, Any]:
@@ -2137,6 +2213,13 @@ def probe_api_models(
         candidates.append((alternate_base, True))
 
     tried: list[str] = []
+    _neg_key = _probe_neg_key(normalized)
+    if _neg_key is not None:
+        _neg_seen = _probe_neg_cache.get(_neg_key)
+        if _neg_seen is not None and (time.monotonic() - _neg_seen) < _PROBE_NEG_TTL:
+            return _probe_result(
+                None, normalized.rstrip("/") + "/models", normalized,
+                alternate_base if alternate_base != normalized else None)
     headers: dict[str, str] = {"User-Agent": _HERMES_USER_AGENT}
     if urllib.parse.urlparse(normalized).hostname == "generativelanguage.googleapis.com":
         headers["X-Goog-Api-Client"] = f"hermes-agent/{_HERMES_VERSION}"
@@ -2159,16 +2242,27 @@ def probe_api_models(
     _ssl_context = _custom_provider_ssl_context(normalized)
     if _ssl_context is not None:
         _open_kwargs["ssl_context"] = _ssl_context
+    reachable = False
     for candidate_base, is_fallback in candidates:
         url = candidate_base.rstrip("/") + "/models"
         tried.append(url)
         try:
             data = _get_json(url, timeout=timeout, headers=headers, **_open_kwargs)
+        except urllib.error.HTTPError:
+            # The host answered: an auth/404 failure is not unreachability, and a user fixing
+            # their key must not be served a cached "no models" for the next TTL window.
+            reachable = True
+            continue
         except Exception:
             continue
+        if _neg_key is not None:
+            _probe_neg_cache.pop(_neg_key, None)
         return _probe_result(
             [m.get("id", "") for m in data.get("data", [])], url, candidate_base.rstrip("/"),
             alternate_base if alternate_base != candidate_base else normalized, is_fallback)
+
+    if _neg_key is not None and not reachable:
+        _probe_neg_cache[_neg_key] = time.monotonic()
     return _probe_result(
         None, tried[0] if tried else normalized.rstrip("/") + "/models", normalized,
         alternate_base if alternate_base != normalized else None)
@@ -2366,29 +2460,35 @@ def cached_fetch_api_models(
     if not normalized_url:  # nothing to key the cache on
         return None if cache_only else _live()
 
-    cache_key = f"custom:{normalized_url}"
+    # Key on URL AND credential fingerprint: N ``custom_providers`` rows can share one proxy URL
+    # with distinct keys (#106184). A URL-only key let the last probe overwrite its siblings'
+    # slot, so every other same-URL row failed the fingerprint check, got an empty catalog and
+    # vanished from the no-probe pickers.
     fp = _custom_endpoint_fingerprint(api_key, api_mode, headers)
+    cache_key = f"custom:{normalized_url}#{fp}"
     cache = _load_provider_models_cache()
     entry = cache.get(cache_key)
     now = time.time()
     valid = not force_refresh and _cache_entry_valid(entry, fp, allow_empty=isinstance(entry, dict) and entry.get("native_catalog") is True)
-
-    if cache_only:
-        # Same trust window as the SWR tier below, minus the revalidation.
-        return _catalog(entry) if valid and now - entry["at"] < _PROVIDER_MODELS_STALE_SERVE_MAX else None
 
     if valid:
         age = now - entry["at"]
         if age < ttl_seconds:
             return _catalog(entry)
         if age < _PROVIDER_MODELS_STALE_SERVE_MAX:
-            # Stale-while-revalidate: serve now, refresh off-thread for the next open.
+            # Stale-while-revalidate: serve now, refresh off-thread for the next open. cache_only
+            # opens (GUI pickers that must not block on a stopped local server) take the same
+            # non-blocking refresh: without it a locally loaded model stayed invisible for the
+            # whole 7-day stale window unless the user found "Refresh Models" (#71169 class).
             def _refresh_custom():
                 live = _live()
                 return _entry(live) if live or isinstance(live, _NativePickerModelList) else None
 
             _spawn_swr_refresh(cache_key, _refresh_custom)
             return _catalog(entry)
+
+    if cache_only:
+        return None
 
     live = _live()
     if live or isinstance(live, _NativePickerModelList):

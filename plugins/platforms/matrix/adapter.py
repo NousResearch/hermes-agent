@@ -63,7 +63,7 @@ from gateway.platforms.base import (
     SendResult, resolve_proxy_url, proxy_kwargs_for_aiohttp, _ssrf_redirect_guard,
 )
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
-from gateway.platforms.helpers import ThreadParticipationTracker
+
 
 logger = logging.getLogger(__name__)
 
@@ -870,7 +870,7 @@ class MatrixAdapter(BasePlatformAdapter):
         from collections import deque
         self._processed_events: deque = deque(maxlen=1000)  # event dedup, newest kept
         self._processed_events_set: set = set()
-        self._threads = ThreadParticipationTracker("matrix")  # require_mention bypass
+
         self._require_mention: bool = self._parse_require_mention(config)
         self._thread_require_mention: bool = self._parse_thread_require_mention(config)
         self._free_rooms: Set[str] = _extra_csv_set(config, "free_response_rooms", "MATRIX_FREE_RESPONSE_ROOMS")
@@ -1670,7 +1670,8 @@ class MatrixAdapter(BasePlatformAdapter):
             return _MatrixApprovalPrompt(
                 session_key=session_key, chat_id=chat_id, message_id=message_id, requester_user_id=requester,
                 expires_at=expires_at,
-                choices={emoji: self._approval_reaction_map[emoji] for emoji in (*reactions, "❎")})
+                choices={**{emoji: self._approval_reaction_map[emoji] for emoji in reactions},
+                         "❎": self._approval_reaction_map.get("❎", "deny")})
         return await self._send_reaction_prompt(
             chat_id, text, metadata, _make, self._approval_prompts_by_event, tuple(reactions), "approval")
 
@@ -2027,6 +2028,15 @@ class MatrixAdapter(BasePlatformAdapter):
         mentions_block = source_content.get("m.mentions") or {}  # MSC3952: authoritative signal
         mention_user_ids = mentions_block.get("user_ids") if isinstance(mentions_block, dict) else None
         is_mentioned = self._is_bot_mentioned(body, formatted_body, mention_user_ids)
+        # Explicit addressing wins over room broadcast and cached participation.
+        # Treat unknown @targets conservatively: the adapter cannot enumerate other bots.
+        explicit_targets = {target.rstrip(":") for target in re.findall(r"(?<![\w])@[\w.=-]+(?::[\w.:-]+)?", body)}
+        explicit_targets.update(re.findall(r"matrix\.to/#/(@[^\s\"'<>/]+)", formatted_body or ""))
+        if isinstance(mention_user_ids, list):
+            explicit_targets.update(uid for uid in mention_user_ids if isinstance(uid, str))
+        own_targets = {self._user_id, "@" + self._user_localpart()}
+        if not is_dm and explicit_targets and not (explicit_targets & own_targets):
+            return None
         if not is_dm:
             # Whitelist first: non-listed rooms are dropped even when @mentioned (DMs exempt).
             if self._allowed_rooms and room_id not in self._allowed_rooms:
@@ -2036,7 +2046,10 @@ class MatrixAdapter(BasePlatformAdapter):
             # Free-response rooms exempt ordinary conversation, never commands.
             is_free_room = room_id in self._free_rooms and not body.startswith("/")
             in_bot_thread = bool(thread_id and (room_id, thread_id) in getattr(self, "_bot_reply_roots", {})) or reply_to_self
-            if self._require_mention and not is_free_room and not in_bot_thread:
+            if body.startswith("/") and (thread_id or reply_to) and not (is_mentioned or in_bot_thread):
+                return None
+            broadcast_command = bool(re.match(r"^/[A-Za-z][\w-]*(?:\s|$)", body)) and not (thread_id or reply_to or is_mentioned)
+            if self._require_mention and not is_free_room and not in_bot_thread and not broadcast_command:
                 if not is_mentioned:
                     logger.debug(
                         "Matrix: ignoring message %s in %s — no @mention "
@@ -2049,9 +2062,12 @@ class MatrixAdapter(BasePlatformAdapter):
                     "Matrix: ignoring message %s in thread %s — no @mention (thread_require_mention=true)",
                     event_id, thread_id)
                 return None
-        if is_mentioned and self._require_mention:
+        if is_mentioned:
             command_body = self._strip_command_address(body, formatted_body)
-            body = command_body if command_body is not None else self._strip_mention(body)
+            if command_body is not None:
+                body = command_body
+            elif self._require_mention:
+                body = self._strip_mention(body)
         # Real thread roots are preserved above; synthetic roots (this event) follow policy: DM
         # @mention threads / DM auto-thread, or room auto-thread unless session_scope pins the room.
         if not thread_id:
@@ -2062,6 +2078,8 @@ class MatrixAdapter(BasePlatformAdapter):
             else:
                 synthetic = self._matrix_session_scope == "thread" or (
                     self._matrix_session_scope != "room" and self._auto_thread)
+            if not is_dm and re.match(r"^/(?:stop)(?:\s|$)", _normalize_matrix_bang_command(body), re.IGNORECASE):
+                synthetic = False  # A control command must never create its own empty thread.
             if synthetic:
                 thread_id = event_id
         display_name = await self._get_display_name(room_id, sender)
@@ -2134,6 +2152,18 @@ class MatrixAdapter(BasePlatformAdapter):
         msg_event = await self._build_inbound_event(
             room_id, sender, event_id, _normalize_matrix_bang_command(body), source_content, relates_to)
         if msg_event is None:
+            return
+        if (msg_event.get_command() == "stop" and msg_event.source.chat_type != "dm"
+                and not msg_event.source.thread_id
+                and self._matrix_session_scope != "room"
+                and (self._matrix_session_scope == "thread" or self._auto_thread)
+                and self._is_authorized_user(sender)):
+            # No stable adapter API enumerates the runner's active thread sources.
+            # Do not guess a session key or claim that a room-wide interrupt occurred.
+            await self.send(room_id,
+                "This bot cannot stop all active threads from a top-level /stop. "
+                "Reply to this bot's message or send /stop in each active thread. "
+                "No work was stopped by this command.", reply_to=event_id)
             return
         if msg_event.message_type == MessageType.TEXT and self._text_batch_delay_seconds > 0:
             self._enqueue_text_event(msg_event)

@@ -212,13 +212,33 @@ def _refresh_payload_access_token(
     return payload, access
 
 
+_SSL_TROUBLE_MARKERS = ("[SSL:", "_ssl.c")
+
+
+def _ssl_interop_hint(exc: BaseException) -> str:
+    """Actionable hint for device-login transport errors that look like TLS middlebox interference.
+
+    OpenSSL 3.5+ advertises post-quantum hybrid groups (e.g. X25519MLKEM768) by default, and some
+    intercepting middleboxes reject the resulting larger TLS 1.3 ClientHello — while curl, using a
+    different TLS stack, still works, so the failure masquerades as a Codex outage (#106384).
+    """
+    if not any(marker in str(exc) for marker in _SSL_TROUBLE_MARKERS):
+        return ""
+    return (
+        " This looks like a TLS handshake failure rather than a Codex outage: some networks reject"
+        " the larger TLS 1.3 ClientHello that OpenSSL 3.5+ sends by default (post-quantum hybrid"
+        " groups). As a workaround, point OPENSSL_CONF at a config restricting Groups to classic"
+        " curves (x25519:secp256r1:secp384r1:x448) — see #106384 for details."
+    )
+
+
 def _codex_login_post(url: str, *, failure: Tuple[str, str], **kwargs: Any) -> "httpx.Response":
     """One 15s POST for the device-login flow; transport errors become ``_codex_err(*failure)``."""
     try:
         with _codex_http_client(timeout=httpx.Timeout(15.0)) as client:
             return client.post(url, **kwargs)
     except Exception as exc:
-        raise _codex_err(f"{failure[0]}: {exc}", failure[1])
+        raise _codex_err(f"{failure[0]}: {exc}{_ssl_interop_hint(exc)}", failure[1]) from exc
 
 
 def _codex_http_client(**kwargs: Any) -> "httpx.Client":
@@ -729,10 +749,15 @@ def _codex_poll_authorization_code(
         with _codex_http_client(timeout=httpx.Timeout(15.0)) as client:
             while time.monotonic() - start < max_wait:
                 time.sleep(poll_interval)
-                poll_resp = client.post(
-                    f"{issuer}/api/accounts/deviceauth/token",
-                    json={"device_auth_id": device_auth_id, "user_code": user_code},
-                    headers={"Content-Type": "application/json"})
+                try:
+                    poll_resp = client.post(
+                        f"{issuer}/api/accounts/deviceauth/token",
+                        json={"device_auth_id": device_auth_id, "user_code": user_code},
+                        headers={"Content-Type": "application/json"})
+                except Exception as exc:
+                    raise _codex_err(
+                        f"Device auth polling request failed: {exc}{_ssl_interop_hint(exc)}",
+                        "device_code_poll_error") from exc
                 if poll_resp.status_code == 200:
                     code_resp = poll_resp.json()
                     break

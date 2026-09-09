@@ -142,6 +142,13 @@ class RunIdempotencyStore:
                     self._conn.execute(_EXTEND_RETENTION_BY_KEY, (retention_until, scope, key, fingerprint))
                 self._conn.commit()
                 return _outcome(row, fingerprint)
+            # A client-selected run ID must never alias another profile or key.
+            # Check inside the same write transaction as insertion.
+            if self._conn.execute(
+                "SELECT 1 FROM run_idempotency WHERE run_id=?", (run_id,)
+            ).fetchone() is not None:
+                self._conn.commit()
+                return "conflict", None
             self._conn.execute(
                 "INSERT INTO run_idempotency("
                 "scope,idempotency_key,fingerprint,run_id,status_json,"

@@ -1834,6 +1834,14 @@ class CLICommandsMixin:
         from hermes_cli.kanban_implement import run_implement_slash_rendered
         print(run_implement_slash_rendered(cmd))
 
+    def _handle_review_command(self, cmd: str):
+        """Handle the feature-gated canonical /review adapter."""
+        from hermes_cli.kanban_review import review_command_enabled, run_review_slash_rendered
+        if not review_command_enabled():
+            print("/review is disabled (kanban.review_command)")
+            return
+        print(run_review_slash_rendered(cmd))
+
     def _handle_skills_command(self, cmd: str):
         """Handle /skills slash command — delegates to hermes_cli.skills_hub, after intercepting the
         write-approval review subcommands (pending/approve/reject/diff/mode)."""

@@ -3,6 +3,7 @@ Bound onto ``GatewayRunner`` through ``GatewaySlashCommandsMixin``."""
 
 from __future__ import annotations
 
+import asyncio
 import logging
 
 from agent.i18n import t
@@ -306,34 +307,13 @@ class GatewayGoalCommandsMixin:
         )
 
     async def _handle_review_command(self, event: MessageEvent) -> str:
-        """Handle /review — spawn an independent reviewer subagent. The approval session-key
-        contextvar is only bound during agent turns, so bind it explicitly here or the completion
-        event carries no gateway route and never re-enters this chat."""
-        args = (event.get_command_args() or "").strip()
-        quick_key, agent, error = self._idle_cached_agent_or_error(event, "review")
-        if error:
-            return error
-        snapshot = list(getattr(agent, "_session_messages", None) or [])
-        from tools.approval_context import reset_current_session_key, set_current_session_key
-
-        def _dispatch():
-            token = set_current_session_key(quick_key)
-            try:
-                from agent.review_engine import start_review
-                return start_review(agent, snapshot, args)
-            finally:
-                reset_current_session_key(token)
-
+        """Handle the feature-gated canonical Kanban /review adapter."""
+        from hermes_cli.kanban_review import run_review_slash_rendered
         try:
-            # _run_in_executor_with_context, not a bare hop: the reviewer subagent is spawned from
-            # the worker and inherits its context; a bare hop would run it under the launch home.
-            result = await self._run_in_executor_with_context(_dispatch)
-        except ValueError as exc:
-            return str(exc)
+            return await asyncio.to_thread(run_review_slash_rendered, event.get_command_args())
         except Exception as exc:
-            return f"/review failed to start: {exc}"
-        from agent.review_engine import format_dispatch_note
-        return format_dispatch_note(result, args)
+            logger.warning("review dispatch failed: %s", exc)
+            return "Review is unavailable. No action taken."
 
     async def _handle_subgoal_command(self, event: MessageEvent) -> str:
         """Handle /subgoal (mirror of the CLI handler): extra criteria appended to the active goal

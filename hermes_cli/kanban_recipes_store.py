@@ -102,10 +102,7 @@ def instantiate(conn, prepared, bindings, key, *, board=None, created_by=None, c
         row = conn.execute("SELECT * FROM recipe_instances WHERE idempotency_key=?", (key,)).fetchone()
         if row is not None:
             return _replay(conn, row, prepared, normalized)
-        from hermes_cli.profiles import profile_exists
-        for profile in normalized["roles"].values():
-            if not profile_exists(profile):
-                raise RecipeError("BINDING_INVALID", "/bindings/roles", "Bound profile is not installed")
+        resolver.resolve_assignees(prepared, normalized)
         # CLI read-only preflight may freeze local choices before native DB
         # initialization. Direct callers resolve here, after authoritative replay.
         plan = prepared.get("effective_plan")

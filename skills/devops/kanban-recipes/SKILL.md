@@ -25,7 +25,7 @@ history, not to start another copy of a workflow.
 
 - The operator has authorized starting the work. A successful run makes roots
   immediately dispatchable.
-- Every role binds to an installed local profile. Check with `terminal` using
+- Every assignee resolves to an installed local profile. Check with `terminal` using
   `hermes profile list`. Do not invent profile names or modify credentials.
 - Worktree tasks require an existing native project binding with a primary repo.
 - Choose the board explicitly. Do not override a worker's inherited board pin.
@@ -35,7 +35,12 @@ history, not to start another copy of a workflow.
 Read `templates/brief.json` with `read_file`. Use `write_file` to create a local
 copy and separate invocation files. For example, inputs can be
 `{"topic":"SQLite transactions"}` and bindings can be
-`{"roles":{"researcher":"default","writer":"default"}}`.
+`{"profiles":{"researcher":"default","writer":"default"}}`.
+These are optional profile aliases. Without a matching alias, each node's
+required `assignee` names an installed profile directly. For example,
+`{"key":"research","assignee":"default","title":"Research"}` needs no
+bindings file. Omit `--bindings` entirely for direct assignments without project
+or tenant overrides. Unused alias keys and invalid or missing targets fail.
 
 Run through `terminal`:
 
@@ -62,7 +67,8 @@ from node keys to new task IDs. Retain it as the delivery receipt.
 
 1. Read the recipe with `read_file`. Verify every task body and effect against
    the operator's authorization. Parsing is not a sandbox for task instructions.
-2. Bind all roles and supply declared inputs. Use a new key for new work, and
+2. Check direct assignees or optional profile aliases and supply declared inputs.
+   Use a new key for new work, and
    retain the exact key for retries of that invocation.
 3. Validate. Inspect the effective profiles, workspace policy and task controls.
 4. Run once. If output fails or storage reports an uncertain outcome, inspect
@@ -82,7 +88,7 @@ from node keys to new task IDs. Retain it as the delivery receipt.
 - Archived tasks do not release a recipe key. Native parent readiness accepts
   archived parents, which is not proof of successful acceptance.
 - Imported recipe history is fenced in triage. Export its definition and use
-  a new key with explicit local bindings. There is no v1 resume/rebind command.
+  a new key with valid local assignees. There is no v1 resume/rebind command.
 - Missing bound profiles block recipe tasks. Repair the profile or reassign
   deliberately, then use the normal operator unblock path.
 - Export refuses an existing file unless `--overwrite` is explicit.

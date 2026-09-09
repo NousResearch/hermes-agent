@@ -19,7 +19,7 @@ def test_bundled_recipe_validate_run_show_export(tmp_path, monkeypatch, capsys):
     definition = root / 'skills/devops/kanban-recipes/templates/brief.json'
     inputs, bindings = tmp_path / 'inputs.json', tmp_path / 'bindings.json'
     inputs.write_text('{"topic":"SQLite transactions"}')
-    bindings.write_text('{"roles":{"researcher":"default","writer":"default"}}')
+    bindings.write_text('{"profiles":{"researcher":"default","writer":"default"}}')
     def invoke(*words):
         parser = argparse.ArgumentParser()
         cli.build_parser(parser.add_subparsers())

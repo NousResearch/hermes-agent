@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import NoReturn
 
 from hermes_cli.kanban_recipes import (
-    MAX_PLAN_BYTES, RecipeError, _identifier, _json_safe, _object, _pointer, canonical,
+    MAX_PLAN_BYTES, RecipeError, _json_safe, _object, _pointer, canonical,
 )
 
 
@@ -22,34 +22,20 @@ def normalize_bindings(prepared, bindings) -> dict:
     In particular project spelling is request identity, not its resolved slug.
     Omitted project/tenant stay omitted so a retry can reuse frozen defaults.
     """
-    from hermes_cli.profiles import normalize_profile_name, validate_profile_name
-
     try:
         _json_safe(bindings, "/bindings")
-        _object(bindings, "/bindings", {"roles", "project", "tenant"}, ("roles",))
-        _object(bindings["roles"], "/bindings/roles")
-        for role in bindings["roles"]:
-            _identifier(role, _pointer("/bindings/roles", role))
+        _object(bindings, "/bindings", {"profiles", "project", "tenant"})
+        aliases = bindings.get("profiles", {})
+        _object(aliases, "/bindings/profiles")
     except RecipeError as exc:
         _invalid(exc.path, exc.message)
-    roles = prepared["definition"]["roles"]
-    for role in bindings["roles"]:
-        if role not in roles:
-            _invalid(_pointer("/bindings/roles", role), "Undeclared role binding")
-    result: dict = {"roles": {}}
-    for role in roles:
-        path = _pointer("/bindings/roles", role)
-        if role not in bindings["roles"]:
-            _invalid(path, "Required role binding is missing")
-        value = bindings["roles"][role]
-        if type(value) is not str:
-            _invalid(path, "Profile binding must be a string")
-        try:
-            profile = normalize_profile_name(value)
-            validate_profile_name(profile)
-        except ValueError:
-            _invalid(path, "Invalid profile name")
-        result["roles"][role] = profile
+    references = {node["assignee"] for node in prepared["nodes"]}
+    result: dict = {"profiles": {}}
+    for alias, value in aliases.items():
+        path = _pointer("/bindings/profiles", alias)
+        if alias not in references:
+            _invalid(path, "Unused profile alias")
+        result["profiles"][alias] = _profile_name(value, path)
     for field in ("project", "tenant"):
         if field in bindings:
             value = bindings[field]
@@ -57,6 +43,36 @@ def normalize_bindings(prepared, bindings) -> dict:
                 _invalid("/bindings/" + field, "Binding must be a nonempty string")
             result[field] = value
     return result
+
+
+def _profile_name(value, path):
+    from hermes_cli.profiles import normalize_profile_name, validate_profile_name
+
+    if type(value) is not str:
+        _invalid(path, "Profile must be a string")
+    try:
+        profile = normalize_profile_name(value)
+        validate_profile_name(profile)
+    except ValueError:
+        _invalid(path, "Invalid profile name")
+    return profile
+
+
+def resolve_assignees(prepared, normalized_bindings):
+    """Aliases override exact references; other values name installed profiles."""
+    from hermes_cli.profiles import profile_exists
+
+    aliases = normalized_bindings["profiles"]
+    assignees = {}
+    for index, node in enumerate(prepared["nodes"]):
+        reference = node["assignee"]
+        path = (_pointer("/bindings/profiles", reference) if reference in aliases
+                else f"/nodes/{index}/assignee")
+        profile = _profile_name(aliases.get(reference, reference), path)
+        if not profile_exists(profile):
+            _invalid(path, "Assigned profile is not installed")
+        assignees[node["key"]] = profile
+    return assignees
 
 
 def _resolve_project(reference):
@@ -80,12 +96,10 @@ def _resolve_project(reference):
 
 def resolve_plan(prepared, normalized_bindings, board) -> dict:
     """Freeze native creation choices; never write or materialize a workspace."""
-    from hermes_cli import kanban_db, profiles
+    from hermes_cli import kanban_db
     from hermes_cli.kanban_pr_acceptance import validate_contract
 
-    for role, profile in normalized_bindings["roles"].items():
-        if not profiles.profile_exists(profile):
-            _invalid(_pointer("/bindings/roles", role), "Bound profile is not installed")
+    assignees = resolve_assignees(prepared, normalized_bindings)
     metadata = kanban_db.read_board_metadata(board)
     reference = normalized_bindings.get("project", metadata.get("project_id"))
     project = _resolve_project(reference) if reference else None
@@ -110,7 +124,7 @@ def resolve_plan(prepared, normalized_bindings, board) -> dict:
             task.setdefault(field, None)
         node["title"] = node["title"].strip()
         task["completion_contract"] = validate_contract(task["completion_contract"])
-        node["assignee"] = normalized_bindings["roles"][node["role"]]
+        node["assignee"] = assignees[node["key"]]
         node["tenant"] = normalized_bindings.get("tenant")
     plan = {"nodes": nodes, "project": project}
     if len(canonical(plan).encode("utf-8")) > MAX_PLAN_BYTES:

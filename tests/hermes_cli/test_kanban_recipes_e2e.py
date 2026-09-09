@@ -129,23 +129,24 @@ def runtime(tmp_path, monkeypatch):
             rt.stop()
 
 
-def recipe(runtime, *, worktree=False):
+def recipe(runtime, *, worktree=False, aliases=True):
     task = {'workspace_kind': 'worktree' if worktree else 'scratch',
             'model': 'fixture-model', 'provider': 'fixture-provider',
             'reasoning_effort': 'high', 'skills': ['github-code-review'],
             'goal_mode': True, 'goal_max_turns': 7, 'max_runtime_seconds': 120,
             'max_retries': 2}
     # Intentionally not topologically ordered. Two roots fan into one join.
-    definition = {'schema_version': 1, 'recipe_id': 'composed', 'roles': ['builder'],
+    assignee = 'builder' if aliases else 'default'
+    definition = {'schema_version': 1, 'recipe_id': 'composed',
                   'inputs': {'topic': {'type': 'string', 'required': True}},
                   'nodes': [
-                      {'key': 'join', 'role': 'builder', 'title': 'Join',
+                      {'key': 'join', 'assignee': assignee, 'title': 'Join',
                        'needs': ['left', 'right'], 'task': task},
-                      {'key': 'left', 'role': 'builder', 'title': 'Left {{input.topic}}',
+                      {'key': 'left', 'assignee': assignee, 'title': 'Left {{input.topic}}',
                        'task': task},
-                      {'key': 'right', 'role': 'builder', 'title': 'Right', 'task': task}]}
+                      {'key': 'right', 'assignee': assignee, 'title': 'Right', 'task': task}]}
     paths = [runtime.path(n + '.json') for n in ('recipe', 'inputs', 'bindings')]
-    bindings = {'roles': {'builder': 'default'}}
+    bindings = {'profiles': {'builder': 'default'}} if aliases else {}
     if worktree:
         bindings['project'] = 'fixture'
     for path, value in zip(paths, (definition, {'topic': 'isolated'}, bindings)):
@@ -286,8 +287,9 @@ def test_killed_cli_before_commit_or_before_stdout_recovers_by_replay(runtime, p
     assert runtime.cli(run_args(paths)) == dict(result, replayed=True)
 
 
-def test_same_card_review_changes_new_run_rereview_and_join(runtime):
-    paths = recipe(runtime)
+@pytest.mark.parametrize('aliases', [False, True], ids=['direct', 'alias'])
+def test_same_card_review_changes_new_run_rereview_and_join(runtime, aliases):
+    paths = recipe(runtime, aliases=aliases)
     result = runtime.cli(run_args(paths))
     ids = result['tasks']
     observer = runtime.observer()

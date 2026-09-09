@@ -23,20 +23,23 @@ def env(tmp_path, monkeypatch):
     return home
 
 
-def recipe(profile='default'):
-    definition = {'schema_version': 1, 'recipe_id': 'runtime', 'roles': ['worker'],
+def recipe(profile='default', *, aliases=True):
+    assignee = 'worker-alias' if aliases else profile
+    definition = {'schema_version': 1, 'recipe_id': 'runtime',
                   'inputs': {'data': {'type': 'object'}},
-                  'nodes': [{'key': 'root', 'role': 'worker', 'title': 'Root'},
-                            {'key': 'child', 'role': 'worker', 'title': 'Child', 'needs': ['root']}]}
-    return prepare_definition(definition, {'data': {'message': 'untrusted fixture'}}), {'roles': {'worker': profile}}
+                  'nodes': [{'key': 'root', 'assignee': assignee, 'title': 'Root'},
+                            {'key': 'child', 'assignee': assignee, 'title': 'Child', 'needs': ['root']}]}
+    bindings = {'profiles': {assignee: profile}} if aliases else {}
+    return prepare_definition(definition, {'data': {'message': 'untrusted fixture'}}), bindings
 
 
-def test_missing_recipe_profile_blocks_durably_but_external_lanes_unchanged(env):
+@pytest.mark.parametrize('aliases', [False, True], ids=['direct', 'alias'])
+def test_missing_recipe_profile_blocks_durably_but_external_lanes_unchanged(env, aliases):
     profile = env / 'profiles' / 'worker'
     profile.mkdir(parents=True)
     (profile / 'config.yaml').write_text('{}')
     with kbc.connect_closing() as conn:
-        prepared, bindings = recipe('worker')
+        prepared, bindings = recipe('worker', aliases=aliases)
         result = instantiate(conn, prepared, bindings, 'missing')
         external = kb.create_task(conn, title='External', assignee='external-lane')
         (profile / 'config.yaml').unlink()
@@ -56,9 +59,10 @@ def test_missing_recipe_profile_blocks_durably_but_external_lanes_unchanged(env)
 
 
 @pytest.mark.parametrize('lane', ['ready', 'review'])
-def test_recipe_reassignment_to_external_lane_retains_native_claiming(env, lane):
+@pytest.mark.parametrize('aliases', [False, True], ids=['direct', 'alias'])
+def test_recipe_reassignment_to_external_lane_retains_native_claiming(env, lane, aliases):
     with kbc.connect_closing() as conn:
-        prepared, bindings = recipe()
+        prepared, bindings = recipe(aliases=aliases)
         result = instantiate(conn, prepared, bindings, 'external-reassignment')
         task_id = result['tasks']['root']
         if lane == 'review':
@@ -75,7 +79,7 @@ def test_recipe_reassignment_to_external_lane_retains_native_claiming(env, lane)
         assert task.status == lane
         assert task.block_kind is None
         assert task_id in tick.skipped_nonspawnable
-        assert show_instance(conn, result['instance_id'])['bindings'] == bindings
+        assert show_instance(conn, result['instance_id'])['bindings'] == {'profiles': bindings.get('profiles', {})}
         claim = kb.claim_review_task if lane == 'review' else kb.claim_task
         assert claim(conn, task_id) is not None
 
@@ -128,12 +132,13 @@ def test_transfer_fences_all_active_recipe_members_before_publish(env, tmp_path,
     assert imported['counts']['recipe_instance_tasks'] == len(ids)
 
 
-def test_preflight_profile_removed_before_commit_creates_nothing(env):
+@pytest.mark.parametrize('aliases', [False, True], ids=['direct', 'alias'])
+def test_preflight_profile_removed_before_commit_creates_nothing(env, aliases):
     from hermes_cli.kanban_recipes_bindings import normalize_bindings, resolve_plan
     profile = env / 'profiles' / 'worker'
     profile.mkdir(parents=True)
     (profile / 'config.yaml').write_text('{}')
-    prepared, bindings = recipe('worker')
+    prepared, bindings = recipe('worker', aliases=aliases)
     prepared['effective_plan'] = resolve_plan(prepared, normalize_bindings(prepared, bindings), 'default')
     (profile / 'config.yaml').unlink()
     profile.rmdir()
@@ -179,13 +184,13 @@ def test_valid_deep_input_survives_receipt_and_cli_show(env):
     value = 'leaf'
     for _ in range(15):
         value = [value]
-    definition = {'schema_version': 1, 'recipe_id': 'deep', 'roles': ['worker'],
+    definition = {'schema_version': 1, 'recipe_id': 'deep',
                   'inputs': {'data': {'type': 'array'}},
-                  'nodes': [{'key': 'root', 'role': 'worker', 'title': 'Deep'}]}
+                  'nodes': [{'key': 'root', 'assignee': 'worker', 'title': 'Deep'}]}
     inputs = {'data': value}
     prepared = prepare_definition(definition, inputs)
     with kbc.connect_closing() as conn:
-        result = instantiate(conn, prepared, {'roles': {'worker': 'default'}}, 'deep')
+        result = instantiate(conn, prepared, {'profiles': {'worker': 'default'}}, 'deep')
     parser = argparse.ArgumentParser()
     cli.build_parser(parser.add_subparsers())
     args = parser.parse_args(['kanban', 'recipe', 'show', result['instance_id'], '--json'])

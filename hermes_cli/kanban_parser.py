@@ -137,7 +137,7 @@ _BOARD_SPECS = [
 _RECIPE_INVOCATION = (
     _arg("definition", help="Portable recipe JSON file"),
     _arg("--inputs", help="Invocation inputs JSON file"),
-    _arg("--bindings", help="Local role/project bindings JSON file"),
+    _arg("--bindings", help="Optional profile aliases/project/tenant JSON file"),
     _json_flag(),
 )
 _RECIPE_SPECS = [

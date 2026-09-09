@@ -303,29 +303,21 @@ def _task_controls(task, path):
 
 
 def _nodes(definition, inputs):
-    roles = definition["roles"]
-    _array(roles, "/roles", 64, 1)
-    declared_roles = set()
-    for index, role in enumerate(roles):
-        path = _pointer("/roles", index)
-        _identifier(role, path)
-        if role in declared_roles:
-            _fail(path, "Duplicate role declaration")
-        declared_roles.add(role)
     raw_nodes = definition["nodes"]
     _array(raw_nodes, "/nodes", 256, 1)
     nodes, keys = [], set()
     edge_count = 0
     for index, node in enumerate(raw_nodes):
         path = _pointer("/nodes", index)
-        _object(node, path, {"key", "role", "title", "body", "needs", "task"}, ("key", "role", "title"))
+        _object(node, path, {"key", "assignee", "title", "body", "needs", "task"}, ("key", "assignee", "title"))
         _identifier(node["key"], path + "/key")
-        _identifier(node["role"], path + "/role")
+        _string(node["assignee"], path + "/assignee")
+        if not node["assignee"].strip():
+            _fail(path + "/assignee", "Assignee must be a nonempty string")
         if node["key"] in keys:
             _fail(path + "/key", "Duplicate node declaration")
         keys.add(node["key"])
-        if node["role"] not in declared_roles:
-            _fail(path + "/role", "Undeclared role reference")
+
         needs = node.get("needs", [])
         _array(needs, path + "/needs", 2048)
         seen = set()
@@ -341,7 +333,7 @@ def _nodes(definition, inputs):
         title = _render(node["title"], inputs, path + "/title", 1024)
         if not title.strip():
             _fail(path + "/title", "Rendered title must contain non-whitespace text")
-        nodes.append({"key": node["key"], "role": node["role"], "title": title,
+        nodes.append({"key": node["key"], "assignee": node["assignee"], "title": title,
                       "body": _render(node.get("body", ""), inputs, path + "/body", 65536),
                       "needs": list(needs), "task": _task_controls(node.get("task", {}), path + "/task")})
     if len(canonical(nodes).encode("utf-8")) > MAX_PLAN_BYTES:
@@ -382,8 +374,8 @@ def prepare_definition(definition: dict, inputs: dict) -> dict:
     """
     _json_safe(definition)
     _json_safe(inputs, "/inputs")
-    _object(definition, "", {"schema_version", "recipe_id", "description", "inputs", "roles", "nodes"},
-            ("schema_version", "recipe_id", "roles", "nodes"))
+    _object(definition, "", {"schema_version", "recipe_id", "description", "inputs", "nodes"},
+            ("schema_version", "recipe_id", "nodes"))
     _integer(definition["schema_version"], "/schema_version", 1, 1)
     _identifier(definition["recipe_id"], "/recipe_id")
     encoded = canonical(definition).encode("utf-8")

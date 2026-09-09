@@ -43,11 +43,11 @@ def files(home):
 
 @pytest.fixture
 def recipe_files(tmp_path):
-    definition = {'schema_version': 1, 'recipe_id': 'brief', 'roles': ['writer'],
-                  'nodes': [{'key': 'draft', 'role': 'writer', 'title': 'Original {{input.topic}}'},
-                            {'key': 'check', 'role': 'writer', 'title': 'Check', 'needs': ['draft']}],
+    definition = {'schema_version': 1, 'recipe_id': 'brief',
+                  'nodes': [{'key': 'draft', 'assignee': 'writer', 'title': 'Original {{input.topic}}'},
+                            {'key': 'check', 'assignee': 'writer', 'title': 'Check', 'needs': ['draft']}],
                   'inputs': {'topic': {'type': 'string', 'required': True}}}
-    values = [definition, {'topic': 'private-input'}, {'roles': {'writer': 'default'}}]
+    values = [definition, {'topic': 'private-input'}, {'profiles': {'writer': 'default'}}]
     paths = [tmp_path / name for name in ['recipe.json', 'inputs.json', 'bindings.json']]
     for path, value in zip(paths, values):
         path.write_text(json.dumps(value))
@@ -97,7 +97,7 @@ def test_missing_profile_and_explicit_board_do_not_create_storage(isolated, reci
     before = files(isolated)
     rc, result = invoke(capsys, '--board', 'absent', *args)
     assert rc == 2 and result['error']['code'] == 'BINDING_INVALID'
-    recipe_files[2].write_text('{"roles":{"writer":"missing-private-profile"}}')
+    recipe_files[2].write_text('{"profiles":{"writer":"missing-private-profile"}}')
     rc, result = invoke(capsys, *args)
     assert rc == 2 and result['error']['code'] == 'BINDING_INVALID'
     assert 'missing-private-profile' not in json.dumps(result)
@@ -233,11 +233,12 @@ def test_run_freezes_plan_once_before_migration(isolated, recipe_files, capsys, 
     assert len(calls) == 1
 
 
-def test_replay_does_not_check_removed_profile(isolated, recipe_files, capsys):
+@pytest.mark.parametrize('aliases', [False, True], ids=['direct', 'alias'])
+def test_replay_does_not_check_removed_profile(isolated, recipe_files, capsys, aliases):
     profile = isolated / 'profiles' / 'writer'
     profile.mkdir(parents=True)
     (profile / 'config.yaml').write_text('{}')
-    recipe_files[2].write_text('{"roles":{"writer":"writer"}}')
+    recipe_files[2].write_text(json.dumps({'profiles': {'writer': 'writer'}} if aliases else {}))
     rc, first = invoke(capsys, *request(recipe_files, 'run', 'once'))
     assert rc == 0, first
     (profile / 'config.yaml').unlink()

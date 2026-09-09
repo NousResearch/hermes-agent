@@ -23,8 +23,8 @@ def api():
 
 
 def recipe(**updates):
-    value = {"schema_version": 1, "recipe_id": "brief", "roles": ["writer"],
-             "nodes": [{"key": "draft", "role": "writer", "title": "Draft"}]}
+    value = {"schema_version": 1, "recipe_id": "brief",
+             "nodes": [{"key": "draft", "assignee": "writer", "title": "Draft"}]}
     value.update(updates)
     return value
 
@@ -49,12 +49,21 @@ def test_error_contract(api):
     assert api.RecipeError("STORAGE_UNAVAILABLE", "", "Unavailable", True).retryable
 
 
+@pytest.mark.parametrize("assignee", [" Writer ", "0worker", "Research / author", "é", "a" * 65])
+def test_assignee_references_are_preserved_for_native_resolution(api, assignee):
+    value = recipe()
+    value["nodes"][0]["assignee"] = assignee
+    result = api.prepare_definition(value, {})
+    assert result["definition"] == value
+    assert result["nodes"][0]["assignee"] == assignee
+
+
 def test_original_digest_and_stable_topology(api):
     definition = recipe(inputs={"topic": {"type": "string", "default": "café"}}, nodes=[
-        {"key": "join", "role": "writer", "title": "{{input.topic}}", "needs": ["b", "a"]},
-        {"key": "a", "role": "writer", "title": "A"},
-        {"key": "b", "role": "writer", "title": "B"},
-        {"key": "last", "role": "writer", "title": "Last"},
+        {"key": "join", "assignee": "writer", "title": "{{input.topic}}", "needs": ["b", "a"]},
+        {"key": "a", "assignee": "writer", "title": "A"},
+        {"key": "b", "assignee": "writer", "title": "B"},
+        {"key": "last", "assignee": "writer", "title": "Last"},
     ])
     original = copy.deepcopy(definition)
     result = api.prepare_definition(definition, {})
@@ -75,7 +84,7 @@ def test_original_digest_and_stable_topology(api):
     assert api.prepare_definition(reordered, {})["definition_digest"] != result["definition_digest"]
 
 
-@pytest.mark.parametrize("slot", ["recipe_id", "input", "role", "key", "role_ref", "needs_ref", "invocation"])
+@pytest.mark.parametrize("slot", ["recipe_id", "input", "key", "needs_ref", "invocation"])
 @pytest.mark.parametrize("name", ["", "a" * 65, "A", "a b", " a", "a ", "a.b", "a/b", "é", "a\n", "0a"])
 def test_identifiers_are_exact_ascii(api, slot, name):
     definition = recipe()
@@ -84,12 +93,8 @@ def test_identifiers_are_exact_ascii(api, slot, name):
         definition["recipe_id"] = name
     elif slot == "input":
         definition["inputs"] = {name: {"type": "string"}}
-    elif slot == "role":
-        definition["roles"] = [name]
     elif slot == "key":
         definition["nodes"][0]["key"] = name
-    elif slot == "role_ref":
-        definition["nodes"][0]["role"] = name
     elif slot == "needs_ref":
         definition["nodes"][0]["needs"] = [name]
     else:
@@ -99,14 +104,13 @@ def test_identifiers_are_exact_ascii(api, slot, name):
 
 @pytest.mark.parametrize("name", ["a", "a" * 64, "a-0_b"])
 def test_identifier_endpoints_and_separate_namespaces(api, name):
-    value = recipe(recipe_id=name, roles=[name], inputs={name: {"type": "string"}}, nodes=[
-        {"key": name, "role": name, "title": "{{input." + name + "}}"}])
+    value = recipe(recipe_id=name, inputs={name: {"type": "string"}}, nodes=[
+        {"key": name, "assignee": name, "title": "{{input." + name + "}}"}])
     assert api.prepare_definition(value, {name: "yes"})["nodes"][0]["title"] == "yes"
 
 
 @pytest.mark.parametrize("updates", [
     {"schema_version": True}, {"schema_version": 1.0}, {"schema_version": "1"}, {"schema_version": 2},
-    {"roles": []}, {"roles": ["writer", "writer"]}, {"roles": "writer"},
     {"nodes": []}, {"nodes": {}}, {"inputs": None}, {"description": None}, {"description": 1},
     {"gates": []}, {"outputs": {}}, {"cycles": []}, {"joins": {}}, {"include": "elsewhere.json"},
 ])
@@ -114,14 +118,14 @@ def test_definition_shapes_and_unknown_fields(api, updates):
     invalid(api, recipe(**updates))
 
 
-@pytest.mark.parametrize("field", ["schema_version", "recipe_id", "roles", "nodes"])
+@pytest.mark.parametrize("field", ["schema_version", "recipe_id", "nodes"])
 def test_missing_definition_fields(api, field):
     value = recipe()
     del value[field]
     invalid(api, value, path="/" + field)
 
 
-@pytest.mark.parametrize("field", ["key", "role", "title"])
+@pytest.mark.parametrize("field", ["key", "assignee", "title"])
 def test_missing_node_fields(api, field):
     value = recipe()
     del value["nodes"][0][field]
@@ -130,7 +134,8 @@ def test_missing_node_fields(api, field):
 
 @pytest.mark.parametrize("patch", [
     {"title": None}, {"body": 1}, {"title": " \n\t"}, {"needs": "draft"}, {"task": []},
-    {"role": "unknown"}, {"needs": ["unknown"]}, {"needs": ["draft"]},
+    {"assignee": ""}, {"assignee": " \t"}, {"assignee": None}, {"assignee": 1},
+    {"needs": ["unknown"]}, {"needs": ["draft"]},
     {"status": "ready"}, {"outputs": {}}, {"consumes": {}}, {"reviewer": "salt"},
 ])
 def test_invalid_node_controls(api, patch):
@@ -141,8 +146,8 @@ def test_invalid_node_controls(api, patch):
 
 @pytest.mark.parametrize("kind", ["duplicate-node", "duplicate-edge", "cycle"])
 def test_graph_rejections(api, kind):
-    nodes = [{"key": "a", "role": "writer", "title": "A"},
-             {"key": "b", "role": "writer", "title": "B", "needs": ["a"]}]
+    nodes = [{"key": "a", "assignee": "writer", "title": "A"},
+             {"key": "b", "assignee": "writer", "title": "B", "needs": ["a"]}]
     if kind == "duplicate-node":
         nodes[1]["key"] = "a"
     elif kind == "duplicate-edge":
@@ -407,19 +412,14 @@ def test_input_canonical_byte_cap(api):
 
 
 def test_graph_count_limits(api):
-    nodes = [{"key": f"n{i}", "role": "writer", "title": "N"} for i in range(256)]
+    nodes = [{"key": f"n{i}", "assignee": "writer", "title": "N"} for i in range(256)]
     assert len(api.prepare_definition(recipe(nodes=nodes), {})["nodes"]) == 256
-    invalid(api, recipe(nodes=nodes + [{"key": "overflow", "role": "writer", "title": "N"}]))
+    invalid(api, recipe(nodes=nodes + [{"key": "overflow", "assignee": "writer", "title": "N"}]))
     for count in [64, 65]:
-        roles = [f"r{i}" for i in range(count)]
-        value = recipe(roles=roles)
-        value["nodes"][0]["role"] = roles[0]
         inputs = {f"i{i}": {"type": "string"} for i in range(count)}
         if count == 64:
-            api.prepare_definition(value, {})
             api.prepare_definition(recipe(inputs=inputs), {})
         else:
-            invalid(api, value)
             invalid(api, recipe(inputs=inputs))
     parents = [f"n{i}" for i in range(32)]
     for i in range(32, 96):
@@ -431,7 +431,7 @@ def test_graph_count_limits(api):
 
 def test_combined_rendered_plan_cap(api):
     value = recipe(inputs={"data": {"type": "string"}}, nodes=[
-        {"key": f"n{i}", "role": "writer", "title": "N", "body": "{{input.data}}"}
+        {"key": f"n{i}", "assignee": "writer", "title": "N", "body": "{{input.data}}"}
         for i in range(40)])
     api.prepare_definition(value, {"data": "x" * 1000})
     invalid(api, value, {"data": "x" * 60000})

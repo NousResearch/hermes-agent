@@ -46,13 +46,13 @@ def api():
 
 
 def prepared(task=None):
-    return prepare_definition({'schema_version': 1, 'recipe_id': 'sample', 'roles': ['builder'],
-        'nodes': [{'key': 'child', 'role': 'builder', 'title': '  Child  ', 'needs': ['root'],
+    return prepare_definition({'schema_version': 1, 'recipe_id': 'sample',
+        'nodes': [{'key': 'child', 'assignee': 'builder', 'title': '  Child  ', 'needs': ['root'],
                    'task': task or {}},
-                  {'key': 'root', 'role': 'builder', 'title': 'Root', 'task': task or {}}]}, {})
+                  {'key': 'root', 'assignee': 'builder', 'title': 'Root', 'task': task or {}}]}, {})
 
 
-BINDINGS = {'roles': {'builder': 'default'}}
+BINDINGS = {'profiles': {'builder': 'default'}}
 
 
 def test_receipt_hashes_native_topology_immutable_replay(conn, monkeypatch):
@@ -78,7 +78,7 @@ def test_receipt_hashes_native_topology_immutable_replay(conn, monkeypatch):
     assert shown['definition'] == p['definition']
     conn.execute("UPDATE tasks SET title='edited',status='archived'")
     monkeypatch.setattr(resolver, 'resolve_plan', lambda *a: pytest.fail('replay resolved ambient state'))
-    replay = store.instantiate(conn, p, {'roles': {'builder': ' DEFAULT '}}, 'request')
+    replay = store.instantiate(conn, p, {'profiles': {'builder': ' DEFAULT '}}, 'request')
     assert replay == dict(result, replayed=True)
     assert store.show_instance(conn, result['instance_id'])['request_digest'] == result['request_digest']
     with pytest.raises(RecipeError) as e:
@@ -115,8 +115,8 @@ def test_key_validation_before_writes(conn, key):
     assert conn.execute('SELECT count(*) FROM tasks').fetchone()[0] == 0
 
 
-@pytest.mark.parametrize('bindings', [{}, {'roles': {}}, {'roles': {'builder': 2}},
-    {'roles': {'builder': '../escape'}}, {'roles': {'builder': 'default', 'other': 'default'}},
+@pytest.mark.parametrize('bindings', [{'profiles': None}, {'profiles': []}, {'profiles': {'builder': 2}},
+    {'profiles': {'builder': '../escape'}}, {'profiles': {'builder': 'default', 'other': 'default'}},
     dict(BINDINGS, unknown=True), dict(BINDINGS, project=None), dict(BINDINGS, tenant=2)])
 def test_bindings_shape_is_pure(env, bindings):
     _, resolver = api()
@@ -125,11 +125,45 @@ def test_bindings_shape_is_pure(env, bindings):
     assert e.value.code == 'BINDING_INVALID'
 
 
+@pytest.mark.parametrize('raw,normalized', [(' DEFAULT ', 'default'), (' 0Worker ', '0worker'),
+                                         ('A' * 64, 'a' * 64)])
+@pytest.mark.parametrize('aliases', [False, True], ids=['direct', 'alias'])
+def test_native_profile_normalization_reaches_tasks_and_frozen_plan(conn, env, raw, normalized, aliases):
+    store, resolver = api()
+    if normalized != 'default':
+        profile = env / 'profiles' / normalized
+        profile.mkdir(parents=True)
+        (profile / 'config.yaml').write_text('{}')
+    reference = ' Research / author ' if aliases else raw
+    definition = {'schema_version': 1, 'recipe_id': 'normalized', 'nodes': [
+        {'key': 'draft', 'assignee': reference, 'title': 'Draft'}]}
+    p = prepare_definition(definition, {})
+    bindings = {'profiles': {reference: raw}} if aliases else {}
+    result = store.instantiate(conn, p, bindings, 'native-name')
+    shown = store.show_instance(conn, result['instance_id'])
+    task = kb.get_task(conn, result['tasks']['draft'])
+    assert task is not None and task.assignee == normalized
+    assert shown['effective_plan']['nodes'][0]['assignee'] == normalized
+    assert p['nodes'][0]['assignee'] == reference
+    assert shown['definition'] == definition
+    assert shown['bindings'] == {'profiles': {reference: normalized} if aliases else {}}
+    if aliases:
+        with pytest.raises(RecipeError) as error:
+            resolver.normalize_bindings(p, {'profiles': {reference.strip(): raw}})
+        assert error.value.code == 'BINDING_INVALID'
+
+
+@pytest.mark.parametrize('bindings', [{}, {'profiles': {}}])
+def test_empty_profile_mapping_defers_direct_resolution(env, bindings):
+    _, resolver = api()
+    assert resolver.normalize_bindings(prepared(), bindings) == {'profiles': {}}
+
+
 def test_normalization_does_not_check_existence_and_resolution_does(env):
     _, resolver = api()
     p = prepared()
-    b = resolver.normalize_bindings(p, {'roles': {'builder': ' Uninstalled '}, 'project': 'Case-Slug'})
-    assert b['roles']['builder'] == 'uninstalled'
+    b = resolver.normalize_bindings(p, {'profiles': {'builder': ' Uninstalled '}, 'project': 'Case-Slug'})
+    assert b['profiles']['builder'] == 'uninstalled'
     assert b['project'] == 'Case-Slug'
     before = set(env.rglob('*'))
     with pytest.raises(RecipeError) as e:
@@ -300,7 +334,7 @@ if mode == 'native':
     result = {'task': kb.create_task(conn, title='native', idempotency_key='race')}
 else:
     result = instantiate(conn, prepare_definition(json.loads(definition), {}),
-                         {'roles': {'builder': 'default'}}, 'race', board='default')
+                         {'profiles': {'builder': 'default'}}, 'race', board='default')
 if mode == 'after':
     pathlib.Path(marker).touch()
     time.sleep(60)

@@ -23,6 +23,17 @@ class TurnState:
     started_ts: float = 0.0  # 0.0 = not running
     lease: Any = None  # cross-process active-session slot lease
     busy_ack_ts: float = 0.0  # debounce; 0.0 = never acked
+    # Run generation of the turn that CLAIMED this slot (None = unclaimed). The turn's finalizer
+    # releases the slot only while it is still the owner: an eviction can hand the slot to a
+    # replacement turn before the evicted turn has unwound (#106966), and the session's current
+    # generation is no proxy for ownership (session_reset bumps it without re-claiming, #28686).
+    owner_generation: Optional[int] = None
+    # One-shot model override to put back when this turn ends: the ``/model --once`` or
+    # ``/moa <prompt>`` snapshot ({"had_override", "override"}) the turn adopted at claim time.
+    # Turn-owned and applied by ``_release_running_agent_state`` exactly once, so an evicted turn
+    # restores it BEFORE a replacement turn claims the slot and can never write over the
+    # replacement's own override from its late finalizer (#106966).
+    model_restore: Optional[Dict[str, Any]] = None
     # Held turn-lease token + acquiring generation: release/rebind match only when the
     # generation is current, so a stale unwind can never free a newer turn's lease.
     lease_token: Any = None
@@ -30,7 +41,7 @@ class TurnState:
 
     def clear(self) -> None:
         """Reset the per-turn slot.  The caller pops ``lease`` first to release it."""
-        self.agent = self.lease = None
+        self.agent = self.lease = self.owner_generation = self.model_restore = None
         self.started_ts = self.busy_ack_ts = 0.0
 
 

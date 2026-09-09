@@ -174,3 +174,15 @@ class SessionTurnLeaseRegistry:
         if lease.lock.locked():
             lease.lock.release()
         return True
+
+    def release_owned(self, *, owner_key: str, generation: int) -> bool:
+        """Release the lease whose holder token was acquired by (``owner_key``, ``generation``), for
+        a caller that no longer has the token itself: a replacement turn on the same routing key
+        overwrote the one slot that stored it (#106966). Identity is the holder token's own
+        (owner_key, generation), so a newer turn's lease is never released. Idempotent."""
+        for lease in list(self._leases.values()):
+            holder = lease.holder
+            if (holder is not None and holder.owner_key == owner_key
+                    and int(holder.generation) == int(generation)):
+                return self.release(holder)
+        return False

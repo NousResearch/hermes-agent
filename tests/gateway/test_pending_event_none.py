@@ -11,7 +11,9 @@ do not get recycled into the pending-user-message follow-up path.
 
 from types import SimpleNamespace
 
-from gateway.run import _is_control_interrupt_message
+import pytest
+
+from gateway.run import _INTERRUPT_REASON_EVICTED, _is_control_interrupt_message
 
 
 def _extract_channel_prompt(pending_event):
@@ -52,5 +54,63 @@ class TestControlInterruptMessages:
     def test_stop_requested_is_not_treated_as_pending_user_message(self):
         result = _extract_pending_text(True, None, "Stop requested")
         assert result is None
+
+    def test_evicted_reason_is_not_treated_as_pending_user_message(self):
+        """The reason ``_hm_evict_running_agent`` hands to ``request_hard_interrupt`` when a
+        session's turn slot is evicted (reaped durable row / stale turn, #106963) is gateway
+        control flow exactly like "Stop requested": it must never re-enter the conversation
+        as the user's next turn."""
+        assert _extract_pending_text(True, None, _INTERRUPT_REASON_EVICTED) is None
+
+    def test_every_gateway_interrupt_reason_is_control_flow(self):
+        """Invariant behind the frozenset: a reason the gateway itself produces is never user
+        input. Enumerating the ``_INTERRUPT_REASON_*`` constants catches the next reason that
+        is added without being classified (how the eviction reason was missed at first)."""
+        import gateway.run as gateway_run
+
+        reasons = {
+            name: value for name, value in vars(gateway_run).items()
+            if name.startswith("_INTERRUPT_REASON_")
+        }
+        assert _INTERRUPT_REASON_EVICTED in reasons.values()
+        unclassified = sorted(
+            name for name, value in reasons.items() if not _is_control_interrupt_message(value)
+        )
+        assert unclassified == []
+
+
+class TestDrainPendingRealConsumer:
+    """The production consumer, ``_run_agent_drain_pending``, applies the same rule: the mirror
+    above documents the selection, this pins the code path that actually builds the next turn."""
+
+    @staticmethod
+    def _drain(result):
+        from gateway.run import GatewayRunner
+
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner._draining = False
+        adapter = SimpleNamespace(_pending_messages={}, get_pending_message=lambda key: None)
+        source = SimpleNamespace(thread_id=None)
+        return runner._run_agent_drain_pending(result, adapter, source, "agent:main:telegram:dm:0")
+
+    @pytest.mark.asyncio
+    async def test_evicted_reason_does_not_become_the_next_user_turn(self):
+        result = {"interrupted": True, "interrupt_message": _INTERRUPT_REASON_EVICTED}
+
+        pending_event, pending = await self._drain(result)
+
+        assert pending_event is None
+        assert pending is None, "the eviction reason re-entered the conversation as user input"
+
+    @pytest.mark.asyncio
+    async def test_user_supplied_interrupt_text_still_becomes_the_next_turn(self):
+        """Control: an interrupt that carries the user's own follow-up is still recycled, so the
+        classification is what discriminates, not a blanket drop of interrupt messages."""
+        result = {"interrupted": True, "interrupt_message": "actually, use the other file"}
+
+        pending_event, pending = await self._drain(result)
+
+        assert pending_event is None
+        assert pending == "actually, use the other file"
 
 

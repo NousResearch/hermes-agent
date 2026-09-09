@@ -494,3 +494,38 @@ def test_runner_release_turn_lease_is_token_scoped_and_bare_safe():
     _run(scenario())
 
 
+
+
+def test_runner_release_turn_lease_finds_its_token_after_a_replacement_turn_took_the_slot():
+    """A reaped/stale eviction lets a replacement turn on the SAME routing key acquire its own
+    lease (on the healed session id) while the evicted turn is still unwinding, so the
+    replacement's token overwrites the slot's ``lease_token``. The evicted turn's finalizer must
+    still release the token IT acquired, by (owner_key, generation) identity through the
+    registry, or the old session id stays held forever and a later /resume of it times out on
+    every turn (#106966 review interleaving)."""
+    from gateway.run import GatewayRunner
+
+    async def scenario():
+        runner = object.__new__(GatewayRunner)
+        runner._turn_leases = SessionTurnLeaseRegistry()
+        runner._turn_lease_tokens = {}
+        token_old = await runner._turn_leases.acquire(
+            "sess-old", owner_key="key-a", generation=1, timeout=5
+        )
+        runner._turn_lease_tokens[("key-a", 1)] = token_old
+        # The eviction bumped the generation (2); the replacement turn (3) records its own token
+        # in the one slot the routing key has.
+        token_new = await runner._turn_leases.acquire(
+            "sess-new", owner_key="key-a", generation=3, timeout=5
+        )
+        runner._turn_lease_tokens[("key-a", 3)] = token_new
+
+        assert runner._release_turn_lease("key-a", 1) is True
+        assert runner._turn_leases._leases["sess-old"].holder is None
+        # The replacement's lease is untouched and still releasable by its own finalizer.
+        assert runner._turn_leases._leases["sess-new"].holder is token_new
+        assert runner._release_turn_lease("key-a", 3) is True
+        # Idempotent through the fallback path too.
+        assert runner._release_turn_lease("key-a", 1) is False
+
+    _run(scenario())

@@ -223,27 +223,69 @@ class GatewayAgentCacheMixin:
         override = self._session_model_override(session_key)
         return override is not None and override.get("model") == agent_model
 
+    def _claim_running_agent_state(self, session_key: str, lease: Any = None) -> int:
+        """Claim the running-turn slot for a new turn (pending sentinel until ``_run_agent`` installs
+        the real agent) and return the turn's fresh run generation. The generation is also recorded
+        as the slot's OWNER, so ``_release_running_agent_state(owner_generation=...)`` lets the
+        turn's finalizer tell "still my slot" from "a replacement turn's slot" (#106966)."""
+        from gateway.run import _AGENT_PENDING_SENTINEL
+        state = self._session_state(session_key)
+        turn = state.turn
+        if lease is not None:
+            turn.lease = lease
+        turn.agent = _AGENT_PENDING_SENTINEL
+        turn.started_ts = time.time()
+        turn.owner_generation = self._begin_session_run_generation(session_key)
+        # Adopt the pending one-shot snapshot (/model --once, /moa <prompt>): from here on the
+        # restore belongs to this turn and rides its slot release, not a shared finalizer.
+        turn.model_restore, state.conversation.one_turn_restore = state.conversation.one_turn_restore, None
+        self._persist_active_agents()
+        return turn.owner_generation
+
     def _release_running_agent_state(
-        self, session_key: str, *, run_generation: Optional[int] = None
+        self, session_key: str, *, run_generation: Optional[int] = None,
+        owner_generation: Optional[int] = None,
     ) -> bool:
         """Pop ALL per-running-agent state for ``session_key`` (call at every site that ends a running
         turn); True when cleared. Persistent state (model overrides, voice mode, approvals) is NOT
         touched. With ``run_generation``, only clear if still current — a stale async unwind bumped
-        by /stop or /new must not clobber a newer run (returns False)."""
+        by /stop or /new must not clobber a newer run (returns False). With ``owner_generation``,
+        only clear while the slot is still owned by the turn that claimed it under that generation
+        (``_claim_running_agent_state``): the finalizer's guard. Unlike ``run_generation`` it still
+        releases after the generation moved on (session_reset mid-flight leaves the slot to the dead
+        turn, #28686), and it never touches a slot that a replacement turn re-claimed after an
+        eviction (#106966)."""
         if not session_key or (
             run_generation is not None and not self._is_session_run_current(session_key, run_generation)
         ):
             return False
         state = self._peek_session_state(session_key)
+        if owner_generation is not None and (
+            state is None or state.turn.owner_generation != owner_generation
+        ):
+            return False
+        model_restore = None
         if state is not None:
             if state.turn.lease is not None:
                 try:
                     state.turn.lease.release()
                 except Exception:
                     logger.debug("Failed to release active session slot", exc_info=True)
+            model_restore = state.turn.model_restore
             # One structured reset instead of a drifting pop-list. Turn-lease tokens are deliberately NOT
             # cleared here — _release_turn_lease owns them.
             state.turn.clear()
+        if model_restore:
+            # The one-shot override (/model --once, /moa <prompt>) ends with the slot, not with the
+            # turn's finalizer: an evicted turn puts the prior model back before the replacement
+            # turn claims the slot, and its late finalizer (owner guard above) can no longer write
+            # a stale snapshot over the replacement's override or evict the replacement's cached
+            # agent (#106966 review). After clear(): the agent is no longer "mid-turn", so the
+            # cache eviction soft-releases its client pool as before.
+            try:
+                self._restore_session_model_override(session_key, model_restore)
+            except Exception:
+                logger.debug("Failed to restore one-shot model override", exc_info=True)
         # Turn boundary: a running-agent slot was just released; persist the new (lower) in-flight count
         # so the dashboard readout stays current. Preserves gateway_state (see _persist_active_agents).
         self._persist_active_agents()
@@ -263,7 +305,15 @@ class GatewayAgentCacheMixin:
         refuses it if a newer turn holds the lease. Idempotent."""
         held = self._held_turn_lease(session_key, run_generation)
         if held is None:
-            return False
+            # No token for this generation in the slot: never acquired / already released, or a
+            # replacement turn on this routing key overwrote it with its own while this turn was
+            # still unwinding (eviction mid-flight, #106966). In that case this turn's token is
+            # still the holder of ITS session id: release it by (owner key, generation) identity so
+            # a reaped id does not stay leased forever, without touching the replacement's lease.
+            registry = getattr(self, "_turn_leases", None)
+            if registry is None or not session_key:
+                return False
+            return bool(registry.release_owned(owner_key=session_key, generation=run_generation))
         registry, turn = held
         token, turn.lease_token, turn.lease_generation = turn.lease_token, None, None
         try:
@@ -290,8 +340,10 @@ class GatewayAgentCacheMixin:
         """THE single conversation-boundary funnel (/new, /resume, suspension replacement,
         compression-exhausted reset). New conversation-scoped dicts go in _CONVERSATION_SCOPED_STATE
         so every boundary picks them up. Turn-scoped state (_running_agents/_ts, slot leases, turn-
-        lease tokens) is owned by _release_running_agent_state and NOT cleared. Idle agent-cache
-        eviction is NOT a boundary (a resumed turn rebuilds from these). getattr-guarded.
+        lease tokens) is owned by _release_running_agent_state and NOT cleared — except the turn's
+        adopted one-shot model restore, whose "prior" belongs to the conversation being closed.
+        Idle agent-cache eviction is NOT a boundary (a resumed turn rebuilds from these).
+        getattr-guarded.
 
         Why a funnel: these boundaries used to each carry a hand-copied pop-list of the per-session dicts,
         and the lists drifted every time a new dict was added (#48031, #58403, #10702, #35809 were all
@@ -305,6 +357,10 @@ class GatewayAgentCacheMixin:
         state = self._peek_session_state(session_key)
         if state is not None:
             state.conversation.clear()
+            # A boundary reached MID-TURN (compression-exhaustion auto-reset) closes the conversation
+            # while the turn still owns its slot: drop the one-shot snapshot it adopted, or the slot
+            # release writes the OLD conversation's override into the fresh session (#106966 review).
+            state.turn.model_restore = None
         # Legacy plain-dict stores still in _CONVERSATION_SCOPED_STATE (not yet folded into
         # SessionState), e.g. _pending_model_notes. SessionState-backed names resolve to MutableMapping
         # views (not dict), so the isinstance(dict) guard skips them — already handled above.

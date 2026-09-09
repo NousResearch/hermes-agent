@@ -484,8 +484,28 @@ class GatewayInboundMixin:
             logger.debug("reaped-session staleness check failed", exc_info=True)
 
     def _hm_evict_running_agent(self, _quick_key: str, reason: str) -> None:
+        # Evicting the turn slot does NOT stop the agent that is still executing: the
+        # generation bump only makes the gateway discard its eventual result, so the run
+        # keeps calling the model and running tools (file writes, git commits) until it
+        # finishes on its own. Ask for the interrupt FIRST — releasing the slot also
+        # leaves /stop and /new with nothing to interrupt, so nobody could stop it later.
+        from gateway.run import _AGENT_PENDING_SENTINEL, _INTERRUPT_REASON_EVICTED, request_hard_interrupt
+        state = self._peek_session_state(_quick_key)
+        running_agent = state.turn.agent if state else None
+        if running_agent and running_agent is not _AGENT_PENDING_SENTINEL:
+            # Best effort: a third-party/legacy agent ABI can raise, and the cleanup
+            # below must still run or the dead runtime slot stays reachable.
+            try:
+                request_hard_interrupt(running_agent, _INTERRUPT_REASON_EVICTED)
+            except Exception:
+                logger.debug("Evicted agent interrupt failed", exc_info=True)
         self._invalidate_session_run_generation(_quick_key, reason=reason)
         self._release_running_agent_state(_quick_key)
+        # ``_interrupt_requested`` is only cleared by the turn finalizer, so the evicted
+        # agent must leave the cache too: otherwise a cold reattach reuses it latched and
+        # the session's NEXT message dies before its first API call (#44212). Same
+        # invariant /stop and /new already keep in ``_interrupt_and_clear_session``.
+        self._evict_cached_agent(_quick_key)
 
     def _hm_merge_pending_for_source(
         self, source: SessionSource, _quick_key: str, event: "MessageEvent", *, merge_text: bool = False
@@ -896,13 +916,20 @@ class GatewayInboundMixin:
         try:
             event.text = moa_payload
             _moa_state = self._session_state(_quick_key)
-            event._moa_restore_override = _moa_state.conversation.model_override
+            # One-shot: stage the prior override for the turn about to claim the slot (adopted by
+            # _claim_running_agent_state, put back when that slot is released). A /model --once
+            # snapshot already pending is the older prior and wins: both one-shots end with this
+            # turn, and the override to restore is the one from before either of them.
+            if _moa_state.conversation.one_turn_restore is None:
+                _moa_prior = _moa_state.conversation.model_override
+                _moa_state.conversation.one_turn_restore = {
+                    "had_override": _moa_prior is not None, "override": _moa_prior,
+                }
             _moa_state.conversation.model_override = {
                 "provider": "moa", "model": moa_cfg["default_preset"], "base_url": "moa://local",
                 "api_key": "moa-virtual-provider", "api_mode": "chat_completions",
             }
             self._evict_cached_agent(_quick_key)
-            event._moa_disable_after_turn = True
         except Exception:
             return True, "Failed to prepare MoA turn."
         return False, None
@@ -1183,7 +1210,6 @@ class GatewayInboundMixin:
     async def _handle_message(self, event: MessageEvent) -> Optional[str]:
         """Handle an incoming message from any platform: auth → command check → running-agent
         interrupt → get/create session → build context → run agent → return response."""
-        from gateway.run import _AGENT_PENDING_SENTINEL
         _admitted = await self._hm_admit_event(event)
         if _admitted is None:
             return None
@@ -1246,13 +1272,9 @@ class GatewayInboundMixin:
 
         event, source, is_internal = self._hm_rescue_orphaned_fifo(event, source, is_internal, _quick_key)
 
-        _claim_state = self._session_state(_quick_key)
-        if _active_session_lease is not None:
-            _claim_state.turn.lease = _active_session_lease
-        _claim_state.turn.agent = _AGENT_PENDING_SENTINEL
-        _claim_state.turn.started_ts = time.time()
-        self._persist_active_agents()
-        _run_generation = self._begin_session_run_generation(_quick_key)
+        # The claim records this turn's generation as the slot's owner; the finalizer below
+        # releases the slot only while that is still true.
+        _run_generation = self._claim_running_agent_state(_quick_key, _active_session_lease)
 
         try:
             try:
@@ -1279,50 +1301,27 @@ class GatewayInboundMixin:
                 logger.debug("post-turn hook failed: %s", _goal_exc)
             return _agent_result
         finally:
-            # MoA one-shot restore must run on EVERY exit path (success, exception, interrupt):
-            # the restore data lives on the per-turn event and would leak permanently otherwise.
-            self._restore_moa_one_shot(event, _quick_key)
-            self._restore_pending_one_turn_model_override(_quick_key)
+            # The one-shot model restore (/moa <prompt>, /model --once) is NOT applied here: it is
+            # turn-owned (turn.model_restore, adopted at claim) and rides the slot release below,
+            # so it still runs on every exit path (success, exception, interrupt) but never after
+            # an evictor already handed the slot to a replacement turn (#106966 review).
             # SIGKILL/OOM skips finally, leaving the durable marker for the next unclean startup's
             # recovery pass.
             await self._clear_durable_active_turn(event)
-            # Unconditional, idempotent release without a run_generation guard: evicts the zombie
-            # left when session_reset bumps the generation mid-flight (gen-N's guarded release in
-            # _run_agent returns False; a sentinel-only check would lock forever).
-            self._release_running_agent_state(_quick_key)
-            # Turn lease is keyed by (routing key, run generation) so this unwind can only free
-            # the lease its own turn acquired, never a newer turn's.
-            # Unconditional release covers every exit path. _release_running_agent_state is idempotent
-            # (pop-on-absent is harmless) and, called without a run_generation guard, always clears the slot
-            # regardless of which generation it holds. This evicts the zombie left when session_reset bumps
-            # the generation (N -> N+1) mid-flight: gen-N's guarded release inside _run_agent returns False,
-            # and the old sentinel-only check here missed the leftover real agent — locking the session out
-            # forever (#28686).
+            # Release the slot only while THIS turn still owns it (the generation recorded at claim
+            # time), on every exit path. Not "only if my generation is still current": session_reset
+            # bumps the generation mid-flight without re-claiming, gen-N's guarded release inside
+            # _run_agent then returns False, and the ownership guard is what still clears that
+            # zombie (#28686). And not unconditional: _hm_evict_running_agent frees the slot while
+            # this turn is still unwinding, the same inbound message re-claims it for a replacement
+            # turn, and an unconditional release here erased the replacement's sentinel and
+            # active-session lease — leaving that turn untracked and admitting a concurrent one
+            # (#106966).
+            self._release_running_agent_state(_quick_key, owner_generation=_run_generation)
+            # Turn lease is keyed by (routing key, run generation): this unwind frees only the lease
+            # its own turn acquired, never a newer turn's — also when the replacement already
+            # overwrote the slot's token (then released through the registry by identity).
             self._release_turn_lease(_quick_key, _run_generation)
-
-    def _restore_moa_one_shot(self, event: "MessageEvent", quick_key: str) -> None:
-        """Revert a ``/moa <prompt>`` one-shot model override after its turn (called from the
-        message-handling ``finally``). ``_moa_restore_override`` holds the prior per-session
-        override (``None`` = clear the MoA override outright)."""
-        if not getattr(event, "_moa_disable_after_turn", False):
-            return
-        with suppress(Exception):
-            self._session_state(quick_key).conversation.model_override = getattr(event, "_moa_restore_override", None)
-            self._evict_cached_agent(quick_key)
-
-    def _restore_pending_one_turn_model_override(self, session_key: str) -> None:
-        """Restore a per-session model override after ``/model --once`` runs."""
-        if not session_key:
-            return
-        try:
-            _otr_state = self._peek_session_state(session_key)
-            snapshot = _otr_state.conversation.one_turn_restore if _otr_state else None
-            if _otr_state is not None:
-                _otr_state.conversation.one_turn_restore = None
-            if snapshot:
-                self._restore_session_model_override(session_key, snapshot)
-        except Exception:
-            logger.debug("Failed to restore one-turn model override", exc_info=True)
 
     def _prefix_inbound_sender_context(self, event: MessageEvent, source: SessionSource, message_text: str) -> str:
         """Attribute the sender in shared multi-user sessions and prepend history-backfill channel context."""

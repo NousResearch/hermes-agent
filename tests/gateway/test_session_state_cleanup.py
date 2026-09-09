@@ -160,3 +160,70 @@ class TestSessionResetZombieRace:
         assert key not in runner._running_agents_ts
         assert key not in runner._busy_ack_ts
 
+
+
+class TestEvictedTurnFinalizerIsGenerationSafe:
+    """#106966 review interleaving: ``_hm_evict_running_agent`` frees the slot of an in-flight
+    turn (reaped durable row / stale turn) and the same inbound message claims it for a
+    replacement turn; the evicted turn then unwinds and runs its ``_handle_message`` finalizer.
+
+    The finalizer's guard is slot OWNERSHIP (the generation recorded when the slot was claimed),
+    not "is my generation still the session's current one": that proxy is what produced the
+    #28686 zombie, and the unconditional release that worked around it is what erased the
+    replacement here. Ownership answers both cases: release while the slot is still mine (even
+    after the generation moved on), never once a newer turn claimed it.
+    """
+
+    KEY = "agent:main:telegram:private:1"
+
+    def test_old_turn_finalizer_release_leaves_the_replacement_turn_intact(self):
+        from gateway.run import _AGENT_PENDING_SENTINEL
+
+        runner = _make_runner()
+        lease_a, lease_b = MagicMock(name="lease-a"), MagicMock(name="lease-b")
+        gen_a = runner._claim_running_agent_state(self.KEY, lease_a)
+        agent_a = MagicMock(name="agent-a")
+        runner._session_state(self.KEY).turn.agent = agent_a  # _run_agent installs the real agent
+
+        # Message 2 finds the durable row reaped: interrupt A, invalidate, free the slot...
+        runner._hm_evict_running_agent(self.KEY, "reaped_session_eviction")
+        agent_a.interrupt.assert_called_once()
+        lease_a.release.assert_called_once()
+        assert runner._is_session_running(self.KEY) is False
+        # ...and claims it for the replacement turn before A has unwound.
+        gen_b = runner._claim_running_agent_state(self.KEY, lease_b)
+        assert gen_b > gen_a
+
+        # A unwinds: its finalizer must recognise that the slot is no longer its own.
+        assert runner._release_running_agent_state(self.KEY, owner_generation=gen_a) is False
+        turn = runner._peek_session_state(self.KEY).turn
+        assert turn.agent is _AGENT_PENDING_SENTINEL, "the replacement's sentinel was erased"
+        assert turn.lease is lease_b
+        lease_b.release.assert_not_called()
+        assert runner._is_session_running(self.KEY) is True, (
+            "with the slot erased, a third message would be admitted as a concurrent turn"
+        )
+
+        # The replacement's own finalizer still cleans up: no zombie in the other direction.
+        assert runner._release_running_agent_state(self.KEY, owner_generation=gen_b) is True
+        lease_b.release.assert_called_once()
+        assert runner._is_session_running(self.KEY) is False
+
+    def test_reset_zombie_is_still_evicted_by_the_ownership_guarded_release(self):
+        """#28686 shape, preserved: session_reset bumps the generation while gen-N is in flight
+        and nobody re-claims the slot. The current-generation guard blocks (the pre-fix zombie);
+        the ownership guard releases, because the slot is still gen-N's."""
+        runner = _make_runner()
+        lease = MagicMock(name="lease")
+        gen_n = runner._claim_running_agent_state(self.KEY, lease)
+        dead_agent = MagicMock(name="dead-agent")
+        runner._session_state(self.KEY).turn.agent = dead_agent
+
+        runner._invalidate_session_run_generation(self.KEY, reason="session_reset")
+
+        assert runner._release_running_agent_state(self.KEY, run_generation=gen_n) is False
+        assert runner._running_agents.get(self.KEY) is dead_agent
+        assert runner._release_running_agent_state(self.KEY, owner_generation=gen_n) is True
+        lease.release.assert_called_once()
+        assert self.KEY not in runner._running_agents
+        assert self.KEY not in runner._running_agents_ts

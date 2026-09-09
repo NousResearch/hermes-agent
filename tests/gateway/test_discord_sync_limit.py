@@ -57,6 +57,109 @@ def adapter():
     return adapter
 
 
+# The sync-limit tests above use the fixture's identity-canonicalize mock; the
+# churn-regression tests below deliberately exercise the REAL canonicalizer
+# (del of the instance attribute falls back to the bound method) so field
+# normalization matches production.
+
+class _UnsetPrefTreeCommand:
+    """Desired command whose tree sets no installation/context preference.
+
+    Mirrors discord.py's ``to_dict()``: emits ``None`` for unset
+    ``integration_types``/``contexts``, while Discord materializes defaults
+    server-side.
+    """
+
+    def __init__(self, name: str, description: str = "Show or change the model"):
+        self.name = name
+        self.type = 1
+        self._description = description
+
+    def to_dict(self, _tree):
+        return {
+            "name": self.name, "type": 1,
+            "description": self._description,
+            "dm_permission": True, "nsfw": False,
+            "contexts": None, "integration_types": None, "options": [],
+        }
+
+
+class _PinnedTreeCommand(_UnsetPrefTreeCommand):
+    """Desired command that EXPLICITLY pins installation/context values."""
+
+    def __init__(self, name: str):
+        super().__init__(name)
+        self._description = "d"
+
+    def to_dict(self, _tree):
+        return {
+            "name": self.name, "type": 1, "description": self._description,
+            "dm_permission": True, "nsfw": False,
+            "contexts": [0], "integration_types": [0], "options": [],
+        }
+
+
+@pytest.mark.asyncio
+async def test_sync_treats_unset_installation_context_as_matching(adapter):
+    """Desired integration_types/contexts=None must match server-materialized values.
+
+    Regression guard for the churn bug: discord.py's to_dict() emits None when
+    the tree sets no preference, but Discord stores [0, 1]; naive payload
+    equality flagged every command changed on every sync, the reconciler
+    delete+recreated all of them, the 600s sync timeout meant last_success_at
+    was never stamped, and the rate bucket burned — the 'slash commands break
+    on every update' signature. Unset on the DESIRED side means no preference.
+    """
+    adapter._existing_command_to_payload = MagicMock(side_effect=lambda cmd: {
+        "name": cmd.name, "type": 1, "description": "Show or change the model",
+        "default_member_permissions": None, "dm_permission": True, "nsfw": False,
+        "contexts": [0, 1, 2], "integration_types": [0, 1], "options": [],
+    })
+    del adapter._canonicalize_app_command_payload
+
+    adapter._client.tree.fetch_commands = AsyncMock(
+        return_value=[SimpleNamespace(id="id_model", name="model", type=1)])
+    adapter._client.tree.get_commands = MagicMock(
+        return_value=[_UnsetPrefTreeCommand(name="model")])
+
+    summary = await adapter._safe_sync_slash_commands()
+
+    assert summary["unchanged"] == 1
+    assert summary["created"] == 0 and summary["recreated"] == 0
+    assert summary["updated"] == 0 and summary["deleted"] == 0
+    assert adapter._client.http.delete_global_command.await_count == 0
+    assert adapter._client.http.upsert_global_command.await_count == 0
+
+
+@pytest.mark.asyncio
+async def test_sync_still_mutates_when_desired_pins_installation_explicitly(adapter):
+    """An EXPLICIT desired integration_types/contexts value still compares exactly.
+
+    Unset-tolerance must mean 'no preference', never 'anything matches': a tree
+    that pins [0] against a server-materialized [0, 1] is a real change and must
+    still be reconciled (patchable fields equal → the recreate path).
+    """
+    adapter._existing_command_to_payload = MagicMock(side_effect=lambda cmd: {
+        "name": cmd.name, "type": 1, "description": "d",
+        "default_member_permissions": None, "dm_permission": True, "nsfw": False,
+        "contexts": [0], "integration_types": [0, 1], "options": [],
+    })
+    del adapter._canonicalize_app_command_payload
+    # Exercise the REAL patchable shape (name/description/options only) so the
+    # pinned-but-patchable-equal case takes the production recreate path.
+    del adapter._patchable_app_command_payload
+
+    adapter._client.tree.fetch_commands = AsyncMock(
+        return_value=[SimpleNamespace(id="id_x", name="model", type=1)])
+    adapter._client.tree.get_commands = MagicMock(
+        return_value=[_PinnedTreeCommand(name="model")])
+
+    summary = await adapter._safe_sync_slash_commands()
+
+    assert summary["recreated"] == 1
+    assert summary["unchanged"] == 0
+
+
 @pytest.mark.asyncio
 async def test_safe_sync_deletes_before_creating():
     """Sync must delete obsolete commands BEFORE creating new ones.

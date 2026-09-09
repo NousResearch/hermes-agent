@@ -555,6 +555,15 @@ export class JsonRpcGatewayClient {
 
     this.replayHold = hold
 
+    // These watermarks belong to this epoch, even if gateway.ready advances
+    // the live epoch while their replay requests are pending.
+    const watermarkEpoch = this.replayEpoch
+
+    const currentReplay = () =>
+      this.socket === socket &&
+      this.replayHold === hold &&
+      (watermarkEpoch === null || this.replayEpoch === watermarkEpoch)
+
     try {
       const entries = Object.entries(this.getSeqWatermarks())
 
@@ -569,14 +578,14 @@ export class JsonRpcGatewayClient {
         )
       )
 
-      if (this.socket !== socket || this.replayHold !== hold) {
+      if (!currentReplay()) {
         return false
       }
 
       let complete = true
 
       for (const result of results) {
-        if (this.socket !== socket || this.replayHold !== hold) {
+        if (!currentReplay()) {
           return false
         }
 
@@ -587,12 +596,16 @@ export class JsonRpcGatewayClient {
         }
 
         const epoch = (result.value as { epoch?: unknown }).epoch
+        const expectedEpoch = watermarkEpoch ?? this.replayEpoch
 
-        if (typeof epoch === 'string' && epoch && this.replayEpoch && epoch !== this.replayEpoch) {
+        if (typeof epoch === 'string' && epoch && expectedEpoch && epoch !== expectedEpoch) {
           // Backend restarted: its seq numbering reset, so our watermarks —
           // and this replay window — are meaningless. Drop them and start
           // fresh under the new epoch.
-          this.adoptReplayEpoch(epoch)
+          if (this.replayEpoch === watermarkEpoch) {
+            this.adoptReplayEpoch(epoch)
+          }
+
           complete = false
 
           continue
@@ -607,7 +620,7 @@ export class JsonRpcGatewayClient {
         }
 
         for (const event of result.value.events) {
-          if (this.socket !== socket || this.replayHold !== hold) {
+          if (!currentReplay()) {
             return false
           }
 

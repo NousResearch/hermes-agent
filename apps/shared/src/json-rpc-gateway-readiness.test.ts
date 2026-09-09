@@ -5,7 +5,7 @@ import { type GatewayEvent, JsonRpcGatewayClient } from './json-rpc-gateway'
 class ReplaySocket extends EventTarget {
   static OPEN = 1
   readyState = 0
-  requests: Array<{ id: string; method: string }> = []
+  requests: Array<{ id: string; method: string; params?: Record<string, unknown> }> = []
 
   send(data: string) {
     this.requests.push(JSON.parse(data))
@@ -67,6 +67,74 @@ afterEach(() => {
 })
 
 describe('replay readiness belongs to the socket generation', () => {
+  it.each(['reply-only', 'ready-before-reply'] as const)('rejects a changed watermark epoch: %s', async order => {
+    const first = await connect()
+    first.frame({ method: 'event', params: { type: 'gateway.ready', payload: { replay_epoch: 'epoch-A' } } })
+    first.event(97, 'message.start')
+    client.invalidate()
+    const second = await connect()
+    expect(second.requests[0].params).toEqual({ session_id: 'running', last_seen: 97 })
+
+    const outcome = client.waitForReplay().then(
+      () => 'ready',
+      () => 'not-ready'
+    )
+
+    if (order === 'ready-before-reply') {
+      second.frame({ method: 'event', params: { type: 'gateway.ready', payload: { replay_epoch: 'epoch-B' } } })
+    }
+
+    second.reply({ events: [], latest_seq: 0, truncated: false, count: 0, epoch: 'epoch-B' })
+    expect(await outcome).toBe('not-ready')
+    expect(client.getSeqWatermarks()).toEqual({})
+  })
+
+  it('does not roll a new announced epoch back to an older in-flight reply', async () => {
+    const first = await connect()
+    first.frame({ method: 'event', params: { type: 'gateway.ready', payload: { replay_epoch: 'epoch-A' } } })
+    first.event(97, 'message.start')
+    client.invalidate()
+    const second = await connect()
+
+    const outcome = client.waitForReplay().then(
+      () => 'ready',
+      () => 'not-ready'
+    )
+
+    second.frame({ method: 'event', params: { type: 'gateway.ready', payload: { replay_epoch: 'epoch-B' } } })
+    second.event(1, 'message.start')
+    const staleIdle = vi.fn()
+    client.onEvent(event => {
+      if (event.type === 'session.info') {
+        staleIdle(event)
+      }
+    })
+    second.reply({
+      events: [{ type: 'session.info', session_id: 'running', seq: 98, payload: { running: false } }],
+      epoch: 'epoch-A'
+    })
+    expect(await outcome).toBe('not-ready')
+    expect(staleIdle).not.toHaveBeenCalled()
+    expect(client.getSeqWatermarks()).toEqual({ running: 1 })
+    client.invalidate()
+    const third = await connect()
+    expect(third.requests[0].params).toEqual({ session_id: 'running', last_seen: 1 })
+    third.reply({ events: [], epoch: 'epoch-B' })
+    await expect(client.waitForReplay()).resolves.toBeUndefined()
+  })
+
+  it('accepts same-epoch catch-up when ready arrives before the reply', async () => {
+    const first = await connect()
+    first.frame({ method: 'event', params: { type: 'gateway.ready', payload: { replay_epoch: 'epoch-A' } } })
+    first.event(97, 'message.start')
+    client.invalidate()
+    const second = await connect()
+    second.frame({ method: 'event', params: { type: 'gateway.ready', payload: { replay_epoch: 'epoch-A' } } })
+    second.reply({ events: [], epoch: 'epoch-A' })
+    await expect(client.waitForReplay()).resolves.toBeUndefined()
+    expect(client.getSeqWatermarks()).toEqual({ running: 97 })
+  })
+
   it('publishes the barrier before open listeners and drains held live frames before releasing it', async () => {
     const first = await connect()
     await expect(client.waitForReplay()).resolves.toBeUndefined()

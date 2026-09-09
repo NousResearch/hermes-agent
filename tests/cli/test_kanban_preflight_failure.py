@@ -19,6 +19,7 @@ def test_kanban_chat_records_credential_preflight_failure(monkeypatch):
         _last_turn_interrupted=False,
         _secret_capture_callback=None,
         _ensure_runtime_credentials=lambda: False,
+        _ensure_conversation_worktree_binding=lambda: None,
     )
     monkeypatch.setattr(cli, "set_secret_capture_callback", lambda *_args: None)
 

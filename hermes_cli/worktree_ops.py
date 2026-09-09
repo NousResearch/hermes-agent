@@ -315,9 +315,10 @@ def _setup_worktree(repo_root: str = None, sync_base: bool = True,
                     name: Optional[str] = None) -> Optional[Dict[str, str]]:
     """Create an isolated git worktree -> ``{path, branch, repo_root, base}``, or None on failure.
 
-    *sync_base* branches from the fetched remote tip (``_resolve_worktree_base``), else local
-    HEAD. *name* replaces the random ``hermes-<id>``; named trees lack the ``hermes-`` prefix so
-    the pruner ages them on its slower schedule.
+    *sync_base* branches from the fetched remote default (``worktree_base.resolve_worktree_base``,
+    ``prefer_current_upstream=False`` since this is new work), else local HEAD. *name* replaces
+    the random ``hermes-<id>``; named trees lack the ``hermes-`` prefix so the pruner ages them on
+    its slower schedule.
 
     Set ``worktree_sync: false`` in config to branch from local ``HEAD`` (the pre-#10760-followup behavior).
     """
@@ -343,9 +344,14 @@ def _setup_worktree(repo_root: str = None, sync_base: bool = True,
 
     # Resolve the base ref. By default branch from the freshly-fetched remote tip so the worktree starts
     # current with the project, not from the (possibly stale) local HEAD of the standalone clone (#10760
-    # follow-up).
-    base_ref, base_label = (_resolve_worktree_base(repo_root) if sync_base
-                            else ("HEAD", "HEAD (local — worktree_sync disabled)"))
+    # follow-up). This is a new-work flow (a fresh worktree, not a resume/continuation), so
+    # prefer_current_upstream=False: a branch the caller happens to have checked out and pushed
+    # (a "parked" feature) must not silently become the base for unrelated new work.
+    if sync_base:
+        from hermes_cli.worktree_base import resolve_worktree_base
+        base_ref, base_label = resolve_worktree_base(repo_root, prefer_current_upstream=False)
+    else:
+        base_ref, base_label = "HEAD", "HEAD (local — worktree_sync disabled)"
 
     added = _worktree_add(repo_root, wt_path, branch_name, base_ref, base_label)
     if added is None:

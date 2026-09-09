@@ -43,6 +43,15 @@ class CLIChatTurnMixin:
         self._last_turn_interrupted = False
 
         if not self._ensure_runtime_credentials():
+            # A Kanban worker supervisor distinguishes a failed one-shot turn from a process
+            # that exited without a terminal Kanban call via _last_turn_result; leaving it
+            # unset here made an early credential failure look like a clean protocol exit
+            # and get retried as if the task itself were broken.
+            self._last_turn_result = {
+                "failed": True,
+                "failure_reason": "credentials",
+                "error": "runtime credentials unavailable",
+            }
             return None
 
         turn_route = self._resolve_turn_agent_config(message)

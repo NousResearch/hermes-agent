@@ -1052,3 +1052,74 @@ class TestWindowsLockedProfileCopy:
         dst, err = bc.snapshot_real_profile("chrome", src=str(root))
         assert dst is None
         assert err and "login data" in err.lower() and "close" in err.lower()
+
+
+class TestRealProfileChromeReapedOnSessionCleanup:
+    """The real-profile browser is launched directly (not by agent-browser),
+    so an ``agent-browser close`` only detaches from it via CDP — the process
+    itself used to stay alive until process exit (atexit), which never fires
+    on a long-lived externally-supervised gateway. _cleanup_single_browser_session
+    must now terminate it once the last real-profile-backed session is gone.
+    """
+
+    def _session(self, real_profile: bool):
+        return {
+            "session_name": "s1",
+            "bb_session_id": None,
+            "cdp_url": None,
+            "features": {"local": True, "real_profile": real_profile},
+        }
+
+    def test_terminates_when_last_real_profile_session_closes(self, monkeypatch):
+        import tools.browser_tool as bt
+
+        monkeypatch.setattr(bt, "_active_sessions", {"task1": self._session(True)})
+        monkeypatch.setattr(bt, "_session_last_activity", {"task1": 0.0})
+        monkeypatch.setattr(bt, "_run_browser_command", lambda *a, **k: None)
+        monkeypatch.setattr(bt, "_maybe_stop_recording", lambda *a, **k: None)
+        monkeypatch.setattr(bt, "_session_has_expired", lambda *a, **k: False)
+        monkeypatch.setattr(bt, "_socket_safe_tmpdir", lambda: "/tmp/nonexistent-abc")
+        terminate_calls = []
+        monkeypatch.setattr(bt, "_terminate_real_profile_chrome", lambda: terminate_calls.append(1))
+        monkeypatch.setattr(bt, "_real_profile_cdp_cache", {"cdp": "http://127.0.0.1:1/json"})
+
+        bt._cleanup_single_browser_session("task1")
+
+        assert terminate_calls == [1]
+        assert "cdp" not in bt._real_profile_cdp_cache
+
+    def test_does_not_terminate_while_another_real_profile_session_active(self, monkeypatch):
+        import tools.browser_tool as bt
+
+        monkeypatch.setattr(bt, "_active_sessions", {
+            "task1": self._session(True),
+            "task2": self._session(True),
+        })
+        monkeypatch.setattr(bt, "_session_last_activity", {"task1": 0.0, "task2": 0.0})
+        monkeypatch.setattr(bt, "_run_browser_command", lambda *a, **k: None)
+        monkeypatch.setattr(bt, "_maybe_stop_recording", lambda *a, **k: None)
+        monkeypatch.setattr(bt, "_session_has_expired", lambda *a, **k: False)
+        monkeypatch.setattr(bt, "_socket_safe_tmpdir", lambda: "/tmp/nonexistent-abc")
+        terminate_calls = []
+        monkeypatch.setattr(bt, "_terminate_real_profile_chrome", lambda: terminate_calls.append(1))
+
+        bt._cleanup_single_browser_session("task1")
+
+        assert terminate_calls == []
+        assert "task2" in bt._active_sessions
+
+    def test_non_real_profile_session_never_touches_terminate(self, monkeypatch):
+        import tools.browser_tool as bt
+
+        monkeypatch.setattr(bt, "_active_sessions", {"task1": self._session(False)})
+        monkeypatch.setattr(bt, "_session_last_activity", {"task1": 0.0})
+        monkeypatch.setattr(bt, "_run_browser_command", lambda *a, **k: None)
+        monkeypatch.setattr(bt, "_maybe_stop_recording", lambda *a, **k: None)
+        monkeypatch.setattr(bt, "_session_has_expired", lambda *a, **k: False)
+        monkeypatch.setattr(bt, "_socket_safe_tmpdir", lambda: "/tmp/nonexistent-abc")
+        terminate_calls = []
+        monkeypatch.setattr(bt, "_terminate_real_profile_chrome", lambda: terminate_calls.append(1))
+
+        bt._cleanup_single_browser_session("task1")
+
+        assert terminate_calls == []

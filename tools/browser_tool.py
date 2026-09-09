@@ -5905,9 +5905,27 @@ def _cleanup_single_browser_session(task_id: str) -> None:
                 logger.warning("agent-browser close failed for task %s: %s", task_id, e)
 
         # Now remove from tracking under lock
+        was_real_profile = (session_info.get("features") or {}).get("real_profile")
         with _cleanup_lock:
             _active_sessions.pop(task_id, None)
             _session_last_activity.pop(task_id, None)
+            other_real_profile_sessions = any(
+                (info.get("features") or {}).get("real_profile")
+                for info in _active_sessions.values()
+            )
+
+        # The real-profile browser is launched directly (not by agent-browser)
+        # and the "close" command above only detaches from it via CDP — the
+        # process itself keeps running (see _terminate_real_profile_chrome's
+        # docstring). Previously that only happened via atexit, which never
+        # fires on a long-lived externally-supervised gateway, so idle
+        # real-profile sessions leaked a full Chrome process indefinitely.
+        # Terminate it here too, once the last real-profile-backed session
+        # this reaper knows about is gone.
+        if was_real_profile and not other_real_profile_sessions:
+            _terminate_real_profile_chrome()
+            with _real_profile_cdp_lock:
+                _real_profile_cdp_cache.pop("cdp", None)
 
         # Cloud mode: close the cloud browser session via provider API.
         # Local sidecars have bb_session_id=None so this no-ops for them.

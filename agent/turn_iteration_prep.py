@@ -216,8 +216,8 @@ def _inject_steer_after_newest_tool_result(agent: Any, messages: Any, steer_text
     for _si in range(len(messages) - 1, -1, -1):
         _sm = messages[_si]
         if isinstance(_sm, dict) and _sm.get("role") == "tool":
-            from agent.prompt_builder import format_steer_marker
-            messages.insert(_si + 1, {"role": "user", "content": format_steer_marker(steer_text)})
+            from agent.prompt_builder import steer_user_row
+            messages.insert(_si + 1, steer_user_row(steer_text))
             logger.debug("Pre-API-call steer drain: appended user row after tool msg at index %d", _si)
             return
     _lock = getattr(agent, "_pending_steer_lock", None)

@@ -19,7 +19,7 @@ from hermes_cli.timeouts import get_provider_request_timeout
 from agent.message_sanitization import (
     _FULL_ARGS_LOG_BOUND, coalesce_tool_call_id, tool_call_id_variants, tool_result_id_variants
 )
-from agent.prompt_builder import format_steer_marker
+from agent.prompt_builder import STEER_DISPLAY_KIND, steer_user_row
 from agent.tool_dispatch_helpers import _trajectory_normalize_msg, make_tool_result_message
 from agent.trajectory import convert_scratchpad_to_think
 from agent.credential_pool import (
@@ -533,6 +533,9 @@ def _merge_consecutive_users(messages: List[Dict]) -> Tuple[List[Dict], int]:
             # A summary carrier followed by a new user row is a deliberate durable shape after
             # retry/rewind; never mutate the persisted carrier (sanitizers merge copies later).
             and split_user_originated_turn(prev)[0] is None
+            # A /steer row that ended the previous run is already persisted; merging the next
+            # prompt into it would rewrite it in place and re-break replay parity.
+            and prev.get("display_kind") != STEER_DISPLAY_KIND
             # Only merge plain-text content; leave multimodal (list) content alone.
             and isinstance(prev.get("content", ""), str) and isinstance(msg.get("content", ""), str)
         ):
@@ -3180,10 +3183,7 @@ def apply_pending_steer_to_tool_results(agent, messages: list, num_tool_msgs: in
         # user message (which persists like any other user turn).
         _requeue_pending_steer(agent, steer_text)
         return
-    marker = format_steer_marker(steer_text)
-    # Append a standalone user message instead of rewriting the persisted
-    # tool row's content.
-    messages.append({"role": "user", "content": marker})
+    messages.append(steer_user_row(steer_text))
     _ra().logger.info(
         "Delivered /steer to agent after tool batch (%d chars) as new user message: %s", len(steer_text),
         steer_text[:120] + ("..." if len(steer_text) > 120 else ""),

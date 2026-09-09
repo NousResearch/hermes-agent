@@ -553,7 +553,22 @@ class TestSteerInjection:
         # The tool row itself is untouched.
         assert messages[0]["content"] == "x"
 
-    def test_multimodal_content_list_preserved(self):
+    def test_persisted_steer_row_is_never_merged_with_the_next_prompt(self):
+        """A run that ends right after a steered batch leaves user(steer) as the persisted tail.
+        The next real prompt makes two consecutive user rows; the alternation repair must leave
+        the steer row byte-identical (append-only persistence cannot follow an in-place merge)."""
+        from agent.agent_runtime_helpers import _merge_consecutive_users
+        from agent.prompt_builder import steer_user_row
+
+        steer = steer_user_row("focus on error handling")
+        before = dict(steer)
+        merged, repairs = _merge_consecutive_users([steer, {"role": "user", "content": "next question"}])
+        assert steer == before
+        assert repairs == 0
+        assert [m["role"] for m in merged] == ["user", "user"]
+        assert merged[-1]["content"] == "next question"
+
+    def test_multimodal_tool_content_untouched_steer_lands_as_user_row(self):
         """Anthropic-style list content on tool results is left untouched —
         the steer is appended as a standalone user message instead of being
         merged into the content blocks."""

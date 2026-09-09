@@ -16,6 +16,7 @@ rebuild later, outside the failed live write/search operation.
 import json
 import os
 import sqlite3
+import time
 
 import pytest
 
@@ -25,6 +26,24 @@ import hermes_state_schema
 from hermes_state import SessionDB
 from hermes_state_common import FTS_REBUILD_DEFERRAL_KEY, FTS_STALE_KEY, LEGACY_FTS_SQL, LEGACY_FTS_TRIGRAM_SQL, SCHEMA_SQL, _FTS_TRIGGERS
 from hermes_state_dbfile import _concrete_state_db_holder_pids, _is_inactive_orphan_desktop_holder
+
+
+def _deferral_is_futile(record):
+    if not isinstance(record, dict):
+        return False
+    if record.get("futile") is True:
+        return True
+    kind = str(record.get("kind") or record.get("status") or "").lower()
+    return "futile" in kind or "permanent_holder" in kind
+
+
+def _doctor_deferral_blob(stats):
+    from hermes_cli.doctor_state import _render_state_db_stats
+
+    return " ".join(
+        " ".join(str(part) for part in row)
+        for row in _render_state_db_stats(stats)
+    ).lower()
 
 
 @pytest.fixture
@@ -782,6 +801,243 @@ class TestRuntimeFtsRebuild:
             assert _meta_value(db_path, FTS_STALE_KEY) is None
             assert _meta_value(db_path, FTS_REBUILD_DEFERRAL_KEY) is None
             assert reopened.search_messages("before restart")
+        finally:
+            reopened.close()
+
+    def test_stable_permanent_holder_marks_futile_deferral(
+        self, db, tmp_path, monkeypatch, caplog
+    ):
+        """Same supervised holder across the escalate window is futile, not a transient peer."""
+        if not db._fts_enabled:
+            pytest.skip("FTS5 unavailable in this build")
+        db_path = tmp_path / "state.db"
+        db.create_session("s1", source="test")
+        db.append_message("s1", "user", "seed")
+        _corrupt_fts(db_path)
+        monkeypatch.setattr(
+            db,
+            "rebuild_fts",
+            lambda: (_ for _ in ()).throw(sqlite3.DatabaseError("still corrupt")),
+        )
+        db.append_message("s1", "user", "before restart")
+        db.close()
+
+        raw = sqlite3.connect(str(db_path))
+        raw.execute(
+            "INSERT INTO state_meta (key, value) VALUES (?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            (
+                FTS_REBUILD_DEFERRAL_KEY,
+                json.dumps({
+                    "first_seen": 1.0,
+                    "last_seen": 30.0,
+                    "attempts": 2,
+                    "holder_pids": [4242],
+                }),
+            ),
+        )
+        raw.commit()
+        raw.close()
+
+        monkeypatch.setattr(
+            SessionDB,
+            "_foreign_state_db_holders",
+            lambda self: [(4242, str(db_path) + "-wal")],
+        )
+        monkeypatch.setattr(
+            SessionDB,
+            "_reap_inactive_orphan_desktop_holders",
+            lambda self, holders, *, min_age_seconds: [],
+        )
+        monkeypatch.setattr(hermes_state_schema.time, "time", lambda: 120.0)
+
+        reopened = SessionDB(db_path=db_path)
+        try:
+            record = json.loads(_meta_value(db_path, FTS_REBUILD_DEFERRAL_KEY))
+            assert _deferral_is_futile(record), record
+            assert record.get("holder_pids") == [4242]
+            assert reopened._fts_stale is True
+            from hermes_cli.doctor_state import _render_state_db_stats
+            from hermes_state_dbfile import collect_state_db_stats
+
+            blob = _doctor_deferral_blob(collect_state_db_stats(db_path))
+            assert "stop the other hermes service" in blob
+            assert "gateway" in blob
+            assert "canonical writes and like search remain available" not in caplog.text.lower()
+        finally:
+            reopened.close()
+
+    def test_changing_holder_pids_do_not_mark_futile(
+        self, db, tmp_path, monkeypatch
+    ):
+        if not db._fts_enabled:
+            pytest.skip("FTS5 unavailable in this build")
+        db_path = tmp_path / "state.db"
+        db.create_session("s1", source="test")
+        db.append_message("s1", "user", "seed")
+        _corrupt_fts(db_path)
+        monkeypatch.setattr(
+            db,
+            "rebuild_fts",
+            lambda: (_ for _ in ()).throw(sqlite3.DatabaseError("still corrupt")),
+        )
+        db.append_message("s1", "user", "before restart")
+        db.close()
+
+        raw = sqlite3.connect(str(db_path))
+        raw.execute(
+            "INSERT INTO state_meta (key, value) VALUES (?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            (
+                FTS_REBUILD_DEFERRAL_KEY,
+                json.dumps({
+                    "first_seen": 1.0,
+                    "last_seen": 30.0,
+                    "attempts": 2,
+                    "holder_pids": [4242],
+                }),
+            ),
+        )
+        raw.commit()
+        raw.close()
+
+        monkeypatch.setattr(
+            SessionDB,
+            "_foreign_state_db_holders",
+            lambda self: [(9999, str(db_path) + "-wal")],
+        )
+        monkeypatch.setattr(
+            SessionDB,
+            "_reap_inactive_orphan_desktop_holders",
+            lambda self, holders, *, min_age_seconds: [],
+        )
+        monkeypatch.setattr(hermes_state_schema.time, "time", lambda: 120.0)
+
+        reopened = SessionDB(db_path=db_path)
+        try:
+            record = json.loads(_meta_value(db_path, FTS_REBUILD_DEFERRAL_KEY))
+            assert not _deferral_is_futile(record), record
+            assert record.get("holder_pids") == [9999]
+            assert reopened._fts_stale is True
+        finally:
+            reopened.close()
+
+    def test_orphan_reap_clearing_holders_does_not_mark_futile(
+        self, db, tmp_path, monkeypatch
+    ):
+        """CONTROL: escalate + successful orphan reap stays on the existing rebuild path."""
+        if not db._fts_enabled:
+            pytest.skip("FTS5 unavailable in this build")
+        db_path = tmp_path / "state.db"
+        db.create_session("s1", source="test")
+        db.append_message("s1", "user", "seed")
+        _corrupt_fts(db_path)
+        monkeypatch.setattr(
+            db,
+            "rebuild_fts",
+            lambda: (_ for _ in ()).throw(sqlite3.DatabaseError("still corrupt")),
+        )
+        db.append_message("s1", "user", "before restart")
+        db.close()
+
+        raw = sqlite3.connect(str(db_path))
+        raw.execute(
+            "INSERT INTO state_meta (key, value) VALUES (?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            (
+                FTS_REBUILD_DEFERRAL_KEY,
+                json.dumps({
+                    "first_seen": 1.0,
+                    "last_seen": 30.0,
+                    "attempts": 2,
+                    "holder_pids": [4242],
+                }),
+            ),
+        )
+        raw.commit()
+        raw.close()
+
+        holder_scans = iter(([(4242, str(db_path) + "-wal")], []))
+        reaped = []
+        monkeypatch.setattr(
+            SessionDB,
+            "_foreign_state_db_holders",
+            lambda self: next(holder_scans),
+        )
+        monkeypatch.setattr(
+            SessionDB,
+            "_reap_inactive_orphan_desktop_holders",
+            lambda self, holders, *, min_age_seconds: reaped.extend(holders) or [4242],
+        )
+        monkeypatch.setattr(hermes_state_schema.time, "time", lambda: 120.0)
+
+        reopened = SessionDB(db_path=db_path)
+        try:
+            assert reaped == [(4242, str(db_path) + "-wal")]
+            leftover = _meta_value(db_path, FTS_REBUILD_DEFERRAL_KEY)
+            if leftover is not None:
+                assert not _deferral_is_futile(json.loads(leftover)), leftover
+            assert reopened._fts_stale is False
+            assert _meta_value(db_path, FTS_STALE_KEY) is None
+        finally:
+            reopened.close()
+
+    def test_permanent_holder_clear_resets_stale_retry_backoff(
+        self, db, tmp_path, monkeypatch
+    ):
+        if not db._fts_enabled:
+            pytest.skip("FTS5 unavailable in this build")
+        db_path = tmp_path / "state.db"
+        db.create_session("s1", source="test")
+        db.append_message("s1", "user", "seed")
+        _corrupt_fts(db_path)
+        monkeypatch.setattr(
+            db,
+            "rebuild_fts",
+            lambda: (_ for _ in ()).throw(sqlite3.DatabaseError("still corrupt")),
+        )
+        db.append_message("s1", "user", "before restart")
+        db.close()
+
+        raw = sqlite3.connect(str(db_path))
+        raw.execute(
+            "INSERT INTO state_meta (key, value) VALUES (?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            (
+                FTS_REBUILD_DEFERRAL_KEY,
+                json.dumps({
+                    "first_seen": 1.0,
+                    "last_seen": 30.0,
+                    "attempts": 2,
+                    "holder_pids": [4242],
+                }),
+            ),
+        )
+        raw.commit()
+        raw.close()
+
+        current_holders = [(4242, str(db_path) + "-wal")]
+        monkeypatch.setattr(
+            SessionDB,
+            "_foreign_state_db_holders",
+            lambda self: list(current_holders),
+        )
+        monkeypatch.setattr(
+            SessionDB,
+            "_reap_inactive_orphan_desktop_holders",
+            lambda self, holders, *, min_age_seconds: [],
+        )
+        monkeypatch.setattr(hermes_state_schema.time, "time", lambda: 120.0)
+
+        reopened = SessionDB(db_path=db_path)
+        try:
+            record = json.loads(_meta_value(db_path, FTS_REBUILD_DEFERRAL_KEY))
+            assert _deferral_is_futile(record), record
+            current_holders = []
+            reopened._fts_stale_retry_after = time.monotonic() + 3600.0
+            reopened._fts_stale_retry_interval = 3600.0
+            assert reopened.retry_deferred_fts_recovery() is True
+            assert reopened._fts_stale is False
         finally:
             reopened.close()
 

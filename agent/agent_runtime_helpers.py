@@ -2179,7 +2179,7 @@ def switch_model(
 
 
 def _pre_tool_block_message(agent, function_name, function_args, effective_task_id, tool_call_id, middleware_trace):
-    """Plugin pre-tool-call hook verdict: ``(block_message, function_args)``; failures never block."""
+    """Plugin pre-tool verdict; optional failures allow, required failures propagate."""
     try:
         from hermes_cli.plugins import _dispatch_pre_tool_call_hooks
         block_message, modified_args = _dispatch_pre_tool_call_hooks(
@@ -2190,8 +2190,24 @@ def _pre_tool_block_message(agent, function_name, function_args, effective_task_
             middleware_trace=list(middleware_trace),
         )
         return block_message, (modified_args if modified_args is not None else function_args)
-    except Exception:
+    except Exception as exc:
+        from hermes_cli.required_lifecycle import RequiredLifecycleError
+
+        if isinstance(exc, RequiredLifecycleError):
+            raise
         return None, function_args
+
+
+def _required_lifecycle_failure_result(exc: Exception) -> str:
+    """Return the stable settlement failure for the one typed lifecycle error."""
+    from hermes_cli.required_lifecycle import (
+        REQUIRED_LIFECYCLE_FAILURE_TEXT,
+        RequiredLifecycleError,
+    )
+
+    if not isinstance(exc, RequiredLifecycleError):
+        raise exc
+    return REQUIRED_LIFECYCLE_FAILURE_TEXT
 
 
 def invoke_tool(agent, function_name: str, function_args: dict, effective_task_id: str,
@@ -2219,18 +2235,24 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
     except Exception as _mw_err:
         logger.debug("tool_request middleware error: %s", _mw_err)
     block_message: Optional[str] = None
-    if not pre_tool_block_checked:
-        block_message, function_args = _pre_tool_block_message(
-            agent, function_name, function_args, effective_task_id, tool_call_id, _tool_middleware_trace
-        )
+    try:
+        if not pre_tool_block_checked:
+            block_message, function_args = _pre_tool_block_message(
+                agent, function_name, function_args, effective_task_id, tool_call_id, _tool_middleware_trace
+            )
+    except Exception as required_exc:
+        return _required_lifecycle_failure_result(required_exc)
     if block_message is not None:
         result = json.dumps({"error": block_message}, ensure_ascii=False)
-        emit_terminal_post_tool_call(
-            agent, function_name=function_name, function_args=function_args, result=result,
-            effective_task_id=effective_task_id, tool_call_id=tool_call_id, status="blocked",
-            error_type="plugin_block", error_message=block_message,
-            middleware_trace=_tool_middleware_trace,
-        )
+        try:
+            emit_terminal_post_tool_call(
+                agent, function_name=function_name, function_args=function_args, result=result,
+                effective_task_id=effective_task_id, tool_call_id=tool_call_id, status="blocked",
+                error_type="plugin_block", error_message=block_message,
+                middleware_trace=_tool_middleware_trace,
+            )
+        except Exception as required_exc:
+            return _required_lifecycle_failure_result(required_exc)
         return result
     tool_start_time = time.monotonic()
     inline_executor = resolve_invoke_tool_executor(agent, function_name)
@@ -2265,14 +2287,17 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
                 dispatch_kwargs["skip_tool_execution_middleware"] = True
             import model_tools
             return model_tools.handle_function_call(function_name, next_args, effective_task_id, **dispatch_kwargs)
-    if skip_tool_execution_middleware:
-        return _execute(function_args)
-    from hermes_cli.middleware import run_tool_execution_middleware
-    return run_tool_execution_middleware(
-        function_name, function_args,
-        lambda next_args: _execute(next_args if isinstance(next_args, dict) else function_args),
-        original_args=function_args, **hook_ids,
-    )
+    try:
+        if skip_tool_execution_middleware:
+            return _execute(function_args)
+        from hermes_cli.middleware import run_tool_execution_middleware
+        return run_tool_execution_middleware(
+            function_name, function_args,
+            lambda next_args: _execute(next_args if isinstance(next_args, dict) else function_args),
+            original_args=function_args, **hook_ids,
+        )
+    except Exception as required_exc:
+        return _required_lifecycle_failure_result(required_exc)
 
 
 def repair_tool_call(agent, tool_name: str) -> str | None:

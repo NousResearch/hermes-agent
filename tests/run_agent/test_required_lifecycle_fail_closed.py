@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import json
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -260,17 +261,105 @@ def test_required_output_authorizes_length_ceiling_before_any_persistence(
         assert all(raw.strip() not in str(snapshot) for snapshot in persisted)
 
 
+@pytest.mark.parametrize(
+    ("output_expr", "expected"),
+    (
+        pytest.param(
+            'required_hook_result("behavioral.output.v1", "safe incomplete")',
+            "safe incomplete",
+            id="transformed",
+        ),
+        pytest.param(
+            '(_ for _ in ()).throw(RuntimeError("raw incomplete hook secret"))',
+            REQUIRED_LIFECYCLE_FAILURE_TEXT,
+            id="failed",
+        ),
+    ),
+)
+def test_required_output_authorizes_codex_incomplete_before_persistence(
+    tmp_path, monkeypatch, output_expr, expected
+):
+    from agent.conversation_loop import _apply_required_direct_result
+    from agent.turn_truncation import continue_codex_incomplete
+
+    home = tmp_path / "hermes"
+    _install_required_plugin(
+        home,
+        'required_hook_result("behavioral.pre_llm.v1", None)',
+        output_expr,
+    )
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    plugins_mod._reset_plugin_managers_for_tests()
+    agent = _agent()
+    agent._codex_incomplete_retries = 0
+    agent._current_turn_id = "turn-incomplete"
+    agent._current_api_request_id = "api-incomplete"
+    interim = MagicMock()
+    agent._emit_interim_assistant_message = interim
+    persisted = []
+    agent._persist_session = lambda messages, _history=None: persisted.append(
+        copy.deepcopy(messages)
+    )
+    messages = [{"role": "user", "content": "continue"}]
+    raw_fragments = [
+        "raw incomplete fragment one",
+        "raw incomplete fragment two",
+        "raw incomplete fragment three",
+    ]
+    result = None
+    for raw in raw_fragments:
+        result = continue_codex_incomplete(
+            agent,
+            _response(raw, finish_reason="incomplete").choices[0].message,
+            "incomplete",
+            messages=messages,
+            conversation_history=[],
+            api_call_count=1,
+        )
+
+    assert result is not None
+    assert persisted == []
+    assert interim.call_count == 0
+    state = SimpleNamespace(
+        effective_task_id="task-1",
+        turn_id="turn-incomplete",
+        conversation_history=[],
+    )
+    result = _apply_required_direct_result(agent, result, state)
+
+    assert result["final_response"] == expected
+    assert len(persisted) == 1
+    observable = str((result, persisted, interim.call_args_list))
+    assert all(raw not in observable for raw in raw_fragments)
+    assert "raw incomplete hook secret" not in observable
+
+
+@pytest.mark.parametrize(
+    "post_tool_expr",
+    [
+        pytest.param(
+            '(_ for _ in ()).throw(RuntimeError("raw post secret"))',
+            id="raises",
+        ),
+        pytest.param(
+            '(__import__("time").sleep(2.0), '
+            'required_hook_result("behavioral.post_tool.v1", None))[1]',
+            id="times-out",
+        ),
+    ],
+)
 def test_required_post_tool_failure_stops_before_next_provider_call(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, post_tool_expr
 ):
     home = tmp_path / "hermes"
     _install_required_plugin(
         home,
         'required_hook_result("behavioral.pre_llm.v1", None)',
         'required_hook_result("behavioral.output.v1", None)',
-        post_tool_expr='(_ for _ in ()).throw(RuntimeError("raw post secret"))',
+        post_tool_expr=post_tool_expr,
     )
     monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(plugins_mod, "_resolve_hook_callback_timeout", lambda: 0.1)
     plugins_mod._reset_plugin_managers_for_tests()
     agent = _agent()
     agent.valid_tool_names.add("web_search")
@@ -278,7 +367,9 @@ def test_required_post_tool_failure_stops_before_next_provider_call(
         SimpleNamespace(
             id=f"call-{index}",
             type="function",
-            function=SimpleNamespace(name="web_search", arguments="{}"),
+            function=SimpleNamespace(
+                name="web_search", arguments=json.dumps({"query": str(index)})
+            ),
         )
         for index in (1, 2)
     ]
@@ -295,8 +386,29 @@ def test_required_post_tool_failure_stops_before_next_provider_call(
         return next(responses)
 
     agent._interruptible_api_call = provider
+    agent.compression_enabled = True
+    agent.context_compressor.should_compress = lambda _tokens: True
+    compress = MagicMock(
+        side_effect=AssertionError("compression must not run after settlement failure")
+    )
+    agent._compress_context = compress
+    persisted = []
+    progress = []
+    completed = []
+    displayed = []
+    agent._flush_messages_to_session_db = lambda messages, _history=None: (
+        persisted.append(copy.deepcopy(messages)) or True
+    )
+    agent.tool_progress_callback = lambda *parts, **kwargs: progress.append(
+        (copy.deepcopy(parts), copy.deepcopy(kwargs))
+    )
+    agent.tool_complete_callback = lambda *parts, **kwargs: completed.append(
+        (copy.deepcopy(parts), copy.deepcopy(kwargs))
+    )
+    agent._vprint = lambda message, **_kwargs: displayed.append(message)
+    raw_tool_result = "raw tool result that settlement did not authorize"
     with patch(
-        "model_tools.handle_function_call", return_value="search result"
+        "model_tools.handle_function_call", return_value=raw_tool_result
     ) as execute:
         result = agent.run_conversation(
             "search",
@@ -306,9 +418,265 @@ def test_required_post_tool_failure_stops_before_next_provider_call(
 
     assert len(calls) == 1
     assert execute.call_count == 1
+    assert compress.call_count == 0
     assert result["failed"] is True
     assert result["final_response"] == REQUIRED_LIFECYCLE_FAILURE_TEXT
     assert "raw post secret" not in str(result)
+    assert raw_tool_result not in str(
+        (result, persisted, progress, completed, displayed)
+    )
+    tool_results = [
+        message for message in result["messages"] if message.get("role") == "tool"
+    ]
+    assert len(tool_results) == 2
+    assert all(
+        REQUIRED_LIFECYCLE_FAILURE_TEXT in message["content"]
+        for message in tool_results
+    )
+    assert [message["effect_disposition"] for message in tool_results] == [
+        "unknown",
+        "none",
+    ]
+    assert completed == []
+    assert all("tool.completed" not in str(event) for event in progress)
+
+
+def test_batch_local_required_lifecycle_failure_stops_before_compression_or_provider(
+    monkeypatch,
+):
+    from hermes_cli.required_lifecycle import RequiredLifecycleError
+
+    agent = _agent()
+    agent.valid_tool_names.add("web_search")
+    tool_call = SimpleNamespace(
+        id="call-batch-health",
+        type="function",
+        function=SimpleNamespace(name="web_search", arguments="{}"),
+    )
+    provider_calls = []
+
+    def provider(kwargs):
+        provider_calls.append(kwargs)
+        return _response("", finish_reason="tool_calls", tool_calls=[tool_call])
+
+    health_checks = 0
+
+    def health(**_kwargs):
+        nonlocal health_checks
+        health_checks += 1
+        if health_checks >= 2:
+            raise RequiredLifecycleError("required_lifecycle_generation_changed")
+
+    agent._interruptible_api_call = provider
+    agent.compression_enabled = True
+    agent.context_compressor.should_compress = lambda _tokens: True
+    compress = MagicMock(
+        side_effect=AssertionError("compression must not run after batch health failure")
+    )
+    agent._compress_context = compress
+    persisted = []
+    agent._flush_messages_to_session_db = lambda messages, _history=None: (
+        persisted.append(copy.deepcopy(messages)) or True
+    )
+
+    with (
+        patch(
+            "hermes_cli.plugins.assert_required_lifecycle_turn_healthy",
+            side_effect=health,
+        ),
+        patch("model_tools.handle_function_call") as execute,
+    ):
+        result = agent.run_conversation(
+            "search", conversation_history=[], task_id="task-1"
+        )
+
+    assert len(provider_calls) == 1
+    execute.assert_not_called()
+    compress.assert_not_called()
+    assert result["failed"] is True
+    assert result["final_response"] == REQUIRED_LIFECYCLE_FAILURE_TEXT
+    tool_results = [
+        message for message in result["messages"] if message.get("role") == "tool"
+    ]
+    assert [message["tool_call_id"] for message in tool_results] == [
+        "call-batch-health"
+    ]
+    assert tool_results[0]["effect_disposition"] == "none"
+    assert persisted and persisted[-1] == result["messages"]
+
+
+def test_required_post_failure_quarantines_quiet_error_output(
+    tmp_path, monkeypatch
+):
+    home = tmp_path / "hermes"
+    _install_required_plugin(
+        home,
+        'required_hook_result("behavioral.pre_llm.v1", None)',
+        'required_hook_result("behavioral.output.v1", None)',
+        post_tool_expr='(_ for _ in ()).throw(RuntimeError("raw post secret"))',
+    )
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    plugins_mod._reset_plugin_managers_for_tests()
+    agent = _agent()
+    agent.platform = "cli"
+    agent.valid_tool_names.add("web_search")
+    agent.tool_progress_callback = None
+    agent._should_start_quiet_spinner = lambda: False
+    displayed = []
+    persisted = []
+    agent._vprint = lambda message, **_kwargs: displayed.append(message)
+    agent._flush_messages_to_session_db = lambda messages, _history=None: (
+        persisted.append(copy.deepcopy(messages)) or True
+    )
+    tool_call = SimpleNamespace(
+        id="call-quiet",
+        type="function",
+        function=SimpleNamespace(
+            name="web_search", arguments=json.dumps({"query": "atlas"})
+        ),
+    )
+    agent._interruptible_api_call = lambda _kwargs: _response(
+        "", finish_reason="tool_calls", tool_calls=[tool_call]
+    )
+    raw_tool_result = json.dumps(
+        {"error": "raw quiet result secret"}, ensure_ascii=False
+    )
+
+    with patch("model_tools.handle_function_call", return_value=raw_tool_result):
+        result = agent.run_conversation(
+            "search", conversation_history=[], task_id="task-1"
+        )
+
+    assert result["failed"] is True
+    assert result["final_response"] == REQUIRED_LIFECYCLE_FAILURE_TEXT
+    assert raw_tool_result not in str((result, persisted, displayed))
+    assert "raw quiet result secret" not in str((result, persisted, displayed))
+    assert displayed
+    assert "Hermes blocked this turn" in str(displayed)
+
+
+def test_required_post_persistence_failure_stops_deferred_spinner_safely(
+    tmp_path, monkeypatch
+):
+    from agent.tool_executor import execute_tool_calls_sequential
+
+    home = tmp_path / "hermes"
+    _install_required_plugin(
+        home,
+        'required_hook_result("behavioral.pre_llm.v1", None)',
+        'required_hook_result("behavioral.output.v1", None)',
+    )
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    plugins_mod._reset_plugin_managers_for_tests()
+    agent = _agent()
+    agent.platform = "cli"
+    agent.valid_tool_names.add("web_search")
+    agent._current_turn_id = "turn-persistence"
+    agent._current_api_request_id = "api-persistence"
+    agent._flush_messages_to_session_db = MagicMock(return_value=False)
+    spinner = MagicMock()
+    tool_call = SimpleNamespace(
+        id="call-persistence",
+        type="function",
+        function=SimpleNamespace(name="web_search", arguments="{}"),
+    )
+    raw_tool_result = json.dumps({"error": "raw persistence secret"})
+
+    with (
+        patch(
+            "agent.tool_executor._start_quiet_tool_spinner",
+            return_value=spinner,
+        ),
+        patch(
+            "model_tools.handle_function_call", return_value=raw_tool_result
+        ),
+    ):
+        execute_tool_calls_sequential(
+            agent,
+            SimpleNamespace(tool_calls=[tool_call]),
+            [],
+            effective_task_id="task-1",
+        )
+
+    assert agent._incremental_persistence_failed is True
+    spinner.stop.assert_called_once()
+    assert "raw persistence secret" not in str(spinner.stop.call_args)
+
+
+@pytest.mark.parametrize(
+    ("scenario", "arguments", "post_tool_expr"),
+    (
+        pytest.param(
+            "invalid_arguments",
+            '{"raw invalid secret":',
+            '(_ for _ in ()).throw(RuntimeError("raw invalid post secret"))',
+            id="invalid-arguments-raises",
+        ),
+        pytest.param(
+            "interrupted",
+            "{}",
+            '(__import__("time").sleep(2.0), '
+            'required_hook_result("behavioral.post_tool.v1", None))[1]',
+            id="pre-dispatch-interrupt-times-out",
+        ),
+    ),
+)
+def test_required_post_failure_settles_preexecution_terminal_paths(
+    tmp_path, monkeypatch, scenario, arguments, post_tool_expr
+):
+    from agent.tool_executor import execute_tool_calls_sequential
+    from hermes_cli.required_lifecycle import RequiredLifecycleError
+
+    home = tmp_path / "hermes"
+    _install_required_plugin(
+        home,
+        'required_hook_result("behavioral.pre_llm.v1", None)',
+        'required_hook_result("behavioral.output.v1", None)',
+        post_tool_expr=post_tool_expr,
+    )
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(plugins_mod, "_resolve_hook_callback_timeout", lambda: 0.1)
+    plugins_mod._reset_plugin_managers_for_tests()
+    agent = _agent()
+    agent.valid_tool_names.add("web_search")
+    agent._current_turn_id = "turn-preexecution"
+    agent._current_api_request_id = "api-preexecution"
+    agent._interrupt_requested = scenario == "interrupted"
+    persisted = []
+    displayed = []
+    agent._flush_messages_to_session_db = lambda messages, _history=None: (
+        persisted.append(copy.deepcopy(messages)) or True
+    )
+    agent._vprint = lambda message, **_kwargs: displayed.append(message)
+    tool_call = SimpleNamespace(
+        id="call-preexecution",
+        type="function",
+        function=SimpleNamespace(name="web_search", arguments=arguments),
+    )
+    assistant_message = SimpleNamespace(tool_calls=[tool_call])
+    messages = []
+
+    with (
+        patch("model_tools.handle_function_call") as execute,
+        pytest.raises(RequiredLifecycleError),
+    ):
+        execute_tool_calls_sequential(
+            agent,
+            assistant_message,
+            messages,
+            effective_task_id="task-1",
+        )
+
+    assert execute.call_count == 0
+    assert len(messages) == 1
+    assert messages[0]["role"] == "tool"
+    assert messages[0]["tool_call_id"] == "call-preexecution"
+    assert REQUIRED_LIFECYCLE_FAILURE_TEXT in messages[0]["content"]
+    assert messages[0]["effect_disposition"] == "unknown"
+    assert persisted and persisted[-1] == messages
+    assert "raw invalid secret" not in str((messages, persisted, displayed))
+    assert "raw invalid post secret" not in str((messages, persisted, displayed))
+    assert "Tool execution cancelled" not in str((messages, persisted))
 
 
 def test_required_pre_tool_failure_blocks_sequential_dispatch(
@@ -370,6 +738,74 @@ def test_required_pre_tool_failure_blocks_direct_invoke_tool(
     assert execute.call_count == 0
     assert REQUIRED_LIFECYCLE_FAILURE_TEXT in result
     assert "raw direct secret" not in result
+
+
+@pytest.mark.parametrize("entrypoint", ("sequential", "invoke", "registry"))
+def test_required_pre_tool_error_reaches_every_dispatch_boundary(
+    monkeypatch, entrypoint
+):
+    from hermes_cli.required_lifecycle import RequiredLifecycleError
+
+    required_error = RequiredLifecycleError(
+        "required_lifecycle_delivery_failed", "pre_tool_call"
+    )
+    monkeypatch.setattr(
+        plugins_mod,
+        "_dispatch_pre_tool_call_hooks",
+        MagicMock(side_effect=required_error),
+    )
+    agent = SimpleNamespace(
+        session_id="required-pre-boundary",
+        _current_turn_id="turn-pre-boundary",
+        _current_api_request_id="api-pre-boundary",
+    )
+    registry_dispatch = None
+
+    if entrypoint == "sequential":
+        from agent.tool_executor import _ToolCallRef, _pre_tool_block
+
+        invoke = lambda: _pre_tool_block(  # noqa: E731
+            agent,
+            _ToolCallRef(
+                "web_search", {}, "task-1", "call-pre-boundary", []
+            ),
+        )
+    elif entrypoint == "invoke":
+        from agent.agent_runtime_helpers import _pre_tool_block_message
+
+        invoke = lambda: _pre_tool_block_message(  # noqa: E731
+            agent,
+            "web_search",
+            {},
+            "task-1",
+            "call-pre-boundary",
+            [],
+        )
+    else:
+        from model_tools import handle_function_call, registry
+
+        registry_dispatch = MagicMock(
+            side_effect=AssertionError("registry dispatch must not start")
+        )
+        monkeypatch.setattr(registry, "dispatch", registry_dispatch)
+        invoke = lambda: handle_function_call(  # noqa: E731
+            "web_search",
+            {},
+            task_id="task-1",
+            session_id="required-pre-boundary",
+            tool_call_id="call-pre-boundary",
+            turn_id="turn-pre-boundary",
+            api_request_id="api-pre-boundary",
+            skip_tool_request_middleware=True,
+            skip_tool_execution_middleware=True,
+        )
+
+    with pytest.raises(RequiredLifecycleError) as caught:
+        invoke()
+
+    assert caught.value is required_error
+    if registry_dispatch is not None:
+        registry_dispatch.assert_not_called()
 
 
 def test_required_output_hides_tool_narration_before_persist_and_interim_egress(

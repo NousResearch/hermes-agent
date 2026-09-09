@@ -149,7 +149,30 @@ def run_tool_round(
         with suppress(Exception):
             agent.stream_delta_callback(None)
 
-    agent._execute_tool_calls(assistant_message, messages, effective_task_id, api_call_count)
+    from hermes_cli.required_lifecycle import (
+        REQUIRED_LIFECYCLE_FAILURE_TEXT,
+        RequiredLifecycleError,
+    )
+
+    try:
+        agent._execute_tool_calls(
+            assistant_message, messages, effective_task_id, api_call_count
+        )
+    except RequiredLifecycleError as required_exc:
+        failed = True
+        if getattr(agent, "_incremental_persistence_failed", False):
+            _turn_exit_reason = "session_persistence_failed"
+            final_response = ""
+        else:
+            _turn_exit_reason = (
+                "required_lifecycle_blocked("
+                f"{required_exc.reason_code})"
+            )
+            final_response = REQUIRED_LIFECYCLE_FAILURE_TEXT
+            append_message(
+                messages, {"role": "assistant", "content": final_response}
+            )
+        return _verdict("break")
 
     if getattr(agent, "_incremental_persistence_failed", False):
         # Tool result could not be made canonical: never send the in-memory result to

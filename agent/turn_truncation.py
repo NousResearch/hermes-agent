@@ -9,6 +9,7 @@ the final roll-back. Nothing here imports ``agent.conversation_loop`` at module 
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import re
 from dataclasses import dataclass
@@ -170,17 +171,7 @@ class _Trunc(TruncationVerdict):
         # output publication boundary.  When that boundary is configured (or
         # its policy is invalid), persisting here would durably expose raw
         # provider fragments before transform_llm_output can authorize them.
-        try:
-            from hermes_cli.plugins import requires_hook
-
-            required_output_pending = requires_hook("transform_llm_output")
-        except Exception as exc:
-            from hermes_cli.required_lifecycle import RequiredLifecycleError
-
-            if not isinstance(exc, RequiredLifecycleError):
-                raise
-            required_output_pending = True
-        if not required_output_pending:
+        if not _required_output_pending():
             agent._persist_session(self.messages, self.conversation_history)
         return self.done("return", partial_result(
             self.messages if result_messages is None else result_messages, self.api_call_count,
@@ -456,6 +447,20 @@ _CODEX_REPLAY_KEYS = (
 )
 
 
+def _required_output_pending() -> bool:
+    """Whether raw direct-return text must stay process-local until authorized."""
+    try:
+        from hermes_cli.plugins import requires_hook
+
+        return requires_hook("transform_llm_output")
+    except Exception as exc:
+        from hermes_cli.required_lifecycle import RequiredLifecycleError
+
+        if not isinstance(exc, RequiredLifecycleError):
+            raise
+        return True
+
+
 def continue_codex_incomplete(
     agent: Any, assistant_message: Any, finish_reason: str, *, messages: List[Dict[str, Any]],
     conversation_history: Any, api_call_count: int,
@@ -472,6 +477,9 @@ def continue_codex_incomplete(
 
     agent._codex_incomplete_retries += 1
     n = agent._codex_incomplete_retries
+    required_output_pending = _required_output_pending()
+    if n == 1 and required_output_pending:
+        agent._required_codex_incomplete_start = len(messages)
 
     interim_msg = agent._build_assistant_message(assistant_message, finish_reason)
     interim_has_content = bool((interim_msg.get("content") or "").strip())
@@ -510,7 +518,8 @@ def continue_codex_incomplete(
                     last_msg[_key] = interim_msg[_key]
         else:
             append_message(messages, interim_msg)
-            agent._emit_interim_assistant_message(interim_msg)
+            if not required_output_pending:
+                agent._emit_interim_assistant_message(interim_msg)
 
     if n < 3:
         # If the interim has nothing the Responses converter will replay, a bare retry is
@@ -545,7 +554,14 @@ def continue_codex_incomplete(
         return None
 
     agent._codex_incomplete_retries = 0
-    agent._persist_session(messages, conversation_history)
+    if required_output_pending:
+        start = getattr(agent, "_required_codex_incomplete_start", len(messages))
+        if isinstance(start, int) and not isinstance(start, bool) and 0 <= start <= len(messages):
+            del messages[start:]
+    else:
+        agent._persist_session(messages, conversation_history)
+    with contextlib.suppress(AttributeError):
+        del agent._required_codex_incomplete_start
     return partial_result(
         messages, api_call_count, "Codex response remained incomplete after 3 continuation attempts"
     )

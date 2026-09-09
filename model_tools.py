@@ -636,6 +636,10 @@ def _emit_post_tool_call_hook(
             middleware_trace=list(middleware_trace or []),
         )
     except Exception as _hook_err:
+        from hermes_cli.required_lifecycle import RequiredLifecycleError
+
+        if isinstance(_hook_err, RequiredLifecycleError):
+            raise
         logger.debug("post_tool_call hook error: %s", _hook_err)
 
 
@@ -714,6 +718,10 @@ def _pre_dispatch_guards(function_name: str, function_args: Dict[str, Any], skip
             if modified_args is not None:
                 function_args = modified_args
         except Exception as _hook_err:
+            from hermes_cli.required_lifecycle import RequiredLifecycleError
+
+            if isinstance(_hook_err, RequiredLifecycleError):
+                raise
             logger.debug("pre_tool_call hook error: %s", _hook_err)
         if block_message is not None:
             return function_args, (tool_error(block_message), "plugin_block", block_message)
@@ -873,6 +881,10 @@ def handle_function_call(
         return _apply_transform_tool_result_hook(function_name, function_args, result, duration_ms, ids)
 
     except Exception as e:
+        from hermes_cli.required_lifecycle import RequiredLifecycleError
+
+        if isinstance(e, RequiredLifecycleError):
+            raise
         error_msg = f"Error executing {function_name}: {str(e)}"
         logger.exception(error_msg)
         return _emit(tool_error(_sanitize_tool_error(error_msg)), duration_ms=_elapsed_ms(start),

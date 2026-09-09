@@ -387,7 +387,7 @@ def test_execute_tool_calls_sequential_flushes_each_tool_result_before_next_disp
     ]
 
 
-def test_sequential_keyboard_interrupt_emits_results_for_all_calls():
+def test_sequential_keyboard_interrupt_emits_results_for_all_calls(tmp_path):
     """A KeyboardInterrupt mid-batch must not leave dangling tool_calls.
 
     When a tool handler raises KeyboardInterrupt, the sequential executor
@@ -403,30 +403,167 @@ def test_sequential_keyboard_interrupt_emits_results_for_all_calls():
         _mock_tool_call(name="web_search", call_id="c2"),
         _mock_tool_call(name="web_search", call_id="c3"),
     ]
-    messages: list = []
+    assistant_row = {
+        "role": "assistant",
+        "content": "",
+        "tool_calls": [
+            {
+                "id": call.id,
+                "type": "function",
+                "function": {
+                    "name": call.function.name,
+                    "arguments": call.function.arguments,
+                },
+            }
+            for call in tool_calls
+        ],
+    }
+    messages: list = [
+        {"role": "user", "content": "search"},
+        assistant_row,
+    ]
     assistant_message = SimpleNamespace(content="", tool_calls=tool_calls)
+    db_path = tmp_path / "state.db"
+    session_id = "keyboard-interrupt-settlement"
+    db = _attach_real_session_db(agent, db_path, session_id)
+    assert agent._flush_messages_to_session_db(messages) is not False
 
     def _interrupt_dispatch(function_name, function_args, effective_task_id, **kwargs):
         # First tool raises a hard interrupt mid-batch.
         raise KeyboardInterrupt()
 
-    agent._flush_messages_to_session_db = MagicMock()
-
-    with (
-        patch("model_tools.handle_function_call", side_effect=_interrupt_dispatch),
-        patch(
-            "agent.tool_executor.maybe_persist_tool_result",
-            side_effect=lambda **kwargs: kwargs["content"],
-        ),
-        pytest.raises(KeyboardInterrupt),
-    ):
-        agent._execute_tool_calls_sequential(assistant_message, messages, "task-1")
+    try:
+        with (
+            patch("model_tools.handle_function_call", side_effect=_interrupt_dispatch),
+            patch(
+                "agent.tool_executor.maybe_persist_tool_result",
+                side_effect=lambda **kwargs: kwargs["content"],
+            ),
+            pytest.raises(KeyboardInterrupt),
+        ):
+            agent._execute_tool_calls_sequential(assistant_message, messages, "task-1")
+    finally:
+        db.close()
 
     # Every call_id has a matching tool result — alternation preserved.
     tool_results = [m for m in messages if m.get("role") == "tool"]
     assert [m["tool_call_id"] for m in tool_results] == ["c1", "c2", "c3"]
     # The results are marked as cancelled, not fabricated successes.
     assert all("cancelled" in m["content"].lower() for m in tool_results)
+    assert [m["effect_disposition"] for m in tool_results] == [
+        "unknown",
+        "none",
+        "none",
+    ]
+    durable_results = [
+        message
+        for message in _durable_messages(db_path, session_id)
+        if message.get("role") == "tool"
+    ]
+    assert [message["tool_call_id"] for message in durable_results] == [
+        "c1",
+        "c2",
+        "c3",
+    ]
+    assert [message["effect_disposition"] for message in durable_results] == [
+        "unknown",
+        "none",
+        "none",
+    ]
+
+
+def test_keyboard_interrupt_retries_settlement_before_escaping(tmp_path):
+    """A transient settlement-write failure must not expose a dangling durable turn."""
+    agent = _make_agent()
+    tool_calls = [
+        _mock_tool_call(name="web_search", call_id="c1"),
+        _mock_tool_call(name="web_search", call_id="c2"),
+    ]
+    messages = [
+        {"role": "user", "content": "search"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": call.id,
+                    "type": "function",
+                    "function": {
+                        "name": call.function.name,
+                        "arguments": call.function.arguments,
+                    },
+                }
+                for call in tool_calls
+            ],
+        },
+    ]
+    assistant_message = SimpleNamespace(content="", tool_calls=tool_calls)
+    db_path = tmp_path / "state.db"
+    session_id = "keyboard-interrupt-retry"
+    db = _attach_real_session_db(agent, db_path, session_id)
+    assert agent._flush_messages_to_session_db(messages) is not False
+    real_flush = agent._flush_messages_to_session_db
+    settlement_attempts = 0
+
+    def fail_once_then_persist(flush_messages, conversation_history=None):
+        nonlocal settlement_attempts
+        settlement_attempts += 1
+        if settlement_attempts == 1:
+            return False
+        return real_flush(flush_messages, conversation_history)
+
+    agent._flush_messages_to_session_db = fail_once_then_persist
+
+    try:
+        with (
+            patch("model_tools.handle_function_call", side_effect=KeyboardInterrupt()),
+            patch(
+                "agent.tool_executor.maybe_persist_tool_result",
+                side_effect=lambda **kwargs: kwargs["content"],
+            ),
+            pytest.raises(KeyboardInterrupt),
+        ):
+            agent._execute_tool_calls_sequential(
+                assistant_message, messages, "task-1"
+            )
+    finally:
+        db.close()
+
+    assert settlement_attempts == 2
+    assert agent._incremental_persistence_failed is False
+    durable_results = [
+        message
+        for message in _durable_messages(db_path, session_id)
+        if message.get("role") == "tool"
+    ]
+    assert [message["tool_call_id"] for message in durable_results] == ["c1", "c2"]
+    assert [message["effect_disposition"] for message in durable_results] == [
+        "unknown",
+        "none",
+    ]
+
+
+def test_keyboard_interrupt_does_not_escape_when_settlement_stays_undurable():
+    agent = _make_agent()
+    tool_call = _mock_tool_call(name="web_search", call_id="c1")
+    messages = []
+    agent._flush_messages_to_session_db = MagicMock(return_value=False)
+
+    with (
+        patch("model_tools.handle_function_call", side_effect=KeyboardInterrupt()),
+        patch(
+            "agent.tool_executor.maybe_persist_tool_result",
+            side_effect=lambda **kwargs: kwargs["content"],
+        ),
+    ):
+        agent._execute_tool_calls_sequential(
+            SimpleNamespace(content="", tool_calls=[tool_call]),
+            messages,
+            "task-1",
+        )
+
+    assert agent._flush_messages_to_session_db.call_count == 2
+    assert agent._incremental_persistence_failed is True
 
 
 @pytest.mark.parametrize("executor_mode", ["sequential", "concurrent"])
@@ -904,4 +1041,3 @@ def test_flush_concurrent_nonblank_winner_adopts_canonical_content(tmp_path):
     assert messages[-1]["content"] == "Canonical winner answer from sibling"
     assert messages[-1]["_db_persisted"] is True
     assert messages[-1]["_row_id"] == row_id
-

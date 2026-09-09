@@ -185,14 +185,6 @@ def reclaim_worktrees(
         records = audit_worktrees(repo_root, with_sizes=False)
     from agent.conversation_worktree import conversation_worktree_reclaim_guard
 
-    actions: List[str] = []
-    for record in records:
-        if record.verdict not in _REAP_VERDICTS:
-            continue
-        if dry_run:
-            actions.append(f"would remove {record.name} ({record.reason})")
-            continue
-
     def reclaim_one(record: TreeRecord) -> List[str]:
         record_actions: List[str] = []
         entry = Path(record.path)
@@ -210,11 +202,9 @@ def reclaim_worktrees(
         try:
             remove_result = _git(["worktree", "remove", record.path, "--force"], cwd=repo_root, timeout=30)
             if remove_result.returncode != 0:
-                actions.append(f"failed to remove {record.name}: {remove_result.stderr.strip()}")
-                continue
+                return [f"failed to remove {record.name}: {remove_result.stderr.strip()}"]
             if record.verdict == "reap-keep-branch":
-                actions.append(f"removed {record.name} (branch {record.branch} kept — pushed open-PR lane)")
-                continue
+                return [f"removed {record.name} (branch {record.branch} kept — pushed open-PR lane)"]
             if record.branch and record.branch not in _PROTECTED_BRANCHES:
                 _git(["branch", "-D", record.branch], cwd=repo_root, timeout=10)
             record_actions.append(f"removed {record.name}")

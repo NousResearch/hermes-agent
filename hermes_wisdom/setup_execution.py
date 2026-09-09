@@ -6,6 +6,7 @@ import hashlib
 import json
 import unicodedata
 from contextvars import copy_context
+from contextlib import contextmanager
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from typing import Literal
@@ -15,6 +16,22 @@ from .client import WisdomConflict
 from .store import utc_now
 
 KIND = "wisdom_setup"
+
+
+@contextmanager
+def _execution_lock(store, skill_id):
+    from hermes_cli.active_sessions import _FileLock
+
+    name = hashlib.sha256(skill_id.encode()).hexdigest()
+    lock = _FileLock(store.root / "setup-locks" / name, blocking=False)
+    try:
+        lock.__enter__()
+    except (OSError, RuntimeError) as exc:
+        raise WisdomConflict("setup execution is busy or its lock is unavailable; check progress again") from exc
+    try:
+        yield
+    finally:
+        lock.__exit__(None, None, None)
 
 
 class SetupStep(BaseModel):
@@ -148,6 +165,17 @@ def plan_step(store, reference):
 
 def execute_step(service, value, actor):
     """Only the authenticated consent handler calls this after native confirmation."""
+    # This descriptor lock cannot expire while an approval prompt or spawn is
+    # still active. Recovery takes the same lock and never races a live starter.
+    with _execution_lock(service.store, value["plan"]["skill_id"]):
+        with service.store.transaction() as db:
+            current = db.execute("SELECT state FROM wisdom_consent WHERE id=?", (value["id"],)).fetchone()
+            if current is None or current["state"] != "applying":
+                raise WisdomConflict("setup approval changed before execution")
+        return _execute_step(service, value, actor)
+
+
+def _execute_step(service, value, actor):
     from gateway.session_context import set_session_vars
     from tools.terminal_tool import _get_env_config, terminal_tool
 
@@ -214,3 +242,46 @@ def interaction_progress(store, value):
             result = _poll(store, row)
             return {"state": "unknown" if result["state"] == "starting" else result["state"]}
     return {"state": "unknown"}
+
+
+def recover_step(store, value, *, acknowledged_stopped=False, finish):
+    """Review or clear uncertain work; only native, owner-bound controls call this.
+
+    The acknowledgement confirms the user checked side effects and stopped the
+    command and its children. It grants no permission to run or verify anything.
+    """
+    skill_id = value["plan"]["skill_id"]
+    with _execution_lock(store, skill_id):
+        from .mediation_store import MediationStore
+
+        for row in _rows(store, skill_id):
+            payload = json.loads(row["payload_json"])
+            if (payload["interaction_id"], payload["org_id"]) != (value["id"], value["organization_id"]):
+                continue
+            result = _poll(store, row)
+            if result["state"] not in {"unknown", "starting"}:
+                return {"state": result["state"]}
+            if not acknowledged_stopped:
+                return {"state": "unknown", "recovery_review": True}
+            with store.transaction() as db:
+                MediationStore._check_org(db, value["organization_id"])
+                current = db.execute("SELECT * FROM operation_journal WHERE id=?", (row["id"],)).fetchone()
+                if current["state"] == "done":
+                    return {"state": current["phase"]}
+                if current["phase"] != row["phase"] or current["payload_json"] != row["payload_json"]:
+                    raise WisdomConflict("setup progress changed; check it again before recovery")
+                payload["recovery"] = {"acknowledged_stopped": True, "at": utc_now()}
+                db.execute(
+                    "UPDATE operation_journal SET phase='abandoned',state='done',payload_json=?,updated_at=? WHERE id=?",
+                    (json.dumps(payload, sort_keys=True), utc_now(), row["id"]),
+                )
+                finish(db, {"state": "abandoned"})
+            return {"state": "abandoned"}
+        # Without a journal there is no starting process protected by this lock,
+        # but a legacy/partially written record still needs explicit human review.
+        if acknowledged_stopped:
+            with store.transaction() as db:
+                MediationStore._check_org(db, value["organization_id"])
+                finish(db, {"state": "abandoned"})
+            return {"state": "abandoned"}
+        return {"state": "unknown", "recovery_review": True}

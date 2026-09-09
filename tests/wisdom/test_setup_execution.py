@@ -13,7 +13,7 @@ from gateway.session_context import clear_session_vars, set_session_vars
 from hermes_wisdom.agent_led.schemas import SharePackage
 from hermes_wisdom.agent_led.setup_document import SETUP_PATH
 from hermes_wisdom.agent_led.share_flow import normalize_generated_package
-from hermes_wisdom.client import WisdomNotFound
+from hermes_wisdom.client import WisdomConflict, WisdomNotFound
 from hermes_wisdom.consent import ConsentActor, WisdomConsent
 from hermes_wisdom.installed_setup import inspect_installed_setup
 from hermes_wisdom.mediation_view import advice_view, interaction_view, resolve_surface_action
@@ -173,10 +173,14 @@ def test_native_setup_runs_once_and_verifies_after_prerequisites(setup):
 
 @pytest.mark.parametrize("failure", ["changed", "expired", "spawn_unknown", "lost_handle", "exit_failure", "sandbox", "secret", "defer", "denied"])
 def test_setup_authority_failure_and_uncertainty_never_replay(setup, monkeypatch, failure):
+    from tools.terminal_tool import terminal_tool
+    from tools.process_registry import process_registry
+
+    real_get = process_registry.get
     service, actor, root = setup
     consent = WisdomConsent(service)
     marker = root / "marker"
-    command = _python(f"from pathlib import Path; Path({str(marker)!r}).write_text('once')")
+    command = _python(f"from pathlib import Path; Path({str(marker)!r}).open('a').write('once')")
     if failure == "exit_failure":
         command = _python("raise SystemExit(3)")
     if failure == "secret":
@@ -245,3 +249,135 @@ def test_setup_authority_failure_and_uncertainty_never_replay(setup, monkeypatch
             "title": "Setup", "explanation": "Retry setup.",
         })
         assert "unfinished" in response
+        before = marker.read_text() if marker.exists() else ""
+        view = interaction_view(consent.resolve("org-1", card["id"], actor, "inspect"))
+        recovery = view.actions[-1].callback_data
+        assert recovery == f"wi:agent:setup.recover:{card['id']}"
+        with pytest.raises(WisdomNotFound):
+            resolve_surface_action(service, recovery, platform=actor.platform, actor_id="other", chat_id=actor.chat_id)
+        preview = resolve_surface_action(service, recovery, platform=actor.platform, actor_id=actor.actor_id, chat_id=actor.chat_id)
+        assert "child processes" in preview.items[0].detail
+        assert service.store.pending_operations()
+        cleared = resolve_surface_action(service, preview.actions[-1].callback_data,
+                                         platform=actor.platform, actor_id=actor.actor_id, chat_id=actor.chat_id)
+        assert cleared.summary == "Interrupted step cleared"
+        assert not service.store.pending_operations()
+        assert (marker.read_text() if marker.exists() else "") == before
+        # Neither old confirmation nor repeated clearing authorizes another run.
+        consent.resolve("org-1", card["id"], actor, "confirm")
+        consent.resolve("org-1", card["id"], actor, "setup.clear")
+        successor = consent.resolve("org-1", card["id"], actor, "recheck")
+        assert successor["id"] != card["id"] and successor["state"] == "pending"
+        assert inspect_installed_setup(service.store, "skill-1", version=1)["ready_to_use"] is not True
+        assert (marker.read_text() if marker.exists() else "") == before
+        monkeypatch.setattr("tools.terminal_tool.terminal_tool", terminal_tool)
+        monkeypatch.setattr(process_registry, "get", real_get)
+        consent.resolve("org-1", successor["id"], actor, "confirm")
+        assert _settle(consent, actor, successor["id"])["state"] == "completed"
+        assert marker.read_text() == before + "once"
+
+
+@pytest.mark.parametrize("phase", ["before_start", "starting", "running", "returned"])
+def test_recovery_cannot_clear_live_execution_even_after_lease_expiry(setup, monkeypatch, phase):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event
+    from tools.terminal_tool import terminal_tool
+    from hermes_wisdom.setup_execution import execute_step
+
+    service, actor, root = setup
+    consent = WisdomConsent(service)
+    marker, release_file = root / "marker", root / "release"
+    source = f"from pathlib import Path; Path({str(marker)!r}).write_text('once')"
+    if phase == "running":
+        source = f"import time; from pathlib import Path; exec(\"while not Path({str(release_file)!r}).exists(): time.sleep(0.02)\"); " + source
+    card = _present("setup", _python(source))
+    entered, release = Event(), Event()
+
+    def pause_before_spawn(**kwargs):
+        entered.set()
+        assert release.wait(15), "test did not release the starter"
+        return terminal_tool(**kwargs)
+
+    def pause_execution(*args):
+        if phase == "returned":
+            outcome = execute_step(*args)
+        entered.set()
+        assert release.wait(15), "test did not release the handler"
+        return outcome if phase == "returned" else execute_step(*args)
+
+    if phase == "starting":
+        monkeypatch.setattr("tools.terminal_tool.terminal_tool", pause_before_spawn)
+    elif phase in {"before_start", "returned"}:
+        monkeypatch.setattr("hermes_wisdom.setup_execution.execute_step", pause_execution)
+        if phase == "returned":
+            monkeypatch.setattr("tools.terminal_tool.terminal_tool", lambda **kwargs: json.dumps({"status": "unknown"}))
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(consent.resolve, "org-1", card["id"], actor, "confirm")
+        try:
+            if phase != "running":
+                assert entered.wait(15)
+            else:
+                assert future.result(timeout=15)["result"]["setup"]["state"] == "running"
+            with service.store.transaction() as db:
+                db.execute("UPDATE operation_lock SET expires_at='1970-01-01T00:00:00+00:00'")
+            if phase == "starting":
+                with pytest.raises(WisdomConflict, match="busy"):
+                    consent.resolve("org-1", card["id"], actor, "setup.clear")
+            elif phase == "running":
+                status = consent.resolve("org-1", card["id"], actor, "setup.clear")
+                assert status["result"]["setup"]["state"] == "running"
+            else:
+                preview = consent.resolve("org-1", card["id"], actor, "setup.recover")
+                assert preview["result"]["setup"]["recovery_review"]
+                cleared = consent.resolve("org-1", card["id"], actor, "setup.clear")
+                assert cleared["result"]["setup"]["state"] == "abandoned"
+            assert not marker.exists()
+            assert bool(service.store.pending_operations()) == (phase in {"starting", "running"})
+        finally:
+            release.set()
+            release_file.write_text("continue")
+        result = future.result(timeout=15)
+    if phase in {"before_start", "returned"}:
+        assert result["result"]["setup"]["state"] == "abandoned"
+        assert not marker.exists()
+        inspected = consent.resolve("org-1", card["id"], actor, "inspect")
+        assert inspected["result"]["setup"]["state"] == "abandoned"
+    else:
+        assert _settle(consent, actor, card["id"])["state"] == "completed"
+        assert marker.read_text() == "once"
+
+
+def test_execution_lock_survives_contention_and_releases_after_process_exit(setup):
+    from hermes_wisdom.setup_execution import _execution_lock
+
+    service, _, root = setup
+    ready = root / "lock-ready"
+    source = (
+        "import sys, time; from pathlib import Path; "
+        "from hermes_wisdom.store import WisdomStore; "
+        "from hermes_wisdom.setup_execution import _execution_lock; "
+        "store=WisdomStore(Path(sys.argv[1])); "
+        "lock=_execution_lock(store, 'skill-1'); lock.__enter__(); "
+        "Path(sys.argv[2]).touch(); time.sleep(30)"
+    )
+    child = subprocess.Popen([sys.executable, "-c", source, str(service.store.root), str(ready)])
+    try:
+        deadline = time.monotonic() + 15
+        while not ready.exists() and child.poll() is None and time.monotonic() < deadline:
+            time.sleep(0.02)
+        assert ready.exists(), "child did not acquire the execution lock"
+        with pytest.raises(WisdomConflict, match="busy"):
+            with _execution_lock(service.store, "skill-1"):
+                pytest.fail("live child owns the execution lock")
+        with _execution_lock(service.store, "another-skill"):
+            pass
+    finally:
+        if child.poll() is None:
+            child.terminate()
+        try:
+            child.wait(timeout=15)
+        except subprocess.TimeoutExpired:
+            child.kill()
+            child.wait(timeout=15)
+    with _execution_lock(service.store, "skill-1"):
+        pass

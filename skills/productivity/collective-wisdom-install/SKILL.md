@@ -66,8 +66,14 @@ the existing setup flow; do not create credentials or silently enable sharing.
    Missing commands and environment variables must be detected again after setup.
 7. Use installed inspection or the native Check progress control to read durable
    progress. A successful spawn is not command completion. If the outcome is
-   unknown, stop: do not repeat or rephrase the command. If terminal permission
-   was denied, no command ran; resolve permissions before requesting fresh review.
+   unknown, stop: do not repeat or rephrase the command. The user can select
+   Review interruption, check that the command and its children have stopped,
+   inspect any side effects, and explicitly clear the interrupted record. A
+   running command cannot be cleared. Clearing does not undo changes, verify
+   setup, or authorize a retry. Recheck opens fresh native approval; never clear
+   the record or claim the process has stopped on the user's behalf.
+   If terminal permission was denied, no command ran; resolve permissions before
+   requesting fresh review.
    After required setup, propose verification separately. Only report readiness
    when installed inspection returns `ready_to_use: true`. An update invalidates
    the previous version's setup evidence. A remote terminal is not silently

@@ -446,6 +446,8 @@ class WisdomConsent:
     def resolve(
         self, org: str, interaction_id: str, actor: ConsentActor, action: str
     ) -> dict[str, Any]:
+        if action in {"setup.recover", "setup.clear"}:
+            return self._recover_setup(org, interaction_id, actor, action)
         if action == "review":
             return self._review_in_portal(org, interaction_id, actor)
         if action == "recheck":
@@ -453,6 +455,9 @@ class WisdomConsent:
             if result["state"] in {"stale", "expired"} or (
                 result["state"] == "pending"
                 and result["expires_at"] <= self.queue.clock()
+            ) or (
+                result["operation"] == "setup" and result["state"] in {"needs_review", "failed"}
+                and ((result.get("result") or {}).get("setup") or {}).get("state") in {"abandoned", "blocked", "failed"}
             ):
                 return self.present(org, result["assessment_id"], actor)
             return result
@@ -460,7 +465,7 @@ class WisdomConsent:
         result = self._resolve(
             org, interaction_id, actor, "inspect" if page else action
         )
-        if result["operation"] == "setup" and result["state"] == "applying":
+        if result["operation"] == "setup" and result["state"] in {"applying", "needs_review"}:
             with self.service.store.transaction() as db:
                 self.queue._check_org(db, org)
                 value = _decode(db.execute("SELECT * FROM wisdom_consent WHERE id=?", (interaction_id,)).fetchone())
@@ -483,6 +488,27 @@ class WisdomConsent:
             return self._inspect_package(org, interaction_id, result, int(page[1] or 0))
         return result
 
+    def _recover_setup(self, org, interaction_id, actor, action):
+        from .setup_execution import recover_step
+
+        result = self._resolve(org, interaction_id, actor, "inspect")
+        if result["operation"] != "setup":
+            raise WisdomNotFound("Setup interaction not found")
+        if result["state"] not in {"applying", "needs_review"}:
+            return result
+        with self.service.store.transaction() as db:
+            self.queue._check_org(db, org)
+            value = _decode(db.execute("SELECT * FROM wisdom_consent WHERE id=?", (interaction_id,)).fetchone())
+
+        def finish(db, setup):
+            self._finish(db, value, "needs_review", {"operation": "setup", "setup": setup})
+
+        setup = recover_step(self.service.store, value, acknowledged_stopped=action == "setup.clear", finish=finish)
+        if setup["state"] in {"passed", "failed", "blocked"}:
+            return self._refresh_setup(value)
+        return {**result, "state": "needs_review" if setup["state"] == "abandoned" else result["state"],
+                "result": {"operation": "setup", "setup": setup}}
+
     def _refresh_setup(self, value):
         from .setup_execution import interaction_progress
 
@@ -490,8 +516,18 @@ class WisdomConsent:
         with self.service.store.transaction() as db:
             self.queue._check_org(db, value["organization_id"])
             current = _decode(db.execute("SELECT * FROM wisdom_consent WHERE id=?", (value["id"],)).fetchone())
-            if current["state"] != "applying":
+            if current["state"] not in {"applying", "needs_review"}:
                 return self.project(current)
+            if current["state"] == "needs_review" and outcome["setup"]["state"] == "unknown":
+                # Only persisted uncertain executions get recovery controls;
+                # validation failures before journaling must not imply a command ran.
+                from .setup_execution import KIND
+                exists = db.execute(
+                    "SELECT 1 FROM operation_journal WHERE kind=? AND json_extract(payload_json,'$.interaction_id')=?",
+                    (KIND, value["id"]),
+                ).fetchone()
+                if exists is None:
+                    return self.project(current)
             if outcome["setup"]["state"] in {"passed", "failed", "blocked"}:
                 state = "completed" if outcome["setup"]["state"] == "passed" else "failed"
                 self._finish(db, current, state, outcome)
@@ -730,18 +766,17 @@ class WisdomConsent:
                     raise WisdomConflict("setup consent expired")
                 setup = execute_step(self.service, value, actor)
                 outcome = {"operation": "setup", "setup": setup}
-                if setup["state"] == "blocked":
-                    with self.service.store.transaction() as db:
-                        self._finish(db, value, "failed", outcome)
-                    return {**self.project(value), "state": "failed", "result": outcome}
-                if setup["state"] != "passed":
-                    with self.service.store.transaction() as db:
-                        self.queue._check_org(db, org)
-                        db.execute("UPDATE wisdom_consent SET result_json=? WHERE id=?", (json.dumps(outcome), interaction_id))
-                    return {**self.project(value), "state": "applying", "result": outcome}
+                state = {"blocked": "failed", "passed": "completed"}.get(setup["state"], "applying")
                 with self.service.store.transaction() as db:
-                    self._finish(db, value, "completed", outcome)
-                return {**self.project(value), "state": "completed", "result": outcome}
+                    self.queue._check_org(db, org)
+                    current = _decode(db.execute("SELECT * FROM wisdom_consent WHERE id=?", (interaction_id,)).fetchone())
+                    if current["state"] != "applying":
+                        return self.project(current)
+                    if state == "applying":
+                        db.execute("UPDATE wisdom_consent SET result_json=? WHERE id=?", (json.dumps(outcome), interaction_id))
+                    else:
+                        self._finish(db, current, state, outcome)
+                return {**self.project(value), "state": state, "result": outcome}
             elif value["operation"] == "publish":
 
                 def check_authority():
@@ -814,6 +849,9 @@ class WisdomConsent:
         except Exception as exc:
             state, outcome = "needs_review", {"reason": type(exc).__name__}
         with self.service.store.transaction() as db:
+            current = _decode(db.execute("SELECT * FROM wisdom_consent WHERE id=?", (interaction_id,)).fetchone())
+            if value["operation"] == "setup" and current["state"] != "applying":
+                return self.project(current)
             self._finish(db, value, state, outcome)
         return {**self.project(value), "state": state, "result": outcome}
 

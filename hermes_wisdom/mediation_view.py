@@ -207,6 +207,7 @@ def _setup_view(result: dict) -> WisdomView:
         "failed": "Setup step failed", "stale": "Setup needs a fresh review",
         "expired": "Setup approval expired", "needs_review": "Setup needs attention",
         "blocked": "Terminal permission required",
+        "abandoned": "Interrupted step cleared",
     }.get(state, "Setup progress")
     detail = facts["setup_instruction"]
     if step["command"]:
@@ -215,6 +216,14 @@ def _setup_view(result: dict) -> WisdomView:
         detail += "\n\nOnly this step is authorized by confirming. Do not enter credentials in chat."
     elif state == "unknown":
         detail += "\n\nThe command may have run. It will not be repeated automatically."
+        if ((result.get("result") or {}).get("setup") or {}).get("recovery_review"):
+            detail += (
+                "\n\nBefore clearing this record, check that the command and its child processes "
+                "have stopped and inspect any changes they made. Clearing does not undo changes, "
+                "mark setup complete, or authorize another command."
+            )
+    elif state == "abandoned":
+        detail += "\n\nThe interrupted attempt remains unverified. Review a fresh step before continuing."
     elif state == "blocked":
         detail += "\n\nThis command did not run. Resolve terminal permissions, then request a fresh setup review."
     elif state == "passed":
@@ -226,9 +235,20 @@ def _setup_view(result: dict) -> WisdomView:
             WisdomAction("Confirm prerequisite" if step["phase"] == "prerequisite" else "Run this step",
                          callback_data=f"wi:agent:confirm:{result['id']}", primary=True),
         ]
+    elif state == "unknown":
+        if ((result.get("result") or {}).get("setup") or {}).get("recovery_review"):
+            actions = [
+                WisdomAction("Back", callback_data=f"wi:agent:inspect:{result['id']}"),
+                WisdomAction("Confirmed stopped; clear record", callback_data=f"wi:agent:setup.clear:{result['id']}", primary=True),
+            ]
+        else:
+            actions = [
+                WisdomAction("Check progress", callback_data=f"wi:agent:inspect:{result['id']}"),
+                WisdomAction("Review interruption", callback_data=f"wi:agent:setup.recover:{result['id']}"),
+            ]
     elif result["state"] == "applying":
         actions = [WisdomAction("Check progress", callback_data=f"wi:agent:inspect:{result['id']}")]
-    elif result["state"] in {"stale", "expired"}:
+    elif result["state"] in {"stale", "expired"} or state in {"abandoned", "blocked", "failed"}:
         actions = [WisdomAction("Recheck", callback_data=f"wi:agent:recheck:{result['id']}")]
     return WisdomView(
         title="Hermes Collective Wisdom", summary=summary,

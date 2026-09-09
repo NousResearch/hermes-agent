@@ -16,6 +16,8 @@ from typing import Optional
 from typing import TYPE_CHECKING
 import contextlib
 
+from hermes_cli.worktree_environment import bootstrap_worktree_environments
+
 if TYPE_CHECKING:
     from hermes_cli.kanban_db import Task
 
@@ -409,6 +411,7 @@ def _ensure_git_worktree(repo_root: Path, target: Path, branch_name: str) -> Non
         raise RuntimeError(
             f"git worktree add failed for {target} on branch {branch_name}: {stderr}"
         )
+    bootstrap_worktree_environments(repo_root, target)
 
 
 def _anchored_worktree(repo_root: Path, task_id: str, branch_name: str) -> tuple[Path, str]:
@@ -460,6 +463,9 @@ def _resolve_worktree_workspace(task: Task, *, board: Optional[str] = None) -> t
     if requested.exists() and _is_linked_worktree_checkout(requested):
         actual_branch = _git_current_branch(requested)
         if actual_branch == branch_name:
+            repo_root = _repo_root_for_worktree_target(requested.parent)
+            if repo_root is not None:
+                bootstrap_worktree_environments(repo_root, requested)
             return requested_resolved, actual_branch
         # The requested path is an existing checkout of a DIFFERENT task's
         # branch (decompose children inherit the root's workspace_path

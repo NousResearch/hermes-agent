@@ -21,6 +21,17 @@
 // succeeds — the Skills Hub page just shows an empty state, and llms.txt
 // generation is skipped. CI always has the deps installed, so production
 // deploys get real data.
+//
+// The `--fast` flag (used by the `prebuild:fast` script that gates
+// `build:fast`) skips the slow skill-extraction + unified-index network fetch
+// but still runs generate-llms-txt.py. `build:fast` only builds the default
+// (`en`) locale for quick local iteration, and npm's `prebuild` lifecycle
+// hook only fires before a script named exactly `build` — not `build:fast` —
+// so without `prebuild:fast` the gitignored `static/llms.txt` /
+// `static/llms-full.txt` are never generated, and Docusaurus emits broken-link
+// warnings for the `/docs/llms.txt` + `/docs/llms-full.txt` links in
+// docs/index.mdx (see #105890). `--fast` keeps `build:fast` fast while
+// resolving those links.
 
 import { spawnSync } from "node:child_process";
 import { mkdirSync, writeFileSync, existsSync, statSync } from "node:fs";
@@ -37,6 +48,7 @@ const unifiedIndexFile = join(websiteDir, "static", "api", "skills-index.json");
 const UNIFIED_INDEX_URL =
   "https://hermes-agent.nousresearch.com/docs/api/skills-index.json";
 const UNIFIED_INDEX_MAX_AGE_MS = 24 * 60 * 60 * 1000; // 24h
+const fast = process.argv.includes("--fast");
 
 function writeEmptyFallback(reason) {
   mkdirSync(dirname(outputFile), { recursive: true });
@@ -119,11 +131,20 @@ async function ensureUnifiedIndex() {
   }
 }
 
-// 0) Pull unified index if we don't have a fresh one.
-await ensureUnifiedIndex();
+// 0) Pull unified index if we don't have a fresh one. Skipped in --fast mode
+//    (network fetch; not needed to generate llms.txt).
+if (!fast) {
+  await ensureUnifiedIndex();
+}
 
-// 1) skills.json — required for the Skills Hub page.
-if (!existsSync(extractScript)) {
+// 1) skills.json — required for the Skills Hub page. Skipped in --fast mode
+//    (extract-skills.py crawls every skill source and takes several minutes);
+//    just ensure the file exists (empty fallback) so the build doesn't 404 it.
+if (fast) {
+  if (!existsSync(outputFile)) {
+    writeEmptyFallback("fast mode (--fast skips skill extraction)");
+  }
+} else if (!existsSync(extractScript)) {
   writeEmptyFallback("extract script missing");
 } else {
   const r = spawnSync("python3", [extractScript], {
@@ -141,5 +162,7 @@ if (!existsSync(extractScript)) {
 runPython(llmsScript, "generate-llms-txt.py");
 
 // 3) automation-blueprints-index.json — Automation Blueprints catalog page. Non-fatal; the page
-//    renders an empty state if the generator can't run.
-runPython(cronBlueprintsScript, "extract-automation-blueprints.py");
+//    renders an empty state if the generator can't run. Skipped in --fast mode.
+if (!fast) {
+  runPython(cronBlueprintsScript, "extract-automation-blueprints.py");
+}

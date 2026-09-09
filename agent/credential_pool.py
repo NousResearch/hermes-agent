@@ -134,6 +134,14 @@ EXHAUSTED_TTL_DEFAULT_SECONDS = 60 * 60
 # credential cools down briefly instead.
 EXHAUSTED_TTL_SOLE_CREDENTIAL_SECONDS = 60
 
+# Owner directive 2026-09-05 (zai MAX key): Z.AI's 5-hour-window 429 (code 1308)
+# reset stamp is frequently premature — live probes and the monitor endpoint show
+# the MAX key serving 200 at ~12% window usage while the pool blind-benched it
+# for ~7h. Cap a zai 1308 bench at this many seconds so a stale stamp cannot
+# strand a working key; a genuine throttle then costs one failing probe per cap
+# window before re-trying. 1310 (Weekly/Monthly credit) stays unbounded (real).
+ZAI_REPROBE_CAP_SECONDS = 15 * 60
+
 # ``FailoverReason.billing`` as a bare string: the pool persists classified
 # failure semantics to JSON and must not import the classifier.
 FAILURE_REASON_BILLING = "billing"
@@ -422,6 +430,27 @@ def _exhausted_until(entry: PooledCredential, *, sole_credential: bool = False) 
     if entry.last_status != STATUS_EXHAUSTED:
         return None
     reset_at = _parse_absolute_timestamp(entry.last_error_reset_at)
+    if entry.provider == "zai":
+        # Owner directive 2026-09-05, re-anchored 2026-09-09 onto upstream
+        # v0.21.1: the MAX-subscription key serves HTTP 200 while the pool
+        # blind-benches it for hours, because Z.AI 429 reset stamps are
+        # routinely premature — the monitor endpoint shows TOKENS_LIMIT ~12%
+        # and live probes return 200. Monitor is truth: never blind-bench zai
+        # on the provider stamp alone. Honour it ONLY for the genuine
+        # Weekly/Monthly credit exhaustion (1310), which is real and
+        # long-lived. For 1308 (5h rolling window) cap the bench at
+        # ZAI_REPROBE_CAP_SECONDS so a premature stamp cannot strand a working
+        # key for hours, while a genuine throttle costs at most one failing
+        # probe per cap window. Other zai 429s (1302 rate-limit, no usable
+        # stamp) re-probe at once. The old TZ-local text-stamp fix is moot on
+        # this upstream: absolute stamps are no longer parsed from message
+        # text, and naive ISO stamps parse as LOCAL time natively.
+        reason = (entry.last_error_reason or "").strip()
+        if reason == "1310" and reset_at is not None:
+            return reset_at
+        if reason == "1308" and reset_at is not None:
+            return min(reset_at, time.time() + ZAI_REPROBE_CAP_SECONDS)
+        return None
     if reset_at is not None:
         return reset_at
     if entry.last_status_at:

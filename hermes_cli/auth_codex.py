@@ -166,7 +166,21 @@ def _save_codex_tokens(tokens: Dict[str, str], last_refresh: str = None, label: 
 
 
 def _recover_codex_tokens_from_cli(reason: str) -> Optional[Dict[str, str]]:
-    """Adopt a valid Codex CLI token pair into Hermes auth, if available."""
+    """FLEET-POLICY (2026-09-09): silent adoption of ~/.codex/auth.json DISABLED.
+
+    Hermes must read ONLY its own auth store. The previous behaviour auto-imported a
+    Codex CLI / VS Code token pair into the Hermes singleton whenever the singleton's
+    auth failed (missing/invalid/expired or a rejected refresh_token) — which silently
+    pulled in an unrelated FREE Codex CLI account (voiced-65...@icloud.com) and dropped
+    account-specific models such as gpt-6-astra from the picker. Adoption is now OFF by
+    default; both automatic call sites fall through to the Hermes pool. Set
+    HERMES_CODEX_ADOPT_CLI_TOKENS=1 to restore the upstream behaviour deliberately.
+    Interactive `codex login` (which calls _import_codex_cli_tokens directly and PROMPTS)
+    is unaffected.
+    """
+    if os.getenv("HERMES_CODEX_ADOPT_CLI_TOKENS", "").strip() not in {"1", "true", "yes"}:
+        logger.debug("Codex CLI auth.json adoption skipped (fleet-policy: Hermes-only); reason=%s", reason)
+        return None
     from hermes_cli.auth import _import_codex_cli_tokens, _save_codex_tokens
     imported = _import_codex_cli_tokens()
     # Require BOTH tokens before adopting: persisting a payload without a usable refresh_token
@@ -578,11 +592,27 @@ def _codex_pool_dicts(entries: Optional[List[Any]]) -> Iterator[Dict[str, Any]]:
 
 
 def _read_codex_pool_entries() -> Optional[List[Any]]:
-    """Locked read of ``credential_pool.openai-codex`` from auth.json (None when absent)."""
+    """Locked read of the ``openai-codex`` pool WITH profile→global-root fallback (None when absent).
+
+    Reads through ``agent.credential_pool.read_credential_pool`` so a named profile that BORROWS
+    its single-use Codex grant from the global-root store — the layout ``persist_pool_entries``
+    deliberately maintains to avoid forking refresh tokens (#100339) — can still resolve a runtime
+    token. The previous active-store-only read made ``resolve_codex_runtime_credentials`` raise
+    ``codex_auth_missing`` in profile context, which silently degrades the model picker's live
+    Codex catalog to the curated fallback list (missing account-specific models such as
+    gpt-6-astra). Read-only: the borrowed rows are never rewritten by this path.
+    """
     from hermes_cli.auth import _auth_store_lock, _load_auth_store
-    with _auth_store_lock():
-        auth_store = _load_auth_store()
-    return _pool_entries(auth_store, "openai-codex")
+    try:
+        from agent.credential_pool import read_credential_pool
+        with _auth_store_lock():
+            entries = read_credential_pool("openai-codex")
+        return entries or None
+    except Exception:
+        logger.debug("Codex pool borrowed read failed; falling back to active store", exc_info=True)
+        with _auth_store_lock():
+            auth_store = _load_auth_store()
+        return _pool_entries(auth_store, "openai-codex")
 
 
 def _codex_pool_rate_limit_status() -> Optional[Dict[str, Any]]:

@@ -265,6 +265,109 @@ def _escape_mdv2(text: str) -> str:
     return _MDV2_ESCAPE_RE.sub(r'\\\1', text)
 
 
+# Bot API HTML payloads (fleet-notification scripts, pre-rendered alerts) must ride
+# parse_mode=HTML — format_message()'s MarkdownV2 escaping would render "<b>" as a literal
+# tag (">" becomes "\>"). Whitelist = the tags the official Formatting-options section
+# supports; detection ignores tags inside code spans/fences so agent replies that SHOW html
+# snippets keep the normal markdown lane. Mirrors _telegram_format() in the standalone
+# sender (tools/send_message_senders.py) so both delivery lanes agree.
+_TG_HTML_TAG_RE = re.compile(
+    r'</?(?:b|strong|i|em|u|ins|s|strike|del|code|pre|a|blockquote|tg-spoiler|tg-emoji|tg-time|span)\b[^>]*>',
+    re.IGNORECASE)
+_TG_CODE_REGION_RE = re.compile(r'```[\s\S]*?```|`[^`\n]+`')
+
+
+def _looks_like_html_payload(text: str) -> bool:
+    """True when *text* carries Bot API HTML tags OUTSIDE code spans/fences."""
+    if not text or '<' not in text:
+        return False
+    return bool(_TG_HTML_TAG_RE.search(_TG_CODE_REGION_RE.sub('', text)))
+
+
+def _strip_html_for_plain(text: str) -> str:
+    """Plain-text fallback for a rejected HTML payload: drop tags, unescape entities."""
+    return _html.unescape(_TG_HTML_TAG_RE.sub('', text))
+
+
+_TG_VOID_HTML_TAGS = frozenset({"br"})
+
+
+def _chunk_html_payload(text: str, max_len: int, len_fn) -> list:
+    """Line-safe, tag-balanced chunking for a Bot API HTML payload.
+
+    ``truncate_message`` is markdown-fence aware but HTML-blind: it can cut mid-tag/mid-entity
+    (``<blockq…``, ``&am…``), which Telegram rejects ("can't parse entities"), degrading the whole
+    chunk to plain text. Rules (official limit: 4096 chars AFTER entities parsing — we count WITH
+    tags, conservatively):
+    - split on LINE boundaries only; an over-long single line is cut at '>' tag boundaries;
+    - open tags are tracked with a stack: each chunk CLOSES them at its end and RE-OPENS them at
+      its start, so every chunk is a standalone well-formed Bot API HTML document.
+    """
+    import re as _re
+    tag_re = _re.compile(r'<(/?)([a-zA-Z][a-zA-Z0-9-]*)([^>]*)>')
+
+    def _close_all(stack):
+        return "".join(f"</{name}>" for name, _attrs in reversed(stack))
+
+    def _reopen_all(stack):
+        return "".join(f"<{name}{attrs}>" for name, attrs in stack)
+
+    def _track(s, stack):
+        """Open-tag stack after consuming *s* (tolerates stray closers; void tags ignored)."""
+        stack = list(stack)
+        for m in tag_re.finditer(s):
+            closing, name, attrs = m.group(1), m.group(2).lower(), m.group(3)
+            if name in _TG_VOID_HTML_TAGS:
+                continue
+            if closing:
+                for i in range(len(stack) - 1, -1, -1):
+                    if stack[i][0] == name:
+                        del stack[i:]
+                        break
+            else:
+                stack.append((name, attrs))
+        return stack
+
+    # Atomic segments: (joiner, text). Lines join with "\n"; an over-long line is pre-split at
+    # '>' boundaries (joiner "" — no newline inside what was one line).
+    budget = max_len - 16  # room for the (N/M) indicator + close/reopen tags
+    segments: list = []
+    for line in text.split("\n"):
+        if len_fn(line) <= budget:
+            segments.append(("\n" if segments else "", line))
+            continue
+        rest, first = line, True
+        while rest:
+            cut = rest.rfind(">", 0, budget)
+            if cut <= 0:
+                cut = budget - 1  # no tag boundary in window: hard cut
+            segments.append(("\n" if (segments and first) else "", rest[:cut + 1]))
+            first = False
+            rest = rest[cut + 1:]
+
+    chunks: list = []
+    stack: list = []  # tags carried open across chunk boundaries
+    cur = ""
+    for joiner, seg in segments:
+        piece = joiner + seg
+        new_stack = _track(piece, stack)
+        if cur and len_fn(cur + piece) + len_fn(_close_all(new_stack)) <= max_len:
+            cur += piece
+            stack = new_stack
+            continue
+        if cur:
+            chunks.append(cur + _close_all(stack))
+            # Continuation chunk: drop the boundary joiner (separate messages need no separator —
+            # a leading "\n" would render an empty first line) and re-open the carried tags.
+            piece = seg
+            new_stack = _track(piece, stack)
+        cur = _reopen_all(stack) + piece
+        stack = new_stack
+    if cur:
+        chunks.append(cur + _close_all(stack))
+    return [c for c in chunks if c.strip()] or [text]
+
+
 def _strip_mdv2(text: str) -> str:
     """Strip MarkdownV2 escapes and formatting markers for the plain-text fallback."""
     cleaned = re.sub(r'\\([_*\[\]()~`>#\+\-=|{}.!\\])', r'\1', text)  # escape backslashes
@@ -3211,13 +3314,25 @@ class TelegramAdapter(BasePlatformAdapter):
                 return await self._bot.send_message(text=_strip_mdv2(chunk), parse_mode=None, **send_kwargs)
             raise
 
+    async def _send_chunk_html_or_plain(self, chunk: str, send_kwargs: Dict[str, Any]):
+        """Bot API HTML first (official parse_mode=HTML); on a parse rejection resend as
+        tag-stripped plain text so a malformed payload still delivers."""
+        try:
+            return await self._bot.send_message(text=chunk, parse_mode=ParseMode.HTML, **send_kwargs)
+        except Exception as html_error:
+            if "parse" in str(html_error).lower() or "entit" in str(html_error).lower():
+                logger.warning("[%s] HTML parse failed, falling back to plain text: %s", self.name, html_error)
+                return await self._bot.send_message(text=_strip_html_for_plain(chunk), parse_mode=None, **send_kwargs)
+            raise
+
     async def _send_chunk_with_retries(
         self, chat_id: str, chunk: str, index: int, reply_to: Optional[str], metadata: Optional[Dict[str, Any]],
-        thread_id: Optional[str], used_thread_fallback: bool, error_types: tuple):
+        thread_id: Optional[str], used_thread_fallback: bool, error_types: tuple, html_mode: bool = False):
         """Deliver one chunk: routing, up to 3 attempts, thread-not-found / deleted-anchor / flood handling.
 
         Returns ``(msg, used_thread_fallback)`` on success or a ``SendResult`` to return verbatim (fail-loud DM-topic
-        cases, flood cap); raises anything the caller's classifier should see."""
+        cases, flood cap); raises anything the caller's classifier should see.
+        ``html_mode`` routes through parse_mode=HTML (Bot API official formatting) instead of MarkdownV2."""
         _NetErr, _BadReq, _TimedOut = error_types
         retried_thread_not_found = False
         private_dm_topic_send, dm_topic_reply_to_off, reply_to_id = self._chunk_reply_routing(chat_id, reply_to, metadata, thread_id, index)
@@ -3234,7 +3349,8 @@ class TelegramAdapter(BasePlatformAdapter):
                 send_kwargs = {
                     "chat_id": normalize_telegram_chat_id(chat_id), "reply_to_message_id": reply_to_id, **thread_kwargs,
                     **self._link_preview_kwargs(), **self._notification_kwargs(metadata)}
-                return await self._send_chunk_markdown_or_plain(chunk, send_kwargs), used_thread_fallback
+                _send_chunk = self._send_chunk_html_or_plain if html_mode else self._send_chunk_markdown_or_plain
+                return await _send_chunk(chunk, send_kwargs), used_thread_fallback
             except _NetErr as send_err:
                 # BadRequest subclasses NetworkError in PTB but is permanent; handle specific cases.
                 if _BadReq and isinstance(send_err, _BadReq):
@@ -3345,28 +3461,36 @@ class TelegramAdapter(BasePlatformAdapter):
             return SendResult(success=True, message_id=None)
         error_types = self._telegram_error_types()
         try:
-            # Bot API 10.1 rich fast-path; falls through to legacy MarkdownV2 on permanent/capability
-            # errors or DM-topic skips; returns directly on success or transient failure (no legacy resend).
-            if self._should_attempt_rich(content, metadata=metadata):
+            html_payload = _looks_like_html_payload(content)
+            # Bot API 10.1 rich fast-path (markdown source only — an HTML payload already carries
+            # official Bot API markup and must not be re-rendered/escaped as markdown).
+            if not html_payload and self._should_attempt_rich(content, metadata=metadata):
                 rich_result = await self._try_send_rich(chat_id, content, reply_to, metadata)
                 if rich_result is not None:
                     if rich_result.success:
                         await self._retrigger_typing(chat_id, metadata)
                     return rich_result
-            chunks = self.truncate_message(self.format_message(content), self.MAX_MESSAGE_LENGTH, len_fn=utf16_len)
-            if len(chunks) > 1:
-                # truncate_message appends a raw " (1/2)" suffix; escape the MarkdownV2-special parentheses.
-                chunks = [
-                    _separate_chunk_indicator_from_fence(re.sub(r" \((\d+)/(\d+)\)$", r" \\(\1/\2\\)", chunk))
-                    for chunk in chunks
-               ]
+            if html_payload:
+                chunks = _chunk_html_payload(content, self.MAX_MESSAGE_LENGTH, utf16_len)
+                if len(chunks) > 1:
+                    chunks = [f"{chunk} <i>({i + 1}/{len(chunks)})</i>" if i < len(chunks) - 1 else chunk
+                              for i, chunk in enumerate(chunks)]
+            else:
+                chunks = self.truncate_message(self.format_message(content), self.MAX_MESSAGE_LENGTH, len_fn=utf16_len)
+                if len(chunks) > 1:
+                    # truncate_message appends a raw " (1/2)" suffix; escape the MarkdownV2-special parentheses.
+                    chunks = [
+                        _separate_chunk_indicator_from_fence(re.sub(r" \((\d+)/(\d+)\)$", r" \\(\1/\2\\)", chunk))
+                        for chunk in chunks
+                   ]
             message_ids = []
             thread_id = self._metadata_thread_id(metadata)
             requested_thread_id = self._message_thread_id_for_send(thread_id)
             used_thread_fallback = False
             for i, chunk in enumerate(chunks):
                 outcome = await self._send_chunk_with_retries(
-                    chat_id, chunk, i, reply_to, metadata, thread_id, used_thread_fallback, error_types)
+                    chat_id, chunk, i, reply_to, metadata, thread_id, used_thread_fallback, error_types,
+                    html_mode=html_payload)
                 if isinstance(outcome, SendResult):
                     return outcome
                 msg, used_thread_fallback = outcome

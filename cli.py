@@ -2744,7 +2744,24 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
         if toolsets and "all" not in toolsets and "*" not in toolsets:
             # MCP server names only resolve after discover_mcp_tools runs; skip them here.
             mcp_names = set((CLI_CONFIG.get("mcp_servers") or {}).keys())
-            invalid = [t for t in toolsets if not validate_toolset(t) and t not in mcp_names]
+            # Plugin toolsets register only once plugin discovery joins; chat startup
+            # runs discovery in a background thread, so a valid plugin key (e.g. an
+            # entrypoint plugin pinned via --toolsets by the kanban dispatcher) can
+            # still be absent from the live registry here. Use the nowait view (live
+            # registry, else last launch's persisted keys, else blocking discovery)
+            # so a valid capability is not falsely reported unknown — a false warning
+            # misleads operators into removing the capability instead of fixing
+            # registration timing. Genuinely unknown names still warn.
+            try:
+                from hermes_cli.plugins import get_plugin_toolset_keys_nowait
+
+                plugin_keys = get_plugin_toolset_keys_nowait()
+            except Exception:
+                plugin_keys = set()
+            invalid = [
+                t for t in toolsets
+                if not validate_toolset(t) and t not in mcp_names and t not in plugin_keys
+            ]
             if invalid:
                 self._console_print(f"[bold red]Warning: Unknown toolsets: {', '.join(invalid)}[/]")
 

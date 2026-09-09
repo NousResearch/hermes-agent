@@ -388,8 +388,55 @@ def _locked_update(skill_name: str, op: Callable[[Dict[str, Dict[str, Any]]], Tu
         return None
 
 
+def canonical_skill_key(skill_name: Any) -> str:
+    """One canonical .usage.json key per skill (#103542): separators normalized
+    to ``/``, and a path-shaped name resolving to a real skill dir maps to its
+    frontmatter ``name:`` (directory name vs frontmatter name split). Plain
+    (separator-free) names pass through untouched — no disk reads on the hot
+    path. Never raises; unresolvable input degrades to the normalized text."""
+    try:
+        text = str(skill_name or "").replace("\\", "/").strip().strip("/")
+    except (OSError, ValueError):
+        return ""
+    if not text or "/" not in text:
+        return text
+    try:
+        candidate = (_skills_dir() / text) if not Path(text).is_absolute() else Path(text)
+        if candidate.is_dir() and (candidate / "SKILL.md").is_file():
+            return _read_skill_name(candidate / "SKILL.md", fallback=text)
+    except (OSError, ValueError):
+        pass
+    return text
+
+
+def _merge_duplicate_keys(data: Dict[str, Dict[str, Any]], canonical: str) -> None:
+    """Fold every key that canonicalizes to *canonical* into it (in place):
+    counters sum, latest timestamps win. Heals pre-fix splits (#103542)."""
+    if not canonical:
+        return
+    for key in [k for k in data if k != canonical and canonical_skill_key(k) == canonical]:
+        record = data.get(key)
+        if not isinstance(record, dict):
+            data.pop(key, None)
+            continue
+        target = data.setdefault(canonical, _empty_record())
+        for count_key in ("use_count", "view_count", "patch_count"):
+            target[count_key] = _non_negative_int(target.get(count_key)) + _non_negative_int(
+                record.get(count_key))
+        for ts_key in ("last_used_at", "last_viewed_at", "last_patched_at", "created_at"):
+            ours, theirs = target.get(ts_key), record.get(ts_key)
+            if theirs and (not ours or str(theirs) > str(ours)):
+                target[ts_key] = theirs
+        if record.get("pinned") and not target.get("pinned"):
+            target["pinned"] = True
+        if not target.get("created_by") and record.get("created_by"):
+            target["created_by"] = record["created_by"]
+        data.pop(key, None)
+
+
 def seed_record_if_missing(skill_name: str) -> None:
     """Baseline record for a curation-eligible skill so its inactivity clock starts at first sight, not epoch."""
+    skill_name = canonical_skill_key(skill_name)
     if skill_name and is_curation_eligible(skill_name):
         # load_usage() already dropped non-dict values, so "missing" == key absent; dirty only when inserted.
         def _seed(data):
@@ -399,10 +446,18 @@ def seed_record_if_missing(skill_name: str) -> None:
 
 def _mutate(skill_name: str, mutator, *, require_curation_eligible: bool = False) -> Any:
     """Load, apply *mutator(record)* in place, save; the mutator result (None if nothing landed). Telemetry is
-    recorded for ANY skill; lifecycle mutators pass ``require_curation_eligible=True`` (never write onto unmanaged)."""
+    recorded for ANY skill; lifecycle mutators pass ``require_curation_eligible=True`` (never write onto unmanaged).
+    Keys are canonicalized (#103542) and pre-existing duplicates folded in, so
+    counters aggregate under one key per skill."""
+    skill_name = canonical_skill_key(skill_name)
     if not skill_name:
         return None
-    return _locked_update(skill_name, lambda data: (mutator(data.setdefault(skill_name, _empty_record())), True),
+
+    def _apply(data):
+        _merge_duplicate_keys(data, skill_name)
+        return mutator(data.setdefault(skill_name, _empty_record())), True
+
+    return _locked_update(skill_name, _apply,
                           "skill_usage._mutate(%s) failed: %s",
                           (lambda: is_curation_eligible(skill_name)) if require_curation_eligible else None)
 

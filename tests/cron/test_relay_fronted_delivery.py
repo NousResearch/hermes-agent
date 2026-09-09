@@ -21,12 +21,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from cron import scheduler as sched
-from cron.scheduler import (
-    _deliver_result,
-    _get_home_target_chat_id,
-    _get_home_target_thread_id,
-    _resolve_delivery_targets,
-)
+from cron.scheduler import _deliver_result, _resolve_delivery_targets
+from cron.scheduler_delivery import _get_home_target_chat_id, _get_home_target_thread_id
 from gateway.config import HomeChannel, Platform
 
 

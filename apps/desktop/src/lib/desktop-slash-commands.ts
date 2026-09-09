@@ -55,6 +55,7 @@ export interface DesktopThemeCommandOption {
 export type DesktopActionId =
   | 'branch'
   | 'browser'
+  | 'btw'
   | 'compress'
   | 'handoff'
   | 'hatch'
@@ -64,6 +65,7 @@ export type DesktopActionId =
   | 'pet'
   | 'profile'
   | 'skin'
+  | 'stop'
   | 'title'
   | 'wake'
   | 'yolo'
@@ -173,6 +175,11 @@ const DESKTOP_COMMAND_SPECS: readonly DesktopCommandSpec[] = [
   // Local client actions
   { name: '/new', description: 'Start a new desktop chat', aliases: ['/reset'], surface: action('new') },
   {
+    name: '/stop',
+    description: 'Stop the active turn and background processes',
+    surface: action('stop')
+  },
+  {
     name: '/branch',
     description: 'Branch the latest message into a new chat',
     aliases: ['/fork'],
@@ -238,6 +245,15 @@ const DESKTOP_COMMAND_SPECS: readonly DesktopCommandSpec[] = [
     description: 'Compress this conversation context',
     aliases: ['/compact'],
     surface: action('compress'),
+    argumentMode: 'text'
+  },
+  // /btw must be an action (prompt.btw RPC), not exec: the slash worker
+  // prints the answer after process_command returns, so Desktop only ever
+  // saw the acknowledgement (#99065). The answer arrives as btw.complete.
+  {
+    name: '/btw',
+    description: 'Ask a side question about this conversation without interrupting it',
+    surface: action('btw'),
     argumentMode: 'text'
   },
   {

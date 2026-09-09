@@ -1,5 +1,6 @@
 import { atom } from 'nanostores'
 
+import type { NewSessionPlacement } from '@/app/chat/new-session-drag'
 import {
   liveSessionProjectId,
   NO_PROJECT_ID,
@@ -30,6 +31,7 @@ import {
   setSessions,
   workspaceCwdForNewSession
 } from '@/store/session'
+import { $removedSessionIds, $sessionMutationsInFlight } from '@/store/session-removal'
 import type { ProjectInfo, ProjectsPayload } from '@/types/hermes'
 
 // First-class, per-profile Projects (named, multi-folder workspaces). State is
@@ -64,78 +66,6 @@ function markProjectsRpcFailure(err: unknown): void {
 function projectsStaleBackendError(): Error {
   return new Error(translateNow('sidebar.projects.staleBackend'))
 }
-
-// Client-side cache eviction (Apollo-style optimistic layer): ids the user just
-// deleted/archived. The backend tree is a snapshot that still lists them until
-// its next refresh, so the render-time overlay strips these so the tree matches
-// the live `$sessions` cache exactly — same as the flat Recents list. Pruned on
-// refresh once the server snapshot has caught up.
-export const $removedSessionIds = atom<Set<string>>(new Set())
-
-export function tombstoneSessions(ids: Array<null | string | undefined>): void {
-  const next = new Set($removedSessionIds.get())
-  const before = next.size
-
-  for (const id of ids) {
-    const trimmed = id?.trim()
-
-    if (trimmed) {
-      next.add(trimmed)
-    }
-  }
-
-  if (next.size !== before) {
-    $removedSessionIds.set(next)
-  }
-}
-
-export function untombstoneSessions(ids: Array<null | string | undefined>): void {
-  const current = $removedSessionIds.get()
-
-  if (!current.size) {
-    return
-  }
-
-  const next = new Set(current)
-
-  for (const id of ids) {
-    const trimmed = id?.trim()
-
-    if (trimmed) {
-      next.delete(trimmed)
-    }
-  }
-
-  if (next.size !== current.size) {
-    $removedSessionIds.set(next)
-  }
-}
-
-// Ids whose delete/archive RPC is still in flight. Their tombstones are pinned
-// against the projects.tree prune below: a refresh whose snapshot predates the
-// mutation completing must NOT drop the tombstone, or the row flashes back until
-// the backend catches up. Keyed by id, so concurrent deletes stay independent.
-export const $sessionMutationsInFlight = atom<Set<string>>(new Set())
-
-function mutateInFlight(ids: Array<null | string | undefined>, add: boolean): void {
-  const current = $sessionMutationsInFlight.get()
-  const next = new Set(current)
-
-  for (const id of ids) {
-    const trimmed = id?.trim()
-
-    if (trimmed) {
-      add ? next.add(trimmed) : next.delete(trimmed)
-    }
-  }
-
-  if (next.size !== current.size) {
-    $sessionMutationsInFlight.set(next)
-  }
-}
-
-export const beginSessionMutation = (ids: Array<null | string | undefined>): void => mutateInFlight(ids, true)
-export const endSessionMutation = (ids: Array<null | string | undefined>): void => mutateInFlight(ids, false)
 
 // True while the disk scan is in flight (drives the "finding repos" hint).
 export const $reposScanning = atom(false)
@@ -208,7 +138,9 @@ export function goToProject(id: string, options?: { newSession?: boolean }): voi
 //
 // Priority (first hit wins):
 //   1. Explicit sidebar project scope (drilled into a project / Home bucket)
-//   2. Configured default project dir / remote remembered cwd (detached otherwise)
+//   2. Configured default project dir (detached otherwise — in BOTH local and
+//      remote mode; a bare new chat never inherits the sticky remembered cwd,
+//      #57911 / #84220)
 //
 // The "active project" is just an atom ($projectScope) — so inside a project a
 // new session (cmd-n, the trunk "+") starts at that project's root (its primary
@@ -347,7 +279,7 @@ async function gatewayRequest<T>(method: string, params: Record<string, unknown>
   return gateway.request<T>(method, params)
 }
 
-function projectProfile(): null | string {
+export function projectProfile(): null | string {
   const profile = normalizeProfileKey($activeGatewayProfile.get())
 
   return $profileScope.get() === ALL_PROFILES || profile === ALL_PROFILES ? null : profile
@@ -387,10 +319,8 @@ function stillOnProjectsContext(context: ActiveProjectsContext): boolean {
   return activeGateway() === context.gateway && projectProfile() === context.profile
 }
 
-async function activeProjectsContext(): Promise<ActiveProjectsContext> {
-  const profile = projectProfile()
-
-  if (!profile) {
+async function activeProjectsContext(profile = projectProfile()): Promise<ActiveProjectsContext> {
+  if (!profile || profile === ALL_PROFILES) {
     throw new Error('Projects are unavailable while viewing all profiles')
   }
 
@@ -400,7 +330,7 @@ async function activeProjectsContext(): Promise<ActiveProjectsContext> {
     gateway = await ensureActiveGatewayOpen()
   }
 
-  if (!gateway || gateway !== activeGateway() || profile !== projectProfile()) {
+  if (!gateway || gateway !== activeGateway() || profile !== normalizeProfileKey($activeGatewayProfile.get())) {
     throw new Error('Active Hermes profile changed while connecting')
   }
 
@@ -581,9 +511,16 @@ let projectSessionsRefreshGeneration = 0
 
 export async function fetchProjectSessions(projectId: string): Promise<SidebarProjectTree | null> {
   const generation = ++projectSessionsRefreshGeneration
+  const profile = projectProfile()
+
+  if (!profile) {
+    return null
+  }
+
+  let context: ActiveProjectsContext | undefined
 
   try {
-    const context = await activeProjectsContext()
+    context = await activeProjectsContext()
 
     const res = await gatewayRequestOn<{ project: SidebarProjectTree | null }>(
       context.gateway,
@@ -596,8 +533,16 @@ export async function fetchProjectSessions(projectId: string): Promise<SidebarPr
     }
 
     return res.project ?? null
-  } catch {
-    return null
+  } catch (error) {
+    if (
+      generation !== projectSessionsRefreshGeneration ||
+      profile !== projectProfile() ||
+      (context && !stillOnProjectsContext(context))
+    ) {
+      return null
+    }
+
+    throw error
   }
 }
 
@@ -825,6 +770,10 @@ export interface CreateProjectInput {
   use?: boolean
   // Free-text project idea; written to IDEA.md at the primary folder on create.
   idea?: string
+  /** Where a "New project" DRAG dropped the project (tab-strip slot / pane
+   *  edge / pane center). The completion side opens the created project's
+   *  fresh session draft exactly there; absent = the plain-click behavior. */
+  dropPlacement?: NewSessionPlacement
 }
 
 // Generate a project idea via the stateless llm.oneshot RPC (inherits the live
@@ -927,19 +876,27 @@ export async function createProject(input: CreateProjectInput): Promise<ProjectI
   let res: { project: ProjectInfo | null }
 
   try {
-    res = await gatewayRequest<{ project: ProjectInfo | null }>(
+    // All profiles filters the sidebar, not the owner of a new project.
+    // Capture the live route so reconnecting cannot retarget the write.
+    const context = await activeProjectsContext(normalizeProfileKey($activeGatewayProfile.get()))
+
+    res = await gatewayRequestOn<{ project: ProjectInfo | null }>(
+      context.gateway,
       'projects.create',
-      projectParams({
-        name: input.name,
-        folders: input.folders ?? [],
-        primary_path: input.primaryPath,
-        slug: input.slug,
-        description: input.description,
-        icon: input.icon,
-        color: input.color,
-        board_slug: input.boardSlug,
-        use: input.use ?? false
-      })
+      projectParams(
+        {
+          name: input.name,
+          folders: input.folders ?? [],
+          primary_path: input.primaryPath,
+          slug: input.slug,
+          description: input.description,
+          icon: input.icon,
+          color: input.color,
+          board_slug: input.boardSlug,
+          use: input.use ?? false
+        },
+        context.profile
+      )
     )
   } catch (err) {
     if (isMissingRpcMethod(err)) {
@@ -973,6 +930,16 @@ export async function createProject(input: CreateProjectInput): Promise<ProjectI
 
     if (input.use) {
       $activeProjectId.set(created.id)
+    }
+
+    // A "New project" DRAG created this: hand the placement to the completion
+    // side so the project's fresh session draft opens exactly where it was
+    // dropped (tab-strip slot / pane edge / pane center). The plain click
+    // path has no placement and keeps its existing behavior.
+    const rootPath = created.primary_path ?? created.folders?.[0]?.path ?? input.primaryPath
+
+    if (input.dropPlacement && rootPath) {
+      $newProjectSessionRequest.set({ path: rootPath, placement: input.dropPlacement })
     }
 
     setSidebarAgentsGrouped(true)
@@ -1173,6 +1140,12 @@ export function openProjectCreate(): void {
   $projectDialog.set({ mode: 'create' })
 }
 
+/** Clear the armed "New project" drag placement — on dialog close, so a later
+ *  plain-click create can never inherit a stale arm. */
+export function clearNewProjectDropPlacement(): void {
+  $newProjectDropPlacement.set(null)
+}
+
 export function openProjectRename(project: { id: string; name: string }): void {
   $projectDialog.set({ mode: 'rename', name: project.name, projectId: project.id })
 }
@@ -1293,6 +1266,28 @@ export interface StartWorkSessionRequest {
 }
 
 export const $startWorkSessionRequest = atom<StartWorkSessionRequest | null>(null)
+
+// ── "New project" drag placement ─────────────────────────────────────────────
+// Dragging the project-overview header's "New project" + onto a chat zone arms
+// WHERE the project should start; the dialog flow consumes it on create. Two
+// atoms, mirroring $startWorkSessionRequest's token pattern:
+//
+// - `$newProjectDropPlacement` holds the last armed placement while the
+//   project dialog is open. The dialog submit reads it when its `createProject`
+//   succeeds and forwards it as `CreateProjectInput.dropPlacement`. Cleared on
+//   dialog close so a later plain-click create never inherits a stale arm.
+// - `$newProjectSessionRequest` is the consume-once completion signal: the
+//   controller effect (ContribWiring) watches it, opens the created project's
+//   fresh session draft at the recorded anchor/slot, and drops the request.
+export const $newProjectDropPlacement = atom<NewSessionPlacement | null>(null)
+
+export interface NewProjectSessionRequest {
+  /** The created project's root cwd — the fresh draft starts here. */
+  path: string
+  placement: NewSessionPlacement
+}
+
+export const $newProjectSessionRequest = atom<NewProjectSessionRequest | null>(null)
 
 // The "make a new worktree" intent, from the keyboard or a menu. One dialog is
 // mounted, in the sidebar beside ProjectDialog, and it reads this atom. This

@@ -54,7 +54,7 @@ def test_aborted_setup_does_not_enable_whatsapp(isolated_home, monkeypatch):
 
     WHATSAPP_ENABLED must NOT be present in .env after abort.
     """
-    from hermes_cli.main import cmd_whatsapp
+    from hermes_cli.main_platform_setup import cmd_whatsapp
 
     # First input() = mode choice, second input() = allowed-users prompt
     # We raise KeyboardInterrupt on the second call to simulate abort.
@@ -90,7 +90,7 @@ def test_existing_pairing_skip_branch_enables_whatsapp(isolated_home, monkeypatc
     should be (re-)written to true so the gateway picks WhatsApp back up,
     even if the var was lost since the original pairing.
     """
-    from hermes_cli.main import cmd_whatsapp
+    from hermes_cli.main_platform_setup import cmd_whatsapp
 
     # Pre-create a paired session WITHOUT WHATSAPP_ENABLED in .env.
     session = isolated_home / "whatsapp" / "session"

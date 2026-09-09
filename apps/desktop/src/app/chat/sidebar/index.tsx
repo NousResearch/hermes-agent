@@ -26,7 +26,6 @@ import { useContributions } from '@/contrib/react/use-contributions'
 import { searchSessions, type SessionInfo, type SessionSearchResult } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { comboTokens } from '@/lib/keybinds/combo'
-import { resolveProfileColor } from '@/lib/profile-color'
 import { sessionMatchesSearch } from '@/lib/session-search'
 import { normalizeSessionSource, sessionSourceLabel } from '@/lib/session-source'
 import { cn } from '@/lib/utils'
@@ -75,7 +74,6 @@ import {
 import { notifyError } from '@/store/notifications'
 import {
   $newChatProfile,
-  $profileColors,
   $profiles,
   $profileScope,
   ALL_PROFILES,
@@ -85,16 +83,15 @@ import {
 } from '@/store/profile'
 import {
   $activeProjectId,
+  $newProjectDropPlacement,
   $projects,
   $projectScope,
   $projectTree,
   $projectTreeLoading,
-  $removedSessionIds,
   $reposScanning,
   ALL_PROJECTS,
   enterProject,
   exitProjectScope,
-  fetchProjectSessions,
   openProjectCreate,
   refreshProjects,
   refreshProjectTree,
@@ -127,7 +124,8 @@ import {
 } from '@/store/session'
 import { $sessionDotStateById, sessionStatusBucket } from '@/store/session-dot-state'
 import { $unconfirmedPinWrites } from '@/store/session-pin-sync'
-import { $focusedStoredSessionId, $workingSessionIds, type SplitDir } from '@/store/session-states'
+import { $removedSessionIds } from '@/store/session-removal'
+import { $focusedSessionIsTile, $focusedStoredSessionId, $workingSessionIds } from '@/store/session-states'
 import { ackAllSessionsRead } from '@/store/session-unread'
 import { markSessionUnread } from '@/store/session-unread-remote'
 import { $archivedSessions, loadArchivedSessions } from '@/store/sidebar-archive'
@@ -143,17 +141,20 @@ import {
   SKILLS_ROUTE
 } from '../../routes'
 import type { SidebarNavItem } from '../../types'
+import { type NewSessionSplitHandler, startNewSessionDrag } from '../new-session-drag'
 
+import { SidebarSectionAddButton } from './chrome'
 import { SidebarCronJobsSection } from './cron-jobs-section'
 import { SidebarFilterMenu } from './filter-menu'
+import { useGatewaySessionGroups } from './gateway-group-model'
 import { SidebarLoadMoreRow } from './load-more-row'
 import { orderByIds, reconcileOrderIds, resolveManualSessionOrderIds, sameIds } from './order'
 import { filterSessionsByProfileScope } from './profile-scope'
 import { ProfileRail } from './profile-switcher'
 import { ProjectDialog } from './project-dialog'
+import { resolveLiveProjectFilter } from './project-filter'
 import {
   excludeProjectSessions,
-  liveSessionProjectId,
   orderProjectsByIds,
   overlayLiveLanes,
   overlayLivePreviews,
@@ -161,19 +162,26 @@ import {
   ProjectBackRow,
   ProjectMenu,
   projectTreeCwd,
+  reconcileEnteredProjectSessions,
+  sessionMatchesProjectFilter,
   sessionRecency as sessionTime,
   type SidebarProjectTree,
-  type SidebarSessionGroup,
   type SidebarWorkspaceTree,
   sortProjectsForOverview,
   StartWorkButton,
   useRepoWorktreeMap
 } from './projects'
 import { WorktreeDialog } from './projects/worktree-dialog'
-import { SidebarBlankState, SidebarPinnedEmptyState, SidebarSessionSkeletons } from './section-states'
+import {
+  SidebarBlankState,
+  SidebarLoadErrorState,
+  SidebarPinnedEmptyState,
+  SidebarSessionSkeletons
+} from './section-states'
 import { buildSessionByAnyId, resolvePinnedSessions } from './session-index'
 import { SidebarSessionsSection, VIRTUALIZE_THRESHOLD } from './sessions-section'
 import { CONTEXT_SPLIT_KIT, SplitSubmenu } from './split-submenu'
+import { useEnteredProjectSessions } from './use-entered-project-sessions'
 
 // Non-session groups (messaging platforms) stay compact: show a few rows up
 // front, reveal more in larger steps on demand. Keeps a busy platform from
@@ -301,14 +309,19 @@ interface ChatSidebarProps extends React.ComponentProps<typeof Sidebar> {
   onArchiveSession: (sessionId: string) => void
   onBranchSession: (sessionId: string) => void
   onNewSessionInWorkspace: (path: null | string) => void
-  /** Create a brand-new session and open it as a tile on `dir`. */
-  onNewSessionSplit: (dir: SplitDir) => void
+  /** Create a brand-new session and open it as a tile. `dir` is the dock edge
+   *  (or `center` to stack a tab); `anchor`/`before` optionally pin it to a
+   *  specific zone / tab-strip slot, and `cwd` pins it to a project's path —
+   *  used by the new-session drags (the "New session" row and the project "+"
+   *  buttons), which land a fresh session exactly where it's dropped. The
+   *  context-menu "Open in split" path passes just a `dir`. */
+  onNewSessionSplit: NewSessionSplitHandler
   onManageCronJob: (jobId: string) => void
   onTriggerCronJob: (jobId: string) => Promise<void>
 }
 
 export function ChatSidebar({
-  currentView,
+  currentView: routeView,
   onNavigate,
   onLoadMoreSessions,
   onLoadMoreMessaging,
@@ -355,7 +368,7 @@ export function ChatSidebar({
   const grouping = useStore($sidebarGrouping)
   const ordering = useStore($sidebarOrdering)
   const statusFilter = useStore($sidebarStatusFilter)
-  const projectFilter = useStore($sidebarProjectFilter)
+  const persistedProjectFilter = useStore($sidebarProjectFilter)
   const profileFilter = useStore($sidebarProfileFilter)
   const prFilter = useStore($sidebarPrFilter)
   const prDataWanted = useStore($sidebarPrDataWanted)
@@ -378,6 +391,8 @@ export function ChatSidebar({
   // The sidebar highlight tracks the FOCUSED session — the interacted tile's
   // tab, else the main selection — so it stays 1:1 with whatever tab is active.
   const selectedSessionId = useStore($focusedStoredSessionId)
+  const focusedSessionIsTile = useStore($focusedSessionIsTile)
+  const currentView = focusedSessionIsTile ? 'chat' : routeView
   const sessions = useStore($sessions)
   const cronSessions = useStore($cronSessions)
   const cronJobs = useStore($cronJobs)
@@ -388,7 +403,6 @@ export function ChatSidebar({
   const sessionProfilesTruncated = useStore($sessionProfilesTruncated)
   const unreadCount = useStore($unreadFinishedSessionIds).length
   const profiles = useStore($profiles)
-  const profileColors = useStore($profileColors)
   const profileScope = useStore($profileScope)
   const activeConnectionId = useStore($activeConnectionId)
 
@@ -420,6 +434,16 @@ export function ChatSidebar({
   const projectOrderIds = useStore($sidebarProjectOrderIds)
   const projects = useStore($projects)
   const projectTree = useStore($projectTree)
+
+  // The persisted project filter's storage is shared across profiles, so ids
+  // picked in another profile don't resolve in the active one and the raw
+  // membership whitelist empties every tier of the sidebar (#96246). Narrow
+  // to ids the ACTIVE tree resolves; dead ids are inert, not fatal.
+  const projectFilter = useMemo(
+    () => resolveLiveProjectFilter(persistedProjectFilter, projectTree),
+    [persistedProjectFilter, projectTree]
+  )
+
   const projectTreeLoading = useStore($projectTreeLoading)
   const removedSessionIds = useStore($removedSessionIds)
   const reposScanning = useStore($reposScanning)
@@ -496,7 +520,8 @@ export function ChatSidebar({
   // One predicate for the status/project filters, so the flat list and the
   // project lanes narrow by the same rule. A project lane holds rows the loaded
   // page may not, so it has to be answerable per session rather than by
-  // membership in the filtered set.
+  // membership in the filtered set. Detached rows file under the Home bucket id
+  // (same rule as the overview overlay), so filtering to Home keeps Home's rows.
   const sessionMatchesFilters = useCallback(
     (session: SessionInfo) => {
       if (statusFilter.length && !statusFilter.includes(sessionStatusBucket(dotStates[session.id]))) {
@@ -519,7 +544,7 @@ export function ChatSidebar({
 
       // Same membership the sidebar groups and colors by, so a filtered row
       // lands in the lane the user picked it from.
-      return !projectFilter.length || projectFilter.includes(liveSessionProjectId(session, projects) ?? '')
+      return sessionMatchesProjectFilter(session, projectFilter, projects)
     },
     [statusFilter, projectFilter, profileFilter, showAllProfiles, prFilter, pullRequests, projects, dotStates]
   )
@@ -957,29 +982,12 @@ export function ChatSidebar({
 
   // Entering a project lazily hydrates its full lanes (repo -> lane -> sessions)
   // from the backend — same grouping/ids as the overview, just with rows.
-  const [enteredProjectTree, setEnteredProjectTree] = useState<SidebarProjectTree | null>(null)
-
-  useEffect(() => {
-    if (!enteredProjectId || !gatewayReady) {
-      setEnteredProjectTree(null)
-
-      return
-    }
-
-    let cancelled = false
-
-    void fetchProjectSessions(enteredProjectId).then(project => {
-      if (!cancelled) {
-        setEnteredProjectTree(project)
-      }
-    })
-
-    return () => {
-      cancelled = true
-    }
-    // `projectTree` in deps: re-hydrate after a tree refresh so the entered view
-    // stays current with new/ended sessions.
-  }, [enteredProjectId, gatewayReady, projectTree])
+  const {
+    project: enteredProjectTree,
+    failed: projectLoadFailed,
+    loading: projectLoading,
+    retry: retryProject
+  } = useEnteredProjectSessions(enteredProjectId, gatewayReady, projectTree, `${activeConnectionId}:${profileScope}`)
 
   // Prefer the hydrated tree; fall back to the overview node (empty lanes) while
   // the drill-in fetch is in flight, so the header/structure render immediately.
@@ -1006,14 +1014,22 @@ export function ChatSidebar({
     )
   }, [overviewEnteredProject, enteredProjectTree, orderRepos, isHiddenFromProjects])
 
+  const enteredProjectOverlaySessions = useMemo(
+    () => reconcileEnteredProjectSessions(agentSessions, overviewEnteredProject?.previewSessions),
+    [agentSessions, overviewEnteredProject?.previewSessions]
+  )
+
   // Overlay live `$sessions` onto the entered project so a just-created session
   // (which the backend snapshot hasn't folded in yet) counts as content and
-  // renders immediately — same optimistic layer as the overview previews. The
-  // backend now seeds each project folder as an (empty) repo, so the overlay
-  // always has a lane to place a new in-project session into.
+  // renders immediately. Also carry over the overview's current preview rows:
+  // its project tree and the separately hydrated drill-in can resolve at
+  // different times, but a row visible in the overview must not disappear on
+  // entry. The backend seeds each project folder as an (empty) repo, so the
+  // overlay always has a lane to place a missing in-project session into.
   const enteredProjectContent = useMemo(
-    () => (enteredProject ? overlayLiveLanes(enteredProject, agentSessions, removedSessionIds) : undefined),
-    [enteredProject, agentSessions, removedSessionIds]
+    () =>
+      enteredProject ? overlayLiveLanes(enteredProject, enteredProjectOverlaySessions, removedSessionIds) : undefined,
+    [enteredProject, enteredProjectOverlaySessions, removedSessionIds]
   )
 
   const scopedRepoPaths = useMemo(
@@ -1242,41 +1258,7 @@ export function ChatSidebar({
       .sort((a, b) => sessionTime(b.sessions[0]) - sessionTime(a.sessions[0]))
   }, [visibleMessagingSessions, messagingPlatformTotals, messagingTruncated, isPinnedSession, messagingProfile])
 
-  // Grouping by profile: one collapsible group per profile, color on the header
-  // (not on every row). Default profile floats to the top, the rest alpha.
-  // Only reachable while the sidebar is showing every profile — scoped to one,
-  // it would draw a single group around the whole list.
-  const profileGrouped = showAllProfiles && grouping === 'profile'
-
-  const profileGroups = useMemo<SidebarSessionGroup[] | undefined>(() => {
-    if (!profileGrouped) {
-      return undefined
-    }
-
-    const groups = new Map<string, SidebarSessionGroup>()
-
-    for (const session of agentSessions) {
-      const key = normalizeProfileKey(session.profile)
-
-      const group = groups.get(key) ?? {
-        color: resolveProfileColor(key, profileColors),
-        id: key,
-        label: key,
-        mode: 'profile',
-        path: null,
-        sessions: []
-      }
-
-      group.sessions.push(session)
-
-      groups.set(key, group)
-    }
-
-    // default (root) first, then the rest alphabetically.
-    return [...groups.values()].sort((a, b) =>
-      a.id === 'default' ? -1 : b.id === 'default' ? 1 : a.label.localeCompare(b.label)
-    )
-  }, [profileGrouped, agentSessions, profileColors])
+  const profileGroups = useGatewaySessionGroups(agentSessions, profileScope === ALL_PROFILES && grouping === 'profile')
 
   // The flat Sessions list always shows ALL recent sessions; Projects is a
   // parallel grouped view, not a filter on this one — nothing is hidden here.
@@ -1481,7 +1463,7 @@ export function ChatSidebar({
                   (item.id === 'artifacts' && currentView === 'artifacts') ||
                   (item.id === 'cron' && currentView === 'cron') ||
                   // Contributed rows light up at their own route.
-                  (Boolean(item.route) && pathname === item.route)
+                  (currentView === 'extension' && Boolean(item.route) && pathname === item.route)
 
                 const isNewSession = item.id === 'new-session'
 
@@ -1515,6 +1497,25 @@ export function ChatSidebar({
                       }
 
                       onNavigate(item)
+                    }}
+                    onPointerDown={event => {
+                      // The "New session" row is a drag source too: drag it onto
+                      // a chat zone's tab strip / edge / center to create the
+                      // session exactly there (stack / split). The pointer drag
+                      // session owns the gesture — a sub-threshold release falls
+                      // through to the onClick above (ordinary new session), and
+                      // an engaged drag suppresses that click so it never
+                      // double-creates. The create callback sets $newChatProfile
+                      // itself (the suppressed click can't), so a dragged new
+                      // session lands in the same profile a click would.
+                      if (!isNewSession) {
+                        return
+                      }
+
+                      startNewSessionDrag(placement => {
+                        $newChatProfile.set(null)
+                        onNewSessionSplit(placement.dir, { anchor: placement.anchor, before: placement.before })
+                      }, event)
                     }}
                     tooltip={
                       item.keybindActionId
@@ -1652,6 +1653,7 @@ export function ChatSidebar({
               />
             )}
 
+            {!trimmedQuery && inProject && projectLoadFailed && <SidebarLoadErrorState onRetry={retryProject} />}
             {!trimmedQuery && (
               <SidebarSessionsSection
                 activeProjectId={activeProjectId}
@@ -1677,7 +1679,7 @@ export function ChatSidebar({
                 )}
                 dndSensors={dndSensors}
                 emptyState={
-                  showSessionSkeletons ? (
+                  inProject && projectLoadFailed ? null : showSessionSkeletons || (inProject && projectLoading) ? (
                     <SidebarSessionSkeletons />
                   ) : (
                     <div className="grid min-h-16 place-items-center rounded-lg px-2 text-center text-xs text-(--ui-text-tertiary)">
@@ -1768,27 +1770,35 @@ export function ChatSidebar({
                       </div>
                     ) : (
                       <>
-                        {!showAllProfiles ? (
-                          <Tip label={agentsGrouped ? s.projects.newButton : s.nav['new-session']}>
-                            <Button
-                              aria-label={agentsGrouped ? s.projects.newButton : s.nav['new-session']}
-                              className={HEADER_ACTION_BTN}
-                              onClick={event => {
-                                event.stopPropagation()
-
-                                if (agentsGrouped) {
-                                  openProjectCreate()
-                                } else {
-                                  onNewSessionInWorkspace(null)
+                        {/* The flat-list header "+" is a drag source too — the
+                            same gesture as the nav's "New session" row: drag
+                            it onto a chat zone's tab strip / edge / center to
+                            create the session exactly there. Project-overview
+                            mode drags its "+" (the "New project" button) with
+                            the project-drag variant: a drop opens the SAME
+                            project dialog, and the created project starts at
+                            the dropped spot. */}
+                        <SidebarSectionAddButton
+                          ariaLabel={agentsGrouped ? s.projects.newButton : s.nav['new-session']}
+                          onNewProjectDrag={
+                            agentsGrouped
+                              ? {
+                                  // Dragging the "New project" + arms WHERE the
+                                  // project should start; the dialog flow consumes
+                                  // it on create (see $newProjectDropPlacement).
+                                  onArm: placement => $newProjectDropPlacement.set(placement)
                                 }
-                              }}
-                              size="icon-xs"
-                              variant="ghost"
-                            >
-                              <Codicon name="add" size="0.75rem" />
-                            </Button>
-                          </Tip>
-                        ) : null}
+                              : undefined
+                          }
+                          onNewSessionSplit={agentsGrouped ? undefined : onNewSessionSplit}
+                          onPlainClick={() => {
+                            if (agentsGrouped) {
+                              openProjectCreate()
+                            } else {
+                              onNewSessionInWorkspace(null)
+                            }
+                          }}
+                        />
                         <div className="grid size-6 place-items-center">
                           <SidebarFilterMenu className={HEADER_NAV_BTN} />
                         </div>
@@ -1804,16 +1814,14 @@ export function ChatSidebar({
                     ) : undefined
                   ) : undefined
                 }
-                liveSessions={inProject ? agentSessions : undefined}
+                liveSessions={inProject ? enteredProjectOverlaySessions : undefined}
                 manualOrderIds={agentOrderManual ? agentOrderIds : sortOrderIds}
                 onArchiveSession={onArchiveSession}
                 onBranchSession={onBranchSession}
                 onDeleteSession={onDeleteSession}
                 onEnterProject={onEnterProject}
-                // Unlike reorder below, this stays on across profiles: a folder
-                // is a folder, and the new session lands in the active profile
-                // — the same one the composer would have started it in.
                 onNewSessionInWorkspace={onNewSessionInWorkspace}
+                onNewSessionSplit={onNewSessionSplit}
                 onReorderProjects={showAllProfiles ? undefined : reorderProjects}
                 onReorderSessions={showAllProfiles ? undefined : reorderSessions}
                 onResumeSession={onResumeSession}

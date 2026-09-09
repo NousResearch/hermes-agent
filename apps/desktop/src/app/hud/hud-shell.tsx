@@ -2,6 +2,7 @@ import { useStore } from '@nanostores/react'
 import { type CSSProperties, useCallback, useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router'
 
+import { useViewedInterval } from '@/hooks/use-viewed-interval'
 import { chatMessageText } from '@/lib/chat-messages'
 import { $activeSessionAwaitingInput } from '@/store/prompts'
 import { $busy, $messages } from '@/store/session'
@@ -13,9 +14,9 @@ import { useHudClickThrough } from './click-through'
 import { useHudGameOverlay } from './game-overlay'
 import { useHudGlass } from './glass'
 import { useHudGoto, useReportHudSession } from './handoff'
-import { hudTranscriptHeight } from './layout'
 import { hudResizeDirections, useHudResizeHandle } from './resize-handle'
 import { useHudThreadFocus } from './thread-focus'
+import { useHudTranscriptBand } from './transcript-band'
 
 /** How long the transcript lingers at its glanceable opacity — after a turn
  *  lands, or after you let go of the composer — before it goes. This is the ONLY
@@ -38,11 +39,6 @@ const HUD_DIM_MS = Math.round(HUD_FADE_MS * 1.5)
  *  while the last of the text is still going — it reads as the transcript being
  *  drawn down into the bar rather than the two dissolving in lockstep. */
 const HUD_COLLAPSE_MS = Math.round(HUD_FADE_MS * 0.66)
-
-/** Breathing room the sheet keeps above the first row, so the fade has
- *  somewhere to land. Folded into the measured height rather than added in CSS,
- *  so an empty transcript measures a true zero instead of a 12px strip. */
-const HUD_SHEET_OVERHANG_PX = 12
 
 /** Composer on top, transcript always hanging below it — Spotlight's shape,
  *  rather than flipping to follow the screen edge the HUD is parked against. */
@@ -236,7 +232,11 @@ export function HudShell() {
   // hysteresis so the layout can't flutter while it's dragged along the line.
   const [edge, setEdge] = useState<'bottom' | 'top'>('top')
 
-  useEffect(() => {
+  // Viewed-gated (#88275): window position only changes while the user can
+  // see the window, so an ungated 300ms poll keeps the idle renderer hot
+  // forever. useViewedInterval parks the timer when hidden/unfocused and
+  // leading-ticks on return, so a drag is still picked up within one tick.
+  const measureEdge = useCallback(() => {
     // Measured on the WINDOW, and flush-only. Flipping is what lets the bar
     // reach the top of the screen at all: the window's top edge can sit against
     // the menu bar, and the flip moves the composer to that edge. Keying it off
@@ -247,33 +247,35 @@ export function HudShell() {
     const FLIP_ON = 0
     const FLIP_OFF = 4
 
-    const measure = () => {
-      // TRYING IT: the bar stays on top and the transcript always hangs below,
-      // wherever the HUD is parked. Flip the constant to re-enable the
-      // edge-aware layout (the CSS for both orientations is still here).
-      if (HUD_THREAD_ALWAYS_BELOW) {
-        setEdge('top')
+    // TRYING IT: the bar stays on top and the transcript always hangs below,
+    // wherever the HUD is parked. Flip the constant to re-enable the
+    // edge-aware layout (the CSS for both orientations is still here).
+    if (HUD_THREAD_ALWAYS_BELOW) {
+      setEdge('top')
 
-        return
-      }
-
-      // availTop ≈ menu bar / notch inset on macOS; screenY is in full-screen
-      // coordinates, so "parked at the top" means screenY ≈ availTop, not 0.
-      const availTop = (window.screen as { availTop?: number }).availTop ?? 0
-      const topGap = window.screenY - availTop
-
-      setEdge(prev => (topGap <= FLIP_ON ? 'top' : topGap >= FLIP_OFF ? 'bottom' : prev))
+      return
     }
 
-    measure()
-    const timer = setInterval(measure, 300)
-    window.addEventListener('resize', measure)
+    // availTop ≈ menu bar / notch inset on macOS; screenY is in full-screen
+    // coordinates, so "parked at the top" means screenY ≈ availTop, not 0.
+    const availTop = (window.screen as { availTop?: number }).availTop ?? 0
+    const topGap = window.screenY - availTop
+
+    setEdge(prev => (topGap <= FLIP_ON ? 'top' : topGap >= FLIP_OFF ? 'bottom' : prev))
+  }, [])
+
+  useViewedInterval(measureEdge, 300)
+
+  useEffect(() => {
+    measureEdge()
+    window.addEventListener('resize', measureEdge)
 
     return () => {
-      clearInterval(timer)
-      window.removeEventListener('resize', measure)
+      window.removeEventListener('resize', measureEdge)
     }
-  }, [])
+  }, [measureEdge])
+
+  const rootRef = useRef<HTMLDivElement | null>(null)
 
   // Whether bar + band actually cover the window. Gates the frost, which is
   // native vibrancy and therefore the WINDOW's content view — it fills the whole
@@ -282,91 +284,7 @@ export function HudShell() {
   // a grey slab hanging under the bar with nothing in it. Now that the band is
   // capped it almost never covers the window, so this is almost always false —
   // which is correct, and asking anything looser paints the slab back.
-  const [filled, setFilled] = useState(false)
-  const rootRef = useRef<HTMLDivElement | null>(null)
-
-  useEffect(() => {
-    const root = rootRef.current
-
-    if (!root) {
-      return
-    }
-
-    let viewport: HTMLElement | null = null
-    const ro = new ResizeObserver(() => measure())
-
-    const measure = () => {
-      const el = viewport ?? root.querySelector<HTMLElement>('[data-slot="aui_thread-viewport"]')
-
-      if (el !== viewport) {
-        viewport = el
-
-        if (el) {
-          ro.observe(el)
-
-          if (el.firstElementChild) {
-            ro.observe(el.firstElementChild)
-          }
-        }
-      }
-
-      // How tall the band actually needs to be — the tight bbox of the message
-      // rows only. Measuring to the viewport edge counted the full-window scroll
-      // container (min-height: 100%) as transcript and painted a empty slab almost
-      // the size of the HUD.
-      const rows = el?.querySelectorAll<HTMLElement>('[data-slot="aui_thread-content"] > *:not([data-slot])')
-
-      // Zero-height rows are not a transcript. A fresh thread still renders
-      // scaffolding inside the content box (clearance, empty state), so
-      // counting rows alone paid the overhang for nothing and left a sliver of
-      // sheet hanging under the bar with no text in it.
-      const text = !rows?.length
-        ? 0
-        : Math.max(0, rows[rows.length - 1].getBoundingClientRect().bottom - rows[0].getBoundingClientRect().top)
-
-      const contentSpan = text < 1 ? 0 : text + HUD_SHEET_OVERHANG_PX
-
-      // Once the HUD has a transcript, a resize must buy readable scrollback.
-      // The old glance-band ceiling froze this at 152px and turned every extra
-      // pixel of native window height into empty transparent chrome.
-      const visible = hudTranscriptHeight({
-        barHeight: root.querySelector<HTMLElement>('[data-slot="composer-dock"]')?.getBoundingClientRect().height ?? 0,
-        contentHeight: contentSpan,
-        viewportHeight: window.innerHeight
-      })
-
-      root.style.setProperty('--hud-band-height', `${visible}px`)
-
-      // …and the bar's real height, which is what the thread has to clear.
-      // --composer-measured-height would be the obvious source, but it is a
-      // surface var that never lands here, so the clearance silently fell back
-      // to the root estimate and reserved ~20px more than the bar occupies —
-      // a visible hole under the last message.
-      const bar = root.querySelector<HTMLElement>('[data-slot="composer-dock"]')
-      const barHeight = bar?.getBoundingClientRect().height ?? 0
-
-      if (bar) {
-        ro.observe(bar)
-        root.style.setProperty('--hud-bar-height', `${Math.round(barHeight)}px`)
-      }
-
-      setFilled(barHeight + visible >= window.innerHeight - 1)
-    }
-
-    // The viewport mounts async (lazy chat surface); poll briefly until it
-    // exists, then let the ResizeObserver own it. Window resize is separate:
-    // the transcript's rows may not change size, but the available scrollback
-    // must, so observing the rows alone cannot update the band.
-    measure()
-    const probe = setInterval(measure, 500)
-    window.addEventListener('resize', measure)
-
-    return () => {
-      clearInterval(probe)
-      window.removeEventListener('resize', measure)
-      ro.disconnect()
-    }
-  }, [])
+  const filled = useHudTranscriptBand(rootRef)
 
   useHudGlass(rootRef, filled)
   useHudClickThrough(rootRef)

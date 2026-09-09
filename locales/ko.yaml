@@ -137,6 +137,8 @@ gateway:
     picker_title:          "⚡ **Priority Processing**\\n\\n현재 모드: `{mode}`\\n\\n옵션을 선택하세요:"
     choice_fast:           "fast — Priority Processing 켜기"
     choice_normal:         "normal — 표준 처리"
+    choice_auto:           "auto — 매 턴의 처음 몇 초 동안 빠름"
+    choice_cold:           "cold — 세션의 첫 턴에만 빠름"
 
   footer:
     status:                "📎 런타임 푸터: **{state}**\n필드: `{fields}`\n플랫폼: `{platform}`"
@@ -269,6 +271,7 @@ Use `/title My Session` to name the current room session, `/resume --all` to lis
 Future messages in this room will use that transcript until `/reset` or another `/resume`.{msg_part}"
     blocked_not_owner:     "⚠️ /resume blocked: '**{name}**' belongs to a different user or chat. You can only resume sessions from this chat."
     no_named_sessions:     "이름이 지정된 세션이 없습니다.\n현재 세션에 이름을 지정하려면 `/title 내 세션`을 사용하고, 나중에 `/resume 내 세션`으로 돌아오세요."
+    all_requires_admin: "_참고: `--all`(채팅 간 목록)은 구성된 관리자가 필요합니다. 이 채팅의 세션만 표시합니다._"
     list_header:           "📋 **이름이 지정된 세션**\n"
     list_item:             "• **{title}**{preview_part}"
     list_item_numbered:    "{index}. **{title}**{preview_part}"

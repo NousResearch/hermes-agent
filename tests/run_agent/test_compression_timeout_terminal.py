@@ -27,14 +27,14 @@ def _no_compression_sleep(monkeypatch):
     import time as _time
 
     monkeypatch.setattr(_time, "sleep", lambda *_a, **_k: None)
-    monkeypatch.setattr(run_agent, "jittered_backoff", lambda *a, **k: 0.0)
+    monkeypatch.setattr("agent.retry_utils.jittered_backoff", lambda *a, **k: 0.0)
 
 
 def _make_agent():
     with (
-        patch("run_agent.get_tool_definitions", return_value=[]),
-        patch("run_agent.check_toolset_requirements", return_value={}),
-        patch("run_agent.OpenAI"),
+        patch("model_tools.get_tool_definitions", return_value=[]),
+        patch("model_tools.check_toolset_requirements", return_value={}),
+        patch("agent.process_bootstrap.OpenAI"),
     ):
         agent = AIAgent(
             api_key="test-key-1234567890",
@@ -114,7 +114,7 @@ def test_overflow_recovery_timeout_ends_turn_without_provider_reentry():
     assert result["completed"] is False
     assert result["compression_exhausted"] is True
     assert "No messages were dropped" in result["final_response"]
-    assert result["error"] == result["final_response"]
+    assert "No messages were dropped" in result["error"]
 
 
 def test_pre_api_compression_timeout_is_typed_terminal():

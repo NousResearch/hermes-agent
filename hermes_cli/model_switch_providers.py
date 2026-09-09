@@ -316,6 +316,16 @@ def _pool_usable(slug: str) -> bool:
         return False
 
 
+def _pool_has_credentials(slug: str) -> bool:
+    """Whether a pool has entries, including temporarily exhausted entries."""
+    try:
+        from agent.credential_pool import load_pool
+        return load_pool(slug).has_credentials()
+    except Exception as exc:
+        logger.debug("Credential pool check failed for %s: %s", slug, exc)
+        return False
+
+
 def _overlay_has_env_creds(pid: str, hermes_slug: str, overlay, read_env) -> bool:
     """Section-2 env/SDK credential check shared by the picker and the prefetch scan.
 
@@ -371,11 +381,44 @@ def _is_aws_sdk(pconfig) -> bool:
     return bool(pconfig) and getattr(pconfig, "auth_type", "") == "aws_sdk"
 
 
-def _live_or_curated_ids(slug: str, curated: dict, *fallback_keys: str, merge_models_dev: bool = True) -> list:
+def _is_configured_builtin_provider(
+    slug: str, user_providers: dict | None, current_provider: str,
+) -> bool:
+    """Whether a built-in row belongs in a config-aware picker listing.
+
+    A concrete ``providers:`` mapping means the caller loaded config.yaml, so
+    ambient credential environment variables must not add unrelated built-ins.
+    Keep the active provider visible even when it uses the legacy ``model:``
+    route rather than a providers entry.
+    """
+    if not isinstance(user_providers, dict):
+        return True
+    normalized = str(slug or "").strip().lower()
+    if not normalized:
+        return False
+    configured = {str(name).strip().lower() for name in user_providers if str(name).strip()}
+    return normalized == str(current_provider or "").strip().lower() or normalized in configured
+
+
+def _cached_model_ids(slug: str, *, refresh: bool) -> list:
+    """Use the shared cached discovery path, including an explicit refresh."""
+    from hermes_cli.models import cached_provider_model_ids
+
+    try:
+        return cached_provider_model_ids(slug, force_refresh=refresh)
+    except TypeError:
+        # Tests and external extensions may still provide the older one-argument
+        # callable; preserve that compatibility while keeping the real path fresh.
+        return cached_provider_model_ids(slug)
+
+
+def _live_or_curated_ids(
+    slug: str, curated: dict, *fallback_keys: str, merge_models_dev: bool = True, refresh: bool = False,
+) -> list:
     """``cached_provider_model_ids`` (the SAME disk-cached list ``hermes model`` builds), falling
     back to the curated list (merged with models.dev for preferred providers) when live is empty."""
-    from hermes_cli.models import _MODELS_DEV_PREFERRED, _merge_with_models_dev, cached_provider_model_ids
-    model_ids = cached_provider_model_ids(slug)
+    from hermes_cli.models import _MODELS_DEV_PREFERRED, _merge_with_models_dev
+    model_ids = _cached_model_ids(slug, refresh=refresh)
     if not model_ids:
         model_ids = _first_curated(curated, fallback_keys or (slug,))
         if merge_models_dev and slug in _MODELS_DEV_PREFERRED:
@@ -393,11 +436,13 @@ def _first_curated(curated: dict, keys) -> list:
     return model_ids
 
 
-def _aws_live_or_curated_ids(slug: str, curated: dict, *fallback_keys: str) -> list:
+def _aws_live_or_curated_ids(slug: str, curated: dict, *fallback_keys: str, refresh: bool = False) -> list:
     """Bedrock: live discovery reflects the active region (eu.*, ap.*) rather than the static
     us.* list; any failure falls back to the curated list."""
     try:
-        return _live_or_curated_ids(slug, curated, *fallback_keys, merge_models_dev=False) or []
+        return _live_or_curated_ids(
+            slug, curated, *fallback_keys, merge_models_dev=False, refresh=refresh,
+        ) or []
     except Exception:
         return _first_curated(curated, fallback_keys or (slug,)) or []
 
@@ -553,7 +598,9 @@ def _discover_endpoint_models(
 
 
 def _collect_authed_provider_slugs(
-    models_dev_data: dict, curated: dict[str, list[str]], excluded: list[str]) -> list[str]:
+    models_dev_data: dict, curated: dict[str, list[str]], excluded: list[str],
+    user_providers: dict | None = None, current_provider: str = "",
+) -> list[str]:
     """Quick-scan which providers have credentials, without fetching model lists.
 
     Mirrors the credential checks of sections 1, 2 and 2b of :func:`list_authenticated_providers`
@@ -574,6 +621,8 @@ def _collect_authed_provider_slugs(
         seen.update(k.lower() for k in keys)
 
     for hermes_id, _mdev_id, _pconfig, env_vars in _iter_builtin_candidates(models_dev_data, excluded_set, seen):
+        if not _is_configured_builtin_provider(hermes_id, user_providers, current_provider):
+            continue
         if _any_env(env_vars, _scoped_key_env) or _raw_pool_usable(hermes_id):
             _emit(hermes_id, hermes_id)
 
@@ -582,6 +631,8 @@ def _collect_authed_provider_slugs(
         hermes_slug = mdev_to_hermes.get(pid, pid)
         if _skip(seen, excluded_set, pid, hermes_slug) or overlay.auth_type == "aws_sdk":
             continue
+        if not _is_configured_builtin_provider(hermes_slug, user_providers, current_provider):
+            continue
         if (
             _overlay_has_env_creds(pid, hermes_slug, overlay, _scoped_key_env)
             or _auth_store_has_provider(pid, hermes_slug) or _pool_usable(hermes_slug)):
@@ -589,6 +640,8 @@ def _collect_authed_provider_slugs(
 
     for cp in CANONICAL_PROVIDERS:
         if _skip(seen, excluded_set, cp.slug):
+            continue
+        if not _is_configured_builtin_provider(cp.slug, user_providers, current_provider):
             continue
         cp_config = PROVIDER_REGISTRY.get(cp.slug)
         has_creds = bool(
@@ -709,9 +762,11 @@ def _lap_builtin_rows(b: _PickerBuild, data: dict, user_providers: dict) -> None
     from hermes_cli.model_switch import _declared_model_ids
     from agent.models_dev import get_provider_info
     for hermes_id, mdev_id, pconfig, env_vars in _iter_builtin_candidates(data, b.excluded, b.seen_slugs):
+        if not _is_configured_builtin_provider(hermes_id, user_providers, b.current_provider):
+            continue
         if not (_any_env(env_vars) or _raw_pool_usable(hermes_id)):
             continue
-        model_ids = _live_or_curated_ids(hermes_id, b.curated)
+        model_ids = _live_or_curated_ids(hermes_id, b.curated, refresh=b.refresh)
         # A providers.<built-in>.models block extends the discovered catalog; section 3 cannot
         # emit it later because this row owns the slug.
         configured = user_providers.get(hermes_id) if isinstance(user_providers, dict) else None
@@ -777,7 +832,7 @@ def _overlay_has_creds(b: _PickerBuild, pid: str, hermes_slug: str, overlay) -> 
     return has_creds
 
 
-def _lap_overlay_rows(b: _PickerBuild, data: dict) -> None:
+def _lap_overlay_rows(b: _PickerBuild, data: dict, user_providers: dict | None) -> None:
     """Section 2: Hermes-only providers (nous, openai-codex, copilot, opencode-go, ...)."""
     from agent.models_dev import PROVIDER_TO_MODELS_DEV
     from hermes_cli.providers import HERMES_OVERLAYS
@@ -789,30 +844,39 @@ def _lap_overlay_rows(b: _PickerBuild, data: dict) -> None:
         hermes_slug = mdev_to_hermes.get(pid, pid)
         if _skip(b.seen_slugs, b.excluded, pid, hermes_slug):
             continue
+        if not _is_configured_builtin_provider(hermes_slug, user_providers, b.current_provider) and not (
+            b.for_picker and _pool_has_credentials(hermes_slug)
+        ):
+            continue
         if not _overlay_has_creds(b, pid, hermes_slug, overlay):
             continue
         if hermes_slug in {"openai-codex", "copilot", "copilot-acp"}:
             # Live OAuth-backed discovery so Pro-only Codex slugs not in the static catalog
             # appear; falls back to curated when unreachable.
-            from hermes_cli.models import cached_provider_model_ids
-            model_ids = cached_provider_model_ids(hermes_slug)
+            model_ids = _cached_model_ids(hermes_slug, refresh=b.refresh)
         elif overlay.auth_type == "aws_sdk":
-            model_ids = _aws_live_or_curated_ids(hermes_slug, b.curated, hermes_slug, pid)
+            model_ids = _aws_live_or_curated_ids(
+                hermes_slug, b.curated, hermes_slug, pid, refresh=b.refresh,
+            )
         elif hermes_slug == "nous":
             model_ids = _nous_picker_model_ids(b.curated, b.force_fresh_nous_tier)
         else:
-            model_ids = _live_or_curated_ids(hermes_slug, b.curated, hermes_slug, pid)
+            model_ids = _live_or_curated_ids(
+                hermes_slug, b.curated, hermes_slug, pid, refresh=b.refresh,
+            )
         b.add_builtin_row(
             hermes_slug, get_label(hermes_slug), b.current_provider in (hermes_slug, pid), model_ids, "hermes")
         b.seen_slugs.add(pid.lower())
 
 
-def _lap_canonical_rows(b: _PickerBuild) -> None:
+def _lap_canonical_rows(b: _PickerBuild, user_providers: dict | None) -> None:
     """Section 2b: CANONICAL_PROVIDERS missed by sections 1/2."""
     from hermes_cli.auth import PROVIDER_REGISTRY
     from hermes_cli.models import CANONICAL_PROVIDERS
     for cp in CANONICAL_PROVIDERS:
         if _skip(b.seen_slugs, b.excluded, cp.slug):
+            continue
+        if not _is_configured_builtin_provider(cp.slug, user_providers, b.current_provider):
             continue
         cp_config = PROVIDER_REGISTRY.get(cp.slug)
         has_creds = False
@@ -831,9 +895,11 @@ def _lap_canonical_rows(b: _PickerBuild) -> None:
         if not has_creds:
             continue
         if _is_aws_sdk(cp_config):
-            model_ids = _aws_live_or_curated_ids(cp.slug, b.curated)
+            model_ids = _aws_live_or_curated_ids(cp.slug, b.curated, refresh=b.refresh)
         else:
-            model_ids = _live_or_curated_ids(cp.slug, b.curated, merge_models_dev=False)
+            model_ids = _live_or_curated_ids(
+                cp.slug, b.curated, merge_models_dev=False, refresh=b.refresh,
+            )
         b.add_builtin_row(
             cp.slug, cp.label, cp.slug == b.current_provider, model_ids, "canonical", uncapped_ok=False)
 
@@ -1071,7 +1137,10 @@ def list_authenticated_providers(
     current_provider = coerce_provider_id(current_provider)
     current_base_url = str(current_base_url or "").strip()
     current_model = str(current_model or "").strip()
-    user_providers = stringify_provider_map(user_providers)
+    # ``None`` means the caller did not supply config context at all, whereas
+    # ``{}`` means config.yaml was loaded and has no providers section.  Keep
+    # that distinction for the config-aware built-in gate below.
+    user_providers = stringify_provider_map(user_providers) if isinstance(user_providers, dict) else None
     data = fetch_models_dev()
 
     # A single excluded entry like ``copilot`` hides the provider under every key it surfaces
@@ -1086,7 +1155,16 @@ def list_authenticated_providers(
     # Warm the disk cache in parallel before the serial section loops (otherwise 15-30s of live
     # round-trips on a cold cache). Skipped when refresh=True (serial path force-refreshes) and
     # for <=3 providers (serial is fast enough; avoids thread-pool overhead).
-    prefetch_slugs = [] if refresh else _collect_authed_provider_slugs(data, b.curated, excluded_providers or [])
+    if refresh:
+        prefetch_slugs = []
+    elif user_providers is None and not current_provider:
+        # Preserve the established three-argument helper contract for callers
+        # without config context (including integrations that patch the helper).
+        prefetch_slugs = _collect_authed_provider_slugs(data, b.curated, excluded_providers or [])
+    else:
+        prefetch_slugs = _collect_authed_provider_slugs(
+            data, b.curated, excluded_providers or [], user_providers, current_provider,
+        )
     if len(prefetch_slugs) > 3:
         try:
             _prefetch_provider_models_parallel(prefetch_slugs)
@@ -1094,8 +1172,8 @@ def list_authenticated_providers(
             pass  # best-effort; serial path still works
 
     _lap_builtin_rows(b, data, user_providers)
-    _lap_overlay_rows(b, data)
-    _lap_canonical_rows(b)
+    _lap_overlay_rows(b, data, user_providers)
+    _lap_canonical_rows(b, user_providers)
     if user_providers and isinstance(user_providers, dict):
         _lap_user_provider_rows(b, user_providers)
     _lap_bare_custom_row(b, custom_providers)

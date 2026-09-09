@@ -108,7 +108,7 @@ class _ModelSwitchContext:
     one_turn: bool = False
     restore_snapshot: Optional[dict] = None
     current_model: str = ""
-    current_provider: str = "openrouter"
+    current_provider: str = ""
     current_base_url: str = ""
     current_api_key: str = ""
     user_provs: Any = None
@@ -127,7 +127,8 @@ class _ModelSwitchContext:
                 self.current_model = model_cfg.get("default", "")
                 self.current_provider = model_cfg.get("provider", self.current_provider)
                 self.current_base_url = model_cfg.get("base_url", "")
-            self.user_provs = cfg.get("providers")
+            raw_user_provs = cfg.get("providers")
+            self.user_provs = raw_user_provs if isinstance(raw_user_provs, dict) else {}
             try:
                 from hermes_cli.config import get_compatible_custom_providers
                 self.custom_provs = get_compatible_custom_providers(cfg)

@@ -144,11 +144,10 @@ _oauth_heal_clean_marks: Dict[str, Tuple[Any, ...]] = {}
 _OAUTH_HEAL_CLEAN_MARK_FILENAME = "oauth_heal_clean.json"
 
 
-def _size(p: Optional[Path]) -> Optional[int]:
-    try:
-        return p.stat().st_size if p is not None else None
-    except OSError:
-        return None
+def _json_shape(fingerprint: tuple) -> list:
+    """The fingerprint as it reads back from JSON (tuples become lists), so the on-disk compare
+    is exact."""
+    return json.loads(json.dumps(fingerprint))
 
 
 def _oauth_heal_clean_mark_path() -> Optional[Path]:
@@ -203,7 +202,7 @@ def _persist_oauth_heal_clean_mark(provider_id: str, fingerprint: tuple) -> None
             key: value for key, value in existing.items()
             if isinstance(key, str) and isinstance(value, list)
         }
-        new_mark = list(fingerprint)
+        new_mark = _json_shape(fingerprint)
         if marks.get(provider_id) == new_mark:
             return  # already recorded; skip the rewrite
         marks[provider_id] = new_mark
@@ -383,11 +382,14 @@ def _heal_forked_provider_block(
     return adopted
 
 
-def _mtime_ns(p: Optional[Path]) -> Optional[int]:
+def _stat_sig(p: Optional[Path]) -> Optional[Tuple[int, int]]:
+    """``(mtime_ns, size)`` from ONE stat, or None when absent — a torn pair from two stats could
+    leave a persisted clean mark matching a store rewritten between them."""
     try:
-        return p.stat().st_mtime_ns if p is not None else None
+        st = p.stat() if p is not None else None
     except OSError:
         return None
+    return (st.st_mtime_ns, st.st_size) if st is not None else None
 
 
 def _pool_rows(store: Dict[str, Any], provider_id: str) -> Tuple[Any, List[Any]]:
@@ -575,23 +577,15 @@ def _heal_forked_single_use_oauth_grants(provider_id: str) -> Optional[Dict[str,
     # rewrite (``rsync -t``, ``tar -p``, a restore) would otherwise leave a stale mark looking
     # current indefinitely rather than for one process.
     fingerprint = (
-        str(profile_path),
-        _mtime_ns(profile_path),
-        _mtime_ns(profile_singleton),
-        str(root_path),
-        _mtime_ns(root_path),
-        _mtime_ns(root_singleton),
-        _size(profile_path),
-        _size(profile_singleton),
-        _size(root_path),
-        _size(root_singleton),
+        str(profile_path), _stat_sig(profile_path), _stat_sig(profile_singleton),
+        str(root_path), _stat_sig(root_path), _stat_sig(root_singleton),
     )
     if _oauth_heal_clean_marks.get(provider_id) == fingerprint:
         return None
     # Same check against the on-disk mark, BEFORE taking any lock: a fresh process would
     # otherwise pay two nested exclusive auth-store locks — a full AUTH_LOCK_TIMEOUT_SECONDS
     # each behind a sibling holding them — only to find nothing to consolidate.
-    if _persisted_oauth_heal_fingerprint(provider_id) == list(fingerprint):
+    if _persisted_oauth_heal_fingerprint(provider_id) == _json_shape(fingerprint):
         _oauth_heal_clean_marks[provider_id] = fingerprint
         return None
     if fingerprint[1] is None and fingerprint[2] is None:

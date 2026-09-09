@@ -4448,6 +4448,19 @@ class TestSessionPinAndStaleArchive:
         assert db.set_session_pinned("s1", False) is True
         assert self._pinned(db, "s1") == 0
 
+    def test_pinning_a_hidden_session_makes_it_listable(self, db):
+        """A bot-tile session is born hidden (#106171). Pinning it must clear ``hidden``, or the
+        session is pinned-but-invisible: absent from both the default listing and the back-fill."""
+        db.create_session(session_id="s1", source="cli")
+        db.append_message(session_id="s1", role="user", content="hi")
+        db.set_session_hidden("s1", True)
+
+        db.set_session_pinned("s1", True)
+
+        assert db.get_session("s1")["hidden"] == 0
+        listed_ids = [s["id"] for s in db.list_sessions_rich(min_message_count=1)]
+        assert "s1" in listed_ids
+
 
 
     # ── pinned back-fill past the page window ─────────────────────────────

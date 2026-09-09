@@ -876,8 +876,13 @@ class SessionSessionsMixin:
         return True
 
     def set_session_pinned(self, session_id: str, pinned: bool) -> bool:
-        """Pin/unpin a session and its compression lineage (pins are exempt from the auto_archive sweep)."""
-        return self._set_lineage_column("pinned", session_id, int(pinned))
+        """Pin/unpin a session and its compression lineage (pins are exempt from the auto_archive sweep).
+        Pinning also clears ``hidden``: a pin means "keep this visible", and a hidden+pinned row is
+        otherwise absent from both the default listing and the pinned back-fill (see #106171)."""
+        result = self._set_lineage_column("pinned", session_id, int(pinned))
+        if pinned:
+            self._set_lineage_column("hidden", session_id, 0)
+        return result
 
     def set_session_hidden(self, session_id: str, hidden: bool) -> bool:
         """Hide/unhide a session and its compression lineage from the default listing; still resumable."""

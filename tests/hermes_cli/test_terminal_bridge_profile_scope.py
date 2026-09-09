@@ -91,3 +91,37 @@ def test_secondary_profile_reload_does_not_bridge_into_shared_env(
     # tommy's `local` must NOT have leaked into the shared process env.
     assert os.environ["TERMINAL_ENV"] == "ssh"
     assert os.environ["TERMINAL_SSH_HOST"] == "10.10.0.103"
+
+
+def test_argumentless_reload_under_override_does_not_bridge(tmp_path, monkeypatch):
+    """Route 2 (#102769): an argument-less load resolves home_path from the process
+    HERMES_HOME, so the bridge is called with the *launch* home and passes the
+    override-immune guard - but a routed-profile override is active, and
+    apply_terminal_config_to_env reads config via the override-FOLLOWING
+    get_hermes_home(). Without the override guard it bridges the routed profile's
+    docker backend into the shared env; with it, the launch env survives.
+    """
+    launch_home = tmp_path / "laptop"
+    routed_home = tmp_path / "browser-scout"
+    _write_terminal_config(
+        launch_home,
+        "terminal:\n"
+        "  backend: ssh\n"
+        "  ssh_host: 10.10.0.103\n"
+        "  ssh_user: bergmann\n",
+    )
+    _write_terminal_config(routed_home, "terminal:\n  backend: docker\n")
+    monkeypatch.setenv("HERMES_HOME", str(launch_home))
+    monkeypatch.setenv("TERMINAL_ENV", "ssh")
+    monkeypatch.setenv("TERMINAL_SSH_HOST", "10.10.0.103")
+
+    # Routed-profile turn scope active; the bridge is invoked with the launch home
+    # (what an argument-less load_hermes_dotenv() resolves from the process env).
+    token = set_hermes_home_override(str(routed_home))
+    try:
+        env_loader._reapply_terminal_config_bridge(launch_home)
+    finally:
+        reset_hermes_home_override(token)
+
+    assert os.environ["TERMINAL_ENV"] == "ssh"
+    assert os.environ["TERMINAL_SSH_HOST"] == "10.10.0.103"

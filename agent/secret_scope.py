@@ -137,6 +137,18 @@ def get_secret(name: str, default: Optional[str] = None) -> Optional[str]:
     return _environ_or(name, default)
 
 
+def secret_or(name: str, default: str = "") -> str:
+    """``get_secret`` for a fail-closed policy read: an unscoped-multiplex miss
+    returns *default* instead of raising. Use for profile-varying policy toggles
+    where the empty/default value is the safe (restrictive) one - NOT for
+    HERMES_WRITE_SAFE_ROOT, whose empty value is permissive (see
+    agent.file_safety._safe_write_root_raw for that key's layered resolution)."""
+    try:
+        return get_secret(name, default) or default
+    except UnscopedSecretError:
+        return default
+
+
 def _strip_inline_comment(value: str) -> str:
     """Strip a dotenv-style inline comment (python-dotenv semantics): quoted values
     scan to the matching close quote (backslash-aware for double quotes) and drop a

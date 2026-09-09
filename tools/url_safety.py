@@ -137,7 +137,12 @@ def _global_allow_private_urls() -> bool:
 
 def _resolve_allow_private_urls() -> bool:
     """Resolve the effective private-URL toggle from the active config scope."""
-    env_val = os.getenv("HERMES_ALLOW_PRIVATE_URLS", "").strip().lower()
+    # Scope-aware read: under multiplex os.environ carries another profile's value;
+    # a leaked "true" here would disable SSRF blocking for a profile that never
+    # opted in. secret_or resolves the bound profile; unscoped-multiplex misses fall
+    # to "" -> fall through to config (fail closed to blocking).
+    from agent.secret_scope import secret_or
+    env_val = secret_or("HERMES_ALLOW_PRIVATE_URLS", "").strip().lower()
     if env_val in {"true", "1", "yes"}:
         return True
     if env_val in {"false", "0", "no"}:

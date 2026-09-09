@@ -110,7 +110,8 @@ def touch_activity_if_due(state: dict, label: str) -> None:
 def get_sandbox_dir() -> Path:
     """Host-side root for all sandbox storage (Docker workspaces, Singularity
     overlays/SIF cache). ``TERMINAL_SANDBOX_DIR`` overrides ``{HERMES_HOME}/sandboxes``."""
-    custom = os.getenv("TERMINAL_SANDBOX_DIR")
+    from tools.terminal_scope import terminal_env
+    custom = terminal_env("TERMINAL_SANDBOX_DIR") or None
     p = Path(custom) if custom else get_hermes_home() / "sandboxes"
     p.mkdir(parents=True, exist_ok=True)
     return p

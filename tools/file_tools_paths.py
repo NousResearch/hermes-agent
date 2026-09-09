@@ -44,6 +44,7 @@ def _terminal_env_type_for_task(task_id: str = "default") -> str:
     try:
         from tools.terminal_tool import (
             _active_environments, _env_lock, _get_env_config, _resolve_container_task_id)
+        from tools.terminal_scope import terminal_env
 
         try:
             container_key = _resolve_container_task_id(task_id)
@@ -57,9 +58,13 @@ def _terminal_env_type_for_task(task_id: str = "default") -> str:
             stamped = getattr(env, "_hermes_backend_name", None)
             if hint or (isinstance(stamped, str) and stamped):
                 return hint or stamped
-        return str(_get_env_config().get("env_type") or os.getenv("TERMINAL_ENV") or "local").lower()
+        return str(_get_env_config().get("env_type") or terminal_env("TERMINAL_ENV") or "local").lower()
     except Exception:
-        return str(os.getenv("TERMINAL_ENV") or "local").lower()
+        try:
+            from tools.terminal_scope import terminal_env
+            return str(terminal_env("TERMINAL_ENV") or "local").lower()
+        except Exception:
+            return "local"
 
 
 def _uses_container_paths(task_id: str = "default") -> bool:

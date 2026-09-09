@@ -400,6 +400,17 @@ def _reapply_terminal_config_bridge(home_path: Path) -> None:
     try:
         if Path(home_path).resolve() != _process_hermes_home().resolve():
             return
+        # An argument-less load_hermes_dotenv() (lazy import mid-tick) resolves home_path from the process
+        # HERMES_HOME, so it passes the override-immune guard above even while a routed-profile home override
+        # is active - but apply_terminal_config_to_env() reads config via the override-FOLLOWING
+        # get_hermes_home(), which would bridge the routed profile's terminal.* into the shared os.environ and
+        # hijack the launch profile's next unscoped turn (#102769 route 2). Any override must suppress the
+        # bridge - unlike the multiplex-gated dotenv skip above, since apply_terminal_config_to_env follows
+        # the override regardless of multiplex.
+        from hermes_constants import get_hermes_home_override
+
+        if get_hermes_home_override() is not None:
+            return
         from hermes_cli.config import apply_terminal_config_to_env
 
         apply_terminal_config_to_env(env=None)

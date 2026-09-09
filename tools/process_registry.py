@@ -97,7 +97,11 @@ def _worker_memory_max_bytes() -> int:
     isolation composes with PR #57121 instead of inventing a second knob.
     """
     override_bound: Optional[int] = None
-    override = os.getenv("TERMINAL_LOCAL_MEMORY_MAX_MB", "").strip()
+    from tools.terminal_scope import terminal_env, TerminalPolicyUnavailable
+    try:
+        override = terminal_env("TERMINAL_LOCAL_MEMORY_MAX_MB", "").strip()
+    except TerminalPolicyUnavailable:
+        override = ""  # refusal scope: no override, use the built-in default cap
     if override:
         try:
             parsed = int(override) * 1024 * 1024
@@ -1630,10 +1634,11 @@ class ProcessRegistry(ProcessCheckpointMixin):
         ``timeout`` defaults to (and is clamped by) TERMINAL_TIMEOUT. Returns a dict
         with status exited|timeout|interrupted|not_found|error and an output snapshot."""
         from tools.interrupt import is_interrupted as _is_interrupted
+        from tools.terminal_scope import terminal_env, TerminalPolicyUnavailable
 
         try:
-            max_timeout = int(os.getenv("TERMINAL_TIMEOUT", "180"))
-        except (ValueError, TypeError):
+            max_timeout = int(terminal_env("TERMINAL_TIMEOUT", "180"))
+        except (ValueError, TypeError, TerminalPolicyUnavailable):
             max_timeout = 180
         # The schema says minimum=1 but not every caller enforces it; timeout=0 is
         # falsy and would silently fall through to the default wait.

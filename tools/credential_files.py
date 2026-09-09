@@ -18,6 +18,7 @@ from hermes_cli.config import cfg_get
 from hermes_constants import get_hermes_dir, get_hermes_home
 
 from agent.skill_utils import EXCLUDED_SKILL_DIRS
+from tools.terminal_scope import terminal_env
 
 try:  # pragma: no cover - exercised via the fail-closed test below
     from agent.file_safety import get_read_block_error
@@ -301,7 +302,7 @@ def map_cache_path_to_container(host_path: str, container_base: str = "/root/.he
 
 def from_agent_visible_cache_path(container_path: str, container_base: str = "/root/.hermes") -> str:
     """Inverse of :func:`to_agent_visible_cache_path`; unchanged unless Docker + cache dir."""
-    if os.environ.get("TERMINAL_ENV", "local") != "docker":
+    if terminal_env("TERMINAL_ENV", "local") != "docker":
         return container_path
     mapped = _remap_cache_path(container_path, container_base, "container_path", "host_path", lambda root, rel: str(Path(root) / rel))
     return mapped if mapped is not None else container_path
@@ -326,7 +327,7 @@ def to_agent_visible_cache_path(host_path: str, container_base: str = "/root/.he
     actual remote home. Previously these backends synced the bytes but still rendered the dangling host path
     (#76577 gap).
     """
-    backend = (os.environ.get("TERMINAL_ENV") or "local").strip().lower()
+    backend = (terminal_env("TERMINAL_ENV", "local") or "local").strip().lower()
     if backend in _HOME_RELATIVE_BACKENDS:
         container_base = "~/.hermes"
     elif backend not in ("docker", "modal"):

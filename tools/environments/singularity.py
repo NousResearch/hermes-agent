@@ -60,7 +60,8 @@ def _save_snapshots(data: dict) -> None:
 
 def _get_scratch_dir() -> Path:
     """``TERMINAL_SCRATCH_DIR`` override, else a writable ``/scratch`` (HPC), else the sandbox dir."""
-    custom_scratch = os.getenv("TERMINAL_SCRATCH_DIR")
+    from tools.terminal_scope import terminal_env
+    custom_scratch = terminal_env("TERMINAL_SCRATCH_DIR") or None
     if custom_scratch:
         scratch_path = Path(custom_scratch)
     else:

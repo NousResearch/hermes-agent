@@ -54,7 +54,7 @@ def scope_terminal_cwd() -> str:
     try:
         from tools.terminal_scope import terminal_env
     except ImportError:
-        return os.environ.get("TERMINAL_CWD", "")
+        return os.environ.get("TERMINAL_CWD", "")  # scope-exempt: ImportError fallback for terminal_env
     return terminal_env("TERMINAL_CWD", "")
 
 

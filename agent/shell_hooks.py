@@ -553,7 +553,13 @@ def _command_script_path(command: str) -> str:
 
 def _resolve_effective_accept(cfg: Dict[str, Any], accept_hooks_arg: bool) -> bool:
     """Any truthy opt-in channel wins: explicit arg, HERMES_ACCEPT_HOOKS, hooks_auto_accept."""
-    if accept_hooks_arg or os.environ.get("HERMES_ACCEPT_HOOKS", "").strip().lower() in _TRUTHY:
+    # Scope-aware: under multiplex os.environ holds another profile's value, and a
+    # leaked truthy here would auto-approve hooks for a profile that never opted in
+    # (trust-boundary leak). secret_or resolves the bound profile; unscoped-multiplex
+    # misses fall to "" (fail closed -> require explicit approval).
+    from agent.secret_scope import secret_or
+    env_accept = secret_or("HERMES_ACCEPT_HOOKS", "").strip().lower()
+    if accept_hooks_arg or env_accept in _TRUTHY:
         return True
     cfg_val = cfg.get("hooks_auto_accept", False)
     return cfg_val if isinstance(cfg_val, bool) else isinstance(cfg_val, str) and cfg_val.strip().lower() in _TRUTHY

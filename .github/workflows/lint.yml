@@ -200,3 +200,10 @@ jobs:
             git fetch --no-tags --deepen=1000 origin "${{ github.base_ref }}" HEAD
           done
           python scripts/ci/check_public_surface.py --base "origin/${{ github.base_ref }}" --head HEAD
+
+      # Under gateway multiplexing one process serves every profile off one shared
+      # os.environ, so a raw os.getenv of a profile-varying key reads whichever
+      # profile loaded last (cross-profile leak). Reads must go through the
+      # fail-closed profile scope; see scripts/check_profile_env_scope.py.
+      - name: Forbid raw reads of profile-varying env vars
+        run: python scripts/check_profile_env_scope.py

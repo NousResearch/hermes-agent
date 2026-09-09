@@ -15,10 +15,10 @@ import { type RefObject, useEffect } from 'react'
  * - Focus BESIDE the shell is a portalled dialog, popover or menu, and it owns
  *   the next click — including the one outside itself that dismisses it, which
  *   the hit test cannot see coming. That pins the window solid.
- * - Focus INSIDE the shell does not. The composer holding the caret is the
- *   HUD's resting state rather than a claim on the whole rectangle, and reading
- *   it as one is what made an engaged HUD eat every click in its own empty
- *   space — on a fresh thread, the entire window.
+ * - Focus INSIDE the shell is normally the HUD's resting state — except for
+ *   the composer caret. On Windows the native window must stay solid while the
+ *   editor owns focus: making it click-through can immediately reactivate the
+ *   application underneath, steal the caret, and collapse the transcript.
  */
 export function hudIgnoresMouse(
   root: Element,
@@ -34,11 +34,16 @@ export function hudIgnoresMouse(
   }
 
   const overSomething = hit !== null && !hit.contains(root)
-  // `windowFocused` is what stops a stale `active` — the composer keeps focus
-  // after you click away to another app — pinning the HUD solid forever.
+
+  const composerFocused =
+    windowFocused &&
+    active !== null &&
+    root.contains(active) &&
+    active.closest('[data-slot="composer-rich-input"]') !== null
+
   const overlayFocused = windowFocused && active !== null && !root.contains(active) && !active.contains(root)
 
-  return !overSomething && !overlayFocused
+  return !composerFocused && !overSomething && !overlayFocused
 }
 
 /**
@@ -63,10 +68,16 @@ export function hudIgnoresMouse(
  * decision, a different courier.
  *
  * It follows that nothing in HUD mode may declare `-webkit-app-region: drag`
- * at all: a draggable region swallows the page's mouse events, so the moves
- * never arrive and the window is stranded on whatever it last decided —
- * usually transparent, which is also why pressing the handle fell through to
- * the app behind. Dragging is `useHudComposerDrag` instead.
+ * on macOS/Windows: a draggable region swallows the page's mouse events, so
+ * the moves never arrive and the window is stranded on whatever it last
+ * decided — usually transparent, which is also why pressing the handle fell
+ * through to the app behind. Dragging there is `useHudComposerDrag` instead.
+ *
+ * Linux is the exception: the solidity decision is fed from MAIN's cursor
+ * poll (`startHudCursorFeed`), which a drag region cannot starve — so the
+ * HUD composer root declares `-webkit-app-region: drag` (input carved out
+ * as no-drag) and the compositor moves the window natively. That is also
+ * the only move that works on Wayland, where `setBounds` position is a no-op.
  */
 export function useHudClickThrough(rootRef: RefObject<HTMLElement | null>): void {
   useEffect(() => {

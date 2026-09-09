@@ -251,6 +251,12 @@ class TestUnsupportedPlatform:
         ("Linux", "riscv64", False),
     ])
     def test_is_platform_supported(self, system, machine, expected):
+        # The patched (system, machine) pairs are table inputs, not a host
+        # fake: is_platform_supported() is a pure string mapping that touches
+        # no OS facility beneath the check, so there is nothing for a real
+        # host to falsify. Two of the rows (Windows/AMD64, Linux/riscv64)
+        # could never execute honestly anyway — the second has no CI runner
+        # on any lane.
         with patch("tools.tirith_security.platform.system", return_value=system), \
              patch("tools.tirith_security.platform.machine", return_value=machine):
             assert _tirith_mod.is_platform_supported() is expected
@@ -597,7 +603,7 @@ class TestSpawnWarningDedup:
         }
         mock_run.side_effect = FileNotFoundError("[WinError 2]")
         # Fresh dedupe state — clear any keys left by other tests.
-        _tirith_mod._reset_spawn_warning_state()
+        _tirith_mod._warned_messages.clear()
 
         with caplog.at_level("WARNING", logger="tools.tirith_security"):
             for i in range(15):

@@ -279,3 +279,66 @@ class TestContextCacheKeyNormalization:
         assert "m1@http://host/v1/" not in cache
 
 
+class TestDetectServerTypeNegativeCaching:
+    """A failed detect_local_server_type verdict is cached briefly (#89863).
+
+    Previously only positive verdicts were memoized, so a remote endpoint
+    that answered the whole waterfall with 401s (no recognizable server
+    type) was re-probed — 5 requests — on every image-bearing turn.
+    """
+
+    @staticmethod
+    def _client_all_401():
+        client = MagicMock()
+        client.__enter__ = lambda s: client
+        client.__exit__ = MagicMock(return_value=False)
+        resp = MagicMock()
+        resp.status_code = 401
+        client.get.return_value = resp
+        return client
+
+    def test_negative_verdict_is_cached_in_memory(self):
+        from agent.model_metadata import detect_local_server_type
+        from agent import model_metadata
+
+        client = self._client_all_401()
+        with patch("httpx.Client", return_value=client):
+            assert detect_local_server_type("http://remote:8080/v1") is None
+            assert detect_local_server_type("http://remote:8080/v1") is None
+
+        # Second call served from the in-memory negative entry: the
+        # waterfall ran exactly once (5 GETs), not twice.
+        assert client.get.call_count == 5
+        assert "http://remote:8080" in model_metadata._endpoint_probe_path_cache
+
+    def test_negative_verdict_not_written_to_disk(self):
+        from agent.model_metadata import detect_local_server_type
+        from agent import model_metadata
+
+        with patch("httpx.Client", return_value=self._client_all_401()), patch.object(
+            model_metadata, "_local_probe_disk_put"
+        ) as disk_put:
+            assert detect_local_server_type("http://remote2:8080/v1") is None
+        disk_put.assert_not_called()
+
+    def test_negative_verdict_expires_quickly(self):
+        """The short failure TTL keeps a transient failure recoverable."""
+        import time as _time
+        from agent.model_metadata import detect_local_server_type
+        from agent import model_metadata
+
+        client = self._client_all_401()
+        with patch("httpx.Client", return_value=client):
+            assert detect_local_server_type("http://remote3:8080/v1") is None
+            # Age the entry past the failure TTL.
+            model_metadata._endpoint_probe_path_cache["http://remote3:8080"] = (
+                None,
+                _time.monotonic()
+                - model_metadata._ENDPOINT_PROBE_FAILURE_TTL_SECONDS
+                - 1,
+            )
+            assert detect_local_server_type("http://remote3:8080/v1") is None
+
+        assert client.get.call_count == 10  # waterfall re-ran after expiry
+
+

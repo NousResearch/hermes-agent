@@ -365,6 +365,49 @@ export const formatAbandonedClarify = (question: string, choices: string[] | nul
   return [head, ...opts, `  (${reason} — no selection)`].join('\n')
 }
 
+/**
+ * Batch counterpart of `formatAbandonedClarify`: every question on its own
+ * line, answered ones keeping their locked answer (partials survive a
+ * timeout server-side, so the record must show what was actually sent).
+ */
+export const formatAbandonedClarifyBatch = (
+  questions: { qid: string; question: string }[],
+  answers: Record<string, string>,
+  reason: string
+) => {
+  const lines = questions.map(q => {
+    const answer = answers[q.qid]
+
+    return answer ? `  ✓ ${q.question} → ${answer}` : `  · ${q.question} (no answer)`
+  })
+
+  return [`ask (${questions.length} questions)`, ...lines, `  (${reason})`].join('\n')
+}
+
+/**
+ * Cursor/draft restore for re-visiting an answered batch clarify question
+ * (Tab/Shift-Tab): a choice answer puts the cursor back on its row; an
+ * answer that matches no choice was typed via Other, so the cursor lands on
+ * the Other row (index = choices.length) with the text staged for editing.
+ * Unanswered questions restore to a clean cursor.
+ */
+export const clarifyBatchRevisitState = (
+  choices: readonly string[],
+  answer: string | undefined
+): { custom: string; sel: number } => {
+  if (answer === undefined || answer === '') {
+    return { custom: '', sel: 0 }
+  }
+
+  const choiceIndex = choices.indexOf(answer)
+
+  if (choiceIndex >= 0) {
+    return { custom: '', sel: choiceIndex }
+  }
+
+  return { custom: answer, sel: choices.length > 0 ? choices.length : 0 }
+}
+
 export const flat = (r: Record<string, string[]>) => Object.values(r).flat()
 
 const COMPACT_NUMBER = new Intl.NumberFormat('en-US', { maximumFractionDigits: 1, notation: 'compact' })

@@ -7,7 +7,7 @@ Verifies that ``HermesCLI._handle_update_command`` correctly:
 - Cancels cleanly when ``_prompt_text_input_modal`` returns None (timeout /
   modal dismissed)
 
-Also verifies that ``hermes_cli.main._launch_tui`` correctly handles exit
+Also verifies that ``main_tui_launch._launch_tui`` correctly handles exit
 code 42 (the TUI's signal to trigger an update) by calling
 ``relaunch(["update"], preserve_inherited=False)`` from the Python wrapper
 side.  The companion Vitest (``ui-tui/src/__tests__/createSlashHandler.test.ts``)
@@ -23,6 +23,7 @@ from unittest.mock import patch
 import pytest
 
 from cli import HermesCLI
+from hermes_cli import main_tui_launch
 
 
 def _bound(fn, instance):

@@ -31,7 +31,11 @@ HEADERS = {"X-Hermes-Session-Token": _SESSION_TOKEN}
 # derived from the catalog so any future virtual provider is covered without a
 # hardcoded slug.
 _VIRTUAL = {d.slug for d in provider_catalog() if d.auth_type == "virtual"}
-_EXEMPT = {"custom"} | _VIRTUAL
+# Keyless providers (opencode-free) are served anonymously: no credential
+# exists, so there is nothing to configure on either Providers tab. Derived
+# from the catalog flag so any future keyless provider is covered.
+_KEYLESS = {d.slug for d in provider_catalog() if d.keyless}
+_EXEMPT = {"custom"} | _VIRTUAL | _KEYLESS
 
 # Providers that legitimately offer BOTH auth methods and so intentionally
 # appear on both desktop tabs (an API-key card AND an account sign-in card).

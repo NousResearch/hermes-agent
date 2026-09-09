@@ -563,12 +563,13 @@ class TestWhisperHallucinationFilter:
 # ============================================================================
 
 class TestPlayAudioFile:
+    @pytest.mark.linux_only
     def test_play_wav_via_sounddevice(self, monkeypatch, sample_wav):
         np = pytest.importorskip("numpy")
-        # Pin to a non-macOS platform: on macOS WAV output deliberately skips
-        # sounddevice (see TestMacOSAudioOutputPolicy), so this path is only
-        # exercised off Darwin.
-        monkeypatch.setattr("tools.voice_mode.platform.system", lambda: "Linux")
+        # Linux-gated rather than faking a non-macOS platform: on macOS WAV
+        # output deliberately skips sounddevice (see
+        # TestMacOSAudioOutputPolicy), so this path is only exercised off
+        # Darwin and the host now selects it by itself.
 
         mock_sd_obj = MagicMock()
         # Simulate stream completing immediately (get_stream().active = False)
@@ -594,9 +595,13 @@ class TestPlayAudioFile:
 # ============================================================================
 
 class TestMacOSAudioOutputPolicy:
+    """macOS-gated: the policy exists because PortAudio/CoreAudio init raises
+    a TCC media-library prompt, which no faked platform on Linux reproduces —
+    and `afplay` only resolves on a real macOS host."""
+
+    @pytest.mark.macos_only
     def test_play_audio_file_skips_sounddevice_on_macos(self, monkeypatch, sample_wav):
         """On macOS, WAV playback must not import sounddevice; it routes to afplay."""
-        monkeypatch.setattr("tools.voice_mode.platform.system", lambda: "Darwin")
 
         def _forbidden_import():
             raise AssertionError("sounddevice must not be imported for output on macOS")
@@ -618,7 +623,8 @@ class TestMacOSAudioOutputPolicy:
             popen_cmds.append(cmd)
             return _FakeProc()
 
-        monkeypatch.setattr("shutil.which", lambda exe: f"/usr/bin/{exe}")
+        # Only Popen is stubbed: the host resolves afplay for real, so the
+        # argv assertion below reflects real player selection.
         monkeypatch.setattr("subprocess.Popen", _fake_popen)
 
         from tools.voice_mode import play_audio_file
@@ -629,10 +635,10 @@ class TestMacOSAudioOutputPolicy:
         assert popen_cmds, "expected a system player to be invoked"
         assert popen_cmds[0][0] == "afplay"
 
+    @pytest.mark.macos_only
     def test_play_beep_routes_through_afplay_on_macos(self, monkeypatch):
         """On macOS, beeps synthesize with numpy but play via the tempfile/afplay path."""
         pytest.importorskip("numpy")
-        monkeypatch.setattr("tools.voice_mode.platform.system", lambda: "Darwin")
 
         def _forbidden_import():
             raise AssertionError("sounddevice must not be imported for beeps on macOS")

@@ -16,7 +16,7 @@ import pytest
 def _write_auth_store(tmp_path, payload: dict) -> None:
     hermes_home = tmp_path / "hermes"
     hermes_home.mkdir(parents=True, exist_ok=True)
-    (hermes_home / "auth.json").write_text(json.dumps(payload, indent=2))
+    (hermes_home / "auth.json").write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
 
 def _entry(
@@ -161,3 +161,82 @@ def test_multi_key_429_keeps_full_bench(tmp_path, monkeypatch):
     )
     assert pool.has_available() is False
     assert pool.select() is None
+
+
+# ── #82154: UNVERIFIED billing must not keep the one-hour bench ──────────────
+# Anthropic's "out of extra usage" 400 is ambiguous: the same body is returned
+# when the server-side content filter rejects part of the request, leaving the
+# credential perfectly healthy. An hour-long bench on that verdict blocks a
+# healthy key and (sole-credential case) replays the stored error for the full
+# hour — making a real fix look like it did not work.
+
+
+def test_sole_credential_unverified_billing_400_recovers_quickly(tmp_path, monkeypatch):
+    """An unverified billing 400 gets the short transient cooldown, not the
+    one-hour billing bench."""
+    pool = _load(
+        tmp_path,
+        monkeypatch,
+        [_entry(400, age_seconds=90, failure_reason="billing_unverified")],
+    )
+    entry = pool.select()
+    assert entry is not None
+    assert entry.last_status == "ok"
+
+
+def test_multi_key_unverified_billing_400_recovers_quickly(tmp_path, monkeypatch):
+    """The short cooldown applies regardless of pool size: a content-filter
+    rejection fails identically on EVERY credential, so benching each rotated
+    key for an hour would take the whole pool offline for nothing."""
+    pool = _load(
+        tmp_path,
+        monkeypatch,
+        [
+            _entry(400, age_seconds=90, cred_id="cred-1", priority=0,
+                   failure_reason="billing_unverified"),
+            _entry(400, age_seconds=90, cred_id="cred-2", priority=1,
+                   failure_reason="billing_unverified"),
+        ],
+    )
+    entry = pool.select()
+    assert entry is not None
+    assert entry.last_status == "ok"
+
+
+def test_unverified_billing_ttl_values(tmp_path, monkeypatch):
+    """Direct TTL contract: unverified billing is transient-sized; confirmed
+    billing keeps the full bench; a true 402 wins over a stray unverified tag."""
+    from agent.credential_pool import (
+        EXHAUSTED_TTL_DEFAULT_SECONDS,
+        EXHAUSTED_TTL_SOLE_CREDENTIAL_SECONDS,
+        _exhausted_ttl,
+    )
+
+    assert (
+        _exhausted_ttl(400, sole_credential=True, failure_reason="billing_unverified")
+        == EXHAUSTED_TTL_SOLE_CREDENTIAL_SECONDS
+    )
+    assert (
+        _exhausted_ttl(400, sole_credential=False, failure_reason="billing_unverified")
+        == EXHAUSTED_TTL_SOLE_CREDENTIAL_SECONDS
+    )
+    assert (
+        _exhausted_ttl(400, sole_credential=True, failure_reason="billing")
+        == EXHAUSTED_TTL_DEFAULT_SECONDS
+    )
+    assert (
+        _exhausted_ttl(402, sole_credential=True, failure_reason="billing_unverified")
+        == EXHAUSTED_TTL_DEFAULT_SECONDS
+    )
+
+
+def test_unverified_billing_survives_reload(tmp_path, monkeypatch):
+    """The unverified marker persists with the entry, so a restart keeps the
+    short cooldown instead of upgrading it to a billing bench."""
+    pool = _load(
+        tmp_path,
+        monkeypatch,
+        [_entry(400, age_seconds=10, failure_reason="billing_unverified")],
+    )
+    entry = pool.entries()[0]
+    assert entry.failure_reason == "billing_unverified"

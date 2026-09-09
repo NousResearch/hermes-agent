@@ -17,7 +17,6 @@ called from the terminal toolset; they don't appear in `always_load`.
 | `p5js` | p5.js sketches — generative art, shaders, interactive, 3D | Renderer for generative art, particle systems, organic motion, web-canvas content |
 | `comfyui` | Generate images, video, audio with ComfyUI workflows (image-to-image, image-to-video, etc.) | image-generator, image-to-video-generator, or general renderer for AI-generated content |
 | `touchdesigner-mcp` | Control a running TouchDesigner instance — real-time visuals, audio-reactive installation art, VJ | Renderer for real-time/audio-reactive content; installation art; live performance |
-| `blender-mcp` *(optional)* | Control Blender 4.3+ via MCP — 3D modeling, animation, rendering | Renderer for 3D scenes, photoreal environments, character animation |
 | `pixel-art` | Pixel art with era palettes (NES, Game Boy, PICO-8) | Renderer for retro game aesthetic; concept artist for pixel-style frames |
 | `baoyu-comic` | Knowledge-comic generation (educational, biography, tutorial) | Renderer for comic-style narrative; explainer in panel form |
 | `baoyu-infographic` | Infographic generation | Renderer for data-driven explainer scenes |
@@ -74,7 +73,7 @@ them directly.
 | Suno API or web | Track composition (paired with `songwriting-and-ai-music`) | music-supervisor |
 | Remotion CLI (`npx remotion render`) | React-based motion graphics | renderer-motion-graphics |
 | Manim CE (`manim`) | Math animation render (driven by `manim-video` skill's recipes) | renderer-manim |
-| Blender (`blender -b`) | 3D rendering (alternative to `blender-mcp`) | renderer-3d |
+| Blender (`blender -b`) | 3D rendering (headless scripting) | renderer-3d |
 
 ## Built-in Hermes tools for media review
 
@@ -164,7 +163,6 @@ skills:
     # - manim-video            (math/explainer)
     # - p5js                   (generative)
     # - comfyui                (AI-generated visuals)
-    # - blender-mcp            (3D)
     # - touchdesigner-mcp      (real-time/installation)
 ```
 
@@ -183,7 +181,6 @@ skills:
     # - p5js                      (renderer-p5js)
     # - comfyui                   (renderer-comfyui — img/video AI gen)
     # - touchdesigner-mcp         (renderer-touchdesigner)
-    # - blender-mcp               (renderer-3d)
     # - pixel-art                 (renderer-pixel)
     # - baoyu-comic               (renderer-comic)
     # - meme-generation           (renderer-meme)

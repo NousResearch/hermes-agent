@@ -8,7 +8,8 @@ import pytest
 
 import gateway.run as gateway_run
 from gateway.config import HomeChannel, Platform, PlatformConfig
-from gateway.platforms.base import MessageEvent, MessageType, SendResult
+from gateway.platforms.base import SendResult
+from gateway.platforms.event import MessageEvent, MessageType
 from gateway.session import build_session_key
 from tests.gateway.restart_test_helpers import (
     make_restart_runner,
@@ -78,7 +79,6 @@ async def test_restart_command_uses_atomic_json_writes_for_marker_files(tmp_path
     # run.py); it uses that module's top-level atomic_json_write import.
     import gateway.slash_commands as gateway_slash
     monkeypatch.setattr(gateway_slash, "atomic_json_write", _fake_atomic_json_write)
-    monkeypatch.setattr(gateway_run, "atomic_json_write", _fake_atomic_json_write)
 
     runner, _adapter = make_restart_runner()
     runner.request_restart = MagicMock(return_value=True)
@@ -388,6 +388,29 @@ async def test_send_restart_notification_skips_unauthorized_marker(tmp_path, mon
     assert checked_source.chat_id == "channel-42"
     assert checked_source.user_id == "user-99"
     assert checked_source.chat_type == "group"
+    adapter.send.assert_not_called()
+    assert not notify_path.exists()
+
+
+@pytest.mark.asyncio
+async def test_send_restart_notification_skips_when_authorization_raises(
+    tmp_path, monkeypatch
+):
+    """Authorization failures fail closed instead of sending the ping."""
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    notify_path = tmp_path / ".restart_notify.json"
+    notify_path.write_text(json.dumps({
+        "platform": "telegram",
+        "chat_id": "42",
+        "user_id": "u1",
+        "chat_type": "dm",
+    }))
+
+    runner, adapter = make_restart_runner()
+    runner._is_user_authorized = MagicMock(side_effect=RuntimeError("auth boom"))
+    adapter.send = AsyncMock()
+
+    assert await runner._send_restart_notification() is None
     adapter.send.assert_not_called()
     assert not notify_path.exists()
 

@@ -1,17 +1,20 @@
-import { type RefObject, useEffect, useRef } from 'react'
+import { type RefObject, useLayoutEffect, useRef } from 'react'
 
+import { usePaneVisible } from '@/components/pane-shell/pane-visibility'
 import { SLASH_COMMAND_RE } from '@/lib/chat-runtime'
 import { triggerHaptic } from '@/lib/haptics'
 import { hasClarifyRequest, skipClarifyRequest } from '@/store/clarify'
 import { clearSessionDraft, type ComposerAttachment } from '@/store/composer'
 import { resetBrowseState } from '@/store/composer-input-history'
 import { enqueueQueuedPrompt, type QueuedPromptEntry } from '@/store/composer-queue'
+import { hasMcpSetupRequest, skipMcpSetupRequest } from '@/store/mcp-setup'
+import { hasBlockingPromptRequest } from '@/store/prompts'
 
 import { cloneAttachments, type QueueEditState } from '../composer-utils'
 import { onComposerSubmitRequest } from '../focus'
 import { pathifyRefs } from '../path-refs'
 import { composerPlainText } from '../rich-editor'
-import { useComposerScope } from '../scope'
+import { useComposerScope, useComposerSurfaceId } from '../scope'
 import type { ChatBarProps } from '../types'
 
 interface UseComposerSubmitArgs {
@@ -74,11 +77,13 @@ export function useComposerSubmit({
   setComposerText,
   stashAt
 }: UseComposerSubmitArgs) {
+  const paneVisible = usePaneVisible()
   const scope = useComposerScope()
+  const surfaceId = useComposerSurfaceId()
 
   // Shared send primitive: fire onSubmit, and if the gateway rejects (accepted
   // === false) or throws, re-load + re-stash the draft so the words survive.
-  const dispatchSubmit = (text: string, attachments?: ComposerAttachment[]) => {
+  const dispatchSubmit = (text: string, attachments?: ComposerAttachment[], displayKind?: 'hidden') => {
     const submittedScope = activeQueueSessionKeyRef.current
     const submittedAttachments = attachments ?? []
 
@@ -93,27 +98,34 @@ export function useComposerSubmit({
 
     void Promise.resolve(
       attachments
-        ? onSubmit(text, { attachments, composerScope: submittedScope })
-        : onSubmit(text, { composerScope: submittedScope })
+        ? onSubmit(text, { attachments, composerScope: submittedScope, ...(displayKind ? { displayKind } : {}) })
+        : onSubmit(text, { composerScope: submittedScope, ...(displayKind ? { displayKind } : {}) })
     )
       .then(accepted => void (accepted === false ? restore() : clearSessionDraft(submittedScope)))
       .catch(restore)
   }
 
   // External "submit this prompt" requests (e.g. the review pane's agent-ship
-  // button) route through the same send path. A ref keeps the listener stable
-  // while always calling the latest dispatchSubmit closure.
+  // button) route through the same send path. Match both the composer target
+  // and the exact visible surface captured at click time — every tile stays
+  // mounted, and a session can be rendered in more than one pane.
   const dispatchSubmitRef = useRef(dispatchSubmit)
   dispatchSubmitRef.current = dispatchSubmit
 
-  useEffect(
+  useLayoutEffect(
     () =>
-      onComposerSubmitRequest(({ target, text }) => {
-        if (target === 'main' && !inputDisabled) {
-          dispatchSubmitRef.current(text)
+      onComposerSubmitRequest(({ surfaceId: requestedSurfaceId, target, text, displayKind }) => {
+        if (
+          target === scope.target &&
+          surfaceId !== null &&
+          requestedSurfaceId === surfaceId &&
+          paneVisible &&
+          !inputDisabled
+        ) {
+          dispatchSubmitRef.current(text, undefined, displayKind)
         }
       }),
-    [inputDisabled]
+    [inputDisabled, paneVisible, scope.target, surfaceId]
   )
 
   const submitDraft = () => {
@@ -161,6 +173,21 @@ export function useComposerSubmit({
       void skipClarifyRequest(sessionId)
     }
 
+    // Same deal for a pending MCP setup card: the agent is blocked on
+    // mcp.setup.respond, so a typed message declines the card and rides on.
+    if (payloadPresent && !queueEdit && hasMcpSetupRequest(sessionId)) {
+      void skipMcpSetupRequest(sessionId)
+    }
+
+    // Approval / sudo / secret prompts also park the turn inside a tool batch,
+    // but typing CANNOT answer them (no message text approves a command or
+    // supplies a password), so there is no skip-and-steer path: a steer would
+    // sit undelivered behind the blocked prompt, and stopping the turn to force
+    // it through resolves the prompt to empty and ends the turn as "Operation
+    // interrupted." — the message looks eaten. Queue the words as the next turn
+    // instead; the prompt stays answerable and the queue drains on settle.
+    const blockingPrompt = !queueEdit && hasBlockingPromptRequest(sessionId)
+
     if (queueEdit) {
       exitQueuedEdit('save')
     } else if (busy) {
@@ -175,14 +202,16 @@ export function useComposerSubmit({
         triggerHaptic('submit')
         clearDraft()
         dispatchSubmit(text)
-      } else if (!compacting && !attachments.length && text.trim()) {
+      } else if (!compacting && !blockingPrompt && !attachments.length && text.trim()) {
         // Cursor-style stop-and-correct: interrupt the live turn and redirect
         // it with this text. redirect() preserves the shown reasoning/work; if
         // the turn already ended, steerDraft re-queues so nothing is lost.
         steerDraft()
       } else if (payloadPresent) {
         // Attachments can't ride a redirect (no tool-result image carriage) —
-        // queue the whole payload for the next turn.
+        // queue the whole payload for the next turn. Same for a turn parked on
+        // an approval/sudo/secret prompt: a steer can't reach the model while
+        // the tool batch is blocked, so the message runs as the next turn.
         queueCurrentDraft()
       } else {
         // Stop button (the only way to reach here while busy with an empty

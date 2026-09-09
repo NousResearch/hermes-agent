@@ -110,7 +110,9 @@ async def test_profile_middleware_binds_auth_before_handler(
     )()
     monkeypatch.setattr(
         "hermes_cli.profiles.profiles_to_serve",
-        lambda multiplex: [("default", tmp_path), ("worker", worker_home)],
+        lambda multiplex, profile_allowlist=None: [
+            ("default", tmp_path), ("worker", worker_home)
+        ],
     )
     monkeypatch.setattr(
         "hermes_cli.profiles.get_profile_dir",

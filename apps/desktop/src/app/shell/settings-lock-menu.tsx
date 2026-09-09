@@ -29,16 +29,24 @@ function remainingLabel(until: number | null): string {
   return seconds >= 60 ? `${Math.floor(seconds / 60)}m` : `${seconds}s`
 }
 
-export function useSettingsLockStatusbarItem(requestGateway: SettingsLockRequester): StatusbarItem {
+export function useSettingsLockStatusbarItem(
+  requestGateway: SettingsLockRequester,
+  gatewayReady: boolean
+): StatusbarItem {
   const { t } = useI18n()
   const copy = t.shell.settingsLock
   const status = useStore($settingsLock)
   const [password, setPassword] = useState('')
   const [failed, setFailed] = useState(false)
 
+  // Gated on readiness, not just mount: a fetch fired before the gateway opens fails, and with
+  // no other trigger the pill would stay hidden on an install that IS locked.
   useEffect(() => {
+    if (!gatewayReady) {
+      return
+    }
     void syncSettingsLock(requestGateway)
-  }, [requestGateway])
+  }, [gatewayReady, requestGateway])
 
   // While a window is open the pill counts down, so "unlocked" is never a state you forget you left on.
   useEffect(() => {
@@ -142,6 +150,8 @@ export function useSettingsLockStatusbarItem(requestGateway: SettingsLockRequest
       </>
     ),
     title: copy.ariaLabel(status.unlocked ? copy.unlocked : copy.locked),
-    variant: 'action'
+    // 'menu' is what makes `menuContent` render at all — an 'action' item with no onSelect is a
+    // button that does nothing when clicked.
+    variant: 'menu'
   }
 }

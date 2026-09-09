@@ -2,14 +2,20 @@
 
 ``hermes logs [name] [-n N] [-f] [--level L] [--session S] [--component C] [--since 1h]``;
 ``hermes logs list`` shows the available files.
+
+``-n N`` is "the last N". With no filter that is N raw lines (a plain tail). With a
+filter it is N matching *records* — a record being a timestamped line plus its
+continuation lines (traceback frames, wrapped text) — each shown whole, and the
+whole file is scanned so a match behind a wall of non-matching lines is still found.
 """
 
 import re
 import sys
 import time
+from collections import deque
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Optional, Sequence
+from typing import Iterable, Iterator, Optional, Sequence
 
 from hermes_constants import get_hermes_home, display_hermes_home
 
@@ -150,7 +156,12 @@ def tail_log(
         if value
     ]
     filter_desc = f" [{', '.join(filter_parts)}]" if filter_parts else ""
-    mode = "Ctrl+C to stop" if follow else f"last {num_lines}"
+    if follow:
+        mode = "Ctrl+C to stop"
+    elif has_filters:
+        mode = f"last {num_lines} matching"  # records, each shown whole
+    else:
+        mode = f"last {num_lines}"
     print(f"--- {display_hermes_home()}/logs/{filename}{filter_desc} ({mode}) ---")
 
     for line in lines:
@@ -164,13 +175,99 @@ def tail_log(
         print("\n--- stopped ---")
 
 
+# --- record-aware filtering ------------------------------------------------
+#
+# A log *record* is one timestamped header line plus every following line that
+# has no timestamp of its own — traceback frames, wrapped messages, pretty-printed
+# payloads. Filtering happens on the header (that is where the level / logger name
+# / timestamp live); a continuation line is never judged on its own, it rides with
+# its header's verdict. This is what fixes both bugs the old per-line + fixed-window
+# approach had:
+#   * a matching record older than the last ~2000 lines was missed entirely;
+#   * a continuation line leaked through (level/since filters) or was dropped
+#     (session/component filters) independently of its header.
+
+
+def _iter_records(lines: Iterable[str]) -> Iterator[tuple[Optional[str], list]]:
+    """Group raw lines into ``(header, [lines])`` records.
+
+    A record starts at a line matching ``_TS_RE``. Lines seen before the first
+    such header (the scan/stream began part-way through a record) are yielded once
+    as ``(None, [...])`` so the caller can drop them — they cannot be attributed
+    to any record's verdict.
+    """
+    header: Optional[str] = None
+    buf: list = []
+    for line in lines:
+        if _TS_RE.match(line):
+            if buf:
+                yield header, buf
+            header, buf = line, [line]
+        else:
+            buf.append(line)
+    if buf:
+        yield header, buf
+
+
+def _filter_records(lines: Iterable[str], *, want: int, **filters) -> list:
+    """Last *want* records whose HEADER passes ``filters``, each emitted in full.
+
+    Streams *lines* once; holds at most *want* records in memory (a rotated log is
+    size-bounded, but we still never materialise the whole file). Orphan
+    continuation lines with no header are dropped.
+    """
+    kept: "deque[list]" = deque(maxlen=max(want, 0))
+    for header, record_lines in _iter_records(lines):
+        if header is None:
+            continue  # began mid-record — unattributable
+        if _matches_filters(header, **filters):
+            kept.append(record_lines)
+    out: list = []
+    for record_lines in kept:
+        out.extend(record_lines)
+    return out
+
+
+class _FollowFilter:
+    """Per-line emit decision for ``-f`` mode: a continuation line inherits the
+    verdict of the header record it belongs to.
+
+    A line seen before this filter has seen any header (the follow tail started
+    part-way through a record) is not emitted — its header, and therefore its
+    verdict, is unknown.
+    """
+
+    def __init__(self, **filters) -> None:
+        self._filters = filters
+        self._emitting = False
+        self._seen_header = False
+
+    def should_emit(self, line: str) -> bool:
+        if _TS_RE.match(line):
+            self._seen_header = True
+            self._emitting = _matches_filters(line, **self._filters)
+        elif not self._seen_header:
+            return False
+        return self._emitting
+
+
 def _read_tail(path: Path, num_lines: int, *, has_filters: bool = False, **filters) -> list:
-    """Read the last *num_lines* matching lines; ``filters`` are ``_matches_filters`` kwargs."""
+    """The tail of *path* as a list of lines.
+
+    Unfiltered: the last *num_lines* raw lines (a plain tail; may begin part-way
+    through a record, exactly like ``tail -n``).
+
+    Filtered: the last *num_lines* log *records* whose header passes ``filters``,
+    each emitted whole (header + its continuation lines). ``num_lines`` counts
+    matching records, so the output can be longer than ``num_lines`` when a
+    matched record carries a traceback. A full forward scan of the file — not a
+    fixed recent window — so a match far behind a wall of non-matching lines is
+    still found.
+    """
     if not has_filters:
         return _read_last_n_lines(path, num_lines)
-    # Over-read so enough lines survive filtering.
-    raw_lines = _read_last_n_lines(path, max(num_lines * 20, 2000))
-    return [l for l in raw_lines if _matches_filters(l, **filters)][-num_lines:]
+    with open(path, "r", encoding="utf-8", errors="replace") as f:
+        return _filter_records(f, want=num_lines, **filters)
 
 
 def _read_all_lines(path: Path) -> list:
@@ -210,14 +307,17 @@ def _read_last_n_lines(path: Path, n: int) -> list:
 
 
 def _follow_log(path: Path, **filters) -> None:
-    """Poll a log file for new content and print matching lines."""
+    """Poll a log file for new content and print the lines of every record whose
+    header passes ``filters`` — including that record's continuation lines."""
+    follow = _FollowFilter(**filters)
     with open(path, "r", encoding="utf-8", errors="replace") as f:
         f.seek(0, 2)
         while True:
             line = f.readline()
             if not line:
                 time.sleep(0.3)
-            elif _matches_filters(line, **filters):
+                continue
+            if follow.should_emit(line):
                 print(line, end="")
                 sys.stdout.flush()
 

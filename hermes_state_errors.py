@@ -89,6 +89,14 @@ _DB_CORRUPTION_MARKERS = (
 )
 
 
+class CheckpointRestoreRejected(ValueError):
+    """A durable checkpoint failed an explicit rewind admission check."""
+
+    def __init__(self, reason: str, message: str):
+        self.reason = reason
+        super().__init__(message)
+
+
 class CompressionSessionClosedError(RuntimeError):
     """A durable write targeted a parent already closed by compression."""
 

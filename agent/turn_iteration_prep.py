@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from typing import Any, Dict
 
 from agent.display import KawaiiSpinner
-from agent.turn_context import reanchor_current_turn_user_idx
+from agent.turn_context_compaction import _reanchor
 
 logger = logging.getLogger("agent.conversation_loop")
 
@@ -185,32 +185,19 @@ def prepare_iteration(
             repaired_seq,
             agent.session_id or "-",
         )
-        # The repair merges adjacent user rows in place (after a compaction the role=user
-        # summary sits next to the protected first user message), so the list shrinks and
-        # the index recorded at turn start points past this turn's user row. Re-anchor it
-        # like the compression restart path does, and mirror the value into
-        # _persist_user_message_idx, which hosts read when the result carries no index:
-        # a stale anchor injects prefetch into a historical row and makes hosts that settle
-        # their transcript by this index (hermes-webui) write the current turn to the FRONT
-        # of the context, rewriting the prompt's leading messages every turn.
-        # reanchor_current_turn_user_idx scans from the tail: with two identical user
-        # rows it resolves to the LAST one, i.e. this turn, never the historical copy.
-        # Without the message text the index cannot be re-derived; leave it (an
-        # out-of-range index is detectably stale, a clamped one would silently target
-        # a wrong row).
-        _reanchored_idx = (
-            reanchor_current_turn_user_idx(messages, user_message) if user_message is not None
-            else current_turn_user_idx
-        )
-        if _reanchored_idx != current_turn_user_idx:
-            request_logger.info(
-                "Re-anchored current_turn_user_idx %s -> %s after alternation repair (session=%s)",
-                current_turn_user_idx,
-                _reanchored_idx,
-                agent.session_id or "-",
-            )
-            current_turn_user_idx = _reanchored_idx
-            agent._persist_user_message_idx = _reanchored_idx
+        # The merge shrank the list, so the index recorded at turn start can point past this
+        # turn's user row: prefetch would inject into a historical row and index-settling hosts
+        # (hermes-webui) would write the current turn to the FRONT of the context. Re-anchor as
+        # the compression-restart path does (last verbatim row wins, never a historical copy);
+        # without the text the index cannot be re-derived and is left detectably stale.
+        if user_message is not None:
+            _reanchored_idx = _reanchor(agent, messages, user_message)
+            if _reanchored_idx != current_turn_user_idx:
+                request_logger.info(
+                    "Re-anchored current_turn_user_idx %s -> %s after alternation repair (session=%s)",
+                    current_turn_user_idx, _reanchored_idx, agent.session_id or "-",
+                )
+                current_turn_user_idx = _reanchored_idx
     return IterationPrep(
         action="fallthrough", messages=messages, request_logger=request_logger,
         current_turn_user_idx=current_turn_user_idx,
@@ -470,8 +457,7 @@ def apply_retry_restarts(
         # In-loop compression rebuilt `messages`; re-anchor the current-turn index
         # like the prologue, AFTER the handoff guard (it may re-append this turn's
         # ask). A stale anchor injects prefetch into a historical row.
-        current_turn_user_idx = reanchor_current_turn_user_idx(messages, user_message)
-        agent._persist_user_message_idx = current_turn_user_idx
+        current_turn_user_idx = _reanchor(agent, messages, user_message)
         return _verdict("continue")
 
     if _retry.restart_with_rebuilt_messages:

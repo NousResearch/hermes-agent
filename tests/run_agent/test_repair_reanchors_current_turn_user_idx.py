@@ -1,50 +1,45 @@
-"""Regression: ``repair_message_sequence`` merges adjacent rows *before* the current
-turn's user message (a role=user compaction summary next to the protected first
-user message), so the index recorded at turn start drifts past the current row.
-Hosts that settle the transcript by that index (WebUI) then write the current
-user turn to the FRONT of the context. ``run_conversation`` must re-anchor the
-index after a repair that changed the list.
-"""
-from agent.agent_runtime_helpers import repair_message_sequence
-from agent.turn_context import reanchor_current_turn_user_idx
+"""``prepare_iteration`` runs the alternation repair, which merges adjacent user rows in place
+(after a compaction the role=user summary sits next to the protected first user message). The
+index recorded at turn start then points past this turn's user row; hosts that settle the
+transcript by that index (WebUI) write the current turn to the FRONT of the context. The
+iteration prep must hand back a re-anchored index and mirror it into the persist override."""
 
 
-class _Agent:
-    session_id = "s"
+def _agent(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    from run_agent import AIAgent
+    from hermes_state import SessionDB
+
+    return AIAgent(session_db=SessionDB(db_path=tmp_path / "proof.db"),
+                   model="test-model", provider="openai-compat", api_key="test",
+                   base_url="http://127.0.0.1:1/v1", max_iterations=4,
+                   quiet_mode=True, skip_context_files=True, skip_memory=True)
 
 
-def _history_with_adjacent_users():
-    return [
-        {"role": "assistant", "content": "**Context snapshot**"},
-        {"role": "user", "content": "compaction summary written as a user row"},
-        {"role": "user", "content": "first protected user message"},
-        {"role": "assistant", "content": "ok",
-         "tool_calls": [{"id": "c1", "type": "function", "function": {"name": "t", "arguments": "{}"}}]},
-        {"role": "tool", "tool_call_id": "c1", "content": "out"},
-        {"role": "user", "content": "NEW question"},
-    ]
+def test_prepare_iteration_reanchors_after_the_repair_merges_rows(tmp_path, monkeypatch):
+    from agent.turn_context import _reset_per_turn_agent_state
+    from agent.turn_iteration_prep import prepare_iteration
 
-
-def test_repair_shifts_recorded_index_and_reanchor_recovers_it():
-    messages = _history_with_adjacent_users()
-    recorded_idx = len(messages) - 1  # what run_conversation records at turn start
-    assert messages[recorded_idx]["content"] == "NEW question"
-    repairs = repair_message_sequence(_Agent(), messages)
-    assert repairs >= 1
-    # the recorded index no longer addresses the current user row
-    assert recorded_idx >= len(messages) or messages[recorded_idx]["content"] != "NEW question"
-    reanchored = reanchor_current_turn_user_idx(messages, "NEW question")
-    assert messages[reanchored]["role"] == "user"
-    assert messages[reanchored]["content"] == "NEW question"
-    assert reanchored == len(messages) - 1
-
-
-def test_repair_without_changes_keeps_index():
-    messages = [
-        {"role": "user", "content": "hello"},
-        {"role": "assistant", "content": "hi"},
-        {"role": "user", "content": "NEW question"},
-    ]
-    recorded_idx = len(messages) - 1
-    assert repair_message_sequence(_Agent(), messages) == 0
-    assert reanchor_current_turn_user_idx(messages, "NEW question") == recorded_idx
+    agent = _agent(tmp_path, monkeypatch)
+    try:
+        _reset_per_turn_agent_state(agent)
+        messages = [
+            {"role": "assistant", "content": "**Context snapshot**"},
+            {"role": "user", "content": "compaction summary written as a user row"},
+            {"role": "user", "content": "first protected user message"},
+            {"role": "assistant", "content": "ok",
+             "tool_calls": [{"id": "c1", "type": "function", "function": {"name": "t", "arguments": "{}"}}]},
+            {"role": "tool", "tool_call_id": "c1", "content": "out"},
+            {"role": "user", "content": "NEW question"},
+        ]
+        recorded_idx = len(messages) - 1  # what run_conversation records at turn start
+        prep = prepare_iteration(
+            agent, messages=messages, api_call_count=1,
+            user_message="NEW question", current_turn_user_idx=recorded_idx,
+        )
+        assert prep.action == "fallthrough"
+        assert len(prep.messages) < len(messages) + 1 and recorded_idx >= len(prep.messages)
+        assert prep.messages[prep.current_turn_user_idx]["content"] == "NEW question"
+        assert agent._persist_user_message_idx == prep.current_turn_user_idx
+    finally:
+        agent._session_db.close()

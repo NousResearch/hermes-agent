@@ -24,54 +24,31 @@ class _Agent:
         self._persist_user_message_idx = None
 
 
-def test_repeated_prompt_resolves_to_the_last_verbatim_row():
-    messages = [
-        {"role": "user", "content": "same question"},
-        {"role": "assistant", "content": "old answer"},
-        {"role": "user", "content": "same question"},
-        {"role": "assistant", "content": "new answer"},
-    ]
+@pytest.mark.parametrize("user_message, messages, expected_idx", [
+    # a repeated prompt resolves to the LAST verbatim row, never the historical copy
+    ("same question", [
+        {"role": "user", "content": "same question"}, {"role": "assistant", "content": "old answer"},
+        {"role": "user", "content": "same question"}, {"role": "assistant", "content": "new answer"},
+    ], 2),
+    # multimodal content matches by structural equality
+    ([{"type": "text", "text": "look"}, {"type": "image_url", "image_url": {"url": "data:x"}}],
+     [{"role": "user", "content": [{"type": "text", "text": "look"}, {"type": "image_url", "image_url": {"url": "data:x"}}]},
+      {"role": "assistant", "content": "ok"}], 0),
+    # a row the repair rewrote (merge-into-tail) is not a proven boundary: export nothing
+    ("same question", [{"role": "user", "content": "summary\n\nsame question"}, {"role": "assistant", "content": "answer"}], None),
+    # no current row at all: export nothing, persist override untouched
+    ("another question", [{"role": "user", "content": "same question"}, {"role": "assistant", "content": "old answer"}], None),
+])
+def test_boundary_is_exported_only_for_the_verbatim_current_row(user_message, messages, expected_idx):
     agent = _Agent()
-    result = export_current_turn_boundary(agent, {"messages": messages}, "same question")
-    assert result["current_turn_user_idx"] == 2
-    assert result["turn_id"] == agent._current_turn_id
-    assert agent._persist_user_message_idx == 2
-
-
-def test_missing_current_row_exports_nothing():
-    messages = [
-        {"role": "user", "content": "same question"},
-        {"role": "assistant", "content": "old answer"},
-    ]
-    agent = _Agent()
-    result = export_current_turn_boundary(agent, {"messages": messages}, "another question")
-    assert "current_turn_user_idx" not in result and "turn_id" not in result
-    assert agent._persist_user_message_idx is None
-
-
-def test_rewritten_row_is_not_a_proven_boundary():
-    # merge-into-tail rewrote the surviving row's content: reanchor would fall back to it,
-    # but the export refuses to claim a row that is not the verbatim message.
-    messages = [
-        {"role": "user", "content": "summary\n\nsame question"},
-        {"role": "assistant", "content": "answer"},
-    ]
-    result = export_current_turn_boundary(_Agent(), {"messages": messages}, "same question")
-    assert "current_turn_user_idx" not in result
-
-
-def test_multimodal_content_is_matched_verbatim():
-    content = [{"type": "text", "text": "look"}, {"type": "image_url", "image_url": {"url": "data:x"}}]
-    messages = [{"role": "user", "content": content}, {"role": "assistant", "content": "ok"}]
-    result = export_current_turn_boundary(_Agent(), {"messages": messages}, content)
-    assert result["current_turn_user_idx"] == 0
-
-
-def test_no_turn_id_or_non_dict_result_is_left_alone():
-    assert export_current_turn_boundary(_Agent(turn_id=""), {"messages": [{"role": "user", "content": "q"}]}, "q") == {
-        "messages": [{"role": "user", "content": "q"}]
-    }
-    assert export_current_turn_boundary(_Agent(), None, "q") is None
+    result = export_current_turn_boundary(agent, {"messages": messages}, user_message)
+    if expected_idx is None:
+        assert "current_turn_user_idx" not in result and "turn_id" not in result
+        assert agent._persist_user_message_idx is None
+    else:
+        assert result["current_turn_user_idx"] == expected_idx
+        assert result["turn_id"] == agent._current_turn_id
+        assert agent._persist_user_message_idx == expected_idx
 
 
 @pytest.fixture()

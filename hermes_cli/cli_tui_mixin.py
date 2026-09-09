@@ -692,8 +692,8 @@ class CLITuiMixin:
             return self._render_sudo_style_panel(
                 f'🔐 Unlock {backend}',
                 [f'The agent wants to sign into a site with a login saved in {backend}.',
-                 'Enter your master password below (hidden) to unlock it for this session, or press Enter to keep it locked.',
-                 'The password never reaches the model; only a session token is kept in memory.'])
+                 'Type your master password (hidden) to unlock it for this session.',
+                 'Enter on an empty line keeps it locked. The model never sees the password.'])
         return self._render_sudo_style_panel(
             '🔐 Sudo Password Required', ['Enter password below (hidden), or press Enter to skip'])
 

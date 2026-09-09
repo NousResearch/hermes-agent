@@ -45,6 +45,7 @@ export const $isBlocked = computed(
     skillsHub,
     subscription,
     sudo,
+    vaultUnlock,
     widget
   }) =>
     Boolean(
@@ -63,6 +64,7 @@ export const $isBlocked = computed(
       skillsHub ||
       subscription ||
       sudo ||
+      vaultUnlock ||
       widget
     )
 )

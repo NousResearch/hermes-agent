@@ -8,6 +8,7 @@ through it at call time.
 """
 
 import contextlib
+from dataclasses import dataclass
 import fnmatch
 import logging
 import re
@@ -20,13 +21,24 @@ from tools.approval_detection import (
 logger = logging.getLogger("tools.approval")
 
 
+def _first_matching_glob(command: str, globs: list[str]) -> str | None:
+    """First glob matching the command. Case-insensitive, run over the same
+    normalized/deobfuscated variants the dangerous-pattern detector uses (whole
+    input plus each executable segment of a compound command) so quoting tricks
+    (``r\\m``, ``git st""atus``) and ``cd x && <cmd>`` can't sidestep a rule."""
+    for command_variant in _deny_command_variants(command):
+        candidate = command_variant.lower().strip()
+        for pattern in globs:
+            if fnmatch.fnmatchcase(candidate, pattern.lower()):
+                return pattern
+    return None
+
+
 def _match_user_deny_rule(command: str) -> str | None:
     """Return the matching ``approvals.deny`` glob, or None. User-defined fnmatch
     globs that block unconditionally — like the hardline floor, a match fires
     BEFORE the yolo / mode=off bypass ("never let the agent run this, even under
-    yolo"). Case-insensitive, run over the same normalized/deobfuscated variants
-    the dangerous-pattern detector uses so quoting tricks (``r\\m``,
-    ``git st""atus``) can't sidestep a rule."""
+    yolo")."""
     try:
         deny_patterns = _ctx._get_approval_config().get("deny") or []
     except Exception:
@@ -34,11 +46,78 @@ def _match_user_deny_rule(command: str) -> str | None:
     globs = [p.strip() for p in deny_patterns if isinstance(p, str) and p.strip()]
     if not globs:
         return None
-    for command_variant in _deny_command_variants(command):
-        candidate = command_variant.lower().strip()
-        for pattern in globs:
-            if fnmatch.fnmatchcase(candidate, pattern.lower()):
-                return pattern
+    return _first_matching_glob(command, globs)
+
+
+# --- approvals.command_approval_required -------------------------------------------------------------------------
+# Operator rules that force a terminal command through the approval flow even when no built-in
+# dangerous pattern fires (deployment-local policy: "restarting MY gateway needs a human"). Same
+# glob syntax and matching as ``approvals.deny``; the difference is the outcome (prompt, not block).
+
+_REVIEW_MODES = ("human", "smart")
+_warned_review_values: set[tuple[str, str]] = set()
+
+
+@dataclass(frozen=True)
+class _RequiredRule:
+    pattern: str
+    description: str
+    review: str  # "human": always a person, never [a]lways | "smart": like a built-in dangerous pattern
+
+    @property
+    def key(self) -> str:
+        return f"approval_required:{self.pattern}"
+
+    @property
+    def prompt_description(self) -> str:
+        return f"matches approval-required rule '{self.description}'"
+
+
+def _approval_required_rules() -> list[_RequiredRule]:
+    """Parse ``approvals.command_approval_required``: a string entry is a glob reviewed by a human;
+    a dict entry is ``{pattern, description?, review?: human|smart}``. Malformed entries are
+    skipped; an unknown ``review`` falls back to ``human`` (the strict choice) with a warning."""
+    raw = _ctx._get_approval_config().get("command_approval_required") or []
+    if isinstance(raw, (str, dict)):
+        raw = [raw]
+    if not isinstance(raw, list):
+        logger.warning("Ignoring malformed approvals.command_approval_required; configure a list.")
+        return []
+    rules = []
+    for entry in raw:
+        if isinstance(entry, str):
+            pattern, description, review = entry, "", "human"
+        elif isinstance(entry, dict):
+            pattern = entry.get("pattern")
+            description = entry.get("description") or ""
+            review = entry.get("review", "human")
+        else:
+            continue
+        if not isinstance(pattern, str) or not pattern.strip():
+            continue
+        pattern = pattern.strip()
+        review_raw = review
+        review = review.strip().lower() if isinstance(review, str) else ""
+        if review not in _REVIEW_MODES:
+            if (pattern, str(review_raw)) not in _warned_review_values:
+                _warned_review_values.add((pattern, str(review_raw)))
+                logger.warning("approvals.command_approval_required rule %r: unknown review %r, using 'human'",
+                               pattern, review_raw)
+            review = "human"
+        rules.append(_RequiredRule(pattern, str(description).strip() or pattern, review))
+    return rules
+
+
+def _match_approval_required_rule(command: str) -> _RequiredRule | None:
+    """First configured approval-required rule matching the command (config order), or None.
+    A config read failure means no rules — the built-in detectors still run."""
+    try:
+        rules = _approval_required_rules()
+    except Exception:
+        return None
+    for rule in rules:
+        if _first_matching_glob(command, [rule.pattern]) is not None:
+            return rule
     return None
 
 

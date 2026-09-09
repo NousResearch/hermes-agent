@@ -47,6 +47,22 @@ DEFAULT_MAX_TOOL_CALLS = 50
 MAX_STDOUT_BYTES = 50_000    # 50 KB
 MAX_STDERR_BYTES = 10_000    # 10 KB
 # Hard ceiling on the spilled file (as web_tools' MAX_STORED_TEXT_CHARS): a runaway print loop must not fill the disk.
+
+
+def _tool_call_limit_reached(count: int, max_tool_calls: int) -> bool:
+    """``max_tool_calls <= 0`` disables the limit (unbounded); a positive limit is exceeded
+    once *count* reaches it."""
+    return max_tool_calls > 0 and count >= max_tool_calls
+
+
+def _configured_max_tool_calls(cfg: dict) -> int:
+    """``code_execution.max_tool_calls`` from *cfg*, validated non-negative."""
+    value = cfg.get("max_tool_calls", DEFAULT_MAX_TOOL_CALLS)
+    if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+        raise ValueError(f"code_execution.max_tool_calls cannot be negative: {value!r}")
+    return value
+
+
 MAX_SPILLED_STDOUT_BYTES = 5_000_000
 
 
@@ -618,7 +634,7 @@ def _execute_remote(code: str, task_id: Optional[str], enabled_tools: Optional[L
     (tools/code_kernel_remote.py) first, else the per-call script ship — the fail-open route when
     a kernel cannot be spawned and the only route for hosts that cannot sustain a background process."""
     _cfg = _load_config()
-    timeout, max_tool_calls = _cfg.get("timeout", DEFAULT_TIMEOUT), _cfg.get("max_tool_calls", DEFAULT_MAX_TOOL_CALLS)
+    timeout, max_tool_calls = _cfg.get("timeout", DEFAULT_TIMEOUT), _configured_max_tool_calls(_cfg)
     sandbox_tools, effective_task_id = _sandbox_tools_for(enabled_tools), task_id or "default"
     env, env_type = _get_or_create_env(effective_task_id)
     exec_start = time.monotonic()
@@ -728,7 +744,7 @@ def execute_code(
         child_cwd=_resolve_child_cwd(_mode, "", task_id=task_id or ""),
         sandbox_tools=frozenset(_sandbox_tools_for(enabled_tools)),
         timeout=_cfg.get("timeout", DEFAULT_TIMEOUT),
-        max_tool_calls=_cfg.get("max_tool_calls", DEFAULT_MAX_TOOL_CALLS),
+        max_tool_calls=_configured_max_tool_calls(_cfg),
         reset=bool(reset), is_interrupted=_is_interrupted,
     )
 

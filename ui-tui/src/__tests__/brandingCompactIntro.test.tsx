@@ -38,7 +38,8 @@ const renderPanel = (compact: boolean) => {
     }
   )
 
-  const text = () => output.replace(/\u001b\[[0-9;]*m/g, '')
+  const ESC = String.fromCharCode(0x1b)
+  const text = () => output.replace(new RegExp(`${ESC}\\[[0-9;]*m`, 'g'), '')
 
   return { cleanup: () => instance.cleanup(), text, unmount: () => instance.unmount() }
 }

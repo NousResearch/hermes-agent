@@ -1,6 +1,7 @@
 import { PassThrough } from 'stream'
 
 import { renderSync } from '@hermes/ink'
+import type * as HermesInk from '@hermes/ink'
 import React from 'react'
 import { describe, expect, it, vi } from 'vitest'
 
@@ -8,7 +9,7 @@ import { ClarifyPrompt } from '../components/prompts.js'
 import { DEFAULT_THEME } from '../theme.js'
 
 vi.mock('@hermes/ink', async importOriginal => {
-  const mod = await importOriginal<typeof import('@hermes/ink')>()
+  const mod = await importOriginal<typeof HermesInk>()
 
   return { ...mod, useInput: () => {} }
 })
@@ -43,7 +44,8 @@ describe('ClarifyPrompt picker rows', () => {
       }
     )
 
-    const out = output.replace(/\u001b\[[0-9;]*m/g, '')
+    const ESC = String.fromCharCode(0x1b)
+    const out = output.replace(new RegExp(`${ESC}\\[[0-9;]*m`, 'g'), '')
     expect(out).toMatch(/Scope A/)
     expect(out).toMatch(/Scope B/)
     expect(out).not.toMatch(/1\. Scope A/)

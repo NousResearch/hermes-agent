@@ -1219,8 +1219,15 @@ def _restart_gateway_fleet_after_update(_pre_update_plan, gateway_mode: bool):
 
         # macOS: EVERY ai.hermes.gateway* LaunchAgent (systemd parity).
         if is_macos():
-            with suppress(FileNotFoundError, ImportError):
+            try:
                 _restart_macos_launchd_gateways(out.restarted_services, out.failed_or_stale_units, _drain_budget)
+            except (FileNotFoundError, ImportError) as exc:
+                # Same exception types the old bare suppress() dropped (e.g. hermes_cli.gateway
+                # no longer importing under a checkout replaced mid-restart, per
+                # _surviving_gateway_pids_after_failed_restart's own docstring below) — but
+                # recorded as a failure instead of silently reporting a clean fleet restart.
+                logger.debug("Fleet restart: launchd failed: %s", exc)
+                out.failed_or_stale_units.append("launchd")
 
         _restart_manual_gateways(out, _drain_budget)
 

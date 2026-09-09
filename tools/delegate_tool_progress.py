@@ -175,6 +175,19 @@ def _build_child_system_prompt(
         if _ctx_files.strip():
             parts.append(_CONTEXT_FILES_INTRO + _ctx_files.strip())
     parts.append(_COMPLETION_INSTRUCTIONS)
+    parts.append(
+        "\n## Delivery Discipline\n"
+        "Your real result must go through the `delegate_tool_reply` tool. "
+        "When your deliverable is ready, call `delegate_tool_reply` with the "
+        "full text as `content`. Do NOT rely on a trailing prose message as "
+        "your result: a short closing comment about cleanup can be mistaken "
+        "for your deliverable and the real content lost. You may call "
+        "`delegate_tool_reply` more than once: chunks are concatenated in "
+        "order, so a large deliverable can be split across calls. After "
+        "calling it you may still run cleanup tools (it does not stop you). "
+        "Your final plain-text reply is only used as a fallback if you "
+        "never call `delegate_tool_reply`."
+    )
     if role == "orchestrator":
         child_note = _LEAF_CHILDREN_NOTE if child_depth + 1 >= max_spawn_depth else _NESTED_CHILDREN_NOTE
         parts.append(

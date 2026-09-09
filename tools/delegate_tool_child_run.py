@@ -393,8 +393,12 @@ class _SchemaOutcome:
 def _validate_child_output_schema(
     child: Any, result: Dict[str, Any], task_index: int, child_task_id: str, relay_child_text: Any
 ) -> _SchemaOutcome:
-    """Validate the final answer against the attached output_schema with ONE bounded retry. Schema-less children (no
-    dict on ``child._delegate_output_schema``) take no branch here so their result entry stays byte-identical."""
+    """Select the authoritative delivery, then validate an optional schema with ONE bounded retry.
+    Schema-less children retain the existing result shape without schema outcome fields."""
+    # Select once before validation and result assembly, even without a schema.
+    delivery = _extract_reply_deliverable(child)
+    if delivery is not None:
+        result["final_response"] = delivery
     _output_schema = getattr(child, "_delegate_output_schema", None)
     if not isinstance(_output_schema, dict):
         return _SchemaOutcome(_output_schema, None, [], 0)
@@ -407,6 +411,8 @@ def _validate_child_output_schema(
     # Exactly one retry turn, carrying the validation errors verbatim (no
     # schema re-paste — the child already holds the contract in its context).
     _retry_result = None
+    # A retry replaces the rejected attempt, never concatenates it with the correction.
+    child._delegate_reply_chunks = []
     try:
         _retry_result = child.run_conversation(
             user_message=build_retry_message(_schema_errors), task_id=child_task_id, stream_callback=relay_child_text,
@@ -414,7 +420,8 @@ def _validate_child_output_schema(
     except Exception as _retry_exc:
         logger.warning("Subagent %d schema-retry turn failed: %s", task_index, _retry_exc)
     if isinstance(_retry_result, dict):
-        _retry_text = _retry_result.get("final_response") or ""
+        delivery = _extract_reply_deliverable(child)
+        _retry_text = delivery if delivery is not None else _retry_result.get("final_response") or ""
         if _retry_text.strip():
             result["final_response"] = _retry_text
         try:
@@ -458,6 +465,14 @@ def _build_tool_trace(messages: Any) -> list[Dict[str, Any]]:
             elif tool_trace:
                 tool_trace[-1].update(result_meta)  # no tool_call_id: pair with the latest call
     return tool_trace
+
+def _extract_reply_deliverable(child) -> Optional[str]:
+    """Join append-only deliveries stored on the child, outside its compressible transcript."""
+    chunks = getattr(child, "_delegate_reply_chunks", None)
+    if not isinstance(chunks, list):
+        return None
+    return "\n\n".join(chunks) if chunks else None
+
 
 def _build_result_entry(
     child: Any, result: Dict[str, Any], task_index: int, duration: float, schema: _SchemaOutcome,

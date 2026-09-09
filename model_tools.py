@@ -324,6 +324,9 @@ def _select_tool_names(enabled_toolsets: Optional[List[str]], disabled_toolsets:
     else:
         from toolsets import get_all_toolsets
         for ts_name in get_all_toolsets():
+            # Internal delivery is explicitly granted by child construction, never by "all tools".
+            if ts_name == "delegation_reply":
+                continue
             tools.update(resolve_toolset(ts_name))
     # Disabled toolsets are always subtracted LAST, so a tool in a disabled
     # toolset is stripped even when a composite (hermes-cli) re-enables it.

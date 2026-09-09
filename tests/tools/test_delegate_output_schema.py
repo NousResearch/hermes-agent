@@ -16,6 +16,8 @@ import json
 import threading
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from tools.delegate_tool import (
     DELEGATE_TASK_SCHEMA,
     _run_single_child,
@@ -167,13 +169,19 @@ class _StubChild:
     def __init__(self, responses):
         self.responses = list(responses)
         self.calls: list = []
+        self._delegate_reply_chunks: list[str] = []
 
     def get_activity_summary(self):
         return {"api_call_count": 1, "max_iterations": 5, "current_tool": None}
 
     def run_conversation(self, user_message, task_id=None, **_kwargs):
         self.calls.append(user_message)
-        text = self.responses.pop(0)
+        response = self.responses.pop(0)
+        if isinstance(response, tuple):
+            text, reply_chunks = response
+            self._delegate_reply_chunks.extend(reply_chunks)
+        else:
+            text = response
         return {
             "final_response": text,
             "completed": True,
@@ -198,6 +206,67 @@ def _run(child):
 
 
 class TestRunSingleChildSchemaValidation:
+    def test_retry_without_explicit_call_uses_only_corrected_final_response(self):
+        child = _StubChild([
+            ("cleanup", ["not json"]),
+            ('{"city": "Oslo"}', []),
+        ])
+        child._delegate_output_schema = ADDRESS_SCHEMA
+        entry = _run(child)
+        assert entry["schema_valid"] is True
+        assert entry["summary"] == '{"city": "Oslo"}'
+        assert child._delegate_reply_chunks == []
+
+    def test_multiple_delivery_chunks_are_validated_as_one_document(self):
+        child = _StubChild([("cleanup", ['{"city":', '"Rome"}'])])
+        child._delegate_output_schema = ADDRESS_SCHEMA
+        entry = _run(child)
+        assert entry["schema_valid"] is True
+        assert json.loads(entry["summary"]) == {"city": "Rome"}
+        assert len(child.calls) == 1
+
+    @pytest.mark.parametrize("correction", ["", "   "])
+    def test_empty_explicit_retry_is_not_replaced_by_cleanup(self, correction):
+        child = _StubChild([
+            ("cleanup", ["rejected delivery"]),
+            ('{"city": "not the deliverable"}', [correction]),
+        ])
+        child._delegate_output_schema = ADDRESS_SCHEMA
+        entry = _run(child)
+        assert entry["schema_valid"] is False
+        assert entry["status"] == "failed"
+        assert entry["schema_retries"] == 1
+        assert child._delegate_reply_chunks == [correction]
+        assert "not the deliverable" not in entry["summary"]
+
+    def test_explicit_delivery_is_validated_before_trailing_prose(self):
+        child = _StubChild(
+            [("cleanup complete", ['{"city": "Rome"}'])]
+        )
+        child._delegate_output_schema = ADDRESS_SCHEMA
+
+        entry = _run(child)
+
+        assert entry["schema_valid"] is True
+        assert entry["summary"] == '{"city": "Rome"}'
+        assert len(child.calls) == 1
+
+    def test_schema_retry_replaces_rejected_delivery_attempt(self):
+        child = _StubChild(
+            [
+                ("first cleanup", ["not json"]),
+                ("retry cleanup", ['{"city": "Oslo"}']),
+            ]
+        )
+        child._delegate_output_schema = ADDRESS_SCHEMA
+
+        entry = _run(child)
+
+        assert entry["schema_valid"] is True
+        assert entry["schema_retries"] == 1
+        assert entry["summary"] == '{"city": "Oslo"}'
+        assert "not json" not in entry["summary"]
+
     def test_valid_first_try_no_retry(self):
         child = _StubChild(['{"city": "Berlin"}'])
         child._delegate_output_schema = ADDRESS_SCHEMA

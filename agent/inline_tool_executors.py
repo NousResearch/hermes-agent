@@ -196,6 +196,11 @@ INLINE_TOOL_EXECUTORS: Dict[str, InlineToolExecutor] = {
         ("server", "server", ""), ("action", "action", "install"), ("reason", "reason", ""),
     ),
     "delegate_task": lambda agent, args, ctx: agent._dispatch_delegate_task(args),
+    # Registry dispatch has no executing-agent reference; both tool paths use this table.
+    "delegate_tool_reply": _tool(
+        "tools.delegate_tool_reply", "delegate_tool_reply", ("content", "content", ""),
+        parent_agent=lambda agent, ctx: agent,
+    ),
 }
 
 # ``invoke_tool`` (concurrent path) consults the memory manager right after these three

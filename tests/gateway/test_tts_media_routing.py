@@ -88,6 +88,35 @@ async def test_base_adapter_routes_voice_tagged_telegram_ogg_media_tag_to_voice_
     adapter.send_document.assert_not_awaited()
 
 
+@pytest.mark.asyncio
+async def test_media_only_response_records_attachment_obligation_before_delivery(
+    tmp_path, monkeypatch,
+):
+    from gateway import delivery_ledger as dl
+
+    adapter = _MediaRoutingAdapter()
+    event = _event()
+    media_file = _allowed_media_path(tmp_path, monkeypatch, "report.pdf")
+    adapter._message_handler = AsyncMock(return_value=f"MEDIA:{media_file}")
+    adapter.send_document = AsyncMock(
+        return_value=SendResult(success=True, message_id="doc")
+    )
+    recorded = []
+    monkeypatch.setattr(dl, "ledger_enabled", lambda: True)
+    monkeypatch.setattr(dl, "record_obligation", lambda **kwargs: recorded.append(kwargs))
+    monkeypatch.setattr(dl, "mark_attempting", lambda _oid: None)
+    monkeypatch.setattr(dl, "mark_delivered", lambda _oid: None)
+
+    await adapter._process_message_background(event, build_session_key(event.source))
+
+    assert len(recorded) == 1
+    assert recorded[0]["content"] == ""
+    assert recorded[0]["attachment_manifest"]["media_files"] == [
+        [str(media_file), False]
+    ]
+    adapter.send_document.assert_awaited_once()
+
+
 def _fake_runner(thread_meta):
     """Build a fake GatewayRunner-like object with the helper methods needed by
     _deliver_media_from_response."""

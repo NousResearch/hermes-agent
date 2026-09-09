@@ -1589,7 +1589,7 @@ class ProcessRegistry(ProcessCheckpointMixin):
             # Read-only: record in _poll_observed (CLI inline dedup) but NOT in
             # _completion_consumed, or a status check would suppress the watcher's
             # autonomous delivery turn. See __init__.
-            self._poll_observed.add(session_id)
+            self._poll_observed.add(session.id)
         if session.detached:
             result.update(detached=True, note="Process recovered after restart -- output history unavailable")
         return result
@@ -1622,7 +1622,7 @@ class ProcessRegistry(ProcessCheckpointMixin):
             **self._status_head(session), "output": "\n".join(selected),
             "total_lines": total_lines, "showing": f"{len(selected)} lines"}
         if session.exited and observed_completion_output:
-            self._completion_consumed.add(session_id)
+            self._completion_consumed.add(session.id)
         return result
 
     def wait(self, session_id: str, timeout: int = None) -> dict:
@@ -1655,7 +1655,7 @@ class ProcessRegistry(ProcessCheckpointMixin):
             self._reconcile_local_exit(session)  # orphaned-pipe reader guard
             result = None
             if session.exited:
-                self._completion_consumed.add(session_id)
+                self._completion_consumed.add(session.id)
                 result = self._exit_snapshot(session, "exited")
             elif _is_interrupted():
                 result = {
@@ -1719,10 +1719,10 @@ class ProcessRegistry(ProcessCheckpointMixin):
             # Only suppress the autonomous turn after its output is present in
             # the explicit kill result, matching wait/log consumption.
             if consume_output:
-                self._completion_consumed.add(session_id)
+                self._completion_consumed.add(session.id)
             return result
         try:
-            early = self._signal_kill(session, session_id, consume_output)
+            early = self._signal_kill(session, consume_output)
             if early is not None:
                 return early
             # Additive to the PID kill: stopping the scope reaps double-forked
@@ -1734,7 +1734,7 @@ class ProcessRegistry(ProcessCheckpointMixin):
             with session._lock:
                 output = _output_tail(session, 2000)
                 if consume_output:
-                    self._completion_consumed.add(session_id)
+                    self._completion_consumed.add(session.id)
                 session.exited = True
                 session.exit_code = -15  # SIGTERM
                 session.completion_reason = "killed"
@@ -1747,7 +1747,7 @@ class ProcessRegistry(ProcessCheckpointMixin):
         except Exception as e:
             return {"status": "error", "error": str(e)}
 
-    def _signal_kill(self, session: ProcessSession, session_id: str, consume_output: bool) -> Optional[dict]:
+    def _signal_kill(self, session: ProcessSession, consume_output: bool) -> Optional[dict]:
         """Deliver the kill via PTY, local Popen tree, sandbox exec or recovered host
         PID. Returns a final result dict when the kill cannot proceed (recycled/dead
         recovered PID, or no runtime handle), else None."""
@@ -1778,7 +1778,7 @@ class ProcessRegistry(ProcessCheckpointMixin):
                     session.exit_code = None
                     output = _output_tail(session, 2000)
                 if consume_output:
-                    self._completion_consumed.add(session_id)
+                    self._completion_consumed.add(session.id)
                 self._move_to_finished(session)
                 return {"status": "already_exited", "exit_code": session.exit_code, "output": output}
             self._terminate_host_pid(session.pid, session.host_start_time)

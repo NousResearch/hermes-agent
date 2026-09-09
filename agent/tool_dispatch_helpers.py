@@ -72,6 +72,30 @@ def _is_destructive_command(cmd: str) -> bool:
     return bool(cmd) and bool(_DESTRUCTIVE_PATTERNS.search(cmd) or _REDIRECT_OVERWRITE.search(cmd))
 
 
+# Read-only terminal commands admitted to parallel runs. Single command only:
+# any shell chaining/pipe/redirection/subshell is a sequential barrier (fail-closed —
+# one hidden writer in a compound command would break the planner's guarantees).
+_TERMINAL_CHAINING = re.compile(r"&&|\|\||;|\||`|\$\(")
+_READ_ONLY_COMMAND_RE = re.compile(
+    r"^(?:ls|cat|head|tail|grep|rg|find|wc|file|stat|du|df|ps|pgrep|printenv|env|whoami|uname|date|pwd|which|command -v|git status|git log|git diff|git branch|git show|git rev-parse|git remote|hermes config show|hermes gateway status|python3 --version|node --version)\b",
+)
+
+
+def _is_read_only_terminal_command(args: dict) -> bool:
+    """True only for a provably single, non-chained, non-redirecting, non-destructive,
+    non-background read command. Anything else stays a sequential barrier."""
+    if not isinstance(args, dict):
+        return False
+    if args.get("background") or args.get("pty"):
+        return False
+    cmd = args.get("command")
+    if not isinstance(cmd, str) or not cmd.strip():
+        return False
+    if _TERMINAL_CHAINING.search(cmd) or _is_destructive_command(cmd):
+        return False
+    return bool(_READ_ONLY_COMMAND_RE.match(cmd.strip()))
+
+
 def _is_mcp_tool_parallel_safe(tool_name: str) -> bool:
     """Whether an MCP tool's server opted into parallel calls; False if MCP is unavailable."""
     try:
@@ -125,6 +149,8 @@ def _batch_admission(tool_call, execution_cwd: Optional[Path]) -> tuple[str, Lis
     if name in _PATH_SCOPED_TOOLS:
         scoped = _extract_parallel_scope_paths(name, args, execution_cwd=execution_cwd)
         return (name, scoped, name in _PATH_SCOPED_WRITERS) if scoped else None
+    if name == "terminal":
+        return ("terminal", [], False) if _is_read_only_terminal_command(args) else None
     if name in _PARALLEL_SAFE_TOOLS or name in _PARALLEL_SAFE_BRIDGE_LOOKUPS or _is_mcp_tool_parallel_safe(name):
         return name, [], False
     return None
@@ -513,6 +539,7 @@ def _maybe_wrap_untrusted(name: str, content: Any) -> Any:
 __all__ = [
     "_NEVER_PARALLEL_TOOLS", "_PARALLEL_SAFE_TOOLS", "_PATH_SCOPED_TOOLS", "_PATH_SCOPED_READERS",
     "_PATH_SCOPED_WRITERS", "_DESTRUCTIVE_PATTERNS", "_REDIRECT_OVERWRITE", "_is_destructive_command",
+    "_is_read_only_terminal_command",
     "_plan_tool_batch_segments", "_should_parallelize_tool_batch", "_canonical_path",
     "_extract_parallel_scope_path", "_extract_parallel_scope_paths", "_paths_overlap",
     "_is_multimodal_tool_result", "_multimodal_text_summary", "_append_subdir_hint_to_multimodal",

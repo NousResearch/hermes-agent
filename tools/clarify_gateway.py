@@ -31,6 +31,11 @@ class _ClarifyEntry:
     # its card, otherwise an unrelated active-session follow-up could become its answer.
     requires_text_reply_binding: bool = False
     text_reply_to_message_id: Optional[str] = None
+    # A Telegram message id is only unique in its chat. These fields make a
+    # reply-bound card fail closed when a group session is shared.
+    text_reply_chat_id: Optional[str] = None
+    text_reply_user_id: Optional[str] = None
+    text_reply_thread_id: Optional[str] = None
 
 
 _lock = threading.RLock()
@@ -62,7 +67,8 @@ def register(clarify_id: str, session_key: str, question: str, choices: Optional
     return entry
 
 
-def bind_text_reply_to(clarify_id: str, message_id: object) -> bool:
+def bind_text_reply_to(clarify_id: str, message_id: object, *, chat_id: object = None,
+                       user_id: object = None, thread_id: object = None) -> bool:
     """Bind typed input for a batch card to its rendered platform message."""
     value = str(message_id).strip() if message_id is not None else ""
     with _lock:
@@ -70,6 +76,9 @@ def bind_text_reply_to(clarify_id: str, message_id: object) -> bool:
         if entry is None or not value:
             return False
         entry.text_reply_to_message_id = value
+        entry.text_reply_chat_id = str(chat_id) if chat_id is not None else None
+        entry.text_reply_user_id = str(user_id) if user_id is not None else None
+        entry.text_reply_thread_id = str(thread_id) if thread_id is not None else None
         return True
 
 

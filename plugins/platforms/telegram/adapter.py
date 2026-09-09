@@ -3860,7 +3860,12 @@ class TelegramAdapter(BasePlatformAdapter):
         if len(questions) != len(clarify_ids):
             return SendResult(success=False, error="Clarify batch question/id mismatch")
         total = len(questions)
-        self._clarify_batch_state[batch_id] = {"session_key": session_key, "clarify_ids": list(clarify_ids), "total": total}
+        self._clarify_batch_state[batch_id] = {
+            "session_key": session_key, "clarify_ids": list(clarify_ids), "total": total,
+            "chat_id": str(chat_id), "cards": {},
+            "initiator_user_id": (metadata or {}).get("_clarify_initiator_user_id"),
+            "initiator_thread_id": (metadata or {}).get("_clarify_initiator_thread_id"),
+        }
         last_result = SendResult(success=True)
         for index, (spec, clarify_id) in enumerate(zip(questions, clarify_ids), start=1):
             question, choices = str(spec.get("question") or ""), spec.get("choices") or None
@@ -3875,13 +3880,21 @@ class TelegramAdapter(BasePlatformAdapter):
                     text += "\n\n<i>Antworte mit Text oder nutze Überspringen.</i>"
                 rows.extend([[InlineKeyboardButton("⏭ Überspringen", callback_data=f"cl:{clarify_id}:skip")],
                              [InlineKeyboardButton("📊 Fortschritt", callback_data=f"clb:{batch_id}:status"), InlineKeyboardButton("✅ Abschließen", callback_data=f"clb:{batch_id}:continue")]])
-                def remember_batch_card(msg, clarify_id=clarify_id):
+                def remember_batch_card(msg, clarify_id=clarify_id, text=text):
                     self._clarify_state[clarify_id] = session_key
                     # Bound text prevents an unrelated follow-up from being consumed by an
                     # open-text card in the same displayed batch.
                     try:
                         from tools.clarify_gateway import bind_text_reply_to
-                        bind_text_reply_to(clarify_id, getattr(msg, "message_id", None))
+                        bound = bind_text_reply_to(
+                            clarify_id, getattr(msg, "message_id", None), chat_id=chat_id,
+                            user_id=(metadata or {}).get("_clarify_initiator_user_id"),
+                            thread_id=(metadata or {}).get("_clarify_initiator_thread_id"),
+                        )
+                        if bound:
+                            self._clarify_batch_state.get(batch_id, {}).get("cards", {})[clarify_id] = {
+                                "message_id": str(getattr(msg, "message_id", "")), "text": text,
+                            }
                     except Exception:
                         logger.debug("Telegram clarify batch card binding failed", exc_info=True)
                 return text, InlineKeyboardMarkup(rows), remember_batch_card
@@ -3894,6 +3907,31 @@ class TelegramAdapter(BasePlatformAdapter):
     def clear_clarify_batch(self, batch_id: str) -> None:
         """Forget terminal batch UI state after the runner has collected its result."""
         self._clarify_batch_state.pop(batch_id, None)
+
+    async def invalidate_clarify_batch_for_session(self, session_key: str) -> None:
+        """Disable visible cards after unbound prose releases a batch.
+
+        Terminal state is owned by clarify_gateway; Telegram edits are best
+        effort so stale cards do not imply that their buttons still work.
+        """
+        if not self._bot:
+            return
+        for batch_id, batch in list(self._clarify_batch_state.items()):
+            if batch.get("session_key") != session_key:
+                continue
+            for card in batch.get("cards", {}).values():
+                message_id = card.get("message_id")
+                if not message_id:
+                    continue
+                try:
+                    await self._bot.edit_message_text(
+                        chat_id=int(batch["chat_id"]), message_id=int(message_id),
+                        text=f"{card.get('text', '')}\n\n<i>Abgebrochen – neue Nachricht erkannt.</i>",
+                        parse_mode=ParseMode.HTML, reply_markup=None,
+                    )
+                except Exception:
+                    logger.debug("Telegram clarify card invalidation failed", exc_info=True)
+            self._clarify_batch_state.pop(batch_id, None)
 
     @staticmethod
     def _provider_get_label():
@@ -4417,6 +4455,15 @@ class TelegramAdapter(BasePlatformAdapter):
             "This prompt has already been resolved.", pop=False)
         if not session_key:
             return
+        try:
+            from tools.clarify_gateway import _entries as _clarify_entries
+            _bound_entry = _clarify_entries.get(clarify_id)
+            if (_bound_entry is not None and _bound_entry.text_reply_user_id
+                    and str(getattr(query.from_user, "id", "")) != _bound_entry.text_reply_user_id):
+                await query.answer(text="⛔ Du darfst diese Frage nicht beantworten.")
+                return
+        except Exception:
+            logger.debug("[%s] clarify callback binding check failed", self.name, exc_info=True)
         user_display = getattr(query.from_user, "first_name", "User")
         if choice_token == "skip":
             self._clarify_state.pop(clarify_id, None)
@@ -4494,6 +4541,10 @@ class TelegramAdapter(BasePlatformAdapter):
             await query.answer(text="Diese Fragen sind nicht mehr aktiv.")
             return
         if not await self._callback_authorized(query, cb, "⛔ Du darfst diese Fragen nicht beantworten."):
+            return
+        if (batch.get("initiator_user_id")
+                and str(getattr(query.from_user, "id", "")) != str(batch["initiator_user_id"])):
+            await query.answer(text="⛔ Du darfst diese Fragen nicht beantworten.")
             return
         try:
             from tools import clarify_gateway as clarify_mod

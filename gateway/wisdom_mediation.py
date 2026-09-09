@@ -93,8 +93,6 @@ async def schedule(
         with gateway._agent_cache_lock:
             cached = gateway._agent_cache.get(key)
             agent = cached[0] if isinstance(cached, tuple) else cached
-            if agent is None:
-                return
             runtime = session_runtime(agent)
             history = list(getattr(agent, "_session_messages", None) or [])
 

@@ -386,7 +386,7 @@ def test_execution_lock_survives_contention_and_releases_after_process_exit(setu
 
 @pytest.mark.parametrize("setup", [False], indirect=True)
 @pytest.mark.parametrize("copy_mode", ["agent", "fixed"])
-@pytest.mark.parametrize("case", ["complete", "defer", "changed", "secret", "missing_guide", "other_owner", "expired_lease", "new_control", "address_changed", "no_command"])
+@pytest.mark.parametrize("case", ["complete", "defer", "changed", "secret", "missing_guide", "other_owner", "expired_lease", "new_control", "address_changed", "no_command", "missing_model"])
 def test_native_install_hands_off_owned_setup_without_implicit_execution(setup, monkeypatch, case, copy_mode):
     from types import SimpleNamespace
     from hermes_wisdom.delivery import DeliveryReceipt
@@ -513,8 +513,32 @@ def test_native_install_hands_off_owned_setup_without_implicit_execution(setup, 
         assert consent.resolve("org-1", prerequisite["id"], actor, "defer")["deferred"]
         assert prepare() == []
         assert not model_calls and not marker.exists()
+        reopened = resolve_surface_action(service, f"wi:agent:setup.status:{install['id']}",
+                                          platform=actor.platform, actor_id=actor.actor_id, chat_id=actor.chat_id)
+        assert any(action.callback_data == f"wi:agent:confirm:{prerequisite['id']}" for action in reopened.actions)
+        assert not model_calls and not marker.exists()
+        now[0] += 86401
+        expired = consent.resolve("org-1", install["id"], actor, "setup.status")
+        assert expired["id"] == prerequisite["id"] and expired["state"] == "expired"
+        assert [action.label for action in interaction_view(expired).actions] == ["Recheck"]
         return
     consent.resolve("org-1", prerequisite["id"], actor, "confirm")
+    if case == "missing_model":
+        runtime.clear()
+        for _ in range(5):
+            assert prepare() == []
+            handoff = next(row for row in mediation.queue.assessments("org-1") if row["event_key"] == f"setup-handoff:{prerequisite['id']}")
+            assert handoff["state"] == "pending" and handoff["attempts"] == 0
+            assert handoff["last_error"] == "session_model_unavailable"
+            waiting = resolve_surface_action(service, f"wi:agent:setup.status:{install['id']}",
+                                             platform=actor.platform, actor_id=actor.actor_id, chat_id=actor.chat_id)
+            assert waiting.summary == "Setup waiting for model"
+            assert not model_calls and not marker.exists()
+            now[0] += 61
+        # Reopening the database with an available model resumes the same handoff.
+        mediation = WisdomMediation(service, clock=lambda: now[0])
+        consent = mediation.consent
+        runtime.update({"model": "test-session-model", "provider": "test-provider"})
     steps = prepare()
     if case in {"secret", "expired_lease", "new_control", "address_changed"}:
         assert steps == [] and not marker.exists()
@@ -552,6 +576,12 @@ def test_native_install_hands_off_owned_setup_without_implicit_execution(setup, 
     ready = prepare()
     assert ready[0]["advice"]["title"].endswith("Ready")
     assert inspect_installed_setup(service.store, "skill-1")["ready_to_use"] is True
+    verified = resolve_surface_action(service, f"wi:agent:setup.status:{install['id']}",
+                                      platform=actor.platform, actor_id=actor.actor_id, chat_id=actor.chat_id)
+    assert verified.summary == "Ready"
+    with pytest.raises(WisdomNotFound):
+        resolve_surface_action(service, f"wi:agent:setup.status:{install['id']}",
+                               platform=actor.platform, actor_id="someone-else", chat_id=actor.chat_id)
     deliver(ready)
     assert prepare() == [] and len(model_calls) == 2
 
@@ -569,6 +599,9 @@ def test_native_install_hands_off_owned_setup_without_implicit_execution(setup, 
     assert interaction_view(updated).summary == "Files updated"
     assert inspect_installed_setup(service.store, "skill-1", version=2)["ready_to_use"] is not True
     assert not mediation.delivery_ready("org-1", ready)
+    previous = resolve_surface_action(service, f"wi:agent:setup.status:{install['id']}",
+                                      platform=actor.platform, actor_id=actor.actor_id, chat_id=actor.chat_id)
+    assert previous.summary == "Setup needs attention"
     next_steps = prepare()
     assert next_steps[0]["interaction"]["facts"]["version"] == 2
     assert next_steps[0]["interaction"]["facts"]["step"]["phase"] == "prerequisite"

@@ -58,6 +58,12 @@ the existing setup flow; do not create credentials or silently enable sharing.
    selected. Fixed copy disables unsolicited agent assessments, not requested
    installation or setup. Passed steps
    queue the next review; Not now pauses the flow without repeating the card.
+   If the conversation has no active model, command preparation waits without
+   spending model retries or selecting a different provider. The completed
+   install/update card's Check setup control shows progress or the existing
+   step's review. Select or reconnect the conversation's model and send a message
+   there to resume queued work. Checking status never runs a command; expired
+   approvals still require Recheck and fresh confirmation.
    Do not create a competing proposal when an existing setup control is pending.
    Propose each step through `present_wisdom_consent` with `kind: setup`, the
    exact installed identity/version, and `step: {phase, index, command}`.

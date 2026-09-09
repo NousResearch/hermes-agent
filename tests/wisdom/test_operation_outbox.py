@@ -408,7 +408,7 @@ def test_share_and_separate_publication_keep_the_same_delivery_but_distinct_outc
         first["result"]["packaging_state"] == "queued"
         and service.client.publications == 0
     )
-    final = mediation.prepare("org", actor, runtime={}, history=[], assessor=Mock())[0][
+    final = mediation.prepare("org", actor, runtime={"model": "test-model", "provider": "test-provider"}, history=[], assessor=Mock())[0][
         "interaction"
     ]
     assert service.client.report_operation_outcome.call_count == 1
@@ -471,7 +471,7 @@ def test_publication_cannot_attach_to_an_unrelated_parent_delivery(sharing, mism
     attach_shared_delivery(sharing)
     service, mediation, actor, shown, _, _, _ = sharing
     mediation.consent.resolve("org", shown["id"], actor, "confirm")
-    final = mediation.prepare("org", actor, runtime={}, history=[], assessor=Mock())[0][
+    final = mediation.prepare("org", actor, runtime={"model": "test-model", "provider": "test-provider"}, history=[], assessor=Mock())[0][
         "interaction"
     ]
     with service.store.transaction() as db:

@@ -122,7 +122,7 @@ def test_qualified_candidate_uses_professionalism_not_installation_assessor(
     assessor = Mock(
         side_effect=AssertionError("Publishing must not use the installation assessor")
     )
-    items = instance.prepare("org", actor, runtime={}, history=[], assessor=assessor)
+    items = instance.prepare("org", actor, runtime={"model": "test-model", "provider": "test-provider"}, history=[], assessor=assessor)
     assert len(items) == 1
     assert items[0]["advice"]["assessment_kind"] == "qualification"
     assessor.assert_not_called()
@@ -203,7 +203,7 @@ def test_source_changed_during_professionalism_review_never_reaches_consent(
     monkeypatch.setattr(instance.consent, "present", present)
     assessor = Mock()
     assert (
-        instance.prepare("org", actor, runtime={}, history=[], assessor=assessor) == []
+        instance.prepare("org", actor, runtime={"model": "test-model", "provider": "test-provider"}, history=[], assessor=assessor) == []
     )
     present.assert_not_called()
     assessor.assert_not_called()
@@ -252,7 +252,7 @@ def test_only_actionable_arrivals_become_recommendations(mediation, category, ki
         results = instance.prepare(
             "org",
             actor,
-            runtime={},
+            runtime={"model": "test-model", "provider": "test-provider"},
             history=[],
             assessor=lambda evidence, **kw: {
                 item["assessment_id"]: {
@@ -380,7 +380,7 @@ def test_completed_install_retires_arrival_before_any_model_call(
     })
     assessor = Mock(side_effect=AssertionError("already installed"))
     assert (
-        instance.prepare("org", actor, runtime={}, history=[], assessor=assessor) == []
+        instance.prepare("org", actor, runtime={"model": "test-model", "provider": "test-provider"}, history=[], assessor=assessor) == []
     )
     assert instance.queue.assessments("org")[0]["state"] == "retired"
     instance.service.version_detail.assert_not_called()
@@ -392,12 +392,12 @@ def test_own_publication_skips_assessment_but_preserves_activity(mediation, cate
     enqueue(instance, category)
     instance.service.version_detail.return_value["version"]["published_by_user_id"] = "owner"
     assessor = Mock(side_effect=AssertionError("must not assess our own publication"))
-    assert instance.prepare("org", actor, runtime={}, history=[], assessor=assessor) == []
+    assert instance.prepare("org", actor, runtime={"model": "test-model", "provider": "test-provider"}, history=[], assessor=assessor) == []
     assessor.assert_not_called()
     assert instance.queue.assessments("org")[0]["state"] == "retired"
     assert instance.service.notifications(mark_seen=False)["events"] == [event(category)]
     instance.ingest()
-    assert instance.prepare("org", actor, runtime={}, history=[], assessor=assessor) == []
+    assert instance.prepare("org", actor, runtime={"model": "test-model", "provider": "test-provider"}, history=[], assessor=assessor) == []
     assert len(instance.queue.assessments("org")) == 1
 
 
@@ -493,7 +493,7 @@ def test_transient_lookup_failure_retries_without_spending_model_attempt(mediati
     instance.service.version_detail.side_effect = TimeoutError
     assessor = Mock(return_value={})
     assert (
-        instance.prepare("org", actor, runtime={}, history=[], assessor=assessor) == []
+        instance.prepare("org", actor, runtime={"model": "test-model", "provider": "test-provider"}, history=[], assessor=assessor) == []
     )
     assert instance.queue.assessments("org")[0]["attempts"] == 0
     assessor.assert_not_called()
@@ -508,7 +508,7 @@ def test_transient_lookup_failure_retries_without_spending_model_attempt(mediati
         }
         for item in evidence
     }
-    result = instance.prepare("org", actor, runtime={}, history=[], assessor=assessor)
+    result = instance.prepare("org", actor, runtime={"model": "test-model", "provider": "test-provider"}, history=[], assessor=assessor)
     assert len(result) == 1
     assert result[0]["advice"]["title"] == "Restored"
     assessor.assert_called_once()
@@ -533,7 +533,7 @@ def test_existing_consent_prevents_duplicate_feed_assessment(mediation, category
         db.execute("UPDATE wisdom_assessment SET state='delivered',lease_token=NULL,lease_until=NULL WHERE id=?", (request,))
     enqueue(instance, category)
     assessor = Mock(side_effect=AssertionError("already has a consent card"))
-    assert instance.prepare("org", actor, runtime={}, history=[], assessor=assessor) == []
+    assert instance.prepare("org", actor, runtime={"model": "test-model", "provider": "test-provider"}, history=[], assessor=assessor) == []
     assert instance.consent.resolve("org", shown["id"], actor, "inspect")["state"] == (
         "pending" if category == "update_available" else "completed"
     )
@@ -545,7 +545,7 @@ def test_legacy_operation_outcome_is_not_reassessed(mediation):
     instance, actor, _, _ = mediation
     instance.queue.enqueue("org", "outcome:old", {"kind": "notice", "notification": {"state": "stale"}})
     assessor = Mock(side_effect=AssertionError("outcome is already on the native card"))
-    assert instance.prepare("org", actor, runtime={}, history=[], assessor=assessor) == []
+    assert instance.prepare("org", actor, runtime={"model": "test-model", "provider": "test-provider"}, history=[], assessor=assessor) == []
     assert instance.queue.assessments("org")[0]["state"] == "retired"
     assessor.assert_not_called()
 
@@ -557,7 +557,7 @@ def test_unlinked_completion_uses_compact_receipt_without_model(mediation, categ
     instance, actor, _, _ = mediation
     enqueue(instance, category)
     assessor = Mock(side_effect=AssertionError("no assessment for a completed operation"))
-    items = instance.prepare("org", actor, runtime={}, history=[], assessor=assessor)
+    items = instance.prepare("org", actor, runtime={"model": "test-model", "provider": "test-provider"}, history=[], assessor=assessor)
     view = advice_view(items)
     assert view.summary == category.capitalize()
     assert view.items[0].title == "helpful"

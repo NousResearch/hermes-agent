@@ -312,7 +312,8 @@ class MediationStore:
             raise WisdomConflict("Wisdom assessment ownership changed")
 
     def claim(
-        self, org: str, session_key: str, *, requested_only: bool = False
+        self, org: str, session_key: str, *, requested_only: bool = False,
+        allow_model_work: bool = True,
     ) -> list[dict[str, Any]]:
         """Elect one eligible session, then fence every row with a fresh token."""
         self._require_org(org)
@@ -352,6 +353,8 @@ class MediationStore:
                 AND available_at<=? AND (state IN ('pending','ready','fallback')
                   OR (state='assessing' AND lease_until<=?))
                 AND (?=0 OR json_type(reference_json,'$.user_requested')='true')
+                AND (?=1 OR state IN ('ready','fallback')
+                  OR json_extract(reference_json,'$.kind')='setup_handoff')
                 AND ((state='ready' AND (owner_session=? OR
                   (origin_session IS NULL AND ?=? AND NOT EXISTS (
                     SELECT 1 FROM wisdom_agent_session owner WHERE owner.organization_id=wisdom_assessment.organization_id
@@ -363,6 +366,7 @@ class MediationStore:
                     now,
                     now,
                     requested_only,
+                    allow_model_work,
                     session_key,
                     session_key,
                     recent,
@@ -438,6 +442,18 @@ class MediationStore:
               WHERE id=? AND organization_id=? AND lease_token=? AND lease_until>?
               AND state IN ('assessing','ready','fallback')""",
                 (max(now + 60, until), now, job["id"], org, job["lease_token"], now),
+            )
+
+    def wait_for_model(self, org: str, job: dict) -> None:
+        """Missing session runtime is a wait, not a failed model attempt."""
+        now = self.clock()
+        with self.store.transaction() as db:
+            self.check_claim(db, org, job["id"], job["lease_token"])
+            db.execute(
+                """UPDATE wisdom_assessment SET state='pending',attempts=MAX(0,attempts-1),
+                last_error='session_model_unavailable',available_at=?,updated_at=?,
+                lease_token=NULL,lease_until=NULL WHERE id=?""",
+                (now + 60, now, job["id"]),
             )
 
     def save_advice(

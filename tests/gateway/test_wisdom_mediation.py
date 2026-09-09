@@ -17,7 +17,8 @@ from tui_gateway.wisdom_mediation import poll
 @pytest.mark.asyncio
 @pytest.mark.parametrize("surface", ["telegram", "slack", "local"])
 @pytest.mark.parametrize("requested", [False, True])
-async def test_fixed_copy_workers_deliver_only_requested_work(tmp_path, monkeypatch, surface, requested):
+@pytest.mark.parametrize("copy_mode,model_available", [("fixed", False), ("fixed", True), ("agent", False)])
+async def test_idle_workers_respect_copy_and_model_availability(tmp_path, monkeypatch, surface, requested, model_available, copy_mode):
     from gateway.wisdom_mediation import schedule
     from hermes_wisdom.consent import ConsentActor
     from hermes_wisdom.delivery import DeliveryReceipt
@@ -50,10 +51,10 @@ async def test_fixed_copy_workers_deliver_only_requested_work(tmp_path, monkeypa
     service.client.display_org_id = "org"
     monkeypatch.setattr("hermes_wisdom.service.WisdomService", lambda: service)
     monkeypatch.setattr("hermes_wisdom.service._config", lambda: {
-        "enabled": True, "notifications": {"delivery_mode": "fixed"},
+        "enabled": True, "notifications": {"delivery_mode": copy_mode},
     })
-    monkeypatch.setattr("agent.auxiliary_client.call_llm", lambda **kw: pytest.fail("unsolicited model call in fixed mode"))
-    agent = SimpleNamespace(_session_messages=[], provider="test", model="test")
+    monkeypatch.setattr("agent.auxiliary_client.call_llm", lambda **kw: pytest.fail("model work requires both a route and an eligible assessment"))
+    agent = SimpleNamespace(_session_messages=[], provider="test", model="test") if model_available else None
     emissions = []
     if surface == "local":
         from tui_gateway import server
@@ -79,7 +80,7 @@ async def test_fixed_copy_workers_deliver_only_requested_work(tmp_path, monkeypa
         assert session["_wisdom_activity_tracking"] is True
         assert not session["running"]
         assert session["history"] == []
-        fixed_notice.assert_called_once()
+        assert fixed_notice.call_count == int(copy_mode == "fixed")
         drain.assert_called_once()
         advice = [payload for method, payload in emissions if payload.get("key") == "wisdom.advice"]
         assert len(advice) == int(requested)
@@ -110,16 +111,18 @@ async def test_fixed_copy_workers_deliver_only_requested_work(tmp_path, monkeypa
         adapter.run_idle_activity = idle
         monkeypatch.setattr("gateway.wisdom_mediation.asyncio.sleep", immediate_sleep)
         source = SimpleNamespace(platform=surface, chat_type="dm", chat_id=actor.chat_id, user_id=actor.actor_id)
-        # False preserves the legacy fixed notification sender; requested work still runs.
-        assert not await schedule(gateway, adapter, source, actor.session_key, observe_only=True)
-        assert not await schedule(gateway, adapter, source, actor.session_key)
+        # Fixed mode preserves its legacy notification sender; requested work still runs.
+        assert await schedule(gateway, adapter, source, actor.session_key, observe_only=True) is (copy_mode == "agent")
+        assert await schedule(gateway, adapter, source, actor.session_key) is (copy_mode == "agent")
         await next(iter(adapter._background_tasks))
         assert adapter.send_wisdom_mediation.await_count == int(requested)
     rows = {row["id"]: row for row in queue.assessments("org")}
     assert rows[unsolicited]["state"] == "pending" and rows[unsolicited]["attempts"] == 0
     assert queued is None or rows[queued]["state"] == "delivered"
     activity = WisdomMediation(service).activity()
-    assert [row["id"] for row in activity["assessments"]] == ([queued] if requested else [])
+    assert {row["id"] for row in activity["assessments"]} == (
+        ({queued} if requested else set()) | ({unsolicited} if copy_mode == "agent" else set())
+    )
 
 
 @pytest.mark.asyncio

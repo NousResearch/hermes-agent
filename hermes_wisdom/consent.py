@@ -449,6 +449,11 @@ class WisdomConsent:
     def resolve(
         self, org: str, interaction_id: str, actor: ConsentActor, action: str
     ) -> dict[str, Any]:
+        if action == "setup.status":
+            from .setup_continuation import inspect_continuation
+
+            result = self._resolve(org, interaction_id, actor, "inspect")
+            return inspect_continuation(self, org, result, actor)
         if action in {"setup.recover", "setup.clear"}:
             return self._recover_setup(org, interaction_id, actor, action)
         if action == "review":

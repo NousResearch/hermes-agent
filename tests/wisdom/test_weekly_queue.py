@@ -150,7 +150,7 @@ def test_quiet_week_commits_without_any_proactive_card(weekly):
         )
     )
     process_weekly_review(
-        mediation, "org-1", job, runtime={}, history=[], reviewer=quiet
+        mediation, "org-1", job, runtime={"model": "test-model", "provider": "test-provider"}, history=[], reviewer=quiet
     )
     rows = mediation.queue.assessments("org-1")
     assert len(rows) == 1 and rows[0]["state"] == "reviewed"
@@ -165,7 +165,7 @@ def test_suppression_and_mute_prevent_review_work(weekly):
     )
     review = Mock(side_effect=AssertionError("must not invoke model"))
     process_weekly_review(
-        mediation, "org-1", job, runtime={}, history=[], reviewer=review
+        mediation, "org-1", job, runtime={"model": "test-model", "provider": "test-provider"}, history=[], reviewer=review
     )
     row = mediation.queue.assessments("org-1")[0]
     assert row["state"] == "pending" and row["attempts"] == 0
@@ -177,7 +177,7 @@ def test_stale_owner_cannot_commit_selection(weekly):
     _, job = claim(weekly)
     now[0] += 181
     process_weekly_review(
-        mediation, "org-1", job, runtime={}, history=[], reviewer=reviewer
+        mediation, "org-1", job, runtime={"model": "test-model", "provider": "test-provider"}, history=[], reviewer=reviewer
     )
     assert len(mediation.queue.assessments("org-1")) == 1
     assert mediation.queue.assessments("org-1")[0].get("advice") is None
@@ -189,7 +189,7 @@ def test_changed_skill_is_not_presented_from_old_usage_snapshot(weekly):
     (root / "release-notes" / "SKILL.md").write_text("changed", encoding="utf-8")
     review = Mock(side_effect=AssertionError("must not review stale bytes"))
     process_weekly_review(
-        mediation, "org-1", job, runtime={}, history=[], reviewer=review
+        mediation, "org-1", job, runtime={"model": "test-model", "provider": "test-provider"}, history=[], reviewer=review
     )
     assert len(mediation.queue.assessments("org-1")) == 1
     assert mediation.queue.assessments("org-1")[0]["state"] == "reviewed"
@@ -206,7 +206,7 @@ def test_model_cannot_invent_a_candidate(weekly):
     )
     with pytest.raises(ValueError, match="invented"):
         process_weekly_review(
-            mediation, "org-1", job, runtime={}, history=[], reviewer=wrong
+            mediation, "org-1", job, runtime={"model": "test-model", "provider": "test-provider"}, history=[], reviewer=wrong
         )
     assert len(mediation.queue.assessments("org-1")) == 1
 
@@ -215,7 +215,7 @@ def test_later_week_does_not_repeat_an_unchanged_recommendation(weekly):
     service, mediation, _, root, _ = weekly
     _, job = claim(weekly)
     process_weekly_review(
-        mediation, "org-1", job, runtime={}, history=[], reviewer=reviewer
+        mediation, "org-1", job, runtime={"model": "test-model", "provider": "test-provider"}, history=[], reviewer=reviewer
     )
     _use(service.store, "release-notes", [-7], per_day=3)
     next_week = enqueue_weekly_review(
@@ -241,7 +241,7 @@ def test_weekly_selection_does_not_duplicate_an_immediate_qualification(weekly):
         origin_session="session",
     )
     process_weekly_review(
-        mediation, "org-1", job, runtime={}, history=[], reviewer=reviewer
+        mediation, "org-1", job, runtime={"model": "test-model", "provider": "test-provider"}, history=[], reviewer=reviewer
     )
     rows = mediation.queue.assessments("org-1")
     assert len(rows) == 2
@@ -282,7 +282,7 @@ def test_prepare_reuses_weekly_advice_and_native_exact_plan(weekly, monkeypatch)
     no_second_model = Mock(side_effect=AssertionError("selection must be reused"))
     assert (
         mediation.prepare(
-            "org-1", actor, runtime={}, history=[], assessor=no_second_model
+            "org-1", actor, runtime={"model": "test-model", "provider": "test-provider"}, history=[], assessor=no_second_model
         )
         == []
     )
@@ -308,7 +308,7 @@ def test_prepare_reuses_weekly_advice_and_native_exact_plan(weekly, monkeypatch)
         },
     }
     items = mediation.prepare(
-        "org-1", actor, runtime={}, history=[], assessor=no_second_model
+        "org-1", actor, runtime={"model": "test-model", "provider": "test-provider"}, history=[], assessor=no_second_model
     )
     assert len(items) == 1 and items[0]["interaction"]["operation"] == "share"
     assert items[0]["interaction"]["actions"][-1] == "confirm"
@@ -326,11 +326,11 @@ def test_failed_model_uses_bounded_retries_then_one_manual_fallback(
     enqueue_weekly_review(service, now=NOW, skills_root=root)
     for _ in range(3):
         register(mediation, actor)
-        assert mediation.prepare("org-1", actor, runtime={}, history=[]) == []
+        assert mediation.prepare("org-1", actor, runtime={"model": "test-model", "provider": "test-provider"}, history=[]) == []
         now[0] += 61
     register(mediation, actor)
-    assert mediation.prepare("org-1", actor, runtime={}, history=[]) == []
-    items = mediation.prepare("org-1", actor, runtime={}, history=[])
+    assert mediation.prepare("org-1", actor, runtime={"model": "test-model", "provider": "test-provider"}, history=[]) == []
+    items = mediation.prepare("org-1", actor, runtime={"model": "test-model", "provider": "test-provider"}, history=[])
     assert failed.call_count == 3
     assert len(items) == 1 and items[0]["interaction"] is None
     assert "/wisdom candidates" in items[0]["advice"]["explanation"]
@@ -362,13 +362,13 @@ def test_selection_transaction_rolls_back_all_cards_on_partial_failure(
     })
     with pytest.raises(RuntimeError, match="simulated crash"):
         process_weekly_review(
-            mediation, "org-1", job, runtime={}, history=[], reviewer=both
+            mediation, "org-1", job, runtime={"model": "test-model", "provider": "test-provider"}, history=[], reviewer=both
         )
     assert len(mediation.queue.assessments("org-1")) == 1
     assert not service.store.local_events(kind="wisdom.candidate")
     monkeypatch.setattr(service.store, "emit_local_event", emit)
     process_weekly_review(
-        mediation, "org-1", job, runtime={}, history=[], reviewer=both
+        mediation, "org-1", job, runtime={"model": "test-model", "provider": "test-provider"}, history=[], reviewer=both
     )
     assert len(mediation.queue.assessments("org-1")) == 3
 
@@ -384,7 +384,7 @@ def test_edit_during_model_review_does_not_commit_stale_selection(weekly):
         return reviewer(payload, **kwargs)
 
     process_weekly_review(
-        mediation, "org-1", job, runtime={}, history=[], reviewer=changed
+        mediation, "org-1", job, runtime={"model": "test-model", "provider": "test-provider"}, history=[], reviewer=changed
     )
     rows = mediation.queue.assessments("org-1")
     assert len(rows) == 1 and rows[0]["state"] == "reviewed"
@@ -408,7 +408,7 @@ def test_server_cap_cannot_be_exceeded_by_model(weekly, monkeypatch):
     })
     with pytest.raises(ValueError, match="cap"):
         process_weekly_review(
-            mediation, "org-1", job, runtime={}, history=[], reviewer=both
+            mediation, "org-1", job, runtime={"model": "test-model", "provider": "test-provider"}, history=[], reviewer=both
         )
     assert len(mediation.queue.assessments("org-1")) == 1
 
@@ -422,7 +422,7 @@ def test_new_org_has_its_own_weekly_identity_and_old_owner_cannot_commit(weekly)
     assert result["assessment_id"] != other["assessment_id"]
     with pytest.raises(ValueError):
         process_weekly_review(
-            mediation, "org-1", job, runtime={}, history=[], reviewer=reviewer
+            mediation, "org-1", job, runtime={"model": "test-model", "provider": "test-provider"}, history=[], reviewer=reviewer
         )
     assert len(mediation.queue.assessments("org-2")) == 1
 
@@ -502,6 +502,6 @@ def test_malformed_model_output_never_creates_native_candidates(weekly, monkeypa
     call = Mock(return_value="not JSON")
     monkeypatch.setattr("hermes_wisdom.weekly_queue._session_call", lambda _: call)
     with pytest.raises(SchemaRejected):
-        process_weekly_review(mediation, "org-1", job, runtime={}, history=[])
+        process_weekly_review(mediation, "org-1", job, runtime={"model": "test-model", "provider": "test-provider"}, history=[])
     assert len(mediation.queue.assessments("org-1")) == 1
     assert not mediation.service.store.local_events(kind="wisdom.candidate")

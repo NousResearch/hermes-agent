@@ -676,7 +676,8 @@ class WisdomMediation:
         self.service.require_setup()
         self.flush_delivery(org)
         claimed = self.queue.claim(
-            org, actor.session_key, requested_only=delivery_mode() != "agent"
+            org, actor.session_key, requested_only=delivery_mode() != "agent",
+            allow_model_work=bool(runtime.get("model") and runtime.get("provider")),
         )
         from .weekly_queue import process_weekly_review
         from .share_queue import process_share_package

@@ -337,10 +337,10 @@ def test_packaging_waits_for_owning_session_safe_boundary(sharing):
     service, mediation, actor, shown, model, _, _ = sharing
     mediation.consent.resolve("org", shown["id"], actor, "confirm")
     register(mediation, actor, available=False)
-    assert mediation.prepare("org", actor, runtime={}, history=[]) == []
+    assert mediation.prepare("org", actor, runtime={"model": "test-model", "provider": "test-provider"}, history=[]) == []
     other = ConsentActor("other", "slack", "other-user", "different")
     register(mediation, other)
-    assert mediation.prepare("org", other, runtime={}, history=[]) == []
+    assert mediation.prepare("org", other, runtime={"model": "test-model", "provider": "test-provider"}, history=[]) == []
     assert service.client.uploaded == 0
     model.assert_not_called()
 
@@ -352,12 +352,12 @@ def test_packaging_retries_resume_persisted_model_output(sharing, monkeypatch):
     monkeypatch.setattr(
         service, "prepare_share_package", Mock(side_effect=OSError("disk busy"))
     )
-    assert mediation.prepare("org", actor, runtime={}, history=[]) == []
+    assert mediation.prepare("org", actor, runtime={"model": "test-model", "provider": "test-provider"}, history=[]) == []
     assert model.call_count == 1
     monkeypatch.setattr(service, "prepare_share_package", prepare)
     now[0] += 61
     register(mediation, actor)
-    items = mediation.prepare("org", actor, runtime={}, history=[])
+    items = mediation.prepare("org", actor, runtime={"model": "test-model", "provider": "test-provider"}, history=[])
     assert items[0]["interaction"]["operation"] == "publish"
     assert model.call_count == 1 and service.client.uploaded == 0
 
@@ -366,7 +366,7 @@ def test_source_change_prevents_packaging_and_upload(sharing):
     service, mediation, actor, shown, model, source, _ = sharing
     mediation.consent.resolve("org", shown["id"], actor, "confirm")
     (source / "SKILL.md").write_text("different")
-    assert mediation.prepare("org", actor, runtime={}, history=[]) == []
+    assert mediation.prepare("org", actor, runtime={"model": "test-model", "provider": "test-provider"}, history=[]) == []
     model.assert_not_called()
     assert service.client.uploaded == 0
 
@@ -381,7 +381,7 @@ def test_superseded_model_owner_cannot_write_a_proposal(sharing):
         return package
 
     model.side_effect = expire
-    assert mediation.prepare("org", actor, runtime={}, history=[]) == []
+    assert mediation.prepare("org", actor, runtime={"model": "test-model", "provider": "test-provider"}, history=[]) == []
     row = mediation.queue.assessments("org")[-1]
     assert "package" not in row["reference"]
     assert not (service.store.root / "share-staging").exists()
@@ -391,7 +391,7 @@ def test_superseded_model_owner_cannot_write_a_proposal(sharing):
 def test_changed_prepared_bytes_are_not_uploaded_from_old_consent(sharing):
     service, mediation, actor, shown, _, _, _ = sharing
     mediation.consent.resolve("org", shown["id"], actor, "confirm")
-    item = mediation.prepare("org", actor, runtime={}, history=[])[0]
+    item = mediation.prepare("org", actor, runtime={"model": "test-model", "provider": "test-provider"}, history=[])[0]
     draft = service.store.draft(item["assessment"]["reference"]["prepared_draft_id"])
     from pathlib import Path
 
@@ -538,7 +538,7 @@ def test_install_update_review_collapses_rows_without_hiding_warnings(sharing, o
 def test_private_review_pages_cover_exact_files_without_consuming_consent(sharing):
     service, mediation, actor, shown, _, _, _ = sharing
     mediation.consent.resolve("org", shown["id"], actor, "confirm")
-    item = mediation.prepare("org", actor, runtime={}, history=[])[0]
+    item = mediation.prepare("org", actor, runtime={"model": "test-model", "provider": "test-provider"}, history=[])[0]
     identity = item["interaction"]["id"]
     first = mediation.consent.resolve("org", identity, actor, "inspect")
     assert first["facts"]["editorial_name"] == "Release Notes"
@@ -606,7 +606,7 @@ def test_install_and_update_receipts_are_compact(operation, title):
     assert view.summary == title
     assert view.items[0].title == "Release Evidence Brief"
     assert "Prerequisites and verification must pass" in view.items[0].detail
-    assert [a.label for a in view.actions] == ["View Assessment"]
+    assert [a.label for a in view.actions] == ["Check setup", "View Assessment"]
 
 
 def test_packaging_prompt_contains_full_schema(sharing):
@@ -632,10 +632,10 @@ def test_packaging_failure_eventually_offers_manual_review_not_publication(shari
     mediation.consent.resolve("org", shown["id"], actor, "confirm")
     for _ in range(3):
         register(mediation, actor)
-        assert mediation.prepare("org", actor, runtime={}, history=[]) == []
+        assert mediation.prepare("org", actor, runtime={"model": "test-model", "provider": "test-provider"}, history=[]) == []
         now[0] += 61
     register(mediation, actor)
-    items = mediation.prepare("org", actor, runtime={}, history=[])
+    items = mediation.prepare("org", actor, runtime={"model": "test-model", "provider": "test-provider"}, history=[])
     assert len(items) == 1 and items[0]["interaction"] is None
     assert "Nothing was uploaded or published" in items[0]["advice"]["explanation"]
     assert model.call_count == 3 and service.client.uploaded == 0
@@ -644,7 +644,7 @@ def test_packaging_failure_eventually_offers_manual_review_not_publication(shari
     assert mediation.queue.complete_delivery(
         "org", job["id"], job["lease_token"], receipt=RECEIPT
     )
-    assert mediation.prepare("org", actor, runtime={}, history=[]) == []
+    assert mediation.prepare("org", actor, runtime={"model": "test-model", "provider": "test-provider"}, history=[]) == []
 
 
 def test_private_review_escapes_terminal_controls_before_pagination(sharing):
@@ -652,7 +652,7 @@ def test_private_review_escapes_terminal_controls_before_pagination(sharing):
     package = model.return_value
     package.files[0].content += "\n" + "\x1b[2J" * 350
     mediation.consent.resolve("org", shown["id"], actor, "confirm")
-    item = mediation.prepare("org", actor, runtime={}, history=[])[0]
+    item = mediation.prepare("org", actor, runtime={"model": "test-model", "provider": "test-provider"}, history=[])[0]
     identity = item["interaction"]["id"]
     first = mediation.consent.resolve("org", identity, actor, "inspect")
     contents = []
@@ -688,7 +688,7 @@ def test_share_model_cannot_return_a_tool_call(monkeypatch):
 def test_consent_expiring_during_review_cannot_upload(sharing, monkeypatch):
     service, mediation, actor, shown, _, _, now = sharing
     mediation.consent.resolve("org", shown["id"], actor, "confirm")
-    item = mediation.prepare("org", actor, runtime={}, history=[])[0]
+    item = mediation.prepare("org", actor, runtime={"model": "test-model", "provider": "test-provider"}, history=[])[0]
     final = item["interaction"]
 
     def slow_review(**kwargs):

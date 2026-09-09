@@ -252,6 +252,8 @@ def _setup_view(result: dict) -> WisdomView:
         actions = [WisdomAction("Check progress", callback_data=f"wi:agent:inspect:{result['id']}")]
     elif result["state"] in {"stale", "expired"} or state in {"abandoned", "blocked", "failed"}:
         actions = [WisdomAction("Recheck", callback_data=f"wi:agent:recheck:{result['id']}")]
+    elif result["state"] == "completed":
+        actions = [WisdomAction("Check setup", callback_data=f"wi:agent:setup.status:{result['id']}")]
     return WisdomView(
         title="Hermes Collective Wisdom", summary=summary,
         items=[WisdomItem(title=f"{facts['slug']} · v{facts['version']}", detail=detail)],
@@ -263,6 +265,15 @@ def interaction_view(
     result: dict, *, checks_expanded: bool = False,
     assessment_expanded: bool = False,
 ) -> WisdomView:
+    if result.get("setup_continuation"):
+        continuation = result["setup_continuation"]
+        return WisdomView(
+            title="Hermes Collective Wisdom",
+            summary={"queued": "Setup queued", "waiting_for_model": "Setup waiting for model",
+                     "needs_review": "Setup needs attention", "ready": "Ready"}[continuation["state"]],
+            items=[WisdomItem(title=f"{result['facts']['slug']} · v{result['facts']['version']}", detail=continuation["message"])],
+            actions=[WisdomAction("Check setup", callback_data=f"wi:agent:setup.status:{result['id']}")],
+        )
     if result["operation"] == "setup":
         return _setup_view(result)
     outcome = result.get("result") or {}
@@ -322,6 +333,7 @@ def interaction_view(
             )
         actions = []
         if result["operation"] in {"install", "update"}:
+            actions.append(WisdomAction("Check setup", callback_data=f"wi:agent:setup.status:{result['id']}"))
             actions.append(_assessment_action(result["id"], assessment_expanded))
             if assessment_expanded:
                 advice = result.get("assessment") or {}

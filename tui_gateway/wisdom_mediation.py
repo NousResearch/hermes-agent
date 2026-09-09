@@ -44,7 +44,6 @@ def poll(session: dict, *, emit, profile_scope, connected=lambda: True) -> None:
     if (
         not key
         or not session.get("_wisdom_user_activity")
-        or session.get("agent") is None
     ):
         return
     if time.time() - session["_wisdom_user_activity"] > 600:
@@ -60,7 +59,7 @@ def poll(session: dict, *, emit, profile_scope, connected=lambda: True) -> None:
             return
         session["running"] = True
         generation = int(session.get("_queued_prompt_generation", 0))
-        runtime = session_runtime(session["agent"])
+        runtime = session_runtime(session.get("agent"))
         history = list(session.get("history") or [])
     try:
         with profile_scope(session):

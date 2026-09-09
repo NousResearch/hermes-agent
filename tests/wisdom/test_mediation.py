@@ -312,7 +312,7 @@ async def test_deferred_manual_review_reaches_native_transport_once(consent, req
         actor_id=actor.actor_id, private=True, available=True, user_activity=True, address=actor.address,
     )
     assessor = Mock(side_effect=AssertionError("explicit review already has advice"))
-    items = mediation.prepare("org", actor, runtime={}, history=[], assessor=assessor)
+    items = mediation.prepare("org", actor, runtime={"model": "test-model", "provider": "test-provider"}, history=[], assessor=assessor)
     assert len(items) == 1
     assert items[0]["interaction"]["id"] == requested["interaction"]["id"]
     assert mediation.begin_delivery("org", items) == items
@@ -733,7 +733,7 @@ def test_completed_assessment_toggle_is_read_only_and_actor_bound(consent, platf
         ))
     shown = instance.present("org", identity, actor)
     completed = instance.resolve("org", shown["id"], actor, "confirm")
-    assert [a.label for a in interaction_view(completed).actions] == ["View Assessment"]
+    assert [a.label for a in interaction_view(completed).actions] == ["Check setup", "View Assessment"]
     before_calls = instance.service.install_apply.call_count
     for action in ("assessment.show", "checks.show", "assessment.hide"):
         view = resolve_surface_action(
@@ -793,7 +793,7 @@ def test_provider_failure_eventually_delivers_one_deterministic_fallback(consent
     assessor = Mock(side_effect=TimeoutError)
     for _ in range(3):
         assert (
-            mediation.prepare("org", actor, runtime={}, history=[], assessor=assessor)
+            mediation.prepare("org", actor, runtime={"model": "test-model", "provider": "test-provider"}, history=[], assessor=assessor)
             == []
         )
         now[0] += 61
@@ -808,7 +808,7 @@ def test_provider_failure_eventually_delivers_one_deterministic_fallback(consent
             address=actor.address,
         )
     fallback = mediation.prepare(
-        "org", actor, runtime={}, history=[], assessor=assessor
+        "org", actor, runtime={"model": "test-model", "provider": "test-provider"}, history=[], assessor=assessor
     )
     assert len(fallback) == 1 and fallback[0]["assessment"]["id"] == event
     assert "could not assess" in fallback[0]["advice"]["explanation"]
@@ -834,7 +834,7 @@ def test_provider_failure_eventually_delivers_one_deterministic_fallback(consent
         ),
     )
     assert (
-        mediation.prepare("org", actor, runtime={}, history=[], assessor=assessor) == []
+        mediation.prepare("org", actor, runtime={"model": "test-model", "provider": "test-provider"}, history=[], assessor=assessor) == []
     )
 
 
@@ -950,7 +950,7 @@ def test_preferences_gate_model_work_without_consuming_attempts(
     mediation = WisdomMediation(instance.service, clock=lambda: now[0])
     assessor = Mock(side_effect=AssertionError("must not assess"))
     assert (
-        mediation.prepare("org", actor, runtime={}, history=[], assessor=assessor) == []
+        mediation.prepare("org", actor, runtime={"model": "test-model", "provider": "test-provider"}, history=[], assessor=assessor) == []
     )
     assessor.assert_not_called()
     record = next(

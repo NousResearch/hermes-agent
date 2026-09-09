@@ -106,7 +106,7 @@ def process_setup_handoff(mediation, org, job, *, runtime):
             if newer["id"] != parent["id"]:
                 raise WisdomConflict("another setup control owns continuation")
             db.execute(
-                "UPDATE wisdom_assessment SET reference_json=?,advice_json=?,state='ready',updated_at=? WHERE id=?",
+                "UPDATE wisdom_assessment SET reference_json=?,advice_json=?,state='ready',last_error=NULL,updated_at=? WHERE id=?",
                 (json.dumps(next_reference), json.dumps(advice), queue.clock(), job["id"]),
             )
             return _decode(db.execute("SELECT * FROM wisdom_assessment WHERE id=?", (job["id"],)).fetchone())
@@ -151,6 +151,9 @@ def process_setup_handoff(mediation, org, job, *, runtime):
             return attention("Required commands or environment variables are still missing. Configure them privately, then ask your agent to inspect setup again. Do not send credential values in chat.")
         phase, index = ("setup", pending) if pending is not None else ("verify", 0)
         instruction = info["guidance"]["setup_instructions"][index] if phase == "setup" else info["guidance"]["verification_step"]
+        if not runtime.get("model") or not runtime.get("provider"):
+            queue.wait_for_model(org, job)
+            return None
         call = session_model_call(runtime, name="wisdom_setup_step", max_tokens=1800)
         proposal = SetupProposal.model_validate_json(call([
             {"role": "system", "content": (

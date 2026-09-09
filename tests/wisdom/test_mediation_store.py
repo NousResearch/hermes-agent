@@ -67,15 +67,16 @@ def test_recent_busy_session_wins_over_idle_older_session(state):
     assert len(queue.claim("org", "newer")) == 1
 
 
-def test_requested_claim_skips_proactive_backlog_without_spending_attempts(state):
+@pytest.mark.parametrize("model_available", [False, True])
+def test_requested_claim_skips_proactive_backlog_without_spending_attempts(state, model_available):
     from hermes_wisdom.mediation_store import BATCH_SIZE
 
     queue, _ = state
     register(queue)
     for index in range(BATCH_SIZE + 1):
         queue.enqueue("org", f"feed:{index}", {"user_requested": "true"})
-    requested = queue.enqueue("org", "manual:1", {"user_requested": True}, origin_session="session")
-    claimed = queue.claim("org", "session", requested_only=True)
+    requested = queue.enqueue("org", "manual:1", {"kind": "setup_handoff", "user_requested": True}, origin_session="session")
+    claimed = queue.claim("org", "session", requested_only=True, allow_model_work=model_available)
     assert [item["id"] for item in claimed] == [requested]
     assert all(item["attempts"] == 0 for item in queue.assessments("org") if item["id"] != requested)
     # A second worker cannot bypass an in-flight requested job's lease.
@@ -84,6 +85,7 @@ def test_requested_claim_skips_proactive_backlog_without_spending_attempts(state
     assert queue.begin_delivery("org", requested, claimed[0]["lease_token"])
     assert queue.complete_delivery("org", requested, claimed[0]["lease_token"], receipt=RECEIPT)
     assert queue.claim("org", "session", requested_only=True) == []
+    assert queue.claim("org", "session", allow_model_work=False) == []
     assert len(queue.claim("org", "session")) == BATCH_SIZE
 
 

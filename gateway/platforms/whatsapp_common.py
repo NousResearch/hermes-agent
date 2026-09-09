@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 from gateway.platforms._shared import get_scoped_secret as _get_wsecret
+from gateway.platforms.whatsapp_renderer import CommonMarkToWhatsApp, _flank_stray_delims
 
 
 logger = logging.getLogger(__name__)
@@ -27,32 +28,15 @@ _TRUTHY = {"true", "1", "yes", "on"}
 _OPTIN_TRUTHY = {"true", "1", "yes"}
 
 
-def _stash(pattern: str, text: str, tag: str) -> tuple[str, list[str]]:
-    """Replace every ``pattern`` match with a ``\\x00<tag><n>\\x00`` placeholder."""
-    saved: list[str] = []
-
-    def keep(m: re.Match) -> str:
-        saved.append(m.group(0))
-        return f"\x00{tag}{len(saved) - 1}\x00"
-
-    return re.sub(pattern, keep, text), saved
-
-
-def _header_to_bold(m: re.Match) -> str:
-    """``# Header`` → ``*Header*``, stripping already-bolded ``*...*`` so ``# **Title**``
-    doesn't render with literal asterisks."""
-    inner = m.group(1).strip()
-    while len(inner) > 1 and inner.startswith("*") and inner.endswith("*"):
-        inner = inner[1:-1].strip()
-    return f"*{inner}*"
-
-
 class WhatsAppBehaviorMixin:
     """Shared behavior for all WhatsApp adapters (Baileys + Cloud API); owns no state
     of its own — see the module docstring for the host adapter's attribute contract."""
 
-    # Practical UX limit, not the ~65K protocol max (long messages are unreadable on mobile).
-    MAX_MESSAGE_LENGTH: int = 4096
+    # WhatsApp's real per-message cap (code points). Send and edit both stay
+    # ONE bubble up to this limit — no 4096 UX fragmentation (long messages
+    # are one scrollable bubble on-device, and splitting an edit surfaces
+    # chunk 2+ as unlinked duplicate bubbles).
+    MAX_MESSAGE_LENGTH: int = 65536
     supports_code_blocks = True  # WhatsApp renders fenced code blocks (monospace)
 
     DEFAULT_REPLY_PREFIX: str = "⚕ *Hermes Agent*\n────────────\n"
@@ -286,26 +270,79 @@ class WhatsAppBehaviorMixin:
         )
 
     # ------------------------------------------------------------------ formatting
+    def _unicode_formatting_enabled(self) -> bool:
+        """Unicode font styling (``WHATSAPP_UNICODE_FORMATTING`` env or
+        ``config.extra["unicode_formatting"]``).
+
+        Default ON: styled Unicode glyphs recover heading *hierarchy* that
+        native WhatsApp flattens (see ``whatsapp_unicode``). Explicitly
+        disable per request via ``WHATSAPP_UNICODE_FORMATTING=false`` or
+        ``config.extra["unicode_formatting"]=False``. Must stay safe on a
+        bare ``object.__new__`` instance (the conformance oracle has no
+        ``config`` at all) — hence the defensive ``getattr``/isinstance,
+        which resolve to the default ``True``.
+        """
+        env = _get_wsecret("WHATSAPP_UNICODE_FORMATTING")
+        if env is not None:
+            return str(env).strip().lower() in _TRUTHY
+        extra = getattr(getattr(self, "config", None), "extra", None)
+        if isinstance(extra, dict):
+            value = extra.get("unicode_formatting")
+            if value is not None:
+                if isinstance(value, str):
+                    return value.strip().lower() in _TRUTHY
+                return bool(value)
+        return True
+
+    def _table_mode(self) -> str:
+        """Table rendering mode (``WHATSAPP_TABLE_MODE`` / ``config.extra``).
+
+        ``flatten`` (default): tables become alignment-free key/value lines
+        (one ``*label*: value`` per line, blank line per row) because
+        WhatsApp always soft-wraps long lines — a padded aligned pipe grid
+        collapses once any row exceeds the bubble width. ``monospace`` keeps
+        the legacy aligned pipe fence for cross-device fidelity. Must stay
+        safe on a bare ``object.__new__`` instance (conformance oracle),
+        hence defensive getattr/isinstance → default ``flatten``.
+        """
+        env = _get_wsecret("WHATSAPP_TABLE_MODE")
+        if env is not None:
+            mode = str(env).strip().lower()
+            if mode in ("flatten", "monospace"):
+                return mode
+        extra = getattr(getattr(self, "config", None), "extra", None)
+        if isinstance(extra, dict):
+            value = extra.get("table_mode")
+            if isinstance(value, str):
+                mode = value.strip().lower()
+                if mode in ("flatten", "monospace"):
+                    return mode
+        return "flatten"
+
     def format_message(self, content: str) -> str:
-        """Convert markdown to WhatsApp syntax (*bold*, _italic_, ~strike~); fenced and
-        inline code are protected via placeholder substitution."""
+        """Convert standard markdown to WhatsApp-compatible formatting.
+
+        Uses an AST-based CommonMark renderer (``CommonMarkToWhatsApp``) so
+        *all* markdown constructs are handled — emphasis, headings, fenced
+        code (with the language tag preserved as a caption), tables, links,
+        images, lists, blockquotes, horizontal rules and HTML — with nothing
+        silently dropped. WhatsApp wraps the spans it understands with
+        ``*bold*`` / ``_italic_`` / ``~strikethrough~`` / backtick monospace;
+        everything else is down-rendered to readable WhatsApp text.
+
+        By default ``unicode_formatting`` is on: constructs native WhatsApp
+        cannot express (heading levels, …) are styled with Unicode fonts
+        instead of being flattened (see ``whatsapp_unicode``). Disable with
+        ``WHATSAPP_UNICODE_FORMATTING=false`` / ``config.extra``.
+        """
         if not content:
             return content
-        result, fences = _stash(r"```[\s\S]*?```", self._sanitize_outbound_text(content), "FENCE")
-        result, codes = _stash(r"`[^`\n]+`", result, "CODE")
-        # Italic *text* → _text_ BEFORE bold so **bold** doesn't become italic;
-        # lookarounds skip list bullets and bold delimiters.
-        result = re.sub(r"(?<!\*)\*(?!\s|\*)([^*\n]*?\S[^*\n]*?)\*(?!\*)", r"_\1_", result)
-        result = re.sub(r"\*\*(.+?)\*\*", r"*\1*", result)
-        result = re.sub(r"__(.+?)__", r"*\1*", result)
-        result = re.sub(r"~~(.+?)~~", r"~\1~", result)
-        result = re.sub(r"^#{1,6}\s+(.+)$", _header_to_bold, result, flags=re.MULTILINE)
-        result = re.sub(r"\[([^\]]+)\]\(([^)]+)\)", r"\1 (\2)", result)  # [text](url) → text (url)
-        for tag, saved in (("FENCE", fences), ("CODE", codes)):
-            for i, original in enumerate(saved):
-                result = result.replace(f"\x00{tag}{i}\x00", original)
-        return result
 
+        return CommonMarkToWhatsApp(
+            self._sanitize_outbound_text(content),
+            unicode_formatting=self._unicode_formatting_enabled(),
+            table_mode=self._table_mode(),
+        ).render()
 
 def resolve_whatsapp_bridge_dir() -> Path:
     """Bridge directory for CLI and adapter. A read-only install tree (e.g. Docker

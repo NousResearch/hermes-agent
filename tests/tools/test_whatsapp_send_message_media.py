@@ -155,3 +155,39 @@ def test_missing_captioned_file_falls_back_to_text():
     assert len(calls) == 1
     assert calls[0][0].endswith("/send")
     assert calls[0][1]["message"] == "floor plan"
+
+
+def test_standalone_text_is_formatted():
+    """Cron/standalone delivery converts markdown before posting so raw
+    # / ** markers never reach WhatsApp (regression: _standalone_send sent
+    text verbatim)."""
+    session_ctx, calls = _session_with([_resp(200, {"messageId": "t1"})])
+    with patch("aiohttp.ClientSession", return_value=session_ctx):
+        res = asyncio.run(
+            _standalone_send(_pconfig(), "12345", "# Big\n\nBody **bold**.")
+        )
+    assert res["success"] is True
+    assert calls[0][0].endswith("/send")
+    assert calls[0][1]["message"] == "𝐁𝐢𝐠\n\nBody *bold*."
+
+
+def test_standalone_caption_is_formatted():
+    """A single-file caption also gets the markdown→WhatsApp conversion."""
+    img = _tmpfile(".png")
+    try:
+        session_ctx, calls = _session_with([_resp(200, {"messageId": "m1"})])
+        with patch("aiohttp.ClientSession", return_value=session_ctx):
+            res = asyncio.run(
+                _standalone_send(
+                    _pconfig(),
+                    "12345",
+                    "",
+                    media_files=[(img, False)],
+                    caption="# Cap",
+                )
+            )
+    finally:
+        os.unlink(img)
+    assert res["success"] is True
+    assert calls[0][0].endswith("/send-media")
+    assert calls[0][1]["caption"] == "𝐂𝐚𝐩"

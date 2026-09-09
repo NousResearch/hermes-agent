@@ -2,7 +2,7 @@
   "$comment": "GENERATED — do not hand-edit. Regenerate with hermes-agent scripts/generate_conformance_vectors.py; the native renderers are the oracle (executable spec).",
   "oracle": {
     "repo": "NousResearch/hermes-agent",
-    "commit": "40eebc7d70f3d8e95c429c8aa482f31ba6c867f6",
+    "commit": "c42e3c5f6744b1af01c8f7c24019b0e7faf2b67b",
     "generator": "scripts/generate_conformance_vectors.py",
     "generator_version": 1
   },
@@ -42,6 +42,27 @@
       "expect": "parity",
       "input": "This is ~~struck~~ text.",
       "native_output": "This is ~struck~ text."
+    },
+    {
+      "id": "tilde-approx",
+      "category": "grid",
+      "expect": "parity",
+      "input": "cost ~2.00USD~ total",
+      "native_output": "cost ~2.00USD~ total"
+    },
+    {
+      "id": "tilde-space-safe",
+      "category": "grid",
+      "expect": "parity",
+      "input": "~5USD ~4USD and range ~5 to ~10",
+      "native_output": "~5USD ~4USD and range ~5 to ~10"
+    },
+    {
+      "id": "tilde-mixed",
+      "category": "grid",
+      "expect": "parity",
+      "input": "~~done~~ and ~maybe~",
+      "native_output": "~done~ and ~maybe~"
     },
     {
       "id": "inline-code",
@@ -98,6 +119,13 @@
       "expect": "parity",
       "input": "### Sub-section\nBody follows.",
       "native_output": "*Sub-section*\nBody follows."
+    },
+    {
+      "id": "header-h3-italic-h",
+      "category": "grid",
+      "expect": "parity",
+      "input": "### high hopes\nBody follows.",
+      "native_output": "*high hopes*\nBody follows."
     },
     {
       "id": "ul-list",

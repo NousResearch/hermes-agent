@@ -181,8 +181,9 @@ class TestSendText:
             )
         )
 
-        # MAX_MESSAGE_LENGTH = 4096 from the mixin. 8500 chars forces 2+ chunks.
-        long_text = "a" * 8500
+        # MAX_MESSAGE_LENGTH = 65,536 from the mixin (WhatsApp's real cap).
+        # 85,000 chars forces 2+ chunks.
+        long_text = "a" * 85000
         await adapter.send("15551234567", long_text)
 
         # At least 2 POST calls
@@ -649,6 +650,25 @@ class TestSendVideo:
         assert payload["type"] == "video"
         assert payload["video"]["link"] == "https://cdn.example.com/v.mp4"
         assert payload["video"]["caption"] == "clip"
+
+
+class TestCloudCaptionFormats:
+    @pytest.mark.asyncio
+    async def test_video_caption_converts_markdown(self):
+        """Cloud API media captions get the markdown→WhatsApp conversion so a
+        caption never leaks raw # / ** markers onto the media bubble."""
+        adapter = _make_adapter()
+        adapter._http_client = MagicMock()
+        adapter._http_client.post = AsyncMock(return_value=_mock_message_response())
+
+        await adapter.send_video(
+            "15551234567",
+            "https://cdn.example.com/v.mp4",
+            caption="# Cap\n\nBody **bold**.",
+        )
+        payload = adapter._http_client.post.call_args.kwargs["json"]
+        assert payload["type"] == "video"
+        assert payload["video"]["caption"] == "𝐂𝐚𝐩\n\nBody *bold*."
 
 
 class TestSendMethodsAcceptBaseClassKwargs:

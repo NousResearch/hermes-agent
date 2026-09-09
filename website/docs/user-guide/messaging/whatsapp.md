@@ -193,7 +193,10 @@ WhatsApp supports **streaming (progressive) responses** — the bot edits its me
 
 ### Chunking
 
-Long responses are automatically split into multiple messages at **4,096 characters** per chunk (WhatsApp's practical display limit). You don't need to configure anything — the gateway handles splitting and sends chunks sequentially.
+Long responses are sent as **one bubble up to WhatsApp's real per-message limit of
+65,536 characters** (code points). You don't need to configure anything — the gateway
+handles splitting at that cap for the rare oversized answer and sends chunks
+sequentially.
 
 ### WhatsApp-Compatible Markdown
 

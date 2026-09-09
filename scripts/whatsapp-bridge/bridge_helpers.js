@@ -18,6 +18,67 @@ export function normalizeWhatsAppId(value) {
   return String(value).replace(':', '@');
 }
 
+/**
+ * Count a string's length the way WhatsApp does: in characters (code
+ * points), not UTF-16 code units and not bytes. WhatsApp handles modern
+ * text natively — every symbol, letter, or emoji counts as one character
+ * toward the 65,536-character per-message cap. JS `.length`/`.slice`
+ * operate on UTF-16 code units, so astral characters (emoji, and the
+ * Unicode math-alphanumeric glyphs Hermes uses for heading formatting)
+ * would count double and could even be split mid-surrogate-pair.
+ * @param {string} text
+ * @returns {number} number of code points
+ */
+export function codePointLength(text) {
+  return [...String(text || '')].length;
+}
+
+/**
+ * Split a message into chunks of at most ``maxLength`` characters (code
+ * points). Prefers newline/space boundaries like the legacy UTF-16
+ * splitter, but never splits a surrogate pair and never counts an astral
+ * character twice, so a chunk is always valid, uncorrupted text.
+ * @param {string} message
+ * @param {number} [maxLength] default 4096 (UX cap, not the WhatsApp limit)
+ * @returns {string[]}
+ */
+export function splitLongMessage(message, maxLength = 4096) {
+  const text = String(message || '');
+  if (!text) return [];
+  if (!Number.isFinite(maxLength) || maxLength < 1 || codePointLength(text) <= maxLength) {
+    return [text];
+  }
+
+  const chars = [...text]; // array of whole code points
+  const chunks = [];
+  let start = 0;
+  while (chars.length - start > maxLength) {
+    let end = start + maxLength;
+    const window = chars.slice(start, end);
+    // Prefer breaking on a newline; fall back to a space; hard-break only
+    // if neither exists inside a sane prefix. (Elements are whole code
+    // points, so lastIndexOf/slice here can never split a surrogate pair.)
+    let splitAt = window.lastIndexOf('\n');
+    if (splitAt < Math.floor(maxLength / 2)) {
+      const spaceAt = window.lastIndexOf(' ');
+      if (spaceAt > splitAt) splitAt = spaceAt;
+    }
+    if (splitAt < 1) {
+      end = start + maxLength;
+    } else {
+      end = start + splitAt;
+    }
+    chunks.push(chars.slice(start, end).join('').trimEnd());
+    start = end;
+    // Skip leading whitespace of the next chunk.
+    while (start < chars.length && (chars[start] === ' ' || chars[start] === '\n')) {
+      start += 1;
+    }
+  }
+  chunks.push(chars.slice(start).join('').trimStart());
+  return chunks;
+}
+
 export function getMessageContent(msg) {
   const content = msg?.message || {};
   if (content.ephemeralMessage?.message) return content.ephemeralMessage.message;

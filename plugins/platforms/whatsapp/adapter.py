@@ -589,9 +589,36 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
 
     @_needs_bridge
     async def edit_message(self, chat_id: str, message_id: str, content: str, *, finalize: bool = False) -> SendResult:
+        """Edit a previously sent message via the WhatsApp bridge.
+
+        Streaming responses are delivered as a series of edits to one
+        message (the stream consumer sends the full accumulated buffer each
+        time). Without the markdown→WhatsApp conversion here, the preview
+        *and* the final message would show raw ``#``/``**`` markers — the
+        same leak ``send()`` would have. ``format_message`` never raises
+        (legacy fallback inside), so delivery can't break.
+        """
         try:
-            async with self._bridge_req("post", "edit", 15, json={"chatId": to_whatsapp_jid(chat_id), "messageId": message_id, "message": content}) as resp:
-                return SendResult(success=True, message_id=message_id) if resp.status == 200 else SendResult(success=False, error=await resp.text())
+            async with self._bridge_req("post", "edit", 15, json={"chatId": to_whatsapp_jid(chat_id), "messageId": message_id, "message": self.format_message(content)}) as resp:
+                if resp.status != 200:
+                    return SendResult(success=False, error=await resp.text())
+                data = await resp.json()
+                # The bridge splits an oversized edit (past WhatsApp's
+                # 65,536-char limit) and sends chunk 2+ as continuation
+                # messages, returning their ids in ``messageIds``. Surface
+                # them exactly like ``send()`` does so the stream consumer
+                # re-targets subsequent edits at the LAST visible bubble
+                # instead of the original (mirrors ``send()``'s continuation
+                # contract). Single-chunk edits return no ids and keep the
+                # original ``message_id``.
+                continuation_ids = [str(i) for i in (data.get("messageIds") or []) if i]
+                if continuation_ids:
+                    return SendResult(
+                        success=True,
+                        message_id=continuation_ids[-1],
+                        continuation_message_ids=tuple(continuation_ids),
+                    )
+                return SendResult(success=True, message_id=message_id)
         except Exception as e:
             return SendResult(success=False, error=str(e))
 
@@ -600,7 +627,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         if not os.path.exists(file_path):
             return SendResult(success=False, error=f"File not found: {file_path}")
         payload: Dict[str, Any] = {"chatId": to_whatsapp_jid(chat_id), "filePath": file_path, "mediaType": media_type}
-        payload.update({k: v for k, v in (("caption", caption), ("fileName", file_name)) if v})
+        payload.update({k: v for k, v in (("caption", self.format_message(caption) if caption else None), ("fileName", file_name)) if v})
         return await self._post_bridge_message("send-media", payload, timeout=120)
 
     @_needs_bridge
@@ -852,8 +879,33 @@ async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_f
         bridge_port = (getattr(pconfig, "extra", {}) or {}).get("bridge_port", 3000)
         normalized_chat_id = to_whatsapp_jid(chat_id)
         media = media_files or []
+        # Apply the same markdown→WhatsApp conversion the in-gateway send()
+        # applies. Cron deliveries run in a separate process and bypass
+        # adapter.send(), so without this the raw # / ** markers would leak
+        # to WhatsApp. format_message never raises (legacy fallback inside),
+        # but guard anyway: delivery must never break.
+        text = message or ""
+        try:
+            text = WhatsAppBehaviorMixin.format_message(
+                object.__new__(WhatsAppBehaviorMixin), text
+            )
+        except Exception:  # noqa: BLE001 - delivery must never fail
+            logger.warning(
+                "format_message failed in _standalone_send; sending raw", exc_info=True
+            )
         # A caption only applies to a single media file — never repeat it across a multi-file send.
         media_caption = caption if (caption and len(media) == 1) else None
+        # Keep captions consistent with body text: convert markdown→WhatsApp
+        # so a caption never leaks raw # / ** markers onto the media bubble.
+        if media_caption:
+            try:
+                media_caption = WhatsAppBehaviorMixin.format_message(
+                    object.__new__(WhatsAppBehaviorMixin), media_caption
+                )
+            except Exception:  # noqa: BLE001 - delivery must never fail
+                logger.warning(
+                    "format_message failed for caption; sending raw", exc_info=True
+                )
         last_message_id = None
         async with aiohttp.ClientSession() as session:
             async def _post(path, payload, total, error_label=None):
@@ -864,8 +916,8 @@ async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_f
                         return (await resp.json()).get("messageId"), None
                     return None, {} if error_label is None else {"error": f"WhatsApp {error_label} error ({resp.status}): {await resp.text()}"}
             # 1) Text first (skipped when media-only or when the text rides as the caption).
-            if (message or "").strip() and not media_caption:
-                last_message_id, err = await _post("send", {"chatId": normalized_chat_id, "message": message}, 30, "bridge")
+            if text.strip() and not media_caption:
+                last_message_id, err = await _post("send", {"chatId": normalized_chat_id, "message": text}, 30, "bridge")
                 if err:
                     return err
             # 2) Each media file as a native attachment (mediaType picks the WhatsApp kind).
@@ -962,5 +1014,5 @@ def register(ctx) -> None:
         install_hint="WhatsApp requires a Node.js bridge — see the WhatsApp messaging docs",
         setup_fn=interactive_setup, apply_yaml_config_fn=_apply_yaml_config, allowed_users_env="WHATSAPP_ALLOWED_USERS",
         allow_all_env="WHATSAPP_ALLOW_ALL_USERS", cron_deliver_env_var="WHATSAPP_HOME_CHANNEL",
-        standalone_sender_fn=_standalone_send, max_message_length=4096, emoji="💬", allow_update_command=True,
+        standalone_sender_fn=_standalone_send, max_message_length=65536, emoji="💬", allow_update_command=True,
     )

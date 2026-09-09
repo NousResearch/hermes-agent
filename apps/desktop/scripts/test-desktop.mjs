@@ -5,6 +5,7 @@ import { spawn, spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { listPackage } from '@electron/asar'
 
+import { resolveLinuxUnpackedDirName } from './packaged-app-layout.mjs'
 import PACKAGE_JSON from '../package.json' with { type: 'json' }
 
 const MODE = process.argv[2] || 'help'
@@ -38,8 +39,8 @@ const APP = (() => {
       unpackedDistIndex: path.join(unpacked, 'resources', 'app.asar.unpacked', 'dist', 'index.html')
     }
   }
-  // linux unpacked layout matches windows but with different binary name
-  const unpacked = path.join(RELEASE_ROOT, 'linux-unpacked')
+  // electron-builder includes the architecture suffix for non-x64 Linux output.
+  const unpacked = path.join(RELEASE_ROOT, resolveLinuxUnpackedDirName(ARCH))
   return {
     appPath: unpacked,
     binary: path.join(unpacked, 'Hermes'),

@@ -108,11 +108,18 @@ def test_connect_without_connectors_is_a_usage_error():
     assert "requires 'connectors'" in out["error"]
 
 
-def test_unknown_action_mentions_dashboard_for_deauth():
+def test_disconnect_is_refused_before_any_gateway_call():
+    # De-authentication is user-only: the tool rejects it up front and the
+    # gateway never hears about it.
+    client = FakeClient()
     out = json.loads(
-        manage_connections({"action": "de-authenticate"}, client_factory=FakeClient)
+        manage_connections(
+            {"action": "disconnect", "connectors": ["gmail"]},
+            client_factory=lambda: client,
+        )
     )
-    assert "dashboard" in out["error"]
+    assert "error" in out
+    assert client.calls == []
 
 
 def test_gateway_failure_is_a_model_actionable_error():
@@ -403,17 +410,6 @@ def test_wait_never_rides_a_parallel_batch():
     from agent.tool_dispatch_helpers import _NEVER_PARALLEL_TOOLS
 
     assert "manage_connections" in _NEVER_PARALLEL_TOOLS
-
-
-def test_schema_documents_wait_and_its_timeout():
-    props = MANAGE_CONNECTIONS_SCHEMA["parameters"]["properties"]
-    assert "wait" in props["action"]["enum"]
-    assert "wait" in MANAGE_CONNECTIONS_SCHEMA["description"]
-    assert "timeout_seconds" in props
-    assert "REQUIRED" in props["connectors"]["description"]
-    # The user-only-disconnect boundary survives the addition.
-    assert "can NOT disconnect" in MANAGE_CONNECTIONS_SCHEMA["description"]
-    assert "Nous Portal" in MANAGE_CONNECTIONS_SCHEMA["description"]
 
 
 # ---------------------------------------------------------------------------

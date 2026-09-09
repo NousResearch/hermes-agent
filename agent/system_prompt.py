@@ -381,7 +381,7 @@ def _active_profile_line(agent: Any) -> str:
     )
 
 
-def _platform_hint(agent: Any) -> str:
+def platform_hint(agent: Any) -> str:
     """Built-in/plugin platform hint + Telegram rich-messages opt-in + config
     override + desktop TUI clarifier."""
     platform_key = (agent.platform or "").lower().strip()
@@ -579,7 +579,7 @@ def _post_workspace_parts(agent: Any) -> List[str]:
             pass  # Probe failure must never block prompt build.
     if getattr(agent, "_bot_mode_protocol", True):
         parts.extend(_bot_mode_parts(agent))
-    parts += [_active_profile_line(agent), _platform_hint(agent)]
+    parts += [_active_profile_line(agent), platform_hint(agent)]
     return parts
 
 
@@ -736,7 +736,7 @@ def format_tools_for_system_message(agent: Any) -> str:
 
 
 __all__ = ["build_system_prompt_parts", "build_system_prompt", "invalidate_system_prompt",
-           "restore_plugin_prompt_sections", "format_tools_for_system_message"]
+           "platform_hint", "restore_plugin_prompt_sections", "format_tools_for_system_message"]
 
 
 # ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----

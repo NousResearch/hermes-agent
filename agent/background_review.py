@@ -842,6 +842,23 @@ def _fork_init_kwargs(agent: Any, rt: Dict[str, Any], routed: bool, max_iteratio
     return kwargs
 
 
+# Above any live registry generation: _publish_tool_snapshot refuses an older-generation rebuild,
+# so the compaction-boundary refresh_agent_mcp_tools(content_aware=True) cannot rebuild the fork's
+# tools[] from the live registry and drop the inherited provider/plugin tools (#103579).
+_FROZEN_TOOL_SNAPSHOT_GENERATION = 2_147_483_647
+
+
+def _inherit_parent_tool_surface(review_agent: Any, agent: Any) -> None:
+    """Same-model fork: advertise the parent's exact tools[] (its last outbound payload — an
+    empty list included) so the request prefix matches byte-for-byte, then freeze the snapshot
+    generation. Dispatch stays behind the review whitelist; advertising is not permission."""
+    # getattr: /btw and review callers build bare object.__new__ agents in tests without ``tools``.
+    review_agent.tools = copy.deepcopy(getattr(agent, "tools", None) or [])
+    review_agent.valid_tool_names = {tool["function"]["name"] for tool in review_agent.tools}
+    review_agent._tool_snapshot_generation = _FROZEN_TOOL_SNAPSHOT_GENERATION
+
+
+
 def build_cache_parity_fork(
     agent: Any, task_cfg: Optional[Dict[str, Any]] = None, *, max_iterations: int,
     write_origin: str = "background_review",
@@ -887,6 +904,7 @@ def build_cache_parity_fork(
     if not _routed:
         review_agent._cached_system_prompt = agent._cached_system_prompt
         review_agent.session_start = agent.session_start
+        _inherit_parent_tool_surface(review_agent, agent)
     _detach_fork_compression(review_agent)
     # Compaction bounds a single request; this bounds the WHOLE review (checked in
     # conversation_loop via _review_input_budget_exhausted).

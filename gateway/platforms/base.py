@@ -2571,8 +2571,8 @@ class BasePlatformAdapter(ABC):
         """Send ``(url, alt)`` images (``http(s)://`` or ``file://``) one by one (GIFs via
         ``send_animation``, local files via ``send_image_file``); override to bundle natively
         (Signal). Returns success when at least one image was delivered — the outcome
-        the turn-level delivery tracker records. Overrides that batch natively but
-        still return ``None`` are legacy: the caller records nothing for them."""
+        the turn-level delivery tracker records; every override must return the same
+        aggregate, or a media-only turn on that platform reports FAILURE (#106153)."""
         from urllib.parse import unquote as _unquote
         delivered = False
         for image_url, alt_text in images:
@@ -3777,9 +3777,6 @@ class BasePlatformAdapter(ABC):
             logger.warning("[%s] Error batching images: %s", self.name, batch_err, exc_info=True)
             record_delivery(SendResult(success=False, error=str(batch_err)))
             return
-        # Legacy native-batch overrides return None instead of a SendResult:
-        # ``record_delivery(None)`` records nothing, so their outcome stays as before
-        # until they migrate to the SendResult contract.
         record_delivery(result)
 
     async def send_final_ledgered(

@@ -1040,6 +1040,11 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         self._voice_timeout_tasks: Dict[int, asyncio.Task] = {}  # guild_id -> timeout task
         self._voice_timeout_seconds = self._load_voice_timeout()
         self._playback_timeout_seconds = self._load_playback_timeout()
+        (
+            self._voice_auto_join_channel_id,
+            self._voice_auto_join_user_ids,
+            self._voice_auto_join_text_channel_id,
+        ) = self._load_voice_auto_join_config()
         self._voice_receivers: Dict[int, VoiceReceiver] = {}  # guild_id -> VoiceReceiver
         self._voice_listen_tasks: Dict[int, asyncio.Task] = {}  # guild_id -> listen loop
         self._voice_input_callback: Optional[Callable] = None  # set by run.py

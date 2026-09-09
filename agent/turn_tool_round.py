@@ -177,6 +177,11 @@ def run_tool_round(
 
     # Reset per-turn retry counters so one truncation can't poison the turn.
     truncated_tool_call_retries = 0
+    # Adaptive model switching: classify the just-completed tool round at this generation
+    # boundary and schedule an escalation/descent. Only SCHEDULES; the switch is applied at
+    # the start of the next iteration (turn_iteration_prep) with nothing in flight.
+    from agent.model_switching import observe_tool_round
+    observe_tool_round(agent, messages)
     # Defer the paragraph break: _fire_stream_delta() prepends one "\n\n" when real
     # text arrives, so tool iterations don't stack blank lines.
     agent._stream_needs_break = True

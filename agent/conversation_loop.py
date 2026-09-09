@@ -1496,6 +1496,10 @@ def _run_conversation_turn(
     agent._ephemeral_reasoning_off = False
     agent._auth_pool_refresh_counts = {}
     agent._last_turn_usage = None
+    # Adaptive escalation is temporary and per-turn. Restore the semantic router's original
+    # model parameter, then clear streaks and any scheduled switch. Resolved settings stay cached.
+    from agent.model_switching import reset_model_switching_turn
+    reset_model_switching_turn(agent)
 
     s = _LoopState(
         system_message=system_message, moa_config=moa_config,

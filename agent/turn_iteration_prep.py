@@ -108,6 +108,14 @@ def prepare_iteration(
         from agent.nous_wire import apply_pending_wire_switch
         apply_pending_wire_switch(agent)
 
+    # Adaptive model switching: an escalation/descent scheduled after the previous tool
+    # round lands here, before this iteration's request is built and with nothing in
+    # flight. Only the next request's model parameter changes; transcript and cached
+    # system prompt stay byte-identical.
+    if getattr(agent, "_adaptive_model_switch_pending", None):
+        from agent.model_switching import apply_pending_model_switch
+        apply_pending_model_switch(agent)
+
     # Fire step_callback for gateway hooks (agent:step event).
     if agent.step_callback is not None:
         try:

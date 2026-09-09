@@ -13,27 +13,30 @@ import pytest
 
 
 def test_check_for_updates_uses_cache(tmp_path, monkeypatch):
-    """When cache is fresh, check_for_updates should return cached value without calling git."""
-    from hermes_cli.banner import check_for_updates
+    """When cache is fresh and matches the local HEAD, return cached value without a git fetch."""
+    from hermes_cli import banner
     from hermes_cli import __version__
 
-    # Create a fake git repo and fresh cache
-    repo_dir = tmp_path / "hermes-agent"
-    repo_dir.mkdir()
-    (repo_dir / ".git").mkdir()
+    # The cache key is the local HEAD for a git install, so a cache whose rev equals HEAD
+    # must be served without an expensive network fetch.
+    fake_head = "1" * 40
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(banner, "_resolve_repo_dir", lambda: tmp_path)
+    mock_git = MagicMock(return_value=fake_head)
+    monkeypatch.setattr(banner, "_git_stdout", mock_git)
+    mock_local_git = MagicMock()
+    monkeypatch.setattr(banner, "_check_via_local_git", mock_local_git)
 
     cache_file = tmp_path / ".update_check"
     cache_file.write_text(
-        json.dumps({"ts": time.time(), "behind": 3, "ver": __version__}),
+        json.dumps({"ts": time.time(), "behind": 3, "rev": fake_head, "ver": __version__}),
         encoding="utf-8",
     )
 
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    with patch("hermes_cli.banner.subprocess.run") as mock_run:
-        result = check_for_updates()
-
-    assert result == 3
-    mock_run.assert_not_called()
+    assert banner.check_for_updates() == 3
+    # Warm cache hit reads the local HEAD exactly once and short-circuits without recomputing.
+    mock_git.assert_called_once_with(["rev-parse", "HEAD"], cwd=tmp_path)
+    mock_local_git.assert_not_called()
 
 
 
@@ -269,6 +272,37 @@ def test_check_for_updates_does_not_cache_none(tmp_path, monkeypatch):
 
     # The cache file must NOT have been written with a None result
     assert not cache_file.exists(), "None result must not be cached"
+
+
+def test_cached_behind_invalidated_when_local_head_changes(tmp_path, monkeypatch):
+    """A cache written for an earlier local HEAD must not report a stale behind count.
+
+    Regression for #45556: for a git install the update-check cache key is
+    ``HERMES_REVISION`` (unset -> None), so a manual ``git pull`` fast-forward changed
+    neither the key nor the version and left a false "N commits behind" until the 6h TTL
+    expired. The cache must key on the local git HEAD, so any local-HEAD move invalidates it.
+    """
+    from hermes_cli import banner
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    cache_file = tmp_path / ".update_check"
+    # A cache written at an earlier HEAD recorded "3 behind"; a manual pull has since brought
+    # the checkout to origin/main, so the truthful answer is 0 behind.
+    old_head = "0" * 40
+    cache_file.write_text(json.dumps({
+        "ts": time.time(), "behind": 3, "rev": old_head, "ver": banner.VERSION,
+    }), encoding="utf-8")
+
+    fake_head = "1" * 40
+    monkeypatch.setattr(banner, "_resolve_repo_dir", lambda: tmp_path)
+    monkeypatch.setattr(banner, "_git_stdout", lambda args, **kw: fake_head)
+    monkeypatch.setattr(banner, "_check_via_local_git", lambda repo_dir: 0)
+
+    assert banner.check_for_updates() == 0
+    # The stale entry was invalidated and the cache rewritten for the new HEAD.
+    cached = json.loads(cache_file.read_text(encoding="utf-8"))
+    assert cached["rev"] == fake_head
+    assert cached["behind"] == 0
 
 
 

@@ -9,6 +9,9 @@ from hermes_constants import get_hermes_home
 def test_passive_check_obeys_config_before_using_cached_notice(monkeypatch):
     from hermes_cli import banner
 
+    # The cache key now includes the local HEAD; force a key of None so the cache below hits.
+    monkeypatch.setattr(banner, "_resolve_repo_dir", lambda: None)
+
     home = get_hermes_home()
     (home / ".update_check").write_text(json.dumps({
         "ts": time.time(), "behind": 17, "rev": None, "ver": banner.VERSION,

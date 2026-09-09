@@ -329,6 +329,22 @@ def _read_json(path: Path) -> Optional[dict]:
     return blob if isinstance(blob, dict) else None
 
 
+def _resolve_check_revision(embedded_rev: Optional[str], repo_dir: Optional[Path]) -> Optional[str]:
+    """The revision that keys the update-check cache (see ``check_for_updates``).
+
+    ``HERMES_REVISION`` builds key on the embedded rev directly. A git install has no
+    embedded rev, so the key is the local HEAD — the value that actually determines the
+    behind-count. Reading HEAD is a cheap local subprocess (no network), not the expensive
+    fetch the cache is designed to avoid; a manual fast-forward therefore invalidates a stale
+    "commits behind" cache (#45556).
+    """
+    if embedded_rev:
+        return embedded_rev
+    if repo_dir is None:
+        return None
+    return _git_stdout(["rev-parse", "HEAD"], cwd=repo_dir)
+
+
 def check_for_updates(*, passive: bool = False) -> Optional[int]:
     """Check whether a Hermes update is available.
 
@@ -353,23 +369,27 @@ def check_for_updates(*, passive: bool = False) -> Optional[int]:
 
     if _quiet(_install_method) in {"docker", "apt"}:
         return None
-    # Cache is invalidated when the embedded rev OR installed version changed since the last check.
+    # The cache key is the revision that determines the behind-count: the embedded rev for
+    # nix/docker builds, else the local git HEAD for a checkout. The old key was the embedded
+    # rev only, so a manual fast-forward (HEAD moved, rev+version unchanged) never expired a
+    # stale "commits behind" entry (#45556).
+    repo_dir = None if embedded_rev else _resolve_repo_dir()
+    check_rev = _resolve_check_revision(embedded_rev, repo_dir)
     now = time.time()
     cached = _read_json(cache_file)
     if (cached is not None and now - cached.get("ts", 0) < _UPDATE_CHECK_CACHE_SECONDS
-            and cached.get("rev") == embedded_rev and cached.get("ver") == VERSION):
+            and cached.get("rev") == check_rev and cached.get("ver") == VERSION):
         return cached.get("behind")
     if embedded_rev:
         behind = _check_via_rev(embedded_rev)
     else:
         # No checkout and no embedded revision — status can't be determined.
-        repo_dir = _resolve_repo_dir()
         behind = _check_via_local_git(repo_dir) if repo_dir is not None else None
     # Don't cache inconclusive results: None means the check could not run (typically a failed
     # fetch), and caching it would suppress retries for the full 6-hour window (#82166).
     if behind is not None:
         _quiet(lambda: cache_file.write_text(
-            json.dumps({"ts": now, "behind": behind, "rev": embedded_rev, "ver": VERSION}), encoding="utf-8"))
+            json.dumps({"ts": now, "behind": behind, "rev": check_rev, "ver": VERSION}), encoding="utf-8"))
     return behind
 
 

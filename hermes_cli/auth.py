@@ -177,7 +177,9 @@ _REGISTRY_ROWS: Tuple[Any, ...] = (
         "nous", "Nous Portal", "oauth_device_code", portal_base_url=DEFAULT_NOUS_PORTAL_URL,
         inference_base_url=DEFAULT_NOUS_INFERENCE_URL, client_id=DEFAULT_NOUS_CLIENT_ID,
         scope=DEFAULT_NOUS_SCOPE),
-    ProviderConfig("openai-codex", "OpenAI Codex", "oauth_external", inference_base_url=DEFAULT_CODEX_BASE_URL),
+    ProviderConfig(
+        "openai-codex", "OpenAI Codex", "oauth_external",
+        inference_base_url=DEFAULT_CODEX_BASE_URL, base_url_env_var="HERMES_CODEX_BASE_URL"),
     ("openai-api", "OpenAI API", "https://api.openai.com/v1", ("OPENAI_API_KEY",), "OPENAI_BASE_URL"),
     ProviderConfig(
         "xai-oauth", "xAI Grok OAuth (SuperGrok / Premium+)", "oauth_external",

@@ -433,6 +433,10 @@ def _pool_entry_mode_and_url(provider, entry, model_cfg, effective_model, base_u
     """(api_mode, base_url) for a pool entry of ``provider``."""
     if provider in _POOL_ENTRY_SIMPLE_MODES:
         api_mode, default_url = _POOL_ENTRY_SIMPLE_MODES[provider]
+        if provider == "openai-codex":
+            base_url = (_config_base_url_for_provider(model_cfg, provider)
+                        or _getenv("HERMES_CODEX_BASE_URL", "").strip().rstrip("/")
+                        or base_url)
         return api_mode, base_url or (default_url() if callable(default_url) else default_url)
     if provider == "anthropic":
         return "anthropic_messages", _anthropic_cfg_base_url(model_cfg) or base_url or _ANTHROPIC_DEFAULT_BASE_URL
@@ -539,7 +543,10 @@ def _creds_fallback(api_key, explicit_base_url, base_url, expiry, expiry_key, re
 
 
 def _explicit_codex(requested_provider, model_cfg, api_key, explicit_base_url, target_model):
-    api_key, base_url, last_refresh = _creds_fallback(api_key, explicit_base_url, explicit_base_url or DEFAULT_CODEX_BASE_URL,
+    configured_base_url = _config_base_url_for_provider(model_cfg, "openai-codex")
+    env_base_url = _getenv("HERMES_CODEX_BASE_URL", "").strip().rstrip("/")
+    preferred_base_url = explicit_base_url or configured_base_url or env_base_url
+    api_key, base_url, last_refresh = _creds_fallback(api_key, preferred_base_url, preferred_base_url or DEFAULT_CODEX_BASE_URL,
                                                       None, "last_refresh", resolve_codex_runtime_credentials)
     return _runtime("openai-codex", "codex_responses", base_url, api_key, source="explicit", last_refresh=last_refresh,
                     requested_provider=requested_provider)

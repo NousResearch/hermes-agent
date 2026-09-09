@@ -86,6 +86,40 @@ def test_resolve_runtime_provider_uses_credential_pool(monkeypatch):
     assert resolved["source"] == "manual"
 
 
+def test_codex_base_url_env_overrides_pool_endpoint(monkeypatch):
+    class _Entry:
+        access_token = "pool-token"
+        source = "manual"
+        base_url = "https://chatgpt.com/backend-api/codex"
+
+    class _Pool:
+        def has_credentials(self):
+            return True
+
+        def select(self):
+            return _Entry()
+
+    monkeypatch.setenv("HERMES_CODEX_BASE_URL", "https://proxy.example/v1/")
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "openai-codex")
+    monkeypatch.setattr(rp, "load_pool", lambda provider: _Pool())
+
+    resolved = rp.resolve_runtime_provider(requested="openai-codex")
+
+    assert resolved["base_url"] == "https://proxy.example/v1"
+
+
+def test_codex_base_url_env_overrides_explicit_credential_route(monkeypatch):
+    monkeypatch.setenv("HERMES_CODEX_BASE_URL", "https://proxy.example/v1/")
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "openai-codex")
+
+    resolved = rp.resolve_runtime_provider(
+        requested="openai-codex",
+        explicit_api_key="codex-token",
+    )
+
+    assert resolved["base_url"] == "https://proxy.example/v1"
+
+
 class TestCustomProviderPoolLoopbackNoKeyExemption:
     """Regression for issue #86864: legacy custom_providers configs often
     used short/placeholder api_keys ('123', 'm') for local no-auth

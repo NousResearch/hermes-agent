@@ -911,11 +911,12 @@ class WisdomConsumption:
                 "Run again with --preserve-modified to save your edited copy as a "
                 "separate local skill and install the team's update."
             )
-        if automatic and not plan["auto_allowed"]:
+        if automatic and (not plan["auto_allowed"] or mode not in {"AUTO_WITH_NOTICE", "REQUIRED"}):
             raise PackagePolicyError(
                 "automatic update is not safe without explicit action"
             )
         preserve = modified_now and (mode == "REQUIRED" or preserve_modified)
+        plan["automatic"] = automatic
         plan["preserve_required"] = preserve
         if preserve and not plan.get("fork_path"):
             plan["fork_path"] = str(_unique_fork_path(str(plan["slug"])))
@@ -1073,7 +1074,12 @@ class WisdomConsumption:
                     "baseline": current["baseline"],
                     "update_mode": server.effective_update_mode,
                 })
-            self.store.advance(operation_id, "gateway_recorded", done=True)
+            if plan.get("automatic") is True:
+                from .setup_handoff import finish_automatic_update
+
+                finish_automatic_update(self.store, operation_id)
+            else:
+                self.store.advance(operation_id, "gateway_recorded", done=True)
             plan_path = self.store.root / "update-plans" / f"{plan['receipt']}.json"
             plan_path.unlink(missing_ok=True)
             return {

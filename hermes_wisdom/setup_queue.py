@@ -14,6 +14,7 @@ from .installed_setup import inspect_installed_setup
 from .mediation_store import _decode
 from .package import PackagePolicyError
 from .setup_execution import SetupStep, plan_step
+from .setup_handoff import setup_source
 
 
 class SetupProposal(BaseModel):
@@ -50,64 +51,24 @@ def setup_notice_current(store, reference):
 
 def process_setup_handoff(mediation, org, job, *, runtime):
     service, queue = mediation.service, mediation.queue
-    reference = job["reference"]
     service.require_setup()
     with service.store.transaction() as db:
-        queue.check_claim(db, org, job["id"], job["lease_token"])
-        parent = db.execute(
-            "SELECT * FROM wisdom_consent WHERE id=? AND organization_id=?",
-            (reference["consent_id"], org),
-        ).fetchone()
-        if parent is None or parent["state"] != "completed" or parent["owner_session"] != job["owner_session"]:
-            raise WisdomConflict("setup has no matching completed native operation")
-        parent = _decode(parent)
-        if parent["operation"] not in {"install", "update", "setup"}:
-            raise WisdomConflict("this operation cannot start setup")
-        plan = parent["plan"]
-        session = db.execute(
-            "SELECT actor_id,platform,address_json FROM wisdom_agent_session WHERE organization_id=? AND session_key=?",
-            (org, parent["owner_session"]),
-        ).fetchone()
-        if session is None or (session["actor_id"], session["platform"], json.loads(session["address_json"])) != (
-            parent["actor_id"], parent["platform"], plan.get("origin_address", {}),
-        ):
-            raise WisdomConflict("setup session authority changed")
-        siblings = db.execute(
-            """SELECT id,state,operation FROM wisdom_consent WHERE organization_id=?
-            AND owner_session=? AND operation IN ('install','update','setup')
-            AND json_extract(plan_json,'$.skill_id')=? AND json_extract(plan_json,'$.version')=?
-            ORDER BY created_at DESC,rowid DESC""",
-            (org, parent["owner_session"], plan["skill_id"], plan["version"]),
-        ).fetchall()
+        parent = setup_source(db, queue, org, job)
     # Another native step (including Not Now) owns continuation. Old handoffs
     # must not reproduce its card or propose a competing command.
-    if siblings[0]["id"] != parent["id"]:
+    if parent is None:
         queue.retire(org, job)
         return None
+    plan = parent["plan"]
 
     def finish(next_reference, advice):
         service.require_setup()
         with service.store.transaction() as db:
-            queue.check_claim(db, org, job["id"], job["lease_token"])
-            session = db.execute(
-                "SELECT actor_id,platform,address_json FROM wisdom_agent_session WHERE organization_id=? AND session_key=?",
-                (org, parent["owner_session"]),
-            ).fetchone()
-            if session is None or (session["actor_id"], session["platform"], json.loads(session["address_json"])) != (
-                parent["actor_id"], parent["platform"], plan.get("origin_address", {}),
-            ):
-                raise WisdomConflict("setup session authority changed")
-            newer = db.execute(
-                """SELECT id FROM wisdom_consent WHERE organization_id=? AND owner_session=?
-                AND operation IN ('install','update','setup') AND json_extract(plan_json,'$.skill_id')=?
-                AND json_extract(plan_json,'$.version')=? ORDER BY created_at DESC,rowid DESC LIMIT 1""",
-                (org, parent["owner_session"], plan["skill_id"], plan["version"]),
-            ).fetchone()
-            if newer["id"] != parent["id"]:
-                raise WisdomConflict("another setup control owns continuation")
+            if setup_source(db, queue, org, job) != parent:
+                raise WisdomConflict("setup source or session authority changed")
             db.execute(
-                "UPDATE wisdom_assessment SET reference_json=?,advice_json=?,state='ready',last_error=NULL,updated_at=? WHERE id=?",
-                (json.dumps(next_reference), json.dumps(advice), queue.clock(), job["id"]),
+                "UPDATE wisdom_assessment SET reference_json=?,advice_json=?,state='ready',origin_session=?,last_error=NULL,updated_at=? WHERE id=?",
+                (json.dumps(next_reference), json.dumps(advice), parent["owner_session"], queue.clock(), job["id"]),
             )
             return _decode(db.execute("SELECT * FROM wisdom_assessment WHERE id=?", (job["id"],)).fetchone())
 

@@ -784,14 +784,16 @@ class SessionMessagesMixin:
         """Load messages in OpenAI format. ``include_compacted`` (deduped display history) is for DISPLAY reads
         only: the model-fed restore must not regrow what compaction summarized away. ``repair_alternation``
         repairs the loaded list for LIVE REPLAY callers (a durable ``user;user`` pair would re-trigger the
-        per-request repair forever); the stored transcript is never mutated."""
+        per-request repair forever), preserving summary markers before repair so derivative context
+        cannot merge with an original user turn; the stored transcript is never mutated."""
         rows = self._fetch_conversation_rows(
             self._resume_lineage_ids(session_id) if include_ancestors else [session_id],
             self._active_clause(include_inactive, include_compacted), with_session_id=False)
         if include_compacted:
             rows = self._dedupe_display_generations(rows)
         return self._rows_to_conversation(rows, session_id=session_id, include_ancestors=include_ancestors,
-            repair_alternation=repair_alternation, include_row_ids=include_row_ids)
+            repair_alternation=repair_alternation, include_row_ids=include_row_ids,
+            include_summary_markers=repair_alternation)
 
     def _dedupe_replayed_user(self, messages, msg, exact_user_clones) -> Tuple[bool, Any]:
         """Ancestor-lineage dedupe of one decoded user *msg* -> ``(skip, exact_clone_key)``. Rotation

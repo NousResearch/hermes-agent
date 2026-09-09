@@ -157,8 +157,8 @@ def _record_codex_app_server_compaction(agent, turn, *, approx_tokens: int | Non
                 getattr(agent, "session_id", None) or "none", thread_id, turn_id, force)
     if not force:
         with suppress(Exception):
-            from agent.conversation_compression import COMPACTION_STATUS
-            agent._emit_status(COMPACTION_STATUS)
+            from agent.compression_status import compaction_status
+            agent._emit_status(compaction_status())
     compressor = getattr(agent, "context_compressor", None)
     if compressor is not None:
         compressor.compression_count = getattr(compressor, "compression_count", 0) + 1

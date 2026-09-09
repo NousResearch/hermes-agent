@@ -9,6 +9,10 @@ did and returns a ``CompactionOutcome``. Predicates/estimators that tests patch 
 
 from __future__ import annotations
 
+from agent.compression_status import (
+    idle_compaction_status, preflight_compression_status,
+)
+
 import logging
 import time
 from dataclasses import dataclass
@@ -16,7 +20,6 @@ from typing import Any, Dict, List, Optional
 
 from agent.context_engine import automatic_compaction_status_message
 from agent.conversation_compression import (
-    IDLE_COMPACTION_STATUS_TEMPLATE, PREFLIGHT_COMPRESSION_STATUS_TEMPLATE,
     compression_skipped_due_to_lock, conversation_history_after_compression,
 )
 
@@ -192,7 +195,7 @@ def _idle_compaction(
     _idle_status = automatic_compaction_status_message(
         _compressor,
         phase="idle",
-        default_message=IDLE_COMPACTION_STATUS_TEMPLATE.format(
+        default_message=idle_compaction_status(
             idle_seconds=int(_idle_gap), tokens=_idle_tokens
         ),
         approx_tokens=_idle_tokens,
@@ -363,7 +366,7 @@ def _run_preflight_passes(
     _preflight_status = automatic_compaction_status_message(
         _compressor,
         phase="preflight",
-        default_message=PREFLIGHT_COMPRESSION_STATUS_TEMPLATE.format(
+        default_message=preflight_compression_status(
             tokens=_preflight_tokens, threshold=_compressor.threshold_tokens
         ),
         approx_tokens=_preflight_tokens,

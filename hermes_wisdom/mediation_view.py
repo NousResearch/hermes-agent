@@ -202,6 +202,8 @@ def _setup_view(result: dict, *, include_command: bool = True) -> WisdomView:
     facts = result["facts"]
     step = facts["step"]
     state = ((result.get("result") or {}).get("setup") or {}).get("state", result["state"])
+    requirement = facts.get("setup_requirement") or {}
+    missing_requirement = bool(requirement) and facts.get("allowed") is False
     summary = {
         "pending": "Review setup step", "running": "Setup step running",
         "applying": "Checking setup progress", "unknown": "Setup outcome unknown",
@@ -211,12 +213,16 @@ def _setup_view(result: dict, *, include_command: bool = True) -> WisdomView:
         "blocked": "Terminal permission required",
         "abandoned": "Interrupted step cleared",
     }.get(state, "Setup progress")
+    if state == "pending" and missing_requirement:
+        summary = "Prerequisite missing"
+    elif state == "passed" and requirement.get("status") == "present":
+        summary = "Prerequisite checked"
     detail = facts["setup_instruction"]
     if facts.get("setup_explanation"):
         detail = facts["setup_explanation"] + "\n\n" + detail
     if step["command"] and include_command:
         detail += f"\n\n{_SETUP_COMMAND_LABEL}:\n" + step["command"]
-    if state == "pending":
+    if state == "pending" and not missing_requirement:
         detail += "\n\nOnly this step is authorized by confirming. Do not enter credentials in chat."
     elif state == "unknown":
         detail += "\n\nThe command may have run. It will not be repeated automatically."
@@ -233,7 +239,12 @@ def _setup_view(result: dict, *, include_command: bool = True) -> WisdomView:
     elif state == "passed":
         detail += "\n\nContinue setup inspection to check remaining prerequisites and verification."
     actions = []
-    if result["state"] == "pending" and not result.get("deferred"):
+    if result["state"] == "pending" and missing_requirement and not result.get("deferred"):
+        actions = [
+            WisdomAction("Not Now", callback_data=f"wi:agent:defer:{result['id']}"),
+            WisdomAction("Recheck", callback_data=f"wi:agent:recheck:{result['id']}", primary=True),
+        ]
+    elif result["state"] == "pending" and not result.get("deferred"):
         actions = [
             WisdomAction("Not Now", callback_data=f"wi:agent:defer:{result['id']}"),
             WisdomAction("Confirm prerequisite" if step["phase"] == "prerequisite" else "Run this step",

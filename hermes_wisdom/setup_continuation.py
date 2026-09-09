@@ -7,6 +7,19 @@ from .installed_setup import inspect_installed_setup
 from .package import PackagePolicyError
 
 
+def recheck_prerequisite(consent, org, result, actor):
+    """Replace a blocked review with current facts, without acknowledging or running it."""
+    with consent.service.store.transaction() as db:
+        consent.queue._check_org(db, org)
+        db.execute(
+            """UPDATE wisdom_consent SET state='stale',updated_at=?
+            WHERE id=? AND organization_id=? AND state='pending'
+            AND operation='setup' AND json_extract(plan_json,'$.allowed')=0""",
+            (consent.queue.clock(), result["id"], org),
+        )
+    return consent.present(org, result["assessment_id"], actor)
+
+
 def inspect_continuation(consent, org, result, actor):
     if result["operation"] not in {"install", "update", "setup"}:
         raise WisdomNotFound("Setup interaction not found")

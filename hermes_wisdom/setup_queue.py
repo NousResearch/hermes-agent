@@ -104,12 +104,13 @@ def process_setup_handoff(mediation, org, job, *, runtime):
                    if row["status"] == "manual" and latest.get(("prerequisite", index)) != "passed"), None)
     pending = next((index for index in range(len(info["guidance"]["setup_instructions"]))
                     if latest.get(("setup", index)) != "passed"), None)
-    if manual is not None:
-        step = SetupStep(phase="prerequisite", index=manual)
+    missing = next((index for index, row in enumerate(info["prerequisites"])
+                    if row["status"] == "missing" and (row["kind"] == "env_var" or pending is None)), None)
+    prerequisite = manual if manual is not None else missing
+    if prerequisite is not None:
+        step = SetupStep(phase="prerequisite", index=prerequisite)
         explanation = "Confirm this prerequisite only after it is configured. Never enter credential values in chat."
     else:
-        if pending is None and any(row["status"] == "missing" for row in info["prerequisites"]):
-            return attention("Required commands or environment variables are still missing. Configure them privately, then ask your agent to inspect setup again. Do not send credential values in chat.")
         phase, index = ("setup", pending) if pending is not None else ("verify", 0)
         instruction = info["guidance"]["setup_instructions"][index] if phase == "setup" else info["guidance"]["verification_step"]
         if not runtime.get("model") or not runtime.get("provider"):

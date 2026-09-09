@@ -135,10 +135,27 @@ def plan_step(store, reference):
     completed = {key for key, row in latest.items() if row["state"] == "passed"}
     if step.phase == "prerequisite":
         requirements = info["prerequisites"]
-        if step.index >= len(requirements) or requirements[step.index]["status"] != "manual":
-            raise WisdomConflict("only user-managed prerequisites can be acknowledged")
+        if step.index >= len(requirements):
+            raise WisdomConflict("prerequisite is not in the installed guidance")
         item = requirements[step.index]
-        instruction = f"Confirm {item['kind']}: {item['name']}. {item['purpose']}"
+        label = "Environment variable" if item["kind"] == "env_var" else item["kind"].capitalize()
+        instruction = f"{label}: {item['name']}\n{item['purpose']}"
+        if item.get("handoff"):
+            instruction += "\nPublisher guidance: " + item["handoff"]
+        if item["kind"] == "env_var":
+            instruction += (
+                "\nConfigure this variable privately for the active Hermes profile on the machine running Hermes. "
+                "Run hermes config env-path under that same profile to locate its private environment file, then edit it privately. "
+                "Reload that profile after editing so new terminal processes receive the change. "
+                "Never paste its value into chat, a skill file, or a command argument. "
+                "Only presence is checked here; verification must still test whether it works."
+            )
+        elif item["kind"] == "command":
+            instruction += "\nThe command must be available on the local Hermes runtime's PATH. Use the declared setup instructions or your normal installation process."
+        else:
+            instruction += "\nConfirm only after you have configured this prerequisite."
+        if item["status"] == "missing":
+            instruction += "\nNot detected. Configure it privately, then select Recheck. No command will run."
     elif step.phase == "setup":
         if step.index >= len(guidance["setup_instructions"]):
             raise WisdomConflict("setup step is not in the installed guidance")
@@ -159,7 +176,9 @@ def plan_step(store, reference):
         "skill_id": info["skill_id"], "slug": installation["slug"],
         "version": info["version"], "content_hash": info["content_hash"],
         "setup_key": hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest(),
-        "step": step.model_dump(), "setup_instruction": instruction, "allowed": True,
+        "step": step.model_dump(), "setup_instruction": instruction,
+        "allowed": step.phase != "prerequisite" or item["status"] != "missing",
+        **({"setup_requirement": item} if step.phase == "prerequisite" else {}),
     }
 
 
@@ -188,6 +207,8 @@ def _execute_step(service, value, actor):
         fresh = plan_step(store, {"skill_id": skill_id, "version": plan["version"], "step": plan["step"]})
         if fresh["setup_key"] != plan["setup_key"]:
             raise WisdomConflict("installed package or proposed setup step changed")
+        if not fresh["allowed"]:
+            raise WisdomConflict("prerequisite is still missing; configure it privately and recheck")
         if plan["step"]["phase"] != "prerequisite" and _get_env_config()["env_type"] != "local":
             raise WisdomConflict("local skill setup requires a local terminal; the configured sandbox was not bypassed")
         payload = {

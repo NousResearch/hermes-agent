@@ -63,6 +63,7 @@ def public_plan(plan: dict[str, Any]) -> dict[str, Any]:
         "step",
         "setup_instruction",
         "setup_explanation",
+        "setup_requirement",
         "setup_key",
     )
     return {key: plan[key] for key in keys if key in plan}
@@ -460,6 +461,11 @@ class WisdomConsent:
             return self._review_in_portal(org, interaction_id, actor)
         if action == "recheck":
             result = self._resolve(org, interaction_id, actor, "inspect")
+            if (result["operation"] == "setup" and result["state"] == "pending"
+                    and result["facts"].get("setup_requirement") and result["facts"].get("allowed") is False):
+                from .setup_continuation import recheck_prerequisite
+
+                return recheck_prerequisite(self, org, result, actor)
             if result["state"] in {"stale", "expired"} or (
                 result["state"] == "pending"
                 and result["expires_at"] <= self.queue.clock()

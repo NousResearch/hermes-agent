@@ -59,6 +59,13 @@ const config: Config = {
             to: '/developer-guide/plugins',
           },
           {
+            // Desktop plugins iframe uses `/docs/plugins?embed=picker` without
+            // trailing slash; GitHub Pages 404s on that path. Redirect to `/plugins/`
+            // which resolves correctly on both edges (GH Pages and Vercel).
+            from: '/plugins',
+            to: '/plugins/',
+          },
+          {
             // Users guess these short paths from abbreviated links and hit
             // raw 404s (consumer-onboarding audit finding #1, Aug 2026).
             from: '/quickstart',

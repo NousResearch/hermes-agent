@@ -221,9 +221,19 @@ def _submit_fal_video_request(endpoint: str, arguments: Dict[str, Any]):
     try:
         return _get_managed_fal_video_client(managed_gateway).submit(endpoint, arguments=arguments, headers=headers)
     except Exception as exc:
-        from tools.fal_common import _extract_http_status
+        from tools.fal_common import _extract_http_status, _managed_fal_billing_error
         status = _extract_http_status(exc)
         if status is not None and 400 <= status < 500:
+            billing = _managed_fal_billing_error(exc)
+            if billing is not None:
+                raise ValueError(
+                    f"Nous Subscription gateway rejected endpoint '{endpoint}' (HTTP {status}): "
+                    f"{billing['message']} ({billing['error_code']}; "
+                    f"{billing['code']}: {billing['detail']}). "
+                    "This is a Nous Portal billing configuration issue, not a missing local API key. "
+                    "The managed route cannot run this endpoint until Nous enables its billing meter; "
+                    "a direct FAL_KEY is an optional bypass."
+                ) from exc
             raise ValueError(f"Nous Subscription gateway rejected endpoint '{endpoint}' (HTTP {status}). This model may not yet be enabled "
                              f"on the Nous Portal's FAL proxy. Either:\n  • Set FAL_KEY in your environment to use FAL.ai directly, or\n"
                              f"  • Pick a different model via `hermes tools` → Video Generation.") from exc

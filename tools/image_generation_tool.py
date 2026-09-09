@@ -29,7 +29,10 @@ def _load_fal_client() -> Any:
 
 
 from tools.debug_helpers import DebugSession
-from tools.fal_common import _ManagedFalSyncClient, _extract_http_status, _normalize_fal_queue_url_format
+from tools.fal_common import (
+    _ManagedFalSyncClient, _extract_http_status, _managed_fal_billing_error,
+    _normalize_fal_queue_url_format,
+)
 from tools.image_generation_catalog import (
     DEFAULT_ASPECT_RATIO, DEFAULT_MODEL, FAL_MODELS, UPSCALER_CREATIVITY, UPSCALER_DEFAULT_PROMPT,
     UPSCALER_FACTOR, UPSCALER_GUIDANCE_SCALE, UPSCALER_MODEL, UPSCALER_NEGATIVE_PROMPT,
@@ -131,6 +134,16 @@ def _submit_fal_request(model: str, arguments: Dict[str, Any]):
         # (allowlist miss, billing gate): give remediation instead of a raw httpx error.
         status = _extract_http_status(exc)
         if status is not None and 400 <= status < 500:
+            billing = _managed_fal_billing_error(exc)
+            if billing is not None:
+                raise ValueError(
+                    f"Nous Subscription gateway rejected model '{model}' (HTTP {status}): "
+                    f"{billing['message']} ({billing['error_code']}; "
+                    f"{billing['code']}: {billing['detail']}). "
+                    "This is a Nous Portal billing configuration issue, not a missing local API key. "
+                    "The managed route cannot run this model until Nous enables its billing meter; "
+                    "a direct FAL_KEY is an optional bypass."
+                ) from exc
             gateway_message = ""
             if status in {401, 402, 403}:
                 gateway_message = "\n\n" + nous_tool_gateway_unavailable_message(

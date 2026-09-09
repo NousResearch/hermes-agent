@@ -46,6 +46,30 @@ def _extract_http_status(exc: BaseException) -> Optional[int]:
     return status if isinstance(status, int) else None
 
 
+def _managed_fal_billing_error(exc: BaseException) -> Optional[Dict[str, str]]:
+    """Return normalized Nous billing details from a managed-gateway error."""
+    response = getattr(exc, "response", None)
+    if response is None:
+        return None
+    try:
+        payload = response.json()
+    except Exception:  # noqa: BLE001 — diagnostics must not mask the provider error
+        return None
+    error = payload.get("error") if isinstance(payload, dict) else None
+    if not isinstance(error, dict) or error.get("code") != "BILLING_ERROR":
+        return None
+    raw_details = error.get("details")
+    details = raw_details if isinstance(raw_details, dict) else {}
+    raw_upstream = details.get("upstreamPayload")
+    upstream = raw_upstream if isinstance(raw_upstream, dict) else {}
+    return {
+        "message": str(error.get("message") or "Charge authorization failed"),
+        "error_code": str(error.get("code") or "BILLING_ERROR"),
+        "code": str(upstream.get("code") or details.get("chargeIntentErrorCode") or "billing_error"),
+        "detail": str(upstream.get("error") or "Nous Portal rejected the charge authorization"),
+    }
+
+
 def _require(value: Any, what: str) -> Any:
     if value is None:
         raise RuntimeError(f"{what} is required for managed FAL gateway mode")
@@ -93,9 +117,28 @@ class _ManagedFalSyncClient:
             if self._add_timeout_header is None:
                 raise RuntimeError("fal_client.client.add_timeout_header is required for timeout requests")
             self._add_timeout_header(start_timeout, request_headers)
-        response = self._maybe_retry_request(
-            self._http_client, "POST", url, json=arguments,
-            timeout=getattr(self._sync_client, "default_timeout", 120.0), headers=request_headers)
+        request_kwargs = {
+            "json": arguments,
+            "timeout": getattr(self._sync_client, "default_timeout", 120.0),
+            "headers": request_headers,
+        }
+        # The Nous gateway currently records a keyed submission before billing
+        # authorization finishes, but cannot replay the resulting error. The
+        # SDK's automatic 409 retry therefore replaces the real billing error
+        # with an idempotency conflict. Make one attempt when the caller supplied
+        # a key; an ambiguous transport failure is safer than a possible duplicate
+        # generation or a masked entitlement failure.
+        has_idempotency_key = any(
+            str(key).lower() == "x-idempotency-key" for key in request_headers
+        )
+        if has_idempotency_key:
+            response = self._http_client.request("POST", url, **request_kwargs)
+        else:
+            retry_request = self._maybe_retry_request
+            if retry_request is None:  # guarded in __init__; keeps static analysis honest
+                raise RuntimeError("fal_client.client request helpers are required")
+            response = retry_request(
+                self._http_client, "POST", url, **request_kwargs)
         self._raise_for_status(response)
         data = response.json()
         return self._request_handle_class(

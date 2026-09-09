@@ -393,15 +393,22 @@ class TestRegistryIntegration:
 # ---------------------------------------------------------------------------
 
 class _MockResponse:
-    def __init__(self, status_code: int):
+    def __init__(self, status_code: int, payload=None):
         self.status_code = status_code
+        self._payload = payload
+        self.text = "" if payload is None else __import__("json").dumps(payload)
+
+    def json(self):
+        if self._payload is None:
+            raise ValueError("not json")
+        return self._payload
 
 
 class _MockHttpxError(Exception):
     """Simulates httpx.HTTPStatusError which exposes .response.status_code."""
-    def __init__(self, status_code: int, message: str = "Bad Request"):
+    def __init__(self, status_code: int, message: str = "Bad Request", payload=None):
         super().__init__(message)
-        self.response = _MockResponse(status_code)
+        self.response = _MockResponse(status_code, payload)
 
 
 class TestExtractHttpStatus:
@@ -422,6 +429,11 @@ class TestExtractHttpStatus:
 
 class TestManagedGatewayErrorTranslation:
     """4xx from the Nous managed gateway should be translated to a user-actionable message."""
+
+    @pytest.fixture(autouse=True)
+    def _skip_optional_fal_dependency(self, image_tool, monkeypatch):
+        """These unit tests replace the managed client and need no FAL SDK."""
+        monkeypatch.setattr(image_tool, "_load_fal_client", lambda: None)
 
     def test_4xx_translates_to_value_error_with_remediation(self, image_tool, monkeypatch):
         """403 from managed gateway → ValueError mentioning FAL_KEY + hermes tools."""
@@ -450,6 +462,49 @@ class TestManagedGatewayErrorTranslation:
         assert "hermes tools" in msg
         # Original exception chained for debugging
         assert exc_info.value.__cause__ is bad_request
+
+    def test_billing_meter_error_is_preserved_instead_of_called_model_unavailable(
+        self, image_tool, monkeypatch
+    ):
+        """Portal billing configuration is the root cause, not a missing model."""
+        from unittest.mock import MagicMock
+
+        managed_gateway = MagicMock()
+        managed_gateway.gateway_origin = "https://fal-queue-gateway.example.com"
+        managed_gateway.nous_user_token = "test-token"
+        monkeypatch.setattr(
+            image_tool, "_resolve_managed_fal_gateway", lambda: managed_gateway
+        )
+        payload = {
+            "error": {
+                "code": "BILLING_ERROR",
+                "message": "Charge authorization failed",
+                "details": {
+                    "upstreamPayload": {
+                        "code": "unsupported_pricing_meter",
+                        "error": "Unsupported resolver usage meter",
+                    }
+                },
+            }
+        }
+        billing_error = _MockHttpxError(409, payload=payload)
+        mock_managed_client = MagicMock()
+        mock_managed_client.submit.side_effect = billing_error
+        monkeypatch.setattr(
+            image_tool, "_get_managed_fal_client", lambda gw: mock_managed_client
+        )
+
+        with pytest.raises(ValueError) as exc_info:
+            image_tool._submit_fal_request(
+                "openai/gpt-image-2.5/flare/text-to-image", {"prompt": "x"}
+            )
+
+        msg = str(exc_info.value)
+        assert "Charge authorization failed" in msg
+        assert "BILLING_ERROR" in msg
+        assert "unsupported_pricing_meter" in msg
+        assert "Nous Portal billing" in msg
+        assert "may not yet be enabled" not in msg
 
 
     def test_non_http_exception_from_managed_bubbles_up(self, image_tool, monkeypatch):

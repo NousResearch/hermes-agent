@@ -59,6 +59,8 @@ def matrix_env(tmp_path, monkeypatch):
     fake_fal.submit = _submit  # type: ignore
 
     monkeypatch.setitem(__import__("sys").modules, "fal_client", fake_fal)
+    import tools.fal_common as fal_common
+    monkeypatch.setattr(fal_common, "import_fal_client", lambda: fake_fal)
 
     # httpx stub for xAI
     import httpx
@@ -100,11 +102,7 @@ def matrix_env(tmp_path, monkeypatch):
     async def _no_sleep(*a, **k): return None
     monkeypatch.setattr(asyncio, "sleep", _no_sleep)
 
-    # Reset FAL plugin's lazy fal_client cache so it picks up the stub
-    from plugins.video_gen import fal as fal_plugin
-    fal_plugin._fal_client = None
-
-    # Force discovery
+    # Force discovery.
     from hermes_cli.plugins import _ensure_plugins_discovered
     _ensure_plugins_discovered(force=True)
 

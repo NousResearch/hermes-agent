@@ -317,6 +317,39 @@ class TestManagedFalSyncClientSubmit:
         client._request_handle_class.assert_called_once()
         assert result is client._request_handle_class.return_value
 
+    def test_submit_with_idempotency_key_is_not_retried(self):
+        """The Nous gateway cannot replay an accepted submit reliably.
+
+        A retry can replace the original billing/entitlement response with a
+        misleading ``idempotency key ... without a reusable request handle``
+        conflict, so keyed submits must make exactly one POST attempt.
+        """
+        http_client = MagicMock()
+        response = MagicMock()
+        response.json.return_value = {
+            "request_id": "req-1",
+            "response_url": "https://q.example.com/resp",
+            "status_url": "https://q.example.com/status",
+            "cancel_url": "https://q.example.com/cancel",
+        }
+        http_client.request.return_value = response
+        client, _, _ = self._make_client(http_client=http_client)
+        client._maybe_retry_request = MagicMock()
+        client._raise_for_status = MagicMock()
+        client._request_handle_class = MagicMock()
+
+        client.submit(
+            "my-app", {"prompt": "hello"},
+            headers={"X-Idempotency-Key": "submission-1"},
+        )
+
+        http_client.request.assert_called_once_with(
+            "POST", "https://queue.example.com/my-app",
+            json={"prompt": "hello"}, timeout=120.0,
+            headers={"X-Idempotency-Key": "submission-1"},
+        )
+        client._maybe_retry_request.assert_not_called()
+
     def test_submit_with_path(self):
         client, _, _ = self._make_client()
         response = MagicMock()

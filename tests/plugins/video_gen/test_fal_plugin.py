@@ -29,6 +29,54 @@ def test_fal_provider_registers():
     assert DEFAULT_MODEL in {"pixverse-v6", "ltx-2.3"}
 
 
+def test_managed_billing_error_preserves_structured_diagnostic(monkeypatch):
+    """Video and image callers share the same Nous billing diagnosis."""
+    from plugins.video_gen import fal as fal_plugin
+
+    class Response:
+        status_code = 409
+
+        @staticmethod
+        def json():
+            return {
+                "error": {
+                    "code": "BILLING_ERROR",
+                    "message": "Charge authorization failed",
+                    "details": {
+                        "upstreamPayload": {
+                            "code": "unsupported_pricing_meter",
+                            "error": "Unsupported resolver usage meter",
+                        }
+                    },
+                }
+            }
+
+    class BillingError(RuntimeError):
+        def __init__(self):
+            super().__init__("gateway billing failure")
+            self.response = Response()
+
+    error = BillingError()
+    client = Mock()
+    client.submit.side_effect = error
+    monkeypatch.setattr(fal_plugin, "_load_fal_client", lambda: object())
+    monkeypatch.setattr(
+        fal_plugin, "_resolve_managed_fal_video_gateway", lambda: object()
+    )
+    monkeypatch.setattr(
+        fal_plugin, "_get_managed_fal_video_client", lambda gateway: client
+    )
+
+    with pytest.raises(ValueError) as exc_info:
+        fal_plugin._submit_fal_video_request("fal-ai/video", {"prompt": "x"})
+
+    message = str(exc_info.value)
+    assert "BILLING_ERROR" in message
+    assert "unsupported_pricing_meter" in message
+    assert "Nous Portal billing" in message
+    assert "may not yet be enabled" not in message
+
+
 def test_kling_4k_uses_start_image_url():
     """Kling v3 4K's image-to-video endpoint expects start_image_url,
     not image_url. The family must declare image_param_key='start_image_url'."""
@@ -161,9 +209,10 @@ class TestFamilyRouting:
         fake.submit = _submit  # type: ignore
         monkeypatch.setitem(sys.modules, "fal_client", fake)
 
-        # Reset the lazy global so it picks up our stub
+        # Pin the stub directly so the clean test environment does not attempt
+        # to auto-install the optional fal-client distribution.
         from plugins.video_gen import fal as fal_plugin
-        fal_plugin._fal_client = None
+        fal_plugin._fal_client = fake
         # Also reset the managed client cache
         fal_plugin._managed_fal_video_client = None
         fal_plugin._managed_fal_video_client_config = None
@@ -532,7 +581,7 @@ class TestUpscalePass:
         monkeypatch.setitem(sys.modules, "fal_client", fake)
 
         from plugins.video_gen import fal as fal_plugin
-        fal_plugin._fal_client = None
+        fal_plugin._fal_client = fake
         fal_plugin._managed_fal_video_client = None
         fal_plugin._managed_fal_video_client_config = None
 

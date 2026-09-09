@@ -10,6 +10,7 @@ mutate ``agent`` / ``messages`` / ``api_messages`` in place. Logger name stays
 from __future__ import annotations
 
 import logging
+import math
 import re
 import time
 from dataclasses import dataclass
@@ -51,7 +52,7 @@ def _blines(agent: Any, *lines: str) -> None:
 
 
 def _image_error_max_dimension(error: Exception) -> Optional[int]:
-    """Extract a provider-reported image dimension ceiling, if present."""
+    """Extract a dimension ceiling, including OpenAI's 32px-patch budget."""
     parts = []
     for value in (error, getattr(error, "message", None), getattr(error, "body", None)):
         if value:
@@ -60,6 +61,14 @@ def _image_error_max_dimension(error: Exception) -> Optional[int]:
             except Exception:
                 pass
     text = " ".join(parts).lower()
+    patch_limit = re.search(
+        r"image .*?requires \d+ patches after processing, exceeding the limit of (\d+)", text
+    )
+    if patch_limit and (limit := int(patch_limit.group(1))) > 0:
+        # A byte-small image can still exceed the patch budget. Bounding both
+        # sides to whole 32px patches guarantees ceil(w/32)*ceil(h/32) <= limit;
+        # the existing resizer preserves aspect ratio and only edits the request.
+        return min(8000, 32 * math.isqrt(limit))
     if "image" not in text or "dimension" not in text or "max allowed size" not in text:
         return None
     match = re.search(r"max allowed size(?:\s+for [^:]+)?:\s*(\d{3,5})\s*pixels?", text)

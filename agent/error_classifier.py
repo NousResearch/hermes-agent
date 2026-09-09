@@ -153,6 +153,7 @@ _PAYLOAD_TOO_LARGE_PATTERNS = (
 _IMAGE_TOO_LARGE_PATTERNS = (
     "image exceeds", "image too large", "image_too_large", "image size exceeds", "image dimensions exceed",
     "dimensions exceed max allowed size", "max allowed size: 8000", "media exceeds", "media too large",
+    "patches after processing, exceeding the limit of",
 )
 
 # Undecodable image bytes → strip-and-retry, never shrink. xAI wordings

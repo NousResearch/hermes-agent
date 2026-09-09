@@ -27,7 +27,11 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 from fastapi import APIRouter, HTTPException, Query
 
 from hermes_cli.web_deps import late
-from hermes_cli.web_server_config import _apply_main_model_assignment, _normalize_main_model_assignment
+from hermes_cli.web_server_config import (
+    _apply_main_model_assignment,
+    _normalize_main_model_assignment,
+    _resolve_assignment_credentials,
+)
 from hermes_cli.web_server_gateway import _strip_session_list_rows
 from hermes_cli.web_server_profiles import (
     _fallback_profile_dicts, _hub_action_name, _write_profile_mcp_servers,
@@ -94,14 +98,133 @@ def _profile_setup_command(name: str) -> str:
     return "hermes setup" if name == "default" else f"{name} setup"
 
 
+def _outer_raw_providers() -> Any:
+    """Snapshot ``providers:`` from the caller's current home (before profile scope)."""
+    from hermes_cli.config import read_raw_config
+
+    try:
+        return read_raw_config().get("providers")
+    except Exception:
+        _log.debug("could not read source providers for profile model write", exc_info=True)
+        return None
+
+
+def _lookup_source_provider(source_providers: Any, *names: str) -> Tuple[Any, Optional[Dict[str, Any]]]:
+    """Return the first ``(stored_key, entry)`` matching any of *names* in the source map."""
+    from hermes_cli.config import find_provider_entry
+
+    seen: set[str] = set()
+    for name in names:
+        want = (name or "").strip()
+        if not want or want in seen:
+            continue
+        seen.add(want)
+        stored, entry = find_provider_entry(source_providers, want)
+        if isinstance(entry, dict):
+            return stored, entry
+    return None, None
+
+
+def _ensure_profile_provider_entry(
+    cfg: dict, provider: str, source_key: Any, source_entry: Any,
+) -> Optional[Dict[str, Any]]:
+    """Copy a config-map provider into the target profile when missing.
+
+    Fail-open: no source dict, empty provider, or a same-named dest entry already
+    present (keep the profile's local customization). Never invents a built-in
+    ``providers.<name>`` block. Returns the dest entry (existing or copied).
+    """
+    from hermes_cli.config import find_provider_entry
+
+    if not provider:
+        return None
+    _dest_key, dest_entry = find_provider_entry(cfg.get("providers"), provider)
+    if isinstance(dest_entry, dict):
+        return dest_entry
+    if not isinstance(source_entry, dict):
+        return None
+    dest_providers = cfg.get("providers")
+    if not isinstance(dest_providers, dict):
+        dest_providers = {}
+        cfg["providers"] = dest_providers
+    stored = source_key if source_key not in (None, "") else provider
+    copied = copy.deepcopy(source_entry)
+    # Raw yaml is preferred, but never persist an expanded secret if one slipped in.
+    api_key = copied.get("api_key")
+    if isinstance(api_key, str):
+        raw_key = api_key.strip()
+        if raw_key and not (raw_key.startswith("${") and raw_key.endswith("}")):
+            copied.pop("api_key", None)
+    dest_providers[stored] = copied
+    return dest_providers[stored]
+
+
+def _apply_profile_assignment_credentials(
+    model_cfg: dict, provider: str, dest_entry: Any, source_entry: Any,
+) -> None:
+    """Attach a raw ``key_env`` pointer like the main model-set path; never persist secrets."""
+    _resolve_assignment_credentials(model_cfg, provider, dest_entry)
+    # Target-scope ``read_raw_config()`` cannot see an entry we only just copied
+    # in memory; fall back to the outer-home raw dict (or the copied dest).
+    raw = dest_entry if isinstance(dest_entry, dict) else source_entry
+    if not isinstance(raw, dict):
+        return
+    key_env = str(raw.get("key_env") or "").strip()
+    if key_env and not str(model_cfg.get("key_env") or "").strip():
+        model_cfg["key_env"] = key_env
+        model_cfg.pop("api_key", None)
+    elif isinstance(raw.get("api_key"), str):
+        raw_key = raw["api_key"].strip()
+        if raw_key.startswith("${") and raw_key.endswith("}") and not model_cfg.get("api_key"):
+            model_cfg["api_key"] = raw_key
+
+
 def _write_profile_model(profile_dir: Path, provider: str, model: str) -> None:
     """Write the main model assignment into ``profile_dir``'s config.yaml (HERMES_HOME-scoped);
-    clears stale ``base_url`` / ``context_length`` like ``POST /api/model/set`` does."""
+    clears stale ``base_url`` / ``context_length`` like ``POST /api/model/set`` does.
+
+    Config-map providers (e.g. ``scnet``) are resolved from the caller's current home
+    *before* entering the target profile scope, then copied into the profile when
+    missing so agent init can ``resolve_provider()`` them (#106643).
+    """
     from hermes_cli.config import load_config, save_config
+
+    orig_provider = (provider or "").strip()
+    source_providers = _outer_raw_providers()
+
     with _hermes_home_scope(profile_dir):
         provider, model = _normalize_main_model_assignment(provider, model)
         cfg = load_config()
-        cfg["model"] = _apply_main_model_assignment(cfg.get("model", {}), provider, model)
+        dest_entry: Optional[Dict[str, Any]] = None
+        source_key, source_entry = None, None
+        try:
+            if provider and model:
+                source_key, source_entry = _lookup_source_provider(
+                    source_providers, provider, orig_provider,
+                )
+                dest_entry = _ensure_profile_provider_entry(
+                    cfg, provider, source_key, source_entry,
+                )
+        except Exception:
+            _log.exception(
+                "failed to copy provider %r into profile %s; continuing with model assignment",
+                provider, profile_dir,
+            )
+        base_url = ""
+        if isinstance(dest_entry, dict):
+            base_url = str(dest_entry.get("base_url") or "").strip()
+        model_cfg = _apply_main_model_assignment(
+            cfg.get("model", {}), provider, model, base_url, "",
+        )
+        try:
+            _apply_profile_assignment_credentials(
+                model_cfg, provider, dest_entry, source_entry,
+            )
+        except Exception:
+            _log.debug(
+                "profile assignment credentials skipped for %r", provider, exc_info=True,
+            )
+        cfg["model"] = model_cfg
         save_config(cfg)
 
 

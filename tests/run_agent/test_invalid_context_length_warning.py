@@ -82,3 +82,19 @@ def test_custom_providers_valid_context_length():
         )
     for c in mock_logger.warning.call_args_list:
         assert "Invalid" not in str(c)
+
+
+def test_context_window_alias_resolves():
+    """model.context_window is accepted as an alias for model.context_length (issue #8015)."""
+    agent = _build_agent({"default": "gpt5.4", "provider": "custom",
+                          "base_url": "http://localhost:4000/v1",
+                          "context_window": 1000000})
+    assert agent._config_context_length == 1000000
+
+
+def test_context_length_takes_precedence_over_context_window():
+    """When both keys are set, the canonical context_length wins."""
+    agent = _build_agent({"default": "gpt5.4", "provider": "custom",
+                          "base_url": "http://localhost:4000/v1",
+                          "context_length": 256000, "context_window": 1000000})
+    assert agent._config_context_length == 256000

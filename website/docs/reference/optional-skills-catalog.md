@@ -36,6 +36,7 @@ hermes skills uninstall <skill-name>
 | [**dynamic-workflow**](/docs/user-guide/skills/optional/autonomous-ai-agents/autonomous-ai-agents-dynamic-workflow) | Plan-in-code fan-outs, adversarial verification, waves. |
 | [**grok**](/docs/user-guide/skills/optional/autonomous-ai-agents/autonomous-ai-agents-grok) | Delegate coding to xAI Grok Build CLI (features, PRs). |
 | [**honcho**](/docs/user-guide/skills/optional/autonomous-ai-agents/autonomous-ai-agents-honcho) | Configure and troubleshoot Honcho memory for Hermes. |
+| [**mono-color**](/docs/user-guide/skills/optional/creative/creative-mono-color) | Generate one- or two-ink editorial print poster images. |
 | [**openhands**](/docs/user-guide/skills/optional/autonomous-ai-agents/autonomous-ai-agents-openhands) | Delegate coding to OpenHands CLI (model-agnostic, LiteLLM). |
 
 ## blockchain

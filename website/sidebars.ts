@@ -368,6 +368,7 @@ const sidebars: SidebarsConfig = {
                     'user-guide/skills/optional/creative/creative-impeccable',
                     'user-guide/skills/optional/creative/creative-kanban-video-orchestrator',
                     'user-guide/skills/optional/creative/creative-meme-generation',
+                    'user-guide/skills/optional/creative/creative-mono-color',
                     'user-guide/skills/optional/creative/creative-pixel-art',
                     'user-guide/skills/optional/creative/creative-pretext',
                     'user-guide/skills/optional/creative/creative-simple-english',

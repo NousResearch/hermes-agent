@@ -18,6 +18,8 @@ def test_worker_child_uses_parent_project_from_shared_board_home(tmp_path, monke
     monkeypatch.delenv('HERMES_KANBAN_TASK', raising=False)
     repo = tmp_path / 'hermes-source'
     repo.mkdir()
+    (root / 'profiles' / 'architect').mkdir(parents=True)
+    (root / 'profiles' / 'coding-expert').mkdir(parents=True)
     with pdb.connect_closing() as conn:
         project = pdb.create_project(conn, name='Hermes', slug='hermes-agent', primary_path=str(repo))
     with kbc.connect() as conn:

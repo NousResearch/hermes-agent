@@ -1494,7 +1494,7 @@ def _normalize_workdir(workdir: Optional[str]) -> Optional[str]:
 
 def _resolve_default_model_snapshot() -> Optional[str]:
     """Default model resolved as the ticker's ``run_job`` does, so unpinned jobs can snapshot it and
-    detect a later swap. ``None`` on missing config or failure (fail-open: "no snapshot")."""
+    keep running on it after a later swap. ``None`` on missing config or failure ("no snapshot")."""
     try:
         from hermes_cli.config import _expand_env_vars, read_user_config_raw
 
@@ -1599,8 +1599,9 @@ _UPDATE_FIELD_NORMALIZERS: Dict[str, Callable[[Any], Any]] = {
 def _compute_provider_model_snapshots(
     *, provider: Any, model: Any, base_url: Any, no_agent: Any,
 ) -> Tuple[Optional[str], Optional[str]]:
-    """Snapshot unpinned provider/model resolution so a later global switch fails closed at fire
-    time instead of silently changing spend. Pinned axes and no-agent jobs carry no snapshot."""
+    """Snapshot unpinned provider/model resolution: the scheduler runs the job on this snapshot after
+    a later global switch instead of silently changing spend. Pinned axes and no-agent jobs carry no
+    snapshot."""
     normalized_provider = _normalize_job_optional_text(provider)
     normalized_model = _normalize_job_optional_text(model)
     normalized_base_url = _normalize_base_url(base_url)
@@ -2108,13 +2109,11 @@ def remove_job(job_id: str) -> bool:
 
 def _set_alert_flag(job_id: str, field: str, value: bool) -> bool:
     """Set/clear a persisted alert-dedup marker (alert exactly once until the condition heals;
-    survives restarts) and return the PRIOR value. Fields: ``preflight_alerted``,
-    ``drift_alerted``.
+    survives restarts) and return the PRIOR value. Field: ``preflight_alerted`` (blocked config).
 
     The marker records that the operator was already alerted about this job's condition, so the scheduler
     alerts exactly once and stays silent on subsequent ticks until the condition heals (same alert-once
-    shape as the dead-pin auto-pause in #73506). Fields: ``preflight_alerted`` (blocked config, T1-26) and
-    ``drift_alerted`` (#44585 drift-guard skip).
+    shape as the dead-pin auto-pause in #73506).
     """
     def apply(jobs, _i, job):
         prior = bool(job.get(field))
@@ -2137,11 +2136,6 @@ def mark_preflight_alerted(job_id: str) -> bool:
 def clear_preflight_alerted(job_id: str) -> None:
     """Clear the preflight alert-dedup marker (config validates again)."""
     _set_alert_flag(job_id, "preflight_alerted", False)
-
-
-def mark_drift_alerted(job_id: str) -> bool:
-    """Mark the job as drift-alerted; return True if it already was."""
-    return _set_alert_flag(job_id, "drift_alerted", True)
 
 
 def note_fire_forward_failure(job_id: str, detail: str) -> bool:
@@ -2175,7 +2169,6 @@ def _record_run_outcome(
         # Healthy run: drop the alert-once dedup markers so a FUTURE break re-alerts, and clear
         # the forward-failure stamp so it only describes CURRENT auto-fire health.
         job.pop("preflight_alerted", None)
-        job.pop("drift_alerted", None)
         job.pop("last_fire_error", None)
         job["failure_streak"] = 0
     else:

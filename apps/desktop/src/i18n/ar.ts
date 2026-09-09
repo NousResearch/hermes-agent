@@ -1564,8 +1564,9 @@ export const ar = defineLocale({
   cron: {
     close: 'إغلاق',
     modelImpact: {
-      title: 'تحتاج المهام المجدولة إلى المراجعة',
-      message: count => `سيتم تخطي ${count} من المهام المجدولة حتى تراجع إعدادات النموذج الخاصة بها.`,
+      title: 'تبقى المهام المجدولة على نموذجها الأصلي',
+      message: count =>
+        `${count} من المهام المجدولة غير المثبتة ستواصل العمل على النموذج الذي أُنشئت به. ثبّتها أو اضبط cron.model لنقلها.`,
       detailMore: (names, remaining) => `${names} و${remaining} أخرى`,
       review: 'مراجعة المهام المجدولة',
       saveFailed: 'لم يحفظ Hermes تغيير النموذج هذا.',

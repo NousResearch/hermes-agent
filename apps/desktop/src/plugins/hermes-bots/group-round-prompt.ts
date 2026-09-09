@@ -1,11 +1,11 @@
-import { botHandle } from './data'
+import { botHandle, botRosterKey } from './data'
 import { groupSpeakerLabel } from './group-chat'
 import { groupMemberKey } from './group-membership'
 import type { GroupMember, GroupMessage } from './types'
 
 /** Room-log line as a member sees it: `Name (user): …` / `Name: …` /
  *  `Name (you): …`. */
-export function formatGroupChatLine(entry: GroupMessage, viewerName: string) {
+export function formatGroupChatLine(entry: GroupMessage, viewerKey: string) {
   // Attachments are staged into each member's session as real payloads; the
   // transcript line names them so the delta text and the bytes line up.
   const attached =
@@ -23,7 +23,16 @@ export function formatGroupChatLine(entry: GroupMessage, viewerName: string) {
     return `${entry.from.name || 'User'} (user): ${entry.text}${attached}`
   }
 
-  const suffix = entry.from.name === viewerName ? ' (you)' : ''
+  // Match the speaker to the viewer by connection-qualified identity so two
+  // default profiles on different connections stay distinguishable: a remote
+  // speaker carries its connectionId, and the viewer is keyed the same way
+  // (remote -> botRosterKey, local -> bare name) via groupMemberKey at the
+  // call sites. Without this, a cross-connection "default" was tagged "(you)"
+  // for a local "default" viewer.
+  const senderKey = entry.from.connectionId
+    ? botRosterKey({ connectionId: entry.from.connectionId, name: entry.from.name })
+    : entry.from.name
+  const suffix = senderKey === viewerKey ? ' (you)' : ''
   // Cross-connection speakers carry their device so same-named agents on
   // two machines stay tellable apart in every member's transcript.
   const source = entry.from.source ? ` [${entry.from.source}]` : ''

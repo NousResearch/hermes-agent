@@ -139,6 +139,11 @@ export interface GroupMessageAuthor {
   name: string
   /** Connection label, present when the speaker lives on another machine. */
   source?: string
+  /** Connection id of the speaker; set whenever the member is remote or
+   *  source-scoped, so a viewer can be matched by connection-qualified
+   *  identity (via `groupMemberKey`/`botRosterKey`) rather than bare name.
+   *  Absent for local speakers, whose key is just `name`. */
+  connectionId?: string
 }
 
 export interface GroupMessage {

@@ -93,7 +93,7 @@ function prepareGroupRoundMember(context: GroupRoundMemberContext, member: Group
     groupName: context.group,
     members,
     viewer: member,
-    deltaLines: delta.slice(-GROUP_CHAT_HISTORY_LIMIT).map((e: GroupMessage) => formatGroupChatLine(e, member.name))
+    deltaLines: delta.slice(-GROUP_CHAT_HISTORY_LIMIT).map((e: GroupMessage) => formatGroupChatLine(e, groupMemberKey(member)))
   })
 
   // Images riding this delta (user attachments — member entries don't
@@ -214,6 +214,11 @@ export async function runGroupRoundMember(
           ? {
               source: member.connectionLabel || member.connectionId
             }
+          : {}),
+        ...(member.remoteSource || member.sourceScoped
+          ? {
+              connectionId: member.connectionId
+            }
           : {})
       },
       reply,
@@ -268,7 +273,7 @@ async function runGroupContinuationMember(
     // The continuation prompt centers on what the member missed:
     // everything since its watermark, which includes the reply
     // that cites it.
-    deltaLines: delta.slice(-GROUP_CHAT_HISTORY_LIMIT).map((e: GroupMessage) => formatGroupChatLine(e, member.name))
+    deltaLines: delta.slice(-GROUP_CHAT_HISTORY_LIMIT).map((e: GroupMessage) => formatGroupChatLine(e, groupMemberKey(member)))
   })
 
   updateGroupChat(context.group, (r: GroupChatRoom) => {
@@ -317,6 +322,11 @@ async function runGroupContinuationMember(
         ...(member.remoteSource
           ? {
               source: member.connectionLabel || member.connectionId
+            }
+          : {}),
+        ...(member.remoteSource || member.sourceScoped
+          ? {
+              connectionId: member.connectionId
             }
           : {})
       },

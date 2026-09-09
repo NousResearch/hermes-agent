@@ -120,6 +120,31 @@ describe('speaker labels', () => {
     ).toBe('builder: yo')
   })
 
+  it('does not tag a cross-connection same-named speaker as the local viewer', async () => {
+    const { formatGroupChatLine } = await import('./group-round-prompt')
+    const { botRosterKey } = await import('./data')
+
+    // Two `default` profiles on different connections: the remote speaker
+    // carries its connectionId; the local viewer's groupMemberKey is the bare
+    // name. They must not match, so the remote reply is not tagged "(you)".
+    expect(
+      formatGroupChatLine(
+        { from: { kind: 'member', name: 'default', connectionId: 'remote-1' }, text: 'hi' } as GroupMessage,
+        'default'
+      )
+    ).toBe('Hermes: hi')
+
+    // Same connection + name: the remote viewer's key is botRosterKey, so its
+    // own reply still reads as "(you)".
+    const remoteViewerKey = botRosterKey({ connectionId: 'remote-1', name: 'default' })
+    expect(
+      formatGroupChatLine(
+        { from: { kind: 'member', name: 'default', connectionId: 'remote-1' }, text: 'hi' } as GroupMessage,
+        remoteViewerKey
+      )
+    ).toBe('Hermes (you): hi')
+  })
+
   it('honor friendly identity: Bot Mode title, then display_name, never a stale Hermes', async () => {
     const { chat, rounds } = await loadRoom()
     const { formatGroupChatLine } = await import('./group-round-prompt')

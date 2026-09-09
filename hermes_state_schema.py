@@ -301,8 +301,7 @@ class SessionSchemaMixin:
         names = _FTS_BASE_TRIGGERS + (_FTS_TRIGRAM_TRIGGERS if legacy and trigram_present else ())
         has_messages = cursor.execute("SELECT 1 FROM messages LIMIT 1").fetchone() is not None
         self._fts_tool_prefix_migration_requires_rebuild = bool(
-            self._sqlite_table_exists(cursor, "messages_fts") and has_messages
-            and self._fts_triggers_missing(cursor, names)
+            has_messages and self._fts_triggers_missing(cursor, names)
         )
         cursor.execute("SAVEPOINT bounded_tool_fts")
         try:

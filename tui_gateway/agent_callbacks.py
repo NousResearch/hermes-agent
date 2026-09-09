@@ -169,6 +169,11 @@ def _wire_callbacks(sid: str):
     set_sudo_password_callback(lambda: _block("sudo.request", sid, {}, timeout=120))
     set_project_workspace_callback(_apply_project_workspace)
     set_secret_capture_callback(secret_cb)
+    # External password-manager unlock: the renderer shows a masked master-password card; the
+    # answer is consumed by the manager CLI on stdin and only a session token stays in memory.
+    from agent.vault_backends.unlock import set_unlock_prompt_callback
+    set_unlock_prompt_callback(lambda backend, display_name: _block(
+        "vault.unlock.request", sid, {"backend": backend, "display_name": display_name}, timeout=120))
 
 
 def _available_personalities(cfg: dict | None = None) -> dict:

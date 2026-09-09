@@ -688,6 +688,12 @@ class CLITuiMixin:
     def _get_sudo_display_fragments(self):
         if not self._sudo_state:
             return []
+        if backend := self._sudo_state.get("vault_backend"):
+            return self._render_sudo_style_panel(
+                f'🔐 Unlock {backend}',
+                [f'The agent wants to sign into a site with a login saved in {backend}.',
+                 'Enter your master password below (hidden) to unlock it for this session, or press Enter to keep it locked.',
+                 'The password never reaches the model; only a session token is kept in memory.'])
         return self._render_sudo_style_panel(
             '🔐 Sudo Password Required', ['Enter password below (hidden), or press Enter to skip'])
 

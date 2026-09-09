@@ -2156,6 +2156,23 @@ DEFAULT_CONFIG = {
     },
     # External secret sources — pull credentials from secret managers at startup instead of storing
     # them in ~/.hermes/.env.
+    # Browser credential vault: which login sources browser_vault_list/fill may draw from. The local
+    # encrypted vault (`hermes vault add`, Desktop → Settings → Credential Vault) is always on.
+    # External password managers are unlocked per session with a masked master-password prompt;
+    # headless sessions (cron, webhook, API) never prompt and see them as locked.
+    "vault": {
+        "onepassword": {
+            "enabled": False,       # `op` CLI: Login items with a website URL become fillable handles.
+            "account": "",          # account shorthand for `op --account`; empty = default account.
+            "binary_path": "",      # absolute path to op; empty = PATH.
+            # Env var holding a service-account token (headless auth, no unlock prompt). Unset = prompt.
+            "service_account_token_env": "OP_SERVICE_ACCOUNT_TOKEN",
+        },
+        "bitwarden": {
+            "enabled": False,       # `bw` CLI (Password Manager, not Secrets Manager); run `bw login` once first.
+            "binary_path": "",      # absolute path to bw; empty = PATH.
+        },
+    },
     "secrets": {
         # Optional ordering of enabled sources (e.g. [onepassword, bitwarden]); default registration
         # order. Mapped sources (explicit VAR→ref) always beat bulk sources (BSM project dumps);

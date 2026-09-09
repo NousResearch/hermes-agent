@@ -852,6 +852,29 @@ class CLIModalMixin:
         self._approval_state = None
         self._invalidate()
 
+    def _vault_unlock_callback(self, backend_name: str, display_name: str) -> str:
+        """Masked master-password prompt for an external password manager (agent thread).
+        Reuses the sudo panel state so rendering, Enter/ESC handling and interrupt cleanup are shared."""
+        from cli import _DIM, _RST, _cprint
+
+        response_queue = queue.Queue()
+        self._capture_modal_input_snapshot()
+        self._sudo_state = {"response_queue": response_queue, "vault_backend": display_name}
+        self._sudo_deadline = _time.monotonic() + 120
+        self._ring_bell(prompt=True, context=f"unlock {display_name}")
+        self._paint_now()
+
+        result = self._poll_modal_queue(response_queue, "_sudo_deadline", refresh=0)
+        self._sudo_state = None
+        self._sudo_deadline = 0
+        self._restore_modal_input_snapshot()
+        self._paint_now()
+        if result is _TIMED_OUT or not result:
+            _cprint(f"\n{_DIM}  ⏭ {display_name} stays locked{_RST}")
+            return ""
+        _cprint(f"\n{_DIM}  ✓ Unlocking {display_name} for this session{_RST}")
+        return result
+
     def _secret_capture_callback(self, var_name: str, prompt: str, metadata=None) -> dict:
         self._capture_modal_input_snapshot()
         try:

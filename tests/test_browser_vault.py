@@ -314,6 +314,7 @@ class TestBrowserVaultTools:
         assert out == {
             "success": True,
             "filled_fields": 1,
+            "backend": "local",
             "kind": "login",
             "origin": "https://example.com",
         }

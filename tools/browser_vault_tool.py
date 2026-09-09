@@ -37,11 +37,11 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 def _check_vault_available() -> bool:
-    """Tools are only in the schema when the local vault has ≥1 item."""
+    """Schema-gate: the tools appear only when the local vault has items or an external manager is enabled."""
     try:
+        from agent.vault_backends import enabled_backends
         from agent.vault_store import get_vault_store
-
-        return get_vault_store().has_items()
+        return get_vault_store().has_items() or any(b.needs_unlock for b in enabled_backends())
     except Exception:
         return False
 
@@ -157,28 +157,67 @@ def _current_page_origin(task_id: str) -> Optional[str]:
 # ---------------------------------------------------------------------------
 
 def browser_vault_list() -> str:
-    """List vault items as handles + metadata. Secret values never included.
+    """List login handles + metadata across every enabled backend. Passwords are never included.
 
-    Login identifiers (email/username/phone) ARE included — they are
-    metadata, not secrets, so the agent can type the identifier itself.
+    A locked external manager contributes no items; instead it is reported under ``locked`` so the
+    agent knows to call browser_vault_fill (which prompts the user to unlock) or tell the user.
     """
-    from agent.vault_store import get_vault_store
+    from agent.vault_backends import enabled_backends
+    from agent.vault_backends.unlock import can_prompt_here
 
-    items = []
-    for meta in get_vault_store().list_items():
-        entry = {
-            "handle": meta.id,
-            "label": meta.label,
-            "kind": meta.kind,
-            "origin": meta.origin,
-            # Phase 1: only login items are fillable.
-            "available": meta.kind == "login",
-        }
-        if meta.identifier:
-            entry["identifier"] = meta.identifier
-            entry["identifier_type"] = meta.identifier_type
-        items.append(entry)
-    return json.dumps({"success": True, "items": items}, ensure_ascii=False)
+    items, locked, errors = [], [], []
+    for backend in enabled_backends():
+        if backend.needs_unlock and not backend.is_unlocked():
+            locked.append({"backend": backend.name, "display_name": backend.display_name,
+                           "unlock": "browser_vault_unlock" if can_prompt_here() else "unavailable_in_this_session"})
+            continue
+        try:
+            metas = backend.list_items()
+        except Exception as exc:
+            errors.append({"backend": backend.name, "error": str(exc)[:200]})
+            continue
+        for meta in metas:
+            entry = {"handle": meta.id, "backend": backend.name, "label": meta.label, "kind": meta.kind,
+                     "origin": meta.origin, "available": meta.kind == "login"}
+            if meta.identifier:
+                entry["identifier"] = meta.identifier
+                entry["identifier_type"] = meta.identifier_type
+            items.append(entry)
+    out: Dict[str, Any] = {"success": True, "items": items}
+    if locked:
+        out["locked"] = locked
+    if errors:
+        out["errors"] = errors
+    return json.dumps(out, ensure_ascii=False)
+
+
+def browser_vault_unlock(backend_name: str) -> str:
+    """Ask the user (via the surface's masked prompt) to unlock an external manager for this session."""
+    from agent.vault_backends import enabled_backends
+    from agent.vault_backends.unlock import can_prompt_here, get_unlock_prompt_callback
+
+    backend = next((b for b in enabled_backends() if b.name == backend_name and b.needs_unlock), None)
+    if backend is None:
+        return json.dumps({"success": False, "error": f"No unlockable vault backend named {backend_name!r}."})
+    if backend.is_unlocked():
+        return json.dumps({"success": True, "backend": backend.name, "already_unlocked": True})
+    if not can_prompt_here():
+        return json.dumps({"success": False, "error_type": "unlock_unavailable",
+                           "error": (f"{backend.display_name} is locked and this session cannot prompt for the "
+                                     "master password (headless/cron/API). Unlock it from an interactive Hermes "
+                                     "session or the Desktop app first.")})
+    prompt = get_unlock_prompt_callback()
+    master = prompt(backend.name, backend.display_name) if prompt else ""
+    if not master:
+        return json.dumps({"success": False, "error_type": "unlock_cancelled",
+                           "error": f"The user declined to unlock {backend.display_name}."})
+    try:
+        backend.unlock(master)  # type: ignore[attr-defined]
+    except Exception as exc:
+        return json.dumps({"success": False, "error_type": "unlock_failed", "error": str(exc)[:300]})
+    finally:
+        del master
+    return json.dumps({"success": True, "backend": backend.name})
 
 
 def browser_vault_fill(handle: str, task_id: Optional[str] = None) -> str:
@@ -198,12 +237,21 @@ def browser_vault_fill(handle: str, task_id: Optional[str] = None) -> str:
         classify_login_control,
         select_password_fill,
     )
-    from agent.vault_store import VaultError, get_vault_store, scrub_secret_from_text
+    from agent.vault_backends import UnlockRequired, backend_for_handle
+    from agent.vault_store import scrub_secret_from_text
 
     effective_task_id = task_id or "default"
-    store = get_vault_store()
+    backend = backend_for_handle(handle)
+    if backend is not None and backend.needs_unlock and not backend.is_unlocked():
+        unlocked = json.loads(browser_vault_unlock(backend.name))
+        if not unlocked.get("success"):
+            return json.dumps(unlocked)
 
-    meta = store.get_meta(handle)
+    try:
+        meta = backend.get_meta(handle) if backend is not None else None
+    except UnlockRequired:
+        return json.dumps({"success": False, "error_type": "unlock_required",
+                           "error": f"{backend.display_name} locked again; call browser_vault_unlock."})
     if meta is None:
         return json.dumps(
             {
@@ -263,8 +311,12 @@ def browser_vault_fill(handle: str, task_id: Optional[str] = None) -> str:
         return json.dumps({"success": False, "error": "No login form fields were found on the current page."})
 
     # ── Resolve secret and fill (secret never enters any logged string) ─────
-    secret = store.resolve_secret(handle)
-    password = str(secret.get("password") or "")
+    try:
+        password = backend.resolve_password(handle)
+    except UnlockRequired:
+        return json.dumps({"success": False, "error_type": "unlock_required",
+                           "error": f"{backend.display_name} locked again; call browser_vault_unlock."})
+    secret = {"password": password}
     fills = select_password_fill(classified, password)
     if not fills:
         return json.dumps(
@@ -314,6 +366,7 @@ def browser_vault_fill(handle: str, task_id: Optional[str] = None) -> str:
         {
             "success": bool(filled),
             "filled_fields": int(filled),
+            "backend": backend.name,
             "kind": meta.kind,
             "origin": meta.origin,
         }
@@ -327,33 +380,48 @@ def browser_vault_fill(handle: str, task_id: Optional[str] = None) -> str:
 BROWSER_VAULT_LIST_SCHEMA = {
     "name": "browser_vault_list",
     "description": (
-        "List credentials stored in the local encrypted vault as handles "
-        "with metadata (label, kind, bound origin, and for logins the "
-        "identifier + identifier_type — identifiers are visible so you can "
-        "type them yourself with fill_input). Passwords are NEVER returned. "
-        "Workflow: type the identifier with fill_input, then call "
-        "browser_vault_fill with the handle to fill the password."
+        "List saved website logins as handles with metadata (label, backend, bound origin, and the "
+        "identifier + identifier_type so you can type the username yourself with fill_input). "
+        "Passwords are NEVER returned. Sources: the local Hermes vault plus any enabled password "
+        "manager (1Password, Bitwarden). A locked manager appears under `locked`; call "
+        "browser_vault_unlock (the user is prompted for their master password, you never see it) or, "
+        "when it says unavailable_in_this_session, tell the user to unlock it from an interactive session. "
+        "Workflow: fill_input the identifier, then browser_vault_fill with the handle."
     ),
     "input_schema": {"type": "object", "properties": {}, "required": []},
+}
+
+BROWSER_VAULT_UNLOCK_SCHEMA = {
+    "name": "browser_vault_unlock",
+    "description": (
+        "Ask the user to unlock a password manager (1Password or Bitwarden) for this session. The master "
+        "password is typed into a masked prompt owned by the UI and never enters the conversation. "
+        "Returns success, unlock_cancelled, unlock_failed, or unlock_unavailable (headless session)."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {"backend": {"type": "string", "enum": ["onepassword", "bitwarden"],
+                                   "description": "Backend name from browser_vault_list `locked`."}},
+        "required": ["backend"],
+    },
 }
 
 BROWSER_VAULT_FILL_SCHEMA = {
     "name": "browser_vault_fill",
     "description": (
-        "Fill ONLY the password field of the CURRENT browser page's login "
-        "form from a vault handle (see browser_vault_list). Type the "
-        "identifier/username yourself first with fill_input (it is visible "
-        "in the vault metadata), then call this to fill the password. The "
-        "password is resolved and injected server-side; it never appears in "
-        "the conversation. Refused unless the page origin exactly matches "
-        "the credential's bound origin (re-checked atomically at fill time)."
+        "Fill ONLY the password field of the CURRENT browser page's login form from a vault handle "
+        "(see browser_vault_list). Type the identifier/username yourself first with fill_input, then "
+        "call this. The password is resolved from the local vault or the password manager and injected "
+        "server-side; it never appears in the conversation. Refused unless the page origin exactly "
+        "matches the credential's bound origin (re-checked atomically at fill time). If the manager is "
+        "locked the user is prompted to unlock first."
     ),
     "input_schema": {
         "type": "object",
         "properties": {
             "handle": {
                 "type": "string",
-                "description": "Vault item handle from browser_vault_list (e.g. vault_ab12cd34ef56)",
+                "description": "Handle from browser_vault_list (vault_… local, op:… 1Password, bw:… Bitwarden)",
             }
         },
         "required": ["handle"],
@@ -363,6 +431,10 @@ BROWSER_VAULT_FILL_SCHEMA = {
 
 def _handle_vault_list(args: Dict[str, Any], **kwargs) -> str:
     return browser_vault_list()
+
+
+def _handle_vault_unlock(args: Dict[str, Any], **kwargs) -> str:
+    return browser_vault_unlock(str(args.get("backend") or ""))
 
 
 def _handle_vault_fill(args: Dict[str, Any], **kwargs) -> str:
@@ -378,6 +450,15 @@ registry.register(
     toolset="browser",
     schema=BROWSER_VAULT_LIST_SCHEMA,
     handler=_handle_vault_list,
+    check_fn=_check_vault_available,
+    emoji="🔐",
+)
+
+registry.register(
+    name="browser_vault_unlock",
+    toolset="browser",
+    schema=BROWSER_VAULT_UNLOCK_SCHEMA,
+    handler=_handle_vault_unlock,
     check_fn=_check_vault_available,
     emoji="🔐",
 )

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import json
+import os
 from io import BytesIO
 from pathlib import Path
 
@@ -245,3 +246,11 @@ def test_spotify_playlist_cover_rejects_cache_symlink_escape(
     root_link.symlink_to(outside_cache, target_is_directory=True)
     with pytest.raises(spotify_mod.SpotifyError, match="approved generated-media cache"):
         spotify_tool._prepare_playlist_cover(str(root_link / "generated.png"))
+
+    hard_link = cache / "hard-linked.png"
+    try:
+        os.link(outside, hard_link)
+    except OSError:
+        pytest.skip("hard links unavailable")
+    with pytest.raises(spotify_mod.SpotifyError, match="without following links"):
+        spotify_tool._prepare_playlist_cover(str(hard_link))

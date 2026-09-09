@@ -247,7 +247,8 @@ def _read_cache_file_no_follow(root: Path, relative: Path, src: str) -> bytes:
 
         file_fd = os.open(relative.parts[-1], os.O_RDONLY | os.O_NOFOLLOW, dir_fd=current_fd)
         descriptors.append(file_fd)
-        if not stat.S_ISREG(os.fstat(file_fd).st_mode):
+        opened = os.fstat(file_fd)
+        if not stat.S_ISREG(opened.st_mode) or opened.st_nlink != 1:
             raise OSError("cache entry is not a regular file")
 
         chunks: list[bytes] = []

@@ -71,6 +71,9 @@ class ToolTimerMixin:
         self._tool_timer_tick_count: int = 0  # for spinner rotation
         self._timer_lock = threading.Lock()  # guards ALL timer mutable state
         self._tool_completed_lines: list[str] = []  # completed tool history (max 5)
+        # Worker callbacks may outlive the consumer task.  Teardown closes this
+        # admission gate before clearing state so late callbacks cannot re-arm it.
+        self._tool_timer_accepting_events = True
 
     # ── Public API ───────────────────────────────────────────────────────
 
@@ -92,7 +95,10 @@ class ToolTimerMixin:
         """
         from gateway.stream_consumer import _TOOL_PROGRESS
         if line:
-            self._queue.put((_TOOL_PROGRESS, line))
+            with self._timer_lock:
+                if not self._tool_timer_accepting_events:
+                    return
+                self._queue.put((_TOOL_PROGRESS, line))
             # The base in-bubble progress overlay above is available to every
             # native-streaming user.  The animated spinner/elapsed *timer* is a
             # separate opt-in (``supports_tool_timer``): only start it when the
@@ -111,6 +117,8 @@ class ToolTimerMixin:
             # on_tool_completed() handles moving finished tools to
             # _tool_completed_lines when tool.completed fires.
             with self._timer_lock:
+                if not self._tool_timer_accepting_events:
+                    return
                 self._tool_timer_labels[key] = line.strip()
             self._start_tool_timer(key)
 
@@ -132,6 +140,8 @@ class ToolTimerMixin:
             tool_name = "tool"
         key = tool_call_id if tool_call_id is not None else tool_name
         with self._timer_lock:
+            if not self._tool_timer_accepting_events:
+                return
             self._tool_timer_labels[key] = tool_name
         self._start_tool_timer(key)
 
@@ -150,6 +160,8 @@ class ToolTimerMixin:
             return
         key = tool_call_id if tool_call_id is not None else tool_name
         with self._timer_lock:
+            if not self._tool_timer_accepting_events:
+                return
             label = self._tool_timer_labels.pop(key, tool_name)
             self._tool_start_times.pop(key, None)
             completion_line = f"✓ {label} ({int(duration)}s)"
@@ -157,8 +169,8 @@ class ToolTimerMixin:
             # Keep max 5 entries
             if len(self._tool_completed_lines) > 5:
                 self._tool_completed_lines = self._tool_completed_lines[-5:]
-        self._tool_progress_active = True
-        self._queue.put(_TIMER_TICK)
+            self._tool_progress_active = True
+            self._queue.put(_TIMER_TICK)
 
     def on_llm_thinking(self, label: "str | None" = None) -> None:
         """Signal that an LLM API call has started — show thinking animation.
@@ -179,18 +191,26 @@ class ToolTimerMixin:
         # pre-seed latch so a non-timer platform never sets _pending_thinking.
         if not getattr(self, "supports_tool_timer", False):
             return
+        with self._timer_lock:
+            if not self._tool_timer_accepting_events:
+                return
         # First-call race: the signal can arrive before run() has finished the
         # seed round-trip, so the bubble is not open yet (or the timer loop is
         # not captured).  Latch it instead of dropping — run() consumes the
         # latch right after seeding so the first call still arms thinking.
         if not self._native_stream_opened or self._tool_timer_loop is None:
-            self._pending_thinking = True
+            with self._timer_lock:
+                if not self._tool_timer_accepting_events:
+                    return
+                self._pending_thinking = True
             logger.info("[TIMING] on_llm_thinking: latched (pre-seed, opened=%s)", self._native_stream_opened)
             return
         logger.info("[TIMING] on_llm_thinking: arming now (stream open)")
         # LLM thinking means all tools are done — move remaining tool entries
         # to completed history, then start the thinking timer.
         with self._timer_lock:
+            if not self._tool_timer_accepting_events:
+                return
             stale = [k for k in self._tool_start_times if k != "_thinking"]
             now = time.monotonic()
             for k in stale:
@@ -210,12 +230,12 @@ class ToolTimerMixin:
         # Arm the timer if not already running.
         with self._timer_lock:
             handle_present = self._tool_timer_handle is not None
-            loop_present = self._tool_timer_loop is not None
-        if loop_present:
+            loop = self._tool_timer_loop
+        if loop is not None:
             if not handle_present:
                 # No live tick loop — arm normally (fires the synchronous first
                 # tick that renders "💭 Thinking (0s)" without a 1s delay).
-                self._tool_timer_loop.call_soon_threadsafe(self._arm_tool_timer)
+                loop.call_soon_threadsafe(self._arm_tool_timer)
             else:
                 # A handle is already set, so the normal arm path (need_arm =
                 # handle is None) is a no-op — _arm_tool_timer, the ONLY place the
@@ -239,7 +259,7 @@ class ToolTimerMixin:
                 # never touches _tool_start_times, so the preserved _thinking start
                 # keeps the elapsed count accurate; the only visible effect is the
                 # immediate first frame the first call also gets.
-                self._tool_timer_loop.call_soon_threadsafe(self._rearm_after_tool)
+                loop.call_soon_threadsafe(self._rearm_after_tool)
 
     def _consume_pending_thinking(self) -> None:
         """Honour a pre-seed first-call thinking latch, if one is pending.
@@ -291,17 +311,19 @@ class ToolTimerMixin:
         if not self._use_native_streaming:
             return
         with self._timer_lock:
+            if not self._tool_timer_accepting_events:
+                return
             is_new_tool = tool_name not in self._tool_start_times
             if is_new_tool:
                 self._tool_start_times[tool_name] = time.monotonic()
             # Arm the periodic tick if not already running.
             # Use call_soon_threadsafe because this method is called from the
             # agent worker thread, not the event loop thread.
-            need_arm = self._tool_timer_handle is None and self._tool_timer_loop is not None
-            loop_present = self._tool_timer_loop is not None
+            loop = self._tool_timer_loop
+            need_arm = self._tool_timer_handle is None and loop is not None
         if need_arm:
-            self._tool_timer_loop.call_soon_threadsafe(self._arm_tool_timer)
-        elif loop_present and is_new_tool:
+            loop.call_soon_threadsafe(self._arm_tool_timer)
+        elif loop is not None and is_new_tool:
             # A handle is already set (need_arm is False), so the normal arm path
             # would be a no-op — _arm_tool_timer, the ONLY place the synchronous
             # first tick fires, would be skipped and this NEW tool's first
@@ -321,7 +343,7 @@ class ToolTimerMixin:
             # event-loop thread, so _rearm_after_tool's cancel precedes the
             # pending tick (no race), and it never touches _tool_start_times, so
             # every live tool's elapsed count is preserved.
-            self._tool_timer_loop.call_soon_threadsafe(self._rearm_after_tool)
+            loop.call_soon_threadsafe(self._rearm_after_tool)
 
     def _arm_tool_timer(self) -> None:
         """Arm the periodic tick.  Must run on the event loop thread.

@@ -144,6 +144,9 @@ class ReplyQueue:
         # slot mid-finalization would let a later ACK for that successor certify the FINAL frame (stale ack
         # misattribution). The final frame owns the slot once finalization starts.
         self.finalizing: bool = False
+        # A timed-out predecessor can still ACK on this req_id. Keep a tombstone until the
+        # websocket is retired: neither a new stream_id nor elapsed time restores ACK identity.
+        self.ack_poisoned: bool = False
 
 
 class StreamTurn:
@@ -222,13 +225,11 @@ class WeComStreamMixin:
         self._require_ws()
         normalized = self._require_reply_req_id(reply_req_id)
         queue = self._reply_queues.setdefault(normalized, ReplyQueue(normalized))
+        if not is_final and queue.finalizing:
+            return {"skipped": True, "errcode": 0, "errmsg": "coalesce_suppressed_finalizing"}
+        if not is_final and queue.ack_poisoned:
+            return {"skipped": True, "errcode": 0, "errmsg": "settlement_indeterminate"}
         if skip_if_pending and queue.pending_ack is not None:
-            if queue.finalizing:
-                # Finalizing fence (PR #96942 Part B): a final frame owns the ack slot. Publishing a
-                # coalesced successor now would let its later ACK certify the final frame (stale ack
-                # misattribution). Drop it — the final frame carries the last word.
-                logger.debug("[%s] _send_reply_queued: coalesce suppressed — finalizing fence up (req_id=%s)", self.name, normalized)
-                return {"skipped": True, "errcode": 0, "errmsg": "coalesce_suppressed_finalizing"}
             # One frame in flight already — coalesce (buffer the latest cumulative snapshot). When the
             # pending ack resolves, _resolve_reply_ack flushes this so the newest content still reaches the
             # wire; dropping it here would freeze the bubble until an unrelated later frame.
@@ -248,6 +249,11 @@ class WeComStreamMixin:
         try:
             if queue.pending_ack is not None:
                 await self._drain_pending_ack(queue, normalized)
+            if queue.ack_poisoned:
+                # Still send the cumulative final, but do not register an indistinguishable ACK
+                # successor. A late seed/intermediate ACK must never prove this final arrived.
+                await self._send_json({"cmd": APP_CMD_RESPONSE, "headers": {"req_id": normalized}, "body": body})
+                return {"errcode": 0, "errmsg": "settlement_indeterminate", "ack_pending": True}
             # Attempt 1: send the final frame and await its ack.
             frame = await self._dispatch_reply_frame(queue, normalized, body, is_final=True)
             try:
@@ -263,8 +269,9 @@ class WeComStreamMixin:
             # Attempt 2 (re-send). A transport raise here surfaces (real disconnect → consumer fallback);
             # the ack payload is returned as-is so an 846608/846604 expiry is mapped to
             # WeComStreamExpiredError by _send_stream_reply exactly like a first-attempt expiry.
-            frame = await self._dispatch_reply_frame(queue, normalized, body, is_final=True)
+            frame = None
             try:
+                frame = await self._dispatch_reply_frame(queue, normalized, body, is_final=True)
                 return await asyncio.wait_for(frame.future, timeout=self._REPLY_ACK_TIMEOUT)
             except asyncio.TimeoutError:
                 # Both attempts (~30s total) timed out — delivery is genuinely indeterminate. Degrade to the
@@ -273,9 +280,15 @@ class WeComStreamMixin:
                 logger.warning("[%s] Final frame ack timeout after re-send (req_id=%s) — settlement indeterminate (delivery unconfirmed).", self.name, normalized)
                 return {"errcode": 0, "errmsg": "settlement_indeterminate", "ack_pending": True}
             finally:
-                self._release_pending(queue, normalized, frame)
+                # An ACK of either identical final attempt proves this content, but another ACK
+                # may still be in flight. It cannot certify a subsequent rotation/stream.
+                queue.ack_poisoned = True
+                if frame is not None:
+                    self._release_pending(queue, normalized, frame)
         finally:
             queue.finalizing = False
+            if not queue.ack_poisoned and queue.pending_ack is None and queue.coalesced_body is None:
+                self._reply_queues.pop(normalized, None)
 
     async def _dispatch_reply_frame(self, queue: ReplyQueue, req_id: str, body: Dict[str, Any], *, is_final: bool) -> ReplyFrame:
         """Create the ack future, register it as the in-flight pending ack, and put the frame on the wire.
@@ -305,6 +318,9 @@ class WeComStreamMixin:
         try:
             await asyncio.wait_for(asyncio.shield(pending_frame.future), timeout=self._REPLY_ACK_TIMEOUT)
         except asyncio.TimeoutError:
+            queue.ack_poisoned = True
+            if not pending_frame.future.done():
+                pending_frame.future.cancel()
             logger.warning(
                 "[%s] Reply ack timeout waiting for pending (req_id=%s) — pending_stream_id=%s pending_finish=%s elapsed=%.1fs. Possible causes: ack cmd filtered, ack req_id mismatch, or WeCom did not ack.",
                 *pending_desc, _elapsed(pending_frame.sent_at),
@@ -322,12 +338,15 @@ class WeComStreamMixin:
         ack AND no coalesced body waiting to flush)."""
         if queue.pending_ack is frame:
             queue.pending_ack = None
-        if queue.pending_ack is None and queue.coalesced_body is None:
+        if (queue.pending_ack is None and queue.coalesced_body is None
+                and not queue.finalizing and not queue.ack_poisoned):
             self._reply_queues.pop(req_id, None)
 
     def _resolve_reply_ack(self, req_id: str, payload: Dict[str, Any]) -> bool:
         """Resolve a pending reply ack. Returns True if handled."""
         queue = self._reply_queues.get(req_id)
+        if queue is not None and queue.ack_poisoned:
+            return True  # an uncorrelated late ACK is not a new frame's receipt
         if queue is None or queue.pending_ack is None:
             return False
         frame = queue.pending_ack
@@ -344,7 +363,8 @@ class WeComStreamMixin:
             with contextlib.suppress(RuntimeError):  # no running loop (defensive)
                 asyncio.get_running_loop().create_task(self._flush_coalesced(req_id))
             return True
-        self._reply_queues.pop(req_id, None)
+        if not queue.finalizing:
+            self._reply_queues.pop(req_id, None)
         return True
 
     async def _flush_coalesced(self, req_id: str) -> None:
@@ -356,7 +376,7 @@ class WeComStreamMixin:
         queue = self._reply_queues.get(req_id)
         if queue is None or queue.coalesced_body is None or queue.pending_ack is not None:
             return
-        if queue.finalizing:
+        if queue.finalizing or queue.ack_poisoned:
             # Finalizing fence (PR #96942 Part B): the final frame owns the slot. Do not republish a
             # successor here — an ACK-triggered flush racing after the drain cleared the slot would let a
             # later ACK for this successor certify the final frame (stale ack misattribution).
@@ -537,7 +557,7 @@ class WeComStreamMixin:
             return  # _rotate_stream already retired the turn on failure
         self._arm_rotation_check(turn, turn_id=turn_id)
 
-    async def _rotate_stream(self, turn: StreamTurn, turn_id: Optional[str]) -> bool:
+    async def _rotate_stream(self, turn: StreamTurn, turn_id: Optional[str]) -> Optional[bool]:
         """Locked rotation entrypoint — acquires the per-turn lock around seal-old + rotate().
 
         LOCKING CONTRACT: the ACTIVE timer path and external callers invoke THIS (it acquires
@@ -547,13 +567,14 @@ class WeComStreamMixin:
         async with turn.rotation_lock():
             return await self._rotate_stream_locked(turn, turn_id)
 
-    async def _rotate_stream_locked(self, turn: StreamTurn, turn_id: Optional[str]) -> bool:
+    async def _rotate_stream_locked(self, turn: StreamTurn, turn_id: Optional[str]) -> Optional[bool]:
         """Close the current stream and rotate the turn to a fresh bubble. Caller MUST hold the lock.
 
         Sends ``finish=true`` on the current stream so the existing bubble seals cleanly while still in the
         window, then rotate()s the turn (new stream_id, cleared seed flag) on the SAME req_id. Returns True
         when the old stream was sealed and the turn is ready to continue on a fresh bubble; False when the
-        close failed (stream already dead) — the caller retires the turn and falls back to send()."""
+        close failed (stream already dead). None means an unconfirmed seal: keep the original stream
+        and body coordinates so its eventual final still carries the whole unsplit body."""
         if not turn.seeded:
             # Another rotation (passive or active) already ran during an await interleave; no bubble to seal.
             logger.debug("[%s] _rotate_stream: skipping — turn %s already un-seeded (concurrent rotation likely completed first).", self.name, turn.stream_id)
@@ -561,6 +582,9 @@ class WeComStreamMixin:
         old_stream_id = turn.stream_id
         self._cancel_keepalive(turn)
         self._cancel_rotation_check(turn)
+        queue = self._reply_queues.get(turn.req_id)
+        if queue is not None and queue.ack_poisoned:
+            return None
         # Seal the old bubble with the canonical BODY text only. accumulated_text is pure body (overlay
         # frames never update it, see the is_overlay_frame gate in _send_stream_frame_core) — NOT
         # last_sent_content, which mirrors the exact wire frame for dedup and may be a tool-progress
@@ -573,7 +597,7 @@ class WeComStreamMixin:
         # (still-full) cumulative body by this so it never repeats the sealed prefix (see _finalize_turn).
         turn.rotation_seal_body_len = len(turn.accumulated_text or "")
         try:
-            await self._send_stream_reply(turn.req_id, old_stream_id, close_text, finish=True)
+            response = await self._send_stream_reply(turn.req_id, old_stream_id, close_text, finish=True)
         except WeComStreamExpiredError:
             logger.info("[%s] Stream rotation: old stream %s already expired on close (chat=%s) — retiring turn, falling back to send.", self.name, old_stream_id, turn.chat_id)
             self._expire_turn(turn, turn_id)
@@ -582,6 +606,9 @@ class WeComStreamMixin:
             logger.warning("[%s] Stream rotation: failed to close old stream %s (chat=%s): %s — retiring turn, falling back to send.", self.name, old_stream_id, turn.chat_id, exc)
             self._retire_turn(turn, turn_id)
             return False
+        if response.get("errmsg") == "settlement_indeterminate":
+            turn.rotation_seal_body_len = None
+            return None
         turn.rotate()
         # Signal the gateway to split its cumulative buffer and send only incremental text on the fresh
         # bubble. The passive path drains this into its synchronous return; the active-timer path (no frame
@@ -730,7 +757,7 @@ class WeComStreamMixin:
                     if stream_age >= self._stream_safe_duration_seconds:
                         logger.info("[%s] Stream age %.0fs >= safe duration %.0fs for chat %s — rotating to a fresh bubble (Layer 2). finalize=%s", self.name, stream_age, self._stream_safe_duration_seconds, chat, finalize)
                         rotated = await self._rotate_stream_locked(turn, turn_id)
-                        if not rotated:
+                        if rotated is False:
                             # Close failed — turn already retired; fall back to the consumer's send().
                             return StreamFrameResult.FAILED
                         # turn.rotate() cleared last_sent_content, so the seed/frame below is never
@@ -812,16 +839,14 @@ class WeComStreamMixin:
         marking the turn finalized."""
         self._cancel_keepalive(turn)
         self._cancel_rotation_check(turn)
-        # A finalize that lands on a freshly-rotated bubble (this call rotated up-front, OR an active-timer
-        # rotation sealed just before it) receives the gateway's FULL cumulative slice — its split offset has
-        # not advanced yet (it learns rotated=True only from this call's return), so `text` still begins with
-        # the sealed prefix. Unlike an intermediate frame there is no next frame to correct the slice, so drop
-        # the sealed prefix HERE by the recorded seal length (offset accounting, not string search): the fresh
-        # bubble must show only the post-seal tail. Guard on the prefix actually matching so an unexpected
-        # divergence falls back to sending `text` whole rather than truncating wrong content.
+        # Only an UNREPORTED rotation leaves the caller in the old body's coordinates. A deferred
+        # intermediate can already have reported the seal without sending a body; the gateway slices
+        # subsequent frames itself. Text equality cannot distinguish those states (new text can repeat
+        # the old prefix), so apply the seal offset only while its receipt is still pending.
         seal_len = turn.rotation_seal_body_len
         turn.rotation_seal_body_len = None  # consumed
-        if seal_len and 0 < seal_len <= len(text) and turn.accumulated_text and text.startswith(turn.accumulated_text):
+        if (turn.pending_rotation_signal and seal_len
+                and text.startswith(turn.accumulated_text)):
             logger.info("[%s] finalize on rotated bubble — dropping %d-char sealed prefix so the fresh bubble carries only the tail (turn=%s).", self.name, seal_len, turn_id)
             text = text[seal_len:]
         # A final frame identical to the last intermediate is silently dropped — differ via ZWSP.

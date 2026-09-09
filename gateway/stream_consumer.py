@@ -356,39 +356,18 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         return ensure_closed_code_fences(self._clean_for_display(text or "")).strip()
 
     def _record_turn_final_payload(self, text: str) -> None:
-        """Record what the user actually saw as this turn's final answer.  On a split ``text``
-        is only the trailing chunk, so the un-truncated ``_stream_ledger`` is recorded — else
-        the gateway sees a mismatch and re-sends an answer the user already received.
+        """Record visible turn-final bytes, not the authoritative final's ledger entry.
 
-        Native streaming shares the same hazard for a different reason: a native turn with a
-        tool call splits ``_accumulated`` into post-tool segments, and after a rotation the
-        finalize path passes only the tail here.  ``_adopt_final_text`` heals ``_stream_ledger``
-        with the authoritative full final on native turns (ledger-only, never re-sent as a
-        frame), so prefer the ledger there too — otherwise a tool-bearing / rotated native turn
-        records a tail-only payload, ``delivered_final_matches`` reports a mismatch, and the
-        gateway resends the tail as a fresh bubble (double bubble).
-
-        BUT the healed native ledger may also carry post-stream AUGMENTATION (verifier footer,
-        completion explainer) that ``finish()`` appended after streaming ended — content that
-        the native finalize frames NEVER put on the wire (it frames ``_accumulated``, not the
-        ledger).  Recording that as delivered is a lie: ``delivered_final_matches`` would confirm
-        the augmented payload and the gateway would suppress its corrective send, silently losing
-        the footer (#96942).  The distinction is a prefix test: native keeps ``_accumulated`` as
-        the framed body (cumulatively the whole thing reached the wire), so a ledger that STRICTLY
-        EXTENDS that body carries un-sent augmentation — record only the delivered body then, so
-        the match stays False until the corrective send delivers the rest.  A ledger that merely
-        re-expresses the delivered body (equal to it, or reconstructed when ``_accumulated`` is
-        empty on the finalize-tail path) is still substituted (no double bubble).  getattr
-        defaults keep __new__-constructed test consumers (which skip __init__) working."""
+        Split edit delivery reconstructs its visible payload from ``_stream_ledger``.
+        Native delivery is different: ``_accumulated`` is the cumulative body actually
+        framed across tool boundaries and rotations, while ``_stream_ledger`` may have
+        been replaced by an authoritative final containing unsent augmentation.  Record
+        the framed body; the ledger is only a compatibility fallback for callers that do
+        not retain an accumulator."""
         ledger = getattr(self, "_stream_ledger", "")
-        if getattr(self, "_use_native_streaming", False) and ledger:
-            delivered = self._display_payload(getattr(self, "_accumulated", ""))
-            ledger_display = self._display_payload(ledger)
-            if delivered and ledger_display != delivered and ledger_display.startswith(delivered):
-                # Ledger strictly extends the framed body → un-sent augmentation.
-                self._delivered_final_text = delivered
-                return
-            text = ledger
+        if getattr(self, "_use_native_streaming", False):
+            delivered = getattr(self, "_accumulated", "")
+            text = delivered or ledger or text
         elif getattr(self, "_turn_split_delivery", False) and ledger:
             text = ledger
         self._delivered_final_text = self._display_payload(text)
@@ -403,8 +382,17 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         if not target:
             return None
         if self._delivered_final_text is not None:
+            # A native cumulative stream may include a delivered preamble before the
+            # authoritative last-call answer.  The answer is delivered only when its
+            # normalized bytes are the exact visible tail; augmentation absent from that
+            # tail remains a mismatch and is sent by the gateway's corrective path.
+            recorded = self._delivered_final_text.strip()
+            native_tail_match = (
+                getattr(self, "_use_native_streaming", False)
+                and recorded.endswith(target)
+            )
             # A segment break / commentary may have delivered it under another record.
-            return (self._delivered_final_text.strip() == target
+            return (recorded == target or native_tail_match
                     or self.has_delivered_text(final_text))
         if self._turn_split_delivery:
             return False
@@ -602,13 +590,14 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
     async def run(self) -> None:
         """Async task that drains the queue and edits the platform message."""
         self._len_fn, self._safe_limit = self._resolve_length_budget()
-        await self._start_transports()
-        # Capture the event loop for the tool-timer's thread-safe scheduling, then honour any first-call
-        # thinking latch that raced the seed (on_llm_thinking can fire before the bubble was open).
-        self._tool_timer_loop = asyncio.get_event_loop()
-        if self._native_stream_opened:
-            self._consume_pending_thinking()
+        self._tool_timer_accepting_events = True
         try:
+            await self._start_transports()
+            # Capture the event loop for the tool-timer's thread-safe scheduling, then honour any first-call
+            # thinking latch that raced the seed (on_llm_thinking can fire before the bubble was open).
+            self._tool_timer_loop = asyncio.get_event_loop()
+            if self._native_stream_opened:
+                self._consume_pending_thinking()
             while True:
                 # Session reset (/new, /stop): abandon rather than deliver stale deltas.
                 if not self._run_still_current():
@@ -669,6 +658,13 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         except Exception as e:
             logger.error("Stream consumer error: %s", e)
         finally:
+            # Close admission first so late worker callbacks cannot repopulate
+            # timer state after this unconditional clear.
+            with self._timer_lock:
+                self._tool_timer_accepting_events = False
+            self._stop_tool_timer()
+            with self._timer_lock:
+                self._tool_timer_loop = None
             self._wake_flush_waiters()
 
     # ── run() collaborators ─────────────────────────────────────────────

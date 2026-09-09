@@ -91,14 +91,18 @@ function PluginRow({
           {row.catalog_name && (
             <Tip label={t.skills.plugins.catalogProvenance(row.installed_sha?.slice(0, 8) ?? '')}>
               <span className="rounded border border-(--ui-stroke-tertiary) px-1 text-[0.65rem] text-(--ui-text-tertiary)">
-                {row.catalog_tier === 'official'
-                  ? t.skills.plugins.tierOfficial
-                  : t.skills.plugins.tierCommunity}
+                {row.catalog_tier === 'official' ? t.skills.plugins.tierOfficial : t.skills.plugins.tierCommunity}
               </span>
             </Tip>
           )}
           {row.update_available && onUpdate && (
-            <Button className="h-5 px-1.5 text-[0.65rem]" disabled={busy} onClick={onUpdate} size="xs" variant="outline">
+            <Button
+              className="h-5 px-1.5 text-[0.65rem]"
+              disabled={busy}
+              onClick={onUpdate}
+              size="xs"
+              variant="outline"
+            >
               {t.skills.plugins.updateToPin(row.catalog_sha?.slice(0, 8) ?? '')}
             </Button>
           )}
@@ -176,9 +180,7 @@ export const PluginsTab = memo(function PluginsTab({ profile }: { profile: Profi
       // Already installed at (or past) this pin in the scoped profile →
       // tell the user instead of re-running the install ceremony. Rows with
       // update_available keep their explicit Update chip in the list above.
-      const existing = $agentPlugins
-        .get()
-        .find(row => row.catalog_name === data.name || row.name === data.name)
+      const existing = $agentPlugins.get().find(row => row.catalog_name === data.name || row.name === data.name)
 
       if (existing && !existing.update_available) {
         notify({ kind: 'success', message: t.skills.plugins.alreadyInstalled(String(data.name)) })
@@ -251,9 +253,7 @@ export const PluginsTab = memo(function PluginsTab({ profile }: { profile: Profi
         )}
       </div>
 
-      <section
-        className={cn('relative flex min-h-9 flex-col overflow-hidden border-t border-(--ui-stroke-secondary)')}
-      >
+      <section className={cn('relative flex min-h-9 flex-col overflow-hidden border-t border-(--ui-stroke-secondary)')}>
         <div className="flex shrink-0 items-center justify-between px-3 py-1.5">
           <span className="text-[0.7rem] font-medium text-(--ui-text-tertiary)">{p.catalogTitle}</span>
           <Button onClick={() => setPaneHeightOverride(CATALOG_PANE_ID, open ? 0 : undefined)} size="xs" variant="text">

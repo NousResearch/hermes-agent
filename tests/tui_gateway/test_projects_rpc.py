@@ -543,6 +543,33 @@ def test_non_local_backend_terminal_cwd_stays_launch_artifact(tmp_path, monkeypa
     assert server._context_cwd_is_launch_artifact({"source": "desktop", "cwd": str(tmp_path)}) is True
 
 
+def test_bound_profile_configured_cwd_is_a_context_workspace(tmp_path, monkeypatch):
+    """The intent gate is session-scoped: a session bound to a sibling profile takes its intent
+    from THAT profile's config, not the launch env. Here the launch env is unset but the bound
+    profile configures a real ``terminal.cwd``, so the desktop session is a context workspace."""
+    monkeypatch.setattr(server, "_effective_terminal_backend", lambda: "local")
+    monkeypatch.delenv("TERMINAL_CWD", raising=False)
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    profile_home = tmp_path / "profiles" / "ops"
+    profile_home.mkdir(parents=True)
+    (profile_home / "config.yaml").write_text(f"terminal:\n  cwd: {workspace}\n", encoding="utf-8")
+    session = {"source": "desktop", "cwd": str(workspace), "profile_home": str(profile_home)}
+    assert server._context_cwd_is_launch_artifact(session) is False
+
+
+def test_bound_profile_without_config_ignores_launch_env(tmp_path, monkeypatch):
+    """A bound sibling profile with no configured ``terminal.cwd`` must NOT inherit the launch
+    profile's ``TERMINAL_CWD`` (#40334): the gate stays session-scoped, so the desktop session
+    remains a launch artifact even though the launch env points at a real directory."""
+    monkeypatch.setattr(server, "_effective_terminal_backend", lambda: "local")
+    monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))  # launch profile's dir — exists, not a sentinel
+    profile_home = tmp_path / "profiles" / "ops"
+    profile_home.mkdir(parents=True)  # no config.yaml → no configured cwd for this profile
+    session = {"source": "desktop", "cwd": str(tmp_path), "profile_home": str(profile_home)}
+    assert server._context_cwd_is_launch_artifact(session) is True
+
+
 @pytest.mark.parametrize(
     ("explicit_cwd", "launch_artifact"),
     [(True, False), (False, True)],

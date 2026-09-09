@@ -77,16 +77,27 @@ def _session_cwd(session: dict | None) -> str:
 _LAUNCH_CWD_NOT_A_WORKSPACE = {"desktop"}
 
 
-def _configured_terminal_cwd_intent() -> bool:
+def _configured_terminal_cwd_intent(session: dict | None = None) -> bool:
     """A deliberate, existing local ``terminal.cwd`` (env bridge or profile config) — the same
     workspace intent as launching the CLI in that directory, so its context files must load even
-    when a desktop session never set ``explicit_cwd`` (#106012). Mirrors the resolution in
-    ``_terminal_task_cwd_with_source``. Non-local backends are excluded (their cwd lives inside the
-    target environment, and under docker isolation the fallback is a PREVIOUS session's launch
-    artifact); trivial ``.``/``auto``/``cwd`` values carry no intent; a missing directory is left to
-    the launch-dir fallback so ``resolve_context_cwd`` and this gate agree on what actually loads."""
+    when a desktop session never set ``explicit_cwd`` (#106012).
+
+    Session-scoped, mirroring ``_completion_cwd``: a session bound to a sibling profile takes its
+    intent from THAT profile's config (``profile_home``), never the launch profile's process-global
+    ``TERMINAL_CWD`` (#40334) — otherwise a multiplexing gateway consults the wrong profile and this
+    gate disagrees with the session-scoped resolver. Only the launch profile (no ``profile_home``)
+    falls back to the env bridge / active-profile config. Non-local backends are excluded (their cwd
+    lives inside the target environment, and under docker isolation the fallback is a PREVIOUS
+    session's launch artifact); trivial ``.``/``auto``/``cwd`` values carry no intent; a missing
+    directory is left to the launch-dir fallback so ``resolve_context_cwd`` and this gate agree on
+    what actually loads."""
     if _effective_terminal_backend() != "local":
         return False
+    profile_home = (session or {}).get("profile_home")
+    if profile_home:
+        # A bound sibling profile: its own config decides intent (absolute/exists/sentinel semantics
+        # come from _profile_configured_cwd), never the launch profile's stale env var.
+        return _profile_configured_cwd(Path(profile_home)) is not None
     raw = (os.environ.get("TERMINAL_CWD", "").strip() or _workdir_terminal_cfg("cwd")).strip()
     if not raw or raw in {".", "auto", "cwd"}:
         return False
@@ -104,7 +115,7 @@ def _context_cwd_is_launch_artifact(session: dict | None) -> bool:
         session
         and not session.get("explicit_cwd")
         and _session_source(session) in _LAUNCH_CWD_NOT_A_WORKSPACE
-        and not _configured_terminal_cwd_intent()
+        and not _configured_terminal_cwd_intent(session)
     )
 
 

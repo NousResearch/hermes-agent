@@ -40,6 +40,10 @@ _HEALTH_WINDOW = 6
 class GatewayKanbanWatchersMixin:
     """Kanban watcher / notifier / dispatcher loops for GatewayRunner."""
 
+    # Set once per process when the lock probe itself fails, so the warning is
+    # logged once instead of every tick.
+    _kanban_dispatcher_lock_probe_failed = False
+
     def _owns_kanban_dispatcher_lock(self) -> bool:
         return getattr(self, "_kanban_dispatcher_lock_handle", None) is not None
 
@@ -79,14 +83,23 @@ class GatewayKanbanWatchersMixin:
             )
             return True
         if state == "unavailable":
-            # Locking stopped working mid-run — fall back to config-only
-            # control rather than freezing the board forever.
-            self._kanban_dispatcher_lock_path = None
-            logger.warning(
-                "kanban dispatcher: advisory lock unavailable at %s; proceeding "
-                "on config control alone.", lock_path,
-            )
-            return True
+            # Locking stopped working mid-run. Do NOT read that as permission
+            # to dispatch: `_acquire_singleton_lock` answers "unavailable" for
+            # any OSError (fd exhaustion, ENOSPC, a transient EIO), not only
+            # for a filesystem without flock — and somebody demonstrably held
+            # this lock a moment ago. Dispatching anyway would put a second
+            # dispatcher on the board, which is what the lock exists to
+            # prevent. Boot-time "unavailable" is different (nobody was ever
+            # observed holding it) and still falls back to config-only control.
+            if not self._kanban_dispatcher_lock_probe_failed:
+                self._kanban_dispatcher_lock_probe_failed = True
+                logger.warning(
+                    "kanban dispatcher: cannot probe the singleton lock at %s; "
+                    "standing by rather than dispatching alongside the current "
+                    "holder.", lock_path,
+                )
+            return False
+        self._kanban_dispatcher_lock_probe_failed = False
         return False
 
     async def _sleep_between_ticks(self, interval: float) -> None:
@@ -261,6 +274,7 @@ class GatewayKanbanWatchersMixin:
         # `None` disables locking for the rest of this process (see
         # `_may_dispatch_this_tick`); a path means "re-try it every tick".
         self._kanban_dispatcher_lock_path = None if _lock_state == "unavailable" else _lock_path
+        self._kanban_dispatcher_lock_probe_failed = False
         if _lock_state == "contended":
             # Standby, not exit: the loop below re-tries the lock each tick.
             logger.info("kanban dispatcher: another gateway already holds the dispatcher "

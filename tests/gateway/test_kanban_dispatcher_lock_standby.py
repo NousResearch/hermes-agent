@@ -54,6 +54,26 @@ def test_may_dispatch_is_false_while_contended_and_true_once_free(tmp_path):
     runner._release_kanban_dispatcher_lock()
 
 
+def test_mid_run_probe_failure_does_not_dispatch(tmp_path, monkeypatch):
+    """A broken probe next to a live holder must NOT be read as permission.
+
+    `_acquire_singleton_lock` answers "unavailable" for any OSError — fd
+    exhaustion, ENOSPC, a transient EIO — not only for a filesystem without
+    flock. Treating that as "go ahead" would put a second dispatcher on the
+    board beside the real holder.
+    """
+    runner = _Runner()
+    runner._kanban_dispatcher_lock_path = _lock_path(tmp_path)
+    monkeypatch.setattr(kw, "_acquire_singleton_lock", lambda _p: (None, "unavailable"))
+
+    assert runner._may_dispatch_this_tick() is False
+    assert runner._may_dispatch_this_tick() is False
+    assert runner._owns_kanban_dispatcher_lock() is False
+    # The path must NOT be latched away: once the probe works again the
+    # gateway has to be able to take a freed lock.
+    assert runner._kanban_dispatcher_lock_path is not None
+
+
 def test_may_dispatch_is_true_when_locking_is_unavailable(tmp_path):
     """No advisory locking -> config-only control, never a frozen board."""
     runner = _Runner()

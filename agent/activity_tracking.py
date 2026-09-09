@@ -80,11 +80,17 @@ class ActivityTrackingMixin:
                 heartbeat_current_worker_from_env()
                 # Fold new operator notes into the running turn (OUT-OF-BAND steer).
                 inject_new_comments_from_env(self)
+        # Peer-session messages (tools/peer_messaging_tool.py) ride the same steer
+        # channel. Rate-limited inside; a no-inbox session exits on one is_dir().
+        with suppress(Exception):
+            from tools.peer_messaging_tool import inject_peer_messages
+            inject_peer_messages(self)
         if force_persist or is_terminal_compression_provenance(resolved_provenance):
             # A terminal compression stamp must land durably NOW. The heartbeat wrote "context compression
             # in progress" moments ago, so deferring this write to the next 60s window leaves the durable
             # row advertising a compression that has already ended — and no later writer corrects it once
             # the turn is over or the host is gone (the permanently "stuck" chat, #72039 follow-up).
+
             reset_session_activity_persist_window(self)
         self._persist_session_activity_if_due()
 

@@ -325,6 +325,13 @@ export function ConnectionsRegistrySection() {
   // it mints (native PKCE bearer tokens, or the legacy session cookies). This
   // is the same IPC the first-run form and the gateway panel use — the
   // registry editor simply had no affordance to reach it.
+  //
+  // The draft's identity rides along because this sign-in can run BEFORE the
+  // connection is saved: the main process settles the id the save will reuse
+  // and writes the session into that connection's own cookie jar. An unsaved
+  // draft has no on-disk entry to URL-match, so without the identity the
+  // session would land in the legacy shared jar the saved connection never
+  // reads. Pin the settled id into the draft so Save reuses it.
   const signInOauth = useCallback(async () => {
     if (!editorUrl) {
       notify({ kind: 'warning', title: t.settings.gateway.authTitle, message: t.settings.gateway.enterUrlFirst })
@@ -335,7 +342,16 @@ export function ConnectionsRegistrySection() {
     setSigningIn(true)
 
     try {
-      const result = await window.hermesDesktop.oauthLoginConnectionConfig(editorUrl)
+      const result = await window.hermesDesktop.oauthLoginConnectionConfig(editorUrl, {
+        connectionId: editor?.id ?? null,
+        label: editor?.label ?? ''
+      })
+
+      if (result.connectionId) {
+        const settledId = result.connectionId
+
+        setEditor(prev => (prev && !prev.id ? { ...prev, id: settledId } : prev))
+      }
 
       setOauthConnected(Boolean(result.connected))
 
@@ -356,7 +372,7 @@ export function ConnectionsRegistrySection() {
     } finally {
       setSigningIn(false)
     }
-  }, [authProviderShape.providerLabel, editorUrl, t])
+  }, [authProviderShape.providerLabel, editor?.id, editor?.label, editorUrl, t])
 
   const load = useCallback(async () => {
     if (!bridge) {

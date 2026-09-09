@@ -193,8 +193,15 @@ function textFromQuotedMessage(quotedMessage) {
   if (!quotedMessage) return '';
   // A quoted payload can arrive inside the same wrappers as a top-level message
   // (ephemeralMessage for disappearing-message replies, viewOnce…); normalize
-  // first so wrapped quotes keep their text (#106066).
-  const content = getMessageContent({ message: quotedMessage });
+  // first so wrapped quotes keep their text (#106066). Wrappers can nest
+  // (e.g. ephemeral around viewOnce), so keep unwrapping with an explicit
+  // bound, mirroring Baileys' own nested-envelope normalization.
+  let content = getMessageContent({ message: quotedMessage });
+  for (let depth = 0; depth < 4; depth += 1) {
+    const unwrapped = getMessageContent({ message: content });
+    if (unwrapped === content) break;
+    content = unwrapped;
+  }
   if (content.conversation) return content.conversation;
   if (content.extendedTextMessage?.text) return content.extendedTextMessage.text;
   if (content.imageMessage?.caption) return content.imageMessage.caption;

@@ -57,3 +57,23 @@ test('wrapped quoted media caption still resolves', async () => {
   });
   assert.equal(event.quotedText, 'pic caption');
 });
+
+test('nested wrappers around a quoted conversation keep their text', async () => {
+  const event = await quotedEvent({
+    ephemeralMessage: { message: { viewOnceMessage: { message: { conversation: 'nested quote' } } } },
+  });
+  assert.equal(event.quotedText, 'nested quote');
+});
+
+test('deeply nested wrappers stay bounded and still resolve', async () => {
+  const event = await quotedEvent({
+    ephemeralMessage: {
+      message: {
+        viewOnceMessage: {
+          message: { viewOnceMessageV2: { message: { extendedTextMessage: { text: 'three deep' } } } },
+        },
+      },
+    },
+  });
+  assert.equal(event.quotedText, 'three deep');
+});

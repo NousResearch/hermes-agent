@@ -3,6 +3,7 @@ include/exclude filtering, trust-tier metadata capture, utility-tool selection, 
 resolution and the schema-cache write-through. Both entry points (``_register_server_tools``
 live, ``_register_from_cache_sync`` lazy) build ``_Candidate`` records for ``_register_candidates``."""
 
+import json
 import logging
 import threading
 from dataclasses import dataclass
@@ -376,10 +377,22 @@ def _server_enabled(config: dict) -> bool:
     return _parse_boolish(config.get("enabled", True), default=True)
 
 
-def _same_server_route(server: Any, config: dict) -> bool:
+def _connection_identity(config: dict) -> tuple:
+    """What makes one live connection reusable for another profile: the route fingerprint PLUS
+    everything that authenticates it (``config_fingerprint`` deliberately excludes credentials so
+    the schema cache survives a token rotation). Two profiles pointing at the same URL with different
+    headers/env/auth are two identities; borrowing across them would call tools as the other user."""
     from tools.mcp_schema_cache import config_fingerprint
 
-    return config_fingerprint(getattr(server, "_config", {}) or {}) == config_fingerprint(config)
+    def _frozen(value):
+        return json.dumps(value or {}, sort_keys=True, default=str)
+
+    return (config_fingerprint(config), _frozen(config.get("env")), _frozen(config.get("headers")),
+            (config.get("auth") or "").lower().strip())
+
+
+def _same_server_route(server: Any, config: dict) -> bool:
+    return _connection_identity(getattr(server, "_config", {}) or {}) == _connection_identity(config)
 
 
 def register_connected_into_current_scope(servers: dict) -> int:
@@ -405,8 +418,6 @@ def _register_connected_into_current_scope(servers: dict) -> int:
     if scope is None:
         return 0
 
-    from tools.mcp_schema_cache import config_fingerprint
-
     with _core._lock:
         stale = []
         for name, scopes in _core._server_tool_scopes.items():
@@ -415,8 +426,7 @@ def _register_connected_into_current_scope(servers: dict) -> int:
             server = _core._servers.get(name)
             config = servers.get(name)
             if (config is None or not _server_enabled(config) or server is None
-                    or getattr(server, "session", None) is None
-                    or config_fingerprint(getattr(server, "_config", {}) or {}) != config_fingerprint(config)):
+                    or getattr(server, "session", None) is None or not _same_server_route(server, config)):
                 stale.append(name)
     for name in stale:
         _remove_server_scope(name, scope)
@@ -429,6 +439,9 @@ def _register_connected_into_current_scope(servers: dict) -> int:
             server = _core._servers.get(name)
         if server is None or getattr(server, "session", None) is None or not _same_server_route(server, config):
             continue
+        # Visibility for this profile: the owner keeps teardown, this scope sees the connection.
+        with _core._lock:
+            _core._server_tool_scopes.setdefault(name, set()).add(scope)
         if registry.get_tool_names_for_toolset(f"mcp-{name}"):
             continue
         candidates = _tool_candidates(name, server._tools, _make_tool_filter(name, config), server.tool_timeout)

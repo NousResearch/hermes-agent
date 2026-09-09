@@ -126,7 +126,8 @@ async def test_reload_mcp_reports_a_shared_server_to_a_non_owner_profile(
         get_or_create_session=MagicMock(side_effect=RuntimeError("skip transcript")),
     )
 
-    live_server = SimpleNamespace(session=object(), _config={})
+    live_server = SimpleNamespace(session=object(), _config={}, _tools=[], tool_timeout=30,
+                                  initialize_result=None, _registered_tool_names=[])
     monkeypatch.setattr(mcp_tool, "_servers", {"shared": live_server})
     monkeypatch.setattr(mcp_tool, "_server_scope_keys", {"shared": launch_scope})
     monkeypatch.setattr(mcp_tool, "_server_tool_scopes", {"shared": {launch_scope}}, raising=False)
@@ -136,7 +137,8 @@ async def test_reload_mcp_reports_a_shared_server_to_a_non_owner_profile(
     monkeypatch.setattr(mcp_tool, "_mcp_registry_scope", lambda: worker_scope)
 
     def fake_discover() -> list[str]:
-        _mcp_discovery._select_new_servers({"shared": {}})
+        from tools import mcp_tool_registration as _mcp_registration
+        _mcp_registration.register_connected_into_current_scope({"shared": {}})
         return ["mcp__shared__tool"]
 
     monkeypatch.setattr(_mcp_lifecycle, "shutdown_mcp_servers", lambda **_kwargs: None)
@@ -157,11 +159,18 @@ async def test_reload_mcp_reports_a_shared_server_to_a_non_owner_profile(
     assert mcp_tool._server_tool_scopes["shared"] == {launch_scope, worker_scope}
 
 
-def test_scope_visibility_rejects_a_foreign_server_route(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize("worker_cfg", [
+    {"url": "https://worker.example/mcp"},                                   # different route
+    {"url": "https://default.example/mcp", "headers": {"Authorization": "Bearer worker"}},  # same route, other credentials
+    {"url": "https://default.example/mcp", "env": {"API_TOKEN": "worker"}},
+])
+def test_scope_visibility_rejects_a_foreign_or_differently_authenticated_route(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, worker_cfg: dict
 ) -> None:
+    """A profile may only see a live connection whose route AND credentials match its own config;
+    otherwise it would call tools as the owning profile's identity."""
     from tools import mcp_tool
-    from tools import mcp_tool_discovery as _mcp_discovery
+    from tools import mcp_tool_registration as _mcp_registration
 
     worker_scope = hermes_home_key(tmp_path / "worker")
     launch_scope = hermes_home_key(tmp_path / "default")
@@ -169,13 +178,9 @@ def test_scope_visibility_rejects_a_foreign_server_route(
     monkeypatch.setattr(mcp_tool, "_servers", {"shared": live_server})
     monkeypatch.setattr(mcp_tool, "_server_scope_keys", {"shared": launch_scope})
     monkeypatch.setattr(mcp_tool, "_server_tool_scopes", {"shared": {launch_scope}}, raising=False)
-    monkeypatch.setattr(mcp_tool, "_server_connecting", set())
-    monkeypatch.setattr(mcp_tool, "_server_connect_errors", {})
-    monkeypatch.setattr(mcp_tool, "_lazy_server_configs", {})
     monkeypatch.setattr(mcp_tool, "_mcp_registry_scope", lambda: worker_scope)
 
-    _mcp_discovery._select_new_servers({"shared": {"url": "https://worker.example/mcp"}})
-
+    assert _mcp_registration.register_connected_into_current_scope({"shared": worker_cfg}) == 0
     assert mcp_tool._server_tool_scopes["shared"] == {launch_scope}
 
 

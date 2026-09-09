@@ -49,6 +49,7 @@ class GatewayTurnMixin:
     def _resolve_session_agent_runtime(
         self, *, source: Optional[SessionSource] = None, session_key: Optional[str] = None,
         user_config: Optional[dict] = None,
+        defaults_only: bool = False,
     ) -> tuple[str, dict]:
         """Resolve model/runtime for a session.
 
@@ -58,7 +59,7 @@ class GatewayTurnMixin:
             _credential_pool_for_provider, _get_channel_override, _resolve_gateway_model,
             _resolve_runtime_agent_kwargs, _resolve_runtime_agent_kwargs_for_provider,
         )
-        skey = self._resolve_session_key_or_none(source, session_key)
+        skey = None if defaults_only else self._resolve_session_key_or_none(source, session_key)
 
         model = _resolve_gateway_model(user_config)
         if skey:
@@ -136,7 +137,7 @@ class GatewayTurnMixin:
 
         # Final safety net: an empty model (transient config-cache miss) makes every API call 400 and
         # the session goes silent — reuse the last model resolved for this session, else process-wide.
-        if not model:
+        if not model and not defaults_only:
             _lr_state = self._peek_session_state(skey) if skey else None
             _lr_star = self._peek_session_state("*")
             _recovered = (
@@ -150,7 +151,7 @@ class GatewayTurnMixin:
                     "empty; see #35314)", skey or "", _recovered,
                 )
                 model = _recovered
-        else:
+        elif model and not defaults_only:
             # Cache the good resolution for future recovery turns.
             if skey:
                 self._session_state(skey).conversation.last_resolved_model = model
@@ -2034,24 +2035,40 @@ class GatewayTurnMixin:
             return _profile_runtime_scope(self._resolve_profile_home_for_source(source))
         return nullcontext()
 
-    def _reset_notice_session_info(self, source: SessionSource) -> str:
+    def _reset_notice_session_info(self, source: SessionSource, session_id: str = "") -> str:
         """Session-info block for the auto-reset notice, resolved inside the profile serving ``source``.
 
         Call via ``asyncio.to_thread``: resolution can block (credential refresh, context-length
         probes), and the scope is entered here so contextvars behave in the worker thread."""
         with self._profile_scope_for_source(source):
-            info = self._format_session_info()
+            model = None
+            try:
+                model, runtime = self._resolve_session_agent_runtime(source=source, defaults_only=True)
+                info = self._format_session_info(model=model, runtime=runtime)
+            except Exception:
+                info = self._format_session_info()
             try:
                 from gateway.session_banner import format_reset_settings
-                settings = format_reset_settings(self)
+                settings = format_reset_settings(self, model=model)
             except Exception:
                 settings = "◆ Session settings: unknown"
+            if session_id:
+                from gateway.session_banner import session_identifier
+                resolver = None
+                try:
+                    resolver = self.session_store._db.resolve_session_id
+                except Exception:
+                    pass
+                short = session_identifier(session_id, resolver)
+                settings += f"\n◆ Session: {short}"
+                if short != session_id:
+                    settings += f" (full: {session_id})"
             return f"{info}\n{settings}"
 
-    def _format_session_info(self) -> str:
+    def _format_session_info(self, model=None, runtime=None) -> str:
         """Model / provider / context-length / endpoint block so users can spot bad context detection."""
         from gateway.run import _resolve_gateway_model_context
-        resolved = _resolve_gateway_model_context()
+        resolved = _resolve_gateway_model_context(model, runtime=runtime)
         context_length = resolved.context_length
         ctx_source = {
             "config": "config",

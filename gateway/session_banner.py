@@ -15,19 +15,35 @@ def _effort_label(reasoning):
     return reasoning.get("effort") or "default"
 
 
-def format_reset_settings(runner) -> str:
+def session_identifier(session_id, resolve):
+    """Return a verified unambiguous prefix, or the full ID if lookup is unavailable."""
+    if resolve is not None:
+        try:
+            for length in range(8, len(session_id)):
+                prefix = session_id[:length]
+                if not prefix.isdigit() and resolve(prefix) == session_id:
+                    return prefix
+        except Exception:
+            pass
+    return session_id
+
+
+def format_reset_settings(runner, model="") -> str:
     """Describe profile defaults without constructing an agent or resolving credentials."""
     from hermes_cli.config import load_config_readonly
     from tools.approval import _YOLO_MODE_FROZEN
     from tools.approval_context import _get_approval_mode
 
     config = load_config_readonly()
-    delegation = config.get("delegation") or {}
+    delegation = config.get("delegation", {})
+    malformed_delegation = not isinstance(delegation, dict)
+    if malformed_delegation:
+        delegation = {}
     profile = profile_name_for_home(get_hermes_home()) or "unknown"
-    reasoning = runner._load_reasoning_config()
+    reasoning = runner._load_reasoning_config(model) if model is not None else None
     tier = runner._load_service_tier() or "default (normal)"
-    model = delegation.get("model")
-    model_label = f"{model} (configured)" if model else "inherited from main"
+    delegation_model = delegation.get("model")
+    model_label = f"{delegation_model} (configured)" if delegation_model else "inherited from main"
     raw_effort = delegation.get("reasoning_effort")
     parsed = parse_reasoning_effort(raw_effort)
     effort = "inherited from main"
@@ -38,8 +54,9 @@ def format_reset_settings(runner) -> str:
     approval = "off (runtime override)" if _YOLO_MODE_FROZEN else _get_approval_mode()
     return "\n".join([
         f"◆ Profile: {profile} · Hermes {__version__}",
-        f"◆ Main reasoning: {_effort_label(reasoning)}",
+        f"◆ Main reasoning: {_effort_label(reasoning) if model is not None else 'unknown (route unavailable)'}",
         f"◆ Service tier (requested): {tier}",
+        "◆ Delegation default: unknown" if malformed_delegation else
         f"◆ Delegation default — model: {model_label}; effort: {effort}",
         f"◆ Tool approval: {approval}",
     ])

@@ -237,6 +237,32 @@ platform network disconnect as an event-loop failure.
 
 Sessions persist across messages until they reset. The agent remembers your conversation context.
 
+### New-session confirmation
+
+`/new` and `/reset` retain the model, provider, context-window information and
+tip, and show the serving profile, installed Hermes version, main reasoning
+effort, requested service tier, delegation defaults, tool approval mode and
+the newly created session's identifier. Conversation-local model, reasoning
+and speed overrides are cleared before this information is collected.
+
+Reasoning is resolved for the new session's channel/provider model route,
+including per-model reasoning defaults. It describes Hermes' reasoning
+configuration, not provider-specific wire clamping. An unavailable route is
+reported as unknown. The requested service tier is not a latency or capacity
+guarantee; later fallback and per-turn routing can change execution.
+
+Delegation defaults describe ordinary child-agent spawning. “Inherited from
+main” refers to the parent at spawn time, not named-profile workers or explicit
+per-task overrides. Tool approval includes the process runtime override when
+active; it is not a claim that every tool invocation requires approval.
+
+The short session identifier is a prefix verified as unambiguous in the serving
+profile's session database. The full ID is retained alongside it: prefixes may
+become ambiguous as sessions accumulate. If lookup is unavailable or no shorter
+unique prefix exists, the full ID is shown instead. Prefix-aware local session
+commands can use the short form; gateway `/resume` requires the full ID (or a
+title). Neither form bypasses session ownership checks.
+
 ### Finding Past Sessions (`/sessions`)
 
 `/sessions` lists your previous sessions for the current chat — including the one you're in now, marked `(current)` — and `/sessions <name>` resumes one (shorthand for `/resume`). When the list grows long, `/sessions search <query>` (alias `find`) filters by title or session-id match, ordered by most recently active. Cross-origin listing with `/sessions all` is admin-only — regular users get a notice explaining the list stayed chat-scoped, and only ever see sessions from their own chat origin.

@@ -2270,7 +2270,7 @@ class _GatewayModelContext:
     context_source: str
 
 
-def _resolve_gateway_model_context(model: Optional[str] = None) -> _GatewayModelContext:
+def _resolve_gateway_model_context(model: Optional[str] = None, *, runtime: Optional[dict] = None) -> _GatewayModelContext:
     """Resolve the configured gateway route and effective context window. Call off-loop (may block)."""
     from agent.model_metadata import DEFAULT_FALLBACK_CONTEXT, get_model_context_length
     resolved_model = model or _resolve_gateway_model()
@@ -2300,10 +2300,10 @@ def _resolve_gateway_model_context(model: Optional[str] = None) -> _GatewayModel
 
     def _read_runtime() -> None:
         nonlocal provider, base_url, api_key
-        runtime = _resolve_runtime_agent_kwargs()
-        provider = runtime.get("provider") or provider
-        base_url = runtime.get("base_url") or base_url
-        api_key = runtime.get("api_key")
+        effective_runtime = runtime if runtime is not None else _resolve_runtime_agent_kwargs()
+        provider = effective_runtime.get("provider") or provider
+        base_url = effective_runtime.get("base_url") or base_url
+        api_key = effective_runtime.get("api_key")
 
     def _pin_still_applies() -> bool:
         # Drop a configured context_length pin when the effective route no longer matches (or on error).

@@ -166,3 +166,55 @@ async def test_gateway_batch_text_reply_skips_button_resolved_card_and_answers_n
     assert second.response == "blue"
 
 
+@pytest.mark.asyncio
+async def test_unbound_batch_followup_is_not_silently_consumed_and_releases_wait():
+    """Only a reply to the screenshot card may fill it; a follow-up releases the batch."""
+    _clear_clarify_state()
+    from gateway.run import GatewayRunner
+    from tools import clarify_gateway as cm
+
+    screenshot = cm.register(
+        "screenshot", "telegram:batch", "Send screenshot?", None,
+        require_text_reply_binding=True,
+    )
+    assert cm.bind_text_reply_to("screenshot", "prompt-42") is True
+
+    runner = object.__new__(GatewayRunner)
+    runner._pending_event_audio_paths = lambda event: []
+    runner._adapter_for_source = lambda source: None
+
+    event = _event("und?")
+    event.reply_to_message_id = "some-other-message"
+    result = await runner._hm_clarify_reply(event, event.source, "telegram:batch")
+
+    assert result is None
+    assert screenshot.event.is_set()
+    assert screenshot.response == ""
+
+
+@pytest.mark.asyncio
+async def test_bound_reply_to_open_batch_card_is_consumed_as_its_answer():
+    """The explicit Telegram reply anchor still permits the intended screenshot answer."""
+    _clear_clarify_state()
+    from gateway.run import GatewayRunner
+    from tools import clarify_gateway as cm
+
+    screenshot = cm.register(
+        "screenshot", "telegram:batch", "Send screenshot?", None,
+        require_text_reply_binding=True,
+    )
+    assert cm.bind_text_reply_to("screenshot", "prompt-42") is True
+
+    runner = object.__new__(GatewayRunner)
+    runner._pending_event_audio_paths = lambda event: []
+    runner._adapter_for_source = lambda source: None
+
+    event = _event("here is the screenshot")
+    event.reply_to_message_id = "prompt-42"
+    result = await runner._hm_clarify_reply(event, event.source, "telegram:batch")
+
+    assert result == ""
+    assert screenshot.event.is_set()
+    assert screenshot.response == "here is the screenshot"
+
+

@@ -3875,7 +3875,16 @@ class TelegramAdapter(BasePlatformAdapter):
                     text += "\n\n<i>Antworte mit Text oder nutze Überspringen.</i>"
                 rows.extend([[InlineKeyboardButton("⏭ Überspringen", callback_data=f"cl:{clarify_id}:skip")],
                              [InlineKeyboardButton("📊 Fortschritt", callback_data=f"clb:{batch_id}:status"), InlineKeyboardButton("✅ Abschließen", callback_data=f"clb:{batch_id}:continue")]])
-                return text, InlineKeyboardMarkup(rows), lambda msg: self._clarify_state.__setitem__(clarify_id, session_key)
+                def remember_batch_card(msg, clarify_id=clarify_id):
+                    self._clarify_state[clarify_id] = session_key
+                    # Bound text prevents an unrelated follow-up from being consumed by an
+                    # open-text card in the same displayed batch.
+                    try:
+                        from tools.clarify_gateway import bind_text_reply_to
+                        bind_text_reply_to(clarify_id, getattr(msg, "message_id", None))
+                    except Exception:
+                        logger.debug("Telegram clarify batch card binding failed", exc_info=True)
+                return text, InlineKeyboardMarkup(rows), remember_batch_card
             last_result = await self._send_prompt("send_clarify_batch", chat_id, metadata, build, parse_mode=ParseMode.HTML, thread_id=self._metadata_thread_id(metadata))
             if not last_result.success:
                 self._clarify_batch_state.pop(batch_id, None)

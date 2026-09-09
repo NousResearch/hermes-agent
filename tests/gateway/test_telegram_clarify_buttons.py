@@ -222,8 +222,8 @@ class TestTelegramClarifyBatch:
 
         adapter = _make_adapter()
         adapter._bot.send_message = AsyncMock(return_value=MagicMock(message_id=100))
-        cm.register("cid-budget", "sk-batch", "Budget?", ["850", "500"])
-        cm.register("cid-shot", "sk-batch", "Screenshot?", None)
+        cm.register("cid-budget", "sk-batch", "Budget?", ["850", "500"], require_text_reply_binding=True)
+        cm.register("cid-shot", "sk-batch", "Screenshot?", None, require_text_reply_binding=True)
 
         result = await adapter.send_clarify_batch(
             chat_id="12345",
@@ -237,6 +237,9 @@ class TestTelegramClarifyBatch:
         )
         assert result.success is True
         assert adapter._bot.send_message.await_count == 2
+        with cm._lock:
+            assert cm._entries["cid-shot"].requires_text_reply_binding is True
+            assert cm._entries["cid-shot"].text_reply_to_message_id == "100"
 
         # The user has answered the choice; the screenshot remains open.
         assert cm.resolve_gateway_clarify("cid-budget", "850") is True

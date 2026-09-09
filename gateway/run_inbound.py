@@ -335,6 +335,19 @@ class GatewayInboundMixin:
         # they can retry; on timeout the agent unblocks with an empty response.
         if not _raw_clarify_reply or _raw_clarify_reply.startswith("/"):
             return None
+        if (_pending_clarify.awaiting_text and _pending_clarify.requires_text_reply_binding
+                and str(getattr(event, "reply_to_message_id", "") or "")
+                != (_pending_clarify.text_reply_to_message_id or "")):
+            # A batch can contain multiple open-text cards. Do not let ordinary
+            # active-session prose silently answer whichever one happens to be next.
+            # Release all batch cards before it falls through, so the follow-up cannot
+            # sit hidden behind an unlimited clarify timeout.
+            _clarify_mod.cancel_bound_batch_for_session(_quick_key)
+            logger.info(
+                "Gateway cancelled reply-bound clarify batch for unbound text follow-up "
+                "(session=%s, id=%s)", _quick_key, _pending_clarify.clarify_id,
+            )
+            return None
         _text_outcome = _clarify_mod.attempt_text_response_for_session(_quick_key, _raw_clarify_reply)
         if _text_outcome == _clarify_mod.TEXT_RESOLVED:
             logger.info(

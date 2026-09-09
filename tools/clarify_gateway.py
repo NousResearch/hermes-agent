@@ -27,6 +27,10 @@ class _ClarifyEntry:
     event: threading.Event = field(default_factory=threading.Event)
     response: Optional[str] = None
     awaiting_text: bool = False  # set when user picked "Other" or clarify is open-ended
+    # Batch cards are displayed side-by-side. Free prose must explicitly reply to
+    # its card, otherwise an unrelated active-session follow-up could become its answer.
+    requires_text_reply_binding: bool = False
+    text_reply_to_message_id: Optional[str] = None
 
 
 _lock = threading.RLock()
@@ -44,15 +48,47 @@ TEXT_NO_PENDING = "no_pending"
 
 
 def register(clarify_id: str, session_key: str, question: str, choices: Optional[List[str]],
-             multi_select: bool = False) -> _ClarifyEntry:
+             multi_select: bool = False, require_text_reply_binding: bool = False) -> _ClarifyEntry:
     """Register a pending clarify request; caller then blocks on ``wait_for_response``.
     Open-ended (no choices) entries start in text mode: the next message IS the response."""
-    entry = _ClarifyEntry(clarify_id, session_key, question, list(choices) if choices else None,
-                          bool(multi_select) and bool(choices), awaiting_text=not bool(choices))
+    entry = _ClarifyEntry(
+        clarify_id, session_key, question, list(choices) if choices else None,
+        bool(multi_select) and bool(choices), awaiting_text=not bool(choices),
+        requires_text_reply_binding=bool(require_text_reply_binding),
+    )
     with _lock:
         _entries[clarify_id] = entry
         _session_index.setdefault(session_key, []).append(clarify_id)
     return entry
+
+
+def bind_text_reply_to(clarify_id: str, message_id: object) -> bool:
+    """Bind typed input for a batch card to its rendered platform message."""
+    value = str(message_id).strip() if message_id is not None else ""
+    with _lock:
+        entry = _entries.get(clarify_id)
+        if entry is None or not value:
+            return False
+        entry.text_reply_to_message_id = value
+        return True
+
+
+def cancel_bound_batch_for_session(session_key: str) -> int:
+    """Release every unresolved reply-bound batch card when the user sends a follow-up.
+
+    A batch owns one blocked agent turn.  An unbound message is ordinary conversation, not
+    an answer to a card, so keeping the remaining cards armed would hide that follow-up behind
+    a potentially unlimited clarify timeout.
+    """
+    cancelled = 0
+    with _lock:
+        for clarify_id in _session_index.get(session_key) or []:
+            entry = _entries.get(clarify_id)
+            if entry is not None and entry.requires_text_reply_binding and not entry.event.is_set():
+                entry.response = ""
+                entry.event.set()
+                cancelled += 1
+    return cancelled
 
 
 def wait_for_response(clarify_id: str, timeout: float) -> Optional[str]:

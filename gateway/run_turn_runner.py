@@ -1244,7 +1244,7 @@ class TurnRunner:
             clarify_ids = [uuid.uuid4().hex[:10] for _ in questions]
             for clarify_id, spec in zip(clarify_ids, questions):
                 clarify_mod.register(clarify_id, session_key, spec["question"], spec.get("choices"),
-                                     multi_select=bool(spec.get("multi_select")))
+                                     multi_select=bool(spec.get("multi_select")), require_text_reply_binding=True)
             self._close_native_stream_boundary("Clarify", "💬 等待你的选择...", reopen=True)
             with suppress(Exception):
                 ctx._status_adapter.pause_typing_for_chat(ctx._status_chat_id)

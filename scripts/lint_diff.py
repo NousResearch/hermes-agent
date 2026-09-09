@@ -6,11 +6,10 @@ comments. Compares issues by a stable key (path, rule, message) so line-only
 shifts from unrelated edits are treated as the same issue.
 
 Usage:
-    lint_diff.py \
-        --base-ruff base/ruff.json --head-ruff head/ruff.json \
-        --base-ty   base/ty.json   --head-ty   head/ty.json \
-        [--base-ref origin/main] [--head-ref HEAD]
-        [--fail-on-new RULE,...]
+    lint_diff.py \\
+        --base-ruff base/ruff.json --head-ruff head/ruff.json \\
+        --base-ty   base/ty.json   --head-ty   head/ty.json \\
+        [--base-ref origin/main] [--head-ref HEAD] [--fail-on-new RULE,...]
 
 Any of the four --{base,head}-{ruff,ty} files may be missing or empty; in that
 case the tool treats it as "0 diagnostics" (e.g. if base/main doesn't have the
@@ -205,7 +204,8 @@ def main() -> int:
     buf.append(_tool_report("ruff", base_ruff, head_ruff, base_ruff_avail))
     buf.append(_tool_report("ty (type checker)", base_ty, head_ty, base_ty_avail))
     buf.append(
-        "_Diagnostics are surfaced as warnings — this check never fails the build._\n"
+        "_Diagnostics are advisory; only NEW diagnostics of the rules passed via "
+        "`--fail-on-new` fail the build._\n"
     )
 
     summary = "\n".join(buf)

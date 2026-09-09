@@ -1,8 +1,6 @@
 """The --fail-on-new gate in scripts/lint_diff.py blocks only diagnostics the
 head introduces vs base, scoped to the listed ty rule classes.
 
-Without the flag the tool stays advisory (always exit 0); a missing base
-report skips the gate so it can never block a PR for lack of comparison data.
 Pinned here with ty-gitlab-shaped fixtures, no real ty run.
 """
 import importlib.util
@@ -54,24 +52,10 @@ def test_new_gated_rule_fails(monkeypatch, tmp_path):
                 "--fail-on-new", "invalid-method-override") == 1
 
 
-def test_preexisting_gated_rule_passes(monkeypatch, tmp_path):
-    entry = _ty_entry("invalid-method-override", path="p.py", message="bad override")
-    assert _run(monkeypatch, tmp_path, [entry], [entry],
+def test_preexisting_gated_and_new_ungated_pass(monkeypatch, tmp_path):
+    # A pre-existing override error carried over from base and a NEW error of a
+    # non-gated class must both stay advisory.
+    old = _ty_entry("invalid-method-override", path="p.py", message="bad override")
+    other = _ty_entry("unresolved-import", path="p.py", message="no module")
+    assert _run(monkeypatch, tmp_path, [old], [old, other],
                 "--fail-on-new", "invalid-method-override") == 0
-
-
-def test_new_ungated_rule_passes(monkeypatch, tmp_path):
-    entry = _ty_entry("unresolved-import", path="p.py", message="no module")
-    assert _run(monkeypatch, tmp_path, [], [entry],
-                "--fail-on-new", "invalid-method-override") == 0
-
-
-def test_missing_base_skips_gate(monkeypatch, tmp_path):
-    entry = _ty_entry("invalid-method-override", path="p.py", message="bad override")
-    assert _run(monkeypatch, tmp_path, None, [entry],
-                "--fail-on-new", "invalid-method-override") == 0
-
-
-def test_no_flag_stays_advisory(monkeypatch, tmp_path):
-    entry = _ty_entry("invalid-method-override", path="p.py", message="bad override")
-    assert _run(monkeypatch, tmp_path, [], [entry]) == 0

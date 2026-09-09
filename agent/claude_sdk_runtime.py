@@ -57,6 +57,18 @@ def run_claude_agent_sdk_turn(
       gateway restart/eviction  → same row, id persisted  → RESUME
       error/timeout retire      → id CLEARED → next turn fresh + digest
       stale/failed resume       → retire → clear → ONE fresh retry with digest
+      workspace moved           → binding declined + live session retired → fresh + digest
+      legacy (unprovenanced) id → CLEARED once, then fresh + digest
+
+    Resume ids are persisted as a versioned envelope bound to the workspace the
+    producing session ran in (``claude_sdk_runtime_continuity``); an id whose
+    workspace does not match is declined rather than resumed, and a pre-envelope
+    id is cleared once because nothing records where it came from.
+
+    A /stop that races the turn is classified, not merged into failure: a
+    completed terminal result is preserved and the late stop consumed, while a
+    turn with no terminal result — or one whose terminal result carried an
+    error — is reported interrupted rather than failed.
 
     Phase order is load-bearing: attempt effects are reset BEFORE session
     startup; terminal/stop state is reconciled BEFORE the provider-fallback

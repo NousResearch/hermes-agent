@@ -487,6 +487,8 @@ class SessionGatewayMixin:
             if (donor is None or orphan is None or not donor["session_key"] or orphan["session_key"]
                     or (donor["source"] or "") != (orphan["source"] or "")):
                 return False
+            topology_ids = {donor_id, orphan_id}
+            roots_before = self._display_roots_from_conn(conn, topology_ids)
             # Belt-and-suspenders for gateway routing metadata (#59527): the gateway re-records the peer on
             # the child after rotation (d5b4879d4), but a hard crash between child creation and that write
             # leaves the child row without origin columns, so ``find_latest_gateway_session_for_peer`` can't
@@ -494,7 +496,7 @@ class SessionGatewayMixin:
             # compression forks (parent already ended with end_reason='compression'). Delegate/subagent
             # children are spawned while the parent is still live and must NOT inherit routing keys, or peer
             # recovery could repoint gateway traffic into a subagent's session.
-            conn.execute(
+            adopted = conn.execute(
                 """UPDATE sessions
                       SET session_key = ?,
                           chat_id = COALESCE(chat_id, ?),
@@ -508,12 +510,15 @@ class SessionGatewayMixin:
                 (donor["session_key"], donor["chat_id"], donor["chat_type"], donor["thread_id"],
                  donor["user_id"], donor["origin_json"], donor["display_name"], donor_id, orphan_id),
             )
+            if adopted.rowcount != 1:
+                return False
             # Retire under a reason recovery does NOT treat as resumable — 'agent_close' /
             # 'ws_orphan_reap' would keep it in the running and the orphan could lose the chat again.
             conn.execute(
                 "UPDATE sessions SET ended_at = COALESCE(ended_at, ?), "
                 "end_reason = 'superseded_by_repair' WHERE id = ?",
                 (time.time(), donor_id))
+            self._invalidate_display_topology(conn, roots_before, topology_ids)
             return True
         return self._execute_write(_do)
 

@@ -17,6 +17,8 @@ import path from 'path'
 import fs from 'fs'
 import { createRequire } from 'module'
 
+import { sessionOpenPerfFixtureEntry } from './scripts/perf/lib/vite-conditionals.mjs'
+
 // `hgui` symlinks a worktree's node_modules to the main checkout. Vite realpaths
 // those before enforcing server.fs.allow, so codicon/font assets resolve outside
 // the worktree root and 404. Whitelist the real node_modules locations.
@@ -199,6 +201,11 @@ export default defineConfig(({ command }) => ({
   resolve: {
     alias: {
       '@/debug/dev-only': debugEntry(command, process.env as Record<string, string>),
+      '@/app/session/hooks/use-session-actions/session-open-perf-fixture': sessionOpenPerfFixtureEntry(
+        __dirname,
+        command,
+        process.env as Record<string, string>
+      ),
       '@': path.resolve(__dirname, './src'),
       '@hermes/plugin-sdk': path.resolve(__dirname, './src/sdk/index.ts'),
       '@hermes/shared/billing': path.resolve(__dirname, '../shared/src/billing-types.ts'),

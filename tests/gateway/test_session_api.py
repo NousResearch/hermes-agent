@@ -117,6 +117,196 @@ async def test_session_messages_default_to_latest_bounded_page(adapter, session_
 
 
 @pytest.mark.asyncio
+async def test_list_sessions_includes_display_revisions_from_one_batch_lookup(
+    adapter, session_db, monkeypatch
+):
+    session_db.create_session("revision-visible", "api_server")
+    session_db.append_message("revision-visible", "user", "hello")
+    session_db.create_session("revision-empty", "api_server")
+
+    batch_calls = []
+    original_batch = session_db.get_display_revisions
+
+    def record_batch(roots):
+        batch_calls.append(list(roots))
+        return original_batch(roots)
+
+    def reject_single(*args, **kwargs):
+        raise AssertionError("session lists must not perform N+1 revision reads")
+
+    monkeypatch.setattr(session_db, "get_display_revisions", record_batch)
+    monkeypatch.setattr(session_db, "get_display_revision", reject_single)
+
+    app = _create_session_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        resp = await cli.get("/api/sessions")
+        assert resp.status == 200
+        payload = await resp.json()
+
+    rows = {row["id"]: row for row in payload["data"]}
+    assert rows["revision-visible"]["display_revision"] == 1
+    assert rows["revision-empty"]["display_revision"] == 0
+    assert len(batch_calls) == 1
+    assert set(batch_calls[0]) == {"revision-visible", "revision-empty"}
+
+
+@pytest.mark.asyncio
+async def test_session_messages_forwards_compacted_conditional_page(adapter, session_db):
+    session_db.create_session("root", "api_server")
+    session_db.end_session("root", "compression")
+    session_db.create_session("tip", "api_server", parent_session_id="root")
+    session_db.append_messages_batch(
+        "tip",
+        [
+            {"role": "user", "content": "old question"},
+            {"role": "assistant", "content": "old answer"},
+        ],
+    )
+    session_db.archive_and_compact(
+        "tip",
+        [
+            {"role": "assistant", "content": "summary"},
+            {"role": "user", "content": "live question"},
+        ],
+    )
+
+    app = _create_session_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        resp = await cli.get(
+            "/api/sessions/root/messages"
+            "?include_compacted=true&limit=120&order=latest"
+        )
+        assert resp.status == 200
+        payload = await resp.json()
+
+    assert payload["session_id"] == "tip"
+    assert payload["lineage_root_id"] == "root"
+    assert payload["resolved_tip_id"] == "tip"
+    assert payload["display_revision"] == session_db.get_display_revision("root")
+    assert payload["unchanged"] is False
+    assert [message["content"] for message in payload["data"]] == [
+        "old question",
+        "old answer",
+        "summary",
+        "live question",
+    ]
+    assert payload["pagination"] == {
+        "limit": 120,
+        "offset": 0,
+        "order": "latest",
+        "returned": 4,
+    }
+
+
+@pytest.mark.asyncio
+async def test_session_messages_known_revision_skips_message_response(
+    adapter, session_db, monkeypatch
+):
+    session_db.create_session("conditional-root", "api_server")
+    session_db.append_message("conditional-root", "user", "hello")
+    revision = session_db.get_display_revision("conditional-root")
+
+    def unexpected(*args, **kwargs):
+        raise AssertionError("unchanged pages must not transform messages")
+
+    monkeypatch.setattr(adapter, "_message_response", unexpected)
+
+    app = _create_session_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        resp = await cli.get(
+            "/api/sessions/conditional-root/messages"
+            f"?known_display_revision={revision}"
+        )
+        assert resp.status == 200
+        payload = await resp.json()
+
+    assert payload["display_revision"] == revision
+    assert payload["unchanged"] is True
+    assert payload["data"] == []
+    assert payload["pagination"]["returned"] == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "value",
+    ["-1", "1.0", "true", "", " 1", "+1", "1e0", "not-an-int"],
+)
+async def test_session_messages_rejects_invalid_known_display_revision(
+    adapter, session_db, value
+):
+    session_db.create_session("validation-root", "api_server")
+    app = _create_session_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        resp = await cli.get(
+            "/api/sessions/validation-root/messages",
+            params={"known_display_revision": value},
+        )
+        assert resp.status == 400
+        payload = await resp.json()
+
+    assert payload["error"]["code"] == "invalid_pagination"
+
+
+@pytest.mark.asyncio
+async def test_session_messages_rejects_overlong_known_display_revision(
+    adapter, session_db
+):
+    session_db.create_session("overlong-revision", "api_server")
+    app = _create_session_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        resp = await cli.get(
+            "/api/sessions/overlong-revision/messages",
+            params={"known_display_revision": "9" * 5_000},
+        )
+        assert resp.status == 400
+        payload = await resp.json()
+
+    assert payload["error"]["code"] == "invalid_pagination"
+
+
+@pytest.mark.asyncio
+async def test_session_messages_accepts_maximum_int64_known_display_revision(
+    adapter, session_db
+):
+    session_db.create_session("max-revision", "api_server")
+    app = _create_session_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        resp = await cli.get(
+            "/api/sessions/max-revision/messages",
+            params={"known_display_revision": "9223372036854775807"},
+        )
+        assert resp.status == 200
+        payload = await resp.json()
+
+    assert payload["display_revision"] == 0
+    assert payload["unchanged"] is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "value",
+    [
+        pytest.param("9223372036854775808", id="above-int64"),
+        pytest.param("0" * 20, id="overlong-leading-zeroes"),
+    ],
+)
+async def test_session_messages_rejects_out_of_range_known_display_revision(
+    adapter, session_db, value
+):
+    session_db.create_session("range-revision", "api_server")
+    app = _create_session_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        resp = await cli.get(
+            "/api/sessions/range-revision/messages",
+            params={"known_display_revision": value},
+        )
+        assert resp.status == 400
+        payload = await resp.json()
+
+    assert payload["error"]["code"] == "invalid_pagination"
+
+
+@pytest.mark.asyncio
 async def test_run_agent_binds_api_session_context_for_tool_env(adapter, monkeypatch):
     """API-server request sessions should reach tools and terminal subprocess env."""
     monkeypatch.setenv("HERMES_SESSION_ID", "stale-session")

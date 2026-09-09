@@ -55,7 +55,24 @@ describe('useSessionStateCache — stored-id rotation provenance', () => {
     )
 
     act(() => {
-      cache.updateSessionState('runtime-A', state => state, 'stored-A')
+      cache.updateSessionState(
+        'runtime-A',
+        state => ({
+          ...state,
+          transcriptAuthorityEpoch: 3,
+          transcriptProvenance: {
+            connectionId: 'conn-1',
+            coverage: 'latest-page',
+            displayRevision: 7,
+            lineageRootId: 'root-1',
+            profile: 'default',
+            resolvedTipId: 'tip-1',
+            source: 'persisted-display',
+            storedSessionId: 'stored-A'
+          }
+        }),
+        'stored-A'
+      )
       cache.updateSessionState('runtime-A', state => state, 'stored-A-next')
     })
 
@@ -66,6 +83,11 @@ describe('useSessionStateCache — stored-id rotation provenance', () => {
     })
     expect(cache.runtimeIdByStoredSessionIdRef.current.has('stored-A')).toBe(false)
     expect(cache.runtimeIdByStoredSessionIdRef.current.get('stored-A-next')).toBe('runtime-A')
+    expect(cache.sessionStateByRuntimeIdRef.current.get('runtime-A')).toMatchObject({
+      storedSessionId: 'stored-A-next',
+      transcriptAuthorityEpoch: 4
+    })
+    expect(cache.sessionStateByRuntimeIdRef.current.get('runtime-A')?.transcriptProvenance).toBeUndefined()
   })
 
   it('does not publish a foreground-navigation event for a background runtime rotation', () => {

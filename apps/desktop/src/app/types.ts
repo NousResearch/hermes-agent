@@ -180,8 +180,10 @@ export interface PersistedDisplayTranscriptProvenance {
   connectionId: string
   profile: string
   storedSessionId: string
-  lineageRootId: string | null
-  coverage: 'latest-page'
+  lineageRootId: string
+  resolvedTipId: string
+  displayRevision: number
+  coverage: 'latest-page' | 'latest-page-tail'
 }
 
 export interface ClientSessionState {

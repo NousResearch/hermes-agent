@@ -14,7 +14,9 @@ from agent.session_activity import (
     ActivityProvenance, bound_activity_description, normalize_activity_provenance,
 )
 from hermes_state_common import (
-    _LISTABLE_CHILD_SQL, _PREVIEW_ELIGIBLE_SQL, _PREVIEW_RAW_SELECT, _RECOVERABLE_END_REASONS,
+    _LISTABLE_CHILD_SQL, _NOT_BRANCH_MARKER_CHILD_SQL, _NOT_DELEGATE_MARKER_CHILD_SQL,
+    _PREVIEW_ELIGIBLE_SQL,
+    _PREVIEW_RAW_SELECT, _RECOVERABLE_END_REASONS,
     _RECOVERABLE_END_REASONS_SQL, _RESET_END_REASONS, _legacy_reset_child_sql, _shape_preview,
     _sql_session_last_active, _sql_session_last_active_by_id, escape_like as _escape_like,
     _placeholders as _session_ids_placeholders,
@@ -99,7 +101,7 @@ def _session_filter_where(
     where: List[str] = []
     params: List[Any] = []
     if exclude_children:
-        where += [_LISTABLE_CHILD_SQL, f"{_delegate_from_json('s.model_config')} IS NULL"]
+        where += [_LISTABLE_CHILD_SQL, _NOT_DELEGATE_MARKER_CHILD_SQL.format(a="s")]
     # Show roots and user-visible branch/reset sessions, while still hiding sub-agent runs and compression
     # continuations. All four carry parent_session_id, so the shared predicate classifies the edge from
     # stable markers plus legacy-compatible parent metadata. Branch sessions are identified two ways, OR'd
@@ -437,9 +439,18 @@ class SessionSessionsMixin:
     def _end_and_bump(self, conn, sql: str, params: tuple, session_id: str, reason: str) -> int:
         """Run an end-stamp UPDATE; only a boundary this call actually wrote advances the
         conversation generation (a no-op must not rotate the peer). Returns rowcount."""
+        child_ids = {
+            row["id"]
+            for row in conn.execute(
+                "SELECT id FROM sessions WHERE parent_session_id = ?", (session_id,)
+            ).fetchall()
+        }
+        topology_ids = {session_id, *child_ids}
+        roots_before = self._display_roots_from_conn(conn, topology_ids)
         changed = conn.execute(sql, params).rowcount
         if changed:
             self._bump_conversation_generation(conn, session_id, reason)
+            self._invalidate_display_topology(conn, roots_before, topology_ids)
         return changed
 
     def reopen_session(self, session_id: str) -> None:
@@ -447,6 +458,14 @@ class SessionSessionsMixin:
         children that depend on the parent's mutable end_reason (WHERE shared with the listing predicate
         so they cannot drift)."""
         def _do(conn):
+            child_ids = {
+                row["id"]
+                for row in conn.execute(
+                    "SELECT id FROM sessions WHERE parent_session_id = ?", (session_id,)
+                ).fetchall()
+            }
+            topology_ids = {session_id, *child_ids}
+            roots_before = self._display_roots_from_conn(conn, topology_ids)
             conn.execute(
                 "UPDATE sessions AS child SET model_config = json_set("
                 "COALESCE(child.model_config, '{}'), '$._reset_from', child.parent_session_id) "
@@ -455,9 +474,13 @@ class SessionSessionsMixin:
                 f"AND {_legacy_reset_child_sql('child', _session_ids_placeholders(_RESET_END_REASONS))}",
                 (session_id, *_RESET_END_REASONS),
             )
-            conn.execute(
-                "UPDATE sessions SET ended_at = NULL, end_reason = NULL WHERE id = ?", (session_id,),
+            updated = conn.execute(
+                "UPDATE sessions SET ended_at = NULL, end_reason = NULL "
+                "WHERE id = ? AND (ended_at IS NOT NULL OR end_reason IS NOT NULL)",
+                (session_id,),
             )
+            if updated.rowcount == 1:
+                self._invalidate_display_topology(conn, roots_before, topology_ids)
         self._execute_write(_do)
 
     def promote_to_session_reset(self, session_id: str, reason: str = "session_reset") -> bool:
@@ -764,14 +787,9 @@ class SessionSessionsMixin:
 
     def resolve_session_id(self, session_id_or_prefix: str) -> Optional[str]:
         """Exact id, else the single unambiguous prefix match, else None."""
-        exact = self.get_session(session_id_or_prefix)
-        if exact:
-            return exact["id"]
-        matches = self._read_all(
-            "SELECT id FROM sessions WHERE id LIKE ? ESCAPE '\\' ORDER BY started_at DESC LIMIT 2",
-            (f"{_escape_like(session_id_or_prefix)}%",),
-        )
-        return matches[0]["id"] if len(matches) == 1 else None
+        self.flush_token_counts()
+        with self._read_ctx() as conn:
+            return self._resolve_session_id_from_conn(conn, session_id_or_prefix)
 
     def backfill_null_session_profiles(self, profile_name: str) -> int:
         """Stamp this store's own profile onto legacy ``profile_name IS NULL`` rows, which the fail-closed
@@ -1213,8 +1231,8 @@ class SessionSessionsMixin:
                     JOIN sessions parent ON parent.id = c.cur_id
                     JOIN sessions child ON child.parent_session_id = c.cur_id
                     WHERE parent.end_reason = 'compression'
-                      AND json_extract(COALESCE(child.model_config, '{{}}'), '$._branched_from') IS NULL
-                      AND json_extract(COALESCE(child.model_config, '{{}}'), '$._delegate_from') IS NULL
+                      AND {_NOT_BRANCH_MARKER_CHILD_SQL.format(a='child')}
+                      AND {_NOT_DELEGATE_MARKER_CHILD_SQL.format(a='child')}
                       AND COALESCE(child.source, '') != 'tool'
                 ),
                 chain_max AS (
@@ -1321,8 +1339,12 @@ class SessionSessionsMixin:
         compression continuations need the parent's archived rows."""
         if not session_id:
             return False
-        row = self._read_one("SELECT model_config FROM sessions WHERE id = ?", (session_id,))
-        return row is not None and bool(_parse_model_config(row[0]).get("_branched_from"))
+        row = self._read_one(
+            "SELECT parent_session_id, model_config FROM sessions WHERE id = ?", (session_id,)
+        )
+        if row is None or not row["parent_session_id"]:
+            return False
+        return _parse_model_config(row["model_config"]).get("_branched_from") == row["parent_session_id"]
 
     def _session_lineage_root_to_tip(self, session_id: str) -> List[str]:
         if not session_id:
@@ -1454,10 +1476,12 @@ class SessionSessionsMixin:
         def _do(conn):
             if conn.execute("SELECT 1 FROM sessions WHERE id = ? LIMIT 1", (session_id,)).fetchone() is None:
                 return False
-            if expected_ids is not None and expected_ids != {
-                session_id, *_collect_delegate_child_ids(conn, [session_id])
-            }:
+            delegate_ids = _collect_delegate_child_ids(conn, [session_id])
+            actual_ids = {session_id, *delegate_ids}
+            if expected_ids is not None and expected_ids != actual_ids:
                 return False
+            roots_before = self._capture_display_ancestor_roots(conn, actual_ids)
+            surviving_child_ids = self._surviving_children_for_deleted_sessions(conn, actual_ids)
             removed_ids.extend(_delete_delegate_children(conn, [session_id]))
             conn.execute(  # orphan remaining children (branches) so FK is satisfied
                 "UPDATE sessions SET parent_session_id = NULL WHERE parent_session_id = ?", (session_id,),
@@ -1465,6 +1489,7 @@ class SessionSessionsMixin:
             conn.execute("DELETE FROM messages WHERE session_id = ?", (session_id,))
             conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
             self._delete_unreferenced_system_prompts(conn)
+            self._invalidate_display_topology(conn, roots_before, surviving_child_ids)
             removed_ids.append(session_id)
             return True
         deleted = self._execute_write(_do)
@@ -1514,6 +1539,10 @@ class SessionSessionsMixin:
             if not existing:
                 return 0
             ph = _session_ids_placeholders(existing)
+            delegate_ids = _collect_delegate_child_ids(conn, existing)
+            deleted_ids = {*existing, *delegate_ids}
+            roots_before = self._capture_display_ancestor_roots(conn, deleted_ids)
+            surviving_child_ids = self._surviving_children_for_deleted_sessions(conn, deleted_ids)
             removed_ids.extend(_delete_delegate_children(conn, existing))
             conn.execute(  # orphan children whose parent is in the kill list (FK)
                 f"UPDATE sessions SET parent_session_id = NULL WHERE parent_session_id IN ({ph})", existing,
@@ -1521,6 +1550,7 @@ class SessionSessionsMixin:
             conn.execute(f"DELETE FROM messages WHERE session_id IN ({ph})", existing)
             conn.execute(f"DELETE FROM sessions WHERE id IN ({ph})", existing)
             self._delete_unreferenced_system_prompts(conn)
+            self._invalidate_display_topology(conn, roots_before, surviving_child_ids)
             removed_ids.extend(existing)
             return len(existing)
         count = self._execute_write(_do)

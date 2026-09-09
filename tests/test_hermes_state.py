@@ -424,6 +424,82 @@ class TestSessionLifecycle:
         ] == ["before branch", "initial answer"]
         assert db.get_ancestor_display_prefix("branch") == []
 
+    def test_inherited_branch_marker_tip_keeps_branch_history_not_original_parent(self, db):
+        """A branch's compression tip inherits config, not the branch edge."""
+        db.create_session("root", source="tui")
+        db.append_message("root", role="user", content="original parent only")
+        db.create_session(
+            "branch",
+            source="tui",
+            parent_session_id="root",
+            model_config={"_branched_from": "root"},
+        )
+        db.append_message("branch", role="user", content="branch history")
+        db.end_session("branch", "compression")
+        db.create_session(
+            "branch-tip",
+            source="tui",
+            parent_session_id="branch",
+            model_config={"_branched_from": "root"},
+        )
+        db.append_message("branch-tip", role="assistant", content="tip history")
+
+        assert db._is_explicit_branch_session("branch") is True
+        assert db._is_explicit_branch_session("branch-tip") is False
+        assert [
+            message["content"]
+            for message in db.get_messages_as_conversation(
+                "branch-tip", include_ancestors=True
+            )
+        ] == ["branch history", "tip history"]
+        model_history, display_history = db.get_resume_conversations("branch-tip")
+        assert [message["content"] for message in model_history] == ["tip history"]
+        assert [message["content"] for message in display_history] == [
+            "branch history",
+            "tip history",
+        ]
+        assert [
+            message["content"] for message in db.get_ancestor_display_prefix("branch-tip")
+        ] == ["branch history"]
+
+    def test_inherited_branch_tip_resume_guard_counts_only_display_history(self, db):
+        """Resume counting must use the same branch-bounded history projection."""
+        db.create_session("root", source="tui")
+        db.append_messages_batch(
+            "root",
+            [{"role": "user", "content": f"root-{index}"} for index in range(5)],
+        )
+        db.create_session(
+            "branch",
+            source="tui",
+            parent_session_id="root",
+            model_config={"_branched_from": "root"},
+        )
+        db.append_message("branch", role="user", content="branch history")
+        db.end_session("branch", "compression")
+        db.create_session(
+            "branch-tip",
+            source="tui",
+            parent_session_id="branch",
+            # Compression carries the branch origin forward, but this row is
+            # not itself a branch edge.
+            model_config={"_branched_from": "root"},
+        )
+        db.append_message("branch-tip", role="assistant", content="tip history")
+
+        model_history, display_history = db.get_resume_conversations("branch-tip")
+        assert [message["content"] for message in model_history] == ["tip history"]
+        assert [message["content"] for message in display_history] == [
+            "branch history",
+            "tip history",
+        ]
+        assert db.get_resume_message_count("branch-tip") == 2
+        assert db.assert_resume_safe("branch-tip", max_messages=2) == 2
+        with pytest.raises(hermes_state.SessionResumeTooLargeError) as exc_info:
+            db.assert_resume_safe("branch-tip", max_messages=1)
+        assert exc_info.value.message_count == 2
+        assert exc_info.value.limit == 1
+
 
 
 
@@ -910,10 +986,10 @@ class TestFTS5Search:
         db.append_message("s1", role="user", content="after")
 
         statements = []
-        read_conn = db._get_read_conn() or db._conn
-        traced_connections = [db._conn]
-        if read_conn is not db._conn:
-            traced_connections.append(read_conn)
+        with db._read_ctx() as read_conn:
+            traced_connections = [db._conn]
+            if read_conn is not db._conn:
+                traced_connections.append(read_conn)
         for conn in traced_connections:
             conn.set_trace_callback(statements.append)
 

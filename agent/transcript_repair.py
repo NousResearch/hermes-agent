@@ -21,18 +21,56 @@ def is_content_blank(content: Any) -> bool:
     return False
 
 
+def _has_nonempty_media_payload(value: Any) -> bool:
+    if isinstance(value, str):
+        return bool(value.strip())
+    if isinstance(value, (bytes, bytearray)):
+        return bool(value)
+    if isinstance(value, dict):
+        return any(_has_nonempty_media_payload(value.get(key)) for key in ("url", "data"))
+    return False
+
+
+def _has_visible_repair_content(content: Any) -> bool:
+    """True when repaired content has a user-visible text or media payload."""
+    if isinstance(content, str):
+        return bool(content.strip())
+    if isinstance(content, list):
+        return any(_has_visible_repair_content(part) for part in content)
+    if not isinstance(content, dict):
+        return False
+
+    part_type = str(content.get("type") or "").strip().lower()
+    if part_type in {"text", "input_text", "output_text"}:
+        return any(
+            isinstance(content.get(key), str) and bool(content[key].strip())
+            for key in ("text", "content")
+        )
+    if not part_type and isinstance(content.get("text"), str):
+        return bool(content["text"].strip())
+    if part_type in {"image_url", "input_image", "image"}:
+        return any(
+            _has_nonempty_media_payload(content.get(key))
+            for key in ("image_url", "url", "data", "source")
+        )
+    if part_type in {"input_audio", "audio"}:
+        return any(
+            _has_nonempty_media_payload(content.get(key))
+            for key in ("input_audio", "audio", "audio_url", "url", "data")
+        )
+    return False
+
+
 def resolve_and_repair_transcript_batch(
     conn: sqlite3.Connection,
     session_id: str,
     messages: List[Dict[str, Any]],
     encode_content_fn: Callable[[Any], Any],
     decode_content_fn: Callable[[Any], Any],
-) -> List[Dict[str, Any]]:
-    """Partition a message batch within an active write transaction. An assistant message carrying an
-    existing integer ``_row_id`` targets its active SQLite row (or the active clone a watermark compaction
-    made of it): a blank row is updated in place; a non-blank one (concurrent winner) has its canonical
-    content adopted without overwrite. Returns the messages that must be inserted as fresh rows."""
+) -> tuple[List[Dict[str, Any]], int]:
+    """Partition a batch and report fresh inserts plus visible in-place repairs."""
     inserted_rows: List[Dict[str, Any]] = []
+    repaired_visible_rows = 0
     for msg in messages:
         existing_row_id = msg.get("_row_id") if isinstance(msg, dict) else None
         target_row = None
@@ -42,17 +80,29 @@ def resolve_and_repair_transcript_batch(
             inserted_rows.append(msg)
             continue
         target_id = int(target_row["id"])
-        decoded = decode_content_fn(target_row["content"])
+        raw_content = target_row["content"]
+        decoded = decode_content_fn(raw_content)
         msg["_row_id"] = target_id
         if is_content_blank(decoded):
-            conn.execute(
-                "UPDATE messages SET content = ? "
-                "WHERE id = ? AND session_id = ? AND active = 1",
-                (encode_content_fn(msg.get("content")), target_id, session_id),
-            )
+            encoded = encode_content_fn(msg.get("content"))
+            incoming_decoded = decode_content_fn(encoded)
+            if decoded != incoming_decoded:
+                updated = conn.execute(
+                    "UPDATE messages SET content = ? "
+                    "WHERE id = ? AND session_id = ? AND active = 1",
+                    (encoded, target_id, session_id),
+                )
+                if (
+                    updated.rowcount > 0
+                    and raw_content != encoded
+                    and _has_visible_repair_content(incoming_decoded)
+                ):
+                    repaired_visible_rows += 1
+            if decoded == incoming_decoded:
+                msg["_canonical_content"] = decoded
         else:
             msg["_canonical_content"] = decoded  # concurrent winner: adopt, don't overwrite
-    return inserted_rows
+    return inserted_rows, repaired_visible_rows
 
 
 def _active_assistant_row(conn: sqlite3.Connection, session_id: str, row_id: int):

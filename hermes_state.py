@@ -51,6 +51,7 @@ from hermes_state_dbfile import (
     refuse_deleted_wal_generation,
 )
 from hermes_state_messages import SessionMessagesMixin
+from hermes_state_display import SessionDisplayMixin
 from hermes_state_wal import _WAL_INCOMPAT_MARKERS, apply_database_pragmas, apply_wal_with_fallback
 from hermes_state_repair import _claim_repair_attempt, preflight_db_writability, repair_state_db_schema
 from hermes_state_titles import SessionTitlesMixin
@@ -328,7 +329,7 @@ class SessionDB(
     SessionSessionsMixin, SessionFtsSetupMixin, SessionSearchMixin, SessionSchemaMixin,
     SessionPortabilityMixin, SessionTelegramTopicsMixin, SessionCompressionMixin,
     SessionGatewayMixin, SessionMaintenanceMixin, SessionUsageMixin, SessionTitlesMixin,
-    SessionMessagesMixin,
+    SessionMessagesMixin, SessionDisplayMixin,
 ):
     """SQLite-backed session storage with FTS5 search; many reader threads, one writer (WAL)."""
 
@@ -458,6 +459,8 @@ class SessionDB(
         # is queryable AND not marked stale.
         self._fts_cjk_loaded = self._fts_cjk_available = self._fts_unavailable_warned = False
         self._conn = None
+        # A failed rollback on the fallback primary reader poisons that handle.
+        self._primary_connection_recovery_failed = False
         # Async token accounting; distinct from self._lock so enqueue/flush never contends with writes.
         self._token_queue: deque = deque()
         self._token_queue_cond = threading.Condition(threading.Lock())
@@ -709,34 +712,135 @@ class SessionDB(
         except queue.Empty:
             return self._get_read_conn()
 
+    def _return_read_conn(self, conn) -> None:
+        """Return a healthy checked-out reader, or close it if the pool closed."""
+        returned = False
+        with self._read_conns_lock:
+            if not self._read_conns_closed:
+                try:
+                    self._read_pool.put_nowait(conn)
+                    returned = True
+                except queue.Full:
+                    pass
+        if not returned:
+            self._close_read_conn(conn)
+
     @contextmanager
     def _read_ctx(self) -> Iterator[sqlite3.Connection]:
         """Yield a connection for read-only statements: a pooled read-only
         connection with NO lock under WAL; otherwise (non-WAL, open failure,
         ceiling reached) the writer connection under self._lock — deliberate
         degradation: slower beats EMFILE, which the supervisor cannot see."""
+        self._raise_if_primary_connection_recovery_failed()
         conn = self._checkout_read_conn()
         if conn is not None:
             try:
                 yield conn
             finally:
-                returned = False
-                with self._read_conns_lock:
-                    if not self._read_conns_closed:
-                        try:
-                            self._read_pool.put_nowait(conn)
-                            returned = True
-                        except queue.Full:
-                            pass
-                if not returned:
-                    # close() drained the pool (or queue.Full: unreachable while
-                    # permits == maxsize, load-bearing if they drift): surplus.
-                    self._close_read_conn(conn)
+                self._return_read_conn(conn)
             return
         with self._lock:
             if self._conn is None:  # close() raced a still-unwinding reader
                 self._reopen_after_close_locked(context="read")
             yield cast(sqlite3.Connection, self._conn)
+
+    def _raise_if_primary_connection_recovery_failed(self) -> None:
+        if self._primary_connection_recovery_failed:
+            raise RuntimeError("SessionDB primary connection is unavailable after failed recovery")
+
+    def _replace_primary_connection_after_read_failure(self, failed_conn) -> None:
+        """Discard a poisoned fallback reader and reopen the primary handle."""
+        try:
+            self._raise_if_db_replaced()
+        finally:
+            if self._conn is failed_conn:
+                self._conn = None
+            self._close_connection_quietly(failed_conn)
+            self._db_sidecar_identity = {}
+        replacement = None
+        try:
+            if self.read_only:
+                replacement = _connect_tracked_db(
+                    f"file:{self.db_path}?mode=ro", tracking_path=self.db_path, uri=True,
+                    check_same_thread=False, timeout=1.0, isolation_level=None,
+                )
+            else:
+                replacement = _connect_tracked_db(
+                    str(self.db_path), check_same_thread=False, timeout=1.0, isolation_level=None,
+                )
+            replacement.row_factory = sqlite3.Row
+            apply_database_pragmas(replacement, db_label="state.db")
+            if not self.read_only:
+                replacement.execute("PRAGMA foreign_keys=ON")
+                self._fts_cjk_loaded = load_fts5_cjk_extension(replacement)
+            self._conn = replacement
+            self._primary_connection_recovery_failed = False
+        except BaseException as exc:
+            self._close_connection_quietly(replacement)
+            self._primary_connection_recovery_failed = True
+            logger.error(
+                "failed to replace poisoned primary read connection for %s (%s)",
+                self.db_path, type(exc).__name__,
+            )
+
+    @contextmanager
+    def _read_transaction_on_conn(self, conn, *, pooled: bool):
+        """Run one deferred read transaction on an already-owned connection."""
+        healthy = False
+        try:
+            if conn.in_transaction:
+                raise RuntimeError("read connection unexpectedly has an active transaction")
+            conn.execute("BEGIN")
+            try:
+                yield conn
+            except BaseException:
+                try:
+                    conn.execute("ROLLBACK")
+                    if conn.in_transaction:
+                        raise RuntimeError("read transaction rollback left connection active")
+                    healthy = True
+                except BaseException as cleanup_exc:
+                    logger.warning(
+                        "read transaction rollback failed for %s (%s); discarding connection",
+                        self.db_path, type(cleanup_exc).__name__,
+                    )
+                    if not pooled:
+                        self._replace_primary_connection_after_read_failure(conn)
+                raise
+            else:
+                try:
+                    conn.execute("ROLLBACK")
+                    if conn.in_transaction:
+                        raise RuntimeError("read transaction rollback left connection active")
+                except BaseException:
+                    if not pooled:
+                        self._replace_primary_connection_after_read_failure(conn)
+                    raise
+                else:
+                    healthy = True
+        finally:
+            if pooled:
+                if healthy:
+                    self._return_read_conn(conn)
+                else:
+                    self._close_read_conn(conn)
+
+    @contextmanager
+    def _read_transaction_ctx(self):
+        """Yield one connection pinned to a single deferred SQLite read snapshot."""
+        self._raise_if_primary_connection_recovery_failed()
+        conn = self._checkout_read_conn()
+        if conn is not None:
+            with self._read_transaction_on_conn(conn, pooled=True) as read_conn:
+                yield read_conn
+            return
+        with self._lock:
+            self._raise_if_primary_connection_recovery_failed()
+            if self._conn is None:
+                self._reopen_after_close_locked(context="read transaction")
+            primary_conn = cast(sqlite3.Connection, self._conn)
+            with self._read_transaction_on_conn(primary_conn, pooled=False) as read_conn:
+                yield read_conn
 
     def _reopen_after_close_locked(self, context: str = "write") -> None:
         """Reopen the writer after ``close()`` raced a live caller (a teardown owner
@@ -795,6 +899,7 @@ class SessionDB(
             fn_started = False
             try:
                 with self._lock:
+                    self._raise_if_primary_connection_recovery_failed()
                     if self._conn is None:  # close() raced this writer
                         self._reopen_after_close_locked(context="write")
                     self._conn.execute("BEGIN IMMEDIATE")

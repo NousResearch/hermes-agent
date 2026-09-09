@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import {
   buildGroups,
+  FIRST_PAINT_BUDGET,
   firstVisibleGroupIndex,
   HIDDEN_TRANSCRIPT_RENDER_BUDGET,
   LIVE_TAIL_MIN_GROUPS,
@@ -247,6 +248,12 @@ describe('firstVisibleGroupIndex', () => {
     const groups = Array.from({ length: 20 }, (_, i) => group(`g${i}`, 1))
 
     expect(firstVisibleGroupIndex(groups, 600, 8)).toBe(0)
+  })
+
+  it('keeps the synchronous first paint to one lightweight rich-text turn', () => {
+    const groups = Array.from({ length: 5 }, (_, index) => group(`turn-${index}`, 4))
+
+    expect(firstVisibleGroupIndex(groups, FIRST_PAINT_BUDGET)).toBe(4)
   })
 })
 

@@ -758,6 +758,13 @@ def _shutdown_agent_memory_provider(agent) -> None:
     if _mm is not None and hasattr(_mm, 'flush_pending'):
         with suppress(Exception):
             _mm.flush_pending(timeout=10)
+    if getattr(agent, "session_id", None) in _handed_off_session_ids:
+        # The gateway now owns extraction and context-engine session-end hooks.
+        # Release this process's providers without committing its stale transcript.
+        agent._memory_provider_shutdown = True
+        if _mm is not None:
+            _mm.shutdown_all()
+        return
     # Forward the agent's transcript so on_session_end hooks see the real conversation;
     # no-arg fallback for stubs / partially-initialised agents.
     _session_msgs = getattr(agent, '_session_messages', None)
@@ -3925,6 +3932,7 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
     def _tui_shutdown(self):
         """Teardown after the app exits: interrupt agent, stop voice/pet, persist + close session, cleanup, exit summary."""
         self._should_exit = True
+        handed_off = (getattr(self.agent, "session_id", None) or self.session_id) in _handed_off_session_ids
         self._pet_stop_anim()
         # Without this line the terminal sits silent through the whole cleanup window.
         with suppress(Exception):
@@ -3942,9 +3950,11 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
         for _unset in (set_sudo_password_callback, set_approval_callback, set_secret_capture_callback):
             _unset(None)
         # On SIGHUP/SIGTERM the agent thread may be reaped before its own persistence runs.
-        self._persist_active_session_before_close()
+        # Successful /handoff transferred the transcript before this TUI unwound.
+        if not handed_off:
+            self._persist_active_session_before_close()
 
-        if self._session_db and self.agent:
+        if self._session_db and self.agent and not handed_off:
             try:
                 self._session_db.end_session(self.agent.session_id, "cli_close")
             except (Exception, KeyboardInterrupt) as e:
@@ -3966,7 +3976,7 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
                 except (Exception, KeyboardInterrupt) as e:
                     logger.debug("Could not delete session on exit: %s", e)
         # run_conversation() fires on_session_end on normal completion; only fire here mid-turn.
-        if self.agent and self._agent_running:
+        if self.agent and self._agent_running and not handed_off:
             _invoke_interrupted_session_end(self.agent, self.agent.session_id, "shutdown")
         _run_cleanup()
         self._print_exit_summary()

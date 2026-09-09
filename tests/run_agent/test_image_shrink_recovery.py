@@ -78,6 +78,25 @@ class TestImageTooLargeClassification:
         assert result.reason == FailoverReason.image_too_large
         assert result.retryable is True
 
+    def test_codex_400_patch_budget_message(self):
+        """OpenAI Codex Responses rejects a high-resolution image on its
+        30000-tile-patch ceiling with wording that contains none of the
+        image-size vocabulary ("requires N patches after processing,
+        exceeding the limit").  It used to fall through to format_error /
+        non-retryable, so the shrink recovery was bypassed and the session
+        kept failing (or failover re-sent the same invalid image) (#106337).
+        """
+        err = _FakeApiError(
+            status_code=400,
+            message=(
+                "The image you provided requires 33174 patches after processing, "
+                "exceeding the limit of 30000. Please resize the image and try again."
+            ),
+        )
+        result = classify_api_error(err, provider="openai-codex", model="gpt-5.6-sol")
+        assert result.reason == FailoverReason.image_too_large
+        assert result.retryable is True
+
     def test_unrelated_400_still_not_image_too_large(self):
         """The new "media" patterns must not widen into ordinary 400s."""
         err = _FakeApiError(

@@ -271,6 +271,171 @@ def _review_service(tmp_path: Path, *, client: ReviewClient):
     return WisdomService(store=store, client=client)
 
 
+@pytest.fixture
+def local_publication(monkeypatch, tmp_path):
+    client = ReviewClient()
+    client.identity = {"owner": "user-1"}
+    client.publication_mode = "moderated"
+    client.agent_led_policy = lambda: SimpleNamespace(publication_mode=client.publication_mode)
+    skill = tmp_path / "skills" / "reviewed-skill"
+    skill.mkdir(parents=True)
+    (skill / "SKILL.md").write_text("---\nname: reviewed-skill\ndescription: Review incident notes.\n---\n# Incident notes\n", encoding="utf-8")
+    service = WisdomService(store=WisdomStore(tmp_path / "state"), client=client)
+    monkeypatch.setattr(service, "require_setup", lambda: None)
+    monkeypatch.setattr(service, "_eligible_paths", lambda: [skill])
+    monkeypatch.setattr(service, "_enqueue_professionalism_review", lambda **_: None)
+    monkeypatch.setattr(service, "_require_professionalism_review", lambda **_: {"status": "pass", "checks": []})
+    monkeypatch.setattr(service, "portal_review_url", lambda id: "https://portal.example/review/" + id)
+    prepared = service.suggest("reviewed-skill")
+    id = prepared["local_draft_id"]
+    client.submissions = []
+
+    def submit(**payload):
+        client.submissions.append(payload)
+        saved = service._prepared_result(service.store.draft(id))
+        client.files = [(f["path"], f["mode"], f["content_utf8"].encode()) for f in saved["files"]]
+        client.description = saved["drafted_description"]
+        draft = client._draft()
+        assert draft.contentHash == payload["content_hash"]
+        return draft
+
+    def publish(_id, *, content_hash):
+        client.publications += 1
+        client.state = "published" if client.publication_mode == "open" else "pending_moderation"
+        return {"state": client.state, "content_hash": content_hash}
+
+    client.submit_draft = submit
+    client.publish = publish
+    return service, client, id
+
+
+@pytest.mark.parametrize("mode,state", [("open", "published"), ("moderated", "pending_moderation"), ("managed", "pending_moderation")])
+def test_local_final_confirmation_uploads_and_submits_exact_package_once(local_publication, mode, state):
+    service, client, id = local_publication
+    client.publication_mode = mode
+    review = service.publication_review(id)
+    assert client.uploaded == 0
+    assert review["publication_mode"] == mode
+    assert review["draft"]["security_check"]["status"] == "pass"
+    assert review["draft"]["professionalism_check"]["status"] == "pass"
+    assert {f["path"] for f in review["files"]} == {"SKILL.md", "skill.manifest.json"}
+    result = service.submit_reviewed_package(id, expected_hashes=review["hashes"], publication_mode=mode)
+    assert result["publication_state"] == state
+    assert len(client.submissions) == len(client.approvals) == client.publications == 1
+    assert service.store.receipt(result["draft_id"]) is None
+    assert service.submit_reviewed_package(id, expected_hashes=review["hashes"], publication_mode=mode) == result
+    assert len(client.submissions) == len(client.approvals) == client.publications == 1
+
+
+@pytest.mark.parametrize("key", ["content", "author_description", "package_manifest"])
+def test_local_final_confirmation_rejects_stale_display_before_upload(local_publication, key):
+    service, client, id = local_publication
+    review = service.publication_review(id)
+    hashes = {**review["hashes"], key: "sha256:" + "0" * 64}
+    with pytest.raises(WisdomConflict, match="local package changed"):
+        service.submit_reviewed_package(id, expected_hashes=hashes, publication_mode="moderated")
+    assert client.uploaded == 0
+    assert client.approvals == []
+
+
+def test_local_final_confirmation_rejects_changed_policy(local_publication):
+    service, client, id = local_publication
+    review = service.publication_review(id)
+    client.publication_mode = "open"
+    with pytest.raises(WisdomConflict, match="policy changed"):
+        service.submit_reviewed_package(id, expected_hashes=review["hashes"], publication_mode="moderated")
+    assert client.uploaded == 0
+
+
+def test_local_final_confirmation_resumes_after_upload_without_reupload(local_publication):
+    service, client, id = local_publication
+    review = service.publication_review(id)
+    approve = client.approve
+    client.approve = lambda *a, **kw: (_ for _ in ()).throw(WisdomConflict("scan not ready"))
+    with pytest.raises(WisdomConflict, match="scan not ready"):
+        service.submit_reviewed_package(id, expected_hashes=review["hashes"], publication_mode="moderated")
+    assert client.publications == 0
+    assert len(client.submissions) == 1
+    recovered = service.publication_review(id)
+    assert recovered["draft"]["id"] == "draft-review"
+    assert recovered["hashes"] == review["hashes"]
+    uploaded = client.uploaded
+    client.approve = approve
+    result = service.submit_reviewed_package(id, expected_hashes=review["hashes"], publication_mode="moderated")
+    assert result["publication_state"] == "pending_moderation"
+    assert len(client.submissions) == 1
+    assert client.uploaded == uploaded
+
+
+def test_server_hash_change_never_creates_acknowledgement_receipt(tmp_path):
+    client = ReviewClient()
+    service = _review_service(tmp_path, client=client)
+    review = service.review("draft-review", acknowledge=False)
+    client.description = "Changed since the user reviewed it."
+    with pytest.raises(WisdomConflict, match="package changed after review"):
+        service.review("draft-review", acknowledge=True, expected_hashes=review["hashes"])
+    assert service.store.receipt("draft-review") is None
+    assert not client.approvals
+
+
+def test_final_confirmation_cannot_race_another_submit(local_publication):
+    service, client, id = local_publication
+    review = service.publication_review(id)
+    key = "publication:" + service.store.draft(id)["skill_id"]
+    lock = service.store.acquire_operation_lock(key)
+    try:
+        with pytest.raises(WisdomConflict, match="already being submitted"):
+            service.submit_reviewed_package(id, expected_hashes=review["hashes"], publication_mode="moderated")
+        assert client.uploaded == 0
+    finally:
+        service.store.release_operation_lock(key, lock)
+
+
+def test_changed_policy_after_upload_does_not_approve(local_publication):
+    service, client, id = local_publication
+    review = service.publication_review(id)
+    original = client.submit_draft
+    def submit(**payload):
+        result = original(**payload)
+        client.publication_mode = "open"
+        return result
+    client.submit_draft = submit
+    with pytest.raises(WisdomConflict, match="policy changed"):
+        service.submit_reviewed_package(id, expected_hashes=review["hashes"], publication_mode="moderated")
+    assert client.uploaded > 0
+    assert not client.approvals
+    assert client.publications == 0
+
+
+def test_final_confirmation_reruns_local_guard_before_upload(local_publication, monkeypatch):
+    service, client, id = local_publication
+    review = service.publication_review(id)
+    monkeypatch.setattr("hermes_wisdom.service._scan_summary", lambda _: {
+        "guard": {"allowed": False, "reason": "new blocking rule", "findings": []},
+        "skill_evaluator": {"findings": []},
+    })
+    with pytest.raises(PackagePolicyError, match="guard blocked"):
+        service.submit_reviewed_package(id, expected_hashes=review["hashes"], publication_mode="moderated")
+    assert client.uploaded == 0
+    assert not client.approvals
+
+
+def test_local_review_waits_for_an_inflight_professionalism_check(local_publication, monkeypatch):
+    service, client, id = local_publication
+    calls = []
+    def review(**kwargs):
+        calls.append(kwargs)
+        if len(calls) == 1:
+            raise WisdomConflict("Still running", code="professionalism_review_pending")
+        return {"status": "pass"}
+    monkeypatch.setattr(service, "_require_professionalism_review", review)
+    monkeypatch.setattr("hermes_wisdom.service.time.sleep", lambda _: None)
+    result = service.publication_review(id)
+    assert result["draft"]["professionalism_check"]["status"] == "pass"
+    assert len(calls) == 2
+    assert client.uploaded == 0
+
+
 def test_owner_draft_approval_reconciles_a_portal_won_race(monkeypatch, tmp_path: Path):
     client = ReviewClient()
     service = _review_service(tmp_path, client=client)

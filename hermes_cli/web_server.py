@@ -1881,6 +1881,7 @@ from hermes_cli.web_models import (  # noqa: F401
     LearningNodeEdit,
     WisdomSuggestRequest,
     WisdomReviewRequest,
+    WisdomPublicationRequest,
     WisdomPreparedSaveRequest,
     WisdomCandidateDismissRequest,
     WisdomCandidateEventRequest,
@@ -15771,7 +15772,37 @@ async def post_wisdom_review(body: WisdomReviewRequest):
     return await _run_wisdom(
         body.profile,
         lambda service: service.review(
-            body.draft_id, acknowledge=body.acknowledge, portal=False
+            body.draft_id, acknowledge=body.acknowledge, portal=False,
+            expected_hashes=body.expected_hashes,
+        ),
+    )
+
+
+@app.post("/api/wisdom/publication/review")
+async def post_wisdom_publication_review(body: WisdomDecisionRequest):
+    return await _run_wisdom(body.profile, lambda service: service.publication_review(body.draft_id))
+
+
+@app.post("/api/wisdom/publication/submit")
+async def post_wisdom_publication_submit(body: WisdomPublicationRequest):
+    if set(body.expected_hashes) != {"content", "author_description", "package_manifest"}:
+        raise HTTPException(status_code=422, detail="Confirmation requires all three displayed package hashes")
+    if body.interaction_id or body.session_id:
+        if not body.interaction_id or not body.session_id:
+            raise HTTPException(status_code=422, detail="Both interaction and session are required")
+        def submit(service):
+            from hermes_wisdom.consent import ConsentActor, WisdomConsent
+            actor = ConsentActor(body.session_id, "local", "local-user", f"local:{body.session_id}")
+            return WisdomConsent(service).submit_local_publication(
+                service.store.active_org_id(), body.interaction_id, actor,
+                draft_id=body.draft_id, expected_hashes=body.expected_hashes, publication_mode=body.publication_mode,
+            )
+        return await _run_wisdom(body.profile, submit)
+    return await _run_wisdom(
+        body.profile,
+        lambda service: service.submit_reviewed_package(
+            body.draft_id, expected_hashes=body.expected_hashes,
+            publication_mode=body.publication_mode,
         ),
     )
 
@@ -15983,6 +16014,15 @@ async def post_wisdom_consent(body: WisdomConsentRequest):
             service.store.active_org_id(), body.interaction_id, actor, body.action
         )
     return await _run_wisdom(body.profile, resolve)
+
+
+@app.post("/api/wisdom/consent/publication-review")
+async def post_wisdom_consent_publication_review(body: WisdomConsentRequest):
+    def prepare(service):
+        from hermes_wisdom.consent import ConsentActor, WisdomConsent
+        actor = ConsentActor(body.session_id, "local", "local-user", f"local:{body.session_id}")
+        return WisdomConsent(service).prepare_local_publication(service.store.active_org_id(), body.interaction_id, actor)
+    return await _run_wisdom(body.profile, prepare)
 
 
 app.include_router(_skills_routes.router)

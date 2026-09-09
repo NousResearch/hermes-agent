@@ -62,6 +62,31 @@ def consent(tmp_path):
     return instance, actor, identity, now
 
 
+def test_local_publication_review_keeps_actor_binding_and_completes_original_card(consent, monkeypatch):
+    instance, actor, identity, now = consent
+    card = instance.present("org", identity, actor)
+    local_actor = ConsentActor("session", "local", "local-user", "local:session")
+    plan = {"event_id": "candidate-1", "skill_id": "local-skill", "source_hash": "source", "origin_address": local_actor.address}
+    with instance.service.store.transaction() as db:
+        db.execute("UPDATE wisdom_consent SET platform='local',actor_id='local-user',operation='share',plan_json=? WHERE id=?", (json.dumps(plan), card["id"]))
+    instance.service.prepare_candidate.return_value = {"stage": "prepared", "prepared": {"local_draft_id": "local:draft"}}
+    with pytest.raises(WisdomNotFound):
+        instance.prepare_local_publication("org", card["id"], actor)
+    with pytest.raises(WisdomNotFound):
+        instance.prepare_local_publication("org", card["id"], ConsentActor("other-session", "local", "local-user", "local:session"))
+    assert instance.prepare_local_publication("org", card["id"], local_actor) == {"draft_id": "local:draft"}
+    instance.service.submit_reviewed_package.assert_not_called()
+    monkeypatch.setattr(instance.service.store, "draft", lambda id: {"skill_id": "local-skill", "source_hash": "source"})
+    result = {"draft_id": "server-draft", "publication_state": "pending_moderation", "portal_url": "https://portal.example/review/server-draft"}
+    instance.service.submit_reviewed_package.return_value = result
+    hashes = {"content": "content", "author_description": "description", "package_manifest": "manifest"}
+    assert instance.submit_local_publication("org", card["id"], local_actor, draft_id="local:draft", expected_hashes=hashes, publication_mode="moderated") == result
+    instance.service.submit_reviewed_package.assert_called_once_with("local:draft", expected_hashes=hashes, publication_mode="moderated")
+    completed = instance._resolve("org", card["id"], local_actor, "inspect")
+    assert completed["state"] == "completed"
+    assert completed["result"]["publication_state"] == "pending_moderation"
+
+
 def test_exact_plan_is_private_and_repeated_consent_applies_once(consent):
     instance, actor, identity, _ = consent
     shown = instance.present("org", identity, actor)

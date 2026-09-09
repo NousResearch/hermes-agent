@@ -319,6 +319,16 @@ class WisdomReviewRequest(BaseModel):
     draft_id: str
     acknowledge: bool = False
     profile: Optional[str] = None
+    expected_hashes: Optional[Dict[str, str]] = None
+
+
+class WisdomPublicationRequest(BaseModel):
+    draft_id: str
+    expected_hashes: Dict[str, str]
+    publication_mode: Literal["open", "managed", "moderated"]
+    profile: Optional[str] = None
+    interaction_id: Optional[str] = None
+    session_id: Optional[str] = None
 
 
 class WisdomEditedFile(BaseModel):

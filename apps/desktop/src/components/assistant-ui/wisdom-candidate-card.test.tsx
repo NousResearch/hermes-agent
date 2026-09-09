@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type * as HermesApi from '@/hermes'
@@ -13,9 +13,13 @@ const saveWisdomPreparedDraft = vi.fn()
 const reviewWisdomDraft = vi.fn()
 const reviseWisdomDraft = vi.fn()
 const decideWisdomDraft = vi.fn()
+const reviewWisdomPublication = vi.fn()
+const submitWisdomPublication = vi.fn()
 
 vi.mock('@/hermes', async importOriginal => ({
   ...(await importOriginal<typeof HermesApi>()),
+  reviewWisdomPublication,
+  submitWisdomPublication,
   approveWisdomCandidate,
   decideWisdomDraft,
   deferWisdomCandidate,
@@ -132,6 +136,16 @@ beforeEach(() => {
     skill_name: 'safe-skill'
   })
   suggestWisdomSkill.mockResolvedValue(prepared())
+  reviewWisdomPublication.mockResolvedValue({
+    ...exactReview('local-1'),
+    draft: { ...exactReview('local-1').draft, state: 'prepared' },
+    publication_mode: 'moderated'
+  })
+  submitWisdomPublication.mockResolvedValue({
+    draft_id: 'draft-1',
+    publication_state: 'pending_moderation',
+    portal_url: 'https://portal.example/review/draft-1'
+  })
 })
 
 afterEach(() => {
@@ -140,114 +154,62 @@ afterEach(() => {
 })
 
 describe('WisdomCandidateCard', () => {
-  it('shows controls immediately and prepares the exact event only after Review first', async () => {
-    const scrollIntoView = vi.fn()
-    Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', { configurable: true, value: scrollIntoView })
-
+  it('opens the entire local package before one final moderation submission', async () => {
     await renderCard()
-
-    expect(await screen.findByText(/Your organisation \(Nous Research\) has enabled Collective Wisdom/)).toBeTruthy()
-    expect(screen.getByText(/Congratulations! Hermes detected a skill/)).toBeTruthy()
-    expect(screen.getByText('Safe Skill')).toBeTruthy()
-    expect(screen.getByText('Share a dependable workflow with your team.')).toBeTruthy()
-    expect(screen.queryByDisplayValue('Owner copy')).toBeNull()
-    expect(screen.queryByLabelText('Edit SKILL.md')).toBeNull()
-    expect(screen.queryByText('Minimum Hermes version')).toBeNull()
-    expect(screen.getByText('Would you like to share?')).toBeTruthy()
-    expect(screen.getByRole('button', { name: 'Review first' })).toBeTruthy()
-    expect(screen.getByRole('button', { name: 'Not Now' })).toBeTruthy()
-    expect(screen.getByRole('button', { name: 'Yes' })).toBeTruthy()
-    expect(prepareWisdomCandidate).not.toHaveBeenCalled()
+    expect(await screen.findByText('Safe Skill')).toBeTruthy()
+    expect(submitWisdomPublication).not.toHaveBeenCalled()
     fireEvent.click(screen.getByRole('button', { name: 'Review first' }))
-    expect(await screen.findByRole('button', { name: 'Review & edit' })).toBeTruthy()
-    expect(prepareWisdomCandidate).toHaveBeenCalledWith('event-1', 'research')
-    fireEvent.click(screen.getByRole('button', { name: 'Review & edit' }))
-    expect(screen.getByDisplayValue('Owner copy')).toBeTruthy()
+    const submit = await screen.findByRole('button', { name: 'Submit for approval' })
     expect(screen.getByLabelText('Edit SKILL.md')).toBeTruthy()
-    expect(screen.getByDisplayValue('safe-skill')).toBeTruthy()
-    expect(screen.queryByText('Minimum Hermes version')).toBeNull()
-    fireEvent.click(screen.getByRole('button', { name: 'Edit detailed requirements' }))
     expect(screen.getByText('Minimum Hermes version')).toBeTruthy()
-    expect(screen.getByText('Why Hermes suggested this skill')).toBeTruthy()
-    expect(screen.queryByRole('button', { name: 'Prepare exact package' })).toBeNull()
-    expect(screen.queryByRole('button', { name: 'Open Collective' })).toBeNull()
-    fireEvent.click(screen.getByRole('button', { name: 'Open full review' }))
-    expect(window.location.hash).toBe('#/skills?tab=collective')
-    expect(screen.queryByText(/expires/i)).toBeNull()
-    expect(screen.queryByText(/publisher device|from device/i)).toBeNull()
-    await waitFor(() => expect(scrollIntoView).toHaveBeenCalledWith({ block: 'nearest' }))
+    await waitFor(() => expect(submit).toHaveProperty('disabled', false))
+    expect(prepareWisdomCandidate).toHaveBeenCalledWith('event-1', 'research')
+    fireEvent.click(submit)
+    expect(await screen.findByText('Waiting for collective administrator approval')).toBeTruthy()
+    expect(submitWisdomPublication).toHaveBeenCalledWith(
+      expect.objectContaining({
+        hashes: exactReview('local-1').hashes,
+        publication_mode: 'moderated'
+      }),
+      'research',
+      undefined
+    )
+    expect(suggestWisdomSkill).not.toHaveBeenCalled()
+    expect(approveWisdomCandidate).not.toHaveBeenCalled()
   }, 30_000)
 
-  it('saves local edits before upload, saves a rescanned server revision, then requires a fresh receipt', async () => {
-    const setIntervalSpy = vi.spyOn(window, 'setInterval')
-    saveWisdomPreparedDraft.mockResolvedValue(prepared('# Locally edited\n'))
-    suggestWisdomSkill.mockResolvedValueOnce({
-      draft: { id: 'draft-1' },
-      local_scan: localScan,
-      notice: 'owner private'
-    })
-    reviewWisdomDraft
-      .mockResolvedValueOnce(exactReview('draft-1'))
-      .mockResolvedValueOnce(exactReview('draft-2', '# Rescanned edit\n'))
-      .mockResolvedValueOnce({ ...exactReview('draft-2', '# Rescanned edit\n'), receipt: 'receipt-1' })
-    reviseWisdomDraft.mockResolvedValue({
-      draft: { id: 'draft-2' },
-      local_scan: localScan,
-      notice: 'rescanned'
-    })
-    decideWisdomDraft.mockResolvedValue({ ok: true })
-
+  it('blocks unsaved edits, rescans locally, then submits the new hashes', async () => {
     await renderCard()
     fireEvent.click(await screen.findByRole('button', { name: 'Review first' }))
-    fireEvent.click(await screen.findByRole('button', { name: 'Review & edit' }))
-    const localEditor = await screen.findByLabelText('Edit SKILL.md')
-    fireEvent.change(screen.getByDisplayValue('safe-skill'), { target: { value: 'safer-skill' } })
-    fireEvent.change(localEditor, { target: { value: '# Locally edited\n' } })
-    expect((screen.getByRole('button', { name: 'Review first' }) as HTMLButtonElement).disabled).toBe(true)
-    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
-    await waitFor(() =>
-      expect(saveWisdomPreparedDraft).toHaveBeenCalledWith(
-        'local-1',
-        'Owner copy',
-        expect.arrayContaining([
-          expect.objectContaining({ path: 'SKILL.md', content_utf8: '# Locally edited\n' }),
-          expect.objectContaining({ path: 'skill.manifest.json', content_utf8: expect.stringContaining('safer-skill') })
-        ]),
-        'research'
-      )
-    )
-
-    await waitFor(() =>
-      expect((screen.getByRole('button', { name: 'Review first' }) as HTMLButtonElement).disabled).toBe(false)
-    )
-    fireEvent.click(screen.getByRole('button', { name: 'Review first' }))
-    expect(await screen.findByText(/sha256:draft-1-content/)).toBeTruthy()
-    expect(suggestWisdomSkill.mock.calls[0][3]).toBe('local-skill-1')
-
-    fireEvent.change(screen.getByLabelText('Edit SKILL.md'), { target: { value: '# Rescanned edit\n' } })
-    expect((screen.getByRole('button', { name: 'Yes' }) as HTMLButtonElement).disabled).toBe(true)
+    fireEvent.change(await screen.findByLabelText('Edit SKILL.md'), { target: { value: '# Edited' } })
+    expect(screen.getByRole('button', { name: 'Submit for approval' })).toHaveProperty('disabled', true)
+    saveWisdomPreparedDraft.mockResolvedValue(prepared())
+    const updated = {
+      ...exactReview('saved', '# Edited'),
+      draft: { ...exactReview('saved').draft, state: 'prepared' },
+      publication_mode: 'moderated'
+    }
+    reviewWisdomPublication.mockResolvedValue(updated)
     fireEvent.click(screen.getByRole('button', { name: 'Save changes & rescan' }))
+    await waitFor(() => expect(saveWisdomPreparedDraft).toHaveBeenCalledTimes(1))
     await waitFor(() =>
-      expect(reviseWisdomDraft).toHaveBeenCalledWith(
-        'draft-1',
-        'Owner-authored claim',
-        expect.arrayContaining([expect.objectContaining({ path: 'SKILL.md', content_utf8: '# Rescanned edit\n' })]),
-        expect.objectContaining({ content: 'sha256:draft-1-content' }),
-        'research'
-      )
+      expect(screen.getByRole('button', { name: 'Submit for approval' })).toHaveProperty('disabled', false)
     )
+    fireEvent.click(screen.getByRole('button', { name: 'Submit for approval' }))
+    await waitFor(() => expect(submitWisdomPublication).toHaveBeenCalledWith(updated, 'research', undefined))
+  })
 
-    fireEvent.click(await screen.findByRole('button', { name: 'Yes' }))
-    await waitFor(() => expect(decideWisdomDraft).toHaveBeenCalledWith('draft-2', 'approve', 'research'))
-    expect(reviewWisdomDraft.mock.calls[2].slice(0, 2)).toEqual(['draft-2', true])
-    expect(screen.queryByText('safe-skill')).toBeNull()
-
-    getWisdomEvents.mockClear()
-    const poll = setIntervalSpy.mock.calls.find(([, delay]) => delay === 10_000)?.[0]
-    expect(poll).toBeTypeOf('function')
-    act(() => (poll as () => void)())
-    await waitFor(() => expect(getWisdomEvents).toHaveBeenCalledTimes(1))
-    expect(screen.queryByText('safe-skill')).toBeNull()
+  it('uses the open-policy label and keeps failures available for retry', async () => {
+    reviewWisdomPublication.mockResolvedValue({ ...exactReview(), publication_mode: 'open' })
+    submitWisdomPublication.mockRejectedValueOnce(new Error('Package changed; reload review'))
+    await renderCard()
+    fireEvent.click(await screen.findByRole('button', { name: 'Review first' }))
+    const button = await screen.findByRole('button', { name: 'Publish to team' })
+    fireEvent.click(button)
+    expect(await screen.findByRole('alert')).toHaveProperty('textContent', 'Package changed; reload review')
+    expect(screen.getByRole('button', { name: 'Reload review' })).toBeTruthy()
+    expect(button).toHaveProperty('disabled', false)
+    expect(screen.queryByRole('link', { name: 'View in Portal' })).toBeNull()
   })
 
   it('defers this notification without declining the qualified candidate', async () => {
@@ -258,16 +220,13 @@ describe('WisdomCandidateCard', () => {
     expect(screen.queryByText('safe-skill')).toBeNull()
   })
 
-  it('publishes directly from Yes through the candidate approval boundary', async () => {
-    approveWisdomCandidate.mockResolvedValue({ publication_state: 'pending_moderation' })
+  it('Share opens local review and never approves an unseen package', async () => {
     await renderCard()
-
-    fireEvent.click(await screen.findByRole('button', { name: 'Yes' }))
-
-    await waitFor(() => expect(approveWisdomCandidate).toHaveBeenCalledWith('event-1', 'research'))
-    expect(prepareWisdomCandidate).not.toHaveBeenCalled()
-    expect(decideWisdomDraft).not.toHaveBeenCalled()
-    expect(screen.queryByText('safe-skill')).toBeNull()
+    fireEvent.click(await screen.findByRole('button', { name: 'Share' }))
+    await screen.findByRole('button', { name: 'Submit for approval' })
+    expect(prepareWisdomCandidate).toHaveBeenCalledWith('event-1', 'research')
+    expect(approveWisdomCandidate).not.toHaveBeenCalled()
+    expect(submitWisdomPublication).not.toHaveBeenCalled()
   })
 
   it('shows the notification mute placeholder as a local visual toggle', async () => {
@@ -291,10 +250,10 @@ describe('WisdomCandidateCard', () => {
     expect((await screen.findByRole('alert')).textContent).toContain('Gateway temporarily unavailable')
     expect((screen.getByRole('button', { name: 'Not Now' }) as HTMLButtonElement).disabled).toBe(false)
     expect((screen.getByRole('button', { name: 'Review first' }) as HTMLButtonElement).disabled).toBe(false)
-    expect((screen.getByRole('button', { name: 'Yes' }) as HTMLButtonElement).disabled).toBe(false)
+    expect((screen.getByRole('button', { name: 'Share' }) as HTMLButtonElement).disabled).toBe(false)
 
     fireEvent.click(screen.getByRole('button', { name: 'Review first' }))
-    expect(await screen.findByRole('button', { name: 'Review & edit' })).toBeTruthy()
+    expect(await screen.findByRole('button', { name: 'Submit for approval' })).toBeTruthy()
     expect(prepareWisdomCandidate).toHaveBeenCalledTimes(2)
   })
 })

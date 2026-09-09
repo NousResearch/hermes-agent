@@ -1235,6 +1235,11 @@ export const zhHant = defineLocale({
 
   skills: {
     collective: {
+      publishToTeam: '發布至團隊',
+      submitForApproval: '提交審核',
+      publishLocalNotice: '確認後將上傳此確切的套件，並在通過必要檢查後發布至團隊。',
+      submitLocalNotice: '確認後將上傳此確切的套件供組織審核。審核完成前不會發布。',
+      reloadReview: '重新載入審核內容',
       notificationPreferences: {
         title: "通知設定",
         scope: "管理此組織中跨用戶端的主動通知。手動瀏覽和分享仍可使用。",

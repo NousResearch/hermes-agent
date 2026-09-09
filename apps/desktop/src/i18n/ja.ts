@@ -1368,6 +1368,11 @@ export const ja = defineLocale({
       submit: '下書きを提出',
       submitting: '提出中…',
       readEvery: 'すべてのファイルを確認してください。承認は下記の正確な3つのハッシュに紐づきます。',
+      publishToTeam: "チームに公開",
+      submitForApproval: "承認を申請",
+      publishLocalNotice: "確認すると、このパッケージをアップロードし、必要なチェックの後にチームへ公開します。",
+      submitLocalNotice: "確認すると、このパッケージを組織の承認に提出します。審査完了までは公開されません。",
+      reloadReview: "レビューを再読み込み",
       editReview:
         'ここで説明、SKILL.md、宣言的マニフェストを編集できます。保存すると新しい非公開リビジョンが作成され、スキャンが再実行されて新しいハッシュが返されます。ローカルの元スキルは書き換えません。',
       editOwnerDescription: '所有者による説明を編集',

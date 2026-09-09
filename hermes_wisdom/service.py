@@ -9,6 +9,7 @@ import re
 import shutil
 import sys
 import tempfile
+import time
 import uuid
 import webbrowser
 from concurrent.futures import ThreadPoolExecutor
@@ -951,6 +952,11 @@ class WisdomService:
         return {
             "network_submission": False,
             "local_draft_id": str(draft["id"]),
+            "hashes": {
+                "content": content_hash,
+                "author_description": description_hash,
+                "package_manifest": sha256_address((overlay / "skill.manifest.json").read_bytes()),
+            },
             **load_skill_editorial_metadata(overlay),
             "overlay_path": str(overlay),
             "drafted_description": str(draft["description"]),
@@ -1703,7 +1709,8 @@ class WisdomService:
         }
 
     def review(
-        self, draft_id: str, *, acknowledge: bool, portal: bool = False
+        self, draft_id: str, *, acknowledge: bool, portal: bool = False,
+        expected_hashes: dict[str, str] | None = None,
     ) -> dict[str, Any]:
         reconstructed = self.client.reconstruct_draft(draft_id)
         draft = reconstructed.detail.draft
@@ -1741,6 +1748,8 @@ class WisdomService:
             },
             "receipt": None,
         }
+        if expected_hashes is not None and result["hashes"] != expected_hashes:
+            raise WisdomConflict("The package changed after review. Reload it before confirming.")
         if portal:
             url = self.portal_review_url(draft_id)
             webbrowser.open(url)
@@ -1932,6 +1941,123 @@ class WisdomService:
                 "review receipt is stale; review the complete server draft again"
             )
         return receipt, draft.model_dump(mode="json")
+
+    def publication_review(self, draft_id: str) -> dict[str, Any]:
+        """Read the complete local or uploaded package without granting approval."""
+        self.require_setup()
+        policy = self.client.agent_led_policy()
+        if draft_id.startswith("local:"):
+            local = self.store.draft(draft_id)
+            if local is not None and local["state"] != "prepared":
+                submitted = self.store.latest_draft_for_source(str(local["skill_id"]), str(local["source_hash"]))
+                if submitted and not str(submitted["id"]).startswith("local:"):
+                    draft_id = str(submitted["id"])
+        if draft_id.startswith("local:"):
+            local = self.store.draft(draft_id)
+            if local is None:
+                raise WisdomNotFound("Local publication draft not found")
+            if local["state"] != "prepared":
+                raise WisdomConflict("This local draft has advanced. Open its submitted draft to continue.")
+            # Preparation may already have handed this check to the background worker.
+            deadline = time.monotonic() + 90
+            while True:
+                try:
+                    prepared = self._prepared_result(local, finish_reviews=True)
+                    break
+                except WisdomConflict as exc:
+                    if exc.code != "professionalism_review_pending" or time.monotonic() >= deadline:
+                        raise
+                    time.sleep(1)
+            result = {
+                "draft": {
+                    "id": draft_id, "slug": _parse_package_manifest(
+                        (Path(local["overlay_path"]) / "skill.manifest.json").read_bytes()
+                    ).name, "state": "prepared",
+                    "authorDescription": prepared["drafted_description"],
+                    "security_check": prepared_security_check(
+                        prepared["files"], prepared["drafted_description"], prepared["local_scan"],
+                        include_gateway_pending=False,
+                    ),
+                    "professionalism_check": prepared["professionalism_check"],
+                },
+                "files": prepared["files"], "hashes": prepared["hashes"],
+                "receipt": None, "effective_policy": {},
+            }
+        else:
+            result = self.review(draft_id, acknowledge=False)
+            result["portal_url"] = self.portal_review_url(draft_id)
+        return {**result, "publication_mode": policy.publication_mode}
+
+    def submit_reviewed_package(
+        self, draft_id: str, *, expected_hashes: dict[str, str], publication_mode: str
+    ) -> dict[str, Any]:
+        local = self.store.draft(draft_id)
+        key = "publication:" + (str(local["skill_id"]) if local else draft_id)
+        lock = self.store.acquire_operation_lock(key)
+        if lock is None:
+            raise WisdomConflict("This package is already being submitted. Reload its status before retrying.")
+        try:
+            return self._submit_reviewed_package(
+                draft_id, expected_hashes=expected_hashes, publication_mode=publication_mode
+            )
+        finally:
+            self.store.release_operation_lock(key, lock)
+
+    def _submit_reviewed_package(
+        self, draft_id: str, *, expected_hashes: dict[str, str], publication_mode: str
+    ) -> dict[str, Any]:
+        """One explicit local confirmation, bound to the entire displayed package."""
+        self.require_setup()
+
+        def check_policy():
+            policy = self.client.agent_led_policy()
+            if policy.publication_mode != publication_mode:
+                raise WisdomConflict("The team's publication policy changed. Review it before confirming.")
+
+        check_policy()
+        if draft_id.startswith("local:"):
+            local = self.store.draft(draft_id)
+            if local is None:
+                raise WisdomNotFound("prepared draft not found")
+            if local["state"] == "prepared":
+                prepared = self._prepared_result(local)
+                if prepared["hashes"] != expected_hashes:
+                    raise WisdomConflict("The local package changed. Save and review it before confirming.")
+                skill = self.store.local_skill(str(local["skill_id"]))
+                if skill is None:
+                    raise WisdomNotFound("local skill not found")
+                if _source_fingerprint(Path(skill["canonical_path"])) != local["source_hash"]:
+                    raise WisdomConflict("The local source changed. Prepare and review its current version before confirming.")
+                submitted = self.suggest(
+                    Path(skill["canonical_path"]).name,
+                    description=prepared["drafted_description"],
+                    system_specification=prepared["system_specification"],
+                    local_skill_id=str(local["skill_id"]),
+                    expected_hashes=expected_hashes,
+                    _pre_upload_guard=check_policy,
+                )
+                draft_id = str(submitted["draft"]["id"])
+            else:
+                # A retry after upload resumes the same contribution, never a new draft.
+                existing = self.store.latest_draft_for_source(str(local["skill_id"]), str(local["source_hash"]))
+                if not existing or str(existing["id"]).startswith("local:"):
+                    raise WisdomConflict("The submission needs review before retrying.")
+                draft_id = str(existing["id"])
+        reviewed = self.review(draft_id, acknowledge=False, expected_hashes=expected_hashes)
+        state = reviewed["draft"]["state"]
+        if state in {"pending_moderation", "published"}:
+            return {"draft_id": draft_id, "publication_state": state, "portal_url": self.portal_review_url(draft_id)}
+        if state not in {"ready", "owner_approved", "publishing"}:
+            raise WisdomConflict(f"This draft cannot be submitted while it is {state}.")
+        check_policy()
+        self.review(draft_id, acknowledge=True, expected_hashes=expected_hashes)
+        result = self.approve(draft_id) if state == "ready" else self._resume_owner_publication(draft_id, reviewed["draft"])
+        publication = result.get("publication") or {}
+        return {
+            "draft_id": draft_id,
+            "publication_state": publication.get("state"),
+            "portal_url": self.portal_review_url(draft_id),
+        }
 
     def approve(self, draft_id: str) -> dict[str, Any]:
         receipt, _draft = self._validated_review_receipt(draft_id)

@@ -64,6 +64,11 @@ export interface WisdomTranslations {
   submit: string
   submitting: string
   readEvery: string
+  publishToTeam: string
+  submitForApproval: string
+  publishLocalNotice: string
+  submitLocalNotice: string
+  reloadReview: string
   editReview: string
   editOwnerDescription: string
   unsavedChanges: string

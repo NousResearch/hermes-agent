@@ -9,17 +9,18 @@ interface Props {
   file: WisdomDraftReview['files'][number]
   value: string
   disabled?: boolean
+  reviewSource?: 'local' | 'server'
   onChange: (value: string) => void
 }
 
-export function WisdomFileEditor({ file, value, disabled = false, onChange }: Props) {
+export function WisdomFileEditor({ file, value, disabled = false, reviewSource = 'server', onChange }: Props) {
   const [mode, setMode] = useState<'source' | 'preview'>('source')
 
   if (file.path === 'skill.manifest.json') {
     return (
       <details className="border-t border-border py-3" open>
         <summary className="cursor-pointer font-mono text-xs">
-          {file.path} · server-reviewed {file.hash}
+          {file.path} · {reviewSource === 'local' ? 'local draft' : 'server-reviewed'} {file.hash}
         </summary>
         <WisdomManifestEditor value={value} disabled={disabled} onChange={onChange} />
       </details>
@@ -31,7 +32,7 @@ export function WisdomFileEditor({ file, value, disabled = false, onChange }: Pr
   return (
     <details className="border-t border-border py-3" open>
       <summary className="cursor-pointer font-mono text-xs">
-        {file.path} · server-reviewed {file.hash}
+        {file.path} · {reviewSource === 'local' ? 'local draft' : 'server-reviewed'} {file.hash}
       </summary>
       {supportsPreview && (
         <div className="mt-3 flex gap-2" aria-label={`${file.path} editor mode`}>

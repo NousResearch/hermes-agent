@@ -15,6 +15,7 @@ export interface WisdomReviewCheckRow {
 }
 
 export interface WisdomReviewCheck {
+  source?: 'local_preflight' | string
   schema_version?: number
   status: WisdomReviewStatus
   summary?: string
@@ -103,6 +104,7 @@ export interface WisdomDraft {
 }
 
 export interface WisdomPreparedDraft {
+  hashes: WisdomDraftReview['hashes']
   network_submission: false
   local_draft_id: string
   overlay_path: string
@@ -142,6 +144,50 @@ export interface WisdomDraftReview {
   hashes: { author_description: string; content: string; package_manifest: string }
   receipt: null | string
 }
+
+export type WisdomPublicationReview = WisdomDraftReview & {
+  publication_mode: 'open' | 'managed' | 'moderated'
+  portal_url?: string
+}
+export interface WisdomPublicationResult {
+  draft_id: string
+  publication_state: 'pending_moderation' | 'published'
+  portal_url: string
+}
+
+export const reviewWisdomPublication = (draftId: string, profile?: ProfileScope): Promise<WisdomPublicationReview> =>
+  request('/api/wisdom/publication/review', profile, {
+    method: 'POST',
+    timeoutMs: 120_000,
+    body: { draft_id: draftId }
+  })
+
+export const submitWisdomPublication = (
+  review: WisdomPublicationReview,
+  profile?: ProfileScope,
+  consent?: { interaction_id: string; session_id: string }
+): Promise<WisdomPublicationResult> =>
+  request('/api/wisdom/publication/submit', profile, {
+    method: 'POST',
+    timeoutMs: 120_000,
+    body: {
+      draft_id: review.draft.id,
+      expected_hashes: review.hashes,
+      publication_mode: review.publication_mode,
+      ...consent
+    }
+  })
+
+export const prepareWisdomConsentPublication = (
+  interactionId: string,
+  sessionId: string,
+  profile?: ProfileScope
+): Promise<{ draft_id: string }> =>
+  request('/api/wisdom/consent/publication-review', profile, {
+    method: 'POST',
+    timeoutMs: 120_000,
+    body: { interaction_id: interactionId, session_id: sessionId, action: 'inspect' }
+  })
 
 export interface WisdomEditedFile {
   path: string
@@ -280,30 +326,45 @@ export interface WisdomActionPlan {
   allowed?: boolean
 }
 
-const request = <T>(path: string, profile?: ProfileScope, init?: { body?: unknown; method?: string }): Promise<T> =>
+const request = <T>(
+  path: string,
+  profile?: ProfileScope,
+  init?: { body?: unknown; method?: string; timeoutMs?: number }
+): Promise<T> =>
   window.hermesDesktop.api<T>({
     ...capabilityScoped(profile),
     path,
     method: init?.method,
+    timeoutMs: init?.timeoutMs,
     body: init?.body
   })
 
 export const getWisdomStatus = (profile?: ProfileScope): Promise<WisdomStatus> => request('/api/wisdom/status', profile)
 
-export const getWisdomMute = (profile?: ProfileScope): Promise<WisdomMuteSnapshot> => request('/api/wisdom/mute', profile)
+export const getWisdomMute = (profile?: ProfileScope): Promise<WisdomMuteSnapshot> =>
+  request('/api/wisdom/mute', profile)
 export const prepareWisdomMute = (profile?: ProfileScope): Promise<WisdomMuteControl> =>
   request('/api/wisdom/mute/prepare', profile, { method: 'POST', body: {} })
-export const chooseWisdomMute = (controlId: string, duration: WisdomMuteDuration, profile?: ProfileScope): Promise<WisdomMuteSnapshot> =>
+export const chooseWisdomMute = (
+  controlId: string,
+  duration: WisdomMuteDuration,
+  profile?: ProfileScope
+): Promise<WisdomMuteSnapshot> =>
   request('/api/wisdom/mute/choose', profile, { method: 'POST', body: { control_id: controlId, duration } })
 
 export const getWisdomMediation = (profile?: ProfileScope): Promise<WisdomMediationActivity> =>
   request('/api/wisdom/mediation', profile)
 
 export const resolveWisdomConsent = (
-  interactionId: string, sessionId: string, action: 'inspect' | `inspect.${number}` | 'defer' | 'confirm', profile?: ProfileScope
-): Promise<WisdomConsentInteraction> => request('/api/wisdom/consent', profile, {
-  method: 'POST', body: { interaction_id: interactionId, session_id: sessionId, action }
-})
+  interactionId: string,
+  sessionId: string,
+  action: 'inspect' | `inspect.${number}` | 'defer' | 'confirm',
+  profile?: ProfileScope
+): Promise<WisdomConsentInteraction> =>
+  request('/api/wisdom/consent', profile, {
+    method: 'POST',
+    body: { interaction_id: interactionId, session_id: sessionId, action }
+  })
 
 export const setupWisdom = (profile?: ProfileScope): Promise<ActionResponse> =>
   request('/api/wisdom/setup', profile, { method: 'POST', body: { accept_disclosure: true } })

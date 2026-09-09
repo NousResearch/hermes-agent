@@ -338,6 +338,33 @@ class WisdomConsent:
             "result": value.get("result"),
         }
 
+    def _local_contribution(self, org: str, interaction_id: str, actor: ConsentActor) -> dict[str, Any]:
+        if actor.platform != "local":
+            raise WisdomNotFound("Local publication review not found")
+        self._resolve(org, interaction_id, actor, "inspect")
+        with self.service.store.transaction() as db:
+            row = db.execute("SELECT * FROM wisdom_consent WHERE id=? AND organization_id=?", (interaction_id, org)).fetchone()
+            value = _decode(row)
+        if value["operation"] not in {"share", "publish"} or value["state"] != "pending" or value["expires_at"] <= self.queue.clock():
+            raise WisdomConflict("This contribution needs a fresh review control")
+        return value
+
+    def prepare_local_publication(self, org: str, interaction_id: str, actor: ConsentActor) -> dict[str, Any]:
+        value = self._local_contribution(org, interaction_id, actor)
+        prepared = self.service.prepare_candidate(value["plan"]["event_id"])
+        draft_id = prepared["prepared"]["local_draft_id"] if prepared["stage"] == "prepared" else prepared["review"]["draft"]["id"]
+        return {"draft_id": draft_id}
+
+    def submit_local_publication(self, org: str, interaction_id: str, actor: ConsentActor, *, draft_id: str, expected_hashes: dict[str, str], publication_mode: str) -> dict[str, Any]:
+        value = self._local_contribution(org, interaction_id, actor)
+        local = self.service.store.draft(draft_id)
+        if local is None or (local["skill_id"], local["source_hash"]) != (value["plan"]["skill_id"], value["plan"]["source_hash"]):
+            raise WisdomConflict("This package does not belong to the reviewed contribution")
+        result = self.service.submit_reviewed_package(draft_id, expected_hashes=expected_hashes, publication_mode=publication_mode)
+        with self.service.store.transaction() as db:
+            self._finish(db, value, "completed", result)
+        return result
+
     def resolve(
         self, org: str, interaction_id: str, actor: ConsentActor, action: str
     ) -> dict[str, Any]:

@@ -7,8 +7,8 @@ import type {
   WisdomCheckResult,
   WisdomDiscovery,
   WisdomDraft,
-  WisdomDraftReview,
-  WisdomPreparedDraft,
+  WisdomPublicationReview,
+  WisdomPublicationResult,
   WisdomReviewCheck,
   WisdomActionPlan,
   WisdomInstallations,
@@ -23,14 +23,8 @@ import { useI18n } from '@/i18n'
 import { WisdomFileEditor } from './WisdomFileEditor'
 import { WisdomAgentActivity } from './WisdomAgentActivity'
 import { WisdomNotificationSettings } from './WisdomNotificationSettings'
-import { WisdomSystemSpecificationEditor } from './WisdomManifestEditor'
 import { WisdomCheckBadge, WisdomReviewTables } from './WisdomChecks'
-import {
-  parseWisdomSystemSpecification,
-  wisdomManifestValidationError,
-  wisdomSystemSpecificationValidationError
-} from '@/lib/wisdom-manifest'
-import type { WisdomSystemSpecification } from '@/lib/wisdom-manifest'
+import { wisdomManifestValidationError } from '@/lib/wisdom-manifest'
 
 interface Props {
   profile?: string
@@ -119,14 +113,10 @@ export function CollectiveWisdomPanel({ profile }: Props) {
   const [acceptSensitive, setAcceptSensitive] = useState(false)
   const [acceptPartial, setAcceptPartial] = useState(false)
   const [preserveModified, setPreserveModified] = useState(false)
-  const [review, setReview] = useState<WisdomDraftReview | null>(null)
+  const [review, setReview] = useState<WisdomPublicationReview | null>(null)
   const [reviewDescription, setReviewDescription] = useState('')
   const [reviewFiles, setReviewFiles] = useState<Record<string, string>>({})
-  const [prepared, setPrepared] = useState<WisdomPreparedDraft | null>(null)
-  const [preparedSkill, setPreparedSkill] = useState('')
-  const [preparedSkillId, setPreparedSkillId] = useState('')
-  const [approvedDescription, setApprovedDescription] = useState('')
-  const [approvedSpecification, setApprovedSpecification] = useState<WisdomSystemSpecification | null>(null)
+  const [publication, setPublication] = useState<WisdomPublicationResult | null>(null)
   const [busy, setBusy] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [showManualCandidates, setShowManualCandidates] = useState(false)
@@ -298,12 +288,15 @@ export function CollectiveWisdomPanel({ profile }: Props) {
       : wisdomManifestValidationError(manifest)
   }, [review, reviewFiles])
 
-  const reviewCanEdit = !!review && ['ready', 'changes_requested'].includes(review.draft.state)
-  const approvedSpecificationError = approvedSpecification
-    ? wisdomSystemSpecificationValidationError(approvedSpecification)
-    : 'System Specification is unavailable.'
-
-  const showReview = (nextReview: WisdomDraftReview) => {
+  const reviewCanEdit = !!review && ['prepared', 'ready', 'changes_requested'].includes(review.draft.state)
+  const showReview = (nextReview: WisdomPublicationReview) => {
+    const state = nextReview.draft.state
+    if (nextReview.portal_url && state === 'published') {
+      setPublication({ draft_id: nextReview.draft.id, publication_state: state, portal_url: nextReview.portal_url })
+      setReview(null)
+      return
+    }
+    setPublication(null)
     setReview(nextReview)
     setReviewDescription(nextReview.draft.authorDescription || '')
     setReviewFiles(Object.fromEntries(nextReview.files.map(file => [file.path, file.content_utf8])))
@@ -529,13 +522,12 @@ export function CollectiveWisdomPanel({ profile }: Props) {
         undefined,
         candidate.local_skill_id
       )
-      if ('network_submission' in result) {
-        setPrepared(result)
-        setPreparedSkill(candidate.name)
-        setPreparedSkillId(candidate.local_skill_id)
-        setApprovedDescription(result.drafted_description)
-        setApprovedSpecification(parseWisdomSystemSpecification(result.system_specification))
-      }
+      showReview(
+        await api.reviewWisdomPublication(
+          'network_submission' in result ? result.local_draft_id : result.draft.id,
+          profile
+        )
+      )
     } catch (reason) {
       setError(userFacingError(reason))
     } finally {
@@ -547,7 +539,7 @@ export function CollectiveWisdomPanel({ profile }: Props) {
     setBusy(draftId)
     setError(null)
     try {
-      showReview(await api.reviewWisdomDraft(draftId, false, profile))
+      showReview(await api.reviewWisdomPublication(draftId, profile))
     } catch (reason) {
       setError(userFacingError(reason))
     } finally {
@@ -569,18 +561,21 @@ export function CollectiveWisdomPanel({ profile }: Props) {
       }
       const manifestError = wisdomManifestValidationError(manifest)
       if (manifestError) throw new Error(`Fix the System Specification before saving: ${manifestError}`)
-      const revised = await api.reviseWisdomDraft(
-        review.draft.id,
-        reviewDescription,
-        review.files.map(file => ({
-          path: file.path,
-          content_utf8: reviewFiles[file.path] ?? file.content_utf8
-        })),
-        review.hashes,
-        profile
-      )
+      const files = review.files.map(file => ({
+        path: file.path,
+        content_utf8: reviewFiles[file.path] ?? file.content_utf8
+      }))
+      const revised =
+        review.draft.state === 'prepared'
+          ? await api.saveWisdomPreparedDraft(review.draft.id, reviewDescription, files, profile)
+          : await api.reviseWisdomDraft(review.draft.id, reviewDescription, files, review.hashes, profile)
       await refreshContributionData()
-      showReview(await api.reviewWisdomDraft(revised.draft.id, false, profile))
+      showReview(
+        await api.reviewWisdomPublication(
+          'local_draft_id' in revised ? revised.local_draft_id : revised.draft.id,
+          profile
+        )
+      )
     } catch (reason) {
       setError(userFacingError(reason))
     } finally {
@@ -855,10 +850,7 @@ export function CollectiveWisdomPanel({ profile }: Props) {
                               <p className="text-xs text-text-tertiary">{candidateSummary(candidate)}</p>
                               {candidate.professionalism_check && (
                                 <div className="mt-1">
-                                  <WisdomCheckBadge
-                                    label="Professionalism"
-                                    value={candidate.professionalism_check}
-                                  />
+                                  <WisdomCheckBadge label="Professionalism" value={candidate.professionalism_check} />
                                 </div>
                               )}
                             </div>
@@ -950,14 +942,11 @@ export function CollectiveWisdomPanel({ profile }: Props) {
           </div>
           <WisdomReviewTables
             security={
-              asRecord(asRecord(selected.latest_version_detail).version).security_check as
-                | WisdomReviewCheck
-                | undefined
+              asRecord(asRecord(selected.latest_version_detail).version).security_check as WisdomReviewCheck | undefined
             }
             professionalism={
               asRecord(asRecord(selected.latest_version_detail).version).professionalism_check as
-                | WisdomReviewCheck
-                | undefined
+                WisdomReviewCheck | undefined
             }
           />
           <pre className="mt-4 max-h-80 overflow-auto whitespace-pre-wrap text-xs text-text-secondary">
@@ -1092,84 +1081,23 @@ export function CollectiveWisdomPanel({ profile }: Props) {
         </div>
       )}
 
-      {prepared && (
-        <div className="border border-cyan-500/40 p-4" aria-label="Prepare owner-private Wisdom draft">
-          <h3 className="font-mono text-base">{copy.prepareTitle}</h3>
-          <p className="mt-1 text-xs text-text-secondary">{copy.prepareNotice}</p>
-          <WisdomReviewTables professionalism={prepared.professionalism_check} />
-          <label className="mt-4 block text-xs font-medium" htmlFor="wisdom-author-description">
-            {copy.ownerDescription}
-          </label>
-          <textarea
-            id="wisdom-author-description"
-            className="mt-1 min-h-24 w-full border border-border bg-transparent p-3 text-sm focus-visible:outline focus-visible:outline-2"
-            maxLength={4096}
-            value={approvedDescription}
-            onChange={event => setApprovedDescription(event.target.value)}
-          />
-          <div className="mt-4 text-xs font-medium">{copy.systemSpecification}</div>
-          {approvedSpecification && (
-            <div className="mt-2">
-              <WisdomSystemSpecificationEditor
-                value={approvedSpecification}
-                disabled={busy === prepared.local_draft_id}
-                onChange={setApprovedSpecification}
-              />
-            </div>
-          )}
-          {approvedSpecificationError && (
-            <div role="alert" className="mt-3 border border-amber-500/50 bg-amber-500/5 p-3 text-xs text-amber-200">
-              {approvedSpecificationError}
-            </div>
-          )}
-          <p className="mt-2 break-all font-mono text-[11px] text-text-tertiary">
-            {copy.localOverlay}: {prepared.overlay_path}
-          </p>
-          <div className="mt-4 grid grid-cols-3 items-center gap-2">
-            <div className="justify-self-start">
-              <Button size="sm" outlined onClick={() => setPrepared(null)}>
-                {copy.cancel}
-              </Button>
-            </div>
-            <div className="justify-self-center">
-              <Button
-                size="sm"
-                disabled={busy === prepared.local_draft_id || !!approvedSpecificationError}
-                onClick={async () => {
-                  setBusy(prepared.local_draft_id)
-                  setError(null)
-                  try {
-                    if (!approvedSpecification || approvedSpecificationError) {
-                      throw new Error(approvedSpecificationError || 'System Specification is unavailable')
-                    }
-                    await api.suggestWisdomSkill(
-                      preparedSkill,
-                      profile,
-                      approvedDescription,
-                      approvedSpecification,
-                      preparedSkillId
-                    )
-                    await refreshContributionData()
-                    setPrepared(null)
-                  } catch (reason) {
-                    setError(userFacingError(reason))
-                  } finally {
-                    setBusy(null)
-                  }
-                }}
-              >
-                {busy === prepared.local_draft_id ? copy.submitting : copy.submit}
-              </Button>
-            </div>
-            <span aria-hidden="true" />
-          </div>
+      {publication && (
+        <div role="status" className="border-y border-border p-4">
+          <p>{copy.draftState(publication.publication_state)}</p>
+          <a href={publication.portal_url} target="_blank" rel="noreferrer">
+            View in Portal
+          </a>
         </div>
       )}
 
       {review && (
         <div className="border border-emerald-500/40 p-4" aria-label="Owner review exact content">
           <h3 className="font-mono text-base">{review.draft.slug}</h3>
-          <p className="mt-1 text-xs text-text-secondary">{copy.readEvery}</p>
+          <p className="mt-1 text-xs text-text-secondary">
+            {review.publication_mode === 'open'
+              ? 'Confirming uploads this exact package and publishes it to your team after the required checks.'
+              : 'Confirming uploads this exact package for your organisation to approve. It stays unpublished until moderation is complete.'}
+          </p>
           {reviewCanEdit && <p className="mt-2 text-xs leading-5 text-text-secondary">{copy.editReview}</p>}
           {reviewDirty && (
             <div role="status" className="mt-3 border border-amber-500/50 bg-amber-500/5 p-3 text-xs text-amber-200">
@@ -1227,6 +1155,7 @@ export function CollectiveWisdomPanel({ profile }: Props) {
           {review.files.map(file => (
             <WisdomFileEditor
               key={`${review.draft.id}:${file.path}`}
+              reviewSource={review.draft.state === 'prepared' ? 'local' : 'server'}
               file={file}
               value={reviewFiles[file.path] ?? file.content_utf8}
               disabled={!reviewCanEdit || busy === review.draft.id}
@@ -1277,12 +1206,19 @@ export function CollectiveWisdomPanel({ profile }: Props) {
             <div className="justify-self-end">
               <Button
                 size="sm"
-                disabled={busy === review.draft.id || reviewDirty}
+                disabled={
+                  busy === review.draft.id ||
+                  reviewDirty ||
+                  !!reviewManifestError ||
+                  !reviewDescription.trim() ||
+                  !['prepared', 'ready', 'owner_approved', 'publishing'].includes(review.draft.state) ||
+                  review.draft.security_check?.status === 'blocked'
+                }
                 onClick={async () => {
                   setBusy(review.draft.id)
                   try {
-                    await api.reviewWisdomDraft(review.draft.id, true, profile)
-                    await api.decideWisdomDraft(review.draft.id, 'approve', profile)
+                    const result = await api.submitWisdomPublication(review, profile)
+                    setPublication(result)
                     await refreshContributionData()
                     closeReview()
                   } catch (reason) {
@@ -1292,7 +1228,11 @@ export function CollectiveWisdomPanel({ profile }: Props) {
                   }
                 }}
               >
-                {busy === review.draft.id ? copy.publishing : copy.approve}
+                {busy === review.draft.id
+                  ? copy.submitting
+                  : review.publication_mode === 'open'
+                    ? 'Publish to team'
+                    : 'Submit for approval'}
               </Button>
             </div>
           </div>

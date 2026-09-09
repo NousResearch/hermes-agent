@@ -2,8 +2,10 @@ import { useEffect, useRef, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { WisdomReviewTables } from '@/components/wisdom-checks'
+import { WisdomPublicationReview } from '@/components/wisdom-publication-review'
 import {
   getWisdomMediation,
+  prepareWisdomConsentPublication,
   type ProfileScope,
   resolveWisdomConsent,
   type WisdomConsentInteraction,
@@ -27,6 +29,7 @@ export function WisdomMediationCard({
   const [busy, setBusy] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [expanded, setExpanded] = useState<string | null>(null)
+  const [publication, setPublication] = useState<{ draft_id: string; interaction_id: string } | null>(null)
   const [reviews, setReviews] = useState<Record<string, WisdomConsentInteraction['inspection']>>({})
   const [deferred, setDeferred] = useState<Set<string>>(() => new Set())
   const revision = useRef(0)
@@ -39,11 +42,13 @@ export function WisdomMediationCard({
     setBusy(null)
     setError(null)
     setReviews({})
+    setPublication(null)
 
     const refresh = async () => {
       if (acting.current) {
         return
       }
+
       const request = ++revision.current
 
       try {
@@ -74,17 +79,29 @@ export function WisdomMediationCard({
     if (!sessionId || acting.current) {
       return
     }
+
     acting.current = true
     const request = ++revision.current
     setBusy(interaction.id)
     setError(null)
 
     try {
+      if (['share', 'publish'].includes(interaction.operation) && (action === 'inspect' || action === 'confirm')) {
+        const prepared = await prepareWisdomConsentPublication(interaction.id, sessionId, profile)
+
+        if (request === revision.current) {
+          setPublication({ ...prepared, interaction_id: interaction.id })
+        }
+
+        return
+      }
+
       const result = await resolveWisdomConsent(interaction.id, sessionId, action, profile)
 
       if (request !== revision.current) {
         return
       }
+
       setActivity(current =>
         current
           ? {
@@ -121,6 +138,7 @@ export function WisdomMediationCard({
   if (activity?.mode !== 'agent') {
     return null
   }
+
   const entries = activity.assessments.filter(item => item.advice && (passive || item.owner_session === sessionId))
 
   if (!entries.length) {
@@ -130,6 +148,15 @@ export function WisdomMediationCard({
   return (
     <section aria-label={copy.notifications} className="my-3 min-w-0 border-y border-(--ui-stroke-tertiary) py-3">
       <h2 className="text-sm font-semibold">{copy.title}</h2>
+      {publication && sessionId && (
+        <WisdomPublicationReview
+          consent={{ interaction_id: publication.interaction_id, session_id: sessionId }}
+          draftId={publication.draft_id}
+          key={publication.draft_id}
+          onClose={() => setPublication(null)}
+          profile={profile}
+        />
+      )}
       {error && (
         <p className="mt-2 text-sm text-destructive" role="alert">
           {error}
@@ -145,9 +172,14 @@ export function WisdomMediationCard({
         ) {
           return null
         }
+
         const own = !!sessionId && entry.owner_session === sessionId
         const pending = interaction?.state === 'pending' && interaction.expires_at * 1000 > Date.now()
         const review = interaction ? reviews[interaction.id] : undefined
+
+        if (publication?.interaction_id === interaction?.id) {
+          return null
+        }
 
         return (
           <article className="min-w-0 border-t border-(--ui-stroke-tertiary) py-3 first:border-0" key={entry.id}>

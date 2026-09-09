@@ -9,6 +9,8 @@ from fastapi import HTTPException
 
 from hermes_cli import web_server
 from hermes_cli.web_models import (
+    WisdomPublicationRequest,
+    WisdomDecisionRequest,
     WisdomCandidateEventRequest,
     WisdomEditedFile,
     WisdomCandidateDismissRequest,
@@ -20,6 +22,30 @@ from hermes_cli.web_models import (
     WisdomSuggestRequest,
     WisdomUpdateApplyRequest,
 )
+
+
+def test_local_publication_bff_separates_read_from_hash_bound_confirmation(monkeypatch):
+    calls = []
+    class Service:
+        def publication_review(self, id):
+            calls.append(("review", id))
+            return {"publication_mode": "moderated"}
+        def submit_reviewed_package(self, id, **kwargs):
+            calls.append(("submit", id, kwargs))
+            return {"publication_state": "pending_moderation"}
+    async def run(profile, fn):
+        assert profile == "research"
+        return fn(Service())
+    monkeypatch.setattr(web_server, "_run_wisdom", run)
+    asyncio.run(web_server.post_wisdom_publication_review(WisdomDecisionRequest(draft_id="local:1", profile="research")))
+    assert calls == [("review", "local:1")]
+    hashes = {"content": "content", "author_description": "copy", "package_manifest": "manifest"}
+    result = asyncio.run(web_server.post_wisdom_publication_submit(WisdomPublicationRequest(draft_id="local:1", profile="research", expected_hashes=hashes, publication_mode="moderated")))
+    assert result["publication_state"] == "pending_moderation"
+    assert calls[-1] == ("submit", "local:1", {"expected_hashes": hashes, "publication_mode": "moderated"})
+    with pytest.raises(HTTPException) as error:
+        asyncio.run(web_server.post_wisdom_publication_submit(WisdomPublicationRequest(draft_id="local:1", profile="research", expected_hashes={"content": "content"}, publication_mode="moderated")))
+    assert error.value.status_code == 422
 
 
 def test_setup_bff_forwards_explicit_disclosure_with_profile_scope(monkeypatch):

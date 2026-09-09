@@ -5,17 +5,16 @@ import { useLocation, useNavigate } from 'react-router'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
-import { Textarea } from '@/components/ui/textarea'
 import { WisdomCheckBadge, WisdomReviewTables } from '@/components/wisdom-checks'
-import { WisdomNotificationsCard } from '@/components/wisdom-notifications-card'
 import { WisdomMediationCard } from '@/components/wisdom-mediation-card'
 import { WisdomNotificationSettings } from '@/components/wisdom-notification-settings'
+import { WisdomNotificationsCard } from '@/components/wisdom-notifications-card'
+import { WisdomPublicationReview } from '@/components/wisdom-publication-review'
 import {
   acknowledgeWisdomNotifications,
   applyWisdomInstall,
   applyWisdomUpdate,
   checkWisdom,
-  decideWisdomDraft,
   getActionStatus,
   getWisdomCandidates,
   getWisdomDiscovery,
@@ -28,8 +27,6 @@ import {
   planWisdomUpdate,
   type ProfileScope,
   profileScopeKey,
-  reviewWisdomDraft,
-  reviseWisdomDraft,
   scanWisdom,
   setupWisdom,
   suggestWisdomSkill,
@@ -37,8 +34,6 @@ import {
   type WisdomActionPlan,
   type WisdomCandidate,
   type WisdomCheckResult,
-  type WisdomDraftReview,
-  type WisdomPreparedDraft,
   type WisdomReviewCheck,
   type WisdomUpdateMode
 } from '@/hermes'
@@ -48,15 +43,6 @@ import { notifyError } from '@/store/notifications'
 
 import { DetailColumn, ListColumn, ListStrip, MasterDetail } from '../master-detail'
 
-import { WisdomFileEditor } from './wisdom-file-editor'
-import {
-  parseWisdomSystemSpecification,
-  wisdomManifestValidationError,
-  type WisdomSystemSpecification,
-  wisdomSystemSpecificationValidationError
-} from './wisdom-manifest'
-import { WisdomSystemSpecificationEditor } from './wisdom-manifest-editor'
-
 const TERMINAL_DRAFT_STATES = new Set(['published', 'declined', 'invalidated', 'rejected'])
 const UPDATE_CHECK_INTERVAL_MS = 5 * 60 * 1000
 
@@ -64,8 +50,7 @@ function asRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : {}
 }
 
-const candidateDisplayName = (candidate: WisdomCandidate): string =>
-  candidate.editorial_name?.trim() || candidate.name
+const candidateDisplayName = (candidate: WisdomCandidate): string => candidate.editorial_name?.trim() || candidate.name
 
 const candidateDisplayDescription = (candidate: WisdomCandidate): string =>
   candidate.editorial_description?.trim() || ''
@@ -96,13 +81,7 @@ export function CollectiveTab({ profile, query }: { profile: ProfileScope; query
   const scope = profileScopeKey(profile)
   const [selectedId, setSelectedId] = useState<null | string>(null)
 
-  const [prepared, setPrepared] = useState<null | (WisdomPreparedDraft & { localSkillId: string; skill: string })>(null)
-
-  const [description, setDescription] = useState('')
-  const [specification, setSpecification] = useState<null | WisdomSystemSpecification>(null)
-  const [review, setReview] = useState<null | WisdomDraftReview>(null)
-  const [reviewDescription, setReviewDescription] = useState('')
-  const [reviewFiles, setReviewFiles] = useState<Record<string, string>>({})
+  const [publicationDraftId, setPublicationDraftId] = useState<string | null>(null)
   const [busy, setBusy] = useState<null | string>(null)
   const [showManualCandidates, setShowManualCandidates] = useState(false)
   const [installReference, setInstallReference] = useState('')
@@ -120,12 +99,7 @@ export function CollectiveTab({ profile, query }: { profile: ProfileScope; query
 
   useEffect(() => {
     setSelectedId(null)
-    setPrepared(null)
-    setDescription('')
-    setSpecification(null)
-    setReview(null)
-    setReviewDescription('')
-    setReviewFiles({})
+    setPublicationDraftId(null)
     setShowManualCandidates(false)
     setInstallReference('')
     setInstallUpdateMode('')
@@ -272,36 +246,6 @@ export function CollectiveTab({ profile, query }: { profile: ProfileScope; query
     [filterCandidates, manualCandidates]
   )
 
-  const reviewDirty = useMemo(() => {
-    if (!review) {
-      return false
-    }
-
-    if (reviewDescription !== (review.draft.authorDescription || '')) {
-      return true
-    }
-
-    return review.files.some(file => reviewFiles[file.path] !== file.content_utf8)
-  }, [review, reviewDescription, reviewFiles])
-
-  const reviewManifestError = useMemo(() => {
-    if (!review) {
-      return null
-    }
-
-    const manifest = reviewFiles['skill.manifest.json']
-
-    return manifest === undefined
-      ? 'The complete package must include skill.manifest.json.'
-      : wisdomManifestValidationError(manifest)
-  }, [review, reviewFiles])
-
-  const reviewCanEdit = Boolean(review && ['ready', 'changes_requested'].includes(review.draft.state))
-
-  const specificationError = specification
-    ? wisdomSystemSpecificationValidationError(specification)
-    : 'System Specification is unavailable.'
-
   const refreshContributionData = useCallback(async () => {
     await Promise.all([candidates.refetch(), drafts.refetch(), discovery.refetch()])
   }, [candidates, discovery, drafts])
@@ -326,12 +270,7 @@ export function CollectiveTab({ profile, query }: { profile: ProfileScope; query
 
     try {
       const result = await suggestWisdomSkill(candidate.name, profile, undefined, candidate.local_skill_id)
-
-      if ('network_submission' in result) {
-        setPrepared({ ...result, localSkillId: candidate.local_skill_id, skill: candidate.name })
-        setDescription(result.drafted_description)
-        setSpecification(parseWisdomSystemSpecification(result.system_specification))
-      }
+      setPublicationDraftId('network_submission' in result ? result.local_draft_id : result.draft.id)
     } catch (error) {
       notifyError(error, 'Collective Wisdom preparation failed')
     } finally {
@@ -339,127 +278,7 @@ export function CollectiveTab({ profile, query }: { profile: ProfileScope; query
     }
   }
 
-  const submit = async () => {
-    if (!prepared) {
-      return
-    }
-
-    setBusy(prepared.local_draft_id)
-
-    try {
-      if (!description.trim()) {
-        throw new Error('Add a description before submitting this private draft.')
-      }
-
-      if (!specification || specificationError) {
-        throw new Error(specificationError || 'System Specification is unavailable.')
-      }
-
-      await suggestWisdomSkill(
-        prepared.skill,
-        profile,
-        { description, systemSpecification: specification },
-        prepared.localSkillId
-      )
-      setPrepared(null)
-      setSpecification(null)
-      await refreshContributionData()
-    } catch (error) {
-      notifyError(error, 'Owner-private submission failed')
-    } finally {
-      setBusy(null)
-    }
-  }
-
-  const openReview = async (draftId: string) => {
-    setBusy(draftId)
-
-    try {
-      const nextReview = await reviewWisdomDraft(draftId, false, profile)
-      setReview(nextReview)
-      setReviewDescription(nextReview.draft.authorDescription || '')
-      setReviewFiles(Object.fromEntries(nextReview.files.map(file => [file.path, file.content_utf8])))
-    } catch (error) {
-      notifyError(error, 'Wisdom review failed')
-    } finally {
-      setBusy(null)
-    }
-  }
-
-  const closeReview = () => {
-    setReview(null)
-    setReviewDescription('')
-    setReviewFiles({})
-  }
-
-  const resetReviewEdits = () => {
-    if (!review) {
-      return
-    }
-
-    setReviewDescription(review.draft.authorDescription || '')
-    setReviewFiles(Object.fromEntries(review.files.map(file => [file.path, file.content_utf8])))
-  }
-
-  const saveReviewRevision = async () => {
-    if (!review || !reviewCanEdit || !reviewDirty) {
-      return
-    }
-
-    setBusy(review.draft.id)
-
-    try {
-      if (!reviewDescription.trim()) {
-        throw new Error('Add a description before saving this revision.')
-      }
-
-      if (reviewManifestError) {
-        throw new Error(`Fix the System Specification before saving: ${reviewManifestError}`)
-      }
-
-      const revised = await reviseWisdomDraft(
-        review.draft.id,
-        reviewDescription,
-        review.files.map(file => ({ path: file.path, content_utf8: reviewFiles[file.path] ?? file.content_utf8 })),
-        review.hashes,
-        profile
-      )
-
-      await refreshContributionData()
-      const nextReview = await reviewWisdomDraft(revised.draft.id, false, profile)
-      setReview(nextReview)
-      setReviewDescription(nextReview.draft.authorDescription || '')
-      setReviewFiles(Object.fromEntries(nextReview.files.map(file => [file.path, file.content_utf8])))
-    } catch (error) {
-      notifyError(error, 'Wisdom revision failed')
-    } finally {
-      setBusy(null)
-    }
-  }
-
-  const approve = async () => {
-    if (!review) {
-      return
-    }
-
-    setBusy(review.draft.id)
-
-    try {
-      const acknowledged = await reviewWisdomDraft(review.draft.id, true, profile)
-
-      if (!acknowledged.receipt) {
-        throw new Error('Gateway review receipt was not created')
-      }
-
-      await decideWisdomDraft(review.draft.id, 'approve', profile)
-      closeReview()
-      await refreshContributionData()
-    } catch (error) {
-      notifyError(error, 'Wisdom publication failed')
-    } finally {
-      setBusy(null)
-    }
-  }
+  const openReview = (draftId: string) => setPublicationDraftId(draftId)
 
   const installed = installations.data?.installations.find(
     item => item.skill_id === selectedId && item.state === 'active'
@@ -810,7 +629,7 @@ export function CollectiveTab({ profile, query }: { profile: ProfileScope; query
             {busy === 'install-reference' ? copy.planningInstall : copy.reviewInstall}
           </Button>
         </form>
-        <WisdomMediationCard profile={profile} passive />
+        <WisdomMediationCard passive profile={profile} />
         <WisdomNotificationSettings profile={profile} />
         <WisdomNotificationsCard
           className="mt-2"
@@ -936,7 +755,9 @@ export function CollectiveTab({ profile, query }: { profile: ProfileScope; query
                                   key={candidate.local_skill_id}
                                 >
                                   <div className="min-w-0 flex-1">
-                                    <div className="truncate text-xs font-medium">{candidateDisplayName(candidate)}</div>
+                                    <div className="truncate text-xs font-medium">
+                                      {candidateDisplayName(candidate)}
+                                    </div>
                                     {candidateDisplayDescription(candidate) && (
                                       <div className="line-clamp-2 text-[0.65rem] leading-4 text-muted-foreground">
                                         {candidateDisplayDescription(candidate)}
@@ -1072,175 +893,24 @@ export function CollectiveTab({ profile, query }: { profile: ProfileScope; query
         </DetailColumn>
       </MasterDetail>
 
-      {prepared && (
-        <div
-          aria-label={copy.prepareTitle}
-          aria-modal="true"
-          className="shadow-nous absolute inset-6 z-20 overflow-auto border border-(--stroke-nous) bg-background p-5"
-          role="dialog"
-        >
-          <h2 className="font-mono text-sm">{copy.prepareTitle}</h2>
-          <p className="mt-1 text-xs text-muted-foreground">{copy.prepareNotice}</p>
-          <WisdomReviewTables professionalism={prepared.professionalism_check} />
-          <label className="mt-4 block text-xs" htmlFor="desktop-wisdom-description">
-            {copy.ownerDescription}
-          </label>
-          <Textarea
-            className="mt-1 min-h-20 w-full resize-y text-xs"
-            id="desktop-wisdom-description"
-            maxLength={4096}
-            onChange={event => setDescription(event.target.value)}
-            value={description}
-          />
-          <h3 className="mt-5 text-xs font-medium">{copy.systemSpecification}</h3>
-          {specification && (
-            <div className="mt-3">
-              <WisdomSystemSpecificationEditor
-                disabled={busy === prepared.local_draft_id}
-                onChange={setSpecification}
-                value={specification}
-              />
-            </div>
-          )}
-          {specificationError && (
-            <div className="mt-3 text-xs text-destructive" role="alert">
-              {specificationError}
-            </div>
-          )}
-          <p className="mt-3 break-all font-mono text-[0.62rem] text-muted-foreground">
-            {copy.localOverlay}: {prepared.overlay_path}
-          </p>
-          <div className="mt-4 flex justify-end gap-2">
-            <Button
-              onClick={() => {
-                setPrepared(null)
-                setSpecification(null)
-              }}
-              size="sm"
-              variant="outline"
-            >
-              {copy.cancel}
-            </Button>
-            <Button
-              disabled={busy === prepared.local_draft_id || Boolean(specificationError)}
-              onClick={() => void submit()}
-              size="sm"
-            >
-              {busy === prepared.local_draft_id ? copy.submitting : copy.submit}
-            </Button>
-          </div>
-        </div>
-      )}
-
-      {review && (
+      {publicationDraftId && (
         <div
           aria-label={copy.ownerReviewExact}
           aria-modal="true"
-          className="shadow-nous absolute inset-6 z-20 overflow-auto border border-(--stroke-nous) bg-background p-5"
+          className="shadow-nous absolute inset-6 z-20 overflow-auto border border-(--stroke-nous) bg-background"
           role="dialog"
         >
-          <h2 className="font-mono text-sm">{review.draft.slug}</h2>
-          <p className="mt-1 text-xs text-muted-foreground">{copy.readEvery}</p>
-          {reviewCanEdit && <p className="mt-2 text-xs leading-5 text-muted-foreground">{copy.editReview}</p>}
-          {reviewDirty && (
-            <div className="mt-3 border-l-2 border-amber-500 pl-3 text-xs text-amber-500" role="status">
-              {copy.unsavedChanges}
-            </div>
-          )}
-          <div className="mt-3 grid gap-3 border-y border-(--ui-stroke-tertiary) py-3 text-xs">
-            <div>
-              <strong>{copy.ownerCopyLabel}</strong>
-              {reviewCanEdit ? (
-                <Textarea
-                  aria-label={copy.editOwnerDescription}
-                  className="mt-2 min-h-20 w-full resize-y text-xs leading-relaxed"
-                  disabled={busy === review.draft.id}
-                  maxLength={4096}
-                  onChange={event => setReviewDescription(event.target.value)}
-                  value={reviewDescription}
-                />
-              ) : (
-                <p className="mt-1 whitespace-pre-wrap text-muted-foreground">
-                  {review.draft.authorDescription || copy.noDescription}
-                </p>
-              )}
-            </div>
-            <div>
-              <strong>{copy.serverFactsLabel}</strong>
-              <WisdomReviewTables
-                professionalism={review.draft.professionalism_check}
-                security={review.draft.security_check}
-              />
-              <pre className="mt-1 max-h-48 overflow-auto whitespace-pre-wrap text-muted-foreground">
-                {JSON.stringify(
-                  {
-                    verdict: review.draft.scanVerdict,
-                    scan: review.draft.scan,
-                    explanation: review.draft.explanation
-                  },
-                  null,
-                  2
-                )}
-              </pre>
-            </div>
-          </div>
-          <div className="my-3 grid gap-1 break-all font-mono text-[0.62rem]">
-            <strong className="font-sans text-xs">{copy.reviewedHashes}</strong>
-            <span>content {review.hashes.content}</span>
-            <span>author description {review.hashes.author_description}</span>
-            <span>package manifest {review.hashes.package_manifest}</span>
-          </div>
-          {review.files.map(file => (
-            <WisdomFileEditor
-              disabled={!reviewCanEdit || busy === review.draft.id}
-              file={file}
-              key={`${review.draft.id}:${file.path}`}
-              onChange={value => setReviewFiles(current => ({ ...current, [file.path]: value }))}
-              value={reviewFiles[file.path] ?? file.content_utf8}
-            />
-          ))}
-          <div className="mt-4 flex justify-end gap-2">
-            <Button onClick={closeReview} size="sm" variant="outline">
-              {copy.close}
-            </Button>
-            {reviewCanEdit && reviewDirty && (
-              <>
-                <Button disabled={busy === review.draft.id} onClick={resetReviewEdits} size="sm" variant="outline">
-                  {copy.resetChanges}
-                </Button>
-                <Button
-                  disabled={busy === review.draft.id || Boolean(reviewManifestError)}
-                  onClick={() => void saveReviewRevision()}
-                  size="sm"
-                >
-                  {busy === review.draft.id ? copy.savingRevision : copy.saveAndRescan}
-                </Button>
-              </>
-            )}
-            <Button
-              disabled={busy === review.draft.id}
-              onClick={async () => {
-                setBusy(review.draft.id)
-
-                try {
-                  await decideWisdomDraft(review.draft.id, 'decline', profile)
-                  await refreshContributionData()
-                  closeReview()
-                } catch (error) {
-                  notifyError(error, 'Wisdom decline failed')
-                } finally {
-                  setBusy(null)
-                }
-              }}
-              size="sm"
-              variant="outline"
-            >
-              {copy.decline}
-            </Button>
-            <Button disabled={busy === review.draft.id || reviewDirty} onClick={() => void approve()} size="sm">
-              {busy === review.draft.id ? copy.publishing : copy.approve}
-            </Button>
-          </div>
+          <WisdomPublicationReview
+            allowDecline
+            draftId={publicationDraftId}
+            key={scope + publicationDraftId}
+            onClose={() => {
+              setPublicationDraftId(null)
+              void refreshContributionData()
+            }}
+            onSubmitted={() => void refreshContributionData()}
+            profile={profile}
+          />
         </div>
       )}
 

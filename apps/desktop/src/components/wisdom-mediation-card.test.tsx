@@ -3,8 +3,25 @@ import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { WisdomMediationCard } from './wisdom-mediation-card'
 
-const { read, resolve } = vi.hoisted(() => ({ read: vi.fn(), resolve: vi.fn() }))
-vi.mock('@/hermes', () => ({ getWisdomMediation: read, resolveWisdomConsent: resolve }))
+const { read, resolve, prepare } = vi.hoisted(() => ({ read: vi.fn(), resolve: vi.fn(), prepare: vi.fn() }))
+vi.mock('@/hermes', () => ({
+  getWisdomMediation: read,
+  resolveWisdomConsent: resolve,
+  prepareWisdomConsentPublication: prepare
+}))
+vi.mock('@/components/wisdom-publication-review', () => ({
+  WisdomPublicationReview: ({
+    draftId,
+    consent
+  }: {
+    draftId: string
+    consent: { interaction_id: string; session_id: string }
+  }) => (
+    <div>
+      Local package {draftId} for {consent.interaction_id} in {consent.session_id}
+    </div>
+  )
+}))
 
 const interaction = {
   id: 'consent',
@@ -56,39 +73,14 @@ describe('WisdomMediationCard', () => {
     expect(screen.queryByRole('button', { name: 'Update' })).toBeNull()
   })
 
-  it('separates local Share preparation from publication approval', async () => {
-    read.mockResolvedValue({ ...activity, interactions: [{ ...interaction, operation: 'share' }] })
-    render(<WisdomMediationCard sessionId="session" />)
-    await screen.findByRole('button', { name: 'Share' })
-    expect(screen.getByText(/Share prepares a local handoff package/)).toBeTruthy()
-    expect(resolve).not.toHaveBeenCalled()
-    resolve.mockResolvedValue({ ...interaction, operation: 'share', state: 'completed', actions: ['inspect'] })
-    fireEvent.click(screen.getByRole('button', { name: 'Share' }))
-    await waitFor(() => expect(resolve).toHaveBeenCalledWith('consent', 'session', 'confirm', undefined))
-    expect(screen.queryByRole('button', { name: 'Approve exact content & publish' })).toBeNull()
-  })
-
-  it('reads private package pages without approving them', async () => {
-    read.mockResolvedValue({ ...activity, interactions: [{ ...interaction, operation: 'publish' }] })
-    resolve.mockResolvedValue({
-      ...interaction,
-      operation: 'publish',
-      inspection: {
-        path: 'SKILL.md',
-        content: 'Proposed instructions',
-        hash: 'hash',
-        description: 'Team workflow',
-        page: 0,
-        page_count: 2
-      }
-    })
+  it.each(['share', 'publish'])('opens full local review for %s without authorising upload', async operation => {
+    read.mockResolvedValue({ ...activity, interactions: [{ ...interaction, operation }] })
+    prepare.mockResolvedValue({ draft_id: 'local:draft' })
     render(<WisdomMediationCard sessionId="session" />)
     fireEvent.click(await screen.findByRole('button', { name: 'Review first' }))
-    await screen.findByText('Proposed instructions')
-    expect(resolve).toHaveBeenLastCalledWith('consent', 'session', 'inspect', undefined)
-    fireEvent.click(screen.getByRole('button', { name: 'Next review page' }))
-    await waitFor(() => expect(resolve).toHaveBeenLastCalledWith('consent', 'session', 'inspect.1', undefined))
-    expect(resolve.mock.calls.every(call => call[2] !== 'confirm')).toBe(true)
+    expect(await screen.findByText('Local package local:draft for consent in session')).toBeTruthy()
+    expect(prepare).toHaveBeenCalledWith('consent', 'session', undefined)
+    expect(resolve).not.toHaveBeenCalled()
   })
 
   it('retains advice through a polling failure', async () => {

@@ -13,8 +13,10 @@ const {
   planWisdomInstall,
   applyWisdomInstall,
   checkWisdom,
+  submitWisdomPublication,
+  saveWisdomPreparedDraft,
   suggestWisdomSkill,
-  reviewWisdomDraft,
+  reviewWisdomPublication,
   reviseWisdomDraft,
   decideWisdomDraft,
   setupWisdom,
@@ -30,8 +32,10 @@ const {
   planWisdomInstall: vi.fn(),
   applyWisdomInstall: vi.fn(),
   checkWisdom: vi.fn(),
+  submitWisdomPublication: vi.fn(),
+  saveWisdomPreparedDraft: vi.fn(),
   suggestWisdomSkill: vi.fn(),
-  reviewWisdomDraft: vi.fn(),
+  reviewWisdomPublication: vi.fn(),
   reviseWisdomDraft: vi.fn(),
   decideWisdomDraft: vi.fn(),
   setupWisdom: vi.fn(),
@@ -50,8 +54,10 @@ vi.mock('@/lib/api', () => ({
     getWisdomInstallations,
     getWisdomVersionContent,
     getWisdomStatus,
-    reviewWisdomDraft,
+    reviewWisdomPublication,
     reviseWisdomDraft,
+    submitWisdomPublication,
+    saveWisdomPreparedDraft,
     suggestWisdomSkill,
     planWisdomInstall,
     applyWisdomInstall,
@@ -213,49 +219,47 @@ describe('CollectiveWisdomPanel', () => {
     expect(screen.getByText(/Hermes detected another skill that could be useful to your team/)).toBeTruthy()
   })
 
-  it('keeps preparation local until explicit owner copy and System Specification submission', async () => {
+  it('keeps all files local until the final moderation confirmation', async () => {
     getWisdomCandidates.mockResolvedValue({
       candidates: [
         {
           local_skill_id: 'local-1',
           name: 'candidate-skill',
           eligibility: 'eligible',
-          reason: null,
           qualification: 'manual_selection',
           contribution_state: 'new'
         }
       ]
     })
-    suggestWisdomSkill
-      .mockResolvedValueOnce({
-        network_submission: false,
-        local_draft_id: 'local-1',
-        overlay_path: '/private/overlay',
-        drafted_description: 'Drafted copy',
-        system_specification: systemSpecification(),
-        next_step: 'review'
-      })
-      .mockResolvedValueOnce({ draft: { id: 'draft-1' } })
-
+    suggestWisdomSkill.mockResolvedValue({ network_submission: false, local_draft_id: 'local:1' })
+    const review = {
+      publication_mode: 'moderated',
+      draft: { id: 'local:1', slug: 'candidate-skill', state: 'prepared', authorDescription: 'Owner copy' },
+      files: [
+        { path: 'SKILL.md', mode: 'file', hash: 'content', content_utf8: '# Local skill' },
+        { path: 'skill.manifest.json', mode: 'file', hash: 'manifest', content_utf8: manifestJson() }
+      ],
+      hashes: { content: 'content', author_description: 'description', package_manifest: 'manifest' }
+    }
+    reviewWisdomPublication.mockResolvedValue(review)
+    submitWisdomPublication.mockResolvedValue({
+      draft_id: 'server:1',
+      publication_state: 'pending_moderation',
+      portal_url: 'https://portal.example/review/1'
+    })
     render(<CollectiveWisdomPanel profile="research" />)
     fireEvent.click(await screen.findByText('View all local skills (1)'))
     fireEvent.click(await screen.findByRole('button', { name: 'Start contribution' }))
-    fireEvent.change(await screen.findByLabelText('Owner-authored description'), {
-      target: { value: 'Owner approved' }
-    })
-    expect(screen.queryByLabelText(/System Specification \(declarative metadata/)).toBeNull()
-    fireEvent.click(screen.getByRole('checkbox', { name: 'Linux' }))
-    fireEvent.click(screen.getByRole('button', { name: 'Submit draft' }))
-
-    await waitFor(() => expect(suggestWisdomSkill).toHaveBeenCalledTimes(2))
-    expect(suggestWisdomSkill.mock.calls[1]).toEqual([
-      'candidate-skill',
-      'research',
-      'Owner approved',
-      { ...systemSpecification(), platforms: ['Linux'] },
-      'local-1'
-    ])
-    expect(JSON.stringify(suggestWisdomSkill.mock.calls[1])).not.toMatch(/usage|refinement|ranking|stability/)
+    const submit = await screen.findByRole('button', { name: 'Submit for approval' })
+    expect(screen.getByLabelText('Edit SKILL.md')).toHaveProperty('value', '# Local skill')
+    expect(submitWisdomPublication).not.toHaveBeenCalled()
+    expect(suggestWisdomSkill).toHaveBeenCalledTimes(1)
+    await waitFor(() => expect(submit).toHaveProperty('disabled', false))
+    fireEvent.click(submit)
+    await screen.findByText('Waiting for collective administrator approval')
+    expect(submitWisdomPublication).toHaveBeenCalledWith(review, 'research')
+    expect(suggestWisdomSkill).toHaveBeenCalledTimes(1)
+    expect(decideWisdomDraft).not.toHaveBeenCalled()
   })
 
   it('uses user-facing activity copy and hides completed drafts from the action queue', async () => {
@@ -297,6 +301,7 @@ describe('CollectiveWisdomPanel', () => {
       drafts: [{ id: 'draft-1', slug: 'deployment-checklist', state: 'ready' }]
     })
     const initialReview = {
+      publication_mode: 'open',
       draft: {
         id: 'draft-1',
         slug: 'deployment-checklist',
@@ -340,7 +345,7 @@ describe('CollectiveWisdomPanel', () => {
         package_manifest: 'sha256:old-manifest'
       }
     }
-    reviewWisdomDraft.mockResolvedValueOnce(initialReview).mockResolvedValueOnce(revisedReview)
+    reviewWisdomPublication.mockResolvedValueOnce(initialReview).mockResolvedValueOnce(revisedReview)
     reviseWisdomDraft.mockResolvedValue({
       draft: { id: 'draft-2' },
       local_scan: {},
@@ -367,7 +372,7 @@ describe('CollectiveWisdomPanel', () => {
     fireEvent.click(screen.getByRole('checkbox', { name: 'Shell commands' }))
 
     expect(screen.getByText(/These changes have not been scanned/)).toBeTruthy()
-    expect(screen.getByRole('button', { name: 'Approve exact content & publish' })).toHaveProperty('disabled', true)
+    expect(screen.getByRole('button', { name: 'Publish to team' })).toHaveProperty('disabled', true)
     fireEvent.click(screen.getByRole('button', { name: 'Preview' }))
     expect(screen.getByRole('heading', { name: 'Updated' })).toBeTruthy()
     fireEvent.click(screen.getByRole('button', { name: 'Save changes & rescan' }))
@@ -394,7 +399,7 @@ describe('CollectiveWisdomPanel', () => {
       'research'
     )
     expect(await screen.findByText('content sha256:new-content')).toBeTruthy()
-    expect(screen.getByRole('button', { name: 'Approve exact content & publish' })).toHaveProperty('disabled', false)
+    expect(screen.getByRole('button', { name: 'Publish to team' })).toHaveProperty('disabled', false)
   })
 
   it('shows exact version bytes and applies only a verified install receipt', async () => {

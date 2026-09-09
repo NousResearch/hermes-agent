@@ -125,8 +125,12 @@ export function WisdomReviewTables({
   return (
     <div className="mt-3 border-y border-(--ui-stroke-tertiary)">
       <CheckTable
-        label="Security check"
-        note="Deterministic Gateway scan. A pass means no known matches were detected, not that the package is certified secure."
+        label={security?.source === 'local_preflight' ? 'Security check (local preflight)' : 'Security check'}
+        note={
+          security?.source === 'local_preflight'
+            ? 'Local checks complete. Required Gateway checks run after you confirm upload and before publication.'
+            : 'Deterministic Gateway scan. A pass means no known matches were detected, not that the package is certified secure.'
+        }
         value={security}
       />
       <CheckTable

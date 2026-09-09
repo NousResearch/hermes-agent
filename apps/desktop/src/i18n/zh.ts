@@ -1582,6 +1582,11 @@ export const zh: Translations = {
 
   skills: {
     collective: {
+      publishToTeam: '发布到团队',
+      submitForApproval: '提交审核',
+      publishLocalNotice: '确认后将上传此确切的软件包，并在通过必要检查后发布到团队。',
+      submitLocalNotice: '确认后将上传此确切的软件包供组织审核。审核完成前不会发布。',
+      reloadReview: '重新加载审核内容',
       notificationPreferences: {
         title: "通知设置",
         scope: "管理此组织中跨客户端的主动通知。手动浏览和分享仍可使用。",

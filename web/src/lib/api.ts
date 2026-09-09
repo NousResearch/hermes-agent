@@ -655,26 +655,39 @@ export const api = {
   getSkills: (profile?: string) => fetchJSON<SkillInfo[]>(`/api/skills${profileQuery(profile)}`),
   getWisdomStatus: (profile?: string) => fetchJSON<WisdomStatus>(`/api/wisdom/status${profileQuery(profile)}`),
   getWisdomMute: (profile?: string) => fetchJSON<WisdomMuteSnapshot>(`/api/wisdom/mute${profileQuery(profile)}`),
-  prepareWisdomMute: (profile?: string) => fetchJSON<WisdomMuteControl>('/api/wisdom/mute/prepare', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ profile })
-  }),
+  prepareWisdomMute: (profile?: string) =>
+    fetchJSON<WisdomMuteControl>('/api/wisdom/mute/prepare', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ profile })
+    }),
   chooseWisdomMute: (controlId: string, duration: WisdomMuteDuration, profile?: string) =>
     fetchJSON<WisdomMuteSnapshot>('/api/wisdom/mute/choose', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ control_id: controlId, duration, profile })
     }),
-  getWisdomMediation: (profile?: string) => fetchJSON<{
-    mode: 'fixed' | 'agent'
-    assessments: { id: string; state: string; advice: null | { title: string; explanation: string } }[]
-    interactions: {
-      id: string; assessment_id: string; state: string; operation: string
-      facts: {
-        editorial_name?: string | null; slug?: string; version?: number
-        compatibility?: { outcome: string }; modified?: boolean; sensitive_expansion?: string[]
-        security_check?: WisdomReviewCheck | null; professionalism_check?: WisdomReviewCheck | null
-      }
-    }[]
-  }>(`/api/wisdom/mediation${profileQuery(profile)}`),
+  getWisdomMediation: (profile?: string) =>
+    fetchJSON<{
+      mode: 'fixed' | 'agent'
+      assessments: { id: string; state: string; advice: null | { title: string; explanation: string } }[]
+      interactions: {
+        id: string
+        assessment_id: string
+        state: string
+        operation: string
+        facts: {
+          editorial_name?: string | null
+          slug?: string
+          version?: number
+          compatibility?: { outcome: string }
+          modified?: boolean
+          sensitive_expansion?: string[]
+          security_check?: WisdomReviewCheck | null
+          professionalism_check?: WisdomReviewCheck | null
+        }
+      }[]
+    }>(`/api/wisdom/mediation${profileQuery(profile)}`),
   setupWisdom: (profile?: string) =>
     fetchJSON<ActionResponse>('/api/wisdom/setup', {
       method: 'POST',
@@ -810,6 +823,29 @@ export const api = {
         acknowledge,
         profile: profile || undefined
       })
+    }),
+  reviewWisdomPublication: (draftId: string, profile?: string) =>
+    fetchJSON<WisdomPublicationReview>('/api/wisdom/publication/review', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ draft_id: draftId, profile })
+    }),
+  submitWisdomPublication: (review: WisdomPublicationReview, profile?: string) =>
+    fetchJSON<WisdomPublicationResult>('/api/wisdom/publication/submit', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        draft_id: review.draft.id,
+        expected_hashes: review.hashes,
+        publication_mode: review.publication_mode,
+        profile
+      })
+    }),
+  saveWisdomPreparedDraft: (draftId: string, description: string, files: WisdomEditedFile[], profile?: string) =>
+    fetchJSON<WisdomPreparedDraft>('/api/wisdom/prepared/save', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ draft_id: draftId, author_description: description, files, profile })
     }),
   reviseWisdomDraft: (
     draftId: string,
@@ -2296,6 +2332,7 @@ export interface WisdomReviewCheckRow {
 }
 
 export interface WisdomReviewCheck {
+  source?: 'local_preflight' | string
   schema_version?: number
   status: WisdomReviewStatus
   summary?: string
@@ -2341,6 +2378,8 @@ export interface WisdomCandidateEvent {
 }
 
 export interface WisdomPreparedDraft {
+  files: WisdomDraftReview['files']
+  hashes: WisdomDraftReview['hashes']
   network_submission: false
   local_draft_id: string
   overlay_path: string
@@ -2348,6 +2387,16 @@ export interface WisdomPreparedDraft {
   system_specification: Record<string, unknown>
   next_step: string
   professionalism_check: WisdomReviewCheck
+}
+
+export type WisdomPublicationReview = WisdomDraftReview & {
+  publication_mode: 'open' | 'managed' | 'moderated'
+  portal_url?: string
+}
+export interface WisdomPublicationResult {
+  draft_id: string
+  publication_state: 'pending_moderation' | 'published'
+  portal_url: string
 }
 
 export interface WisdomLocalScan {

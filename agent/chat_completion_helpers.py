@@ -2495,8 +2495,22 @@ class _ToolCallAccumulator:
                 # Assignment, not +=: names arrive complete and some providers (MiniMax via
                 # NVIDIA NIM) resend the full name every chunk — += gives "read_fileread_file".
                 entry["function"]["name"] = tc_function.name
-            if getattr(tc_function, "arguments", None):
-                parts.append(tc_function.arguments)
+            arg_val = getattr(tc_function, "arguments", None)
+            if arg_val is not None and arg_val != "":
+                # Local OpenAI-compatible backends (llama-server, Ollama) and some
+                # custom providers (Mistral via `p` padding, #106006) may emit
+                # tool arguments as a parsed dict/list instead of a JSON string.
+                # Coerce to string before buffering to avoid 'list' object has no
+                # attribute 'strip' / TypeError on "".join (see #1071).
+                if isinstance(arg_val, (dict, list)):
+                    try:
+                        arg_val = json.dumps(arg_val)
+                    except Exception:
+                        arg_val = str(arg_val)
+                elif not isinstance(arg_val, str):
+                    arg_val = str(arg_val)
+                if arg_val:
+                    parts.append(arg_val)
         extra = getattr(tc_delta, "extra_content", None)
         if extra is None and hasattr(tc_delta, "model_extra"):
             extra = (tc_delta.model_extra if isinstance(tc_delta.model_extra, dict) else {}).get("extra_content")
@@ -2527,6 +2541,10 @@ class _StreamingCall(StreamingWaitMonitor):
         self.first_delta_fired = {"done": False}
         self.deltas_were_sent = {"yes": False}  # for the partial-delivery fallback
         self.provider_tool_in_flight = {"yes": False}
+        # Mistral p-padding detection (#106006): set when any chunk carries
+        # model_extra.p, so the finalizer can treat a clean close without
+        # finish_reason/usage as a complete stop for that provider.
+        self._seen_p_padding = False
         # Last REAL chunk; the monitor detects SSE-ping-only connections with it.
         self.last_chunk_time = {"t": time.time()}
         # Shared by the socket read timeout (``_stream_timeouts``) and the stale
@@ -2781,6 +2799,11 @@ class _StreamingCall(StreamingWaitMonitor):
 
         for chunk in _iter_provider_stream_chunks(stream, response=lambda: self._attempt_stream_response):
             self._count_chunk(_diag, chunk)
+            # Detect Mistral's `p` padding field (#106006) for the finalizer.
+            with __import__("contextlib").suppress(Exception):
+                me = getattr(chunk, "model_extra", None)
+                if isinstance(me, dict) and "p" in me:
+                    self._seen_p_padding = True
             if self.agent._interrupt_requested:
                 # A half-read SSE response stays checked out of the httpx pool and the finally
                 # would cache the client WITH the leaked connection: close on the owner first.
@@ -2885,7 +2908,18 @@ class _StreamingCall(StreamingWaitMonitor):
         for idx in sorted(tool_calls_acc):
             tc = tool_calls_acc[idx]
             arguments = tc["function"]["arguments"]
-            if arguments and arguments.strip():
+            # Coerce non-string arguments (dict/list from permissive providers,
+            # #1071, #106006) to JSON string before validation.
+            if isinstance(arguments, (dict, list)):
+                try:
+                    arguments = json.dumps(arguments)
+                except Exception:
+                    arguments = str(arguments)
+                tc["function"]["arguments"] = arguments
+            elif arguments is not None and not isinstance(arguments, str):
+                arguments = str(arguments)
+                tc["function"]["arguments"] = arguments
+            if isinstance(arguments, str) and arguments.strip():
                 try:
                     json.loads(arguments)
                 except json.JSONDecodeError:
@@ -2928,11 +2962,33 @@ class _StreamingCall(StreamingWaitMonitor):
             return _build_partial_stream_stub(
                 role, full_content, full_reasoning, model_name, usage_obj, dropped_tool_names=_dropped_names or None)
         if finish_reason is None and content_parts and not tool_calls_acc and usage_obj is None:
-            # Text-only drop: otherwise the partial text is stamped "stop" and the next step is
-            # lost. A usage object proves the provider finished (include_usage's final chunk).
-            logger.warning(
-                "Stream ended with no finish_reason after delivering text with no tool calls; treating as a mid-stream drop.")
-            return _build_partial_stream_stub(role, full_content, full_reasoning, model_name, usage_obj)
+            # Text-only close without finish_reason: historically treated as a
+            # mid-stream network drop (partial-stream stub with finish_reason=length).
+            # Mistral's custom endpoint (#106006) added a top-level `p` padding
+            # field to every chunk and, for `custom` providers where
+            # stream_options.include_usage is ignored, closes the SSE stream
+            # cleanly without a final finish_reason or usage frame. Every
+            # healthy single-turn answer then entered the length-continuation
+            # loop, duplicating the response and spamming
+            # "Stream interrupted by network error (finish_reason='length' on
+            # partial-stream-stub)". For the specific Mistral custom route
+            # (or any provider that sent `p` padding), a *clean* close with
+            # delivered text and no truncated tool args is a complete stop,
+            # not a drop. Generic providers keep the original stub behaviour
+            # so abrupt drops without usage are still recoverable (see tests).
+            _is_mistral_custom = (
+                getattr(self.agent, "provider", "") == "custom"
+                and "mistral" in (getattr(self.agent, "base_url", "") or "").lower()
+            ) or getattr(self, "_seen_p_padding", False)
+            if _is_mistral_custom:
+                logger.info(
+                    "Stream ended with no finish_reason after delivering text with no tool calls; "
+                    "treating as clean completion for Mistral custom provider (see #106006) rather than a mid-stream drop.")
+                finish_reason = "stop"
+            else:
+                logger.warning(
+                    "Stream ended with no finish_reason after delivering text with no tool calls; treating as a mid-stream drop.")
+                return _build_partial_stream_stub(role, full_content, full_reasoning, model_name, usage_obj)
         effective_finish_reason = "length" if has_truncated_tool_args else (finish_reason or "stop")
         provider_stream_error = _provider_stream_error_from_text(
             full_content or "", effective_finish_reason, response=getattr(stream, "response", None))

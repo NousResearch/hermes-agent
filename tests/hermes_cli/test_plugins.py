@@ -47,6 +47,45 @@ def test_portable_skill_namespace_is_ascii_safe():
     assert is_valid_namespace(namespace)
 
 
+def test_turn_route_middleware_discards_mutation_from_failed_callback():
+    manager = PluginManager()
+    original = {"model": "alpha", "runtime": {"provider": "custom"}}
+
+    def broken(route, **_kwargs):
+        route["model"] = "uncommitted-target"
+        raise RuntimeError("decision unavailable")
+
+    manager._middleware["turn_route"] = [broken]
+
+    assert manager.invoke_middleware(
+        "turn_route", route=original, original_route=original,
+    ) == []
+    assert original == {"model": "alpha", "runtime": {"provider": "custom"}}
+
+
+def test_turn_route_failed_callback_does_not_poison_next_callback():
+    manager = PluginManager()
+    original = {"model": "alpha", "runtime": {"provider": "custom"}}
+    seen = []
+
+    def broken(route, **_kwargs):
+        route["model"] = "uncommitted-target"
+        raise RuntimeError("decision unavailable")
+
+    def noop(route, **_kwargs):
+        seen.append(route)
+        return {"route": route}
+
+    manager._middleware["turn_route"] = [broken, noop]
+
+    results = manager.invoke_middleware(
+        "turn_route", route=original, original_route=original,
+    )
+
+    assert seen == [original]
+    assert results == [{"route": original}]
+
+
 def _make_plugin_dir(base: Path, name: str, *, register_body: str = "pass",
                      manifest_extra: dict | None = None,
                      auto_enable: bool = True,

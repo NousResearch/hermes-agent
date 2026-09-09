@@ -43,6 +43,24 @@ if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
 logger = logging.getLogger("gateway.run")
 
 
+def _project_runtime_agent_kwargs(runtime_kwargs: dict) -> tuple[dict, dict]:
+    """Split provider resolution output into public agent runtime and request overrides.
+
+    Provider resolvers return constructor kwargs, including ``request_overrides``.  Turn routes
+    pass request overrides separately so fast-mode overlays can be applied without expanding the
+    same keyword twice at the AIAgent call site.
+    """
+    runtime = {
+        key: runtime_kwargs.get(key) for key in (
+            "api_key", "base_url", "provider", "requested_provider", "api_mode", "command", "args",
+            "credential_pool", "max_tokens", "capabilities",
+        )
+    }
+    runtime["args"] = list(runtime["args"] or [])
+    runtime["capabilities"] = dict(runtime["capabilities"] or {})
+    return runtime, dict(runtime_kwargs.get("request_overrides") or {})
+
+
 class GatewayTurnMixin:
     """Agent-turn execution for GatewayRunner (see module docstring)."""
 
@@ -168,15 +186,7 @@ class GatewayTurnMixin:
         from gateway.run import _deep_merge_request_overrides
         from hermes_cli.models import resolve_fast_mode_overrides
         # Tests bind this method onto bare namespaces, so no class-level tables here.
-        runtime = {
-            k: runtime_kwargs.get(k) for k in (
-                "api_key", "base_url", "provider", "requested_provider", "api_mode", "command", "args",
-                "credential_pool", "max_tokens", "capabilities",
-            )
-        }
-        runtime["args"] = list(runtime["args"] or [])
-        runtime["capabilities"] = dict(runtime["capabilities"] or {})
-        base_request_overrides = dict(runtime_kwargs.get("request_overrides") or {})
+        runtime, base_request_overrides = _project_runtime_agent_kwargs(runtime_kwargs)
         route = {
             "model": model,
             "runtime": runtime,
@@ -215,7 +225,9 @@ class GatewayTurnMixin:
                         selected_provider = selected_provider.strip()
                         if selected_provider != current_requested:
                             from gateway.run import _resolve_runtime_agent_kwargs_for_provider
-                            runtime = _resolve_runtime_agent_kwargs_for_provider(selected_provider)
+                            runtime, base_request_overrides = _project_runtime_agent_kwargs(
+                                _resolve_runtime_agent_kwargs_for_provider(selected_provider)
+                            )
                         runtime["requested_provider"] = selected_provider
                         route["model"] = selected_model
                         route["runtime"] = runtime

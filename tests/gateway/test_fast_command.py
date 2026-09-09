@@ -145,6 +145,7 @@ def test_turn_route_resolves_requested_provider_alias(monkeypatch):
     resolver = MagicMock(return_value={
         "provider": "custom", "requested_provider": "custom:beta",
         "api_key": "beta-key", "base_url": "https://beta.example/v1", "api_mode": "responses",
+        "request_overrides": {"extra_body": {"route_owner": "beta"}},
     })
     monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs_for_provider", resolver)
     route = runner._resolve_turn_agent_config(
@@ -160,6 +161,50 @@ def test_turn_route_resolves_requested_provider_alias(monkeypatch):
     assert route["runtime"]["requested_provider"] == "custom:beta"
     assert route["runtime"]["api_key"] == "beta-key"
     assert route["runtime"]["api_mode"] == "responses"
+    assert "request_overrides" not in route["runtime"]
+    assert route["request_overrides"] == {"extra_body": {"route_owner": "beta"}}
+
+
+def test_build_fresh_agent_receives_projected_route_overrides(monkeypatch):
+    from gateway.run_turn_runner import TurnRunner
+
+    runner = _make_runner()
+    runner._refresh_fallback_model = lambda: None
+    source = _make_source()
+    ctx = SimpleNamespace(
+        AIAgent=_CapturingAgent,
+        source=source,
+        user_config={},
+        enabled_toolsets=[],
+        disabled_toolsets=[],
+        session_id="session-1",
+        session_key="chat-1",
+    )
+    turn_runner = TurnRunner(runner, ctx)
+    route = {
+        "model": "target",
+        "runtime": {
+            "api_key": "beta-key",
+            "base_url": "https://beta.example/v1",
+            "provider": "custom",
+            "requested_provider": "custom:beta",
+            "api_mode": "responses",
+            "command": None,
+            "args": [],
+            "credential_pool": None,
+            "max_tokens": None,
+            "capabilities": {},
+        },
+        "request_overrides": {"extra_body": {"route_owner": "beta"}},
+    }
+
+    monkeypatch.setattr(gateway_run, "_checkpoint_agent_kwargs", lambda _config: {})
+    turn_runner._build_fresh_agent(route, "telegram", "", 3, None, {}, False)
+
+    assert _CapturingAgent.last_init["request_overrides"] == {
+        "extra_body": {"route_owner": "beta"}
+    }
+    assert _CapturingAgent.last_init["requested_provider"] == "custom:beta"
 
 
 @pytest.mark.asyncio

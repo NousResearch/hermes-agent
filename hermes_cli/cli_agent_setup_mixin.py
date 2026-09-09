@@ -432,6 +432,7 @@ class CLIAgentSetupMixin:
             except Exception:
                 pass
         route["request_overrides"] = overrides
+        route["signature"] = _route_signature(route["model"], route["runtime"])
         return route
 
     def _follow_compression_chain(self, session_meta, announce):

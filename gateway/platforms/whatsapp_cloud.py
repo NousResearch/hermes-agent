@@ -157,6 +157,10 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
     server. The mixin comes first so its ``format_message`` overrides the base one."""
 
     splits_long_messages = True  # send() chunks via truncate_message()
+    # Meta's Cloud API has no message-edit endpoint.  Declaring that explicitly keeps
+    # the streaming runner from attaching an edit consumer whose undelivered state
+    # makes final-delivery ownership ambiguous.
+    SUPPORTS_MESSAGE_EDITING = False
 
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.WHATSAPP_CLOUD)

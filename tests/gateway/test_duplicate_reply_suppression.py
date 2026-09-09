@@ -17,7 +17,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway.config import Platform, PlatformConfig
+from gateway.config import Platform, PlatformConfig, StreamingConfig
 from gateway.platforms.base import (
     BasePlatformAdapter,
     SendResult,
@@ -65,6 +65,25 @@ def _make_event(text="hello", chat_id="c1", user_id="u1"):
         ),
         message_id="m1",
     )
+
+
+def test_misdeclared_edit_capability_without_implementation_fails_closed():
+    """A stale True capability must not activate the inherited no-op edit path."""
+    from gateway.run import GatewayRunner
+
+    class MisdeclaredEditingAdapter(StubAdapter):
+        SUPPORTS_MESSAGE_EDITING = True
+
+    adapter = MisdeclaredEditingAdapter()
+    source = SimpleNamespace(platform=Platform.DISCORD, chat_type="dm")
+
+    with pytest.raises(RuntimeError, match="non-editable platform"):
+        GatewayRunner.__new__(GatewayRunner)._build_stream_consumer_config(
+            source,
+            StreamingConfig(),
+            adapter,
+            on_missing_cursor="raise",
+        )
 
 
 # ===================================================================
@@ -319,4 +338,3 @@ class TestFinalContentDeliveredSuppression:
             response["already_sent"] = True
 
         assert response.get("already_sent") is True
-

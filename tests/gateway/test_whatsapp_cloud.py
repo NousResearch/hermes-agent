@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -123,6 +124,23 @@ def _mock_httpx_response(status_code: int, json_body: dict):
     resp.json = MagicMock(return_value=json_body)
     resp.text = json.dumps(json_body)
     return resp
+
+
+def test_non_editing_transport_keeps_final_delivery_out_of_stream_consumer():
+    """The Cloud API cannot edit, so normal final-send keeps sole ownership."""
+    from gateway.config import StreamingConfig
+    from gateway.run import GatewayRunner
+
+    adapter = _make_adapter()
+    source = SimpleNamespace(platform=Platform.WHATSAPP_CLOUD, chat_type="dm")
+
+    with pytest.raises(RuntimeError, match="non-editable platform"):
+        GatewayRunner.__new__(GatewayRunner)._build_stream_consumer_config(
+            source,
+            StreamingConfig(),
+            adapter,
+            on_missing_cursor="raise",
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -1399,4 +1417,3 @@ class TestReplyContextResolution:
         assert event.reply_to_message_id is None
         assert event.reply_to_text is None
         assert event.reply_to_is_own_message is False
-

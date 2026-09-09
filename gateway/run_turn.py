@@ -2363,7 +2363,16 @@ class GatewayTurnMixin:
                 _adapter.pause_typing_for_chat(_chat_id)
         # Non-editing platforms (QQ, WeChat) skip streaming — the partial first message could never
         # be updated — unless they have a native-streaming transport (WeCom msgtype "stream").
-        _adapter_supports_edit = getattr(adapter, "SUPPORTS_MESSAGE_EDITING", True)
+        # Fail closed on capability drift: inheriting BasePlatformAdapter.edit_message means
+        # the adapter has no edit transport, even if an omitted/stale declaration defaults to
+        # True.  Otherwise the stream consumer can claim a turn it cannot update and leave
+        # final-delivery ownership ambiguous.
+        _edit_impl = getattr(type(adapter), "edit_message", None)
+        _adapter_supports_edit = (
+            getattr(adapter, "SUPPORTS_MESSAGE_EDITING", True) is True
+            and _edit_impl is not None
+            and _edit_impl is not BasePlatformAdapter.edit_message
+        )
         _adapter_supports_native_stream = bool(getattr(adapter, "SUPPORTS_NATIVE_STREAMING", False))
         if not _adapter_supports_edit and not _adapter_supports_native_stream and on_missing_cursor == "raise":
             raise RuntimeError("skip streaming for non-editable platform")

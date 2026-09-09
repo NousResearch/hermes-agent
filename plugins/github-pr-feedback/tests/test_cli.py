@@ -2769,7 +2769,7 @@ def test_retrigger_codex_review_is_a_noop_while_same_head_request_is_pending() -
 
 def test_retrigger_codex_review_is_a_noop_when_codex_already_reviewed_this_head() -> None:
     head = "a" * 40
-    github = _FakeGitHubCodex((_codex_feedback(_codex_summary_body("Completed", head[:7])),))
+    github = _FakeGitHubCodex((_codex_feedback(_codex_summary_body("Completed", head)),))
 
     status = _retrigger_codex_review(github, "mrkillbob/luna-bot", 17, head)
 

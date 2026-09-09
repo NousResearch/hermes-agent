@@ -2674,7 +2674,7 @@ def _ci_failure_task(
         "canonical PR head, and the latest owner reply. If a verified push and factual reply "
         "already exist, do not repeat completed work: run only the affected failed lane when "
         "fresh exact-head evidence is absent, then acknowledge and complete. Do not retry a "
-        "background terminal process or tool-blocked command; use one literal repository-owned command or the existing verified "
+        "background terminal process or tool-blocked command; wait for the process to exit rather than using process wait loops; use one literal repository-owned command or the existing verified "
         "receipt evidence. "
         "Re-read the canonical pull request and require both its base and head to equal the receipt "
         "identities before editing and immediately before every GitHub write. Reproduce the exact "

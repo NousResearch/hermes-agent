@@ -104,7 +104,7 @@ _oneshot_cleanup_done = False
 # BaseException-derived errors from executor teardown; the rest are Exception.
 _ONESHOT_CLEANUPS = (
     ("tools.terminal_tool", "cleanup_all_environments", {}, Exception),
-    ("tools.async_delegation", "interrupt_all", {"reason": "oneshot shutdown"}, Exception),
+    ("tools.async_delegation", "finalize_for_oneshot_shutdown", {}, Exception),
     ("tools.browser_tool_lifecycle", "_emergency_cleanup_all_sessions", {}, Exception),
     ("tools.mcp_tool_lifecycle", "shutdown_mcp_servers", {}, BaseException),
     ("agent.auxiliary_client", "shutdown_cached_clients", {}, Exception),

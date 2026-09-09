@@ -6861,6 +6861,38 @@ def _clean_discord_user_ids(raw: str) -> list:
     return cleaned
 
 
+def _discord_token_shape_error(token: str) -> Optional[str]:
+    """Reject a Discord bot token that is really the numeric application ID.
+
+    Users routinely paste the application ID from the Developer Portal's General
+    Information page instead of the bot token (Bot page); the gateway then fails
+    at runtime with an opaque 401. A real bot token is dot-separated base64 and
+    never purely numeric, so this is a safe, narrow shape check (port of
+    openclaw/openclaw#140531).
+    """
+    if token and token.strip().isdigit():
+        return ("That looks like a numeric application ID, not a bot token. "
+                "Paste the bot token from the Discord Developer Portal (Bot page), "
+                "not the application ID (General Information page).")
+    return None
+
+
+def _prompt_discord_bot_token(prompt) -> str:
+    """Prompt for the bot token, re-prompting once when the answer is a numeric app ID."""
+    from hermes_cli.cli_output import print_error
+    token = ""
+    for _attempt in range(2):
+        token = prompt("Discord bot token", password=True)
+        if not token:
+            return ""
+        error = _discord_token_shape_error(token)
+        if error is None:
+            return token
+        print_error(error)
+    # Second consecutive numeric answer: trust the user, keep the value.
+    return token
+
+
 def interactive_setup() -> None:
     """Guide the user through Discord bot setup: token, allowlist, home channel (lazy CLI imports)."""
     from hermes_cli.config import get_env_value, remove_env_value, save_env_value
@@ -6900,7 +6932,7 @@ def interactive_setup() -> None:
         "Save Changes in the Developer Portal before starting the gateway.",
         "Docs: https://hermes-agent.nousresearch.com/docs/user-guide/messaging/discord",
     )
-    token = prompt("Discord bot token", password=True)
+    token = _prompt_discord_bot_token(prompt)
     if not token:
         return
     save_env_value("DISCORD_BOT_TOKEN", token)

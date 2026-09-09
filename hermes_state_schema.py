@@ -32,6 +32,31 @@ logger = logging.getLogger("hermes_state")
 
 _FTS_HOLDER_ESCALATE_ATTEMPTS = 3
 _FTS_HOLDER_ESCALATE_SECONDS = 60.0
+# Deferring on a foreign holder is cheap and correct while the holder might go
+# away. It stops being either when the holder is another *supervised* service
+# sharing this HERMES_HOME (a gateway alongside `hermes serve`): that holder is
+# a fixed property of the deployment, the orphan reap above deliberately will
+# not touch it, and every deferral leaves the FTS index detached while the
+# messages_fts triggers keep failing canonical writes. Waiting forever is not
+# the safe choice there -- it is silent, unbounded transcript loss (#106393:
+# five days, 292 deferrals, all of it logged and none of it repaired).
+#
+# So the deferral gets an exit condition. Once the same holder set has blocked
+# this many attempts across this much wall time, the wait is proven futile and
+# the rebuild proceeds -- NOT by ignoring safety, but because the safety for
+# this particular operation is `fts_rebuild_admission` (a cross-process flock),
+# not holder absence. `_recover_stale_fts_locked` is one BEGIN IMMEDIATE write
+# transaction over SQL DDL/DML; it never unlinks or replaces the WAL sidecars.
+# The corruption that motivated the holder gate (#90806, #90950) came from
+# file-level surgery -- sidecar unlink, journal_mode flips -- which lives in
+# hermes_state_repair.py behind its own `_live_writer_holds_db` gate and is
+# untouched by this. Concurrent *rebuilds* remain impossible via the flock.
+#
+# Thresholds are deliberately well past any transient peer: with the doubling
+# backoff in `retry_deferred_fts_recovery` (60s -> 3600s cap) this is several
+# hours of a genuinely stuck holder, not a restarting one.
+_FTS_HOLDER_FUTILE_ATTEMPTS = 10
+_FTS_HOLDER_FUTILE_SECONDS = 3600.0
 # retry_deferred_fts_recovery cadence: startup paid the full admission wait once; later
 # retries are non-blocking probes whose spacing doubles up to the cap.
 _FTS_STALE_RETRY_SECONDS = 60.0
@@ -422,7 +447,14 @@ class SessionSchemaMixin:
         """Record a deferral diagnostic for the foreign processes holding the DB; True = defer
         (holders remain). After ``_FTS_HOLDER_ESCALATE_ATTEMPTS`` deferrals spanning
         ``_FTS_HOLDER_ESCALATE_SECONDS``, provably inactive orphan Desktop backends are
-        reaped and the holders re-checked."""
+        reaped and the holders re-checked.
+
+        Returns False (proceed with the rebuild) once the holders have proven permanent --
+        ``_FTS_HOLDER_FUTILE_ATTEMPTS`` deferrals spanning ``_FTS_HOLDER_FUTILE_SECONDS``.
+        A holder that survives the orphan reap is a supervised peer that will never leave,
+        and deferring to it forever means canonical writes keep failing through the
+        ``messages_fts`` triggers indefinitely (#106393). The rebuild's own safety is the
+        cross-process ``fts_rebuild_admission`` flock, which still applies."""
         now = time.time()
         try:
             row = cursor.execute(
@@ -457,14 +489,28 @@ class SessionSchemaMixin:
                     "state.db FTS rebuild deferrals; checking holders again.", reaped, attempts,
                 )
                 foreign_holders = self._foreign_state_db_holders()
-            if foreign_holders:
+            if foreign_holders and attempts < _FTS_HOLDER_FUTILE_ATTEMPTS:
                 logger.error(
                     "state.db FTS repair remains blocked after %d deferrals "
-                    "by holder(s) %s. Stop the listed processes, then run "
-                    "`hermes sessions optimize-storage` with the gateway stopped. "
+                    "by holder(s) %s. Stopping the Desktop backend "
+                    "(`systemctl --user stop hermes-serve`) leaves the gateway as the sole "
+                    "holder and lets its own retry tick rebuild without gateway downtime; "
+                    "note that tick backs off to hourly, so allow up to an hour. "
                     "`hermes doctor` reports this degraded state.", attempts, foreign_holders,
                 )
         if not foreign_holders:
+            return False
+        if attempts >= _FTS_HOLDER_FUTILE_ATTEMPTS and now - first_seen >= _FTS_HOLDER_FUTILE_SECONDS:
+            # Proven-futile wait: proceed under the rebuild flock rather than
+            # deferring forever while canonical writes keep failing. See the
+            # _FTS_HOLDER_FUTILE_* rationale above.
+            logger.error(
+                "state.db FTS repair blocked by holder(s) %s for %d deferrals over %.1fh; "
+                "the holders look permanent (supervised peers are never reaped), so proceeding "
+                "with the rebuild under the cross-process rebuild lock instead of deferring "
+                "again. This is a single write transaction and performs no WAL surgery.",
+                foreign_holders, attempts, (now - first_seen) / 3600.0,
+            )
             return False
         logger.warning(
             "Deferred stale state.db FTS rebuild while foreign processes "
@@ -478,8 +524,16 @@ class SessionSchemaMixin:
         bounds the admission wait (None = full startup budget, ``0`` = non-blocking retry).
         Fails closed: holders or a lost admission race leave the breadcrumb set."""
         foreign_holders = self._foreign_state_db_holders()
-        if foreign_holders and self._defer_stale_fts_for_holders(cursor, foreign_holders):
-            return False
+        if foreign_holders:
+            if self._defer_stale_fts_for_holders(cursor, foreign_holders):
+                return False
+            # Proceeding past a proven-permanent holder (see
+            # _defer_stale_fts_for_holders): probe the rebuild authority instead
+            # of waiting on it. The holder is not going away, so a blocking
+            # acquire here would add the full admission budget to every startup
+            # of a database in this state -- and the stale breadcrumb already
+            # guarantees the retry, so waiting buys nothing.
+            timeout_seconds = 0.0
         with fts_rebuild_admission(self.db_path, timeout_seconds=timeout_seconds) as admitted:
             if not admitted:
                 logger.warning(

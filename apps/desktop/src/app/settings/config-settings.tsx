@@ -32,6 +32,7 @@ import { useOnProfileSwitch } from '../hooks/use-on-profile-switch'
 import { PanelEmpty } from '../overlays/panel'
 
 import { ConfigField } from './config-field'
+import { DelegationModelSettings } from './delegation-model-settings'
 import {
   clearsEnabledToolsets,
   diffConfig,
@@ -285,7 +286,8 @@ function ConfigSettingsInner({
       return
     }
 
-    const element = document.getElementById(`setting-field-${targetField}`)
+    const resolvedField = targetField === 'delegation.provider' ? 'delegation.model' : targetField
+    const element = document.getElementById(`setting-field-${resolvedField}`)
 
     if (!element) {
       return
@@ -377,7 +379,9 @@ function ConfigSettingsInner({
     return <SettingsSkeleton sections={[{ rows: 6 }]} />
   }
 
-  const visibleFields = activeSectionId === 'voice' ? fields.filter(([key]) => voiceFieldVisible(key, config)) : fields
+  const visibleFields = fields.filter(([key]) =>
+    key !== 'delegation.provider' && (activeSectionId !== 'voice' || voiceFieldVisible(key, config))
+  )
 
   return (
     <SettingsContent>
@@ -387,6 +391,7 @@ function ConfigSettingsInner({
       {activeSectionId === 'model' && (
         <div className="mb-6">
           <ModelSettings onMainModelChanged={onMainModelChanged} scopeProfile={scopeProfile} />
+          <DelegationModelSettings scopeProfile={scopeProfile} />
         </div>
       )}
       {/* Device-local desktop prefs (not config.yaml) — they live here since
@@ -420,7 +425,9 @@ function ConfigSettingsInner({
         <div className="grid gap-1">
           {visibleFields.map(([key, field]) => (
             <div className="scroll-mt-6 rounded-lg" id={`setting-field-${key}`} key={key}>
-              <ConfigField
+              {key === 'delegation.model' ? (
+                <DelegationModelSettings scopeProfile={scopeProfile} />
+              ) : <ConfigField
                 descriptionExtra={
                   key === 'memory.provider' && isExternalMemoryProvider(getNested(config, key)) ? (
                     <MemoryConnect profile={scopeProfile} provider={String(getNested(config, key))} />
@@ -436,7 +443,7 @@ function ConfigSettingsInner({
                 schema={field}
                 schemaKey={key}
                 value={getNested(config, key)}
-              />
+              />}
               {key === 'memory.provider' && isExternalMemoryProvider(getNested(config, key)) ? (
                 <ProviderConfigPanel
                   key={String(getNested(config, key))}

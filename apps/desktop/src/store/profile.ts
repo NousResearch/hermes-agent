@@ -1,4 +1,4 @@
-import { LOCAL_CONNECTION_ID, registryBackendScopeKey } from '@hermes/shared'
+import { registryBackendScopeKey } from '@hermes/shared'
 import { atom, batch, computed } from 'nanostores'
 
 import type { HermesConnection } from '@/global'
@@ -271,43 +271,14 @@ export const $newChatRoute = atom<AgentProfileRoute | null>(null)
 // string "omar", and every follow-up RPC dialed requestGatewayForProfile
 // ("omar") — a DIFFERENT socket than the one that created the session —
 // and 4001'd "session not found" (#94071). null = the intent dials the legacy
-// profile-only path (a v1 primary with no registry identity, or a named
-// profile pick on the explicit `local` source — see profilePickConnectionId).
+// profile-only path (a v1 primary with no registry identity).
 export const $newChatConnectionId = atom<null | string>(null)
 
 /** Capture the registry source a new-chat profile intent lands on — by
  *  default the active one; callers that dial a different door (a profile
- *  pick, see profilePickConnectionId) pass the source that door uses. */
+ *  pick) pass the source that door uses. */
 export function captureNewChatSource(connectionId: null | string = activeGatewayConnectionId()): void {
   $newChatConnectionId.set(connectionId)
-}
-
-/**
- * The registry source a PROFILE PICK dials, mirroring activateOnCurrentSource:
- * a live remote registry source keeps its connection id. Named picks on the
- * explicit `local` source (and the window primary) take the legacy
- * profile-only path (null) so the main process can resolve a per-profile
- * remote override before falling back to a local backend (#94166).
- *
- * Default on that same `local` source is different: it is also the window
- * primary's profile key. The legacy door would activate the remote primary on
- * a VPS-primary desktop, and Bots would show the VPS as Current Gateway.
- * Keep Default on `local` so This-device home stays on This device.
- */
-function profilePickConnectionId(profile?: string): null | string {
-  const connectionId = activeGatewayConnectionId()
-
-  if (connectionId && connectionId !== LOCAL_CONNECTION_ID) {
-    return connectionId
-  }
-
-  if (connectionId === LOCAL_CONNECTION_ID) {
-    const key = normalizeProfileKey(profile ?? $newChatProfile.get())
-
-    return key === 'default' ? LOCAL_CONNECTION_ID : null
-  }
-
-  return null
 }
 
 /**
@@ -330,9 +301,7 @@ export function resolveNewChatOwnerRoute(forProfile?: string): AgentProfileRoute
   const intentProfile = forProfile ? normalizeProfileKey(forProfile) : $newChatProfile.get()
 
   const connectionId = (
-    (intentProfile
-      ? ($newChatConnectionId.get() ?? profilePickConnectionId(intentProfile))
-      : activeGatewayConnectionId()) ?? ''
+    (intentProfile ? ($newChatConnectionId.get() ?? activeGatewayConnectionId()) : activeGatewayConnectionId()) ?? ''
   ).trim()
 
   if (!connectionId) {
@@ -864,7 +833,7 @@ export function selectProfile(name: string): void {
   // is made on the source the user is looking at (activateOnCurrentSource
   // dials exactly that pair), so the draft's exact owner is that pair — or the
   // legacy profile-only path when that is the door the pick takes.
-  captureNewChatSource(profilePickConnectionId(target))
+  captureNewChatSource()
 
   if (switching) {
     requestFreshSession()
@@ -925,14 +894,10 @@ async function isLocalDesktopProfile(target: string): Promise<boolean> {
 }
 
 // Route a profile pick at the source the user is LOOKING at. $profiles is the
-// active gateway's list, so a pick made while a remote registry source is live
-// names one of THAT source's profiles and must keep its connection id. Named
-// picks on the primary and explicit "local" source stay on the legacy
-// profile-only path so the main process can resolve a per-profile remote
-// override before falling back to a local backend. Default on `local` stays
-// on that source — see profilePickConnectionId.
+// active gateway's list. ponytail: retain its source, including local;
+// Electron's registry route already resolves per-profile remote overrides.
 function activateOnCurrentSource(target: string): Promise<void> {
-  const connectionId = profilePickConnectionId(target)
+  const connectionId = activeGatewayConnectionId()
 
   return connectionId ? ensureGatewayAgent(connectionId, target) : ensureGatewayProfile(target)
 }
@@ -944,7 +909,7 @@ export function pinNewChatProfile(name: string): string {
   const target = normalizeProfileKey(name)
   $newChatProfile.set(target)
   $newChatRoute.set(null)
-  captureNewChatSource(profilePickConnectionId(target))
+  captureNewChatSource()
 
   return target
 }

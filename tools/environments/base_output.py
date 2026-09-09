@@ -198,9 +198,13 @@ def _new_output_collector(proc, bounded_capture: bool) -> _BoundedOutputCollecto
     return _BoundedOutputCollector(capture_limit, spill_path=spill_path)
 
 
-def _finalize_wait_result(collector: _BoundedOutputCollector, rendered: str, returncode: int | None) -> dict:
+def _finalize_wait_result(
+    collector: _BoundedOutputCollector, rendered: str, returncode: int | None, *, timed_out: bool = False,
+) -> dict:
     """Assemble a wait result, attaching spill metadata when overflow occurred."""
     result = {"output": rendered, "returncode": returncode}
+    if timed_out:
+        result["timed_out"] = True
     spill = collector.close_spill()
     if spill:
         result["output_total_chars"] = collector.total_chars

@@ -189,5 +189,6 @@ def test_managed_modal_execute_times_out_and_cancels(monkeypatch):
     assert result == {
         "output": "Managed Modal exec timed out after 2s",
         "returncode": 124,
+        "timed_out": True,
     }
     assert any(call[0] == "POST" and call[1].endswith("/cancel") for call in calls)

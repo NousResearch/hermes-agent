@@ -1087,7 +1087,16 @@ def _run_foreground(
             break
         except Exception as e:
             if "timeout" in str(e).lower():
-                return _error_json(f"Command timed out after {effective_timeout} seconds", exit_code=124)
+                # Backend/setup exceptions that merely mention "timeout" are not
+                # proof that the command ran until its execution deadline. Keep the
+                # legacy exit code, but do not emit the explicit terminal-timeout
+                # markers that poison the exact-retry circuit.
+                return _error_json(
+                    _redact_terminal_error_text(
+                        f"Command execution failed: {type(e).__name__}: {e}"
+                    ),
+                    exit_code=124,
+                )
             # Retry on transient errors
             if retry_count < max_retries:
                 wait_time = 2 ** (retry_count + 1)

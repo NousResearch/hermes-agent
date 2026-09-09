@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import concurrent.futures
 import contextlib
+import copy
 import json
 from pathlib import Path
 import logging
@@ -450,6 +451,49 @@ class _ToolCancelledResult(str):
     post_tool_call was already emitted, so a late-finishing abandoned worker must not report."""
 
 
+class _DispatchCommit:
+    """Linearize actual dispatch against an outer runner abandoning the call."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._abandoned = False
+        self._args: dict[str, Any] | None = None
+
+    def commit(self, args: dict[str, Any]) -> bool:
+        with self._lock:
+            if self._abandoned:
+                return False
+            self._args = copy.deepcopy(args)
+            return True
+
+    def abandon_and_snapshot(self) -> dict[str, Any] | None:
+        with self._lock:
+            self._abandoned = True
+            return None if self._args is None else copy.deepcopy(self._args)
+
+
+def _is_terminal_timeout_result(tool_name: str, result: Any) -> bool:
+    if tool_name != "terminal":
+        return False
+    try:
+        payload = result if isinstance(result, dict) else json.loads(result)
+    except (TypeError, ValueError):
+        return False
+    return (
+        isinstance(payload, dict)
+        and payload.get("status") == "timeout"
+        and payload.get("error_type") == "terminal_timeout"
+    )
+
+
+def _record_terminal_timeout(agent, args: dict) -> None:
+    try:
+        from agent.tool_timeout_circuit import record_tool_timeout
+        record_tool_timeout("terminal", args, getattr(agent, "session_id", "") or "")
+    except Exception:
+        logger.exception("could not record terminal timeout circuit")
+
+
 class _ConcurrentToolAuthorizationGate:
     """Serialize policy prompts and exclude human approval waits from batch deadlines.
 
@@ -640,6 +684,7 @@ def _dispatch_authorized_once(
     display_index: int | None,
     begin_execution,
     authorization_gate: _ConcurrentToolAuthorizationGate | None,
+    dispatch_commit: _DispatchCommit,
 ) -> Any:
     """Hermes policy (scope → plugin pre-hooks → guardrails) then the one real dispatch.
 
@@ -679,8 +724,44 @@ def _dispatch_authorized_once(
     elif ref.name == "skill_manage":
         agent._iters_since_skill = 0
 
-    _advance_start_order(lambda: _begin_tool_execution(agent, ref, display_index))
-    return _run_with_activity_heartbeat(agent, ref.name, lambda: execute(ref.args))
+    admitted = False
+
+    def _begin() -> None:
+        nonlocal admitted
+        if ref.name == "terminal":
+            from agent.tool_timeout_circuit import try_admit_tool_call
+
+            admitted = try_admit_tool_call(
+                ref.name,
+                ref.args,
+                getattr(agent, "session_id", "") or "",
+                lambda: dispatch_commit.commit(ref.args),
+            )
+        else:
+            admitted = dispatch_commit.commit(ref.args)
+        if admitted:
+            _begin_tool_execution(agent, ref, display_index)
+
+    _advance_start_order(_begin)
+    if not admitted:
+        state.blocked = True
+        state.dispatched = False
+        return _blocked_tool_result(
+            agent,
+            ref,
+            block_message=(
+                "Identical terminal call timed out recently in this session and is temporarily "
+                "circuit-broken, or this call was abandoned before dispatch. Its prior side effects "
+                "may be UNKNOWN. Do NOT retry unchanged; inspect external state first, then use a "
+                "different bounded approach or wait for the circuit to expire."
+            ),
+            block_error_type="tool_timeout_retry_circuit",
+            guardrail_decision=None,
+        )
+    result = _run_with_activity_heartbeat(agent, ref.name, lambda: execute(ref.args))
+    if _is_terminal_timeout_result(ref.name, result):
+        _record_terminal_timeout(agent, ref.args)
+    return result
 
 
 def _run_agent_tool_execution_middleware(
@@ -696,6 +777,7 @@ def _run_agent_tool_execution_middleware(
     middleware_trace: list[dict[str, Any]] | None = None,
     begin_execution=None,
     authorization_gate: _ConcurrentToolAuthorizationGate | None = None,
+    dispatch_commit: _DispatchCommit | None = None,
 ) -> _ManagedToolResult:
     """Run Relay rewrites before Hermes policy and dispatch exactly once."""
     from agent import relay_tools
@@ -706,6 +788,7 @@ def _run_agent_tool_execution_middleware(
 
     trace = middleware_trace if middleware_trace is not None else []
     state = _ManagedToolResult(result=None, args=function_args, middleware_trace=trace, blocked=False, dispatched=False)
+    dispatch_commit = dispatch_commit or _DispatchCommit()
     dispatch_lock = threading.Lock()
 
     def _authorized_dispatch(final_args: dict[str, Any]) -> Any:
@@ -724,6 +807,7 @@ def _run_agent_tool_execution_middleware(
             display_index=display_index,
             begin_execution=begin_execution,
             authorization_gate=authorization_gate,
+            dispatch_commit=dispatch_commit,
         )
 
     def _hermes_pipeline(relay_args: dict[str, Any]) -> Any:
@@ -839,11 +923,16 @@ def _run_sequential_tool_execution_middleware(
 
     authorization_gate = _ConcurrentToolAuthorizationGate()
     worker_tid: list[int] = []
+    dispatch_commit = _DispatchCommit()
 
     def _run() -> _ManagedToolResult:
         with _registered_tool_worker(agent) as tid:
             worker_tid.append(tid)
-            return _run_agent_tool_execution_middleware(agent, authorization_gate=authorization_gate, **kwargs)
+            return _run_agent_tool_execution_middleware(
+                agent, authorization_gate=authorization_gate,
+                dispatch_commit=dispatch_commit,
+                **kwargs,
+            )
 
     if ref.trace is None:
         ref.trace = []
@@ -863,6 +952,7 @@ def _run_sequential_tool_execution_middleware(
             concurrent.futures.wait([future], timeout=3.0)
             if future.done() and not future.cancelled():
                 return future.result()
+            dispatch_commit.abandon_and_snapshot()
             interrupt_reason = getattr(agent, "_tool_interrupt_reason", None) or "interrupt requested"
             message = f"[Tool execution cancelled — {function_name} was abandoned: {interrupt_reason}]"
             logger.info(
@@ -877,6 +967,9 @@ def _run_sequential_tool_execution_middleware(
             assert timeout_s is not None  # only reachable when a deadline exists
             message = f"Error executing tool '{function_name}': timed out after {timeout_s:.1f}s"
             logger.warning("sequential tool %s timed out after %.1fs", function_name, timeout_s)
+            dispatched_args = dispatch_commit.abandon_and_snapshot()
+            if function_name == "terminal" and dispatched_args is not None:
+                _record_terminal_timeout(agent, dispatched_args)
             result_cls, outcome = _ToolTimeoutResult, dict(
                 duration_ms=int(timeout_s * 1000), status="timeout", error_type="tool_timeout", error_message=message,
             )
@@ -1158,6 +1251,7 @@ class _ConcurrentBatch:
         self.gate = _StartOrderGate(_start_order_gate_timeout(timeout_s))
         self.authorization_gate = _ConcurrentToolAuthorizationGate()
         self.timed_out_indices: set[int] = set()
+        self.dispatch_commits = [_DispatchCommit() for _ in parsed_calls]
 
     def _dispatch_worker(self, index: int, ref: _ToolCallRef, scope_block, start_gate: _WorkerStartOnce) -> Optional[_ToolOutcome]:
         """Run one call through the middleware and synthesize its slot outcome; ``None`` when
@@ -1184,6 +1278,7 @@ class _ConcurrentBatch:
                 display_index=index + 1,
                 begin_execution=start_gate.advance,
                 authorization_gate=self.authorization_gate,
+                dispatch_commit=self.dispatch_commits[index],
             )
             result, ref.args, ref.trace = managed.result, managed.args, managed.middleware_trace
             blocked, dispatched = managed.blocked, managed.dispatched
@@ -1302,6 +1397,16 @@ class _ConcurrentBatch:
                 continue
             for f in not_done:
                 f.cancel()
+            # Atomically prevent calls that have not crossed the dispatch boundary
+            # from starting after the batch result is synthesized. Calls that did
+            # commit expose an immutable args snapshot for timeout recording.
+            for f in not_done:
+                index = future_to_index.get(f)
+                if index is None:
+                    continue
+                dispatched_args = self.dispatch_commits[index].abandon_and_snapshot()
+                if timed_out and self.parsed_calls[index].name == "terminal" and dispatched_args is not None:
+                    _record_terminal_timeout(agent, dispatched_args)
             # Release gate-parked workers BEFORE interrupt fan-out so none later
             # dispatches a tool the turn already reported as timed out / interrupted.
             self.gate.abandon()

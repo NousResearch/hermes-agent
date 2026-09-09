@@ -400,7 +400,7 @@ class BaseEnvironment(ABC):
                     rendered = output.render(suffix=f"\n[Command timed out after {timeout}s]")
                     if output.total_chars == 0:
                         rendered = rendered.lstrip()
-                    return self._finalize_wait_result(output, rendered, 124)
+                    return self._finalize_wait_result(output, rendered, 124, timed_out=True)
                 touch_activity_if_due(_activity_state, "terminal command running")
                 trace.heartbeat()
                 time.sleep(_poll_sleep)
@@ -559,7 +559,7 @@ class BaseEnvironment(ABC):
             raise
 
         result = (
-            {"output": f"[Command timed out after {effective_timeout}s]", "returncode": 124}
+            {"output": f"[Command timed out after {effective_timeout}s]", "returncode": 124, "timed_out": True}
             if bounded.timed_out else bounded.value)
         self._update_cwd(result)
         return result

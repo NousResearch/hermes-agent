@@ -247,6 +247,8 @@ def finalize_foreground_result(
         approval_note = approval_note.rstrip(".") + ", then interrupted."
 
     result_dict = {"output": output, "exit_code": returncode, "error": None}
+    if result.get("timed_out") is True:
+        result_dict.update(status="timeout", error_type="terminal_timeout")
     # Optional fields in observable JSON key order; None means "omit". Spill
     # metadata is present only when output overflowed the capture window.
     optional_fields: list[tuple[str, Any]] = [

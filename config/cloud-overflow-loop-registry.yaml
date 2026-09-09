@@ -7,7 +7,7 @@ loops:
     owner: fleet-engineer
     project: control-plane
     trigger: manual fixture-backed dry-run only; no schedule installed
-    oracle: pytest tests/hermes_cli/test_cloud_overflow.py -q
+    oracle: python -m pytest tests/hermes_cli/test_cloud_overflow.py -q -o addopts=''
     budget: max one planned launch per tick; max three concurrent leases; bounded retries
     consumer: jarvis-os cloud-overflow review surface
     retirement: retire when DGX capacity policy or the approved cloud-provider contract changes

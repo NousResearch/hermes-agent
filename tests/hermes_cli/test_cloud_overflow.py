@@ -23,6 +23,7 @@ from hermes_cli.cloud_overflow import (
     ProviderRefused,
     TaskSnapshot,
     eligibility,
+
     exponential_backoff,
     load_fixture,
     record_launch,
@@ -74,6 +75,23 @@ def test_saturation_and_max_one_tick(tmp_path, task):
     assert run_tick((BoardSnapshot("board-a", 2, 3, (task,)),), state=state, adapters=adapters).reason == "no_eligible_candidate"
 
 
+def test_active_concurrency_cap_blocks_another_candidate(tmp_path, task):
+    state = OverflowState(tmp_path / "state.sqlite3", max_concurrency=1)
+    second = TaskSnapshot(id="t_docs_2", title="Second documentation draft", skills=("docs",))
+    adapters = {"cursor-cloud": CursorCloudAdapter("cursor-cloud", plan_authenticated=True, isolated_checkout="fixture")}
+    board = BoardSnapshot("board-a", running=3, max_spawn=3, tasks=(task,))
+    first = run_tick((board,), state=state, adapters=adapters, now=100)
+    assert first.status == "planned"
+    capped = run_tick(
+        (BoardSnapshot("board-a", running=3, max_spawn=3, tasks=(second,)),),
+        state=state,
+        adapters=adapters,
+        now=101,
+    )
+    assert capped.reason == "global_concurrency_cap"
+    assert state.get(first.idempotency_key)["status"] == "planned"
+
+
 def test_toctou_reread_rejects_changed_source(tmp_path, task):
     state = OverflowState(tmp_path / "state.sqlite3")
     changed = TaskSnapshot(id=task.id, title="Changed", skills=task.skills)
@@ -104,6 +122,20 @@ def test_saturation_dry_run_cli_is_fixture_only(tmp_path):
     assert "cloud-agent" not in first.stdout
     assert "claude --cloud" not in first.stdout
     assert "codex cloud exec" not in first.stdout
+
+
+@pytest.mark.parametrize("operation", ["merge", "deploy", "cron", "webhook", "schedule", "schedule-activation", "provider-launch", "unknown"])
+def test_prepare_only_boundary_rejects_activation_operations(tmp_path, task, operation):
+    state = OverflowState(tmp_path / "state.sqlite3")
+    adapter = {"cursor-cloud": CursorCloudAdapter("cursor-cloud", plan_authenticated=True, isolated_checkout="fixture")}
+    with pytest.raises(ProviderRefused, match="activation is not implemented"):
+        run_tick(
+            (BoardSnapshot("board-a", running=3, max_spawn=3, tasks=(task,)),),
+            state=state,
+            adapters=adapter,
+            operation=operation,
+        )
+    assert state.get(OverflowState.idempotency_key("board-a", task.id, source_revision(task), "cursor-cloud")) is None
 
 
 def test_provider_argv_timeout_and_parsed_identity(monkeypatch, task):

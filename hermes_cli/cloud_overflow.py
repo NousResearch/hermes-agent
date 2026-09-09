@@ -25,6 +25,7 @@ from urllib.parse import urlparse
 
 
 PROVIDER_ORDER = ("cursor-cloud", "claude-cloud", "codex-cloud")
+PREPARE_ONLY_ACTION = "prepare-only"
 EXPLICIT_WORK_CLASSES = frozenset({"docs", "documentation", "research"})
 EXCLUDED_CLASSES = frozenset(
     {
@@ -61,6 +62,17 @@ class ProviderRefused(OverflowError):
 
 class CommentWriteError(OverflowError):
     """Raised when an audit receipt cannot be written."""
+
+
+def enforce_prepare_only(action: str) -> str:
+    """Reject every action except the planner's non-activating action.
+
+    This is the command-boundary guard: merge, deploy, cron, webhook, schedule,
+    provider launch, and unknown operations have no execution path here.
+    """
+    if action != PREPARE_ONLY_ACTION:
+        raise ProviderRefused("cloud-overflow supports prepare-only; activation is not implemented")
+    return PREPARE_ONLY_ACTION
 
 
 @dataclass(frozen=True)
@@ -453,8 +465,10 @@ def run_tick(
     fleet_paused: bool = False,
     kill_switch: bool = False,
     now: Optional[int] = None,
+    operation: str = PREPARE_ONLY_ACTION,
 ) -> TickResult:
     """Run one bounded prepare pass.  This function never invokes a provider."""
+    enforce_prepare_only(operation)
     if fleet_paused or kill_switch:
         return TickResult("blocked", action="no-op", reason="pause_or_kill_switch")
     for board in boards:
@@ -484,7 +498,7 @@ def run_tick(
                 board=board.board,
                 task_id=task.id,
                 provider=provider,
-                action="prepare-only",
+                action=PREPARE_ONLY_ACTION,
                 reason="eligible_saturated_ready_task",
                 idempotency_key=key,
             )
@@ -592,6 +606,7 @@ def kanban_comment_writer(board: str, task_id: str, body: str) -> int:
 
 def cloud_overflow_command(args: argparse.Namespace) -> int:
     """CLI entry point; only --dry-run fixture planning is exposed."""
+    enforce_prepare_only(PREPARE_ONLY_ACTION)
     if not getattr(args, "fixture", None):
         print("cloud-overflow: --fixture is required for the prepare-only path", file=__import__("sys").stderr)
         return 2

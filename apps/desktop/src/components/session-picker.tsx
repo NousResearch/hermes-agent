@@ -30,7 +30,7 @@ export function SessionPickerDialog({ activeStoredSessionId, onOpenChange, onRes
 
   const sessionsQuery = useQuery({
     enabled: open,
-    queryFn: () => listAllProfileSessions(200, 1, 'exclude'),
+    queryFn: ({ signal }) => listAllProfileSessions(200, 1, 'exclude', 'recent', 'all', {}, { signal }),
     queryKey: ['session-picker', 'sessions']
   })
 

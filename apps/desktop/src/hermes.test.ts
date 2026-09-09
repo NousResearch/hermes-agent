@@ -625,6 +625,37 @@ describe('Hermes REST helpers', () => {
     })
   })
 
+  it('forwards transcript cancellation to the session request', async () => {
+    const controller = new AbortController()
+    api.mockResolvedValueOnce({ messages: [], session_id: 'session-1' })
+
+    await getAllSessionMessages('session-1', undefined, { signal: controller.signal })
+
+    expect(api).toHaveBeenCalledWith(
+      expect.objectContaining({
+        path: '/api/sessions/session-1/messages?limit=500&offset=0&order=oldest&include_compacted=true',
+        signal: controller.signal
+      })
+    )
+  })
+
+  it('rejects an in-flight complete transcript request when aborted', async () => {
+    let resolveRequest!: (value: unknown) => void
+
+    const pending = new Promise(resolve => {
+      resolveRequest = resolve
+    })
+
+    const controller = new AbortController()
+    api.mockReturnValue(pending)
+
+    const result = getAllSessionMessages('session-1', null, { signal: controller.signal })
+    controller.abort()
+
+    await expect(result).rejects.toMatchObject({ name: 'AbortError' })
+    resolveRequest({ messages: [], session_id: 'session-1' })
+  })
+
   it('stops complete transcript loads before Desktop memory becomes unbounded', async () => {
     api.mockResolvedValueOnce({
       messages: [{ id: 1, content: 'large transcript page' }],

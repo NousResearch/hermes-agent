@@ -492,6 +492,27 @@ def _under_gateway_supervisor(argv: list) -> bool:
     ).strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _nf_provisioning_file_present() -> bool:
+    """Cheap, import-free check: is a North Forge provisioning record on this drive?
+
+    Used only to choose fail-open vs fail-closed when :func:`_nf_tier_gate` hits an
+    *unexpected* error. If the record exists the drive was meant to be enforced, so
+    an internal failure must **block** startup, not silently run unprovisioned
+    (PC-2026-09-08-001). Never imports ``nf_tier`` / ``hermes_constants``.
+    """
+    try:
+        env = os.environ.get("HERMES_HOME", "").strip()
+        if env:
+            base = Path(env)
+            if base.parent.name == "profiles":  # HERMES_HOME points at a profile dir
+                base = base.parent.parent
+        else:
+            base = Path.home() / ".hermes"
+        return (base / "north-forge" / "provisioning.json").is_file()
+    except Exception:
+        return False
+
+
 def _nf_tier_gate(flag_name, env_profile_name):
     """North Forge tier / pinned-edition gate — runs before the stock profile logic.
 
@@ -507,8 +528,19 @@ def _nf_tier_gate(flag_name, env_profile_name):
       * ``("block", message)`` — hard stop (Basic drive asked for a forbidden
         edition via an explicit flag, or the record is tampered).
 
-    Never raises for its own bugs — a broken gate must not stop hermes starting.
+    A broken gate must not stop hermes starting **on an un-provisioned drive**
+    (dev checkout / plain upstream) — those still return ``None``. But when a
+    provisioning record is physically present, an unexpected internal failure
+    fails **closed** (``("block", …)``) rather than silently disabling
+    enforcement (PC-2026-09-08-001).
     """
+    _fail_closed = (
+        "block",
+        "North Forge tier enforcement could not run (internal error) but this "
+        "drive carries a provisioning record — refusing to start rather than run "
+        "it unprovisioned. Re-run Setup (scripts\\nf-setup.ps1 --repair) or have "
+        "an admin check the drive.",
+    )
     try:
         from hermes_cli.nf_tier import (
             load, enforce_startup_profile, NfTierError,
@@ -516,7 +548,7 @@ def _nf_tier_gate(flag_name, env_profile_name):
         )
         from hermes_constants import get_default_hermes_root
     except Exception:
-        return None
+        return _fail_closed if _nf_provisioning_file_present() else None
     try:
         p = load()
         if p.state not in (STATE_ACTIVE, STATE_TAMPERED):
@@ -552,7 +584,11 @@ def _nf_tier_gate(flag_name, env_profile_name):
     except SystemExit:
         raise
     except Exception:
-        return None
+        # An unexpected failure while a record is physically present ⇒ fail
+        # closed; never run a provisioned drive with enforcement silently off
+        # (PC-2026-09-08-001). No record ⇒ this was a bug unrelated to
+        # provisioning; keep hermes startable.
+        return _fail_closed if _nf_provisioning_file_present() else None
 
 
 def _apply_profile_override() -> None:

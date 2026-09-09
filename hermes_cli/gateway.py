@@ -2075,6 +2075,19 @@ def _wait_for_user_dbus_socket(timeout: float = 3.0) -> bool:
     return _user_systemd_socket_ready()
 
 
+def _wait_for_target_user_bus(uid: int, timeout: float = 5.0) -> bool:
+    """Poll for ``/run/user/<uid>/bus`` of ANOTHER account (the system unit's ``User=`` while root installs).
+    Only the D-Bus socket counts — ``systemd/private`` alone is enough for ``systemctl --user`` but not for
+    the ``systemd-run --user`` that restart-safe workers need. Never adopts anything into our env."""
+    bus = Path(f"/run/user/{uid}/bus")
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if _path_exists_safe(bus):
+            return True
+        time.sleep(0.2)
+    return _path_exists_safe(bus)
+
+
 def _loginctl_enable_linger(username: str) -> subprocess.CompletedProcess:
     """``loginctl enable-linger <username>`` (check=False, 30s); exceptions propagate to the caller."""
     return subprocess.run(["loginctl", "enable-linger", username], check=False, timeout=30, **_CAPTURE_TEXT)
@@ -2338,7 +2351,7 @@ def _require_root_for_system_service(action: str) -> None:
         raise SystemScopeRequiresRootError(f"System gateway {action} requires root. Re-run with sudo.", action)
 
 
-def _system_service_identity(run_as_user: str | None = None) -> tuple[str, str, str]:
+def _system_service_identity(run_as_user: str | None = None) -> tuple[str, str, str, int]:
     import getpass
     import grp
     import pwd
@@ -2359,7 +2372,7 @@ def _system_service_identity(run_as_user: str | None = None) -> tuple[str, str, 
         user_info = pwd.getpwnam(username)
     except KeyError as e:
         raise ValueError(f"Unknown user: {username}") from e
-    return username, grp.getgrgid(user_info.pw_gid).gr_name, user_info.pw_dir
+    return username, grp.getgrgid(user_info.pw_gid).gr_name, user_info.pw_dir, user_info.pw_uid
 
 
 def _read_systemd_user_from_unit(unit_path: Path) -> str | None:
@@ -2483,8 +2496,13 @@ def ensure_gateway_service(context: str = "setup") -> bool:
     return False
 
 
-def get_systemd_linger_status() -> tuple[bool | None, str]:
-    """Linger status for the current user: ``(True, "")``, ``(False, "")``, or ``(None, detail)`` when unknown."""
+def get_systemd_linger_status(username: str | None = None) -> tuple[bool | None, str]:
+    """Linger status for *username* or the current user when omitted.
+
+    System-scope gateway installation runs as root but the service runs as a
+    configured target user, so querying the caller would validate the wrong
+    user manager.
+    """
     if is_termux():
         return None, "not supported in Termux"
     if not is_linux():
@@ -2492,7 +2510,8 @@ def get_systemd_linger_status() -> tuple[bool | None, str]:
     if not shutil.which("loginctl"):
         return None, "loginctl not found"
 
-    username = os.getenv("USER") or os.getenv("LOGNAME")
+    if username is None:
+        username = os.getenv("USER") or os.getenv("LOGNAME")
     if not username:
         try:
             import pwd
@@ -2754,7 +2773,7 @@ def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) 
     restart_timeout = resolve_systemd_timeout_stop_sec(_get_restart_drain_timeout(), _get_cron_drain_timeout())
 
     if system:
-        username, group_name, home_dir = _system_service_identity(run_as_user)
+        username, group_name, home_dir, uid = _system_service_identity(run_as_user)
         hermes_home = _hermes_home_for_target_user(home_dir)
         # Profile arg relative to the TARGET user's ~/.hermes when hermes_home lives under it.
         target_root = Path(home_dir) / ".hermes"
@@ -2774,6 +2793,10 @@ def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) 
         path_entries = [e for e in _target_node_entries if e not in path_entries] + path_entries
         user_home = Path(home_dir)
         identity_lines = f"User={username}\nGroup={group_name}\n"
+        # Restart-safe cron/Kanban workers cross `systemd-run --user`, which needs this user's manager;
+        # without the ordering the gateway and user@<uid>.service race at boot and the one-shot bus
+        # adoption in run_gateway() can miss (#104893).
+        ordering_lines = f"After=user@{uid}.service\nWants=user@{uid}.service\n"
         env_lines = (
             f'Environment="HOME={home_dir}"\n'
             f'Environment="USER={username}"\n'
@@ -2784,7 +2807,7 @@ def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) 
         hermes_home = str(get_hermes_home().resolve())
         profile_arg = _profile_arg(hermes_home)
         user_home = Path.home()
-        identity_lines = env_lines = ""
+        identity_lines = env_lines = ordering_lines = ""
         wanted_by = "default.target"
 
     watchdog_seconds = _systemd_watchdog_seconds(hermes_home)
@@ -2799,7 +2822,7 @@ def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) 
 Description={SERVICE_DESCRIPTION}
 After=network-online.target
 Wants=network-online.target
-StartLimitIntervalSec=0
+{ordering_lines}StartLimitIntervalSec=0
 
 [Service]
 Type={systemd_type}
@@ -2936,51 +2959,92 @@ def refresh_systemd_unit_if_needed(system: bool = False) -> bool:
     return True
 
 
-def _print_linger_enable_warning(username: str, detail: str | None = None) -> None:
+def _print_linger_enable_warning(username: str, detail: str | None = None, *, system: bool = False) -> None:
     print()
-    print("⚠ Linger not enabled — gateway may stop when you close this terminal.")
+    if system:
+        print(f"⚠ Linger not enabled for {username} — cron and Kanban workers cannot start (no user D-Bus).")
+    else:
+        print("⚠ Linger not enabled — gateway may stop when you close this terminal.")
     if detail:
         print(f"  Auto-enable failed: {detail}")
     print()
-    print("  On headless servers (VPS, cloud instances) run:")
+    print("  Enable it manually:" if system else "  On headless servers (VPS, cloud instances) run:")
     print(f"    sudo loginctl enable-linger {username}")
     print()
     print("  Then restart the gateway:")
-    print(f"    systemctl --user restart {get_service_name()}.service")
+    sudo, _, user_flag = _systemd_cli_bits(system)
+    print(f"    {sudo}systemctl {user_flag}restart {get_service_name()}.service")
     print()
 
 
-def _ensure_linger_enabled() -> None:
-    """Enable linger when possible so the user gateway survives logout."""
+def _ensure_linger_enabled(username: str | None = None, *, system: bool = False) -> bool:
+    """Enable linger for *username* (default: the current user) when possible.
+
+    A user unit needs linger so the gateway survives logout. A system unit (``system=True``) needs
+    it for its ``User=`` so ``user@<uid>.service`` provides the D-Bus that ``systemd-run --user
+    --scope`` — every restart-safe cron/Kanban worker — connects to (#104893). Returns True only
+    when linger was enabled by this call.
+    """
     if is_termux() or not is_linux():
-        return
+        return False
 
-    import getpass
-    username = getpass.getuser()
+    if username is None:
+        import getpass
+        username = getpass.getuser()
+    enabled_msg = (
+        f"✓ Systemd linger is enabled for {username} (worker D-Bus available)" if system
+        else "✓ Systemd linger is enabled (service survives logout)"
+    )
     if Path(f"/var/lib/systemd/linger/{username}").exists():
-        print("✓ Systemd linger is enabled (service survives logout)")
-        return
+        print(enabled_msg)
+        return False
 
-    linger_enabled, linger_detail = get_systemd_linger_status()
+    linger_enabled, linger_detail = get_systemd_linger_status(username)
     if linger_enabled is True:
-        print("✓ Systemd linger is enabled (service survives logout)")
-        return
+        print(enabled_msg)
+        return False
 
     if not shutil.which("loginctl"):
-        _print_linger_enable_warning(username, linger_detail or "loginctl not found")
-        return
+        _print_linger_enable_warning(username, linger_detail or "loginctl not found", system=system)
+        return False
 
-    print("Enabling linger so the gateway survives SSH logout...")
+    if system:
+        print(f"Enabling linger for {username} so cron and Kanban workers can reach systemd-run --user...")
+    else:
+        print("Enabling linger so the gateway survives SSH logout...")
     try:
         result = _loginctl_enable_linger(username)
     except Exception as e:
-        _print_linger_enable_warning(username, str(e))
-        return
+        _print_linger_enable_warning(username, str(e), system=system)
+        return False
 
-    if result.returncode == 0:
-        print("✓ Linger enabled — gateway will persist after logout")
+    if result.returncode != 0:
+        _print_linger_enable_warning(username, _completed_process_detail(result) or linger_detail, system=system)
+        return False
+    print(f"✓ Enabled linger for {username}" if system else "✓ Linger enabled — gateway will persist after logout")
+    return True
+
+
+def _ensure_system_service_linger(username: str) -> None:
+    """Enable linger for the installed unit's ``User=`` (root included: restart-safe workers always cross
+    ``systemd-run --user``, so a root gateway needs ``user@0.service`` just the same).
+
+    After a fresh enable, wait for the TARGET user's bus: logind starts ``user@<uid>.service``
+    asynchronously and ``--start-now`` boots the gateway immediately. A gateway that was already running
+    keeps its bus-less environment and ``systemctl start`` on an active unit is a no-op — say so rather
+    than let the repair silently not take."""
+    if not _ensure_linger_enabled(username, system=True):
         return
-    _print_linger_enable_warning(username, _completed_process_detail(result) or linger_detail)
+    import pwd
+    uid = pwd.getpwnam(username).pw_uid  # windows-footgun: ok — POSIX systemd helper, never invoked on Windows
+    if _wait_for_target_user_bus(uid):
+        print(f"✓ /run/user/{uid}/bus is up — cron and Kanban workers can use systemd-run --user")
+    else:
+        print(f"⚠ /run/user/{uid}/bus did not appear within 5s.")
+        print(f"  Start the user manager: sudo systemctl start user@{uid}.service")
+    if _systemd_unit_is_active(system=True):
+        print("  The running gateway was started without a user D-Bus; restart it to pick one up:")
+        print(f"    sudo systemctl restart {get_service_name()}.service")
 
 
 def _select_systemd_scope(system: bool = False) -> bool:
@@ -3085,9 +3149,12 @@ def systemd_install(
             if enable_on_startup:
                 _run_systemctl(["enable", get_service_name()], system=system, check=True, timeout=30)
             print(f"✓ {scope_label.capitalize()} service definition updated")
-            return
-        print(f"Service already installed at: {unit_path}")
-        print("Use --force to reinstall")
+        else:
+            print(f"Service already installed at: {unit_path}")
+            print("Use --force to reinstall")
+        configured_user = _read_systemd_user_from_unit(unit_path) if system else None
+        if configured_user:
+            _ensure_system_service_linger(configured_user)
         return
 
     unit_path.parent.mkdir(parents=True, exist_ok=True)
@@ -3114,6 +3181,7 @@ def systemd_install(
         configured_user = _read_systemd_user_from_unit(unit_path)
         if configured_user:
             print(f"Configured to run as: {configured_user}")
+            _ensure_system_service_linger(configured_user)
     else:
         _ensure_linger_enabled()
 

@@ -5,9 +5,17 @@ resolves the recurring question: *"is this string supposed to say North Forge, o
 is it deliberately left as Hermes?"*
 
 North Forge is a fork of [`NousResearch/hermes-agent`](https://github.com/NousResearch/hermes-agent),
-kept rebased on upstream, engine used **unmodified**. The rebrand
-(`DECISION-2026-09-06-001`, Option B — see `logs/ledger/`) changed identity and
-workflow surfaces only. Three categories:
+kept rebased on upstream. **North Forge keeps Hermes's functional engine behavior;
+its downstream changes are identity, presentation, and workflow only**
+(`DECISION-2026-09-06-001` Option B; the earlier "engine used unmodified" / "full
+rebrand" phrasing was tightened to this per `DECISION-2026-09-07-002` — see
+`logs/ledger/`). Some visible CLI strings still say Hermes on purpose — the
+`hermes` command name and its `hermes …` examples, `HERMES_HOME` and the paths
+shown in `hermes config` / status output, the `HERMES_AGENT_HELP_GUIDANCE` engine
+help text, the `agent_name` skin-branding fallback in `cli.py` (only reached if
+the skin engine fails), the OS-service descriptions ("Hermes Agent Gateway"), and
+upstream's own setup / update / uninstall copy ("Hermes will …", "Update Hermes
+Agent"). Those are category 2 / 3 below. Three categories:
 
 ---
 
@@ -23,6 +31,7 @@ Change these to match North Forge; a stray "Hermes" here is a bug.
 | `editions/**` | North Forge profile overlays (e.g. `editions/field-service/`). Optional, additive, never a replacement for root `SOUL.md`. |
 | `hermes_cli/default_soul.py` `DEFAULT_SOUL_MD` + `agent/prompt_builder.py` `DEFAULT_AGENT_IDENTITY` | The runtime persona **identity line**: the text seeded into `HERMES_HOME/SOUL.md` on first run (`DEFAULT_SOUL_MD`) and the in-memory fallback used when no SOUL.md is present (`DEFAULT_AGENT_IDENTITY`, e.g. `skip_context_files` / subagent). Opens *"You are North Forge, an adaptive AI agent (built on the Hermes Agent engine by Nous Research)."* The two are kept **byte-identical**. `CHG-2026-09-07-007` — moved here from category 2. The rest of the behaviour spec (reply-sizing rule, named prohibitions, earned-depth) is upstream's and stays; the `_LEGACY_TEMPLATE_SOULS` / `_SCAFFOLD_*` detection strings in the same file stay Hermes-verbatim (category 2). |
 | `hermes_cli/banner.py` `format_banner_version_label()` + `hermes_cli/_parser.py` top-level parser `description` | Display name in `hermes --version` (*"North Forge v0.21.0 …"*) and the `hermes --help` header (*"North Forge - AI assistant with tool-calling capabilities"*). `CHG-2026-09-07-007` — moved here from category 2. The version number, the `· upstream <sha>` suffix, and the `Install directory` / `Install method` / `Python` / `OpenAI SDK` lines are **not** identity — they stay. Every `hermes …` example in the epilogue stays (that is the command name — category 2). Degraded-path echoes in `hermes_cli/_startup_fast.py` and `cli.py` (`HERMES_FAST_STARTUP_BANNER=1`) match. |
+| `hermes_cli/_parser.py` `chat` subparser `description` + `cli.py` interactive `_welcome_text` fallback | The `hermes chat --help` blurb (*"Start an interactive chat session with North Forge (on the Hermes Agent engine)."*) and the interactive REPL greeting shown when the skin engine can't supply `branding.welcome` (*"Welcome to North Forge! …"*, matching `skins/north-forge.yaml`). `CHG-2026-09-08-011` — folded in per `DECISION-2026-09-07-002`. The skinned `welcome` / `agent_name` come from `skins/north-forge.yaml`; the `agent_name` **fallback** string in `cli.py` stays Hermes (category 2 — only reached on skin-engine failure). |
 | `LICENSE` | MIT. Both copyright lines: `© 2025 Nous Research` (engine) **and** `© 2026 Kenneth C. Walker Jr.` (North Forge). Never remove Nous's line. `CHG-2026-09-06-024`. |
 | `package.json` — `name`, `repository`, `homepage`, `bugs` | `north-forge-agent`, `kwalker7631/north-forge-agent`. `CHG-2026-09-06-022`. Root `package-lock.json` root `name` mirrors it. |
 | `pyproject.toml` — `[project.urls]` | `Homepage` / `Repository` → `kwalker7631/north-forge-agent`. `CHG-2026-09-06-023`. |
@@ -55,9 +64,10 @@ benefit and breaks compatibility or self-references. Each is a settled carve-out
 ## 3. Upstream documentation — left pointing at Nous
 
 North Forge has **no docs site of its own**. Everything below still points at
-`hermes-agent.nousresearch.com` and upstream repos on purpose — the engine is
-used unmodified, so upstream's docs are correct for it. Fork-specific issues go to
-`github.com/kwalker7631/north-forge-agent/issues`; engine issues go upstream.
+`hermes-agent.nousresearch.com` and upstream repos on purpose — North Forge keeps
+Hermes's functional engine behavior, so upstream's docs are correct for it.
+Fork-specific issues go to `github.com/kwalker7631/north-forge-agent/issues`;
+engine issues go upstream.
 
 - `README.md` install one-liners, `hermes …` command reference, the documentation
   table, the feature table, Contributing, Community, Migrating-from-OpenClaw.

@@ -8,8 +8,9 @@
 sobre el motor [Hermes Agent](https://hermes-agent.nousresearch.com/) de
 [Nous Research](https://nousresearch.com). Es un *fork* de
 [`NousResearch/hermes-agent`](https://github.com/NousResearch/hermes-agent),
-mantenido al día con upstream y usado sin modificar: todo lo que hace Hermes
-Agent, lo hace North Forge.
+mantenido al día con upstream; conserva el comportamiento funcional del motor
+Hermes Agent, y sus cambios propios son solo de identidad, presentación y flujo
+de trabajo: todo lo que hace Hermes Agent, lo hace North Forge.
 
 > Esta es una página de entrada. La documentación completa y actualizada está en
 > inglés y no se traduce aquí para evitar que quede obsoleta.

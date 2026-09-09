@@ -1,24 +1,22 @@
 [package]
-name = "hermes-bootstrap"
-version = "0.0.1"
-description = "Hermes Setup — signed installer that drives scripts/install.ps1"
-authors = ["Nous Research <info@nousresearch.com>"]
+name = "north-forge-setup"
+version = "0.1.0"
+description = "North Forge Setup — branded GUI that runs scripts/bootstrap-north-forge.ps1 for a checkout already on the drive"
+authors = ["Kenneth C. Walker Jr."]
 edition = "2021"
-rust-version = "1.77"
+rust-version = "1.82"
 
 # Rename the output binary so the distributed artifact is literally
-# `Hermes-Setup.exe` on disk — not `hermes-bootstrap.exe`. Grandma sees
-# what we hand her, period. Tauri honors [[bin]] over [package].name
-# for the produced executable name.
+# `North-Forge-Setup.exe` on disk — not `north-forge-setup.exe`. Tauri honors
+# [[bin]] over [package].name for the produced executable name.
 [[bin]]
-name = "Hermes-Setup"
+name = "North-Forge-Setup"
 path = "src/main.rs"
 
-# The library target name MUST match the `withGlobalTauri` binding name that
-# tauri.conf.json's `app.windows[].label` references. We don't ship a separate
-# lib for now; everything is in src/.
+# The library holds all the logic so it can be unit-tested; main.rs is a
+# 3-line shim. The name is referenced by src/main.rs only.
 [lib]
-name = "hermes_bootstrap_lib"
+name = "north_forge_setup_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]
@@ -34,14 +32,10 @@ tauri-plugin-shell = "2"
 
 # Async + IO
 tokio = { version = "1", features = ["full"] }
-futures = "0.3"
 
 # Serialization
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-
-# HTTP — rustls so we don't need OpenSSL on the build box
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream"] }
 
 # Logging — emitted to a file under HERMES_HOME/logs/ and (optionally) the
 # webview console via Tauri's event channel.
@@ -53,26 +47,9 @@ tracing-appender = "0.2"
 dirs = "5"
 which = "6"
 anyhow = "1"
-thiserror = "1"
-once_cell = "1"
-uuid = { version = "1", features = ["v4"] }
-
-# Process control on Windows (CREATE_NO_WINDOW etc.)
-[target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.59", features = [
-    "Win32_Foundation",
-    "Win32_System_Diagnostics_ToolHelp",
-    "Win32_System_Threading",
-    "Win32_System_Console",
-    "Win32_UI_WindowsAndMessaging",
-] }
-
-# Signal-0 liveness probe for the update-lock marker owner (update.rs).
-[target.'cfg(unix)'.dependencies]
-libc = "0.2"
 
 [profile.release]
-# A 5-10MB signed installer is the goal. LTO + size-opt + single codegen unit.
+# A small signed installer is the goal. LTO + size-opt + single codegen unit.
 panic = "abort"
 codegen-units = 1
 lto = true

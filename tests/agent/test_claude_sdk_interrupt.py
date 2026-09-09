@@ -5,6 +5,8 @@ stand-ins, fake clients and shared builders live in
 ``tests.agent.claude_sdk_fakes``.
 """
 
+import threading
+import types
 from unittest.mock import MagicMock
 
 import pytest
@@ -202,6 +204,75 @@ class TestInterruptRoutesToSdkSession:
             assert holder["client"].interrupted is True
         finally:
             session.close()
+
+
+    def _agent_with_real_interrupt_surface(self):
+        """A test agent whose stop-clearing is the REAL mixin method.
+
+        The usual double is a MagicMock, so `clear_interrupt()` on it changes
+        nothing and a leak is invisible. Bind the production method and give it
+        a real Event, which is the half that leaks.
+        """
+        from agent.interrupt_control import InterruptControlMixin
+
+        agent = _make_agent()
+        agent._hard_interrupt_requested = threading.Event()
+        agent._execution_thread_id = None
+        agent._pending_redirect_lock = None
+        agent._pending_steer_lock = None
+        agent._tool_worker_threads = None
+        agent._tool_worker_threads_lock = None
+        agent.clear_interrupt = types.MethodType(
+            InterruptControlMixin.clear_interrupt, agent
+        )
+        return agent
+
+    def test_honored_interrupt_clears_the_hard_interrupt_event(self):
+        """Both halves of the stop are consumed, not just the flag.
+
+        `_hard_interrupt_requested` is an Event that conversation_compression
+        reads as a live cancel signal. The whole-turn runtimes return from
+        conversation_loop before `finalize_turn`, so nothing downstream clears
+        it for us — codex_runtime consumes both halves itself and this lane
+        must too, or the next compaction on the session sees a cancel that the
+        user never issued.
+        """
+        agent = self._agent_with_real_interrupt_surface()
+        agent._interrupt_requested = True
+        agent._hard_interrupt_requested.set()
+        agent._claude_sdk_session.run_turn.return_value = _make_turn(
+            interrupted=True, final_text="", projected_messages=[]
+        )
+
+        result = run_claude_agent_sdk_turn(
+            agent,
+            user_message="hi",
+            original_user_message="hi",
+            messages=[{"role": "user", "content": "hi"}],
+            effective_task_id="task-1",
+        )
+
+        assert result["interrupted"] is True
+        assert agent._interrupt_requested is False
+        assert agent._hard_interrupt_requested.is_set() is False
+
+    def test_interrupt_before_the_turn_starts_clears_both_halves(self):
+        """The pre-turn short-circuit honours the stop, so it must consume it fully."""
+        agent = self._agent_with_real_interrupt_surface()
+        agent._interrupt_requested = True
+        agent._hard_interrupt_requested.set()
+
+        result = run_claude_agent_sdk_turn(
+            agent,
+            user_message="hi",
+            original_user_message="hi",
+            messages=[{"role": "user", "content": "hi"}],
+            effective_task_id="task-1",
+        )
+
+        assert result["interrupted"] is True
+        assert result["api_calls"] == 0
+        assert agent._hard_interrupt_requested.is_set() is False
 
 
 class TestBargeInInterruptHandoff:

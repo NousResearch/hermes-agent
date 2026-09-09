@@ -18,6 +18,7 @@ from typing import Any, Dict, Optional
 
 from agent.redact import redact_sensitive_text
 from agent.claude_sdk_runtime_compaction import _on_compact_boundary, _on_compaction
+from agent.claude_sdk_runtime_fallback import _consume_agent_interrupt
 from agent.claude_sdk_runtime_continuity import (
     _canonical_sdk_cwd,
     _persisted_sdk_session_id,
@@ -587,7 +588,7 @@ def _run_sdk_attempts(agent, state: _SdkTurnState) -> Optional[Dict[str, Any]]:
                 # no live transport survives to carry it. Consume the agent
                 # layer too: this dead turn honored the user's stop and must
                 # not reject the next message.
-                agent._interrupt_requested = False
+                _consume_agent_interrupt(agent)
             if resumed and attempt == 0 and not interrupted:
                 # A raising RESUMED session is a suspect resume — clear the
                 # id and give the turn one fresh chance (digest included).

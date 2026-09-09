@@ -278,16 +278,15 @@ def _encode_playlist_cover(data: bytes) -> str:
 
 
 def _prepare_playlist_cover(image_url: Any) -> str:
-    """Resolve a network/data image without granting the tool arbitrary filesystem reads."""
+    """Resolve a network/data image or generated cache artifact without arbitrary file reads."""
     source = _nonblank(image_url, "image_url is required for action='upload_cover'")
-    if not source.startswith(("http://", "https://", "data:")):
-        raise SpotifyError(
-            "image_url must be an HTTP(S) URL or base64 data URL; local file paths are not accepted."
-        )
     from tools.image_source import ImageResolutionError, ResolveContext, resolve_image_source
     try:
         from model_tools import _run_async
-        resolved = _run_async(resolve_image_source(source, ResolveContext()))
+        resolved = _run_async(resolve_image_source(
+            source,
+            ResolveContext(host_path_policy="media_cache_only"),
+        ))
     except ImageResolutionError as exc:
         raise SpotifyError(f"Could not load playlist cover: {exc}") from exc
     return _encode_playlist_cover(resolved.data)
@@ -388,7 +387,7 @@ SPOTIFY_PLAYLISTS_SCHEMA = _schema("spotify_playlists", "List, inspect, create, 
     "action": _enum("list", "get", "create", "add_items", "remove_items", "update_details", "upload_cover"),
     **_strs("playlist_id", "market"), "limit": _INT, "offset": _INT, **_strs("name", "description"),
     "public": _BOOL, "collaborative": _BOOL, "uris": _STR_ARRAY, "position": _INT, "snapshot_id": COMMON_STRING,
-    "image_url": {"type": "string", "description": "For upload_cover: an HTTP(S) URL or base64 data URL for the exact approved image. It is converted to JPEG and compressed to Spotify's 256 KB Base64 payload limit. Local file paths are rejected. Use a square image to avoid display cropping."}})
+    "image_url": {"type": "string", "description": "For upload_cover: an HTTP(S) URL, base64 data URL, or path inside Hermes' approved generated-media caches for the exact image the user approved. It is converted to JPEG and compressed to Spotify's 256 KB Base64 payload limit. Arbitrary local file paths are rejected. Use a square image to avoid display cropping."}})
 SPOTIFY_ALBUMS_SCHEMA = _schema("spotify_albums", "Fetch Spotify album metadata or album tracks.",
                                 {"action": _enum("get", "tracks"), **_strs("album_id", "id", "market"), "limit": _INT, "offset": _INT})
 SPOTIFY_LIBRARY_SCHEMA = _schema("spotify_library", "List, save, or remove the user's saved Spotify tracks or albums. Use `kind` to select which.", {

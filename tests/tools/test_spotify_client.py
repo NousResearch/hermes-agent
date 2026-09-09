@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import json
 from io import BytesIO
+from pathlib import Path
 
 import pytest
 from PIL import Image
@@ -170,5 +171,77 @@ def test_spotify_playlists_upload_cover_converts_and_sends_image(
     params = spotify_tool.SPOTIFY_PLAYLISTS_SCHEMA["parameters"]["properties"]
     assert "upload_cover" in params["action"]["enum"]
     assert params["image_url"]["type"] == "string"
-    with pytest.raises(spotify_mod.SpotifyError, match=r"HTTP\(S\) URL or base64 data URL"):
+    with pytest.raises(spotify_mod.SpotifyError, match="approved generated-media cache"):
         spotify_tool._prepare_playlist_cover("/tmp/private-photo.jpg")
+
+
+def test_spotify_playlist_cover_accepts_only_profile_media_cache_paths(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    hermes_home = tmp_path / "profile"
+    approved = hermes_home / "cache" / "images" / "generated.png"
+    approved.parent.mkdir(parents=True)
+    Image.new("RGB", (32, 32), (40, 80, 120)).save(approved, format="PNG")
+    outside = tmp_path / "private.png"
+    Image.new("RGB", (32, 32), (120, 80, 40)).save(outside, format="PNG")
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    # The Spotify boundary must stay cache-only even for a local terminal backend.
+    monkeypatch.setenv("TERMINAL_ENV", "local")
+
+    encoded = spotify_tool._prepare_playlist_cover(str(approved))
+    assert base64.b64decode(encoded, validate=True).startswith(b"\xff\xd8\xff")
+    encoded_uri = spotify_tool._prepare_playlist_cover(approved.as_uri())
+    assert base64.b64decode(encoded_uri, validate=True).startswith(b"\xff\xd8\xff")
+    with pytest.raises(spotify_mod.SpotifyError, match="approved generated-media cache"):
+        spotify_tool._prepare_playlist_cover(str(outside))
+
+    # Agent-visible Docker cache paths map back to the same approved host cache.
+    monkeypatch.setenv("TERMINAL_ENV", "docker")
+    encoded_docker = spotify_tool._prepare_playlist_cover(
+        "/root/.hermes/cache/images/generated.png")
+    assert base64.b64decode(encoded_docker, validate=True).startswith(b"\xff\xd8\xff")
+    with pytest.raises(spotify_mod.SpotifyError, match="approved generated-media cache"):
+        spotify_tool._prepare_playlist_cover(str(outside))
+
+
+def test_spotify_playlist_cover_rejects_cache_symlink_escape(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    hermes_home = tmp_path / "profile"
+    cache = hermes_home / "cache"
+    cache.mkdir(parents=True)
+    outside = tmp_path / "private.png"
+    Image.new("RGB", (32, 32), (120, 80, 40)).save(outside, format="PNG")
+    link = cache / "generated.png"
+    try:
+        link.symlink_to(outside)
+    except OSError:
+        pytest.skip("symlinks unavailable")
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setenv("TERMINAL_ENV", "local")
+
+    with pytest.raises(spotify_mod.SpotifyError, match="approved generated-media cache"):
+        spotify_tool._prepare_playlist_cover(str(link))
+
+    # Even a symlink that resolves to another location inside the cache must not
+    # pass the descriptor walk; otherwise a post-validation swap could escape.
+    real_dir = cache / "real"
+    real_dir.mkdir()
+    Image.new("RGB", (32, 32), (40, 80, 120)).save(
+        real_dir / "generated.png", format="PNG")
+    alias = cache / "alias"
+    alias.symlink_to(real_dir, target_is_directory=True)
+    with pytest.raises(spotify_mod.SpotifyError, match="without following links"):
+        spotify_tool._prepare_playlist_cover(str(alias / "generated.png"))
+
+    # The allowlisted root itself may not redirect outside the profile.
+    outside_cache = tmp_path / "outside-cache"
+    outside_cache.mkdir()
+    Image.new("RGB", (32, 32), (40, 80, 120)).save(
+        outside_cache / "generated.png", format="PNG")
+    root_link = hermes_home / "image_cache"
+    root_link.symlink_to(outside_cache, target_is_directory=True)
+    with pytest.raises(spotify_mod.SpotifyError, match="approved generated-media cache"):
+        spotify_tool._prepare_playlist_cover(str(root_link / "generated.png"))

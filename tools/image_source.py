@@ -12,9 +12,10 @@ import asyncio
 import base64
 import os
 import re
+import stat
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
+from typing import Literal, Optional
 
 # Raw-bytes INGEST budget: deliberately the 50MB download cap, NOT the 20MB provider
 # payload cap — that one is enforced post-resize at the call sites.
@@ -37,6 +38,11 @@ class NotAnImage(ImageResolutionError): ...
 @dataclass
 class ResolveContext:
     task_id: Optional[str] = None
+    # ``backend`` preserves the normal vision contract: local backends may read local files,
+    # remote backends may host-read only media caches and otherwise exec-read in the sandbox.
+    # ``media_cache_only`` is for egressing consumers (for example Spotify cover upload) that
+    # must accept generated artifacts without gaining an arbitrary local/container file-read.
+    host_path_policy: Literal["backend", "media_cache_only"] = "backend"
 
 
 @dataclass
@@ -72,6 +78,18 @@ async def resolve_image_source(
     # (a path-shape gate here regressed them once).
     candidate = s[len("file://"):] if s.lower().startswith("file://") else s
     p = Path(os.path.expanduser(candidate))
+    if ctx.host_path_policy == "media_cache_only":
+        approved = _approved_media_cache_target(p)
+        if approved is None:
+            raise SourceUnsafe(
+                "local image paths must resolve beneath an approved generated-media cache",
+                src=s,
+                origin="file",
+            )
+        target, root, relative = approved
+        _guard_credential_read(target, s)
+        data = await asyncio.to_thread(_read_cache_file_no_follow, root, relative, s)
+        return _finalize(data, "", "file", s, permitted)
     host_target = _permitted_host_read_target(p, ctx)
     if host_target is not None and host_target.is_file():
         _guard_credential_read(host_target, s)
@@ -160,6 +178,99 @@ def _media_cache_roots() -> list:
     from hermes_constants import get_hermes_home
     home = get_hermes_home()
     return [home / sub for sub in _MEDIA_CACHE_SUBDIRS]
+
+
+def _approved_media_cache_target(p: Path) -> Optional[tuple[Path, Path, Path]]:
+    """Return ``(resolved target, lexical root, relative path)`` for a safe cache entry.
+
+    The root itself must not be a symlink and must remain under the active Hermes home.
+    The relative lexical path is retained so the subsequent descriptor walk can reject
+    symlinks in every component instead of trusting a resolve-then-open check.
+    """
+    from hermes_constants import get_hermes_home
+    from tools.credential_files import from_agent_visible_cache_path
+
+    try:
+        translated = Path(from_agent_visible_cache_path(str(p)))
+        lexical = translated if translated.is_absolute() else Path.cwd() / translated
+        target = lexical.resolve(strict=True)
+        home = get_hermes_home().resolve(strict=True)
+    except (OSError, RuntimeError, ValueError):
+        return None
+
+    for configured_root in _media_cache_roots():
+        try:
+            root = configured_root if configured_root.is_absolute() else Path.cwd() / configured_root
+            # A symlinked cache root can redirect the entire allowlisted subtree outside HERMES_HOME.
+            if root.is_symlink():
+                continue
+            resolved_root = root.resolve(strict=True)
+            if not resolved_root.is_dir() or not resolved_root.is_relative_to(home):
+                continue
+            relative = lexical.relative_to(root)
+            if not relative.parts or any(part in {"", ".", ".."} for part in relative.parts):
+                continue
+            if target.is_relative_to(resolved_root):
+                return target, root, relative
+        except (OSError, RuntimeError, ValueError):
+            continue
+    return None
+
+
+def _read_cache_file_no_follow(root: Path, relative: Path, src: str) -> bytes:
+    """Read a regular cache file through no-follow descriptors, bounded to the ingest cap.
+
+    Validation and reading are one descriptor walk, closing the symlink-swap window between
+    ``resolve()`` and ``read_bytes()``. Platforms without POSIX ``openat``/``O_NOFOLLOW`` fail
+    closed for cache-path egress; URL and data-URL inputs remain portable.
+    """
+    if (
+        os.name != "posix"
+        or not hasattr(os, "O_NOFOLLOW")
+        or os.open not in os.supports_dir_fd
+    ):
+        raise SourceUnsafe(
+            "generated-media cache paths cannot be opened safely on this platform; use a URL or data URL",
+            src=src,
+            origin="file",
+        )
+
+    descriptors: list[int] = []
+    try:
+        directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+        root_fd = os.open(root, directory_flags)
+        descriptors.append(root_fd)
+        current_fd = root_fd
+        for component in relative.parts[:-1]:
+            current_fd = os.open(component, directory_flags, dir_fd=current_fd)
+            descriptors.append(current_fd)
+
+        file_fd = os.open(relative.parts[-1], os.O_RDONLY | os.O_NOFOLLOW, dir_fd=current_fd)
+        descriptors.append(file_fd)
+        if not stat.S_ISREG(os.fstat(file_fd).st_mode):
+            raise OSError("cache entry is not a regular file")
+
+        chunks: list[bytes] = []
+        remaining = _MAX_INGEST_BYTES + 1
+        while remaining:
+            chunk = os.read(file_fd, min(1024 * 1024, remaining))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        return b"".join(chunks)
+    except OSError as exc:
+        raise SourceUnsafe(
+            "generated-media cache entry could not be read without following links",
+            src=src,
+            origin="file",
+        ) from exc
+    finally:
+        for fd in reversed(descriptors):
+            try:
+                os.close(fd)
+            except OSError:
+                pass
 
 
 def _permitted_host_read_target(p: Path, ctx: ResolveContext) -> Optional[Path]:

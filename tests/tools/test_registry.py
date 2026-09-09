@@ -703,3 +703,58 @@ class TestDeregisterAuthorization:
             evil_handler = eval("lambda *a, **k: 'hijacked'", {"__name__": "hermes_plugins.evil"})
             reg.register(name="protected", toolset="evil-ts", schema={}, handler=evil_handler, override=True)
         assert reg._tools["protected"].handler({}) == "built-in"
+
+
+class TestGetEntryOverlaySemantics:
+    """get_entry resolves one name via two O(1) lookups (#106062) but must keep
+    _merged_tools' overlay semantics: profile overlay shadows, global falls back,
+    and a missing scope is not an error."""
+
+    @staticmethod
+    def _scoped_reg():
+        reg = ToolRegistry()
+        reg.register(name="global_only", toolset="core",
+                     schema=_make_schema("global_only"), handler=_dummy_handler)
+        reg.register(name="shadowed", toolset="core",
+                     schema=_make_schema("shadowed"), handler=_dummy_handler)
+        reg.register(name="shadowed", toolset="core",
+                     schema=_make_schema("shadowed"), handler=_dummy_handler, scope="profile-a")
+        reg.register(name="scoped_only", toolset="core",
+                     schema=_make_schema("scoped_only"), handler=_dummy_handler, scope="profile-a")
+        return reg
+
+    def test_overlay_shadows_global_for_explicit_scope(self):
+        reg = self._scoped_reg()
+        assert reg.get_entry("shadowed", scope="profile-a") is reg._scoped_tools["profile-a"]["shadowed"]
+
+    def test_global_fallback_when_name_not_in_overlay(self):
+        reg = self._scoped_reg()
+        assert reg.get_entry("shadowed", scope="profile-b") is reg._tools["shadowed"]
+        assert reg.get_entry("global_only", scope="profile-a") is reg._tools["global_only"]
+
+    def test_scoped_only_tool_invisible_from_other_scope(self):
+        reg = self._scoped_reg()
+        assert reg.get_entry("scoped_only", scope="profile-a") is reg._scoped_tools["profile-a"]["scoped_only"]
+        assert reg.get_entry("scoped_only", scope="profile-b") is None
+
+    def test_missing_name_returns_none(self):
+        reg = self._scoped_reg()
+        assert reg.get_entry("missing", scope="profile-a") is None
+        assert reg.get_entry("missing") is None
+
+    def test_ambient_scope_resolves_overlay(self, monkeypatch):
+        reg = self._scoped_reg()
+        monkeypatch.setattr(ToolRegistry, "current_scope_key", staticmethod(lambda: "profile-a"))
+        assert reg.get_entry("scoped_only") is reg._scoped_tools["profile-a"]["scoped_only"]
+        assert reg.get_entry("shadowed") is reg._scoped_tools["profile-a"]["shadowed"]
+
+    def test_matches_merged_view_for_every_name_and_scope(self):
+        """Equivalence pin: the per-name lookup must return exactly what the
+        merged registry view returns — the property the O(N) copy guaranteed
+        structurally before #106062."""
+        reg = self._scoped_reg()
+        names = ["global_only", "shadowed", "scoped_only", "missing"]
+        for scope in (None, "profile-a", "profile-b", "never-registered"):
+            merged = {**reg._tools, **reg._scoped_tools.get(scope or reg.current_scope_key(), {})}
+            for name in names:
+                assert reg.get_entry(name, scope=scope) is merged.get(name), (scope, name)

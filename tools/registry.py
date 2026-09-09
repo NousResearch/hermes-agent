@@ -439,7 +439,13 @@ class ToolRegistry:
     def get_entry(self, name: str, *, scope: Optional[str] = None) -> Optional[ToolEntry]:
         """Active profile's entry by name, falling back to global."""
         with self._lock:
-            return self._merged_tools(scope).get(name)
+            # Two O(1) lookups, not _merged_tools(): building the merged dict
+            # copies the whole registry per call, and per-tool callers
+            # (dispatch(), build_catalog()) turn that into quadratic cost.
+            overlay = self._scoped_tools.get(scope or self.current_scope_key())
+            if overlay and name in overlay:
+                return overlay[name]
+            return self._tools.get(name)
 
     def snapshot_registration(
         self, name: str, *, scope: Optional[str] = None) -> Optional[ToolEntry]:

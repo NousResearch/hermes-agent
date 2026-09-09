@@ -730,7 +730,9 @@ class SessionSearchMixin:
         decode loop; otherwise ``/undo N`` pairs an in-memory count that excludes handoffs
         with a DB pick that includes them."""
         active_clause = "" if include_inactive else " AND active = 1"
-        display_clause = " AND (display_kind IS NULL OR display_kind = '')"
+        # A /steer row is typed for the renderer but is human input: keep it so the DB pick agrees
+        # with the in-memory user_originated_turn_view count.
+        display_clause = " AND (display_kind IS NULL OR display_kind = '' OR display_kind = 'steer')"
         with self._read_ctx() as conn:
             rows = conn.execute(
                 "SELECT id, timestamp, content FROM messages WHERE session_id = ? AND role = 'user'"
@@ -1182,7 +1184,11 @@ class SessionSearchMixin:
     def optimize_fts(self) -> int:
         """Merge fragmented FTS5 segments into one per index (``'optimize'``). Pure
         maintenance: changes neither results nor ``snippet()`` output, only layout and
-        speed; VACUUM then returns the freed pages. Returns the number optimized."""
+        speed; VACUUM then returns the freed pages. Returns the number optimized. A quarantined
+        handle never issues ``'optimize'``: it rewrites index segments in place and would compound
+        structural damage (or a split WAL generation) instead of leaving it diagnosable."""
+        self._raise_if_db_corrupt()
+        self._raise_if_db_replaced()
         optimized = 0
         with self._lock:
             for tbl in self._present_fts_tables():

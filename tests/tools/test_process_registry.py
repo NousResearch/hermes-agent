@@ -2382,6 +2382,79 @@ class TestSystemdCgroupIsolation:
         ), probe_argv
 
     @pytest.mark.linux_only
+    def test_systemd_probe_derives_owned_user_bus_env_for_system_gateway(
+        self, registry, monkeypatch, request
+    ):
+        """A system service running as an unprivileged user has no login env,
+        but may still have a valid lingering user manager and D-Bus socket."""
+        import socket
+        import tempfile
+
+        import tools.process_registry as pr
+
+        # Short path: AF_UNIX socket paths are capped at ~104 bytes, longer than most tmp_path values.
+        runtime_dir = pr.Path(tempfile.mkdtemp(prefix="hbus-", dir="/tmp"))
+        runtime_dir.chmod(0o700)
+        bus_path = runtime_dir / "bus"
+        bus_socket = socket.socket(socket.AF_UNIX)
+        bus_socket.bind(str(bus_path))
+
+        def _cleanup():
+            bus_socket.close()
+            bus_path.unlink(missing_ok=True)
+            runtime_dir.rmdir()
+
+        request.addfinalizer(_cleanup)
+
+        monkeypatch.delenv("XDG_RUNTIME_DIR", raising=False)
+        monkeypatch.delenv("DBUS_SESSION_BUS_ADDRESS", raising=False)
+        monkeypatch.setattr(pr, "_SYSTEMD_SCOPE_AVAILABLE", None)
+        monkeypatch.setattr(pr, "_default_user_runtime_dir", lambda: runtime_dir)
+        monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/systemd-run")
+        derived = pr.systemd_user_bus_env(
+            {"DBUS_SESSION_BUS_ADDRESS": "unix:path=/tmp/untrusted-bus"}
+        )
+        assert derived["DBUS_SESSION_BUS_ADDRESS"] == f"unix:path={bus_path}"
+        probe_kwargs = []
+
+        def fake_run(*args, **kwargs):
+            probe_kwargs.append(kwargs)
+            return subprocess.CompletedProcess(args=args[0], returncode=0)
+
+        monkeypatch.setattr("subprocess.run", fake_run)
+
+        assert pr._systemd_run_user_scope_available() is True
+        env = probe_kwargs[0]["env"]
+        assert env["XDG_RUNTIME_DIR"] == str(runtime_dir)
+        assert env["DBUS_SESSION_BUS_ADDRESS"] == f"unix:path={bus_path}"
+        assert "XDG_RUNTIME_DIR" not in os.environ
+        assert "DBUS_SESSION_BUS_ADDRESS" not in os.environ
+
+    @pytest.mark.linux_only
+    def test_probe_succeeds_without_bin_true(self, monkeypatch):
+        """An absent ``/bin/true`` must not make a usable scope fail its probe."""
+        import tools.process_registry as pr
+
+        monkeypatch.setattr(pr, "_SYSTEMD_SCOPE_AVAILABLE", None)
+        monkeypatch.setattr(pr, "_SYSTEMD_SCOPE_PROBED_AT", 0.0)
+        real_run = subprocess.run
+        executed = []
+
+        def systemd_run_on_nixos_shaped_root(argv, **kwargs):
+            # Simulate NixOS's missing executable, but run the selected replacement.
+            payload = argv[argv.index("--") + 1 :]
+            if payload[0] == "/bin/true":
+                return subprocess.CompletedProcess(payload, 127, stderr=b"No such file or directory")
+            executed.append(payload)
+            return real_run(payload, **kwargs)
+
+        monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/systemd-run")
+        monkeypatch.setattr("subprocess.run", systemd_run_on_nixos_shaped_root)
+
+        assert pr._systemd_run_user_scope_available() is True
+        assert len(executed) == 1, "payload must really run (exit 0) on the host, not just be spelled right"
+
+    @pytest.mark.linux_only
     def test_systemd_scope_first_probe_is_serialized(self, monkeypatch):
         """Concurrent first-use callers must wait for one definitive probe.
 

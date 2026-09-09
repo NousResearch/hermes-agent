@@ -41,6 +41,7 @@ import { isSecondaryWindow } from '@/store/windows'
 import { MessageRenderBoundary } from '../message-render-boundary'
 
 import { resolveShowEarlierAction, useTranscriptWindow } from './transcript-window'
+import { useMessagesBelow } from './use-messages-below'
 
 type ThreadMessageComponents = ComponentProps<typeof ThreadPrimitive.MessageByIndex>['components']
 
@@ -376,6 +377,7 @@ const TurnRow = memo(function TurnRow({ components, group, resetKey, virtualized
         'flex min-w-0 flex-col gap-(--conversation-turn-gap) pb-(--conversation-turn-gap)',
         virtualized && '[contain-intrinsic-size:auto_37.5rem] [content-visibility:auto]'
       )}
+      data-slot="aui_message-group"
     >
       <MessageRenderBoundary resetKey={resetKey}>
         {group.kind === 'turn' ? (
@@ -989,6 +991,8 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
       )),
     [visibleGroups, components, structuralSignature, tailStart]
   )
+
+  useMessagesBelow({ contentRef, scrollRef, isAtBottom, paneVisible, rows, sessionKey })
 
   return (
     <div

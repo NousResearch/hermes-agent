@@ -2567,11 +2567,12 @@ class BasePlatformAdapter(ABC):
 
     async def send_multiple_images(
         self, chat_id: str, images: List[Tuple[str, str]],
-        metadata: Optional[Dict[str, Any]] = None, human_delay: float = 0.0) -> None:
+        metadata: Optional[Dict[str, Any]] = None, human_delay: float = 0.0) -> SendResult:
         """Send ``(url, alt)`` images (``http(s)://`` or ``file://``) one by one (GIFs via
         ``send_animation``, local files via ``send_image_file``); override to bundle natively
         (Signal)."""
         from urllib.parse import unquote as _unquote
+        outcome = SendResult(success=True)
         for image_url, alt_text in images:
             if human_delay > 0:
                 await asyncio.sleep(human_delay)
@@ -2588,8 +2589,13 @@ class BasePlatformAdapter(ABC):
                     chat_id=chat_id, **url_kw, caption=alt_text or None, metadata=metadata)
                 if not img_result.success:
                     logger.error("[%s] Failed to send image: %s", self.name, img_result.error)
+                    if outcome.success:
+                        outcome = img_result
             except Exception as img_err:
                 logger.error("[%s] Error sending image: %s", self.name, img_err, exc_info=True)
+                if outcome.success:
+                    outcome = SendResult(success=False, error=str(img_err))
+        return outcome
 
     async def send_image(
         self, chat_id: str, image_url: str, caption: Optional[str] = None,
@@ -3706,7 +3712,7 @@ class BasePlatformAdapter(ABC):
 
     async def _deliver_media_attachments(
         self, chat_id: str, media_files: list, local_files: list, *,
-        force_document_attachments: bool, human_delay: float, metadata: Dict[str, Any]) -> bool:
+        force_document_attachments: bool, human_delay: float, metadata: Dict[str, Any]) -> SendResult:
         """Deliver MEDIA-tag files and detected local files by type: images batched via
         ``send_multiple_images`` unless ``[[as_document]]``; otherwise audio → send_voice (MEDIA
         tags only, never bare local files), video → send_video, else send_document. Every failure is
@@ -3717,12 +3723,12 @@ class BasePlatformAdapter(ABC):
             return Path(path).suffix.lower() in _IMAGE_EXTS and not force_document_attachments
         _image_paths = [p for p, is_voice in media_files if not is_voice and _as_image(p)]
         _image_paths += [p for p in local_files if _as_image(p)]
-        succeeded = True
+        outcome = SendResult(success=True)
         if _image_paths:
-            succeeded = await self._send_image_batch(
+            outcome = await self._send_image_batch(
                 chat_id, [(f"file://{_quote(p)}", "") for p in _image_paths], metadata, human_delay)
 
-        async def _send_one(path: str, *, is_voice: bool, media_tag: bool) -> bool:
+        async def _send_one(path: str, *, is_voice: bool, media_tag: bool) -> SendResult:
             """MEDIA-tag files (``media_tag``) may route to send_voice; bare local files never
             do."""
             ext = Path(path).suffix.lower()
@@ -3738,7 +3744,7 @@ class BasePlatformAdapter(ABC):
                 logger.warning("[%s] Failed to send %s (%s): %s", self.name,
                                "media" if media_tag else "local file", ext, result.error)
                 await self._notify_media_delivery_failure(chat_id, path, is_voice=is_voice, metadata=metadata)
-            return bool(result.success)
+            return result
         queue = [(p, v, True) for p, v in media_files if v or not _as_image(p)]
         if queue:
             logger.info("[%s] Delivering %d non-image MEDIA attachment(s)", self.name, len(queue))
@@ -3747,26 +3753,30 @@ class BasePlatformAdapter(ABC):
             if human_delay > 0:
                 await asyncio.sleep(human_delay)
             try:
-                succeeded = await _send_one(
-                    path, is_voice=is_voice, media_tag=media_tag) and succeeded
+                result = await _send_one(path, is_voice=is_voice, media_tag=media_tag)
+                if outcome.success and not result.success:
+                    outcome = result
             except Exception as err:
-                succeeded = False
+                if outcome.success:
+                    outcome = SendResult(success=False, error=str(err))
                 if media_tag:
                     logger.warning("[%s] Error sending media: %s", self.name, err)
                 else:
                     logger.error("[%s] Error sending local file %s: %s", self.name, path, err)
-        return succeeded
+        return outcome
 
     async def _send_image_batch(
-        self, chat_id: str, images: list, metadata: Dict[str, Any], human_delay: float) -> bool:
+        self, chat_id: str, images: list, metadata: Dict[str, Any], human_delay: float) -> SendResult:
         """Batch-send images; report whether dispatch completed so the ledger can retain failures."""
         try:
             result = await self.send_multiple_images(
                 chat_id=chat_id, images=images, metadata=metadata, human_delay=human_delay)
-            return bool(getattr(result, "success", True))
+            # External adapters predating the result contract return None. Bundled implementations
+            # return SendResult so their failures remain represented in the delivery obligation.
+            return result if isinstance(result, SendResult) else SendResult(success=True)
         except Exception as batch_err:
             logger.warning("[%s] Error batching images: %s", self.name, batch_err, exc_info=True)
-            return False
+            return SendResult(success=False, error=str(batch_err))
 
     @staticmethod
     def _attachment_manifest(extracted: "_ExtractedResponse") -> Dict[str, Any]:
@@ -3782,18 +3792,19 @@ class BasePlatformAdapter(ABC):
 
     async def _deliver_attachment_manifest(
         self, chat_id: str, manifest: Dict[str, Any], metadata: Dict[str, Any],
-    ) -> bool:
+    ) -> SendResult:
         """Deliver a persisted attachment manifest through the same routes as the live turn."""
         human_delay = self._get_human_delay()
         images = manifest.get("images") or []
-        succeeded = True
+        outcome = SendResult(success=True)
         if images:
             logger.info("[%s] Extracted %d image(s) to send as attachments", self.name, len(images))
-            succeeded = await self._send_image_batch(chat_id, images, metadata, human_delay)
-        return await self._deliver_media_attachments(
+            outcome = await self._send_image_batch(chat_id, images, metadata, human_delay)
+        media_outcome = await self._deliver_media_attachments(
             chat_id, manifest.get("media_files") or [], manifest.get("local_files") or [],
             force_document_attachments=bool(manifest.get("force_document_attachments")),
-            human_delay=human_delay, metadata=metadata) and succeeded
+            human_delay=human_delay, metadata=metadata)
+        return outcome if not outcome.success else media_outcome
 
     async def send_final_ledgered(
         self, event: MessageEvent, session_key: str, text_content: str, metadata: Dict[str, Any], *,
@@ -3821,15 +3832,22 @@ class BasePlatformAdapter(ABC):
         self, event: MessageEvent, session_key: str, text_content: str, metadata: Dict[str, Any],
         is_ephemeral_response: bool, ephemeral_ttl: int, record_delivery: Callable,
         delivery_adapter: Optional["BasePlatformAdapter"] = None,
+        *, ledgered_elsewhere: bool = False,
     ) -> SendResult:
-        """Send the final text on the CURRENT transport (a reconnect may have replaced
-        this adapter); the complete-response caller owns the ledger transaction."""
-        delivery_adapter = delivery_adapter or self._final_delivery_adapter(event.source)
-        logger.info("[%s] Sending response (%d chars) to %s", delivery_adapter.name,
-                    len(text_content), event.source.chat_id)
-        result = await delivery_adapter._send_with_retry(
-            chat_id=event.source.chat_id, content=text_content,
-            reply_to=_reply_anchor_for_event(event), metadata=metadata)
+        """Send final text through the ordinary ledger path unless a complete-response
+        obligation already brackets this text together with its attachments."""
+        if ledgered_elsewhere:
+            delivery_adapter = delivery_adapter or self._final_delivery_adapter(event.source)
+            logger.info("[%s] Sending response (%d chars) to %s", delivery_adapter.name,
+                        len(text_content), event.source.chat_id)
+            result = await delivery_adapter._send_with_retry(
+                chat_id=event.source.chat_id, content=text_content,
+                reply_to=_reply_anchor_for_event(event), metadata=metadata)
+        else:
+            result, delivery_adapter = await self.send_final_ledgered(
+                event, session_key, text_content, metadata,
+                reply_to=_reply_anchor_for_event(event),
+                is_ephemeral_response=is_ephemeral_response)
         record_delivery(result)
         if ephemeral_ttl and ephemeral_ttl > 0 and result.success and result.message_id:
             delivery_adapter._schedule_ephemeral_delete(
@@ -3853,18 +3871,18 @@ class BasePlatformAdapter(ABC):
         return _thread_metadata
 
     async def _deliver_attachments(self, event: MessageEvent, extracted: "_ExtractedResponse",
-                                   metadata: Dict[str, Any], *, anything_sent: bool) -> bool:
+                                   metadata: Dict[str, Any], *, anything_sent: bool) -> SendResult:
         """Send extracted image URLs, MEDIA files and bare local files (human-paced),
         then fail loudly if a non-empty response produced nothing deliverable."""
         manifest = self._attachment_manifest(extracted)
-        succeeded = await self._deliver_attachment_manifest(
+        outcome = await self._deliver_attachment_manifest(
             event.source.chat_id, manifest, metadata)
         if not (anything_sent or manifest) and extracted.pre_extract.strip():
             logger.error("[%s] response_delivery_dropped: non-empty response "
                          "(%d chars) produced no delivered message or attachment "
                          "for %s (empty after extract, recovery yielded nothing).", self.name,
                          len(extracted.pre_extract), event.source.chat_id)
-        return succeeded
+        return outcome
 
     def _start_typing_refresh(self, event: MessageEvent, interrupt_event: asyncio.Event,
                               metadata: Optional[dict]) -> Optional[asyncio.Task]:
@@ -4022,23 +4040,25 @@ class BasePlatformAdapter(ABC):
                     _text_result = await self._send_final_text(
                         event, session_key, text_content, _final_thread_metadata,
                         is_ephemeral_response, _ephemeral_ttl, _record_delivery,
-                        delivery_adapter=_delivery_adapter)
+                        delivery_adapter=_delivery_adapter, ledgered_elsewhere=True)
                     _text_delivered = bool(getattr(_text_result, "success", False))
-                _attachments_delivered = await _delivery_adapter._deliver_attachments(
+                _attachment_result = await _delivery_adapter._deliver_attachments(
                     event, extracted, _final_thread_metadata,
                     anything_sent=delivery_attempted or _tts_caption_delivered)
                 if _attachment_manifest:
-                    _record_delivery(SendResult(
-                        success=_attachments_delivered,
-                        error="" if _attachments_delivered else "attachment delivery failed"))
+                    _record_delivery(_attachment_result)
                 if _obligation_id is not None:
-                    _complete_delivery = _text_delivered and _attachments_delivered
-                    _failure = getattr(_text_result, "error", "") if not _text_delivered else ""
+                    _complete_delivery = _text_delivered and _attachment_result.success
+                    _failure = _text_result if not _text_delivered else _attachment_result
                     await self._finalize_delivery_obligation(
                         _obligation_id,
                         SendResult(
                             success=_complete_delivery,
-                            error=_failure or ("" if _complete_delivery else "attachment delivery failed")),
+                            error="" if _complete_delivery else str(getattr(_failure, "error", "") or "send failed"),
+                            retryable=bool(getattr(_failure, "retryable", False)),
+                            retry_after=getattr(_failure, "retry_after", None),
+                            error_kind=getattr(_failure, "error_kind", None),
+                        ),
                         event, _delivery_adapter)
             processing_ok = delivery_succeeded if delivery_attempted else not bool(response)
             # Clean up the per-turn streaming-TTS flag.

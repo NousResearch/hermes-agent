@@ -65,33 +65,32 @@ class DiscordMediaMixin:
     async def send_multiple_images(
         self, chat_id: str, images: List[Tuple[str, str]],
         metadata: Optional[Dict[str, Any]] = None, human_delay: float = 0.0,
-    ) -> None:
+    ) -> SendResult:
         """Send images as one Discord message (<=10 attachments): URLs are downloaded and uploaded
         inline (bare links don't render); on chunk failure the remainder uses the per-image loop."""
         from plugins.platforms.discord.adapter import _prompt_target_id, _image_ext_from_content_type, _read_url_image_with_redirect_guard, is_safe_url
 
         if not self._client:
-            return
+            return SendResult(success=False, error="Not connected")
         if not images:
-            return
+            return SendResult(success=True)
         try:
             import discord as _discord_mod
             import io as _io
             from urllib.parse import unquote as _unquote
         except Exception:  # pragma: no cover
-            await super().send_multiple_images(chat_id, images, metadata, human_delay)
-            return
+            return await super().send_multiple_images(chat_id, images, metadata, human_delay)
         try:
             channel = await self._resolve_channel(_prompt_target_id(chat_id, metadata))
             if not channel:
                 logger.warning("[%s] Channel %s not found for multi-image send", self.name, chat_id)
-                return
+                return SendResult(success=False, error=f"Channel {chat_id} not found")
         except Exception as e:
             logger.warning("[%s] Failed to resolve channel for multi-image send: %s", self.name, e)
-            await super().send_multiple_images(chat_id, images, metadata, human_delay)
-            return
+            return await super().send_multiple_images(chat_id, images, metadata, human_delay)
         CHUNK = 10
         chunks = [images[i:i + CHUNK] for i in range(0, len(images), CHUNK)]
+        outcome = SendResult(success=True)
         for chunk_idx, chunk in enumerate(chunks):
             if human_delay > 0 and chunk_idx > 0:
                 await asyncio.sleep(human_delay)
@@ -135,6 +134,8 @@ class DiscordMediaMixin:
                         except Exception as dl_err:
                             logger.warning("[%s] Download failed for %s: %s", self.name, image_url[:80], dl_err)
                             continue
+                if len(files) != len(chunk) and outcome.success:
+                    outcome = SendResult(success=False, error="Some images could not be prepared")
                 if not files:
                     continue
                 # Use the first caption if any (Discord only has one message body for the group)
@@ -154,13 +155,17 @@ class DiscordMediaMixin:
                     "[%s] Multi-image Discord send failed (chunk %d/%d), falling back to per-image: %s",
                     self.name, chunk_idx + 1, len(chunks), e, exc_info=True,
                 )
-                await super().send_multiple_images(chat_id, chunk, metadata, human_delay=human_delay)
+                fallback = await super().send_multiple_images(
+                    chat_id, chunk, metadata, human_delay=human_delay)
+                if outcome.success and not fallback.success:
+                    outcome = fallback
             finally:
                 if aiohttp_session is not None:
                     try:
                         await aiohttp_session.close()
                     except Exception:
                         pass
+        return outcome
 
 
     async def send_voice(

@@ -2657,31 +2657,33 @@ class SlackAdapter(BasePlatformAdapter):
 
     async def send_multiple_images(
         self, chat_id: str, images: List[Tuple[str, str]],
-        metadata: Optional[Dict[str, Any]] = None, human_delay: float = 0.0) -> None:
+        metadata: Optional[Dict[str, Any]] = None, human_delay: float = 0.0) -> SendResult:
         """Send a batch of images as one message via ``files_upload_v2(file_uploads=...)`` (10 per
         call, Slack cap) instead of N posts; falls back to the base per-image loop on failure."""
         if self._suppressed_ignored(chat_id, "multi-image upload in"):
-            return
+            return SendResult(success=False, error="Delivery suppressed")
         if not self._app:
-            return
+            return SendResult(success=False, error="Not connected")
         if not images:
-            return
+            return SendResult(success=True)
         chat_id = await self._dm_target(chat_id, metadata)
         try:
             from urllib.parse import unquote as _unquote
             from tools.url_safety import create_ssrf_safe_async_client, is_safe_url as _is_safe_url
         except Exception:
-            await super().send_multiple_images(chat_id, images, metadata, human_delay)
-            return
+            return await super().send_multiple_images(chat_id, images, metadata, human_delay)
         thread_ts = self._resolve_thread_ts(None, metadata)
         CHUNK = 10
         chunks = [images[i : i + CHUNK] for i in range(0, len(images), CHUNK)]
+        outcome = SendResult(success=True)
         for chunk_idx, chunk in enumerate(chunks):
             if human_delay > 0 and chunk_idx > 0:
                 await asyncio.sleep(human_delay)
             try:
                 file_uploads, initial_comment_parts = await self._collect_image_uploads(
                     chunk, _unquote, _is_safe_url, create_ssrf_safe_async_client)
+                if len(file_uploads) != len(chunk) and outcome.success:
+                    outcome = SendResult(success=False, error="Some images could not be prepared")
                 if not file_uploads:
                     continue
                 initial_comment = "\n".join(initial_comment_parts) if initial_comment_parts else ""
@@ -2696,8 +2698,11 @@ class SlackAdapter(BasePlatformAdapter):
                 logger.warning(
                     "[Slack] Multi-image files_upload_v2 failed (chunk %d/%d), falling back to per-image: %s",
                     chunk_idx + 1, len(chunks), e, exc_info=True)
-                await super().send_multiple_images(
+                fallback = await super().send_multiple_images(
                     chat_id, chunk, metadata, human_delay=human_delay)
+                if outcome.success and not fallback.success:
+                    outcome = fallback
+        return outcome
 
     @staticmethod
     async def _collect_image_uploads(

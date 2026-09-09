@@ -394,13 +394,15 @@ class GatewayStartupMixin:
                     logger.warning(
                         "obligation %s: redelivery send raised: %s",
                         row["obligation_id"], send_err)
+            attachment_result = None
             attachments_succeeded = True
             if not row.get("attachment_manifest_valid", True):
                 attachments_succeeded = False
             elif attachment_manifest:
                 try:
-                    attachments_succeeded = await adapter._deliver_attachment_manifest(
+                    attachment_result = await adapter._deliver_attachment_manifest(
                         row["chat_id"], attachment_manifest, metadata)
+                    attachments_succeeded = bool(getattr(attachment_result, "success", False))
                 except Exception as attachment_err:
                     attachments_succeeded = False
                     logger.warning(
@@ -418,7 +420,7 @@ class GatewayStartupMixin:
                 else:
                     error = str(getattr(result, "error", "") or "")
                     if not attachments_succeeded:
-                        error = "attachment delivery failed"
+                        error = str(getattr(attachment_result, "error", "") or "attachment delivery failed")
                     await asyncio.to_thread(
                         mark_failed, row["obligation_id"], error or "send failed"
                     )

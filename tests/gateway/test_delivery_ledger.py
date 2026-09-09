@@ -18,6 +18,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from gateway import delivery_ledger as dl
+from gateway.platforms.base import SendResult
 
 
 @pytest.fixture(autouse=True)
@@ -412,7 +413,9 @@ class TestGatewayRedeliverySweep:
         _record(content=content, attachment_manifest=manifest)
         _orphan("ob-1")
         adapter = self._adapter()
-        adapter._deliver_attachment_manifest = AsyncMock(return_value=True)
+        adapter._deliver_attachment_manifest = AsyncMock(
+            return_value=SendResult(success=True)
+        )
         runner = self._runner(adapter)
 
         assert await runner._redeliver_pending_obligations() == 1

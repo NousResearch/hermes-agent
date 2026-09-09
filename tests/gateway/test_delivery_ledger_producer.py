@@ -9,6 +9,7 @@ block the send.
 
 import asyncio
 import threading
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -66,6 +67,23 @@ def _rows():
             """SELECT obligation_id, state, content, adapter_profile
                FROM delivery_obligations"""
         ).fetchall()
+
+
+def _last_error():
+    with dl._connect() as conn:
+        row = conn.execute(
+            "SELECT last_error FROM delivery_obligations"
+        ).fetchone()
+    return row[0] if row else None
+
+
+def _allowed_media_path(tmp_path, monkeypatch, name="report.pdf"):
+    root = tmp_path / "media-cache"
+    path = root / name
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(b"attachment")
+    monkeypatch.setattr("gateway.platforms.base.MEDIA_DELIVERY_SAFE_ROOTS", (root,))
+    return Path(path).resolve()
 
 
 def _blocking_probe():
@@ -149,6 +167,64 @@ class TestProducerHook:
         assert _rows()[0][3] == "reviewer"
         runner._redeliver_failed_obligations_for_platform.assert_awaited_once_with(
             Platform.SLACK, profile="reviewer"
+        )
+
+    @pytest.mark.asyncio
+    async def test_failed_image_keeps_complete_obligation_recoverable(self):
+        adapter = _Adapter()
+        adapter.send_image = AsyncMock(
+            return_value=SendResult(success=False, error="image upload failed")
+        )
+
+        await _run(adapter, _event(), response="![chart](https://example.test/chart.png)")
+
+        assert _rows()[0][1] == "failed"
+        assert _last_error() == "image upload failed"
+
+    @pytest.mark.asyncio
+    async def test_attachment_degradation_triggers_replacement_redelivery(
+        self, tmp_path, monkeypatch,
+    ):
+        adapter = _Adapter()
+        adapter._owner_profile = "reviewer"
+        replacement = _Adapter()
+        replacement._owner_profile = "reviewer"
+        runner = MagicMock()
+        runner._adapter_for_source.side_effect = [adapter, replacement]
+        runner._redeliver_failed_obligations_for_platform = AsyncMock(return_value=1)
+        adapter.gateway_runner = runner
+        adapter.send_document = AsyncMock(return_value=SendResult(
+            success=False, error="send_path_degraded", retryable=True,
+        ))
+        media = _allowed_media_path(tmp_path, monkeypatch)
+
+        await _run(adapter, _event(), response=f"MEDIA:{media}")
+
+        assert _rows()[0][1] == "failed"
+        assert _last_error() == "send_path_degraded"
+        runner._redeliver_failed_obligations_for_platform.assert_awaited_once_with(
+            Platform.SLACK, profile="reviewer"
+        )
+
+    @pytest.mark.asyncio
+    async def test_attachment_flood_failure_arms_runtime_timer(
+        self, tmp_path, monkeypatch,
+    ):
+        adapter = _Adapter()
+        runner = MagicMock()
+        runner._schedule_flood_redelivery = MagicMock()
+        adapter.gateway_runner = runner
+        adapter.send_document = AsyncMock(return_value=SendResult(
+            success=False, error="flood_control:60", retry_after=60,
+        ))
+        media = _allowed_media_path(tmp_path, monkeypatch)
+
+        await _run(adapter, _event(), response=f"MEDIA:{media}")
+
+        assert _rows()[0][1] == "failed"
+        assert _last_error() == "flood_control:60"
+        runner._schedule_flood_redelivery.assert_called_once_with(
+            Platform.SLACK, profile=None
         )
 
 

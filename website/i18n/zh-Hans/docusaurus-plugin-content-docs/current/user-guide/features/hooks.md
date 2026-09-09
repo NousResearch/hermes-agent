@@ -394,6 +394,7 @@ def register(ctx):
 | `on_session_finalize` | 观察者 | CLI/TUI/gateway 通过 `finalize_session` teardown；gateway 关闭时可只 finalize 而不 reset。忽略返回值。 | 按 surface：`session_id`, `platform`，可选 `reason`, `old_session_id`, `new_session_id` | Session 和 routing 标识。 |
 | `on_session_reset` | 观察者 | CLI/TUI session boundary，或 gateway 创建替代 session 后；忽略返回值。 | CLI：`session_id`, `platform`, `reason`；TUI：`session_id`, `platform`；gateway：另有 `reason`, `old_session_id`, `new_session_id` | Session 和 routing 标识。 |
 | `on_skill_lifecycle` | 观察者 | 权威 skill 使用状态变更后；忽略返回值。 | `action`, `skill_name`, `provenance`, `task_id`, `session_id`, `use_count`, `reused`, `reuse_after_patch` | 暴露本地 skill 名和 provenance。 |
+| `cron_job_failed` | 观察者 | 定时任务失败时触发——以 `success=False` 结束，或运行中抛出异常——在失败通知投递前，由运行该任务的 worker 线程发出；忽略返回值。 | `job_id`, `job_name`, `profile`, `error`, `last_run_at`, `job`（完整任务规格） | `error` 和 `job` 可能包含 prompt 文本、脚本路径及其他任务内容。 |
 | `subagent_start` | 观察者 | 子 agent 已构造、即将运行；忽略返回值。 | `parent_session_id`, `parent_turn_id`, `parent_subagent_id`, `child_session_id`, `child_subagent_id`, `child_role`, `child_goal` | Child goal 可能含用户/项目内容。 |
 | `subagent_stop` | 观察者 | 子 agent 退出；忽略返回值。 | `parent_session_id`, `parent_turn_id`, `child_session_id`, `child_role`, `child_summary`, `child_status`, `tool_call_history`, `duration_ms` | Summary 和已脱敏 tool-history metadata 仍可能暴露项目结构。 |
 | `pre_gateway_dispatch` | 指令/控制 | 非 internal 入站消息在 auth/pairing/dispatch 前；第一个有效 `skip`、`rewrite` 或 `allow` 控制流程。 | `event`, `gateway`, `session_store` | 极高权限的进程内对象会暴露入站用户/routing 数据和 host handle。 |
@@ -1178,6 +1179,12 @@ Completion 和 cleanup 后触发，通常位于 worker 进程；`summary` 可能
 三个 kanban hook 均仅观察，并携带 `task_id`、`profile_name`、`board`、`assignee`、`run_id`；completed 增加 `summary`，blocked 增加 `reason`。
 
 ---
+
+### Cron 任务生命周期观察者
+
+#### `cron_job_failed`
+
+定时任务失败时触发一次，由运行该任务的 worker 线程在失败通知投递前发出。覆盖两种失败形态：以 `success=False` 结束（provider 报错、输出为空、配置被阻断）以及 `run_job` 抛出异常。仅观察：忽略返回值；hook 抛出的异常会被记录并吞掉，绝不会掩盖或延迟原始失败通知。Payload：`job_id`、`job_name`、`profile`、`error`、`last_run_at`，以及 `job`（完整任务规格——schedule、prompt、script、deliver、skills——供自愈脚本使用）。它已注册进 `VALID_HOOKS`，因此 Python 插件和 `hooks:` shell hook 均可使用。
 
 ## Shell Hooks
 

@@ -460,6 +460,7 @@ Payload fields below are the exact event-specific fields supplied by each call s
 | `on_session_finalize` | Observer | CLI/TUI/gateway teardown through `finalize_session`; gateway shutdown may finalize without a reset. Return ignored. | Surface-dependent `session_id`, `platform`, optionally `reason`, `old_session_id`, `new_session_id` | Session and routing identifiers. |
 | `on_session_reset` | Observer | CLI/TUI session boundary and gateway after the replacement session exists; return ignored. | CLI: `session_id`, `platform`, `reason`; TUI: `session_id`, `platform`; gateway: those plus `reason`, `old_session_id`, `new_session_id` | Session and routing identifiers. |
 | `on_skill_lifecycle` | Observer | After an authoritative skill-usage state change; return ignored. | `action`, `skill_name`, `provenance`, `task_id`, `session_id`, `use_count`, `reused`, `reuse_after_patch` | Exposes the local skill name and provenance. |
+| `cron_job_failed` | Observer | From the cron worker thread when a scheduled job run fails — finishes with `success=False` or raises out of the run — before the failure notice is delivered; return ignored. | `job_id`, `job_name`, `profile`, `error`, `last_run_at`, `job` (full job spec) | `error` and `job` may contain prompt text, script paths, and other job content. |
 | `subagent_start` | Observer | Child constructed and about to run; return ignored. | `parent_session_id`, `parent_turn_id`, `parent_subagent_id`, `child_session_id`, `child_subagent_id`, `child_role`, `child_goal` | Child goal may contain user/project content. |
 | `subagent_stop` | Observer | Child exit; return ignored. | `parent_session_id`, `parent_turn_id`, `child_session_id`, `child_role`, `child_summary`, `child_status`, `tool_call_history`, `duration_ms` | Summary and redacted tool-history metadata may reveal project structure. |
 | `pre_gateway_dispatch` | Directive/control | Incoming non-internal message before auth/pairing/dispatch; first valid `skip`, `rewrite`, or `allow` controls flow. | `event`, `gateway`, `session_store` | Extremely privileged in-process objects expose inbound user/routing data and host handles. |
@@ -1574,6 +1575,12 @@ Five additional observers (RFC #58548) extend the kanban family. All are observe
 - **`on_kanban_dispatch_tick`** — once per dispatcher tick, strictly after the dispatch lock is released, including idle and lock-contended ticks. Payload: `board`, `profile_name`, `dry_run`, `outcome`, `result`.
 
 ---
+
+### Cron job lifecycle observers
+
+#### `cron_job_failed`
+
+Fires once per failed cron run, from the worker thread that ran the job, immediately before the failure notice is delivered. Covers both failure shapes: a run that finishes with `success=False` (provider error, empty output, blocked config) and a run that raises out of `run_job`. Observer-only: return values are ignored, and a hook that raises is logged and swallowed so it can never mask or delay the original failure message. Payload: `job_id`, `job_name`, `profile`, `error`, `last_run_at`, and `job` (the full job spec — schedule, prompt, script, deliver, skills — for reactive self-healing scripts). It is registered in `VALID_HOOKS`, so it is available to Python plugins and `hooks:` shell hooks alike.
 
 ## Shell Hooks
 

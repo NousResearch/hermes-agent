@@ -2463,6 +2463,73 @@ class TestLaunchctlBootstrapEioRetry:
         assert excinfo.value.returncode == 5
 
 
+class TestLaunchdExpectedNoiseIsCaptured:
+    """Expected launchctl failures must not leak stderr to the terminal.
+
+    When the job is unloaded, ``kickstart -k`` fails with 3/113/125 and the
+    recovery bootout is best-effort — both used to inherit the terminal's
+    stderr, printing ``Could not find service ...`` / ``Boot-out failed: 3``
+    around the CLI's own ``↻ launchd job was unloaded`` line.
+    """
+
+    def test_eio_recovery_bootout_captures_output(self, monkeypatch):
+        """The stale-EIO bootout in ``_launchctl_bootstrap`` is best-effort."""
+        calls = []
+
+        def fake_run(cmd, check=True, **kwargs):
+            calls.append((cmd, kwargs))
+            if cmd[1] == "bootstrap" and len([c for c, _ in calls if c[1] == "bootstrap"]) == 1:
+                raise subprocess.CalledProcessError(5, cmd)
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+
+        gateway_cli._launchctl_bootstrap("gui/501", "/tmp/ai.hermes.gateway.plist", "ai.hermes.gateway")
+
+        bootouts = [kw for cmd, kw in calls if cmd[1] == "bootout"]
+        assert len(bootouts) == 1
+        assert bootouts[0].get("capture_output") is True
+
+    def test_unloaded_restart_captures_kickstart_and_bootout(self, monkeypatch, capsys):
+        """``launchd_restart`` on an unloaded job keeps the terminal clean.
+
+        The kickstart error stays available as ``e.stderr`` for the update_cmd
+        diagnostic instead of being printed raw by launchctl.
+        """
+        run_kwargs = []
+
+        monkeypatch.setattr(gateway_cli, "get_launchd_label", lambda: "ai.hermes.gateway")
+        monkeypatch.setattr(gateway_cli, "_launchd_domain", lambda: "gui/501")
+        monkeypatch.setattr("gateway.status.get_running_pid", lambda *a, **k: None)
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: "/tmp/ai.hermes.gateway.plist")
+        monkeypatch.setattr(gateway_cli, "_clear_launchd_unsupported_marker", lambda: None)
+
+        def fake_run(cmd, **kwargs):
+            run_kwargs.append((cmd, kwargs))
+            if cmd[:2] == ["launchctl", "kickstart"] and "-k" in cmd:
+                raise subprocess.CalledProcessError(3, cmd, stderr="Could not find service")
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+
+        gateway_cli.launchd_restart()
+
+        by_verb: dict[str, list] = {}
+        for cmd, kwargs in run_kwargs:
+            by_verb.setdefault(cmd[1], []).append((cmd, kwargs))
+        # The `-k` kickstart whose 3/113/125 failure is the handled
+        # unloaded case must capture; the post-bootstrap kickstart stays
+        # loud (its failure propagates to the domain fallback).
+        dash_k = [k for cmd, k in by_verb.get("kickstart", []) if "-k" in cmd]
+        assert dash_k, run_kwargs
+        assert all(k.get("capture_output") is True for k in dash_k)
+        assert by_verb.get("bootout"), run_kwargs
+        assert all(k.get("capture_output") is True for _, k in by_verb["bootout"])
+        out = capsys.readouterr().out
+        assert "↻ launchd job was unloaded; reloading" in out
+        assert "✓ Service restarted" in out
+
+
 class TestRetryLaunchctlBootstrapUntilRegistered:
     """`_retry_launchctl_bootstrap_until_registered` — salvage of #53277.
 

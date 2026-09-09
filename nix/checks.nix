@@ -4,7 +4,13 @@
 # transitive deps like onnxruntime that lack compatible wheels on
 # aarch64-darwin. The package and devShell still work on macOS.
 { inputs, ... }: {
-  perSystem = { pkgs, lib, self', ... }:
+  perSystem =
+    {
+      pkgs,
+      lib,
+      self',
+      ...
+    }:
     let
       hermes-agent = self'.packages.default;
       hermesVenv = hermes-agent.hermesVenv;
@@ -83,7 +89,8 @@
       # services.hermes-agent. The internal names that the module system adds
       # are not in the list.
       moduleOptionNames =
-        eval: lib.attrNames (lib.filterAttrs (n: _: !lib.hasPrefix "_" n) eval.options.services.hermes-agent);
+        eval:
+        lib.attrNames (lib.filterAttrs (n: _: !lib.hasPrefix "_" n) eval.options.services.hermes-agent);
 
       # These options belong to one module by design. The check does not
       # compare the two lists against each other, because that test only
@@ -104,52 +111,65 @@
       ];
 
       # Auto-generated config key reference — always in sync with Python
-      configKeys = pkgs.runCommand "hermes-config-keys" {} ''
-        set -euo pipefail
-        export HOME=$TMPDIR
-        ${hermesVenv}/bin/python3 -c '
-import json, sys
-from hermes_cli.config import DEFAULT_CONFIG
+      configKeys = pkgs.runCommand "hermes-config-keys" { } ''
+                set -euo pipefail
+                export HOME=$TMPDIR
+                ${hermesVenv}/bin/python3 -c '
+        import json, sys
+        from hermes_cli.config import DEFAULT_CONFIG
 
-def leaf_paths(d, prefix=""):
-    paths = []
-    for k, v in sorted(d.items()):
-        path = f"{prefix}.{k}" if prefix else k
-        if isinstance(v, dict) and v:
-            paths.extend(leaf_paths(v, path))
-        else:
-            paths.append(path)
-    return paths
+        def leaf_paths(d, prefix=""):
+            paths = []
+            for k, v in sorted(d.items()):
+                path = f"{prefix}.{k}" if prefix else k
+                if isinstance(v, dict) and v:
+                    paths.extend(leaf_paths(v, path))
+                else:
+                    paths.append(path)
+            return paths
 
-json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
-' > $out
+        json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
+        ' > $out
       '';
-    in {
+    in
+    {
       packages.configKeys = configKeys;
 
       checks = {
         # Cross-platform evaluation — catches "not supported for interpreter"
         # errors (e.g. sphinx dropping python311) without needing a darwin builder.
         # Evaluation is pure and instant; it doesn't build anything.
-        cross-eval = let
-          targetSystems = builtins.filter
-            (s: inputs.self.packages ? ${s})
-            [ "x86_64-linux" "aarch64-linux" "aarch64-darwin" "x86_64-darwin" ];
-          tryEvalPkg = sys:
-            let pkg = inputs.self.packages.${sys}.default;
-            in builtins.tryEval (builtins.seq pkg.drvPath true);
-          results = map (sys: { inherit sys; result = tryEvalPkg sys; }) targetSystems;
-          failures = builtins.filter (r: !r.result.success) results;
-          failMsg = lib.concatMapStringsSep "\n" (r: "  - ${r.sys}") failures;
-        in pkgs.runCommand "hermes-cross-eval" { } (
-          if failures != [] then
-            throw "Package fails to evaluate on:\n${failMsg}"
-          else ''
-            echo "PASS: package evaluates on all ${toString (builtins.length targetSystems)} platforms"
-            mkdir -p $out
-            echo "ok" > $out/result
-          ''
-        );
+        cross-eval =
+          let
+            targetSystems = builtins.filter (s: inputs.self.packages ? ${s}) [
+              "x86_64-linux"
+              "aarch64-linux"
+              "aarch64-darwin"
+              "x86_64-darwin"
+            ];
+            tryEvalPkg =
+              sys:
+              let
+                pkg = inputs.self.packages.${sys}.default;
+              in
+              builtins.tryEval (builtins.seq pkg.drvPath true);
+            results = map (sys: {
+              inherit sys;
+              result = tryEvalPkg sys;
+            }) targetSystems;
+            failures = builtins.filter (r: !r.result.success) results;
+            failMsg = lib.concatMapStringsSep "\n" (r: "  - ${r.sys}") failures;
+          in
+          pkgs.runCommand "hermes-cross-eval" { } (
+            if failures != [ ] then
+              throw "Package fails to evaluate on:\n${failMsg}"
+            else
+              ''
+                echo "PASS: package evaluates on all ${toString (builtins.length targetSystems)} platforms"
+                mkdir -p $out
+                echo "ok" > $out/result
+              ''
+          );
 
         # Verify the default package builds successfully (cross-platform).
         # On Linux the runtime checks below already depend on the package,
@@ -227,10 +247,12 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
             activation = cfg.home.activation.hermesAgentSetup.data;
 
             failures =
-              lib.optional (names != [
-                "hermes-agent"
-                "hermes-backend"
-              ]) "expected hermes-agent + hermes-backend processes, got: ${toString names}"
+              lib.optional (
+                names != [
+                  "hermes-agent"
+                  "hermes-backend"
+                ]
+              ) "expected hermes-agent + hermes-backend processes, got: ${toString names}"
               ++ lib.optional (
                 !lib.hasInfix "bin/hermes gateway" (argvOf "hermes-agent")
               ) "gateway process does not run `hermes gateway`: ${argvOf "hermes-agent"}"
@@ -240,9 +262,9 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
               ++ lib.optional (
                 !lib.hasInfix "--no-open" (argvOf "hermes-backend")
               ) "backend must pass --no-open so a service never opens a browser"
-              ++ lib.optional (
-                lib.any (n: !lib.hasInfix "/home/hermes-check/.hermes" (envOf n)) names
-              ) "gateway and backend must share one HERMES_HOME"
+              ++ lib.optional (lib.any (
+                n: !lib.hasInfix "/home/hermes-check/.hermes" (envOf n)
+              ) names) "gateway and backend must share one HERMES_HOME"
               ++ lib.optional (
                 cfg.home.sessionVariables.HERMES_HOME or null != "/home/hermes-check/.hermes"
               ) "programs.hermes-agent.enable must export HERMES_HOME for interactive shells"
@@ -342,9 +364,7 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
           in
           pkgs.runCommand "hermes-workspace-files-need-a-directory" { } (
             if failed != [ ] then
-              throw "workspace-files rule failed:\n${
-                lib.concatMapStringsSep "\n" (c: "  - ${c.name}") failed
-              }"
+              throw "workspace-files rule failed:\n${lib.concatMapStringsSep "\n" (c: "  - ${c.name}") failed}"
             else
               ''
                 ${lib.concatMapStringsSep "\n" (c: ''echo "PASS: ${c.name}"'') cases}
@@ -427,27 +447,29 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
               builtins.readFile path;
 
             failures =
-              lib.optional (
-                lib.length desktopPackages != 1
-              ) "programs.desktop.enable must install exactly one hermes-desktop package, got ${toString (lib.length desktopPackages)}"
-              ++ lib.optional (
-                setValue "HERMES_HOME" != "/home/hermes-check/.hermes-work"
-              ) "the launcher must carry HERMES_HOME: a GUI launcher reads no shell profile, so home.sessionVariables never reaches it (got: ${toString (setValue "HERMES_HOME")})"
-              ++ lib.optional (
-                setValue "HERMES_MANAGED" != "home-manager"
-              ) "the launcher must report HERMES_MANAGED=home-manager while the services own the configuration (got: ${toString (setValue "HERMES_MANAGED")})"
-              ++ lib.optional (
-                lib.length agentPackages == 1
-                && setValue "HERMES_DESKTOP_HERMES" != "${lib.head agentPackages}/bin/hermes"
-              ) "the launcher must pin the agent package that programs.enable installs, and not a second runtime: ${toString (setValue "HERMES_DESKTOP_HERMES")}"
+              lib.optional (lib.length desktopPackages != 1)
+                "programs.desktop.enable must install exactly one hermes-desktop package, got ${toString (lib.length desktopPackages)}"
+              ++
+                lib.optional (setValue "HERMES_HOME" != "/home/hermes-check/.hermes-work")
+                  "the launcher must carry HERMES_HOME: a GUI launcher reads no shell profile, so home.sessionVariables never reaches it (got: ${toString (setValue "HERMES_HOME")})"
+              ++
+                lib.optional (setValue "HERMES_MANAGED" != "home-manager")
+                  "the launcher must report HERMES_MANAGED=home-manager while the services own the configuration (got: ${toString (setValue "HERMES_MANAGED")})"
+              ++
+                lib.optional
+                  (
+                    lib.length agentPackages == 1
+                    && setValue "HERMES_DESKTOP_HERMES" != "${lib.head agentPackages}/bin/hermes"
+                  )
+                  "the launcher must pin the agent package that programs.enable installs, and not a second runtime: ${toString (setValue "HERMES_DESKTOP_HERMES")}"
 
               # ── The application reaches the backend of the service ──────
-              ++ lib.optional (
-                setValue "HERMES_DESKTOP_REMOTE_URL" != "http://127.0.0.1:9231"
-              ) "the launcher must name the backend of the service, or the application starts a second one (got: ${toString (setValue "HERMES_DESKTOP_REMOTE_URL")})"
-              ++ lib.optional (
-                !lib.hasInfix "HERMES_DESKTOP_REMOTE_TOKEN" wrapper
-              ) "the launcher must give a token with the URL: the desktop resolver throws when the URL is set alone"
+              ++
+                lib.optional (setValue "HERMES_DESKTOP_REMOTE_URL" != "http://127.0.0.1:9231")
+                  "the launcher must name the backend of the service, or the application starts a second one (got: ${toString (setValue "HERMES_DESKTOP_REMOTE_URL")})"
+              ++
+                lib.optional (!lib.hasInfix "HERMES_DESKTOP_REMOTE_TOKEN" wrapper)
+                  "the launcher must give a token with the URL: the desktop resolver throws when the URL is set alone"
               ++ lib.optional (
                 !lib.hasInfix "HERMES_DASHBOARD_SESSION_TOKEN" backendScript
               ) "the backend must read the session token, or it makes a new one that the application cannot know"
@@ -503,19 +525,17 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
               ++ lib.optional (
                 !lib.hasInfix "--set HERMES_HOME" wrapper
               ) "the launcher must carry HERMES_HOME even with no services"
-              ++ lib.optional (
-                lib.hasInfix "HERMES_MANAGED" wrapper
-              ) "the launcher must not claim a managed install when no activation writes one"
-              ++ lib.optional (
-                lib.hasInfix "HERMES_DESKTOP_REMOTE_URL" wrapper
-              ) "the launcher must not name a backend when the services run none"
+              ++ lib.optional (lib.hasInfix "HERMES_MANAGED" wrapper) "the launcher must not claim a managed install when no activation writes one"
+              ++ lib.optional (lib.hasInfix "HERMES_DESKTOP_REMOTE_URL" wrapper) "the launcher must not name a backend when the services run none"
               ++ lib.optional (
                 cfg.systemd.user.services ? hermes-backend || cfg.launchd.agents ? hermes-backend
               ) "programs.enable alone must start no service";
           in
           pkgs.runCommand "hermes-home-manager-desktop-standalone" { } (
             if failures != [ ] then
-              throw "Home Manager standalone desktop check failed:\n${lib.concatMapStringsSep "\n" (f: "  - ${f}") failures}"
+              throw "Home Manager standalone desktop check failed:\n${
+                lib.concatMapStringsSep "\n" (f: "  - ${f}") failures
+              }"
             else
               ''
                 echo "PASS: the application runs with no services, and claims nothing that no activation wrote"
@@ -569,9 +589,7 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
             failures =
               lib.concatMap (
                 case:
-                lib.optional (
-                  !refuses case.value
-                ) "installPackage = ${lib.boolToString case.value} must be refused"
+                lib.optional (!refuses case.value) "installPackage = ${lib.boolToString case.value} must be refused"
                 ++ lib.optional (
                   !lib.hasInfix case.expect (messageFor case.value)
                 ) "the message for installPackage = ${lib.boolToString case.value} must name `${case.expect}`"
@@ -588,7 +606,9 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
           in
           pkgs.runCommand "hermes-home-manager-install-package-removed" { } (
             if failures != [ ] then
-              throw "installPackage removal check failed:\n${lib.concatMapStringsSep "\n" (f: "  - ${f}") failures}"
+              throw "installPackage removal check failed:\n${
+                lib.concatMapStringsSep "\n" (f: "  - ${f}") failures
+              }"
             else
               ''
                 echo "PASS: installPackage is refused with guidance, and its absence evaluates"
@@ -621,18 +641,17 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
             staleHomeOnly = lib.subtractLists homeNames homeOnlyOptions;
 
             failures =
-              lib.optional (
-                missingInHome != [ ]
-              ) "shared options missing from the Home Manager module: ${toString missingInHome} (add to nix/moduleCommon.nix, or list under nixosOnlyOptions if system-scoped)"
-              ++ lib.optional (
-                missingInNixos != [ ]
-              ) "shared options missing from the NixOS module: ${toString missingInNixos} (add to nix/moduleCommon.nix, or list under homeOnlyOptions if user-scoped)"
+              lib.optional (missingInHome != [ ])
+                "shared options missing from the Home Manager module: ${toString missingInHome} (add to nix/moduleCommon.nix, or list under nixosOnlyOptions if system-scoped)"
+              ++
+                lib.optional (missingInNixos != [ ])
+                  "shared options missing from the NixOS module: ${toString missingInNixos} (add to nix/moduleCommon.nix, or list under homeOnlyOptions if user-scoped)"
               ++ lib.optional (
                 staleNixosOnly != [ ]
               ) "nixosOnlyOptions names options the NixOS module no longer defines: ${toString staleNixosOnly}"
-              ++ lib.optional (
-                staleHomeOnly != [ ]
-              ) "homeOnlyOptions names options the Home Manager module no longer defines: ${toString staleHomeOnly}";
+              ++
+                lib.optional (staleHomeOnly != [ ])
+                  "homeOnlyOptions names options the Home Manager module no longer defines: ${toString staleHomeOnly}";
           in
           pkgs.runCommand "hermes-module-option-parity" { } (
             if failures != [ ] then
@@ -644,30 +663,33 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
                 echo "ok" > $out/result
               ''
           );
-      } // lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
+      }
+      // lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
         # ── The NixOS module ─────────────────────────────────────────────
         # This check runs on Linux only. The evaluation of a NixOS module
         # needs a Linux hostPlatform.
         nixos-module =
           let
-            cfg = (evalNixosModule {
-              enable = true;
-              backend.mode = "dashboard";
-              settings.model.default = "test/model";
-              environmentFiles = [ "/run/secrets/hermes-env" ];
-              hermesHomeFiles."SOUL.md" = "test soul";
-            }).config;
+            cfg =
+              (evalNixosModule {
+                enable = true;
+                backend.mode = "dashboard";
+                settings.model.default = "test/model";
+                environmentFiles = [ "/run/secrets/hermes-env" ];
+                hermesHomeFiles."SOUL.md" = "test soul";
+              }).config;
 
             units = lib.filterAttrs (n: _: lib.hasPrefix "hermes" n) cfg.systemd.services;
             names = lib.attrNames units;
             execOf = name: units.${name}.serviceConfig.ExecStart;
-            activation = cfg.system.activationScripts."hermes-agent-setup".text;
 
             failures =
-              lib.optional (names != [
-                "hermes-agent"
-                "hermes-backend"
-              ]) "expected hermes-agent + hermes-backend units, got: ${toString names}"
+              lib.optional (
+                names != [
+                  "hermes-agent"
+                  "hermes-backend"
+                ]
+              ) "expected hermes-agent + hermes-backend units, got: ${toString names}"
               ++ lib.optional (
                 !lib.hasInfix "bin/hermes gateway" (execOf "hermes-agent")
               ) "gateway unit does not run `hermes gateway`: ${execOf "hermes-agent"}"
@@ -676,10 +698,7 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
               ) "backend unit does not run `hermes dashboard`: ${execOf "hermes-backend"}"
               ++ lib.optional (
                 units.hermes-agent.environment.HERMES_HOME != units.hermes-backend.environment.HERMES_HOME
-              ) "gateway and backend must share one HERMES_HOME"
-              ++ lib.optional (
-                !lib.hasInfix "/var/lib/hermes/.hermes/SOUL.md" activation
-              ) "hermesHomeFiles must install into HERMES_HOME";
+              ) "gateway and backend must share one HERMES_HOME";
 
             # You cannot use container mode and the backend together. The
             # module says so with an assertion. Without the assertion it
@@ -719,7 +738,8 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
           let
             execOf =
               settings:
-              (evalNixosModule ({ enable = true; } // settings)).config.systemd.services.hermes-backend.serviceConfig.ExecStart;
+              (evalNixosModule ({ enable = true; } // settings))
+              .config.systemd.services.hermes-backend.serviceConfig.ExecStart;
 
             direct = execOf { backend.mode = "serve"; };
 
@@ -747,57 +767,62 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
             evalFails =
               settings:
               !(builtins.tryEval (
-                lib.deepSeq
-                  (evalNixosModule ({ enable = true; } // settings)).config.system.build.toplevel.drvPath
+                lib.deepSeq (evalNixosModule ({ enable = true; } // settings)).config.system.build.toplevel.drvPath
                   true
               )).success;
 
             failures =
               # The default must not change.
-              lib.optional (!lib.hasInfix "bin/hermes serve --host 127.0.0.1" direct)
-                "without waitFor the backend must exec hermes directly, got: ${direct}"
-              ++ lib.optional (lib.hasInfix "hermes-backend-launch" direct)
-                "without waitFor the backend must not use the launcher"
+              lib.optional (
+                !lib.hasInfix "bin/hermes serve --host 127.0.0.1" direct
+              ) "without waitFor the backend must exec hermes directly, got: ${direct}"
+              ++ lib.optional (lib.hasInfix "hermes-backend-launch" direct) "without waitFor the backend must not use the launcher"
 
               # The hostname mode polls the resolver, then binds the name.
-              ++ lib.optional (!lib.hasInfix "hermes-backend-launch" hostnameWait)
-                "waitFor = hostname must run the launcher, got: ${hostnameWait}"
-              ++ lib.optional (!lib.hasInfix "getent hosts" hostnameScript)
-                "the hostname launcher must poll with getent"
-              ++ lib.optional (!lib.hasInfix "host.example.ts.net" hostnameScript)
-                "the hostname launcher must poll for backend.host"
-              ++ lib.optional (!lib.hasInfix "exec " hostnameScript)
-                "the launcher must exec hermes, so that it keeps the MainPID"
-              ++ lib.optional (!lib.hasInfix ''--host "$_target"'' hostnameScript)
-                "the launcher must bind the address that the poll resolved"
+              ++ lib.optional (
+                !lib.hasInfix "hermes-backend-launch" hostnameWait
+              ) "waitFor = hostname must run the launcher, got: ${hostnameWait}"
+              ++ lib.optional (
+                !lib.hasInfix "getent hosts" hostnameScript
+              ) "the hostname launcher must poll with getent"
+              ++ lib.optional (
+                !lib.hasInfix "host.example.ts.net" hostnameScript
+              ) "the hostname launcher must poll for backend.host"
+              ++ lib.optional (
+                !lib.hasInfix "exec " hostnameScript
+              ) "the launcher must exec hermes, so that it keeps the MainPID"
+              ++ lib.optional (
+                !lib.hasInfix ''--host "$_target"'' hostnameScript
+              ) "the launcher must bind the address that the poll resolved"
 
               # The interface mode reads an address off the interface.
-              ++ lib.optional (!lib.hasInfix "tailscale0" interfaceScript)
-                "the interface launcher must poll backend.interfaceName"
-              ++ lib.optional (!lib.hasInfix "_timeout=30" interfaceScript)
-                "the launcher must use backend.waitTimeout"
-              ++ lib.optional (!lib.hasInfix "bin/hermes dashboard" interfaceScript)
-                "the launcher must keep backend.mode"
+              ++ lib.optional (
+                !lib.hasInfix "tailscale0" interfaceScript
+              ) "the interface launcher must poll backend.interfaceName"
+              ++ lib.optional (
+                !lib.hasInfix "_timeout=30" interfaceScript
+              ) "the launcher must use backend.waitTimeout"
+              ++ lib.optional (
+                !lib.hasInfix "bin/hermes dashboard" interfaceScript
+              ) "the launcher must keep backend.mode"
 
               # The assertions reject what cannot work.
-              ++
-                lib.optional
-                  (!evalFails {
-                    backend = {
-                      mode = "serve";
-                      waitFor = "interface";
-                    };
-                  })
-                  "an assertion must reject waitFor = interface without interfaceName"
-              ++
-                lib.optional
-                  (!evalFails {
-                    backend = {
-                      mode = "serve";
-                      interfaceName = "tailscale0";
-                    };
-                  })
-                  "an assertion must reject interfaceName without waitFor = interface";
+              ++ lib.optional (
+                !evalFails {
+                  backend = {
+                    mode = "serve";
+                    waitFor = "interface";
+                  };
+                }
+              ) "an assertion must reject waitFor = interface without interfaceName"
+              ++ lib.optional (
+                !evalFails {
+                  backend = {
+                    mode = "serve";
+                    interfaceName = "tailscale0";
+                  };
+                }
+              ) "an assertion must reject interfaceName without waitFor = interface";
           in
           pkgs.runCommand "hermes-backend-bind-wait" { } (
             if failures != [ ] then
@@ -937,8 +962,22 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
             }
 
             check "gateway"   ${probe (common.gatewayArgv (cfgFor "none"))}
-            check "serve"     ${probe (common.backendArgv { inherit pkgs; cfg = cfgFor "serve"; })}
-            check "dashboard" ${probe (common.backendArgv { inherit pkgs; cfg = cfgFor "dashboard"; })}
+            check "serve"     ${
+              probe (
+                common.backendArgv {
+                  inherit pkgs;
+                  cfg = cfgFor "serve";
+                }
+              )
+            }
+            check "dashboard" ${
+              probe (
+                common.backendArgv {
+                  inherit pkgs;
+                  cfg = cfgFor "dashboard";
+                }
+              )
+            }
 
             mkdir -p $out
             echo "ok" > $out/result
@@ -1174,54 +1213,58 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
         '';
 
         # Verify extraPythonPackages PYTHONPATH injection
-        extra-python-packages = let
-          testPkg = pkgs.python312Packages.pyfiglet;
-          hermesWithExtra = hermes-agent.override {
-            extraPythonPackages = [ testPkg ];
-          };
-        in pkgs.runCommand "hermes-extra-python-packages" { } ''
-          set -e
-          echo "=== Checking extraPythonPackages PYTHONPATH injection ==="
+        extra-python-packages =
+          let
+            testPkg = pkgs.python312Packages.pyfiglet;
+            hermesWithExtra = hermes-agent.override {
+              extraPythonPackages = [ testPkg ];
+            };
+          in
+          pkgs.runCommand "hermes-extra-python-packages" { } ''
+            set -e
+            echo "=== Checking extraPythonPackages PYTHONPATH injection ==="
 
-          grep -q "PYTHONPATH" ${hermesWithExtra}/bin/hermes || \
-            (echo "FAIL: PYTHONPATH not in wrapper"; exit 1)
-          echo "PASS: PYTHONPATH present in wrapper"
+            grep -q "PYTHONPATH" ${hermesWithExtra}/bin/hermes || \
+              (echo "FAIL: PYTHONPATH not in wrapper"; exit 1)
+            echo "PASS: PYTHONPATH present in wrapper"
 
-          grep -q "${testPkg}" ${hermesWithExtra}/bin/hermes || \
-            (echo "FAIL: test package path not in PYTHONPATH"; exit 1)
-          echo "PASS: test package path found in wrapper"
+            grep -q "${testPkg}" ${hermesWithExtra}/bin/hermes || \
+              (echo "FAIL: test package path not in PYTHONPATH"; exit 1)
+            echo "PASS: test package path found in wrapper"
 
-          echo "=== Checking base package has no PYTHONPATH ==="
-          if grep -q "PYTHONPATH" ${hermes-agent}/bin/hermes; then
-            echo "FAIL: base package should not have PYTHONPATH"; exit 1
-          fi
-          echo "PASS: base package clean"
+            echo "=== Checking base package has no PYTHONPATH ==="
+            if grep -q "PYTHONPATH" ${hermes-agent}/bin/hermes; then
+              echo "FAIL: base package should not have PYTHONPATH"; exit 1
+            fi
+            echo "PASS: base package clean"
 
-          echo "=== All extraPythonPackages checks passed ==="
-          mkdir -p $out
-          echo "ok" > $out/result
-        '';
+            echo "=== All extraPythonPackages checks passed ==="
+            mkdir -p $out
+            echo "ok" > $out/result
+          '';
 
         # Verify extraDependencyGroups passes through to python.nix
-        extra-dependency-groups = let
-          hermesWithGroups = hermes-agent.override {
-            extraDependencyGroups = [ "honcho" ];
-          };
-        in pkgs.runCommand "hermes-extra-dependency-groups" { } ''
-          set -e
-          echo "=== Checking extraDependencyGroups override evaluates ==="
+        extra-dependency-groups =
+          let
+            hermesWithGroups = hermes-agent.override {
+              extraDependencyGroups = [ "honcho" ];
+            };
+          in
+          pkgs.runCommand "hermes-extra-dependency-groups" { } ''
+            set -e
+            echo "=== Checking extraDependencyGroups override evaluates ==="
 
-          # Eval-only: verify the override produces valid derivation paths
-          # without building the full venv (which is expensive and redundant
-          # since the mechanism is just list concatenation into python.nix).
-          echo "derivation: ${hermesWithGroups}"
-          echo "venv: ${hermesWithGroups.hermesVenv}"
-          echo "PASS: extraDependencyGroups override evaluates cleanly"
+            # Eval-only: verify the override produces valid derivation paths
+            # without building the full venv (which is expensive and redundant
+            # since the mechanism is just list concatenation into python.nix).
+            echo "derivation: ${hermesWithGroups}"
+            echo "venv: ${hermesWithGroups.hermesVenv}"
+            echo "PASS: extraDependencyGroups override evaluates cleanly"
 
-          echo "=== All extraDependencyGroups checks passed ==="
-          mkdir -p $out
-          echo "ok" > $out/result
-        '';
+            echo "=== All extraDependencyGroups checks passed ==="
+            mkdir -p $out
+            echo "ok" > $out/result
+          '';
 
         # Regression guard: messaging deps live outside [all], so the
         # #messaging variant must actually ship discord.py — otherwise
@@ -1239,216 +1282,228 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
         # ── Config merge + round-trip test ────────────────────────────────
         # Tests the merge script (Nix activation behavior) across 7
         # scenarios, then verifies Python's load_config() reads correctly.
-        config-roundtrip = let
-          # Nix settings used across scenarios
-          nixSettings = pkgs.writeText "nix-settings.json" (builtins.toJSON {
-            model = "test/nix-model";
-            toolsets = ["nix-toolset"];
-            terminal = { backend = "docker"; timeout = 999; };
-            mcp_servers = {
-              nix-server = { command = "echo"; args = ["nix"]; };
-            };
-          });
+        config-roundtrip =
+          let
+            # Nix settings used across scenarios
+            nixSettings = pkgs.writeText "nix-settings.json" (
+              builtins.toJSON {
+                model = "test/nix-model";
+                toolsets = [ "nix-toolset" ];
+                terminal = {
+                  backend = "docker";
+                  timeout = 999;
+                };
+                mcp_servers = {
+                  nix-server = {
+                    command = "echo";
+                    args = [ "nix" ];
+                  };
+                };
+              }
+            );
 
-          # Pre-built YAML fixtures for each scenario
-          fixtureB = pkgs.writeText "fixture-b.yaml" ''
-            model: "old-model"
-            mcp_servers:
-              old-server:
-                url: "http://old"
-          '';
-          fixtureC = pkgs.writeText "fixture-c.yaml" ''
-            skills:
-              disabled:
-                - skill-a
-                - skill-b
-            session_reset:
-              mode: idle
-              idle_minutes: 30
-            streaming:
-              enabled: true
-            fallback_model:
-              provider: openrouter
-              model: test-fallback
-          '';
-          fixtureD = pkgs.writeText "fixture-d.yaml" ''
-            model: "user-model"
-            skills:
-              disabled:
-                - skill-x
-            streaming:
-              enabled: true
-              transport: edit
-          '';
-          fixtureE = pkgs.writeText "fixture-e.yaml" ''
-            mcp_servers:
-              user-server:
-                url: "http://user-mcp"
-              nix-server:
-                command: "old-cmd"
-                args: ["old"]
-          '';
-          fixtureF = pkgs.writeText "fixture-f.yaml" ''
-            terminal:
-              cwd: "/user/path"
-              custom_key: "preserved"
-              env_passthrough:
-                - USER_VAR
-          '';
+            # Pre-built YAML fixtures for each scenario
+            fixtureB = pkgs.writeText "fixture-b.yaml" ''
+              model: "old-model"
+              mcp_servers:
+                old-server:
+                  url: "http://old"
+            '';
+            fixtureC = pkgs.writeText "fixture-c.yaml" ''
+              skills:
+                disabled:
+                  - skill-a
+                  - skill-b
+              session_reset:
+                mode: idle
+                idle_minutes: 30
+              streaming:
+                enabled: true
+              fallback_model:
+                provider: openrouter
+                model: test-fallback
+            '';
+            fixtureD = pkgs.writeText "fixture-d.yaml" ''
+              model: "user-model"
+              skills:
+                disabled:
+                  - skill-x
+              streaming:
+                enabled: true
+                transport: edit
+            '';
+            fixtureE = pkgs.writeText "fixture-e.yaml" ''
+              mcp_servers:
+                user-server:
+                  url: "http://user-mcp"
+                nix-server:
+                  command: "old-cmd"
+                  args: ["old"]
+            '';
+            fixtureF = pkgs.writeText "fixture-f.yaml" ''
+              terminal:
+                cwd: "/user/path"
+                custom_key: "preserved"
+                env_passthrough:
+                  - USER_VAR
+            '';
 
-        in pkgs.runCommand "hermes-config-roundtrip" {
-          nativeBuildInputs = [ pkgs.jq ];
-        } ''
-          set -e
-          export HOME=$(mktemp -d)
-          ERRORS=""
+          in
+          pkgs.runCommand "hermes-config-roundtrip"
+            {
+              nativeBuildInputs = [ pkgs.jq ];
+            }
+            ''
+                        set -e
+                        export HOME=$(mktemp -d)
+                        ERRORS=""
 
-          fail() { ERRORS="$ERRORS\nFAIL: $1"; }
+                        fail() { ERRORS="$ERRORS\nFAIL: $1"; }
 
-          # Helper: run merge then load with Python, output merged JSON
-          merge_and_load() {
-            local hermes_home="$1"
-            export HERMES_HOME="$hermes_home"
-            ${configMergeScript} ${nixSettings} "$hermes_home/config.yaml"
-            ${hermesVenv}/bin/python3 -c '
-import json, sys
-from hermes_cli.config import load_config
-json.dump(load_config(), sys.stdout, default=str)
-'
-          }
+                        # Helper: run merge then load with Python, output merged JSON
+                        merge_and_load() {
+                          local hermes_home="$1"
+                          export HERMES_HOME="$hermes_home"
+                          ${configMergeScript} ${nixSettings} "$hermes_home/config.yaml"
+                          ${hermesVenv}/bin/python3 -c '
+              import json, sys
+              from hermes_cli.config import load_config
+              json.dump(load_config(), sys.stdout, default=str)
+              '
+                        }
 
-          # ═══════════════════════════════════════════════════════════════
-          # Scenario A: Fresh install — no existing config.yaml
-          # ═══════════════════════════════════════════════════════════════
-          echo "=== Scenario A: Fresh install ==="
-          A_HOME=$(mktemp -d)
-          A_CONFIG=$(merge_and_load "$A_HOME")
+                        # ═══════════════════════════════════════════════════════════════
+                        # Scenario A: Fresh install — no existing config.yaml
+                        # ═══════════════════════════════════════════════════════════════
+                        echo "=== Scenario A: Fresh install ==="
+                        A_HOME=$(mktemp -d)
+                        A_CONFIG=$(merge_and_load "$A_HOME")
 
-          echo "$A_CONFIG" | jq -e '.model == "test/nix-model"' > /dev/null \
-            || fail "A: model not set from Nix"
-          echo "$A_CONFIG" | jq -e '.mcp_servers."nix-server".command == "echo"' > /dev/null \
-            || fail "A: MCP nix-server missing"
-          echo "PASS: Scenario A"
+                        echo "$A_CONFIG" | jq -e '.model == "test/nix-model"' > /dev/null \
+                          || fail "A: model not set from Nix"
+                        echo "$A_CONFIG" | jq -e '.mcp_servers."nix-server".command == "echo"' > /dev/null \
+                          || fail "A: MCP nix-server missing"
+                        echo "PASS: Scenario A"
 
-          # ═══════════════════════════════════════════════════════════════
-          # Scenario B: Nix keys override existing values
-          # ═══════════════════════════════════════════════════════════════
-          echo "=== Scenario B: Nix overrides ==="
-          B_HOME=$(mktemp -d)
-          install -m 0644 ${fixtureB} "$B_HOME/config.yaml"
-          B_CONFIG=$(merge_and_load "$B_HOME")
+                        # ═══════════════════════════════════════════════════════════════
+                        # Scenario B: Nix keys override existing values
+                        # ═══════════════════════════════════════════════════════════════
+                        echo "=== Scenario B: Nix overrides ==="
+                        B_HOME=$(mktemp -d)
+                        install -m 0644 ${fixtureB} "$B_HOME/config.yaml"
+                        B_CONFIG=$(merge_and_load "$B_HOME")
 
-          echo "$B_CONFIG" | jq -e '.model == "test/nix-model"' > /dev/null \
-            || fail "B: Nix model did not override"
-          echo "PASS: Scenario B"
+                        echo "$B_CONFIG" | jq -e '.model == "test/nix-model"' > /dev/null \
+                          || fail "B: Nix model did not override"
+                        echo "PASS: Scenario B"
 
-          # ═══════════════════════════════════════════════════════════════
-          # Scenario C: User-only keys preserved
-          # ═══════════════════════════════════════════════════════════════
-          echo "=== Scenario C: User keys preserved ==="
-          C_HOME=$(mktemp -d)
-          install -m 0644 ${fixtureC} "$C_HOME/config.yaml"
-          C_CONFIG=$(merge_and_load "$C_HOME")
+                        # ═══════════════════════════════════════════════════════════════
+                        # Scenario C: User-only keys preserved
+                        # ═══════════════════════════════════════════════════════════════
+                        echo "=== Scenario C: User keys preserved ==="
+                        C_HOME=$(mktemp -d)
+                        install -m 0644 ${fixtureC} "$C_HOME/config.yaml"
+                        C_CONFIG=$(merge_and_load "$C_HOME")
 
-          echo "$C_CONFIG" | jq -e '.skills.disabled == ["skill-a", "skill-b"]' > /dev/null \
-            || fail "C: skills.disabled not preserved"
-          echo "$C_CONFIG" | jq -e '.session_reset.mode == "idle"' > /dev/null \
-            || fail "C: session_reset.mode not preserved"
-          echo "$C_CONFIG" | jq -e '.session_reset.idle_minutes == 30' > /dev/null \
-            || fail "C: session_reset.idle_minutes not preserved"
-          echo "$C_CONFIG" | jq -e '.streaming.enabled == true' > /dev/null \
-            || fail "C: streaming.enabled not preserved"
-          echo "$C_CONFIG" | jq -e '.fallback_model.provider == "openrouter"' > /dev/null \
-            || fail "C: fallback_model not preserved"
-          echo "PASS: Scenario C"
+                        echo "$C_CONFIG" | jq -e '.skills.disabled == ["skill-a", "skill-b"]' > /dev/null \
+                          || fail "C: skills.disabled not preserved"
+                        echo "$C_CONFIG" | jq -e '.session_reset.mode == "idle"' > /dev/null \
+                          || fail "C: session_reset.mode not preserved"
+                        echo "$C_CONFIG" | jq -e '.session_reset.idle_minutes == 30' > /dev/null \
+                          || fail "C: session_reset.idle_minutes not preserved"
+                        echo "$C_CONFIG" | jq -e '.streaming.enabled == true' > /dev/null \
+                          || fail "C: streaming.enabled not preserved"
+                        echo "$C_CONFIG" | jq -e '.fallback_model.provider == "openrouter"' > /dev/null \
+                          || fail "C: fallback_model not preserved"
+                        echo "PASS: Scenario C"
 
-          # ═══════════════════════════════════════════════════════════════
-          # Scenario D: Mixed — Nix wins for its keys, user keys preserved
-          # ═══════════════════════════════════════════════════════════════
-          echo "=== Scenario D: Mixed merge ==="
-          D_HOME=$(mktemp -d)
-          install -m 0644 ${fixtureD} "$D_HOME/config.yaml"
-          D_CONFIG=$(merge_and_load "$D_HOME")
+                        # ═══════════════════════════════════════════════════════════════
+                        # Scenario D: Mixed — Nix wins for its keys, user keys preserved
+                        # ═══════════════════════════════════════════════════════════════
+                        echo "=== Scenario D: Mixed merge ==="
+                        D_HOME=$(mktemp -d)
+                        install -m 0644 ${fixtureD} "$D_HOME/config.yaml"
+                        D_CONFIG=$(merge_and_load "$D_HOME")
 
-          echo "$D_CONFIG" | jq -e '.model == "test/nix-model"' > /dev/null \
-            || fail "D: Nix model did not override user model"
-          echo "$D_CONFIG" | jq -e '.skills.disabled == ["skill-x"]' > /dev/null \
-            || fail "D: user skills not preserved"
-          echo "$D_CONFIG" | jq -e '.streaming.enabled == true' > /dev/null \
-            || fail "D: user streaming not preserved"
-          echo "PASS: Scenario D"
+                        echo "$D_CONFIG" | jq -e '.model == "test/nix-model"' > /dev/null \
+                          || fail "D: Nix model did not override user model"
+                        echo "$D_CONFIG" | jq -e '.skills.disabled == ["skill-x"]' > /dev/null \
+                          || fail "D: user skills not preserved"
+                        echo "$D_CONFIG" | jq -e '.streaming.enabled == true' > /dev/null \
+                          || fail "D: user streaming not preserved"
+                        echo "PASS: Scenario D"
 
-          # ═══════════════════════════════════════════════════════════════
-          # Scenario E: MCP additive merge
-          # ═══════════════════════════════════════════════════════════════
-          echo "=== Scenario E: MCP additive merge ==="
-          E_HOME=$(mktemp -d)
-          install -m 0644 ${fixtureE} "$E_HOME/config.yaml"
-          E_CONFIG=$(merge_and_load "$E_HOME")
+                        # ═══════════════════════════════════════════════════════════════
+                        # Scenario E: MCP additive merge
+                        # ═══════════════════════════════════════════════════════════════
+                        echo "=== Scenario E: MCP additive merge ==="
+                        E_HOME=$(mktemp -d)
+                        install -m 0644 ${fixtureE} "$E_HOME/config.yaml"
+                        E_CONFIG=$(merge_and_load "$E_HOME")
 
-          echo "$E_CONFIG" | jq -e '.mcp_servers."user-server".url == "http://user-mcp"' > /dev/null \
-            || fail "E: user MCP server not preserved"
-          echo "$E_CONFIG" | jq -e '.mcp_servers."nix-server".command == "echo"' > /dev/null \
-            || fail "E: Nix MCP server did not override same-name user server"
-          echo "$E_CONFIG" | jq -e '.mcp_servers."nix-server".args == ["nix"]' > /dev/null \
-            || fail "E: Nix MCP server args wrong"
-          echo "PASS: Scenario E"
+                        echo "$E_CONFIG" | jq -e '.mcp_servers."user-server".url == "http://user-mcp"' > /dev/null \
+                          || fail "E: user MCP server not preserved"
+                        echo "$E_CONFIG" | jq -e '.mcp_servers."nix-server".command == "echo"' > /dev/null \
+                          || fail "E: Nix MCP server did not override same-name user server"
+                        echo "$E_CONFIG" | jq -e '.mcp_servers."nix-server".args == ["nix"]' > /dev/null \
+                          || fail "E: Nix MCP server args wrong"
+                        echo "PASS: Scenario E"
 
-          # ═══════════════════════════════════════════════════════════════
-          # Scenario F: Nested deep merge
-          # ═══════════════════════════════════════════════════════════════
-          echo "=== Scenario F: Nested deep merge ==="
-          F_HOME=$(mktemp -d)
-          install -m 0644 ${fixtureF} "$F_HOME/config.yaml"
-          F_CONFIG=$(merge_and_load "$F_HOME")
+                        # ═══════════════════════════════════════════════════════════════
+                        # Scenario F: Nested deep merge
+                        # ═══════════════════════════════════════════════════════════════
+                        echo "=== Scenario F: Nested deep merge ==="
+                        F_HOME=$(mktemp -d)
+                        install -m 0644 ${fixtureF} "$F_HOME/config.yaml"
+                        F_CONFIG=$(merge_and_load "$F_HOME")
 
-          echo "$F_CONFIG" | jq -e '.terminal.backend == "docker"' > /dev/null \
-            || fail "F: Nix terminal.backend did not override"
-          echo "$F_CONFIG" | jq -e '.terminal.timeout == 999' > /dev/null \
-            || fail "F: Nix terminal.timeout did not override"
-          echo "$F_CONFIG" | jq -e '.terminal.custom_key == "preserved"' > /dev/null \
-            || fail "F: terminal.custom_key not preserved"
-          echo "$F_CONFIG" | jq -e '.terminal.cwd == "/user/path"' > /dev/null \
-            || fail "F: user terminal.cwd not preserved when Nix does not set it"
-          echo "$F_CONFIG" | jq -e '.terminal.env_passthrough == ["USER_VAR"]' > /dev/null \
-            || fail "F: user terminal.env_passthrough not preserved"
-          echo "PASS: Scenario F"
+                        echo "$F_CONFIG" | jq -e '.terminal.backend == "docker"' > /dev/null \
+                          || fail "F: Nix terminal.backend did not override"
+                        echo "$F_CONFIG" | jq -e '.terminal.timeout == 999' > /dev/null \
+                          || fail "F: Nix terminal.timeout did not override"
+                        echo "$F_CONFIG" | jq -e '.terminal.custom_key == "preserved"' > /dev/null \
+                          || fail "F: terminal.custom_key not preserved"
+                        echo "$F_CONFIG" | jq -e '.terminal.cwd == "/user/path"' > /dev/null \
+                          || fail "F: user terminal.cwd not preserved when Nix does not set it"
+                        echo "$F_CONFIG" | jq -e '.terminal.env_passthrough == ["USER_VAR"]' > /dev/null \
+                          || fail "F: user terminal.env_passthrough not preserved"
+                        echo "PASS: Scenario F"
 
-          # ═══════════════════════════════════════════════════════════════
-          # Scenario G: Idempotency — merging twice yields the same result
-          # ═══════════════════════════════════════════════════════════════
-          echo "=== Scenario G: Idempotency ==="
-          G_HOME=$(mktemp -d)
-          install -m 0644 ${fixtureD} "$G_HOME/config.yaml"
-          ${configMergeScript} ${nixSettings} "$G_HOME/config.yaml"
-          FIRST=$(cat "$G_HOME/config.yaml")
-          ${configMergeScript} ${nixSettings} "$G_HOME/config.yaml"
-          SECOND=$(cat "$G_HOME/config.yaml")
+                        # ═══════════════════════════════════════════════════════════════
+                        # Scenario G: Idempotency — merging twice yields the same result
+                        # ═══════════════════════════════════════════════════════════════
+                        echo "=== Scenario G: Idempotency ==="
+                        G_HOME=$(mktemp -d)
+                        install -m 0644 ${fixtureD} "$G_HOME/config.yaml"
+                        ${configMergeScript} ${nixSettings} "$G_HOME/config.yaml"
+                        FIRST=$(cat "$G_HOME/config.yaml")
+                        ${configMergeScript} ${nixSettings} "$G_HOME/config.yaml"
+                        SECOND=$(cat "$G_HOME/config.yaml")
 
-          if [ "$FIRST" != "$SECOND" ]; then
-            fail "G: second merge produced different output"
-            echo "--- first ---"
-            echo "$FIRST"
-            echo "--- second ---"
-            echo "$SECOND"
-          fi
-          echo "PASS: Scenario G"
+                        if [ "$FIRST" != "$SECOND" ]; then
+                          fail "G: second merge produced different output"
+                          echo "--- first ---"
+                          echo "$FIRST"
+                          echo "--- second ---"
+                          echo "$SECOND"
+                        fi
+                        echo "PASS: Scenario G"
 
-          # ═══════════════════════════════════════════════════════════════
-          # Report
-          # ═══════════════════════════════════════════════════════════════
-          if [ -n "$ERRORS" ]; then
-            echo ""
-            echo "FAILURES:"
-            echo -e "$ERRORS"
-            exit 1
-          fi
+                        # ═══════════════════════════════════════════════════════════════
+                        # Report
+                        # ═══════════════════════════════════════════════════════════════
+                        if [ -n "$ERRORS" ]; then
+                          echo ""
+                          echo "FAILURES:"
+                          echo -e "$ERRORS"
+                          exit 1
+                        fi
 
-          echo ""
-          echo "=== All 7 merge scenarios passed ==="
-          mkdir -p $out
-          echo "ok" > $out/result
-        '';
+                        echo ""
+                        echo "=== All 7 merge scenarios passed ==="
+                        mkdir -p $out
+                        echo "ok" > $out/result
+            '';
       };
     };
 }

@@ -28,21 +28,22 @@ from tests.integration.test_honcho_peer_mapping_live import _credential, _delete
 pytestmark = pytest.mark.integration
 
 
-def _load_user_env() -> None:
+def _env_file_value(key: str) -> str:
+    """One value from ~/.hermes/.env; called only after the suite has opted in and never writes os.environ."""
     env_file = Path.home() / ".hermes" / ".env"
     if not env_file.exists():
-        return
+        return ""
     for raw in env_file.read_text().splitlines():
         line = raw.strip()
         if not line or line.startswith("#") or "=" not in line:
             continue
-        key, value = line.split("=", 1)
-        os.environ.setdefault(key.strip(), value.strip().strip('"').strip("'"))
+        name, value = line.split("=", 1)
+        if name.strip() == key:
+            return value.strip().strip('"').strip("'")
+    return ""
 
 
-_load_user_env()
 _LIVE = os.environ.get("HONCHO_E2E") == "1" and os.environ.get("HERMES_LIVE_TESTS") == "1"
-_OR_KEY = os.environ.get("OPENROUTER_API_KEY", "")
 _MODEL = os.environ.get("HERMES_LIVE_MODEL", "google/gemini-2.5-flash")
 _REPLY_WAIT = 180.0
 _HONCHO_WAIT = 90.0
@@ -55,7 +56,8 @@ BOB = SimpleNamespace(user_id="222000222", name="bob", chat_id="222000222")
 def live():
     if not _LIVE:
         pytest.skip("set HONCHO_E2E=1 and HERMES_LIVE_TESTS=1 to run the live gateway suite")
-    if not _OR_KEY:
+    or_key = os.environ.get("OPENROUTER_API_KEY", "") or _env_file_value("OPENROUTER_API_KEY")
+    if not or_key:
         pytest.skip("OPENROUTER_API_KEY not configured")
     key, base_url = _credential()
     if not key:
@@ -67,15 +69,16 @@ def live():
     if base_url:
         kwargs["base_url"] = base_url
     client = Honcho(**kwargs)
-    yield _Live(key, base_url, workspace, client)
+    yield _Live(key, base_url, workspace, client, or_key)
     _delete_workspace(client, workspace)
 
 
 class _Live:
     """Live handles; the repr hides the credential so a failing fixture never prints it."""
 
-    def __init__(self, key, base_url, workspace, client):
+    def __init__(self, key, base_url, workspace, client, or_key):
         self.key, self.base_url, self.workspace, self.client = key, base_url, workspace, client
+        self.or_key = or_key
 
     def __repr__(self) -> str:
         return f"<live workspace={self.workspace}>"
@@ -113,7 +116,7 @@ def gateway(tmp_path, monkeypatch, live):
                 "GATEWAY_ALLOW_ALL_USERS", "TELEGRAM_ALLOW_ALL_USERS"):
         monkeypatch.delenv(var, raising=False)
     monkeypatch.setenv("HERMES_HOME", str(home))
-    monkeypatch.setenv("OPENROUTER_API_KEY", _OR_KEY)
+    monkeypatch.setenv("OPENROUTER_API_KEY", live.or_key)
     monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", f"{ALICE.user_id},{BOB.user_id}")
     token = set_hermes_home_override(home)
     monkeypatch.setattr(gateway_run, "_hermes_home", home)

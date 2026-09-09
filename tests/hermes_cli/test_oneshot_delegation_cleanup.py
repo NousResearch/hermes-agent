@@ -85,6 +85,10 @@ def test_oneshot_cleanup_terminalizes_prompt_child_and_grace_survivor():
         release_survivor.wait(timeout=10)
         return {"status": "completed", "summary": "late result"}
 
+    def survivor_interrupt():
+        survivor_interrupted.set()
+        time.sleep(0.08)
+
     prompt_id = _dispatch(
         goal="prompt finalizer",
         runner=prompt_runner,
@@ -93,7 +97,7 @@ def test_oneshot_cleanup_terminalizes_prompt_child_and_grace_survivor():
     survivor_id = _dispatch(
         goal="grace survivor",
         runner=survivor_runner,
-        interrupt_fn=survivor_interrupted.set,
+        interrupt_fn=survivor_interrupt,
     )
 
     try:
@@ -102,7 +106,7 @@ def test_oneshot_cleanup_terminalizes_prompt_child_and_grace_survivor():
         elapsed = time.monotonic() - started
 
         assert prompt_interrupted.is_set() and survivor_interrupted.is_set()
-        assert 0.08 <= elapsed < 0.5
+        assert elapsed == pytest.approx(0.1, abs=0.001)
         prompt_row = ad.get_durable_delegation(prompt_id)
         survivor_row = ad.get_durable_delegation(survivor_id)
         assert prompt_row["state"] == "interrupted"
@@ -128,6 +132,72 @@ def test_oneshot_cleanup_terminalizes_prompt_child_and_grace_survivor():
         time.sleep(0.02)
     assert ad.get_durable_delegation(survivor_id)["state"] == "unknown"
     assert process_registry.completion_queue.empty()
+
+
+def test_oneshot_cleanup_does_not_renew_grace_after_signal_overrun():
+    """A synchronous signal overrun skips the wait instead of restarting it."""
+    release = threading.Event()
+
+    def runner():
+        release.wait(timeout=10)
+        return {"status": "completed", "summary": "late result"}
+
+    def blocking_interrupt():
+        time.sleep(0.12)
+
+    delegation_id = _dispatch(goal="blocking signal", runner=runner, interrupt_fn=blocking_interrupt)
+    try:
+        started = time.monotonic()
+        cli_main._cleanup_oneshot_runtime()
+        assert time.monotonic() - started == pytest.approx(0.12, abs=0.001)
+        assert ad.get_durable_delegation(delegation_id)["state"] == "unknown"
+    finally:
+        release.set()
+
+
+def test_first_durable_read_preserves_live_owner_when_start_identity_unavailable(monkeypatch):
+    """Unavailable start identity cannot turn a live owner's row terminal."""
+    from gateway import status as gateway_status
+
+    release = threading.Event()
+
+    def live_runner():
+        release.wait(timeout=10)
+        return {"status": "completed", "summary": "done"}
+
+    delegation_id = _dispatch(
+        goal="live owner",
+        runner=live_runner,
+        interrupt_fn=lambda: None,
+    )
+    actual_started = gateway_status.get_process_start_time(os.getpid())
+    assert actual_started is not None
+
+    try:
+        with ad._DB_LOCK, ad._transaction() as conn:
+            conn.execute(
+                "UPDATE async_delegations SET owner_started_at=NULL WHERE delegation_id=?",
+                (delegation_id,),
+            )
+        assert ad.get_durable_delegation(delegation_id)["state"] == "running"
+
+        with ad._DB_LOCK, ad._transaction() as conn:
+            conn.execute(
+                "UPDATE async_delegations SET owner_started_at=? WHERE delegation_id=?",
+                (actual_started, delegation_id),
+            )
+        monkeypatch.setattr(gateway_status, "get_process_start_time", lambda _pid: None)
+        assert ad.get_durable_delegation(delegation_id)["state"] == "running"
+    finally:
+        release.set()
+
+    deadline = time.monotonic() + 2
+    row = ad.get_durable_delegation(delegation_id)
+    while row["state"] == "running" and time.monotonic() < deadline:
+        time.sleep(0.02)
+        row = ad.get_durable_delegation(delegation_id)
+    assert row["state"] == "completed"
+    assert row["result"]["summary"] == "done"
 
 
 def test_first_durable_read_recovers_reused_owner_pid_as_unknown(tmp_path):

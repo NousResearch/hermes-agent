@@ -263,9 +263,12 @@ def recover_abandoned_delegations() -> int:
                FROM async_delegations WHERE state IN ('running','finalizing')""").fetchall()
         for row in rows:
             delegation_id, session_key, origin_ui, parent_id, dispatched_at, pid, started, task_json, origin_sid, result_json = row
-            live_started = get_process_start_time(int(pid)) if pid and _pid_exists(int(pid)) else None
-            if started is not None and live_started is not None and int(live_started) == int(started):
-                continue
+            if pid and _pid_exists(int(pid)):
+                live_started = get_process_start_time(int(pid))
+                # A mismatch proves PID reuse. Missing start identity proves
+                # nothing, so preserve a row whose owner PID is still live.
+                if started is None or live_started is None or int(live_started) == int(started):
+                    continue
             task = json.loads(task_json or "{}")
             error = "Delegation owner exited before recording a terminal result; outcome unknown."
             recovered_results = _recovered_results(task, result_json, error)
@@ -1001,7 +1004,11 @@ def interrupt_all(reason: str = "shutdown") -> int:
 
 
 def finalize_for_oneshot_shutdown(*, grace_seconds: float = 2.0) -> dict[str, int]:
-    """Terminalize live children during bounded graceful one-shot shutdown."""
+    """Signal live children, then terminalize them against one monotonic grace deadline.
+
+    Interrupt callbacks are synchronous; their elapsed time consumes the grace
+    budget. An overrun therefore skips the wait rather than renewing the budget.
+    """
     reason = (
         "One-shot shutdown grace period elapsed before the delegation recorded a "
         "terminal result; outcome unknown."
@@ -1009,6 +1016,7 @@ def finalize_for_oneshot_shutdown(*, grace_seconds: float = 2.0) -> dict[str, in
     with _records_lock:
         targets = [dict(record) for record in _records.values() if record.get("status") in _ACTIVE_STATES]
     target_ids = {str(record["delegation_id"]) for record in targets}
+    deadline = time.monotonic() + max(0.0, float(grace_seconds))
     signaled = _interrupt_records(
         targets,
         "finalize_for_oneshot_shutdown",
@@ -1016,7 +1024,6 @@ def finalize_for_oneshot_shutdown(*, grace_seconds: float = 2.0) -> dict[str, in
         "Interrupted %d async delegation(s) (%s)",
     )
 
-    deadline = time.monotonic() + max(0.0, float(grace_seconds))
     while target_ids:
         with _records_lock:
             live = {

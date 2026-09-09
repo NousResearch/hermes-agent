@@ -10,6 +10,7 @@ from __future__ import annotations
 import enum
 import json
 import logging
+import re
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, Iterator, Optional, Sequence
 
@@ -153,6 +154,13 @@ _PAYLOAD_TOO_LARGE_PATTERNS = (
 _IMAGE_TOO_LARGE_PATTERNS = (
     "image exceeds", "image too large", "image_too_large", "image size exceeds", "image dimensions exceed",
     "dimensions exceed max allowed size", "max allowed size: 8000", "media exceeds", "media too large",
+)
+
+# OpenAI Codex Responses reports image size in 32 px patches rather than
+# pixels/bytes. Keep this shape strict so unrelated patch/token limits do not
+# enter image recovery.
+_IMAGE_PATCH_LIMIT_RE = re.compile(
+    r"\bimage\b.*\brequires\s+\d+\s+patches\b.*\b(?:exceeding\s+the\s+)?limit\s+of\s+\d+\b"
 )
 
 # Undecodable image bytes → strip-and-retry, never shrink. xAI wordings
@@ -712,6 +720,8 @@ def _classify_400(c: _Ctx) -> Verdict:
     verdict = _first_match(msg, _IMAGE_TOOL_RULES)
     if verdict is not None:
         return verdict
+    if _IMAGE_PATCH_LIMIT_RE.search(msg):
+        return _V_IMAGE_TOO_LARGE
     # Invalid encrypted reasoning replay blob (OpenAI Responses); before
     # overflow because "encrypted content … could not be verified" trips it.
     if code == "invalid_encrypted_content" or "invalid_encrypted_content" in msg or (

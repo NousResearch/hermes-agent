@@ -40,6 +40,40 @@ class _FakeApiError(Exception):
 
 
 class TestImageTooLargeClassification:
+    def test_codex_400_patch_limit_message(self):
+        """Codex patch-budget errors must enter image shrink recovery."""
+        message = (
+            "The image you provided requires 33174 patches after processing, "
+            "exceeding the limit of 30000. Please resize the image and try again."
+        )
+        err = _FakeApiError(
+            status_code=400,
+            message=message,
+            body={
+                "error": {
+                    "type": "invalid_request_error",
+                    "code": "invalid_value",
+                    "message": message,
+                },
+            },
+        )
+
+        result = classify_api_error(err, provider="openai-codex", model="gpt-5.6-sol")
+
+        assert result.reason == FailoverReason.image_too_large
+        assert result.retryable is True
+
+    def test_patch_limit_without_image_fails_open(self):
+        """Bare patch-budget wording must not be treated as an image error."""
+        err = _FakeApiError(
+            status_code=400,
+            message="Input requires 33174 patches, exceeding the limit of 30000.",
+        )
+
+        result = classify_api_error(err, provider="openai-codex", model="gpt-5.6-sol")
+
+        assert result.reason != FailoverReason.image_too_large
+
     def test_anthropic_400_image_exceeds_message(self):
         """Anthropic's exact wording must classify as image_too_large, not context."""
         err = _FakeApiError(
@@ -155,6 +189,55 @@ def _make_agent():
 
 
 class TestShrinkImagePartsHelper:
+    def test_codex_patch_limit_derives_dimension_and_shrinks_tall_image(self, monkeypatch):
+        """Patch budget 30000 derives 5504px, shrinking a 6200px side below the old 8000 default."""
+        agent = _make_agent()
+        original_url = _big_png_data_url(100)
+        resized_url = "data:image/png;base64," + "R" * 80 * 1024
+        _install_fake_pillow(monkeypatch, (5444, 6200), shrunk_size=(4830, 5504))
+        seen = {}
+
+        def _fake_resize(path, mime_type=None, max_base64_bytes=None, max_dimension=None):
+            seen["max_dimension"] = max_dimension
+            return resized_url
+
+        monkeypatch.setattr(
+            "tools.vision_tools._resize_image_for_vision",
+            _fake_resize,
+            raising=False,
+        )
+        error = _FakeApiError(
+            status_code=400,
+            message=(
+                "The image you provided requires 33174 patches after processing, "
+                "exceeding the limit of 30000. Please resize the image and try again."
+            ),
+        )
+        max_dimension = _image_error_max_dimension(error)
+        messages = [{
+            "role": "user",
+            "content": [{"type": "image_url", "image_url": {"url": original_url}}],
+        }]
+
+        assert max_dimension == 172 * 32
+        assert agent._try_shrink_image_parts_in_messages(
+            messages, max_dimension=max_dimension,
+        ) is True
+        assert seen["max_dimension"] == 5504
+        assert messages[0]["content"][0]["image_url"]["url"] == resized_url
+
+    def test_patch_limit_dimension_fails_open_for_missing_or_invalid_numbers(self):
+        """Patch-derived dimensions require both a positive requirement and limit."""
+        missing_required = _FakeApiError(
+            400, "The image uses patches, exceeding the limit of 30000."
+        )
+        zero_limit = _FakeApiError(
+            400, "The image requires 33174 patches, exceeding the limit of 0."
+        )
+
+        assert _image_error_max_dimension(missing_required) is None
+        assert _image_error_max_dimension(zero_limit) is None
+
     def test_no_messages_returns_false(self):
         agent = _make_agent()
         assert agent._try_shrink_image_parts_in_messages([]) is False

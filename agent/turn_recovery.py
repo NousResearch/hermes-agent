@@ -10,6 +10,7 @@ mutate ``agent`` / ``messages`` / ``api_messages`` in place. Logger name stays
 from __future__ import annotations
 
 import logging
+import math
 import re
 import time
 from dataclasses import dataclass
@@ -51,7 +52,7 @@ def _blines(agent: Any, *lines: str) -> None:
 
 
 def _image_error_max_dimension(error: Exception) -> Optional[int]:
-    """Extract a provider-reported image dimension ceiling, if present."""
+    """Extract a provider-reported pixel or patch-derived image ceiling."""
     parts = []
     for value in (error, getattr(error, "message", None), getattr(error, "body", None)):
         if value:
@@ -60,16 +61,35 @@ def _image_error_max_dimension(error: Exception) -> Optional[int]:
             except Exception:
                 pass
     text = " ".join(parts).lower()
-    if "image" not in text or "dimension" not in text or "max allowed size" not in text:
+    if "image" not in text:
         return None
-    match = re.search(r"max allowed size(?:\s+for [^:]+)?:\s*(\d{3,5})\s*pixels?", text)
-    if not match:
+
+    if "dimension" in text and "max allowed size" in text:
+        match = re.search(r"max allowed size(?:\s+for [^:]+)?:\s*(\d{3,5})\s*pixels?", text)
+        if match:
+            try:
+                max_dimension = int(match.group(1))
+            except ValueError:
+                return None
+            return max_dimension if 512 <= max_dimension <= 8000 else None
+
+    if "patches" not in text:
+        return None
+    required_match = re.search(r"\brequires\s+(\d+)\s+patches\b", text)
+    limit_match = re.search(r"\b(?:exceeding\s+the\s+)?limit\s+of\s+(\d+)\b", text)
+    if not required_match or not limit_match:
         return None
     try:
-        max_dimension = int(match.group(1))
+        required_patches = int(required_match.group(1))
+        patch_limit = int(limit_match.group(1))
     except ValueError:
         return None
-    return max_dimension if 512 <= max_dimension <= 8000 else None
+    if required_patches <= 0 or patch_limit <= 0:
+        return None
+    # Reserve one 32 px patch row below the square-root ceiling. This keeps the
+    # retry conservatively under provider-side processing/rounding boundaries
+    # (30000 patches -> (isqrt(30000) - 1) * 32 == 5504 px).
+    return max(512, min((math.isqrt(patch_limit) - 1) * 32, 8000))
 
 
 def _try_refresh_nous_paid_entitlement_credentials(agent) -> bool:

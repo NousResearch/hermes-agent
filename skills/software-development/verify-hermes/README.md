@@ -39,9 +39,9 @@ python .cursor/skills/verify-hermes/scripts/verify.py cleanup
 ├── references/
 │   └── feature-map.md         # Map features to CLI/TUI/gateway paths
 └── templates/
-    ├── test-cli-template.py   # CLI test patterns
-    ├── test-tui-template.py   # TUI test patterns
-    └── test-gateway-template.py  # Gateway test patterns
+    ├── test-cli-template.md   # CLI test patterns
+    ├── test-tui-template.md   # TUI test patterns
+    └── test-gateway-template.md  # Gateway test patterns
 ```
 
 ## 5-Phase Workflow
@@ -125,19 +125,19 @@ See `references/feature-map.md` for complete mapping.
 
 Three templates provide starting points for each surface:
 
-1. **test-cli-template.py**
+1. **test-cli-template.md**
    - Slash command tests
    - Agent conversation tests
    - Tool execution tests
    - Config loading tests
 
-2. **test-tui-template.py**
+2. **test-tui-template.md**
    - JSON-RPC method tests
    - Session management tests
    - Streaming event tests
    - React component tests
 
-3. **test-gateway-template.py**
+3. **test-gateway-template.md**
    - Message handler tests
    - Platform adapter tests
    - Multiplex profile tests

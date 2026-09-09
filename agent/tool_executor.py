@@ -108,6 +108,10 @@ _MAX_TOOL_WORKERS = 8  # concurrent worker threads per batch
 _DEFAULT_IMAGE_PARALLEL_REQUESTS = 4
 # Generous: slow-but-valid tool work must never be preempted by the batch guard.
 _DEFAULT_CONCURRENT_TOOL_TIMEOUT_S = 420.0
+# Heartbeat stamps stop after the longest possible tool deadline plus margin (#106244): the gateway
+# watchdog gives a turn 30 idle minutes, so a call abandoned past this bound is wedged beyond
+# saving, and stamping forever pins the session's ``last_activity_at`` at "now" (sidebar sort + age).
+_TOOL_ACTIVITY_HEARTBEAT_MAX_S = 1800.0 + 120.0
 # Long enough for an approval round-trip, short enough that one wedged dispatch can't starve the batch.
 _START_ORDER_GATE_TIMEOUT_S = 120.0
 # Fallback only; the effective bound derives from approvals.timeout (_authorization_gate_lock_timeout).
@@ -567,12 +571,20 @@ def _run_tool_activity_heartbeat(
     stop_event: threading.Event,
     label: str,
     interval: float = _TOOL_ACTIVITY_HEARTBEAT_INTERVAL_S,
+    max_duration: float = _TOOL_ACTIVITY_HEARTBEAT_MAX_S,
 ) -> None:
     """Daemon thread stamping ``agent._touch_activity`` every ``interval`` seconds until
-    ``stop_event`` is set, so the gateway inactivity watchdog never abandons a turn whose
-    tool runs silently. Wedged tools stay bounded by the tool layer's own timeouts."""
+    ``stop_event`` is set or ``max_duration`` elapses, so the gateway inactivity watchdog never
+    abandons a turn whose tool runs silently. The duration bound is the wedge backstop: a tool
+    call abandoned past every tool-layer deadline keeps its worker thread (daemon executors never
+    join it), and an unbounded heartbeat would keep stamping ``last_activity_at`` "now" for days,
+    pinning the session at the top of every recency-sorted surface (#106244). Past the bound the
+    watchdog may eventually reclaim the turn — correct for a call that overstayed every deadline."""
+    started = time.monotonic()
     try:
         while not stop_event.wait(interval):
+            if time.monotonic() - started >= max_duration:
+                break
             agent._touch_activity(label)
     except Exception:
         pass  # a heartbeat must never break the agent loop

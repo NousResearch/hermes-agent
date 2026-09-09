@@ -268,3 +268,41 @@ def test_concurrent_tool_call_heartbeat(monkeypatch):
     agent._execute_tool_calls_concurrent(msg, messages, "task")
 
     assert len(touches) >= 3, f"expected mid-call heartbeats, got {len(touches)}"
+
+
+def test_heartbeat_stops_after_max_duration(monkeypatch):
+    """A wedged tool call must not keep stamping last_activity_at forever (#106244).
+
+    The sequential runner abandons a wedged worker without joining it (daemon executor), so
+    the worker thread — and its heartbeat — can outlive the turn by days. Past
+    ``_TOOL_ACTIVITY_HEARTBEAT_MAX_S`` the heartbeat must stop: the gateway watchdog reclaims
+    an idle turn, and the session's age label returns to real time.
+
+    Red on base: the loop had no duration bound, so touches continued past the window.
+    """
+    import agent.tool_executor as te
+
+    touches: list = []
+    stop = threading.Event()
+
+    class _Agent:
+        def _touch_activity(self, desc):
+            touches.append(time.time())
+
+    thread = threading.Thread(
+        target=te._run_tool_activity_heartbeat,
+        args=(_Agent(), stop, "tool running: browser_exec"),
+        kwargs={"interval": 0.02, "max_duration": 0.1},
+        daemon=True,
+    )
+    thread.start()
+    time.sleep(0.4)
+    n = len(touches)
+    assert n >= 2, f"expected periodic touches before the bound, got {n}"
+    time.sleep(0.2)
+    assert len(touches) == n, (
+        f"heartbeat kept stamping past max_duration: {n} -> {len(touches)}"
+    )
+    stop.set()
+    thread.join(timeout=1.0)
+    assert not thread.is_alive()

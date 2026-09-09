@@ -248,6 +248,10 @@ def _real_profile_cdp() -> tuple:
     from hermes_cli.browser_connect import (chromium_executable, detect_default_chromium,
                                             real_profile_copy_dir, snapshot_real_profile)
 
+    # The lock guards cache reads/publishes ONLY — never the snapshot or launch: those run
+    # minutes-scale with no bound that covers a wedged file op, and holding the lock across
+    # them queued every other browser_exec in every session behind one slow/wedged copy, each
+    # still running its own activity heartbeat — sessions pinned at "now" for days (#106244).
     with _bt._real_profile_cdp_lock:
         cached = _bt._real_profile_cdp_cache.get("cdp")
         if cached and _cdp_http_ready(cached):
@@ -257,33 +261,66 @@ def _real_profile_cdp() -> tuple:
             return cached, None
         _bt._real_profile_cdp_cache.pop("cdp", None)
 
-        browser = detect_default_chromium()
-        unsupported = _real_profile_unsupported_reason(browser)
-        if unsupported:
-            return None, unsupported
+    browser = detect_default_chromium()
+    unsupported = _real_profile_unsupported_reason(browser)
+    if unsupported:
+        return None, unsupported
+    if browser is None:
+        return None, _RP + "no default Chromium-family browser could be detected. Install Chrome (or set browser.engine), or turn the toggle off."
 
-        # Reuse BEFORE writing anything. CRITICAL: the snapshot overlay (truncates/rewrites
-        # Cookies / Login Data) must NOT run while a live copy-browser (maybe from a previous
-        # hermes process) holds the user-data-dir open — that corrupts the databases.
-        copy_dir = real_profile_copy_dir(browser)
-        existing = _agent_browser_get_cdp(_bt._REAL_PROFILE_SESSION)
-        if existing and _cdp_http_ready(existing) and _cdp_on_data_dir(existing, copy_dir):
+    # Reuse BEFORE writing anything. CRITICAL: the snapshot overlay (truncates/rewrites
+    # Cookies / Login Data) must NOT run while a live copy-browser (maybe from a previous
+    # hermes process) holds the user-data-dir open — that corrupts the databases.
+    copy_dir = real_profile_copy_dir(browser)
+    existing = _agent_browser_get_cdp(_bt._REAL_PROFILE_SESSION)
+    if existing and _cdp_http_ready(existing) and _cdp_on_data_dir(existing, copy_dir):
+        with _bt._real_profile_cdp_lock:
             _bt._real_profile_cdp_cache["cdp"] = existing
-            return existing, None
-        if existing:  # stale/wrong-dir session: close it so nothing holds the dir open
-            _agent_browser_close_session(_bt._REAL_PROFILE_SESSION)
-        # A Chrome from an earlier hermes process can still hold the copy dir after its attach
-        # daemon was reaped (that owner died). Re-attach to it rather than overlay a live profile;
-        # if the daemon cannot attach, fail closed — never snapshot over an open profile. Not ours
-        # to terminate (no Popen handle): it lives until the user closes it, by design.
-        surviving = _surviving_chrome_cdp(copy_dir)
-        if surviving:
-            cdp, err = _attach_agent_browser_to_real_profile(int(surviving.rsplit(":", 1)[1]), copy_dir)
-            if not cdp:
-                return None, err
+        return existing, None
+    if existing:  # stale/wrong-dir session: close it so nothing holds the dir open
+        _agent_browser_close_session(_bt._REAL_PROFILE_SESSION)
+    # A Chrome from an earlier hermes process can still hold the copy dir after its attach
+    # daemon was reaped (that owner died). Re-attach to it rather than overlay a live profile;
+    # if the daemon cannot attach, fail closed — never snapshot over an open profile. Not ours
+    # to terminate (no Popen handle): it lives until the user closes it, by design.
+    surviving = _surviving_chrome_cdp(copy_dir)
+    if surviving:
+        cdp, err = _attach_agent_browser_to_real_profile(int(surviving.rsplit(":", 1)[1]), copy_dir)
+        if not cdp:
+            return None, err
+        with _bt._real_profile_cdp_lock:
             _bt._real_profile_cdp_cache["cdp"] = cdp
-            _bt.logger.info("real-profile: re-attached to surviving Chrome at %s (%s)", cdp, copy_dir)
-            return cdp, None
+        _bt.logger.info("real-profile: re-attached to surviving Chrome at %s (%s)", cdp, copy_dir)
+        return cdp, None
+
+    # Two calls can pass the cache check together; only one may snapshot+launch, or two racing
+    # callers would overlay the SAME copy dir concurrently (corrupts the profile) and
+    # double-launch Chrome. The loser polls the cache — the winner publishes there — with a
+    # bound: the full path completes in minutes, so a waiter past it means the holder wedged
+    # and this caller fails instead of parking its turn (and heartbeat) forever (#106244).
+    acquired_now = _bt._real_profile_launch_lock.acquire(blocking=False)
+    if not acquired_now:
+        for _ in range(_REAL_PROFILE_LAUNCH_WAIT_POLLS):
+            time.sleep(_REAL_PROFILE_LAUNCH_WAIT_POLL_S)
+            with _bt._real_profile_cdp_lock:
+                cached = _bt._real_profile_cdp_cache.get("cdp")
+                if cached and _cdp_http_ready(cached):
+                    return cached, None
+            # The holder finished without publishing (error path) or died: take over the
+            # launch instead of waiting out the full bound for nothing.
+            if _bt._real_profile_launch_lock.acquire(blocking=False):
+                acquired_now = True
+                break
+        if not acquired_now:
+            return None, (_RP + "another call is already starting the real-profile browser and has "
+                          "not finished in time. Retry.")
+    try:
+        # Re-check the cache under the launch lock: the previous holder may have published
+        # between our cache check and this acquire.
+        with _bt._real_profile_cdp_lock:
+            cached = _bt._real_profile_cdp_cache.get("cdp")
+            if cached and _cdp_http_ready(cached):
+                return cached, None
 
         copy_dir, err = snapshot_real_profile(browser)
         if err or not copy_dir:
@@ -297,6 +334,13 @@ def _real_profile_cdp() -> tuple:
         cdp, err = _attach_agent_browser_to_real_profile(port, copy_dir)
         if not cdp:
             return None, err
-        _bt._real_profile_cdp_cache["cdp"] = cdp
+        with _bt._real_profile_cdp_lock:
+            _bt._real_profile_cdp_cache["cdp"] = cdp
         _bt.logger.info("real-profile browser ready for %s at %s (%s)", browser, cdp, copy_dir)
         return cdp, None
+    finally:
+        _bt._real_profile_launch_lock.release()
+
+
+_REAL_PROFILE_LAUNCH_WAIT_POLL_S = 1.0
+_REAL_PROFILE_LAUNCH_WAIT_POLLS = 900  # 15 min: snapshot + cold Chrome launch + attach, with margin

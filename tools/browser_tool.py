@@ -232,6 +232,7 @@ from tools import browser_tool_lightpanda_fallback as _lp
 # instead of each launching a rival Chromium on the same copied user-data-dir.
 _REAL_PROFILE_SESSION = "hermes-real-profile"
 _real_profile_cdp_lock = threading.Lock()
+_real_profile_launch_lock = threading.Lock()  # one snapshot+launch at a time; losers poll the cache (#106244)
 _real_profile_cdp_cache: dict = {}
 _real_profile_chrome_procs: list = []  # Popen handles of directly-launched real browsers
 

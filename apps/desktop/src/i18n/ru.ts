@@ -1174,6 +1174,11 @@ export const ru = defineLocale({
       },
       cloudRefresh: 'Обновить',
       cloudConnect: 'Подключиться',
+      cloudSavedTitle: 'Сохранённые облачные шлюзы',
+      cloudSavedDesc:
+        'Используйте сохранённый шлюз без изменения шлюза по умолчанию. Войдите ниже, чтобы добавить экземпляры. Имена и вход — в списке сохранённых подключений.',
+      cloudUseSaved: 'Использовать шлюз',
+      cloudActive: 'Активен в этом окне',
       cloudConnecting: 'Подключение…',
       cloudDiscoverFailed: 'Не удалось загрузить агентов Hermes Cloud',
       cloudConnectFailed: 'Не удалось подключиться к этому агенту',
@@ -1699,6 +1704,10 @@ export const ru = defineLocale({
     resetToMine: 'Вернуться к моей карте'
   },
   agents: {
+    extendedTranscript: 'Подробный журнал',
+    transcriptTruncated: 'Последние 16 КиБ',
+    transcriptUnavailable: 'Текущий журнал недоступен',
+
     close: 'Закрыть агентов',
     title: 'Дерево запусков',
     subtitle: 'Активные субагенты текущего хода в реальном времени.',
@@ -1710,6 +1719,14 @@ export const ru = defineLocale({
     streaming: 'Стримится',
     files: 'Файлы',
     moreFiles: count => `+ещё ${count} ${RU_NOUN(count, 'файл', 'файла', 'файлов')}`,
+    moreAgents: count => `Ещё ${count} агентов`,
+    queued: 'В очереди',
+    waitingActivity: 'Ожидание активности',
+    steer: 'Направить',
+    steerPlaceholder: 'Инструкции этому субагенту',
+    steerQueued: 'В очереди до следующей контрольной точки',
+    stopRequested: 'Запрошена остановка',
+    requestRejected: 'Субагент не принял запрос',
     delegation: index => `Делегирование ${index}`,
     workers: count => `${count} ${RU_NOUN(count, 'воркер', 'воркера', 'воркеров')}`,
     workersActive: count => `${count} ${RU_NOUN(count, 'активен', 'активно', 'активных')}`,
@@ -2234,9 +2251,9 @@ export const ru = defineLocale({
     title: 'Запланированные задачи',
     count: count => `${count} ${RU_PLURAL(count, 'задача', 'задачи', 'задач')}`,
     modelImpact: {
-      title: 'Запланированные задачи требуют проверки',
+      title: 'Запланированные задачи остаются на исходной модели',
       message: count =>
-        `Будет пропущено ${count} ${RU_NOUN(count, 'задача', 'задачи', 'задач')} до тех пор, пока вы не проверите их настройки модели.`,
+        `${count} незакреплённых запланированных задач продолжат работать на модели, с которой были созданы. Закрепите их или задайте cron.model, чтобы перевести.`,
       detailMore: (names, remaining) => `${names} и ещё ${remaining}`,
       review: 'Проверить запланированные задачи',
       saveFailed: 'Hermes не сохранил это изменение модели.'
@@ -2427,13 +2444,23 @@ export const ru = defineLocale({
     missingBody: 'Этот артефакт больше нет в локальном реестре.'
   },
   sidebar: {
+    gatewayGroups: {
+      grouping: 'Шлюз и профиль',
+      rename: 'Переименовать группу',
+      aliasLabel: 'Отображаемое имя',
+      aliasHint: 'Меняется только отображаемое имя; имена шлюза и профиля остаются прежними.',
+      resetName: 'Сбросить имя',
+      moveUp: 'Переместить вверх',
+      moveDown: 'Переместить вниз',
+      reorder: 'Изменить порядок групп',
+      actions: 'Действия с группой'
+    },
     nav: {
       'new-session': 'Новый сеанс',
       skills: 'Возможности',
       messaging: 'Сообщения',
       artifacts: 'Артефакты',
-      cron: 'Запланированные задачи',
-      'session-import': 'Импортировать сессию'
+      cron: 'Запланированные задачи'
     },
     searchAria: 'Поиск сеансов',
     searchPlaceholder: 'Поиск сеансов…',
@@ -2453,6 +2480,7 @@ export const ru = defineLocale({
     shiftClickHint: 'Shift-клик по чату, чтобы закрепить',
     noWorkspace: 'Без рабочего пространства',
     projectEmpty: 'Сеансов пока нет',
+    projectLoadFailed: 'Не удалось загрузить сеансы',
     noSessions: 'Сеансов пока нет',
     noFilterMatches: 'Нет сеансов по этим фильтрам',
     projects: {

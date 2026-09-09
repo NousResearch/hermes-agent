@@ -1250,9 +1250,8 @@ class TestRunJobConfigEnvVarExpansion:
 
         def resolve_runtime(**kwargs):
             requested.append(kwargs.get("requested"))
-            if kwargs.get("requested") in (None, "openai-codex"):
-                # Cron must retain the configured primary provider for drift
-                # comparison even when older/custom AuthError sites omit it.
+            if kwargs.get("requested") == "openai-codex":
+                # The unpinned job's provider_snapshot is its effective pin.
                 raise AuthError("No Codex credentials stored")
             assert kwargs["requested"] == "openrouter"
             assert kwargs["target_model"] == "z-ai/glm-5.2"
@@ -1274,7 +1273,7 @@ class TestRunJobConfigEnvVarExpansion:
 
         assert success is True
         assert error is None
-        assert requested == [None, "openrouter"]
+        assert requested == ["openai-codex", "openrouter"]
         kwargs = mock_agent_cls.call_args.kwargs
         assert kwargs["provider"] == "openrouter"
         assert kwargs["model"] == "z-ai/glm-5.2"

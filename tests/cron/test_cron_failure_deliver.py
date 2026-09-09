@@ -1,7 +1,7 @@
 """Per-job ``failure_deliver`` routing (NS-788).
 
-A job's FAILURE notices (run failed, escaped scheduler exception, drift-skip /
-blocked-config alerts) resolve their delivery targets from ``failure_deliver``
+A job's FAILURE notices (run failed, escaped scheduler exception, blocked-config
+alerts) resolve their delivery targets from ``failure_deliver``
 when the job sets it, falling back to ``deliver`` when unset — so existing
 jobs behave byte-identically. ``failure_deliver: local`` is structural silence
 for failures: nothing is sent, but state (last_status, run history, output

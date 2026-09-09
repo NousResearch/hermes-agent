@@ -913,6 +913,8 @@ test('spawnRemoteDashboard always spawns serve (legacy dashboard path removed)',
 test('READY_RE accepts both serve and dashboard sentinels', () => {
   assert.equal(READY_RE.exec('HERMES_BACKEND_READY port=4321')?.[1], '4321')
   assert.equal(READY_RE.exec('HERMES_DASHBOARD_READY port=8765')?.[1], '8765')
+  // The remote log is `>> log 2>&1`, so a stderr chunk without a newline can be spliced onto the sentinel.
+  assert.equal(READY_RE.exec('INFO  Started server process [4711]HERMES_BACKEND_READY port=65238')?.[1], '65238')
 })
 
 test('spawnRemoteDashboard rejects when no pid is returned', async () => {

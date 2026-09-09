@@ -449,6 +449,9 @@ export interface Translations {
         sources: Record<string, string>
       }
       installModal: {
+        installFromGit: string
+        reviewRepository: string
+        repoPlaceholder: string
         title: string
         description: string
         repoLabel: string
@@ -825,6 +828,10 @@ export interface Translations {
       cloudNoAgents: { before: string; linkText: string; after: string }
       cloudRefresh: string
       cloudConnect: string
+      cloudSavedTitle: string
+      cloudSavedDesc: string
+      cloudUseSaved: string
+      cloudActive: string
       cloudConnecting: string
       cloudDiscoverFailed: string
       cloudConnectFailed: string
@@ -1432,6 +1439,9 @@ export interface Translations {
     resetToMine: string
   }
   agents: {
+    extendedTranscript: string
+    transcriptTruncated: string
+    transcriptUnavailable: string
     close: string
     title: string
     subtitle: string
@@ -1443,6 +1453,14 @@ export interface Translations {
     streaming: string
     files: string
     moreFiles: (count: number) => string
+    moreAgents: (count: number) => string
+    queued: string
+    waitingActivity: string
+    steer: string
+    steerPlaceholder: string
+    steerQueued: string
+    stopRequested: string
+    requestRejected: string
     delegation: (index: number) => string
     workers: (count: number) => string
     workersActive: (count: number) => string
@@ -2044,6 +2062,17 @@ export interface Translations {
   }
 
   sidebar: {
+    gatewayGroups: {
+      grouping: string
+      rename: string
+      aliasLabel: string
+      aliasHint: string
+      resetName: string
+      moveUp: string
+      moveDown: string
+      reorder: string
+      actions: string
+    }
     nav: Record<string, string>
     searchAria: string
     searchPlaceholder: string
@@ -2063,6 +2092,7 @@ export interface Translations {
     shiftClickHint: string
     noWorkspace: string
     projectEmpty: string
+    projectLoadFailed: string
     noSessions: string
     noFilterMatches: string
     projects: {

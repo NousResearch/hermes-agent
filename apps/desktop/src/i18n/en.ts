@@ -508,6 +508,9 @@ export const en: Translations = {
         sources: { bundled: 'bundled', user: 'user', git: 'git', project: 'project', entrypoint: 'pip' }
       },
       installModal: {
+        installFromGit: 'Install from Git',
+        reviewRepository: 'Review repository',
+        repoPlaceholder: 'https://github.com/owner/repo',
         title: 'Install plugin',
         description: 'Review what this repository contains before installing anything.',
         repoLabel: 'Repository',
@@ -958,6 +961,11 @@ export const en: Translations = {
       },
       cloudRefresh: 'Refresh',
       cloudConnect: 'Connect',
+      cloudSavedTitle: 'Saved Cloud gateways',
+      cloudSavedDesc:
+        'Use a saved gateway without changing your default. Sign in below to add instances. Manage names and sign-in in the saved connections list.',
+      cloudUseSaved: 'Use gateway',
+      cloudActive: 'Active in this window',
       cloudConnecting: 'Connecting…',
       cloudDiscoverFailed: 'Could not load your Hermes Cloud agents',
       cloudConnectFailed: 'Could not connect to that agent',
@@ -1621,6 +1629,10 @@ export const en: Translations = {
     resetToMine: 'Back to my map'
   },
   agents: {
+    extendedTranscript: 'Extended transcript',
+    transcriptTruncated: 'Showing the latest 16 KiB',
+    transcriptUnavailable: 'Live transcript unavailable',
+
     close: 'Close agents',
     title: 'Spawn tree',
     subtitle: 'Live subagent activity for the current turn.',
@@ -1632,6 +1644,14 @@ export const en: Translations = {
     streaming: 'Streaming',
     files: 'Files',
     moreFiles: count => `+${count} more files`,
+    moreAgents: count => `+${count} more agents`,
+    queued: 'Queued',
+    waitingActivity: 'Waiting for activity',
+    steer: 'Steer',
+    steerPlaceholder: 'Instructions for this subagent',
+    steerQueued: 'Queued for the next checkpoint',
+    stopRequested: 'Stop requested',
+    requestRejected: 'The subagent did not accept the request',
     delegation: index => `Delegation ${index}`,
     workers: count => `${count} workers`,
     workersActive: count => `${count} active`,
@@ -2193,9 +2213,9 @@ export const en: Translations = {
     title: 'Scheduled jobs',
     count: count => `${count} ${count === 1 ? 'job' : 'jobs'}`,
     modelImpact: {
-      title: 'Scheduled jobs need review',
+      title: 'Scheduled jobs stay on their original model',
       message: count =>
-        `${count} scheduled ${count === 1 ? 'job' : 'jobs'} will be skipped until you review their model settings.`,
+        `${count} unpinned scheduled ${count === 1 ? 'job keeps' : 'jobs keep'} running on the model ${count === 1 ? 'it was' : 'they were'} created under. Pin ${count === 1 ? 'it' : 'them'} or set cron.model to move ${count === 1 ? 'it' : 'them'}.`,
       detailMore: (names, remaining) => `${names} and ${remaining} more`,
       review: 'Review scheduled jobs',
       saveFailed: 'Hermes did not save that model change.',
@@ -2391,13 +2411,23 @@ export const en: Translations = {
   },
 
   sidebar: {
+    gatewayGroups: {
+      grouping: 'Gateway & profile',
+      rename: 'Rename group',
+      aliasLabel: 'Display name',
+      aliasHint: 'Display name only; gateway and profile names stay unchanged.',
+      resetName: 'Reset name',
+      moveUp: 'Move up',
+      moveDown: 'Move down',
+      reorder: 'Reorder group',
+      actions: 'Group actions'
+    },
     nav: {
       'new-session': 'New session',
       skills: 'Capabilities',
       messaging: 'Messaging',
       artifacts: 'Artifacts',
-      cron: 'Scheduled jobs',
-      'session-import': 'Import session'
+      cron: 'Scheduled jobs'
     },
     searchAria: 'Search sessions',
     searchPlaceholder: 'Search sessions…',
@@ -2417,6 +2447,7 @@ export const en: Translations = {
     shiftClickHint: 'Shift-click a chat to pin',
     noWorkspace: 'No workspace',
     projectEmpty: 'No sessions yet',
+    projectLoadFailed: 'Could not load sessions',
     noSessions: 'No sessions yet',
     noFilterMatches: 'No sessions match these filters',
     projects: {

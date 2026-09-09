@@ -650,7 +650,7 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
             file_size=file_size, file_ends_with_newline=file_ends_with_newline)
 
     def _native_read_enabled(self) -> bool:
-        """Whether ``read_file`` may bypass the shell: only POSIX + ``LocalEnvironment``
+        """Whether ``read_file`` and ``search_files`` may bypass the shell: only POSIX + ``LocalEnvironment``
         (file is on this host, path already native; Windows keeps the shell path since
         file_operations holds Git-Bash-style paths there). ``HERMES_NATIVE_FILE_READ=0``
         turns the fast path off."""

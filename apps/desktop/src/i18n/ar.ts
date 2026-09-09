@@ -1108,6 +1108,10 @@ export const ar = defineLocale({
     failedToUpdate: name => `فشل تحديث ${name}`
   },
   agents: {
+    extendedTranscript: 'سجل موسّع',
+    transcriptTruncated: 'عرض أحدث 16 KiB',
+    transcriptUnavailable: 'السجل المباشر غير متاح',
+
     close: 'إغلاق الوكلاء',
     title: 'شجرة التوليد',
     subtitle: 'نشاط الوكلاء الفرعيين المباشر للدور الحالي.',
@@ -1119,6 +1123,14 @@ export const ar = defineLocale({
     streaming: 'جار البث',
     files: 'الملفات',
     moreFiles: count => `+${count} ملفات إضافية`,
+    moreAgents: count => `${count} وكلاء إضافيون`,
+    queued: 'في قائمة الانتظار',
+    waitingActivity: 'بانتظار النشاط',
+    steer: 'توجيه',
+    steerPlaceholder: 'تعليمات لهذا الوكيل الفرعي',
+    steerQueued: 'في انتظار نقطة التحقق التالية',
+    stopRequested: 'تم طلب الإيقاف',
+    requestRejected: 'لم يقبل الوكيل الفرعي الطلب',
     delegation: index => `التفويض ${index}`,
     workers: count => `${count} عامل`,
     workersActive: count => `${count} نشط`,
@@ -1591,8 +1603,9 @@ export const ar = defineLocale({
   cron: {
     close: 'إغلاق',
     modelImpact: {
-      title: 'تحتاج المهام المجدولة إلى المراجعة',
-      message: count => `سيتم تخطي ${count} من المهام المجدولة حتى تراجع إعدادات النموذج الخاصة بها.`,
+      title: 'تبقى المهام المجدولة على نموذجها الأصلي',
+      message: count =>
+        `${count} من المهام المجدولة غير المثبتة ستواصل العمل على النموذج الذي أُنشئت به. ثبّتها أو اضبط cron.model لنقلها.`,
       detailMore: (names, remaining) => `${names} و${remaining} أخرى`,
       review: 'مراجعة المهام المجدولة',
       saveFailed: 'لم يحفظ Hermes تغيير النموذج هذا.',
@@ -1762,6 +1775,17 @@ export const ar = defineLocale({
     missingBody: 'لم يعد هذا الناتج موجودًا في السجل المحلي.'
   },
   sidebar: {
+    gatewayGroups: {
+      grouping: 'البوابة والملف الشخصي',
+      rename: 'إعادة تسمية المجموعة',
+      aliasLabel: 'اسم العرض',
+      aliasHint: 'يتغير اسم العرض فقط؛ تبقى أسماء البوابة والملف الشخصي دون تغيير.',
+      resetName: 'إعادة تعيين الاسم',
+      moveUp: 'نقل لأعلى',
+      moveDown: 'نقل لأسفل',
+      reorder: 'إعادة ترتيب المجموعة',
+      actions: 'إجراءات المجموعة'
+    },
     nav: {
       'new-session': 'جلسة جديدة',
       skills: 'المهارات',
@@ -1770,8 +1794,7 @@ export const ar = defineLocale({
       chat: 'المحادثة',
       settings: 'الإعدادات',
       cron: 'المهام المجدولة',
-      agents: 'الوكلاء',
-      'session-import': 'استيراد جلسة'
+      agents: 'الوكلاء'
     },
     searchAria: 'البحث في الجلسات',
     searchPlaceholder: 'البحث في الجلسات...',
@@ -1791,6 +1814,7 @@ export const ar = defineLocale({
     shiftClickHint: 'استخدم Shift للتحديد المتعدد',
     noWorkspace: 'بدون مساحة عمل',
     projectEmpty: 'لا توجد جلسات بعد',
+    projectLoadFailed: 'تعذر تحميل الجلسات',
     noSessions: 'لا توجد جلسات بعد',
     noFilterMatches: 'لا توجد جلسات تطابق عوامل التصفية هذه',
     projects: {

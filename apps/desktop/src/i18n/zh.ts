@@ -495,6 +495,9 @@ export const zh: Translations = {
         sources: { bundled: '内置', user: '用户', git: 'git', project: '项目', entrypoint: 'pip' }
       },
       installModal: {
+        installFromGit: '从 Git 安装',
+        reviewRepository: '检查仓库',
+        repoPlaceholder: 'https://github.com/owner/repo',
         title: '安装插件',
         description: '在安装前查看此仓库包含哪些组件。',
         repoLabel: '仓库',
@@ -1153,6 +1156,10 @@ export const zh: Translations = {
       },
       cloudRefresh: '刷新',
       cloudConnect: '连接',
+      cloudSavedTitle: '已保存的云网关',
+      cloudSavedDesc: '使用已保存的网关，不更改默认网关。在下方登录以添加实例。在已保存的连接列表中管理名称和登录。',
+      cloudUseSaved: '使用网关',
+      cloudActive: '当前窗口正在使用',
       cloudConnecting: '正在连接…',
       cloudDiscoverFailed: '无法加载你的 Hermes Cloud 智能体',
       cloudConnectFailed: '无法连接到该智能体',
@@ -1793,6 +1800,10 @@ export const zh: Translations = {
     resetToMine: '返回我的图谱'
   },
   agents: {
+    extendedTranscript: '扩展记录',
+    transcriptTruncated: '显示最新 16 KiB',
+    transcriptUnavailable: '实时记录不可用',
+
     close: '关闭代理',
     title: '派生树',
     subtitle: '当前回合的子代理实时活动。',
@@ -1804,6 +1815,14 @@ export const zh: Translations = {
     streaming: '流式传输',
     files: '文件',
     moreFiles: count => `还有 ${count} 个文件`,
+    moreAgents: count => `还有 ${count} 个子代理`,
+    queued: '排队中',
+    waitingActivity: '等待活动',
+    steer: '引导',
+    steerPlaceholder: '此子代理的指令',
+    steerQueued: '已排队，等待下一个检查点',
+    stopRequested: '已请求停止',
+    requestRejected: '子代理未接受请求',
     delegation: index => `派发 ${index}`,
     workers: count => `${count} 个工作单元`,
     workersActive: count => `${count} 个活跃`,
@@ -2360,8 +2379,8 @@ export const zh: Translations = {
     title: '定时任务',
     count: count => `${count} 个任务`,
     modelImpact: {
-      title: '定时任务需要检查',
-      message: count => `在您检查模型设置之前，${count} 个定时任务将被跳过。`,
+      title: '定时任务将继续使用原模型',
+      message: count => `${count} 个未固定的定时任务将继续使用创建时的模型运行。固定它们或设置 cron.model 以迁移。`,
       detailMore: (names, remaining) => `${names}，以及另外 ${remaining} 个`,
       review: '检查定时任务',
       saveFailed: 'Hermes 未保存该模型更改。',
@@ -2557,13 +2576,23 @@ export const zh: Translations = {
   },
 
   sidebar: {
+    gatewayGroups: {
+      grouping: '网关与配置',
+      rename: '重命名分组',
+      aliasLabel: '显示名称',
+      aliasHint: '仅更改显示名称；网关和配置档名称保持不变。',
+      resetName: '重置名称',
+      moveUp: '上移',
+      moveDown: '下移',
+      reorder: '调整分组顺序',
+      actions: '分组操作'
+    },
     nav: {
       'new-session': '新建会话',
       skills: '技能与工具',
       messaging: '消息平台',
       artifacts: '产物',
-      cron: '定时任务',
-      'session-import': '导入会话'
+      cron: '定时任务'
     },
     searchAria: '搜索会话',
     searchPlaceholder: '搜索会话…',
@@ -2583,6 +2612,7 @@ export const zh: Translations = {
     shiftClickHint: 'Shift+ 单击对话以置顶 · 拖动以重新排序',
     noWorkspace: '无工作区',
     projectEmpty: '暂无会话',
+    projectLoadFailed: '会话加载失败',
     noSessions: '暂无会话',
     noFilterMatches: '没有会话符合这些筛选条件',
     projects: {

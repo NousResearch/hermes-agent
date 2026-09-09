@@ -85,6 +85,10 @@ function DropdownMenuSearch({
             event.stopPropagation()
           }
         }}
+        // Search fields here filter ids, slugs, and model names — dictionary
+        // squiggles under them are noise (matching the composer/settings
+        // inputs, which already disable spellcheck).
+        spellCheck={false}
         type="text"
         {...props}
       />

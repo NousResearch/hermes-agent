@@ -206,6 +206,32 @@ def named_profile_home(path: str | Path) -> Path | None:
     return None
 
 
+def profile_name_for_home(path: str | Path | None) -> str | None:
+    """Return the canonical profile id owning *path*, or ``None`` when it is not a profile home.
+
+    The default home is the Hermes root itself, so its basename is an installation detail (``.hermes``
+    on POSIX and commonly ``hermes`` on Windows), not the profile id ``default``.
+    """
+    if path is None or not str(path).strip():
+        return None
+    current = Path(path).expanduser()
+    try:
+        default_root = get_default_hermes_root()
+        for candidate in (current, current.resolve(strict=False)):
+            if candidate == default_root or candidate == default_root.resolve(strict=False):
+                return "default"
+            named = named_profile_home(candidate)
+            if named is not None:
+                return named.name
+            # A stored profile home is authoritative: its owner already resolved it, so the
+            # <root>/profiles/<name> shape names the profile even when <root> carries no markers.
+            if candidate.parent.name == "profiles" and not candidate.name.startswith("."):
+                return candidate.name
+    except (OSError, RuntimeError, ValueError):
+        return None
+    return None
+
+
 def profile_tombstone_path(profile_home: Path) -> Path:
     return profile_home.parent / _DELETED_PROFILES_DIR / profile_home.name
 
@@ -1042,12 +1068,16 @@ def is_container() -> bool:
     return _container_detected
 
 
-def _proc_file_has_marker(path: str, markers: tuple[str, ...]) -> bool:
+def _read_proc(path: str) -> str:
     try:
         with open(path, "r", encoding="utf-8") as f:
-            content = f.read()
+            return f.read()
     except OSError:
-        return False
+        return ""
+
+
+def _proc_file_has_marker(path: str, markers: tuple[str, ...]) -> bool:
+    content = _read_proc(path)
     return any(marker in content for marker in markers)
 
 
@@ -1059,8 +1089,17 @@ def _detect_container() -> bool:
         or _proc_file_has_marker("/proc/1/cgroup", ("docker", "podman", "/lxc/", "kubepods", "containerd", "crio"))
     ):
         return True
-    # cgroup v2: /proc/1/cgroup is just "0::/"; the runtime still shows in mountinfo.
-    return _proc_file_has_marker("/proc/self/mountinfo", ("kubepods", "containerd", "crio"))
+    # cgroup v2: /proc/1/cgroup is just "0::/"; the runtime still shows in mountinfo — but ONLY on
+    # the root ("/") mount line. A host that merely *runs* containers exposes every container's
+    # overlay lowerdir (``lowerdir=/var/lib/containerd/...``) at non-root mount points, which a
+    # whole-file scan misread as "inside a container" and flipped subprocess HOME (#58135).
+    return _root_mount_has_marker("/proc/self/mountinfo", ("kubepods", "containerd", "crio"))
+
+
+def _root_mount_has_marker(path: str, markers: tuple[str, ...]) -> bool:
+    """mountinfo field 5 (index 4) is the mount point; only the root ("/") line is the process's own rootfs."""
+    root_lines = [line for line in _read_proc(path).splitlines() if len(f := line.split()) >= 5 and f[4] == "/"]
+    return any(marker in line for line in root_lines for marker in markers)
 
 
 def get_config_path() -> Path:

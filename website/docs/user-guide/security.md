@@ -187,6 +187,7 @@ approvals:
 - Patterns use the same syntax and matching as `approvals.deny`: case-insensitive fnmatch globs, run over the whole command and over each executable segment, so `cd repo && systemctl --user restart hermes-gateway` and `timeout 30 kubectl --context prod ...` still match.
 - `review: human` (the default, and what a bare string means): the Smart Approvals guardian is **never** consulted, even under `approvals.mode: smart`, and the prompt never offers **Always** — a person sees every match. *Session* approval still works within one conversation. A `command_allowlist` entry cannot silence the rule either.
 - `review: smart`: the rule behaves like a built-in dangerous pattern. Under `approvals.mode: smart` the guardian assesses the command first (the rule's `description` is what it is told the command was flagged for); APPROVE runs it, DENY or ESCALATE reach you. **Always** is offered and persists.
+- The review policy is part of an approval's identity. Tightening a rule from `smart` to `human` takes effect on the next command (the config is live-reloaded) and discards any session or permanent grant taken under `smart` for that pattern — a person is asked again.
 - Unattended contexts (`cron_mode`, `single_query_mode`, `unattended_mode`) treat a match like any dangerous command: `deny` blocks it, `approve` lets it run.
 - Unknown `review` values fall back to `human` with a warning. Malformed entries are skipped.
 

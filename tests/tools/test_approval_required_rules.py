@@ -259,6 +259,42 @@ class TestSmartReview:
         assert check_all_command_guards(KUBECTL, "local")["approved"] is True
         assert seen == [True], "[a]lways stays available for review: smart"
 
+    def test_smart_session_grant_does_not_survive_tightening_to_human(self, approvals_config, isolated_state, cli,
+                                                                      monkeypatch, guardian):
+        """A session grant taken under ``review: smart`` must not satisfy the same pattern after the live
+        config tightens it to ``review: human``: the stricter policy asks a person again."""
+        approvals_config([KUBECTL_RULE], mode="smart")
+        guardian.verdict("escalate")
+        seen = _prompt(monkeypatch, "session", "deny")
+        assert check_all_command_guards(KUBECTL, "local")["approved"] is True
+        assert check_all_command_guards(KUBECTL, "local")["approved"] is True, "same policy: grant holds"
+        approvals_config([{**KUBECTL_RULE, "review": "human"}], mode="smart")
+        guardian.verdict("approve")
+        assert check_all_command_guards(KUBECTL, "local")["approved"] is False
+        assert seen == [True, False], "the human policy prompted again, without [a]lways"
+        assert guardian[-1][0] == KUBECTL and len(guardian) == 1, "the guardian never sees a review: human rule"
+
+    def test_smart_session_grant_does_not_survive_tightening_on_gateway(self, approvals_config, isolated_state,
+                                                                        monkeypatch, guardian):
+        approvals_config([KUBECTL_RULE], mode="smart")
+        monkeypatch.setenv("HERMES_GATEWAY_SESSION", "1")
+        guardian.verdict("escalate")
+        answers = iter(["session", "deny"])
+        notified = []
+
+        def notify(data):
+            notified.append(data)
+            approval_module.resolve_gateway_approval(isolated_state, next(answers))
+
+        approval_module.register_gateway_notify(isolated_state, notify)
+        try:
+            assert check_all_command_guards(KUBECTL, "local")["approved"] is True
+            approvals_config([{**KUBECTL_RULE, "review": "human"}], mode="smart")
+            assert check_all_command_guards(KUBECTL, "local")["approved"] is False
+        finally:
+            approval_module.unregister_gateway_notify(isolated_state)
+        assert [n["allow_permanent"] for n in notified] == [True, False]
+
     def test_guardian_deny_lets_owner_override_once_only(self, approvals_config, isolated_state, cli, monkeypatch,
                                                          guardian):
         approvals_config([KUBECTL_RULE], mode="smart")

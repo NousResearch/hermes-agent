@@ -1428,6 +1428,14 @@ def _live_system_guard(request, monkeypatch):
         "daemon-reload", "try-restart", "reload-or-restart",
     )
     _PROCESS_KILLERS = ("pkill", "killall", "taskkill", "skill", "fuser")
+    _CONTAINER_RUNTIMES = ("docker", "podman", "nerdctl")
+
+    def _first_token_basename(cmd_str: str) -> str:
+        try:
+            tokens = _shlex.split(cmd_str)
+        except ValueError:
+            tokens = cmd_str.split()
+        return tokens[0].rsplit("/", 1)[-1].lower() if tokens else ""
     # Shell/launcher executables whose arguments are themselves commands —
     # argv[0]-only scanning must not exempt what they wrap.
     _WRAPPER_COMMANDS = (
@@ -1563,7 +1571,14 @@ def _live_system_guard(request, monkeypatch):
         # sibling refactor moved the spawn seam and left tests patching the
         # facade. The canonical matcher, never an argv substring.
         from gateway.status import _gateway_command_subcommand
-        if not lookalike_ok and _gateway_command_subcommand(cmd_str) in ("run", "start", "restart"):
+        # A gateway launched INSIDE a container (`docker exec … hermes gateway start`) cannot
+        # reach the host's systemd unit or webhook port; tests/docker/ exists to exercise it.
+        in_container = _first_token_basename(cmd_str) in _CONTAINER_RUNTIMES
+        if (
+            not lookalike_ok
+            and not in_container
+            and _gateway_command_subcommand(cmd_str) in ("run", "start", "restart")
+        ):
             raise RuntimeError(
                 f"tests/conftest.py live-system guard: blocked "
                 f"subprocess.{name}({cmd!r}) — this would spawn a REAL "

@@ -11,17 +11,19 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 from tools.registry import registry
+from hermes_wisdom.setup_execution import SetupStep
 
 
 class Target(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True)
+    model_config = ConfigDict(extra="forbid", strict=True, hide_input_in_errors=True)
     kind: Literal["candidate", "skill", "installed"]
     identity: str = Field(min_length=1, max_length=128)
     version: int | None = Field(default=None, ge=1)
 
 
 class Presentation(Target):
-    kind: Literal["candidate", "skill"]
+    kind: Literal["candidate", "skill", "setup"]
+    step: SetupStep | None = None
     title: str = Field(min_length=1, max_length=120)
     explanation: str = Field(min_length=1, max_length=600)
 
@@ -35,6 +37,13 @@ def available() -> bool:
 
 
 def _reference(service, target: Target) -> dict:
+    if isinstance(target, Presentation) and target.kind == "setup":
+        if target.version is None or target.step is None:
+            raise ValueError("setup requires the exact installed version and proposed step")
+        return {"kind": "setup", "skill_id": target.identity, "version": target.version,
+                "step": target.step.model_dump()}
+    if isinstance(target, Presentation) and target.step is not None:
+        raise ValueError("steps are only supported for installed setup consent")
     if target.kind == "candidate":
         event = service._candidate_event(target.identity)
         if event.get("organization_id") != service.store.active_org_id():
@@ -219,6 +228,8 @@ registry.register(
         "description": (
             "Queue native, exact-package Wisdom consent in the current private conversation. "
             "Explain relevance; backend supplies warnings and controls. Never installs or publishes. "
+            "Use kind=setup with an exact installed version and step to propose prerequisite acknowledgement, "
+            "a setup command, or verification; no command runs until native approval. Never include secrets. "
             "Read delivery.state: queued is not yet displayed; do not claim the card opened. "
             "Users must click the control or use the deterministic local CLI confirmation."
         ),

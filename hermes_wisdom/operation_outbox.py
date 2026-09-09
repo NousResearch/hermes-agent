@@ -61,6 +61,8 @@ def _delivery(db, value):
 
 def stage(db, value, state, result, now):
     """Commit with native consent completion. No auth/network or nested transaction."""
+    if value["operation"] == "setup":
+        return False  # Local setup commands and acknowledgements never leave this profile.
     delivery = _delivery(db, value)
     if delivery is None or delivery["outcome"] == "not_sent":
         return False  # Manual/fixed-mode actions do not manufacture delivery evidence.

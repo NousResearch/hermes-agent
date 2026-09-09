@@ -396,7 +396,7 @@ class WisdomMediation:
                         "SELECT operation FROM wisdom_consent WHERE id=? AND organization_id=?",
                         (job["event_key"].removeprefix("outcome:"), org),
                     ).fetchone()
-                if outcome is None or outcome["operation"] in {"install", "update"}:
+                if outcome is None or outcome["operation"] in {"install", "update", "setup"}:
                     self.queue.retire(org, job)
                     continue
             if reference["kind"] == "skill" or notification.get("category") in {"installed", "updated"}:

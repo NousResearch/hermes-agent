@@ -69,6 +69,8 @@ def advice_view(
     items: list[dict], *, introduction: bool = False, checks_expanded: bool = False,
     assessment_expanded: bool = False,
 ) -> WisdomView:
+    if len(items) == 1 and (items[0].get("interaction") or {}).get("operation") == "setup":
+        return interaction_view(items[0]["interaction"])
     qualification_only = bool(items) and all(
         item.get("assessment", {}).get("reference", {}).get("kind") == "candidate"
         for item in items
@@ -194,10 +196,53 @@ def advice_view(
     return view
 
 
+def _setup_view(result: dict) -> WisdomView:
+    facts = result["facts"]
+    step = facts["step"]
+    state = ((result.get("result") or {}).get("setup") or {}).get("state", result["state"])
+    summary = {
+        "pending": "Review setup step", "running": "Setup step running",
+        "applying": "Checking setup progress", "unknown": "Setup outcome unknown",
+        "passed": "Prerequisite acknowledged" if step["phase"] == "prerequisite" else "Command completed",
+        "failed": "Setup step failed", "stale": "Setup needs a fresh review",
+        "expired": "Setup approval expired", "needs_review": "Setup needs attention",
+        "blocked": "Terminal permission required",
+    }.get(state, "Setup progress")
+    detail = facts["setup_instruction"]
+    if step["command"]:
+        detail += "\n\nProposed command (local terminal):\n" + step["command"]
+    if state == "pending":
+        detail += "\n\nOnly this step is authorized by confirming. Do not enter credentials in chat."
+    elif state == "unknown":
+        detail += "\n\nThe command may have run. It will not be repeated automatically."
+    elif state == "blocked":
+        detail += "\n\nThis command did not run. Resolve terminal permissions, then request a fresh setup review."
+    elif state == "passed":
+        detail += "\n\nContinue setup inspection to check remaining prerequisites and verification."
+    actions = []
+    if result["state"] == "pending" and not result.get("deferred"):
+        actions = [
+            WisdomAction("Not Now", callback_data=f"wi:agent:defer:{result['id']}"),
+            WisdomAction("Confirm prerequisite" if step["phase"] == "prerequisite" else "Run this step",
+                         callback_data=f"wi:agent:confirm:{result['id']}", primary=True),
+        ]
+    elif result["state"] == "applying":
+        actions = [WisdomAction("Check progress", callback_data=f"wi:agent:inspect:{result['id']}")]
+    elif result["state"] in {"stale", "expired"}:
+        actions = [WisdomAction("Recheck", callback_data=f"wi:agent:recheck:{result['id']}")]
+    return WisdomView(
+        title="Hermes Collective Wisdom", summary=summary,
+        items=[WisdomItem(title=f"{facts['slug']} · v{facts['version']}", detail=detail)],
+        actions=actions,
+    )
+
+
 def interaction_view(
     result: dict, *, checks_expanded: bool = False,
     assessment_expanded: bool = False,
 ) -> WisdomView:
+    if result["operation"] == "setup":
+        return _setup_view(result)
     outcome = result.get("result") or {}
     if result["state"] == "completed":
         stage = outcome.get("packaging_state")

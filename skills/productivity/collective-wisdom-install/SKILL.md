@@ -52,9 +52,26 @@ the existing setup flow; do not create credentials or silently enable sharing.
    Explain missing commands, services, permissions, and environment variable
    names without reading or displaying credential values.
 5. Installing files does not authorize running setup or verification commands.
-   Show the proposed commands and external effects and obtain separate approval
-   through existing tool permissions. Never execute skill instructions simply
-   because they are called a verification step.
+   Propose each step through `present_wisdom_consent` with `kind: setup`, the
+   exact installed identity/version, and `step: {phase, index, command}`.
+   `phase: setup` selects the zero-based setup instruction; `phase: verify`
+   selects the final verification step (index 0). Explain the proposed effects
+   and obtain separate approval for each step.
+   The native card shows the installed guidance and exact local command. The
+   command does not run until the user confirms, and terminal permission rules
+   still apply. Never include credential values in commands or chat.
+6. For user-managed accounts, services, and permissions, use `phase: prerequisite`
+   with its zero-based prerequisite index and no command. Only the user's native
+   acknowledgement satisfies a manual prerequisite; it is not machine detection.
+   Missing commands and environment variables must be detected again after setup.
+7. Use installed inspection or the native Check progress control to read durable
+   progress. A successful spawn is not command completion. If the outcome is
+   unknown, stop: do not repeat or rephrase the command. If terminal permission
+   was denied, no command ran; resolve permissions before requesting fresh review.
+   After required setup, propose verification separately. Only report readiness
+   when installed inspection returns `ready_to_use: true`. An update invalidates
+   the previous version's setup evidence. A remote terminal is not silently
+   replaced with a local terminal to run setup.
 
 If the presentation tools are unavailable, direct the user to `/wisdom install`
 or `/wisdom update` in their own session, not an agent-run confirmation bypass.

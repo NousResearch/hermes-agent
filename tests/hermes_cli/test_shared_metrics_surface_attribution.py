@@ -52,7 +52,7 @@ def test_batch_runs_declare_their_surface():
 
 @pytest.mark.parametrize(
     "platform",
-    ["cli", "tui", "desktop", "batch", "acp", "api_server", "cron", "telegram"],
+    ["cli", "tui", "desktop", "batch", "acp", "api_server", "cron", "telegram", "subagent", "curator"],
 )
 def test_declared_platforms_resolve_to_a_named_surface(platform):
     """No production construction path should resolve to unknown/other.
@@ -65,6 +65,43 @@ def test_declared_platforms_resolve_to_a_named_surface(platform):
         f"platform={platform!r} resolves to {surface!r}; a real surface is being "
         "folded into the catch-all bucket"
     )
+
+
+def test_subagent_forks_get_their_own_surface():
+    """tools/delegate_tool.py builds every subagent child with platform="subagent".
+
+    If that value is not an accepted surface, every subagent delegation task run
+    is folded into "other" instead of being attributable as delegation traffic.
+    """
+    assert contract.execution_surface({"platform": "subagent"}) == "subagent"
+
+
+def test_subagent_forks_are_delegated():
+    """A subagent's task_start_fields must resolve to the "delegated" entrypoint.
+
+    delegate_tool.py always sets parent_session_id on the fork, so task_entrypoint's
+    own parent_session_id check resolves this first in practice -- this pins the
+    _SURFACE_ENTRYPOINTS mapping too, so the classification does not silently depend
+    on that incidental rescue.
+    """
+    fields = contract.task_start_fields({"platform": "subagent", "parent_session_id": "parent-1"})
+    assert fields["entrypoint"] == "delegated"
+    assert fields["execution_surface"] == "subagent"
+    # Without parent_session_id (e.g. a bare/test construction), the mapping in
+    # _SURFACE_ENTRYPOINTS is what carries the classification.
+    assert contract.task_start_fields({"platform": "subagent"})["entrypoint"] == "delegated"
+
+
+def test_curator_forks_get_their_own_surface():
+    """agent/curator.py builds its review fork with platform="curator".
+
+    curator forks carry no parent_session_id (they are not a delegated child of a
+    live turn), so an undeclared surface here folds BOTH execution_surface and
+    entrypoint into "other", losing curator activity from analytics entirely.
+    """
+    fields = contract.task_start_fields({"platform": "curator"})
+    assert fields["execution_surface"] == "curator"
+    assert fields["entrypoint"] == "background"
 
 
 def test_unattributed_runs_still_report_unknown():

@@ -38,8 +38,8 @@ _METRIC_IDENTIFIER_CHARACTERS = frozenset("abcdefghijklmnopqrstuvwxyz0123456789.
 _METRIC_IDENTIFIER_START_CHARACTERS = frozenset("abcdefghijklmnopqrstuvwxyz0123456789")
 
 EXECUTION_SURFACES = frozenset({
-    "acp", "api", "batch", "cli", "desktop", "gateway", "python", "scheduled_task", "tui",
-    "other", "unknown",
+    "acp", "api", "batch", "cli", "curator", "desktop", "gateway", "python", "scheduled_task",
+    "subagent", "tui", "other", "unknown",
 })
 TASK_OUTCOMES = frozenset({"cancelled", "failed", "success", "timed_out", "unknown"})
 TASK_END_REASONS = frozenset({
@@ -425,6 +425,13 @@ _SURFACE_ENTRYPOINTS = {
     **dict.fromkeys(("acp", "cli", "desktop", "tui"), "interactive"),
     **{s: s for s in ("api", "batch", "python", "scheduled_task", "unknown")},
     "gateway": "gateway_message",
+    # A subagent fork always carries parent_session_id, so task_entrypoint's own
+    # parent_session_id check resolves this first in practice -- declared anyway so
+    # the surface->entrypoint mapping does not depend on that incidental rescue.
+    "subagent": "delegated",
+    # The curator fork is autonomous background curation (agent/curator.py), not a
+    # human-driven surface and not delegated from a parent turn.
+    "curator": "background",
 }
 
 

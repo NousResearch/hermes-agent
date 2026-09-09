@@ -764,6 +764,20 @@ class TestClassifyApiError:
 
         assert result.reason == FailoverReason.invalid_encrypted_content
 
+    def test_unrelated_encrypted_payload_error_stays_generic(self):
+        e = MockAPIError(
+            "Error code: 400 - bad request",
+            status_code=400,
+            body={"error": {
+                "code": "bad_request",
+                "message": "Encrypted content in the uploaded document could not be decrypted or parsed.",
+            }},
+        )
+
+        result = classify_api_error(e, provider="custom", model="gpt-5.6-sol-high")
+
+        assert result.reason == FailoverReason.format_error
+
     # ── Codex masked encrypted-reasoning replay rejection (#92353) ──
 
     _CODEX_MASKED = {"message": "Request blocked.", "type": "invalid_request_error", "param": None, "code": "invalid_prompt"}

@@ -80,11 +80,20 @@ export function QuickEntryApp() {
       })
     })
 
+    const offLateResult = api?.onLateResult(payload => {
+      dispatch({
+        message: payload?.result?.message ?? 'Hermes could not deliver the prompt.',
+        ok: payload?.result?.ok === true,
+        type: 'late-result'
+      })
+    })
+
     inputRef.current?.focus()
 
     return () => {
       offShown?.()
       offState?.()
+      offLateResult?.()
     }
   }, [])
 

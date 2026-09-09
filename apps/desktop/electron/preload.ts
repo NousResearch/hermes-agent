@@ -258,6 +258,15 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
       ipcRenderer.on('hermes:quick-entry:shown', listener)
 
       return () => ipcRenderer.removeListener('hermes:quick-entry:shown', listener)
+    },
+    // Main → quick window: the outcome of a submit whose relay already timed
+    // out. Delivery is now KNOWN — reconcile the unknown state instead of
+    // leaving the user to resend a prompt that may already be delivered.
+    onLateResult: callback => {
+      const listener = (_event, payload) => callback(payload)
+      ipcRenderer.on('hermes:quick-entry:late-result', listener)
+
+      return () => ipcRenderer.removeListener('hermes:quick-entry:late-result', listener)
     }
   },
   getBootProgress: () => ipcRenderer.invoke('hermes:boot-progress:get'),

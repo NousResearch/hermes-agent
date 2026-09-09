@@ -336,6 +336,47 @@ describe('quickComposerReducer', () => {
     expect(retried.state.unknownSubmitId).toBe(7)
   })
 
+  it('a late success clears an unknown outcome', () => {
+    const { state } = run([
+      connect,
+      { draft: 'pending prompt', type: 'edit' },
+      { submitId: 7, type: 'submit' },
+      { message: 'may still be delivered', submitId: 7, type: 'submit-unknown' },
+      { message: 'accepted', ok: true, type: 'late-result' }
+    ])
+
+    expect(state.draft).toBe('')
+    expect(state.visible).toBe(false)
+    expect(state.unknownSubmitId).toBeNull()
+    expect(state.error).toBeNull()
+  })
+
+  it('a late failure proves non-acceptance and keeps the text', () => {
+    const { state } = run([
+      connect,
+      { draft: 'pending prompt', type: 'edit' },
+      { submitId: 7, type: 'submit' },
+      { message: 'may still be delivered', submitId: 7, type: 'submit-unknown' },
+      { message: 'gateway down', ok: false, type: 'late-result' }
+    ])
+
+    expect(state.unknownSubmitId).toBeNull()
+    expect(state.error).toBe('gateway down')
+    expect(state.draft).toBe('pending prompt')
+    expect(state.visible).toBe(true)
+  })
+
+  it('a late result without an unknown submit changes nothing', () => {
+    const { state } = run([
+      connect,
+      { draft: 'fresh draft', type: 'edit' },
+      { message: 'accepted', ok: true, type: 'late-result' }
+    ])
+
+    expect(state.draft).toBe('fresh draft')
+    expect(state.visible).toBe(true)
+  })
+
   it('a late success reconciles the unknown outcome', () => {
     const unknown = run([
       connect,

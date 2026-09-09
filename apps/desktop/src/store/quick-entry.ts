@@ -181,6 +181,7 @@ export type QuickComposerEvent =
   | { type: 'submit'; submitId?: number }
   | { type: 'submit-error'; message: string; submitId: number }
   | { message: string; submitId: number; type: 'submit-unknown' }
+  | { message: string; ok: boolean; type: 'late-result' }
   | { type: 'submit-ok'; submitId: number }
   | { type: 'target'; target: string }
 
@@ -384,6 +385,38 @@ export function quickComposerReducer(state: QuickComposerState, event: QuickComp
           visible: true
         }
       }
+    }
+
+    case 'late-result': {
+      // A late outcome only reconciles a submit the window still holds as
+      // UNKNOWN. Without one it must not clobber a fresh draft.
+      if (state.unknownSubmitId === null) {
+        return { send: null, state }
+      }
+
+      return event.ok
+        ? {
+            send: null,
+            state: {
+              ...state,
+              draft: '',
+              error: null,
+              lastSubmitText: '',
+              orphanedFailure: null,
+              unknownSubmitId: null,
+              visible: false
+            }
+          }
+        : {
+            send: null,
+            state: {
+              ...state,
+              error: event.message,
+              lastSubmitText: '',
+              unknownSubmitId: null,
+              visible: true
+            }
+          }
     }
 
     case 'submit-error': {

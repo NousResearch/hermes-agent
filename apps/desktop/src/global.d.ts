@@ -206,6 +206,11 @@ declare global {
         // Quick window subscribes to "you were just summoned" so it can reset
         // its draft and re-focus the input on every open.
         onShown: (callback: () => void) => () => void
+        // Quick window subscribes to the outcome of a submit whose relay timed
+        // out (delivery is unknown until this arrives).
+        onLateResult: (
+          callback: (payload: { correlationId: string; result: QuickEntrySubmitResult }) => void
+        ) => () => void
       }
       getBootProgress: () => Promise<DesktopBootProgress>
       getConnectionConfig: (profile?: null | string) => Promise<DesktopConnectionConfig>

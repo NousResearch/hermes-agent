@@ -157,12 +157,23 @@ def _resolve_budget_fallback(
 ) -> Tuple[Any, Any, bool]:
     """Iteration-budget exhaustion. Returns ``(final_response, _turn_exit_reason,
     preserved_verification_fallback)``."""
+    _guardrail_decision = getattr(agent, "_tool_guardrail_halt_decision", None)
+    if _guardrail_decision is not None:
+        # A controlled tool-loop halt is a terminal outcome in its own right — record
+        # it and skip the budget-exhaustion path entirely so the two recordings never
+        # race for the same kanban run.
+        _kanban_task = os.environ.get("HERMES_KANBAN_TASK")
+        if _kanban_task:
+            _record_kanban_guardrail_halt(_kanban_task, _guardrail_decision, logger)
+        return final_response, _turn_exit_reason, False
+
     budget_exhausted = (
         api_call_count >= agent.max_iterations or agent.iteration_budget.remaining <= 0
     )
     preserved_verification_fallback = False
     if (
-        final_response is None and budget_exhausted and not interrupted and not failed
+        (final_response is None or not str(final_response).strip())
+        and budget_exhausted and not interrupted and not failed
         and str(_turn_exit_reason) in {"unknown", "budget_exhausted"}
     ):
         _turn_exit_reason = f"max_iterations_reached({api_call_count}/{agent.max_iterations})"

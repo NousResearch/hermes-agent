@@ -32,3 +32,47 @@ export function resolveShowEarlierAction(hiddenCount: number, olderAvailable: bo
 
   return olderAvailable ? 'window' : null
 }
+
+/** Slack (px) treated as "already at the top edge" for auto Show-earlier. */
+export const TOP_EDGE_PX = 48
+
+export interface ShouldAutoShowEarlierInput {
+  action: 'dom' | 'window' | null
+  isAtBottom: boolean
+  loadSettled: boolean
+  restorePending: boolean
+  scrollTop: number
+  topEdgePx?: number
+  /** Present only for `wheel` events; omitted for `scroll`. */
+  wheelDeltaY?: number
+}
+
+/**
+ * Auto Show-earlier is the button's `showEarlier()` path, triggered when the
+ * reader is at the viewport top and older content exists. Fail-open: missing
+ * action, an unsettled load, a pending prepend restore, following the bottom,
+ * or a mid-transcript scroll must not page.
+ */
+export function shouldAutoShowEarlier({
+  action,
+  isAtBottom,
+  loadSettled,
+  restorePending,
+  scrollTop,
+  topEdgePx = TOP_EDGE_PX,
+  wheelDeltaY
+}: ShouldAutoShowEarlierInput): boolean {
+  if (action == null || !loadSettled || restorePending || isAtBottom) {
+    return false
+  }
+
+  if (scrollTop > topEdgePx) {
+    return false
+  }
+
+  if (wheelDeltaY !== undefined && !(wheelDeltaY < 0)) {
+    return false
+  }
+
+  return true
+}

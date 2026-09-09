@@ -415,13 +415,13 @@ def _assert_retired_rows_recoverable_after_exit(tmp_path, *, rename):
     finally:
         recovered.close()
 
-    if hasattr(sqlite3.Connection, "setconfig"):
-        # With SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE the closed handle also left the newer generation alone.
-        live = sqlite3.connect(str(path))
-        try:
-            assert _integrity_ok(live) and live.execute("SELECT COUNT(*) FROM messages").fetchone()[0] == expected
-        finally:
-            live.close()
+    # The newer generation at the path is untouched too: setconfig switched SQLite's close-time
+    # checkpoint off, or the handle was retired unclosed where it could not be.
+    live = sqlite3.connect(str(path))
+    try:
+        assert _integrity_ok(live) and live.execute("SELECT COUNT(*) FROM messages").fetchone()[0] == expected
+    finally:
+        live.close()
 
 
 @pytest.mark.linux_only

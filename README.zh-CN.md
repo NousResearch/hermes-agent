@@ -8,7 +8,7 @@
 [Nous Research](https://nousresearch.com) 的
 [Hermes Agent](https://hermes-agent.nousresearch.com/) 引擎之上。它是
 [`NousResearch/hermes-agent`](https://github.com/NousResearch/hermes-agent)
-的 fork，持续基于上游 rebase 且不修改引擎——Hermes Agent 能做的，North Forge 都能做。
+的 fork，持续基于上游 rebase；它保留 Hermes Agent 引擎的功能行为，自身改动仅限于身份、呈现和工作流——Hermes Agent 能做的，North Forge 都能做。
 
 > 这是一个入口页面。完整且持续更新的文档为英文，此处不做翻译以免内容过时。
 

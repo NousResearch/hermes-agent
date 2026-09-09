@@ -10,8 +10,9 @@
 [Nous Research](https://nousresearch.com) کے
 [Hermes Agent](https://hermes-agent.nousresearch.com/) انجن پر بنایا گیا ہے۔ یہ
 [`NousResearch/hermes-agent`](https://github.com/NousResearch/hermes-agent) کا
-fork ہے، اپ‌سٹریم کے ساتھ rebase شدہ اور بغیر ترمیم کے استعمال ہوتا ہے — جو کچھ
-Hermes Agent کرتا ہے، North Forge بھی کرتا ہے۔
+fork ہے، اپ‌سٹریم کے ساتھ rebase شدہ ہے؛ یہ Hermes Agent انجن کا فعالی رویہ
+برقرار رکھتا ہے، اور اس کی اپنی تبدیلیاں صرف شناخت، پیشکش اور ورک‌فلو تک محدود ہیں —
+جو کچھ Hermes Agent کرتا ہے، North Forge بھی کرتا ہے۔
 
 > یہ صرف ایک تعارفی صفحہ ہے۔ مکمل اور تازہ ترین دستاویزات انگریزی میں ہیں اور
 > پرانی ہو جانے سے بچنے کے لیے یہاں ترجمہ نہیں کی جاتیں۔

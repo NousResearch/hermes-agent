@@ -2,14 +2,13 @@
 
 Two independent rules, enforced on commit and push:
 
-1. **A real `.env` never enters the repository.** Only `*.example` / `*.sample` env
-   files are allowed in git. — `secret-guard` (filename check)
+1. **A credential-bearing file never enters the repository by its name.** — `secret-guard` (filename check)
 2. **A fork commit never adds a high-confidence AWS / GitHub / Slack credential in
    file content.** — `content-scan` (content check)
 
 | Hook | When | What it does |
 | --- | --- | --- |
-| `pre-commit` | `git commit` | `secret-guard --staged`: rejects the commit if a staged path is `.env`, `.env.<anything>`, or `.op.env` (not `*.example`/`*.sample`, not `.envrc`). |
+| `pre-commit` | `git commit` | `secret-guard --staged`: rejects the commit if a staged path matches the blocklist below. |
 | `pre-push` | `git push` | For every ref: `secret-guard` scans the tip tree + the new commits' filenames; `content-scan --commits` scans the **content** of files the new commits changed. Aborts the push on any hit. |
 
 ## `secret-guard` (filenames) — runnable by hand
@@ -19,6 +18,22 @@ sh .githooks/secret-guard --worktree      # what's on disk right now
 sh .githooks/secret-guard --staged        # what's staged
 sh .githooks/secret-guard --tree HEAD     # what a given commit's tree contains
 ```
+
+### Blocked filenames
+
+| Class | Matches | Notes |
+| --- | --- | --- |
+| `.env` family | `.env`, `.env.<anything>`, `.op.env` | not `*.example` / `*.sample` / `*.template`, not `.envrc` |
+| SSH private keys | `id_rsa`, `id_dsa`, `id_ecdsa`, `id_ed25519` | the `.pub` is allowed |
+| PKCS#12 / keystores | `*.p12`, `*.pfx`, `*.pkcs12`, `*.jks`, `*.keystore` | |
+| Cloud / service creds | `credentials.json`, `service-account.json`, `*-service-account.json`, `service-account-*.json`, `gcloud-service-key*.json` | |
+| Auth stores | `.netrc`, `_netrc`, `.pgpass`, `.htpasswd` | |
+| PEM / private keys | `*.pem`, `*.key`, `*.keypair`, `*.priv`, `*.pk8` | **except** public bundles (`cacert.pem`, `*-bundle.pem`, `fullchain.pem`, `chain.pem`, `cert.pem`, …) and **except** files under a `test/` / `tests/` / `fixtures/` / `testdata/` / `mocks/` / `spec/` / `e2e/` path (throwaway test certs by convention) |
+
+A confirmed-safe file that still trips a rule: add its exact repo-relative path to
+`ALLOWLIST` at the top of [`secret-guard`](secret-guard) (reviewed, line by line —
+same discipline as content-scan's inline marker), or `--no-verify` for a one-off.
+Self-tests: `sh .githooks/tests/secret-guard.sh`.
 
 ## `content-scan` (content) — runnable by hand
 
@@ -54,9 +69,10 @@ small and reviewable, one line at a time.
 
 ## CI
 
-`.github/workflows/nf-secret-scan.yml` runs `content-scan --commits` on every push
-and PR (plus the scanner's own self-tests), so a push is checked even when local
-hooks are not installed on the machine it came from.
+`.github/workflows/nf-secret-scan.yml` runs, on every push and PR, both hook
+self-test suites, `secret-guard --tree`/`--range` (filenames), and
+`content-scan --commits` (content) — so a push is checked even when local hooks
+are not installed on the machine it came from.
 
 ## Activate local hooks (once per clone)
 
@@ -76,10 +92,13 @@ for `.env` files.
 ## Layers (defense in depth)
 
 1. `.gitignore` — `.env`, `.env.*`, `.op.env` ignored; `!*.example` / `!*.sample`.
-2. `pre-commit` — blocks staging a secret file.
-3. `pre-push` — blocks pushing a secret file (`secret-guard`) or a credential in new
-   commit content (`content-scan`), whatever commit introduced it.
-4. `nf-secret-scan` CI — the same `content-scan`, independent of local hook install.
+   (`.gitignore` is convenience, not a boundary — `git add -f` bypasses it; the
+   hooks are the boundary.)
+2. `pre-commit` — blocks staging a credential-bearing filename.
+3. `pre-push` — blocks pushing a credential-bearing filename (`secret-guard`) or a
+   credential in new commit content (`content-scan`), whatever commit introduced it.
+4. `nf-secret-scan` CI — the same `secret-guard` + `content-scan`, independent of
+   local hook install.
 5. `scripts/redact_handoff.py` — the handoff bundle (`D:\logs.zip`) is redacted with
    the agent's full production vocabulary before it is zipped; the zip is not created
    if a likely secret survives.

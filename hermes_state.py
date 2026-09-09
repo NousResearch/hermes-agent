@@ -999,10 +999,12 @@ class SessionDB(
         # through stale WAL/shm assumptions (#89332). Refuse instead.
         if self._db_replaced or self._db_file_was_replaced():
             self._db_replaced = True
+            self._disable_close_time_checkpoint()
             logger.error(_STATE_DB_REPLACED_MSG)
             raise StateDbReplacedError(_STATE_DB_REPLACED_MSG)
         if self._db_wal_generation_lost or self._wal_generation_was_lost():
             self._db_wal_generation_lost = True
+            self._disable_close_time_checkpoint()
             logger.error(_DELETED_WAL_GENERATION_MSG)
             raise DeletedWalGenerationError(_DELETED_WAL_GENERATION_MSG)
 
@@ -1050,7 +1052,8 @@ class SessionDB(
     def _disable_close_time_checkpoint(self) -> None:
         """Best-effort SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE (Python 3.12+): sqlite3's
         close() otherwise runs the internal last-connection checkpoint that wrote
-        the incident's pages under wrong page numbers (see StateDbCorruptError).
+        the incident's pages under wrong page numbers (see StateDbCorruptError and
+        the generation-loss halts).
         <3.12 has no setconfig; the residual checkpoint only carries
         pre-quarantine committed frames, which is tolerable."""
         flag = getattr(sqlite3, "SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE", None)
@@ -1088,6 +1091,19 @@ class SessionDB(
         """Foreign processes holding this DB or its WAL sidecars (see hermes_state_holders)."""
         return _foreign_state_db_holders(self.db_path)
 
+    def _quarantine_reason(self) -> Optional[str]:
+        """Why this handle must not checkpoint or run in-file repair, or None. A corrupted image has
+        torn B-trees; a replaced file or a deleted/replaced WAL generation would checkpoint under
+        wrong page numbers into the main DB -- the shutdown-time cause of #105670. Same precedence
+        as the halt path (replaced is checked before generation loss)."""
+        if self._db_corrupt:
+            return f"structural corruption ({self._db_corrupt_reason})"
+        if self._db_replaced:
+            return "a replaced state.db file"
+        if self._db_wal_generation_lost:
+            return "a deleted WAL generation (split-brain)"
+        return None
+
     def _try_wal_checkpoint(self) -> None:
         """Best-effort PASSIVE WAL checkpoint; never raises. PASSIVE never blocks writers;
         TRUNCATE corrupted B-trees on 65K+ page databases under exclusive-lock I/O pressure.
@@ -1095,8 +1111,8 @@ class SessionDB(
         Previous TRUNCATE strategy caused B-tree corruption on large databases (65K+ pages) due to the
         exclusive-lock I/O pressure from checkpointing thousands of frames at once (issue #45383).
         """
-        if self._db_corrupt:
-            return  # quarantined: never checkpoint over a damaged image
+        if self._quarantine_reason() is not None:
+            return
         try:
             with self._lock:
                 result = self._conn.execute("PRAGMA wal_checkpoint(PASSIVE)").fetchone()
@@ -1150,13 +1166,13 @@ class SessionDB(
             pass
         with self._lock:
             if self._conn:
-                if self._db_corrupt:  # quarantined: no checkpoint over a damaged image
+                quarantine_reason = self._quarantine_reason()
+                if quarantine_reason is not None:
                     logger.warning(
                         "Skipping the close-time WAL checkpoint for %s: this "
-                        "handle observed structural corruption (%s). Take a "
-                        "snapshot of state.db, -wal and -shm before restarting, "
-                        "then run `hermes sessions recover --source %s --inspect-only`.", self.db_path,
-                        self._db_corrupt_reason, self.db_path,
+                        "handle observed %s. Take a snapshot of state.db, -wal and -shm "
+                        "before restarting, then run `hermes sessions recover --source %s --inspect-only`.",
+                        self.db_path, quarantine_reason, self.db_path,
                     )
                 elif not self.read_only:  # PASSIVE, not TRUNCATE (see docstring)
                     try:

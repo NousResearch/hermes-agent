@@ -133,7 +133,18 @@ def install_exit_flush_signal_handlers() -> bool:
 def _transport_is_dead(transport) -> bool:
     # _detached_ws_transport is the post-disconnect drop sentinel. _stdio_transport is the REAL transport for
     # standalone `hermes --tui` and must NOT count as dead.
-    return transport is _detached_ws_transport or getattr(transport, "_closed", None) is True
+    if transport is _detached_ws_transport:
+        return True
+    if isinstance(transport, FanoutTransport):
+        # A fan-out is never the sentinel and has no ``_closed`` of its own, so without this arm every
+        # multi-client session reads as alive forever — the TTL reaper, the LRU cap and the #77129 disconnect
+        # revalidation all gate on this predicate. A fan-out can legitimately end up empty, or holding nothing
+        # but closed sockets, with no disconnect passing through _close_sessions_for_transport: a failed write
+        # prunes the peer that failed. It is dead exactly when no peer of its own is alive, and an empty one is
+        # dead. Peers are always leaf transports (attach flattens a fan-out argument instead of nesting it), so
+        # this recurses one level at most.
+        return all(_transport_is_dead(peer) for peer in transport.transports())
+    return getattr(transport, "_closed", None) is True
 
 
 def _session_is_lru_evictable(sid: str, session: dict) -> bool:
@@ -170,6 +181,7 @@ def _reap_idle_sessions() -> None:
         _close_session_by_id(
             sid, end_reason="idle_timeout",
             predicate=lambda session, vs=sid: _session_is_evictable(vs, session, time.time()))
+    _repair_missing_ws_orphan_reaps()
     _enforce_session_cap()
     _reclaim_orphaned_leases()
     # Long-lived processes: gen2 GC rarely runs at steady state and glibc retains freed pages as RSS, so trim
@@ -179,6 +191,34 @@ def _reap_idle_sessions() -> None:
         trim_memory(reason="idle reaper periodic trim")
     except Exception as exc:  # debug, not warning — a persistent failure would repeat every scan.
         logger.debug("idle reaper memory trim failed: %s: %s", type(exc).__name__, exc)
+
+
+def _repair_missing_ws_orphan_reaps() -> None:
+    """Re-arm detached sessions whose disconnect path lost its teardown timer.
+
+    A resident record otherwise vouches for its lease during every orphan sweep,
+    while the live process prevents PID pruning. Reusing the normal WS grace
+    path preserves reconnect and in-flight-work protections instead of stealing
+    the lease directly.
+    """
+    if _WS_ORPHAN_REAP_GRACE_S <= 0:
+        return
+    # A socket can be closed before its disconnect cleanup reaches the sentinel.
+    # Reuse that cleanup (including surviving viewers), never revoke a fence from
+    # a stale liveness snapshot.
+    with _sessions_lock:
+        closed_transports = [session.get("transport") for session in _sessions.values()
+                             if session.get("transport") is not _detached_ws_transport
+                             and _transport_is_dead(session.get("transport"))]
+    for transport in closed_transports:
+        _close_sessions_for_transport(transport)
+    with _sessions_lock:
+        missing = [
+            sid for sid, session in _sessions.items()
+            if _ws_session_is_detached(session) and sid not in _pending_ws_reaps
+        ]
+        for sid in missing:
+            _schedule_ws_orphan_reap(sid)
 
 
 def _reclaim_orphaned_leases() -> None:

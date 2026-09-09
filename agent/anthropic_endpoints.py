@@ -72,6 +72,25 @@ def _is_kimi_family_endpoint(base_url: str | None, model: str | None = None) -> 
     )
 
 
+
+_DEEPSEEK_THINKING_MODEL_PREFIXES = (
+    "deepseek-r", "deepseek-v4", "deepseek_v4", "deepseek-pro",
+    "deepseek_pro", "deepseek-flash", "deepseek_flash",
+)
+
+
+def _model_name_is_deepseek_thinking(model: str | None) -> bool:
+    """Known DeepSeek thinking families behind an Anthropic-compatible relay.
+
+    Strip vendor namespaces, but do not treat arbitrary DeepSeek chat/distill
+    names as evidence of the thinking replay contract.
+    """
+    if not isinstance(model, str):
+        return False
+    name = model.strip().lower().rsplit("/", 1)[-1]
+    return bool(name) and name.startswith(_DEEPSEEK_THINKING_MODEL_PREFIXES)
+
+
 def _is_deepseek_anthropic_endpoint(base_url: str | None) -> bool:
     """DeepSeek's ``/anthropic`` route. In thinking mode DeepSeek requires prior-turn ``thinking``
     blocks to round-trip while the generic third-party path strips them; its blocks are unsigned,

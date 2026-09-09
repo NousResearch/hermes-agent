@@ -111,6 +111,14 @@ def _db_path() -> Path:
     return get_hermes_home() / "verification_evidence.db"
 
 
+def _ledger_enabled() -> bool:
+    """The ledger exists only to feed verify-on-stop; when that guard is off nothing may
+    record, read, or even create the database (an unconsumed ledger is pure disk churn)."""
+    from agent.verification_stop import verify_on_stop_enabled
+
+    return verify_on_stop_enabled()
+
+
 def _connect() -> sqlite3.Connection:
     from hermes_state_wal import apply_wal_with_fallback
 
@@ -451,6 +459,8 @@ def record_terminal_result(
     *, command: str, cwd: str | Path | None, session_id: str | None, exit_code: int, output: str = ""
 ) -> Optional[dict[str, Any]]:
     """Record a foreground terminal result when it is verification evidence."""
+    if not _ledger_enabled():
+        return None
     evidence = classify_verification_command(command, cwd=cwd, session_id=session_id, exit_code=exit_code, output=output)
     return None if evidence is None else _insert_evidence(evidence)
 
@@ -465,6 +475,8 @@ def record_verify_run(
     canonical test command would. ``root`` is re-resolved through project facts
     so it matches what :func:`verification_status` derives later.
     """
+    if not _ledger_enabled():
+        return None
     resolved = str(Path(root).resolve())
     return _insert_evidence(VerificationEvidence(
         command=command, canonical_command="hermes verify", kind="verify",
@@ -511,6 +523,8 @@ def mark_workspace_edited(
     *, session_id: str | None, cwd: str | Path | None, paths: list[str] | tuple[str, ...] | None = None
 ) -> Optional[dict[str, Any]]:
     """Mark verification evidence stale after a successful file edit."""
+    if not _ledger_enabled():
+        return None
     facts = _project_facts(cwd)
     if not facts:
         return None
@@ -547,6 +561,8 @@ def verification_status(*, session_id: str | None, cwd: str | Path | None) -> di
 
     Evidence recorded before the latest edit is reported as ``stale``.
     """
+    if not _ledger_enabled():
+        return {"status": "disabled", "evidence": None}
     facts = _project_facts(cwd)
     if not facts:
         return {"status": "not_applicable", "evidence": None}

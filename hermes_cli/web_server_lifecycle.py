@@ -175,9 +175,11 @@ def _eager_reconcile_own_session_db() -> None:
     per-poll read-probe heal in :func:`_open_session_db_at_path`.
     """
     try:
-        from hermes_state import SessionDB, _default_db_path
+        from hermes_state import _default_db_path
+        from hermes_state_registry import acquire, release_or_close
 
-        SessionDB(db_path=Path(_default_db_path()), read_only=False).close()
+        db = acquire(Path(_default_db_path()))
+        release_or_close(db)
     except Exception as exc:
         _log.warning(
             "startup schema reconcile of state.db failed (%s); session "

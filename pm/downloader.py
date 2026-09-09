@@ -15,7 +15,7 @@ instead of mixing bytes from different upstream versions.
 
 The progress callback reports the whole job AND the per-dest bitmap:
 ``progress(overall_done, overall_total, ranges)`` where ``ranges`` maps
-``dest.name`` to half-open [start, end) runs. ``done_bytes`` is the sum;
+the destination path to half-open [start, end) runs. ``done_bytes`` is the sum;
 ``ranges`` is the shape — one datum, two resolutions.
 """
 
@@ -190,6 +190,7 @@ class Download:
         resume: bool = True,
         connections: int = CONNECTIONS,
         partials_dir: Optional[Path] = None,
+        pause_event: Optional[threading.Event] = None,
     ):
         self.sources = [Source(s.url, Path(s.dest), s.sha256) for s in sources]
         self.resume = resume
@@ -200,7 +201,8 @@ class Download:
             from pm import paths
 
             self.partials_dir = paths.partials_root()
-        self._paused = threading.Event()
+        self._owns_pause_event = pause_event is None
+        self._paused = pause_event if pause_event is not None else threading.Event()
 
     def pause(self) -> None:
         """Request a stop between chunks; run() raises DownloadPaused."""
@@ -208,49 +210,86 @@ class Download:
 
     def run(self, progress: Optional[ProgressFn] = None) -> list[Path]:
         """Fetch every source; return the moved destination paths."""
-        self._paused.clear()
+        if self._owns_pause_event:
+            self._paused.clear()
+        self._check_pause()
         self.partials_dir.mkdir(parents=True, exist_ok=True)
         for source in self.sources:
             if not (source.url.startswith("https://")
                     or source.url.startswith(_LOOPBACK)):
                 raise ValueError(f"refusing non-https url: {source.url}")
 
-        # Probe every source up front so progress covers the whole plan.
-        probed = [(source, _Remote(source.dest.stat().st_size, False) if _existing_dest_ok(source)
-                   else self._probe(source.url)) for source in self.sources]
-        overall_total = sum(remote.total for _, remote in probed)
-        completed: dict[str, _Ranges] = {}
-        done_base = 0
+        # Probe the whole plan before reporting a denominator. A missing
+        # Content-Length keeps the bar indeterminate until that file ends.
         from pm.download_state import partial_lock
 
-        for source, initial in probed:
+        totals: dict[str, int] = {}
+        unknown: set[str] = set()
+        coverage: dict[str, _Ranges] = {}
+        for source in self.sources:
+            self._check_pause()
+            key = str(source.dest)
+            cached = _existing_dest_ok(source)
+            if cached:
+                remote = _Remote(source.dest.stat().st_size, False)
+                covered = [(0, remote.total)]
+            else:
+                remote = self._probe(source.url)
+                covered = []
+                with partial_lock(self.partials_dir, self._key(source.url), wait=False) as acquired:
+                    if acquired and remote.ranged:
+                        covered = self._partial_ranges(source, remote)
+                if not remote.total:
+                    unknown.add(key)
+            totals[key] = remote.total
+            coverage[key] = covered
+
+        progress_lock = threading.Lock()
+
+        def report(key: str, written: _Ranges) -> None:
+            with progress_lock:
+                # The last key identifies the source reporting this tick.
+                coverage.pop(key, None)
+                coverage[key] = list(written)
+                if progress is not None:
+                    done = sum(b - a for rows in coverage.values() for a, b in rows)
+                    progress(done, 0 if unknown else sum(totals.values()), dict(coverage))
+
+        for source in self.sources:
             with partial_lock(self.partials_dir, self._key(source.url), cancelled=self._paused.is_set) as acquired:
-                if not acquired or self._paused.is_set():
+                if not acquired:
                     raise DownloadPaused(source.url)
+                self._check_pause()
+                key = str(source.dest)
                 if _existing_dest_ok(source):
                     size = source.dest.stat().st_size
                 else:
-                    # Remote data can change while another process owns this URL.
+                    # Recheck identity after waiting for another process's partial.
                     remote = self._probe(source.url)
-                    overall_total += remote.total - initial.total
+                    totals[key] = remote.total
+                    if remote.total:
+                        unknown.discard(key)
+                    else:
+                        unknown.add(key)
+                    report(key, self._partial_ranges(source, remote) if remote.ranged else [])
 
-                    def tick(covered: _Ranges) -> None:
-                        if progress is not None:
-                            progress(done_base + sum(end - start for start, end in covered),
-                                     overall_total, {**completed, source.dest.name: covered})
+                    def tick(written: _Ranges) -> None:
+                        report(key, written)
 
                     if remote.total and remote.ranged and (source.sha256 or remote.etag):
                         size = self._fetch_ranged(source, remote, tick)
                     else:
                         size = self._fetch_single(source, remote, tick)
-                    overall_total += size - remote.total
-                completed[source.dest.name] = [(0, size)]
-                done_base += size
-                if progress is not None:
-                    progress(done_base, overall_total, dict(completed))
+                totals[key] = size
+                unknown.discard(key)
+                report(key, [(0, size)])
         return [source.dest for source in self.sources]
 
     # ── internals ─────────────────────────────────────────────
+
+    def _check_pause(self) -> None:
+        if self._paused.is_set():
+            raise DownloadPaused("download paused")
 
     @staticmethod
     def _probe(url: str) -> _Remote:
@@ -297,6 +336,11 @@ class Download:
             return _coalesce([tuple(row) for row in ranges])
         except (OSError, ValueError, KeyError, TypeError):
             return []
+
+    def _partial_ranges(self, source: Source, remote: _Remote) -> _Ranges:
+        key = self._key(source.url)
+        return self._load_sidecar(self.partials_dir / f"{key}.ranges",
+                                  self.partials_dir / f"{key}.part", remote, source.sha256)
 
     @staticmethod
     def _write_sidecar(side: Path, part: Path, covered: _Ranges, remote: _Remote, sha256: str) -> None:
@@ -382,8 +426,7 @@ class Download:
                         position += len(chunk)
                         with lock:
                             covered[:] = _coalesce(covered + [(start, position)])
-                            snapshot = list(covered)
-                        tick(snapshot)
+                            tick(list(covered))
                     if response.read(1):
                         raise _RangeError("range body exceeds its declared bounds")
             except Exception as exc:
@@ -437,6 +480,7 @@ class Download:
         return position
 
     def _finalize(self, source: Source, part: Path, side: Path) -> None:
+        self._check_pause()
         if source.sha256:
             actual = _sha256_file(part)
             if actual != source.sha256:
@@ -448,6 +492,7 @@ class Download:
         import os
         import tempfile
 
+        self._check_pause()
         source.dest.parent.mkdir(parents=True, exist_ok=True)
         fd, name = tempfile.mkstemp(prefix=f".{source.dest.name}-", suffix=".download", dir=source.dest.parent)
         staged = Path(name)
@@ -458,6 +503,7 @@ class Download:
                 os.fsync(target.fileno())
             if staged.stat().st_size != part.stat().st_size:
                 raise DownloadError("destination copy did not preserve the complete download")
+            self._check_pause()
             os.replace(staged, source.dest)
         finally:
             staged.unlink(missing_ok=True)

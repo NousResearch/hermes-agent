@@ -60,8 +60,8 @@ def test_progress_carries_overall_and_ranges(dl_server, tmp_path):
     final_d, final_t, final_r = seen[-1]
     assert final_d == 3000
     assert final_t == 3000
-    assert final_r["a.bin"] == [(0, 1000)]
-    assert final_r["b.bin"] == [(0, 2000)]
+    assert final_r[str(d1)] == [(0, 1000)]
+    assert final_r[str(d2)] == [(0, 2000)]
 
 
 # ── optional hash ─────────────────────────────────────────────
@@ -263,7 +263,7 @@ def test_no_range_fallback_downloads_full_body(dl_server, tmp_path):
     assert _Handler.ranges_seen == []  # never used Range
     d, t, r = seen[-1]
     assert d == t == len(payload)
-    assert r["nr.bin"] == [(0, len(payload))]
+    assert r[str(dest)] == [(0, len(payload))]
 
 
 def test_no_range_short_body_raises_and_leaves_no_dest(dl_server, tmp_path):
@@ -346,7 +346,7 @@ def test_resume_first_progress_shows_durable_prefix(dl_server, tmp_path):
     d0, t0, r0 = seen[0]
     assert d0 > 0  # overall_done starts above zero (durable prefix + new)
     assert t0 == total
-    ranges = r0["rp.bin"]
+    ranges = r0[str(dest)]
     assert len(ranges) == 1  # coalesced
     assert ranges[0][0] == 0  # the durable prefix is a covered range
     assert ranges[0][1] > 0

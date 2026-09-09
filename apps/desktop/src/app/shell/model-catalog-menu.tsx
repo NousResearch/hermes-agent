@@ -682,9 +682,18 @@ const LOCAL_PROVIDER_SLUG = 'llamacpp'
 // above subscribes to download identity, not progress.
 function DownloadingModelRow({ jobId, target }: { jobId: string; target: string }) {
   const { t } = useI18n()
-  const copy = t.modelPicker
+  const copyPicker = t.modelPicker
+  const copyLocal = t.settings.localModels
 
+  // The row's own scalar slice: percent for live rows, status for the
+  // paused fork (a paused download must stay listed with its Paused pill,
+  // not vanish — progress loss is information loss).
   const percent = useStoreSelector($localRuntimeJobs, jobs => jobs.find(job => job.job_id === jobId)?.percent ?? null)
+
+  const paused = useStoreSelector(
+    $localRuntimeJobs,
+    jobs => jobs.find(job => job.job_id === jobId)?.status === 'paused'
+  )
 
   return (
     <DropdownMenuItem
@@ -694,15 +703,25 @@ function DownloadingModelRow({ jobId, target }: { jobId: string; target: string 
       textValue=""
     >
       <span className="min-w-0 flex-1 truncate">{target}</span>
-      <span className="ml-auto flex shrink-0 items-center gap-1.5" title={copy.downloading}>
+      <span
+        className="ml-auto flex shrink-0 items-center gap-1.5"
+        title={paused ? copyLocal.downloadPausedLabel : copyPicker.downloading}
+      >
         <span className="h-1 w-14 overflow-hidden rounded-full bg-(--ui-bg-tertiary)">
           <span
-            className="block h-full rounded-full bg-primary transition-[width] duration-500"
+            className={cn(
+              'block h-full rounded-full',
+              paused ? 'bg-muted-foreground/60' : 'bg-primary transition-[width] duration-500'
+            )}
             style={{ width: `${Math.max(2, percent ?? 0)}%` }}
           />
         </span>
         <span className="text-[0.62rem] tabular-nums text-(--ui-text-tertiary)">
-          {typeof percent === 'number' ? `${percent}%` : copy.downloading}
+          {paused
+            ? copyLocal.downloadPausedLabel
+            : typeof percent === 'number'
+              ? `${percent}%`
+              : copyPicker.downloading}
         </span>
       </span>
     </DropdownMenuItem>

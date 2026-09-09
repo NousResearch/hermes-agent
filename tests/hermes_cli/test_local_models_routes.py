@@ -7,6 +7,7 @@ downloads are stubbed at the urllib boundary — never live."""
 from __future__ import annotations
 
 import io
+import hashlib
 import json
 import time
 from pathlib import Path
@@ -136,7 +137,8 @@ class _FakeRangeOpener:
 
         class _Resp(io.BytesIO):
             status = 200
-            headers = {"Content-Length": str(parent._length)}
+            headers = {"Content-Length": str(parent._length),
+                       "ETag": '"' + hashlib.sha256(parent._body).hexdigest() + '"'}
 
             def __enter__(self):
                 return self
@@ -149,19 +151,22 @@ class _FakeRangeOpener:
             lo_hi = rng[len("bytes="):]
             if lo_hi == "0-0":
                 # probe: 206 with full Content-Range so range support is detected
-                probe = _Resp(b"")
+                probe = _Resp(parent._body[:1])
                 probe.status = 206
                 probe.headers = {
                     "Content-Range": f"bytes 0-0/{parent._length}",
                     "Content-Length": "1",
+                    "ETag": _Resp.headers["ETag"],
                 }
                 return probe
             lo, hi = (int(x) for x in lo_hi.split("-"))
             part = parent._body[lo:hi + 1]
             resp = _Resp(part)
+            resp.status = 206
             resp.headers = {
                 "Content-Range": f"bytes {lo}-{hi}/{parent._length}",
-                "Content-Length": str(len(part)),
+                "Content-Length": str(hi - lo + 1),
+                "ETag": _Resp.headers["ETag"],
             }
             return resp
         return _Resp(parent._body)
@@ -211,7 +216,7 @@ def test_download_short_of_server_length_errors_and_cleans_up(client, monkeypatc
             break
         time.sleep(0.05)
     assert status is not None and status["status"] == "error"
-    assert "bytes" in status["error"].lower()
+    assert "range body ended before its declared bounds" in status["error"]
 
     from hermes_cli.local_runtime.bootstrap import models_dir
 
@@ -231,7 +236,10 @@ def test_download_already_downloaded_short_circuits(client, monkeypatch):
                         lambda **kw: budget)
     choice = select_variant(CATALOG[0], budget)
     assert choice is not None
-    _write_fake_gguf(models_dir() / choice.variant.files[0].local_name)
+    from hermes_cli.web_routers.local_models import _download_plan
+
+    for _, dest, _ in _download_plan(CATALOG[0], choice.variant):
+        _write_fake_gguf(dest)
     r = client.post("/api/local-models/download", json={"model_id": CATALOG[0].id})
     assert r.status_code == 200
     assert r.json()["already_downloaded"] is True
@@ -253,11 +261,15 @@ def test_runtime_install_rejects_impossible_combo(client, monkeypatch):
     """Impossible platform/backend combos fail the POST itself with the
     resolver's honest message — not a background job that dies silently.
     (win-arm64-vulkan; the old cuda case became real upstream at ~b1036x.)"""
-    monkeypatch.setattr(
-        "hermes_cli.local_runtime.binaries._host_os_arch", lambda: ("win", "arm64"))
-    r = client.post("/api/local-models/runtime/install", json={"backend": "vulkan"})
+    from pm import paths
+    from pm.lock import Lockfile
+
+    lock_path = Path(paths.partials_root()).parent / "unavailable-lock.json"
+    Lockfile(lock_path).save()
+    monkeypatch.setattr(paths, "lockfile_path", lambda: lock_path)
+    r = client.post("/api/local-models/runtime/install", json={"backend": "cpu"})
     assert r.status_code == 400
-    assert "arm64" in r.json()["detail"]
+    assert "not pinned" in r.json()["detail"]
 
 
 def test_job_poll_unknown_404s(client):
@@ -378,12 +390,15 @@ def test_download_pause_reaches_paused_status(client, monkeypatch):
         the worker is mid-download when the test pauses it."""
 
         def open(self, req, timeout=None):
-            parent = self
+            rng = req.headers.get("Range") if req.headers else None
+            if rng == "bytes=0-0":
+                return _FakeRangeOpener(b"x" * 1048576).open(req, timeout=timeout)
 
-            class _Resp:
+            class _Resp(io.BytesIO):
                 status = 206
-                headers = {"Content-Range": "bytes 0-0/1048576",
-                           "Content-Length": "1"}
+                headers = {"Content-Range": "bytes 0-1048575/1048576",
+                           "Content-Length": "1048576",
+                           "ETag": '"' + hashlib.sha256(b"x" * 1048576).hexdigest() + '"'}
 
                 def __enter__(self):
                     return self
@@ -393,15 +408,9 @@ def test_download_pause_reaches_paused_status(client, monkeypatch):
 
                 def read(self, size=-1):
                     gate.wait(timeout=15)   # hold the worker until let go
-                    return b""
+                    return super().read(size)
 
-            rng = req.headers.get("Range") if req.headers else None
-            if rng and rng.startswith("bytes=") and rng != "bytes=0-0":
-                # body range: answer the probe shape with full length so the
-                # worker blocks inside read()
-                _Resp.headers = {"Content-Range": "bytes 0-1048575/1048576",
-                                 "Content-Length": "1048576"}
-            return _Resp()
+            return _Resp(b"x" * 1048576)
 
     monkeypatch.setattr("pm.downloader._OPENER", _BlockingOpener())
     from hermes_cli.local_runtime.catalog import CATALOG
@@ -630,8 +639,10 @@ def test_quickstart_pause_stops_the_sequence(client, monkeypatch, dl_server,
 
     _serve_plan(monkeypatch, dl_server, tmp_path / "partials",
                 {"QsPartA": _BIG_BODY, "QsPartB": _BIG_BODY})
-    monkeypatch.setattr("hermes_cli.local_runtime.binaries.installed_tags",
-                        lambda: ["b99999"])   # runtime leg already satisfied
+    from hermes_cli.local_runtime.binaries import Engine
+
+    monkeypatch.setattr("hermes_cli.local_runtime.binaries.installed_engine",
+                        lambda *args, **kwargs: Engine("cpu", "b99999", Path("unused")))
     monkeypatch.setattr(lm, "_runtime_target",
                         lambda requested=None: ("b1", "cpu"))
 

@@ -225,6 +225,19 @@
       },
       "version": "10362"
     },
+    "llamacpp-hip": {
+      "artifacts": {
+        "linux-x64": {
+          "sha256": "8df777b54d88405fb5d8bb8207b80ae0d2051cb03f5a7dd69f4b1f67f94f3f2b",
+          "url": "https://github.com/ggml-org/llama.cpp/releases/download/b10362/llama-b10362-bin-ubuntu-rocm-7.14-x64.tar.gz"
+        },
+        "win32-x64": {
+          "sha256": "fcd1899e9577aa8805e761eb8feb8fde028644975b8c7270edd66c60bcceceb4",
+          "url": "https://github.com/ggml-org/llama.cpp/releases/download/b10362/llama-b10362-bin-win-rocm-7.14-x64.zip"
+        }
+      },
+      "version": "10362"
+    },
     "llamacpp-metal": {
       "artifacts": {
         "darwin-arm64": {

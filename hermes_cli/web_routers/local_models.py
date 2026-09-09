@@ -50,9 +50,7 @@ _RUNNING: Dict[str, Dict[str, Any]] = {}
 _QUICKSTART_LOCK = threading.Lock()
 _LLAMACPP_PROVIDERS = ("llamacpp", "llama.cpp", "llama-cpp")
 _SPLIT_PART_RE = r"-\d{5}-of-\d{5}"
-# One TCP stream to a CDN rarely fills a fast line; 8 ranged connections into a preallocated file saturate gigabit.
-_DOWNLOAD_CONNECTIONS = 8
-_CHUNK = 4 << 20
+_DOWNLOAD_PHASES = frozenset({"starting", "installing-runtime", "downloading-runtime", "downloading"})
 _SERVER_START_FAILED = "The local server could not start — check the runtime is installed"
 
 
@@ -128,7 +126,7 @@ def _job(kind: str, target: str, model_id: str | None = None) -> Dict[str, Any]:
     job = {
         "job_id": uuid.uuid4().hex[:12], "kind": kind, "target": target,
         "model_id": model_id,       # catalog id for downloads; None otherwise
-        "status": "running",        # running | done | error
+        "status": "running",        # running | paused | done | error
         "phase": "starting",        # human-readable step name
         "detail": "", "total_bytes": None, "done_bytes": 0, "started_at": time.time(), "error": None,
     }
@@ -139,14 +137,29 @@ def _job(kind: str, target: str, model_id: str | None = None) -> Dict[str, Any]:
 
 def _job_view(job: Dict[str, Any]) -> Dict[str, Any]:
     out = dict(job)
+    running = _RUNNING.get(job["job_id"], {})
+    pause = running.get("pause")
+    out["pause_requested"] = bool(pause is not None and pause.is_set() and out["status"] == "running")
+    out["can_pause"] = bool(pause is not None and out["status"] == "running"
+                            and out["phase"] in _DOWNLOAD_PHASES and not out["pause_requested"])
+    out["can_resume"] = out["status"] == "paused" and "resume" in running
     if out["total_bytes"]:
         out["percent"] = min(100, round(out["done_bytes"] / out["total_bytes"] * 100))
     return out
 
 
+def _check_job_pause(job: Dict[str, Any]) -> None:
+    pause = _RUNNING.get(job["job_id"], {}).get("pause")
+    if pause is not None and pause.is_set():
+        raise DownloadPaused("download paused")
+
+
 def _step(job: Dict[str, Any], phase: str, detail: str) -> None:
-    job["phase"] = phase
-    job["detail"] = detail
+    with _JOBS_LOCK:
+        if job.get("phase") in _DOWNLOAD_PHASES and phase not in _DOWNLOAD_PHASES:
+            _check_job_pause(job)
+        job["phase"] = phase
+        job["detail"] = detail
 
 
 def _finish(job: Dict[str, Any], detail: str) -> None:
@@ -159,6 +172,7 @@ def _spawn_job(job: Dict[str, Any], name: str, body: Callable[[], None], *, fail
                resumable: bool = False) -> None:
     """One worker per job. Pauses retain ownership; terminal outcomes release it."""
     guard = threading.Lock()
+    pause = threading.Event()
 
     def _run():
         status = "done"
@@ -176,22 +190,25 @@ def _spawn_job(job: Dict[str, Any], name: str, body: Callable[[], None], *, fail
             job["error"] = str(exc)
         finally:
             try:
-                if status != "paused":
-                    _RUNNING.pop(job["job_id"], None)
-                    if on_exit is not None:
-                        on_exit()
+                if status != "paused" and on_exit is not None:
+                    on_exit()
             finally:
-                job["status"] = status
-                guard.release()
+                with _JOBS_LOCK:
+                    if status != "paused":
+                        _RUNNING.pop(job["job_id"], None)
+                    job["status"] = status
+                    guard.release()
 
     def start(*, initial: bool = False) -> bool:
         if not guard.acquire(blocking=False):
             return False
-        if not initial and job["status"] != "paused":
-            guard.release()
-            return False
-        job["status"] = "running"
-        job["error"] = None
+        with _JOBS_LOCK:
+            if not initial and job["status"] != "paused":
+                guard.release()
+                return False
+            pause.clear()
+            job["status"] = "running"
+            job["error"] = None
         try:
             threading.Thread(target=_run, daemon=True, name=name).start()
         except Exception:
@@ -204,7 +221,7 @@ def _spawn_job(job: Dict[str, Any], name: str, body: Callable[[], None], *, fail
         return True
 
     if resumable:
-        _RUNNING[job["job_id"]] = {"resume": start}
+        _RUNNING[job["job_id"]] = {"resume": start, "pause": pause}
     start(initial=True)
 
 
@@ -244,30 +261,22 @@ def _set_runtime_enabled(enabled: bool) -> dict:
     return config
 
 
-def _runtime_target(requested: str | None = None) -> "tuple[str, str]":
-    """(tag, backend) the runtime routes act on: configured tag or release default; ``auto`` -> detected GPU vendor."""
+def _runtime_target(requested: str | None = None) -> tuple[str, str]:
+    """Resolve only reviewed PM artifacts; hardware work stays off the event loop."""
     section = _runtime_section()
-    tag = section.get("tag") or binaries.default_tag()
     backend = requested or section.get("backend", "auto")
-    if backend == "auto":
-        backend = binaries.select_backend(bootstrap._detect_gpu_vendor())
-    return tag, backend
-
-
-def _resolve_assets_or_400(tag: str, backend: str):
-    """Resolve first so an impossible combination fails the POST, not the job."""
     with _http_error(400):
-        return binaries.resolve_assets(tag, backend)
+        backend = binaries.resolve_backend(backend)
+        return binaries.pinned_tag(backend), backend
 
 
 def _engine_too_old(min_engine: str) -> bool:
-    """True when the installed llama.cpp predates a model's requirement. Tags are release numbers (b10362);
-    no engine installed compares as too old only when the model states a requirement."""
-    def newest_installed() -> int:
-        tags = binaries.installed_tags() or [binaries.default_tag()]
-        return max(int(t.lstrip("b")) for t in tags if t.lstrip("b").isdigit())
-
-    return bool(min_engine) and _quiet(lambda: newest_installed() < int(min_engine.lstrip("b")), False)
+    if not min_engine:
+        return False
+    requested = _runtime_section().get("backend", "auto")
+    engine = binaries.installed_engine(requested)
+    tag = engine.tag if engine is not None else _runtime_target()[0]
+    return int(tag.removeprefix("b")) < int(min_engine.removeprefix("b"))
 
 
 def _eligible_entries():
@@ -331,94 +340,6 @@ def _variant_files_on_disk(model_id: str) -> "list[Path]":
     return files
 
 
-def _probe_range_support(url: str) -> int:
-    """Total size when the server honors Range requests, else 0. 401/403 = gated repo or wrong catalog
-    repo — raise a plain-language message, not a bare status."""
-    req = urllib.request.Request(url, headers={"Range": "bytes=0-0"})
-    try:
-        with urllib.request.urlopen(req, timeout=60) as r:
-            content_range = r.headers.get("Content-Range", "") if r.status == 206 else ""
-            if "/" in content_range:
-                return int(content_range.rsplit("/", 1)[1])
-    except urllib.error.HTTPError as exc:
-        if exc.code in (401, 403):
-            raise RuntimeError("The model host refused the download (gated or moved). "
-                               "This is a catalog problem, not yours — please report it.") from exc
-        raise
-    except Exception:  # noqa: BLE001
-        pass
-    return 0
-
-
-def download_file(url: str, dest: Path, job: Dict[str, Any], *, base_done: int = 0, keep_totals: bool = False) -> None:
-    """Download url -> dest with byte progress on ``job``; ranged-parallel when the server supports it,
-    single-stream otherwise. Never leaves a .part. Completeness is checked only against what the SERVER
-    declared (range-probe total / Content-Length), never the CATALOG (its sizes may lag a re-upload), so a
-    dropped connection still errors instead of staging a truncated file. Multi-file variants: ``base_done``
-    offsets progress onto earlier files; ``keep_totals=True`` keeps the per-file size from overwriting the
-    variant's total."""
-    tmp = dest.with_suffix(".part")
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    file_done = [0]
-    progress_lock = threading.Lock()
-    errors: list[Exception] = []
-
-    def pump(r, f) -> None:
-        for chunk in iter(lambda: r.read(_CHUNK), b""):
-            f.write(chunk)
-            with progress_lock:
-                file_done[0] += len(chunk)
-                job["done_bytes"] = base_done + file_done[0]
-
-    def fetch_range(start: int, end: int) -> None:
-        try:
-            req = urllib.request.Request(url, headers={"Range": f"bytes={start}-{end}"})
-            with urllib.request.urlopen(req, timeout=120) as r, open(tmp, "r+b") as f:
-                f.seek(start)
-                pump(r, f)
-        except Exception as exc:  # noqa: BLE001
-            errors.append(exc)
-
-    try:
-        # Probe and preallocation take real seconds on a 20+ GB file — narrate them, or the pane shows a dead '— of X GB'.
-        job["detail"] = "Connecting"
-        total = _probe_range_support(url)
-        if total:
-            if not keep_totals:
-                job["total_bytes"] = total
-            # Preallocate so each worker writes at its own offset.
-            job["detail"] = f"Reserving {_human_gb(total)} of disk space"
-            with open(tmp, "wb") as f:
-                f.truncate(total)
-            job["detail"] = ""
-            n = _DOWNLOAD_CONNECTIONS
-            threads = [threading.Thread(target=fetch_range, daemon=True, name=f"lm-dl-{i}",
-                                        args=(i * total // n, (i + 1) * total // n - 1)) for i in range(n)]
-            for t in threads:
-                t.start()
-            for t in threads:
-                t.join()
-            if errors:
-                raise errors[0]
-            if file_done[0] != total:
-                raise RuntimeError(f"download incomplete ({file_done[0]} of {total} bytes)")
-        else:
-            # No range support: single stream; completeness judged by the server's
-            # own Content-Length when it sent one — never the catalog.
-            with urllib.request.urlopen(url, timeout=120) as r, open(tmp, "wb") as f:
-                length = int(r.headers.get("Content-Length") or 0)
-                if length and not keep_totals:
-                    job["total_bytes"] = length
-                pump(r, f)
-            if length and file_done[0] != length:
-                raise RuntimeError(f"Download ended at {file_done[0]:,} bytes but the server "
-                                   f"said {length:,} — connection dropped? Removed; try again")
-        shutil.move(str(tmp), str(dest))
-    except Exception:
-        tmp.unlink(missing_ok=True)
-        raise
-
-
 def _download_plan(entry, variant) -> list:
     """Everything a variant needs: split parts + mmproj/draft assets, as (url, dest, bytes) tuples."""
     plan = [(_hf_url(entry.repo, a.path), bootstrap.models_dir() / a.local_name, a.size_bytes) for a in variant.files]
@@ -428,47 +349,23 @@ def _download_plan(entry, variant) -> list:
 
 
 def _run_download_plan(job: Dict[str, Any], plan: list, label: str) -> None:
-    """Download every missing file in ``plan`` via pm.downloader (one resumable
-    Download per job); already-present files count toward progress without a
-    transfer. Raises DownloadPaused straight through: the caller's worker
-    parks the job — the sequence must never advance past a pause. Handle
-    lifecycle (dl registration, resume handle, _RUNNING cleanup) belongs to
-    _spawn_job, not here."""
-    _step(job, "downloading", f"{label} — {_human_gb(sum(p[2] for p in plan))}")
-    done_before = 0
-    for url, dest, size in plan:
-        if not dest.exists():
-            _download_job(job, [(url, dest, size)])
-            job["phase"] = "downloading"
-        done_before += size
-        job["done_bytes"] = done_before
+    """The downloader counts completed files and every part of this plan."""
+    _step(job, "downloading", f"Downloading {label}")
+    _download_job(job, plan)
+
+
+def _download_progress_hook(job: Dict[str, Any]):
+    def tick(done: int, total: int, ranges: dict) -> None:
+        with _JOBS_LOCK:
+            job.update(done_bytes=done, total_bytes=total or None, ranges=ranges)
+    return tick
+
 
 def _download_job(job: Dict[str, Any], plan) -> None:
-    """Run a plan of (url, dest, size) downloads as ONE resumable Download.
-
-    Completion and range progress feed the job dict (done_bytes /
-    total_bytes / ranges — the bar reads the aggregate, the detail view
-    reads the bitmap; both come from the same callback). Sources carry NO
-    hash by design: catalog sizes may lag an upstream re-upload, so
-    completeness is judged by the downloader against the server's declared
-    total, never the catalog. On pause the downloader raises
-    DownloadPaused and this propagates to the caller: the worker parks the
-    job 'paused' with its partials intact for a later resume. The live
-    handle is kept OFF the job dict (which stays JSON-serializable for the
-    poll route) under _RUNNING.
-    """
-    dl = Download([Source(url, dest) for url, dest, _ in plan])
-    _RUNNING.setdefault(job["job_id"], {})["dl"] = dl
-
-    def tick(done: int, total: int, ranges: dict) -> None:
-        job["done_bytes"] = done
-        job["total_bytes"] = total
-        job["ranges"] = ranges
-
-    try:
-        dl.run(progress=tick)
-    finally:
-        _RUNNING.get(job["job_id"], {}).pop("dl", None)
+    """Model bytes use the same resumable transfer as pinned PM archives."""
+    running = _RUNNING.get(job["job_id"], {})
+    dl = Download([Source(url, dest) for url, dest, _ in plan], pause_event=running.get("pause"))
+    dl.run(progress=_download_progress_hook(job))
 
 
 def _loaded_models(running: Dict[str, Any]) -> "tuple[Dict[str, str], Dict[str, Any]]":
@@ -493,13 +390,6 @@ def _loaded_models(running: Dict[str, Any]) -> "tuple[Dict[str, str], Dict[str, 
         if facts:
             placement[model_id] = facts
     return loaded, placement
-
-
-def _installed_backend(tag: str) -> str | None:
-    """Name of the first backend dir under ``tag`` with a working server binary."""
-    root = binaries.runtimes_root() / tag
-    dirs = sorted(p for p in root.iterdir() if p.is_dir()) if root.exists() else []
-    return next((d.name for d in dirs if _quiet(lambda: binaries.server_binary(d), None) is not None), None)
 
 
 def _staged_row(gguf: Path) -> Dict[str, Any]:
@@ -527,11 +417,13 @@ def local_models_status():
     """Cheap, immediate: config state + installed runtime + staged models + supervisor state (GPU facts live
     in /hardware). Sync def on purpose: blocking urlopen/scans run in the threadpool."""
     section = _runtime_section()
-    configured_tag = section.get("tag") or binaries.default_tag()
-    have = binaries.installed_tags()
-    # The tag actually serving (boot ladder: configured if installed, else newest installed).
-    tag = configured_tag if configured_tag in have else (have[0] if have else configured_tag)
-    runtime_backend = _installed_backend(tag)
+    engine = binaries.installed_engine(section.get("backend", "auto"))
+    runtime_backend = engine.backend if engine is not None else None
+    configured_tag = binaries.pinned_tag(runtime_backend) if runtime_backend else _runtime_target()[0]
+    tag = engine.tag if engine is not None else configured_tag
+    import pm
+
+    current = pm.installed_package(binaries.BACKEND_PACKAGES[runtime_backend]) if runtime_backend else None
     mdir = bootstrap.models_dir()
     running = _state_endpoint()
     # Resident models from the live router ({} when down): Loaded pills + eject. A failed read is never
@@ -540,9 +432,7 @@ def local_models_status():
         lambda: _loaded_models(running), ({}, {}), warn="loaded-models read failed: %r")
     return {
         "enabled": bool(section.get("enabled")), "tag": tag, "configured_tag": configured_tag,
-        # Update pending = engine in use (enabled + something installed) and the configured tag
-        # (pinned or release default) isn't on disk. The download is a button click, never automatic.
-        "update_available": bool(section.get("enabled") and have and configured_tag not in have),
+        "update_available": bool(section.get("enabled") and engine is not None and current is None),
         "runtime_installed": runtime_backend is not None, "runtime_backend": runtime_backend,
         "server_running": running is not None, "server_base_url": (running or {}).get("base_url"),
         "active_model_id": _active_llamacpp_model_id(), "loaded_models": loaded,
@@ -596,7 +486,8 @@ _QUANT_REASON_COMPACT = "Compact build sized for this machine ({quant}) — larg
 def _catalog_row(entry, budget, recommended, recommended_reason, staged_ids) -> Dict[str, Any]:
     choice = catalog.select_variant(entry, budget)
     # Any variant of this family on disk counts as downloaded.
-    dl = next((v for v in entry.variants if v.model_id in staged_ids), None)
+    dl = next((v for v in entry.variants if v.model_id in staged_ids
+               and all(dest.is_file() for _, dest, _ in _download_plan(entry, v))), None)
     row: Dict[str, Any] = {
         "id": entry.id, "display_name": entry.display_name, "description": entry.description,
         "native_context": entry.n_ctx_train, "native_context_label": _k_label(entry.n_ctx_train),
@@ -669,68 +560,43 @@ def local_models_catalog():
 
 # ── runtime install (job) ────────────────────────────────────
 def _runtime_progress_hook(job: Dict[str, Any]):
-    """Adapter: ensure_runtime_installed's progress stream -> job fields, throttled to ~4 updates/s. Byte
-    counters are CUMULATIVE across the plan (a multi-asset engine reads as one growing download, total
-    growing as each asset's size becomes known); unpack/verify keep the counters — a bar bouncing back to
-    zero after the bytes finished reads as failure."""
-    state = {"last": 0.0, "banked": 0, "asset": None, "asset_total": 0}
+    """PM owns byte accounting; stages describe work without resetting it."""
+    phases = {
+        "download": ("downloading-runtime", "Downloading the local engine"),
+        "unpack": ("unpacking-runtime", "Unpacking the local engine"),
+        "verify": ("verifying-runtime", "Verifying the local engine"),
+    }
 
     def hook(stage: str, done: int, total: int, label: str) -> None:
-        now = time.monotonic()
-        if now - state["last"] < 0.25 and done < total:
-            return
-        state["last"] = now
-        suffix = f" ({label})" if label else ""
-        if stage == "download":
-            if label != state["asset"]:
-                # Previous asset finished: bank its bytes so the counters keep climbing instead of restarting.
-                state["banked"] += state["asset_total"]
-                state["asset"] = label
-            state["asset_total"] = total or done
-            plan_done = state["banked"] + done
-            plan_total = state["banked"] + (total or 0)
-            _step(job, "downloading-runtime", f"Downloading the local engine{suffix} — {_human_gb(plan_done)}"
-                  + (f" of {_human_gb(plan_total)}" if total else ""))
-            job["done_bytes"] = plan_done
-            job["total_bytes"] = plan_total or None
-        elif stage == "extract":
-            pct = f" — {min(100, round(done / total * 100))}%" if total else ""
-            _step(job, "unpacking-runtime", f"Unpacking the engine{suffix}{pct}")
-        else:  # verify
-            _step(job, "verifying-runtime", f"Verifying the engine{suffix}")
-
+        phase, detail = phases[stage]
+        _step(job, phase, detail + (f" ({label})" if label else ""))
     return hook
 
 
-def _restart_on_new_tag(job: Dict[str, Any], tag: str, previous: list) -> bool:
-    """Engine update path: a server already running on an older tag moves to the new one now — the click was
-    the consent. Fresh installs (no server) skip this; Use/boot handles their start."""
-    if bootstrap.get_supervisor() is None or not previous or tag in previous:
-        return False
-    _step(job, "restarting", "Switching the running server to the new build")
-    bootstrap.shutdown_local_runtime()
-    bootstrap.ensure_local_runtime(_load_config(), force=True)
-    return True
+def _install_engine_job(job: Dict[str, Any], backend: str):
+    _step(job, "installing-runtime", "Preparing the pinned local engine")
+    return binaries.ensure_engine(
+        backend, progress=_runtime_progress_hook(job),
+        download_progress=_download_progress_hook(job),
+        pause_event=_RUNNING[job["job_id"]]["pause"],
+    )
 
 
 @router.post("/api/local-models/runtime/install")
-async def local_models_runtime_install(body: RuntimeInstallBody):
+def local_models_runtime_install(body: RuntimeInstallBody):
     tag, backend = _runtime_target(body.backend)
-    plan = _resolve_assets_or_400(tag, backend)
     job = _job("runtime-install", f"llama.cpp {tag} ({backend})")
 
-    def _run():
-        previous = binaries.installed_tags()
-        _step(job, "downloading", f"Fetching {len(plan.assets)} package(s) for {backend}")
-        binaries.ensure_runtime_installed(tag, backend, progress=_runtime_progress_hook(job))
-        # Restart failure is logged only: the new build is installed either way and the next boot serves it.
-        restarted = _quiet(lambda: _restart_on_new_tag(job, tag, previous), False, warn="post-update restart skipped: %s")
-        # N-1 retention, only after the new tag verified: keep it + the newest previous build as the rollback pin target.
-        _quiet(lambda: binaries.prune_old_tags([tag] + [t for t in previous if t != tag][:1]), None,
-               warn="runtime prune skipped: %s")
-        _finish(job, f"llama.cpp {tag} ready ({backend})" + (" — server restarted on the new build" if restarted else ""))
+    def run():
+        previous = binaries.installed_engine(backend)
+        engine = _install_engine_job(job, backend)
+        running = bootstrap.get_supervisor()
+        if running is not None and previous != engine:
+            _step(job, "restarting", "Switching the running server to the pinned build")
+            bootstrap.refresh_local_runtime()
+        _finish(job, f"llama.cpp {tag} ready ({backend})")
 
-    _spawn_job(job, "lr-runtime-install", _run, fail_msg="runtime install failed: %s")
+    _spawn_job(job, "lr-runtime-install", run, fail_msg="runtime install failed: %s", resumable=True)
     return {"job_id": job["job_id"], "backend": backend, "tag": tag}
 
 
@@ -751,19 +617,15 @@ def _download_target(model_id: str):
 
 
 @router.post("/api/local-models/download")
-async def local_models_download(body: ModelDownloadBody):
+def local_models_download(body: ModelDownloadBody):
     """Accepts either a family id (downloads this machine's selected variant) or an exact variant model_id."""
     entry, variant = _download_target(body.model_id)
-    if variant.model_id in bootstrap.staged_model_ids():
-        return {"job_id": None, "already_downloaded": True, "model_id": variant.model_id}
     plan = _download_plan(entry, variant)
+    if plan and all(dest.is_file() for _, dest, _ in plan):
+        return {"job_id": None, "already_downloaded": True, "model_id": variant.model_id}
     job = _job("model-download", f"{entry.display_name} ({variant.quant})", model_id=entry.id)
-    job["total_bytes"] = sum(p[2] for p in plan)
-
     def _run():
-        job["phase"] = "downloading"
-        job["detail"] = f"{entry.display_name} — {_human_gb(job['total_bytes'])}"
-        _download_job(job, plan)
+        _run_download_plan(job, plan, entry.display_name)
         _finish(job, f"{entry.display_name} ready")
         _refresh_runtime("post-download runtime refresh skipped")
 
@@ -773,29 +635,24 @@ async def local_models_download(body: ModelDownloadBody):
 
 @router.post("/api/local-models/download/pause")
 async def local_models_download_pause(body: JobIdBody):
-    """Pause a running model download. The downloader's live handle is
-    checked off the job dict (which stays JSON-serializable for the poll
-    route); when none is active (already done/paused) this is a no-op."""
-    running = _RUNNING.get(body.job_id)
-    if running is None:
+    """Pause the download phase of a model, component or quickstart job."""
+    job = _JOBS.get(body.job_id)
+    if job is None:
         raise HTTPException(status_code=404, detail="unknown download job")
-    dl = running.get("dl")
-    if dl is None:
-        return {"ok": True, "paused": False}
-    dl.pause()
+    with _JOBS_LOCK:
+        if not _job_view(job)["can_pause"]:
+            return {"ok": True, "paused": False}
+        _RUNNING[body.job_id]["pause"].set()
     return {"ok": True, "paused": True}
 
 
 @router.post("/api/local-models/download/resume")
 async def local_models_download_resume(body: JobIdBody):
-    """Resume a paused model download."""
-    running = _RUNNING.get(body.job_id)
-    if running is None:
+    """Restart the same job; PM reuses verified files and durable ranges."""
+    if body.job_id not in _JOBS:
         raise HTTPException(status_code=404, detail="unknown download job")
-    resume = running.get("resume")
-    if resume is None:
-        return {"ok": True, "resumed": False}
-    return {"ok": True, "resumed": resume()}
+    resume = _RUNNING.get(body.job_id, {}).get("resume")
+    return {"ok": True, "resumed": bool(resume and resume())}
 
 
 @router.delete("/api/local-models/models/{model_id}")
@@ -833,34 +690,33 @@ def _quickstart_target(body: QuickstartBody, budget):
 
 
 @router.post("/api/local-models/quickstart")
-async def local_models_quickstart(body: QuickstartBody):
+def local_models_quickstart(body: QuickstartBody):
     """One job: install the runtime (if missing), download this machine's build of the recommended model (if
     missing), make it the default. Each leg is the same code the individual routes run, so 'Configure' and
     quickstart can never disagree. Preflight rejects (no servable entry, engine too old) fail the POST
     synchronously so the button can explain itself; everything slow runs in the job with phase/byte progress."""
     entry, variant = _quickstart_target(body, hardware.probe_budget(planning=True))
     tag, backend = _runtime_target()
-    need_runtime = not binaries.installed_tags()
-    if need_runtime:
-        _resolve_assets_or_400(tag, backend)
-    need_download = variant.model_id not in bootstrap.staged_model_ids()
-    download_plan = _download_plan(entry, variant) if need_download else []
+    need_runtime = binaries.installed_engine(backend) is None
+    download_plan = _download_plan(entry, variant)
+    need_download = any(not dest.is_file() for _, dest, _ in download_plan)
+    if not need_download:
+        download_plan = []
     download_bytes = sum(p[2] for p in download_plan)
     if not _QUICKSTART_LOCK.acquire(blocking=False):
         raise HTTPException(status_code=409, detail="Setup is already running")
     job = _job("quickstart", entry.display_name, model_id=entry.id)
-    job["total_bytes"] = download_bytes or None
-
     def _run():
-        if need_runtime:
-            _step(job, "installing-runtime", "Installing the local engine")
-            binaries.ensure_runtime_installed(tag, backend, progress=_runtime_progress_hook(job))
+        if need_runtime and binaries.installed_engine(backend) is None:
+            _install_engine_job(job, backend)
         if need_download:
-            # The runtime leg repurposed the byte counters for its own stages — reset them to the model plan.
-            job["done_bytes"] = 0
-            job["total_bytes"] = download_bytes
+            # Each phase has its own complete download plan. Resume within a
+            # phase retains counters until PM reports the durable bytes.
+            if job["phase"] != "downloading":
+                with _JOBS_LOCK:
+                    job.update(done_bytes=0, total_bytes=None, ranges={})
             _run_download_plan(job, download_plan, entry.display_name)
-        # Activate: same sequence as /activate's job body.
+        _step(job, "starting-server", "Starting the local server")
         _ensure_server(job, _set_runtime_enabled(True), variant.model_id,
                        fail_detail="The local server could not start — open Local Models for details",
                        skip_msg="quickstart rescan check skipped")
@@ -958,17 +814,19 @@ async def local_models_activate(body: ModelActivateBody):
 async def local_models_jobs():
     """All recent jobs, running first — the pane and app-level poller rediscover in-flight work here after a remount."""
     with _JOBS_LOCK:
-        jobs = sorted(_JOBS.values(), key=lambda j: (j["status"] != "running", -j["started_at"]))
-    return {"jobs": [_job_view(job) for job in jobs[:20]]}
+        jobs = sorted(_JOBS.values(), key=lambda job: -job["started_at"])
+        active = [job for job in jobs if job["status"] in ("running", "paused")]
+        recent = [job for job in jobs if job["status"] in ("done", "error")][:20]
+        return {"jobs": [_job_view(job) for job in [*active, *recent]]}
 
 
 @router.get("/api/local-models/jobs/{job_id}")
 async def local_models_job(job_id: str):
     with _JOBS_LOCK:
         job = _JOBS.get(job_id)
-    if job is None:
-        raise HTTPException(status_code=404, detail="job not found")
-    return _job_view(job)
+        if job is None:
+            raise HTTPException(status_code=404, detail="job not found")
+        return _job_view(job)
 
 
 # ── Hugging Face browser: search, repo files, arbitrary download ─
@@ -1003,17 +861,13 @@ async def local_models_download_browsed(body: BrowsedDownloadBody):
         return {"job_id": None, "already_downloaded": True, "model_id": model_id}
     job = _job("model-download", f"{model_id} (from {body.repo})", model_id=model_id)
 
-    def _fetch():
-        job["phase"] = "downloading"
-        for p in paths:
-            dest = bootstrap.models_dir() / p.rsplit("/", 1)[-1]
-            if dest.exists():
-                continue
-            download_file(_hf_url(body.repo, urllib.parse.quote(p)), dest, job,
-                          base_done=int(job.get("done_bytes") or 0), keep_totals=bool(job.get("total_bytes")))
-            job["phase"] = "downloading"
+    plan = [(_hf_url(body.repo, urllib.parse.quote(path)),
+             bootstrap.models_dir() / path.rsplit("/", 1)[-1], 0) for path in paths]
 
-    _spawn_job(job, "lm-download-browsed", _fetch, download_label=model_id)
+    def _fetch():
+        _run_download_plan(job, plan, model_id)
+
+    _spawn_job(job, "lm-download-browsed", _fetch, download_label=model_id, resumable=True)
     return {"job_id": job["job_id"], "model_id": model_id}
 
 

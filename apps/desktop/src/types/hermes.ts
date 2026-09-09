@@ -1349,13 +1349,23 @@ export interface LocalRuntimeJob {
   kind: 'model-activate' | 'model-download' | 'quickstart' | 'runtime-install'
   target: string
   model_id: string | null
-  status: 'running' | 'done' | 'error'
+  status: 'done' | 'error' | 'paused' | 'running'
   phase: string
   detail: string
   total_bytes: number | null
   done_bytes: number
   percent?: number
   error: string | null
+  /** Which file ranges of the source plan are fetched vs banked — present
+   * while a plan (multi-file or cached+fresh mix) is in flight. */
+  ranges?: Record<string, [number, number][]>
+  /** Control flags: false while the job is in a phase that cannot park
+   * (server start, default assignment, non-download quickstart legs). */
+  can_pause?: boolean
+  can_resume?: boolean
+  /** The backend has accepted a pause request; the status flips when the
+   * downloader actually parks. */
+  pause_requested?: boolean
 }
 
 export interface ActionResponse {

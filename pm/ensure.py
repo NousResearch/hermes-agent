@@ -6,10 +6,13 @@ from __future__ import annotations
 import json
 import logging
 import shutil
+import threading
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
 from pm import paths
+from pm.downloader import DownloadPaused, ProgressFn
 from pm.lock import Facts, Lockfile
 from pm.package import InstallError, Package, Runner, StatePackage, compose_env
 from pm.registry import get_package, walk
@@ -42,17 +45,49 @@ def _store() -> Store:
     return Store(paths.store_root())
 
 
-def _installed_location(package: Package, lockfile: Lockfile, target: str, *, verify: bool = False):
-    """Select matching shipped bytes first, then an added pinned store entry."""
+def _installed_location(package: Package, lockfile: Lockfile, target: str, *,
+                        verify: bool = False, allow_outdated: bool = False):
+    """Prefer the current pin. An explicit read may retain a prior PM install."""
     roots = dict.fromkeys([paths.store_root(), paths.writable_store_root()])
+    fallback = None
     for root in roots:
         store = Store(root)
         facts = _facts() if root == paths.store_root() else Facts(root / "facts.json")
+        fact = facts.get(package.name)
+        if not fact or not facts.installed(package.name, None, root):
+            continue
+        binary = package.binary(store.entry(fact["entry"]), target)
+        if binary is not None and not binary.is_file():
+            continue
+        if verify and not _entry_verified(package, fact, store, target):
+            continue
         if facts.installed(package.name, lockfile.version(package.name), root,
                            _identity(lockfile, package.name, target)):
-            if not verify or _entry_verified(package, facts.get(package.name), store, target):
-                return facts, store
-    return None
+            return facts, store
+        if (allow_outdated and fact.get("target") == target
+                and fact.get("artifacts") and fact.get("digest")):
+            fallback = facts, store
+    return fallback
+
+
+@dataclass(frozen=True)
+class InstalledPackage:
+    path: Path
+    version: str
+    binary: Path | None
+
+
+def installed_package(name: str, *, allow_outdated: bool = False) -> InstalledPackage | None:
+    """Read the selected PM entry without installing or changing its facts."""
+    package = get_package(name)
+    target = current_target()
+    location = _installed_location(package, _lockfile(), target, allow_outdated=allow_outdated)
+    if location is None:
+        return None
+    facts, store = location
+    fact = facts.get(name)
+    entry = store.entry(fact["entry"])
+    return InstalledPackage(entry, fact["version"], package.binary(entry, target))
 
 
 def _identity(lockfile: Lockfile, name: str, target: str):
@@ -179,6 +214,8 @@ def _install(
     store: Store,
     target: str,
     progress=None,
+    pause_event: threading.Event | None = None,
+    download_progress: ProgressFn | None = None,
 ) -> None:
     version = lockfile.version(package.name)
     if version is None:
@@ -194,6 +231,8 @@ def _install(
     entry_name = package.store_entry(version, target)
 
     with store.install_lock():
+        if pause_event is not None and pause_event.is_set():
+            raise DownloadPaused("install paused")
         facts.reload()
         entry = store.entry(entry_name)
         previous_entry = store.entry(f".previous-{entry_name}")
@@ -219,12 +258,20 @@ def _install(
             staged = scratch / "tree"
             previous = facts.get(package.name)
             try:
-                for index, artifact in enumerate(artifacts):
+                def tick(done, total, ranges):
+                    if progress is not None:
+                        active = next(reversed(ranges))
+                        index = next(i for i, artifact in enumerate(artifacts) if artifact["url"] == active)
+                        label = f"{index + 1}/{len(artifacts)}" if len(artifacts) > 1 else ""
+                        progress("download", done, total, label)
+                    if download_progress is not None:
+                        download_progress(done, total, ranges)
+
+                archives = store.fetch_many(artifacts, scratch, progress=tick, pause_event=pause_event)
+                for index, archive in enumerate(archives):
+                    if pause_event is not None and pause_event.is_set():
+                        raise DownloadPaused("install paused")
                     label = f"{index + 1}/{len(artifacts)}" if len(artifacts) > 1 else ""
-                    archive = store.fetch(
-                        artifact["url"], artifact["sha256"], scratch,
-                        progress=_artifact_progress(progress, index, len(artifacts)),
-                    )
                     if progress is not None:
                         progress("unpack", 0, 0, label)
                     if index == 0:
@@ -235,7 +282,11 @@ def _install(
                     extra = scratch / f"extra-{index}"
                     package.unpack(archive, extra, target)
                     merge_tree(extra, staged)
+                if pause_event is not None and pause_event.is_set():
+                    raise DownloadPaused("install paused")
                 package.stage(store, staged, version, target)
+                if progress is not None:
+                    progress("verify", 0, 0, "")
                 reason = package.verify(staged, target)
                 if reason:
                     raise InstallError(package.name, f"staged entry failed verification: {reason}")
@@ -257,7 +308,7 @@ def _install(
                     raise
                 if previous_entry.exists():
                     _remove_entry(store, previous_entry.name)
-            except InstallError:
+            except (InstallError, DownloadPaused):
                 raise
             except Exception as e:
                 raise InstallError(package.name, f"install failed: {e}") from e
@@ -393,6 +444,8 @@ def ensure(
     base_env: Optional[dict] = None,
     explicit: bool = False,
     progress=None,
+    pause_event: threading.Event | None = None,
+    download_progress: ProgressFn | None = None,
 ) -> Runner:
     """``explicit`` marks a deliberate install command (`hermes pm
     install`, `hermes pm bundle`) — those ARE the remedy the lazy-install
@@ -415,7 +468,8 @@ def ensure(
         store = Store(paths.writable_store_root())
         facts = _facts() if store.root == paths.store_root() else Facts(store.root / "facts.json")
         for package in missing:
-            _install(package, lockfile, facts, store, target, progress=progress)
+            _install(package, lockfile, facts, store, target, progress=progress,
+                     pause_event=pause_event, download_progress=download_progress)
     return Runner(name, env_for(name, base_env=base_env))
 
 

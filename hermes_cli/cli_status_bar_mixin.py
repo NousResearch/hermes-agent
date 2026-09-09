@@ -191,6 +191,7 @@ class CLIStatusBarMixin:
         snapshot = {
             "model_name": model_name,
             "model_short": model_short,
+            "routed_model": getattr(agent, "_last_routed_model", None),
             "duration": format_duration_compact(elapsed_seconds),
             "session_title": self._get_status_bar_session_title(),
             "prompt_elapsed": self._format_prompt_elapsed(
@@ -1004,6 +1005,15 @@ class CLIStatusBarMixin:
                 segs.append([(_SB, " ☤ "), (_STRONG, model_short)])
             else:
                 segs.append([("", f"☤ {model_short}")])
+            # Routed member (→laguna-s) when on a combo — from the turn result, session-scoped
+            from gateway.runtime_footer import _combo_prefix, _routed_suffix
+            from cli import CLI_CONFIG
+            _prefix = _combo_prefix(CLI_CONFIG if isinstance(CLI_CONFIG, dict) else None)
+            routed = _routed_suffix(model=snapshot.get("model_name"),
+                                    routed_model=snapshot.get("routed_model"),
+                                    combo_prefix=_prefix)
+            if routed and _ok("routed_model"):
+                segs.append([(_DIM, f" {routed}")])
         narrow, wide = width < 52, width >= 76
         if narrow:
             # Narrow bars put duration ahead of the goal segment; the other tiers reverse it.

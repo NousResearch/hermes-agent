@@ -1,8 +1,11 @@
 """Gateway runtime-metadata footer (model · context % · cwd), off by default to keep replies
-minimal. Config: ``display.runtime_footer: {enabled: bool, fields: [model, context_pct, cwd]}``
-(order shown; drop any to hide), per-platform override ``display.platforms.<p>.runtime_footer``,
-toggled by ``/footer on|off``. Fields: ``model`` (vendor prefix dropped), ``context_pct`` (last-call
-occupancy), ``latency`` (turn wall-clock, opt-in — NOT in the default set so an unset ``fields``
+minimal. Config: ``display.runtime_footer: {enabled: bool, fields: [model, routed_model,
+context_pct, cwd]}`` (order shown; drop any to hide), ``display.combo_prefix`` (default
+``"combo-"``: only models starting with it are treated as proxy combos), per-platform
+override ``display.platforms.<p>.runtime_footer``, toggled by ``/footer on|off``. Fields:
+``model`` (vendor prefix dropped), ``routed_model`` (``→member`` that actually answered a
+combo call, from the turn result — never scraped), ``context_pct`` (last-call occupancy),
+``latency`` (turn wall-clock, opt-in — NOT in the default set so an unset ``fields``
 renders exactly as before), ``cwd`` (home-relative). ``gateway/run.py`` appends the footer to the
 final response only (never to tool-progress or streaming partials); when streaming already
 delivered the text, it goes out as a trailing message via ``send_trailing_footer()``."""
@@ -13,6 +16,7 @@ import os
 from typing import Any, Iterable, Optional
 
 _DEFAULT_FIELDS: tuple[str, ...] = ("model", "context_pct", "cwd")
+COMBO_PREFIX_DEFAULT = "combo-"
 _SEP = " · "
 
 
@@ -33,6 +37,36 @@ def _home_relative_cwd(cwd: str) -> str:
 def _model_short(model: Optional[str]) -> str:
     """Drop ``vendor/`` prefix (``openai/gpt-5.4`` → ``gpt-5.4``)."""
     return model.rsplit("/", 1)[-1] if model else ""
+
+
+def _combo_prefix(user_config: dict[str, Any] | None = None) -> str:
+    """Combo-name prefix from ``display.combo_prefix`` (default ``"combo-"``).
+
+    Only models starting with this prefix are treated as proxy combos whose
+    answering member is worth showing. Proxy-agnostic: the operator names
+    their combos accordingly; no proxy brand appears in code."""
+    try:
+        cfg = (user_config or {}).get("display") or {}
+        prefix = cfg.get("combo_prefix", COMBO_PREFIX_DEFAULT)
+        if isinstance(prefix, str) and prefix:
+            return prefix
+    except Exception:
+        pass
+    return COMBO_PREFIX_DEFAULT
+
+
+def _routed_suffix(*, model: Optional[str], routed_model: Optional[str],
+                   combo_prefix: str = COMBO_PREFIX_DEFAULT) -> str:
+    """``→short`` for the member that answered a combo call, else ``""``.
+
+    Pure function over values the caller already holds (the proxy echoes the
+    member in ``response.model``) — no log scraping, no subprocess."""
+    if not model or not str(model).startswith(combo_prefix):
+        return ""
+    if not routed_model or str(routed_model) == str(model):
+        return ""
+    short = _model_short(str(routed_model))
+    return f"→{short}" if short else ""
 
 
 def _env_cwd() -> str:
@@ -74,6 +108,8 @@ def _format_latency(seconds: float) -> str:
 def format_runtime_footer(*, model: Optional[str], context_tokens: int,
                           context_length: Optional[int], cwd: Optional[str] = None,
                           turn_seconds: Optional[float] = None,
+                          routed_model: Optional[str] = None,
+                          combo_prefix: str = COMBO_PREFIX_DEFAULT,
                           fields: Iterable[str] = _DEFAULT_FIELDS) -> str:
     """Render the footer line, or "" if no fields have data. Fields whose data is missing (and
     unknown field names) are skipped silently — a partial footer beats ``?%`` or empty slots."""
@@ -84,6 +120,8 @@ def format_runtime_footer(*, model: Optional[str], context_tokens: int,
 
     renderers = {
         "model": lambda: _model_short(model),
+        "routed_model": lambda: _routed_suffix(
+            model=model, routed_model=routed_model, combo_prefix=combo_prefix),
         "context_pct": context_pct,
         # Skipped when the caller did not measure (None) or the value is negative.
         "latency": lambda: _format_latency(turn_seconds) if turn_seconds is not None and turn_seconds >= 0 else "",
@@ -94,7 +132,8 @@ def format_runtime_footer(*, model: Optional[str], context_tokens: int,
 
 def build_footer_line(*, user_config: dict[str, Any] | None, platform_key: str | None,
                       model: Optional[str], context_tokens: int, context_length: Optional[int],
-                      cwd: Optional[str] = None, turn_seconds: Optional[float] = None) -> str:
+                      cwd: Optional[str] = None, turn_seconds: Optional[float] = None,
+                      routed_model: Optional[str] = None) -> str:
     """Entry point for gateway/run.py: footer text, or "" when disabled / no data. Callers append it
     to the final response themselves, preserving a single blank line of separation.
     ``turn_seconds`` is the caller-measured (``time.monotonic()``) run duration; ``None`` skips the
@@ -104,4 +143,6 @@ def build_footer_line(*, user_config: dict[str, Any] | None, platform_key: str |
         return ""
     return format_runtime_footer(model=model, context_tokens=context_tokens,
                                  context_length=context_length, cwd=cwd, turn_seconds=turn_seconds,
+                                 routed_model=routed_model,
+                                 combo_prefix=_combo_prefix(user_config),
                                  fields=cfg.get("fields") or _DEFAULT_FIELDS)

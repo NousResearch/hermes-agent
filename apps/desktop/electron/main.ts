@@ -169,7 +169,7 @@ import {
   uninstallArgsForMode
 } from './desktop-uninstall'
 import { describeDevCdpDecision, resolveDevCdpPort } from './dev-cdp'
-import { installEmbedReferer } from './embed-referer'
+import { installEmbedReferer, withEmbedRefererStamp } from './embed-referer'
 import { createEventDeduper } from './event-dedupe'
 import {
   buildTerminalScript,
@@ -9259,9 +9259,11 @@ function installRemoteHeaderRules() {
   }
 
   remoteHeaderRulesInstalled = true
-  session.defaultSession.webRequest.onBeforeSendHeaders((details, callback) => {
-    applyRemoteRequestHeaders(details, callback, headersForRemoteRequest)
-  })
+  session.defaultSession.webRequest.onBeforeSendHeaders(
+    withEmbedRefererStamp((details, callback) => {
+      applyRemoteRequestHeaders(details, callback, headersForRemoteRequest)
+    })
+  )
 }
 
 // Validate + normalize the per-profile remote overrides map read from disk.

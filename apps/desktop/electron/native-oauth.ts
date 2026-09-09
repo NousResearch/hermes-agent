@@ -20,15 +20,15 @@
  * it stores itself.
  *
  * Capability detection: the gateway advertises supported flows on the public
- * /api/status `auth_flows` array. `native_pkce` present ⇒ use this flow;
- * absent (older gateway) ⇒ the caller falls back to the embedded-webview
- * cookie flow. This is the "observable ladder / compatibility fallback tied to
- * an identified older runtime" the desktop guide requires.
+ * /api/status `auth_flows` array. `native_pkce` present ⇒ this flow is
+ * available; absent (older gateway) ⇒ the caller falls back to the
+ * embedded-webview cookie flow. This is the "observable ladder / compatibility
+ * fallback tied to an identified older runtime" the desktop guide requires.
  */
 
 import { createHash, randomBytes } from 'node:crypto'
 
-import { type AdvertisedAuthProvider, oauthGuardMayHardFail } from './native-auth-decisions'
+import { type AdvertisedAuthProvider, normalizeAdvertisedAuthProviders } from './native-auth-decisions'
 
 // The gateway status field that lists supported auth flows. See
 // hermes_cli/web_server.py status handler.
@@ -79,17 +79,31 @@ export function statusSupportsNativeFlow(statusBody: any): boolean {
   return Array.isArray(flows) && flows.includes(NATIVE_FLOW_ID)
 }
 
+function selectNativeLoginProvider(providers: AdvertisedAuthProvider[]): string | undefined {
+  const oauthProviders = providers.filter(provider => !provider.supportsPassword)
+
+  if (oauthProviders.length === 1) {
+    return oauthProviders[0].name
+  }
+
+  if (oauthProviders.length === 0 && providers.length === 1) {
+    return providers[0].name
+  }
+
+  return undefined
+}
+
+/** Pick the provider the server would auto-select; undefined leaves selection to the caller or server. */
+export function resolveNativeLoginProvider(providers: unknown): string | undefined {
+  return selectNativeLoginProvider(normalizeAdvertisedAuthProviders(providers))
+}
+
 /**
- * Decide the login strategy for a gated gateway from its status body and
- * advertised provider capabilities.
- *
- * Returns 'native' when the gateway advertises native_pkce AND at least one
- * non-password provider is available; 'embedded' when all providers are
- * password-only, the gateway lacks native_pkce, or forceEmbedded is set.
- *
- * Provider metadata is discovered from /api/auth/providers (separate from
- * /api/status). When absent (older gateway), the decision falls through to
- * the auth_flows check — existing compatibility is preserved.
+ * Decide the login strategy from the gateway's advertised auth flows.
+ * Password providers also support native PKCE: the gateway sends the system
+ * browser through its login form before returning to the desktop callback.
+ * An ambiguous provider list uses the embedded chooser; missing metadata
+ * trusts `auth_flows` so older gateways keep their existing behavior.
  *
  * `forceEmbedded` lets a user/setting or an env override pin the legacy flow
  * (e.g. a corporate proxy that blocks loopback). Precedence written down here,
@@ -97,17 +111,23 @@ export function statusSupportsNativeFlow(statusBody: any): boolean {
  */
 export function resolveLoginStrategy(
   statusBody: any,
-  opts: { forceEmbedded?: boolean; providers?: AdvertisedAuthProvider[] } = {}
+  opts: { forceEmbedded?: boolean; providers?: unknown } = {}
 ): 'native' | 'embedded' {
   if (opts.forceEmbedded) {
     return 'embedded'
   }
 
-  if (!oauthGuardMayHardFail(opts.providers)) {
+  if (!statusSupportsNativeFlow(statusBody)) {
     return 'embedded'
   }
 
-  return statusSupportsNativeFlow(statusBody) ? 'native' : 'embedded'
+  const providers = normalizeAdvertisedAuthProviders(opts.providers)
+
+  if (providers.length === 0) {
+    return 'native'
+  }
+
+  return selectNativeLoginProvider(providers) ? 'native' : 'embedded'
 }
 
 /**

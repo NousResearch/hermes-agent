@@ -376,6 +376,15 @@ _INFLIGHT_TASK_REPLAY_HEADER = (
     "start over.]"
 )
 
+# When the in-flight request survives verbatim in the protected head AND is
+# restated after the boundary, the head copy is replaced with this pointer so
+# the full text lives exactly once (after the boundary) while the protected
+# lead stays a user turn (#106864).
+_INFLIGHT_HEAD_REPLACED_NOTICE = (
+    "[This request is still in progress — the full text is restated after the "
+    "context summary below so the run continues without keeping a second copy here.]"
+)
+
 _SALVAGE_SUMMARY_MAX_CHARS = 8_000
 _SALVAGE_KEEP_RECENT_TOOLS = 2
 
@@ -4105,6 +4114,35 @@ Write only the summary body. Do not include any preamble or prefix."""
             task_text = task_text.rsplit(_INFLIGHT_TASK_REPLAY_HEADER, 1)[1].strip()
         if not task_text:
             return compressed
+
+        # The restate after the boundary is the single actionable copy; if the
+        # verbatim request also survives in the protected head it would double
+        # the input (a large unfinished request can risk overflow). Replace the
+        # head copy with a short pointer so the protected lead stays a user turn
+        # (alternation intact) while the full text lives exactly once, after the
+        # boundary (#106864).
+        _inflight_raw = _content_text_for_contains(inflight.get("content"))
+        if _inflight_raw:
+            # The active in-flight copy is the most recent equal-text user row
+            # before the summary carrier. Completed-history rows that happen to
+            # share the text must be left intact, so iterate from the carrier
+            # backwards and let the last match win; object identity is
+            # unreliable because _assemble_head() shallow-copies rows, and
+            # text equality alone picks the wrong (first) row (#106889 review).
+            for _head_idx in range(carrier_idx - 1, -1, -1):
+                _head_msg = compressed[_head_idx]
+                if (
+                    _head_msg.get("role") == "user"
+                    and _content_text_for_contains(_head_msg.get("content"))
+                    == _inflight_raw
+                    and not self._is_synthetic_compression_user_turn(_head_msg)
+                ):
+                    _head_msg["content"] = _INFLIGHT_HEAD_REPLACED_NOTICE
+                    # Clear the stale api_content sidecar so the provider wire
+                    # carries the pointer, not the full original request
+                    # (#106889 review).
+                    drop_stale_api_content(_head_msg)
+                    break
 
         if not self.quiet_mode:
             logger.info(

@@ -15,6 +15,7 @@ from types import SimpleNamespace
 import pytest
 
 import hermes_cli.auth as auth_mod
+import hermes_cli.auth_codex as auth_codex
 from hermes_cli.auth import (
     AuthError,
     _codex_usage_probe_url,
@@ -229,6 +230,9 @@ def test_resolver_recovers_when_probe_confirms_reset(tmp_path, monkeypatch):
     monkeypatch.setattr(
         auth_mod, "_probe_codex_quota_restored", lambda token, **kw: True
     )
+    monkeypatch.setattr(
+        auth_codex, "_probe_codex_quota_restored", lambda token, **kw: True
+    )
 
     resolved = resolve_codex_runtime_credentials()
     assert resolved["api_key"] == "tok-quota"
@@ -270,6 +274,7 @@ def test_pool_probe_not_fired_for_non_quota_exhaustion(tmp_path, monkeypatch):
         return True
 
     monkeypatch.setattr(auth_mod, "_probe_codex_quota_restored", _spy)
+    monkeypatch.setattr(auth_codex, "_probe_codex_quota_restored", _spy)
     pool._available_entries(clear_expired=True, refresh=False)
     assert probes == []
 

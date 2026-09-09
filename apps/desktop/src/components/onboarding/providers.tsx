@@ -95,6 +95,16 @@ export function FireworksProviderRow({ onClick }: { onClick: () => void }) {
   return <KeyProviderRow onClick={onClick} pitch={t.onboarding.fireworksPitch} title="Fireworks AI" />
 }
 
+/** Onboarding row for the managed local runtime: no account, no key — the
+ *  destination is the Local Models pane where install/download live. */
+export function LocalModelsProviderRow({ onClick }: { onClick: () => void }) {
+  const { t } = useI18n()
+
+  return (
+    <KeyProviderRow onClick={onClick} pitch={t.onboarding.localModelsPitch} title={t.onboarding.localModelsTitle} />
+  )
+}
+
 export function OpenRouterProviderRow({ onClick }: { onClick: () => void }) {
   const { t } = useI18n()
 

@@ -1,41 +1,19 @@
 import { $activeSessionId, requestSessionResume } from './session'
+import {
+  healsByStoredId,
+  isSessionGone,
+  isSessionGoneForBackgroundPolling,
+  latchSessionGone,
+  resetBackgroundPollingGuard,
+  resetBackgroundPollingGuardAfterRebind
+} from './session-gone-latch'
 import { $sessionStates, $sessionTiles, unbindTileRuntime } from './session-states'
 
-/** Session ids the gateway has told us are gone. A session-scoped RPC against a
- *  runtime the gateway no longer holds fails 4001 "session not found" — terminal
- *  for THIS runtime id, not a transient socket loss.
- *
- *  Shared by every background poller (process.list, approval.pending, goal
- *  status). One set, one clear path: a fresh-runtime rebind calls
- *  {@link resetBackgroundPollingGuard} and every poller resumes. */
-const goneSessions = new Set<string>()
-
-/** Gateway JSON-RPC code for "session not found" (tui_gateway `_sess_nowait`). */
-const GATEWAY_SESSION_NOT_FOUND_CODE = 4001
-
-/** A gone session is unrecoverable for THIS runtime id; a timeout or transport
- *  blip is not. Only the former may stop a poll — misclassifying a transient
- *  failure would silently freeze a healthy session.
- *
- *  Match the gateway's 4001 code when the error carries one. The message
- *  fallback survives only for errors with no numeric code at all. */
-export function isSessionGoneForBackgroundPolling(error: unknown): boolean {
-  const code =
-    error && typeof error === 'object' && typeof (error as { code?: unknown }).code === 'number'
-      ? (error as { code: number }).code
-      : undefined
-
-  if (code !== undefined) {
-    return code === GATEWAY_SESSION_NOT_FOUND_CODE
-  }
-
-  const message = error instanceof Error ? error.message : String(error ?? '')
-
-  return /session not found/i.test(message)
-}
-
-export function isSessionGone(sid: string): boolean {
-  return goneSessions.has(sid)
+export {
+  isSessionGone,
+  isSessionGoneForBackgroundPolling,
+  resetBackgroundPollingGuard,
+  resetBackgroundPollingGuardAfterRebind
 }
 
 /** Latch `sid` off and heal the bound view. Safe to call on every 4001. */
@@ -44,21 +22,8 @@ export function markSessionGone(sid: string): void {
     return
   }
 
-  goneSessions.add(sid)
+  latchSessionGone(sid)
   markRuntimeGone(sid)
-}
-
-/** Clear the gone-latch. Called with a session id when a fresh runtime binds to
- *  it (so polling resumes), or with no argument to reset everything (tests /
- *  gateway reconnect). */
-export function resetBackgroundPollingGuard(sid?: string): void {
-  if (sid) {
-    goneSessions.delete(sid)
-
-    return
-  }
-
-  goneSessions.clear()
 }
 
 /** Heal a session view whose bound runtime id the gateway no longer holds.
@@ -96,11 +61,12 @@ export function resetBackgroundPollingGuard(sid?: string): void {
  *  for the same id could only come from a duplicate report of the same death. */
 const healedRuntimes = new Set<string>()
 
-/** Consecutive heals per stored session id, reset by {@link noteRuntimeAlive}.
- *  A backend that reaps as fast as we resume would otherwise turn this into the
- *  very storm it exists to stop — one resume per poll tick, forever. Cap it and
- *  let the user's next action (which carries its own recovery) take over. */
-const healsByStoredId = new Map<string, number>()
+/** Consecutive heals per stored session id live in `session-gone-latch`
+ *  (`healsByStoredId`), reset by {@link noteRuntimeAlive} and by a successful
+ *  rebind. A backend that reaps as fast as we resume would otherwise turn this
+ *  into the very storm it exists to stop — one resume per poll tick, forever.
+ *  Cap it and let the user's next action (which carries its own recovery)
+ *  take over. */
 
 /** Enough to ride out a reap that races a resume, low enough that a backend
  *  reaping on sight cannot be turned into a resume loop. */

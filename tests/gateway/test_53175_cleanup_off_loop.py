@@ -7,7 +7,7 @@ browser daemons / background processes; shutdown_memory_provider() may do
 SQLite / network IO via a memory plugin) was still called INLINE on the event
 loop from three other places:
 
-  * ``_session_expiry_watcher`` (the 5-minute idle sweep) — live loop
+  * ``_session_housekeeping_watcher`` (the 5-minute idle sweep) — live loop
   * ``_handle_message_with_agent`` cache-hygiene re-eviction — live loop
   * ``_finalize_shutdown_agents`` / ``stop()`` idle-cache loop — shutdown
 
@@ -164,5 +164,3 @@ async def test_cleanup_off_loop_swallows_executor_failure(caplog):
     assert any(
         "failed" in r.message and "#53175" in r.message for r in caplog.records
     ), "expected the cleanup-failure warning to be logged"
-
-

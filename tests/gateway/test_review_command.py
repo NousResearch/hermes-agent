@@ -8,7 +8,8 @@ tests/tools/test_async_delegation.py).
 
 import json
 import time
-from unittest.mock import MagicMock
+from datetime import datetime
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -138,6 +139,79 @@ async def test_review_command_requires_cached_agent():
     runner._agent_cache = {}
     out = await runner._handle_review_command(_Event())
     assert "send a message first" in out
+
+
+@pytest.mark.asyncio
+async def test_review_command_hydrates_persisted_session_on_cache_miss(monkeypatch):
+    """#106509: a RAM-cache miss (e.g. an evicted agent, or a Telegram forum topic whose live
+    agent isn't resident) must not read as "empty conversation" when SessionDB already holds a
+    transcript for the session. /review should hydrate a throwaway agent from that transcript and
+    still dispatch the reviewer."""
+    import tools.delegate_tool as dt
+    from agent import review_engine as re_mod
+    from gateway.config import GatewayConfig, Platform, PlatformConfig
+    from gateway.platforms.event import MessageEvent
+    from gateway.session import SessionEntry, SessionSource
+
+    source = SessionSource(
+        platform=Platform.TELEGRAM, chat_id="c1", chat_type="group", user_id="u1",
+        user_name="tester", thread_id="topic-1",
+    )
+    event = MessageEvent(text="/review check tests", source=source, message_id="m1")
+    history = [
+        {"role": "user", "content": "open a PR"},
+        {"role": "assistant", "content": "PR #5 opened: https://x/pull/5"},
+    ]
+    session_entry = SessionEntry(
+        session_key=SESSION_KEY, session_id="persisted-sess", created_at=datetime.now(),
+        updated_at=datetime.now(), platform=Platform.TELEGRAM, chat_type="group",
+    )
+
+    runner = _make_runner(None)
+    runner._agent_cache = {}
+    runner.config = GatewayConfig(platforms={Platform.TELEGRAM: PlatformConfig(enabled=True, token="***")})
+    runner.session_store = MagicMock()
+    runner.session_store.get_or_create_session.return_value = session_entry
+    runner.session_store.load_transcript.return_value = history
+    runner._session_db = None
+
+    agent_instance = _make_agent()
+    agent_instance._session_messages = []  # overwritten by hydration below
+
+    fake_child = MagicMock()
+    fake_child._delegate_role = "leaf"
+    creds = {
+        "model": "m", "provider": None, "base_url": None, "api_key": None,
+        "api_mode": None, "command": None, "args": None,
+    }
+    built = {}
+
+    def fake_build(**kw):
+        built.update(kw)
+        return fake_child
+
+    monkeypatch.setattr(dt, "_build_child_agent", fake_build)
+    monkeypatch.setattr(dt, "_resolve_delegation_credentials", lambda *a, **k: creds)
+    monkeypatch.setattr(
+        dt, "_run_single_child",
+        lambda *a, **k: {
+            "task_index": 0, "status": "completed", "summary": "review done",
+            "api_calls": 1, "duration_seconds": 0.1, "model": "m",
+            "exit_reason": "completed",
+        },
+    )
+    monkeypatch.setattr(re_mod, "_load_review_credentials_cfg", lambda: None)
+
+    with (
+        patch("gateway.run._resolve_runtime_agent_kwargs", return_value={"api_key": "test-key"}),
+        patch("gateway.run._resolve_gateway_model", return_value="test-model"),
+        patch("run_agent.AIAgent", return_value=agent_instance),
+    ):
+        out = await runner._handle_review_command(event)
+
+    assert out == re_mod.format_dispatch_note({"status": "dispatched"})
+    assert "PR #5 opened" in built["context"]
+    runner.session_store.load_transcript.assert_called_once_with("persisted-sess")
 
 
 @pytest.mark.asyncio

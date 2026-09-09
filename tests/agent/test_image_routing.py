@@ -64,13 +64,27 @@ class TestDecideImageInputMode:
         with patch("agent.image_routing._lookup_supports_vision", return_value=None):
             assert decide_image_input_mode("openrouter", "brand-new-slug", {}) == "text"
 
-    def test_auto_prefers_native_for_vision_capable_main_model_even_with_aux_configured(self):
-        """Regression #29135: vision-capable main model wins over aux fallback.
-
-        Auxiliary.vision is a fallback for text-only main models; it must
-        not preempt native vision on a vision-capable main model.
-        """
+    def test_auto_explicit_aux_backend_is_the_defacto_route(self):
+        """Maintainer decision (2026-08-28, reverses #29135): a user who
+        NAMED a dedicated vision backend wants it used — even when the
+        main model has native vision. Config that only takes effect when
+        the main model gets worse is a trap, not a setting."""
         cfg = {"auxiliary": {"vision": {"provider": "openrouter", "model": "google/gemini-2.5-flash"}}}
+        with patch("agent.image_routing._lookup_supports_vision", return_value=True):
+            assert decide_image_input_mode("anthropic", "claude-sonnet-4", cfg) == "text"
+
+    def test_auto_unset_aux_backend_native_remains_default(self):
+        """No configured aux backend -> native for vision-capable mains
+        (the unconfigured-install default is unchanged)."""
+        for cfg in ({}, {"auxiliary": {}}, {"auxiliary": {"vision": {"provider": "auto"}}}):
+            with patch("agent.image_routing._lookup_supports_vision", return_value=True):
+                assert decide_image_input_mode("anthropic", "claude-sonnet-4", cfg) == "native"
+
+    def test_image_input_mode_native_overrides_aux_backend(self):
+        """agent.image_input_mode: native stays the absolute escape hatch —
+        forces native attach even with an explicit aux backend."""
+        cfg = {"agent": {"image_input_mode": "native"},
+               "auxiliary": {"vision": {"provider": "openrouter", "model": "google/gemini-2.5-flash"}}}
         with patch("agent.image_routing._lookup_supports_vision", return_value=True):
             assert decide_image_input_mode("anthropic", "claude-sonnet-4", cfg) == "native"
 

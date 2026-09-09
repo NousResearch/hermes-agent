@@ -15,7 +15,7 @@ Generate ideas via named methods from creative practice.
 | | |
 |---|---|
 | Source | Optional — install with `hermes skills install official/creative/creative-ideation` |
-| Path | `optional-skills/creative/creative-ideation` |
+| Path | `optional-skills/creative\creative-ideation` |
 | Version | `2.1.0` |
 | Author | SHL0MS |
 | License | MIT |

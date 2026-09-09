@@ -16,6 +16,7 @@ import socket
 
 
 from hermes_cli import auth as auth_mod
+import hermes_cli.auth_device_flow as auth_device_flow
 
 
 def _cap(fn):
@@ -27,6 +28,7 @@ def _cap(fn):
 
 def test_loopback_ssh_hint_silent_when_not_remote(monkeypatch):
     monkeypatch.setattr(auth_mod, "_is_remote_session", lambda: False)
+    monkeypatch.setattr(auth_device_flow, "_is_remote_session", lambda: False)
     out = _cap(lambda: auth_mod._print_loopback_ssh_hint(
         "http://127.0.0.1:43827/spotify/callback", docs_url=auth_mod.SPOTIFY_DOCS_URL
     ))
@@ -36,6 +38,7 @@ def test_loopback_ssh_hint_silent_when_not_remote(monkeypatch):
 def test_loopback_ssh_hint_has_visual_header(monkeypatch):
     """The hint should print a divider and header so it stands out in noisy output."""
     monkeypatch.setattr(auth_mod, "_is_remote_session", lambda: True)
+    monkeypatch.setattr(auth_device_flow, "_is_remote_session", lambda: True)
     out = _cap(lambda: auth_mod._print_loopback_ssh_hint(
         "http://127.0.0.1:43827/callback"
     ))

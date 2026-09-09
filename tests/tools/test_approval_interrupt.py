@@ -65,15 +65,16 @@ class TestApprovalInterrupt:
                 os.environ[k] = v
         _clear_approval_state()
 
-    def test_interrupt_unblocks_pending_approval_quickly(self):
+    def test_interrupt_unblocks_pending_approval_quickly(self, monkeypatch):
         """An interrupt on the waiting thread must resolve the wait as deny
         well before the (here, intentionally long) approval timeout."""
         from tools import approval as mod
+        from tools import approval_context
         from tools.interrupt import set_interrupt
 
         # Force a long timeout so a *passing* test can only happen via the
         # interrupt path, never by the deadline elapsing.
-        mod._get_approval_config = lambda: {"timeout": 300}
+        monkeypatch.setattr(approval_context, "_get_approval_config", lambda: {"timeout": 300})
 
         approval_data = {
             "command": "rm -rf /tmp/whatever",
@@ -120,15 +121,16 @@ class TestApprovalInterrupt:
         # Queue entry was cleaned up.
         assert not mod.has_blocking_approval(self.SESSION_KEY)
 
-    def test_unrelated_thread_interrupt_does_not_unblock(self):
+    def test_unrelated_thread_interrupt_does_not_unblock(self, monkeypatch):
         """An interrupt flagged on a *different* thread must NOT release this
         session's approval wait — interrupts are thread-scoped."""
         from tools import approval as mod
+        from tools import approval_context
         from tools.interrupt import set_interrupt
 
         # Short timeout so the test finishes fast via the deadline, proving the
         # foreign interrupt did not short-circuit the wait.
-        mod._get_approval_config = lambda: {"timeout": 1}
+        monkeypatch.setattr(approval_context, "_get_approval_config", lambda: {"timeout": 1})
 
         approval_data = {
             "command": "rm -rf /tmp/whatever",

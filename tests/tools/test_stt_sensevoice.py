@@ -21,10 +21,18 @@ def test_sensevoice_dispatches_locally_with_configured_gguf(tmp_path, monkeypatc
     binary.write_bytes(b"binary")
     binary.chmod(0o755)
     captured = {}
+    for name in ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN"):
+        monkeypatch.setenv(name, f"secret-{name}")
 
     def fake_run(command, **kwargs):
         captured.update(command=command, kwargs=kwargs)
-        return SimpleNamespace(stdout="粵語 mixed English\n", stderr="")
+        return SimpleNamespace(
+            stdout=(
+                "1\n00:00:00,000 --> 00:00:01,000\nhello\n\n"
+                "2\n00:00:01,000 --> 00:00:02,000\nworld\n"
+            ),
+            stderr="",
+        )
 
     config = {
         "provider": "sensevoice",
@@ -41,15 +49,18 @@ def test_sensevoice_dispatches_locally_with_configured_gguf(tmp_path, monkeypatc
 
     assert result == {
         "success": True,
-        "transcript": "粵語 mixed English",
+        "transcript": "hello world",
         "provider": "sensevoice",
     }
     assert captured["command"] == [
         str(binary), "-m", str(model), "-a", str(audio),
-        "--vad", str(vad), "--backend", "cpu",
+        "--vad", str(vad), "--srt", "--backend", "cpu",
     ]
     assert captured["kwargs"]["timeout"] == 300
     assert "OPENAI_API_KEY" not in captured["kwargs"]["env"]
+    assert not {
+        "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN",
+    } & captured["kwargs"]["env"].keys()
 
 
 def test_sensevoice_reports_missing_model_before_spawning(tmp_path, monkeypatch):

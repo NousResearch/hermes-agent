@@ -60,6 +60,18 @@ def _sensevoice_config_error(cfg: Any, *, model_name: Any = None) -> Optional[st
     return None
 
 
+def _parse_srt_transcript(output: str) -> str:
+    segments = []
+    for block in output.replace("\r\n", "\n").split("\n\n"):
+        lines = [line.strip() for line in block.splitlines()]
+        timestamp = next((index for index, line in enumerate(lines) if "-->" in line), None)
+        if timestamp is not None:
+            text = " ".join(line for line in lines[timestamp + 1:] if line)
+            if text:
+                segments.append(text)
+    return " ".join(segments)
+
+
 def _transcribe_sensevoice(
     file_path: str, model_name: str, *, language: Optional[str] = None,
     prompt: Optional[str] = None,
@@ -90,14 +102,23 @@ def _transcribe_sensevoice(
                 return _error_result(prep_error)
             command = [binary, "-m", str(model), "-a", prepared_input]
             if vad_model is not None:
-                command.extend(("--vad", str(vad_model)))
+                command.extend(("--vad", str(vad_model), "--srt"))
             command.extend(("--backend", backend))
             from tools.environments.local import hermes_subprocess_env
+            child_env = {
+                key: value
+                for key, value in hermes_subprocess_env(inherit_credentials=False).items()
+                if not key.upper().startswith("AWS_")
+            }
             result = _run_quiet(
                 command, timeout=timeout,
-                env=hermes_subprocess_env(inherit_credentials=False),
+                env=child_env,
             )
-        transcript = result.stdout.strip()
+        transcript = (
+            _parse_srt_transcript(result.stdout)
+            if vad_model is not None
+            else result.stdout.strip()
+        )
         if not transcript:
             return _error_result("SenseVoice completed but produced no transcript")
         return _ok_result(transcript, "sensevoice")

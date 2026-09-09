@@ -67,6 +67,43 @@ def _clear_fleet_restart_pending_marker() -> None:
     _m()._clear_marker_file(_fleet_restart_pending_marker_path(), label="fleet-restart-pending")
 
 
+def _read_pending_marker_expected_sha() -> str | None:
+    """``expected_sha`` from the pending marker, or None when absent/unreadable."""
+    try:
+        text = _fleet_restart_pending_marker_path().read_text(encoding="utf-8")
+    except OSError:
+        return None
+    for line in text.splitlines():
+        key, sep, value = line.partition("=")
+        if sep and key.strip() == "expected_sha" and value.strip():
+            return value.strip()
+    return None
+
+
+def _discharge_fleet_restart_marker_if_covered() -> bool:
+    """Clear the marker when the live fleet provably serves its expected SHA.
+
+    A restart outside the update flow (``hermes gateway restart``, systemd, or a
+    manual relaunch) already fulfills the pull→restart obligation once every
+    recorded runtime reports ``current`` at the expected SHA — keeping the marker
+    past that point is a false stale warning. Anything unverifiable (missing SHA,
+    probe failure, partial fleet) keeps the marker: fail closed. Never raises.
+    """
+    try:
+        if not _fleet_restart_pending_marker_path().is_file():
+            return False
+        expected_sha = _read_pending_marker_expected_sha()
+        if not expected_sha:
+            return False
+        if not _live_fleet_covers_receipt(expected_sha):
+            return False
+    except Exception as exc:
+        logger.debug("Fleet-restart discharge probe failed: %s", exc)
+        return False
+    _clear_fleet_restart_pending_marker()
+    return True
+
+
 def _current_checkout_sha() -> str | None:
     """Current on-disk checkout HEAD, or None if it cannot be resolved."""
     from hermes_cli.update_cmd import _capture_head_sha, _m
@@ -191,7 +228,10 @@ def _pending_fleet_restart_needed() -> bool:
     # than latest.json. An older receipt cannot discharge that unknown obligation.
     with suppress(OSError):
         if _fleet_restart_pending_marker_path().is_file():
-            return True
+            if not _discharge_fleet_restart_marker_if_covered():
+                return True
+            # Discharged: the fleet provably serves the expected SHA. Fall through
+            # to the receipt check in case it reports a different skew.
     if not _receipt_reports_stale_runtime():
         return False
     return not _live_fleet_covers_receipt(_current_checkout_sha())

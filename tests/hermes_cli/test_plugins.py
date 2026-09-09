@@ -1447,6 +1447,43 @@ class TestResolvePreToolBlock:
             "rule_key": "write_file:ssh",
         }
 
+    def test_approve_passes_display_target_to_gate(self, monkeypatch):
+        from hermes_cli.plugins import resolve_pre_tool_block
+
+        seen = {}
+        monkeypatch.setattr(
+            "hermes_cli.plugins.invoke_hook",
+            lambda hook_name, **kwargs: [
+                {"action": "approve", "message": "why", "rule_key": "k",
+                 "display_target": "  kubectl delete pod x  "}
+            ],
+        )
+
+        def _approve(tool_name, reason, **kwargs):
+            seen["display_target"] = kwargs.get("display_target")
+            return {"approved": True, "message": None}
+
+        monkeypatch.setattr("tools.approval.request_tool_approval", _approve)
+        assert resolve_pre_tool_block("terminal", {}) is None
+        assert seen == {"display_target": "kubectl delete pod x"}
+
+    def test_approve_without_display_target_passes_empty(self, monkeypatch):
+        from hermes_cli.plugins import resolve_pre_tool_block
+
+        seen = {}
+        monkeypatch.setattr(
+            "hermes_cli.plugins.invoke_hook",
+            lambda hook_name, **kwargs: [{"action": "approve", "message": "why", "display_target": 42}],
+        )
+
+        def _approve(tool_name, reason, **kwargs):
+            seen["display_target"] = kwargs.get("display_target")
+            return {"approved": True, "message": None}
+
+        monkeypatch.setattr("tools.approval.request_tool_approval", _approve)
+        assert resolve_pre_tool_block("terminal", {}) is None
+        assert seen == {"display_target": ""}  # non-string ignored → synthetic label
+
 
     def test_approve_gate_exception_fails_closed(self, monkeypatch):
         from hermes_cli.plugins import resolve_pre_tool_block

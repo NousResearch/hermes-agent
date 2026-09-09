@@ -153,3 +153,43 @@ def test_speak_mode_rpc_round_trip(tmp_path, monkeypatch):
     bad = server._methods["speak.mode"](13, {"mode": "sometimes"})
     assert "error" in bad
     server._methods["speak.mode"](14, {"mode": "once"})
+
+
+def _say_items(text):
+    from tui_gateway import methods_complete_helpers as h
+
+    if not hasattr(h, "_item"):
+        h._item = lambda text, meta, display=None: {"text": text, "display": display or text, "meta": meta}
+    return h._say_completions(text)
+
+
+def test_say_completions_list_options_on_bare_command():
+    texts = [i["text"] for i in _say_items("/say")]
+    assert texts == [" stop", " always", " once"]
+
+
+def test_say_completions_list_options_after_space():
+    assert [i["text"] for i in _say_items("/say ")] == ["stop", "always", "once"]
+
+
+def test_say_completions_filter_by_prefix():
+    assert [_say_items("/say a")[0]["text"]] == ["always"]
+    assert [_say_items("/say o")[0]["text"]] == ["once"]
+    assert [_say_items("/say s")[0]["text"]] == ["stop"]
+    assert _say_items("/say x") == []
+
+
+def test_say_completions_ignore_other_commands():
+    assert _say_items("/copy") is None
+    assert _say_items("/saying hi") is None
+    assert _say_items("say") is None
+
+
+def test_complete_slash_serves_say_options():
+    from tui_gateway import server
+
+    result = server._methods["complete.slash"](31, {"text": "/say "})
+    texts = [i["text"] for i in result["result"]["items"]]
+    assert texts == ["stop", "always", "once"]
+    metas = {i["text"]: i["meta"] for i in result["result"]["items"]}
+    assert "future reply" in metas["always"]

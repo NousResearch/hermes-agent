@@ -162,6 +162,32 @@ def _details_completions(text: str) -> list[dict] | None:
     return []
 
 
+_SAY_OPTIONS = (
+    ("stop", "stop playback"),
+    ("always", "speak every future reply automatically"),
+    ("once", "back to on-demand (default)"),
+)
+
+
+def _say_completions(text: str) -> list[dict] | None:
+    """Argument completions for ``/say [text|number|stop|always|once]``; None when ``text`` is not that command."""
+    if not text.lower().startswith("/say"):
+        return None
+    stripped = text.strip()
+    if stripped and not "/say".startswith(stripped.lower().split()[0]):
+        return None
+    body = text[len("/say") :].removeprefix(" ")
+    parts = body.split()
+    trailing = text.endswith(" ")
+    if not body or (not parts and trailing):
+        lead = "" if trailing else " "
+        return [_item(f"{lead}{c}", meta) for c, meta in _SAY_OPTIONS]
+    if len(parts) == 1 and not trailing:
+        prefix = parts[0].lower()
+        return [_item(c, meta) for c, meta in _SAY_OPTIONS if c.startswith(prefix) and c != prefix]
+    return []
+
+
 def _model_picker_context(agent):
     """Layer live session state onto config without losing custom identity."""
     from hermes_cli.inventory import load_picker_context

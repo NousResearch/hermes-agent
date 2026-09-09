@@ -338,17 +338,44 @@ def _apply_delete_for_wal_reset_bug(conn: sqlite3.Connection, *, db_label: str, 
     return "delete"
 
 
+_EXTERNAL_RUNTIME_REPAIR_HINT = (
+    "the interpreter providing SQLite is not Hermes-managed for this install — upgrade or replace it with a "
+    "Python build bundled with SQLite 3.51.3+ (or backports 3.50.7 / 3.44.6), then restart Hermes"
+)
+
+
+def _interpreter_in_project_venv(project_root) -> bool:
+    """True when the running interpreter lives in the install tree's own ``venv``/``.venv``.
+
+    Only that layout is rebuilt by ``hermes update``; a git checkout driven by a system Python or an
+    externally managed venv keeps its linked SQLite whatever ``hermes update`` does to the code tree.
+    """
+    try:
+        from pathlib import Path
+
+        from hermes_constants import project_venv_dir
+
+        venv = project_venv_dir(project_root)
+        return venv is not None and Path(sys.prefix).resolve() == venv.resolve()
+    except Exception:
+        return False
+
+
 def _wal_reset_repair_hint() -> str:
     """Repair hint matching what ``hermes update`` can actually do for this install type.
 
-    See #75153.
+    See #75153 and #79179: ``git``/``unknown`` describe the code layout, not who owns the running
+    interpreter, so the managed-runtime wording additionally requires the project's own venv.
     """
     try:
         from hermes_cli.config import detect_install_method, get_project_root, recommended_update_command_for_method
-        method = detect_install_method(get_project_root())
+        root = get_project_root()
+        method = detect_install_method(root)
         cmd = recommended_update_command_for_method(method)
         if method in {"git", "unknown"}:
-            return f"Hermes-managed installs can repair the embedded runtime with `{cmd}`"
+            if _interpreter_in_project_venv(root):
+                return f"Hermes-managed installs can repair the embedded runtime with `{cmd}`"
+            return _EXTERNAL_RUNTIME_REPAIR_HINT
         return f"update the container image with `{cmd}`" if method == "docker" else cmd  # else nix/nixos
     except Exception:
         return "install a Python build bundled with SQLite 3.51.3+ (or backports 3.50.7 / 3.44.6) and restart Hermes"

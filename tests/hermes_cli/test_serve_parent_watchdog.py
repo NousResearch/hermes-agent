@@ -223,13 +223,14 @@ def test_parent_watchdog_detects_dead_parent_on_process_lookup_error():
 
 
 def test_ps_process_start_marker_raises_process_lookup_error_on_missing_process(monkeypatch):
-    """#80204: _process_start_marker raises ProcessLookupError when ps exits non-zero with no marker."""
+    """#80204: _process_start_marker raises ProcessLookupError when ps exits with known missing-process markers."""
     import subprocess
     import pytest
     from hermes_cli import web_server_lifecycle
 
+    # returncode != 1 but explicit "No such process" in stderr
     def fake_run(*args, **kwargs):
-        return subprocess.CompletedProcess(args=args, returncode=1, stdout="", stderr="ps: 4242: No such process")
+        return subprocess.CompletedProcess(args=args, returncode=2, stdout="", stderr="ps: 4242: No such process")
 
     monkeypatch.setattr(subprocess, "run", fake_run)
     monkeypatch.setattr(web_server_lifecycle.sys, "platform", "darwin")
@@ -237,4 +238,57 @@ def test_ps_process_start_marker_raises_process_lookup_error_on_missing_process(
 
     with pytest.raises(ProcessLookupError):
         web_server_lifecycle._process_start_marker(4242)
+
+
+def test_ps_process_start_marker_raises_oserror_on_unrelated_nonzero_failure(monkeypatch):
+    """#80204: unrelated ps failures (e.g. returncode 2 without missing-process message) must raise OSError."""
+    import subprocess
+    import pytest
+    from hermes_cli import web_server_lifecycle
+
+    def fake_run(*args, **kwargs):
+        return subprocess.CompletedProcess(args=args, returncode=2, stdout="", stderr="ps: temporary process table failure")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setattr(web_server_lifecycle.sys, "platform", "darwin")
+    monkeypatch.setattr(web_server_lifecycle.os, "name", "posix")
+
+    with pytest.raises(OSError) as excinfo:
+        web_server_lifecycle._process_start_marker(4242)
+    assert "ps could not inspect PID 4242" in str(excinfo.value)
+    assert not isinstance(excinfo.value, ProcessLookupError)
+
+
+def test_parent_watchdog_does_not_kill_live_parent_on_unrelated_ps_failure(monkeypatch):
+    """#80204: an unrelated nonzero ps error raises OSError, degrading to pid_exists which keeps a live backend alive."""
+    import subprocess
+    from hermes_cli import web_server_lifecycle
+
+    def fake_run(*args, **kwargs):
+        return subprocess.CompletedProcess(args=args, returncode=2, stdout="", stderr="ps: temporary process table failure")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setattr(web_server_lifecycle.sys, "platform", "darwin")
+    monkeypatch.setattr(web_server_lifecycle.os, "name", "posix")
+
+    # Parent is alive: must return False (do not kill healthy backend)
+    assert (
+        web_server_lifecycle._is_serve_orphaned(
+            4242,
+            "ps:Thu Aug 20 22:33:11 2026",
+            pid_exists=lambda _pid: True,
+        )
+        is False
+    )
+
+    # Parent is dead: must return True (reap orphan)
+    assert (
+        web_server_lifecycle._is_serve_orphaned(
+            4242,
+            "ps:Thu Aug 20 22:33:11 2026",
+            pid_exists=lambda _pid: False,
+        )
+        is True
+    )
+
 

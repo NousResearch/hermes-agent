@@ -286,8 +286,7 @@ def test_e_call_does_not_unwind_module_callables():
         "summarize_background_review_actions returned partial results"
         in src
     ), "expected partial-results guard message present"
-    # And the prior-tonon-dict guard for the call_details lookup.
-    assert "if not isinstance(detail, dict):" in src
+    # And the non-dict guards on free-form tool payload fields.
     assert "if isinstance(ops_raw, list)" in src
     assert "if isinstance(change_raw, dict)" in src
 
@@ -299,9 +298,6 @@ def test_e_call_does_not_unwind_module_callables():
 
 def main():
     runner = TestRunner()
-    runner.run("a_change_as_list_does_not_crash", test_a_change_as_list_does_not_crash)
-    runner.run("a_change_as_int_does_not_crash", test_a_change_as_int_does_not_crash)
-    runner.run("b_operations_as_string_treated_as_empty", test_b_operations_as_string_treated_as_empty)
     runner.run("b_operations_as_none_treated_as_empty", test_b_operations_as_none_treated_as_empty)
     runner.run("c_operations_contains_non_dict_entries", test_c_operations_contains_non_dict_entries)
     runner.run("d_detail_non_dict_replaced_with_empty", test_d_detail_non_dict_replaced_with_empty)

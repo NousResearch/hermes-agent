@@ -31,14 +31,15 @@ describe('bot_relay.deliver budget mirrors', () => {
   })
 
   it('mirrors the backend per-attempt turn timeout', () => {
-    const attemptTimeouts = [...relayHandler.matchAll(/timeout=(\d+)/g)].map(m => Number(m[1]))
+    // The backend names both numbers explicitly (methods_bot_relay.py) so the mirror is a
+    // constant-to-constant check, not a count of textual subprocess.run(...) call sites.
+    const attemptTimeout = relayHandler.match(/^TURN_ATTEMPT_TIMEOUT_SECONDS\s*=\s*(\d+)/m)
+    const maxAttempts = relayHandler.match(/^TURN_MAX_ATTEMPTS\s*=\s*(\d+)/m)
 
-    expect(attemptTimeouts.length, 'expected the attempt and its policy-gated retry').toBeGreaterThanOrEqual(2)
-    // Every attempt shares one bound; if they ever diverge, the mirror below is
-    // no longer a faithful ceiling and this must be revisited deliberately.
-    expect(new Set(attemptTimeouts).size, `attempt timeouts diverged: ${attemptTimeouts}`).toBe(1)
-    expect(tsConstant('RELAY_TURN_ATTEMPT_MS')).toBe(attemptTimeouts[0] * 1000)
-    expect(tsConstant('RELAY_TURN_MAX_ATTEMPTS')).toBe(attemptTimeouts.length)
+    expect(attemptTimeout, 'TURN_ATTEMPT_TIMEOUT_SECONDS must exist in methods_bot_relay.py').toBeTruthy()
+    expect(maxAttempts, 'TURN_MAX_ATTEMPTS must exist in methods_bot_relay.py').toBeTruthy()
+    expect(tsConstant('RELAY_TURN_ATTEMPT_MS')).toBe(Number(attemptTimeout![1]) * 1000)
+    expect(tsConstant('RELAY_TURN_MAX_ATTEMPTS')).toBe(Number(maxAttempts![1]))
   })
 
   it('keeps the client deadline strictly greater than the backend ceiling', () => {

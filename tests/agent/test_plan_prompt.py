@@ -68,7 +68,7 @@ class TestPlanRegistryWiring:
         assert "plan" in GATEWAY_KNOWN_COMMANDS
 
     def test_plan_in_telegram_bot_commands(self):
-        from hermes_cli.commands import telegram_bot_commands
+        from hermes_cli.commands_platforms import telegram_bot_commands
 
         names = {n for n, _ in telegram_bot_commands()}
         assert "plan" in names

@@ -19,7 +19,6 @@ from tools.session_search_tool import (
     SESSION_SEARCH_SCHEMA,
     _format_timestamp,
     _is_compacted_message,
-    _is_compression_ended,
     _resolve_to_parent,
     _session_link,
     session_search,
@@ -152,9 +151,9 @@ class TestBrowseShape:
                 return []
 
         db = _DB()
-        monkeypatch.setattr("hermes_state.get_shared_session_db", lambda: db)
+        monkeypatch.setattr("hermes_state_registry.acquire", lambda: db)
         monkeypatch.setattr(
-            "hermes_state.release_or_close",
+            "hermes_state_registry.release_or_close",
             lambda _: setattr(db, "released", db.released + 1),
         )
 
@@ -928,24 +927,6 @@ class TestRewindExclusion:
             current_session_id="s_mixed",
         ))
         assert result_rewind["count"] == 0
-
-
-class TestCompressionEndedHelper:
-    """Unit tests for _is_compression_ended."""
-
-    def test_compression_ended_session(self, db):
-        db.create_session("s1", source="cli")
-        db.end_session("s1", "compression")
-        assert _is_compression_ended(db, "s1") is True
-
-    def test_delegation_child_not_ended(self, db):
-        """A delegation child under a compression continuation does NOT have
-        end_reason='compression' itself."""
-        db.create_session("s_parent", source="cli")
-        db.end_session("s_parent", "compression")
-        db.create_session("s_continuation", source="cli", parent_session_id="s_parent")
-        db.create_session("s_delegate_child", source="cli", parent_session_id="s_continuation")
-        assert _is_compression_ended(db, "s_delegate_child") is False
 
 
 class TestLegacyContinuationPlusDelegation:

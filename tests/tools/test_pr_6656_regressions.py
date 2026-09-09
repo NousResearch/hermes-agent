@@ -26,11 +26,8 @@ from unittest.mock import patch
 
 import pytest
 
-from tools.skills_hub import (
-    SkillBundle,
-    bundle_content_hash,
-    uninstall_skill,
-)
+from tools.skills_hub_install import bundle_content_hash, uninstall_skill
+from tools.skills_hub_models import SkillBundle
 from tools.skills_guard import content_hash
 
 

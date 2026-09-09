@@ -423,6 +423,11 @@ def apply_retry_restarts(
                 "refunding the iteration budget indefinitely.",
                 max_retries,
             )
+            # The correction that tripped the cap was never applied; hand it back as the
+            # next user turn (result["pending_steer"]) instead of losing it to clear_interrupt().
+            _unapplied = agent._drain_pending_redirect()
+            if _unapplied:
+                agent.steer(_unapplied)
             return _verdict("break")
         # Cancelled request produced no valid assistant item: reuse the same logical
         # iteration after the outer loop appends partial context + correction.

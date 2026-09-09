@@ -33,6 +33,20 @@ DEFAULT_MINIMAX_MODEL = "speech-02-hd"
 DEFAULT_MINIMAX_VOICE_ID = "English_expressive_narrator"
 DEFAULT_MINIMAX_BASE_URL = "https://api.minimax.io/v1/t2a_v2"
 DEFAULT_MINIMAX_CN_BASE_URL = "https://api.minimaxi.com/v1/t2a_v2"
+# Emotions MiniMax documents for the t2a_v2 voice_setting. "neutral" is not in
+# the published list but the API accepts it, and Hermes sent it on every request
+# until the hardcoded default was removed, so it stays recognized here: it is
+# the documented way back to the old flat delivery.
+MINIMAX_EMOTIONS = frozenset({
+    "happy",
+    "sad",
+    "angry",
+    "fearful",
+    "disgusted",
+    "surprised",
+    "calm",
+    "neutral",
+})
 DEFAULT_MISTRAL_TTS_MODEL = "voxtral-mini-tts-2603"
 DEFAULT_MISTRAL_TTS_VOICE_ID = "c69964a6-ab8b-4f8a-9465-ec0925096ec8"  # Paul - Neutral
 DEFAULT_XAI_VOICE_ID = "eve"
@@ -389,13 +403,54 @@ def _raise_minimax_api_error(result: Dict[str, Any]) -> None:
             f"MiniMax TTS API error (code {status_code}): {base_resp.get('status_msg', 'unknown error')}")
 
 
+def _minimax_voice_id(mm_config: Dict[str, Any]) -> str:
+    """Resolve the configured MiniMax voice id.
+
+    Both payload shapes need it (t2a_v2 nests it under voice_setting, the older
+    text_to_speech endpoint carries it flat), so the default lives in one place
+    and the two cannot drift apart.
+    """
+    return mm_config.get("voice_id", DEFAULT_MINIMAX_VOICE_ID)
+
+
+def _minimax_voice_setting(mm_config: Dict[str, Any]) -> Dict[str, Any]:
+    """Build the t2a_v2 voice_setting payload. (minimax-auto-emotion)
+
+    The emotion field is only sent when a config explicitly sets one. With
+    the field omitted, MiniMax "automatically selects the most natural
+    emotion based on text", which is the API's documented default; the old
+    hardcoded "neutral" fallback silently disabled that inference on every
+    request, flattening delivery. An empty value or "auto" also omits the
+    field, so a config can state the intent explicitly.
+    """
+    setting = {
+        "voice_id": _minimax_voice_id(mm_config),
+        "speed": mm_config.get("speed", 1.0),
+        "vol": mm_config.get("vol", 1.0),
+        "pitch": mm_config.get("pitch", 0),
+    }
+    emotion = str(mm_config.get("emotion") or "").strip().lower()
+    if emotion and emotion != "auto":
+        if emotion not in MINIMAX_EMOTIONS:
+            logger.warning(
+                "tts.minimax.emotion is %r, which is not an emotion MiniMax "
+                "documents (%s). Sending it as configured; if the API rejects "
+                "it, correct the value or unset it to let MiniMax infer the "
+                "emotion from the text.",
+                emotion,
+                ", ".join(sorted(MINIMAX_EMOTIONS)),
+            )
+        setting["emotion"] = emotion
+    return setting
+
+
 def _generate_minimax_tts(text: str, output_path: str, tts_config: Dict[str, Any]) -> str:
     """Generate audio via MiniMax: ``t2a_v2`` (nested payload, JSON reply with hex audio) or the legacy
     ``text_to_speech`` endpoint (flat payload, raw ``audio/*`` body), detected from the URL."""
     runtime = _resolve_minimax_tts_runtime(tts_config)
     mm_config = _section(tts_config, "minimax")
     model = mm_config.get("model", DEFAULT_MINIMAX_MODEL)
-    voice_id = mm_config.get("voice_id", DEFAULT_MINIMAX_VOICE_ID)
+    voice_id = _minimax_voice_id(mm_config)
     base_url = runtime.endpoint
     # MiniMax scopes TTS requests by GroupId (``?GroupId=<id>`` on the t2a_v2 URL): config or
     # MINIMAX_GROUP_ID, attached only when absent from the URL.
@@ -407,10 +462,7 @@ def _generate_minimax_tts(text: str, output_path: str, tts_config: Dict[str, Any
     if is_t2a_v2:
         payload = {
             "model": model, "text": text,
-            "voice_setting": {
-                "voice_id": voice_id, "speed": mm_config.get("speed", 1.0), "vol": mm_config.get("vol", 1.0),
-                "pitch": mm_config.get("pitch", 0), "emotion": mm_config.get("emotion", "neutral"),
-            },
+            "voice_setting": _minimax_voice_setting(mm_config),
             "audio_setting": {
                 "sample_rate": mm_config.get("sample_rate", 32000), "bitrate": mm_config.get("bitrate", 128000),
                 "format": "mp3", "channel": 1,

@@ -584,6 +584,9 @@ export const ru = defineLocale({
       tabStripAuto: 'Авто',
       tabStripAlways: 'Всегда',
       tabStripNever: 'Никогда',
+      tabStripWrapTitle: 'Перенос вкладок',
+      tabStripWrapDesc:
+        'Переносить вкладки на несколько рядов вместо прокрутки одного. Занимает место у переписки; полезно, когда окно слишком узкое для открытых вкладок.',
       terminalFontTitle: 'Шрифт терминала',
       terminalFontDesc:
         'Выберите установленный шрифт для терминалов приложения. Nerd Fonts отображают Powerlevel10k и иконки оболочки; оставьте пустым, чтобы использовать встроенный JetBrains Mono.',

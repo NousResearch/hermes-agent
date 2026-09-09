@@ -411,6 +411,9 @@ export const zhHant = defineLocale({
       tabStripAuto: '自動',
       tabStripAlways: '一律',
       tabStripNever: '永不',
+      tabStripWrapTitle: '換行分頁',
+      tabStripWrapDesc:
+        '讓分頁換到多列顯示，而不是在單列中捲動。會佔用對話區高度；當視窗寬度不足以顯示所有分頁時很有用。',
       terminalFontTitle: '終端機字型',
       terminalFontDesc:
         '選擇已安裝的字型用於桌面端終端機。Nerd Font 可正確顯示 Powerlevel10k 與 Shell 圖示；留空則使用內建的 JetBrains Mono。',

@@ -595,6 +595,9 @@ export const en: Translations = {
       tabStripAuto: 'Auto',
       tabStripAlways: 'Always',
       tabStripNever: 'Never',
+      tabStripWrapTitle: 'Wrap Tabs',
+      tabStripWrapDesc:
+        'Overflow tabs onto more rows instead of scrolling one. Costs transcript height; useful when the window is too narrow for the tabs you keep open.',
       terminalFontTitle: 'Terminal Font',
       terminalFontDesc:
         'Choose an installed font for Desktop terminals. Nerd Fonts render Powerlevel10k and shell icons; leave blank to use bundled JetBrains Mono.',

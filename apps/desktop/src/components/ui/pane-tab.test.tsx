@@ -1,7 +1,7 @@
 import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { PaneTab, PaneTabLabel } from './pane-tab'
+import { PaneTab, PaneTabLabel, PaneTabStrip } from './pane-tab'
 
 afterEach(cleanup)
 
@@ -201,5 +201,91 @@ describe('PaneTab hover close button', () => {
     )
 
     expect(screen.queryByRole('button', { name: 'Close' })).toBeNull()
+  })
+})
+
+describe('PaneTabStrip overflow', () => {
+  // The strip has exactly two overflow behaviours and they are mutually
+  // exclusive: scroll one row (default) or wrap onto several. Asserted as a
+  // contract between the prop and the two properties that actually decide it —
+  // the list's wrapping and the bar's height being a floor vs a fixed value —
+  // rather than by freezing the full class string, which churns on every
+  // restyle.
+
+  const listOf = (): HTMLElement => screen.getByRole('tablist')
+  const barOf = (): HTMLElement => listOf().parentElement!
+  const classes = (el: HTMLElement): string[] => el.className.split(/\s+/).filter(Boolean)
+
+  it('scrolls a single row by default — the strip stays exactly one tab tall', () => {
+    render(
+      <PaneTabStrip>
+        <PaneTab>
+          <PaneTabLabel>one</PaneTabLabel>
+        </PaneTab>
+      </PaneTabStrip>
+    )
+
+    expect(classes(listOf())).toContain('overflow-x-auto')
+    expect(classes(listOf())).not.toContain('flex-wrap')
+    // Fixed height, not a floor: a scrolling strip can never grow a second row.
+    expect(classes(barOf())).toContain('h-7')
+    expect(classes(barOf())).not.toContain('min-h-7')
+  })
+
+  it('wraps onto more rows when asked, and stops scrolling', () => {
+    render(
+      <PaneTabStrip wrap>
+        <PaneTab>
+          <PaneTabLabel>one</PaneTabLabel>
+        </PaneTab>
+      </PaneTabStrip>
+    )
+
+    expect(classes(listOf())).toContain('flex-wrap')
+    // Both halves matter: a wrapping list inside a fixed-height bar clips the
+    // rows it just created instead of showing them.
+    expect(classes(listOf())).not.toContain('overflow-x-auto')
+    expect(classes(barOf())).toContain('min-h-7')
+    expect(classes(barOf())).not.toContain('h-7')
+  })
+
+  it('pins a wrapped tab to ONE row — height:100% would resolve against the whole bar', () => {
+    const { rerender } = render(
+      <PaneTabStrip wrap>
+        <PaneTab>
+          <PaneTabLabel>one</PaneTabLabel>
+        </PaneTab>
+      </PaneTabStrip>
+    )
+
+    // The var the tab's height reads. Set here, a tab is one row tall; unset,
+    // it falls back to 100% and stretches to every row in the bar.
+    expect(classes(barOf())).toContain('[--pane-tab-h:1.75rem]')
+
+    rerender(
+      <PaneTabStrip>
+        <PaneTab>
+          <PaneTabLabel>one</PaneTabLabel>
+        </PaneTab>
+      </PaneTabStrip>
+    )
+
+    // Unwrapped strips must NOT declare it: the fallback is what keeps a
+    // single-row tab filling a bar whose height it does not know.
+    expect(classes(barOf())).not.toContain('[--pane-tab-h:1.75rem]')
+  })
+
+  it('keeps trailing chrome one row tall so the chevron stays on the first row', () => {
+    render(
+      <PaneTabStrip trailing={<button type="button">chevron</button>} wrap>
+        <PaneTab>
+          <PaneTabLabel>one</PaneTabLabel>
+        </PaneTab>
+      </PaneTabStrip>
+    )
+
+    const trailing = screen.getByText('chevron').parentElement!
+
+    expect(classes(trailing)).toContain('h-7')
   })
 })

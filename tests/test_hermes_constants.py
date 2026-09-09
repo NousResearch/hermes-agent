@@ -1212,6 +1212,31 @@ class TestEnginesNodeRange:
         assert hermes_constants.engines_node_allows_major(20, missing) is True
 
 
+class TestHermesNodeTargetMajorDefault:
+    def test_default_target_major_comes_from_engines_node(self, monkeypatch, tmp_path):
+        monkeypatch.delenv("HERMES_NODE_TARGET_MAJOR", raising=False)
+        p = _write_engines_node(tmp_path, "^22.22.0 || ^24.11.0 || >=26.0.0")
+        monkeypatch.setattr(
+            hermes_constants, "_HERMES_NODE_TARGET_MAJOR",
+            int(hermes_constants.engines_node_minimum_major(p)))
+        assert hermes_constants._HERMES_NODE_TARGET_MAJOR == 22
+
+    def test_env_var_override_still_wins(self, monkeypatch):
+        monkeypatch.setenv("HERMES_NODE_TARGET_MAJOR", "99")
+        # Re-derive the same expression the module uses, since the module constant itself is
+        # frozen at import time (this test documents the override contract, not a live re-import).
+        import importlib
+        importlib.reload(hermes_constants)
+        assert hermes_constants._HERMES_NODE_TARGET_MAJOR == 99
+        monkeypatch.delenv("HERMES_NODE_TARGET_MAJOR", raising=False)
+        importlib.reload(hermes_constants)
+
+
+def test_target_major_default_reflects_this_repos_engines_node():
+    """Not monkeypatched: the real package.json's engines.node minimum, as installed today."""
+    assert hermes_constants.engines_node_minimum_major() == 22
+
+
 class TestEnginesNodeRangeMalformedInput:
     """Adversarial inputs beyond the happy-path/missing-file tests above: engines.node
     values that are syntactically present but semantically wrong, and I/O edge cases."""

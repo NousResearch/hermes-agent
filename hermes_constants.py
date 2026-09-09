@@ -443,7 +443,8 @@ def engines_node_default_upgrade_major(package_json_path: Path | None = None) ->
     return max(major for _, major in _parse_engines_node_clauses(package_json_path))
 
 
-_HERMES_NODE_TARGET_MAJOR = int(os.environ.get("HERMES_NODE_TARGET_MAJOR", "22"))
+_HERMES_NODE_TARGET_MAJOR = int(
+    os.environ.get("HERMES_NODE_TARGET_MAJOR") or engines_node_minimum_major())
 _managed_node_heal_attempted = False
 _NODE_BOOTSTRAP_SCRIPT = Path(__file__).resolve().parent / "scripts" / "lib" / "node-bootstrap.sh"
 

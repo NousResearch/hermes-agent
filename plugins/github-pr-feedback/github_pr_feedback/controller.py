@@ -13,7 +13,7 @@ import sys
 from collections import Counter
 from collections.abc import Callable, Mapping
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 from pathlib import Path
@@ -246,6 +246,18 @@ class ScanResult:
     local_ci_catalogue_deferred: int = 0
 
 
+def _dispatch_generation(task: KanbanTask, lease: ClaimLease) -> KanbanTask:
+    """Give a reclaimed receipt a fresh Kanban identity instead of reusing a done card.
+
+    ``lease.version`` starts at 1 for a fresh claim and is only incremented by
+    the reopen/reclaim paths (see ``FeedbackLedger``), so version > 1 is
+    exactly the "this dispatch was reopened" signal.
+    """
+    if lease.version <= 1:
+        return task
+    return replace(task, idempotency_key=f"{task.idempotency_key}:dispatch-{lease.version}")
+
+
 def _bind_pooled_worktree_task(
     local_git: object, receipt: FeedbackReceipt, task_id: str, board: str
 ) -> None:
@@ -427,12 +439,26 @@ def _is_reopenable_egress_failure(
 def _is_staged_auto_dispatch_task(
     details: Mapping[str, object], receipt: FeedbackReceipt
 ) -> bool:
-    """Recognize a finalized repair card that never left its staging state."""
+    """Recognize a finalized repair card that never left its staging state.
+
+    A card created directly with ``initial_status="blocked"`` (auto-dispatch
+    staging) never goes through ``block_task()``, so it has no "blocked"-kind
+    lifecycle event -- only "created" and similar. A repair worker that
+    legitimately claims, runs, and then calls ``kanban_block`` (e.g. after
+    detecting a changed PR identity) produces a real "blocked" event and ends
+    up in the exact same status/idempotency-prefix/evidence shape, so those
+    static fields alone can't tell the two apart; the event history can.
+    """
     if details.get("status") != "blocked":
         return False
     idempotency_key = details.get("idempotency_key")
     if not isinstance(idempotency_key, str) or not idempotency_key.startswith(
         "github-pr-repair:v3:"
+    ):
+        return False
+    events = details.get("_events")
+    if isinstance(events, list) and any(
+        isinstance(event, Mapping) and event.get("kind") == "blocked" for event in events
     ):
         return False
     evidence = _legacy_task_evidence(details.get("body"))
@@ -1814,14 +1840,14 @@ class ScanController:
                 receipt, lease, prepared.path, prepared.expected_sha
             )
             task_id = self._kanban.create_or_get_task(
-                _ci_failure_task(
+                _dispatch_generation(_ci_failure_task(
                     self._policy,
                     receipt,
                     audit,
                     prepared,
                     assignee=assignee,
                     control_home=self._control_home,
-                )
+                ), lease)
             )
             _bind_pooled_worktree_task(
                 self._local_git, receipt, task_id, self._policy.board or ""
@@ -1945,13 +1971,13 @@ class ScanController:
                 prepared.expected_sha,
             )
             task_id = self._kanban.create_or_get_task(
-                _local_ci_task(
+                _dispatch_generation(_local_ci_task(
                     self._policy,
                     receipt,
                     prepared,
                     control_home=self._control_home,
                     post_results=audit_policy.post_results,
-                )
+                ), lease)
             )
             _bind_pooled_worktree_task(
                 self._local_git, receipt, task_id, self._policy.board or ""
@@ -2241,7 +2267,7 @@ class ScanController:
                 prepared.expected_sha,
             )
             task_id = self._kanban.create_or_get_task(
-                _task(
+                _dispatch_generation(_task(
                     self._policy,
                     receipt,
                     prepared,
@@ -2250,7 +2276,7 @@ class ScanController:
                     assignee_override=self._typed_ci_assignee(receipt, feedback.body),
                     labels=labels,
                     internal_intent_review=internal_intent_review,
-                )
+                ), lease)
             )
             _bind_pooled_worktree_task(
                 self._local_git, receipt, task_id, self._policy.board or ""

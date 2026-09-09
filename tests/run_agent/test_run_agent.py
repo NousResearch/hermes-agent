@@ -4899,8 +4899,7 @@ class TestRunConversation:
 
         with (
             patch("model_tools.handle_function_call", return_value="ok"),
-            patch("hermes_cli.kanban_db_dispatch._record_task_failure",
-                  mock_record_failure),
+            patch("hermes_cli.kanban_db.block_task", mock_block_task),
             patch("hermes_cli.kanban_db_connect.connect", mock_connect),
             patch.object(agent, "_persist_session"),
             patch.object(agent, "_save_trajectory"),

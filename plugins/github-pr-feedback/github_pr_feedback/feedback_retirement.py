@@ -6,8 +6,10 @@ from .ledger import LedgerStateError
 
 
 def retire_closed_feedback(policy, github, ledger, receipt):
-    if receipt.feedback_kind == "pr_local_ci":
-        raise ValueError("CI dispatches require their own governed lifecycle")
+    # pr_local_ci normally completes through audit-pr's own typed-receipt flow,
+    # not this one -- but audit-pr rejects a non-OPEN PR identity outright, so
+    # a card whose PR closes mid-audit has no other path to clear its pending
+    # ledger row. Retire it here too rather than leaving it stuck forever.
     current = github.get_pull_request(receipt.repository, receipt.pr_number)
     if (not policy.enabled or current.state not in {"CLOSED", "MERGED"}
             or current.head_sha != receipt.head_sha

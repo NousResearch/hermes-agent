@@ -12,6 +12,40 @@ class CompletionPolicyError(ValueError):
     """A registered completion contract could not be satisfied."""
 
 
+def _load_bundled_github_pr_feedback_guard():
+    """Import ``github_pr_feedback.repair_completion_policy`` from the bundled
+    plugin source, not the worker's own (possibly plugin-disabled) sys.path.
+
+    A dispatched worker profile that doesn't enable ``github-pr-feedback`` never
+    puts it on sys.path, so a bare ``import github_pr_feedback...`` here raises
+    ModuleNotFoundError even though its control-plane receipt still needs this
+    guard enforced. Load it directly from the bundled plugin directory (part of
+    this same trusted Hermes source tree, unlike a profile-local override
+    manifest) via its real package name so its relative imports resolve.
+    """
+    import sys
+
+    module = sys.modules.get("github_pr_feedback")
+    if module is None:
+        import importlib.util
+
+        from hermes_cli._startup_fast import project_root_str
+
+        plugin_dir = Path(project_root_str()) / "plugins" / "github-pr-feedback" / "github_pr_feedback"
+        spec = importlib.util.spec_from_file_location(
+            "github_pr_feedback", plugin_dir / "__init__.py",
+            submodule_search_locations=[str(plugin_dir)],
+        )
+        if spec is None or spec.loader is None:
+            raise ImportError(f"cannot load bundled github_pr_feedback from {plugin_dir}")
+        module = importlib.util.module_from_spec(spec)
+        sys.modules["github_pr_feedback"] = module
+        spec.loader.exec_module(module)
+    import importlib
+
+    return importlib.import_module("github_pr_feedback.repair_completion_policy").guard_repair_completion
+
+
 def enforce_completion_policies(*, task_id, board, assignee, summary):
     from hermes_cli.plugins import invoke_hook
 
@@ -77,7 +111,10 @@ def _control_plane_github_feedback_results(*, task_id):
                 return []
     except (OSError, sqlite3.Error, ValueError):
         return [{"action": "block", "message": "Kanban completion policy could not verify the control-plane GitHub PR feedback binding"}]
-    from github_pr_feedback.repair_completion_policy import guard_repair_completion
+    try:
+        guard_repair_completion = _load_bundled_github_pr_feedback_guard()
+    except ImportError:
+        return [{"action": "block", "message": "Kanban completion policy could not load the control-plane GitHub PR feedback guard"}]
 
     ctx = type("ControlPlaneFeedbackContext", (), {"get_config": staticmethod(lambda key, default=None: True if key == "enabled" else default)})()
     return [guard_repair_completion(ctx, task_id=task_id)]

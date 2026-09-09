@@ -39,6 +39,20 @@ class TestTurnContext:
         assert b.last_progress_msg == [None]
         assert b.repeat_count == [0]
         assert b._cleanup_msg_ids == []
+        a.interim_media_responses.append("MEDIA:/a.png")
+        assert b.interim_media_responses == []
+
+    def test_interim_callback_captures_media_payloads(self):
+        ctx = TurnContext(
+            source=SessionSource(platform=Platform.LOCAL, chat_id="c", user_id="u"),
+            user_config={},
+            resolve_display_setting=lambda *_args: False,
+            _run_still_current=lambda: True,
+            interim_assistant_messages_enabled=True,
+        )
+        _consumer, _delta, callback, _want = _make_runner(ctx)._setup_stream_consumer("local")
+        callback("Generated artifact\nMEDIA:/tmp/interim.png")
+        assert ctx.interim_media_responses == ["Generated artifact\nMEDIA:/tmp/interim.png"]
 
     def test_shared_containers_visible_to_outer_scope(self):
         # The outer body and the runner share the SAME list objects, so

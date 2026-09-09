@@ -232,19 +232,89 @@ def _classify_default(value: str, channels, table, match) -> str | None:
     return next((browser for frag, browser in table if match(value, frag)), None)
 
 
-def _detect_default_windows() -> str | None:
+def _windows_shell_progid(scheme: str) -> str | None:
+    """Return the effective ProgId for a URL scheme via the Windows Shell API."""
     try:
-        import winreg  # type: ignore
+        import ctypes
+        from ctypes import wintypes
 
-        key = winreg.OpenKey(
-            winreg.HKEY_CURRENT_USER,
-            r"Software\Microsoft\Windows\Shell\Associations\UrlAssociations\https\UserChoice")
-        prog_id, _ = winreg.QueryValueEx(key, "ProgId")
-        winreg.CloseKey(key)
-    except Exception:  # non-Windows host (no winreg) or unreadable key
+        # ASSOCSTR_PROGID from shlwapi.h.
+        assocstr_progid = 20
+
+        assoc_query = ctypes.WinDLL(
+            "Shlwapi.dll",
+            use_last_error=True,
+        ).AssocQueryStringW
+
+        assoc_query.argtypes = [
+            wintypes.DWORD,
+            wintypes.DWORD,
+            wintypes.LPCWSTR,
+            wintypes.LPCWSTR,
+            wintypes.LPWSTR,
+            ctypes.POINTER(wintypes.DWORD),
+        ]
+        assoc_query.restype = ctypes.c_long
+
+        length = wintypes.DWORD(0)
+
+        # First call obtains the required output buffer size.
+        assoc_query(
+            0,
+            assocstr_progid,
+            scheme,
+            None,
+            None,
+            ctypes.byref(length),
+        )
+
+        if not length.value:
+            return None
+
+        buffer = ctypes.create_unicode_buffer(length.value)
+
+        result = assoc_query(
+            0,
+            assocstr_progid,
+            scheme,
+            None,
+            buffer,
+            ctypes.byref(length),
+        )
+
+        return buffer.value if result == 0 else None
+
+    except (AttributeError, OSError):
         return None
-    return _classify_default(str(prog_id or "").lower(), _WINDOWS_CHANNEL_PROGIDS,
-                             _WINDOWS_PROGID_MAP, str.startswith)
+
+
+def _detect_default_windows() -> str | None:
+    # Prefer the effective association reported by the Windows Shell.
+    # Modern Windows builds may no longer expose it through the legacy
+    # UserChoice\ProgId registry value.
+    prog_id = _windows_shell_progid("https")
+
+    # Compatibility fallback for older Windows versions/environments.
+    if not prog_id:
+        try:
+            import winreg  # type: ignore
+
+            with winreg.OpenKey(
+                winreg.HKEY_CURRENT_USER,
+                r"Software\Microsoft\Windows\Shell\Associations"
+                r"\UrlAssociations\https\UserChoice",
+            ) as key:
+                prog_id, _ = winreg.QueryValueEx(key, "ProgId")
+
+        except (ImportError, OSError):
+            return None
+
+    return _classify_default(
+        str(prog_id or "").lower(),
+        _WINDOWS_CHANNEL_PROGIDS,
+        _WINDOWS_PROGID_MAP,
+        str.startswith,
+    )
 
 
 def _run_stdout(argv: list[str]) -> str | None:

@@ -254,10 +254,11 @@ def export_current_turn_boundary(agent: Any, result: Any, user_message: Any) -> 
     identical historical prompt and claim its old answer as this turn's. So the producer
     exports the coordinate, computed on the final list, only when the addressed row is this
     turn's user message verbatim. Otherwise the keys are omitted and hosts fail closed.
-    Also mirrors the final index into ``_persist_user_message_idx`` so the persist override
-    targets the surviving row after post-turn micro-compaction.
+
+    A preflight-timeout envelope carries the prior history without this turn's row (#7100), so a
+    repeated prompt would resolve to its historical copy: nothing is exported there.
     """
-    if not isinstance(result, dict):
+    if not isinstance(result, dict) or result.get("turn_exit_reason") == "context_compression_timeout":
         return result
     messages = result.get("messages")
     turn_id = str(getattr(agent, "_current_turn_id", "") or "")
@@ -278,7 +279,6 @@ def export_current_turn_boundary(agent: Any, result: Any, user_message: Any) -> 
         return result  # rewritten (merge-into-tail) row: not a proven boundary
     result["turn_id"] = turn_id
     result["current_turn_user_idx"] = idx
-    agent._persist_user_message_idx = idx
     return result
 
 

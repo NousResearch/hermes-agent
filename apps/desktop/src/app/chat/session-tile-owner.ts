@@ -56,3 +56,14 @@ export function ownerRouteKey(route: SessionOwnerRoute | undefined): string | nu
 
   return `${route.connectionId}\u0000${route.profile}\u0000${route.targetProfile ?? ''}`
 }
+
+/** Inverse of `ownerRouteKey`; the two live together so the field order cannot drift. */
+export function ownerRouteFromKey(key: string | null): SessionOwnerRoute | undefined {
+  if (!key) {
+    return undefined
+  }
+
+  const [connectionId, profile, targetProfile] = key.split('\u0000')
+
+  return { connectionId, profile, ...(targetProfile ? { targetProfile } : {}) }
+}

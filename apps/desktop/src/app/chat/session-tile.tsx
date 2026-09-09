@@ -52,7 +52,7 @@ import {
   sessionPinId
 } from '@/store/session'
 import { isSessionRemovalPending } from '@/store/session-removal'
-import { requestForSessionProfile, type SessionOwnerRoute } from '@/store/session-request-router'
+import { requestForSessionProfile } from '@/store/session-request-router'
 import {
   $sessionStates,
   $sessionTileDelegateRevision,
@@ -72,7 +72,7 @@ import { SessionDraftTitle } from './session-draft-title'
 import { startSessionDrag } from './session-drag'
 import { SessionStatusDot } from './session-status-dot'
 import { useSessionTileActions } from './session-tile-actions'
-import { ownerRouteKey, tileOwnerRoute } from './session-tile-owner'
+import { ownerRouteFromKey, ownerRouteKey, tileOwnerRoute } from './session-tile-owner'
 import { type SessionView, SessionViewProvider } from './session-view'
 import { SessionContextMenu } from './sidebar/session-actions-menu'
 import { lastVisibleMessageIsUser } from './thread-loading'
@@ -186,11 +186,6 @@ function TileChat({
   const queryClient = useQueryClient()
 
   // Owner ladder, same as useSessionTileActions (session-tile-actions.ts:99-103).
-  // Recomputed when the tile store or any owner-bearing session list changes,
-  // NOT on every render: this component re-renders per streamed token, and the
-  // lookup spreads three arrays before scanning them.
-  const tiles = useStore($sessionTiles)
-
   // The route is derived through a SCALAR key instead of a `$sessions` array
   // subscription: `$sessions` is republished whenever ANY row's last_active
   // moves (a sessions.changed tick — multi-profile / Bots setups tick every
@@ -214,15 +209,7 @@ function TileChat({
     }
   )
 
-  const ownerRoute = useMemo<SessionOwnerRoute | undefined>(() => {
-    if (!ownerKey) {
-      return undefined
-    }
-
-    const [connectionId, profile, targetProfile] = ownerKey.split('\u0000')
-
-    return { connectionId, profile, ...(targetProfile ? { targetProfile } : {}) }
-  }, [ownerKey])
+  const ownerRoute = useMemo(() => ownerRouteFromKey(ownerKey), [ownerKey])
 
   const requestTileGateway = useCallback(
     <T,>(method: string, params?: Record<string, unknown>, timeoutMs?: number, signal?: AbortSignal): Promise<T> =>

@@ -96,6 +96,8 @@ export type BotsMessages = {
     makePublic: string
     madePrivate: string
     madePublic: string
+    circle: string
+    circleHint: string
     needsAttention: string
     needsInput: string
     /** The kind filter's three options, in menu order. */

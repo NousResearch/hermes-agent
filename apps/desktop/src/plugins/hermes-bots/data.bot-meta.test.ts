@@ -489,10 +489,13 @@ describe("a bot is named by its own backend, never by another bot's cached recor
   })
 
   it('Edit Profile sends only what the user changed since it opened', () => {
-    const opened = { color: '#ff0000', image: null, shape: 'circle' as const, title: 'Old title' }
+    const opened = { circle: 'work', color: '#ff0000', image: null, shape: 'circle' as const, title: 'Old title' }
 
     // Renamed elsewhere meanwhile; this dialog only changes the color.
     expect(editedLook(opened, { ...opened, color: '#0000ff' })).toEqual({ color: '#0000ff', custom: true })
     expect(editedLook(opened, { ...opened, title: ' Old title ' })).toBeNull()
+    // Circle is membership, not look: it rides alone, and only a real change (not case or spacing) counts.
+    expect(editedLook(opened, { ...opened, circle: 'hobby' })).toEqual({ circle: 'hobby' })
+    expect(editedLook(opened, { ...opened, circle: ' Work ' })).toBeNull()
   })
 })

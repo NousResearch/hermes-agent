@@ -1821,6 +1821,8 @@ DEFAULT_CONFIG = {
         "max_size_mb": 5,      # max size per log file before rotation
         "backup_count": 3,     # rotated backups to keep
     },
+    # Picker preference only; explicitly typed models and provider defaults are unchanged.
+    "models": {"openrouter": {"free_only": False}},
     # Remote model-catalog manifest: curated OpenRouter / Nous Portal model lists fetched from this
     # URL (falls back to the in-repo snapshot on network failure), so picker lists update without a
     # release. Default URL is served by the docs-site GitHub Pages deploy.

@@ -133,6 +133,8 @@ def build_models_payload(
 
     if include_unconfigured:
         rows = list(rows) + _without_slug(_append_unconfigured_rows(rows, ctx), "moa")
+    from hermes_cli.models_openrouter_policy import apply_openrouter_picker_policy
+    apply_openrouter_picker_policy(rows, max_models=max_models)
     if picker_hints:
         _apply_picker_hints(rows)
     if canonical_order:

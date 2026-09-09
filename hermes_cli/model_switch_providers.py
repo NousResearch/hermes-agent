@@ -376,7 +376,7 @@ def _live_or_curated_ids(slug: str, curated: dict, *fallback_keys: str, merge_mo
     back to the curated list (merged with models.dev for preferred providers) when live is empty."""
     from hermes_cli.models import _MODELS_DEV_PREFERRED, _merge_with_models_dev, cached_provider_model_ids
     model_ids = cached_provider_model_ids(slug)
-    if not model_ids:
+    if not model_ids and slug != "openrouter":
         model_ids = _first_curated(curated, fallback_keys or (slug,))
         if merge_models_dev and slug in _MODELS_DEV_PREFERRED:
             model_ids = _merge_with_models_dev(slug, model_ids)
@@ -1101,10 +1101,12 @@ def list_authenticated_providers(
     _lap_bare_custom_row(b, custom_providers)
     if custom_providers and isinstance(custom_providers, list):
         _lap_custom_provider_rows(b, custom_providers)
-    return _finalize_picker_rows(b.results, user_providers, current_model)
+    return _finalize_picker_rows(b.results, user_providers, current_model,
+                                 max_models=max_models, refresh=refresh)
 
 
-def _finalize_picker_rows(results: list, user_providers, current_model: str) -> list:
+def _finalize_picker_rows(results: list, user_providers, current_model: str, *,
+                          max_models: int | None = None, refresh: bool = False) -> list:
     """Post-passes: drop ``providers.<name>.enabled: false`` rows, inject the current model, sort."""
     # The enabled post-filter covers built-in rows (sections 1-2) that bypass the per-section
     # gate; matched by slug and ``provider_id``.
@@ -1139,6 +1141,9 @@ def _finalize_picker_rows(results: list, user_providers, current_model: str) -> 
                 row["total_models"] = row.get("total_models", len(models)) + 1
             break
 
+    from hermes_cli.models_openrouter_policy import apply_openrouter_picker_policy
+    apply_openrouter_picker_policy(results, max_models=max_models, force_refresh=refresh)
+
     # Current provider first, then by model count descending
     results.sort(key=lambda r: (not r["is_current"], -r["total_models"]))
     return results
@@ -1166,11 +1171,9 @@ def list_picker_providers(
     include_moa: bool = False, excluded_providers: list | None = None) -> List[dict]:
     """Interactive-picker variant of :func:`list_authenticated_providers`.
 
-    OpenRouter's list is replaced with :func:`hermes_cli.models.fetch_openrouter_models` (curated
-    snapshot filtered against the live catalog) and rows left with no models are dropped — except
+    Shared finalized rows already apply the OpenRouter policy. Empty rows are dropped except
     custom endpoints, where the user may supply their own model set through config."""
     from hermes_cli.model_switch import list_authenticated_providers
-    from hermes_cli.models import fetch_openrouter_models
     providers = list_authenticated_providers(
         current_provider=current_provider, current_base_url=current_base_url,
         user_providers=user_providers, custom_providers=custom_providers, max_models=max_models,
@@ -1180,15 +1183,6 @@ def list_picker_providers(
 
     filtered: List[dict] = []
     for p in providers:
-        if str(p.get("slug", "")).lower() == "openrouter":
-            try:
-                live_ids = [mid for mid, _ in fetch_openrouter_models()]
-            except Exception:
-                live_ids = list(p.get("models", []))
-            p = dict(p)
-            p["models"] = live_ids[:max_models] if max_models is not None else live_ids
-            p["total_models"] = len(live_ids)
-
         is_custom_endpoint = bool(p.get("is_user_defined")) and bool(p.get("api_url"))
         if p.get("models") or is_custom_endpoint:
             filtered.append(p)

@@ -622,7 +622,7 @@ class CLIModelSwitchMixin:
             # Curated list (same as `hermes model` / gateway pickers); live catalog only when
             # it is empty (user-defined endpoints).
             model_list = provider_data.get("models", [])
-            if not model_list:
+            if not model_list and not provider_data.get("catalog_authoritative"):
                 try:
                     from hermes_cli.models import provider_model_ids
                     model_list = provider_model_ids(provider_data["slug"]) or model_list

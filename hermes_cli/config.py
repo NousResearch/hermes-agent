@@ -1206,6 +1206,11 @@ def validate_config_structure(config: Optional[Dict[str, Any]] = None) -> List["
 
     issues: List[ConfigIssue] = []
     _validate_voice(config, issues)
+    from hermes_cli.models_openrouter_policy import openrouter_free_only
+    try:
+        openrouter_free_only(config)
+    except ValueError as exc:
+        _issue(issues, "error", str(exc), "Set models.openrouter.free_only to true or false")
     cp = config.get("custom_providers")
     fb = config.get("fallback_model")
     for value, validator in ((cp, _validate_custom_providers), (fb, _validate_fallback_model)):

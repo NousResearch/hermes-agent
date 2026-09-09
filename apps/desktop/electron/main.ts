@@ -69,7 +69,7 @@ import {
   verifyHermesCli
 } from './backend-probes'
 import { waitForDashboardPortAnnouncement } from './backend-ready'
-import { recycleOwnedBackend } from './backend-recycle'
+import { recycleOwnedBackend, recyclePinnedBackend } from './backend-recycle'
 import { isPidAliveWindows, waitForBackendRelease } from './backend-release-gate'
 import {
   isHostKeyChangedBootFailure,
@@ -125,6 +125,7 @@ import {
   type RegistryBackendRequestScope,
   remoteRequestMatchesBaseUrl,
   resolveAuthMode,
+  resolveLegacyApiConnection,
   resolveProfileApiRequest,
   resolveProfileBackendRoute,
   resolveRemoteSshDashboardProfile,
@@ -15191,6 +15192,26 @@ const hudIpc = registerHudIpc({
 })
 
 ipcMain.handle('hermes:backend:recycle', async (_event, profile) => {
+  if (profile && typeof profile === 'object') {
+    const primaryProfile = primaryProfileKey()
+    const config = readDesktopConnectionConfig()
+    await recyclePinnedBackend(profile, {
+      registry: readDesktopConnectionsRegistry(),
+      routeOptions: profileRouteOptions(profile.profile),
+      primarySshKey: profileSshOverride(config, primaryProfile) ? sshScopeKey(primaryProfile) : sshScopeKey(null),
+      effectiveSshFingerprint: source => effectiveSshConfigFingerprint(managedSshConfig(source, profile.profile)),
+      primaryPromise: () => backendConnectionState.getPromise(),
+      pool: backendPool,
+      sshState: key => sshConnections.get(key),
+      teardownSsh: key => teardownSshConnection(key),
+      teardownPool: stopPoolBackend,
+      teardownPrimary: () => teardownPrimaryBackendAndWait({ soft: true }),
+      notifyApplied: sendConnectionApplied
+    })
+
+    return { ok: true }
+  }
+
   // Models-page recovery after a code-skew 503 (#97046): kill the owned
   // SSH serve (if any) before the local child so reconnect cannot reuse a
   // stale lockfile. Soft primary teardown keeps the renderer shell mounted.
@@ -16696,7 +16717,7 @@ async function handleHermesApiRequest(request) {
   let response
 
   try {
-    const connection = await ensureBackend(routeProfile, { passive: request?.passive })
+    const connection = await resolveLegacyApiConnection(request, routeProfile, ensureBackend)
     const timeoutMs = resolveTimeoutMs(request?.timeoutMs, DEFAULT_FETCH_TIMEOUT_MS)
 
     response = await fetchJsonForBackend(connection, apiRoute.requestPath, {

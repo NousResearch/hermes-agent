@@ -11,8 +11,10 @@
  */
 
 import assert from 'node:assert/strict'
+import http from 'node:http'
+import type { AddressInfo } from 'node:net'
 
-import { test } from 'vitest'
+import { test, vi } from 'vitest'
 
 import { makeNousCloudBackendDownError } from './backend-health'
 import {
@@ -43,6 +45,7 @@ import {
   profileSshOverride,
   remoteRequestMatchesBaseUrl,
   resolveAuthMode,
+  resolveLegacyApiConnection,
   resolveProfileApiRequest,
   resolveProfileBackendRoute,
   resolveRemoteSshDashboardProfile,
@@ -53,6 +56,78 @@ import {
   translateSelfProfileQuery,
   withTransientRetries
 } from './connection-config'
+
+test('legacy Settings resolution retains its HTTP origin across awaits and rejects route replacement', async () => {
+  const received: string[] = []
+
+  const server = http.createServer((request, response) => {
+    received.push(`${request.method} ${request.url}`)
+    response.setHeader('Content-Type', 'application/json')
+    response.end(JSON.stringify({ ok: true }))
+  })
+
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
+
+  const legacyConnection = {
+    mode: 'remote',
+    baseUrl: `http://127.0.0.1:${(server.address() as AddressInfo).port}`,
+    token: 'fixture'
+  }
+
+  const request = { connectionId: undefined, profile: 'worker', path: '/api/config', legacyConnection }
+  let resolve!: (connection: typeof legacyConnection) => void
+  let backend = Promise.resolve(legacyConnection)
+  const ensureBackend = vi.fn((_profile: string | null) => backend)
+
+  const dispatch = async (method: string) => {
+    assert.equal(apiRequestRegistryConnectionId(request), null)
+
+    const route = resolveProfileApiRequest(request.profile, request.path, {
+      globalRemote: true,
+      primaryProfile: 'default'
+    })
+
+    const connection = await resolveLegacyApiConnection(request, route.backendProfile, ensureBackend)
+
+    return (await fetch(`${connection.baseUrl}${route.requestPath}`, { method })).json()
+  }
+
+  try {
+    await dispatch('GET')
+    backend = new Promise(yes => {
+      resolve = yes
+    })
+    const write = dispatch('PUT')
+    resolve(legacyConnection)
+    await write
+    assert.deepEqual(received, ['GET /api/config?profile=worker', 'PUT /api/config?profile=worker'])
+    assert.ok(ensureBackend.mock.calls.every(args => args[0] === null))
+
+    // A connection apply while resolution awaits may replace the v1 route. No local write.
+    for (const replacement of [
+      { ...legacyConnection, mode: 'local' },
+      { ...legacyConnection, baseUrl: 'https://replacement.invalid' },
+      { ...legacyConnection, token: 'replacement' },
+      { ...legacyConnection, headers: { 'Cf-Access-Client-Id': 'replacement' } }
+    ]) {
+      backend = new Promise(yes => {
+        resolve = yes
+      })
+      const stale = dispatch('PUT')
+      resolve(replacement)
+      await assert.rejects(stale, /Backend changed/)
+    }
+
+    assert.equal(received.length, 2)
+    await assert.rejects(
+      resolveLegacyApiConnection({ legacyConnection: null }, null, () => Promise.resolve(legacyConnection)),
+      /Backend changed/
+    )
+  } finally {
+    server.closeAllConnections()
+    await new Promise<void>(resolve => server.close(() => resolve()))
+  }
+})
 
 // --- connectionScopeKey / normAuthMode ---
 

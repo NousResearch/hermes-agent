@@ -1,6 +1,6 @@
 import { JsonRpcGatewayClient } from '@hermes/shared'
 
-import type { HermesApiRequest } from '@/global'
+import type { HermesApiRequest, LegacyConnectionOwner } from '@/global'
 
 // Desktop startup fires a burst of read-only data calls (config, profiles,
 // model info/options, cron) the moment the backend passes readiness. On a
@@ -110,10 +110,9 @@ export function ambientOwnerConnectionId(): string | undefined {
  *
  *  Helpers under `api/` go through here rather than calling the preload bridge
  *  directly, so the connection tag cannot be forgotten on a new one.
- *  capabilityScoped() now emits an explicit `connectionId` for EVERY object
- *  pin — `'local'` included — so a pin always overrides the ambient tag spread
- *  underneath it. (It used to omit the key for 'local', which made the pin
- *  unable to beat the ambient tag; helpers then had to bypass this wrapper.) */
+ *  capabilityScoped() preserves concrete pins (including 'local') and emits
+ *  an own undefined connectionId for an explicit legacy null pin. Both must
+ *  override the ambient tag underneath them, including in delayed callbacks. */
 export function hermesApi<T>(request: HermesApiRequest): Promise<T> {
   return window.hermesDesktop.api<T>({ ...connectionScoped(), ...request })
 }
@@ -139,16 +138,33 @@ export function hermesApi<T>(request: HermesApiRequest): Promise<T> {
 //     remote/cloud/ssh gateway: the v1 fallback route treats a remote registry
 //     primary as global-remote, so the explicit pin is the ONLY way back to
 //     this machine (see apiRequestRegistryConnectionId in Electron main).
-export type ProfileScope = undefined | null | string | { connectionId?: null | string; profile?: null | string }
+//   - `{ connectionId: null, profile }` → explicit v1/legacy route, never the
+//     foreground registry source. Settings also pins the resolved descriptor
+//     so replacing that route fails closed before a request reaches a new host.
+export type ProfileScope =
+  | undefined
+  | null
+  | string
+  | {
+      connectionId?: null | string
+      profile?: null | string
+      legacyConnection?: LegacyConnectionOwner
+    }
 
-export function capabilityScoped(scope?: ProfileScope): { connectionId?: string; profile?: string } {
+export function capabilityScoped(scope?: ProfileScope): {
+  connectionId?: string
+  profile?: string
+  legacyConnection?: LegacyConnectionOwner
+} {
   if (scope && typeof scope === 'object') {
     const profile = (scope.profile ?? '').trim()
     const connectionId = (scope.connectionId ?? '').trim()
 
     return {
       ...(profile ? { profile } : {}),
-      ...(connectionId ? { connectionId } : {})
+      // An explicit legacy pin must also override hermesApi's ambient registry tag.
+      ...(connectionId ? { connectionId } : scope.connectionId === null ? { connectionId: undefined } : {}),
+      ...(scope.legacyConnection ? { legacyConnection: scope.legacyConnection } : {})
     }
   }
 
@@ -161,10 +177,22 @@ export function capabilityScoped(scope?: ProfileScope): { connectionId?: string;
  *  to hit the same backend (a remote registry PRIMARY makes the ambient path
  *  remote), so sharing the bare-profile cache row between them painted one
  *  machine's config under the other's scope (AGENTS.md scope-in-key rule). */
+// Descriptor lifetime isolates legacy caches without storing credentials in query keys.
+const legacyScopeGenerations = new WeakMap<LegacyConnectionOwner, number>()
+let legacyScopeGeneration = 0
+
 export function profileScopeKey(scope?: ProfileScope): string {
   if (scope && typeof scope === 'object') {
     const profile = (scope.profile ?? '').trim() || 'default'
     const connectionId = (scope.connectionId ?? '').trim()
+
+    if (!connectionId && scope.legacyConnection) {
+      if (!legacyScopeGenerations.has(scope.legacyConnection)) {
+        legacyScopeGenerations.set(scope.legacyConnection, ++legacyScopeGeneration)
+      }
+
+      return `legacy:${legacyScopeGenerations.get(scope.legacyConnection)}::${profile}`
+    }
 
     return connectionId ? `${connectionId}::${profile}` : profile
   }

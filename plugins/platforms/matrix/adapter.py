@@ -1478,11 +1478,12 @@ class MatrixAdapter(BasePlatformAdapter):
 
     async def send_multiple_images(
         self, chat_id: str, images: list[tuple[str, str]], metadata: Optional[Dict[str, Any]] = None,
-        human_delay: float = 0.0) -> None:
+        human_delay: float = 0.0) -> SendResult:
         if not images:
-            return
+            return SendResult(success=False, error="no images to send")
         from urllib.parse import unquote as _unquote
         total = len(images)
+        delivered = False
         for idx, (image_url, alt_text) in enumerate(images, start=1):
             if human_delay > 0 and idx > 1:
                 await asyncio.sleep(human_delay)
@@ -1494,6 +1495,8 @@ class MatrixAdapter(BasePlatformAdapter):
                 result = await self.send_image(chat_id=chat_id, image_url=image_url, caption=caption, metadata=metadata)
             if not result.success:
                 logger.warning("Matrix: failed to send image %d/%d: %s", idx, total, result.error)
+            delivered = delivered or result.success
+        return SendResult(success=delivered, error=None if delivered else "all images failed to send")
 
     async def send_document(
         self, chat_id: str, file_path: str, caption: Optional[str] = None, file_name: Optional[str] = None,

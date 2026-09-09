@@ -3173,11 +3173,11 @@ def request_changes(
 
 def promote_task(
     conn: sqlite3.Connection, task_id: str, *, actor: str, reason: Optional[str] = None,
-    force: bool = False, dry_run: bool = False,
+    dry_run: bool = False,
 ) -> tuple[bool, Optional[str]]:
     """Operator promotion ``todo``/``blocked`` -> ``ready`` with an audit event.
-    Refused while a parent is unfinished unless ``force``; ``dry_run`` only
-    validates. Returns ``(ok, reason)``."""
+    Refused while a parent is unfinished; ``dry_run`` only validates.
+    Returns ``(ok, reason)``."""
     cur_status = _task_status(conn, task_id)
     if cur_status is None:
         return False, f"task {task_id} not found"
@@ -3188,18 +3188,22 @@ def promote_task(
             f"'todo' or 'blocked'"
         )
 
-    if not force:
-        parents = conn.execute(
-            "SELECT t.id, t.status FROM tasks t "
-            "JOIN task_links l ON l.parent_id = t.id "
-            "WHERE l.child_id = ?", (task_id,),
-        ).fetchall()
-        unsatisfied = [p["id"] for p in parents if p["status"] not in ("done", "archived")]
-        if unsatisfied:
-            return False, (
-                f"unsatisfied parent dependencies: "
-                f"{', '.join(unsatisfied)} (use --force to override)"
-            )
+    # No override: claim_task demotes ready -> todo on an undone parent whichever
+    # writer set 'ready', so a forced promotion would only report a success the
+    # first claim silently reverts (#106195). The dependency itself is the knob.
+    parents = conn.execute(
+        "SELECT t.id, t.status FROM tasks t "
+        "JOIN task_links l ON l.parent_id = t.id "
+        "WHERE l.child_id = ?", (task_id,),
+    ).fetchall()
+    unsatisfied = [p["id"] for p in parents if p["status"] not in ("done", "archived")]
+    if unsatisfied:
+        return False, (
+            f"unsatisfied parent dependencies: {', '.join(unsatisfied)} "
+            f"(the ready -> running claim re-checks parents, so promotion cannot "
+            f"bypass them; complete the parents or drop the link with "
+            f"`hermes kanban unlink <parent_id> {task_id}`)"
+        )
 
     if dry_run:
         return True, None
@@ -3211,9 +3215,7 @@ def promote_task(
         )
         if upd.rowcount != 1:
             return False, f"task {task_id} status changed during promotion"
-        _append_event(
-            conn, task_id, "promoted_manual", {"actor": actor, "reason": reason, "forced": force},
-        )
+        _append_event(conn, task_id, "promoted_manual", {"actor": actor, "reason": reason})
 
     return True, None
 

@@ -1176,7 +1176,9 @@ class TurnRunner:
                 if pdc is not None:
                     pdc[ctx.session_key] = bg_release
         # display.memory_notifications: off | on (generic "💾 Memory updated", default) | verbose.
-        mem_notif = ctx.user_config.get("display", {}).get("memory_notifications")
+        # `display:` present-but-null yields None, not the {} default (same `or {}` guard as
+        # display_config.py / runtime_footer.py).
+        mem_notif = (ctx.user_config.get("display") or {}).get("memory_notifications")
         if isinstance(mem_notif, bool):
             mem_notif = "on" if mem_notif else "off"
         agent.memory_notifications = str(mem_notif).lower() if mem_notif else "on"

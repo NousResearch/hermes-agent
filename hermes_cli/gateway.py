@@ -1385,7 +1385,7 @@ def _s6_gateway_snapshot(gateway_pids: tuple[int, ...]) -> GatewayRuntimeSnapsho
     from hermes_cli.service_manager import detect_service_manager, get_service_manager
     if detect_service_manager() != "s6":
         return None
-    service_name = f"gateway-{_profile_suffix() or 'default'}"
+    service_name = f"gateway-{_current_profile_name()}"
     mgr = get_service_manager()
     service_installed = service_running = False
     try:
@@ -1949,16 +1949,29 @@ def _profile_name_from_home(home: Path, default: Path) -> str | None:
 
 
 def _profile_suffix() -> str:
-    """Service-name suffix for HERMES_HOME: "" for the default root, the profile name for
-    ``<root>/profiles/<name>``, else a short hash of the path."""
+    """Service-name suffix for HERMES_HOME: "" for the platform-native default home (``~/.hermes``), the
+    profile name for ``<root>/profiles/<name>``, else a short hash of the path.
+
+    The bare name is reserved for the NATIVE default, not ``get_default_hermes_root()``: that helper
+    treats any HERMES_HOME outside ``~/.hermes`` (Docker ``/opt/data``, a temp dir) as "the root itself",
+    which let a temp-home harness resolve to the default profile's ``hermes-gateway`` unit and uninstall
+    the production gateway. Service names are host-wide identities; only the real default home owns the
+    bare one."""
     import hashlib
-    from hermes_constants import get_default_hermes_root
+    from hermes_constants import _get_platform_default_hermes_home, get_default_hermes_root
     home = get_hermes_home().resolve()
-    default = get_default_hermes_root().resolve()
-    if home == default:
+    if home == _get_platform_default_hermes_home().resolve():
         return ""
-    # Fallback: short hash for arbitrary HERMES_HOME paths
-    return _profile_name_from_home(home, default) or hashlib.sha256(str(home).encode()).hexdigest()[:8]
+    name = _profile_name_from_home(home, get_default_hermes_root().resolve())
+    return name or hashlib.sha256(str(home).encode()).hexdigest()[:8]
+
+
+def _current_profile_name() -> str:
+    """Profile id relative to the profile ROOT: ``default`` for the root itself (Docker's ``/opt/data``
+    included), ``<name>`` for ``<root>/profiles/<name>``, else the service hash. s6 slots and the
+    multiplexer ask which PROFILE this is; ``_profile_suffix()`` answers which HOST SERVICE this is."""
+    from hermes_constants import profile_name_for_home
+    return profile_name_for_home(get_hermes_home()) or _profile_suffix()
 
 
 def _profile_arg(hermes_home: str | None = None, default_root: str | Path | None = None) -> str:
@@ -3205,8 +3218,24 @@ def _systemd_scope_preamble(
     return system
 
 
+def _systemd_unit_belongs_to_current_home(system: bool = False) -> bool:
+    """False (with a warning) when the installed unit pins a HERMES_HOME other than this process's: the
+    service name then resolved to ANOTHER install's gateway, and stop/disable/unlink would take it down."""
+    _sync_hermes_home_from_systemd_unit(system=system)  # sudo strips HERMES_HOME; adopt the unit's first
+    unit_home = _hermes_home_from_systemd_unit_file(system=system)
+    if unit_home is None or Path(unit_home).expanduser().resolve() == get_hermes_home().resolve():
+        return True
+    print_warning(
+        f"Refusing to remove {get_systemd_unit_path(system=system)}: it runs HERMES_HOME={unit_home}, "
+        f"but this process has HERMES_HOME={get_hermes_home()}"
+    )
+    return False
+
+
 def systemd_uninstall(system: bool = False):
     system = _systemd_scope_preamble("uninstall", system, require_installed=False)
+    if not _systemd_unit_belongs_to_current_home(system):
+        return
     _run_systemctl(["stop", get_service_name()], system=system, check=False, timeout=90)
     _run_systemctl(["disable", get_service_name()], system=system, check=False, timeout=30)
 
@@ -4277,7 +4306,7 @@ def named_profile_served_by_running_multiplexer(profile_name: str | None = None)
     See #97120.
     """
     try:
-        suffix = profile_name if profile_name is not None else _profile_suffix()
+        suffix = profile_name if profile_name is not None else _current_profile_name()
     except Exception:
         return False
     if not suffix or suffix == "default":
@@ -4334,7 +4363,7 @@ def _guard_named_profile_under_multiplexer(force: bool = False) -> None:
     if force:
         return
     try:
-        suffix = _profile_suffix()
+        suffix = _current_profile_name()
     except Exception:
         return
     if not named_profile_served_by_running_multiplexer():
@@ -5683,8 +5712,7 @@ def _dispatch_via_service_manager_if_s6(action: str, profile: str | None = None)
     if detect_service_manager() != "s6":
         return False
     if profile is None:
-        # _profile_suffix() is "" for the default root; the default gateway is gateway-default.
-        profile = _profile_suffix() or "default"
+        profile = _current_profile_name()  # root home (Docker /opt/data included) is gateway-default
     mgr = get_service_manager()
     if action not in ("start", "stop", "restart"):
         return False

@@ -1708,6 +1708,21 @@ class TestSessionTitleLineage:
         # The unrelated holder keeps its title.
         assert db.get_session("a")["title"] == "shared"
 
+    def test_projected_tip_inherits_root_title_when_untitled(self, db):
+        """A rotation that ended the root before the title carry ran leaves the name on the
+        root only; the projected lineage row must still surface it (exact-title lookups such as
+        `hermes peer dm` -> canonical "Bot Chat", #106165). A titled tip keeps its own title."""
+        import time as _time
+        self._make_compression_chain(db, _time.time() - 3600)
+        db.set_session_title("root", "Bot Chat")
+
+        rows = db.list_sessions_rich(limit=50, order_by_last_active=True, search_query="Bot Chat")
+        assert [(r["id"], r["title"], r["_lineage_root_id"]) for r in rows] == [("tip", "Bot Chat", "root")]
+
+        db.set_session_title("tip", "renamed tip")
+        rows = db.list_sessions_rich(limit=50, order_by_last_active=True)
+        assert [(r["id"], r["title"]) for r in rows] == [("tip", "renamed tip")]
+
 
 
 class TestSanitizeTitle:

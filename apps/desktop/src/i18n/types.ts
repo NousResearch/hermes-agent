@@ -396,18 +396,12 @@ export interface Translations {
       failed: string
       empty: string
       kinds: { bundled: string; disk: string; runtime: string }
+      agentHalfMissing: string
+      agentHalfMissingTip: string
       agent: {
         title: string
-        blurb: string
-        appliesTo: string
-        empty: string
-        loadFailed: string
-        portable: string
-        search: string
-        noMatches: string
-        toggleFailed: (name: string) => string
-        updateBackendToManage: string
-        sources: Record<string, string>
+        movedToCapabilities: string
+        openCapabilities: string
       }
       installModal: {
         installFromGit: string
@@ -421,6 +415,13 @@ export interface Translations {
         desktopLabel: string
         agentTargetLocal: (profile: string) => string
         agentTargetRemote: (profile: string) => string
+        catalogPinned: (name: string, sha: string) => string
+        reviewedHeading: string
+        reviewedIntro: string
+        restartToApply: string
+        restartNow: string
+        missingEnvAction: string
+        alreadyInstalled: (name: string) => string
         desktopTarget: string
         desktopOnlyNote: string
         insecureWarning: string
@@ -1320,6 +1321,26 @@ export interface Translations {
     archive: string
     skillArchivedTitle: string
     skillArchivedMessage: string
+    tabPlugins: string
+    plugins: {
+      empty: string
+      emptyHint: string
+      loadFailed: string
+      toggleFailed: (name: string) => string
+      legacyBackend: string
+      portableBadge: string
+      catalogTitle: string
+      catalogBrowse: string
+      catalogHide: string
+      catalogHint: string
+      alreadyInstalled: (name: string) => string
+      catalogProvenance: (sha: string) => string
+      tierOfficial: string
+      tierCommunity: string
+      updateToPin: (sha: string) => string
+      updateFailed: (name: string) => string
+      updated: (name: string) => string
+    }
     officialCatalog: string
     officialPill: string
     hub: {

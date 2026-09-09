@@ -186,6 +186,57 @@ class TestRequireServiceInstalled:
         gateway_cli._require_service_installed("start")
 
 
+class TestServiceIdentityForForeignHome:
+    """A HERMES_HOME that is neither ``~/.hermes`` nor ``~/.hermes/profiles/<name>`` must never resolve to
+    the default profile's ``hermes-gateway`` unit (a temp-home harness uninstalled the production gateway)."""
+
+    @pytest.fixture
+    def machine_home(self, tmp_path, monkeypatch):
+        home = tmp_path / "home"
+        home.mkdir()
+        monkeypatch.setattr(Path, "home", lambda: home)
+        return home
+
+    def test_foreign_home_gets_its_own_unit(self, machine_home, tmp_path, monkeypatch):
+        foreign = tmp_path / "elsewhere"
+        foreign.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(foreign))
+
+        default_unit = machine_home / ".config" / "systemd" / "user" / "hermes-gateway.service"
+        assert gateway_cli.get_service_name() != "hermes-gateway"
+        assert gateway_cli.get_systemd_unit_path() != default_unit
+        assert gateway_cli.get_systemd_unit_path().parent == default_unit.parent
+
+    def test_default_and_named_profile_homes_keep_their_names(self, machine_home, monkeypatch):
+        default_home = machine_home / ".hermes"
+        (default_home / "profiles" / "alpha").mkdir(parents=True)
+
+        monkeypatch.setenv("HERMES_HOME", str(default_home))
+        assert gateway_cli.get_service_name() == "hermes-gateway"
+
+        monkeypatch.setenv("HERMES_HOME", str(default_home / "profiles" / "alpha"))
+        assert gateway_cli.get_service_name() == "hermes-gateway-alpha"
+
+
+class TestUninstallRefusesForeignUnit:
+    """systemd_uninstall must not stop/disable/unlink a unit pinned to another HERMES_HOME."""
+
+    def test_unit_for_other_home_is_left_alone(self, tmp_path, monkeypatch, capsys):
+        unit_path = tmp_path / "hermes-gateway.service"
+        unit_path.write_text('[Service]\nEnvironment="HERMES_HOME=/somewhere/else"\n', encoding="utf-8")
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "mine"))
+        monkeypatch.setattr(gateway_cli, "get_systemd_unit_path", lambda system=False: unit_path)
+        monkeypatch.setattr(gateway_cli, "_systemd_scope_preamble", lambda *a, **k: False)
+        calls = []
+        monkeypatch.setattr(gateway_cli, "_run_systemctl", lambda args, **k: calls.append(args))
+
+        gateway_cli.systemd_uninstall(system=False)
+
+        assert unit_path.exists()
+        assert calls == []
+        assert "/somewhere/else" in capsys.readouterr().out
+
+
 class TestGetCronDrainTimeout:
     def test_missing_config_falls_back_to_default(self, monkeypatch):
         monkeypatch.delenv("HERMES_CRON_DRAIN_TIMEOUT", raising=False)

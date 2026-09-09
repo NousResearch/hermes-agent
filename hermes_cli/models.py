@@ -2119,20 +2119,11 @@ _PROBE_NEG_TTL = 60.0  # seconds
 
 
 def _probe_neg_key(base_url: str) -> Optional[str]:
-    """Return a ``host:port`` key for *base_url*, or None if it has no host."""
-    normalized = (base_url or "").strip().lower()
-    if not normalized:
-        return None
-    url = normalized if "://" in normalized else f"http://{normalized}"
-    try:
-        parsed = urllib.parse.urlparse(url)
-        host = parsed.hostname or ""
-        if not host:
-            return None
-        port = parsed.port or (443 if parsed.scheme == "https" else 80)
-    except Exception:
-        return None
-    return f"{host}:{port}"
+    """``host:port`` for *base_url* (both URL candidates share one entry), or None without a host."""
+    from utils import base_url_origin
+
+    _, host, port = base_url_origin(base_url)
+    return f"{host}:{port}" if host else None
 
 
 def _probe_result(
@@ -2166,7 +2157,6 @@ def probe_api_models(
         candidates.append((alternate_base, True))
 
     tried: list[str] = []
-    # ponytail: short-TTL negative cache; full re-probe once it expires.
     _neg_key = _probe_neg_key(normalized)
     if _neg_key is not None:
         _neg_seen = _probe_neg_cache.get(_neg_key)
@@ -2196,11 +2186,17 @@ def probe_api_models(
     _ssl_context = _custom_provider_ssl_context(normalized)
     if _ssl_context is not None:
         _open_kwargs["ssl_context"] = _ssl_context
+    reachable = False
     for candidate_base, is_fallback in candidates:
         url = candidate_base.rstrip("/") + "/models"
         tried.append(url)
         try:
             data = _get_json(url, timeout=timeout, headers=headers, **_open_kwargs)
+        except urllib.error.HTTPError:
+            # The host answered: an auth/404 failure is not unreachability, and a user fixing
+            # their key must not be served a cached "no models" for the next TTL window.
+            reachable = True
+            continue
         except Exception:
             continue
         if _neg_key is not None:
@@ -2209,7 +2205,7 @@ def probe_api_models(
             [m.get("id", "") for m in data.get("data", [])], url, candidate_base.rstrip("/"),
             alternate_base if alternate_base != candidate_base else normalized, is_fallback)
 
-    if _neg_key is not None:
+    if _neg_key is not None and not reachable:
         _probe_neg_cache[_neg_key] = time.monotonic()
     return _probe_result(
         None, tried[0] if tried else normalized.rstrip("/") + "/models", normalized,

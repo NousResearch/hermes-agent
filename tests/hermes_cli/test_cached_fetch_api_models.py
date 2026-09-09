@@ -410,6 +410,19 @@ class TestProbeApiModelsNegativeCache:
         assert calls == []  # /v1 + root share one host:port entry
         assert r2["probed_url"] == "https://blackhole.invalid/v1/models"
 
+    def test_http_error_from_a_reachable_host_is_not_cached_as_unreachable(self, monkeypatch):
+        import urllib.error
+
+        import hermes_cli.models as mod
+
+        def _unauthorized(req, **kw):
+            raise urllib.error.HTTPError(req.full_url, 401, "Unauthorized", {}, None)
+
+        monkeypatch.setattr(mod, "_urlopen_model_catalog_request", _unauthorized)
+        assert mod.probe_api_models("bad-key", "https://reachable.invalid/v1", timeout=1.0)["models"] is None
+        # The host answered; a corrected key must probe again immediately.
+        assert "reachable.invalid:443" not in mod._probe_neg_cache
+
     def test_expired_entry_reprobes_and_success_clears_it(self, monkeypatch):
         import hermes_cli.models as mod
 

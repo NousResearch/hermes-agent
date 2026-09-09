@@ -327,8 +327,8 @@ mechanism instead:
   compaction entirely (codex may still compact natively).
 
 Hermes' local transcript is never rewritten on this runtime — state.db records
-the compaction boundary while the visible transcript stays intact. All other
-routes (including Codex OAuth chat sessions) keep Hermes' summary compressor.
+the compaction boundary while the visible transcript stays intact. Other routes
+keep Hermes' summary compressor unless they meet the native Responses gate below.
 
 ### Native Responses compaction (gpt-5.6 on direct OpenAI / Codex subscription)
 
@@ -364,8 +364,21 @@ native threshold from the resolved local trigger. For example, a local trigger
 of 765,000 selects 756,808. Set a positive integer to preserve an absolute
 threshold such as 200,000. Invalid values select automatic behavior. If no
 usable local trigger exists, automatic mode uses 200,000. The provider minimum
-is 1,024 tokens, so an unusually small local trigger at or below that floor
+The provider minimum is 1,024 tokens, so an unusually small local trigger at or below that floor
 cannot preserve strict native first ordering.
+
+#### Manual native compaction (Codex OAuth CLI)
+
+`/native-compact` (alias `/compact-native`) calls OpenAI's standalone
+`/responses/compact` endpoint immediately, without lowering or waiting for the
+automatic native threshold. It is CLI-only and requires the same gpt-5.6,
+official ChatGPT Codex OAuth route, `compression.enabled: true`, and
+`compression.codex_responses_native: true` gates as automatic native compaction.
+
+The command stores the returned encrypted checkpoint as a provider projection
+on a retained assistant turn. Hermes keeps the complete readable transcript in
+the session store; later eligible Codex requests replay the checkpoint, while a
+model/provider switch drops it and retains the portable local history.
 
 ### Computed Values (for a 200K context model at defaults)
 

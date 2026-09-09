@@ -11,6 +11,7 @@ ride the ``codex_reasoning_items`` sidecar. No transport imports (shared gate, n
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlsplit
 
@@ -126,6 +127,121 @@ def native_compaction_context_management(agent: Any, *, is_codex_backend: bool, 
     local_trigger = getattr(compressor, "threshold_tokens", None) if compressor is not None else None
     threshold = resolve_compact_threshold(getattr(agent, "codex_responses_compact_threshold", None), local_trigger)
     return [{"type": "compaction", "compact_threshold": threshold}]
+
+
+@dataclass(frozen=True)
+class ManualNativeCompaction:
+    """A provider checkpoint projected onto an otherwise unchanged local transcript."""
+
+    messages: List[Dict[str, Any]]
+    checkpoint_count: int
+
+
+def _manual_native_compaction_carrier(messages: List[Dict[str, Any]], protect_last_n: Any) -> Optional[int]:
+    """Latest retained assistant turn that can carry a checkpoint for an older prefix."""
+    try:
+        protected = max(1, int(protect_last_n))
+    except (TypeError, ValueError):
+        protected = 1
+    # The checkpoint must follow a non-empty prefix and precede the retained tail.  A completed
+    # assistant turn is the existing durable sidecar carrier; adding a synthetic turn would break
+    # role alternation and make a manual operation alter the visible transcript.
+    upper = max(1, len(messages) - protected)
+    for index in range(min(upper, len(messages) - 1), 0, -1):
+        if isinstance(messages[index], dict) and messages[index].get("role") == "assistant":
+            return index
+    return None
+
+
+def manual_native_responses_compaction(agent: Any, messages: List[Dict[str, Any]]) -> ManualNativeCompaction:
+    """Create an immediate native checkpoint for an eligible Codex OAuth transcript.
+
+    Unlike local ``/compress``, this keeps Hermes' readable transcript intact.  The checkpoint
+    is stored on a retained assistant turn; the existing Responses adapter projects it only onto
+    later eligible Codex requests and drops it on a provider/model switch, leaving the full local
+    history available for portability and session views.
+    """
+    if getattr(agent, "api_mode", None) != "codex_responses":
+        raise RuntimeError("Native compaction is available only on the OpenAI Responses transport.")
+    if not isinstance(messages, list) or len(messages) < 2:
+        raise RuntimeError("Native compaction needs at least one completed assistant turn.")
+
+    from agent.codex_responses_adapter import (
+        _classify_responses_issuer,
+        _normalize_codex_response,
+        classify_responses_route,
+    )
+
+    route = classify_responses_route(agent)
+    if not route.is_codex_backend:
+        raise RuntimeError("Native compaction is available only on the official ChatGPT Codex OAuth route.")
+    if native_compaction_context_management(agent, **route._asdict()) is None:
+        raise RuntimeError(
+            "Native compaction is unavailable for this session; require gpt-5.6, "
+            "compression.enabled, and compression.codex_responses_native."
+        )
+
+    compressor = getattr(agent, "context_compressor", None)
+    carrier_index = _manual_native_compaction_carrier(
+        messages, getattr(compressor, "protect_last_n", 1)
+    )
+    if carrier_index is None:
+        raise RuntimeError("Native compaction needs a completed assistant turn before the preserved tail.")
+    prefix = messages[:carrier_index]
+
+    api_kwargs = agent._build_api_kwargs(prefix)
+    transport = agent._get_transport()
+    api_kwargs = transport.preflight_kwargs(api_kwargs, allow_stream=False)
+    compact_kwargs = {
+        key: api_kwargs[key]
+        for key in (
+            "model", "input", "instructions", "prompt_cache_key", "timeout", "extra_headers"
+        )
+        if api_kwargs.get(key) is not None
+    }
+    client = agent._ensure_primary_openai_client(reason="manual_native_responses_compaction")
+    compact = getattr(getattr(client, "responses", None), "compact", None)
+    if not callable(compact):
+        raise RuntimeError("The installed OpenAI SDK does not expose responses.compact.")
+    try:
+        response = compact(**compact_kwargs)
+    except Exception as exc:
+        refresh = getattr(agent, "_try_refresh_codex_client_credentials", None)
+        if (
+            getattr(exc, "status_code", None) == 401
+            and callable(refresh)
+            and refresh(force=True)
+        ):
+            client = agent._ensure_primary_openai_client(
+                reason="manual_native_responses_compaction_retry"
+            )
+            response = client.responses.compact(**compact_kwargs)
+        else:
+            raise
+
+    issuer = _classify_responses_issuer(
+        base_url=getattr(agent, "base_url", None), **route._asdict()
+    )
+    normalized, _ = _normalize_codex_response(response, issuer_kind=issuer)
+    checkpoints = [
+        item for item in (getattr(normalized, "codex_reasoning_items", None) or [])
+        if isinstance(item, dict) and item.get("type") == "compaction"
+    ]
+    if not checkpoints:
+        raise RuntimeError("The native compaction endpoint returned no replayable checkpoint.")
+
+    projected = [dict(message) if isinstance(message, dict) else message for message in messages]
+    carrier = projected[carrier_index]
+    existing = [
+        dict(item) for item in carrier.get("codex_reasoning_items", [])
+        if isinstance(item, dict)
+    ]
+    carrier["codex_reasoning_items"] = existing + checkpoints
+    logger.info(
+        "Manual native Responses compaction checkpoint stored: session=%s carrier=%d checkpoints=%d",
+        getattr(agent, "session_id", None) or "none", carrier_index, len(checkpoints),
+    )
+    return ManualNativeCompaction(messages=projected, checkpoint_count=len(checkpoints))
 
 
 # Retention budgets for plaintext user messages / local summaries carried across a native

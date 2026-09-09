@@ -6,7 +6,7 @@ from types import SimpleNamespace
 import httpx
 
 from agent.credential_pool import label_from_token, load_pool
-from hermes_cli import auth_commands
+from hermes_cli import auth_codex, auth_commands
 from hermes_cli.web_routers import oauth
 
 
@@ -23,7 +23,10 @@ def test_codex_identity_survives_exchange_and_pool_reload(tmp_path, monkeypatch)
     monkeypatch.setattr(httpx, "Client", lambda **kw: real_client(
         transport=httpx.MockTransport(lambda request: httpx.Response(200, json=tokens)), **kw))
     exchanged = oauth._codex_exchange_tokens(httpx, {"authorization_code": "code", "code_verifier": "verifier"})
-    monkeypatch.setattr(auth_commands.auth_mod, "_codex_device_code_login", lambda: {"tokens": exchanged})
+    monkeypatch.setattr(auth_codex, "_codex_request_device_code", lambda *args: {
+        "user_code": "CODE", "device_auth_id": "device", "interval": 1})
+    monkeypatch.setattr(auth_codex, "_codex_poll_authorization_code", lambda *args, **kw: {})
+    monkeypatch.setattr(auth_codex, "_codex_exchange_authorization_code", lambda *args: exchanged)
     pool = load_pool("openai-codex")
     first = auth_commands._add_credential(SimpleNamespace(label=None), "openai-codex", pool, "oauth")
     assert first.label == "first@example.test"

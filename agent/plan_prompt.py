@@ -7,6 +7,8 @@ so system prompt and history stay untouched (prompt-cache safe).
 
 from __future__ import annotations
 
+PLAN_PROMPT_MARKER = "[/plan — plan mode]"
+
 # Ground rules + authoring craft (writing-craft adapted from obra/superpowers).
 _PLAN_MODE_RULES = """\
 For this turn, you are in PLAN MODE — planning only.
@@ -68,4 +70,4 @@ def build_plan_prompt(task: str = "") -> str:
         "current conversation context (the thing we have been discussing "
         "or working toward). If the conversation does not imply a task, ask a brief clarifying question.\n"
     )
-    return "[/plan — plan mode]\n\n" + _PLAN_MODE_RULES + "\n" + task_block + "\n" + _PLAN_CRAFT
+    return PLAN_PROMPT_MARKER + "\n\n" + _PLAN_MODE_RULES + "\n" + task_block + "\n" + _PLAN_CRAFT

@@ -20,6 +20,13 @@ def _aux(timeout, *, reasoning_effort=True, **extra):
 
 DEFAULT_CONFIG = {
     "model": "",
+    # Optional route used only by the built-in /plan turn. It is never persisted as a
+    # session model override; empty values keep planning on the normal session route.
+    "planning": {
+        "model": "",
+        "provider": "",
+        "reasoning_effort": "",
+    },
     "providers": {},
     "fallback_providers": [],
     "credential_pool_strategies": {},

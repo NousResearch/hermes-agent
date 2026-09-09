@@ -580,20 +580,6 @@ def run_setup_wizard(args):
             return None
 
 
-def _backup_config_file(config_path: Path) -> Path | None:
-    """Back up config.yaml before setup modifies it; None when absent or copy fails."""
-    if not config_path.exists():
-        return None
-    import shutil
-    from datetime import datetime
-    backup_path = config_path.with_suffix(f".yaml.bak.{datetime.now().strftime('%Y%m%d_%H%M%S')}")
-    try:
-        shutil.copy2(config_path, backup_path)
-        return backup_path
-    except Exception:
-        return None
-
-
 def _run_setup_section(config: dict, section: str) -> None:
     """``hermes setup <section>``: run one SETUP_SECTIONS entry under the banner."""
     entry = next(((label, func) for key, label, func in SETUP_SECTIONS if key == section), None)
@@ -672,7 +658,8 @@ def _run_setup_wizard_impl(args):
     hermes_home = get_hermes_home()
     # Back up existing config before setup modifies it (#3522)
     config_path = get_config_path()
-    _backup_path = _backup_config_file(config_path)
+    from hermes_cli.config_backups import backup_config
+    _backup_path = backup_config(config_path, "pre-setup")
 
     # Non-interactive environments (headless SSH, Docker, CI/CD)
     if getattr(args, 'non_interactive', False) or not is_interactive_stdin():

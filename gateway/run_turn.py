@@ -30,6 +30,7 @@ from gateway.session import (
 from gateway.session_transcript import TranscriptReadError
 from gateway.turn_context import TurnContext
 from gateway.turn_lease import DEFAULT_LEASE_WAIT, TurnLeaseTimeoutError
+from gateway.run_turn_routing import GatewayTurnRoutingMixin
 from hermes_constants import get_hermes_home_override
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
@@ -43,25 +44,7 @@ if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
 logger = logging.getLogger("gateway.run")
 
 
-def _project_runtime_agent_kwargs(runtime_kwargs: dict) -> tuple[dict, dict]:
-    """Split provider resolution output into public agent runtime and request overrides.
-
-    Provider resolvers return constructor kwargs, including ``request_overrides``.  Turn routes
-    pass request overrides separately so fast-mode overlays can be applied without expanding the
-    same keyword twice at the AIAgent call site.
-    """
-    runtime = {
-        key: runtime_kwargs.get(key) for key in (
-            "api_key", "base_url", "provider", "requested_provider", "api_mode", "command", "args",
-            "credential_pool", "max_tokens", "capabilities",
-        )
-    }
-    runtime["args"] = list(runtime["args"] or [])
-    runtime["capabilities"] = dict(runtime["capabilities"] or {})
-    return runtime, dict(runtime_kwargs.get("request_overrides") or {})
-
-
-class GatewayTurnMixin:
+class GatewayTurnMixin(GatewayTurnRoutingMixin):
     """Agent-turn execution for GatewayRunner (see module docstring)."""
 
     def _resolve_session_agent_runtime(
@@ -175,79 +158,6 @@ class GatewayTurnMixin:
             self._session_state("*").conversation.last_resolved_model = model
 
         return model, runtime_kwargs
-
-    def _resolve_turn_agent_config(
-        self, user_message: str, model: str, runtime_kwargs: dict,
-        *, session_id: Optional[str] = None, session_key: Optional[str] = None,
-        source: Optional[SessionSource] = None, conversation_history: Optional[list] = None,
-        internal: bool = False,
-    ) -> dict:
-        """Effective model/runtime config for one turn. With `/fast` priority on, fast-mode
-        ``request_overrides`` are deep-merged OVER the per-provider ones so both reach the model."""
-        from gateway.run import _deep_merge_request_overrides
-        from hermes_cli.models import resolve_fast_mode_overrides
-        # Tests bind this method onto bare namespaces, so no class-level tables here.
-        runtime, base_request_overrides = _project_runtime_agent_kwargs(runtime_kwargs)
-        route = {
-            "model": model,
-            "runtime": runtime,
-            "signature": (
-                model, runtime["provider"], runtime["requested_provider"], runtime["base_url"],
-                runtime["api_mode"], runtime["command"], tuple(runtime["args"]),
-            ),
-        }
-        if not internal:
-            try:
-                from hermes_cli.middleware import apply_turn_route_middleware, public_turn_route
-                result = apply_turn_route_middleware(
-                    public_turn_route(route["model"], runtime),
-                    user_message=user_message,
-                    session_id=session_id,
-                    session_key=session_key,
-                    source=source.platform.value if source and source.platform else "gateway",
-                    is_user_turn=True,
-                    is_first_turn=not bool(conversation_history),
-                    internal=False,
-                    tool_continuation=False,
-                )
-                if result.changed and isinstance(result.payload, dict):
-                    selected_model = result.payload.get("model")
-                    public_runtime = result.payload.get("runtime")
-                    public_runtime = public_runtime if isinstance(public_runtime, dict) else {}
-                    current_requested = runtime.get("requested_provider") or runtime.get("provider")
-                    current_canonical = runtime.get("provider")
-                    top_requested = result.payload.get("requested_provider")
-                    nested_requested = public_runtime.get("requested_provider")
-                    requested = nested_requested if nested_requested and nested_requested != current_requested else (top_requested or nested_requested)
-                    canonical = result.payload.get("provider") or public_runtime.get("provider")
-                    selected_provider = requested if requested and requested != current_requested else (canonical if canonical and canonical != current_canonical else (requested or canonical or current_requested))
-                    if isinstance(selected_model, str) and selected_model.strip() and isinstance(selected_provider, str) and selected_provider.strip():
-                        selected_model = selected_model.strip()
-                        selected_provider = selected_provider.strip()
-                        if selected_provider != current_requested:
-                            from gateway.run import _resolve_runtime_agent_kwargs_for_provider
-                            runtime, base_request_overrides = _project_runtime_agent_kwargs(
-                                _resolve_runtime_agent_kwargs_for_provider(selected_provider)
-                            )
-                        runtime["requested_provider"] = selected_provider
-                        route["model"] = selected_model
-                        route["runtime"] = runtime
-                        route["middleware_trace"] = result.trace
-            except Exception as exc:
-                logger.warning("Turn-route middleware failed open: %s", exc)
-        if getattr(self, "_service_tier", None) != "priority":
-            # None / auto / cold: the bounded window is applied per request by agent.fast_mode.
-            route["request_overrides"] = base_request_overrides
-            return route
-        try:
-            overrides = resolve_fast_mode_overrides(
-                route["model"], provider=runtime["provider"], base_url=runtime["base_url"],
-            )
-        except Exception:
-            overrides = None
-        # Fast-mode keys (service_tier / speed) are top-level and don't collide with extra_body.
-        route["request_overrides"] = _deep_merge_request_overrides(base_request_overrides, overrides or {})
-        return route
 
     def _sync_session_model_from_agent(self, session_id: str, agent: Any) -> None:
         """Persist the runtime model/provider a gateway turn actually used (provider fallback can
@@ -2192,7 +2102,7 @@ class GatewayTurnMixin:
             reasoning_config = self._resolve_session_reasoning_config(source=source, model=model)
             self._reasoning_config = reasoning_config
             self._service_tier = self._resolve_session_service_tier(source=source)
-            turn_route = self._resolve_turn_agent_config(prompt, model, runtime_kwargs, internal=True)
+            turn_route = self._resolve_turn_agent_config(prompt, model, runtime_kwargs)
 
             # Enrich the prompt with image descriptions (same as the main flow).
             enriched_prompt = prompt

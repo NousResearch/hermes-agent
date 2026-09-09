@@ -1729,7 +1729,7 @@ class TurnRunner:
         turn_route = runner._resolve_turn_agent_config(
             ctx.message, model, runtime_kwargs,
             session_id=ctx.session_id, session_key=ctx.session_key,
-            source=ctx.source, conversation_history=ctx.history,
+            source=ctx.source, conversation_history=ctx.history, internal=False,
         )
         agent, reused_cached_agent = self._resolve_turn_agent(
             turn_route, platform_key, combined_ephemeral, max_iterations, reasoning_config, pr,

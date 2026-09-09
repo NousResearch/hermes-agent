@@ -144,11 +144,11 @@ def test_turn_route_reports_history_derived_first_turn(monkeypatch):
     }
 
     gateway_run.GatewayRunner._resolve_turn_agent_config(
-        runner, "first", "gpt-5.4", runtime_kwargs, source=_make_source(), conversation_history=[]
+        runner, "first", "gpt-5.4", runtime_kwargs, source=_make_source(), conversation_history=[], internal=False
     )
     gateway_run.GatewayRunner._resolve_turn_agent_config(
         runner, "later", "gpt-5.4", runtime_kwargs, source=_make_source(),
-        conversation_history=[{"role": "user", "content": "first"}],
+        conversation_history=[{"role": "user", "content": "first"}], internal=False,
     )
 
     assert seen == [True, False]
@@ -179,6 +179,7 @@ def test_turn_route_resolves_requested_provider_alias(monkeypatch):
             "api_key": "alpha-key", "base_url": "https://alpha.example/v1",
             "api_mode": "chat_completions",
         }, session_id="session-1", session_key="chat-1", source=_make_source(),
+        internal=False,
     )
 
     resolver.assert_called_once_with("custom:beta")

@@ -19,7 +19,7 @@ it('rejects an old route reply and refreshes from the new owner without remounti
   const request = vi.spyOn(gateway, 'requestGatewayForAgent')
   request.mockImplementationOnce(
     async () =>
-      (await new Promise(resolve => {
+      (await new Promise<unknown>(resolve => {
         finishOld = resolve
       })) as never
   )

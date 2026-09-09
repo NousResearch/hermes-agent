@@ -14,7 +14,7 @@ import {
   writeEnvFile,
   writeMockProviderConfig
 } from './fixtures'
-import { startMockServer } from './mock-server'
+import { startMockServer } from '../../../tests-js/scripts/mock-server'
 import { cleanupAfterOwnedElectron, finishOwnedElectronShutdown } from './owned-electron-cleanup'
 import { collectErrorBanners, expect, type Page, test } from './test'
 

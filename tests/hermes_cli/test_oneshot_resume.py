@@ -216,6 +216,26 @@ class TestRunAgentResumeRuntime:
         finally:
             db.close()
 
+    def test_run_agent_closes_store_when_resume_target_is_unknown(self, tmp_path, monkeypatch):
+        """A failed resume must not leak the SessionDB: the one-shot exit is os._exit, so nothing
+        else ever closes it."""
+        import hermes_cli.oneshot as oneshot_mod
+
+        closed = []
+
+        class _Store(SessionDB):
+            def close(self):
+                closed.append(True)
+                super().close()
+
+        db = _Store(db_path=tmp_path / "state.db")
+        monkeypatch.setattr(oneshot_mod, "_create_session_db_for_oneshot", lambda: db)
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: {"model": {"default": "m", "provider": "openrouter"}})
+
+        with pytest.raises(RuntimeError, match="session not found"):
+            oneshot_mod._run_agent("hello", resume="missing-sid")
+        assert closed, "SessionDB left open after the resume failure"
+
     def test_run_agent_explicit_model_beats_stored_runtime(self, tmp_path, monkeypatch):
         import hermes_cli.oneshot as oneshot_mod
 

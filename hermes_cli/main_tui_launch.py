@@ -420,13 +420,84 @@ def _ensure_tui_workspace(tui_dir: Path) -> None:
     sys.exit(1)
 
 
+def _is_regular_userconfig_file(path: Path) -> bool:
+    """True for a regular file (or symlink-to-file). Dirs and symlink-to-dir are skipped."""
+    try:
+        return path.is_file() and not path.is_dir()
+    except OSError:
+        return False
+
+
+def _hermes_home_npm_userconfig(hermes_home: str) -> str | None:
+    """Absolute ``$HERMES_HOME/npmrc`` or ``.npmrc`` path, preferring the bare name."""
+    home = Path(hermes_home)
+    for name in ("npmrc", ".npmrc"):
+        candidate = home / name
+        if _is_regular_userconfig_file(candidate):
+            return os.path.abspath(str(candidate))
+    return None
+
+
+def _windows_profile_fallback(run_env: dict[str, str]) -> str:
+    """USERPROFILE from the parent process or HOMEDRIVE+HOMEPATH; empty if unknown."""
+    for source in (os.environ, run_env):
+        value = (source.get("USERPROFILE") or "").strip()
+        if value:
+            return value
+    for source in (os.environ, run_env):
+        drive = (source.get("HOMEDRIVE") or "").strip()
+        path = (source.get("HOMEPATH") or "").strip()
+        if drive and path:
+            return f"{drive}{path}" if path.startswith(("\\", "/")) else os.path.join(drive, path)
+    return ""
+
+
+def _apply_npm_lifecycle_userconfig(
+    run_env: dict[str, str], *, windows: bool | None = None,
+) -> dict[str, str]:
+    """Pin npm userconfig + Windows profile vars so updater children still see mirrors.
+
+    ``$HERMES_HOME/npmrc`` (else ``.npmrc``) is durable across git autostash; npm's
+    default ``%USERPROFILE%\\.npmrc`` lookup needs USERPROFILE/HOME on win32.
+    Explicit ``NPM_CONFIG_USERCONFIG`` is never overwritten. Fail-open when no
+    HERMES_HOME npmrc exists.
+    """
+    if windows is None:
+        windows = sys.platform == "win32"
+    if windows:
+        if not (run_env.get("USERPROFILE") or "").strip():
+            filled = _windows_profile_fallback(run_env)
+            if filled:
+                run_env["USERPROFILE"] = filled
+        if not (run_env.get("HOME") or "").strip():
+            userprofile = (run_env.get("USERPROFILE") or "").strip()
+            if userprofile:
+                run_env["HOME"] = userprofile
+    if not (run_env.get("NPM_CONFIG_USERCONFIG") or "").strip():
+        hermes_home = (run_env.get("HERMES_HOME") or "").strip()
+        userconfig = _hermes_home_npm_userconfig(hermes_home) if hermes_home else None
+        if userconfig:
+            run_env["NPM_CONFIG_USERCONFIG"] = userconfig
+    for key, value in os.environ.items():
+        lowered = key.lower()
+        if not (
+            lowered.startswith("npm_config_")
+            and lowered.endswith("_binary_host_mirror")
+            and (value or "").strip()
+        ):
+            continue
+        if not any(k.lower() == lowered and (run_env.get(k) or "").strip() for k in run_env):
+            run_env[key] = value
+    return run_env
+
+
 def _npm_lifecycle_env(env: dict[str, str] | None = None) -> dict[str, str]:
     """Build a clean environment for the pinned UI toolchain lifecycle."""
     run_env = {**os.environ, **(env or {}), "CI": "1"}
     # esbuild treats this as an executable override. If a shell points it at a
     # different release, the pinned package's postinstall rejects that binary.
     run_env.pop("ESBUILD_BINARY_PATH", None)
-    return run_env
+    return _apply_npm_lifecycle_userconfig(run_env)
 
 
 def _tui_node_bin(bin: str) -> str:

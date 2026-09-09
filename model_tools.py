@@ -685,6 +685,15 @@ def _dispatch_bridge_tool(function_name: str, function_args: Dict[str, Any],
     return None, (underlying_name, underlying_args)
 
 
+def _is_inline_catalog_tool(function_name: str) -> bool:
+    """Whether the bridge call is an inline catalog read, not a tool-call unwrap."""
+    try:
+        from tools import tool_search as ts
+    except Exception:
+        return False
+    return function_name in {ts.TOOL_SEARCH_NAME, ts.TOOL_DESCRIBE_NAME}
+
+
 def _apply_request_middleware(
     function_name: str, function_args: Dict[str, Any], ids: _CallIds, trace: List[Dict[str, Any]],
 ) -> Tuple[Dict[str, Any], Dict[str, Any], List[Dict[str, Any]]]:
@@ -836,10 +845,13 @@ def handle_function_call(
                                   **asdict(ids), middleware_trace=list(trace), **extra)
         return result
 
-    # Tool Search bridge: tool_search / tool_describe are catalog reads handled
-    # inline; tool_call is unwrapped so every downstream hook (pre/post, edit
-    # approval, guardrails) sees the real tool name, never the bridge.
-    bridged = _dispatch_bridge_tool(function_name, function_args, enabled_toolsets, disabled_toolsets)
+    # tool_call is unwrapped before policy so every downstream hook sees the
+    # real tool name. Inline catalog reads stay here until after pre-tool policy:
+    # direct callers must not bypass an operator-required guard.
+    inline_catalog_tool = _is_inline_catalog_tool(function_name)
+    bridged = None if inline_catalog_tool else _dispatch_bridge_tool(
+        function_name, function_args, enabled_toolsets, disabled_toolsets
+    )
     if bridged is not None:
         result, underlying = bridged
         if underlying is None:
@@ -852,7 +864,7 @@ def handle_function_call(
         )
 
     original_args = dict(function_args)
-    if not skip_tool_request_middleware:
+    if not skip_tool_request_middleware and not inline_catalog_tool:
         function_args, original_args, trace = _apply_request_middleware(function_name, function_args, ids, trace)
 
     try:
@@ -863,6 +875,17 @@ def handle_function_call(
         if blocked is not None:
             result, error_type, error_message = blocked
             return _emit(result, status="blocked", error_type=error_type, error_message=error_message)
+
+        if inline_catalog_tool:
+            bridged = _dispatch_bridge_tool(
+                function_name,
+                function_args,
+                enabled_toolsets,
+                disabled_toolsets,
+            )
+            if bridged is None or bridged[1] is not None:
+                raise RuntimeError("inline catalog bridge resolution changed during dispatch")
+            return _emit(bridged[0], duration_ms=_elapsed_ms(start))
 
         # Any non-read/search tool resets the consecutive-read-loop counter.
         if function_name not in _READ_SEARCH_TOOLS:

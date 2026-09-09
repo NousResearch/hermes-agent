@@ -1,7 +1,9 @@
 """Tests for model_tools.py — function call dispatch, agent-loop interception, legacy toolsets."""
 
 import json
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
+
+import pytest
 
 
 from model_tools import (
@@ -547,10 +549,85 @@ class TestBridgeDispatch:
             out = handle_function_call("tool_describe", {"names": ["nope"]})
             assert isinstance(out, str) and json.loads(out) is not None
 
+    def test_catalog_bridge_runs_pre_tool_guard_once_before_dispatch(self):
+        import tools.tool_search as ts
+
+        pre_tool = MagicMock(return_value=(None, {"queries": ["modified"]}))
+        catalog = MagicMock(return_value='{"matches": []}')
+        post_tool = MagicMock()
+        with (
+            patch("model_tools.get_tool_definitions", return_value=[]),
+            patch(
+                "hermes_cli.plugins._dispatch_pre_tool_call_hooks", pre_tool
+            ),
+            patch.object(ts, "dispatch_tool_search", catalog),
+            patch("model_tools._emit_post_tool_call_hook", post_tool),
+        ):
+            result = handle_function_call(
+                "tool_search",
+                {"queries": ["original"]},
+                task_id="task-catalog",
+                session_id="session-catalog",
+                tool_call_id="call-catalog",
+                turn_id="turn-catalog",
+                api_request_id="api-catalog",
+                skip_tool_request_middleware=True,
+            )
+
+        assert json.loads(result) == {"matches": []}
+        pre_tool.assert_called_once()
+        catalog.assert_called_once_with(
+            {"queries": ["modified"]}, current_tool_defs=[]
+        )
+        post_tool.assert_called_once()
+
     def test_tool_call_bad_args_error(self):
         with patch("model_tools.get_tool_definitions", return_value=[]):
             result = json.loads(handle_function_call("tool_call", {}))
         assert "requires a 'name'" in result["error"]
+
+    @pytest.mark.parametrize(
+        ("tool_name", "arguments", "dispatcher_name"),
+        (
+            ("tool_search", {"queries": ["anything"]}, "dispatch_tool_search"),
+            ("tool_describe", {"names": ["anything"]}, "dispatch_tool_describe"),
+        ),
+    )
+    def test_catalog_bridge_cannot_bypass_required_pre_tool_guard(
+        self, tool_name, arguments, dispatcher_name
+    ):
+        import tools.tool_search as ts
+        from hermes_cli.required_lifecycle import RequiredLifecycleError
+
+        required_error = RequiredLifecycleError(
+            "required_lifecycle_delivery_failed", "pre_tool_call"
+        )
+        dispatcher = MagicMock(
+            side_effect=AssertionError("catalog dispatch must not start")
+        )
+        with (
+            patch("model_tools.get_tool_definitions", return_value=[]),
+            patch(
+                "hermes_cli.plugins._dispatch_pre_tool_call_hooks",
+                side_effect=required_error,
+            ),
+            patch.object(ts, dispatcher_name, dispatcher),
+            pytest.raises(RequiredLifecycleError) as caught,
+        ):
+            handle_function_call(
+                tool_name,
+                arguments,
+                task_id="task-bridge",
+                session_id="session-bridge",
+                tool_call_id="call-bridge",
+                turn_id="turn-bridge",
+                api_request_id="api-bridge",
+                skip_tool_request_middleware=True,
+                skip_tool_execution_middleware=True,
+            )
+
+        assert caught.value is required_error
+        dispatcher.assert_not_called()
 
     def test_tool_call_rejects_out_of_scope_and_unwraps_in_scope(self):
         import tools.tool_search as ts

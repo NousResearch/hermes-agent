@@ -434,7 +434,7 @@ def test_required_post_tool_failure_stops_before_next_provider_call(
         for message in tool_results
     )
     assert [message["effect_disposition"] for message in tool_results] == [
-        "unknown",
+        "none",
         "none",
     ]
     assert completed == []
@@ -672,7 +672,7 @@ def test_required_post_failure_settles_preexecution_terminal_paths(
     assert messages[0]["role"] == "tool"
     assert messages[0]["tool_call_id"] == "call-preexecution"
     assert REQUIRED_LIFECYCLE_FAILURE_TEXT in messages[0]["content"]
-    assert messages[0]["effect_disposition"] == "unknown"
+    assert messages[0]["effect_disposition"] == "none"
     assert persisted and persisted[-1] == messages
     assert "raw invalid secret" not in str((messages, persisted, displayed))
     assert "raw invalid post secret" not in str((messages, persisted, displayed))
@@ -711,6 +711,181 @@ def test_required_pre_tool_failure_blocks_sequential_dispatch(
     assert result["failed"] is True
     assert result["final_response"] == REQUIRED_LIFECYCLE_FAILURE_TEXT
     assert "raw pre secret" not in str(result)
+    tool_results = [
+        message for message in result["messages"] if message.get("role") == "tool"
+    ]
+    assert len(tool_results) == 1
+    assert tool_results[0]["effect_disposition"] == "none"
+
+
+@pytest.mark.parametrize("block_kind", ("scope", "guardrail"))
+def test_required_post_failure_marks_policy_block_as_no_effect(
+    monkeypatch, block_kind
+):
+    from agent.tool_executor import execute_tool_calls_sequential
+    from hermes_cli.required_lifecycle import RequiredLifecycleError
+
+    agent = _agent()
+    agent.valid_tool_names.add("terminal")
+    agent._current_turn_id = "turn-policy-block"
+    agent._current_api_request_id = "api-policy-block"
+    persisted = []
+    agent._flush_messages_to_session_db = lambda messages, _history=None: (
+        persisted.append(copy.deepcopy(messages)) or True
+    )
+    if block_kind == "scope":
+        monkeypatch.setattr(
+            "agent.tool_executor._unwrap_tool_search_call",
+            lambda *_args, **_kwargs: ("terminal", {}, "scope denied"),
+        )
+    else:
+        agent._tool_guardrails.before_call = MagicMock(
+            return_value=SimpleNamespace(
+                allows_execution=False,
+                message="guardrail denied",
+            )
+        )
+    call = SimpleNamespace(
+        id=f"call-{block_kind}",
+        type="function",
+        function=SimpleNamespace(name="terminal", arguments="{}"),
+    )
+    required_error = RequiredLifecycleError(
+        "required_lifecycle_delivery_failed", "post_tool_call"
+    )
+
+    with (
+        patch("hermes_cli.plugins.requires_hook", return_value=True),
+        patch("model_tools.handle_function_call") as execute,
+        patch(
+            "agent.tool_executor._emit_terminal_post_tool_call",
+            side_effect=required_error,
+        ),
+        pytest.raises(RequiredLifecycleError),
+    ):
+        execute_tool_calls_sequential(
+            agent,
+            SimpleNamespace(tool_calls=[call]),
+            [],
+            effective_task_id="task-policy-block",
+        )
+
+    execute.assert_not_called()
+    tool_results = [
+        message for message in persisted[-1] if message.get("role") == "tool"
+    ]
+    assert len(tool_results) == 1
+    assert tool_results[0]["effect_disposition"] == "none"
+    assert REQUIRED_LIFECYCLE_FAILURE_TEXT in tool_results[0]["content"]
+
+
+def test_required_post_failure_scopes_settlement_to_current_tool_frame(monkeypatch):
+    from agent.tool_executor import execute_tool_calls_sequential
+    from hermes_cli.required_lifecycle import RequiredLifecycleError
+
+    agent = _agent()
+    agent.valid_tool_names.add("terminal")
+    agent._current_turn_id = "turn-current"
+    agent._current_api_request_id = "api-current"
+    persisted = []
+    agent._flush_messages_to_session_db = lambda messages, _history=None: (
+        persisted.append(copy.deepcopy(messages)) or True
+    )
+    old_result = {
+        "role": "tool",
+        "tool_call_id": "reused-call-id",
+        "name": "terminal",
+        "content": "old turn result",
+    }
+    messages = [old_result]
+    current_call = SimpleNamespace(
+        id="reused-call-id",
+        type="function",
+        function=SimpleNamespace(name="terminal", arguments="{}"),
+    )
+    required_error = RequiredLifecycleError(
+        "required_lifecycle_delivery_failed", "post_tool_call"
+    )
+
+    with (
+        patch("hermes_cli.plugins.requires_hook", return_value=True),
+        patch("model_tools.handle_function_call", return_value="raw current result"),
+        patch(
+            "agent.tool_executor._emit_terminal_post_tool_call",
+            side_effect=required_error,
+        ),
+        pytest.raises(RequiredLifecycleError) as caught,
+    ):
+        execute_tool_calls_sequential(
+            agent,
+            SimpleNamespace(tool_calls=[current_call]),
+            messages,
+            effective_task_id="task-current",
+        )
+
+    assert caught.value is required_error
+    assert messages[0] == old_result
+    assert len(messages) == 2
+    assert messages[1]["tool_call_id"] == "reused-call-id"
+    assert messages[1]["effect_disposition"] == "unknown"
+    assert REQUIRED_LIFECYCLE_FAILURE_TEXT in messages[1]["content"]
+    assert "raw current result" not in str((messages, persisted))
+    assert persisted and persisted[-1] == messages
+
+
+def test_required_post_failure_does_not_hide_duplicate_current_call_id(monkeypatch):
+    from agent.tool_executor import execute_tool_calls_sequential
+    from hermes_cli.required_lifecycle import RequiredLifecycleError
+
+    agent = _agent()
+    agent.valid_tool_names.add("terminal")
+    agent._current_turn_id = "turn-duplicate"
+    agent._current_api_request_id = "api-duplicate"
+    persisted = []
+    agent._flush_messages_to_session_db = lambda messages, _history=None: (
+        persisted.append(copy.deepcopy(messages)) or True
+    )
+    calls = [
+        SimpleNamespace(
+            id="duplicate-call-id",
+            type="function",
+            function=SimpleNamespace(name="terminal", arguments="{}"),
+        )
+        for _ in range(2)
+    ]
+    required_error = RequiredLifecycleError(
+        "required_lifecycle_delivery_failed", "post_tool_call"
+    )
+
+    with (
+        patch("hermes_cli.plugins.requires_hook", return_value=True),
+        patch(
+            "model_tools.handle_function_call",
+            side_effect=("first result", "raw second result"),
+        ) as execute,
+        patch(
+            "agent.tool_executor._emit_terminal_post_tool_call",
+            side_effect=(None, required_error),
+        ),
+        pytest.raises(RequiredLifecycleError) as caught,
+    ):
+        execute_tool_calls_sequential(
+            agent,
+            SimpleNamespace(tool_calls=calls),
+            [],
+            effective_task_id="task-duplicate",
+        )
+
+    assert caught.value is required_error
+    assert execute.call_count == 2
+    tool_results = [
+        message for message in persisted[-1] if message.get("role") == "tool"
+    ]
+    assert len(tool_results) == 2
+    assert tool_results[0]["content"] == "first result"
+    assert tool_results[1]["effect_disposition"] == "unknown"
+    assert REQUIRED_LIFECYCLE_FAILURE_TEXT in tool_results[1]["content"]
+    assert "raw second result" not in str(persisted)
 
 
 def test_required_pre_tool_failure_blocks_direct_invoke_tool(
@@ -806,6 +981,37 @@ def test_required_pre_tool_error_reaches_every_dispatch_boundary(
     assert caught.value is required_error
     if registry_dispatch is not None:
         registry_dispatch.assert_not_called()
+
+
+def test_required_pre_tool_blocks_uncorrelated_external_registry_caller(
+    tmp_path, monkeypatch
+):
+    from hermes_cli.required_lifecycle import RequiredLifecycleError
+    from model_tools import handle_function_call, registry
+
+    home = tmp_path / "hermes"
+    _install_required_plugin(
+        home,
+        'required_hook_result("behavioral.pre_llm.v1", None)',
+        'required_hook_result("behavioral.output.v1", None)',
+    )
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    plugins_mod._reset_plugin_managers_for_tests()
+    registry_dispatch = MagicMock(
+        side_effect=AssertionError("uncorrelated external dispatch must not start")
+    )
+    monkeypatch.setattr(registry, "dispatch", registry_dispatch)
+
+    with pytest.raises(RequiredLifecycleError) as caught:
+        handle_function_call(
+            "terminal",
+            {"command": "true"},
+            skip_tool_request_middleware=True,
+            skip_tool_execution_middleware=True,
+        )
+
+    assert caught.value.reason_code == "required_lifecycle_identity_missing"
+    registry_dispatch.assert_not_called()
 
 
 def test_required_output_hides_tool_narration_before_persist_and_interim_egress(

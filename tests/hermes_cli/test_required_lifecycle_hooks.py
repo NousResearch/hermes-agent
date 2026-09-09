@@ -334,6 +334,7 @@ def test_provider_continuity_is_private_but_restored_on_request_clone():
         "timestamp": 1.0,
         "finish_reason": "tool_calls",
         "reasoning_content": "private reasoning",
+        "bedrock_content_blocks": [{"text": "private bedrock text"}],
         "tool_calls": [
             {
                 "id": "call-1",
@@ -348,11 +349,30 @@ def test_provider_continuity_is_private_but_restored_on_request_clone():
     restore_required_provider_fields(agent, message, request_message)
 
     assert "reasoning_content" not in message
+    assert "bedrock_content_blocks" not in message
     assert "extra_content" not in message["tool_calls"][0]
     assert request_message["reasoning_content"] == "private reasoning"
+    assert request_message["bedrock_content_blocks"] == [
+        {"text": "private bedrock text"}
+    ]
     assert request_message["tool_calls"][0]["extra_content"] == {
         "thought_signature": "private signature"
     }
+
+
+def test_required_output_discards_terminal_bedrock_raw_blocks():
+    agent = SimpleNamespace()
+    message = {
+        "role": "assistant",
+        "content": "authorized public text",
+        "finish_reason": "stop",
+        "bedrock_content_blocks": [{"text": "raw provider text"}],
+    }
+
+    quarantine_required_provider_fields(agent, message)
+
+    assert "bedrock_content_blocks" not in message
+    assert not hasattr(agent, "_required_provider_continuity")
 
 
 def test_optional_hooks_keep_legacy_fail_open_behavior(tmp_path, monkeypatch):

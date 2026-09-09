@@ -31,6 +31,7 @@ _PROVIDER_CONTINUITY_FIELDS = frozenset(
         "reasoning_content",
         "reasoning_details",
         "anthropic_content_blocks",
+        "bedrock_content_blocks",
         "codex_reasoning_items",
         "codex_message_items",
     }

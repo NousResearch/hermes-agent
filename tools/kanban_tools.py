@@ -504,7 +504,9 @@ def _handle_show(args: dict, **kw) -> str:
             # Capped; full log via CLI.
             "events": [_fields(e, _EVENT_FIELDS) for e in kb.list_events(conn, tid)[-50:]],
             "runs": [_fields(r, _RUN_FIELDS) for r in kb.list_runs(conn, tid)],
-            # Same string build_worker_context hands the dispatcher at spawn time.
+            # The same string build_worker_context renders for the worker; the
+            # dispatcher does NOT pass it at spawn — the worker computes it
+            # fresh via its first kanban_show call.
             "worker_context": kb.build_worker_context(conn, tid)})
 
 

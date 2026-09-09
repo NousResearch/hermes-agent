@@ -96,6 +96,11 @@ def _admit_prompt_turn(
         _emit("error", sid, {"message": str(ownership_refusal)})
         return None
     with session["history_lock"]:
+        if session.get('_kanban_cache_dirty'):
+            from tui_gateway.kanban_delivery import repair_cache
+            from tui_gateway import server as host
+            with _session_db(session) as db:
+                repair_cache(host, session, db)
         if session.get("_closing") or (
             queued_prompt_generation is not None
             and int(session.get("_queued_prompt_generation", 0)) != queued_prompt_generation):
@@ -751,7 +756,9 @@ def _run_prompt_submit(
     rid, sid: str, session: dict, text: Any, *, display_kind: str | None = None,
     display_metadata: dict | None = None, image_paths: list[str] | None = None,
     queued_prompt_generation: int | None = None,
-    terminal_callback: Callable[[dict[str, Any]], None] | None = None) -> bool:
+    terminal_callback: Callable[[dict[str, Any]], None] | None = None,
+    lifecycle_callback: Callable[[str], None] | None = None,
+    emit_message_start: bool = True) -> bool:
     admitted = _admit_prompt_turn(sid, session, text, image_paths, queued_prompt_generation)
     if admitted is None:
         return False
@@ -770,7 +777,8 @@ def _run_prompt_submit(
         "kind=%s chars=%s images=%d",
         sid, session.get("session_key") or "", getattr(agent, "session_id", "") or "",
         display_kind or "user", len(text) if isinstance(text, str) else "-", len(images))
-    _emit("message.start", sid)
+    if emit_message_start:
+        _emit("message.start", sid)
 
     def run():
         # RPC-dispatcher ContextVars do not follow onto this thread: rebind the transport
@@ -780,9 +788,9 @@ def _run_prompt_submit(
         st = _TurnRun(
             session["agent"], session.pop("one_turn_model_restore", None), terminal_callback,
             receipt_committed=terminal_callback is None)
-        st.marker_key = _record_turn_marker(session, text, auto_continue=terminal_callback is None)
         goal_followup = None
         try:
+            st.marker_key = _record_turn_marker(session, text, auto_continue=terminal_callback is None)
             prepared = _prepare_turn_input(sid, session, st, text, images)
             if prepared is None:
                 if st.terminal_callback is not None and not st.receipt_attempted:
@@ -792,6 +800,8 @@ def _run_prompt_submit(
                     st.receipt_committed = True
                 return
             prompt, run_message, cols, streamer = prepared
+            if lifecycle_callback is not None:
+                lifecycle_callback('started')
             _invoke_agent(
                 sid, session, st, prompt, run_message, streamer, images, display_kind,
                 display_metadata)
@@ -846,6 +856,8 @@ def _run_prompt_submit(
         registered = _sessions.get(sid)
         can_start = not session.get("_closing") and (registered is None or registered is session)
         if can_start:
+            if lifecycle_callback is not None:
+                lifecycle_callback('admitted')
             session["_run_thread"] = run_thread
             run_thread.start()
     if not can_start:

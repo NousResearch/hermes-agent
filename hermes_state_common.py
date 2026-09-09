@@ -388,6 +388,22 @@ CREATE TABLE IF NOT EXISTS session_model_usage (
     PRIMARY KEY (session_id, model, billing_provider, billing_base_url, billing_mode, task)
 );
 
+-- Admission receipts outlive transcript compression and deletion. The message id
+-- records the original durable admission, not necessarily an active transcript row.
+-- Do not cascade-delete receipts: absence must never authorize legacy replay.
+CREATE TABLE IF NOT EXISTS notification_receipts (
+    identity_json TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL,
+    message_id INTEGER NOT NULL,
+    admitted_at REAL NOT NULL,
+    continuation_state TEXT NOT NULL DEFAULT 'pending',
+    continuation_text TEXT,
+    continuation_owner TEXT,
+    continuation_error TEXT,
+    continuation_updated_at REAL,
+    continuation_notice_after REAL NOT NULL DEFAULT 0
+);
+
 CREATE TABLE IF NOT EXISTS state_meta (
     key TEXT PRIMARY KEY,
     value TEXT

@@ -286,7 +286,7 @@ class TestNotificationPollerLoopKanbanWiring:
         monkeypatch.setattr(
             server,
             "_run_prompt_submit",
-            lambda rid, sid, sess, text: submits.append(text),
+            lambda rid, sid, sess, text, **kwargs: (submits.append(text), True)[1],
         )
         stop = threading.Event()
         thread = threading.Thread(
@@ -310,11 +310,22 @@ class TestNotificationPollerLoopKanbanWiring:
 
     def _poller_session(self, *, running: bool = False) -> dict:
         import threading
+        import tui_gateway.server as server
+        from hermes_constants import get_hermes_home
+
+        # Native prerequisites; original behavioral test bodies stay unchanged.
+        # The lifecycle test file exercises the unmocked admission/runner.
+        db = server._get_db()
+        if not db.get_session(SESSION_KEY):
+            db.create_session(SESSION_KEY, source='tui')
 
         return {
             "session_key": SESSION_KEY,
             "history_lock": threading.Lock(),
             "running": running,
+            "agent": SimpleNamespace(run_conversation=lambda *a, **k: None),
+            "profile_home": str(get_hermes_home()),
+            "history": [],
         }
 
     def test_idle_session_gets_status_update_and_agent_turn(self, monkeypatch):

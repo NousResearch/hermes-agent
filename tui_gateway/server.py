@@ -935,6 +935,7 @@ def _wire_session_agent(sid: str, key: str, agent) -> bool:
 
 def _start_session_services(sid: str, key: str, current: dict) -> None:
     """Start the notification poller and fire the session-reset boundary hook."""
+    _notif_poll_kanban(sid, current)
     with _sessions_lock:
         if (rec := _sessions.get(sid)) is not None:
             rec["_notif_stop"] = _start_notification_poller(sid, rec)

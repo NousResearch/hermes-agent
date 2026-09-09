@@ -60,6 +60,97 @@ def _handle_list():
         return json.dumps(_error(f"Failed to load channel directory: {e}"))
 
 
+_TOKEN_UNSET = object()
+
+
+def _authorize_relay_target(platform_name: str, chat_id, thread_id=None, *,
+                            native_token=_TOKEN_UNSET) -> str | None:
+    """Relay egress-authorization guard (P5a); None when the send may proceed.
+
+    Thin delegate to ``gateway.relay.egress`` so the tool keeps working in
+    environments where the gateway package can't be imported.
+
+    THE TWO FAILURES ARE NOT THE SAME, and conflating them disabled the
+    boundary. A missing gateway module means there is no relay egress to
+    authorize, so proceeding is correct. A fault INSIDE the guard means
+    authorization did not happen — and returning None there means "authorized",
+    so a single runtime bug in the guard silently switched the whole P5(a)
+    boundary off. Review found this by making the guard raise and watching the
+    send go through.
+
+    So: the import is tolerated, the CALL is not. A guard that cannot answer
+    refuses, which is the only safe polarity for an authorization check.
+    """
+    try:
+        from gateway.relay.egress import authorize_relay_target
+    except ImportError as exc:
+        # ABSENCE ONLY, and absence means the gateway relay module ITSELF is
+        # missing — `exc.name` says which module was not found. An ImportError
+        # naming a NESTED dependency is a broken installation, i.e. a fault,
+        # and returning None here means "authorized". Review probed exactly
+        # that (`ImportError.name = "gateway.relay.dependency"`) and got an
+        # authorized verdict, so `except ImportError` alone was still fail-open.
+        # ABSENCE has one shape and it is checkable: a genuinely missing module
+        # raises ModuleNotFoundError with `.name` set to the module that was not
+        # found (verified: `import gateway.relay.x` -> ModuleNotFoundError,
+        # name="gateway.relay.x"). So a plain ImportError, or a nameless one, is
+        # an unattributable FAULT — never proof that there is no relay here.
+        # I previously admitted the nameless case to protect the CLI/cron path;
+        # that reasoning was wrong, because that path does not produce one.
+        _missing = getattr(exc, "name", None)
+        if not isinstance(exc, ModuleNotFoundError) or _missing not in (
+            "gateway",
+            "gateway.relay",
+            "gateway.relay.egress",
+        ):
+            logger.exception(
+                "relay egress module failed to import for %s — refusing the send",
+                platform_name,
+            )
+            return (
+                f"Refusing to send to relay target '{platform_name}': the egress "
+                "authorization module could not be loaded, so this destination "
+                "could not be verified."
+            )
+        logger.debug("relay target authorization unavailable", exc_info=True)
+        return None
+    except Exception:  # noqa: BLE001 - the module is THERE and broke; FAIL CLOSED
+        logger.exception(
+            "relay egress module failed to import for %s — refusing the send",
+            platform_name,
+        )
+        return (
+            f"Refusing to send to relay target '{platform_name}': the egress "
+            "authorization module could not be loaded, so this destination "
+            "could not be verified."
+        )
+
+    try:
+        # ONE SNAPSHOT. `native_token` is the token from the SAME pconfig the
+        # dispatch below will actually send with. Letting the guard reload
+        # config independently allowed a transition where authorization saw a
+        # connector-only setup (exemption granted) while dispatch still held a
+        # native token and sent the unattested handle itself.
+        if native_token is _TOKEN_UNSET:
+            # A caller that forgets the snapshot must NOT silently look like
+            # "no native token", which would grant the @handle exemption.
+            return authorize_relay_target(platform_name, chat_id, thread_id)
+        return authorize_relay_target(
+            platform_name, chat_id, thread_id, native_token=native_token
+        )
+    except Exception:  # noqa: BLE001 - the guard faulted; FAIL CLOSED
+        logger.exception(
+            "relay target authorization FAILED for %s — refusing the send",
+            platform_name,
+        )
+        return (
+            f"Refusing to send to relay target '{platform_name}': the egress "
+            "authorization check failed, so this destination could not be "
+            "verified. This is a bug — the send was blocked rather than "
+            "allowed through unchecked."
+        )
+
+
 def _handle_react(args, remove=False):
     """Attach (``remove=True``: retract) an emoji reaction via the live gateway adapter; no
     standalone fallback because reacting needs the adapter's live message-id state."""
@@ -83,6 +174,16 @@ def _handle_react(args, remove=False):
         except Exception:
             return tool_error(f"No chat specified and no home channel set for {platform_name}. "
                               f"Use '{platform_name}:chat_id'.")
+    # P5(a): same egress-authorization floor as the send path — a reaction is
+    # an outbound act against a named destination, so an unattested relay
+    # target must be refused here too, not just on `send`.
+    # The react path has no pconfig snapshot of its own; it dispatches through
+    # the LIVE adapter below, never through a native token, so the guard does
+    # its own credential probe here.
+    _relay_denial = _authorize_relay_target(platform_name, chat_id, _thread_id)
+    if _relay_denial:
+        return tool_error(_relay_denial)
+
     _, adapter = _live_adapter(platform)
     if adapter is None:
         return tool_error(f"Reactions require a live {platform_name} adapter in the running "
@@ -136,6 +237,21 @@ def _handle_send(args):
         chat_id, resolve_err = _slack_dm_chat_id(pconfig, chat_id)
         if resolve_err:
             return json.dumps(resolve_err)
+    # POSITION IS LOAD-BEARING — this must stay BELOW Slack user→DM resolution.
+    # `_parse_target_ref` emits internal pseudo-ids (`user_name:ben`,
+    # `user:U...`) that no provenance can ever contain, because provenances
+    # record RESOLVED conversation ids. Authorizing above the resolver compared
+    # a handle against a set of `D...` ids and refused every Slack DM — a fix
+    # that caused the outage it was meant to prevent. Pinned by
+    # test_slack_user_targets_resolve_then_authorize; moving this call back up
+    # turns those cases red.
+    # thread_id is part of the DESTINATION: on Discord the thread is the literal
+    # REST target, so an attested parent must not vouch for an arbitrary thread.
+    _relay_denial = _authorize_relay_target(platform_name, chat_id, thread_id,
+                                            native_token=getattr(pconfig, "token", None))
+    if _relay_denial:
+        return tool_error(_relay_denial)
+
     try:
         from model_tools import _run_async
         # Only custom plugin handlers receive the complete typed request.

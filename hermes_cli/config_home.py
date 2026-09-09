@@ -41,7 +41,7 @@ def _ensure_directory(path: Path, *, create: bool, secure: bool) -> None:
 
 
 def initialize_home(home: Path, subdirs: tuple[str, ...], ensured: set[str]) -> None:
-    from hermes_cli.config import _ensure_default_soul_md, is_managed
+    from hermes_cli.config import _ensure_default_skin, _ensure_default_soul_md, is_managed
 
     managed = is_managed()
     old_umask = os.umask(0o007) if managed else None
@@ -59,6 +59,10 @@ def initialize_home(home: Path, subdirs: tuple[str, ...], ensured: set[str]) -> 
                 f"Cannot initialize Hermes home {home}: {exc}. "
                 "Check storage availability and access permissions."
             ) from exc
+        # North Forge fork: pin the first-launch skin to north-forge. Best-effort and
+        # self-contained — never raises — so it can't turn a cosmetic default into a
+        # home-init failure.
+        _ensure_default_skin(home)
     finally:
         if old_umask is not None:
             os.umask(old_umask)

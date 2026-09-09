@@ -170,6 +170,78 @@ class TestEnsureHermesHome:
             assert content != DEFAULT_SOUL_MD
 
 
+class TestEnsureDefaultSkin:
+    """North Forge fork: a fresh, North-Forge-seeded HERMES_HOME must start on
+    the 'north-forge' skin — enforced at home-seed time (config._ensure_default_skin),
+    not left to engine default. See hermes_cli/config.py."""
+
+    @staticmethod
+    def _seed_nf_skin(home: Path) -> None:
+        (home / "skins").mkdir(parents=True, exist_ok=True)
+        (home / "skins" / "north-forge.yaml").write_text(
+            "name: north-forge\ndescription: test\n", encoding="utf-8")
+
+    def _skin_in_config(self, home: Path):
+        raw = yaml.safe_load((home / "config.yaml").read_text(encoding="utf-8")) or {}
+        return (raw.get("display") or {}).get("skin")
+
+    def test_seeds_north_forge_on_fresh_nf_home(self, tmp_path):
+        self._seed_nf_skin(tmp_path)
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            ensure_hermes_home()
+        assert (tmp_path / "config.yaml").is_file()
+        assert self._skin_in_config(tmp_path) == "north-forge"
+
+    def test_no_op_when_not_a_north_forge_home(self, tmp_path):
+        # No skins/north-forge.yaml → not a NF-seeded drive → leave config alone.
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            ensure_hermes_home()
+        assert not (tmp_path / "config.yaml").exists()
+
+    def test_does_not_override_an_explicit_skin_choice(self, tmp_path):
+        self._seed_nf_skin(tmp_path)
+        (tmp_path / "config.yaml").write_text(
+            "display:\n  skin: crimson\n", encoding="utf-8")
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            ensure_hermes_home()
+        assert self._skin_in_config(tmp_path) == "crimson"
+
+    def test_overrides_stock_default_skin_value(self, tmp_path):
+        self._seed_nf_skin(tmp_path)
+        (tmp_path / "config.yaml").write_text(
+            "display:\n  skin: default\n", encoding="utf-8")
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            ensure_hermes_home()
+        assert self._skin_in_config(tmp_path) == "north-forge"
+
+    def test_preserves_other_config_keys(self, tmp_path):
+        self._seed_nf_skin(tmp_path)
+        (tmp_path / "config.yaml").write_text(
+            "model:\n  default: gpt-4o\ndisplay:\n  theme: dark\n", encoding="utf-8")
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            ensure_hermes_home()
+        raw = yaml.safe_load((tmp_path / "config.yaml").read_text(encoding="utf-8"))
+        assert raw["model"]["default"] == "gpt-4o"
+        assert raw["display"]["theme"] == "dark"
+        assert raw["display"]["skin"] == "north-forge"
+
+    def test_skipped_in_managed_mode(self, tmp_path):
+        from hermes_cli.config import _ensure_default_skin
+
+        self._seed_nf_skin(tmp_path)
+        with patch("hermes_cli.config.is_managed", return_value=True):
+            _ensure_default_skin(tmp_path)
+        assert not (tmp_path / "config.yaml").exists()
+
+    def test_never_raises_on_unwritable_config(self, tmp_path):
+        from hermes_cli.config import _ensure_default_skin
+
+        self._seed_nf_skin(tmp_path)
+        (tmp_path / "config.yaml").write_text("{ this: is not: valid yaml", encoding="utf-8")
+        # Unparseable config.yaml → atomic_config_write fails closed; the helper
+        # must swallow it, not propagate.
+        _ensure_default_skin(tmp_path)
+        assert (tmp_path / "config.yaml").read_text(encoding="utf-8").startswith("{ this")
 
 
 

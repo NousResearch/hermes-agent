@@ -67,6 +67,7 @@ Text-to-speech and speech-to-text across all messaging platforms:
 | **Edge TTS** (default) | Good | Free | None needed |
 | **ElevenLabs** | Excellent | Paid | `ELEVENLABS_API_KEY` |
 | **OpenAI TTS** | Good | Paid | `VOICE_TOOLS_OPENAI_KEY` |
+| **OpenAI Codex OAuth** | Good | ChatGPT subscription | Existing Codex login |
 | **MiniMax** | Good | Paid | `MINIMAX_API_KEY` |
 | **xAI TTS** | Good | Paid | `XAI_API_KEY` |
 | **NeuTTS** | Good | Free | None needed |

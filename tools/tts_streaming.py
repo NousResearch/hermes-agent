@@ -10,8 +10,13 @@ a subclass; the dispatcher, config gate (``tts.<name>.streaming``) and resolver 
 
 from __future__ import annotations
 
+import contextlib
 import logging
+import os
 import re
+import shutil
+import subprocess
+import tempfile
 import time
 from abc import ABC, abstractmethod
 from typing import Callable, Dict, Iterator, List, Optional
@@ -167,6 +172,61 @@ def _capped(chunks: Iterator[bytes], label: str) -> Iterator[bytes]:
             logger.warning("%s exceeded %d bytes for one sentence; truncating", label, _STREAM_SENTENCE_BYTE_CAP)
             return
         yield chunk
+
+
+@register("openai-codex")
+class OpenAICodexStreamer(StreamingTTSProvider):
+    """Verified ChatGPT read-aloud MP3 decoded to bounded 24 kHz PCM per sentence."""
+
+    @staticmethod
+    def available() -> bool:
+        from tools.tts_tool_codex import _has_codex_tts_backend
+        return _has_codex_tts_backend()
+
+    def __init__(self, tts_config: Dict, section: Dict):
+        super().__init__(tts_config, section)
+        from tools.tts_tool_codex import _codex_tts_credentials
+        # Capture the requesting profile's pool while the Desktop router's profile scope is active.
+        self.pool, self.credentials = _codex_tts_credentials()
+
+    def stream(self, text: str) -> Iterator[bytes]:
+        from tools.codex_web_audio import synthesize_codex_speech
+        voice = str(self.section.get("voice") or "juniper")
+        timeout = max(10.0, min(float(self.section.get("timeout") or 120), 180.0))
+        speech = synthesize_codex_speech(text, self.credentials["api_key"], voice=voice, timeout=timeout)
+        fd, path = tempfile.mkstemp(suffix=".mp3")
+        os.close(fd)
+        try:
+            with open(path, "wb") as handle:
+                handle.write(speech.audio)
+            ffmpeg = shutil.which("ffmpeg")
+            if not ffmpeg:
+                raise FileNotFoundError("ffmpeg is required for Codex live voice")
+            from hermes_cli._subprocess_compat import windows_hide_flags
+            proc = subprocess.Popen(
+                [ffmpeg, "-hide_banner", "-loglevel", "error", "-i", path, "-f", "s16le",
+                 "-acodec", "pcm_s16le", "-ar", str(self.sample_rate), "-ac", str(self.channels), "pipe:1"],
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, stdin=subprocess.DEVNULL,
+                creationflags=windows_hide_flags())
+            total = 0
+            assert proc.stdout is not None
+            try:
+                while chunk := proc.stdout.read(64 * 1024):
+                    total += len(chunk)
+                    if total > _STREAM_SENTENCE_BYTE_CAP:
+                        proc.terminate()
+                        raise ValueError("Codex live-voice PCM exceeded the per-sentence byte cap")
+                    yield chunk
+                stderr = proc.stderr.read().decode("utf-8", "replace") if proc.stderr else ""
+                if proc.wait(timeout=10):
+                    raise RuntimeError(f"ffmpeg failed to decode Codex speech: {stderr[:300]}")
+            finally:
+                if proc.poll() is None:
+                    proc.terminate()
+                    proc.wait(timeout=5)
+        finally:
+            with contextlib.suppress(OSError):
+                os.unlink(path)
 
 
 @register("elevenlabs")

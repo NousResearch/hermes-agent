@@ -267,7 +267,7 @@ def _command_output_format(config: Dict[str, Any], formats: FrozenSet[str], defa
 
 # Any ``tts.provider`` value NOT in this set refers to ``tts.providers.<name>``.
 BUILTIN_TTS_PROVIDERS = frozenset({
-    "edge", "elevenlabs", "openai", "minimax", "xai", "mistral", "gemini",
+    "edge", "elevenlabs", "openai", "openai-codex", "minimax", "xai", "mistral", "gemini",
     "neutts", "kittentts", "piper", "deepinfra"})
 
 DEFAULT_COMMAND_TTS_TIMEOUT_SECONDS = 120

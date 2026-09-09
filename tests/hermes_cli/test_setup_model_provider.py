@@ -163,6 +163,40 @@ def test_setup_summary_reports_missing_codex_stt_auth(tmp_path, monkeypatch, cap
     assert "hermes auth add openai-codex" in output
 
 
+def test_setup_summary_reports_codex_tts_ready(tmp_path, monkeypatch, capsys):
+    from hermes_cli import auth
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _clear_provider_env(monkeypatch)
+    monkeypatch.setattr(auth, "has_codex_runtime_credentials", lambda: True)
+    monkeypatch.setattr("agent.auxiliary_client.get_available_vision_backends", lambda: [])
+    config = load_config()
+    config["tts"]["provider"] = "openai-codex"
+
+    _print_setup_summary(config, tmp_path)
+    output = capsys.readouterr().out
+
+    assert "Text-to-Speech (OpenAI Codex OAuth)" in output
+    assert "hermes auth add openai-codex" not in output
+
+
+def test_setup_summary_reports_missing_codex_tts_auth(tmp_path, monkeypatch, capsys):
+    from hermes_cli import auth
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _clear_provider_env(monkeypatch)
+    monkeypatch.setattr(auth, "has_codex_runtime_credentials", lambda: False)
+    monkeypatch.setattr("agent.auxiliary_client.get_available_vision_backends", lambda: [])
+    config = load_config()
+    config["tts"]["provider"] = "openai-codex"
+
+    _print_setup_summary(config, tmp_path)
+    output = capsys.readouterr().out
+
+    assert "Text-to-Speech (OpenAI Codex OAuth)" in output
+    assert "hermes auth add openai-codex" in output
+
+
 def test_setup_summary_local_browser_unavailable_without_chromium(
     tmp_path, monkeypatch, capsys
 ):

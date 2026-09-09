@@ -7,6 +7,7 @@ Extracted from ``hermes_cli.web_server``; helpers/state that tests monkeypatch o
 import base64
 import binascii
 import contextlib
+import concurrent.futures
 import logging
 import queue
 import tempfile
@@ -396,13 +397,25 @@ async def speak_stream_ws(ws: "WebSocket") -> None:
 
     stop = threading.Event()
     text_q: queue.Queue = queue.Queue()  # str deltas; None = end-of-text
-    chunks: asyncio.Queue = asyncio.Queue()  # PCM out; None = synthesis done
+    chunks: asyncio.Queue = asyncio.Queue(maxsize=64)  # bounded PCM out; None = synthesis done
 
     def _produce():
         from tools.tts_streaming import SentenceChunker
         from tools.tts_text_normalize import _strip_markdown_for_tts
 
         chunker = SentenceChunker()
+
+        def _emit(value) -> bool:
+            """Publish with backpressure; abandon a blocked put after barge-in."""
+            future = asyncio.run_coroutine_threadsafe(chunks.put(value), loop)
+            while not stop.is_set():
+                try:
+                    future.result(timeout=0.5)
+                    return True
+                except concurrent.futures.TimeoutError:
+                    continue
+            future.cancel()
+            return False
 
         # The session stays open for a whole agent turn and no text arrives
         # during tool execution, so without an idle flush a narration line with
@@ -441,11 +454,12 @@ async def speak_stream_ws(ws: "WebSocket") -> None:
                     for chunk in streamer.stream(piece):
                         if stop.is_set():
                             return
-                        loop.call_soon_threadsafe(chunks.put_nowait, chunk)
+                        if not _emit(chunk):
+                            return
         except Exception as exc:
             _log.warning("speak-stream synthesis failed: %s", exc)
         finally:
-            loop.call_soon_threadsafe(chunks.put_nowait, None)
+            _emit(None)
 
     threading.Thread(target=_produce, daemon=True).start()
 

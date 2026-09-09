@@ -58,6 +58,7 @@ from tools.tts_tool_plugins import (
     _dispatch_to_plugin_provider, _plugin_provider_is_available,
     _plugin_provider_is_voice_compatible)
 from tools.tts_tool_openai import _generate_deepinfra_tts, _generate_openai_tts, _has_openai_audio_backend
+from tools.tts_tool_codex import _generate_openai_codex_tts, _has_codex_tts_backend
 
 
 # --- Lazy SDK importers -- providers import only when used (headless boxes lack PortAudio etc.) ---
@@ -159,7 +160,7 @@ def _get_provider(tts_config: Dict[str, Any]) -> str:
 OPUS_VOICE_PLATFORMS = frozenset({"telegram", "matrix", "feishu", "whatsapp", "signal"})
 # Built-ins that emit Opus natively when asked for .ogg; the rest need ffmpeg for voice bubbles.
 _NATIVE_OPUS_PROVIDERS = frozenset({"openai", "elevenlabs", "mistral", "gemini"})
-_FFMPEG_OPUS_PROVIDERS = frozenset({"edge", "neutts", "minimax", "xai", "kittentts", "piper"})
+_FFMPEG_OPUS_PROVIDERS = frozenset({"edge", "openai-codex", "neutts", "minimax", "xai", "kittentts", "piper"})
 
 
 # --- Built-in provider dispatch ---
@@ -170,6 +171,9 @@ _BUILTIN_DISPATCH: Dict[str, tuple] = {
                    "ElevenLabs provider selected but 'elevenlabs' package not installed. Run: pip install elevenlabs"),
     "openai": (lambda: _importable(_import_openai_client), "OpenAI TTS", "_generate_openai_tts",
                "OpenAI provider selected but 'openai' package not installed."),
+    "openai-codex": (_has_codex_tts_backend, "OpenAI Codex OAuth TTS", "_generate_openai_codex_tts",
+                     "OpenAI Codex OAuth TTS selected but no Codex credential is available. "
+                     "Run: hermes auth add openai-codex"),
     "deepinfra": (lambda: _importable(_import_openai_client), "DeepInfra TTS", "_generate_deepinfra_tts",
                   "DeepInfra TTS uses the 'openai' SDK but it isn't installed."),
     "minimax": (None, "MiniMax TTS", "_generate_minimax_tts", None),
@@ -499,6 +503,7 @@ _BUILTIN_REQUIREMENTS: Dict[str, Callable[[], bool]] = {
     "edge": lambda: _importable(_import_edge_tts) or _check_neutts_available(),
     "elevenlabs": lambda: _importable(_import_elevenlabs) and bool(_resolve_provider_key("ELEVENLABS_API_KEY", "elevenlabs")),
     "openai": lambda: _package_installed("openai") and _has_openai_audio_backend(),
+    "openai-codex": _has_codex_tts_backend,
     "deepinfra": lambda: _package_installed("openai") and bool(_resolve_provider_key("DEEPINFRA_API_KEY", "deepinfra")),
     "minimax": _minimax_requirements,
     "xai": _xai_requirements,

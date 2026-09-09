@@ -994,7 +994,7 @@ DEFAULT_CONFIG = {
     # 15000, MiniMax 10000, ElevenLabs 5k-40k model-aware, Gemini 32000, Edge 5000, Mistral 4000,
     # NeuTTS/KittenTTS 2000).
     "tts": {
-        # "edge" (free) | "elevenlabs" (premium) | "openai" | "xai" | "minimax" | "mistral" |
+        # "edge" (free) | "elevenlabs" (premium) | "openai" | "openai-codex" | "xai" | "minimax" | "mistral" |
         # "gemini" | "deepinfra" | "neutts" (local) | "kittentts" (local) | "piper" (local)
         "provider": "edge",
         "edge": {
@@ -1010,6 +1010,12 @@ DEFAULT_CONFIG = {
             # gpt-4o-mini-tts voices: alloy, ash, ballad, cedar, coral, echo, fable, marin, nova,
             # onyx, sage, shimmer, verse
             "voice": "alloy",
+        },
+        "openai_codex": {
+            # ChatGPT read-aloud voices: juniper, cove, ember, breeze, maple, vale, glimmer,
+            # orbit, fathom, ridge. OpenAI API voice aliases are accepted too.
+            "voice": "juniper",
+            "timeout": 120,
         },
         "gemini": {
             "model": "gemini-2.5-flash-preview-tts",

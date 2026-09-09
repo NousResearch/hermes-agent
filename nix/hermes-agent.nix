@@ -98,6 +98,10 @@ let
 
   hermesVenv = (mkHermesVenv extraDependencyGroups).venv;
 
+  generatedIcons = callPackage ./icons.nix {
+    inherit (mkHermesVenv [ ]) iconBuildVenv;
+  };
+
   hermesNpmLib = callPackage ./lib.nix {
     inherit npm-lockfile-fix;
   };
@@ -107,7 +111,7 @@ let
   };
 
   hermesWeb = callPackage ./web.nix {
-    inherit hermesNpmLib;
+    inherit hermesNpmLib generatedIcons;
   };
 
   bundledSkills = lib.cleanSourceWith {
@@ -300,7 +304,7 @@ stdenv.mkDerivation (finalAttrs: {
       # runtime PATH (ripgrep/git/ffmpeg/etc).  No re-implementation
       # of the agent resolution in the desktop wrapper.
       hermesDesktop = callPackage ./desktop.nix {
-        inherit hermesNpmLib electron installStampFile;
+        inherit hermesNpmLib electron installStampFile generatedIcons;
         python3 = python;
         hermesAgent = finalAttrs.finalPackage;
       };

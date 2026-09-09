@@ -1,5 +1,5 @@
 # nix/web.nix — Hermes Web Dashboard (Vite/React) frontend build
-{ hermesNpmLib, ... }:
+{ hermesNpmLib, generatedIcons, ... }:
 hermesNpmLib.buildNpmPackage {
   dirs = [
     "web"
@@ -12,6 +12,7 @@ hermesNpmLib.buildNpmPackage {
   doCheck = false;
 
   buildPhase = ''
+    cp -r ${generatedIcons}/web/public/. web/public/
     # Build from web/ so vite.config.ts and tsconfig resolve correctly.
     # The workspace root's node_modules/ is at ../node_modules/.
     cd web

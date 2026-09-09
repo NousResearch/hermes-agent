@@ -96,7 +96,7 @@ def _archive_untracked(tree: Path, untracked: List[str]) -> Optional[Path]:
         for rel in untracked:
             src = tree / rel
             if not src.exists() or src.is_symlink():
-                continue
+                return record_actions
             (dest / rel).parent.mkdir(parents=True, exist_ok=True)
             if src.is_dir():
                 shutil.copytree(src, dest / rel, dirs_exist_ok=True)
@@ -208,11 +208,15 @@ def reclaim_worktrees(
         try:
             remove_result = _git(["worktree", "remove", record.path, "--force"], cwd=repo_root, timeout=30)
             if remove_result.returncode != 0:
-                actions.append(f"failed to remove {record.name}: {remove_result.stderr.strip()}")
-                continue
+                record_actions.append(
+                    f"failed to remove {record.name}: {remove_result.stderr.strip()}"
+                )
+                return record_actions
             if record.verdict == "reap-keep-branch":
-                actions.append(f"removed {record.name} (branch {record.branch} kept — pushed open-PR lane)")
-                continue
+                record_actions.append(
+                    f"removed {record.name} (branch {record.branch} kept — pushed open-PR lane)"
+                )
+                return record_actions
             if record.branch and record.branch not in _PROTECTED_BRANCHES:
                 _git(["branch", "-D", record.branch], cwd=repo_root, timeout=10)
             record_actions.append(f"removed {record.name}")

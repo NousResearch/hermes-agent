@@ -34,6 +34,7 @@ import {
   Loader2,
   Monitor,
   Package,
+  Pause,
   Search,
   StopFilled,
   Trash2,
@@ -47,28 +48,16 @@ import {
   watchLocalRuntimeJobs
 } from '@/store/local-runtime-jobs'
 import { notify, notifyError } from '@/store/notifications'
-import type { LocalCatalogModel, LocalHardware, LocalModelsStatus } from '@/types/hermes'
+import type { LocalCatalogModel, LocalHardware, LocalModelsStatus, LocalRuntimeJob } from '@/types/hermes'
 
+import {
+  gbLabel,
+  isDownloadPhase,
+  LocalModelDownloadActions,
+  LocalModelDownloadProgress,
+  ProgressBar
+} from './local-model-download-progress'
 import { ListRow, Pill, SettingsContent, SettingsSection, SettingsSkeleton } from './primitives'
-
-function ProgressBar({ percent }: { percent: number | undefined }) {
-  return (
-    <div className="h-1.5 w-full overflow-hidden rounded-full bg-(--ui-bg-tertiary)">
-      <div
-        className="h-full rounded-full bg-primary transition-[width] duration-300"
-        style={{ width: `${Math.max(2, Math.min(100, percent ?? 2))}%` }}
-      />
-    </div>
-  )
-}
-
-function gbLabel(bytes: number | null | undefined): string {
-  if (!bytes) {
-    return '—'
-  }
-
-  return `${(bytes / (1 << 30)).toFixed(1)} GB`
-}
 
 // Catalog display order: what runs well leads. Resident (all on GPU)
 // first, then spilled (works, slower), then doesn't-fit; catalog order
@@ -83,6 +72,12 @@ function fitRank(model: LocalCatalogModel): number {
   }
 
   return 2
+}
+
+// Still on its way (or parked mid-way): rows/hero stay visible while
+// paused — a paused download vanishing reads as progress loss.
+function isActiveStatus(status: LocalRuntimeJob['status']): boolean {
+  return status === 'paused' || status === 'running'
 }
 
 export function LocalModelsSettings() {
@@ -265,7 +260,7 @@ export function LocalModelsSettings() {
   const navigate = useNavigate()
   const seenQuickstarts = useRef(new Set<string>())
 
-  const runningQuickstart = jobs.find(j => j.kind === 'quickstart' && j.status === 'running')
+  const runningQuickstart = jobs.find(j => j.kind === 'quickstart' && isActiveStatus(j.status))
 
   useEffect(() => {
     // Event detection, not value mirroring: the ref only remembers which
@@ -306,7 +301,14 @@ export function LocalModelsSettings() {
   const needsSetup = !status.runtime_installed || status.models.length === 0
   const heroModel = catalog.find(c => c.recommended && c.fits) ?? catalog.find(c => c.fits) ?? null
 
-  if (qJob || (needsSetup && !configure && heroModel)) {
+  // An active runtime install/update or model download needs the FULL pane
+  // (its row lives there with its controls) — the setup hero must not hide
+  // it on a remount.
+  const otherActiveJob = jobs.some(
+    j => (j.kind === 'runtime-install' || j.kind === 'model-download') && isActiveStatus(j.status)
+  )
+
+  if ((qJob || (needsSetup && !configure && heroModel)) && !otherActiveJob) {
     // Stage rail derived from the job phase: engine -> model -> finish.
     const phase = qJob?.phase ?? ''
 
@@ -314,23 +316,17 @@ export function LocalModelsSettings() {
 
     const stages = [copy.quickstartStageEngine, copy.quickstartStageModel, copy.quickstartStageFinish]
 
-    // The model-download leg blanks job.detail on purpose (pane rows
-    // render their own byte counter) — compose one here instead of
-    // falling back to runtime copy that would misname the stage.
-    const liveDetail =
-      qJob &&
-      (qJob.detail ||
-        (qJob.total_bytes
-          ? copy.downloadProgress(gbLabel(qJob.done_bytes), gbLabel(qJob.total_bytes))
-          : copy.installing))
-
     return (
       <SettingsContent>
         <div className="flex min-h-[60dvh] items-center justify-center">
           <div className="w-full max-w-md text-center">
             <div className="mx-auto mb-5 flex size-14 items-center justify-center rounded-2xl bg-primary/10">
               {qJob ? (
-                <Loader2 className="size-7 animate-spin text-primary" />
+                qJob.status === 'paused' ? (
+                  <Pause className="size-7 text-muted-foreground" />
+                ) : (
+                  <Loader2 className="size-7 animate-spin text-primary" />
+                )
               ) : (
                 <Cpu className="size-7 text-primary" />
               )}
@@ -342,10 +338,28 @@ export function LocalModelsSettings() {
 
             {qJob ? (
               <>
-                <p className="mt-2 min-h-10 text-[0.8rem] leading-5 text-muted-foreground">{liveDetail}</p>
+                {/* Byte counter only while bytes actually move: each stage
+                    recomputes percent against ITS OWN download plan, and a
+                    stage hand-off resets the counter by design — showing it
+                    across a hand-off would read as progress loss. Paused
+                    rows keep the frozen counter they parked with. */}
+                <p className="mt-2 min-h-10 text-[0.8rem] leading-5 text-muted-foreground">
+                  {qJob.status === 'paused'
+                    ? copy.downloadPausedLabel
+                    : isDownloadPhase(qJob) && (qJob.detail || qJob.total_bytes)
+                      ? qJob.detail || copy.downloadProgress(gbLabel(qJob.done_bytes), gbLabel(qJob.total_bytes))
+                      : qJob.detail || copy.installing}
+                </p>
 
                 <div className="mt-5">
-                  <ProgressBar percent={qJob.percent} />
+                  <ProgressBar paused={qJob.status === 'paused'} percent={qJob.percent} />
+                </div>
+
+                {/* Pause / Resume — the backend's can_pause/can_resume gate
+                    when controls exist (engine legs, server start report
+                    false); the paused state always offers Resume. */}
+                <div className="mt-5 flex items-center justify-center gap-3">
+                  <LocalModelDownloadActions job={qJob} />
                 </div>
 
                 {/* Stage rail: engine -> model -> finish. */}
@@ -456,11 +470,16 @@ export function LocalModelsSettings() {
           />
         ) : rJob ? (
           <ListRow
-            below={<ProgressBar percent={rJob.percent} />}
+            action={<LocalModelDownloadActions job={rJob} />}
+            below={<LocalModelDownloadProgress job={rJob} />}
             description={rJob.detail || copy.installing}
             title={
               <span className="inline-flex items-center gap-2">
-                <Loader2 className="size-3.5 animate-spin" />
+                {rJob.status === 'paused' ? (
+                  <Pause className="size-3.5" />
+                ) : (
+                  <Loader2 className="size-3.5 animate-spin" />
+                )}
                 {copy.installing}
               </span>
             }
@@ -493,11 +512,16 @@ export function LocalModelsSettings() {
 
         {rJob && status.runtime_installed && (
           <ListRow
-            below={<ProgressBar percent={rJob.percent} />}
+            action={<LocalModelDownloadActions job={rJob} />}
+            below={<LocalModelDownloadProgress job={rJob} />}
             description={rJob.detail || copy.updating}
             title={
               <span className="inline-flex items-center gap-2">
-                <Loader2 className="size-3.5 animate-spin" />
+                {rJob.status === 'paused' ? (
+                  <Pause className="size-3.5" />
+                ) : (
+                  <Loader2 className="size-3.5 animate-spin" />
+                )}
                 {copy.updating}
               </span>
             }
@@ -554,7 +578,9 @@ export function LocalModelsSettings() {
         <div className="grid gap-1">
           {sortedCatalog.map(model => {
             const dJob = runningDownloadFor(jobs, model.id)
-            const anyDownloadRunning = jobs.some(j => j.kind === 'model-download' && j.status === 'running')
+
+            const anyDownloadRunning = jobs.some(j => j.kind === 'model-download' && isActiveStatus(j.status))
+
             const activateTarget = model.downloaded_model_id ?? model.model_id
             const isActive = Boolean(activateTarget && status.active_model_id === activateTarget)
             const residency = activateTarget ? status.loaded_models[activateTarget] : undefined
@@ -634,7 +660,9 @@ export function LocalModelsSettings() {
                         </Button>
                       </Tip>
                     </div>
-                  ) : dJob ? undefined : (
+                  ) : dJob ? (
+                    <LocalModelDownloadActions job={dJob} />
+                  ) : (
                     <Button
                       disabled={!model.fits || anyDownloadRunning || !status.runtime_installed}
                       onClick={() => void handleDownload(model)}
@@ -649,12 +677,14 @@ export function LocalModelsSettings() {
                 below={
                   dJob ? (
                     <div className="mt-2 grid gap-1">
-                      <ProgressBar percent={dJob.percent} />
+                      <ProgressBar paused={dJob.status === 'paused'} percent={dJob.percent} />
 
                       <p className="text-[0.68rem] text-muted-foreground">
-                        {!dJob.done_bytes && dJob.detail
-                          ? dJob.detail
-                          : copy.downloadProgress(gbLabel(dJob.done_bytes), gbLabel(dJob.total_bytes))}
+                        {dJob.status === 'paused'
+                          ? copy.downloadPausedLabel
+                          : !dJob.done_bytes && dJob.detail
+                            ? dJob.detail
+                            : copy.downloadProgress(gbLabel(dJob.done_bytes), gbLabel(dJob.total_bytes))}
                       </p>
                     </div>
                   ) : undefined
@@ -1067,13 +1097,17 @@ function BrowseSection({ onChanged }: { onChanged: () => void }) {
 
                       {dJob ? (
                         <>
-                          <ProgressBar percent={dJob.percent} />
+                          <ProgressBar paused={dJob.status === 'paused'} percent={dJob.percent} />
 
                           <span className="text-[0.68rem] text-muted-foreground">
-                            {!dJob.done_bytes && dJob.detail
-                              ? dJob.detail
-                              : copy.downloadProgress(gbLabel(dJob.done_bytes), gbLabel(dJob.total_bytes))}
+                            {dJob.status === 'paused'
+                              ? copy.downloadPausedLabel
+                              : !dJob.done_bytes && dJob.detail
+                                ? dJob.detail
+                                : copy.downloadProgress(gbLabel(dJob.done_bytes), gbLabel(dJob.total_bytes))}
                           </span>
+
+                          <LocalModelDownloadActions job={dJob} />
                         </>
                       ) : (
                         <span className="flex items-center justify-between gap-2">

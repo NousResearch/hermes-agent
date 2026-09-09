@@ -886,6 +886,9 @@ def test_store_path_dirs_include_node_npm_when_installed(tmp_path, monkeypatch):
         entry = f"{name}-1"
         entry_dir = store / entry
         entry_dir.mkdir(parents=True, exist_ok=True)
+        binary = registry.get_package(name).binary(entry_dir, current_target())
+        binary.parent.mkdir(parents=True, exist_ok=True)
+        binary.write_bytes(b"installed tool")
         facts.record(
             name, "1", entry,
             {"PATH": ["{store}/" + entry]}, store_root=store,

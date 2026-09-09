@@ -83,7 +83,7 @@ def test_boot_replaces_incumbent_with_stale_presets(hermes_home, monkeypatch):
 
     # Fail fast once boot proper begins — reaching it IS the assertion.
     monkeypatch.setattr(
-        "hermes_cli.local_runtime.binaries.ensure_runtime_installed", fake_boot)
+        "hermes_cli.local_runtime.binaries.installed_engine", fake_boot)
 
     result = boot.ensure_local_runtime({"local_runtime": {"enabled": True}})
     assert stopped.get("pid") == 12345, "stale incumbent was not stopped"

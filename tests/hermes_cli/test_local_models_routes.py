@@ -231,7 +231,10 @@ def test_download_already_downloaded_short_circuits(client, monkeypatch):
                         lambda **kw: budget)
     choice = select_variant(CATALOG[0], budget)
     assert choice is not None
-    _write_fake_gguf(models_dir() / choice.variant.files[0].local_name)
+    from hermes_cli.web_routers.local_models import _download_plan
+
+    for _, dest, _ in _download_plan(CATALOG[0], choice.variant):
+        _write_fake_gguf(dest)
     r = client.post("/api/local-models/download", json={"model_id": CATALOG[0].id})
     assert r.status_code == 200
     assert r.json()["already_downloaded"] is True
@@ -253,11 +256,15 @@ def test_runtime_install_rejects_impossible_combo(client, monkeypatch):
     """Impossible platform/backend combos fail the POST itself with the
     resolver's honest message — not a background job that dies silently.
     (win-arm64-vulkan; the old cuda case became real upstream at ~b1036x.)"""
-    monkeypatch.setattr(
-        "hermes_cli.local_runtime.binaries._host_os_arch", lambda: ("win", "arm64"))
-    r = client.post("/api/local-models/runtime/install", json={"backend": "vulkan"})
+    from pm import paths
+    from pm.lock import Lockfile
+
+    lock_path = Path(paths.partials_root()).parent / "unavailable-lock.json"
+    Lockfile(lock_path).save()
+    monkeypatch.setattr(paths, "lockfile_path", lambda: lock_path)
+    r = client.post("/api/local-models/runtime/install", json={"backend": "cpu"})
     assert r.status_code == 400
-    assert "arm64" in r.json()["detail"]
+    assert "not pinned" in r.json()["detail"]
 
 
 def test_job_poll_unknown_404s(client):
@@ -630,8 +637,10 @@ def test_quickstart_pause_stops_the_sequence(client, monkeypatch, dl_server,
 
     _serve_plan(monkeypatch, dl_server, tmp_path / "partials",
                 {"QsPartA": _BIG_BODY, "QsPartB": _BIG_BODY})
-    monkeypatch.setattr("hermes_cli.local_runtime.binaries.installed_tags",
-                        lambda: ["b99999"])   # runtime leg already satisfied
+    from hermes_cli.local_runtime.binaries import Engine
+
+    monkeypatch.setattr("hermes_cli.local_runtime.binaries.installed_engine",
+                        lambda *args, **kwargs: Engine("cpu", "b99999", Path("unused")))
     monkeypatch.setattr(lm, "_runtime_target",
                         lambda requested=None: ("b1", "cpu"))
 

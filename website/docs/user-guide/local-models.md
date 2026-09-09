@@ -21,9 +21,20 @@ builds require the `--local` launch flag. A runtime can already be bundled;
 its absence triggers the managed-tool install path, not an arbitrary latest
 llama.cpp download.
 
-Model downloads support pause and resume. Partial downloads use PM's writable
-`cache/partials` area, outside a signed app package. Model weights and managed
-engine binaries are separate downloads.
+Use **Pause** and **Resume** on engine installs, engine updates, catalog models,
+Hugging Face downloads, and quickstart. Paused jobs remain visible when you
+leave and reopen Local Models. Pause stops the transfer at a chunk boundary;
+unpacking, verification, and server activation are separate phases.
+
+PM downloads every engine component, including CUDA runtime DLLs, from the
+URLs and SHA-256 pins in `pm/lock.json`. Model weights, split GGUF parts,
+vision projectors, and draft models use the same downloader. Byte progress
+covers the whole download plan, including completed files and resumed ranges.
+Quickstart labels engine and model progress as separate stages.
+
+Partial downloads use PM's writable `cache/partials` area, outside a signed
+app package. Range-capable hosts resume missing bytes. Hosts without Range
+support restart the current file. Completed files are reused.
 
 ## Getting started
 
@@ -123,23 +134,27 @@ local_runtime:
   enabled: false     # true = start the managed server with Hermes.
                      # The desktop "Use" button sets this automatically.
   backend: auto      # auto | cuda | metal | vulkan | hip | cpu
-  tag: b10362        # pinned llama.cpp release; Hermes updates it with
-                     # each release after re-validation
 ```
 
-Models and runtime builds live under the Hermes home directory
-(`models/` and `runtimes/llamacpp/`). Selecting a local model as your
-main model uses the standard `model.provider: llamacpp` +
-`model.default` settings — the same shape as every other provider.
+Engine versions come only from PM's lockfile, not a `local_runtime.tag`
+override. Boot uses an installed PM engine without downloading. When a new
+pin is available, install it with the desktop update button.
+
+Models live in the machine-shared `models/` directory. Engine binaries live
+in PM's store; `runtimes/llamacpp/` holds mutable presets and server state.
+Selecting a local model as your main model uses the standard
+`model.provider: llamacpp` + `model.default` settings.
 
 ## Requirements and limits
 
-- **Windows and Linux:** NVIDIA GPU (CUDA) or CPU. **macOS:** Apple
-  Silicon (Metal). Vulkan builds serve AMD GPUs.
+- **Windows:** CUDA on supported NVIDIA targets, Vulkan on x64, or CPU.
+  **Linux:** Vulkan or CPU; the pinned release has no prebuilt CUDA archive.
+  **macOS:** Metal or CPU. HIP/ROCm is an explicit choice on supported x64
+  targets. Unsupported backend/target pairs fail before any download.
 - A GPU with 8 GB+ of memory runs the small catalog models comfortably;
   16 GB+ runs the 27–35B models at high quality.
-- Model downloads are byte-size checked against the catalog during the
-  transfer; an incomplete download is deleted and reported, never
-  half-used. (Only the runtime engine zips are SHA-256 verified.)
+- Model completeness is checked against the server's response, not catalog
+  size estimates. Interrupted transfers retain partials for resume; incomplete
+  files are not published. Engine archives are SHA-256 verified before use.
 - Deleting a model removes every file it staged, including vision
   adapters and speculative-decoding companions.

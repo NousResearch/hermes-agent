@@ -1103,6 +1103,16 @@ class LlamaCppVulkan(LlamaCpp):
 
 
 @register
+class LlamaCppHip(LlamaCpp):
+    name = "llamacpp-hip"
+    backend = "hip"
+    assets = {
+        "win32-x64": "win-rocm-7.14-x64",
+        "linux-x64": "ubuntu-rocm-7.14-x64",
+    }
+
+
+@register
 class LlamaCppMetal(LlamaCpp):
     """macOS archives are unified builds with Metal compiled in."""
 

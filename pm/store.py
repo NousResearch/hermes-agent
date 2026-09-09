@@ -7,6 +7,7 @@ import platform
 import shutil
 import stat
 import sys
+import threading
 import tempfile
 import time
 from contextlib import contextmanager
@@ -125,24 +126,6 @@ def hash_url(url: str) -> str:
         for block in iter(lambda: resp.read(1024 * 1024), b""):
             digest.update(block)
     return digest.hexdigest()
-
-
-def download(url: str, dest: Path, sha256: str, progress=None) -> Path:
-    """Fetch url into dest dir, hash-verified, via the resumable downloader.
-    The digest is proven before the caller ever sees the file.
-    ``progress(done, total)`` ticks per chunk — a several-hundred-MB engine
-    archive on a slow line must never look hung. Partial state lives in
-    the downloader's writable partials area (outside scratch, keyed by
-    sha256(url)), so an interrupted = failed fetch resumes on the next
-    call instead of re-fetching the whole archive. Non-https/non-loopback
-    urls are refused by Download itself (ValueError)."""
-    from pm.downloader import Download, Source
-
-    dest.mkdir(parents=True, exist_ok=True)
-    archive = dest / url.rsplit("/", 1)[-1]
-    p = (lambda d, t, r: progress(d, t)) if progress is not None else None
-    Download([Source(url, archive, sha256)]).run(progress=p)
-    return archive
 
 
 def extract(archive: Path, dest: Path) -> None:
@@ -272,26 +255,50 @@ class Store:
     def published(self, name: str) -> bool:
         return self.entry(name).is_dir()
 
-    def fetch(self, url: str, sha256: str, scratch: Path, progress=None) -> Path:
-        """Verified archive for url, from the store if already fetched.
-        The cache entry is `fetch-<full sha256>/` holding the single file.
-        The cached file is RE-HASHED against the requested digest before
-        it is returned: the cache lives on a mutable disk, so trust is
-        re-proven, not assumed. On mismatch the entry is deleted and the
-        archive re-downloaded (the 100MB+ re-hash is install-time only)."""
-        entry_name = f"fetch-{sha256}"
-        entry = self.entry(entry_name)
-        if entry.is_dir():
-            files = [p for p in entry.iterdir() if p.is_file()]
-            if len(files) == 1 and sha256_file(files[0]) == sha256:
-                return files[0]
-            shutil.rmtree(entry, ignore_errors=True)
-        archive = download(url, scratch, sha256, progress=progress)
-        staged = scratch / entry_name
-        staged.mkdir(parents=True)
-        archive.rename(staged / archive.name)
-        published = self.publish(staged, entry_name)
-        return published / archive.name
+    def fetch(self, url: str, sha256: str, scratch: Path, progress=None, *, pause_event: threading.Event | None = None) -> Path:
+        tick = (lambda done, total, ranges: progress(done, total)) if progress is not None else None
+        return self.fetch_many([{"url": url, "sha256": sha256}], scratch,
+                               progress=tick, pause_event=pause_event)[0]
+
+    def fetch_many(self, artifacts: list[dict], scratch: Path, *, progress=None,
+                   pause_event: threading.Event | None = None) -> list[Path]:
+        """Fetch a pinned plan with one aggregate progress stream.
+
+        Completed archives enter the cache even if a later source pauses.
+        The downloader owns partial bytes outside this disposable scratch.
+        """
+        from pm.downloader import Download, DownloadPaused, Source
+
+        sources = []
+        for artifact in artifacts:
+            if pause_event is not None and pause_event.is_set():
+                raise DownloadPaused("download paused")
+            url, digest = artifact["url"], artifact["sha256"]
+            entry_name = f"fetch-{digest}"
+            entry = self.entry(entry_name)
+            files = list(entry.iterdir()) if entry.is_dir() else []
+            if len(files) == 1 and files[0].is_file() and sha256_file(files[0]) == digest:
+                destination = files[0]
+            else:
+                if entry.exists():
+                    shutil.rmtree(entry)
+                destination = scratch / entry_name / url.rsplit("/", 1)[-1]
+            sources.append(Source(url, destination, digest))
+
+        urls = {str(source.dest): source.url for source in sources}
+
+        def tick(done, total, ranges):
+            if progress is not None:
+                progress(done, total, {urls[key]: rows for key, rows in ranges.items()})
+
+        try:
+            Download(sources, pause_event=pause_event).run(progress=tick)
+        finally:
+            # Only finalized, hash-verified files can exist at these paths.
+            for source in sources:
+                if source.dest.is_relative_to(scratch) and source.dest.is_file():
+                    self.publish(source.dest.parent, f"fetch-{source.sha256}")
+        return [self.entry(f"fetch-{source.sha256}") / source.dest.name for source in sources]
 
     @contextmanager
     def scratch(self):

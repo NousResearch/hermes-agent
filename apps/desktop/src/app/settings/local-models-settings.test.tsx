@@ -3,7 +3,7 @@ import { MemoryRouter, useLocation } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { I18nProvider } from '@/i18n'
-import { $localRuntimeJobs } from '@/store/local-runtime-jobs'
+import { $localRuntimeJobs, watchLocalRuntimeJobs } from '@/store/local-runtime-jobs'
 import type { LocalCatalogModel, LocalHardware, LocalModelsStatus, LocalRuntimeJob } from '@/types/hermes'
 
 import { LocalModelsSettings } from './local-models-settings'
@@ -23,7 +23,9 @@ vi.mock('@/hermes', () => ({
   getLocalRuntimeJob: vi.fn(),
   installLocalRuntime: vi.fn(),
   listHFRepoFiles: vi.fn(),
+  pauseLocalDownload: vi.fn(),
   quickstartLocalModels: vi.fn(),
+  resumeLocalDownload: vi.fn(),
   searchHFModels: vi.fn(),
   sideloadLocalModel: vi.fn()
 }))
@@ -116,9 +118,21 @@ function renderPane() {
 // is one 'Configure…' click away. Render and click through.
 async function renderFullPane() {
   const result = renderPane()
-  const configure = await screen.findByRole('button', { name: /configure/i })
 
-  fireEvent.click(configure)
+  // Wait for status to load: the pane either shows the setup card (click
+  // through to the full pane) or, when an active runtime/model job routes
+  // straight to the full pane, the runtime section directly.
+  await waitFor(() => {
+    expect(
+      Boolean(screen.queryByRole('button', { name: /configure/i })) || screen.queryAllByText(/this machine/i).length > 0
+    ).toBe(true)
+  })
+
+  const configure = screen.queryByRole('button', { name: /configure/i })
+
+  if (configure) {
+    fireEvent.click(configure)
+  }
 
   return result
 }
@@ -127,12 +141,18 @@ beforeEach(() => {
   mocked.getLocalModelsStatus.mockResolvedValue(BASE_STATUS)
   mocked.getLocalHardware.mockResolvedValue(BASE_HARDWARE)
   mocked.getLocalCatalog.mockResolvedValue({ models: [FITTING_MODEL, SPILLED_MODEL, REFUSED_MODEL] })
-  mocked.getLocalModelsJobs.mockResolvedValue({ jobs: [] })
+  // The backend mock ECHOES the atom: the watcher's immediate poll reads
+  // seeded jobs instead of wiping them with a default {jobs:[]}.
+  mocked.getLocalModelsJobs.mockImplementation(async () => ({ jobs: [...$localRuntimeJobs.get()] }))
   $localRuntimeJobs.set([])
 })
 
-afterEach(() => {
+afterEach(async () => {
   cleanup()
+  mocked.getLocalModelsJobs.mockResolvedValue({ jobs: [] })
+  await act(async () => {
+    watchLocalRuntimeJobs()
+  })
   vi.clearAllMocks()
 })
 
@@ -552,5 +572,202 @@ describe('quickstart completion navigation', () => {
       $localRuntimeJobs.set([doneJob, { ...running, phase: 'done', status: 'done' }])
     })
     expect(routeProbe).toHaveBeenCalledWith('/')
+  })
+})
+
+describe('pause / resume integration', () => {
+  beforeEach(() => {
+    vi.mocked(hermes.pauseLocalDownload).mockResolvedValue({ ok: true, paused: true })
+    vi.mocked(hermes.resumeLocalDownload).mockResolvedValue({ ok: true, resumed: true })
+  })
+
+  it('a running catalog download shows Pause; clicking sends the job id once', async () => {
+    mocked.getLocalModelsStatus.mockResolvedValue({
+      ...BASE_STATUS,
+      runtime_installed: true,
+      runtime_backend: 'cuda'
+    })
+    $localRuntimeJobs.set([
+      {
+        job_id: 'j1',
+        kind: 'model-download',
+        target: 'Qwen3.6 27B',
+        model_id: FITTING_MODEL.id,
+        status: 'running',
+        phase: 'downloading',
+        detail: 'Qwen3.6 27B — 17.6 GB',
+        total_bytes: 100,
+        can_pause: true,
+        done_bytes: 40,
+        percent: 40,
+        error: null
+      }
+    ])
+
+    await renderFullPane()
+    await screen.findByText('Qwen3.6 27B')
+
+    fireEvent.click(screen.getByRole('button', { name: /pause/i }))
+
+    await waitFor(() => {
+      expect(hermes.pauseLocalDownload).toHaveBeenCalledTimes(1)
+    })
+    expect(hermes.pauseLocalDownload).toHaveBeenCalledWith('j1')
+    expect(hermes.resumeLocalDownload).not.toHaveBeenCalled()
+  })
+
+  it('a paused catalog download keeps its row: Paused label, Resume button, progress bar retained', async () => {
+    mocked.getLocalModelsStatus.mockResolvedValue({
+      ...BASE_STATUS,
+      runtime_installed: true,
+      runtime_backend: 'cuda'
+    })
+    $localRuntimeJobs.set([
+      {
+        job_id: 'j1',
+        kind: 'model-download',
+        target: 'Qwen3.6 27B',
+        model_id: FITTING_MODEL.id,
+        can_resume: true,
+        phase: 'downloading',
+        status: 'paused',
+        detail: 'Qwen3.6 27B — 17.6 GB',
+        total_bytes: 100,
+        done_bytes: 40,
+        percent: 40,
+        error: null
+      }
+    ])
+
+    await renderFullPane()
+    await screen.findByText('Qwen3.6 27B')
+
+    // Row survives with an honest parked label and a way forward.
+    expect(screen.getAllByText(/paused/i).length).toBeGreaterThan(0)
+    expect(screen.getByRole('button', { name: /resume/i })).toBeTruthy()
+
+    fireEvent.click(screen.getByRole('button', { name: /resume/i }))
+    await waitFor(() => {
+      expect(hermes.resumeLocalDownload).toHaveBeenCalledWith('j1')
+    })
+
+    // The watcher re-kicked: an authoritative re-read happens after resume.
+    await waitFor(() => {
+      expect(mocked.getLocalModelsJobs.mock.calls.length).toBeGreaterThanOrEqual(2)
+    })
+  })
+
+  it('a paused quickstart stays pinned in the hero with a Resume control', async () => {
+    $localRuntimeJobs.set([
+      {
+        job_id: 'q1',
+        kind: 'quickstart',
+        target: 'Qwen3.6 27B',
+        model_id: 'qwen3.6-27b',
+        can_resume: true,
+        phase: 'downloading',
+        status: 'paused',
+        detail: '',
+        total_bytes: 100,
+        done_bytes: 30,
+        percent: 30,
+        error: null
+      }
+    ])
+
+    renderPane()
+    await screen.findAllByText(/paused/i)
+
+    expect(screen.getByRole('button', { name: /resume/i })).toBeTruthy()
+    // Hero is pinned — no quickstart action button competes with it.
+    expect(screen.queryByRole('button', { name: /set up for me/i })).toBeNull()
+
+    fireEvent.click(screen.getByRole('button', { name: /resume/i }))
+    await waitFor(() => {
+      expect(hermes.resumeLocalDownload).toHaveBeenCalledWith('q1')
+    })
+  })
+
+  it('a running quickstart hero shows Pause during the download stage', async () => {
+    $localRuntimeJobs.set([
+      {
+        job_id: 'q1',
+        kind: 'quickstart',
+        target: 'Qwen3.6 27B',
+        model_id: 'qwen3.6-27b',
+        can_pause: true,
+        phase: 'downloading',
+        status: 'running',
+        detail: '',
+        total_bytes: 100,
+        done_bytes: 30,
+        percent: 30,
+        error: null
+      }
+    ])
+
+    renderPane()
+    await screen.findByText('Qwen3.6 27B')
+
+    expect(screen.getByRole('button', { name: /pause/i })).toBeTruthy()
+  })
+
+  it('a running runtime install row shows Pause when the engine leg can park', async () => {
+    mocked.getLocalModelsStatus.mockResolvedValue({
+      ...BASE_STATUS,
+      runtime_installed: false,
+      update_available: false
+    })
+    $localRuntimeJobs.set([
+      {
+        job_id: 'r1',
+        kind: 'runtime-install',
+        target: 'llamacpp',
+        model_id: null,
+        can_pause: true,
+        phase: 'downloading-runtime',
+        status: 'running',
+        detail: 'llamacpp b10290',
+        total_bytes: 100,
+        done_bytes: 10,
+        percent: 10,
+        error: null
+      }
+    ])
+
+    renderPane()
+    await screen.findByText(/installing/i)
+
+    const pause = screen.getByRole('button', { name: /pause/i })
+    fireEvent.click(pause)
+
+    await waitFor(() => {
+      expect(hermes.pauseLocalDownload).toHaveBeenCalledWith('r1')
+    })
+  })
+
+  it('quickstart hero suppresses the byte counter outside download phases', async () => {
+    $localRuntimeJobs.set([
+      {
+        job_id: 'q1',
+        kind: 'quickstart',
+        target: 'Qwen3.6 27B',
+        model_id: 'qwen3.6-27b',
+        status: 'running',
+        phase: 'installing-runtime',
+        detail: 'Unpacking runtime',
+        total_bytes: 100,
+        done_bytes: 100,
+        percent: 100,
+        error: null
+      }
+    ])
+
+    renderPane()
+    await screen.findByText('Unpacking runtime')
+
+    // Stage detail yes; byte counter no — a 100% counter on an install
+    // phase would lie about the model leg still ahead.
+    expect(screen.queryByText(/of/)).toBeNull()
   })
 })

@@ -14,7 +14,7 @@ exactly the ranges the bitmap says are missing.
 
 The progress callback reports the whole job AND the per-dest bitmap:
 ``progress(overall_done, overall_total, ranges)`` where ``ranges`` maps
-``dest.name`` to half-open [start, end) runs. ``done_bytes`` is the sum;
+the destination path to half-open [start, end) runs. ``done_bytes`` is the sum;
 ``ranges`` is the shape — one datum, two resolutions.
 """
 
@@ -176,6 +176,10 @@ def gc_protected_names(
                 protected.add(entry.name)
         except OSError:
             protected.add(entry.name)  # unreadable → assume live
+    for name in tuple(protected):
+        path = Path(name)
+        if path.suffix in (".part", ".ranges"):
+            protected.update({path.with_suffix(".part").name, path.with_suffix(".ranges").name})
     return protected
 
 
@@ -202,6 +206,7 @@ class Download:
         resume: bool = True,
         connections: int = CONNECTIONS,
         partials_dir: Optional[Path] = None,
+        pause_event: Optional[threading.Event] = None,
     ):
         self.sources = [Source(s.url, Path(s.dest), s.sha256) for s in sources]
         self.resume = resume
@@ -212,7 +217,8 @@ class Download:
             from pm import paths
 
             self.partials_dir = paths.partials_root()
-        self._paused = threading.Event()
+        self._owns_pause_event = pause_event is None
+        self._paused = pause_event if pause_event is not None else threading.Event()
 
     def pause(self) -> None:
         """Request a stop between chunks; run() raises DownloadPaused."""
@@ -220,55 +226,75 @@ class Download:
 
     def run(self, progress: Optional[ProgressFn] = None) -> list[Path]:
         """Fetch every source; return the moved destination paths."""
-        self._paused.clear()
+        if self._owns_pause_event:
+            self._paused.clear()
+        self._check_pause()
         self.partials_dir.mkdir(parents=True, exist_ok=True)
         for source in self.sources:
             if not (source.url.startswith("https://")
                     or source.url.startswith(_LOOPBACK)):
                 raise ValueError(f"refusing non-https url: {source.url}")
 
-        # Probe every source up front so overall_total is the whole job.
-        probed = []  # (source, total, range_supported)
+        # Probe the whole plan before reporting a denominator. A missing
+        # Content-Length keeps the bar indeterminate until that file ends.
+        probed = []
+        totals: dict[str, int] = {}
+        unknown: set[str] = set()
+        coverage: dict[str, _Ranges] = {}
         for source in self.sources:
-            if _existing_dest_ok(source):
-                probed.append((source, source.dest.stat().st_size, True))
-                continue
-            # A pre-existing dest that fails its pinned hash is stale — clear
-            # it so the fetch below replaces it rather than trusting it.
-            if source.dest.exists():
-                source.dest.unlink(missing_ok=True)
-            total, supported = self._probe(source.url)
-            probed.append((source, total, supported))
-        overall_total = sum(t for _, t, _ in probed)
+            self._check_pause()
+            key = str(source.dest)
+            cached = _existing_dest_ok(source)
+            if cached:
+                total, supported = source.dest.stat().st_size, True
+                covered = [(0, total)]
+            else:
+                if source.dest.exists():
+                    source.dest.unlink(missing_ok=True)
+                total, supported = self._probe(source.url)
+                covered = self._partial_ranges(source.url, total) if supported else []
+                if not total:
+                    unknown.add(key)
+            totals[key] = total
+            coverage[key] = _coalesce(covered)
+            probed.append((source, total, supported, cached))
+
+        progress_lock = threading.Lock()
+
+        def report(key: str, written: _Ranges) -> None:
+            with progress_lock:
+                # The last key identifies the source reporting this tick.
+                coverage.pop(key, None)
+                coverage[key] = list(written)
+                if progress is not None:
+                    done = sum(b - a for rows in coverage.values() for a, b in rows)
+                    progress(done, 0 if unknown else sum(totals.values()), dict(coverage))
 
         moved: list[Path] = []
-        done_base = 0
-        completed: dict = {}
-        for source, total, supported in probed:
-            if _existing_dest_ok(source):
-                size = source.dest.stat().st_size
-                completed[source.dest.name] = [(0, size)]
-                done_base += size
-                moved.append(source.dest)
-                continue
+        for source, total, supported, cached in probed:
+            self._check_pause()
+            key = str(source.dest)
+            report(key, coverage[key])
+            if not cached:
+                def tick(written: _Ranges) -> None:
+                    report(key, written)
 
-            def tick(written: _Ranges) -> None:
-                if progress is not None:
-                    ranges = dict(completed)
-                    ranges[source.dest.name] = written
-                    progress(done_base + sum(b - a for a, b in written),
-                             overall_total, ranges)
-
-            if total and supported:
-                self._fetch_ranged(source, total, tick)
-            else:
-                self._fetch_single(source, total, tick)
-            done_base += total
-            completed[source.dest.name] = [(0, total)]
+                if total and supported:
+                    self._fetch_ranged(source, total, tick)
+                else:
+                    self._fetch_single(source, total, tick)
+            size = source.dest.stat().st_size
+            totals[key] = size
+            unknown.discard(key)
+            report(key, [(0, size)])
             moved.append(source.dest)
         return moved
 
     # ── internals ─────────────────────────────────────────────
+
+    def _check_pause(self) -> None:
+        if self._paused.is_set():
+            raise DownloadPaused("download paused")
 
     @staticmethod
     def _probe(url: str) -> tuple[int, bool]:
@@ -306,6 +332,17 @@ class Download:
         except (OSError, ValueError):
             return []
 
+    def _partial_ranges(self, url: str, total: int) -> _Ranges:
+        key = self._key(url)
+        part = self.partials_dir / f"{key}.part"
+        if not part.is_file():
+            return []
+        size = part.stat().st_size
+        covered = self._load_sidecar(self.partials_dir / f"{key}.ranges")
+        if any(a < 0 or b < a or b > min(size, total) for a, b in covered):
+            return []
+        return _coalesce(covered)
+
     @staticmethod
     def _write_sidecar(side: Path, covered: _Ranges) -> None:
         side.parent.mkdir(parents=True, exist_ok=True)
@@ -315,9 +352,7 @@ class Download:
         key = self._key(source.url)
         part = self.partials_dir / f"{key}.part"
         side = self.partials_dir / f"{key}.ranges"
-        covered = self._load_sidecar(side)
-        if any(b > total for _, b in covered):
-            covered = []  # server now serves a smaller file: stale partial
+        covered = self._partial_ranges(source.url, total)
         # Create the file WITHOUT truncating an existing partial (resume),
         # then size it to total (extends with zeros / shrinks stale tails).
         open(part, "ab").close()
@@ -358,7 +393,7 @@ class Download:
                         with lock:
                             covered[:] = _coalesce(covered + [(start, pos)])
                             written[0] += len(chunk)
-                        tick(list(covered))
+                            tick(list(covered))
             except Exception as exc:  # noqa: BLE001
                 with lock:
                     errors.append(exc)
@@ -402,6 +437,7 @@ class Download:
             self._write_sidecar(side, covered)
             raise DownloadError(
                 f"download incomplete ({written[0]} of {total} bytes)")
+        self._write_sidecar(side, covered)
         self._finalize(source, part, side)
 
     def _fetch_single(self, source: Source, total: int, tick) -> None:
@@ -443,9 +479,11 @@ class Download:
         except Exception:
             self._write_sidecar(side, covered)
             raise
+        self._write_sidecar(side, covered)
         self._finalize(source, part, side)
 
     def _finalize(self, source: Source, part: Path, side: Path) -> None:
+        self._check_pause()
         if source.sha256:
             actual = _sha256_file(part)
             if actual != source.sha256:
@@ -454,6 +492,7 @@ class Download:
                 raise HashError(
                     f"sha256 mismatch for {source.url}: pinned "
                     f"{source.sha256}, got {actual}")
+        self._check_pause()
         source.dest.parent.mkdir(parents=True, exist_ok=True)
         shutil.move(str(part), str(source.dest))
         side.unlink(missing_ok=True)

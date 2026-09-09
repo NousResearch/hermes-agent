@@ -206,35 +206,19 @@ def ensure_local_runtime(config: dict, force: bool = False) -> "object | None":
         _stop_state_server(state)
 
     try:
-        from hermes_cli.local_runtime.binaries import (
-            default_tag, ensure_runtime_installed, installed_tags, select_backend)
+        from hermes_cli.local_runtime.binaries import installed_engine
         from hermes_cli.local_runtime.supervisor import LlamaServerSupervisor
 
-        backend = section.get("backend", "auto")
-        if backend == "auto":
-            backend = select_backend(_detect_gpu_vendor())
-        # Boot ladder: serve what is INSTALLED, never download here. The configured tag is
-        # preferred; when it isn't installed yet, the newest installed tag serves and the status
-        # endpoint reports the pending update — the download is a deliberate click in the pane,
-        # not a boot-path surprise (a multi-minute inline download here is exactly how the
-        # onboarding bounce returns).
-        tag = section.get("tag") or default_tag()
-        have = installed_tags()
-        if tag not in have:
-            if not have:
-                logger.info("local runtime enabled but no build installed; "
-                            "install happens in the Local Models pane")
-                return None
-            logger.info("configured tag %s not installed; serving %s "
-                        "(update is a click in Local Models)", tag, have[0])
-            tag = have[0]
-        install_dir = ensure_runtime_installed(tag, backend)
+        engine = installed_engine(section.get("backend", "auto"))
+        if engine is None:
+            logger.info("local runtime enabled but no PM engine installed; use the Local Models pane")
+            return None
 
         mdir = models_dir()
         mdir.mkdir(parents=True, exist_ok=True)
         preset_path = _generate_presets(mdir, runtimes_root() / "presets.ini")
 
-        sup = LlamaServerSupervisor(install_dir, mdir, preset_path=preset_path,
+        sup = LlamaServerSupervisor(engine.binary, mdir, preset_path=preset_path,
                                     models_max=int(section.get("models_max", 4)),
                                     port=int(section.get("port", 0)) or None)
         try:
@@ -246,7 +230,7 @@ def ensure_local_runtime(config: dict, force: bool = False) -> "object | None":
                 sup.stop()
             raise
         _SUPERVISOR = sup
-        logger.info("managed llama-server up at %s (backend=%s tag=%s)", sup.base_url, backend, tag)
+        logger.info("managed llama-server up at %s (backend=%s tag=%s)", sup.base_url, engine.backend, engine.tag)
         _start_idle_sweeper(sup)
         return sup
     except Exception as exc:  # noqa: BLE001 — never break session start

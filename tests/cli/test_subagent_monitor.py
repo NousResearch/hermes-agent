@@ -15,7 +15,7 @@ def test_dock_scopes_children_and_fits_short_narrow_terminal(monkeypatch):
     assert dock.refresh(now=20)
     text = dock.dock_text(columns=32, rows=14)
     from prompt_toolkit.utils import get_cwidth
-    assert '8 live' in text and 'F6' in text and 'read_file' in text
+    assert '8 live' in text and 'Ctrl+T' in text and 'read_file' in text
     assert 'SECRET' not in text
     assert len(text.splitlines()) <= 3
     assert all(get_cwidth(line) <= 32 for line in text.splitlines())

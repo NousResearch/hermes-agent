@@ -1442,25 +1442,54 @@ def planned_stop_marker_targets_self() -> bool:
 
 
 def get_running_pid(
-    pid_path: Optional[Path] = None, *, cleanup_stale: bool = True
+    pid_path: Optional[Path] = None,
+    *,
+    cleanup_stale: bool = True,
+    expected_home: Optional[Path | str] = None,
 ) -> Optional[int]:
-    """PID of a running gateway (lock + PID file verified against the live process), or None."""
+    """PID of a running gateway (lock + PID file verified against the live process), or None.
+
+    A scoped ``pid_path`` (another profile's ``gateway.pid``) reads that profile's identity
+    files: the record is validated against the target home (``expected_home``, defaulting to
+    ``pid_path.parent``) instead of this process's home, so a live foreign profile's record is
+    accepted rather than rejected as cross-profile poison — and a stale/mismatched record is never
+    ``cleanup_stale``-unlinked: a read-only status query must not destroy a foreign gateway's
+    ``gateway.pid``/``gateway.lock`` (#106406). ``resolve_gateway_liveness`` owns the scoped
+    runtime-status fallback (rung 3), so the lock-inactive scoped path returns None without it.
+    """
     resolved_pid_path = pid_path or _get_pid_path()
+    scoped = pid_path is not None
+    if expected_home is None and scoped:
+        expected_home = resolved_pid_path.parent
     resolved_lock_path = _get_gateway_lock_path(resolved_pid_path)
     if is_gateway_runtime_lock_active(resolved_lock_path):
         records = (
-            _read_pid_record(resolved_pid_path), _read_gateway_lock_record(resolved_lock_path),
+            _read_pid_record(resolved_pid_path),
+            _read_gateway_lock_record(resolved_lock_path),
         )
         for record in records:
             pid = _live_pid_from_record(record)
-            if pid is None or not _pid_record_belongs_to_current_profile(record):
+            if pid is None:
                 continue
-            if _record_matches_live_gateway_pid(record, pid):
-                return pid
-        _cleanup_invalid_pid_path(resolved_pid_path, cleanup_stale=cleanup_stale)
-        return get_runtime_status_running_pid() if pid_path is None else None
+            # Scoped read: validate the record against the target home, not this process's home
+            # (a named profile's record legitimately names a different HERMES_HOME than the serve
+            # process). Unscoped: keep the cross-profile guard (another home's record must not
+            # lend the default gateway its identity).
+            if scoped:
+                if recorded_gateway_home_conflicts(record, expected_home=expected_home):
+                    continue
+            elif not _pid_record_belongs_to_current_profile(record):
+                continue
+            if not _record_matches_live_gateway_pid(record, pid, expected_home=expected_home):
+                continue
+            return pid
+        # Never force-unlink foreign identity files on a scoped read (#106406).
+        _cleanup_invalid_pid_path(resolved_pid_path, cleanup_stale=cleanup_stale and not scoped)
+        return None if scoped else get_runtime_status_running_pid()
     # Lock inactive: the runtime-status fallback runs BEFORE cleanup here.
-    runtime_pid = get_runtime_status_running_pid() if pid_path is None else None
+    if scoped:
+        return None
+    runtime_pid = get_runtime_status_running_pid()
     if runtime_pid is None:
         _cleanup_invalid_pid_path(resolved_pid_path, cleanup_stale=cleanup_stale)
     return runtime_pid

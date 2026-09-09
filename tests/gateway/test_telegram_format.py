@@ -288,6 +288,13 @@ class TestFormatMessageBlockquote:
         assert "\\|" in result
         assert "\\>" not in result
 
+    def test_expandable_blockquote_with_leading_bold_survives(self, adapter):
+        """The "**>" opener must not be consumed by the bold regex, which would
+        otherwise pair it with the next "**" and destroy the quote."""
+        result = adapter.format_message("**> **Heading** more text||")
+        assert "\\>" not in result
+        assert result.count("*") >= 4  # opener ** survives + Heading's bold survives
+
 
 # =========================================================================
 # format_message - mixed/complex

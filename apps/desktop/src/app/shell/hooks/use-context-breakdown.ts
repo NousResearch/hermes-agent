@@ -25,16 +25,25 @@ interface ContextBreakdownOptions {
  *  sessions drops the previous numbers instead of painting them under the new
  *  session's name.
  *
- *  The refetch after a turn end can land in windows where the answer is not
- *  trustworthy (#94001): right after a `session.reclaimed` resume the new
- *  agent may still be building (the backend answers a ZEROED breakdown,
- *  which would blank the meter), or the RPC can fail outright during the
- *  rebind. Neither may freeze the gauge on pre-compression numbers: a failed
- *  or agentless answer is retried on a bounded backoff, and once retries are
- *  exhausted the cached breakdown is EVICTED — the meter shows nothing rather
- *  than numbers known to be stale. Without eviction the stale value would
- *  survive until the session is switched, which is the manual recovery every
- *  report describes. */
+ *  Two events change the transcript WITHOUT a busy toggle, so the refetch
+ *  must be driven explicitly:
+ *
+ *  - **Compression** — manual `/compress` runs the `session.compress` RPC
+ *    outside any turn (busy never flips), and auto-compression can commit
+ *    mid-turn. The post-compression transcript measures a fraction of the
+ *    pre-compression size, so a served pre-compression breakdown is not
+ *    merely stale, it is wrong by 5-10x (#94001).
+ *  - **Reclaim** (`session.reclaimed`) — the runtime is reaped and the
+ *    session re-resumes; the first refetch can race the agent rebuild.
+ *
+ *  `invalidateContextBreakdown` bumps a per-session generation that both
+ *  call sites (slash.ts after a successful compress, lifecycle.ts on
+ *  reclaim) fire, forcing an immediate refetch. An untrustworthy answer —
+ *  an outright failure, or a ZEROED breakdown from the backend's
+ *  agent-is-None branch (`context_max: 0`) — retries on a bounded backoff;
+ *  once the ladder is exhausted the cached breakdown is EVICTED so the
+ *  meter goes dark honestly rather than showing numbers known to be
+ *  stale. */
 
 /** A breakdown the backend computed from a live agent carries a real
  *  context_max (the compressor's context_length). Zero means the
@@ -45,15 +54,73 @@ function isZeroedBreakdown(breakdown: ContextBreakdown): boolean {
 
 const RETRY_DELAYS_MS = [1_000, 4_000, 12_000]
 
+/** Per-session invalidation generations. `invalidateContextBreakdown` bumps
+ *  the generation for one session and notifies subscribers; the hook
+ *  subscribes for its own session, so a bump re-runs the fetch immediately. */
+const invalidationGenerations = new Map<string, number>()
+const invalidationListeners = new Set<(sessionId: string, generation: number) => void>()
+
+/** Force a refetch of the context breakdown for `sessionId` on the next
+ *  render. Call when the transcript is known to have changed outside a
+ *  turn: after a successful `session.compress`, and on
+ *  `session.reclaimed`. */
+export function invalidateContextBreakdown(sessionId: string): void {
+  const id = sessionId.trim()
+
+  if (id) {
+    const generation = (invalidationGenerations.get(id) ?? 0) + 1
+
+    invalidationGenerations.set(id, generation)
+
+    for (const listener of invalidationListeners) {
+      listener(id, generation)
+    }
+  }
+}
+
+/** Clear all invalidation generations (test isolation — the Map is
+ *  module-level and would otherwise leak across tests). */
+export function _resetContextBreakdownInvalidationsForTests(): void {
+  invalidationGenerations.clear()
+}
+
 export function useContextBreakdown({ busy, enabled, requestGateway, sessionId }: ContextBreakdownOptions) {
   const [fetched, setFetched] = useState<{ breakdown: ContextBreakdown; sessionId: string } | null>(null)
   const [loading, setLoading] = useState(false)
   // Bounded retry: `attempt` indexes RETRY_DELAYS_MS; advancing it re-runs the
   // fetch effect. `exhausted` marks the end state — cached numbers evicted,
   // backoff stopped, meter dark until the next legitimate trigger (session
-  // change or turn end) starts a fresh ladder.
+  // change, turn end, or invalidation) starts a fresh ladder.
   const [attempt, setAttempt] = useState(0)
   const [exhausted, setExhausted] = useState(false)
+  const [generation, setGeneration] = useState(0)
+
+  // Subscribe to invalidation bumps for THIS session: a bump from
+  // invalidateContextBreakdown (post-compress, reclaim) re-runs the fetch
+  // effect immediately, without waiting for a busy toggle or session switch.
+  useEffect(() => {
+    if (!sessionId) {
+      return
+    }
+
+    const listener = (id: string, next: number) => {
+      if (id === sessionId) {
+        setGeneration(current => (current === next ? current : next))
+      }
+    }
+
+    invalidationListeners.add(listener)
+
+    // Adopt any generation bumped before this effect subscribed (e.g. the
+    // invalidation fired while the meter was hidden, or between sessions).
+    const pending = invalidationGenerations.get(sessionId) ?? 0
+
+    setGeneration(current => (current === pending ? current : pending))
+
+    return () => {
+      invalidationListeners.delete(listener)
+    }
+  }, [sessionId])
 
   // A session switch must not inherit the previous session's retry state —
   // its first successful fetch is authoritative for it. (The fetch effect's
@@ -122,12 +189,13 @@ export function useContextBreakdown({ busy, enabled, requestGateway, sessionId }
         clearTimeout(timer)
       }
     }
-    // `attempt` drives the bounded-retry re-runs; everything else is a trigger.
-  }, [attempt, busy, enabled, requestGateway, sessionId])
+    // `attempt` + `generation` drive the refetch re-runs; everything else is a trigger.
+  }, [attempt, busy, enabled, generation, requestGateway, sessionId])
 
   // While the retry ladder is still running, the last good breakdown stays on
-  // screen (the meter ticking down beats flickering dark); once exhausted the
-  // cache is gone, so this returns null and the meter goes dark honestly.
+  // screen (the meter ticking down beats flickering dark for a transient window);
+  // once exhausted the cache is gone, so this returns null and the meter goes
+  // dark honestly.
   return {
     breakdown: fetched && fetched.sessionId === sessionId ? fetched.breakdown : null,
     loading

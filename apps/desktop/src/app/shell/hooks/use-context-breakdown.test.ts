@@ -5,7 +5,11 @@ import type { ContextBreakdown } from '@/types/hermes'
 
 import { deferred } from '../../../test/deferred'
 
-import { useContextBreakdown } from './use-context-breakdown'
+import {
+  _resetContextBreakdownInvalidationsForTests,
+  invalidateContextBreakdown,
+  useContextBreakdown
+} from './use-context-breakdown'
 
 type GatewayRequester = <T = unknown>(method: string, params?: Record<string, unknown>) => Promise<T>
 
@@ -235,5 +239,58 @@ describe('useContextBreakdown (#94001)', () => {
 
     // s1's 91% must NOT appear under s2.
     expect(result.current.breakdown).toBeNull()
+  })
+})
+describe('useContextBreakdown invalidation (#94001 follow-up)', () => {
+  beforeEach(() => {
+    _resetContextBreakdownInvalidationsForTests()
+  })
+
+  afterEach(() => {
+    cleanup()
+    vi.restoreAllMocks()
+    vi.useRealTimers()
+  })
+
+  it('refetches immediately when invalidateContextBreakdown bumps the session generation', async () => {
+    let answer = PRE_COMPRESSION_BREAKDOWN
+    const requestGateway = vi.fn(async () => answer) as unknown as GatewayRequester
+
+    const { result, rerender } = renderHook(props => useContextBreakdown(props), {
+      initialProps: { busy: false, enabled: true, requestGateway, sessionId: 's1' as null | string }
+    })
+
+    await flushAsync()
+    expect(result.current.breakdown).toEqual(PRE_COMPRESSION_BREAKDOWN)
+    expect(requestGateway).toHaveBeenCalledTimes(1)
+
+    // Compression happened outside any turn (no busy toggle) — invalidate.
+    answer = LIVE_BREAKDOWN
+    invalidateContextBreakdown('s1')
+    rerender({ busy: false, enabled: true, requestGateway, sessionId: 's1' })
+    await flushAsync()
+
+    // The meter must serve the POST-compression figure without a busy toggle
+    // or a session switch.
+    expect(result.current.breakdown).toEqual(LIVE_BREAKDOWN)
+    expect(requestGateway).toHaveBeenCalledTimes(2)
+  })
+
+  it('does not refetch a different session when an unrelated session is invalidated', async () => {
+    const requestGateway = vi.fn(async () => PRE_COMPRESSION_BREAKDOWN) as unknown as GatewayRequester
+
+    const { result, rerender } = renderHook(props => useContextBreakdown(props), {
+      initialProps: { busy: false, enabled: true, requestGateway, sessionId: 's1' as null | string }
+    })
+
+    await flushAsync()
+    expect(requestGateway).toHaveBeenCalledTimes(1)
+
+    invalidateContextBreakdown('other-session')
+    rerender({ busy: false, enabled: true, requestGateway, sessionId: 's1' })
+    await flushAsync()
+
+    expect(requestGateway).toHaveBeenCalledTimes(1)
+    expect(result.current.breakdown).toEqual(PRE_COMPRESSION_BREAKDOWN)
   })
 })

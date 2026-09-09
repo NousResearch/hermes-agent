@@ -26,6 +26,7 @@ import type {
 import { useI18n } from '@/i18n'
 import { isCodeSkewRestartRequired } from '@/lib/code-skew-error'
 import { AlertTriangle, Cpu, Loader2 } from '@/lib/icons'
+import { isLocalEndpointUrl } from '@/lib/local-endpoint'
 import { DEFAULT_REASONING_EFFORT, REASONING_EFFORT_VALUES } from '@/lib/reasoning-effort'
 import { cn } from '@/lib/utils'
 import { setMainModelAssignment } from '@/store/cron-model-impact'
@@ -514,7 +515,12 @@ export function ModelSettings({ onMainModelChanged, scopeProfile }: ModelSetting
       .filter(entry => {
         const p = (entry.provider ?? '').toLowerCase()
 
-        return p && p !== 'auto' && p !== mainProvider
+        if (!p || p === 'auto' || p === mainProvider) {
+          return false
+        }
+        // A pin pointed at a private endpoint (localhost/LAN/mDNS — the per-task
+        // base_url feature) can never bill a provider, so it is not stale.
+        return !isLocalEndpointUrl(entry.base_url)
       })
       .map(entry => ({ task: entry.task, provider: entry.provider, model: entry.model }))
   }, [auxiliary, mainModel])
@@ -1067,8 +1073,9 @@ export function ModelSettings({ onMainModelChanged, scopeProfile }: ModelSetting
                     )
                   }
                   description={
-                    <span className="font-mono text-[0.68rem]">
-                      {isAuto ? m.autoUseMain : `${current.provider} · ${current.model || m.providerDefault}`}
+                    <span className="flex flex-wrap items-center gap-x-2 font-mono text-[0.68rem]">
+                      <span>{isAuto ? m.autoUseMain : `${current.provider} · ${current.model || m.providerDefault}`}</span>
+                      {!isAuto && current.base_url && <span className="text-muted-foreground">{current.base_url}</span>}
                     </span>
                   }
                   title={

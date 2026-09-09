@@ -616,10 +616,33 @@ def _stale_aux_pins(cfg: dict, new_provider: str) -> list:
             continue
         slot_provider = str(slot_cfg.get("provider", "") or "").strip()
         if slot_provider and slot_provider.lower() not in {"auto", ""} and slot_provider.lower() != new_provider:
+            # A pin pointed at a private endpoint (localhost/LAN/mDNS, the per-task
+            # base_url feature) can never bill a provider — the switch does not
+            # orphan it, so it must not be reported as stale.
+            if _aux_pin_on_private_endpoint(slot_cfg):
+                continue
             stale_aux.append({
                 "task": slot, "provider": slot_provider, "model": str(slot_cfg.get("model", "") or ""),
             })
     return stale_aux
+
+
+def _aux_pin_on_private_endpoint(slot_cfg: dict) -> bool:
+    """True when the slot pins a local/private endpoint via ``base_url``.
+
+    Reuses ``agent.model_metadata.is_local_endpoint`` (the canonical local-endpoint
+    classifier: loopback, RFC-1918, link-local, Tailscale CGNAT, mDNS and
+    unqualified hosts) so the stale-aux report and the runtime's timeout
+    auto-bumps agree on what counts as local.
+    """
+    base_url = str(slot_cfg.get("base_url") or "").strip()
+    if not base_url:
+        return False
+    try:
+        from agent.model_metadata import is_local_endpoint
+    except Exception:
+        return False
+    return is_local_endpoint(base_url)
 
 
 def _cron_model_impact(cfg: dict, provider: str, model: str) -> Any:

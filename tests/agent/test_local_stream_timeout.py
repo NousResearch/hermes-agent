@@ -25,6 +25,8 @@ class TestLocalStreamReadTimeout:
         "http://host.docker.internal:11434",
         "http://host.containers.internal:11434",
         "http://host.lima.internal:11434",
+        "http://byron.local:11434",
+        "http://ollama.local:11434/v1",
     ])
     def test_local_endpoint_bumps_read_timeout(self, base_url):
         """Local endpoint + default timeout -> bumps to base_timeout."""
@@ -70,6 +72,9 @@ class TestIsLocalEndpoint:
         "http://192.168.1.100:8000",
         "http://10.0.0.5:1234",
         "http://172.17.0.1:11434",
+        "http://byron.local:11434",
+        "http://[fd00::1]:11434",
+        "http://[fe80::1]:11434",
     ])
     def test_classic_local_addresses(self, url):
         assert is_local_endpoint(url) is True
@@ -81,6 +86,7 @@ class TestIsLocalEndpoint:
         "https://openrouter.ai/api",
         "https://api.anthropic.com",
         "https://evil.docker.internal.example.com",
+        "http://[2607:f8b0::1]:11434",
     ])
     def test_remote_endpoints(self, url):
         assert is_local_endpoint(url) is False

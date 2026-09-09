@@ -409,6 +409,34 @@ describe('ModelSettings', () => {
     // Banner present on load, no switch required.
     expect(await screen.findByText(/still run on/)).toBeTruthy()
   })
+
+  it('does not flag an aux slot pinned to a private endpoint (per-task base_url)', async () => {
+    getAuxiliaryModels.mockResolvedValueOnce({
+      main: { provider: 'nous', model: 'hermes-4' },
+      tasks: [{ task: 'curator', provider: 'openai', model: 'gpt-4o', base_url: 'http://byron.local:11434/v1' }]
+    })
+
+    await renderModelSettings()
+    await waitFor(() => expect(getAuxiliaryModels).toHaveBeenCalled())
+
+    // A pin on a private endpoint can never bill the provider — it is the
+    // intended per-task base_url feature, not a stale pin.
+    expect(screen.queryByText(/still run on/)).toBeNull()
+  })
+
+  it('shows the custom base_url on the pinned aux row', async () => {
+    getAuxiliaryModels.mockResolvedValueOnce({
+      main: { provider: 'nous', model: 'hermes-4' },
+      tasks: [{ task: 'vision', provider: 'openai', model: 'gpt-4o-mini', base_url: 'http://192.168.1.10:11434/v1' }]
+    })
+
+    await renderModelSettings()
+
+    // The endpoint the backend already sends is finally visible, so a user can
+    // tell a local pin apart from a provider pin at a glance.
+    expect(await screen.findByText('http://192.168.1.10:11434/v1')).toBeTruthy()
+    expect(screen.queryByText(/still run on/)).toBeNull()
+  })
 })
 
 describe('ModelSettings MoA preset editor', () => {

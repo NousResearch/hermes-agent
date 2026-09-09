@@ -381,6 +381,7 @@ class TestEmission:
             assert len(chain) >= 2
             assert chain[-1]["provider"] == "custom:turbofit-local"
             assert chain[-1]["model"] == "active:main"
+            assert chain[-1]["timeout"] == 1800
             assert chain[-2]["model"] in {"gpt-5.6-sol", "gpt-5.6-luna"}
             tier_expected = "luna" if surf["tier"] == "LUNA" else "sol"
             assert chain[-2]["model"] == f"gpt-5.6-{tier_expected}"

@@ -14,6 +14,7 @@ explicitly approved step.
 | `registry/surfaces.yaml` | All 64 surfaces (63 profiles + root `default`): tier, preserved main model, slot chain, `routes_policy`. |
 | `route_registry/generator.py` | Generator engine: validation, chain building, deployment dedup, diffing, removed-capability summary, pool/env checks, atomic plan/apply. |
 | `generator_cli.py` | CLI entry point (dry-run default). |
+| `local_transition_cli.py` | Isolated CAS plan/apply/rollback for the governed turbohaul-to-turbofit local transition. |
 | `tests/test_generator.py` | 49 unit + integration + adversarial tests (run against temp copies only). |
 | `out/dryrun-plan-20260901.json` | Generated dry-run plan for approval (deterministic; byte-identical across runs modulo the target-root path). |
 | `route_registry/backups/` | apply-mode timestamped backups. Empty until an approved apply runs; `_archive-*` dirs are pre-remediation test artifacts retained for audit. |

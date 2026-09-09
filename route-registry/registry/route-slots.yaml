@@ -626,6 +626,20 @@ local_final:
   model: active:main
   base_url: http://127.0.0.1:8091/v1
   reasoning_effort: medium
+  timeout: 1800
+local_transition:
+  old:
+    provider: custom:turbohaul-local
+    provider_name: turbohaul-local
+    base_url: http://127.0.0.1:11410/v1
+  new:
+    provider: custom:turbofit-local
+    provider_name: turbofit-local
+    base_url: http://127.0.0.1:8091/v1
+    request_timeout_seconds: 1800
+  models:
+    qwen3.8-27b: active:main
+    carwin-moe: active:aux
 limits:
   max_same_model_routes_per_surface: 5
   nim_request_limit: 60
@@ -699,8 +713,6 @@ model_capability_matrix:
   custom:turbofit-local:
   - active:main
   - active:aux
-  custom:turbohaul-local:
-  - qwen3.8-27b
   ollama-cloud:
   - deepseek-v4-flash
   - deepseek-v4-pro

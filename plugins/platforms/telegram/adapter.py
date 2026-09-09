@@ -5049,6 +5049,13 @@ class TelegramAdapter(BasePlatformAdapter):
         """Return whether explicit @...bot mentions exclusively route group messages."""
         return self._extra_bool("exclusive_bot_mentions", "TELEGRAM_EXCLUSIVE_BOT_MENTIONS", "true")
 
+    def _telegram_bots_require_mention(self) -> bool:
+        """Whether another bot's message must explicitly @mention us (a quote-reply alone won't);
+        breaks two-bot reply loops in groups while human replies stay unaffected."""
+        return self._extra_bool(
+            "bots_require_mention", "TELEGRAM_BOTS_REQUIRE_MENTION", "false"
+        )
+
     def _telegram_free_response_chats(self) -> set[str]:
         return self._extra_str_set("free_response_chats", "TELEGRAM_FREE_RESPONSE_CHATS")
 
@@ -5608,6 +5615,16 @@ class TelegramAdapter(BasePlatformAdapter):
         user_id = getattr(from_user, "id", None)
         return bot_id is not None and user_id is not None and bot_id == user_id
 
+    def _sender_is_other_bot(self, message: Message) -> bool:
+        """True when the sender is a bot other than this one (this bot's own echoes are already
+        filtered by ``_is_own_message``)."""
+        sender = getattr(message, "from_user", None)
+        if sender is None or not getattr(sender, "is_bot", False):
+            return False
+        bot_id = getattr(self._bot, "id", None)
+        sender_id = getattr(sender, "id", None)
+        return bot_id is None or sender_id is None or sender_id != bot_id
+
     def _should_process_message(self, message: Message, *, is_command: bool = False) -> bool:
         """Apply Telegram group trigger rules: DMs unrestricted; group messages pass ``allowed_chats`` (hard gate; only
         the ``guest_mode`` @mention bypass crosses it) and then any of free_response chat/topic, ``require_mention``
@@ -5637,6 +5654,14 @@ class TelegramAdapter(BasePlatformAdapter):
             return guest_mention
         if guest_mention or chat_id_str in self._telegram_free_response_chats() or self._telegram_is_free_response_topic(message):
             return True
+        # Bot-to-bot loop breaker: another bot must explicitly @mention us; its quote-reply or
+        # plain chatter does not count (two bots answering each other's replies never stop otherwise).
+        if (
+            self._telegram_bots_require_mention()
+            and self._sender_is_other_bot(message)
+            and not self._message_mentions_bot(message)
+        ):
+            return False
         if not self._telegram_require_mention() or self._is_reply_to_bot(message):
             return True
         if not self._telegram_guest_mode() and self._message_mentions_bot(message):
@@ -6484,6 +6509,7 @@ def _apply_yaml_config(yaml_cfg: dict, telegram_cfg: dict) -> dict | None:
         _set_env("TELEGRAM_MENTION_PATTERNS", _json.dumps(telegram_cfg["mention_patterns"]))
     for key, env in (
         ("exclusive_bot_mentions", "TELEGRAM_EXCLUSIVE_BOT_MENTIONS"), ("allow_bots", "TELEGRAM_ALLOW_BOTS"),
+        ("bots_require_mention", "TELEGRAM_BOTS_REQUIRE_MENTION"),
         ("guest_mode", "TELEGRAM_GUEST_MODE", ), ("observe_unmentioned_group_messages", "TELEGRAM_OBSERVE_UNMENTIONED_GROUP_MESSAGES")):
         _bridge_lower(key, env)
     # No extras seed for allowed_chats / allowed_topics / group_allowed_chats: the shared-key loop already

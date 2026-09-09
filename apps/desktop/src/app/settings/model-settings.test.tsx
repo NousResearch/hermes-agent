@@ -409,6 +409,30 @@ describe('ModelSettings', () => {
     // Banner present on load, no switch required.
     expect(await screen.findByText(/still run on/)).toBeTruthy()
   })
+
+  it('does not flag an aux slot pinned to a local/LAN endpoint and shows its base_url', async () => {
+    getAuxiliaryModels.mockResolvedValueOnce({
+      main: { provider: 'ollama-cloud', model: 'glm-5.3-flash' },
+      tasks: [
+        {
+          task: 'title_generation',
+          provider: 'openai',
+          model: 'llama3.2:3b',
+          base_url: 'http://byron.local:11434/v1',
+          local_endpoint: true
+        },
+        { task: 'vision', provider: 'openai', model: 'gpt-4o-mini', base_url: 'https://api.example.com/v1', local_endpoint: false }
+      ]
+    })
+
+    await renderModelSettings()
+
+    // The public custom endpoint still bills a provider, so the banner stays —
+    // but it names only that one task, not the free LAN pin.
+    expect(await screen.findByText(/1 auxiliary task \(/)).toBeTruthy()
+    // The row shows where the pinned task actually points.
+    expect(screen.getByText(/http:\/\/byron\.local:11434\/v1/)).toBeTruthy()
+  })
 })
 
 describe('ModelSettings MoA preset editor', () => {

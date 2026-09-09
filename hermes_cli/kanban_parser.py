@@ -225,7 +225,7 @@ _SPECS = [
         _arg("--tenant"),
         _arg("--session",
              help="Filter by originating chat/agent session id (set on tasks created from inside an ACP loop)"),
-        _arg("--tag", help="Only tasks carrying this tag (exact match, cross-board)"),
+        _arg("--tag", help="Only tasks carrying this tag (exact match, cross-board; single tag only, multi-tag AND/OR not supported)"),
         _arg("--archived", action="store_true", help="Include archived tasks"),
         _json_flag(),
         _arg("--sort", choices=sorted(kb.VALID_SORT_ORDERS.keys()),

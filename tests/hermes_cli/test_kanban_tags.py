@@ -3,6 +3,7 @@ and the legacy-DB column migration."""
 
 from __future__ import annotations
 
+import argparse
 from pathlib import Path
 
 import pytest
@@ -118,3 +119,15 @@ def test_legacy_db_without_tags_column_is_migrated(kanban_home):
         assert kb.get_task(conn, "legacy-1").tags is None
         tid = kb.create_task(conn, title="fresh", tags=["writing"])
         assert kb.get_task(conn, tid).tags == ["writing"]
+
+
+def test_cli_create_comma_tag_exits_cleanly(kanban_home, capsys):
+    from hermes_cli import kanban as kc
+    parser = argparse.ArgumentParser(prog="hermes")
+    sub = parser.add_subparsers(dest="sub")
+    kc.build_parser(sub)
+    args = parser.parse_args(["kanban", "create", "task with comma", "--tag", "a,b"])
+    rc = kc.kanban_command(args)
+    assert rc == 2
+    captured = capsys.readouterr()
+    assert "tag cannot contain comma" in captured.err

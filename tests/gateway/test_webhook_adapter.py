@@ -104,6 +104,11 @@ def _generic_signature(body: bytes, secret: str) -> str:
     return hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
 
 
+def _gitea_signature(body: bytes, secret: str) -> str:
+    """Compute X-Gitea-Signature (bare HMAC-SHA256 hex of the body, no prefix)."""
+    return hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
+
+
 def _generic_v2_signature(body: bytes, secret: str, timestamp: str) -> str:
     """Compute X-Webhook-Signature-V2 (HMAC-SHA256 of "<timestamp>.<body>")."""
     signed_content = timestamp.encode() + b"." + body
@@ -148,6 +153,7 @@ class TestValidateSignature:
         for header in (
             "X-Hub-Signature-256",
             "X-Gitlab-Token",
+            "X-Gitea-Signature",
             "X-Webhook-Signature",
             "linear-signature",
         ):
@@ -173,6 +179,27 @@ class TestValidateSignature:
         sig = _generic_signature(body, "attacker-controlled-key")
 
         req = _mock_request(headers={"linear-signature": sig})
+
+        assert adapter._validate_signature(req, body, "real-secret") is False
+
+    def test_gitea_signature_valid_accepts(self):
+        """Gitea signs the raw body (bare hex HMAC-SHA256, no `sha256=` prefix) in X-Gitea-Signature."""
+        adapter = _make_adapter()
+        body = b'{"action": "opened", "number": 4}'
+        secret = "gitea-webhook-key"
+        sig = _gitea_signature(body, secret)
+
+        req = _mock_request(headers={"X-Gitea-Event": "issues", "X-Gitea-Signature": sig})
+
+        assert adapter._validate_signature(req, body, secret) is True
+
+    def test_gitea_signature_mismatch_rejects(self):
+        """A well-formed X-Gitea-Signature computed with the wrong key fails closed."""
+        adapter = _make_adapter()
+        body = b'{"action": "opened"}'
+        sig = _gitea_signature(body, "attacker-controlled-key")
+
+        req = _mock_request(headers={"X-Gitea-Signature": sig})
 
         assert adapter._validate_signature(req, body, "real-secret") is False
 

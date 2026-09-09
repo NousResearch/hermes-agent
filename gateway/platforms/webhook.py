@@ -1,5 +1,5 @@
 """Generic webhook platform adapter: aiohttp server that validates HMAC-signed POSTs (GitHub, GitLab,
-Svix, Linear, generic), renders payloads into agent prompts, and routes responses back (github_comment
+Gitea, Svix, Linear, generic), renders payloads into agent prompts, and routes responses back (github_comment
 or any gateway platform). Routes live under platforms.webhook.extra.routes: events (header filter),
 secret (REQUIRED; "INSECURE_NO_AUTH" skips validation, loopback only), prompt template, skills,
 deliver/deliver_extra, deliver_only (rendered prompt IS the message). Per-route rate limiting,
@@ -523,6 +523,7 @@ class WebhookAdapter(BasePlatformAdapter):
             return _json_error("Cannot parse body", 400)
         headers = request.headers
         event_type = (headers.get("X-GitHub-Event", "") or headers.get("X-GitLab-Event", "")
+                      or headers.get("X-Gitea-Event", "")
                       or payload.get("event_type", "") or payload.get("type", "") or "unknown")
         allowed_events = route_config.get("events", [])
         if allowed_events and event_type not in allowed_events:
@@ -549,8 +550,8 @@ class WebhookAdapter(BasePlatformAdapter):
             prompt = self._render_prompt(route_config.get("prompt", ""), payload, event_type, route_name)
             if skills := route_config.get("skills", []):
                 prompt = self._apply_skills(prompt, skills)
-        delivery_id = headers.get("X-GitHub-Delivery", headers.get("svix-id", headers.get(
-            "webhook-id", headers.get("X-Request-ID", str(int(time.time() * 1000))))))
+        delivery_id = headers.get("X-GitHub-Delivery", headers.get("X-Gitea-Delivery", headers.get("svix-id", headers.get(
+            "webhook-id", headers.get("X-Request-ID", str(int(time.time() * 1000)))))))
         now = time.time()  # idempotency: skip duplicate deliveries (webhook retries)
         if not self._record_delivery_id(delivery_id, now):
             logger.info("[webhook] Skipping duplicate delivery %s", delivery_id)
@@ -618,7 +619,7 @@ class WebhookAdapter(BasePlatformAdapter):
     # --- Signature validation ---
 
     def _validate_signature(self, request: "web.Request", body: bytes, secret: str) -> bool:
-        """Validate webhook signature (GitHub, GitLab, Svix, Standard Webhooks, Linear, generic HMAC-SHA256)."""
+        """Validate webhook signature (GitHub, GitLab, Gitea, Svix, Standard Webhooks, Linear, generic HMAC-SHA256)."""
         headers = request.headers
 
         def _header(name: str) -> str:
@@ -634,10 +635,13 @@ class WebhookAdapter(BasePlatformAdapter):
             svix = [_header(name) for name in ("webhook-id", "webhook-timestamp", "webhook-signature")]
         if any(svix):
             return _validate_svix_signature(body, secret, *svix)
-        # Linear (any header case): hex HMAC of the body. GitHub: sha256=<hex>. GitLab: plain token.
+        # Linear (any header case): hex HMAC of the body. GitHub: sha256=<hex>. Gitea: bare hex HMAC of
+        # the body in X-Gitea-Signature (Gitea also mirrors GitHub's X-Hub-Signature-256, but not every
+        # version/route does — commit to the Gitea header when it is the one present). GitLab: plain token.
         for provided, expected in (
                 (_header("linear-signature"), lambda: _hex_hmac(secret, body)),
                 (headers.get("X-Hub-Signature-256", ""), lambda: "sha256=" + _hex_hmac(secret, body)),
+                (headers.get("X-Gitea-Signature", ""), lambda: _hex_hmac(secret, body)),
                 (headers.get("X-Gitlab-Token", ""), lambda: secret)):
             if provided:
                 return _hmac_str_equal(provided, expected())

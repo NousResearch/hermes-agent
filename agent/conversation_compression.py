@@ -1697,13 +1697,16 @@ def _lower_threshold_to_aux_context(
 ) -> None:
     """Lower the live threshold to the aux model's window and tell the user how to fix config.
     The summariser sends one user prompt (no system/tools), so threshold == aux_context is safe.
-    tail_token_budget and threshold_percent are kept in lockstep (as update_model does) or the 1.5x tail
-    ceiling exceeds the trigger and re-fires."""
+    Retention is recalibrated through its selected policy: lean is window-relative;
+    only legacy follows the lowered threshold."""
     compressor = agent.context_compressor
     old_threshold = compressor.threshold_tokens
     new_threshold = compressor.threshold_tokens = aux_context
     summary_target_ratio = getattr(compressor, "summary_target_ratio", None)
-    if isinstance(summary_target_ratio, (int, float)):
+    if getattr(compressor, "tail_mode", None) == "lean":
+        # Keep the window-relative policy owned by the compressor property.
+        compressor._tail_token_budget = None
+    elif isinstance(summary_target_ratio, (int, float)):
         compressor.tail_token_budget = int(new_threshold * summary_target_ratio)
     main_ctx = compressor.context_length
     if main_ctx:
@@ -1931,8 +1934,8 @@ def _steer_markers() -> Tuple[str, str]:
 
 def _message_contains_busy_steer(message: Any) -> bool:
     """Return whether *message* carries a busy-steer marker.
-    Steer follow-ups live as markers inside ``role=tool`` results, so they carry user intent that
-    ``_is_real_user_message`` alone would miss."""
+    Steer follow-ups are now their own ``role=user`` rows (caught by ``_is_real_user_message``); in
+    transcripts persisted before that they ride inside ``role=tool`` results, so those still count."""
     text = _message_text(message)
     if not text:
         return False

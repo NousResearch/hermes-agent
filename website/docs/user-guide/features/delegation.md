@@ -165,7 +165,9 @@ When a top-level agent provides a `tasks` array, Hermes returns one background h
 
 ### Independent completions (opt-in)
 
-Set `delegation.independent_completions: true` to have results land **per completion unit** as each finishes instead:
+Set `delegation.independent_completions: true` to have results land **per completion unit** as each finishes instead. The model-facing `group` field and grouping guidance are only advertised when this option is enabled. Start a new session after changing it so the tool schema can reflect the setting without changing an existing conversation's cached prefix. Old calls containing `group` remain accepted; with the option off, the whole call still returns together.
+
+When independent completions are enabled:
 
 - Omit `group` when each result is useful to act on separately. Each task reports as soon as it finishes.
 - Use the same `group` string when you want to review outputs together: comparison, synthesis, or one coordinated decision. The group returns **one** consolidated message after all its tasks finish. Even independently executable tasks can belong in one group when their results inform the same decision.

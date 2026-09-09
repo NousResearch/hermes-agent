@@ -61,11 +61,12 @@ class _FakeDB:
 
 
 class _FakeAgent:
-    def __init__(self, home: Path, title: str = "Bot Chat"):
+    def __init__(self, home: Path, title: str = "Bot Chat", platform: str = "cli"):
         self._session_db = _FakeDB(home, title)
         self.session_id = "sess-1"
         self._session_title_hint = None
         self._bot_mode_protocol = True
+        self.platform = platform
         self.tools: list = []
         self.valid_tool_names: set = set()
 
@@ -86,17 +87,42 @@ def test_injects_only_into_bot_chat_on_managed_install(tmp_path):
     assert len(agent.tools) == 1
 
 
-@pytest.mark.parametrize(
-    "title",
-    ["", "My research chat", "Group: room-abc123", "handoff-12ab34cd"],
-)
-def test_never_injects_outside_bot_chat(tmp_path, title):
-    """CLI sessions, ordinary chats, group-room member sessions: no tool."""
+_NON_BOT_CHAT_TITLES = ["", "My research chat", "Group: room-abc123", "handoff-12ab34cd"]
+# Every session source that is not the Desktop chat panel: CLI, embedded terminal pane,
+# messaging adapters (and their group rooms), cron, kanban, subagents.
+_NON_DESKTOP_PLATFORMS = ["cli", "tui", "telegram", "discord", "cron", "kanban", "subagent"]
+
+
+@pytest.mark.parametrize("title", _NON_BOT_CHAT_TITLES)
+@pytest.mark.parametrize("platform", _NON_DESKTOP_PLATFORMS)
+def test_never_injects_outside_bot_chat(tmp_path, title, platform):
+    """Outside Bot Chat, only the Desktop chat panel qualifies — every other source: no tool."""
     home = _managed_home(tmp_path)
-    agent = _FakeAgent(home, title=title)
+    agent = _FakeAgent(home, title=title, platform=platform)
     assert bot_mode_dm.ensure_message_agent_tool(agent) is False
     assert agent.tools == []
     assert agent.valid_tool_names == set()
+
+
+@pytest.mark.parametrize("title", _NON_BOT_CHAT_TITLES)
+def test_desktop_chat_injects_outside_bot_chat(tmp_path, title):
+    """A regular Desktop chat on a managed install gets the tool: the Desktop's @mention
+    middleware tells the agent to send with message_agent from ANY chat, so the tool must
+    exist there — the gate is the session's platform, not its title."""
+    home = _managed_home(tmp_path)
+    agent = _FakeAgent(home, title=title, platform="desktop")
+    assert bot_mode_dm.ensure_message_agent_tool(agent) is True
+    assert [t["function"]["name"] for t in agent.tools] == [bot_mode_dm.MESSAGE_AGENT_TOOL_NAME]
+    assert bot_mode_dm.ensure_message_agent_tool(agent) is True
+    assert len(agent.tools) == 1
+
+
+def test_desktop_chat_never_injects_on_unmanaged_install(tmp_path):
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    agent = _FakeAgent(home, title="Fresh chat", platform="desktop")
+    assert bot_mode_dm.ensure_message_agent_tool(agent) is False
+    assert agent.tools == []
 
 
 def test_never_injects_on_unmanaged_install(tmp_path):
@@ -130,14 +156,27 @@ def test_schema_never_in_global_registry():
 # ── dispatch gate (defense in depth) ─────────────────────────────────────────
 
 
-def test_tool_refuses_outside_bot_chat(tmp_path):
+@pytest.mark.parametrize("platform", _NON_DESKTOP_PLATFORMS)
+def test_tool_refuses_outside_bot_chat(tmp_path, platform):
     home = _managed_home(tmp_path)
-    agent = _FakeAgent(home, title="Ordinary chat")
+    agent = _FakeAgent(home, title="Ordinary chat", platform=platform)
     result = json.loads(
         bot_mode_dm.message_agent_tool(target="researcher", message="hi", agent=agent)
     )
     assert "error" in result
     assert "Bot Chat" in result["error"]
+
+
+def test_desktop_chat_dispatch_passes_session_gate(tmp_path):
+    """Dispatch mirrors injection: a regular Desktop chat gets past the session gate and
+    reaches target validation (the roster error proves the gate was not the refusal)."""
+    home = _managed_home(tmp_path)
+    agent = _FakeAgent(home, title="Ordinary chat", platform="desktop")
+    result = json.loads(
+        bot_mode_dm.message_agent_tool(target="nobody-here", message="hi", agent=agent)
+    )
+    assert "Bot Chat" not in result["error"]
+    assert "researcher" in result["teammates"]
 
 
 def test_tool_refuses_on_unmanaged_install(tmp_path):

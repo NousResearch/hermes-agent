@@ -21,6 +21,7 @@ approval:
 
 gateway:
   busy:
+    iteration_label: "轮次"
     action_restarting: "重启"
     action_shutting_down: "关闭"
     command_mid_turn: "⏳ 代理正在运行 — `/{command}` 不能在当前回合中运行。请等待当前回复完成，或先使用 `/stop`。"

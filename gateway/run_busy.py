@@ -603,7 +603,8 @@ class GatewayBusySessionMixin:
                 if summary.get("max_iterations", 0):
                     status_parts.append(
                         format_iteration_progress(
-                            summary.get("api_call_count", 0), summary.get("max_iterations", 0)
+                            summary.get("api_call_count", 0), summary.get("max_iterations", 0),
+                            label=t("gateway.busy.iteration_label"),
                         )
                     )
                 if summary.get("current_tool"):

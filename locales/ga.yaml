@@ -25,6 +25,7 @@ approval:
 
 gateway:
   busy:
+    iteration_label: "iteration"
     action_restarting: "restarting"
     action_shutting_down: "shutting down"
     command_mid_turn: "⏳ Agent is running — `/{command}` can't run mid-turn. Wait for the current response or `/stop` first."

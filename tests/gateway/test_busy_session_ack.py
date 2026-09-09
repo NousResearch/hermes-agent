@@ -529,8 +529,13 @@ def test_busy_ack_localizes_at_emission(monkeypatch, mode, key):
     from agent.onboarding import busy_input_hint_gateway
     monkeypatch.setattr('agent.onboarding.is_seen', lambda *a: True)
     runner, _ = _make_runner()
+    from agent.session_activity import format_iteration_progress
+    import sys
     for lang in ('en', 'zh'):
         monkeypatch.setenv('HERMES_LANGUAGE', lang)
+        label = t('gateway.busy.iteration_label', lang=lang)
+        assert format_iteration_progress(3, 10, label=label) == f'{label} 3/10'
+        assert format_iteration_progress(3, sys.maxsize, label=label) == f'{label} 3'
         result = runner._compose_busy_ack_message(
             _make_event(), time.time(), None, None,
             is_steer_mode=mode == 'steer', is_redirect_mode=mode == 'redirect',

@@ -281,6 +281,42 @@ class TestFlushAttributesMessages:
         (_peer, config), = honcho_session.add_peers.call_args[0][0]
         assert (config.observe_me, config.observe_others) == (False, False)
 
+    def test_joined_authors_forget_the_oldest_session_past_the_cap(self):
+        """The join memory is bounded by session count; a forgotten session's author rejoins on its next write."""
+        from plugins.memory.honcho import session as session_module
+
+        mgr = _manager(_config(), runtime_id="7654321")
+        first = self._session(mgr, key="telegram:group0")
+        first_honcho = MagicMock()
+        mgr._sessions_cache[first.honcho_session_id] = first_honcho
+        first.add_message("user", "hi", author_peer_id="alice")
+        mgr._flush_session(first)
+
+        for i in range(1, session_module._SESSION_CACHE_MAX_SIZE + 1):
+            session = self._session(mgr, key=f"telegram:group{i}")
+            mgr._sessions_cache[session.honcho_session_id] = MagicMock()
+            session.add_message("user", "hi", author_peer_id="alice")
+            mgr._flush_session(session)
+
+        assert len(mgr._joined_author_peers) == session_module._SESSION_CACHE_MAX_SIZE
+        assert first.honcho_session_id not in mgr._joined_author_peers
+
+        first.add_message("user", "again", author_peer_id="alice")
+        mgr._flush_session(first)
+        assert first_honcho.add_peers.call_count == 2
+
+    def test_a_failed_join_leaves_no_session_entry_behind(self):
+        """Only a successful join occupies one of the bounded slots."""
+        mgr = _manager(_config(), runtime_id="7654321")
+        session = self._session(mgr)
+        honcho_session = MagicMock()
+        honcho_session.add_peers.side_effect = RuntimeError("network")
+        mgr._sessions_cache[session.honcho_session_id] = honcho_session
+
+        session.add_message("user", "alice speaking", author_peer_id="alice")
+        mgr._flush_session(session)
+        assert mgr._joined_author_peers == {}
+
 
 class TestProviderReadsTheAuthor:
     def _provider(self) -> HonchoMemoryProvider:

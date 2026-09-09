@@ -24,6 +24,9 @@ logger = logging.getLogger(__name__)
 # Sentinel to signal the async writer thread to shut down
 _ASYNC_SHUTDOWN = object()
 
+# Sessions remembered in _joined_author_peers; the oldest is dropped past this and its authors rejoin on their next write.
+_SESSION_CACHE_MAX_SIZE = 128
+
 
 @dataclass
 class HonchoSession:
@@ -260,7 +263,7 @@ class HonchoSessionManager(SessionAuthMixin, SessionPeersMixin, SessionContextMi
         Joins are remembered per session, so this costs one API call per author."""
         peer = self._get_or_create_peer(author_peer_id)
         with self._cache_lock:
-            if author_peer_id in self._joined_author_peers.setdefault(honcho_session_id, set()):
+            if author_peer_id in self._joined_author_peers.get(honcho_session_id, ()):
                 return peer
         try:
             from honcho.session import SessionPeerConfig
@@ -273,6 +276,8 @@ class HonchoSessionManager(SessionAuthMixin, SessionPeersMixin, SessionContextMi
             return peer
         with self._cache_lock:
             self._joined_author_peers.setdefault(honcho_session_id, set()).add(author_peer_id)
+            while len(self._joined_author_peers) > _SESSION_CACHE_MAX_SIZE:
+                self._joined_author_peers.pop(next(iter(self._joined_author_peers)))
         return peer
 
     def _flush_session(self, session: HonchoSession) -> bool:

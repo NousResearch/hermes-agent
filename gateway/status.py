@@ -450,6 +450,15 @@ def _pid_record_belongs_to_current_profile(record: Optional[dict[str, Any]]) -> 
     return not record_home or _same_hermes_home(record_home, _get_process_hermes_home())
 
 
+def _pid_record_matches_home(record: Optional[dict[str, Any]], expected_home: Path) -> bool:
+    """True when the record's ``hermes_home`` matches ``expected_home`` (legacy records: True).
+    Scoped queries validate against the probed home, not the serve process's."""
+    if not isinstance(record, dict):
+        return False
+    record_home = record.get("hermes_home")
+    return not record_home or _same_hermes_home(record_home, expected_home)
+
+
 def _build_runtime_status_record() -> dict[str, Any]:
     return {
         **_build_pid_record(), "gateway_state": "starting", "exit_reason": None,
@@ -1444,20 +1453,37 @@ def planned_stop_marker_targets_self() -> bool:
 def get_running_pid(
     pid_path: Optional[Path] = None, *, cleanup_stale: bool = True
 ) -> Optional[int]:
-    """PID of a running gateway (lock + PID file verified against the live process), or None."""
+    """PID of a running gateway (lock + PID file verified against the live process), or None.
+    An explicit ``pid_path`` is a scoped query into that home's identity files: records are
+    validated against the probed home (not the serve process's), and a live record is never
+    cleanup-unlinked, so polling another profile must not delete its gateway.pid/gateway.lock
+    (#106406)."""
     resolved_pid_path = pid_path or _get_pid_path()
     resolved_lock_path = _get_gateway_lock_path(resolved_pid_path)
     if is_gateway_runtime_lock_active(resolved_lock_path):
         records = (
             _read_pid_record(resolved_pid_path), _read_gateway_lock_record(resolved_lock_path),
         )
+        expected_home = pid_path.parent if pid_path is not None else None
+        saw_live_pid = False
         for record in records:
             pid = _live_pid_from_record(record)
-            if pid is None or not _pid_record_belongs_to_current_profile(record):
+            if pid is None:
                 continue
-            if _record_matches_live_gateway_pid(record, pid):
+            home_ok = (
+                _pid_record_belongs_to_current_profile(record) if expected_home is None
+                else _pid_record_matches_home(record, expected_home)
+            )
+            if home_ok and _record_matches_live_gateway_pid(
+                record, pid, expected_home=expected_home
+            ):
                 return pid
-        _cleanup_invalid_pid_path(resolved_pid_path, cleanup_stale=cleanup_stale)
+            # A live record we could not adopt may still be a real gateway: unlinking its
+            # identity files would break that home's double-run protection while the PID
+            # is alive, so leave cleanup to a poll after it dies.
+            saw_live_pid = True
+        if not saw_live_pid:
+            _cleanup_invalid_pid_path(resolved_pid_path, cleanup_stale=cleanup_stale)
         return get_runtime_status_running_pid() if pid_path is None else None
     # Lock inactive: the runtime-status fallback runs BEFORE cleanup here.
     runtime_pid = get_runtime_status_running_pid() if pid_path is None else None

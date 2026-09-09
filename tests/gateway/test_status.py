@@ -170,6 +170,70 @@ class TestGatewayPidState:
         (process_home / "gateway.pid").unlink(missing_ok=True)
 
 
+class TestScopedGatewayPidQuery:
+    """get_running_pid(pid_path) is a scoped query into another home's identity files (#106406):
+    records are validated against the probed home (not the serve process's) and a live record is
+    never cleanup-unlinked, so a scoped status poll must not delete a live foreign gateway's
+    gateway.pid/gateway.lock."""
+
+    def _write_scoped_profile(self, tmp_path):
+        profile_dir = tmp_path / "profiles" / "wiki"
+        profile_dir.mkdir(parents=True)
+        record = {
+            "pid": 4242,
+            "kind": "hermes-gateway",
+            "argv": ["python", "-m", "hermes_cli.main", "gateway", "--profile", "wiki"],
+            "start_time": 123,
+            "hermes_home": str(profile_dir.resolve()),
+        }
+        pid_path = profile_dir / "gateway.pid"
+        pid_path.write_text(json.dumps(record))
+        (profile_dir / "gateway.lock").write_text(json.dumps(record))
+        return profile_dir, pid_path, record
+
+    def test_scoped_query_reports_live_foreign_profile_pid(self, tmp_path, monkeypatch):
+        # The serve process polls from the DEFAULT home; the live wiki record must still count.
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "default-home"))
+        profile_dir, pid_path, _ = self._write_scoped_profile(tmp_path)
+        monkeypatch.setattr(status, "is_gateway_runtime_lock_active", lambda lock: True)
+        monkeypatch.setattr(status, "_pid_exists", lambda pid: True)
+        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 123)
+        monkeypatch.setattr(
+            status, "_read_process_cmdline",
+            lambda pid: "python -m hermes_cli.main gateway --profile wiki",
+        )
+        assert status.get_running_pid(pid_path) == 4242
+        assert pid_path.exists()
+        assert (profile_dir / "gateway.lock").exists()
+
+    def test_scoped_query_never_unlinks_live_foreign_identity(self, tmp_path, monkeypatch):
+        # Live PID whose record claims a THIRD home: not adoptable, but its identity files must
+        # survive the poll (double-run/takeover protection).
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "default-home"))
+        profile_dir, pid_path, record = self._write_scoped_profile(tmp_path)
+        # Both identity files migrate together in the real world; repoint both homes.
+        record["hermes_home"] = str((tmp_path / "elsewhere").resolve())
+        pid_path.write_text(json.dumps(record))
+        (profile_dir / "gateway.lock").write_text(json.dumps(record))
+        monkeypatch.setattr(status, "is_gateway_runtime_lock_active", lambda lock: True)
+        monkeypatch.setattr(status, "_pid_exists", lambda pid: True)
+        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 123)
+        monkeypatch.setattr(status, "_read_process_cmdline", lambda pid: None)
+        assert status.get_running_pid(pid_path) is None
+        assert pid_path.exists()
+        assert (profile_dir / "gateway.lock").exists()
+
+    def test_scoped_query_still_cleans_dead_pid_record(self, tmp_path, monkeypatch):
+        # A dead PID's stale record is still cleanup-unlinked, scoped or not.
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "default-home"))
+        profile_dir, pid_path, _ = self._write_scoped_profile(tmp_path)
+        monkeypatch.setattr(status, "is_gateway_runtime_lock_active", lambda lock: True)
+        monkeypatch.setattr(status, "_pid_exists", lambda pid: False)
+        assert status.get_running_pid(pid_path) is None
+        assert not pid_path.exists()
+        assert not (profile_dir / "gateway.lock").exists()
+
+
 class TestGatewayRuntimeStatus:
     def test_clear_profile_platforms_preserves_primary_entries(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))

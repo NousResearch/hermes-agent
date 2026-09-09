@@ -101,13 +101,35 @@ class _InputMixin:
         button_norm = (button or "left").lower()
         if button_norm not in {"left", "right", "middle"}:
             return _refuse("click", f"unknown button {button!r} — expected left, right, middle.")
-        tool, args["button"] = ("double_click" if click_count == 2 else "click"), button_norm
+        if click_count == 2 and self._session.supports_input_property("click", "count"):
+            tool, args["count"] = "click", 2
+            if self._session.supports_input_property("click", "button"):
+                args["button"] = button_norm
+            elif button_norm != "left":
+                return _refuse("click", "The connected cua-driver cannot preserve the requested double-click "
+                               f"button {button_norm!r}.", code="double_click_unsupported")
+            if modifiers:
+                if not self._session.supports_input_property("click", "modifier"):
+                    return _refuse("click", "The connected cua-driver cannot preserve modifiers on this double-click.",
+                                   code="double_click_unsupported")
+                args["modifier"] = modifiers
+        elif click_count == 2:
+            tool = "double_click"
+            if button_norm != "left" or modifiers:
+                return _refuse("click", "The connected cua-driver only supports an unmodified left double-click; "
+                               "use a driver with canonical click count support.", code="double_click_unsupported")
+            if element is None and x is not None and y is not None:
+                return _refuse("click", "The connected cua-driver's legacy double_click uses screen-relative "
+                               "coordinates, but computer_use coordinates are relative to the captured window.",
+                               code="double_click_coordinate_origin_unsupported")
+        else:
+            tool, args["button"] = "click", button_norm
+            if modifiers:
+                args["modifier"] = modifiers
         refusal = self._pointer_args(tool, args, (
             ("element_index click", {"element_index": element} if element is not None else None),
             ("coordinate click", {"x": x, "y": y} if x is not None and y is not None else None),
         ), "click requires element= or x/y.")
-        if modifiers:
-            args["modifier"] = modifiers
         return refusal if refusal is not None else self._run_input_action(tool, args, delivery_mode, bring_to_front)
 
     def drag(self, *, from_element: Optional[int] = None, to_element: Optional[int] = None,
@@ -115,10 +137,17 @@ class _InputMixin:
              button: str = "left", modifiers: Optional[List[str]] = None,
              delivery_mode: Optional[str] = None, bring_to_front: bool = False) -> ActionResult:
         refusal, args = self._target_args("drag")
+        element_drag = from_element is not None and to_element is not None
+        if refusal is None and element_drag and not (
+            self._session.supports_input_property("drag", "from_element")
+            and self._session.supports_input_property("drag", "to_element")
+        ):
+            return _refuse("drag", "The connected cua-driver does not support element-addressed drag; "
+                           "use verified from_coordinate/to_coordinate values.", code="element_drag_unsupported")
         if refusal is None:
             refusal = self._pointer_args("drag", args, (
                 ("element-based drag", {"from_element": from_element, "to_element": to_element}
-                 if from_element is not None and to_element is not None else None),
+                 if element_drag else None),
                 ("coordinate drag", {"from_x": int(from_xy[0]), "from_y": int(from_xy[1]),
                                      "to_x": int(to_xy[0]), "to_y": int(to_xy[1])}
                  if from_xy is not None and to_xy is not None else None),

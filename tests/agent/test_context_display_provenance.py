@@ -41,3 +41,51 @@ def test_preflight_seed_does_not_label_actual_usage_estimated():
     from agent.context_breakdown import context_display_source
     # A cleared live gauge must not re-label a persisted provider fallback.
     assert context_display_source(comp) == "provider_usage"
+
+
+def test_live_usage_stale_anchors_fall_back_to_compressor_not_lifetime_input():
+    from tui_gateway.server import _get_usage
+
+    comp = ContextCompressor(model="fixture", config_context_length=100_000, quiet_mode=True)
+    comp.update_from_response({"prompt_tokens": 3_210, "completion_tokens": 20})
+    agent = SimpleNamespace(
+        context_compressor=comp,
+        model="fixture",
+        session_input_tokens=900_000,
+        _session_messages=[{"role": "user", "content": "rebuilt transcript"}],
+        _turn_base_usage_anchor={"base_count": 99},
+        _usage_anchor={"base_count": 98},
+    )
+
+    usage = _get_usage(agent)
+    assert usage["context_used"] == 3_210
+    assert usage["context_source"] == "provider_usage"
+    assert usage["context_estimated"] is False
+
+    comp.last_prompt_tokens = 0
+    assert "context_used" not in _get_usage(agent)
+
+
+def test_live_usage_falls_back_to_valid_last_response_anchor():
+    from tui_gateway.server import _get_usage
+
+    messages = [{"role": "user", "content": "question"}]
+    anchor = capture_usage_anchor(2_000, 30, messages)
+    messages.append({"role": "assistant", "content": "answer"})
+    agent = SimpleNamespace(
+        context_compressor=SimpleNamespace(
+            context_length=100_000,
+            last_prompt_tokens=9_000,
+            last_real_prompt_tokens=9_000,
+            compression_count=0,
+        ),
+        model="fixture",
+        _session_messages=messages,
+        _turn_base_usage_anchor={"base_count": 99},
+        _usage_anchor=anchor,
+    )
+
+    usage = _get_usage(agent)
+    assert usage["context_used"] == 2_030
+    assert usage["context_source"] == "provider_usage"
+    assert usage["context_estimated"] is False

@@ -16,6 +16,7 @@ from hermes_wisdom.contract import (
     CONTRACT_PIN,
     ContentFile,
     author_description_hash,
+    canonical_content_manifest,
     derive_content_hash,
     sanitize_author_description,
     sha256_address,
@@ -37,14 +38,28 @@ def main() -> int:
     assert digest(schema) == CONTRACT_PIN.manifest_schema_sha256
     assert digest(vectors_path) == CONTRACT_PIN.canonical_vectors_sha256
     vectors = json.loads(vectors_path.read_text(encoding="utf-8"))
-    files: list[ContentFile] = []
-    for item in vectors["files"]:
-        body = base64.b64decode(item["content_base64"], validate=True)
-        assert sha256_address(body) == item["hash"]
-        files.append(
-            ContentFile(path=item["path"], mode=item["mode"], hash=item["hash"])
+    for vector in [vectors, *vectors["content_hash_cases"]]:
+        files: list[ContentFile] = []
+        for item in vector["files"]:
+            body = base64.b64decode(item["content_base64"], validate=True)
+            assert body.decode("utf-8") == item["content_utf8"]
+            assert sha256_address(body) == item["hash"]
+            files.append(
+                ContentFile(path=item["path"], mode=item["mode"], hash=item["hash"])
+            )
+        assert (
+            canonical_content_manifest(files).decode("utf-8")
+            == vector["canonical_content_manifest_utf8"]
         )
-    assert derive_content_hash(files) == vectors["content_hash"]
+        assert derive_content_hash(files) == vector["content_hash"]
+    assert (
+        next(
+            item["hash"]
+            for item in vectors["files"]
+            if item["path"] == "skill.manifest.json"
+        )
+        == vectors["package_manifest_hash"]
+    )
     canonical = sanitize_author_description(vectors["author_description_input"])
     assert canonical == vectors["canonical_author_description"]
     assert author_description_hash(canonical) == vectors["author_description_hash"]

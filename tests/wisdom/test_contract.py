@@ -60,6 +60,18 @@ def test_content_hash_commits_to_mode_and_path():
     assert len({plain, executable, moved}) == 3
 
 
+@pytest.mark.parametrize(
+    "vector", json.loads(VECTORS.read_text())["content_hash_cases"]
+)
+def test_content_hash_matches_cross_language_unicode_vectors(vector):
+    files = [
+        ContentFile(path=item["path"], mode=item["mode"], hash=item["hash"])
+        for item in vector["files"]
+    ]
+    assert derive_content_hash(files) == vector["content_hash"]
+    assert derive_content_hash(list(reversed(files))) == vector["content_hash"]
+
+
 def _valid_manifest_bytes() -> bytes:
     manifest = PackageManifest(
         name="strict-manifest",

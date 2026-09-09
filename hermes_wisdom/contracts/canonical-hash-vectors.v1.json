@@ -28,5 +28,28 @@
   "package_manifest_hash": "sha256:0fb917e5e5641cd16612323e2873fcdbe755e38b306cd6f9b676564116629b4f",
   "author_description_input": "  <b>Reuses</b> a proven deployment checklist.  \r\n",
   "canonical_author_description": "Reuses a proven deployment checklist.",
-  "author_description_hash": "sha256:6b6736801941addd7dd16b6030f5202f33f52540605c8c1e2ee8110014651cd1"
+  "author_description_hash": "sha256:6b6736801941addd7dd16b6030f5202f33f52540605c8c1e2ee8110014651cd1",
+  "content_hash_cases": [
+    {
+      "name": "unicode-byte-order",
+      "files": [
+        {
+          "path": "refs/\ud800\udc00.txt",
+          "mode": "file",
+          "content_utf8": "fixture\n",
+          "content_base64": "Zml4dHVyZQo=",
+          "hash": "sha256:e80b71cd14d3cbd65f4173abcbfcf01a545dbca32a72d575108b553a648cc96f"
+        },
+        {
+          "path": "refs/\ue000.txt",
+          "mode": "file",
+          "content_utf8": "fixture\n",
+          "content_base64": "Zml4dHVyZQo=",
+          "hash": "sha256:e80b71cd14d3cbd65f4173abcbfcf01a545dbca32a72d575108b553a648cc96f"
+        }
+      ],
+      "canonical_content_manifest_utf8": "refs/\ue000.txt file sha256:e80b71cd14d3cbd65f4173abcbfcf01a545dbca32a72d575108b553a648cc96f\nrefs/\ud800\udc00.txt file sha256:e80b71cd14d3cbd65f4173abcbfcf01a545dbca32a72d575108b553a648cc96f\n",
+      "content_hash": "sha256:2e5112a651d74b036eaee610a1778df4ed65cb1c2b7d235a509c018d8d60512f"
+    }
+  ]
 }

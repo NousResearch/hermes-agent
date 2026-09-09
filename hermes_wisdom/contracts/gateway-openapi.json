@@ -657,13 +657,17 @@
       "RelayProvisionResponse": {
         "type": "object",
         "properties": {
+          "secretIssued": {
+            "type": "boolean",
+            "description": "Whether this call returned usable credentials. True when it MINTED them, and also on a replay of an unchanged binding when the caller is PROVEN — the row's recorded owner, or a caller presenting currentSecret. False when the caller proved neither, in which case secret/deliveryKey are absent by design: the endpoint is never a raw-secret read for a principal whose token merely verifies to the same org. Such a caller recovers via POST /relay/rotate."
+          },
           "secret": {
             "type": "string",
-            "description": "Per-gateway secret (returned once)."
+            "description": "Per-gateway secret. Present ONLY when secretIssued is true."
           },
           "deliveryKey": {
             "type": "string",
-            "description": "Per-tenant delivery key (returned once)."
+            "description": "Per-tenant delivery key. Present ONLY when secretIssued is true."
           },
           "tenant": {
             "type": "string"
@@ -700,8 +704,7 @@
           }
         },
         "required": [
-          "secret",
-          "deliveryKey",
+          "secretIssued",
           "tenant",
           "gatewayId",
           "routeKeys"
@@ -747,12 +750,70 @@
             "example": [
               "guild-123"
             ]
+          },
+          "currentSecret": {
+            "type": "string",
+            "description": "Optional proof-of-possession: an upgrade-style bearer token signed with the gateway's CURRENT per-gateway secret. Required only to RE-BIND a gateway/instance that is already live when the caller is not its recorded owner (a re-bind revokes the running credential). Verified against the stored verify list; never logged."
           }
         },
         "required": [
           "gatewayId",
           "platform",
           "botId"
+        ]
+      },
+      "RelayRotateResponse": {
+        "type": "object",
+        "properties": {
+          "secret": {
+            "type": "string",
+            "description": "The gateway's CURRENT per-gateway secret: newly minted when rotated is true, or the primary the original rotation already issued when this call was an idempotent replay. Persist it either way. After a real rotation the previous secret stays valid as the rotation-window secondary so an in-flight gateway is not locked out."
+          },
+          "rotated": {
+            "type": "boolean",
+            "description": "False when this call was an idempotent REPLAY of an already-served rotation and deliberately did NOT roll the key — rolling again would evict the rotation-window secondary the running gateway may still be using. A possession proof presented with the SECONDARY slot, or an owner call while a rotation window is open, is served this way."
+          },
+          "tenant": {
+            "type": "string"
+          },
+          "gatewayId": {
+            "type": "string"
+          },
+          "authorizedBy": {
+            "type": "string",
+            "enum": [
+              "secret_possession",
+              "owner_identity"
+            ],
+            "description": "Which proof authorized the rotation."
+          },
+          "ownerBackfilled": {
+            "type": "boolean",
+            "description": "Present and true when this call stamped an owner onto a LEGACY owner-less row (self-heal). Only ever happens on the secret_possession leg — an unproven caller can never claim ownership."
+          }
+        },
+        "required": [
+          "secret",
+          "rotated",
+          "tenant",
+          "gatewayId",
+          "authorizedBy"
+        ]
+      },
+      "RelayRotateRequest": {
+        "type": "object",
+        "properties": {
+          "gatewayId": {
+            "type": "string",
+            "description": "The gateway whose per-gateway secret is being rolled."
+          },
+          "currentSecret": {
+            "type": "string",
+            "description": "Proof-of-possession: an upgrade-style bearer token signed with the gateway's CURRENT secret (either rotation slot is accepted). One of this or an owner-identity Authorization header is REQUIRED."
+          }
+        },
+        "required": [
+          "gatewayId"
         ]
       },
       "OkResponse": {
@@ -6093,6 +6154,16 @@
                 }
               }
             }
+          },
+          "409": {
+            "description": "gatewayId is already provisioned to a different tenant (the store refused a cross-tenant clobber). The single-use enrollment token has been consumed; mint a new one and retry with a free gatewayId.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
           }
         }
       }
@@ -6119,7 +6190,7 @@
         },
         "responses": {
           "200": {
-            "description": "Provisioned. Secret + delivery key returned ONCE.",
+            "description": "Provisioned. secretIssued:true with secret + delivery key when this call minted them, and also on a replay of an unchanged binding when the caller is PROVEN (recorded owner, or currentSecret possession). secretIssued:false and no secret material when the caller proved neither — use /relay/rotate to recover a lost secret.",
             "content": {
               "application/json": {
                 "schema": {
@@ -6159,7 +6230,7 @@
             }
           },
           "409": {
-            "description": "gatewayId already bound to a different tenant.",
+            "description": "gatewayId already bound to a different tenant, instanceId owned by another user, or a re-bind of a LIVE gateway without proof of ownership or possession of its current secret.",
             "content": {
               "application/json": {
                 "schema": {
@@ -6170,6 +6241,70 @@
           },
           "429": {
             "description": "Per-caller bootstrap rate limit exceeded.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/relay/rotate": {
+      "post": {
+        "summary": "Rotate a gateway's per-gateway secret (authorized recovery/roll).",
+        "tags": [
+          "relay"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RelayRotateRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Rotated. The NEW secret is returned ONCE; the previous one stays valid as the rotation-window secondary.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RelayRotateResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid JSON body / missing gatewayId.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Refused. ONE normalized answer for every denial — neither proof satisfied, unknown gatewayId, or a revoked one — so this endpoint is not an existence oracle for other tenants' gateway ids. A bare same-tenant token is NOT sufficient. The real reason is recorded server-side as a bounded slug on gg.relay.lifecycle{flow=rotate}.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Per-caller rate limit exceeded.",
             "content": {
               "application/json": {
                 "schema": {
@@ -6455,8 +6590,28 @@
               }
             }
           },
+          "403": {
+            "description": "The authenticated instance is not provisioned for the requested platform (F-003a).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "409": {
             "description": "No live instance bound; cannot issue a code.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The provisioned-identity store could not be consulted; the platform authorization check failed closed (F-003a).",
             "content": {
               "application/json": {
                 "schema": {
@@ -6519,12 +6674,32 @@
               }
             }
           },
+          "403": {
+            "description": "The authenticated instance is not provisioned for the requested platform (F-003a).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "409": {
             "description": "The location is already owned by another instance.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ScopeConflictResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The provisioned-identity store could not be consulted; the platform authorization check failed closed (F-003a).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             }
@@ -6575,6 +6750,26 @@
           },
           "401": {
             "description": "No valid agent token or per-gateway bearer.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The authenticated instance is not provisioned for the requested platform (F-003a).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The provisioned-identity store could not be consulted; the platform authorization check failed closed (F-003a).",
             "content": {
               "application/json": {
                 "schema": {
@@ -6636,6 +6831,26 @@
                 }
               }
             }
+          },
+          "403": {
+            "description": "The authenticated instance is not provisioned for the requested platform (F-003a).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The provisioned-identity store could not be consulted; the platform authorization check failed closed (F-003a).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
           }
         }
       }
@@ -6690,6 +6905,26 @@
                 }
               }
             }
+          },
+          "403": {
+            "description": "The authenticated instance is not provisioned for the requested platform (F-003a).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The provisioned-identity store could not be consulted; the platform authorization check failed closed (F-003a).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
           }
         }
       }
@@ -6737,6 +6972,26 @@
           },
           "401": {
             "description": "No valid agent token or per-gateway bearer.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The authenticated instance is not provisioned for the requested platform (F-003a).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The provisioned-identity store could not be consulted; the platform authorization check failed closed (F-003a).",
             "content": {
               "application/json": {
                 "schema": {
@@ -6799,8 +7054,28 @@
               }
             }
           },
+          "403": {
+            "description": "The authenticated instance is not provisioned for the requested platform (F-003a).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "409": {
             "description": "The user has not linked the authenticated instance.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The provisioned-identity store could not be consulted; the platform authorization check failed closed (F-003a).",
             "content": {
               "application/json": {
                 "schema": {

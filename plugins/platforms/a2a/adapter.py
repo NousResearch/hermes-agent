@@ -33,7 +33,7 @@ from . import protocol, security
 logger = logging.getLogger(__name__)
 
 _DEFAULT_PORT = 9900
-_ORPHAN_TIMEOUT, _WATCHDOG_INTERVAL = 300, 60  # seconds: pending task considered orphaned / watchdog period
+_WATCHDOG_INTERVAL = 60  # seconds: watchdog period — the sweep window itself honors A2A_REPLY_TIMEOUT
 _MAX_BODY = 1_048_576  # 1MB max request body — prevents DoS via memory exhaustion
 _SSE_KEEPALIVE = 5  # seconds between SSE keepalive comments
 _DEFAULT_DESCRIPTION = "Hermes Agent — a general-purpose agent reachable over A2A."
@@ -330,13 +330,28 @@ class A2AAdapter(BasePlatformAdapter):
             self._pending.clear()
             self._pending_order.clear()
 
+    def _sweep_orphans(self) -> list[str]:
+        """Fail tasks still pending past the configured reply-timeout window.
+
+        The orphan sweep honors ``A2A_REPLY_TIMEOUT`` (via ``_reply_timeout``) so a
+        long-running turn is not marked failed before the configured reply
+        deadline arrives — a late but legitimate reply can still complete the
+        task instead of being silently discarded by the terminal-state guard
+        in ``TaskStore.complete`` (#106972).
+        """
+        orphan_timeout = int(_reply_timeout())
+        swept: list[str] = []
+        for tid in self.tasks.fail_orphans(orphan_timeout):
+            logger.warning("A2A: orphaned task %s marked failed (timeout %ds)", tid, orphan_timeout)
+            protocol.metrics.tasks_failed += 1
+            swept.append(tid)
+        return swept
+
     def _watchdog_loop(self) -> None:
         """Background thread that fails orphaned tasks (keeps them queryable)."""
         while not self._watchdog_stop.wait(_WATCHDOG_INTERVAL):
             try:
-                for tid in self.tasks.fail_orphans(_ORPHAN_TIMEOUT):
-                    logger.warning("A2A: orphaned task %s marked failed (timeout %ds)", tid, _ORPHAN_TIMEOUT)
-                    protocol.metrics.tasks_failed += 1
+                self._sweep_orphans()
             except Exception:
                 logger.debug("A2A: watchdog error", exc_info=True)
 

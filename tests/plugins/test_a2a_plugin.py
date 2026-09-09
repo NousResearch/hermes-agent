@@ -913,6 +913,54 @@ def _send_body(text, ctx="", extra_params=None):
     return {"jsonrpc": "2.0", "id": "1", "method": "message/send", "params": params}
 
 
+class TestOrphanSweepRespectsReplyTimeout:
+    """The orphan-task sweep must honor ``A2A_REPLY_TIMEOUT`` rather than a
+    hardcoded 300s, so a long-running turn survives long enough for its real
+    reply to complete the task (#106972)."""
+
+    def test_sweep_fails_task_older_than_default_window(self, monkeypatch):
+        monkeypatch.delenv("A2A_REPLY_TIMEOUT", raising=False)  # default 300s
+        adapter = _bare_adapter()
+        adapter.tasks.create("t-stale", "ctx", "peer")
+        adapter.tasks._tasks["t-stale"]["created_at"] -= 400  # 400s old: over the 300s default
+        failed_before = protocol.metrics.tasks_failed
+        swept = adapter._sweep_orphans()
+        assert swept == ["t-stale"]
+        assert adapter.tasks.get("t-stale")["state"] == protocol.STATE_FAILED
+        assert protocol.metrics.tasks_failed == failed_before + 1
+
+    def test_sweep_preserves_task_when_reply_timeout_extended(self, monkeypatch):
+        """Regression for #106972: raising A2A_REPLY_TIMEOUT must keep a
+        long-running turn alive past the old hardcoded 300s sweep window so its
+        real reply can still complete the task."""
+        monkeypatch.setenv("A2A_REPLY_TIMEOUT", "600")
+        adapter = _bare_adapter()
+        adapter.tasks.create("t-survives", "ctx", "peer")
+        adapter.tasks._tasks["t-survives"]["created_at"] -= 400  # 400s: under 600, over the old 300
+        swept = adapter._sweep_orphans()
+        assert swept == []
+        assert adapter.tasks.get("t-survives")["state"] != protocol.STATE_FAILED
+
+    def test_sweep_skips_terminal_tasks(self, monkeypatch):
+        monkeypatch.delenv("A2A_REPLY_TIMEOUT", raising=False)
+        adapter = _bare_adapter()
+        adapter.tasks.create("t-done", "ctx", "peer")
+        adapter.tasks.complete("t-done", protocol.STATE_COMPLETED, "answer")
+        adapter.tasks._tasks["t-done"]["created_at"] -= 9999  # ancient but already terminal
+        swept = adapter._sweep_orphans()
+        assert swept == []
+        assert adapter.tasks.get("t-done")["state"] == protocol.STATE_COMPLETED
+
+    def test_sweep_invalid_env_falls_back_to_300(self, monkeypatch):
+        monkeypatch.setenv("A2A_REPLY_TIMEOUT", "not-a-number")
+        adapter = _bare_adapter()
+        adapter.tasks.create("t-bad", "ctx", "peer")
+        adapter.tasks._tasks["t-bad"]["created_at"] -= 400  # 400s: over the 300s fallback
+        swept = adapter._sweep_orphans()
+        assert swept == ["t-bad"]
+        assert adapter.tasks.get("t-bad")["state"] == protocol.STATE_FAILED
+
+
 @pytest.mark.integration
 class TestInboundRoundTrip:
     def test_live_server_card_and_message_send(self, monkeypatch):

@@ -1,57 +1,13 @@
 """User OAuth helper for the Google Chat gateway adapter.
 
-Google Chat's ``media.upload`` REST endpoint hard-rejects service-account
-authentication:
-
-    "This method doesn't support app authentication with a service
-     account. Authenticate with a user account."
-
-(See https://developers.google.com/workspace/chat/api/reference/rest/v1/media/upload
-and https://developers.google.com/chat/api/guides/auth/users.)
-
-For the bot to deliver native file attachments — the same drag-and-drop
-file widget the user gets when they upload manually — each user must
-grant the bot the ``chat.messages.create`` scope ONCE in their own DM.
-The bot stores per-user refresh tokens and calls ``media.upload`` plus
-the subsequent ``messages.create`` *as the requesting user* whenever a
-file needs sending.
-
-This module is BOTH a CLI tool (driven by the agent via slash commands or
-terminal commands) AND a library imported by ``google_chat.py``:
-
-    Library functions (called from the adapter at runtime):
-        load_user_credentials(email=None) -> Credentials | None
-        refresh_or_none(creds, email=None) -> Credentials | None
-        build_user_chat_service(creds) -> chat_v1.Resource
-        list_authorized_emails() -> List[str]
-
-    CLI commands (driven by the agent through the /setup-files slash
-    command, modeled on skills/productivity/google-workspace/scripts/setup.py):
-        --check                          Exit 0 if auth is valid, else 1
-        --client-secret /path/to.json    Persist OAuth client credentials
-        --auth-url                       Print the OAuth URL for the user
-        --auth-code CODE                 Exchange auth code for token
-        --revoke                         Revoke and delete stored token
-        --install-deps                   Install Python dependencies
-        --email EMAIL                    Scope CLI ops to a specific user
-                                         (defaults to legacy single-user
-                                         mode when omitted)
-
-The flow mirrors the existing google-workspace skill exactly so anyone
-familiar with that flow can read this without surprises.
-
-Token storage layout
---------------------
-- Per-user tokens (keyed by sender email):
-    ``${HERMES_HOME}/google_chat_user_tokens/<sanitized_email>.json``
-- Legacy single-user token (fallback, untouched for backward compat):
-    ``${HERMES_HOME}/google_chat_user_token.json``
-- Per-user pending OAuth state during /setup-files start → exchange:
-    ``${HERMES_HOME}/google_chat_user_oauth_pending/<sanitized_email>.json``
-- Legacy pending state:
-    ``${HERMES_HOME}/google_chat_user_oauth_pending.json``
-- OAuth client secret (profile-scoped — each profile registers its own):
-    ``${HERMES_HOME}/google_chat_user_client_secret.json``
+Google Chat's ``media.upload`` rejects service-account auth, so for native file
+attachments each user grants the bot ``chat.messages.create`` ONCE in their own DM;
+the bot stores per-user refresh tokens and uploads *as the user*
+(https://developers.google.com/chat/api/guides/auth/users). Library API for the
+adapter plus a CLI driven by ``/setup-files`` (``--help``; ``--email`` omitted ==
+legacy single-user mode). Files under ``${HERMES_HOME}``: ``google_chat_user_tokens/
+<email>.json`` (per-user) / ``google_chat_user_token.json`` (legacy); pending PKCE state
+in ``google_chat_user_oauth_pending[/<email>].json``; ``google_chat_user_client_secret.json``.
 """
 
 from __future__ import annotations
@@ -61,104 +17,27 @@ import json
 import logging
 import os
 import re
-import secrets
 import stat
-import subprocess
 import sys
 from importlib.metadata import version as _distribution_version
 from pathlib import Path
-from typing import Any, List, Optional, Tuple
+from typing import Any, List, NoReturn, Optional, Tuple
 
 from packaging.requirements import Requirement
 
-# Pin the legacy logger name so operator-side log filters keep matching
-# after the in-tree → plugin migration. See adapter.py for context.
+from hermes_constants import display_hermes_home, get_hermes_home
+from utils import atomic_write_text
+
+# Pinned legacy logger name so operator log filters keep matching (see adapter.py).
 logger = logging.getLogger("gateway.platforms.google_chat_user_oauth")
 
-# Use the project's HERMES_HOME helper so the token follows the user's
-# profile (e.g. tests can override via HERMES_HOME=/tmp/...).
-try:
-    from hermes_constants import display_hermes_home, get_hermes_home
-except (ModuleNotFoundError, ImportError):
-    # Fallback for environments where hermes_constants isn't importable
-    # (mirrors the same fallback used by the google-workspace skill's
-    # _hermes_home.py shim).
-    def get_hermes_home() -> Path:
-        val = os.environ.get("HERMES_HOME", "").strip()
-        return Path(val) if val else Path.home() / ".hermes"
-
-    def display_hermes_home() -> str:
-        home = get_hermes_home()
-        try:
-            return "~/" + str(home.relative_to(Path.home()))
-        except ValueError:
-            return str(home)
-
-from utils import atomic_replace
-
-
-def _hermes_home() -> Path:
-    """Resolve HERMES_HOME at call time (NOT module import).
-
-    Tests and ``HERMES_HOME=...`` env overrides need this to be late-
-    binding. If we cached the path at import time, switching profiles
-    or tweaking env vars in tests would silently keep using the old
-    path."""
-    return get_hermes_home()
-
-
-# Filesystem-safe key: lowercase, allow ``[a-z0-9._-@]``, replace anything
-# else with ``_``. ``ramon.fernandez@nttdata.com`` stays human-readable
-# (``ramon.fernandez@nttdata.com.json``) which makes admin debugging by
-# ``ls ~/.hermes/google_chat_user_tokens/`` trivial.
+# Filesystem-safe key: lowercase, keep ``[a-z0-9._-@]`` so token files stay
+# human-readable under ``ls ~/.hermes/google_chat_user_tokens/``.
 _EMAIL_FS_RE = re.compile(r"[^a-z0-9._@-]+")
 
-
-def _sanitize_email(email: str) -> str:
-    cleaned = _EMAIL_FS_RE.sub("_", (email or "").strip().lower())
-    return cleaned or "_unknown_"
-
-
-def _legacy_token_path() -> Path:
-    return _hermes_home() / "google_chat_user_token.json"
-
-
-def _user_tokens_dir() -> Path:
-    return _hermes_home() / "google_chat_user_tokens"
-
-
-def _legacy_pending_path() -> Path:
-    return _hermes_home() / "google_chat_user_oauth_pending.json"
-
-
-def _user_pending_dir() -> Path:
-    return _hermes_home() / "google_chat_user_oauth_pending"
-
-
-def _token_path(email: Optional[str] = None) -> Path:
-    """Return the on-disk token path for ``email`` or the legacy path."""
-    if email:
-        return _user_tokens_dir() / f"{_sanitize_email(email)}.json"
-    return _legacy_token_path()
-
-
-def _client_secret_path() -> Path:
-    return _hermes_home() / "google_chat_user_client_secret.json"
-
-
-def _pending_auth_path(email: Optional[str] = None) -> Path:
-    if email:
-        return _user_pending_dir() / f"{_sanitize_email(email)}.json"
-    return _legacy_pending_path()
-
-
-# Minimum scope for native Chat attachment delivery.
-# `chat.messages.create` covers BOTH `media.upload` and the subsequent
-# `messages.create` that references the attachmentDataRef. We deliberately
-# do NOT request drive.file or other scopes — least privilege.
-SCOPES: List[str] = [
-    "https://www.googleapis.com/auth/chat.messages.create",
-]
+# Least privilege: chat.messages.create covers BOTH media.upload and the
+# subsequent messages.create; no drive.file or other scopes.
+SCOPES: List[str] = ["https://www.googleapis.com/auth/chat.messages.create"]
 
 # Pip packages required by the Google Chat adapter and its OAuth flow.
 _REQUIRED_PACKAGES = [
@@ -171,43 +50,73 @@ _REQUIRED_PACKAGES = [
     "pyasn1==0.6.4",
 ]
 
-# Out-of-band redirect: Google deprecated the ``urn:ietf:wg:oauth:2.0:oob``
-# flow, so we use a localhost redirect that's expected to FAIL. The user
-# copies the auth code from the failed browser URL bar back into chat.
-# Same trick used by skills/productivity/google-workspace/scripts/setup.py.
+# Google deprecated the ``oob`` flow: use a localhost redirect that is expected
+# to FAIL; the user pastes the code from the failed browser URL back into chat.
 _REDIRECT_URI = "http://localhost:1"
 
 
-# =============================================================================
-# Library API — called from the adapter at runtime
-# =============================================================================
+def _sanitize_email(email: str) -> str:
+    cleaned = _EMAIL_FS_RE.sub("_", (email or "").strip().lower())
+    return cleaned or "_unknown_"
+
+
+def _token_rel(email: Optional[str]) -> str:
+    """HERMES_HOME-relative token file: per-user under the tokens dir, else the legacy path."""
+    return f"google_chat_user_tokens/{_sanitize_email(email)}.json" if email else "google_chat_user_token.json"
+
+
+def _user_tokens_dir() -> Path:
+    return get_hermes_home() / "google_chat_user_tokens"
+
+
+def _token_path(email: Optional[str] = None) -> Path:
+    """Per-user token path for ``email``, or the legacy single-user path."""
+    return get_hermes_home() / _token_rel(email)
+
+
+def _client_secret_path() -> Path:
+    return get_hermes_home() / "google_chat_user_client_secret.json"
+
+
+def _pending_auth_path(email: Optional[str] = None) -> Path:
+    if email:
+        return get_hermes_home() / "google_chat_user_oauth_pending" / f"{_sanitize_email(email)}.json"
+    return get_hermes_home() / "google_chat_user_oauth_pending.json"
+
+
+# -- Library API — called from the adapter at runtime -------------------------
+
+
+def _refresh_and_persist(creds: Any, token_path: Path, request_cls: Any, *, failure_msg: str) -> Optional[Any]:
+    """Refresh expired creds and write them back; None when unusable or refresh fails."""
+    if creds.valid:
+        return creds
+    if creds.expired and creds.refresh_token:
+        try:
+            creds.refresh(request_cls())
+        except Exception as exc:
+            logger.warning("[google_chat_user_oauth] %s: %s", failure_msg, exc)
+            return None
+        _persist_credentials(creds, token_path)
+        return creds
+    # Token exists but is unusable (e.g. revoked, no refresh token).
+    return None
 
 
 def load_user_credentials(email: Optional[str] = None) -> Optional[Any]:
     """Load + validate persisted user OAuth credentials.
 
-    ``email`` selects the per-user token file; ``None`` falls back to the
-    legacy single-user path (left in place for installs that ran the
-    pre-multi-user flow). Returns a ``google.oauth2.credentials.Credentials``
-    instance ready for use, or ``None`` if no token is stored, the token
-    is corrupt, or refresh fails. Adapter callers should treat ``None``
-    as "user has not run /setup-files yet" and surface the setup-instructions
-    fallback to the user.
-
-    Does NOT raise on the no-token case — that's expected.
+    ``None`` email → legacy single-user path. Returns ``None`` (never raises) when
+    no token is stored, the token is corrupt, or refresh fails — callers treat
+    that as "user has not run /setup-files yet".
     """
     token_path = _token_path(email)
     if not token_path.exists():
         return None
-
-    # Same class as slack_tokens.json: hand-provisioned or legacy-written
-    # token files commonly end up 0o644. Warn so the owner tightens them.
+    # Hand-provisioned / legacy token files commonly end up 0o644; warn the owner.
     from utils import warn_if_credential_file_broadly_readable
 
-    warn_if_credential_file_broadly_readable(
-        token_path, label="[google_chat_user_oauth]", log=logger
-    )
-
+    warn_if_credential_file_broadly_readable(token_path, label="[google_chat_user_oauth]", log=logger)
     try:
         from google.oauth2.credentials import Credentials
         from google.auth.transport.requests import Request
@@ -217,120 +126,56 @@ def load_user_credentials(email: Optional[str] = None) -> Optional[Any]:
             "attachment delivery is disabled. Run `hermes setup` to install Google Chat support."
         )
         return None
-
     try:
-        # Don't pass scopes — user may have authorized only a subset, and
-        # passing scopes makes refresh validate them strictly. Same logic
-        # as the google-workspace skill.
+        # No scopes: the user may have authorized a subset, and passing scopes
+        # makes refresh validate them strictly.
         creds = Credentials.from_authorized_user_file(str(token_path))
     except Exception as exc:
-        logger.warning(
-            "[google_chat_user_oauth] token at %s is corrupt: %s",
-            token_path, exc,
-        )
+        logger.warning("[google_chat_user_oauth] token at %s is corrupt: %s", token_path, exc)
         return None
-
-    if creds.valid:
-        return creds
-
-    if creds.expired and creds.refresh_token:
-        try:
-            creds.refresh(Request())
-        except Exception as exc:
-            logger.warning(
-                "[google_chat_user_oauth] token refresh failed (user "
-                "should re-run /setup-files): %s", exc,
-            )
-            return None
-        # Persist refreshed token so next start picks up the new access
-        # token without an unnecessary refresh round-trip.
-        _persist_credentials(creds, token_path)
-        return creds
-
-    # Token exists but is unusable (e.g. revoked, no refresh token).
-    return None
+    return _refresh_and_persist(
+        creds, token_path, Request, failure_msg="token refresh failed (user should re-run /setup-files)",
+    )
 
 
 def refresh_or_none(creds: Any, email: Optional[str] = None) -> Optional[Any]:
-    """Refresh ``creds`` if expired. Returns the credentials or ``None``.
-
-    Used by the adapter just before calling media.upload to ensure the
-    token is current. Returns ``None`` if refresh fails — caller falls
-    back to the text-notice path. ``email`` controls where the refreshed
-    token is written back; ``None`` keeps the legacy single-file path.
-    """
+    """Refresh ``creds`` if expired; ``None`` on failure (caller falls back to the
+    text-notice path). ``email`` selects where the refreshed token is written."""
     if creds is None:
         return None
-
     if creds.valid:
         return creds
-
     try:
         from google.auth.transport.requests import Request
     except ImportError:
         return None
-
-    if creds.expired and creds.refresh_token:
-        try:
-            creds.refresh(Request())
-            _persist_credentials(creds, _token_path(email))
-            return creds
-        except Exception as exc:
-            logger.warning(
-                "[google_chat_user_oauth] refresh failed: %s", exc,
-            )
-            return None
-
-    return None
+    return _refresh_and_persist(creds, _token_path(email), Request, failure_msg="refresh failed")
 
 
 def build_user_chat_service(creds: Any) -> Any:
-    """Build a Google Chat API client authenticated as the user.
-
-    Used for media.upload + the subsequent messages.create that
-    references the attachmentDataRef. The bot's separate SA-authed
-    client (``self._chat_api`` in the adapter) is for everything else.
-    """
+    """Chat API client authenticated as the user (for media.upload + messages.create)."""
     from googleapiclient.discovery import build as build_service
     return build_service("chat", "v1", credentials=creds, cache_discovery=False)
 
 
 def list_authorized_emails() -> List[str]:
-    """Return the set of user emails that have stored per-user tokens.
-
-    Lists files in the per-user tokens dir; does NOT include the legacy
-    single-user token (its owner is unknown). Sanitized filenames lose
-    the ``+suffix`` part of plus-addressed emails — accept that and use
-    this list only for admin display, not for trust decisions.
-    """
+    """Sanitized emails with stored per-user tokens (admin display only, not trust;
+    excludes the legacy single-user token whose owner is unknown)."""
     d = _user_tokens_dir()
     if not d.exists():
         return []
-    out: List[str] = []
-    for f in d.iterdir():
-        if f.is_file() and f.suffix == ".json":
-            out.append(f.stem)
-    out.sort()
-    return out
+    return sorted(f.stem for f in d.iterdir() if f.is_file() and f.suffix == ".json")
 
 
 def _persist_credentials(creds: Any, token_path: Path) -> None:
     """Persist refreshed credentials atomically with private permissions."""
     try:
-        _write_private_json(
-            token_path,
-            _normalize_authorized_user_payload(json.loads(creds.to_json())),
-        )
+        _write_private_json(token_path, _normalize_authorized_user_payload(json.loads(creds.to_json())))
     except Exception:
-        logger.debug(
-            "[google_chat_user_oauth] failed to persist credentials at %s",
-            token_path, exc_info=True,
-        )
+        logger.debug("[google_chat_user_oauth] failed to persist credentials at %s", token_path, exc_info=True)
 
 
-# =============================================================================
-# CLI commands — driven by the agent via /setup-files
-# =============================================================================
+# -- CLI commands — driven by the agent via /setup-files ----------------------
 
 
 def _normalize_authorized_user_payload(payload: dict) -> dict:
@@ -341,36 +186,27 @@ def _normalize_authorized_user_payload(payload: dict) -> dict:
     return normalized
 
 
-def _write_private_json(path: Path, data: Any) -> None:
-    """Atomically write JSON with 0o600 permissions where supported."""
-    path.parent.mkdir(parents=True, exist_ok=True)
+def _chmod_quiet(path: Path, mode: int) -> None:
     try:
-        os.chmod(path.parent, 0o700)
+        os.chmod(path, mode)
     except OSError:
         pass
 
-    tmp_path = path.with_suffix(f".tmp.{os.getpid()}.{secrets.token_hex(4)}")
-    try:
-        fd = os.open(
-            str(tmp_path),
-            os.O_WRONLY | os.O_CREAT | os.O_EXCL,
-            stat.S_IRUSR | stat.S_IWUSR,
-        )
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            json.dump(data, fh, indent=2, ensure_ascii=False)
-            fh.flush()
-            os.fsync(fh.fileno())
-        atomic_replace(tmp_path, path)
-        try:
-            os.chmod(path, stat.S_IRUSR | stat.S_IWUSR)
-        except OSError:
-            pass
-    finally:
-        try:
-            if tmp_path.exists():
-                tmp_path.unlink()
-        except OSError:
-            pass
+
+def _write_private_json(path: Path, data: Any) -> None:
+    """Atomically write JSON with 0o600 permissions (0o700 parent) where supported."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    _chmod_quiet(path.parent, 0o700)
+    # mkstemp's 0o600 temp + atomic rename never exposes the token at process umask.
+    atomic_write_text(path, json.dumps(data, indent=2, ensure_ascii=False), create_mode=0o600)
+    _chmod_quiet(path, stat.S_IRUSR | stat.S_IWUSR)
+
+
+def _fail(*lines: str) -> NoReturn:
+    """Print CLI error lines and exit 1."""
+    for line in lines:
+        print(line)
+    sys.exit(1)
 
 
 def _ensure_deps() -> None:
@@ -399,7 +235,6 @@ def install_deps() -> bool:
     if not missing:
         print("Dependencies already installed.")
         return True
-
     print("Installing Google Chat dependencies...")
     try:
         from hermes_cli.tools_config import _pip_install
@@ -409,9 +244,7 @@ def install_deps() -> bool:
             raise RuntimeError((result.stderr or "install failed").strip()[:300])
         remaining = _missing_required_packages()
         if remaining:
-            raise RuntimeError(
-                "dependencies remain stale after install: " + " ".join(remaining)
-            )
+            raise RuntimeError("dependencies remain stale after install: " + " ".join(remaining))
         print("Dependencies installed.")
         return True
     except Exception as exc:
@@ -421,20 +254,14 @@ def install_deps() -> bool:
 
 
 def check_auth(email: Optional[str] = None) -> bool:
-    """Print status; return True if creds are usable.
-
-    Per-user when ``email`` given, legacy single-user when omitted.
-    """
+    """Print status; return True if creds are usable."""
     token_path = _token_path(email)
     if not token_path.exists():
         print(f"NOT_AUTHENTICATED: No token at {token_path}")
         return False
-
-    creds = load_user_credentials(email)
-    if creds is None:
+    if load_user_credentials(email) is None:
         print(f"TOKEN_INVALID: Re-run /setup-files (path: {token_path})")
         return False
-
     print(f"AUTHENTICATED: Token valid at {token_path}")
     return True
 
@@ -443,190 +270,126 @@ def store_client_secret(path: str) -> None:
     """Validate and copy the user's OAuth client_secret.json into HERMES_HOME."""
     src = Path(path).expanduser().resolve()
     if not src.exists():
-        print(f"ERROR: File not found: {src}")
-        sys.exit(1)
-
+        _fail(f"ERROR: File not found: {src}")
     try:
         data = json.loads(src.read_text(encoding="utf-8"))
     except json.JSONDecodeError:
-        print("ERROR: File is not valid JSON.")
-        sys.exit(1)
-
+        _fail("ERROR: File is not valid JSON.")
     if "installed" not in data and "web" not in data:
-        print(
-            "ERROR: Not a Google OAuth client secret file (missing "
-            "'installed' or 'web' key)."
-        )
-        print(
-            "Download from: https://console.cloud.google.com/apis/credentials"
-        )
-        sys.exit(1)
-
+        _fail(
+            "ERROR: Not a Google OAuth client secret file (missing 'installed' or 'web' key).",
+            "Download from: https://console.cloud.google.com/apis/credentials")
     target = _client_secret_path()
     _write_private_json(target, data)
     print(f"OK: Client secret saved to {target}")
 
 
-def _save_pending_auth(*, state: str, code_verifier: str,
-                      email: Optional[str] = None) -> None:
-    pending = _pending_auth_path(email)
+def _save_pending_auth(*, state: str, code_verifier: str, email: Optional[str] = None) -> None:
     _write_private_json(
-        pending,
-        {
-            "state": state,
-            "code_verifier": code_verifier,
-            "redirect_uri": _REDIRECT_URI,
-            "email": email or "",
-        },
+        _pending_auth_path(email),
+        {"state": state, "code_verifier": code_verifier, "redirect_uri": _REDIRECT_URI, "email": email or ""},
     )
 
 
 def _load_pending_auth(email: Optional[str] = None) -> dict:
     pending = _pending_auth_path(email)
     if not pending.exists():
-        print("ERROR: No pending OAuth session found. Run --auth-url first.")
-        sys.exit(1)
+        _fail("ERROR: No pending OAuth session found. Run --auth-url first.")
     try:
         data = json.loads(pending.read_text(encoding="utf-8"))
     except Exception as exc:
-        print(f"ERROR: Could not read pending OAuth session: {exc}")
-        print("Run --auth-url again to start a fresh session.")
-        sys.exit(1)
+        _fail(f"ERROR: Could not read pending OAuth session: {exc}", "Run --auth-url again to start a fresh session.")
     if not data.get("state") or not data.get("code_verifier"):
-        print("ERROR: Pending OAuth session is missing PKCE data.")
-        print("Run --auth-url again.")
-        sys.exit(1)
+        _fail("ERROR: Pending OAuth session is missing PKCE data.", "Run --auth-url again.")
     return data
+
+
+def _callback_params(code_or_url: str) -> Optional[dict]:
+    """Query params of a pasted failed-redirect URL; ``None`` for a raw auth code."""
+    if not code_or_url.startswith("http"):
+        return None
+    from urllib.parse import parse_qs, urlparse
+
+    return parse_qs(urlparse(code_or_url).query)
 
 
 def _extract_code_and_state(code_or_url: str) -> Tuple[str, Optional[str]]:
     """Accept a raw auth code OR the full failed-redirect URL the user pastes."""
-    if not code_or_url.startswith("http"):
+    params = _callback_params(code_or_url)
+    if params is None:
         return code_or_url, None
-
-    from urllib.parse import parse_qs, urlparse
-
-    parsed = urlparse(code_or_url)
-    params = parse_qs(parsed.query)
     if "code" not in params:
-        print("ERROR: No 'code' parameter found in URL.")
-        sys.exit(1)
-    state = params.get("state", [None])[0]
-    return params["code"][0], state
+        _fail("ERROR: No 'code' parameter found in URL.")
+    return params["code"][0], params.get("state", [None])[0]
+
+
+def _require_client_secret() -> None:
+    if not _client_secret_path().exists():
+        _fail("ERROR: No client secret stored. Run --client-secret first.")
 
 
 def get_auth_url(email: Optional[str] = None) -> None:
-    """Print the OAuth URL for the user to visit. Persists PKCE state.
-
-    ``email`` namespaces the pending state so two users can be mid-flow
-    in parallel without trampling each other's PKCE verifier.
-    """
-    if not _client_secret_path().exists():
-        print("ERROR: No client secret stored. Run --client-secret first.")
-        sys.exit(1)
-
+    """Print the OAuth URL for the user to visit; persists PKCE state under ``email``
+    so two users can be mid-flow in parallel."""
+    _require_client_secret()
     _ensure_deps()
     from google_auth_oauthlib.flow import Flow
 
     flow = Flow.from_client_secrets_file(
-        str(_client_secret_path()),
-        scopes=SCOPES,
-        redirect_uri=_REDIRECT_URI,
-        autogenerate_code_verifier=True,
+        str(_client_secret_path()), scopes=SCOPES, redirect_uri=_REDIRECT_URI, autogenerate_code_verifier=True,
     )
-    auth_url, state = flow.authorization_url(
-        access_type="offline",
-        prompt="consent",
-    )
+    auth_url, state = flow.authorization_url(access_type="offline", prompt="consent")
     _save_pending_auth(state=state, code_verifier=flow.code_verifier, email=email)
     print(auth_url)
 
 
 def exchange_auth_code(code: str, email: Optional[str] = None) -> None:
-    """Exchange an auth code (or pasted redirect URL) for a refresh token.
-
-    ``email`` selects the destination token path. ``None`` writes to the
-    legacy single-user path (kept for the existing CLI entrypoint and for
-    pre-multi-user installs).
-    """
-    if not _client_secret_path().exists():
-        print("ERROR: No client secret stored. Run --client-secret first.")
-        sys.exit(1)
-
+    """Exchange an auth code (or pasted redirect URL) for a refresh token stored
+    at the per-user path for ``email`` (legacy single-user path when None)."""
+    _require_client_secret()
     pending_auth = _load_pending_auth(email)
     raw_callback = code
     code, returned_state = _extract_code_and_state(code)
     if returned_state and returned_state != pending_auth["state"]:
-        print(
-            "ERROR: OAuth state mismatch. Run --auth-url again to start a "
-            "fresh session."
-        )
-        sys.exit(1)
-
+        _fail("ERROR: OAuth state mismatch. Run --auth-url again to start a fresh session.")
     _ensure_deps()
     from google_auth_oauthlib.flow import Flow
-    from urllib.parse import parse_qs, urlparse
 
     granted_scopes = list(SCOPES)
-    if isinstance(raw_callback, str) and raw_callback.startswith("http"):
-        params = parse_qs(urlparse(raw_callback).query)
-        scope_val = (params.get("scope") or [""])[0].strip()
-        if scope_val:
-            granted_scopes = scope_val.split()
-
+    params = _callback_params(raw_callback) if isinstance(raw_callback, str) else None
+    scope_val = (params.get("scope") or [""])[0].strip() if params is not None else ""
+    if scope_val:
+        granted_scopes = scope_val.split()
     flow = Flow.from_client_secrets_file(
-        str(_client_secret_path()),
-        scopes=granted_scopes,
-        redirect_uri=pending_auth.get("redirect_uri", _REDIRECT_URI),
-        state=pending_auth["state"],
-        code_verifier=pending_auth["code_verifier"],
-    )
-
+        str(_client_secret_path()), scopes=granted_scopes,
+        redirect_uri=pending_auth.get("redirect_uri", _REDIRECT_URI), state=pending_auth["state"],
+        code_verifier=pending_auth["code_verifier"])
     try:
         # Accept partial scopes — user may deselect items in the consent screen.
         os.environ["OAUTHLIB_RELAX_TOKEN_SCOPE"] = "1"
         flow.fetch_token(code=code)
     except Exception as exc:
-        print(f"ERROR: Token exchange failed: {exc}")
-        print("The code may have expired. Run --auth-url to get a fresh URL.")
-        sys.exit(1)
-
+        _fail(f"ERROR: Token exchange failed: {exc}", "The code may have expired. Run --auth-url to get a fresh URL.")
     creds = flow.credentials
     token_payload = _normalize_authorized_user_payload(json.loads(creds.to_json()))
-
-    actually_granted = (
-        list(creds.granted_scopes or [])
-        if hasattr(creds, "granted_scopes") and creds.granted_scopes
-        else []
-    )
+    actually_granted = list(getattr(creds, "granted_scopes", None) or [])
     if actually_granted:
         token_payload["scopes"] = actually_granted
     elif granted_scopes != SCOPES:
         token_payload["scopes"] = granted_scopes
-
     token_path = _token_path(email)
     _write_private_json(token_path, token_payload)
     _pending_auth_path(email).unlink(missing_ok=True)
-
     print(f"OK: Authenticated. Token saved to {token_path}")
-    rel_label = (
-        f"{display_hermes_home()}/google_chat_user_tokens/{_sanitize_email(email)}.json"
-        if email
-        else f"{display_hermes_home()}/google_chat_user_token.json"
-    )
-    print(f"Profile path: {rel_label}")
+    print(f"Profile path: {display_hermes_home()}/{_token_rel(email)}")
 
 
 def revoke(email: Optional[str] = None) -> None:
-    """Revoke the stored token with Google and delete it locally.
-
-    Per-user when ``email`` given, legacy single-user when omitted.
-    """
+    """Revoke the stored token with Google and delete it locally."""
     token_path = _token_path(email)
     if not token_path.exists():
         print("No token to revoke.")
         return
-
     _ensure_deps()
     from google.oauth2.credentials import Credentials
     from google.auth.transport.requests import Request
@@ -635,20 +398,16 @@ def revoke(email: Optional[str] = None) -> None:
         creds = Credentials.from_authorized_user_file(str(token_path), SCOPES)
         if creds.expired and creds.refresh_token:
             creds.refresh(Request())
-
         import urllib.request
         urllib.request.urlopen(
             urllib.request.Request(
                 f"https://oauth2.googleapis.com/revoke?token={creds.token}",
                 method="POST",
-                headers={"Content-Type": "application/x-www-form-urlencoded"},
-            ),
-            timeout=15,
-        )
+                headers={"Content-Type": "application/x-www-form-urlencoded"}),
+            timeout=15)
         print("Token revoked with Google.")
     except Exception as exc:
         print(f"Remote revocation failed (token may already be invalid): {exc}")
-
     token_path.unlink(missing_ok=True)
     _pending_auth_path(email).unlink(missing_ok=True)
     print(f"Deleted {token_path}")
@@ -659,23 +418,16 @@ def main() -> None:
         description="Google Chat user-OAuth setup for Hermes (native attachment delivery)"
     )
     group = parser.add_mutually_exclusive_group(required=True)
-    group.add_argument("--check", action="store_true",
-                       help="Check if auth is valid (exit 0=yes, 1=no)")
-    group.add_argument("--client-secret", metavar="PATH",
-                       help="Store OAuth client_secret.json")
-    group.add_argument("--auth-url", action="store_true",
-                       help="Print OAuth URL for user to visit")
-    group.add_argument("--auth-code", metavar="CODE",
-                       help="Exchange auth code for token")
-    group.add_argument("--revoke", action="store_true",
-                       help="Revoke and delete stored token")
-    group.add_argument("--install-deps", action="store_true",
-                       help="Install Python dependencies")
-    parser.add_argument("--email", metavar="EMAIL", default=None,
-                       help="Scope operation to a specific user's token "
-                            "(default: legacy single-user path)")
+    group.add_argument("--check", action="store_true", help="Check if auth is valid (exit 0=yes, 1=no)")
+    group.add_argument("--client-secret", metavar="PATH", help="Store OAuth client_secret.json")
+    group.add_argument("--auth-url", action="store_true", help="Print OAuth URL for user to visit")
+    group.add_argument("--auth-code", metavar="CODE", help="Exchange auth code for token")
+    group.add_argument("--revoke", action="store_true", help="Revoke and delete stored token")
+    group.add_argument("--install-deps", action="store_true", help="Install Python dependencies")
+    parser.add_argument(
+        "--email", metavar="EMAIL", default=None,
+        help="Scope operation to a specific user's token (default: legacy single-user path)")
     args = parser.parse_args()
-
     email = args.email or None
     if args.check:
         sys.exit(0 if check_auth(email) else 1)
@@ -693,3 +445,27 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
+
+# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
+# Names external plugins imported from this module before the Sep 2026 decomposition.
+# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
+# The whole block is removed by reverting the commit that added it.
+import secrets  # noqa: F401,E402
+import subprocess  # noqa: F401,E402
+
+
+_PLUGIN_COMPAT_LAZY = {
+    'atomic_replace': ('utils', 'atomic_replace'),
+}
+
+
+def __getattr__(name):  # PEP 562 — lazy so no import cycles
+    target = _PLUGIN_COMPAT_LAZY.get(name)
+    if target is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    import importlib
+    from hermes_cli.plugin_compat import warn_once
+    warn_once(__name__, name, *target)
+    return getattr(importlib.import_module(target[0]), target[1])
+# ---- END PLUGIN-COMPAT ----

@@ -3,7 +3,10 @@
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from agent.credential_pool import credential_pool_matches_provider
+from agent.credential_pool import (
+    credential_pool_matches_provider,
+    resolve_runtime_pool_key,
+)
 from hermes_cli import runtime_provider as rp
 
 
@@ -23,6 +26,174 @@ def test_custom_pool_match_is_scoped_by_endpoint():
         )
         assert not credential_pool_matches_provider(
             "custom:other", "custom", base_url="https://lab.example/v1"
+        )
+
+
+def test_named_custom_pool_match_requires_configured_identity_and_endpoint():
+    configured = [
+        (
+            "gemini-display",
+            {
+                "name": "Gemini Display",
+                "provider_key": "gemini-no-filter",
+                "base_url": "https://generativelanguage.googleapis.com/v1beta/",
+            },
+        )
+    ]
+    with patch("agent.credential_pool._iter_custom_providers", return_value=configured):
+        assert credential_pool_matches_provider(
+            "custom:gemini-display",
+            "gemini-no-filter",
+            base_url="https://generativelanguage.googleapis.com/v1beta",
+        )
+        assert credential_pool_matches_provider(
+            "custom:gemini-display",
+            "custom:gemini-no-filter",
+            base_url="https://generativelanguage.googleapis.com/v1beta",
+        )
+        assert not credential_pool_matches_provider(
+            "custom:gemini-display",
+            "gemini-no-filter",
+            base_url="https://fallback.example/v1",
+        )
+        assert not credential_pool_matches_provider(
+            "custom:gemini-display",
+            "custom:gemini-no-filter",
+            base_url="https://fallback.example/v1",
+        )
+        assert not credential_pool_matches_provider(
+            "custom:gemini-display",
+            "other-provider",
+            base_url="https://generativelanguage.googleapis.com/v1beta",
+        )
+
+
+def test_runtime_pool_key_resolves_all_custom_runtime_identities():
+    endpoint = "https://generativelanguage.googleapis.com/v1beta"
+    configured = [
+        (
+            "sibling-display",
+            {
+                "name": "Sibling Display",
+                "provider_key": "sibling-provider",
+                "base_url": endpoint,
+            },
+        ),
+        (
+            "gemini-display",
+            {
+                "name": "Gemini Display",
+                "provider_key": "gemini-no-filter",
+                "base_url": endpoint,
+            },
+        )
+    ]
+    with patch("agent.credential_pool._iter_custom_providers", return_value=configured):
+        assert resolve_runtime_pool_key("custom", endpoint) == "sibling-provider"
+        assert (
+            resolve_runtime_pool_key("gemini-no-filter", endpoint)
+            == "gemini-no-filter"
+        )
+        assert (
+            resolve_runtime_pool_key("custom:gemini-no-filter", endpoint)
+            == "gemini-no-filter"
+        )
+        assert (
+            resolve_runtime_pool_key(
+                "gemini-no-filter",
+                "https://fallback.example/v1",
+            )
+            == "gemini-no-filter"
+        )
+
+
+def test_runtime_pool_key_resolves_modern_provider_in_mixed_config():
+    endpoint = "https://generativelanguage.googleapis.com/v1beta"
+    config = {
+        "custom_providers": [
+            {
+                "name": "Legacy Provider",
+                "base_url": "https://legacy.example/v1",
+            }
+        ],
+        "providers": {
+            "gemini-no-filter": {
+                "name": "Gemini Display",
+                "api": endpoint,
+            }
+        },
+    }
+
+    with patch("agent.credential_pool._load_config_safe", return_value=config):
+        assert (
+            resolve_runtime_pool_key("gemini-no-filter", endpoint)
+            == "gemini-no-filter"
+        )
+        assert (
+            resolve_runtime_pool_key("custom:gemini-no-filter", endpoint)
+            == "gemini-no-filter"
+        )
+        assert (
+            resolve_runtime_pool_key(
+                "custom:gemini-no-filter",
+                "https://fallback.example/v1",
+            )
+            == "custom:gemini-no-filter"
+        )
+
+
+def test_keyed_provider_pool_matches_runtime_aliases():
+    configured = [
+        (
+            "b.ai",
+            {
+                "name": "B.AI",
+                "provider_key": "b-ai",
+                "base_url": "https://api.b.ai/v1",
+            },
+        )
+    ]
+    with patch("agent.credential_pool._iter_custom_providers", return_value=configured):
+        assert credential_pool_matches_provider(
+            "b-ai", "b-ai", base_url="https://api.b.ai/v1"
+        )
+        assert credential_pool_matches_provider(
+            "b-ai", "custom", base_url="https://api.b.ai/v1"
+        )
+        assert credential_pool_matches_provider(
+            "b-ai", "custom:b.ai", base_url="https://api.b.ai/v1"
+        )
+        assert not credential_pool_matches_provider(
+            "b-ai", "custom", base_url="https://other.example/v1"
+        )
+        assert not credential_pool_matches_provider(
+            "b-ai", "deepseek", base_url="https://api.b.ai/v1"
+        )
+
+
+def test_runtime_pool_key_prefers_durable_provider_slug():
+    endpoint = "https://api.b.ai/v1"
+    configured = [
+        (
+            "b.ai",
+            {
+                "name": "B.AI",
+                "provider_key": "b-ai",
+                "base_url": endpoint,
+            },
+        )
+    ]
+    with patch("agent.credential_pool._iter_custom_providers", return_value=configured):
+        assert resolve_runtime_pool_key("b-ai", endpoint) == "b-ai"
+        assert resolve_runtime_pool_key("custom", endpoint) == "b-ai"
+        assert resolve_runtime_pool_key("custom:b.ai", endpoint) == "b-ai"
+
+
+def test_runtime_pool_key_preserves_non_custom_identity():
+    with patch("agent.credential_pool._iter_custom_providers", return_value=[]):
+        assert (
+            resolve_runtime_pool_key("openai-codex", "https://chatgpt.com/backend-api")
+            == "openai-codex"
         )
 
 

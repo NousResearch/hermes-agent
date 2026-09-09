@@ -332,7 +332,16 @@ function SubagentAccordion({
         ? 'warn'
         : 'dim'
 
-  const prefix = item.taskCount > 1 ? `[${item.index + 1}/${item.taskCount}] ` : ''
+  // `[6a66 3/9]` when the gateway tags the batch; `[3/9]` on older gateways.
+  const batchTag = item.delegationId?.split('_').at(-1)?.slice(0, 4)
+
+  const prefix =
+    item.taskCount > 1
+      ? `[${batchTag ? `${batchTag} ` : ''}${item.index + 1}/${item.taskCount}] `
+      : batchTag
+        ? `[${batchTag}] `
+        : ''
+
   const goalLabel = item.goal || `Subagent ${item.index + 1}`
   const title = `${prefix}${open ? goalLabel : compactPreview(goalLabel, 60)}`
   const summary = compactPreview((item.summary || '').replace(/\s+/g, ' ').trim(), 72)

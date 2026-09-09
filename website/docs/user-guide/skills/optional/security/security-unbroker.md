@@ -15,7 +15,7 @@ Autonomously remove your info from data-broker sites.
 | | |
 |---|---|
 | Source | Optional — install with `hermes skills install official/security/unbroker` |
-| Path | `optional-skills/security/unbroker` |
+| Path | `optional-skills/security\unbroker` |
 | Version | `1.0.0` |
 | Author | SHL0MS (github.com/SHL0MS) |
 | License | MIT |
@@ -75,7 +75,7 @@ verifying re-scan.
 
 ## Prerequisites
 
-- `python3` (stdlib only; no extra packages needed for the core engine).
+- `python` (stdlib only; no extra packages needed for the core engine).
 - **Optional upgrades** (the skill works zero-config without these; `setup --auto` turns on every
   one it detects, reading credentials from the shell env **and from `$HERMES_HOME/.env`** so keys
   Hermes already loads for its own tools are picked up without re-exporting - each one converts a
@@ -112,7 +112,7 @@ verifying re-scan.
 Run everything through the `terminal` tool. From this skill's directory:
 
 ```bash
-PDD="python3 scripts/pdd.py"
+PDD="python scripts/pdd.py"
 ```
 
 The engine stores data under `$PDD_DATA_DIR` (default `$HERMES_HOME/unbroker`), written
@@ -325,7 +325,7 @@ recording `found` and before any deletion.
 ## Verification
 
 - `scripts/run_tests.sh tests/skills/test_unbroker_skill.py` (hermetic; no network), or the
-  dependency-free runner `python3 tests/skills/test_unbroker_skill.py`.
+  dependency-free runner `python tests/skills/test_unbroker_skill.py`.
 - Dry run: `$PDD setup --auto && $PDD doctor && SID=$($PDD intake --full-name "Test Person"
-  --email t@example.com --consent | python3 -c 'import sys,json;print(json.load(sys.stdin)["subject_id"])')
+  --email t@example.com --consent | python -c 'import sys,json;print(json.load(sys.stdin)["subject_id"])')
   && $PDD next "$SID"` and confirm a readiness summary plus an ordered action queue.

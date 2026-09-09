@@ -27,6 +27,19 @@ name: OS-specific tests
 
 on:
   workflow_call:
+    inputs:
+      desktop_updater:
+        description: >-
+          Run the Windows desktop-update hand-off integration tests
+          (tests/test_desktop_update_windows_*.py). These spawn the real
+          scripts/desktop-update/windows.ps1 and poll its loopback server, so
+          they carry process-timing noise a shared runner amplifies; the
+          caller gates them on the classifier's desktop_updater lane so a PR
+          that never touched that surface cannot be failed by it. Push /
+          dispatch runs fail open (classifier sets every lane true).
+        type: boolean
+        required: false
+        default: true
 
 permissions:
   contents: read
@@ -134,9 +147,23 @@ jobs:
           # would therefore abort the script on any non-zero exit and the
           # exit-5 branch below would be unreachable dead code — the job
           # would still fail red, but the diagnostic would never print.
+          # Desktop-update hand-off integration tests spawn the real
+          # windows.ps1; deselect them unless the PR touched that surface
+          # (see the workflow_call input). ``--ignore-glob`` keeps the file
+          # list above intact, so a renamed test file still trips the
+          # zero-tests guard rather than silently vanishing.
+          # (bash 3.2 on the macOS runner: an empty array under ``set -u`` is
+          # an unbound-variable error, hence the ``${arr[@]+...}`` idiom.)
+          EXTRA_ARGS=()
+          if [ "${{ inputs.desktop_updater }}" != "true" ]; then
+            echo "desktop_updater lane off: skipping tests/test_desktop_update_windows_*.py"
+            EXTRA_ARGS+=(--ignore-glob='*test_desktop_update_windows_*.py')
+          fi
+
           status=0
           uv run --no-sync python -m pytest \
             "$@" \
+            ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"} \
             -m "${{ matrix.marker }} and not integration" \
             -v --tb=short || status=$?
           if [ "$status" -eq 5 ]; then

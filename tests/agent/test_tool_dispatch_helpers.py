@@ -142,6 +142,11 @@ class TestMakeToolResultMessage:
 
         assert msg["timestamp"] == 123.5
 
+    def test_composite_tool_call_id_is_normalized_at_constructor_boundary(self):
+        msg = make_tool_result_message("terminal", "ok", "call_abc|fc_def")
+
+        assert msg["tool_call_id"] == "call_abc"
+
     def test_high_risk_message_content_wrapped(self):
         msg = make_tool_result_message("web_extract", SAMPLE_LONG_TEXT, "call_2")
         assert msg["role"] == "tool"

@@ -42,17 +42,8 @@ except ImportError:
 parent_dir = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(parent_dir))
 
-# Import terminal_tool module directly using importlib to avoid tools/__init__.py
-import importlib.util
-terminal_tool_path = parent_dir / "tools" / "terminal_tool.py"
-spec = importlib.util.spec_from_file_location("terminal_tool", terminal_tool_path)
-terminal_module = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(terminal_module)
-
-terminal_tool = terminal_module.terminal_tool
-check_terminal_requirements = terminal_module.check_terminal_requirements
-_get_env_config = terminal_module._get_env_config
-cleanup_vm = terminal_module.cleanup_vm
+from tools.terminal_tool import terminal_tool, check_terminal_requirements, _get_env_config  # noqa: E402
+from tools.terminal_tool_lifecycle import cleanup_vm  # noqa: E402
 
 
 def test_modal_requirements():

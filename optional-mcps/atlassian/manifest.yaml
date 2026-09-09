@@ -13,7 +13,11 @@ source: https://support.atlassian.com/rovo/docs/getting-started-with-the-atlassi
 # exchange, and refresh.
 transport:
   type: http
-  url: https://mcp.atlassian.com/v1/sse
+  # /v1/sse was deprecated by Atlassian after June 30, 2026 (404s since the
+  # cutover — OAuth succeeded but every handshake failed; issue #91538).
+  # /v1/mcp/authv2 is the endpoint Atlassian's docs recommend for custom
+  # clients (Streamable HTTP, native OAuth 2.1 + DCR — verified live).
+  url: https://mcp.atlassian.com/v1/mcp/authv2
 
 auth:
   type: oauth

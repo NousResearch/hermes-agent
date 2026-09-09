@@ -94,6 +94,15 @@ afterEach(() => {
   delete (window as unknown as { hermesDesktop?: unknown }).hermesDesktop
 })
 
+// Flush microtasks until the dial registers its secondary (or bail). The dial
+// path's hop count is an implementation detail — #95343's withTimeout wrapper
+// added an await hop and broke the previous exactly-two-Promise.resolve flush.
+async function flushUntilSecondaryRegistered(max = 20): Promise<void> {
+  for (let i = 0; i < max && secondaryGateways.length === 0; i++) {
+    await Promise.resolve()
+  }
+}
+
 describe('activation lease vs. the live-work pruner (#89622)', () => {
   it('a prune during the switch dial does not dispose the target and the switch lands', async () => {
     let releaseConnect: () => void = () => undefined
@@ -103,8 +112,7 @@ describe('activation lease vs. the live-work pruner (#89622)', () => {
 
     const switching = ensureGatewayForProfile('bot')
     // Let the dial start (createSecondary + connect() now pending on the gate).
-    await Promise.resolve()
-    await Promise.resolve()
+    await flushUntilSecondaryRegistered()
     expect(secondaryGateways).toHaveLength(1)
 
     // The exact recompute that killed the switch: no live sessions, target not
@@ -159,8 +167,7 @@ describe('activation lease vs. the live-work pruner (#89622)', () => {
 
     // Dial starts and never settles (wedged bridge call).
     void ensureGatewayForProfile('bot')
-    await Promise.resolve()
-    await Promise.resolve()
+    await flushUntilSecondaryRegistered()
     expect(secondaryGateways).toHaveLength(1)
 
     // Inside the lease window: spared.

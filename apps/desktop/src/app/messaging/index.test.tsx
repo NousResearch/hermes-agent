@@ -13,13 +13,16 @@ const revokePairing = vi.fn()
 const openExternalLink = vi.fn()
 
 vi.mock('@/hermes', () => ({
-  approvePairing: (platformId: string, requestId: string) => approvePairing(platformId, requestId),
-  getMessagingPlatforms: () => getMessagingPlatforms(),
-  getPairing: () => getPairing(),
+  approvePairing: (platformId: string, requestId: string, profile?: null | string) =>
+    approvePairing(platformId, requestId, profile),
+  getMessagingPlatforms: (profile?: null | string) => getMessagingPlatforms(profile),
+  getPairing: (profile?: null | string) => getPairing(profile),
   getProfiles: vi.fn(async () => ({ profiles: [] })),
-  revokePairing: (platformId: string, userId: string) => revokePairing(platformId, userId),
+  revokePairing: (platformId: string, userId: string, profile?: null | string) =>
+    revokePairing(platformId, userId, profile),
   setApiRequestProfile: vi.fn(),
-  updateMessagingPlatform: (id: string, body: unknown) => updateMessagingPlatform(id, body)
+  updateMessagingPlatform: (id: string, body: unknown, profile?: null | string) =>
+    updateMessagingPlatform(id, body, profile)
 }))
 
 // Keep store/profile's side-effecting imports inert (pulled in via the shared
@@ -85,6 +88,20 @@ async function renderMessaging() {
   return result!
 }
 
+describe('MessagingView profile scope', () => {
+  it('follows the active profile instead of targeting primary when there is no override', async () => {
+    const { $settingsScopeOverride } = await import('@/store/settings-scope')
+
+    $settingsScopeOverride.set(null)
+    getMessagingPlatforms.mockResolvedValue({ platforms: [platform()] })
+
+    await renderMessaging()
+
+    await waitFor(() => expect(getMessagingPlatforms).toHaveBeenCalledWith(undefined))
+    expect(getPairing).toHaveBeenCalledWith(undefined)
+  })
+})
+
 describe('MessagingView setup-guide link', () => {
   it('hides the setup-guide button for a plugin platform with no docs URL', async () => {
     // Teams (and other plugin platforms) ship an empty docs_url. Rendering an
@@ -138,7 +155,7 @@ describe('MessagingView pairing', () => {
       fireEvent.click(approve)
     })
 
-    await waitFor(() => expect(approvePairing).toHaveBeenCalledWith('teams', 'a1b2c3d4e5f60718'))
+    await waitFor(() => expect(approvePairing).toHaveBeenCalledWith('teams', 'a1b2c3d4e5f60718', undefined))
   })
 
   it('restores the pending row when approval fails', async () => {

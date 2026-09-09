@@ -14,6 +14,33 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 
+_BOTO_PREFIXES = ("botocore", "boto3")
+
+
+@pytest.fixture(autouse=True)
+def _boto_sys_modules_hygiene():
+    """Snapshot/restore boto* sys.modules around every test.
+
+    Tests here plant fake botocore/boto3 modules; a fake that leaks (or a
+    real submodule first-imported inside a stub window) poisons later
+    imports of the real ``botocore.exceptions`` with
+    ``No module named 'botocore.vendored'`` (PR #92617 CI flake). This
+    fixture makes stub windows airtight regardless of test ordering.
+    """
+    import sys as _sys
+
+    saved = {
+        name: mod
+        for name, mod in _sys.modules.items()
+        if name.split(".", 1)[0] in _BOTO_PREFIXES
+    }
+    yield
+    for name in [n for n in _sys.modules if n.split(".", 1)[0] in _BOTO_PREFIXES]:
+        _sys.modules.pop(name, None)
+    _sys.modules.update(saved)
+
+
+
 class TestProviderRegistry:
     """Verify Bedrock is registered in PROVIDER_REGISTRY."""
 
@@ -263,7 +290,7 @@ class TestPackaging:
 #   us.anthropic.claude-sonnet-4-5-20250929-v1:0
 #   apac.anthropic.claude-haiku-4-5
 #
-# ``agent.anthropic_adapter.normalize_model_name`` converts dots to hyphens
+# ``agent.anthropic_message_convert.normalize_model_name`` converts dots to hyphens
 # unless the caller opts in via ``preserve_dots=True``.  Before this fix,
 # ``AIAgent._anthropic_preserve_dots`` returned False for the ``bedrock``
 # provider, so Claude-on-Bedrock requests went out with
@@ -312,7 +339,7 @@ class TestBedrockModelNameNormalization:
 
     def test_global_anthropic_inference_profile_preserved(self):
         """The reporter's exact model ID."""
-        from agent.anthropic_adapter import normalize_model_name
+        from agent.anthropic_message_convert import normalize_model_name
         assert normalize_model_name(
             "global.anthropic.claude-opus-4-7", preserve_dots=True
         ) == "global.anthropic.claude-opus-4-7"
@@ -324,7 +351,7 @@ class TestBedrockModelNameNormalization:
         always returned unmangled -- ``preserve_dots`` is irrelevant for
         these IDs because the dots are namespace separators, not version
         separators.  Regression for #12295."""
-        from agent.anthropic_adapter import normalize_model_name
+        from agent.anthropic_message_convert import normalize_model_name
         assert normalize_model_name(
             "global.anthropic.claude-opus-4-7", preserve_dots=False
         ) == "global.anthropic.claude-opus-4-7"
@@ -376,7 +403,7 @@ class TestBedrockModelIdDetection:
     regardless of ``preserve_dots``.  Regression for #12295."""
 
     def test_bare_bedrock_id_detected(self):
-        from agent.anthropic_adapter import _is_bedrock_model_id
+        from agent.anthropic_message_convert import _is_bedrock_model_id
         assert _is_bedrock_model_id("anthropic.claude-opus-4-7") is True
 
 
@@ -388,7 +415,7 @@ class TestBedrockModelIdDetection:
         """The primary bug from #12295: ``anthropic.claude-opus-4-7``
         sent to bedrock-mantle via auxiliary clients that don't pass
         ``preserve_dots=True``."""
-        from agent.anthropic_adapter import normalize_model_name
+        from agent.anthropic_message_convert import normalize_model_name
         assert normalize_model_name(
             "anthropic.claude-opus-4-7", preserve_dots=False
         ) == "anthropic.claude-opus-4-7"

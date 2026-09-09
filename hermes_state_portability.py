@@ -33,7 +33,8 @@ _IMPORT_MESSAGE_TEXT_FIELDS = (
     "reasoning", "reasoning_content", "_reasoning_route", "platform_message_id", "message_id",
 )
 _IMPORT_MESSAGE_JSON_FIELDS = (
-    "reasoning_details", "codex_reasoning_items", "codex_message_items", "absorbed_message_uids", "tool_call_uids",
+    "reasoning_details", "anthropic_content_blocks", "bedrock_content_blocks",
+    "codex_reasoning_items", "codex_message_items", "absorbed_message_uids", "tool_call_uids",
 )
 _IMPORT_SESSION_INSERT_SQL = """INSERT INTO sessions (
                            id, source, user_id, model, model_config, system_prompt,

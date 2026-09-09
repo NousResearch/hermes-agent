@@ -5526,6 +5526,11 @@ class TelegramAdapter(BasePlatformAdapter):
             self._attach_cached(
                 event, cached, f"[Replied-to {cached.kind} '{cached.display_name}' saved at: {cached.path}]",
                 "[Telegram] Cached replied-to %s at %s")
+            # Preserve Telegram's voice-note semantics for replied-to media.
+            # The gateway transcribes VOICE but not generic AUDIO, so collapsing
+            # a replied voice note to AUDIO bypasses configured Hermes STT.
+            if cached.kind == "audio" and getattr(reply_msg, "voice", None) is not None:
+                event.message_type = MessageType.VOICE
 
     def _observed_media_source(self, msg: Message):
         """Return (telegram_file_source, filename, mime, default_kind) or Nones."""

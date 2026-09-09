@@ -14,6 +14,9 @@ _log = logging.getLogger(__name__)
 _lock = threading.Lock()
 _providers: dict[str, DashboardAuthProvider] = {}
 _scoped_providers: dict[str, dict[str, DashboardAuthProvider]] = {}
+# Profile (scope_key) that currently owns each name in ``_providers`` — see
+# ``register_global_provider``.
+_provider_owners: dict[str, Optional[str]] = {}
 
 
 def _merged(scope: Optional[str] = None) -> dict[str, DashboardAuthProvider]:
@@ -93,18 +96,32 @@ def list_session_providers() -> List[DashboardAuthProvider]:
     return [p for p in list_providers() if getattr(p, "supports_session", True)]
 
 
-def register_global_provider(provider: DashboardAuthProvider) -> None:
+def register_global_provider(provider: DashboardAuthProvider, *, scope: Optional[str] = None) -> None:
     """Register a host-owned provider in the process-global slot (upsert). The registry is shared
     across every profile one dashboard process serves, so these outlive any per-home plugin
-    manager: always targets ``_providers`` (never a per-home overlay) and *replaces* a same-name
-    entry instead of raising, so a forced plugin re-discovery (e.g. after a password change)
-    rotates the provider in place. Pairs with ``unregister_global_provider``.
+    manager: always targets ``_providers`` (never a per-home overlay), so a forced plugin
+    re-discovery (e.g. after a password change) rotates the provider in place.
+
+    ``scope`` identifies the profile whose plugin manager is registering. A same-name provider
+    from a DIFFERENT scope than the one already holding the name is refused (warn, keep the live
+    provider) rather than upserted — otherwise background plugin discovery for another profile
+    (e.g. the dashboard UI following the machine's sticky active profile) can silently replace the
+    provider actively validating an unrelated, already-authenticated Dashboard's sessions with one
+    signed for a different profile (#106608).
 
     Pairs with ``unregister_global_provider`` for teardown of the exact object still current (#91701).
     """
     assert_protocol_compliance(type(provider))
     with _lock:
+        owner = _provider_owners.get(provider.name)
+        if (provider.name in _providers and owner is not None and scope is not None
+                and owner != scope):
+            _log.warning(
+                "dashboard-auth: refusing to replace provider %r (owned by profile %r) with one "
+                "registered for profile %r", provider.name, owner, scope)
+            return
         _providers[provider.name] = provider
+        _provider_owners[provider.name] = scope
     _log_registered("global provider ", provider)
 
 
@@ -114,6 +131,7 @@ def unregister_global_provider(name: str, provider: DashboardAuthProvider) -> bo
     with _lock:
         if _providers.get(name) is provider:
             _providers.pop(name, None)
+            _provider_owners.pop(name, None)
             return True
     return False
 
@@ -123,3 +141,4 @@ def clear_providers() -> None:
     with _lock:
         _providers.clear()
         _scoped_providers.clear()
+        _provider_owners.clear()

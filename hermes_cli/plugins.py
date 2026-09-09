@@ -755,7 +755,7 @@ class PluginContext:
             # the WHOLE process, permanently disabling sign-in until restart (#91701). The handle still
             # disposes explicitly (identity- conditional), and a forced re-discovery rotates the provider in
             # place via the upsert.
-            register_global_provider(provider)
+            register_global_provider(provider, scope=self._manager.scope_key)
         except (TypeError, ValueError) as e:
             logger.warning("Plugin '%s' failed to register dashboard-auth provider %r: %s",
                            self.manifest.name, getattr(provider, "name", "?"), e)

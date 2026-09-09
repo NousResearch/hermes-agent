@@ -115,8 +115,8 @@ class _Basic(DashboardAuthProvider):
         return None
 
 
-def _real_ctx() -> tuple[PluginManager, PluginContext]:
-    manager = PluginManager(scope_key=hermes_home_key())
+def _real_ctx(scope_key: str | None = None) -> tuple[PluginManager, PluginContext]:
+    manager = PluginManager(scope_key=scope_key or hermes_home_key())
     manifest = PluginManifest(name="basic", version="0.0.1", kind="backend")
     return manager, PluginContext(manifest=manifest, manager=manager)
 
@@ -255,3 +255,38 @@ def test_persistent_dispose_is_idempotent_after_targeted_unload():
     assert manager._persistent_carryover == []
     manager._evict_stale_persistent_registrations()
     assert get_provider("basic") is None
+
+
+# ---------------------------------------------------------------------------
+# #106608: an isolated Dashboard's auth provider must stay bound to its
+# launch profile. Background plugin discovery for a DIFFERENT profile (e.g.
+# the dashboard UI following the machine's sticky active profile) must not
+# clobber it with a same-name provider signed for that other profile.
+# ---------------------------------------------------------------------------
+
+
+def test_other_profile_registration_does_not_replace_owner():
+    """A different scope registering the same name is refused, not upserted."""
+    owner_manager, owner_ctx = _real_ctx(scope_key="profile-a")
+    owner_provider = _Basic("owner")
+    owner_ctx.register_dashboard_auth_provider(owner_provider)
+
+    _other_manager, other_ctx = _real_ctx(scope_key="profile-b")
+    other_ctx.register_dashboard_auth_provider(_Basic("intruder"))
+
+    live = get_provider("basic")
+    assert live is owner_provider, (
+        "a same-name provider registered for a different profile replaced "
+        "the provider validating this process's live sessions"
+    )
+    assert live.tag == "owner"
+
+
+def test_same_profile_rediscovery_still_rotates_in_place():
+    """A same-scope re-registration (e.g. password change) still upserts."""
+    manager, ctx = _real_ctx(scope_key="profile-a")
+    ctx.register_dashboard_auth_provider(_Basic("old"))
+    ctx.register_dashboard_auth_provider(_Basic("new"))
+
+    live = get_provider("basic")
+    assert live.tag == "new"

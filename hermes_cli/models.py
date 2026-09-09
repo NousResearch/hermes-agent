@@ -1987,10 +1987,12 @@ def _opencode_free_session_id() -> str:
     if _opencode_free_session_cache is not None:
         return _opencode_free_session_cache
     try:
-        from hermes_constants import get_hermes_home
+        from hermes_cli.install_identity import get_install_id
 
-        installed = (get_hermes_home() / "install_id").read_bytes().strip()
-        digest = hashlib.sha256(b"opencode-zen-free-keyless:" + installed).hexdigest()[:32]
+        installed = get_install_id()
+        if not installed:
+            raise ValueError("install_id unavailable")
+        digest = hashlib.sha256(b"opencode-zen-free-keyless:" + installed.encode()).hexdigest()[:32]
         session = f"ses_hermes_{digest}"
     except Exception:
         session = f"ses_hermes_{uuid.uuid4().hex[:32]}"

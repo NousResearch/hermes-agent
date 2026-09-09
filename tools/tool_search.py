@@ -214,8 +214,18 @@ def _bridge_schema(name: str, description: str, properties: Dict[str, Any],
         "parameters": {"type": "object", "properties": properties, "required": required}}}
 
 
-def _search_description(deferred_count: int, listing: Optional[str], listing_form: str) -> str:
-    """tool_search bridge description with the listing embedded (framing per ``listing_form``)."""
+_CONNECTIONS_HINT = (
+    " Names starting with `connectors__` are tools of remote connector accounts "
+    "(Gmail, Linear, Notion, ...); `manage_connections` checks whether an account "
+    "is connected and gets the authorization link when it is not.")
+
+
+def _search_description(deferred_count: int, listing: Optional[str], listing_form: str,
+                        connections_granted: bool = False) -> str:
+    """tool_search bridge description with the listing embedded (framing per ``listing_form``).
+    ``connections_granted`` adds the one sentence that ties ``connectors__`` names to
+    ``manage_connections``; without that tool in the session the sentence would name a tool
+    the model cannot call."""
     desc = (
         (f"Search {deferred_count} additional tools that are loaded on demand. "
          if deferred_count else "Search remote connector tools (email, calendars, issue trackers, and more). ")
@@ -225,7 +235,8 @@ def _search_description(deferred_count: int, listing: Optional[str], listing_for
         "tool's description. Follow with "
         f"`{TOOL_DESCRIBE_NAME}` to load full parameter schemas, "
         f"then `{TOOL_CALL_NAME}` to invoke. Tools listed at the top of this "
-        "system prompt are already available and do not need to be searched.")
+        "system prompt are already available and do not need to be searched."
+        + (_CONNECTIONS_HINT if connections_granted else ""))
     if not listing:
         return desc
     if listing_form == "groups":
@@ -249,14 +260,14 @@ def _search_description(deferred_count: int, listing: Optional[str], listing_for
 
 
 def bridge_tool_schemas(deferred_count: int, listing: Optional[str] = None,
-                        listing_form: str = "") -> List[Dict[str, Any]]:
+                        listing_form: str = "", connections_granted: bool = False) -> List[Dict[str, Any]]:
     """Bridge tool schemas injected in place of deferred tools; kept short — every byte is paid
     every turn. ``listing`` is embedded in the tool_search description; per-tool forms say
     "skip search when you see the exact name", "groups" says search is mandatory."""
     return [
         _bridge_schema(
             TOOL_SEARCH_NAME,
-            _search_description(deferred_count, listing, listing_form),
+            _search_description(deferred_count, listing, listing_form, connections_granted),
             {
                 "queries": {
                     "type": "array",
@@ -333,9 +344,10 @@ def assemble_tool_defs(tool_defs: List[Dict[str, Any]], *, context_length: Optio
     incoming = [td for td, name in zip(tool_defs, _tool_def_names(tool_defs))
                 if name not in BRIDGE_TOOL_NAMES]
     visible, deferrable = classify_tools(incoming, config.effective_defer_tools)
+    connections_granted = connections_in_scope(incoming)
     if not deferrable:
-        if should_activate(config, 0, context_length, connections_granted=connections_in_scope(incoming)):
-            return AssemblyResult(tool_defs=incoming + bridge_tool_schemas(0),
+        if should_activate(config, 0, context_length, connections_granted=connections_granted):
+            return AssemblyResult(tool_defs=incoming + bridge_tool_schemas(0, connections_granted=connections_granted),
                                   activated=True, tier=2)
         return AssemblyResult(tool_defs=incoming, activated=False)
     deferrable_tokens = estimate_tokens_from_schemas(deferrable)
@@ -349,7 +361,8 @@ def assemble_tool_defs(tool_defs: List[Dict[str, Any]], *, context_length: Optio
     if config.listing != "off":
         listing, listing_form = build_catalog_listing_with_form(
             deferrable, max_tokens=listing_budget)
-    bridge = bridge_tool_schemas(len(deferrable), listing=listing, listing_form=listing_form)
+    bridge = bridge_tool_schemas(len(deferrable), listing=listing, listing_form=listing_form,
+                                 connections_granted=connections_granted)
     tier = 1 if listing_form in ("full", "names", "mixed") else 2
     logger.info(
         "tool_search activated (tier %d): %d core/visible tools kept, %d deferred "

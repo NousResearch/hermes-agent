@@ -13,11 +13,39 @@ from agent.tool_dispatch_helpers import _peel_bridge_call
 from tools.tool_gateway.bridge import connector_describe, dispatch_calls
 from tools.tool_search import (
     CONNECTOR_BATCH_SENTINEL,
+    ToolSearchConfig,
+    assemble_tool_defs,
     dispatch_tool_describe,
     dispatch_tool_search,
     normalize_tool_call_entries,
     resolve_underlying_call,
 )
+
+
+def _tool_search_description(tool_defs):
+    # session_search is in the default defer set, so the bridge activates in
+    # both arms for the same reason: a deferrable local tool exists.
+    defs = tool_defs + [{"type": "function", "function": {
+        "name": "session_search", "description": "Search past sessions", "parameters": {}}}]
+    assembled = assemble_tool_defs(
+        defs, context_length=200_000, config=ToolSearchConfig.from_raw({"enabled": "on"}))
+    assert assembled.activated
+    return next(td["function"]["description"] for td in assembled.tool_defs
+                if td["function"]["name"] == "tool_search")
+
+
+def test_tool_search_names_manage_connections_only_when_the_session_has_it():
+    """The model learns that connectors__ names belong to accounts managed by
+    manage_connections from the tool_search description, but only when that tool is in the
+    session. Signed out (or connectors off) the tool is absent and the description must not
+    name a tool the model cannot call."""
+    with_connections = _tool_search_description(_local_defs())
+    assert "manage_connections" in with_connections
+    assert "connectors__" in with_connections
+
+    without = _tool_search_description(
+        [td for td in _local_defs() if td["function"]["name"] != "manage_connections"])
+    assert "manage_connections" not in without
 
 
 def _local_defs():

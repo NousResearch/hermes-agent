@@ -45,6 +45,7 @@ class AuthorityConnection:
                 'code': 4001, 'message': 'invalid_params', 'data': {'reason': 'invalid_params'}}}
         ref = SessionRef(self.actor.profile_id, params.get('session_id', ''))
         handlers = {'session.create': self.create, 'ping': self.ping, 'runtime.describe': self.describe,
+                    'gateway.capabilities': self.classic_capabilities,
                     'commands.catalog': self.command_catalog, 'complete.slash': self.slash_completions,
                     'slash.exec': self.slash_exec, 'command.dispatch': self.command_dispatch,
                     'session.list': self.list_sessions, 'session.info': self.info,
@@ -61,6 +62,8 @@ class AuthorityConnection:
                     'prompt.submit': self.submit,
                     'prompt.receipt': self.receipt, 'prompt.cancel': self.cancel,
                     'prompt.resolve_unknown': self.resolve_unknown,
+                    'session.export.read': self.classic_export_read,
+                    'session.export.discard': self.classic_export_discard,
                     'session.interrupt': self.interrupt, 'session.events.since': self.events_since,
                     'approval.respond': self.respond, 'clarify.respond': self.respond_clarify}
         from gateway.session_busy_controls import handlers as busy_handlers
@@ -199,6 +202,18 @@ class AuthorityConnection:
                 'session_create': {'sources': ['cli', 'tui', 'gui', 'acp'],
                                    'parameters': sorted(CREATE_FIELDS | {'title'})}}
 
+    async def classic_capabilities(self, ref, params):
+        from gateway.session_classic_output import capabilities
+        return capabilities(self, params)
+
+    async def classic_export_read(self, ref, params):
+        from gateway.session_classic_output import read
+        return await read(self, ref, params)
+
+    async def classic_export_discard(self, ref, params):
+        from gateway.session_classic_output import discard
+        return await discard(self, ref, params)
+
     async def info(self, ref, params):
         from gateway.session_local import local_session_info
         if set(params) != {'session_id'}:
@@ -291,19 +306,49 @@ class AuthorityConnection:
         if ref.session_id not in self.subscriptions:
             raise RuntimeStoreError('permission_denied')
         forbidden = set(params) - {'session_id', 'text', 'submission_id', 'input_id', 'queued', 'attachments', 'finite',
-                                   'surface', 'voice_context', 'interrupted'}
+                                   'surface', 'voice_context', 'interrupted', 'classic_export'}
         if forbidden:
             raise RuntimeStoreError('invalid_params')
-        request_id = params.get('submission_id') or params.get('input_id')
+        classic_request = params.get('classic_export')
+        classic_request_id = classic_request.get('request_id') if isinstance(classic_request, dict) else None
+        request_id = params.get('submission_id') or params.get('input_id') or classic_request_id
         if not isinstance(request_id, str) or not request_id:
+            raise RuntimeStoreError('invalid_params')
+        if classic_request is not None and classic_request_id != request_id:
+            raise RuntimeStoreError('invalid_params')
+        if not isinstance(params.get('text'), str):
             raise RuntimeStoreError('invalid_params')
         from gateway.session_finite import admit_finite
         from gateway.session_surface import submit_surface_fields
         payload = {'text': params.get('text'), **admit_finite(params), **submit_surface_fields(params)}
         if 'attachments' in params:
             payload['attachments'] = params['attachments']
-        receipt = await self.authority.submit(self.actor, Submission(request_id, ref, payload, 'queue'))
-        return asdict(receipt)
+        prepared = None
+        if classic_request is not None:
+            from gateway.session_classic_output import prepare_submission
+            prepared = prepare_submission(self, ref, classic_request, payload['text'], request_id)
+            payload['classic_export_v1'] = prepared[3]
+        canonical_payload = []
+        try:
+            receipt = await self.authority.submit(
+                self.actor,
+                Submission(request_id, ref, payload, 'queue'),
+                _payload_capture=canonical_payload.append if prepared is not None else None,
+            )
+        except Exception:
+            if prepared is not None:
+                from gateway.session_classic_output import abort_submission
+                abort_submission(
+                    prepared,
+                    self.authority,
+                    canonical_payload[0] if canonical_payload else None,
+                )
+            raise
+        result = asdict(receipt)
+        if prepared is not None:
+            from gateway.session_classic_output import submission_status
+            result['classic_export'] = submission_status(prepared)
+        return result
 
     async def mutate(self, ref, params):
         from gateway.session_mutations import mutate_session
@@ -316,7 +361,13 @@ class AuthorityConnection:
         return result
 
     async def receipt(self, ref, params):
-        return asdict(await self.authority.receipt(self.actor, ref, params.get('admission_id')))
+        admission_id = params.get('admission_id')
+        result = asdict(await self.authority.receipt(self.actor, ref, admission_id))
+        from gateway.session_classic_output import receipt_status
+        classic = receipt_status(self, ref, admission_id)
+        if classic is not None:
+            result['classic_export'] = classic
+        return result
 
     async def cancel(self, ref, params):
         return asdict(await self.authority.cancel_queued(self.actor, ref, params.get('admission_id')))

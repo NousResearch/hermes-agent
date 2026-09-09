@@ -321,7 +321,17 @@ class SessionAuthority:
 
     async def cancel_queued(self, actor, ref, admission_id):
         before = await self.receipt(actor, ref, admission_id)
-        row = cancel_session_input(self.db, epoch=self.epoch, admission_id=admission_id)
+        admission = get_session_admission(self.db, admission_id=admission_id)
+        if admission is None:
+            raise RuntimeStoreError('not_found')
+        from gateway.session_classic_output import cleanup_terminal, terminal_write
+        row = cancel_session_input(
+            self.db,
+            epoch=self.epoch,
+            admission_id=admission_id,
+            _terminal_write=terminal_write(self, admission),
+        )
+        cleanup_terminal(self, admission, row)
         from gateway.session_ingress_media import release_admission_media
         release_admission_media(self.db, admission_id)
         if before.status != 'queued' or row['status'] != 'terminal':
@@ -356,8 +366,18 @@ class SessionAuthority:
         finish; the paused FIFO behind it resumes. Never requeues the lost input."""
         self.authorize(actor, ref, 'session:control')
         await self.receipt(actor, ref, admission_id)
-        row = resolve_unknown_session_input(self.db, epoch=self.epoch, admission_id=admission_id,
-                                            generation=generation)
+        admission = get_session_admission(self.db, admission_id=admission_id)
+        if admission is None:
+            raise RuntimeStoreError('not_found')
+        from gateway.session_classic_output import cleanup_terminal, terminal_write
+        row = resolve_unknown_session_input(
+            self.db,
+            epoch=self.epoch,
+            admission_id=admission_id,
+            generation=generation,
+            _terminal_write=terminal_write(self, admission),
+        )
+        cleanup_terminal(self, admission, row)
         self._publish_pending(ref)
         self._schedule(ref)
         return self._receipt(row)
@@ -503,9 +523,12 @@ class SessionAuthority:
             try:
                 with live.event_stream.lock:
                     from gateway.session_results import finish_result
+                    from gateway.session_classic_output import cleanup_terminal, terminal_write
                     settled, response = finish_result(self.db, epoch=self.epoch, row=row,
                         response=response, outcome=outcome,
-                        result=self.pending_results.pop(admission_id, None))
+                        result=self.pending_results.pop(admission_id, None),
+                        _terminal_write=terminal_write(self, row))
+                    cleanup_terminal(self, row, settled)
                     live.controls.snapshot(ref.session_id, None)
                     from gateway.session_ingress_media import release_admission_media
                     release_admission_media(self.db, admission_id)

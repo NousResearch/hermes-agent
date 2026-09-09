@@ -952,6 +952,8 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         if room is not None:
             max_iterations = room.max_iterations
             ctx.enabled_toolsets = list(room.enabled_toolsets)
+        from gateway.session_classic_output import classic_turn_toolsets
+        ctx.enabled_toolsets = classic_turn_toolsets(ctx.enabled_toolsets)
         try:
             model, runtime_kwargs = runner._resolve_session_agent_runtime(
                 source=ctx.source, session_key=ctx.session_key, user_config=ctx.user_config,

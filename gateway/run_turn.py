@@ -1636,6 +1636,7 @@ class GatewayTurnMixin:
                 cwd=_terminal_scope_cwd(""), turn_seconds=_turn_seconds,
                 requested_model=agent_result.get("requested_model"),
                 served_model=agent_result.get("served_model"),
+                routed_model=agent_result.get("routed_model"),
             )
         except Exception as _footer_err:
             logger.debug("runtime_footer build failed: %s", _footer_err)

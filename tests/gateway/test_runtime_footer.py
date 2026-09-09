@@ -339,3 +339,49 @@ def test_format_footer_served_model_is_opt_in_and_skips_same_model():
     assert format_runtime_footer(
         model="gpt-5.4", context_tokens=0, context_length=None, cwd="/x",
         served_model=None, fields=["served_model"]) == ""
+
+
+# ---------------------------------------------------------------------------
+# routed_model (proxy-agnostic combo member display)
+# ---------------------------------------------------------------------------
+
+from gateway.runtime_footer import _combo_prefix, _routed_suffix
+
+
+def test_routed_suffix_combo_shows_member():
+    assert _routed_suffix(model="combo-1m-free-9r",
+                          routed_model="poolside/laguna-s-2.1:free") == "→laguna-s-2.1:free"
+
+
+def test_routed_suffix_non_combo_hidden():
+    assert _routed_suffix(model="opencode-zen/muse-spark-1.3",
+                          routed_model="poolside/laguna-s-2.1:free") == ""
+
+
+def test_routed_suffix_missing_or_echo_hidden():
+    assert _routed_suffix(model="combo-1m-free-9r", routed_model=None) == ""
+    assert _routed_suffix(model="combo-1m-free-9r",
+                          routed_model="combo-1m-free-9r") == ""
+
+
+def test_routed_suffix_custom_prefix():
+    assert _routed_suffix(model="hermes-combo-x", routed_model="a/b",
+                          combo_prefix="hermes-combo") == "→b"
+    assert _routed_suffix(model="combo-1m-free-9r", routed_model="a/b",
+                          combo_prefix="hermes-combo") == ""
+
+
+def test_combo_prefix_default_and_override():
+    assert _combo_prefix(None) == "combo-"
+    assert _combo_prefix({}) == "combo-"
+    assert _combo_prefix({"display": {"combo_prefix": "mycombo-"}}) == "mycombo-"
+    assert _combo_prefix({"display": {"combo_prefix": ""}}) == "combo-"
+
+
+def test_format_footer_routed_model_field():
+    out = format_runtime_footer(
+        model="combo-1m-free-9r", context_tokens=25_300, context_length=1_000_000,
+        routed_model="poolside/laguna-s-2.1:free", cwd=None,
+        fields=["model", "routed_model", "context_pct"],
+    )
+    assert out == "combo-1m-free-9r · →laguna-s-2.1:free · 3%"

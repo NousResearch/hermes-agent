@@ -1464,7 +1464,7 @@ def _build_api_kwargs_for_mode(agent, api_messages: list, tools_for_api: list | 
             supports_reasoning=agent._supports_reasoning_extra_body(),
             base_url=getattr(agent, "base_url", None),
         )
-    return api_kwargs
+    return _attach_source_provenance_sidecar(agent, api_kwargs, sidecar=_source_sidecar)
 
 
 def _model_dump_safe(obj):

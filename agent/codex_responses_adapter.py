@@ -778,6 +778,7 @@ _PREFLIGHT_OPTIONAL_FIELDS: tuple[tuple[str, Callable[[Any], bool], Optional[Cal
 
 _PREFLIGHT_ALLOWED_KEYS = {
     "model", "instructions", "input", "tools", "store", "extra_headers", "extra_body",
+    "_hermes_source_provenance",
     *(key for key, _, _ in _PREFLIGHT_OPTIONAL_FIELDS),
 }
 
@@ -809,6 +810,8 @@ def _preflight_codex_api_kwargs(
     normalized: Dict[str, Any] = {
         "model": model.strip(), "instructions": instructions, "input": input_items, "store": False,
     }
+    if "_hermes_source_provenance" in api_kwargs:
+        normalized["_hermes_source_provenance"] = api_kwargs["_hermes_source_provenance"]
     tools = api_kwargs.get("tools")
     if tools is not None:
         if not isinstance(tools, list):

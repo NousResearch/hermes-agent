@@ -809,6 +809,9 @@ def _sanitize_consumer_codex_request(agent: Any, request: dict[str, Any]) -> dic
     middleware / ``request_overrides``): a late ``prompt_cache_retention``, top-level or nested in
     ``extra_body``, would otherwise HTTP 400 a valid follow-up."""
     sanitized = dict(request)
+    # Internal-only sidecar (egress firewall's post-hoc trust proof for the NEXT request):
+    # carried through preflight for the runtime to read, never sent to any provider wire.
+    sanitized.pop("_hermes_source_provenance", None)
     # getattr: run_codex_stream is also driven with stand-in agents carrying only the attrs a path needs.
     backend_predicate = getattr(agent, "_is_codex_backend", None)
     if not (callable(backend_predicate) and bool(backend_predicate())):

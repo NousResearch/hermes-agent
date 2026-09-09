@@ -49,7 +49,7 @@ from hermes_state_dbfile import (
     _canonical_sqlite_path, _connect_tracked_db, _read_sqlite_application_id, _stat_sqlite_sidecar_identity,
     _watched_sqlite_sidecar_paths, has_invalid_sqlite_header_preopen, is_zeroed_state_db, quarantine_cross_process_lock,
     quarantine_invalid_state_db,
-    refuse_deleted_wal_generation,
+    RetiredGenerationCaptureError, capture_retired_wal_generation, refuse_deleted_wal_generation,
 )
 from hermes_state_messages import SessionMessagesMixin
 from hermes_state_wal import _WAL_INCOMPAT_MARKERS, apply_database_pragmas, apply_wal_with_fallback
@@ -452,6 +452,9 @@ class SessionDB(
         self._db_file_application_id: int = 0
         self._db_sidecar_identity: Dict[str, tuple] = {}
         self._db_replaced = self._db_wal_generation_lost = False
+        # Durable capture of a lost WAL generation (see _capture_retired_generation): once per handle.
+        self._retired_generation_capture: Optional[Path] = None
+        self._retired_capture_lock = threading.Lock()
         self._db_corrupt, self._db_corrupt_reason = False, ""  # sticky quarantine (StateDbCorruptError)
         self._fts_usermerge_floor_applied = False  # one-shot usermerge-floor write guard
         self._fts_enabled = self._fts_stale = self._trigram_available = False
@@ -1007,8 +1010,36 @@ class SessionDB(
         if self._db_wal_generation_lost or self._wal_generation_was_lost():
             self._db_wal_generation_lost = True
             self._disable_close_time_checkpoint()
+            try:
+                self._capture_retired_generation("halt")
+            except RetiredGenerationCaptureError as exc:
+                logger.error(
+                    "Could not capture the retired WAL generation of %s at halt: %s. close() retries "
+                    "the capture and refuses to settle without it.", self.db_path, exc,
+                )
             logger.error(_DELETED_WAL_GENERATION_MSG)
             raise DeletedWalGenerationError(_DELETED_WAL_GENERATION_MSG)
+
+    def _capture_retired_generation(self, trigger: str) -> Path:
+        """Durably capture the lost WAL generation this handle still holds open, once per handle.
+
+        The quarantine keeps the retired frames from being checkpointed under wrong page numbers,
+        but they live only in an unlinked inode that dies with this process's last descriptor, and
+        the canonical DeletedWalGenerationError remediation is to stop the writers. Capturing at the
+        first halt (or at close(), whichever sees the loss first) makes "preserve" outlive the
+        process. Raises RetiredGenerationCaptureError; nothing is mutated on failure."""
+        with self._retired_capture_lock:
+            if self._retired_generation_capture is not None:
+                return self._retired_generation_capture
+            artifact = capture_retired_wal_generation(
+                self.db_path, sidecar_identity=dict(self._db_sidecar_identity or {}), trigger=trigger,
+            )
+            self._retired_generation_capture = artifact
+        logger.warning(
+            "Captured the retired WAL generation of %s at %s to %s; read its manifest.json before deciding "
+            "whether those frames belong on top of the file now at the path.", self.db_path, trigger, artifact,
+        )
+        return artifact
 
     def _raise_if_db_replaced(self) -> None:
         """Sticky-flag fast path (no log spam on every write), then the live probe."""
@@ -1168,7 +1199,24 @@ class SessionDB(
             pass
         with self._lock:
             if self._conn:
-                quarantine_reason = self._quarantine_reason()
+                generation_lost = not self.read_only and (
+                    self._db_wal_generation_lost
+                    or (bool(self._db_sidecar_identity) and self._wal_generation_was_lost())
+                )
+                if generation_lost:
+                    # Loss is settled here, not at exit: the unlinked WAL inode dies with this process's
+                    # last descriptor. Capture the exact retired generation before the handle goes and
+                    # refuse to settle without it (the capture raises; the handle stays open).
+                    self._db_wal_generation_lost = True
+                    self._disable_close_time_checkpoint()
+                    artifact = self._capture_retired_generation("close")
+                    logger.warning(
+                        "Skipping the close-time WAL checkpoint for %s: this handle's WAL/SHM generation "
+                        "was deleted or replaced; the retired generation is captured at %s. Stop the other "
+                        "writers before reopening and inspect the capture before deciding its disposition.",
+                        self.db_path, artifact,
+                    )
+                quarantine_reason = None if generation_lost else self._quarantine_reason()
                 if quarantine_reason is not None:
                     logger.warning(
                         "Skipping the close-time WAL checkpoint for %s: this "
@@ -1176,7 +1224,7 @@ class SessionDB(
                         "before restarting, then run `hermes sessions recover --source %s --inspect-only`.",
                         self.db_path, quarantine_reason, self.db_path,
                     )
-                elif not self.read_only:  # PASSIVE, not TRUNCATE (see docstring)
+                elif not self.read_only and not generation_lost:  # PASSIVE, not TRUNCATE (see docstring)
                     try:
                         # Every cron run_agent opens+closes a transient SessionDB, so a TRUNCATE here fires
                         # a full WAL reset many times/hour, racing the gateway's long-lived writer on large

@@ -125,14 +125,24 @@ def _reject_delegated_child_mutation(tool_name: str) -> None:
             "configured Kanban orchestrator must perform board mutations.")
 
 
-def _default_task_id(arg: Optional[str]) -> Optional[str]:
-    """``task_id`` arg or the dispatcher's env var. A delegate child or an
-    in-process cron job must never inherit the worker's task id implicitly."""
-    if arg:
-        return arg
-    if _is_delegated_child_context() or not _is_dispatcher_owned_worker():
+def _default_task_id(arg: Any) -> Optional[str]:
+    """Resolve ``task_id`` arg or fall back to the env var the dispatcher set."""
+    if arg is not None:
+        val = str(arg).strip()
+        if val:
+            return val
+    if _is_delegated_child_context():
         return None
-    return os.environ.get("HERMES_KANBAN_TASK") or None
+    if not _is_dispatcher_owned_worker():
+        # A cron job fired in-process from a worker must never inherit the
+        # worker's task id as an implicit default.
+        return None
+    env_tid = os.environ.get("HERMES_KANBAN_TASK")
+    if env_tid:
+        val = env_tid.strip()
+        if val:
+            return val
+    return None
 
 
 def _require_task_id(args: dict) -> str:

@@ -130,6 +130,16 @@ class MyMemoryProvider(MemoryProvider):
 | `on_memory_write(action, target, content)` | Built-in memory writes | Mirror to your backend |
 | `shutdown()` | Process exit | Clean up connections |
 
+### Oversized prefetch results
+
+External `prefetch()` results above the configured spill threshold are written
+to a private spill file and replaced with the configured head/tail preview.
+The preview includes the path so the agent can read the full result when it is
+actually needed. Results at or below the threshold are returned unchanged.
+
+This uses the shared `hooks.output_spill` settings (`10,000` characters by
+default); see [Plugins — oversized-context spill](/developer-guide/plugins/#oversized-context-spill).
+
 ## Pre-Compress Checkpoints (fail-closed)
 
 `on_pre_compress()` is best-effort by default: if your provider raises, the
@@ -148,7 +158,9 @@ class MyArchivingProvider(MemoryProvider):
     # contract: best-effort semantics, raw message list.
     pre_compress_checkpoint_api_version = 2
 
-    def on_pre_compress(self, messages):
+    def on_pre_compress(self, messages, *, require_checkpoint=False):
+        # require_checkpoint mirrors the operator's checkpoint_required
+        # setting: True means a raise here blocks the lossy rewrite.
         ids = self._archive(messages)   # must be durable before returning
         return f"checkpoint: {ids}"     # forwarded into the summary prompt
 ```

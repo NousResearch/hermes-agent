@@ -68,9 +68,7 @@ describe('resolveOauthPartition (#92183 per-connection cookie jars)', () => {
       remote('conn-b', 'https://gw-b.example.com')
     ])
 
-    expect(resolveOauthPartition('https://gw-a.example.com/api/status', { registry: reg })).toBe(
-      LEGACY_OAUTH_PARTITION
-    )
+    expect(resolveOauthPartition('https://gw-a.example.com/api/status', { registry: reg })).toBe(LEGACY_OAUTH_PARTITION)
     expect(resolveOauthPartition('https://gw-b.example.com/api/status', { registry: reg })).not.toBe(
       LEGACY_OAUTH_PARTITION
     )
@@ -100,12 +98,10 @@ describe('resolveOauthPartition (#92183 per-connection cookie jars)', () => {
     )
     expect(resolveOauthPartition('not a url', { registry: reg })).toBe(LEGACY_OAUTH_PARTITION)
     expect(resolveOauthPartition('', { registry: reg })).toBe(LEGACY_OAUTH_PARTITION)
-    expect(resolveOauthPartition('https://gw-a.example.com', { registry: null as any })).toBe(
-      LEGACY_OAUTH_PARTITION
-    )
-    expect(resolveOauthPartition('https://gw-a.example.com', { registry: { primary: 'x', connections: 'junk' } as any })).toBe(
-      LEGACY_OAUTH_PARTITION
-    )
+    expect(resolveOauthPartition('https://gw-a.example.com', { registry: null as any })).toBe(LEGACY_OAUTH_PARTITION)
+    expect(
+      resolveOauthPartition('https://gw-a.example.com', { registry: { primary: 'x', connections: 'junk' } as any })
+    ).toBe(LEGACY_OAUTH_PARTITION)
   })
 
   it('does not treat a hostname PREFIX as a base-url match', () => {

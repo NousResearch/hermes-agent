@@ -130,17 +130,23 @@ describe('useSlashCompletions', () => {
     expect(skills).toEqual(['/work', '/research', '/docx'])
   })
 
-  // Typing is a search, and a search that hides a match is broken — the
-  // never-used built-in still shows, just below the one she actually uses.
-  it('ranks a typed query by use without hiding anything', async () => {
+  // Typing is a search, and a search that hides a match is broken. Order
+  // stays the backend's (fuzzy score, then usage) — a second client usage
+  // sort is what buried `/review` under skills.
+  it('keeps backend order on a typed query and does not hide matches', async () => {
     const request = vi.fn().mockImplementation((method: string) =>
       Promise.resolve(
         method === 'commands.catalog'
           ? RANKED_CATALOG
           : {
               items: [
-                { text: '/research-paper-writing', display: '/research-paper-writing', meta: 'Write a paper' },
-                { text: '/research', display: '/research', meta: 'Look it up' }
+                {
+                  text: '/research-paper-writing',
+                  display: '/research-paper-writing',
+                  kind: 'skill',
+                  meta: 'Write a paper'
+                },
+                { text: '/research', display: '/research', kind: 'skill', meta: 'Look it up' }
               ]
             }
       )
@@ -148,10 +154,34 @@ describe('useSlashCompletions', () => {
 
     const api = harness({ request } as unknown as HermesGateway)
 
-    // Warm the catalog first: the popover always opens on a bare `/` before a
-    // query is typed, which is where the usage map comes from.
-    await completions(api, '')
+    expect(commandsOf(await completions(api, 'research'))).toEqual(['/research-paper-writing', '/research'])
+  })
 
-    expect(commandsOf(await completions(api, 'research'))).toEqual(['/research', '/research-paper-writing'])
+  it('keeps a registry command in Commands even when the desktop table has no row', async () => {
+    const request = vi.fn().mockImplementation((method: string) =>
+      Promise.resolve(
+        method === 'commands.catalog'
+          ? CATALOG
+          : {
+              items: [
+                { text: '/refine', display: '/refine', kind: 'command', meta: 'Review this conversation' },
+                { text: '/docx', display: '/docx', kind: 'skill', meta: 'Edit Word documents' },
+                { text: '/compress', display: '/compress', kind: 'command', meta: 'Compress context' }
+              ]
+            }
+      )
+    )
+
+    const api = harness({ request } as unknown as HermesGateway)
+    const items = await completions(api, 're')
+
+    const groupOf = (command: string) =>
+      (items.find(item => (item.metadata as { command?: string })?.command === command)?.metadata as { group?: string })
+        ?.group
+
+    expect(commandsOf(items)).toEqual(['/refine', '/compress', '/docx'])
+    expect(groupOf('/refine')).toBe('Commands')
+    expect(groupOf('/compress')).toBe('Commands')
+    expect(groupOf('/docx')).toBe('Skills')
   })
 })

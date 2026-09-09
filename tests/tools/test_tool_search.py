@@ -96,7 +96,30 @@ class TestClassification:
             assert not is_deferrable_tool_name(name), name
             assert name not in _HERMES_CORE_TOOLS
 
-    def test_gui_surface_alone_does_not_activate_the_bridge(self):
+    def test_gui_surface_defers_by_default(self):
+        """2026-08 core-deferral reversal: the curated defer set (GUI surface
+        included) hides behind the bridge BY DEFAULT. project tools not in
+        the defer set stay direct."""
+        from tools.registry import discover_builtin_tools
+        from tools.tool_search import ToolSearchConfig, assemble_tool_defs
+
+        discover_builtin_tools()
+        assembled = assemble_tool_defs(
+            [_td(name, f"GUI {name}") for name in
+             {"read_window_below", "apply_layout", "project_list"}],
+            context_length=200_000,
+            config=ToolSearchConfig.from_raw({"enabled": "on"}),
+        )
+        assert assembled.activated
+        names = {td["function"]["name"] for td in assembled.tool_defs}
+        assert "read_window_below" not in names
+        assert "apply_layout" not in names
+        # project_list is NOT in the curated defer set → stays direct.
+        assert "project_list" in names
+
+    def test_defer_override_restores_legacy_direct_gui(self):
+        """tools.tool_search.defer: [] restores the everything-eager legacy:
+        GUI tools alone no longer activate the bridge."""
         from tools.registry import discover_builtin_tools
         from tools.tool_search import ToolSearchConfig, assemble_tool_defs
 
@@ -105,14 +128,15 @@ class TestClassification:
         assembled = assemble_tool_defs(
             [_td(name, f"GUI {name}") for name in names],
             context_length=200_000,
-            config=ToolSearchConfig.from_raw({"enabled": "on"}),
+            config=ToolSearchConfig.from_raw({"enabled": "on", "defer": []}),
         )
         assert not assembled.activated
         assert {td["function"]["name"] for td in assembled.tool_defs} == names
 
-    def test_gui_surface_stays_direct_when_mcp_activates_the_bridge(self):
-        """MCP/plugin tools turn Tool Search on; the session's GUI tools stay
-        in the model-facing array so HUD can still name read_window_below."""
+    def test_core_working_set_never_defers_even_with_mcp_active(self):
+        """The bridge activates for MCP, but working-set core tools (terminal,
+        files, memory...) stay direct — the deferral set is the CURATED list,
+        not all of core."""
         from tools.registry import discover_builtin_tools, registry
         from tools.tool_search import (
             BRIDGE_TOOL_NAMES,
@@ -131,8 +155,8 @@ class TestClassification:
 
         assembled = assemble_tool_defs(
             [
-                _td("read_window_below", "Identify the window below"),
-                _td("apply_layout", "Apply a layout preset"),
+                _td("terminal", "Run a command"),
+                _td("memory", "Persistent memory"),
                 _td("computer_use", "Drive the OS"),
                 _td(mcp_name, "Deferred MCP capability"),
             ],
@@ -144,7 +168,38 @@ class TestClassification:
         assert assembled.activated
         assert mcp_name not in names
         assert BRIDGE_TOOL_NAMES <= names
-        assert {"read_window_below", "apply_layout", "computer_use"} <= names
+        assert {"terminal", "memory"} <= names
+        # computer_use IS in the curated defer set → behind the bridge.
+        assert "computer_use" not in names
+
+    def test_clarify_stays_eager_by_default(self):
+        """PR #97979 A/B verdict (288 runs, 3 model tiers): clarify deferred
+        collapsed structured ask-the-user usage 18/18 → 7/18 (gpt-terra 0/6);
+        models fell back to plain-text questions. The ask-the-user affordance
+        must stay ambient — clarify is NOT in the curated default defer set,
+        and assembles as a direct tool even when the bridge is active."""
+        from tools.registry import discover_builtin_tools
+        from tools.tool_search import (
+            _DEFAULT_DEFERRED_TOOLS,
+            ToolSearchConfig,
+            assemble_tool_defs,
+        )
+
+        assert "clarify" not in _DEFAULT_DEFERRED_TOOLS
+
+        discover_builtin_tools()
+        assembled = assemble_tool_defs(
+            [
+                _td("clarify", "Ask the user clarifying questions"),
+                _td("computer_use", "Drive the OS"),
+            ],
+            context_length=200_000,
+            config=ToolSearchConfig.from_raw({"enabled": "on"}),
+        )
+        assert assembled.activated  # computer_use still activates the bridge
+        names = {td["function"]["name"] for td in assembled.tool_defs}
+        assert "clarify" in names
+        assert "computer_use" not in names
 
     def test_unknown_tool_not_deferrable(self):
         """Defensive: a tool name we cannot resolve to a registry entry must
@@ -199,7 +254,8 @@ class TestThresholdGate:
 class TestRetrieval:
     def _fake_catalog(self):
         """Build a catalog directly without touching the registry."""
-        from tools.tool_search import CatalogEntry, _tokenize, _entry_search_text
+        from tools.tool_search import CatalogEntry
+        from tools.tool_search_catalog import _tokenize, _entry_search_text
         defs = [
             _td("github_create_issue", "Open a new issue in a GitHub repository",
                 {"title": {"type": "string"}, "body": {"type": "string"}}),
@@ -589,7 +645,7 @@ class TestCatalogListing:
         assert result.listing_form in {"names", "groups", "mixed"}
 
     def test_short_desc_first_sentence_and_clip(self):
-        from tools.tool_search import _short_desc
+        from tools.tool_search_catalog import _short_desc
         assert _short_desc("Open an issue. Second sentence dropped.") == "Open an issue."
         long = "word " * 40
         s = _short_desc(long)
@@ -658,9 +714,24 @@ class TestDeferredCallSchemaProbe:
         registry.register(
             name=name,
             handler=_handler,
-            schema={"type": "function",
-                    "function": {"name": name, "description": f"desc {name}",
-                                 "parameters": params}},
+            schema={"name": name, "description": f"desc {name}",
+                    "parameters": params},
+            toolset=toolset,
+        )
+
+    @staticmethod
+    def _register_schema(name, toolset, params, calls):
+        from tools.registry import registry
+
+        def _handler(args, task_id=None, **kw):
+            calls.append(args)
+            return json.dumps({"ok": True, "args": args})
+
+        registry.register(
+            name=name,
+            handler=_handler,
+            schema={"name": name, "description": f"desc {name}",
+                    "parameters": params},
             toolset=toolset,
         )
 
@@ -696,3 +767,166 @@ class TestDeferredCallSchemaProbe:
         ))
         assert result.get("ok") is True
         assert result.get("doc") == "abc"
+
+    def test_invalid_enum_is_blocked_before_dispatch(self):
+        import model_tools
+
+        calls = []
+        name = "mcp_probe_enum_validation"
+        toolset = "mcp-probe-enum-validation"
+        self._register_schema(name, toolset, {
+            "type": "object",
+            "properties": {
+                "priority": {"type": "string", "enum": ["low", "high"]},
+            },
+            "required": ["priority"],
+        }, calls)
+
+        result = json.loads(model_tools.handle_function_call(
+            function_name="tool_call",
+            function_args={"name": name, "arguments": {"priority": "urgent"}},
+            enabled_toolsets=[toolset],
+        ))
+
+        assert calls == []
+        assert result["path"] == "arguments.priority"
+        assert result["constraint"] == "enum"
+        assert "NOT invoked" in result["error"]
+
+    @pytest.mark.parametrize(
+        ("suffix", "arguments", "expected_path", "expected_constraint"),
+        [
+            (
+                "nested_type",
+                {"options": {"count": "not-an-integer"}},
+                "arguments.options.count",
+                "type",
+            ),
+            (
+                "nested_required",
+                {"options": {}},
+                "arguments.options",
+                "required",
+            ),
+            (
+                "nested_extra",
+                {"options": {"count": 1, "extra": True}},
+                "arguments.options",
+                "additionalProperties",
+            ),
+        ],
+    )
+    def test_validator_reports_nested_constraint_path(
+        self, suffix, arguments, expected_path, expected_constraint,
+    ):
+        from tools.tool_search import validate_deferred_call_args
+
+        calls = []
+        name = f"mcp_probe_{suffix}"
+        self._register_schema(name, "mcp-probe-nested", {
+            "type": "object",
+            "properties": {
+                "options": {
+                    "type": "object",
+                    "properties": {"count": {"type": "integer"}},
+                    "required": ["count"],
+                    "additionalProperties": False,
+                },
+            },
+            "required": ["options"],
+        }, calls)
+
+        result = json.loads(validate_deferred_call_args(name, arguments))
+
+        assert result["path"] == expected_path
+        assert result["constraint"] == expected_constraint
+
+    def test_coercible_arguments_validate_then_dispatch_repaired(self):
+        import model_tools
+
+        calls = []
+        name = "mcp_probe_coercion_validation"
+        toolset = "mcp-probe-coercion-validation"
+        self._register_schema(name, toolset, {
+            "type": "object",
+            "properties": {"count": {"type": "integer"}},
+            "required": ["count"],
+        }, calls)
+
+        result = json.loads(model_tools.handle_function_call(
+            function_name="tool_call",
+            function_args={"name": name, "arguments": {"count": "42"}},
+            enabled_toolsets=[toolset],
+        ))
+
+        assert result["ok"] is True
+        assert calls == [{"count": 42}]
+
+    def test_nullable_extension_remains_accepted(self):
+        import model_tools
+
+        calls = []
+        name = "mcp_probe_nullable_validation"
+        toolset = "mcp-probe-nullable-validation"
+        self._register_schema(name, toolset, {
+            "type": "object",
+            "properties": {"value": {"type": "string", "nullable": True}},
+            "required": ["value"],
+        }, calls)
+
+        result = json.loads(model_tools.handle_function_call(
+            function_name="tool_call",
+            function_args={"name": name, "arguments": {"value": None}},
+            enabled_toolsets=[toolset],
+        ))
+
+        assert result["ok"] is True
+        assert calls == [{"value": None}]
+
+    def test_schema_normalization_preserves_literal_enum_objects(self):
+        from tools.tool_search import validate_deferred_call_args
+
+        calls = []
+        name = "mcp_probe_literal_enum_validation"
+        enum_value = {"nullable": True, "$ref": "literal-not-a-schema"}
+        self._register_schema(name, "mcp-probe-literal-enum", {
+            "type": "object",
+            "properties": {"value": {"enum": [enum_value]}},
+            "required": ["value"],
+        }, calls)
+
+        assert validate_deferred_call_args(name, {"value": enum_value}) is None
+
+    def test_malformed_schema_fails_open(self):
+        import model_tools
+
+        calls = []
+        name = "mcp_probe_malformed_validation"
+        toolset = "mcp-probe-malformed-validation"
+        self._register_schema(name, toolset, {
+            "type": "object",
+            "properties": {"value": {"type": "not-a-json-schema-type"}},
+        }, calls)
+
+        result = json.loads(model_tools.handle_function_call(
+            function_name="tool_call",
+            function_args={"name": name, "arguments": {"value": "kept"}},
+            enabled_toolsets=[toolset],
+        ))
+
+        assert result["ok"] is True
+        assert calls == [{"value": "kept"}]
+
+    def test_external_ref_fails_open_without_resolution(self):
+        from tools.tool_search import validate_deferred_call_args
+
+        calls = []
+        name = "mcp_probe_external_ref_validation"
+        self._register_schema(name, "mcp-probe-external-ref", {
+            "type": "object",
+            "properties": {
+                "payload": {"$ref": "https://example.invalid/schema.json"},
+            },
+        }, calls)
+
+        assert validate_deferred_call_args(name, {"payload": {"anything": True}}) is None

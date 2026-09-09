@@ -1,3 +1,4 @@
+import { act } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import * as notifications from '@/store/notifications'
@@ -79,6 +80,87 @@ function fallbackTimeoutGateway(): OnboardingContext['requestGateway'] {
 }
 
 describe('refreshOnboarding', () => {
+  it('keeps onboarding work in its initiating lifetime and profile', async () => {
+    const { startManualOnboarding, startProviderOAuth, saveOnboardingApiKey, closeManualOnboarding } =
+      await import('./onboarding')
+
+    const requests: { path: string; profile?: string }[] = []
+    let release!: () => void
+    let delayKey = true
+    installApiMock(async request => {
+      requests.push(request)
+
+      if (request.path === '/api/providers/oauth') {
+        return { providers: [] }
+      }
+
+      if (request.path.endsWith('/start')) {
+        return {
+          flow: 'device_code',
+          session_id: 'local-fixture',
+          user_code: 'FAKE',
+          verification_url: 'http://localhost/fixture',
+          expires_in: 600
+        }
+      }
+
+      if (request.path.includes('/poll/')) {
+        return { status: 'approved' }
+      }
+
+      if (request.path === '/api/env' && delayKey) {
+        await new Promise<void>(resolve => {
+          release = resolve
+        })
+      }
+
+      if (request.path.startsWith('/api/model/options')) {
+        return { providers: [{ slug: 'fixture', name: 'Fixture', models: ['fixture-model'] }] }
+      }
+
+      if (request.path.startsWith('/api/model/recommended-default')) {
+        return { model: 'fixture-model' }
+      }
+
+      return { ok: true }
+    })
+    vi.spyOn(window, 'open').mockReturnValue(null)
+    let profile = 'beta'
+
+    const ctx: OnboardingContext = {
+      get profile() {
+        return profile
+      },
+      requestGateway: async method =>
+        (method === 'setup.status' ? { provider_configured: true } : { ok: true }) as never
+    }
+
+    try {
+      startManualOnboarding(null, 'beta')
+      const pending = saveOnboardingApiKey('FIREWORKS_API_KEY', 'fake-key', 'Fireworks', ctx)
+      await vi.waitFor(() => expect(release).toBeTypeOf('function'))
+      closeManualOnboarding()
+      profile = 'alpha'
+      startManualOnboarding(null, 'alpha')
+      release()
+      await pending
+      expect(requests.some(r => r.path === '/api/model/set')).toBe(false)
+      expect($desktopOnboarding.get()).toMatchObject({ targetProfile: 'alpha', flow: { status: 'idle' } })
+      closeManualOnboarding()
+      delayKey = false
+      profile = 'beta'
+      startManualOnboarding(null, 'beta')
+      const startAt = requests.length
+      await startProviderOAuth(makeOAuthProvider('fixture'), ctx)
+      await vi.waitFor(() => expect($desktopOnboarding.get().flow.status).toBe('confirming_model'), { timeout: 5000 })
+      expect(requests.slice(startAt).some(r => r.path.includes('/poll/'))).toBe(true)
+      expect(requests.slice(startAt).some(r => r.path === '/api/model/set')).toBe(true)
+      expect(requests.slice(startAt).every(r => r.profile === 'beta')).toBe(true)
+    } finally {
+      closeManualOnboarding()
+    }
+  })
+
   beforeEach(() => {
     window.localStorage.clear()
     $desktopOnboarding.set(baseState())
@@ -641,5 +723,99 @@ describe('saveOnboardingLocalEndpoint', () => {
     expect(result.ok).toBe(false)
     expect(result.message).toContain('No provider can serve the selected model.')
     expect($desktopOnboarding.get().configured).not.toBe(true)
+  })
+})
+
+describe('device-code poll expiry', () => {
+  beforeEach(() => {
+    window.localStorage.clear()
+    $desktopOnboarding.set(baseState())
+  })
+
+  afterEach(() => {
+    window.localStorage.clear()
+    $desktopOnboarding.set(baseState())
+    vi.restoreAllMocks()
+    vi.useRealTimers()
+  })
+
+  function deviceCodeProvider() {
+    // makeOAuthProvider builds a pkce provider; device-code flows need the
+    // device_code branch instead.
+    return { ...makeOAuthProvider('nous', 'Nous Portal'), flow: 'device_code' as const }
+  }
+
+  function deviceStart(expiresIn: number) {
+    return {
+      expires_in: expiresIn,
+      flow: 'device_code',
+      poll_interval: 5,
+      session_id: 'device-sess-1',
+      user_code: 'ABCD-EFGH',
+      verification_url: 'https://portal.example/device'
+    }
+  }
+
+  it('lapses to an error with actionable guidance when the window expires still pending', async () => {
+    vi.useFakeTimers()
+    installApiMock(async ({ path }: { path: string }) => {
+      if (path === '/api/providers/oauth/nous/start') {
+        return deviceStart(2)
+      }
+
+      if (path === '/api/providers/oauth/nous/poll/device-sess-1') {
+        return { status: 'pending' }
+      }
+
+      throw new Error(`unexpected api path: ${path}`)
+    })
+
+    const { startProviderOAuth } = await import('./onboarding')
+    await startProviderOAuth(deviceCodeProvider(), onboardingContext(emptyOpenRouterGateway()))
+
+    expect($desktopOnboarding.get().flow.status).toBe('polling')
+
+    // Let both the poll interval and the expiry window lapse.
+    await act(async () => {
+      vi.advanceTimersByTime(3000)
+    })
+
+    const flow = $desktopOnboarding.get().flow
+    expect(flow.status).toBe('error')
+
+    if (flow.status === 'error') {
+      expect(flow.message).toContain('Sign-in expired waiting for authorization')
+    }
+  })
+
+  it('keeps polling while the window is open and clears the expiry on cancel', async () => {
+    vi.useFakeTimers()
+    installApiMock(async ({ path }: { path: string }) => {
+      if (path === '/api/providers/oauth/nous/start') {
+        return deviceStart(600)
+      }
+
+      if (path === '/api/providers/oauth/nous/poll/device-sess-1') {
+        return { status: 'pending' }
+      }
+
+      throw new Error(`unexpected api path: ${path}`)
+    })
+
+    const { startProviderOAuth, cancelOnboardingFlow } = await import('./onboarding')
+    await startProviderOAuth(deviceCodeProvider(), onboardingContext(emptyOpenRouterGateway()))
+
+    await act(async () => {
+      vi.advanceTimersByTime(10_000)
+    })
+    expect($desktopOnboarding.get().flow.status).toBe('polling')
+
+    cancelOnboardingFlow()
+    // Far past the original window: the cancelled flow must not flip to an
+    // expiry error after the fact.
+    await act(async () => {
+      vi.advanceTimersByTime(700_000)
+    })
+    expect($desktopOnboarding.get().flow.status).toBe('idle')
   })
 })

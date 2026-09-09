@@ -39,6 +39,11 @@ fallback_providers:
 
 Each entry requires both `provider` and `model`. Entries missing either field are ignored.
 
+Gemini fallback entries accept `gemini`, `google`, `google-gemini`, and
+`google-ai-studio`. On Google's native API endpoint, all use the native Gemini
+client, including its `generationConfig.thinkingConfig` translation. A custom
+OpenAI-compatible base URL continues to use the compatible client instead.
+
 :::note `fallback_model` vs `fallback_providers`
 `fallback_providers` (plural, list) is the current config shape and supports multiple fallbacks tried in order. `fallback_model` (singular) is the legacy single-fallback key — Hermes still honors it for back-compat, but `hermes fallback` writes the current `fallback_providers` key and migrates legacy config on write. When both are set, `fallback_providers` takes priority.
 :::
@@ -75,14 +80,17 @@ Each entry requires both `provider` and `model`. Entries missing either field ar
 | OpenCode Go | `opencode-go` | `OPENCODE_GO_API_KEY` |
 | OpenCode Free | `opencode-free` | — (keyless, no credential) |
 | Kilo Code | `kilocode` | `KILOCODE_API_KEY` |
+| Ramp Router | `router` | `RAMP_ROUTER_API_KEY` |
 | Xiaomi MiMo | `xiaomi` | `XIAOMI_API_KEY` |
 | Arcee AI | `arcee` | `ARCEEAI_API_KEY` |
 | GMI Cloud | `gmi` | `GMI_API_KEY` |
+| Nebius Token Factory | `nebius-token-factory` | `NEBIUS_API_KEY` |
 | Alibaba / DashScope | `alibaba` | `DASHSCOPE_API_KEY` |
 | Alibaba Coding Plan | `alibaba-coding-plan` | `ALIBABA_CODING_PLAN_API_KEY` (falls back to `DASHSCOPE_API_KEY`) |
 | Kimi / Moonshot (China) | `kimi-coding-cn` | `KIMI_CN_API_KEY` |
 | StepFun | `stepfun` | `STEPFUN_API_KEY` |
 | Tencent TokenHub | `tencent-tokenhub` | `TOKENHUB_API_KEY` |
+| Tencent TokenPlan | `tencent-tokenplan` | `TOKENPLAN_API_KEY` |
 | Microsoft Foundry | `azure-foundry` | `AZURE_FOUNDRY_API_KEY` + `AZURE_FOUNDRY_BASE_URL` |
 | LM Studio (local) | `lmstudio` | `LM_API_KEY` (or none for local) + `LM_BASE_URL` |
 | Hugging Face | `huggingface` | `HF_TOKEN` |
@@ -112,8 +120,8 @@ The fallback activates automatically when the primary model fails with:
 
 When triggered, Hermes:
 
-1. Resolves credentials for the fallback provider
-2. Builds a new API client
+1. Resolves credentials for the fallback provider (including named custom providers using `key_cmd`)
+2. Builds a new API client, preserving a dynamic credential source across timeout and request-client rebuilds
 3. Swaps the model, provider, and client in-place
 4. Resets the retry counter and continues the conversation
 
@@ -126,7 +134,9 @@ Prompt caches are keyed to the model (and on most providers, the account) servin
 :::info Per-Turn, Not Per-Session
 Fallback is **turn-scoped**: each new user message starts with the primary model restored. If the primary fails mid-turn, fallback activates for that turn only. On the next message, Hermes tries the primary again. Within a single turn, fallback activates at most once — if the fallback also fails, normal error handling takes over (retries, then error message). This prevents cascading failover loops within a turn while giving the primary model a fresh chance every turn.
 
-The per-turn retry is **reset-aware**: when the primary's credentials report a rate-limit reset time that hasn't elapsed yet (subscription windows like Claude Pro/Max's 5-hour blocks or Codex weekly limits report these as hours or days), Hermes skips the doomed retry and stays on the fallback until the reset passes — avoiding two pointless provider switches (and two prompt-cache invalidations) per turn. The moment the reset time elapses, the next turn goes back to the primary automatically. Transient 429s without a reset time keep the existing behavior: a short cooldown, then retry every turn.
+The per-turn retry is **reset-aware**: when the primary's credentials report a rate-limit reset time that hasn't elapsed yet (subscription windows like Claude Pro/Max's 5-hour blocks or Codex weekly limits report these as hours or days), Hermes skips the doomed retry and stays on the fallback until the reset passes — avoiding two pointless provider switches (and two prompt-cache invalidations) per turn. Expiry makes the primary eligible for a later retry; it does not schedule a retry or guarantee recovery. Transient 429s without a reset time use an exponential cooldown.
+
+When a switch arms that cooldown, the fallback notice includes its approximate remaining duration, for example: `Primary retry eligible in ~60 s; recovery is not guaranteed.` Non-rate-limit switches and switches from an already-active cross-provider fallback do not announce a new primary cooldown.
 :::
 
 ### Examples
@@ -175,7 +185,7 @@ fallback_providers:
 |---------|-------------------|
 | CLI sessions | ✔ |
 | Messaging gateway (Telegram, Discord, etc.) | ✔ |
-| Subagent delegation | ✔ (subagents inherit the parent fallback chain) |
+| Subagent delegation | ✔ (`delegation.fallback_providers` when set; otherwise only unpinned children inherit the parent chain; `[]` disables) |
 | Cron jobs | ✔ (cron agents inherit configured fallback providers) |
 | Auxiliary tasks on `provider: auto` | ✔ (try per-task fallback, then the main fallback chain before built-in aux discovery) |
 
@@ -210,6 +220,8 @@ When a task's provider is set to `"auto"` (the default), Hermes first tries the 
 Main provider + main model → auxiliary.<task>.fallback_chain →
 fallback_providers / fallback_model → built-in auxiliary discovery chain
 ```
+
+A billing or quota failure quarantines only the failed custom endpoint for the auxiliary health cooldown, not every route registered as `custom`. A healthy local endpoint with a different base URL remains eligible for fallback and subsequent auto routing. Aliases for the same custom endpoint share its health state. Built-in providers retain their shared-account health checks.
 
 The task-specific chain is most precise and wins when present. The top-level `fallback_providers` chain is the same policy the main agent uses, so free-only or same-provider fallback rules apply to auxiliary tasks on `auto` as well.
 
@@ -428,5 +440,5 @@ See [Scheduled Tasks (Cron)](/user-guide/features/cron) for full configuration d
 | Approval classification | Layered (see above) | `auxiliary.approval` |
 | Title generation | Layered (see above) | `auxiliary.title_generation` |
 | Triage specifier | Layered (see above) | `auxiliary.triage_specifier` |
-| Delegation | Inherits the parent's `fallback_providers` chain; optional provider/model override | `delegation.provider` / `delegation.model` |
+| Delegation | Uses `delegation.fallback_providers` when declared; otherwise only unpinned children inherit the parent chain | `delegation.provider` / `delegation.model` / `delegation.fallback_providers` |
 | Cron jobs | Inherit the configured `fallback_providers` chain; optional per-job provider override | Per-job `provider` / `model` |

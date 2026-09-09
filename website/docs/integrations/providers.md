@@ -20,6 +20,7 @@ You need at least one way to connect to an LLM. Use `hermes model` to switch pro
 | **GitHub Copilot ACP** | `hermes model` (spawns local `copilot --acp --stdio`) |
 | **Anthropic** | `hermes model` (Claude Max + extra usage credits via OAuth; also supports Anthropic API key or manual setup-token — see note below) |
 | **OpenRouter** | `OPENROUTER_API_KEY` in `~/.hermes/.env` |
+| **Ramp Router** | `RAMP_ROUTER_API_KEY` in `~/.hermes/.env` (provider: `router`; aliases: `ramp-router`, `ramp`, `router.com`; Responses-native gateway, live account-scoped catalog) |
 | **Fireworks AI** | `FIREWORKS_API_KEY` in `~/.hermes/.env` (provider: `fireworks`; aliases: `fireworks-ai`, `fw`) |
 | **NovitaAI** | `NOVITA_API_KEY` in `~/.hermes/.env` (provider: `novita`, 200+ models, Model API, Agent Sandbox, GPU Cloud) |
 | **AI Gateway** | `AI_GATEWAY_API_KEY` in `~/.hermes/.env` (provider: `ai-gateway`) |
@@ -28,20 +29,23 @@ You need at least one way to connect to an LLM. Use `hermes model` to switch pro
 | **Kimi / Moonshot (China)** | `KIMI_CN_API_KEY` in `~/.hermes/.env` (provider: `kimi-coding-cn`; aliases: `kimi-cn`, `moonshot-cn`) |
 | **Arcee AI** | `ARCEEAI_API_KEY` in `~/.hermes/.env` (provider: `arcee`; aliases: `arcee-ai`, `arceeai`) |
 | **GMI Cloud** | `GMI_API_KEY` in `~/.hermes/.env` (provider: `gmi`; aliases: `gmi-cloud`, `gmicloud`) |
+| **Nebius Token Factory** | `NEBIUS_API_KEY` in `~/.hermes/.env` (provider: `nebius-token-factory`; aliases: `nebius`, `nebius-tf`, `tokenfactory`) |
 | **Actual Computer** | `ACTUAL_API_KEY` in `~/.hermes/.env` for the hosted relay, or `ACTUAL_BASE_URL=http://127.0.0.1:8080` for the local daemon — no key needed on loopback (provider: `actual`; aliases: `actual-computer`, `actualcomputer`, `aci`) |
 | **MiniMax** | `MINIMAX_API_KEY` in `~/.hermes/.env` (provider: `minimax`) |
 | **MiniMax China** | `MINIMAX_CN_API_KEY` in `~/.hermes/.env` (provider: `minimax-cn`) |
 | **xAI (Grok) — Responses API** | `XAI_API_KEY` in `~/.hermes/.env` (provider: `xai`) |
 | **xAI Grok OAuth (SuperGrok)** | `hermes model` → "xAI Grok OAuth (SuperGrok / Premium+)" — browser login, no API key. See [guide](../guides/xai-grok-oauth.md) |
-| **Qwen Cloud (Alibaba DashScope)** | `DASHSCOPE_API_KEY` in `~/.hermes/.env` (provider: `alibaba`) |
-| **Alibaba Cloud (Coding Plan)** | `DASHSCOPE_API_KEY` (provider: `alibaba-coding-plan`, alias: `alibaba_coding`) — separate billing SKU, different endpoint |
+| **Qwen Cloud (Alibaba DashScope)** | `DASHSCOPE_API_KEY` in `~/.hermes/.env` (provider: `alibaba`; mainland-China endpoint: `alibaba-cn`) |
+| **Alibaba Cloud (Coding Plan)** | `ALIBABA_CODING_PLAN_API_KEY` (falls back to `DASHSCOPE_API_KEY`) (provider: `alibaba-coding-plan`, alias: `alibaba_coding`; mainland-China endpoint: `alibaba-coding-plan-cn` with `ALIBABA_CODING_PLAN_CN_API_KEY`, falling back to the shared keys) — separate billing SKU, different endpoint |
+| **Alibaba Cloud (Token Plan)** | `ALIBABA_TOKEN_PLAN_API_KEY` in `~/.hermes/.env` (provider: `alibaba-token-plan`; mainland-China endpoint: `alibaba-token-plan-cn` with `ALIBABA_TOKEN_PLAN_CN_API_KEY`, falling back to the shared key) — Model Studio flat-token tier |
 | **Kilo Code** | `KILOCODE_API_KEY` in `~/.hermes/.env` (provider: `kilocode`) |
 | **Xiaomi MiMo** | `XIAOMI_API_KEY` in `~/.hermes/.env` (provider: `xiaomi`, aliases: `mimo`, `xiaomi-mimo`) |
 | **Tencent TokenHub** | `TOKENHUB_API_KEY` in `~/.hermes/.env` (provider: `tencent-tokenhub`, aliases: `tencent`, `tokenhub`, `tencentmaas`) |
+| **Tencent TokenPlan** | `TOKENPLAN_API_KEY` in `~/.hermes/.env` (provider: `tencent-tokenplan`, aliases: `tokenplan`, `tencent-lkeap`; Anthropic Messages endpoint) |
 | **OpenCode Zen** | `OPENCODE_ZEN_API_KEY` in `~/.hermes/.env` (provider: `opencode-zen`) |
 | **CommandCode** | `COMMANDCODE_API_KEY` in `~/.hermes/.env` (provider: `commandcode`, alias: `commandcode-chat`; Claude models via `commandcode-anthropic`, alias: `commandcode-claude`). Works with GOAT/Pro/Max/Provider plans (not the $1 Go plan — no API access). |
 | **OpenCode Go** | `OPENCODE_GO_API_KEY` in `~/.hermes/.env` (provider: `opencode-go`) |
-| **OpenCode Free** | Keyless — no API key or account needed (provider: `opencode-free`, aliases: `free`, `opencode_free`). Select via `hermes model` or `/model free`; requests are sent anonymously |
+| **OpenCode Free** | Keyless — no API key or account needed (provider: `opencode-free`, aliases: `free`, `opencode_free`). Select via `hermes model` or `/model free`; requests are sent anonymously. The model list refreshes automatically from OpenCode's live catalog, so rotating free promotions appear (and delisted ones disappear) without a Hermes update |
 | **DeepSeek** | `DEEPSEEK_API_KEY` in `~/.hermes/.env` (provider: `deepseek`) |
 | **Hugging Face** | `HF_TOKEN` in `~/.hermes/.env` (provider: `huggingface`, aliases: `hf`) |
 | **Google / Gemini** | `GOOGLE_API_KEY` (or `GEMINI_API_KEY`) in `~/.hermes/.env` (provider: `gemini`) |
@@ -56,6 +60,8 @@ You need at least one way to connect to an LLM. Use `hermes model` to switch pro
 | **StepFun** | `STEPFUN_API_KEY` in `~/.hermes/.env` (provider: `stepfun`) |
 | **LM Studio** | `hermes model` → "LM Studio" (provider: `lmstudio`, optional `LM_API_KEY`) |
 | **Custom Endpoint** | `hermes model` → choose "Custom endpoint" (saved in `config.yaml`) |
+
+All three OpenCode providers send an opaque, per-conversation `x-opencode-session` header on every request (main turns on every transport plus auxiliary calls such as compression and titles). OpenCode uses it to pin a conversation to one backend so its prompt cache stays warm; the value is derived from the Hermes session id and carries no personal data.
 
 For the official API-key path, see the dedicated [Google Gemini guide](/guides/google-gemini).
 
@@ -138,6 +144,13 @@ If you'd rather not track per-provider plan semantics at all, [Nous Portal](#nou
 ### Anthropic (Native)
 
 Use Claude models directly through the Anthropic API — no OpenRouter proxy needed. Supports three auth methods:
+
+When no explicit environment credential is selected, Hermes-owned OAuth grants
+in the credential pool take precedence over a borrowed Claude Code login. The
+borrowed login remains the fallback when no owned OAuth grant is available.
+Auxiliary authentication recovery refreshes the credential used by the failed
+request, not an unrelated ambient login; rotating a borrowed login can otherwise
+invalidate its owner's refresh token.
 
 :::caution Requires Claude Max "extra usage" credits
 When you authenticate via `hermes model` → Anthropic OAuth (or via `hermes auth add anthropic --type oauth`), Hermes routes as Claude Code against your Anthropic account. **It only works if you're on a Claude Max plan and have purchased extra usage credits.** The base Max plan allowance (the usage included in Claude Code by default) is not consumed by Hermes — only the extra/overage credits you've added on top are. Claude Pro subscribers cannot use this path.
@@ -253,6 +266,10 @@ hermes chat --provider fireworks --model accounts/fireworks/models/kimi-k2p6
 hermes chat --provider novita --model moonshotai/kimi-k2.5
 # Requires: NOVITA_API_KEY in ~/.hermes/.env
 
+# Ramp Router (model IDs come from your account's live catalog)
+hermes chat --provider router --model gpt-5.4-mini
+# Requires: RAMP_ROUTER_API_KEY in ~/.hermes/.env
+
 # z.ai / ZhipuAI GLM
 hermes chat --provider zai --model glm-5
 # Requires: GLM_API_KEY in ~/.hermes/.env
@@ -281,9 +298,13 @@ hermes chat --provider alibaba --model qwen3.5-plus
 hermes chat --provider xiaomi --model mimo-v2-pro
 # Requires: XIAOMI_API_KEY in ~/.hermes/.env
 
-# Tencent TokenHub (Hy3 Preview)
-hermes chat --provider tencent-tokenhub --model hy3-preview
+# Tencent TokenHub (Hy4 preview)
+hermes chat --provider tencent-tokenhub --model hy4-preview
 # Requires: TOKENHUB_API_KEY in ~/.hermes/.env
+
+# Tencent TokenPlan (Hy4 preview via Anthropic Messages endpoint)
+hermes chat --provider tencent-tokenplan --model hy4-preview
+# Requires: TOKENPLAN_API_KEY in ~/.hermes/.env
 
 # Arcee AI (Trinity models)
 hermes chat --provider arcee --model trinity-large-thinking
@@ -297,6 +318,10 @@ hermes chat --provider meta-ai --model muse-spark-1.2
 # Use the exact model ID returned by GMI's /v1/models endpoint.
 hermes chat --provider gmi --model zai-org/GLM-5.1-FP8
 # Requires: GMI_API_KEY in ~/.hermes/.env
+
+# Nebius Token Factory
+hermes chat --provider nebius --model deepseek-ai/DeepSeek-V4-Pro
+# Requires: NEBIUS_API_KEY in ~/.hermes/.env
 ```
 
 Fireworks uses its native slash-form catalog IDs, such as `accounts/fireworks/models/kimi-k2p6`. Run `hermes model`, choose **Fireworks AI**, and select from the live catalog or enter another Fireworks model ID. The default endpoint is `https://api.fireworks.ai/inference/v1`; configure a different endpoint through `model.base_url` in `config.yaml`, not `.env`.
@@ -311,7 +336,7 @@ model:
 Base URLs can be overridden with `NOVITA_BASE_URL`, `GLM_BASE_URL`, `KIMI_BASE_URL`, `MINIMAX_BASE_URL`, `MINIMAX_CN_BASE_URL`, `DASHSCOPE_BASE_URL`, `XIAOMI_BASE_URL`, `GMI_BASE_URL`, `META_BASE_URL`, or `TOKENHUB_BASE_URL` environment variables.
 
 :::note Meta contributor tier
-`muse-spark-1.2-contributor` is Meta's discounted tier — Meta may train on your prompts and completions, so [interactive model selection asks for confirmation](../user-guide/configuring-models.md) before using it. Use `muse-spark-1.2` (standard pricing, no training) for confidential work.
+`muse-spark-1.2-contributor` and `muse-spark-1.3-contributor` are Meta's contributor tiers — Meta may train on your prompts and completions, so [interactive model selection asks for confirmation](../user-guide/configuring-models.md) before using either. For current pricing and rate limits, see [Meta Model API pricing and rate limits](https://dev.meta.ai/docs/pricing-rate-limits/). Use the standard `muse-spark-1.2` / `muse-spark-1.3` (no training) for confidential work.
 :::
 
 :::note Z.AI Endpoint Auto-Detection
@@ -330,7 +355,7 @@ No configuration is needed — caching activates automatically when an xAI endpo
 
 xAI also ships a dedicated TTS endpoint (`/v1/tts`). Select **xAI TTS** in `hermes tools` → Voice & TTS, or see the [Voice & TTS](../user-guide/features/tts.md#text-to-speech) page for config.
 
-**Retired xAI model migration (May 15, 2026):** xAI is retiring `grok-4*`, `grok-3`, `grok-code-fast-1`, and `grok-imagine-image-pro` on 2026-05-15. `hermes doctor` and `hermes chat` startup both detect any config still pointing at a retired ref and print the recommended replacement. Use `hermes migrate xai` for a one-shot config rewrite — dry-run by default, add `--apply` to write changes (a timestamped `config.yaml.bak-pre-migrate-xai-*` backup is created automatically).
+**Retired xAI model migration (May 15, 2026):** xAI is retiring `grok-4*`, `grok-3`, `grok-code-fast-1`, and `grok-imagine-image-pro` on 2026-05-15. `hermes doctor` and `hermes chat` startup both detect any config still pointing at a retired ref and print the recommended replacement. Use `hermes migrate xai` for a one-shot config rewrite — dry-run by default, add `--apply` to write changes (a timestamped copy of the previous config lands in `backups/config/` first).
 
 ```bash
 hermes migrate xai          # preview replacements
@@ -486,6 +511,8 @@ hermes chat --provider alibaba_coding --model qwen3-coder-plus
 ```
 
 `alibaba_coding` uses the same `DASHSCOPE_API_KEY` your `alibaba` entry already uses — no separate key needed, just a different routing target. Before this provider was registered, users who set `provider: alibaba_coding` in `config.yaml` silently fell through to OpenRouter routing.
+
+For the mainland-China endpoint (`alibaba-coding-plan-cn`, `https://coding.dashscope.aliyuncs.com/v1`) set `ALIBABA_CODING_PLAN_CN_API_KEY`. The CN provider still falls back to `ALIBABA_CODING_PLAN_API_KEY` / `DASHSCOPE_API_KEY`, but with only the shared key set the `/model` picker lists just the international row — set the CN key (or `provider: alibaba-coding-plan-cn` in `config.yaml`) to surface the CN one. The same applies to `alibaba-token-plan-cn` with `ALIBABA_TOKEN_PLAN_CN_API_KEY`.
 
 ### MiniMax (OAuth)
 
@@ -842,7 +869,7 @@ hermes model
 **Tool calling:** Use `--tool-call-parser` with the appropriate parser for your model family: `qwen` (Qwen 2.5), `llama3`, `llama4`, `deepseekv3`, `mistral`, `glm`. Without this flag, tool calls come back as plain text.
 
 :::caution SGLang defaults to 128 max output tokens
-If responses seem truncated, add `max_tokens` to your requests or set `--default-max-tokens` on the server. SGLang's default is only 128 tokens per response if not specified in the request.
+If responses seem truncated, check the server's generation default and configure it on the server (for example SGLang's `--default-max-tokens`). Hermes does not expose an output-token cap setting.
 :::
 
 ---
@@ -1111,7 +1138,7 @@ model:
 #### Responses get cut off mid-sentence
 
 **Possible causes:**
-1. **Low output cap (`max_tokens`) on the server** — SGLang defaults to 128 tokens per response. Set `--default-max-tokens` on the server or configure Hermes with `model.max_tokens` in config.yaml. Note: `max_tokens` controls response length only — it is unrelated to how long your conversation history can be (that is `context_length`).
+1. **Low output limit on the server** — configure the server's generation default (for example SGLang's `--default-max-tokens`). Hermes does not expose an output-token cap setting. Response length is distinct from the conversation's context window (`context_length`).
 2. **Context exhaustion** — The model filled its context window. Increase `model.context_length` or enable [context compression](/user-guide/configuration#context-compression) in Hermes.
 
 ---
@@ -1207,13 +1234,24 @@ model:
 
 ### Context Length Detection
 
-:::note Two settings, easy to confuse
+:::note Context windows and output limits are different
 **`context_length`** is the **total context window** — the combined budget for input *and* output tokens (e.g. 200,000 for Claude Opus 4.6). Hermes uses this to decide when to compress history and to validate API requests.
 
-**`model.max_tokens`** is the **output cap** — the maximum number of tokens the model may generate in a *single response*. It has nothing to do with how long your conversation history can be. The industry-standard name `max_tokens` is a common source of confusion; Anthropic's native API has since renamed it `max_output_tokens` for clarity.
+Output limits govern a single generated response, not the conversation history.
+Hermes no longer reads `model.max_tokens`, `HERMES_MAX_TOKENS`, provider output-cap
+settings, or `model_overrides.*.*.max_output_tokens`. Remove these legacy settings.
+Custom OpenAI-compatible endpoints receive no automatic catalog-sized output cap.
+Their server defaults apply; these can be lower than the model maximum.
+
+Native Anthropic Messages (including the native Anthropic Bedrock path) requires
+`max_tokens`, so Hermes supplies an internal value. Bedrock Converse is a separate
+protocol: its optional `inferenceConfig.maxTokens` is omitted by default, which
+[AWS documents as the model maximum](https://docs.aws.amazon.com/bedrock/latest/APIReference/API_runtime_InferenceConfiguration.html).
+Internal bounded tasks and provider-specific protocol requirements remain implementation
+details. Omission does not universally select a model's maximum output.
 
 Set `context_length` when auto-detection gets the window size wrong.
-Set `model.max_tokens` only when you need to limit how long individual responses can be.
+
 :::
 
 Hermes uses a multi-source resolution chain to detect the correct context window for your model and provider:
@@ -1285,6 +1323,15 @@ Each entry accepts: `api` (the endpoint base URL — `base_url`/`url` are accept
 
 #### Command-minted credentials (`key_cmd`)
 
+Vision, thinking, and native local-model capability probes materialize the same
+callable credential used by chat before building authentication headers. They
+reuse the command token cache without replacing the chat client's callable.
+If a command cannot mint a string token, these best-effort probes send no bearer
+rather than an object representation or a lower-priority configured credential.
+Native local-model probes remove inherited Authorization on a failed explicit
+callable while retaining unrelated configured headers. Chat retains its normal
+error handling.
+
 Enterprise gateways often issue short-lived bearer tokens (SSO/OIDC brokers, cloud IAM, internal auth proxies) rather than static API keys, so a token copied into `.env` goes stale mid-session and requests start returning 401. `key_cmd` names a command that *prints* a token; Hermes runs it and caches the result until shortly before expiry, so long sessions keep working with no restart:
 
 ```yaml
@@ -1300,6 +1347,15 @@ Works with any helper that prints a token — `databricks auth token`, `gcloud a
 The command must print **only** the token on stdout: either bare, or as JSON with an `access_token` field (`expires_in` is honored; absolute `expiry`/`expiresOn` ISO timestamps too). Multi-line output is rejected rather than guessed at. If no expiry is advertised, the token is re-minted on a bounded window.
 
 Precedence: an explicit `--api-key` flag still wins; otherwise `key_cmd` beats a static `api_key`/`key_env` on the same entry. The minted credential applies to the main agent turn and to auxiliary tasks (title generation, compression, vision, embedding) alike.
+
+Model discovery also honors `key_cmd` for both `providers:` and legacy
+`custom_providers:` entries, including `hermes model` setup. Helpers run only when
+an authenticated live catalog probe is needed: disabled discovery and warm catalog
+cache reads do not mint tokens. Catalogs are scoped to the command identity, so
+rotating a bearer does not invalidate the catalog. Probe helpers use their own
+short-lived token source, not the inference client's token cache; minted bearers
+are never saved to `config.yaml`. If a helper fails, discovery falls back to the
+configured model without exposing the helper's output.
 
 Not to be confused with `secrets.command`, which runs a helper **once at startup** to populate env vars process-wide. Use that for a vault/keychain helper handing back many secrets; use `key_cmd` when one provider's credential must be re-minted *during* a session.
 
@@ -1334,6 +1390,8 @@ extra_body:
   chat_template_kwargs:
     enable_thinking: false
 ```
+
+The configured `extra_body` follows the provider everywhere: it is merged at agent construction, **survives every gateway turn** (including turns where `/fast` layers `service_tier`/`speed` overrides on top — those merge over your `extra_body` rather than replacing it), and is **re-derived on `/model` switches** — switching to a named custom provider applies its `extra_body`, and switching away clears it so it never leaks to another provider.
 
 The `hermes model` → Custom Endpoint wizard now prompts for the API mode explicitly and persists your answer to `config.yaml` (as `transport` on the provider entry). URL-based auto-detection (e.g. `/anthropic` paths → `anthropic_messages`) still happens as a fallback when the field is left blank.
 
@@ -1536,9 +1594,12 @@ provider_routing:
   # order: ["anthropic", "google"]  # Try providers in this order
   # require_parameters: true  # Only use providers that support all request params
   # data_collection: "deny"   # Exclude providers that may store/train on data
+  # models:                   # Per-model pins (same keys; unset keys fall through)
+  #   "openai/gpt-6-astra": {only: ["openai"]}
+  #   "anthropic/claude-fable-5.1": {only: ["anthropic"]}
 ```
 
-**Shortcuts:** Append `:nitro` to any model name for throughput sorting (e.g., `anthropic/claude-sonnet-4:nitro`), or `:floor` for price sorting.
+**Shortcuts:** Append `:nitro` to any model name for throughput sorting (e.g., `anthropic/claude-sonnet-4:nitro`), or `:floor` for price sorting. Per-model details: [Provider Routing](/user-guide/features/provider-routing#per-model-overrides-models).
 
 ## OpenRouter Pareto Code Router
 
@@ -1585,7 +1646,7 @@ fallback_model:
 
 When activated, the fallback swaps the model and provider mid-session without losing your conversation. The chain is tried entry-by-entry; activation is one-shot per session.
 
-Supported providers: `openrouter`, `nous`, `novita`, `openai-codex`, `copilot`, `copilot-acp`, `anthropic`, `gemini`, `qwen-oauth`, `huggingface`, `zai`, `kimi-coding`, `kimi-coding-cn`, `minimax`, `minimax-cn`, `minimax-oauth`, `deepseek`, `nvidia`, `xai`, `xai-oauth`, `ollama-cloud`, `bedrock`, `ai-gateway`, `azure-foundry`, `opencode-zen`, `opencode-go`, `commandcode`, `commandcode-anthropic`, `kilocode`, `xiaomi`, `arcee`, `gmi`, `actual`, `stepfun`, `lmstudio`, `alibaba`, `alibaba-coding-plan`, `tencent-tokenhub`, `custom`.
+Supported providers: `openrouter`, `nous`, `novita`, `openai-codex`, `copilot`, `copilot-acp`, `anthropic`, `gemini`, `qwen-oauth`, `huggingface`, `zai`, `kimi-coding`, `kimi-coding-cn`, `minimax`, `minimax-cn`, `minimax-oauth`, `deepseek`, `nvidia`, `xai`, `xai-oauth`, `ollama-cloud`, `bedrock`, `ai-gateway`, `azure-foundry`, `opencode-zen`, `opencode-go`, `commandcode`, `commandcode-anthropic`, `kilocode`, `xiaomi`, `arcee`, `gmi`, `actual`, `stepfun`, `lmstudio`, `alibaba`, `alibaba-coding-plan`, `tencent-tokenhub`, `tencent-tokenplan`, `nebius-token-factory`, `router`, `custom`.
 
 :::tip
 Fallback is configured exclusively through `config.yaml` — or interactively via `hermes fallback`. For full details on when it triggers, how the chain advances, and how it interacts with auxiliary tasks and delegation, see [Fallback Providers](/user-guide/features/fallback-providers).

@@ -61,6 +61,21 @@ async function resolveTerminalConnectionForSender(webContentsId, getTarget, ensu
   )
 }
 
+/** A second before-quit must still wait for an in-flight remote kill.
+ *
+ *  teardownSshConnection deletes the sshConnections entry first, then
+ *  SSH-execs kill. backendShutdown's finally() calls app.quit() and
+ *  re-enters before-quit with an empty map. Without `inFlight`, Electron
+ *  exits while disconnect is running and the detached serve --isolated
+ *  stays at pid 1 (post-#95085 leftover on #91668: window X on Windows). */
+function sshQuitShouldBlock({ teardownDone, connectionCount, bootstrapPending, inFlight }) {
+  if (teardownDone) {
+    return false
+  }
+
+  return connectionCount > 0 || bootstrapPending > 0 || Boolean(inFlight)
+}
+
 async function teardownSshState(state, { cleanupRemote }) {
   // Remote process first, while the SSH channel can still exec kill.
   // Then drop the local forward and close the transport. Each step is
@@ -91,5 +106,6 @@ export {
   commitConnectionFailure,
   resolveTerminalConnection,
   resolveTerminalConnectionForSender,
+  sshQuitShouldBlock,
   teardownSshState
 }

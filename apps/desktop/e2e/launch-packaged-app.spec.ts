@@ -46,6 +46,27 @@ test('renderer loads and shows DOM content', async () => {
   expect(childCount).toBeGreaterThan(0)
 })
 
+test('boots to the app UI, not the QueryClient error boundary (#95560)', async () => {
+  const page = fixture!.page
+  await page.waitForSelector('#root', { state: 'attached', timeout: 30_000 })
+
+  // Wait until the root has real content (boot overlay fades, app paints) —
+  // the error boundary also paints, so assert on its absence explicitly.
+  await page.waitForFunction(
+    () => (document.getElementById('root')?.textContent ?? '').trim().length > 0,
+    undefined,
+    { timeout: 60_000 },
+  )
+
+  const text = await page.locator('#root').textContent()
+  // The #95560 crash: a duplicate @tanstack/react-query runtime made the
+  // QueryClientProvider's context invisible to useQuery, so the app hit the
+  // error boundary at launch. Neither the boundary headline nor the throw
+  // message may appear on a healthy boot.
+  expect(text).not.toContain('No QueryClient set')
+  expect(text).not.toContain('Something broke in the interface')
+})
+
 test('HUD composer remains fully inside the transparent window', async () => {
   const hudPagePromise = fixture!.app.waitForEvent('window')
 

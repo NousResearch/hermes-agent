@@ -2,6 +2,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { $desktopBoot } from '@/store/boot'
+import { $notifications } from '@/store/notifications'
 import { $desktopOnboarding } from '@/store/onboarding'
 
 import { BootFailureOverlay } from './boot-failure-overlay'
@@ -279,6 +280,72 @@ describe('BootFailureOverlay', () => {
       await waitFor(() => expect(openExternal).toHaveBeenCalledWith('https://hermes-agent.nousresearch.com/docs/user-guide/desktop'))
     } finally {
       restore()
+    }
+  })
+
+  it.each(['refused', 'thrown', 'unavailable'])('preserves a %s repair failure without reloading', async failure => {
+    const reload = vi.fn()
+    const originalLocation = Object.getOwnPropertyDescriptor(window, 'location')!
+    Object.defineProperty(window, 'location', {
+      configurable: true,
+      value: { ...window.location, reload }
+    })
+
+    const repair = failure === 'unavailable' ? undefined : vi.fn(async () => {
+      if (failure === 'thrown') {
+        throw new Error('installer permission denied')
+      }
+
+      return { ok: false, error: 'bundled-immutable' }
+    })
+
+    const restore = stubDesktop(
+      { mode: 'local' },
+      { repairBootstrap: repair }
+    )
+
+    try {
+      render(<BootFailureOverlay />)
+      fireEvent.click(await screen.findByRole('button', { name: /repair install/i }))
+
+      const message = failure === 'thrown' ? 'installer permission denied'
+        : failure === 'refused' ? 'bundled-immutable' : 'Desktop IPC bridge is unavailable.'
+
+      await waitFor(() => expect($notifications.get()).toEqual(expect.arrayContaining([
+        expect.objectContaining({ kind: 'error', message })
+      ])))
+      expect(reload).not.toHaveBeenCalled()
+      expect(screen.getByRole('button', { name: /repair install/i }).hasAttribute('disabled')).toBe(false)
+    } finally {
+      restore()
+      Object.defineProperty(window, 'location', originalLocation)
+      $notifications.set([])
+    }
+  })
+
+  it('reloads after an accepted repair', async () => {
+    const reload = vi.fn()
+    const originalLocation = Object.getOwnPropertyDescriptor(window, 'location')!
+    Object.defineProperty(window, 'location', {
+      configurable: true,
+      value: { ...window.location, reload }
+    })
+
+    const restore = stubDesktop(
+      { mode: 'local' },
+      { repairBootstrap: vi.fn().mockResolvedValue({ ok: true }) }
+    )
+
+    try {
+      render(<BootFailureOverlay />)
+      fireEvent.click(await screen.findByRole('button', { name: /repair install/i }))
+
+      await waitFor(() => expect(reload).toHaveBeenCalled())
+      expect($notifications.get().some(n => n.kind === 'error')).toBe(false)
+    } finally {
+      restore()
+      Object.defineProperty(window, 'location', originalLocation)
+      $notifications.set([])
     }
   })
 })

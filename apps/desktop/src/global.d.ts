@@ -518,7 +518,7 @@ declare global {
       continueBootstrapLocal: () => Promise<{ ok: boolean }>
       recycleBackend?: (profile?: null | string) => Promise<{ ok: boolean }>
       resetBootstrap: () => Promise<{ ok: boolean }>
-      repairBootstrap: () => Promise<{ ok: boolean }>
+      repairBootstrap: () => Promise<{ ok: boolean; error?: string }>
       cancelBootstrap: () => Promise<{ ok: boolean; cancelled: boolean }>
       onBootstrapEvent: (callback: (payload: DesktopBootstrapEvent) => void) => () => void
       getVersion: () => Promise<DesktopVersionInfo>

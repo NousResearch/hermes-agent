@@ -84,8 +84,7 @@ export function BootFailureOverlay() {
 
   // Bundled installs carry their runtime as an immutable payload — repair
   // would re-run an installer that must never fire for them. Resolve the
-  // artifact kind from the bootstrap snapshot (set by main.ts on setup-choice
-  // broadcast) so the recovery actions swap Repair → "Reinstall the app".
+  // artifact kind from the bootstrap snapshot, including failures before setup.
   useEffect(() => {
     if (!visible) {
       return
@@ -180,10 +179,26 @@ export function BootFailureOverlay() {
     window.location.reload()
   }
 
-  const repair = async () => {
+  const repair = async (): Promise<void> => {
     setBusy('repair')
-    await window.hermesDesktop?.repairBootstrap().catch(() => undefined)
-    window.location.reload()
+
+    try {
+      if (!window.hermesDesktop?.repairBootstrap) {
+        throw new Error(t.boot.errors.ipcBridgeUnavailable)
+      }
+
+      const result = await window.hermesDesktop.repairBootstrap()
+
+      if (!result?.ok) {
+        throw new Error(result?.error || t.boot.errors.desktopBootFailed)
+      }
+
+      window.location.reload()
+    } catch (error) {
+      notifyError(error, t.boot.failure.repairInstall)
+    } finally {
+      setBusy(null)
+    }
   }
 
   const switchToLocalGateway = async () => {

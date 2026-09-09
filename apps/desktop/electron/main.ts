@@ -83,6 +83,7 @@ import {
 } from './bootstrap-platform'
 import { decideBootstrapRepair } from './bootstrap-repair-guard'
 import { runBootstrap } from './bootstrap-runner'
+import { bootstrapSnapshot } from './bootstrap-state'
 import {
   BROWSER_WINDOW_HEIGHT,
   BROWSER_WINDOW_MIN_HEIGHT,
@@ -1950,8 +1951,7 @@ let bootstrapState = {
   startedAt: null,
   completedAt: null,
   setupChoice: null,
-  unsupportedPlatform: null,
-  bundled: false
+  unsupportedPlatform: null
 }
 
 let firstRunSetupGate = null
@@ -2008,11 +2008,10 @@ function broadcastBootstrapEvent(ev) {
           platform: ev.platform,
           activeRoot: ev.activeRoot,
           local: ev.local || 'none',
-          bundled: Boolean(ev.bundled)
+          bundled: installShape() === 'bundled'
         }
       : null
     bootstrapState.unsupportedPlatform = null
-    bootstrapState.bundled = Boolean(ev.bundled)
   } else if (ev.type === 'dismissed') {
     resetBootstrapSnapshot()
   }
@@ -2031,10 +2030,10 @@ function broadcastBootstrapEvent(ev) {
 }
 
 function getBootstrapState() {
-  return bootstrapState
+  return bootstrapSnapshot(bootstrapState)
 }
 
-function resetBootstrapSnapshot() {
+function resetBootstrapSnapshot(): void {
   bootstrapState = {
     active: false,
     manifest: null,
@@ -2044,8 +2043,7 @@ function resetBootstrapSnapshot() {
     startedAt: null,
     completedAt: null,
     setupChoice: null,
-    unsupportedPlatform: null,
-    bundled: false
+    unsupportedPlatform: null
   }
 }
 
@@ -4197,9 +4195,8 @@ function isActiveRuntimeUsable() {
     isHermesSourceRoot(ACTIVE_HERMES_ROOT) &&
     fileExists(venvPython) &&
     canImportHermesCli(venvPython, {
-      env: {
-        PYTHONPATH: [ACTIVE_HERMES_ROOT, process.env.PYTHONPATH].filter(Boolean).join(path.delimiter)
-      }
+      cwd: ACTIVE_HERMES_ROOT,
+      env: { HERMES_HOME }
     })
   )
 }

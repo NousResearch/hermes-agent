@@ -1904,6 +1904,45 @@ def _final_request_options(anthropic_sdk):
     return FinalRequestOptions(method="post", url="/v1/messages", json_data={})
 
 
+def _start_header_capturing_server():
+    """Local HTTP server that records the headers of each POST and returns a minimal Messages
+    response. Returns ``(server, captured)``; the caller derives the base_url from
+    ``server.server_port`` and must call ``server.shutdown()``. Used by the fail-closed fallback
+    tests, where the strip happens at the httpx transport layer (not in ``_build_headers``) and so
+    can only be observed on a real request."""
+    import json as _json
+    import threading
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+
+    captured = {}
+
+    class _Handler(BaseHTTPRequestHandler):
+        def do_POST(self):
+            captured["headers"] = {k.lower(): v for k, v in self.headers.items()}
+            self.rfile.read(int(self.headers.get("content-length", 0)))
+            body = _json.dumps({
+                "id": "msg_test",
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "text", "text": "ok"}],
+                "model": "test",
+                "stop_reason": "end_turn",
+                "usage": {"input_tokens": 1, "output_tokens": 1},
+            }).encode()
+            self.send_response(200)
+            self.send_header("content-type", "application/json")
+            self.send_header("content-length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args):
+            pass
+
+    server = HTTPServer(("127.0.0.1", 0), _Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server, captured
+
+
 class TestApiKeyConstructionClearsEnvBearerToken:
     """Api-key-style clients must not inherit ANTHROPIC_AUTH_TOKEN from the environment.
 
@@ -2052,3 +2091,32 @@ class TestApiKeyConstructionClearsEnvBearerToken:
         headers = captured["headers"]
         assert headers.get("x-api-key") == "third-party-provider-key"
         assert "sentinel-env-token-DO-NOT-SEND" not in headers.get("authorization", "")
+
+    def test_api_key_style_fails_closed_when_omit_unavailable(self, monkeypatch):
+        """When ``anthropic._types.Omit`` cannot be imported, the copy-safe Omit default header
+        is unavailable — but the api-key path must still not leak ANTHROPIC_AUTH_TOKEN. It falls
+        back to a request hook that strips Authorization on the wire (the strip is at the httpx
+        transport layer, hence the real request), on the original client AND on a with_options()
+        copy, while x-api-key and request success are preserved."""
+        anthropic_sdk = pytest.importorskip("anthropic")
+        monkeypatch.setenv("ANTHROPIC_AUTH_TOKEN", "sentinel-env-token-DO-NOT-SEND")
+        monkeypatch.setattr("agent.anthropic_adapter._sdk_omit_sentinel", lambda sdk: None)
+
+        server, captured = _start_header_capturing_server()
+        try:
+            client = build_anthropic_client(
+                "third-party-provider-key",
+                base_url=f"http://127.0.0.1:{server.server_port}",
+            )
+            for wire_client in (client, client.with_options(timeout=30)):
+                captured.clear()
+                wire_client.messages.create(
+                    model="test-model",
+                    max_tokens=8,
+                    messages=[{"role": "user", "content": "hi"}],
+                )
+                headers = captured["headers"]
+                assert headers.get("x-api-key") == "third-party-provider-key"
+                assert "sentinel-env-token-DO-NOT-SEND" not in headers.get("authorization", "")
+        finally:
+            server.shutdown()

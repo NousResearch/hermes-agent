@@ -62,7 +62,7 @@ def _unlink_sidecars(db_path: Path) -> None:
 
 @pytest.mark.linux_only  # deleted-WAL write halt uses Linux unlink semantics
 def test_close_after_halt_runs_no_checkpoint(tmp_path, force_wal):
-    """A writer halted by DeletedWalGenerationError must not checkpoint on close()."""
+    """A writer halted by DeletedWalGenerationError must not checkpoint (periodic or close) nor run FTS repair."""
     path = tmp_path / "state.db"
     db = _make_db(path, "s", "before")
     _require_wal(db)
@@ -72,8 +72,11 @@ def test_close_after_halt_runs_no_checkpoint(tmp_path, force_wal):
         db.append_message("s", role="user", content="after-unlink")
     assert db._db_wal_generation_lost is True
 
-    # close() must not run the explicit PRAGMA wal_checkpoint(PASSIVE).
+    # Neither the periodic checkpoint, the stale-FTS retry, nor close() may touch the file now.
     with patch.object(db._conn, "execute", wraps=db._conn.execute) as mock_execute:
+        db._try_wal_checkpoint()
+        db._fts_stale = True
+        assert db.retry_deferred_fts_recovery() is False
         db.close()
         # No checkpoint call should have been made.
         checkpoint_calls = [
@@ -117,31 +120,5 @@ def test_halt_disables_close_time_checkpoint(tmp_path, force_wal):
         ]
         assert disable_calls, (
             "halt did not call setconfig(SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE, True)"
-        )
-    db.close()
-
-
-@pytest.mark.linux_only  # deleted-WAL write halt uses Linux unlink semantics
-def test_try_wal_checkpoint_skips_when_generation_lost(tmp_path, force_wal):
-    """The periodic _try_wal_checkpoint() must skip when _db_wal_generation_lost is set."""
-    path = tmp_path / "state.db"
-    db = _make_db(path, "s", "before")
-    _require_wal(db)
-    _unlink_sidecars(path)
-
-    with pytest.raises(DeletedWalGenerationError):
-        db.append_message("s", role="user", content="after-unlink")
-    assert db._db_wal_generation_lost is True
-
-    # Directly call _try_wal_checkpoint() — it must skip silently.
-    with patch.object(db._conn, "execute", wraps=db._conn.execute) as mock_execute:
-        db._try_wal_checkpoint()
-        checkpoint_calls = [
-            call
-            for call in mock_execute.call_args_list
-            if "wal_checkpoint" in str(call).lower()
-        ]
-        assert not checkpoint_calls, (
-            "_try_wal_checkpoint() ran a checkpoint on a quarantined handle"
         )
     db.close()

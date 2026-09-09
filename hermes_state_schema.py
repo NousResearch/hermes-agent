@@ -501,9 +501,10 @@ class SessionSchemaMixin:
         """
         if not self._fts_stale:
             return False
-        if getattr(self, "_db_corrupt", False):
-            # Quarantined: never run FTS DDL/DML against a damaged image (mirrors _try_wal_checkpoint /
-            # close). Reset the backoff so a future un-quarantine starts from the default interval.
+        if self._quarantine_reason() is not None:
+            # Quarantined: never run FTS DDL/DML against a damaged image or a stale/replaced generation
+            # (mirrors _try_wal_checkpoint / close). Reset the backoff so a future un-quarantine starts
+            # from the default interval.
             self._fts_stale_retry_after = 0.0
             self._fts_stale_retry_interval = 0.0
             return False

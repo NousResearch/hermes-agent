@@ -1052,7 +1052,8 @@ class SessionDB(
     def _disable_close_time_checkpoint(self) -> None:
         """Best-effort SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE (Python 3.12+): sqlite3's
         close() otherwise runs the internal last-connection checkpoint that wrote
-        the incident's pages under wrong page numbers (see StateDbCorruptError).
+        the incident's pages under wrong page numbers (see StateDbCorruptError and
+        the generation-loss halts).
         <3.12 has no setconfig; the residual checkpoint only carries
         pre-quarantine committed frames, which is tolerable."""
         flag = getattr(sqlite3, "SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE", None)
@@ -1090,6 +1091,19 @@ class SessionDB(
         """Foreign processes holding this DB or its WAL sidecars (see hermes_state_holders)."""
         return _foreign_state_db_holders(self.db_path)
 
+    def _quarantine_reason(self) -> Optional[str]:
+        """Why this handle must not checkpoint or run in-file repair, or None. A corrupted image has
+        torn B-trees; a replaced file or a deleted/replaced WAL generation would checkpoint under
+        wrong page numbers into the main DB -- the shutdown-time cause of #105670. Same precedence
+        as the halt path (replaced is checked before generation loss)."""
+        if self._db_corrupt:
+            return f"structural corruption ({self._db_corrupt_reason})"
+        if self._db_replaced:
+            return "a replaced state.db file"
+        if self._db_wal_generation_lost:
+            return "a deleted WAL generation (split-brain)"
+        return None
+
     def _try_wal_checkpoint(self) -> None:
         """Best-effort PASSIVE WAL checkpoint; never raises. PASSIVE never blocks writers;
         TRUNCATE corrupted B-trees on 65K+ page databases under exclusive-lock I/O pressure.
@@ -1097,8 +1111,7 @@ class SessionDB(
         Previous TRUNCATE strategy caused B-tree corruption on large databases (65K+ pages) due to the
         exclusive-lock I/O pressure from checkpointing thousands of frames at once (issue #45383).
         """
-        # Quarantined: never checkpoint over a damaged image or a stale/replaced generation.
-        if self._db_corrupt or self._db_wal_generation_lost or self._db_replaced:
+        if self._quarantine_reason() is not None:
             return
         try:
             with self._lock:
@@ -1153,16 +1166,8 @@ class SessionDB(
             pass
         with self._lock:
             if self._conn:
-                # Quarantined handles must not checkpoint: a corrupted image has torn B-trees, and a
-                # stale (deleted/replaced) WAL generation would checkpoint under wrong page numbers
-                # into the main DB -- the shutdown-time cause of #105670.
-                quarantine_reason = (
-                    f"structural corruption ({self._db_corrupt_reason})" if self._db_corrupt
-                    else "a deleted WAL generation (split-brain)" if self._db_wal_generation_lost
-                    else "a replaced state.db file" if self._db_replaced
-                    else None
-                )
-                if quarantine_reason:
+                quarantine_reason = self._quarantine_reason()
+                if quarantine_reason is not None:
                     logger.warning(
                         "Skipping the close-time WAL checkpoint for %s: this "
                         "handle observed %s. Take a snapshot of state.db, -wal and -shm "

@@ -347,7 +347,7 @@ export function useStatusbarItems({
 
   const approvalModeItem = useApprovalModeStatusbarItem(activeGatewayProfile, requestApprovalModeGateway)
   // Same backend as the approvals pill it guards: an unlock must reach the gateway that write goes to.
-  const settingsLockItem = useSettingsLockStatusbarItem(requestApprovalModeGateway)
+  const settingsLockItem = useSettingsLockStatusbarItem(requestApprovalModeGateway, gatewayState === 'open')
   const systemResourcesItem = useSystemResourcesStatusbarItem()
 
   const gatewayMenuContent = useMemo(

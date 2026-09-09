@@ -37,6 +37,28 @@
           ];
         };
 
+      # Same as evalNixosModule, but lets a check declare extra NixOS config
+      # (e.g. a users.users entry) alongside the hermes-agent settings.
+      evalNixosModuleWith =
+        extra: settings:
+        inputs.nixpkgs.lib.evalModules {
+          modules = import "${inputs.nixpkgs}/nixos/modules/module-list.nix" ++ [
+            inputs.self.nixosModules.default
+            { _module.args.lib = inputs.nixpkgs.lib; }
+            { nixpkgs.hostPlatform = pkgs.stdenv.hostPlatform.system; }
+            {
+              system.stateVersion = "24.11";
+              boot.loader.grub.enable = false;
+              fileSystems."/" = {
+                device = "/dev/null";
+                fsType = "ext4";
+              };
+            }
+            extra
+            { services.hermes-agent = settings; }
+          ];
+        };
+
       evalHomeModule =
         settings:
         inputs.home-manager.lib.homeManagerConfiguration {
@@ -1020,6 +1042,64 @@ if mismatches:
           );
 
         # ── Declarative named profiles (NixOS) ───────────────────────────
+        # A profile workingDirectory under another user's unreadable home must
+        # be rejected at eval time, not discovered as an EACCES during
+        # activation. The permissive variants must stay accepted.
+        nixos-profile-working-directory-reach =
+          let
+            homeOf = mode: {
+              users.users.chad = {
+                isNormalUser = true;
+                home = "/home/chad";
+                homeMode = mode;
+              };
+            };
+            assertionsFor =
+              mode:
+              let
+                cfg = (evalNixosModuleWith (homeOf mode) {
+                  enable = true;
+                  profiles.engineer.workingDirectory = "/home/chad/hermes";
+                }).config;
+              in
+              map (a: a.message) (lib.filter (a: !a.assertion) cfg.assertions);
+
+            blocked = assertionsFor "0700";
+            traversable = assertionsFor "0711";
+
+            # A workspace outside any home must never trip the assertion.
+            neutral =
+              let
+                cfg = (evalNixosModuleWith (homeOf "0700") {
+                  enable = true;
+                  profiles.engineer.workingDirectory = "/srv/hermes/engineer";
+                }).config;
+              in
+              map (a: a.message) (lib.filter (a: !a.assertion) cfg.assertions);
+
+            mentionsWorkspace = msgs: lib.any (m: lib.hasInfix "cannot traverse" m) msgs;
+
+            failures =
+              lib.optional (
+                !mentionsWorkspace blocked
+              ) "a profile workingDirectory under a 0700 home of another user must fail evaluation"
+              ++ lib.optional (
+                mentionsWorkspace traversable
+              ) "a profile workingDirectory under a 0711 home must be accepted"
+              ++ lib.optional (
+                mentionsWorkspace neutral
+              ) "a profile workingDirectory outside every home must be accepted";
+          in
+          pkgs.runCommand "hermes-nixos-profile-working-directory-reach" { } (
+            if failures != [ ] then
+              throw "NixOS profile workingDirectory check failed:\n${lib.concatMapStringsSep "\n" (f: "  - ${f}") failures}"
+            else
+              ''
+                mkdir -p $out
+                echo "PASS: unreachable profile working directories are rejected at eval time" > $out/result
+              ''
+          );
+
         nixos-profiles =
           let
             evaluated = evalNixosModule {
@@ -1091,8 +1171,14 @@ if mismatches:
                 !(lib.elem "d /srv/hermes-research 2770 hermes hermes - -" cfg.systemd.tmpfiles.rules)
               ) "the external profile working directory must have an explicit tmpfiles ownership rule"
               ++ lib.optional (
-                !lib.hasInfix "runuser -u hermes -g hermes -- mkdir -p /var/lib/hermes/.hermes/profiles/coder" activation
-              ) "activation must create the coder profile home as the unprivileged service user"
+                lib.hasInfix "runuser -u hermes -g hermes -- mkdir -p" activation
+              ) "activation must not re-create tmpfiles-provisioned profile directories as the unprivileged service user"
+              ++ lib.optional (
+                lib.hasInfix "runuser -u hermes -g hermes -- mkdir -p /srv/hermes-research" activation
+              ) "an external profile working directory must never be created by the unprivileged service user"
+              ++ lib.optional (
+                !lib.hasInfix "mkdir -p /var/lib/hermes/.hermes\n" activation
+              ) "the default profile must still provision its own directories during activation"
               ++ lib.optional (
                 !lib.hasInfix "/var/lib/hermes/.hermes/profiles/coder/config.yaml 0640" activation
               ) "activation must atomically install generated profile config with its final mode"

@@ -352,6 +352,11 @@
           run = runAsProfileUser;
           manageConfig = profile.configFile == null;
           stateDirs = common.stateSubdirs;
+          # systemd-tmpfiles already created the profile home, its state
+          # subdirectories and workingDirectory as root just above. Repeating
+          # that as cfg.user would fail for any workingDirectory outside a
+          # tree that user can traverse (e.g. another user's 0700 home).
+          provisionDirectories = false;
           modes = {
             config = configYamlMode;
             env = "0640";
@@ -561,6 +566,11 @@
               ++ profilePluginAssertions
               ++ common.profileNameAssertions {
                 profiles = cfg.profiles;
+                optionPath = "services.hermes-agent.profiles";
+              }
+              ++ common.profileWorkingDirectoryAssertions {
+                inherit cfg;
+                users = config.users.users;
                 optionPath = "services.hermes-agent.profiles";
               }
               ++ common.workspaceFilesAssertions {

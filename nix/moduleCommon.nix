@@ -820,6 +820,14 @@ let
       manageConfig ? true,
       modes,
       stateDirs ? [ ],
+      # Whether this helper creates hermesHome, workingDirectory and the
+      # stateDirs itself. Callers that run unprivileged (the NixOS profile
+      # path drops to cfg.user via runuser) cannot mkdir outside trees that
+      # user already owns, so they provision the same set as root through
+      # systemd-tmpfiles beforehand and set this to false. Creating them a
+      # second time unprivileged is redundant, and it hard-fails activation
+      # when workingDirectory sits outside cfg.user's reach.
+      provisionDirectories ? true,
       # The module writes this value into the .managed marker. An
       # interactive shell reads the marker, because it does not see the
       # HERMES_MANAGED variable of the service. The value tells the shell
@@ -864,16 +872,19 @@ let
       # Directories. The service units and Hermes make most of these
       # directories when they first need them. Activation makes them here so
       # that the first activation sets the correct owner and mode, and does
-      # not use the umask.
-      ${run}mkdir -p ${
-        lib.escapeShellArgs (
-          [
-            hermesHome
-            workingDirectory
-          ]
-          ++ map (d: "${hermesHome}/${d}") stateDirs
-        )
-      }
+      # not use the umask. A caller that already provisioned them as root
+      # (see provisionDirectories) skips this.
+      ${lib.optionalString provisionDirectories ''
+        ${run}mkdir -p ${
+          lib.escapeShellArgs (
+            [
+              hermesHome
+              workingDirectory
+            ]
+            ++ map (d: "${hermesHome}/${d}") stateDirs
+          )
+        }
+      ''}
 
       # config.yaml: merge the Nix settings into the file on disk. Hermes
       # writes this file at runtime. A read-only symlink to the Nix store
@@ -1145,6 +1156,66 @@ let
       }
     ];
 
+  # A profile's workingDirectory is provisioned by systemd-tmpfiles as root,
+  # but everything afterwards (config, .env, documents) is written as
+  # cfg.user, and the gateway unit runs with it as WorkingDirectory. Both
+  # need to *traverse* every parent. A path under another user's home is the
+  # case that actually happens, and NixOS knows those modes at eval time, so
+  # catch it here instead of failing activation with a bare EACCES.
+  profileWorkingDirectoryAssertions =
+    {
+      cfg,
+      users,
+      optionPath,
+    }:
+    let
+      # "0700" and "700" both occur; take the last three digits.
+      digits = mode: let s = toString mode; n = lib.stringLength s; in
+        if n >= 3 then lib.substring (n - 3) 3 s else s;
+      execBit = d: lib.elem d [ "1" "3" "5" "7" ];
+      groupExec = mode: execBit (lib.substring 1 1 (digits mode));
+      otherExec = mode: execBit (lib.substring 2 1 (digits mode));
+
+      # Homes that cfg.user cannot traverse. Owner-execute does not help:
+      # the owner is someone else by construction.
+      unreachable = lib.filterAttrs (
+        name: u:
+        name != cfg.user
+        && u.home != null
+        && u.home != ""
+        && u.home != "/var/empty"
+        && !(otherExec u.homeMode || (groupExec u.homeMode && u.group == cfg.group))
+      ) users;
+
+      offenders = lib.concatLists (
+        lib.mapAttrsToList (
+          profileName: profile:
+          lib.mapAttrsToList (userName: u: {
+            inherit profileName userName;
+            inherit (u) home homeMode;
+            inherit (profile) workingDirectory;
+          }) (lib.filterAttrs (_n: u: lib.hasPrefix "${u.home}/" profile.workingDirectory) unreachable)
+        ) cfg.profiles
+      );
+    in
+    map (o: {
+      assertion = false;
+      message = ''
+        ${optionPath}.${o.profileName}.workingDirectory is set to
+        ${o.workingDirectory}, which lives under ${o.userName}'s home
+        (${o.home}, mode ${toString o.homeMode}).
+
+        Profile setup and the profile gateway both run as '${cfg.user}', which
+        cannot traverse that directory, so activation and the service would
+        fail with "Permission denied". The default profile does not hit this
+        because its activation runs as root.
+
+        Put the workspace somewhere '${cfg.user}' can reach, for example
+        /srv/hermes/${o.profileName}, or widen ${o.home} with
+        users.users.${o.userName}.homeMode = "0711".
+      '';
+    }) offenders;
+
   profileReservedNames = [
     "default"
     "hermes"
@@ -1224,6 +1295,7 @@ in
     pluginNameAssertions
     profileNameAssertions
     profileReservedNames
+    profileWorkingDirectoryAssertions
     processEnvironment
     processPath
     profileOptions

@@ -198,6 +198,28 @@ class PluginDispatchMixin:
                     "Hook '%s' callback %s raised: %s", hook_name, getattr(cb, "__name__", repr(cb)), exc)
         return results
 
+    async def invoke_hook_async(self, hook_name: str, **kwargs: Any) -> List[Any]:
+        """Await callbacks in order on the caller loop, preserving narrow signatures.
+
+        For async policy gates such as pre_gateway_dispatch: completion or an
+        exception must precede dispatch; no worker-thread timeout is introduced.
+        The synchronous dispatcher's bounded-hook policy is unchanged.
+        """
+        if hook_name != "gateway_platform_event":
+            kwargs.setdefault("telemetry_schema_version", OBSERVER_SCHEMA_VERSION)
+        results: List[Any] = []
+        for cb in self._hooks.get(hook_name, []):
+            try:
+                result = self._invoke_hook_callback(cb, kwargs)
+                if inspect.isawaitable(result):
+                    result = await result
+                if result is not None:
+                    results.append(result)
+            except Exception as exc:
+                logger.warning(
+                    "Hook '%s' callback %s raised: %s", hook_name, getattr(cb, "__name__", repr(cb)), exc)
+        return results
+
     def _run_hook_callback_bounded(
         self, hook_name: str, cb: Callable, kwargs: Dict[str, Any], timeout: float
     ) -> Any:

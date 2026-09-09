@@ -1667,6 +1667,11 @@ def _delivery_manager() -> PluginManager:
     return manager
 
 
+async def invoke_hook_async(hook_name: str, **kwargs: Any) -> List[Any]:
+    """Lazily discover plugins, then await hooks on the caller's event loop."""
+    return await _delivery_manager().invoke_hook_async(hook_name, **kwargs)
+
+
 def invoke_hook(hook_name: str, **kwargs: Any) -> List[Any]:
     """Invoke a lifecycle hook (lazy-discovers first); return non-``None`` callback results.
 

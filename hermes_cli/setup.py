@@ -362,52 +362,6 @@ def _print_banner(*lines: str) -> None:
     print(color("└─────────────────────────────────────────────────────────┘", Colors.MAGENTA))
 
 
-def _prompt_container_resources(config: dict):
-    """Prompt for container resource settings (Docker, Singularity, Modal, Daytona)."""
-    terminal = config.setdefault("terminal", {})
-
-    print()
-    print_info("Container Resource Settings:")
-
-    # Persistence
-    current_persist = terminal.get("container_persistent", True)
-    persist_label = "yes" if current_persist else "no"
-    print_info("  Persistent filesystem keeps files between sessions.")
-    print_info("  Set to 'no' for ephemeral sandboxes that reset each time.")
-    persist_str = prompt(
-        "  Persist filesystem across sessions? (yes/no)", persist_label
-    )
-    terminal["container_persistent"] = persist_str.lower() in {"yes", "true", "y", "1"}
-
-    # CPU
-    current_cpu = terminal.get("container_cpu", 1)
-    cpu_str = prompt("  CPU cores", str(current_cpu))
-    try:
-        terminal["container_cpu"] = float(cpu_str)
-    except ValueError:
-        pass
-
-    # Memory
-    current_mem = terminal.get("container_memory", 5120)
-    mem_str = prompt("  Memory in MB (5120 = 5GB)", str(current_mem))
-    try:
-        terminal["container_memory"] = int(mem_str)
-    except ValueError:
-        pass
-
-    # Disk
-    current_disk = terminal.get("container_disk", 51200)
-    disk_str = prompt("  Disk in MB (51200 = 50GB)", str(current_disk))
-    try:
-        terminal["container_disk"] = int(disk_str)
-    except ValueError:
-        pass
-
-
-# Tool categories and provider config are now in tools_config.py (shared
-# between `hermes tools` and `hermes setup tools`).
-
-
 # =============================================================================
 # Section 1: Model & Provider Configuration
 # =============================================================================

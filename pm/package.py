@@ -161,9 +161,6 @@ class Package:
                 diff["PATH"] = [str(binary.parent)]
         return diff
 
-    def migrate(self, previous_version: str, version: str) -> None:
-        """User-state migration on version change."""
-
 
 class DebPackage(Package):
     """A .deb artifact staged by ar+tar extraction (never dpkg, never

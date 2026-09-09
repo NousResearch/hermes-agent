@@ -302,19 +302,16 @@ def test_deps_compose_dependents_win(pm_env):
     assert path.index("toptool-1.0") < path.index("deptool-1.0")
 
 
-def test_version_bump_reinstalls_and_migrates(pm_env):
+def test_version_bump_selects_the_new_tool(pm_env):
     from pm.ensure import ensure
 
     lockfile_path, _, docroot, _ = pm_env
-    migrations = []
-    registry._packages["faketool"].migrate = lambda prev, new: migrations.append((prev, new))
 
     ensure("faketool", base_env={})
     name, digest = make_tar(docroot, "faketool-2.0.tar.gz", {"bin/faketool": "#!2"})
     _pin(lockfile_path, "faketool", "2.0", digest)
     runner = ensure("faketool", base_env={})
     assert "faketool-2.0" in runner.env["PATH"]
-    assert migrations == [("1.0", "2.0")]
 
 
 def test_lazy_installs_disabled(pm_env, monkeypatch):

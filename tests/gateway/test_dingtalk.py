@@ -765,3 +765,63 @@ class TestDingTalkAdapterAICards:
         mock_card_sdk.deliver_card_with_options_async.assert_called_once()
         mock_card_sdk.streaming_update_with_options_async.assert_called_once()
         assert result.success is True
+
+
+class TestResolveMediaCodes:
+    """Media codes resolve through the robot API."""
+
+    @pytest.mark.parametrize("message_type", ["file", "image"])
+    def test_resolves_codes_from_every_payload_shape(self, message_type):
+        from plugins.platforms.dingtalk.adapter import DingTalkAdapter
+
+        adapter = DingTalkAdapter(PlatformConfig(enabled=True))
+        adapter._client_id = "robot-x"
+        message = SimpleNamespace(
+            robot_code=None,
+            image_content=SimpleNamespace(download_code="dl-img"),
+            rich_text_content=SimpleNamespace(rich_text_list=[
+                {"downloadCode": "dl-rich"},
+                {"pictureDownloadCode": "dl-pic"},
+                {"download_code": "dl-snake"},
+            ]),
+            message_type=message_type,
+            extensions={"content": {"downloadCode": "dl-ext"}},
+        )
+
+        seen = []
+
+        async def fetch(request, headers, runtime):
+            seen.append((request.download_code, request.robot_code, headers.x_acs_dingtalk_access_token))
+            return SimpleNamespace(body=SimpleNamespace(download_url=f"https://example.test/{request.download_code}"))
+
+        adapter._get_access_token = AsyncMock(return_value="tok")
+        adapter._robot_sdk = SimpleNamespace(
+            robot_message_file_download_with_options_async=AsyncMock(side_effect=fetch),
+        )
+        asyncio.run(adapter._resolve_media_codes(message))
+        assert sorted(seen) == [
+            ("dl-ext", "robot-x", "tok"),
+            ("dl-img", "robot-x", "tok"),
+            ("dl-pic", "robot-x", "tok"),
+            ("dl-rich", "robot-x", "tok"),
+            ("dl-snake", "robot-x", "tok"),
+        ]
+        assert message.image_content.download_code == "https://example.test/dl-img"
+        assert message.rich_text_content.rich_text_list == [
+            {"downloadCode": "https://example.test/dl-rich"},
+            {"pictureDownloadCode": "https://example.test/dl-pic"},
+            {"download_code": "https://example.test/dl-snake"},
+        ]
+        assert message.extensions["content"]["downloadCode"] == "https://example.test/dl-ext"
+
+    @pytest.mark.parametrize("has_token,has_codes", [(False, True), (True, False)])
+    def test_missing_token_or_codes_never_fetches(self, has_token, has_codes):
+        from plugins.platforms.dingtalk.adapter import DingTalkAdapter
+
+        adapter = DingTalkAdapter(PlatformConfig(enabled=True))
+        message = SimpleNamespace(image_content=SimpleNamespace(download_code="dl") if has_codes else None)
+        adapter._get_access_token = AsyncMock(return_value="tok" if has_token else None)
+        fetch = AsyncMock()
+        adapter._robot_sdk = SimpleNamespace(robot_message_file_download_with_options_async=fetch)
+        asyncio.run(adapter._resolve_media_codes(message))
+        fetch.assert_not_called()

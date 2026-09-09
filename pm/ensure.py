@@ -324,8 +324,6 @@ def _install(
                 else version
             )
             LOG.info("repair: %s re-realized %s -> %s", package.name, old, new)
-        if previous and previous.get("version") != version:
-            package.migrate(previous["version"], version)
 
 
 def stage_only(name: str, target: str, progress=None) -> "Path":

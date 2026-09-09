@@ -6403,12 +6403,3 @@ def _pm_runtime_venv_dir(project_root: Path | None = None) -> Path | None:
     venv = selected_venv(root)  # a malformed committed selection raises: fail closed
     return venv if venv.is_dir() else None
 
-def _systemd_watchdog_service_fields(
-    hermes_home: str | Path | None = None,
-) -> tuple[str, str]:
-    """Return systemd service fields for the effective gateway config."""
-    seconds = _systemd_watchdog_seconds(hermes_home)
-    if seconds <= 0:
-        return "simple", ""
-    return "notify", f"NotifyAccess=main\nWatchdogSec={seconds}s\n"
-

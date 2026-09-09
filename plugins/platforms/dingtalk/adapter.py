@@ -51,7 +51,7 @@ from gateway.platforms.helpers import MessageDeduplicator, compile_mention_patte
 from gateway.platforms.base import BasePlatformAdapter, SendResult
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.platforms._shared import get_scoped_secret as _get_scoped_secret
-from plugins.platforms.dingtalk.inbound import DINGTALK_TYPE_MAPPING
+from plugins.platforms.dingtalk.inbound import DINGTALK_TYPE_MAPPING, collect_download_codes
 
 
 logger = logging.getLogger(__name__)
@@ -1421,32 +1421,7 @@ class DingTalkAdapter(BasePlatformAdapter):
             return
 
         robot_code = getattr(message, "robot_code", None) or self._client_id
-        codes_to_resolve = []
-
-        # Collect codes and references to update
-        # 1. Single image content
-        img_content = getattr(message, "image_content", None)
-        if img_content and getattr(img_content, "download_code", None):
-            codes_to_resolve.append((img_content, "download_code"))
-
-        # 2. Rich text list
-        rich_text = getattr(message, "rich_text_content", None)
-        if rich_text:
-            rich_list = getattr(rich_text, "rich_text_list", []) or []
-            for item in rich_list:
-                if isinstance(item, dict):
-                    for key in ("downloadCode", "pictureDownloadCode", "download_code"):
-                        if item.get(key):
-                            codes_to_resolve.append((item, key))
-
-        # 3. File/image message (msgtype='file' or 'image', codes in extensions)
-        msg_type_str = getattr(message, "message_type", "") or ""
-        if msg_type_str in ("file", "image"):
-            extensions = getattr(message, "extensions", {}) or {}
-            ext_content = extensions.get("content", {})
-            if isinstance(ext_content, dict) and ext_content.get("downloadCode"):
-                codes_to_resolve.append((ext_content, "downloadCode"))
-
+        codes_to_resolve = collect_download_codes(message)
         if not codes_to_resolve:
             return
 

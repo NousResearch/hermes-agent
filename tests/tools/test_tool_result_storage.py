@@ -917,6 +917,21 @@ class TestEnforceTurnBudgetEdgeCases:
         result = enforce_turn_budget(msgs, env=None, config=BudgetConfig(turn_budget=200_000))
         assert result is msgs
 
+    def test_missing_content_key_over_budget_does_not_crash(self):
+        """A message without a content key must not raise KeyError when the
+        enforcement loop reaches it — the budget is still exceeded after the
+        larger candidate is persisted, so the loop processes the content-less
+        message too. Candidate discovery uses msg.get("content", ""); the
+        enforcement access must stay consistent."""
+        env = MagicMock()
+        env.execute.return_value = {"output": "", "returncode": 0}
+        msgs = [
+            {"role": "tool", "tool_call_id": "t1", "content": "x" * 250_000},
+            {"role": "tool", "tool_call_id": "t2"},  # no content key
+        ]
+        result = enforce_turn_budget(msgs, env=env, config=BudgetConfig(turn_budget=100))
+        assert PERSISTED_OUTPUT_TAG in msgs[0]["content"]
+
     def test_all_already_persisted(self):
         """When all results are already persisted, no changes."""
         msgs = [

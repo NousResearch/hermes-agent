@@ -146,14 +146,17 @@ describe('VaultSettings', () => {
       { name: 'onepassword', display_name: '1Password', enabled: true, needs_unlock: true, unlocked: false, installed: true },
       { name: 'bitwarden', display_name: 'Bitwarden', enabled: false, needs_unlock: true, unlocked: false, installed: false }
     ]
+
     requestGateway.mockImplementation(async (method: string) => {
       if (method === 'vault.list') {
         // An external item has no delete affordance; its manager is shown as a source badge instead.
         return { items: [{ ...LOGIN_ITEM, id: 'op:xyz', label: 'GitHub via 1Password', backend: 'onepassword' }] }
       }
+
       if (method === 'vault.sources') {
         return { sources: sources.map(source => ({ ...source })) }
       }
+
       if (method === 'vault.unlock') {
         sources[0] = { ...sources[0], unlocked: true }
 

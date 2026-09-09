@@ -32,6 +32,7 @@ import { ListRow, Pill, SectionHeading, SettingsContent } from './primitives'
 
 // Vault data is private to one (connection, profile); the cache key carries that owner so a
 // late response from profile A can never paint under profile B.
+export const vaultOwnerKey = (connectionId: null | string, profile: string) => `${connectionId ?? ''}::${profile}`
 const vaultQueryKey = (owner: string) => ['vault-items', owner] as const
 const vaultSourcesQueryKey = (owner: string) => ['vault-sources', owner] as const
 
@@ -151,17 +152,20 @@ export function VaultSettings() {
   const v = t.settings.vault
   const gatewayState = useStore($gatewayState)
   const queryClient = useQueryClient()
-  // The owner this panel edits: pinned per render, and every RPC below goes through the owner's
-  // socket with an explicit profile — never the ambient foreground gateway. Changing owner
-  // (profile switch, connection swap) closes every dialog and wipes drafts (see the effect below).
+  // The owner this panel edits: every RPC below goes through the owner's socket with an explicit
+  // profile — never the ambient foreground gateway. The mount site keys the panel by this same
+  // owner, so a profile switch / connection swap remounts it: dialogs close and drafts (including a
+  // typed master password) are gone by construction rather than by cleanup code.
   const scopeProfile = useStore($settingsScopeProfile)
   const connectionId = useStore($activeConnectionId)
-  const owner = `${connectionId ?? ''}::${scopeProfile}`
+  const owner = vaultOwnerKey(connectionId, scopeProfile)
+
   const requestGateway = useCallback(
     <T,>(method: string, params: Record<string, unknown> = {}) =>
       requestGatewayForProfile<T>(scopeProfile, method, params),
     [scopeProfile]
   )
+
   const VAULT_QUERY_KEY = useMemo(() => vaultQueryKey(owner), [owner])
   const VAULT_SOURCES_QUERY_KEY = useMemo(() => vaultSourcesQueryKey(owner), [owner])
   const [searchParams, setSearchParams] = useSearchParams()
@@ -178,18 +182,6 @@ export function VaultSettings() {
   const pendingMasterPassword = useRef('')
   const pendingSecret = useRef<null | Record<string, string>>(null)
 
-  useEffect(() => {
-    // A draft typed for one owner must not be submitted to another.
-    setAddOpen(false)
-    setForm(EMPTY_FORM)
-    setFormError(null)
-    setPendingDelete(null)
-    setUnlockTarget(null)
-    setMasterPassword('')
-    setUnlockError(null)
-    pendingMasterPassword.current = ''
-    pendingSecret.current = null
-  }, [owner])
 
   const { data: sourcesData } = useQuery({
     enabled: gatewayState === 'open',

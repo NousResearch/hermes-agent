@@ -21,11 +21,14 @@ vi.mock('@/store/gateway', async importActual => ({
 vi.mock('@/lib/haptics', () => ({ triggerHaptic: vi.fn() }))
 vi.mock('@/store/notifications', () => ({ notify: vi.fn(), notifyError: vi.fn() }))
 
+import { useStore } from '@nanostores/react'
+
 import { queryClient } from '@/lib/query-client'
 import { $activeGatewayProfile } from '@/store/profile'
 import { $gatewayState } from '@/store/session'
+import { $settingsScopeProfile } from '@/store/settings-scope'
 
-import { VaultSettings } from './vault-settings'
+import { vaultOwnerKey, VaultSettings } from './vault-settings'
 
 stubResizeObserver()
 
@@ -33,11 +36,19 @@ const sources = [
   { name: 'bitwarden', display_name: 'Bitwarden', enabled: true, needs_unlock: true, unlocked: false, installed: true }
 ]
 
+// Mirrors the production mount site (settings/index.tsx): the panel is keyed by its owner, so an
+// owner change remounts it and every dialog/draft is gone by construction.
+function KeyedVault() {
+  const profile = useStore($settingsScopeProfile)
+
+  return <VaultSettings key={vaultOwnerKey(null, profile)} />
+}
+
 function mount() {
   return render(
     <MemoryRouter>
       <QueryClientProvider client={queryClient}>
-        <VaultSettings />
+        <KeyedVault />
       </QueryClientProvider>
     </MemoryRouter>
   )
@@ -72,11 +83,19 @@ it('a master-password draft is wiped on a profile switch and never submitted to 
 it("a late list response from profile A never paints under profile B", async () => {
   let resolveA!: (value: unknown) => void
   const held = new Promise(r => (resolveA = r))
+
   respond = async (profile, method) => {
-    if (method === 'vault.sources') return { sources }
-    if (profile === 'default' && method === 'vault.list') return held
+    if (method === 'vault.sources') {
+      return { sources }
+    }
+
+    if (profile === 'default' && method === 'vault.list') {
+      return held
+    }
+
     return { items: [] }
   }
+
   mount()
   await waitFor(() => expect(calls.some(c => c.profile === 'default' && c.method === 'vault.list')).toBe(true))
 
@@ -94,9 +113,11 @@ it('vault.add secrets never enter the mutation cache', async () => {
   respond = async (_profile, method) => (method === 'vault.sources' ? { sources } : method === 'vault.list' ? { items: [] } : { id: 'created' })
   const view = mount()
   fireEvent.click(await screen.findByRole('button', { name: 'Add credential' }))
+
   for (const [label, value] of [['Label', 'fixture'], ['Site origin', 'https://example.com'], ['Identifier', 'fixture@example.com'], ['Password', 'fixture-retained-password']] as const) {
     fireEvent.change(screen.getByLabelText(label), { target: { value } })
   }
+
   fireEvent.click(screen.getByRole('button', { name: 'Save to vault' }))
   await waitFor(() => expect(calls.some(c => c.method === 'vault.add')).toBe(true))
   expect((calls.find(c => c.method === 'vault.add')!.params.secret as Record<string, string>).password).toBe('fixture-retained-password')

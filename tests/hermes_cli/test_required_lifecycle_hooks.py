@@ -17,6 +17,7 @@ from hermes_cli.plugins import (
     required_hook_result,
 )
 from hermes_cli.required_lifecycle import (
+    REQUIRED_LIFECYCLE_CAPABILITY,
     parse_required_lifecycle_policy,
     quarantine_required_provider_fields,
     restore_required_provider_fields,
@@ -29,6 +30,10 @@ REQUIRED = {
     "post_tool_call": ["behavioral.post_tool.v1"],
     "transform_llm_output": ["behavioral.output.v1"],
 }
+
+
+def test_required_lifecycle_capability_marker_is_stable() -> None:
+    assert REQUIRED_LIFECYCLE_CAPABILITY == "required-lifecycle-hooks/v1"
 
 
 def _write_config(home: Path, requirements=REQUIRED) -> None:

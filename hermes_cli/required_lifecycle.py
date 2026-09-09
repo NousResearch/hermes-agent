@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from typing import Any, Mapping
 
 
+REQUIRED_LIFECYCLE_CAPABILITY = "required-lifecycle-hooks/v1"
 REQUIRED_LIFECYCLE_HOOKS = frozenset(
     {
         "pre_llm_call",

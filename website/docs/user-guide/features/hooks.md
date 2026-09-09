@@ -397,6 +397,11 @@ instead make the four turn-containment boundaries mandatory for a named plugin:
 or failing required callback stops the turn. No later model request or tool starts,
 and untransformed provider text is not streamed or persisted.
 
+Installers that need to detect this host contract without importing plugin code
+can require `hermes_cli.required_lifecycle.REQUIRED_LIFECYCLE_CAPABILITY` to equal
+`"required-lifecycle-hooks/v1"`. The marker is part of the installed distribution;
+its presence does not enable the policy by itself.
+
 The plugin must register stable callback identities and return an acknowledgement
 created by `required_hook_result`:
 

@@ -37,6 +37,21 @@ _FTS_HOLDER_ESCALATE_SECONDS = 60.0
 _FTS_STALE_RETRY_SECONDS = 60.0
 _FTS_STALE_RETRY_MAX_SECONDS = 3600.0
 
+
+def _fts_holder_pid_set(value):
+    """Sorted unique positive PIDs, or None when the stored set is missing/unusable."""
+    if not isinstance(value, (list, tuple)):
+        return None
+    pids = set()
+    for item in value:
+        try:
+            pid = int(item)
+        except (TypeError, ValueError):
+            return None
+        if pid > 0:
+            pids.add(pid)
+    return sorted(pids)
+
 # schema_read_probe_statements() cache (parses SCHEMA_SQL in an in-memory DB; once per process).
 _READ_PROBE_STATEMENTS: Optional[tuple] = None
 
@@ -422,7 +437,8 @@ class SessionSchemaMixin:
         """Record a deferral diagnostic for the foreign processes holding the DB; True = defer
         (holders remain). After ``_FTS_HOLDER_ESCALATE_ATTEMPTS`` deferrals spanning
         ``_FTS_HOLDER_ESCALATE_SECONDS``, provably inactive orphan Desktop backends are
-        reaped and the holders re-checked."""
+        reaped and the holders re-checked. A stable PID set that survives that reap is
+        recorded as a futile/permanent-holder diagnostic; the orphan predicate is unchanged."""
         now = time.time()
         try:
             row = cursor.execute(
@@ -439,14 +455,9 @@ class SessionSchemaMixin:
             first_seen, attempts = now, 1
         if first_seen > now or first_seen < 0:
             first_seen = now
-        diagnostic = {
-            "first_seen": first_seen, "last_seen": now, "attempts": attempts,
-            "holder_pids": sorted({pid for pid, _path in foreign_holders if pid > 0}),
-        }
-        cursor.execute(
-            "INSERT INTO state_meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-            (FTS_REBUILD_DEFERRAL_KEY, json.dumps(diagnostic, sort_keys=True)),
-        )
+        previous_pids = _fts_holder_pid_set(record.get("holder_pids"))
+        holder_pids = sorted({pid for pid, _path in foreign_holders if pid > 0})
+        futile = False
         if attempts >= _FTS_HOLDER_ESCALATE_ATTEMPTS and now - first_seen >= _FTS_HOLDER_ESCALATE_SECONDS:
             reaped = self._reap_inactive_orphan_desktop_holders(
                 foreign_holders, min_age_seconds=_FTS_HOLDER_ESCALATE_SECONDS,
@@ -457,20 +468,59 @@ class SessionSchemaMixin:
                     "state.db FTS rebuild deferrals; checking holders again.", reaped, attempts,
                 )
                 foreign_holders = self._foreign_state_db_holders()
+                holder_pids = sorted({pid for pid, _path in foreign_holders if pid > 0})
             if foreign_holders:
-                logger.error(
-                    "state.db FTS repair remains blocked after %d deferrals "
-                    "by holder(s) %s. Stop the listed processes, then run "
-                    "`hermes sessions optimize-storage` with the gateway stopped. "
-                    "`hermes doctor` reports this degraded state.", attempts, foreign_holders,
-                )
+                if previous_pids is not None and holder_pids and holder_pids == previous_pids:
+                    futile = True
+                    logger.error(
+                        "state.db FTS repair is futile after %d deferrals: the same "
+                        "holder PID set %s is a permanent holder (another Hermes "
+                        "service), not a transient peer. Stop the other Hermes "
+                        "service; leave this gateway running. "
+                        "retry_deferred_fts_recovery admits once this process is "
+                        "the sole holder. `hermes doctor` reports this degraded state.",
+                        attempts, holder_pids,
+                    )
+                else:
+                    logger.error(
+                        "state.db FTS repair remains blocked after %d deferrals "
+                        "by holder(s) %s. Stop the listed processes, then run "
+                        "`hermes sessions optimize-storage` with the gateway stopped. "
+                        "`hermes doctor` reports this degraded state.", attempts, foreign_holders,
+                    )
+            else:
+                self._fts_stale_retry_after = 0.0
+                self._fts_stale_retry_interval = 0.0
+                self._fts_permanent_holder_deferral = False
+        diagnostic = {
+            "first_seen": first_seen, "last_seen": now, "attempts": attempts,
+            "holder_pids": holder_pids,
+        }
+        if futile:
+            diagnostic["futile"] = True
+            diagnostic["kind"] = "permanent_holder"
+            self._fts_permanent_holder_deferral = True
+        else:
+            self._fts_permanent_holder_deferral = False
+        cursor.execute(
+            "INSERT INTO state_meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            (FTS_REBUILD_DEFERRAL_KEY, json.dumps(diagnostic, sort_keys=True)),
+        )
         if not foreign_holders:
             return False
-        logger.warning(
-            "Deferred stale state.db FTS rebuild while foreign processes "
-            "hold the database or WAL sidecars (%s); canonical writes and LIKE search remain available (deferral %d).",
-            foreign_holders, attempts,
-        )
+        if futile:
+            logger.warning(
+                "Deferred stale state.db FTS rebuild while a permanent foreign holder "
+                "blocks repair (%s); stop the other Hermes service and leave this "
+                "gateway running (deferral %d).",
+                foreign_holders, attempts,
+            )
+        else:
+            logger.warning(
+                "Deferred stale state.db FTS rebuild while foreign processes "
+                "hold the database or WAL sidecars (%s); canonical writes and LIKE search remain available (deferral %d).",
+                foreign_holders, attempts,
+            )
         return True
 
     def _recover_stale_fts(self, cursor: sqlite3.Cursor, *, legacy: bool, timeout_seconds=None) -> bool:
@@ -513,6 +563,11 @@ class SessionSchemaMixin:
         if self.read_only or self._conn is None:
             return False
         now = time.monotonic()
+        if getattr(self, "_fts_permanent_holder_deferral", False) and not self._foreign_state_db_holders():
+            # Permanent holder gone: do not wait out a doubled-to-cap backoff (#106393).
+            self._fts_stale_retry_after = 0.0
+            self._fts_stale_retry_interval = 0.0
+            self._fts_permanent_holder_deferral = False
         if now < getattr(self, "_fts_stale_retry_after", 0.0):
             return False
         interval = float(getattr(self, "_fts_stale_retry_interval", 0.0))

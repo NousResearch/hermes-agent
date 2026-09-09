@@ -208,43 +208,67 @@ def _stamp_worker_session_metadata(task_id: str, metadata: Optional[dict]) -> Op
 # deliberately not gated (they don't edit files inside a task workspace).
 # ---------------------------------------------------------------------------
 
+class GitVerifyUnavailable(Exception):
+    """The git completion gate could not verify the working tree (git missing,
+    timing out, or erroring) rather than confirming a clean, pushed tree. The
+    gate fails closed on this: completion is refused, never certified."""
+
+
 def _git_toplevel_ws(path: str) -> Optional[str]:
-    """Return the git work-tree top level for ``path``, or ``None`` if not in a repo."""
+    """Return the git work-tree top level for ``path``, or ``None`` if not in a repo.
+
+    Raises :class:`GitVerifyUnavailable` when git itself cannot answer (missing
+    binary, timeout, or an unexpected error), so an unverifiable path is never
+    silently treated as "not a repo".
+    """
     try:
         r = subprocess.run(
             ["git", "-C", path, "rev-parse", "--show-toplevel"],
             capture_output=True, text=True, timeout=10, check=False,
         )
-        if r.returncode != 0:
-            return None
-        out = r.stdout.strip()
-        return out or None
-    except Exception:
-        return None
+    except Exception as exc:
+        raise GitVerifyUnavailable(f"git unavailable locating the work tree: {exc}") from exc
+    if r.returncode != 0:
+        return None  # git answered: not inside a repository
+    out = r.stdout.strip()
+    return out or None
 
 
 def _git_porcelain(top: str) -> str:
-    """Return ``git status --porcelain`` output (empty string == a clean tree)."""
+    """Return ``git status --porcelain`` output (empty string == a clean tree).
+
+    Raises :class:`GitVerifyUnavailable` when git cannot report status (non-zero
+    exit, timeout, or an exception), so an empty stdout is never misread as a
+    clean tree.
+    """
     try:
         r = subprocess.run(
             ["git", "-C", top, "status", "--porcelain"],
             capture_output=True, text=True, timeout=15, check=False,
         )
-        return r.stdout or ""
-    except Exception:
-        return ""
+    except Exception as exc:
+        raise GitVerifyUnavailable(f"git unavailable checking status: {exc}") from exc
+    if r.returncode != 0:
+        raise GitVerifyUnavailable(
+            f"git status failed (exit {r.returncode}): {r.stderr.strip() or 'unknown error'}"
+        )
+    return r.stdout or ""
 
 
 def _git_origin_remote_exists(top: str) -> bool:
-    """True when the repo has an ``origin`` remote configured."""
+    """True when the repo has an ``origin`` remote configured.
+
+    Raises :class:`GitVerifyUnavailable` when git cannot answer, so "no remote"
+    is never inferred from a git failure.
+    """
     try:
         r = subprocess.run(
             ["git", "-C", top, "remote", "get-url", "origin"],
             capture_output=True, text=True, timeout=10, check=False,
         )
-        return r.returncode == 0 and bool(r.stdout.strip())
-    except Exception:
-        return False
+    except Exception as exc:
+        raise GitVerifyUnavailable(f"git unavailable checking the origin remote: {exc}") from exc
+    return r.returncode == 0 and bool(r.stdout.strip())
 
 
 def _commit_on_remote(top: str, sha: str, branch: Optional[str]) -> Optional[str]:
@@ -255,6 +279,9 @@ def _commit_on_remote(top: str, sha: str, branch: Optional[str]) -> Optional[str
     When ``origin`` exists, the branch is fetched (best-effort, once) so a
     freshly-pushed branch resolves locally before ``git log origin/<branch>``
     is consulted.
+
+    Raises :class:`GitVerifyUnavailable` when git cannot answer, so an
+    unverifiable push is never certified as landed.
     """
     if not branch:
         return None
@@ -282,8 +309,12 @@ def _commit_on_remote(top: str, sha: str, branch: Optional[str]) -> Optional[str
                     f"commit {sha} is not on origin/{branch} — push it before "
                     f"completing (git push origin {branch})"
                 )
-    except Exception:
-        return None
+    except GitVerifyUnavailable:
+        raise
+    except Exception as exc:
+        raise GitVerifyUnavailable(
+            f"git unavailable resolving origin/{branch}: {exc}"
+        ) from exc
     # Confirm the commit (or anything the commit records) is reachable from
     # origin/<branch>.
     try:
@@ -293,8 +324,10 @@ def _commit_on_remote(top: str, sha: str, branch: Optional[str]) -> Optional[str
         )
         if r.returncode == 0:
             return None
-    except Exception:
-        pass
+    except Exception as exc:
+        raise GitVerifyUnavailable(
+            f"git unavailable checking {sha} on origin/{branch}: {exc}"
+        ) from exc
     return (
         f"commit {sha} is not on origin/{branch} — push it before completing "
         f"(git push origin {branch})"
@@ -311,38 +344,48 @@ def _git_verified_completion_rejection(
     Enforced only when the worker's workspace is inside a git repo:
       1. ``git status --porcelain`` must be empty (every change committed), and
       2. any ``metadata.commits`` SHA must be present on ``origin/<branch>``.
+
+    Fails closed: when git cannot be reached or cannot report state, completion
+    is refused with an "unverifiable" rejection instead of being certified.
     """
     if not workspace or not os.path.isdir(workspace):
         return None
-    top = _git_toplevel_ws(workspace)
-    if top is None:
-        return None  # workspace is not in a git repo -> nothing to verify
-    porcelain = _git_porcelain(top)
-    if porcelain.strip():
-        dirty = porcelain.strip().splitlines()
-        preview = "\n  ".join(dirty[:20])
-        more = "" if len(dirty) <= 20 else f"\n  … and {len(dirty) - 20} more"
-        return (
-            "Git completion gate: working tree is not clean (uncommitted changes). "
-            "Commit (or stash/discard) every change before completing:\n"
-            f"  {preview}{more}\n"
-            "Every file you touched in this repo must be committed. If these are "
-            "intended artifacts, move them out of the repo or add them to "
-            ".gitignore and commit the rest; then push the branch."
-        )
-    commits = metadata.get("commits") if isinstance(metadata, dict) else None
-    if not commits:
+    try:
+        top = _git_toplevel_ws(workspace)
+        if top is None:
+            return None  # workspace is not in a git repo -> nothing to verify
+        porcelain = _git_porcelain(top)
+        if porcelain.strip():
+            dirty = porcelain.strip().splitlines()
+            preview = "\n  ".join(dirty[:20])
+            more = "" if len(dirty) <= 20 else f"\n  … and {len(dirty) - 20} more"
+            return (
+                "Git completion gate: working tree is not clean (uncommitted changes). "
+                "Commit (or stash/discard) every change before completing:\n"
+                f"  {preview}{more}\n"
+                "Every file you touched in this repo must be committed. If these are "
+                "intended artifacts, move them out of the repo or add them to "
+                ".gitignore and commit the rest; then push the branch."
+            )
+        commits = metadata.get("commits") if isinstance(metadata, dict) else None
+        if not commits:
+            return None
+        if isinstance(commits, str):
+            commits = [commits]
+        for c in commits:
+            sha = str(c).strip()
+            if not sha:
+                continue
+            reason = _commit_on_remote(top, sha, branch)
+            if reason:
+                return reason
         return None
-    if isinstance(commits, str):
-        commits = [commits]
-    for c in commits:
-        sha = str(c).strip()
-        if not sha:
-            continue
-        reason = _commit_on_remote(top, sha, branch)
-        if reason:
-            return reason
-    return None
+    except GitVerifyUnavailable as exc:
+        return (
+            "Git completion gate could not verify the working tree — refusing to "
+            f"complete: {exc} Fix the git error (or make the workspace verifiable) "
+            "and retry kanban_complete."
+        )
 
 
 def _enforce_worker_task_ownership(tid: str) -> None:

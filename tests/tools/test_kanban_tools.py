@@ -249,6 +249,48 @@ def test_git_gate_allows_clean_repo(worker_env, tmp_path, monkeypatch):
     assert kt._git_verified_completion_rejection("/tmp/not-a-repo", "wt/x", {"files": 1}) is None
 
 
+def test_git_gate_fails_closed_when_git_unavailable(worker_env, tmp_path, monkeypatch):
+    """Invariant: when git cannot run at all, the completion gate must REFUSE
+    (non-None rejection) — never certify an unverifiable tree as clean. This is
+    the fail-open regression the post-mortem gate must not reintroduce."""
+    from tools import kanban_tools as kt
+
+    repo = _make_git_repo(tmp_path)
+    monkeypatch.setenv("HERMES_KANBAN_WORKSPACE", repo)
+    monkeypatch.setenv("HERMES_KANBAN_BRANCH", "wt/test")
+
+    def _no_git(*args, **kw):
+        raise FileNotFoundError("git")
+
+    monkeypatch.setattr(kt.subprocess, "run", _no_git)
+
+    rejection = kt._git_verified_completion_rejection(
+        os.environ["HERMES_KANBAN_WORKSPACE"],
+        os.environ["HERMES_KANBAN_BRANCH"],
+        {"commits": ["deadbeef"]},
+    )
+    assert rejection is not None
+    assert "verify" in rejection.lower() or "git" in rejection.lower()
+
+
+def test_git_porcelain_raises_on_nonzero_status(tmp_path, monkeypatch):
+    """Invariant: a non-zero `git status` exit (corrupt index, bad HEAD, etc.)
+    must raise GitVerifyUnavailable, not read empty stdout as a clean tree."""
+    import types
+
+    from tools import kanban_tools as kt
+
+    monkeypatch.setattr(
+        kt.subprocess,
+        "run",
+        lambda *a, **k: types.SimpleNamespace(
+            returncode=128, stdout="", stderr="fatal: bad index"
+        ),
+    )
+    with pytest.raises(kt.GitVerifyUnavailable):
+        kt._git_porcelain("/some/top")
+
+
 def test_complete_goal_mode_rejected_by_judge(monkeypatch, tmp_path):
     """Goal-mode tasks must pass the auxiliary judge before completion.
     Regression for #38367: workers bypassing the judge via early kanban_complete."""

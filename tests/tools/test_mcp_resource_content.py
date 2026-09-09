@@ -42,7 +42,7 @@ def doc_cache(tmp_path, monkeypatch):
 
 class TestRenderResourceBlock:
     def test_embedded_pdf_blob_is_materialized(self, doc_cache):
-        from tools.mcp_tool import _render_mcp_resource_block
+        from tools.mcp_tool_content import _render_mcp_resource_block
 
         out = _render_mcp_resource_block(_embedded(_blob_resource(PDF_BYTES)), "slack")
         assert "saved to" in out
@@ -55,19 +55,19 @@ class TestRenderResourceBlock:
 
 
     def test_malformed_base64_fails_explicitly(self):
-        from tools.mcp_tool import _render_mcp_resource_block
+        from tools.mcp_tool_content import _render_mcp_resource_block
 
         res = SimpleNamespace(uri="x://y", mimeType="application/pdf", blob="!!!not-base64!!!", text=None)
         out = _render_mcp_resource_block(_embedded(res), "srv")
         assert "could not be decoded" in out
 
     def test_non_resource_block_returns_empty(self):
-        from tools.mcp_tool import _render_mcp_resource_block
+        from tools.mcp_tool_content import _render_mcp_resource_block
 
         assert _render_mcp_resource_block(SimpleNamespace(type="text", text="hi"), "srv") == ""
 
     def test_path_traversal_uri_is_neutralized(self, doc_cache):
-        from tools.mcp_tool import _render_mcp_resource_block
+        from tools.mcp_tool_content import _render_mcp_resource_block
 
         res = _blob_resource(PDF_BYTES, uri="evil://host/../../etc/passwd")
         out = _render_mcp_resource_block(_embedded(res), "srv")
@@ -79,13 +79,13 @@ class TestRenderResourceBlock:
 
 class TestResourceFilename:
     def test_uri_last_segment_used(self):
-        from tools.mcp_tool import _mcp_resource_filename
+        from tools.mcp_tool_content import _mcp_resource_filename
 
         assert _mcp_resource_filename("slack://f/ABC/quarterly.pdf", "application/pdf") == "quarterly.pdf"
 
 
     def test_long_filename_capped_preserving_extension(self):
-        from tools.mcp_tool import _mcp_resource_filename
+        from tools.mcp_tool_content import _mcp_resource_filename
 
         name = _mcp_resource_filename("x://h/" + "a" * 500 + ".pdf", "application/pdf")
         assert len(name) <= 150
@@ -95,29 +95,30 @@ class TestResourceFilename:
 class TestPreDecodeSizeCap:
     def test_oversized_b64_rejected_before_decode(self, monkeypatch):
         import tools.mcp_tool as m
+        from tools import mcp_tool_content as _mcp_content
 
-        monkeypatch.setattr(m, "_MCP_RESOURCE_MAX_B64_CHARS", 16)
+        monkeypatch.setattr(_mcp_content, "_MCP_RESOURCE_MAX_B64_CHARS", 16)
         res = SimpleNamespace(
             uri="x://y/big.pdf", mimeType="application/pdf",
             blob="A" * 100, text=None,
         )
         called = []
         monkeypatch.setattr(base64, "b64decode", lambda *a, **k: called.append(1))
-        out = m._render_mcp_resource_block(_embedded(res), "srv")
+        out = _mcp_content._render_mcp_resource_block(_embedded(res), "srv")
         assert "too large" in out
         assert not called
 
 
 class TestAudioBlock:
     def test_non_audio_returns_empty(self):
-        from tools.mcp_tool import _cache_mcp_audio_block
+        from tools.mcp_tool_content import _cache_mcp_audio_block
 
         block = SimpleNamespace(data=base64.b64encode(b"x").decode(), mimeType="application/pdf")
         assert _cache_mcp_audio_block(block) == ""
 
     def test_audio_block_cached_as_media(self, tmp_path, monkeypatch):
         import gateway.platforms.base as base
-        from tools.mcp_tool import _cache_mcp_audio_block
+        from tools.mcp_tool_content import _cache_mcp_audio_block
 
         monkeypatch.setattr(base, "AUDIO_CACHE_DIR", tmp_path)
         block = SimpleNamespace(
@@ -131,11 +132,7 @@ class TestAudioBlock:
 class TestToolResultLoopOrdering:
     def test_mixed_blocks_preserve_order(self, doc_cache):
         """Simulate the tool-result block loop with text + pdf resource."""
-        from tools.mcp_tool import (
-            _cache_mcp_image_block,
-            _cache_mcp_audio_block,
-            _render_mcp_resource_block,
-        )
+        from tools.mcp_tool_content import _cache_mcp_image_block, _cache_mcp_audio_block, _render_mcp_resource_block
 
         blocks = [
             SimpleNamespace(type="text", text="File ID: F123\nMIME Type: application/pdf"),
@@ -158,7 +155,7 @@ class TestToolResultLoopOrdering:
         assert "saved to" in parts[1]
 
     def test_existing_image_behavior_unchanged(self):
-        from tools.mcp_tool import _cache_mcp_image_block
+        from tools.mcp_tool_content import _cache_mcp_image_block
 
         block = SimpleNamespace(
             data=base64.b64encode(b"some bytes").decode("ascii"),
@@ -176,6 +173,7 @@ class TestErrorPathResourceText:
         from unittest.mock import AsyncMock, MagicMock, patch as mock_patch
 
         from tools import mcp_tool
+        from tools import mcp_tool_handlers as _mcp_handlers
 
         fake_session = MagicMock()
         fake_server = SimpleNamespace(session=fake_session, _rpc_lock=None)
@@ -197,9 +195,9 @@ class TestErrorPathResourceText:
         mcp_tool._reset_server_error("test-server")
         try:
             with mock_patch.dict(mcp_tool._servers, {"test-server": fake_server}), \
-                 mock_patch("tools.mcp_tool._run_on_mcp_loop", side_effect=_fake_run_on_mcp_loop):
+                 mock_patch("tools.mcp_tool_loop._run_on_mcp_loop", side_effect=_fake_run_on_mcp_loop):
                 fake_session.call_tool = AsyncMock()
-                yield fake_session, mcp_tool._make_tool_handler("test-server", "my-tool", 30.0)
+                yield fake_session, _mcp_handlers._make_tool_handler("test-server", "my-tool", 30.0)
         finally:
             mcp_tool._reset_server_error("test-server")
 

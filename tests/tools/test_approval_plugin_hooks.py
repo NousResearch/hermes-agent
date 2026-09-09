@@ -11,12 +11,10 @@ from unittest.mock import patch
 import pytest
 
 import tools.approval as approval_module
-from tools.approval import (
-    check_all_command_guards,
-    check_execute_code_guard,
-    set_current_session_key,
-    clear_session,
-)
+from tools import approval_context
+from tools import approval_smart
+from tools.approval import check_all_command_guards, check_execute_code_guard, clear_session
+from tools.approval_context import set_current_session_key
 
 
 @pytest.fixture
@@ -24,6 +22,7 @@ def isolated_session(monkeypatch, tmp_path):
     """Give each test a fresh session_key, clean approval-state, and isolated
     HERMES_HOME so the real user's command_allowlist doesn't leak in."""
     import tools.approval as _am
+    from tools import approval_context
 
     session_key = "test:session:approval_hooks"
     token = set_current_session_key(session_key)
@@ -41,7 +40,7 @@ def isolated_session(monkeypatch, tmp_path):
         _am._permanent_approved.update(_saved_permanent)
         _am._session_approved.update(_saved_session)
         try:
-            _am._approval_session_key.reset(token)
+            approval_context._approval_session_key.reset(token)
         except Exception:
             pass
         clear_session(session_key)
@@ -58,7 +57,7 @@ class TestCliPathFiresHooks:
         monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
         monkeypatch.delenv("HERMES_EXEC_ASK", raising=False)
         # approvals.mode=manual so we actually reach the prompt site
-        monkeypatch.setattr(approval_module, "_get_approval_mode", lambda: "manual")
+        monkeypatch.setattr(approval_context, "_get_approval_mode", lambda: "manual")
 
         captured = []
 
@@ -98,7 +97,7 @@ class TestCliPathFiresHooks:
         monkeypatch.setenv("HERMES_INTERACTIVE", "1")
         monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
         monkeypatch.delenv("HERMES_EXEC_ASK", raising=False)
-        monkeypatch.setattr(approval_module, "_get_approval_mode", lambda: "manual")
+        monkeypatch.setattr(approval_context, "_get_approval_mode", lambda: "manual")
 
         captured = []
 
@@ -127,7 +126,7 @@ class TestCliPathFiresHooks:
         monkeypatch.setenv("HERMES_INTERACTIVE", "1")
         monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
         monkeypatch.delenv("HERMES_EXEC_ASK", raising=False)
-        monkeypatch.setattr(approval_module, "_get_approval_mode", lambda: "manual")
+        monkeypatch.setattr(approval_context, "_get_approval_mode", lambda: "manual")
 
         def boom(hook_name, **kwargs):
             raise RuntimeError("plugin crashed")
@@ -158,8 +157,8 @@ class TestSmartModeFiresHooks:
         monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
         monkeypatch.delenv("HERMES_CRON_SESSION", raising=False)
         monkeypatch.setattr(approval_module, "_YOLO_MODE_FROZEN", False)
-        monkeypatch.setattr(approval_module, "_get_approval_mode", lambda: "smart")
-        monkeypatch.setattr(approval_module, "_smart_approve", lambda *_: verdict)
+        monkeypatch.setattr(approval_context, "_get_approval_mode", lambda: "smart")
+        monkeypatch.setattr(approval_smart, "_smart_approve", lambda *_: verdict)
         monkeypatch.setattr(
             "tools.tirith_security.check_command_security",
             lambda _: {"action": "allow", "findings": [], "summary": ""},
@@ -221,7 +220,7 @@ class TestSmartModeFiresHooks:
             events.append("smart_approve")
             return "approve"
 
-        monkeypatch.setattr(approval_module, "_smart_approve", decide)
+        monkeypatch.setattr(approval_smart, "_smart_approve", decide)
         with patch(
             "hermes_cli.plugins.invoke_hook",
             side_effect=lambda name, **kwargs: events.append(name),
@@ -321,8 +320,8 @@ class TestSmartModeFiresHooks:
         monkeypatch.setenv("HERMES_EXEC_ASK", "1")
         monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
         monkeypatch.setattr(approval_module, "_YOLO_MODE_FROZEN", False)
-        monkeypatch.setattr(approval_module, "_get_approval_mode", lambda: "smart")
-        monkeypatch.setattr(approval_module, "_smart_approve", lambda *_: next(verdicts))
+        monkeypatch.setattr(approval_context, "_get_approval_mode", lambda: "smart")
+        monkeypatch.setattr(approval_smart, "_smart_approve", lambda *_: next(verdicts))
         monkeypatch.setattr(
             "tools.tirith_security.check_command_security",
             lambda _: {"action": "allow", "findings": [], "summary": ""},

@@ -19,15 +19,16 @@ from unittest.mock import patch
 import pytest
 
 import tools.web_tools as web_tools
+from tools import web_tools_rescue
 from plugins.web import keyless_mcp
-from plugins.web.tavily.provider import TavilyWebSearchProvider
+from plugins.web.keenable.provider import KeenableWebSearchProvider
 
 
 class _KeyedBoomProvider:
     """Minimal keyed provider double that always fails."""
 
-    name = "tavily"
-    display_name = "Tavily"
+    name = "keenable"
+    display_name = "Keenable"
 
     def supports_search(self):
         return True
@@ -54,13 +55,13 @@ class _RaisingProvider(_KeyedBoomProvider):
 
 
 @pytest.fixture(autouse=True)
-def _keyed_tavily_env(monkeypatch):
-    """Simulate a keyed Tavily setup with rescue enabled."""
+def _keyed_keenable_env(monkeypatch):
+    """Simulate a keyed Keenable setup with rescue enabled."""
     monkeypatch.setattr(
         "agent.web_search_provider.get_provider_env",
-        lambda name: "tvly-real" if name == "TAVILY_API_KEY" else "",
+        lambda name: "kn-real" if name == "KEENABLE_API_KEY" else "",
     )
-    monkeypatch.setattr(web_tools, "_load_web_config", lambda: {"backend": "tavily"})
+    monkeypatch.setattr(web_tools, "_load_web_config", lambda: {"backend": "keenable"})
     monkeypatch.setattr(
         "agent.web_search_registry._keyless_tier_enabled", lambda: True
     )
@@ -73,33 +74,33 @@ def _ring_ok(vendor="exa"):
 
 class TestEligibility:
     def test_keyed_ring_vendor_is_eligible(self):
-        assert web_tools._rescue_eligible(_KeyedBoomProvider()) is True
+        assert web_tools_rescue._rescue_eligible(_KeyedBoomProvider()) is True
 
     def test_keyless_mode_ring_vendor_not_eligible(self, monkeypatch):
-        # No key: the tavily call already rode the ring; no double-walk.
+        # No key: the keenable call already rode the ring; no double-walk.
         monkeypatch.setattr(
             "agent.web_search_provider.get_provider_env", lambda name: ""
         )
-        assert web_tools._rescue_eligible(TavilyWebSearchProvider()) is False
+        assert web_tools_rescue._rescue_eligible(KeenableWebSearchProvider()) is False
 
     def test_non_ring_backend_is_eligible(self):
         class _SearxProvider(_KeyedBoomProvider):
             name = "searxng"
 
-        assert web_tools._rescue_eligible(_SearxProvider()) is True
+        assert web_tools_rescue._rescue_eligible(_SearxProvider()) is True
 
     def test_config_gate_disables(self, monkeypatch):
         monkeypatch.setattr(
             web_tools, "_load_web_config",
-            lambda: {"backend": "tavily", "keyless_rescue": False},
+            lambda: {"backend": "keenable", "keyless_rescue": False},
         )
-        assert web_tools._rescue_eligible(_KeyedBoomProvider()) is False
+        assert web_tools_rescue._rescue_eligible(_KeyedBoomProvider()) is False
 
     def test_keyless_fallback_off_disables(self, monkeypatch):
         monkeypatch.setattr(
             "agent.web_search_registry._keyless_tier_enabled", lambda: False
         )
-        assert web_tools._rescue_eligible(_KeyedBoomProvider()) is False
+        assert web_tools_rescue._rescue_eligible(_KeyedBoomProvider()) is False
 
 
 class TestSearchRescue:
@@ -116,7 +117,7 @@ class TestSearchRescue:
         ) as ring:
             out = self._dispatch(monkeypatch, _KeyedBoomProvider())
         assert out["success"] is True
-        assert out["data"]["rescued_from"] == "tavily"
+        assert out["data"]["rescued_from"] == "keenable"
         assert "HTTP 500" in out["data"]["backend_error"]
         assert "next call" in out["data"]["backend_error"].lower()
         ring.assert_called_once()
@@ -161,7 +162,7 @@ class TestSearchRescue:
     def test_no_rescue_when_disabled(self, monkeypatch):
         monkeypatch.setattr(
             web_tools, "_load_web_config",
-            lambda: {"backend": "tavily", "keyless_rescue": False},
+            lambda: {"backend": "keenable", "keyless_rescue": False},
         )
         with patch.object(keyless_mcp, "search_with_failover") as ring:
             out = self._dispatch(monkeypatch, _KeyedBoomProvider())
@@ -211,8 +212,8 @@ class TestExtractRescue:
         with patch.object(
             keyless_mcp, "extract_with_failover", return_value=good
         ):
-            out = web_tools._rescue_extract("tavily", ["https://a"], failed)
-        assert out[0]["metadata"]["rescued_from"] == "tavily"
+            out = web_tools_rescue._rescue_extract("keenable", ["https://a"], failed)
+        assert out[0]["metadata"]["rescued_from"] == "keenable"
         assert "HTTP 500" in out[0]["metadata"]["backend_error"]
 
     @pytest.mark.asyncio

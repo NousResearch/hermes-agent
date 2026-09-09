@@ -322,7 +322,9 @@ class GatewayVoiceMixin:
         try:
             from tools.tts_text_normalize import _strip_markdown_for_tts
             from tools.tts_tool import text_to_speech_tool
-            tts_text = _strip_markdown_for_tts(text)
+            from gateway.platforms.base import _strip_media_tag_directives
+            # Delivery directives belong to the adapter, never to the speech engine.
+            tts_text = _strip_markdown_for_tts(_strip_media_tag_directives(text))
             if not tts_text:
                 return
             # Platforms whose native voice bubbles require Ogg/Opus (OPUS_VOICE_PLATFORMS) get an

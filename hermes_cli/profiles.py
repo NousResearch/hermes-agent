@@ -17,6 +17,7 @@ from typing import Dict, List, Optional, Tuple
 
 from agent.skill_utils import is_excluded_skill_path
 from hermes_cli.archive_safe import archive_root_dirs, make_targz, normalize_archive_parts, safe_extract_targz
+from hermes_cli.home_data_layout import PM_RUNTIME_ROOT_DIRS
 from hermes_constants import clear_named_profile_deleted, mark_named_profile_deleted, named_profile_is_deleted
 
 logger = logging.getLogger(__name__)
@@ -135,7 +136,7 @@ _DEFAULT_EXPORT_EXCLUDE_ROOT = DEFAULT_EXPORT_EXCLUDE_ROOT = frozenset({
     "browser_screenshots", "checkpoints",
     "sandboxes",
     "logs",                 # gateway logs
-})
+}) | PM_RUNTIME_ROOT_DIRS
 
 # Allow-list for ``export_profile("default")``: when HERMES_HOME equals the
 # cwd (Docker/custom deployments), the default profile home is the working
@@ -1566,7 +1567,10 @@ def export_profile(name: str, output_path: str, extra_files: Optional[Dict[str, 
     # copy under a temp dir named after the canonical id: root allow-list for default,
     # credential exclusion for named profiles.
     def _ignore_credentials(directory: str, contents: list) -> set:
-        return _EXPORT_CREDENTIAL_FILES & set(contents)
+        ignored = _EXPORT_CREDENTIAL_FILES & set(contents)
+        if Path(directory) == profile_dir:
+            ignored |= PM_RUNTIME_ROOT_DIRS & set(contents)
+        return ignored
 
     ignore = _default_export_ignore(profile_dir) if canon == "default" else _ignore_credentials
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -1619,6 +1623,14 @@ def import_profile(archive_path: str, name: Optional[str] = None) -> Path:
         if archive_root != canon:
             final_source = staging_root / canon
             extracted.rename(final_source)
+        # Remove foreign runtime state before publishing, including file-shaped roots.
+        # A failed removal must abort import rather than install a stale PM selection.
+        for child in final_source.iterdir():
+            if child.name in PM_RUNTIME_ROOT_DIRS:
+                if child.is_dir():
+                    shutil.rmtree(child)
+                else:
+                    child.unlink()
         shutil.move(str(final_source), str(profile_dir))
     return profile_dir
 

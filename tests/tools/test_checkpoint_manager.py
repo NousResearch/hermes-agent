@@ -53,6 +53,7 @@ def fake_home(tmp_path, monkeypatch):
     home = tmp_path / "home"
     home.mkdir()
     monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("HERMES_HOME", str(home / ".hermes"))
     monkeypatch.setenv("USERPROFILE", str(home))
     monkeypatch.delenv("HOMEDRIVE", raising=False)
     monkeypatch.delenv("HOMEPATH", raising=False)
@@ -578,6 +579,19 @@ class TestSafeRestore:
 # =========================================================================
 
 class TestWorkingDirResolution:
+    def test_registered_project_owns_writes_even_below_an_ancestor_marker(self, mgr, work_dir):
+        (work_dir.parent / "pyproject.toml").write_text("[project]\n", encoding="utf-8")
+        assert mgr.ensure_checkpoint(str(work_dir), "original")
+        checkpoint = mgr.list_checkpoints(str(work_dir))[0]["hash"]
+        target = work_dir / "main.py"
+        target.write_text("agent\n", encoding="utf-8")
+        mgr.record_agent_write(str(target))
+        target.write_text("user\n", encoding="utf-8")
+        result = mgr.restore(str(work_dir), checkpoint, safe=True)
+        assert result["success"]
+        assert target.read_text(encoding="utf-8") == "user\n"
+        assert mgr.get_working_dir_for_path(str(target)) == str(work_dir)
+
     def test_resolves_project_root_markers(self, tmp_path, fake_home):
         m = CheckpointManager(enabled=True)
 
@@ -598,28 +612,12 @@ class TestWorkingDirResolution:
             f"~/{py_proj.name}/src/file.py"
         ) == str(py_proj)
 
-    def test_falls_back_to_parent(self, tmp_path, monkeypatch):
+    def test_falls_back_to_parent(self, fake_home):
         m = CheckpointManager(enabled=True)
-        filepath = tmp_path / "random" / "file.py"
+        filepath = fake_home / "random" / "file.py"
         filepath.parent.mkdir(parents=True)
-        filepath.write_text("x\n")
-
-        import pathlib as _pl
-        _real_exists = _pl.Path.exists
-
-        def _guarded_exists(self):
-            s = str(self)
-            stop = str(tmp_path)
-            if not s.startswith(stop) and any(
-                s.endswith("/" + m) or s == "/" + m
-                for m in (".git", "pyproject.toml", "package.json",
-                          "Cargo.toml", "go.mod", "Makefile", "pom.xml",
-                          ".hg", "Gemfile")
-            ):
-                return False
-            return _real_exists(self)
-
-        monkeypatch.setattr(_pl.Path, "exists", _guarded_exists)
+        filepath.write_text("x\n", encoding="utf-8")
+        (fake_home / "pyproject.toml").write_text("[project]\n", encoding="utf-8")
         assert m.get_working_dir_for_path(str(filepath)) == str(filepath.parent)
 
 

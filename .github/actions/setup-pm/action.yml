@@ -5,7 +5,7 @@ inputs:
     description: python (Python and uv), node (Node and npm), or all.
     default: python
   extras:
-    description: 'JSON array of Python project extras. Omit for tools only; [] installs core; ["dev"] adds dev.'
+    description: 'JSON extras: omit for tools; [] installs core; dev selects an isolated test environment plus the test dependency group.'
     default: ''
   cache:
     description: Cache the verified PM tool store.
@@ -50,7 +50,7 @@ outputs:
     description: PM-provisioned uv executable.
     value: ${{ steps.install.outputs.uv-path }}
   venv:
-    description: PM-selected dependency environment, if extras were supplied.
+    description: Dependency environment; isolated test environment for dev, otherwise PM-selected runtime.
     value: ${{ steps.dependencies.outputs.venv }}
   target:
     description: Native PM target, independent of the bootstrap interpreter architecture.

@@ -6,7 +6,6 @@ PATH, shadowing an existing nvm. Uninstall must remove those symlinks, but
 only when they still resolve into the Hermes-managed node dir.
 """
 
-import os
 from pathlib import Path
 
 import pytest
@@ -21,6 +20,7 @@ def fake_home(tmp_path, monkeypatch):
     home = tmp_path / "home"
     home.mkdir()
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+    monkeypatch.setenv("HERMES_HOME", str(home / ".hermes"))
     (home / ".local" / "bin").mkdir(parents=True)
     return home
 
@@ -30,7 +30,7 @@ def _make_hermes_node(hermes_home: Path) -> Path:
     node_bin = hermes_home / "node" / "bin"
     node_bin.mkdir(parents=True)
     for name in ("node", "npm", "npx"):
-        (node_bin / name).write_text("#!/bin/sh\n")
+        (node_bin / name).write_text("#!/bin/sh\n", encoding="utf-8")
         (node_bin / name).chmod(0o755)
     return node_bin
 
@@ -41,15 +41,18 @@ def _make_hermes_node(hermes_home: Path) -> Path:
 def test_node_link_cleanup_respects_resolved_owner(fake_home, monkeypatch, owned):
     home = fake_home / ".hermes"
     link = fake_home / ".local" / "bin" / "node"
-    link.write_text("link stand-in", encoding="utf-8")
     target = home / "node" / "bin" / "node" if owned else fake_home / "other" / "node"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text("retained binary", encoding="utf-8")
+    try:
+        link.symlink_to(target)
+    except OSError as exc:
+        pytest.skip(f"native symlink creation unavailable: {exc}")
     monkeypatch.setattr(uninstall, "_node_symlink_candidate_dirs", lambda: [link.parent])
-    # Exercise the owner decision on hosts that cannot create symlinks.
-    monkeypatch.setattr(Path, "is_symlink", lambda path: path == link)
-    monkeypatch.setattr(os, "readlink", lambda path: str(target))
     removed = uninstall.remove_node_symlinks(home)
     assert removed == ([link] if owned else [])
     assert link.exists() is (not owned)
+    assert target.read_text(encoding="utf-8") == "retained binary"
 
 
 @pytest.mark.require_symlinks

@@ -176,8 +176,17 @@ def dependencies(args) -> None:
     environment.pop("UV_NO_CONFIG", None)  # keep project indexes and exclude-newer
     # PM's frozen sync must not turn a stale project lock into a green job.
     subprocess.run([uv_bin, "lock", "--check"], cwd=project, env=environment, check=True, timeout=1800)
-    sync_venv(args.extras, explicit=True, plugin_dirs=[])
-    venv = selected_venv(project)
+    if "dev" in args.extras:
+        # Test-only groups must not enter PM facts or a shipped generation.
+        venv = args.home.resolve() / "test-environment"
+        environment["UV_PROJECT_ENVIRONMENT"] = str(venv)
+        command = [uv_bin, "sync", "--locked", "--group", "test", "--no-install-project"]
+        for extra in args.extras:
+            command.extend(["--extra", extra])
+        subprocess.run(command, cwd=project, env=environment, check=True, timeout=1800)
+    else:
+        sync_venv(args.extras, explicit=True, plugin_dirs=[])
+        venv = selected_venv(project)
     bindir = venv / ("Scripts" if os.name == "nt" else "bin")
     python = bindir / ("python.exe" if os.name == "nt" else "python")
     python3_alias(python)

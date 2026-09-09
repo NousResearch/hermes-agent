@@ -203,7 +203,7 @@ def _gc_store(store, facts) -> tuple[int, int]:
     facts) and partials an in-flight download still owns. Returns
     (removed, kept).
     """
-    from pm.downloader import gc_protected_names
+    from pm.download_state import collect_partials
     from pm import paths
 
     partials_dir = paths.partials_root()
@@ -213,22 +213,7 @@ def _gc_store(store, facts) -> tuple[int, int]:
     with store.install_lock():
         facts.reload()
         keep = facts.entries_in_use()
-        # Partials an in-flight (or recently interrupted) download still
-        # owns must survive the sweep. They live in the writable partials
-        # area, NOT the store root, so sweep that area directly.
-        protected_partials = gc_protected_names(partials_dir)
-        if partials_dir.is_dir():
-            for child in sorted(partials_dir.iterdir()):
-                if child.name in protected_partials:
-                    continue
-                print(f"removing partials/{child.name}")
-                if child.is_dir():
-                    shutil.rmtree(child, ignore_errors=True)
-                else:
-                    try:
-                        child.unlink()
-                    except OSError:
-                        pass
+        collect_partials(partials_dir)
         for item in sorted(store.root.iterdir()):
             if not item.is_dir() or item.name.startswith("."):
                 continue

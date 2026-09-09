@@ -4,9 +4,9 @@ Regression coverage for provider-scoped ``ssl_ca_cert`` / ``ssl_verify`` being
 ignored by the discovery/pricing probes. Two probe families share the root
 cause and are covered here:
 
-* ``requests``-based endpoint metadata / pricing probe
+* HTTPX endpoint metadata / pricing probe
   (``agent.model_metadata.fetch_endpoint_model_metadata`` via
-  ``_resolve_requests_verify``).
+  ``resolve_verify``).
 * ``urllib``-based ``/models`` catalog discovery probe
   (``hermes_cli.models.probe_api_models`` via ``_custom_provider_ssl_context``).
 
@@ -21,6 +21,7 @@ provider list and a patched request seam.
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 import ssl
 import urllib.error
 from unittest.mock import MagicMock, patch
@@ -28,7 +29,8 @@ from unittest.mock import MagicMock, patch
 import certifi
 import pytest
 
-from agent.model_metadata import _resolve_requests_verify
+from agent.model_metadata_http import resolve_verify
+from agent.ssl_verify import resolve_httpx_verify
 from hermes_cli.models import _custom_provider_ssl_context
 
 _CA_ENV_VARS = (
@@ -52,19 +54,14 @@ def clean_env(monkeypatch):
 @pytest.fixture
 def bundle_file(tmp_path):
     path = tmp_path / "provider-ca.pem"
-    path.write_text("-----BEGIN CERTIFICATE-----\nstub\n-----END CERTIFICATE-----\n")
+    from pathlib import Path
+    path.write_bytes(Path(certifi.where()).read_bytes())
     return str(path)
 
 
 @pytest.fixture
 def real_ca():
-    """A real, parseable CA bundle on disk.
-
-    ``ssl.create_default_context(cafile=...)`` parses the file eagerly, so the
-    urllib context path needs a genuine bundle rather than a stub. The
-    ``requests`` path only stores the path string (parsed lazily by requests at
-    call time), so it can use the ``bundle_file`` stub.
-    """
+    """Both probe transports parse this actual bundle before connecting."""
     return certifi.where()
 
 
@@ -74,15 +71,15 @@ def _providers(base_url, **tls):
     return [entry]
 
 
-class TestResolveRequestsVerifyProviderScoped:
-    """``_resolve_requests_verify(base_url)`` — the requests probe path."""
+class TestResolveVerifyProviderScoped:
+    """Provider configuration resolves before the probe's transport is built."""
 
     def test_provider_ca_used_for_matching_base_url(self, clean_env, bundle_file):
         with patch(
             "hermes_cli.config.get_compatible_custom_providers",
             return_value=_providers(_BASE, ssl_ca_cert=bundle_file),
         ):
-            assert _resolve_requests_verify(_BASE) == bundle_file
+            assert resolve_verify(_BASE) is resolve_httpx_verify(ca_bundle=bundle_file)
 
     def test_provider_ca_overrides_env_ssl_cert_file(self, clean_env, tmp_path, bundle_file):
         env_bundle = tmp_path / "env-ca.pem"
@@ -92,21 +89,21 @@ class TestResolveRequestsVerifyProviderScoped:
             "hermes_cli.config.get_compatible_custom_providers",
             return_value=_providers(_BASE, ssl_ca_cert=bundle_file),
         ):
-            assert _resolve_requests_verify(_BASE) == bundle_file
+            assert resolve_verify(_BASE) is resolve_httpx_verify(ca_bundle=bundle_file)
 
     def test_provider_ssl_verify_false_disables(self, clean_env):
         with patch(
             "hermes_cli.config.get_compatible_custom_providers",
             return_value=_providers(_BASE, ssl_verify=False),
         ):
-            assert _resolve_requests_verify(_BASE) is False
+            assert resolve_verify(_BASE) is False
 
     def test_no_base_url_does_not_consult_config(self, clean_env, bundle_file):
         """Existing callers pass no base_url — no config read, and env never steers trust."""
         clean_env.setenv("HERMES_CA_BUNDLE", bundle_file)
         probe = MagicMock(return_value=[])
         with patch("hermes_cli.config.get_compatible_custom_providers", probe):
-            assert _resolve_requests_verify() is True
+            assert resolve_verify() is True
         probe.assert_not_called()
 
     def test_unmatched_base_url_env_ignored_returns_true(self, clean_env, bundle_file):
@@ -116,16 +113,16 @@ class TestResolveRequestsVerifyProviderScoped:
             "hermes_cli.config.get_compatible_custom_providers",
             return_value=_providers("https://other.example.invalid/v1", ssl_ca_cert="/nope.pem"),
         ):
-            assert _resolve_requests_verify(_BASE) is True
+            assert resolve_verify(_BASE) is True
 
     def test_unmatched_base_url_no_env_returns_true(self, clean_env):
         with patch(
             "hermes_cli.config.get_compatible_custom_providers",
             return_value=[],
         ):
-            assert _resolve_requests_verify(_BASE) is True
+            assert resolve_verify(_BASE) is True
 
-    def test_provider_ca_missing_file_env_ignored_returns_true(self, clean_env):
+    def test_provider_ca_missing_file_keeps_platform_trust(self, clean_env):
         """A configured bundle that does not exist warns and verifies against the OS store —
         an ambient ``SSL_CERT_FILE`` does not become the fallback authority."""
         clean_env.setenv("SSL_CERT_FILE", "/does/not/matter.pem")
@@ -133,16 +130,20 @@ class TestResolveRequestsVerifyProviderScoped:
             "hermes_cli.config.get_compatible_custom_providers",
             return_value=_providers(_BASE, ssl_ca_cert="/does/not/exist.pem"),
         ):
-            assert _resolve_requests_verify(_BASE) is True
+            context = resolve_verify(_BASE)
+            assert type(context).__module__.startswith("truststore")
+            assert context.verify_mode == ssl.CERT_REQUIRED
 
-    def test_config_lookup_failure_env_ignored_returns_true(self, clean_env):
+    def test_config_lookup_failure_keeps_platform_trust(self, clean_env):
         """A config crash must not silently swap in an ambient env var as trust authority."""
         clean_env.setenv("SSL_CERT_FILE", "/does/not/matter.pem")
         with patch(
             "hermes_cli.config.get_compatible_custom_providers",
             side_effect=RuntimeError("config boom"),
         ):
-            assert _resolve_requests_verify(_BASE) is True
+            context = resolve_verify(_BASE)
+            assert type(context).__module__.startswith("truststore")
+            assert context.verify_mode == ssl.CERT_REQUIRED
 
 
 class TestCustomProviderSSLContext:
@@ -154,7 +155,7 @@ class TestCustomProviderSSLContext:
             return_value=_providers(_BASE, ssl_ca_cert=real_ca),
         ):
             ctx = _custom_provider_ssl_context(_BASE)
-        assert isinstance(ctx, ssl.SSLContext)
+        assert ctx is resolve_httpx_verify(ca_bundle=real_ca)
         assert ctx.verify_mode == ssl.CERT_REQUIRED
 
     def test_ssl_verify_false_returns_unverified_context(self):
@@ -193,51 +194,25 @@ class TestCustomProviderSSLContext:
 
 
 class TestMetadataProbeThreadsProviderCA:
-    """End-to-end: the requests metadata probe carries the provider CA to the wire."""
+    @pytest.mark.parametrize("pinned", [False, True])
+    def test_provider_policy_reaches_the_transport(self, clean_env, real_ca, pinned):
+        import httpx
+        from agent import model_metadata as mm
+        from agent import model_metadata_http
+        from agent.ssl_verify import resolve_httpx_verify
 
-    def test_fetch_endpoint_model_metadata_uses_provider_ca(self, clean_env, bundle_file):
-        import agent.model_metadata as mm
-
-        captured = {}
-
-        def fake_get(url, headers=None, timeout=None, verify=None, **kwargs):
-            captured["verify"] = verify
-            resp = MagicMock()
-            resp.raise_for_status.return_value = None
-            resp.json.return_value = {"data": []}
-            return resp
+        @contextmanager
+        def response(*args, **kwargs):
+            yield httpx.Response(200, json={"data": []}, request=httpx.Request("GET", args[0]))
 
         mm._endpoint_model_metadata_cache.clear()
         mm._endpoint_model_metadata_cache_time.clear()
-        with patch(
-            "hermes_cli.config.get_compatible_custom_providers",
-            return_value=_providers(_BASE, ssl_ca_cert=bundle_file),
-        ), patch.object(mm.requests, "get", side_effect=fake_get):
-            mm.fetch_endpoint_model_metadata(_BASE, force_refresh=True)
-
-        assert captured["verify"] == bundle_file
-
-    def test_public_endpoint_keeps_env_default(self, clean_env):
-        import agent.model_metadata as mm
-
-        captured = {}
-
-        def fake_get(url, headers=None, timeout=None, verify=None, **kwargs):
-            captured["verify"] = verify
-            resp = MagicMock()
-            resp.raise_for_status.return_value = None
-            resp.json.return_value = {"data": []}
-            return resp
-
-        mm._endpoint_model_metadata_cache.clear()
-        mm._endpoint_model_metadata_cache_time.clear()
-        with patch(
-            "hermes_cli.config.get_compatible_custom_providers",
-            return_value=[],
-        ), patch.object(mm.requests, "get", side_effect=fake_get):
-            mm.fetch_endpoint_model_metadata(_BASE, force_refresh=True)
-
-        assert captured["verify"] is True
+        providers = _providers(_BASE, ssl_ca_cert=real_ca) if pinned else []
+        with patch("hermes_cli.config.get_compatible_custom_providers", return_value=providers), \
+             patch.object(model_metadata_http, "stream", side_effect=response) as stream:
+            assert mm.fetch_endpoint_model_metadata(_BASE, force_refresh=True) == {}
+        expected = resolve_httpx_verify(ca_bundle=real_ca) if pinned else True
+        assert stream.call_args.kwargs["verify"] is expected
 
 
 class TestCatalogProbeThreadsSSLContext:
@@ -258,7 +233,7 @@ class TestCatalogProbeThreadsSSLContext:
         ), patch.object(models, "open_credentialed_url", side_effect=fake_open):
             models.probe_api_models(None, _BASE, timeout=1)
 
-        assert isinstance(captured["ssl_context"], ssl.SSLContext)
+        assert captured["ssl_context"] is resolve_httpx_verify(ca_bundle=real_ca)
         assert captured["ssl_context"].verify_mode == ssl.CERT_REQUIRED
 
     def test_probe_api_models_public_endpoint_uses_default_policy(self, clean_env):

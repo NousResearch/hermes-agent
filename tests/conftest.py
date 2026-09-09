@@ -1226,6 +1226,9 @@ def pytest_configure(config):  # noqa: D401 — pytest hook
         "behaviour — e.g. PTY tests that signal their own child).",
     )
     config.addinivalue_line(
+        "markers", "allow_real_home_io: explicitly bypass the test-only home I/O guard."
+    )
+    config.addinivalue_line(
         "markers",
         f"{_REQUIRES_WAL_MARK}: test needs the runtime to actually enable "
         "SQLite WAL mode; skipped on builds where Hermes falls back to "
@@ -1908,102 +1911,15 @@ def _capture_real_hermes_root() -> list[Path]:
 _REAL_HERMES_ROOT_CANDIDATES = _capture_real_hermes_root()
 
 
-def _path_hits_real_home(candidate) -> bool:
-    """True when candidate resolves under any guarded real root."""
-    try:
-        resolved = Path(candidate).expanduser().resolve()
-    except Exception:
-        return False
-    for root in _REAL_HERMES_ROOT_CANDIDATES:
-        try:
-            resolved.relative_to(root)
-            return True
-        except ValueError:
-            continue
-    return False
-
-
 @pytest.fixture(autouse=True)
 def _forbid_real_hermes_home_io(monkeypatch, request):
-    """Fail ANY test that opens/mkdirs/stats under the REAL hermes home.
+    """Guard Python file/metadata/deletion calls and SQLite against real state.
 
-    Opt-out for the (rare) test that legitimately inspects the guard
-    itself or documents a real-path read: @pytest.mark.allow_real_home_io.
-    Everything else gets the tripwire.
-
-    Implementation: wrap builtins.open (covers ~all file I/O incl. pathlib
-    read_text/write_text which call io.open) plus os.mkdir/os.makedirs for
-    directory creation. Guard the check itself with try/except so a weird
-    path never breaks the wrapper.
+    Native libraries and subprocesses still need their own temporary-home
+    contracts. The opt-out is for explicit guard tests, never implicit repair.
     """
     if request.node.get_closest_marker("allow_real_home_io"):
         return
+    from tests.home_io_guard import HomeIOGuard
 
-    import builtins as _builtins
-
-    real_open = _builtins.open
-
-    def _guarded_open(file, *args, **kwargs):
-        try:
-            if _path_hits_real_home(file):
-                raise AssertionError(
-                    f"TEST BUG: file I/O against the REAL hermes home: "
-                    f"{file}\n"
-                    "The hermetic sandbox redirects get_hermes_home(); this "
-                    "path bypasses it (hardcoded Path.home()/.hermes, a "
-                    "frozen import-time path, or an explicit real path). "
-                    "Use get_hermes_home()/the isolated fixture instead."
-                )
-        except AssertionError:
-            raise
-        except Exception:
-            pass
-        return real_open(file, *args, **kwargs)
-
-    monkeypatch.setattr(_builtins, "open", _guarded_open)
-
-    real_mkdir = os.mkdir
-    real_makedirs = os.makedirs
-
-    def _guarded_mkdir(path, *args, **kwargs):
-        if _path_hits_real_home(path):
-            pytest.fail(
-                f"TEST BUG: mkdir against the REAL hermes home: {path}",
-                pytrace=False,
-            )
-        return real_mkdir(path, *args, **kwargs)
-
-    def _guarded_makedirs(path, *args, **kwargs):
-        if _path_hits_real_home(path):
-            pytest.fail(
-                f"TEST BUG: makedirs against the REAL hermes home: {path}",
-                pytrace=False,
-            )
-        return real_makedirs(path, *args, **kwargs)
-
-    monkeypatch.setattr(os, "mkdir", _guarded_mkdir)
-    monkeypatch.setattr(os, "makedirs", _guarded_makedirs)
-
-
-@pytest.fixture(autouse=True)
-def _forbid_real_hermes_home_sqlite(monkeypatch, request):
-    """sqlite3.connect bypasses builtins.open (C-level open) — guard it
-    directly: a DB path resolving under the REAL hermes home fails the
-    test (the state.db-under-~/.hermes leak the session sandbox docs the
-    history of). Same opt-out marker as the file guard."""
-    if request.node.get_closest_marker("allow_real_home_io"):
-        return
-
-    import sqlite3 as _sqlite3
-
-    real_connect = _sqlite3.connect
-
-    def _guarded_connect(database, *args, **kwargs):
-        if isinstance(database, (str, bytes, Path)) and _path_hits_real_home(database):
-            pytest.fail(
-                f"TEST BUG: sqlite connect against the REAL hermes home: {database}",
-                pytrace=False,
-            )
-        return real_connect(database, *args, **kwargs)
-
-    monkeypatch.setattr(_sqlite3, "connect", _guarded_connect)
+    HomeIOGuard(lambda: _REAL_HERMES_ROOT_CANDIDATES).install(monkeypatch)

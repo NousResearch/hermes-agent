@@ -713,10 +713,14 @@ def test_arch_guard_allows_emulated_x64_on_win32_arm64(monkeypatch, tmp_path):
     bin_dir.mkdir(parents=True)
     # A real x64 PE header (MZ + PE sig + machine 0x8664).
     x64_pe = (
-        b"MZ" + b"\0" * 58 + (0x80).to_bytes(4, "little")
+        b"MZ" + b"\0" * 58 + (0x80).to_bytes(4, "little") + b"\0" * 64
         + b"PE\0\0" + (0x8664).to_bytes(2, "little") + b"\0" * 54
     )
-    (bin_dir / "agent-browser-win32-x64.exe").write_bytes(x64_pe)
+    binary = bin_dir / "agent-browser-win32-x64.exe"
+    binary.write_bytes(x64_pe)
+    from pm.package import machine_matches_binary
+
+    assert machine_matches_binary(binary, "win32-arm64") is False
 
     lock = Lockfile(tmp_path / "lock.json")
     lock.set_pin("agent-browser", "0.35.1", {"any": {"url": "x", "sha256": "0" * 64}})

@@ -166,7 +166,6 @@ def test_enabled_member_dirs_finds_enabled_dep_plugins(tmp_path, monkeypatch):
     orphan.mkdir()
     (orphan / "pyproject.toml").write_text("[project]\n", encoding="utf-8")
 
-    monkeypatch.setattr(ws, "_plugin_dir_roots", lambda: {plugins})
     # enabled order = enable recency (legacy enabled first/older, modern
     # newest LAST) — order must carry through for the bisect tiebreak.
     monkeypatch.setattr(
@@ -186,7 +185,6 @@ def test_enabled_member_dirs_empty_when_nothing_enabled(tmp_path, monkeypatch):
     member.mkdir()
     (member / "pyproject.toml").write_text("[project]\n", encoding="utf-8")
 
-    monkeypatch.setattr(ws, "_plugin_dir_roots", lambda: {plugins})
     monkeypatch.setattr(
         "pm.plugins_state.enabled_plugins_ordered", lambda: {}
     )
@@ -211,25 +209,23 @@ def test_scan_plugin_classifies_dep_surfaces(tmp_path):
     assert scan["legacy_deps"] and not scan["pyproject"]
 
 
-def test_enabled_member_dirs_survives_unreadable_roots(tmp_path, monkeypatch):
-    # an OSError mid-scan (dangling junction etc.) must not lose other roots
-    good = tmp_path / "good-plugins"
-    good.mkdir()
-    member = good / "member"
-    member.mkdir()
+def test_enabled_member_dirs_ignores_non_profile_entries(tmp_path, monkeypatch):
+    import pm.plugins_state as pstate
+
+    home = tmp_path / "home"
+    profiles = home / "profiles"
+    profiles.mkdir(parents=True)
+    member = profiles / "work" / "plugins" / "member"
+    member.mkdir(parents=True)
     (member / "pyproject.toml").write_text("[project]\n", encoding="utf-8")
-
-    class _Broken:
-        def is_dir(self):
-            raise OSError("dangling junction")
-
-    monkeypatch.setattr(ws, "_plugin_dir_roots", lambda: {good, _Broken()})
-    monkeypatch.setattr(
-        "pm.plugins_state.enabled_plugins_ordered",
-        lambda: {good: ["member"]},
+    (profiles / "work" / "config.yaml").write_text(
+        "plugins:\n  enabled: [member]\n", encoding="utf-8",
     )
-    found = ws.enabled_member_dirs()
-    assert [p.name for p in found] == ["member"]
+    (profiles / "README.txt").write_text("not a profile", encoding="utf-8")
+    monkeypatch.setattr("hermes_cli.runtime_paths.dependency_home_root", lambda: home)
+
+    assert pstate._all_homes() == [home, profiles / "work"]
+    assert ws.enabled_member_dirs() == [member]
 
 
 # --- classified failures + staging surface (FINAL-RUNTIME-CONTRACT) ---

@@ -335,6 +335,14 @@ A profile you built on one machine can go to another — your own workstation, a
 
 **Send a file.** `/export` packs the profile into one `.tar.gz` — skills, memory, persona, crons, plugins, settings, and (from the desktop) your theme and layout. API keys are stripped. The recipient runs `/import`.
 
+Machine-specific PM state is not portable. Export, import, and distribution
+install exclude `installs/`, `tools/`, and `cache/` at a profile's root.
+Backup and restore apply the same rule to the default home and named profiles.
+Older archives cannot replace the destination machine's PM selections or tools.
+Files such as `plugins/example/facts.json` and `skills/example/tools/helper.py`
+remain user data and are preserved. Install dependencies on the destination
+through [PM](/reference/package-management), rather than copying environments.
+
 ```bash
 # In chat, run /export, hand over the file, and they run /import on it
 hermes profile export coder

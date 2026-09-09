@@ -120,30 +120,20 @@ def _merge_unique(primary: list[str], secondary: list[str], key=lambda m: str(m)
 
 
 def _custom_provider_ssl_context(base_url: str):
-    """``ssl.SSLContext`` honoring a custom provider's ``ssl_ca_cert`` / ``ssl_verify`` (mirrors the
-    httpx TLS resolution), or None so the urllib ``/models`` probe keeps the default policy."""
+    """Use the same trust decision for urllib catalogs and HTTPX metadata/chat."""
+    from agent.model_metadata_http import resolve_verify
 
-    if not base_url:
+    verify = resolve_verify(base_url)
+    if verify is True:
         return None
-    try:
-        from hermes_cli.config import get_custom_provider_tls_settings
-
-        tls = get_custom_provider_tls_settings(base_url)
-        if not tls:
-            return None
+    if verify is False:
         import ssl
 
-        if tls.get("ssl_verify") is False:
-            ctx = ssl.create_default_context()
-            ctx.check_hostname = False
-            ctx.verify_mode = ssl.CERT_NONE
-            return ctx
-        ca = tls.get("ssl_ca_cert")
-        if isinstance(ca, str) and ca and os.path.isfile(ca):
-            return ssl.create_default_context(cafile=ca)
-    except Exception:
-        return None  # never break discovery on a TLS-config lookup
-    return None
+        context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        context.check_hostname = False
+        context.verify_mode = ssl.CERT_NONE
+        return context
+    return verify
 
 
 # Process-lifetime picker lists refreshed from the live catalogs (see fetch_*_models).

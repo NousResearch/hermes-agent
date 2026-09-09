@@ -819,10 +819,16 @@ operating-system trust procedure. Hermes' provider resolver no longer selects
 trust through `HERMES_CA_BUNDLE` or the old CA-environment-variable ladder.
 Sandboxed subprocesses can have their own separate CA configuration.
 
-A custom provider can declare `ssl_ca_cert` for its endpoint. A missing file
-produces a warning and falls back to platform trust. `ssl_verify: false`
-disables certificate verification and is unsafe for untrusted networks.
-Do not use it as a permanent fix for a missing corporate root.
+A custom provider can declare `ssl_ca_cert` for its endpoint. That bundle
+replaces platform trust for chat, model metadata, and model catalog probes.
+A missing file produces a warning and falls back to platform trust.
+`ssl_verify: false` disables certificate verification and is unsafe for
+untrusted networks. Do not use it as a permanent fix for a missing corporate root.
+
+Provider HTTP clients keep proxy configuration separate from certificate
+selection. A stale ambient CA-file path cannot prevent those clients from
+starting. PM index credentials are sent only to their exact HTTPS origin;
+redirects to another origin do not receive them.
 
 ## Supply-chain advisory checking
 

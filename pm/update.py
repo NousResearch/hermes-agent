@@ -175,18 +175,33 @@ def _github_headers() -> dict:
     return headers
 
 
+def _index_headers(url: str) -> dict:
+    from hermes_cli.urllib_security import url_origin
+
+    origin = url_origin(url)
+    if origin == ("https", "api.github.com", 443):
+        return _github_headers()
+    if origin == ("https", "huggingface.co", 443):
+        return {**_UA, **_hf_headers()}
+    return dict(_UA)
+
+
 def _get_json(url: str) -> dict | list:
-    with urllib.request.urlopen(
-        urllib.request.Request(url, headers=_github_headers()), timeout=60
+    from hermes_cli.urllib_security import open_credentialed_url
+
+    with open_credentialed_url(
+        urllib.request.Request(url, headers=_index_headers(url)), timeout=60
     ) as resp:
         return json.load(resp)
 
 
 def _get_text(url: str, headers: Optional[dict] = None) -> str:
-    hdrs = dict(_UA)
+    from hermes_cli.urllib_security import open_credentialed_url
+
+    hdrs = _index_headers(url)
     if headers:
         hdrs.update(headers)
-    with urllib.request.urlopen(
+    with open_credentialed_url(
         urllib.request.Request(url, headers=hdrs), timeout=60
     ) as resp:
         return resp.read().decode("utf-8", "replace")

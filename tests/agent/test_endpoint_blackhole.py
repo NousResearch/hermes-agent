@@ -21,7 +21,6 @@ from unittest.mock import MagicMock, patch
 
 import httpx
 import pytest
-import requests
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
@@ -160,8 +159,8 @@ class TestFetchEndpointModelMetadataBlackhole:
 
         with patch("agent.model_metadata.detect_local_server_type", return_value=None), \
              patch(
-                 "agent.model_metadata.requests.get",
-                 side_effect=requests.exceptions.ConnectTimeout("timed out"),
+                 "agent.model_metadata_http.stream",
+                 side_effect=httpx.ConnectTimeout("timed out"),
              ) as get:
             assert fetch_endpoint_model_metadata(self.URL) == {}
 
@@ -173,8 +172,8 @@ class TestFetchEndpointModelMetadataBlackhole:
 
         with patch("agent.model_metadata.detect_local_server_type", return_value=None), \
              patch(
-                 "agent.model_metadata.requests.get",
-                 side_effect=requests.exceptions.ConnectionError("refused"),
+                 "agent.model_metadata_http.stream",
+                 side_effect=httpx.ConnectError("refused"),
              ) as get:
             assert fetch_endpoint_model_metadata(self.URL) == {}
 
@@ -187,7 +186,7 @@ class TestFetchEndpointModelMetadataBlackhole:
 
         _note_endpoint_blackholed(self.URL)
         with patch("agent.model_metadata.detect_local_server_type", return_value=None), \
-             patch("agent.model_metadata.requests.get") as get:
+             patch("agent.model_metadata_http.stream") as get:
             assert fetch_endpoint_model_metadata(self.URL, force_refresh=True) == {}
 
         get.assert_not_called()
@@ -275,13 +274,6 @@ class TestIsConnectTimeout:
         from agent.model_metadata import _is_connect_timeout
 
         assert _is_connect_timeout(httpx.ConnectTimeout("x")) is True
-
-    def test_requests_connect_timeout(self):
-        from requests.exceptions import ConnectTimeout
-
-        from agent.model_metadata import _is_connect_timeout
-
-        assert _is_connect_timeout(ConnectTimeout("x")) is True
 
     def test_unrelated_errors_are_not_connect_timeouts(self):
         from agent.model_metadata import _is_connect_timeout

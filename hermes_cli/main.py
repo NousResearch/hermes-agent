@@ -2105,6 +2105,14 @@ def cmd_uninstall(args):
         print(json.dumps(gui_install_summary()))
         return
 
+    if getattr(args, "data", False):
+        if not getattr(args, "yes", False) and not getattr(args, "dry_run", False):
+            _require_tty("uninstall --data")
+        from hermes_cli.uninstall import run_data_uninstall
+
+        run_data_uninstall(args)
+        return
+
     if getattr(args, "gui", False):
         if not getattr(args, "yes", False):
             _require_tty("uninstall --gui")

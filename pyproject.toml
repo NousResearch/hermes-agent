@@ -444,6 +444,8 @@ all = [
 # Build tooling is not a runtime extra: payloads select --all-extras.
 # --only-group supplies Pillow without installing the Hermes application.
 icon-build = ["Pillow==12.3.0", "resvg-py==0.4.0"]
+# Native launcher acceptance is required in test environments, not payloads.
+test = ["distlib==0.4.3; sys_platform == 'win32'"]
 
 [build-system]
 # setuptools.build_meta + our setup.py bdist_wheel guard import wheel during

@@ -13,7 +13,7 @@ import pytest
 
 from pm.lock import Facts, Lockfile
 from pm.packages import uv_env
-from pm.store import current_target, tree_digest
+from pm.store import current_target, sha256_file, tree_digest
 from tests.pm.test_workspace_build_inputs import _wheel
 
 
@@ -81,10 +81,19 @@ def test_bootstrap_repairs_before_dependency_activation(tmp_path, monkeypatch, m
         python_entry = tools / "python"
         (python_entry / "bin").mkdir(parents=True)
         (python_entry / "bin/python3").symlink_to(Path(sys._base_executable).resolve())
+    from pm.registry import get_package
+
+    target = current_target()
     for name, directory in (("uv", uv_entry), ("python", python_entry)):
-        lock.set_pin(name, "fixture", {})
+        package = get_package(name)
+        binary = package.binary(directory, target)
+        assert not package.verify(directory, target), (
+            f"startup recovery requires native {target} tools: {binary}"
+        )
+        digest = sha256_file(binary)
+        lock.set_pin(name, "fixture", {target: {"url": binary.as_uri(), "sha256": digest}})
         facts.record(name, "fixture", str(directory), {}, tools,
-                     target=current_target(), digest=tree_digest(directory))
+                     target=target, artifacts=[digest], digest=tree_digest(directory))
     lock.save()
     launcher = core / "launch.py"
     launcher.write_text(

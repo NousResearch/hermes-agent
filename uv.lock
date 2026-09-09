@@ -1085,6 +1085,15 @@ voice = [
 ]
 
 [[package]]
+name = "distlib"
+version = "0.4.3"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/c9/02/bd72be9134d25ed783ecbbc38a539ffaefbf90c78418c7fb7229600dbac7/distlib-0.4.3.tar.gz", hash = "sha256:f152097224a0ae24be5a0f6bae1b9359af82133bce63f98a95f86cae1aede9ed", size = 615141, upload-time = "2026-06-12T08:04:52.847Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/02/08/9c41fb51ab5b43eb21674aff13df270e8ba6c4b29c8624e328dc7a9482af/distlib-0.4.3-py2.py3-none-any.whl", hash = "sha256:4b0ce306c966eb73bc3a7b6abad017c556dadd92c44701562cd528ac7fde4d5b", size = 470628, upload-time = "2026-06-12T08:04:50.506Z" },
+]
+
+[[package]]
 name = "distro"
 version = "1.9.0"
 source = { registry = "https://pypi.org/simple" }
@@ -1838,6 +1847,9 @@ icon-build = [
     { name = "pillow" },
     { name = "resvg-py" },
 ]
+test = [
+    { name = "distlib", marker = "sys_platform == 'win32'" },
+]
 
 [package.metadata]
 requires-dist = [
@@ -2000,6 +2012,7 @@ icon-build = [
     { name = "pillow", specifier = "==12.3.0" },
     { name = "resvg-py", specifier = "==0.4.0" },
 ]
+test = [{ name = "distlib", marker = "sys_platform == 'win32'", specifier = "==0.4.3" }]
 
 [[package]]
 name = "hf-xet"

@@ -72,6 +72,14 @@ environment before third-party imports. Processes retain their existing imports
 until they restart. Garbage collection preserves selected generations and
 lease-managed generations with live readers.
 
+Downloads share a lock per partial URL. A failed or paused transfer cannot
+publish a partial destination, and garbage collection cannot delete a live
+transfer's files. Resume reuses ranges only when their recorded length,
+validator, and optional hash still match. Without a strong ETag or pinned
+hash, an interrupted transfer restarts instead of mixing different versions.
+The small `.locks/` files remain after completion so waiting processes use
+the same lock.
+
 ## Optional Python dependencies and plugins
 
 A built-in feature requests a project extra through `pm.ensure_import`.
@@ -265,8 +273,10 @@ are not durable and can disappear when PM selects a new environment.
 PM's `dev` extra does not make a bare store Python suitable for the canonical
 test runner. The runner clears `PYTHONPATH` and needs an interpreter with pytest
 installed in its own environment. Use the contributor guide's
-[independent test environment](/developer-guide/contributing#manual-development-and-test-environment),
-then run `scripts/run_tests.sh` (through Bash on Windows).
+[independent test environment](/developer-guide/contributing#manual-development-and-test-environment)
+with `uv sync --extra dev --group test`, then run `scripts/run_tests.sh`
+(through Bash on Windows). The `test` dependency group includes native launcher
+test dependencies and does not enter a packaged runtime.
 
 The runner checks repository `.venv`, repository `venv`, and the standard
 source-install venv before using `HERMES_PYTHON` as a fallback. Read its startup

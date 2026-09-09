@@ -213,26 +213,22 @@ def test_facts_failure_triggers_undo_inside_one_transaction(plugin_home, monkeyp
         order.append("before_publish")
         return adm._config_commit({"dep-plug"}, set())
 
-    # Facts stub needs a working reload/get but a failing record_state:
-    class _Facts:
-        def __init__(self, path):
-            self.path = path
+    facts_path = plugin_home / "runtime" / "facts.json"
+    ensure.Facts(facts_path).record_state("venv", "previous-stamp", [])
+    previous_facts = facts_path.read_bytes()
+    monkeypatch.setattr(ensure.paths, "runtime_facts_path", lambda: facts_path)
+    monkeypatch.setattr(ensure.paths, "repo_root", lambda: plugin_home / "runtime")
 
-        def reload(self):
-            pass
+    def fail_publication(self, *args, **kwargs):
+        order.append("record_state")
+        raise OSError("facts disk full")
 
-        def get(self, name):
-            return None
-
-        def record_state(self, *a, **k):
-            order.append("record_state")
-            raise OSError("facts disk full")
-
-    monkeypatch.setattr(ensure, "Facts", _Facts)
-    with pytest.raises(OSError):
+    monkeypatch.setattr(ensure.Facts, "record_state", fail_publication)
+    with pytest.raises(OSError, match="facts disk full"):
         ensure.sync_venv(explicit=True, plugin_dirs=[plug], before_publish=before_publish)
     assert order == ["before_publish", "record_state"]  # config committed under the lock first
     assert (plugin_home / "config.yaml").read_bytes() == previous  # undone atomically
+    assert facts_path.read_bytes() == previous_facts
     latest = json.loads((rdir / "latest.json").read_text(encoding="utf-8-sig"))
     assert latest["outcome"] == "failed"
 

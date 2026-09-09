@@ -79,7 +79,7 @@ POSIX:
 ```bash
 uv venv "$HOME/.hermes/venvs/hermes-dev" --python 3.14
 export UV_PROJECT_ENVIRONMENT="$HOME/.hermes/venvs/hermes-dev"
-uv sync --locked --extra all --extra dev
+uv sync --locked --extra all --extra dev --group test
 export HERMES_PYTHON="$UV_PROJECT_ENVIRONMENT/bin/python"
 "$HERMES_PYTHON" hermes --version
 ```
@@ -90,7 +90,7 @@ PowerShell:
 $devEnv = Join-Path $env:LOCALAPPDATA 'hermes-dev-env'
 uv venv $devEnv --python 3.14
 $env:UV_PROJECT_ENVIRONMENT = $devEnv
-uv sync --locked --extra all --extra dev
+uv sync --locked --extra all --extra dev --group test
 $env:HERMES_PYTHON = Join-Path $devEnv 'Scripts/python.exe'
 & $env:HERMES_PYTHON hermes --version
 ```

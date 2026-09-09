@@ -8,6 +8,7 @@ fixture starts one and resets its state.
 
 from __future__ import annotations
 
+import hashlib
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -21,10 +22,17 @@ class RangeHandler(BaseHTTPRequestHandler):
     abort_after: int | None = None   # close the connection after this many bytes
     slow_per_chunk: float = 0.0      # sleep per served piece (pause tests)
     no_range: bool = False           # ignore Range, serve 200 full body
+    etags: bool = True
     chunk: int = 1 << 20             # serve piece size
 
     def log_message(self, *args):  # noqa: A002 - silence request logging
         pass
+
+    def end_headers(self):
+        payload = self.payloads.get(self.path)
+        if payload is not None and self.etags:
+            self.send_header("ETag", '"' + hashlib.sha256(payload).hexdigest() + '"')
+        super().end_headers()
 
     def do_GET(self):  # noqa: N802 - http.server API
         payload = self.payloads.get(self.path)
@@ -56,7 +64,7 @@ class RangeHandler(BaseHTTPRequestHandler):
                 # probe: 206 with total from Content-Range, 1 byte body
                 total = len(payload)
                 self.send_response(206)
-                self.send_header("Content-Range", f"bytes 0-{total - 1}/{total}")
+                self.send_header("Content-Range", f"bytes 0-0/{total}")
                 self.send_header("Content-Length", "1")
                 self.end_headers()
                 self.wfile.write(payload[:1])
@@ -97,6 +105,7 @@ def dl_server():
     RangeHandler.abort_after = None
     RangeHandler.slow_per_chunk = 0.0
     RangeHandler.no_range = False
+    RangeHandler.etags = True
     RangeHandler.chunk = 1 << 20
     server = HTTPServer(("127.0.0.1", 0), RangeHandler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)

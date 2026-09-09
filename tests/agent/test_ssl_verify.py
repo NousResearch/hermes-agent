@@ -12,7 +12,6 @@ from agent import ssl_verify
 from agent.ssl_verify import (
     install_truststore,
     resolve_httpx_verify,
-    resolve_requests_verify,
 )
 
 
@@ -39,7 +38,6 @@ def test_default_verify_defers_to_the_platform_store():
     # True means "verify normally", which after the install means the OS
     # store. No CA bundle path is threaded through.
     assert resolve_httpx_verify() is True
-    assert resolve_requests_verify() is True
 
 
 def test_env_ca_bundle_vars_no_longer_steer_trust(monkeypatch, tmp_path):
@@ -52,13 +50,17 @@ def test_env_ca_bundle_vars_no_longer_steer_trust(monkeypatch, tmp_path):
     """
     import certifi
 
-    for var in ("HERMES_CA_BUNDLE", "SSL_CERT_FILE", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE"):
-        monkeypatch.setenv(var, certifi.where())
-    assert resolve_httpx_verify() is True
+    import httpx
 
-    for var in ("HERMES_CA_BUNDLE", "SSL_CERT_FILE", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE"):
-        monkeypatch.setenv(var, str(tmp_path / "does-not-exist.pem"))
-    assert resolve_httpx_verify() is True
+    for path in (certifi.where(), str(tmp_path / "does-not-exist.pem")):
+        for var in ("HERMES_CA_BUNDLE", "SSL_CERT_FILE", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE"):
+            monkeypatch.setenv(var, path)
+        verify = resolve_httpx_verify()
+        with httpx.Client(verify=verify) as client:
+            context = client._transport._pool._ssl_context
+            assert type(context).__module__.startswith("truststore")
+            assert context.verify_mode == ssl.CERT_REQUIRED
+            assert context.check_hostname
 
 
 def test_explicit_ca_bundle_replaces_the_platform_store():
@@ -88,24 +90,16 @@ def test_explicit_ca_bundle_replaces_the_platform_store():
     assert len(ctx.get_ca_certs()) > 0
 
 
-def test_requests_explicit_ca_bundle_is_returned_as_a_path():
-    import certifi
-
-    assert resolve_requests_verify(ca_bundle=certifi.where()) == certifi.where()
-
-
 def test_missing_explicit_bundle_falls_back_to_the_platform_store(tmp_path, caplog):
     missing = str(tmp_path / "nope.pem")
 
     assert resolve_httpx_verify(ca_bundle=missing) is True
-    assert resolve_requests_verify(ca_bundle=missing) is True
     assert "does not exist" in caplog.text
 
 
 @pytest.mark.parametrize("value", [False, "false", "0", "no", "off", "FALSE"])
 def test_insecure_disables_verification(value):
     assert resolve_httpx_verify(ssl_verify=value) is False
-    assert resolve_requests_verify(ssl_verify=value) is False
 
 
 def test_insecure_beats_an_explicit_bundle():

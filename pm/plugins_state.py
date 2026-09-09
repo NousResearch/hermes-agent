@@ -22,25 +22,44 @@ def _profiles_root() -> Path:
 
 
 def _read_home_config(home: Path) -> Optional[dict[str, Any]]:
-    """Parse ONE home's config.yaml, or None when absent/unparseable.
+    """Read a selection once; only an absent file means an unknown home.
 
-    The single parse site: every query about a home (plugins.enabled,
-    memory.provider) derives from this one read — config.yaml is parsed
-    once per home, not once per question.
+    An unreadable selection must not shrink the next dependency generation.
+    Empty YAML is an explicit empty configuration, as in the CLI loader.
     """
     config_path = home / "config.yaml"
-    if not config_path.is_file():
+    try:
+        text = config_path.read_text(encoding="utf-8-sig")
+    except FileNotFoundError:
         return None
+    except (OSError, UnicodeError) as exc:
+        raise ValueError(f"could not read plugin selection: {config_path}") from exc
+
     # Missing YAML support is a broken runtime, not an empty plugin selection.
     import utils
+    from yaml import YAMLError
 
     try:
-        config = utils.fast_safe_load(config_path.read_text(encoding="utf-8-sig"))
-        return config if isinstance(config, dict) else None
-    except ImportError:
-        raise
-    except Exception:
-        return None
+        config = utils.fast_safe_load(text)
+    except YAMLError as exc:
+        raise ValueError(f"could not parse plugin selection: {config_path}") from exc
+    if config is None:
+        return {}
+    if not isinstance(config, dict):
+        raise ValueError(f"configuration must be a mapping: {config_path}")
+    for section in ("plugins", "memory"):
+        if config.get(section) is not None and not isinstance(config[section], dict):
+            raise ValueError(f"{section} must be a mapping: {config_path}")
+    plugins = config.get("plugins") or {}
+    for key in ("enabled", "disabled"):
+        names = plugins.get(key)
+        if names is not None and (not isinstance(names, list)
+                                  or any(not isinstance(name, str) for name in names)):
+            raise ValueError(f"plugins.{key} must be a list of names: {config_path}")
+    provider = (config.get("memory") or {}).get("provider")
+    if provider is not None and not isinstance(provider, str):
+        raise ValueError(f"memory.provider must be a name: {config_path}")
+    return config
 
 
 def _enabled_from_config(config: dict[str, Any]) -> list[str]:
@@ -61,23 +80,30 @@ def _enabled_from_config(config: dict[str, Any]) -> list[str]:
     return out
 
 
-def _all_homes() -> list[Path]:
-    """The default home + every profile home (the union's scope)."""
-    homes: list[Path] = []
-    try:
-        from hermes_cli.runtime_paths import dependency_home_root
+def _is_directory(path: Path) -> bool:
+    import stat
 
-        homes.append(dependency_home_root())
-    except Exception:
-        pass
     try:
-        root = _profiles_root()
-        if root.is_dir():
-            for profile in sorted(root.iterdir(), key=str):
-                if profile.is_dir():
-                    homes.append(profile)
-    except OSError:
-        pass
+        return stat.S_ISDIR(path.stat().st_mode)
+    except FileNotFoundError:
+        return False
+    except OSError as exc:
+        raise ValueError(f"could not inspect plugin directory: {path}") from exc
+
+
+def _all_homes() -> list[Path]:
+    """Enumerate the complete union or refuse; a partial scan cannot remove members."""
+    from hermes_cli.runtime_paths import dependency_home_root
+
+    homes = [dependency_home_root()]
+    root = _profiles_root()
+    try:
+        profiles = sorted(root.iterdir(), key=str)
+    except FileNotFoundError:
+        return homes
+    except OSError as exc:
+        raise ValueError(f"could not enumerate profiles: {root}") from exc
+    homes.extend(profile for profile in profiles if _is_directory(profile))
     return homes
 
 
@@ -109,16 +135,11 @@ def enabled_plugins_ordered(*, proposed_home=None, enabled=None, disabled=None) 
 def _provider_from_config(home: Path, config: dict[str, Any]) -> Optional[str]:
     """The ``memory.provider`` key of an already-parsed config, when its
     plugin dir exists (no dir = not a member)."""
-    try:
-        provider = (config.get("memory") or {}).get("provider")
-        if not isinstance(provider, str) or not provider.strip():
-            return None
-        name = provider.strip()
-        if (home / "plugins" / name).is_dir():
-            return name
+    provider = (config.get("memory") or {}).get("provider")
+    if not provider or not provider.strip():
         return None
-    except Exception:
-        return None
+    name = provider.strip()
+    return name if _is_directory(home / "plugins" / name) else None
 
 
 def disable_plugins(names: list[str]) -> dict[str, list[str]]:
@@ -143,13 +164,9 @@ def disable_plugins(names: list[str]) -> dict[str, list[str]]:
 
     for home in _all_homes():
         config_path = home / "config.yaml"
-        if not config_path.is_file():
-            continue
-        config = _read_home_config(config_path.parent)
+        config = _read_home_config(home)
         if config is None:
-            raise ValueError(
-                f"could not parse existing config: {config_path}"
-            )
+            continue
         plugins_cfg = config.get("plugins")
         if not isinstance(plugins_cfg, dict):
             continue

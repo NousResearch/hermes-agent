@@ -17,7 +17,7 @@ from pathlib import Path
 import pytest
 
 from pm.downloader import (Download, DownloadError, DownloadPaused,
-                           HashError, Source, gc_protected_names)
+                           HashError, Source)
 
 from tests.pm._range_server import RangeHandler as _Handler, dl_server, url as _url
 
@@ -76,7 +76,7 @@ def test_hash_mismatch_raises_and_deletes_part(dl_server, tmp_path):
     with pytest.raises(HashError):
         dl.run()
     assert not dest.exists()
-    assert list(partials.iterdir()) == []  # .part + .ranges both deleted
+    assert not [path for path in partials.iterdir() if path.name != ".locks"]  # .part + .ranges both deleted
 
 
 def test_no_hash_accepts_any_bytes_of_right_size(dl_server, tmp_path):
@@ -122,7 +122,10 @@ def test_resume_after_crash_reads_sidecar(dl_server, tmp_path):
     partials.mkdir()
     key = hashlib.sha256(_url(dl_server, "/c").encode("utf-8")).hexdigest()
     (partials / f"{key}.part").write_bytes(payload[: 1 << 20])
-    (partials / f"{key}.ranges").write_text(json.dumps([[0, 1 << 20]]))
+    (partials / f"{key}.ranges").write_text(json.dumps({
+        "total": len(payload), "etag": '"' + _sha(payload) + '"',
+        "sha256": _sha(payload), "ranges": [[0, 1 << 20]],
+    }), encoding="utf-8")
     dl = Download([Source(_url(dl_server, "/c"), dest, _sha(payload))],
                   partials_dir=partials)
     dl.run()
@@ -141,7 +144,7 @@ def test_partials_never_in_scratch_or_dest(dl_server, tmp_path):
     # dest is the only file in its dir; partials dir is empty after mv.
     # (The test harness may drop its own marker dir into tmp_path.)
     assert dest.exists()
-    assert list(partials.iterdir()) == []
+    assert not [path for path in partials.iterdir() if path.name != ".locks"]
     assert not [p for p in tmp_path.iterdir()
                 if p.suffix in (".part", ".ranges")]
 
@@ -398,31 +401,3 @@ def test_pause_mid_plan_resumes_to_completion(dl_server, tmp_path):
     dl.run()
     assert da.read_bytes() == p_a
     assert db.read_bytes() == p_b
-
-
-def test_gc_protected_names_live_partial(tmp_path):
-    """gc protection: entries touched inside the grace window are live."""
-    import os
-
-    partials = tmp_path / "partials"
-    partials.mkdir()
-    (partials / "abc.part").write_bytes(b"p")
-    (partials / "abc.ranges").write_text("[]")
-    (partials / "old.part").write_bytes(b"p")
-    # Backdate the stale entry beyond any plausible grace window.
-    old = time.time() - 10 * 24 * 3600
-    os.utime(partials / "old.part", (old, old))
-
-    protected = gc_protected_names(partials)
-    assert "abc.part" in protected
-    assert "abc.ranges" in protected  # either half protects the pair
-    assert "old.part" not in protected
-
-    # Filesystem timestamps can be slightly ahead of the wall clock.
-    future = time.time() + 60
-    os.utime(partials / "abc.part", (future, future))
-    assert gc_protected_names(partials, grace_seconds=0) == set()
-
-
-def test_gc_protected_names_missing_dir(tmp_path):
-    assert gc_protected_names(tmp_path / "nope") == set()

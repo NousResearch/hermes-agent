@@ -11,8 +11,8 @@ experiments proved it once; these tests keep proving it on every run):
     dispatches to the entry module with argv forwarded and the exit code
     returned.
 
-Skipped off-windows (POSIX payloads ship $0-relative bash trampolines
-instead) and when neither distlib nor pip is importable.
+Runs on Windows with the locked ``test`` dependency group. POSIX payloads
+use $0-relative bash trampolines instead.
 """
 
 from __future__ import annotations
@@ -32,21 +32,6 @@ _MINT = _REPO / "scripts" / "bundles" / "mint_launchers.py"
 pytestmark = [
     pytest.mark.platforms("windows"),
 ]
-
-
-def _distlib_available() -> bool:
-    try:
-        import distlib.scripts  # noqa: F401
-        return True
-    except ImportError:
-        try:
-            from pip._vendor import distlib  # noqa: F401
-            return True
-        except ImportError:
-            return False
-
-
-pytestmark.append(pytest.mark.skipif(not _distlib_available(), reason="no distlib (nor pip's vendored copy)"))
 
 
 @pytest.fixture()
@@ -82,7 +67,8 @@ def payload_tree(tmp_path: Path):
 
     # Exercise the real bootstrap before the fixture entry point.
     for relative in ("hermes_bootstrap.py", "hermes_constants.py", "hermes_cli/__init__.py",
-                     "hermes_cli/runtime_paths.py", "hermes_cli/runtime_state.py"):
+                     "hermes_cli/runtime_paths.py", "hermes_cli/runtime_state.py",
+                     "hermes_cli/_early_recovery.py", "hermes_cli/_parser.py"):
         shutil.copy2(_REPO / relative, repo / relative)
     (repo / "hermes_cli" / "main.py").write_text(
         "import os, sys\n"

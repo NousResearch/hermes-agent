@@ -23,6 +23,8 @@ from utils import (
     _preserve_file_mode, _preserve_file_owner, _restore_file_mode, _restore_file_owner, atomic_replace,
 )
 
+from hermes_cli.archive_safe import normalize_archive_parts
+from hermes_cli.home_data_layout import PM_RUNTIME_ROOT_DIRS, profile_root_entry
 from hermes_cli.sizefmt import format_bytes as _format_size
 
 from hermes_cli.backup_restore import (
@@ -72,15 +74,12 @@ _EXCLUDED_DIRS = {
 # Hermes-managed runtime downloads (GGUF models, llama.cpp runtimes, managed Node): re-downloaded
 # on demand and routinely tens to hundreds of GB. Matched ONLY at the root of HERMES_HOME and at
 # ``profiles/<name>/`` — a deeper dir of the same name (a skill's ``models/``) is user data.
-_EXCLUDED_ROOT_DIRS = {"models", "runtimes", "node"}
+_EXCLUDED_ROOT_DIRS = {"models", "runtimes", "node"} | PM_RUNTIME_ROOT_DIRS
 
 
 def _in_excluded_root_dir(rel_path: Path) -> bool:
     """True when *rel_path* is, or sits inside, a managed runtime tree at a profile-home root."""
-    parts = rel_path.parts
-    return bool(parts) and (
-        parts[0] in _EXCLUDED_ROOT_DIRS
-        or (len(parts) >= 3 and parts[0] == "profiles" and parts[2] in _EXCLUDED_ROOT_DIRS))
+    return profile_root_entry(rel_path.parts) in _EXCLUDED_ROOT_DIRS
 
 
 # SQLite sidecars are excluded because ``*.db`` is snapshotted via ``sqlite3.backup()``:
@@ -888,13 +887,25 @@ def run_import(args) -> None:
             if not rel:
                 continue
 
+            try:
+                parts = tuple(normalize_archive_parts(rel))
+            except ValueError:
+                errors.append(f"  {rel}: path traversal blocked")
+                continue
+
             # Never overwrite volatile gateway/process runtime state. These are
             # namespaced to the machine/container the backup was taken on;
             # clobbering them (especially gateway_state.json) breaks the gateway
             # reconciler on the target and disconnects hosted instances from the
             # Nous portal. Matched by basename so both the root profile and
             # named profiles (profiles/<name>/gateway_state.json) are covered.
-            if Path(rel).name in _IMPORT_SKIP_NAMES:
+            if parts[-1] in _IMPORT_SKIP_NAMES:
+                skipped_runtime.append(rel)
+                continue
+
+            # Older archives may contain PM selections pointing at another machine.
+            # Match their home-root paths; a plugin's own facts.json is user data.
+            if profile_root_entry(parts) in PM_RUNTIME_ROOT_DIRS:
                 skipped_runtime.append(rel)
                 continue
 
@@ -908,7 +919,7 @@ def run_import(args) -> None:
                 skipped_runtime.append(rel)
                 continue
 
-            target = hermes_root / rel
+            target = hermes_root.joinpath(*parts)
 
             # Security: reject absolute paths and traversals
             try:

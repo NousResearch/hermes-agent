@@ -1,91 +1,100 @@
-"""The real-home tripwire: tests touching the REAL hermes home must fail.
-
-The guard (conftest _forbid_real_hermes_home_io) exists to catch the
-hardcoded-restatement bug class — code writing Path.home()/".hermes"
-instead of get_hermes_home(). These tests prove the tripwire fires.
-"""
-
+"""Real-home guards are exercised against disposable protected roots only."""
 from __future__ import annotations
 
+import io
+import os
 from pathlib import Path
+import shutil
+import sqlite3
 
 import pytest
 
 
-def test_read_from_real_home_fails():
-    """Reading production state in a test is a leak — must trip."""
-    from tests.conftest import _REAL_HERMES_ROOT_CANDIDATES
+@pytest.fixture
+def protected_home(tmp_path, monkeypatch):
+    from tests import conftest
 
-    assert _REAL_HERMES_ROOT_CANDIDATES, "guard roots not captured"
-    root = _REAL_HERMES_ROOT_CANDIDATES[0]
-    sentinel = root / "tripwire-probe-should-fail.txt"
-    # the wrapper must raise AssertionError (not create/read anything)
-    with pytest.raises(AssertionError, match="REAL hermes home"):
-        # open() for READ on a nonexistent file still trips the guard
-        # BEFORE the OS error — the check is path-based, not result-based
-        with open(sentinel, "r", encoding="utf-8"):
-            pass
-
-
-def test_write_to_real_home_fails():
-    root = Path.home() / ".hermes"
-    sentinel = root / "tripwire-probe-write-should-fail.json"
-    with pytest.raises(AssertionError, match="REAL hermes home"):
-        with open(sentinel, "w", encoding="utf-8") as f:
-            f.write("should never land")
+    root = tmp_path / "protected"
+    root.mkdir()
+    (root / "file.txt").write_text("unchanged", encoding="utf-8")
+    (root / "empty").mkdir()
+    monkeypatch.setattr(conftest, "_REAL_HERMES_ROOT_CANDIDATES", [root])
+    yield root
+    # Restore access before tmp_path/pytest cleanup even when an assertion fails.
+    monkeypatch.setattr(conftest, "_REAL_HERMES_ROOT_CANDIDATES", [])
 
 
-def test_mkdir_under_real_home_fails(tmp_path):
-    # os.mkdir with a real-home target (parent must exist for mkdir; use
-    # makedirs which creates parents — both are guarded)
-    with pytest.raises(pytest.fail.Exception):
-        import os
-
-        os.makedirs(str(Path.home() / ".hermes" / "tripwire-deep" / "dir"), exist_ok=True)
+def _open_close(path):
+    with open(path, encoding="utf-8"):
+        pass
 
 
-def test_isolated_home_io_still_works(tmp_path):
-    """The happy path: tempdir (the sandboxed HERMES_HOME shape) is NOT
-    under the real root — ordinary I/O must be completely unaffected."""
-    target = tmp_path / "fine.json"
-    with open(target, "w", encoding="utf-8") as f:
-        f.write("ok")
-    with open(target, encoding="utf-8") as f:
-        assert f.read() == "ok"
+def _io_open_close(path):
+    with io.open(path, encoding="utf-8"):
+        pass
 
 
-def test_profile_paths_under_real_root_also_trip():
-    """<root>/profiles/<name> is inside the guarded root — the deployment
-    bug class (pm/plugins_state Path.home()/.hermes/profiles) trips."""
-    with pytest.raises(AssertionError, match="REAL hermes home"):
-        with open(
-            Path.home() / ".hermes" / "profiles" / "some-profile" / "config.yaml",
-            "r",
-            encoding="utf-8",
-        ):
-            pass
+def _os_open_close(path):
+    descriptor = os.open(path, os.O_RDONLY)
+    os.close(descriptor)
+
+
+_OPERATIONS = {
+    "builtin-open": _open_close,
+    "io-open": _io_open_close,
+    "os-open": _os_open_close,
+    "read-text": lambda path: path.read_text(encoding="utf-8"),
+    "write-text": lambda path: path.write_text("changed", encoding="utf-8"),
+    "read-bytes": lambda path: path.read_bytes(),
+    "write-bytes": lambda path: path.write_bytes(b"changed"),
+    "stat": lambda path: path.stat(),
+    "lstat": lambda path: path.lstat(),
+    "unlink": lambda path: path.unlink(),
+    "remove": lambda path: os.remove(path),
+    "rename-out": lambda path: path.rename(path.parent.parent / "moved.txt"),
+    "replace-out": lambda path: path.replace(path.parent.parent / "replaced.txt"),
+    "mkdir": lambda path: (path.parent / "new").mkdir(),
+    "makedirs": lambda path: os.makedirs(path.parent / "deep" / "child"),
+    "rmdir": lambda path: (path.parent / "empty").rmdir(),
+    "rmtree": lambda path: shutil.rmtree(path.parent),
+    "listdir": lambda path: os.listdir(path.parent),
+    "scandir": lambda path: list(os.scandir(path.parent)),
+    "sqlite": lambda path: sqlite3.connect(path.parent / "state.db").close(),
+}
+
+
+@pytest.mark.parametrize("operation", _OPERATIONS, ids=_OPERATIONS)
+def test_io_guard_denies_protected_roots_before_mutation(protected_home, operation):
+    with pytest.raises((AssertionError, pytest.fail.Exception), match="REAL hermes home"):
+        _OPERATIONS[operation](protected_home / "file.txt")
+
+
+def test_rename_cannot_overwrite_a_protected_destination(protected_home, tmp_path):
+    source = tmp_path / "source.txt"
+    source.write_text("external", encoding="utf-8")
+    with pytest.raises((AssertionError, pytest.fail.Exception), match="REAL hermes home"):
+        source.replace(protected_home / "file.txt")
+    assert source.read_text(encoding="utf-8") == "external"
+
+
+def test_unprotected_paths_and_open_descriptors_still_work(protected_home, tmp_path):
+    target = tmp_path / "allowed" / "file.txt"
+    target.parent.mkdir()
+    target.write_text("ok", encoding="utf-8")
+    assert target.read_text(encoding="utf-8") == "ok"
+    fd = os.open(target, os.O_RDONLY)
+    with os.fdopen(fd, "r", encoding="utf-8") as stream:
+        assert stream.read() == "ok"
+    moved = target.replace(target.with_name("moved.txt"))
+    assert list(moved.parent.iterdir()) == [moved]
+    moved.unlink()
+    moved.parent.rmdir()
+    connection = sqlite3.connect(tmp_path / "allowed.db")
+    connection.close()
 
 
 @pytest.mark.allow_real_home_io
-def test_opt_out_marker_bypasses_guard(tmp_path):
-    """The documented escape hatch: marked tests read real paths freely
-    (the guard's own tests inspect conftest internals)."""
-    # just exercising that the fixture returns without wrapping
-    assert True
-
-
-def test_sqlite_connect_to_real_home_fails():
-    """sqlite3 bypasses builtins.open (C-level) — the dedicated hook must
-    catch a state.db-shaped leak under ~/.hermes."""
-    import sqlite3
-
-    with pytest.raises(pytest.fail.Exception):
-        sqlite3.connect(str(Path.home() / ".hermes" / "state.db"))
-
-
-def test_sqlite_connect_to_tempdir_still_works(tmp_path):
-    import sqlite3
-
-    con = sqlite3.connect(str(tmp_path / "fine.db"))
-    con.execute("CREATE TABLE t (x)")
-    con.close()
+def test_explicit_opt_out_allows_only_the_disposable_canary(protected_home):
+    target = protected_home / "file.txt"
+    target.write_text("opted out", encoding="utf-8")
+    assert target.read_text(encoding="utf-8") == "opted out"

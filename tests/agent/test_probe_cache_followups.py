@@ -7,6 +7,7 @@ Covers:
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -164,6 +165,20 @@ class TestLocalhostIPv4SiblingSites:
     """#37595 widened: every probe helper rewrites localhost→127.0.0.1,
     not just detect_local_server_type."""
 
+    @pytest.fixture(autouse=True)
+    def streamed_responses(self, monkeypatch):
+        from agent import model_metadata_http
+
+        @contextmanager
+        def stream(*args, **kwargs):
+            response = model_metadata_http.get(*args, **kwargs)
+            try:
+                yield response
+            finally:
+                response.close()
+
+        monkeypatch.setattr(model_metadata_http, "stream", stream)
+
 
     def test_rewrite_is_host_only_not_substring(self):
         """A URL that merely EMBEDS 'http://localhost' in its path/query must
@@ -201,7 +216,7 @@ class TestLocalhostIPv4SiblingSites:
         resp.json.return_value = {"data": []}
 
         with patch("agent.model_metadata.detect_local_server_type", return_value=None), \
-             patch("agent.model_metadata.requests.get", return_value=resp) as mock_get:
+             patch("agent.model_metadata_http.get", return_value=resp) as mock_get:
             fetch_endpoint_model_metadata("http://localhost:8000/v1")
 
         assert mock_get.call_args[0][0].startswith("http://127.0.0.1:8000")
@@ -223,7 +238,7 @@ class TestLocalhostIPv4SiblingSites:
         }
 
         props_resp = MagicMock()
-        props_resp.ok = True
+        props_resp.is_error = False
         props_resp.json.return_value = {
             "default_generation_settings": {"n_ctx": 32768},
             "model_alias": "llama-3-8b",
@@ -231,7 +246,7 @@ class TestLocalhostIPv4SiblingSites:
 
         with patch("agent.model_metadata.detect_local_server_type", return_value=None), \
              patch(
-                 "agent.model_metadata.requests.get",
+                 "agent.model_metadata_http.get",
                  side_effect=[models_resp, props_resp],
              ) as mock_get:
             result = fetch_endpoint_model_metadata("http://localhost:8000/v1")

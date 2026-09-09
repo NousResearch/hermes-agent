@@ -69,22 +69,27 @@ def _coerce_insecure(ssl_verify: Any) -> bool:
     return False
 
 
-_CA_CONTEXTS: dict[str, ssl.SSLContext] = {}
+_CA_CONTEXTS: dict[str | None, ssl.SSLContext] = {}
 _CA_CONTEXTS_LOCK = threading.Lock()
 
 
-def _context_for_ca_bundle(ca_path: str) -> ssl.SSLContext:
-    """One ``SSLContext`` per CA bundle path, process-wide.
-
-    ``ssl.create_default_context(cafile=...)`` parses the whole bundle each call, and httpx
-    transport sharing keys on context identity — so a per-agent context cost one parsed bundle
-    AND one private connection pool per agent (and per delegated child). An ``SSLContext`` is
-    safe to share across connections.
-    """
+def _shared_context(ca_path: str | None) -> ssl.SSLContext:
+    """A stable context identity lets clients reuse the existing transport pool."""
     with _CA_CONTEXTS_LOCK:
         ctx = _CA_CONTEXTS.get(ca_path)
         if ctx is None:
-            ctx = ssl.create_default_context(cafile=ca_path)
+            if ca_path is not None:
+                from truststore._ssl_constants import _original_SSLContext
+
+                # An explicit bundle replaces OS trust, not augments it.
+                # PROTOCOL_TLS_CLIENT sets hostname checking and CERT_REQUIRED;
+                # assigning the original class's properties after injection recurses.
+                ctx = _original_SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+                ctx.load_verify_locations(cafile=ca_path)
+            else:
+                ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+                if not _installed:
+                    ctx.load_default_certs()
             _CA_CONTEXTS[ca_path] = ctx
         return ctx
 
@@ -120,60 +125,16 @@ def resolve_httpx_verify(
     if effective_ca:
         path = Path(effective_ca).expanduser()
         if path.is_file():
-            # An explicit bundle REPLACES the platform store for this client.
-            # inject_into_ssl() rebinds ssl.SSLContext to truststore's class,
-            # which ignores loaded CA files and verifies against the OS store
-            # anyway — so build from the ORIGINAL class, which truststore
-            # keeps for exactly this purpose. Without it a pinned
-            # ssl_ca_cert silently means "trust the machine" instead.
-            #
-            # Do NOT assign verify_mode/check_hostname here: the stock
-            # class's setters resolve ``super(SSLContext, SSLContext)``
-            # against the PATCHED module global and recurse to the stack
-            # limit. PROTOCOL_TLS_CLIENT already implies CERT_REQUIRED and
-            # check_hostname, so there is nothing to set.
-            from truststore._ssl_constants import _original_SSLContext
-
-            ctx = _original_SSLContext(ssl.PROTOCOL_TLS_CLIENT)
-            ctx.load_verify_locations(cafile=str(path))
-            return ctx
+            return _shared_context(str(path.resolve()))
         logger.warning(
             "ssl_ca_cert path does not exist: %s — using the OS trust store instead",
             effective_ca,
         )
-    return True
+    # HTTPX reads CA env vars before the injected verifier gets control. Pass
+    # the platform context directly so stale paths cannot break construction;
+    # proxy environment handling remains enabled.
+    import os
 
-
-def resolve_requests_verify(
-    *,
-    ca_bundle: Optional[str] = None,
-    ssl_verify: Any = None,
-    base_url: str = "",
-) -> bool | str:
-    """The same decision for ``requests``, which takes a path, not a context.
-
-    With the platform store installed process-wide, ``True`` already means
-    "verify against the OS store" here — urllib3 builds its context through
-    the patched ``ssl.SSLContext``.
-    """
-    install_truststore()
-
-    if _coerce_insecure(ssl_verify):
-        logger.warning(
-            "TLS certificate verification DISABLED (ssl_verify: false) for %s — "
-            "this is intended for local development only and is unsafe on any "
-            "network you do not fully control.",
-            base_url or "a custom provider endpoint",
-        )
-        return False
-
-    bundle = (ca_bundle or "").strip()
-    if bundle:
-        path = Path(bundle).expanduser()
-        if path.is_file():
-            return str(path)
-        logger.warning(
-            "ssl_ca_cert path does not exist: %s — using the OS trust store instead",
-            bundle,
-        )
+    if os.environ.get("SSL_CERT_FILE") or os.environ.get("SSL_CERT_DIR"):
+        return _shared_context(None)
     return True

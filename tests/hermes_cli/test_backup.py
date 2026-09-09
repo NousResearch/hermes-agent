@@ -1173,6 +1173,8 @@ class TestSafeCopyDb:
     def test_aborts_when_source_remains_busy_past_deadline(
         self, tmp_path, monkeypatch
     ):
+        from types import SimpleNamespace
+
         from hermes_cli import backup as backup_mod
 
         src = tmp_path / "locked.db"
@@ -1212,7 +1214,8 @@ class TestSafeCopyDb:
             return next(connections)
 
         monkeypatch.setattr(backup_mod.sqlite3, "connect", fake_connect)
-        monkeypatch.setattr(backup_mod.time, "monotonic", lambda: next(clock))
+        # Rebind this module's clock; asyncio must retain the process-wide one.
+        monkeypatch.setattr(backup_mod, "time", SimpleNamespace(monotonic=lambda: next(clock)))
         monkeypatch.setattr(Path, "unlink", assert_closed_before_unlink)
 
         assert backup_mod._safe_copy_db(src, dst, timeout_seconds=1.0) is False

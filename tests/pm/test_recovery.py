@@ -114,3 +114,76 @@ def test_repair_restores_recorded_plugin_dependencies_without_config(tmp_path, m
     assert Path(new_fact["resolved_lock"]).read_bytes() == old_lock
     assert old.is_dir() and not (site_packages(old) / "plugin_dep").exists()
     assert config.read_bytes() == config_before
+
+
+def test_uncertain_profile_selection_refuses_sync_but_not_recorded_repair(tmp_path, monkeypatch):
+    import pm.paths as paths
+    from hermes_cli.plugins_admission import AdmissionRefused, admit_plugin_set_change
+    from hermes_cli.runtime_paths import install_state_dir, selected_venv, site_packages
+
+    engine = importlib.import_module("pm.ensure")
+    uv = shutil.which("uv")
+    assert uv
+    core = tmp_path / "core"
+    core.mkdir()
+    wheels = tmp_path / "wheels"
+    wheels.mkdir()
+    _wheel(wheels, "core_dep", "1.0")
+    _wheel(wheels, "plugin_dep", "1.0")
+    (core / "pyproject.toml").write_text(
+        '[project]\nname="uncertain-core"\nversion="1"\nrequires-python=">=3.11"\n'
+        'dependencies=["core-dep==1.0"]\n[tool.uv]\npackage=false\nno-index=true\n'
+        f'find-links=[{json.dumps(wheels.as_posix())}]\n', encoding="utf-8",
+    )
+    home = tmp_path / "home"
+    sibling = home / "profiles" / "worker"
+    plugin = sibling / "plugins" / "worker-deps"
+    plugin.mkdir(parents=True)
+    (plugin / "pyproject.toml").write_text(
+        '[project]\nname="worker-deps"\nversion="1"\nrequires-python=">=3.11"\n'
+        'dependencies=["plugin-dep==1.0"]\n[tool.uv]\npackage=false\n', encoding="utf-8",
+    )
+    active_config = home / "config.yaml"
+    active_config.write_text("plugins:\n  enabled: []\n", encoding="utf-8")
+    sibling_config = sibling / "config.yaml"
+    sibling_config.write_text("plugins:\n  enabled: [worker-deps]\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(paths, "repo_root", lambda: core)
+    monkeypatch.setattr(engine, "uv", lambda **kwargs: (
+        uv, {**uv_env(kwargs.get("base_env")), "UV_PYTHON": sys.executable, "UV_OFFLINE": "1"},
+    ))
+    monkeypatch.setattr(engine, "lazy_installs_allowed", lambda: True)
+    env = {**uv_env(), "UV_PYTHON": sys.executable, "UV_OFFLINE": "1"}
+    env.pop("UV_NO_CONFIG")
+    subprocess.run([uv, "lock"], cwd=core, env=env, check=True, capture_output=True, timeout=60)
+    engine.sync_venv([], explicit=True)
+    old = selected_venv(core)
+    before_facts = paths.runtime_facts_path().read_bytes()
+    before_config = active_config.read_bytes()
+    before_generations = set((install_state_dir(core) / "environments").iterdir())
+    old_lock = Path(Facts(paths.runtime_facts_path()).get("venv")["resolved_lock"]).read_bytes()
+    sibling_config.write_text("plugins:\n  enabled: [unclosed\n", encoding="utf-8")
+    damaged_config = sibling_config.read_bytes()
+
+    with pytest.raises(ValueError, match="config.yaml"):
+        engine.sync_venv(explicit=True)
+    with pytest.raises(AdmissionRefused, match="config.yaml"):
+        admit_plugin_set_change(set(), set(), active_plugins_dir=home / "plugins")
+    assert paths.runtime_facts_path().read_bytes() == before_facts
+    assert active_config.read_bytes() == before_config
+    assert selected_venv(core) == old
+    assert set((install_state_dir(core) / "environments").iterdir()) == before_generations
+
+    shutil.rmtree(site_packages(old) / "plugin_dep")
+    engine.sync_venv(repair=True)
+    repaired = selected_venv(core)
+    assert repaired != old
+    python = repaired / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+    result = subprocess.run(
+        [str(python), "-I", "-c", "import plugin_dep; print(plugin_dep.__version__)"],
+        cwd=tmp_path, capture_output=True, text=True, check=True, timeout=30,
+    )
+    assert result.stdout.strip() == "1.0"
+    assert Path(Facts(paths.runtime_facts_path()).get("venv")["resolved_lock"]).read_bytes() == old_lock
+    assert active_config.read_bytes() == before_config
+    assert sibling_config.read_bytes() == damaged_config

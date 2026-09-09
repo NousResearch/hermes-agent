@@ -14,12 +14,13 @@ import subprocess
 import tempfile
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import yaml
 
 from hermes_cli._subprocess_compat import noninteractive_git_env
+from hermes_cli.archive_safe import normalize_archive_parts
 
 
 MANIFEST_FILENAME = "distribution.yaml"
@@ -34,7 +35,7 @@ DEFAULT_DIST_OWNED: Tuple[str, ...] = ("SOUL.md", "config.yaml", "mcp.json", "sk
 from hermes_cli.profiles import DEFAULT_EXPORT_EXCLUDE_ROOT
 
 USER_OWNED_EXCLUDE: frozenset = DEFAULT_EXPORT_EXCLUDE_ROOT | frozenset({
-    "memories", "sessions", "plans", "workspace", "home", "backups", "cache", "local",
+    "memories", "sessions", "plans", "workspace", "home", "backups", "local",
 })
 
 
@@ -329,10 +330,11 @@ def _owned_entries(staged: Path, manifest: DistributionManifest):
         return
     # Path-aware allowlist: copy exactly the declared paths.
     for rel in explicit_owned:
-        rel_parts = PurePosixPath(rel).parts
-        if not rel_parts or rel_parts[0] in USER_OWNED_EXCLUDE:
+        try:
+            rel_parts = tuple(normalize_archive_parts(rel))
+        except ValueError:
             continue
-        if ".." in rel_parts or PurePosixPath(rel).is_absolute():
+        if rel_parts[0] in USER_OWNED_EXCLUDE:
             continue
         src = staged.joinpath(*rel_parts)
         if src.exists():

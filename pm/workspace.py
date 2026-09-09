@@ -199,51 +199,35 @@ def _seed_lock(root: Path, seed_lock: Optional[Path] = None) -> None:
     (root / "uv.lock").write_bytes(seed_lock.read_bytes())
 
 
-def _plugin_dir_roots() -> set[Path]:
-    """All profile plugin dirs + the default home's, machine-wide.
-    Profile roots derive from get_default_hermes_root() — the ONE
-    authority (custom HERMES_HOME → that root directly; profile-mode
-    → its parent), so Docker/custom-root profiles join the union the
-    same as standard ones."""
-    roots: set[Path] = set()
-    try:
-        from hermes_constants import get_default_hermes_root
-
-        profiles_root = get_default_hermes_root() / "profiles"
-        if profiles_root.is_dir():
-            for profile in profiles_root.iterdir():
-                if profile.is_dir():
-                    roots.add(profile / "plugins")
-    except OSError:
-        pass
-    try:
-        from hermes_constants import get_default_hermes_root
-
-        roots.add(get_default_hermes_root() / "plugins")
-    except Exception:
-        pass
-    return roots
-
-
 def _is_member_candidate(plugin_dir: Path) -> bool:
     """A plugin dir is a workspace-member candidate when it declares python
     deps: a pyproject.toml (modern), or legacy pip_dependencies/
     python_dependencies in plugin.yaml (the bridge materializes those)."""
-    try:
-        if (plugin_dir / "pyproject.toml").is_file():
+    import stat
+
+    for name in ("pyproject.toml", "plugin.yaml"):
+        path = plugin_dir / name
+        try:
+            mode = path.stat().st_mode
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            raise ValueError(f"could not inspect plugin metadata: {path}") from exc
+        if not stat.S_ISREG(mode):
+            continue
+        if name == "pyproject.toml":
             return True
-        manifest = plugin_dir / "plugin.yaml"
-        if manifest.is_file():
-            text = manifest.read_text(encoding="utf-8-sig")
-            return "pip_dependencies" in text or "python_dependencies" in text
-    except OSError:
-        return False
+        try:
+            text = path.read_text(encoding="utf-8-sig")
+        except (OSError, UnicodeError) as exc:
+            raise ValueError(f"could not read plugin metadata: {path}") from exc
+        return "pip_dependencies" in text or "python_dependencies" in text
     return False
 
 
 def enabled_member_dirs(*, proposed_home=None, enabled=None, disabled=None) -> list[Path]:
     """Dependency members from the same effective plugin selection on every path."""
-    from pm.plugins_state import enabled_plugins_ordered
+    from pm.plugins_state import _is_directory, enabled_plugins_ordered
 
     selection = enabled_plugins_ordered() if proposed_home is None else enabled_plugins_ordered(
         proposed_home=proposed_home, enabled=enabled, disabled=disabled,
@@ -255,9 +239,9 @@ def enabled_member_dirs(*, proposed_home=None, enabled=None, disabled=None) -> l
             if relative.is_absolute() or ".." in relative.parts:
                 raise InstallError("venv", f"invalid plugin key: {name}")
             plugin_dir = plugins_dir / relative
-            if not plugin_dir.is_dir():
+            if not _is_directory(plugin_dir):
                 plugin_dir = paths.repo_root() / "plugins" / relative
-            if plugin_dir.is_dir() and _is_member_candidate(plugin_dir):
+            if _is_directory(plugin_dir) and _is_member_candidate(plugin_dir):
                 members.append(plugin_dir)
     return list(dict.fromkeys(members))
 

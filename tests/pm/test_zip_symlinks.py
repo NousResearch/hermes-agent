@@ -31,11 +31,6 @@ import pytest
 
 from pm.store import extract
 
-posix_only = pytest.mark.skipif(
-    sys.platform == "win32", reason="symlink resolution semantics are POSIX"
-)
-
-
 def _add_symlink(zf: zipfile.ZipFile, member: str, target: str) -> None:
     """Append a symlink entry the way zip tools actually encode one."""
     info = zipfile.ZipInfo(member)
@@ -59,7 +54,7 @@ def _write_zip(path: Path, build) -> Path:
     return path
 
 
-@posix_only
+@pytest.mark.platforms("posix")
 def test_framework_shaped_links_round_trip(tmp_path: Path) -> None:
     """The CfT .framework shape: links out of the versioned dir, intact."""
 
@@ -84,7 +79,7 @@ def test_framework_shaped_links_round_trip(tmp_path: Path) -> None:
     assert (dest / "app/F.framework/Versions/A/F").stat().st_mode & 0o111
 
 
-@posix_only
+@pytest.mark.platforms("posix")
 def test_intree_dotdot_target_is_kept(tmp_path: Path) -> None:
     """`..` in a target is fine while it stays under dest — real layouts
     (lib/foo -> ../share/foo) depend on it."""
@@ -147,7 +142,7 @@ def test_file_written_through_earlier_link_entry_cannot_escape(
     assert written.is_file() and not (dest / "outdir").is_symlink()
 
 
-@pytest.mark.skipif(sys.platform != "win32", reason="pins the win32 degradation")
+@pytest.mark.platforms("windows")
 def test_win32_safe_link_degrades_without_escaping(tmp_path: Path) -> None:
     """On win32 pm attempts a real symlink (works with Developer Mode /
     admin) and otherwise degrades to a text placeholder holding the

@@ -50,6 +50,38 @@ def test_enabled_plugins_ordered_reads_all_homes(homes):
     assert by_root.get(profile_home / "plugins") == ["c-plug"]
 
 
+@pytest.mark.parametrize("boundary", ["profile-listing", "profile-stat", "config-read", "plugin-stat", "manifest-read", "provider-stat"])
+def test_unreadable_profile_state_is_not_an_empty_selection(homes, monkeypatch, boundary):
+    from pm.workspace import enabled_member_dirs
+
+    default_home, profile_home = homes
+    _write_config(profile_home, ["keep-plug"])
+    plugin = profile_home / "plugins" / "keep-plug"
+    plugin.mkdir(parents=True)
+    manifest = plugin / "plugin.yaml"
+    manifest.write_text("python_dependencies: [fixture-dep]\n", encoding="utf-8")
+    if boundary == "provider-stat":
+        (profile_home / "config.yaml").write_text("memory:\n  provider: keep-plug\n", encoding="utf-8")
+    method, target = {
+        "profile-listing": ("iterdir", profile_home.parent),
+        "profile-stat": ("stat", profile_home),
+        "config-read": ("read_text", profile_home / "config.yaml"),
+        "plugin-stat": ("stat", plugin),
+        "manifest-read": ("read_text", manifest),
+        "provider-stat": ("stat", plugin),
+    }[boundary]
+    original = getattr(Path, method)
+
+    def unreadable(path, *args, **kwargs):
+        if path == target:
+            raise PermissionError("access denied by fixture")
+        return original(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, method, unreadable)
+    with pytest.raises(ValueError, match=re.escape(str(target))):
+        enabled_member_dirs()
+
+
 def test_missing_config_parser_is_not_an_empty_plugin_selection(homes, monkeypatch):
     import sys
 
@@ -94,9 +126,21 @@ def test_disable_plugins_noop_when_not_enabled(homes):
     assert by_root[default_home / "plugins"] == ["keep-plug"]
 
 
-def test_enabled_read_survives_garbage_config(homes):
+@pytest.mark.parametrize("content", ["{ not yaml", "[]", "plugins: wrong", "plugins:\n  enabled: wrong", "memory: wrong"])
+def test_enabled_read_refuses_invalid_existing_config(homes, content):
     default_home, _ = homes
-    (default_home / "config.yaml").write_text("{ not yaml", encoding="utf-8")
+    config = default_home / "config.yaml"
+    config.write_text(content, encoding="utf-8")
+    before = config.read_bytes()
+    with pytest.raises(ValueError, match=re.escape(str(config))):
+        pstate.enabled_plugins_ordered()
+    assert config.read_bytes() == before
+
+
+@pytest.mark.parametrize("content", ["", "# empty config\n", "null", "{}", "plugins: {}", "plugins:\n  enabled: []"])
+def test_empty_config_is_an_explicit_empty_selection(homes, content):
+    default_home, _ = homes
+    (default_home / "config.yaml").write_text(content, encoding="utf-8")
     assert pstate.enabled_plugins_ordered() == {}
 
 

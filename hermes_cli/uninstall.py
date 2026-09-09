@@ -219,9 +219,8 @@ def remove_node_symlinks(hermes_home: Path) -> list:
         # Only act on symlinks — never delete a real binary the user put here.
         if not link.is_symlink():
             return False
-        # os.readlink + manual join handles dangling links too (Path.resolve() on a dangling
-        # link still returns the target path); the link must point into OUR node dir.
-        target = (link.parent / os.readlink(link)).resolve()
+        # resolve() normalizes native Windows extended-path prefixes too.
+        target = link.resolve()
         if target != node_dir and node_dir not in target.parents:
             return False
         link.unlink()
@@ -553,82 +552,49 @@ def _uninstall_profile(profile) -> None:
 
 
 def run_data_uninstall(args):
-    """Remove Hermes user data only — no code, on any install kind.
-
-    This is the one destructive action that is valid everywhere: source
-    checkouts, the bundled desktop app, Nix, Docker. It removes everything
-    under ``$HERMES_HOME`` EXCEPT the ``hermes-agent`` checkout (which is
-    code, owned by the code-removal modes / the steward), plus the desktop
-    app's Electron userData directory.
-    """
-    hermes_home = get_hermes_home()
-    agent_root = hermes_home / "hermes-agent"
-    skip_confirm = bool(getattr(args, "yes", False))
-
-    targets = []
-    if hermes_home.exists():
-        targets = sorted(
-            (p for p in hermes_home.iterdir() if p.name != "hermes-agent"),
-            key=lambda p: p.name,
-        )
-
+    """Erase this home's data, preserving installed runtimes and sibling profiles."""
+    from hermes_cli.data_cleanup import plan_data_removal, remove_data
     from hermes_cli.gui_uninstall import desktop_userdata_dir
 
-    userdata = desktop_userdata_dir()
-
-    if not targets and not userdata.exists():
-        print("No Hermes user data found.")
-        print(f"  Checked: {hermes_home}")
+    home = get_hermes_home()
+    try:
+        userdata = getattr(args, "desktop_userdata", None)
+        plan = plan_data_removal(home, get_project_root(), Path(userdata) if userdata else desktop_userdata_dir())
+    except (OSError, ValueError, RuntimeError) as exc:
+        log_warn(str(exc))
+        raise SystemExit(1) from exc
+    if not plan.remove:
+        print(f"No Hermes user data found in {home}.")
         return
+    print("Data-only removal: installed code and other profiles stay intact.")
+    print("Will remove:")
+    for path in plan.remove:
+        print(f"  {path}")
+    if plan.keep:
+        print("Kept intact:")
+        for path in plan.keep:
+            print(f"  {path}")
+    if bool(getattr(args, "dry_run", False)):
+        print("Dry run: no data or processes changed.")
+        return
+    if not bool(getattr(args, "yes", False)) and not _confirm_yes("to remove this home's data"):
+        return
+    from hermes_cli.data_cleanup_holders import quiescent_home
 
-    print()
-    print(color("This removes your Hermes data — config, chats, secrets, logs.", Colors.YELLOW, Colors.BOLD))
-    print(color("Installed code is not touched.", Colors.CYAN))
-    print()
-    print(color("Will remove:", Colors.YELLOW, Colors.BOLD))
-    for p in targets:
-        print(f"  • {p}")
-    if userdata.exists():
-        print(f"  • {userdata}  (desktop app data)")
-    if agent_root.exists():
-        print()
-        print(color("Kept intact:", Colors.GREEN, Colors.BOLD))
-        print(f"  • {agent_root}")
-    print()
-
-    if not skip_confirm:
-        try:
-            confirm = input(f"Type '{color('yes', Colors.YELLOW)}' to remove your Hermes data: ").strip().lower()
-        except (KeyboardInterrupt, EOFError):
-            print()
-            print("Cancelled.")
-            return
-        if confirm != "yes":
-            print()
-            print("Uninstall cancelled.")
-            return
-
-    print()
-    for p in targets:
-        try:
-            if p.is_symlink() or p.is_file():
-                p.unlink()
-            else:
-                shutil.rmtree(p)
-            log_success(f"Removed {p}")
-        except Exception as e:
-            log_warn(f"Could not remove {p}: {e}")
-
-    if userdata.exists():
-        try:
-            shutil.rmtree(userdata)
-            log_success(f"Removed {userdata}")
-        except Exception as e:
-            log_warn(f"Could not remove {userdata}: {e}")
-
-    print()
-    print(color("✓ Hermes data removed.", Colors.GREEN, Colors.BOLD))
-    print()
+    try:
+        with quiescent_home(plan.home):
+            removed, failed = remove_data(plan)
+    except (OSError, ValueError, RuntimeError) as exc:
+        log_warn(f"No data removed: {exc}")
+        raise SystemExit(1) from exc
+    for path in removed:
+        log_success(f"Removed {path}")
+    if failed:
+        print("Hermes data was only partially removed. Surviving targets:")
+        for path, reason in failed:
+            log_warn(f"{path}: {reason}")
+        raise SystemExit(1)
+    log_success("Hermes data removed.")
 
 
 def run_gui_uninstall(args):
@@ -964,12 +930,13 @@ _RELOAD_HINT = {
 class _UninstallArgs:
     """Lightweight args namespace for the module entrypoint below."""
 
-    def __init__(self, *, mode: str):
+    def __init__(self, *, mode: str, desktop_userdata: Path | None = None):
         self.gui = mode == "gui"
         self.gui_summary = False
         self.full = mode == "full"
         self.data = mode == "data"
         self.yes = True  # the module entrypoint is always non-interactive
+        self.desktop_userdata = desktop_userdata
 
 
 def main(argv=None) -> int:
@@ -986,9 +953,9 @@ def main(argv=None) -> int:
     steward-owned installs (Nix, the bundled desktop app, Docker); the
     code-removing modes hard-fail there with the steward's instructions.
 
-    This module imports only stdlib + ``hermes_constants`` + ``hermes_cli.colors``
-    (and lazily ``hermes_cli.gui_uninstall`` / ``hermes_cli.steward``), so it
-    runs fine under a bare system Python with no site-packages from the venv.
+    Data-only mode keeps the runtime installed and uses its dependencies to
+    coordinate live writers. Code-removing modes can still run outside the
+    environment being removed.
     """
     import argparse
     parser = argparse.ArgumentParser(prog="python -m hermes_cli.uninstall")
@@ -999,8 +966,11 @@ def main(argv=None) -> int:
         help="gui = Chat GUI only; lite = GUI + agent, keep data; "
         "full = everything; data = user data only, keep code",
     )
+    parser.add_argument("--desktop-userdata", type=Path, help=argparse.SUPPRESS)
     ns = parser.parse_args(argv)
-    args = _UninstallArgs(mode=ns.mode)
+    if ns.desktop_userdata is not None and ns.mode != "data":
+        parser.error("--desktop-userdata requires --mode data")
+    args = _UninstallArgs(mode=ns.mode, desktop_userdata=ns.desktop_userdata)
 
     if args.data:
         run_data_uninstall(args)

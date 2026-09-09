@@ -238,6 +238,56 @@ class TestMarkdownStripPatch:
 # signal-streaming-patch: SUPPORTS_MESSAGE_EDITING and send() behavior
 # ===========================================================================
 
+class TestTableRealignment:
+    """GFM pipe tables are re-aligned to a fixed monospace width and wrapped in a
+    single MONOSPACE style range, per the Signal table-rendering feature request."""
+
+    def test_table_becomes_single_monospace_block(self):
+        md = "| Name | Age |\n|------|-----|\n| Alice | 30 |\n| Bob | 25 |"
+        text, styles = _m2s(md)
+        mono = _find_style(styles, "MONOSPACE")
+        assert len(mono) == 1
+        start, length = (int(p) for p in mono[0].split(":")[:2])
+        block = text[start : start + length]
+        rows = block.split("\n")
+        assert len(rows) == 4
+        # Realignment pads cells so every '|' lines up across header/divider/body,
+        # even though the source rows ("Alice" vs "Bob") had different widths.
+        pipe_offsets = [i for i, ch in enumerate(rows[0]) if ch == "|"]
+        assert all([i for i, ch in enumerate(row) if ch == "|"] == pipe_offsets for row in rows[1:])
+
+    def test_non_table_pipes_left_alone(self):
+        """A lone '|' with no divider row is not a table and must not be touched."""
+        text, styles = _m2s("cost | value\nnot a table")
+        assert text == "cost | value\nnot a table"
+        assert _find_style(styles, "MONOSPACE") == []
+
+    def test_table_surrounded_by_prose_keeps_prose_out_of_monospace(self):
+        md = "Before.\n\n| A | B |\n|---|---|\n| 1 | 2 |\n\nAfter."
+        text, styles = _m2s(md)
+        assert text.startswith("Before.\n\n")
+        assert text.endswith("\n\nAfter.")
+        mono = _find_style(styles, "MONOSPACE")
+        assert len(mono) == 1
+        start, length = (int(p) for p in mono[0].split(":")[:2])
+        block = text[start : start + length]
+        assert "Before" not in block and "After" not in block
+        assert block.startswith("| A")
+
+    def test_table_before_code_block_keeps_code_block_position_correct(self):
+        """A table's realignment can change its own rendered length (column padding).
+        Any style range recorded before the table (e.g. a fenced code block) but that sits
+        *after* it in the document must be rebased by that length delta, or it ends up
+        pointing at a random substring of the table instead of the code block."""
+        md = "| Name | Age |\n|------|-----|\n| Alice | 30 |\n| Bob | 25 |\n\n```\ncode\n```"
+        text, styles = _m2s(md)
+        mono = _find_style(styles, "MONOSPACE")
+        assert len(mono) == 2
+        ranges = [(int(s.split(":")[0]), int(s.split(":")[1])) for s in mono]
+        code_start, code_length = max(ranges, key=lambda r: r[0])
+        assert text[code_start : code_start + code_length] == "code"
+
+
 class TestSignalStreamingPatch:
     """Tests for signal-streaming-patch: cursor suppression and edit support.
     

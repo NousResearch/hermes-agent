@@ -58,6 +58,13 @@ def _sanitize_ws_text(text: str) -> str:
 # Max seconds a pool-dispatched handler blocks waiting for the loop to flush a WS frame before we
 # give up waiting (the transport is NOT marked dead).
 _WS_WRITE_TIMEOUT_S = 10.0
+# Max seconds one send_text may await the socket once it is actually running on the loop. A healthy
+# socket returns from send_text without waiting (the frame lands in the transport buffer); only kernel
+# backpressure parks it, so a GIL/loop stall cannot start this clock. Deliberately 3x the worker wait
+# above and under the client's 45s heartbeat deadline (apps/shared json-rpc-gateway): a peer that
+# cannot drain ~48 KiB in 30s is gone, and closing here starts its reconnect instead of leaving every
+# later frame and RPC reply parked behind the writer lock (#106369).
+_WS_SEND_DEADLINE_S = 30.0
 _WS_LOG_PAYLOAD_PREVIEW = 240
 
 # Per-token streaming frames are coalesced: buffered and flushed as a batch on a short timer instead
@@ -183,14 +190,16 @@ class WSTransport:
                     return
                 payload = _sanitize_ws_text(line)
                 try:
-                    await asyncio.wait_for(self._ws.send_text(payload), timeout=_WS_WRITE_TIMEOUT_S)
-                except asyncio.TimeoutError as exc:
-                    # A stalled send_text (socket backpressure) must not hold the writer lock forever.
-                    # Unlike the loop-stall case in write(), this means the socket itself is unresponsive:
-                    # latch closed so queued batches bail and reconnect recovery can start. See #106369.
+                    await asyncio.wait_for(self._ws.send_text(payload), timeout=_WS_SEND_DEADLINE_S)
+                except asyncio.TimeoutError:
+                    # The loop is responsive (the timer fired) but the socket never drained: unlike the
+                    # loop-stall wait in write(), this is a dead peer. Latch under the writer lock so queued
+                    # batches bail, and close the socket so handle_ws's read loop ends and its teardown
+                    # (session detach/reap, client reconnect) runs. See #106369.
                     self._closed = True
-                    _log.warning("ws send timed out peer=%s timeout=%ss error_type=%s error=%s",
-                                 self._peer, _WS_WRITE_TIMEOUT_S, type(exc).__name__, exc)
+                    _log.warning("ws send deadline exceeded (socket stalled, loop responsive) peer=%s deadline=%ss — closing",
+                                 self._peer, _WS_SEND_DEADLINE_S)
+                    self._loop.create_task(self._close_stalled_socket())
                     return
                 except UnicodeEncodeError as exc:
                     # A single illegal UTF-8 frame (lone surrogate) must not tear down the socket.
@@ -207,6 +216,14 @@ class WSTransport:
         if self._token_flush_handle is not None:
             self._token_flush_handle.cancel()
             self._token_flush_handle = None
+
+    async def _close_stalled_socket(self) -> None:
+        """Close the peer socket after a send deadline so ``handle_ws``'s ``receive_text`` unblocks and its
+        disconnect teardown runs. The server library bounds this (websockets ``close_timeout`` → abort)."""
+        try:
+            await self._ws.close(code=1011)
+        except Exception as exc:  # noqa: BLE001 - the peer is already gone; teardown is what matters
+            _log.debug("ws close after send deadline failed peer=%s error=%s", self._peer, exc)
 
 
 def _ws_peer_label(ws: Any) -> str:

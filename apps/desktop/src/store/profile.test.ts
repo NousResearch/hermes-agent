@@ -6,25 +6,27 @@ import type { ProfileInfo } from '@/types/hermes'
 
 // Keep profile.ts's side-effecting imports inert: the gateway socket layer and
 // the REST query client must not run for real in a unit test.
-// Returns true: both prepare seams hand back a thunk reporting whether the
-// activation was ACCEPTED, and a caller publishes its companion state only on
-// true. A bare vi.fn() returns undefined, which now reads as "superseded" and
-// would silently suppress every publication these tests assert on.
-const activateGateway = vi.fn(() => true)
 const ensureGatewayForProfile = vi.fn(async () => undefined)
-const prepareGatewayForAgent = vi.fn(async (_connectionId: null | string, _profile: string) => activateGateway)
-const prepareGatewayForProfile = vi.fn(async (_profile: string) => activateGateway)
+const ensureGatewayForAgent = vi.fn(async () => undefined)
 const openGatewayForProfile = vi.fn(async (_profile: string) => undefined)
-const $gateway = atom<unknown>({ id: 'live-socket' })
+const openSecondaryCount = vi.fn(() => 0)
+const $gateway = atom<unknown>({ id: 'live-socket', connectionState: 'open' })
 const resetStarmapGraph = vi.fn()
 
 vi.mock('@/store/gateway', () => ({
   $gateway,
+  ensureGatewayForAgent,
   ensureGatewayForProfile,
   openGatewayForProfile,
-  prepareGatewayForAgent,
-  prepareGatewayForProfile
+  openSecondaryCount
 }))
+// The pool-limits atom is profile.ts's live saturation signal — keep the real
+// one so tests can move the cap via the store, but stub its IPC bridge.
+vi.mock('@/store/pool-limits', async () => {
+  const { atom } = await import('nanostores')
+
+  return { $poolLimits: atom({ idleMs: 600_000, maxBackends: 3 }) }
+})
 vi.mock('@/hermes', () => ({
   getProfiles: vi.fn(async () => ({ profiles: [] })),
   setApiRequestProfile: vi.fn()
@@ -40,6 +42,8 @@ const {
   prewarmProfileBackend,
   refreshProfiles
 } = await import('./profile')
+
+const { $poolLimits } = await import('@/store/pool-limits')
 
 const { $connection } = await import('./session')
 const { invalidateProfileScopedQueries } = await import('@/lib/query-client')
@@ -65,11 +69,10 @@ const getConnection = vi.fn<(profile?: string | null) => Promise<HermesConnectio
 
 beforeEach(() => {
   getConnection.mockReset()
-  activateGateway.mockClear()
   ensureGatewayForProfile.mockClear()
-  prepareGatewayForProfile.mockClear()
   openGatewayForProfile.mockClear()
-  $gateway.set({ id: 'live-socket' })
+  openSecondaryCount.mockReturnValue(0)
+  $gateway.set({ id: 'live-socket', connectionState: 'open' })
   $activeGatewayProfile.set('default')
   $connection.set(localConn())
   $profiles.set([])
@@ -93,8 +96,7 @@ describe('ensureGatewayProfile → $connection sync (#46651)', () => {
 
     await ensureGatewayProfile('vps-remote')
 
-    expect(prepareGatewayForProfile).toHaveBeenCalledWith('vps-remote')
-    expect(activateGateway).toHaveBeenCalledTimes(1)
+    expect(ensureGatewayForProfile).toHaveBeenCalledWith('vps-remote')
     expect(getConnection).toHaveBeenCalledWith('vps-remote')
     expect($connection.get()?.mode).toBe('remote')
     expect($connection.get()?.profile).toBe('vps-remote')
@@ -111,49 +113,13 @@ describe('ensureGatewayProfile → $connection sync (#46651)', () => {
     expect($connection.get()?.mode).toBe('local')
   })
 
-  it('fails as a unit when the descriptor fetch fails — no mixed state', async () => {
-    // Previously the gateway was activated and $activeGatewayProfile set even
-    // when the descriptor lookup failed, leaving $gateway on the new backend
-    // while $connection kept describing the old one for the rest of the
-    // session. Now nothing is published: every atom still consistently
-    // describes the previous profile and the user can retry.
+  it('leaves the prior connection intact when the descriptor fetch fails', async () => {
     getConnection.mockRejectedValue(new Error('backend unreachable'))
 
     await ensureGatewayProfile('vps-remote')
 
-    expect(activateGateway).not.toHaveBeenCalled()
-    expect($activeGatewayProfile.get()).toBe('default')
+    // Best-effort: boot/reconnect resyncs later; we must not null it out here.
     expect($connection.get()?.mode).toBe('local')
-  })
-
-  it('never publishes the new gateway before its connection descriptor', async () => {
-    // The exact mixed-state window from the follow-up review: a slow
-    // descriptor fetch must not leave $gateway/$activeGatewayProfile on the
-    // remote backend while $connection still says local. All three flip
-    // together only once the descriptor is in hand.
-    let resolveDescriptor: (conn: HermesConnection) => void = () => undefined
-    getConnection.mockReturnValue(
-      new Promise<HermesConnection>(resolve => {
-        resolveDescriptor = resolve
-      })
-    )
-
-    const switching = ensureGatewayProfile('vps-remote')
-    // Let the socket-open half of the switch settle; the descriptor is still
-    // deliberately pending.
-    await Promise.resolve()
-    await Promise.resolve()
-
-    expect(activateGateway).not.toHaveBeenCalled()
-    expect($activeGatewayProfile.get()).toBe('default')
-    expect($connection.get()?.mode).toBe('local')
-
-    resolveDescriptor(remoteConn())
-    await switching
-
-    expect(activateGateway).toHaveBeenCalledTimes(1)
-    expect($activeGatewayProfile.get()).toBe('vps-remote')
-    expect($connection.get()?.mode).toBe('remote')
   })
 
   it('does not churn $connection when the target is already the active profile', async () => {
@@ -163,8 +129,19 @@ describe('ensureGatewayProfile → $connection sync (#46651)', () => {
     await ensureGatewayProfile('vps-remote')
 
     expect(getConnection).not.toHaveBeenCalled()
-    expect(prepareGatewayForProfile).not.toHaveBeenCalled()
+    expect(ensureGatewayForProfile).not.toHaveBeenCalled()
     expect($connection.get()?.mode).toBe('remote')
+  })
+
+  it('reconnects when the target profile is active but its gateway socket is closed', async () => {
+    $activeGatewayProfile.set('vps-remote')
+    $connection.set(remoteConn())
+    $gateway.set({ connectionState: 'closed' })
+    getConnection.mockResolvedValue(remoteConn())
+
+    await ensureGatewayProfile('vps-remote')
+
+    expect(ensureGatewayForProfile).toHaveBeenCalledWith('vps-remote')
   })
 })
 
@@ -209,9 +186,56 @@ describe('prewarmProfileBackend (hover-intent pool spawn)', () => {
 
     expect(() => prewarmProfileBackend('warm-failing')).not.toThrow()
   })
+
+  it('skips pre-warm when the pool is saturated (#91545 evict/respawn cascade)', () => {
+    // Every pool slot occupied: a speculative spawn would LRU-evict a warm
+    // backend — often the one the user is about to click. Default limit 3,
+    // 3 open secondaries → the next spawn would exceed the cap.
+    openSecondaryCount.mockReturnValue(3)
+
+    prewarmProfileBackend('warm-saturated')
+
+    expect(openGatewayForProfile).not.toHaveBeenCalled()
+  })
+
+  it('pre-warms while pool slots are free', () => {
+    openSecondaryCount.mockReturnValue(1)
+
+    prewarmProfileBackend('warm-slot-free')
+
+    expect(openGatewayForProfile).toHaveBeenCalledWith('warm-slot-free')
+  })
+
+  it('follows the live pool-limit atom, not a hard-coded cap', () => {
+    // User raises Warm Bot Backends to 8 in Settings: prewarming must keep
+    // working well past the old default of 3.
+    openSecondaryCount.mockReturnValue(5)
+    $poolLimits.set({ idleMs: 600_000, maxBackends: 8 })
+
+    prewarmProfileBackend('warm-raised-cap')
+
+    expect(openGatewayForProfile).toHaveBeenCalledWith('warm-raised-cap')
+
+    // And lowering the cap re-engages the guard at the new boundary.
+    $poolLimits.set({ idleMs: 600_000, maxBackends: 2 })
+
+    prewarmProfileBackend('warm-lowered-cap')
+
+    expect(openGatewayForProfile).not.toHaveBeenCalledWith('warm-lowered-cap')
+  })
 })
 
 describe('refreshProfiles shared rail list (#49289)', () => {
+  beforeEach(() => {
+    vi.mocked(getProfiles).mockReset()
+    vi.useFakeTimers()
+  })
+
+  afterEach(() => {
+    vi.clearAllTimers()
+    vi.useRealTimers()
+  })
+
   it('removes a deleted profile from the shared $profiles cache after Manage Profiles refreshes', async () => {
     $profiles.set([profile('default', true), profile('test1')])
     vi.mocked(getProfiles).mockResolvedValueOnce({ profiles: [profile('default', true)] })
@@ -221,12 +245,54 @@ describe('refreshProfiles shared rail list (#49289)', () => {
     expect($profiles.get().map(profile => profile.name)).toEqual(['default'])
   })
 
-  it('leaves the shared $profiles cache intact when the refresh fails', async () => {
+  it('recovers from transient failures and writes the returned profile list (#70679)', async () => {
+    // Global remote mode: the refresh fires while the remote HTTP proxy is still
+    // routing, so the first attempts fail and a later one succeeds. The retry
+    // backoff is 500ms then 1000ms (refreshProfiles retries twice on failure).
+    $profiles.set([])
+    vi.mocked(getProfiles)
+      .mockRejectedValueOnce(new Error('backend unavailable'))
+      .mockRejectedValueOnce(new Error('backend unavailable'))
+      .mockResolvedValueOnce({ profiles: [profile('default', true), profile('healthops')] })
+
+    const refresh = refreshProfiles()
+    await vi.advanceTimersByTimeAsync(500)
+    await vi.advanceTimersByTimeAsync(1000)
+    await expect(refresh).resolves.toHaveLength(2)
+
+    expect(vi.mocked(getProfiles)).toHaveBeenCalledTimes(3)
+    expect($profiles.get().map(profile => profile.name)).toEqual(['default', 'healthops'])
+  })
+
+  it('shares one retry chain across concurrent callers (single-flight)', async () => {
+    // Gateway open fires both useBackgroundSync and the activeGatewayProfile
+    // effect at once; both callers must ride the same chain, not double it.
+    $profiles.set([])
+    vi.mocked(getProfiles)
+      .mockRejectedValueOnce(new Error('backend unavailable'))
+      .mockResolvedValueOnce({ profiles: [profile('default', true), profile('healthops')] })
+
+    const first = refreshProfiles()
+    const second = refreshProfiles()
+    await vi.advanceTimersByTimeAsync(500)
+    await expect(first).resolves.toHaveLength(2)
+    await expect(second).resolves.toHaveLength(2)
+
+    expect(vi.mocked(getProfiles)).toHaveBeenCalledTimes(2)
+    expect($profiles.get().map(profile => profile.name)).toEqual(['default', 'healthops'])
+  })
+
+  it('leaves the shared $profiles cache intact when every retry fails', async () => {
     $profiles.set([profile('default', true), profile('test1')])
-    vi.mocked(getProfiles).mockRejectedValueOnce(new Error('backend unavailable'))
+    vi.mocked(getProfiles).mockRejectedValue(new Error('backend unavailable'))
 
-    await expect(refreshProfiles()).rejects.toThrow('backend unavailable')
+    const refresh = refreshProfiles()
+    const rejection = expect(refresh).rejects.toThrow('backend unavailable')
+    await vi.advanceTimersByTimeAsync(500)
+    await vi.advanceTimersByTimeAsync(1000)
+    await rejection
 
+    expect(vi.mocked(getProfiles)).toHaveBeenCalledTimes(3)
     expect($profiles.get().map(profile => profile.name)).toEqual(['default', 'test1'])
   })
 })

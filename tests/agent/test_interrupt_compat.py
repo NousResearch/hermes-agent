@@ -10,13 +10,18 @@ from agent.interrupt_compat import request_hard_interrupt
 
 class _ModernAgent:
     def __init__(self) -> None:
-        self.calls: list[tuple[str, str | None]] = []
+        self.calls: list[tuple[str, str | None, str | None]] = []
 
-    def hard_interrupt(self, message: str | None = None) -> None:
-        self.calls.append(("hard", message))
+    def hard_interrupt(
+        self,
+        message: str | None = None,
+        *,
+        tool_reason: str | None = None,
+    ) -> None:
+        self.calls.append(("hard", message, tool_reason))
 
     def interrupt(self, message: str | None = None) -> None:
-        self.calls.append(("soft", message))
+        self.calls.append(("soft", message, None))
 
 
 class _LegacyAgent:
@@ -32,7 +37,22 @@ def test_explicit_producer_prefers_feature_detected_hard_interrupt() -> None:
 
     assert request_hard_interrupt(agent, "stop now") is True
 
-    assert agent.calls == [("hard", "stop now")]
+    assert agent.calls == [("hard", "stop now", None)]
+
+
+def test_safe_tool_reason_only_reaches_supporting_modern_agent() -> None:
+    modern = _ModernAgent()
+    legacy = _LegacyAgent()
+
+    assert request_hard_interrupt(
+        modern, "private diagnostic", tool_reason="fixed category"
+    )
+    assert request_hard_interrupt(
+        legacy, "private diagnostic", tool_reason="fixed category"
+    )
+
+    assert modern.calls == [("hard", "private diagnostic", "fixed category")]
+    assert legacy.calls == [("legacy", "private diagnostic")]
 
 
 def test_explicit_producer_falls_back_to_old_interrupt_signature() -> None:
@@ -100,4 +120,4 @@ def test_tui_subagent_interrupt_is_an_explicit_hard_stop() -> None:
         with delegate_tool._active_subagents_lock:
             delegate_tool._active_subagents.pop(subagent_id, None)
 
-    assert agent.calls == [("hard", f"Interrupted via TUI ({subagent_id})")]
+    assert agent.calls == [("hard", f"Interrupted via TUI ({subagent_id})", None)]

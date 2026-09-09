@@ -5,8 +5,8 @@
  * model's tool_call_id while `clarify.request` carries a gateway-generated
  * request_id. A batch payload has no top-level `question`, so the two rows
  * only merge when the correlation key comes from the question list
- * (`batchClarifyMatchValue` in lib/chat-messages.ts). Before that fix this
- * exact flow rendered two identical interactive cards.
+ * (`batchClarifyMatchValue` in lib/chat-messages/tool-parts.ts). Before that
+ * fix this exact flow rendered two identical interactive cards.
  *
  * The flow runs the real chain: composer → gateway → agent → clarify tool →
  * clarify.request event → renderer, against the mock inference server.
@@ -15,7 +15,7 @@
 import { expect, test } from './test'
 
 import { type MockBackendFixture, setupMockBackend, waitForAppReady } from './fixtures'
-import { BATCH_CLARIFY_QUESTIONS, BATCH_CLARIFY_TRIGGER } from './mock-server'
+import { BATCH_CLARIFY_QUESTIONS, BATCH_CLARIFY_TRIGGER } from '../../../tests-js/scripts/mock-server'
 
 let fixture: MockBackendFixture | null = null
 

@@ -925,7 +925,19 @@ async function runRealChatChecks(cdp, timed, measure, mock, runDir, appPid, nati
     const streamingRequestsBefore = mock.streamingCompletionRequests()
     const beforeAssistant = await timed(`real-chat.assistant-count.${exchange}`, () =>
       cdp.eval(
-        `document.querySelectorAll('[data-slot="aui_assistant-message-root"]:not([data-streaming="true"])').length`
+        // Settled = no streaming marker anywhere in the row's subtree. The
+        // marker moved off the message root onto a hidden leaf inside it — a
+        // per-flip attribute write on the root widened style recalc across the
+        // whole message subtree — so this counts the descendant instead of the
+        // root's own attribute. Same rows, same gate.
+        //
+        // Counted by subtraction rather than with
+        // `:not(:has([data-message-streaming="true"]))`, which makes the engine
+        // walk every row's subtree on each evaluation — and this probe runs
+        // inside the very latency window it is measuring, so that cost lands in
+        // the number. At most one marker per row carries the attribute, so
+        // roots - streaming is exactly the settled count.
+        `document.querySelectorAll('[data-slot="aui_assistant-message-root"]').length - document.querySelectorAll('[data-message-streaming="true"]').length`
       )
     )
     const composer = await timed(`real-chat.composer-focus.${exchange}`, () =>
@@ -1020,7 +1032,9 @@ async function runRealChatChecks(cdp, timed, measure, mock, runDir, appPid, nati
     await measure(`real-chat.assistant-response.${exchange}`, () =>
       waitForResponsive(
         cdp,
-        `document.querySelectorAll('[data-slot="aui_assistant-message-root"]:not([data-streaming="true"])').length > ${beforeAssistant}`,
+        // Same count-by-subtraction as the pre-send probe above: no `:has()`
+        // subtree walk inside the responsiveness measurement window.
+        `document.querySelectorAll('[data-slot="aui_assistant-message-root"]').length - document.querySelectorAll('[data-message-streaming="true"]').length > ${beforeAssistant}`,
         STREAM_RESPONSE_TIMEOUT_MS,
         `real assistant response ${exchange}`,
         STREAM_RESPONSE_EVALUATION_TIMEOUT_MS

@@ -9,6 +9,7 @@ from plugins.memory.supermemory import (
     SupermemoryMemoryProvider,
     _clean_text_for_capture,
     _format_connection_summary,
+    _format_conversation_as_document,
     _format_prefetch_context,
     _load_supermemory_config,
     _probe_supermemory_connection,
@@ -325,22 +326,16 @@ def test_client_passes_custom_base_url_to_sdk(monkeypatch):
     assert captured["base_url"] == "http://localhost:6767"
 
 
-@pytest.mark.parametrize(
-    ("base_url", "expected_url"),
-    [
-        ("https://api.supermemory.ai", "https://api.supermemory.ai/v4/conversations"),
-        ("http://localhost:6767", "http://localhost:6767/v4/conversations"),
-    ],
-)
-def test_ingest_conversation_uses_client_base_url(monkeypatch, base_url, expected_url):
-    """Raw conversation ingest follows the same endpoint as SDK operations."""
+def test_ingest_conversation_cloud_uses_v4_conversations(monkeypatch):
+    """Default (cloud) base_url still POSTs the structured payload straight
+    to /v4/conversations — unchanged from before #101270."""
     from plugins.memory.supermemory import _SupermemoryClient
 
     client = _SupermemoryClient.__new__(_SupermemoryClient)
     client._api_key = "test-key"
     client._container_tag = "hermes"
     client._timeout = 1.0
-    client._base_url = base_url
+    client._base_url = "https://api.supermemory.ai"
 
     captured = {}
 
@@ -357,7 +352,95 @@ def test_ingest_conversation_uses_client_base_url(monkeypatch, base_url, expecte
 
     monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
     client.ingest_conversation("s1", [{"role": "user", "content": "hello there"}])
-    assert captured["url"] == expected_url
+    assert captured["url"] == "https://api.supermemory.ai/v4/conversations"
+
+
+def test_ingest_conversation_self_hosted_routes_through_documents_add(monkeypatch):
+    """A non-default base_url (self-hosted) must not hit /v4/conversations —
+    the self-hosted binary 404s on that route, which is what #101270
+    reported (session-end capture silently dropped). It must instead flatten
+    the turns into one document and go through the SDK's documents.add(),
+    which /v3/documents implements on both cloud and self-hosted."""
+    from plugins.memory.supermemory import _SupermemoryClient
+
+    client = _SupermemoryClient.__new__(_SupermemoryClient)
+    client._api_key = "test-key"
+    client._container_tag = "hermes"
+    client._timeout = 1.0
+    client._base_url = "http://localhost:6767"
+
+    class _FakeDocuments:
+        def __init__(self):
+            self.add_calls = []
+
+        def add(self, **kwargs):
+            self.add_calls.append(kwargs)
+
+    class _FakeSdkClient:
+        def __init__(self):
+            self.documents = _FakeDocuments()
+
+    fake_sdk_client = _FakeSdkClient()
+    client._client = fake_sdk_client
+
+    def fail_urlopen(req, timeout=None):
+        raise AssertionError("self-hosted ingest must not hit urllib/v4/conversations")
+
+    monkeypatch.setattr("urllib.request.urlopen", fail_urlopen)
+
+    client.ingest_conversation(
+        "s1",
+        [
+            {"role": "user", "content": "hello there"},
+            {"role": "assistant", "content": "hi!"},
+        ],
+        metadata={"type": "full_session"},
+    )
+
+    assert len(fake_sdk_client.documents.add_calls) == 1
+    call = fake_sdk_client.documents.add_calls[0]
+    assert call["container_tags"] == ["hermes"]
+    assert call["custom_id"] == "session-s1"
+    assert call["dreaming"] == "instant"
+    assert call["content"] == "User: hello there\n\nAssistant: hi!"
+    assert call["metadata"]["sm_source"] == "hermes"
+    assert call["metadata"]["type"] == "full_session"
+
+
+def test_ingest_conversation_self_hosted_skips_empty_conversation(monkeypatch):
+    """No content survives flattening (e.g. every message is blank) -> no
+    SDK call at all, rather than sending an empty document."""
+    from plugins.memory.supermemory import _SupermemoryClient
+
+    client = _SupermemoryClient.__new__(_SupermemoryClient)
+    client._base_url = "http://localhost:6767"
+
+    class _FakeDocuments:
+        def __init__(self):
+            self.add_calls = []
+
+        def add(self, **kwargs):
+            self.add_calls.append(kwargs)
+
+    class _FakeSdkClient:
+        def __init__(self):
+            self.documents = _FakeDocuments()
+
+    fake_sdk_client = _FakeSdkClient()
+    client._client = fake_sdk_client
+
+    client.ingest_conversation("s1", [{"role": "user", "content": "   "}])
+
+    assert fake_sdk_client.documents.add_calls == []
+
+
+def test_format_conversation_as_document_role_tags_and_skips_blank():
+    text = _format_conversation_as_document([
+        {"role": "user", "content": "hello there"},
+        {"role": "assistant", "content": ""},
+        {"role": "assistant", "content": "hi!"},
+    ])
+    assert text == "User: hello there\n\nAssistant: hi!"
 
 
 # -- Multi-container tests ----------------------------------------------------

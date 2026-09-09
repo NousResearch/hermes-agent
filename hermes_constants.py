@@ -223,6 +223,10 @@ def profile_name_for_home(path: str | Path | None) -> str | None:
             named = named_profile_home(candidate)
             if named is not None:
                 return named.name
+            # A stored profile home is authoritative: its owner already resolved it, so the
+            # <root>/profiles/<name> shape names the profile even when <root> carries no markers.
+            if candidate.parent.name == "profiles" and not candidate.name.startswith("."):
+                return candidate.name
     except (OSError, RuntimeError, ValueError):
         return None
     return None

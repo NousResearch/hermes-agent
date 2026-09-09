@@ -4,7 +4,7 @@ import { _resetSessionOwnerHintsForTests, setSessionOwnerHint } from '@/store/se
 import type { SessionTile } from '@/store/session-states'
 import type { SessionInfo } from '@/types/hermes'
 
-import { ownerRouteKey, tileOwnerRoute } from './session-tile-owner'
+import { ownerRouteFromKey, ownerRouteKey, tileOwnerRoute } from './session-tile-owner'
 
 const row = (over: Partial<SessionInfo>): SessionInfo => over as SessionInfo
 
@@ -98,5 +98,15 @@ describe('tileOwnerRoute key stability under session-list churn', () => {
       ownerRouteKey({ connectionId: 'local', profile: 'default', targetProfile: 'tech-review' })
     )
     expect(ownerRouteKey(undefined)).toBeNull()
+
+    // The component rebuilds the route from the key; encoder and decoder must round-trip.
+    for (const route of [
+      { connectionId: 'local', profile: 'default' },
+      { connectionId: 'local', profile: 'default', targetProfile: 'tech-review' }
+    ]) {
+      expect(ownerRouteFromKey(ownerRouteKey(route))).toEqual(route)
+    }
+
+    expect(ownerRouteFromKey(null)).toBeUndefined()
   })
 })

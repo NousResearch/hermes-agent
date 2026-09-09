@@ -310,7 +310,7 @@ def test_install_scheduled_task_recreates_instead_of_change(monkeypatch, tmp_pat
     # (issue #45599 fix A: no console -> no logon CTRL_CLOSE_EVENT / 0xC000013A).
     assert "<Command>wscript.exe</Command>" in xml_seen["text"]
     assert "//B //Nologo" in xml_seen["text"]
-    assert "Hermes_Gateway_alice.vbs" in xml_seen["text"]
+    assert "Hermes_Gateway_alice.task.vbs" in xml_seen["text"]
     assert "cmd.exe" not in xml_seen["text"]
 
 

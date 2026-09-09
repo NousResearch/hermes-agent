@@ -233,7 +233,7 @@ def _sanitize_filename(value: str) -> str:
 
 def get_task_script_path() -> Path:
     """The generated ``gateway.cmd`` wrapper under ``<HERMES_HOME>/gateway-service/`` (per-profile
-    installs stay self-contained); the VBS launcher lives beside it."""
+    installs stay self-contained); the async and supervised VBS launchers live beside it."""
     _assert_windows()
     script_dir = _hermes_home() / "gateway-service"
     script_dir.mkdir(parents=True, exist_ok=True)
@@ -327,7 +327,9 @@ def _build_gateway_cmd_script(python_path: str, working_dir: str, hermes_home: s
     return "\r\n".join(lines) + "\r\n"
 
 
-def _build_gateway_vbs_script(python_path: str, working_dir: str, hermes_home: str, profile_arg: str) -> str:
+def _build_gateway_vbs_script(
+    python_path: str, working_dir: str, hermes_home: str, profile_arg: str, *, wait_for_exit: bool = False,
+) -> str:
     """Build the hidden-console ``gateway.vbs`` launcher (CRLF-terminated).
 
     Run via ``wscript.exe``, not ``cmd.exe``: at logon Windows broadcasts CTRL_CLOSE_EVENT to console
@@ -343,7 +345,12 @@ def _build_gateway_vbs_script(python_path: str, working_dir: str, hermes_home: s
     (#54220/#56747; the previous console-less pythonw.exe gateway forced exactly that per-descendant flash).
     No cmd.exe anywhere in the chain. Mirrors ``_build_gateway_cmd_script`` (same env + argv via
     ``_resolve_detached_python``).
+
+    Scheduled Tasks wait for the child and return transient failures so RestartOnFailure can
+    observe gateway crashes, but do not retry fatal configuration errors. Other callers detach.
     """
+    from gateway.restart import EXTERNAL_GATEWAY_SUPERVISOR_ENV, GATEWAY_FATAL_CONFIG_EXIT_CODE
+
     python_exe_path, venv_dir, extra_pythonpath = _resolve_detached_python(python_path)
     # list2cmdline gives CreateProcess-correct quoting for WScript.Shell.Run.
     command_line = subprocess.list2cmdline(_gateway_run_argv(python_exe_path, profile_arg))
@@ -352,11 +359,13 @@ def _build_gateway_vbs_script(python_path: str, working_dir: str, hermes_home: s
     lines = [
         f"' {_TASK_DESCRIPTION}",
         "Option Explicit",
-        "Dim sh, env, existing_pp",
+        "Dim sh, env, existing_pp" + (", exitCode" if wait_for_exit else ""),
         'Set sh = CreateObject("WScript.Shell")',
         'Set env = sh.Environment("PROCESS")',
         f"env.Item({q('HERMES_HOME')}) = {q(hermes_home)}",
         *[f"env.Item({q(k)}) = {q(v)}" for k, v in _GATEWAY_ENV],
+        # A detached child must not inherit task ownership from its launching gateway.
+        f"env.Item({q(EXTERNAL_GATEWAY_SUPERVISOR_ENV)}) = {q('1' if wait_for_exit else '')}",
         f"env.Item({q('VIRTUAL_ENV')}) = {q(_preserve_hermes_home_path(venv_dir))}",
         # Mirror the cmd wrapper's ``PYTHONPATH=<static>;%PYTHONPATH%`` at runtime.
         f"existing_pp = env.Item({q('PYTHONPATH')})",
@@ -366,8 +375,11 @@ def _build_gateway_vbs_script(python_path: str, working_dir: str, hermes_home: s
         f"  env.Item({q('PYTHONPATH')}) = {q(static_pythonpath)}",
         "End If",
         f"sh.CurrentDirectory = {q(working_dir)}",
-        # Window style 0 = hidden; bWaitOnReturn False = detached/async.
-        f"sh.Run {q(command_line)}, 0, False",
+        # Both modes keep the same hidden console; only the task owns the child's lifetime.
+        *([f"exitCode = sh.Run({q(command_line)}, 0, True)",
+           f"If exitCode = {GATEWAY_FATAL_CONFIG_EXIT_CODE} Then exitCode = 0",
+           "WScript.Quit exitCode"]
+          if wait_for_exit else [f"sh.Run {q(command_line)}, 0, False"]),
     ]
     return "\r\n".join(lines) + "\r\n"
 
@@ -392,15 +404,19 @@ def _build_startup_launcher(script_path: Path) -> str:
 
 def _write_task_script() -> Path:
     """Generate the gateway.cmd wrapper (kept as a compatibility artifact) and the console-less .vbs
-    launcher used by the Scheduled Task and Startup fallback. Return the .cmd path."""
+    launchers for detached callers and Task Scheduler supervision. Return the .cmd path."""
     _assert_windows()
     settings = _launcher_settings()
     script_path = get_task_script_path()
     _atomic_write(script_path, _build_gateway_cmd_script(*settings), script_path.with_suffix(".tmp"))
-    # Also render the console-less .vbs launcher used by Scheduled Task and the Startup-folder fallback via
-    # wscript.exe (issue #45599 fix A). The .cmd wrapper stays as a generated helper/compatibility artifact.
+    # Keep the shared async launcher for Startup fallback and existing external callers.
     vbs_path = script_path.with_suffix(".vbs")
     _atomic_write(vbs_path, _build_gateway_vbs_script(*settings), vbs_path.with_name(vbs_path.name + ".tmp"))
+    task_vbs_path = script_path.with_suffix(".task.vbs")
+    _atomic_write(
+        task_vbs_path, _build_gateway_vbs_script(*settings, wait_for_exit=True),
+        task_vbs_path.with_name(task_vbs_path.name + ".tmp"),
+    )
     return script_path
 
 
@@ -491,8 +507,8 @@ def _install_scheduled_task(task_name: str, script_path: Path) -> tuple[bool, st
         return (False, f"schtasks /Delete failed (code {delete_code}): {delete_detail}")
     # Other /Delete failures are non-fatal: /Create /F may still replace it; keep the detail.
     user = _resolve_task_user()
-    launcher_path = script_path.with_suffix(".vbs")   # the task launches the console-less .vbs
-    xml_path = launcher_path.with_suffix(".task.xml")
+    launcher_path = script_path.with_suffix(".task.vbs")
+    xml_path = script_path.with_suffix(".task.xml")
     xml_path.write_text(_build_scheduled_task_xml(task_name, launcher_path, user), encoding="utf-16", newline="")
     # Immediate manual starts use _spawn_detached(). See #45599.
     base = ["/Create", "/F", "/TN", task_name, "/XML", str(xml_path)]
@@ -1162,7 +1178,8 @@ def uninstall() -> None:
 
     for path, label in (
         (get_startup_entry_path(), "Windows login item"), (_legacy_startup_entry_path(), "legacy Windows login item"),
-        (script_path, "Task script"), (script_path.with_suffix(".vbs"), "Task launcher"),
+        (script_path, "Task script"), (script_path.with_suffix(".vbs"), "Async launcher"),
+        (script_path.with_suffix(".task.vbs"), "Task launcher"),
     ):
         try:
             path.unlink()
@@ -1298,7 +1315,7 @@ def _probe_state_file(state_path: Path) -> None:
         _probe(5, False, f"gateway_state.json present but unreadable: {exc}")
 
 
-def _probe_exit_diag(diag_path: Path) -> None:
+def _probe_exit_diag(diag_path: Path, pid_path: Path) -> None:
     if _probe_missing(6, diag_path, "exit-diag log"):
         return
     try:
@@ -1313,10 +1330,46 @@ def _probe_exit_diag(diag_path: Path) -> None:
             return
         try:
             event = json.loads(last_event)
-            tag = event.get("tag", "?")
-            _probe(6, tag in ("gateway.start",), f"Last lifecycle event: tag={tag} pid={event.get('pid', '?')} ts={event.get('ts', '?')}")
-        except Exception:
-            _probe(6, False, f"Last lifecycle line not JSON: {last_event[:120]}")
+            if not isinstance(event, dict):
+                raise ValueError("expected an event object")
+            tag, pid, ts = event.get("tag"), event.get("pid"), event.get("ts")
+            if not isinstance(tag, str) or type(pid) is not int or pid <= 0 or not isinstance(ts, str):
+                raise ValueError("missing or malformed tag, PID, or timestamp")
+            event_time = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+            if event_time.tzinfo is None:
+                raise ValueError("lifecycle timestamp has no timezone")
+        except (TypeError, ValueError) as exc:
+            _probe(6, False, f"Last lifecycle event malformed: {exc}")
+            return
+
+        message = f"Last lifecycle event: tag={tag} pid={pid} ts={ts}"
+        previous_unclean = tag == "gateway.previous_unclean_exit"
+        if previous_unclean:
+            message += (
+                f"; WARNING: previous gateway exited uncleanly"
+                f" prior_pid={event.get('prior_pid', '?')}"
+                f" prior_started_at={event.get('prior_started_at', '?')}"
+                f" state_db_integrity={event.get('state_db_integrity', '?')}"
+            )
+        try:
+            from gateway.status import get_running_pid_identity_strict
+
+            identity = get_running_pid_identity_strict(pid_path)
+        except Exception as exc:
+            _probe(6, False, f"{message}; live gateway identity unverified: {exc}")
+            return
+        # record_startup reports the previous life AFTER gateway.start. Its PID and
+        # timestamp belong to the new process, whose exact creation time rules out reuse.
+        current_event = (
+            identity is not None and pid == identity[0]
+            and identity[1] <= event_time.timestamp() <= datetime.now(timezone.utc).timestamp()
+        )
+        healthy_event = tag == "gateway.start" or (
+            previous_unclean and event.get("state_db_integrity") in ("ok", "absent")
+        )
+        if not current_event:
+            message += "; event does not identify the verified live gateway"
+        _probe(6, current_event and healthy_event, message)
     except Exception as exc:
         _probe(6, False, f"exit-diag log unreadable: {exc}")
 
@@ -1331,7 +1384,7 @@ def _print_deep_probes() -> None:
     running_pid = _probe_running_pid()
     _probe_pid_exists(running_pid if running_pid is not None else pid_value)
     _probe_state_file(home / "gateway_state.json")
-    _probe_exit_diag(home / "logs" / "gateway-exit-diag.log")
+    _probe_exit_diag(home / "logs" / "gateway-exit-diag.log", home / "gateway.pid")
 
 
 def status(deep: bool = False) -> None:

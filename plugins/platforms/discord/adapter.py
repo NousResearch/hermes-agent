@@ -1010,6 +1010,7 @@ def _read_discord_prompt_timeout() -> int:
 
 
 from plugins.platforms.discord.adapter_media import DiscordMediaMixin
+from plugins.platforms.discord.client_lifecycle import close_discord_client
 
 
 class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
@@ -1270,7 +1271,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             if self._client is not None:
                 try:
                     if not self._client.is_closed():
-                        await self._client.close()
+                        await close_discord_client(self._client)
                 except Exception:
                     logger.debug("[%s] Failed to close previous Discord client", self.name)
                 finally:
@@ -1777,7 +1778,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         await itself via ``disconnect()``); the runner owns the bounded teardown."""
         failed_websocket = getattr(client, "ws", None)
         try:
-            close_task = asyncio.create_task(client.close())
+            close_task = asyncio.create_task(close_discord_client(client))
             try:
                 done, _pending = await asyncio.wait({close_task}, timeout=1.0)
                 if close_task not in done:
@@ -1891,7 +1892,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         await self._cancel_bot_task()
         if self._client:
             try:
-                await self._client.close()
+                await close_discord_client(self._client)
             except Exception as e:  # pragma: no cover - defensive logging
                 logger.warning("[%s] Error during disconnect: %s", self.name, e, exc_info=True)
         for task in (self._post_connect_task, self._missed_message_backfill_task):

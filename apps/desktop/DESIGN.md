@@ -275,6 +275,8 @@ Sizes: `default`, `xs`, `overlay` (titlebar glyph counts).
 
 ## Motion
 
+- Visible windows keep animating when another app takes focus. Hidden/minimized
+  windows and inactive panes may pause; background polling stays focus-gated.
 - Quick, functional transitions (~100ms on controls). Respect
   `prefers-reduced-motion` for anything beyond a fade.
 - Choreographed exits (e.g. onboarding's "matrix" fade-down) stagger per-element

@@ -319,6 +319,8 @@ class LocalCIAuditPolicy:
     required_for_open_prs: bool = False
     max_dispatches_per_scan: int = 1
     max_open_prs_per_scan: int = 300
+    worker_model: str | None = None
+    worker_provider: str | None = None
 
     def applies_to(self, repository: str) -> bool:
         return not self.repositories or repository in self.repositories
@@ -695,6 +697,8 @@ def _parse_local_ci_audit(raw: object) -> LocalCIAuditPolicy | None:
         "required_for_open_prs",
         "max_dispatches_per_scan",
         "max_open_prs_per_scan",
+        "worker_model",
+        "worker_provider",
     }
     if not required.issubset(raw) or set(raw).difference(required | optional):
         raise ValueError("local_ci_audit has missing or unknown fields")
@@ -703,6 +707,8 @@ def _parse_local_ci_audit(raw: object) -> LocalCIAuditPolicy | None:
     required_for_open_prs = raw.get("required_for_open_prs", False)
     max_dispatches_per_scan = raw.get("max_dispatches_per_scan", 1)
     max_open_prs_per_scan = raw.get("max_open_prs_per_scan", 300)
+    worker_model = raw.get("worker_model")
+    worker_provider = raw.get("worker_provider")
     if (
         not isinstance(enabled, bool)
         or not isinstance(post_results, bool)
@@ -713,6 +719,8 @@ def _parse_local_ci_audit(raw: object) -> LocalCIAuditPolicy | None:
         or not isinstance(max_open_prs_per_scan, int)
         or isinstance(max_open_prs_per_scan, bool)
         or max_open_prs_per_scan < 1
+        or (worker_model is not None and (not isinstance(worker_model, str) or not worker_model.strip()))
+        or (worker_provider is not None and (not isinstance(worker_provider, str) or not worker_provider.strip()))
     ):
         raise ValueError("local_ci_audit booleans are invalid")
     assignee = _nonempty_string(raw["assignee"], "local_ci_audit assignee")
@@ -730,6 +738,8 @@ def _parse_local_ci_audit(raw: object) -> LocalCIAuditPolicy | None:
         required_for_open_prs=required_for_open_prs,
         max_dispatches_per_scan=max_dispatches_per_scan,
         max_open_prs_per_scan=max_open_prs_per_scan,
+        worker_model=worker_model.strip() if isinstance(worker_model, str) else None,
+        worker_provider=worker_provider.strip() if isinstance(worker_provider, str) else None,
     )
 
 

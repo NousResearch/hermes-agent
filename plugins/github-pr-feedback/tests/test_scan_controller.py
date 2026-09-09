@@ -791,6 +791,8 @@ def test_failed_exact_head_static_receipt_immediately_dispatches_one_typed_fixer
             "enabled": True,
             "assignee": "pr-local-ci-auditor",
             "post_results": True,
+            "worker_model": "qwen3.5:4b",
+            "worker_provider": "ollama-launch",
         },
     }
     current = PullRequest(
@@ -4024,6 +4026,8 @@ def configured_policy(
             "enabled": True,
             "assignee": "pr-local-ci-auditor",
             "post_results": True,
+            "worker_model": "qwen3.5:4b",
+            "worker_provider": "ollama-launch",
         }
         raw["routing_rules"] = [
             {

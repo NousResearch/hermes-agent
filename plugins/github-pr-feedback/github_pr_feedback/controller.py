@@ -46,8 +46,6 @@ LOCAL_CI_FEEDBACK_ID = "local-ci-audit-v2"
 # Keep this route explicit on the durable task so it survives profile/global
 # config drift; the provider/model are the operator's configured loopback
 # route in the active Hermes installation.
-LOCAL_CI_WORKER_PROVIDER = "ollama-launch"
-LOCAL_CI_WORKER_MODEL = "qwen3.5:4b"
 _SHA = re.compile(r"^[0-9a-fA-F]{40,64}$")
 DEFAULT_CLAIM_LEASE = timedelta(minutes=5)
 LOCAL_CI_RETRY_BACKOFF = timedelta(minutes=5)
@@ -2713,8 +2711,8 @@ def _ci_failure_task(
         initial_status="running" if policy.auto_dispatch else "blocked",
         max_retries=2 if policy.auto_dispatch else 1,
         max_runtime_seconds=60 * 60 if policy.auto_dispatch else None,
-        model_override=LOCAL_CI_WORKER_MODEL,
-        provider_override=LOCAL_CI_WORKER_PROVIDER,
+        model_override=policy.local_ci_audit.worker_model if policy.local_ci_audit else None,
+        provider_override=policy.local_ci_audit.worker_provider if policy.local_ci_audit else None,
         reasoning_effort="none",
     )
 
@@ -2794,8 +2792,8 @@ def _local_ci_task(
         # exact-head CI lease prevents duplicate restarts while the real
         # supervisor PID is alive; give the full lane sequence an 8h envelope.
         max_runtime_seconds=8 * 60 * 60,
-        model_override=LOCAL_CI_WORKER_MODEL,
-        provider_override=LOCAL_CI_WORKER_PROVIDER,
+        model_override=policy.local_ci_audit.worker_model if policy.local_ci_audit else None,
+        provider_override=policy.local_ci_audit.worker_provider if policy.local_ci_audit else None,
         reasoning_effort="none",
     )
 

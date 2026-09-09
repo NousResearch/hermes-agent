@@ -1,10 +1,10 @@
 ---
 sidebar_position: 15
-title: "Web Dashboard"
+title: "Hermes Web Dashboard"
 description: "Browser-based administration panel for managing configuration, API keys, MCP servers, messaging pairing, webhooks, the gateway, memory, credentials, sessions, logs, analytics, cron jobs, and skills"
 ---
 
-# Web Dashboard
+# Hermes Web Dashboard
 
 The web dashboard is a browser-based UI for managing your Hermes Agent installation. Instead of editing YAML files or running CLI commands, you can configure settings, manage API keys, and monitor sessions from a clean web interface.
 
@@ -235,7 +235,7 @@ Config changes take effect on the next agent session or gateway restart. The web
 Manage the `.env` file where API keys and credentials are stored. Keys are grouped by category:
 
 - **LLM Providers** — OpenRouter, Anthropic, OpenAI, DeepSeek, etc.
-- **Tool API Keys** — Browserbase, Firecrawl, Tavily, ElevenLabs, etc.
+- **Tool API Keys** — Browserbase, Firecrawl, Tavily, Keenable, ElevenLabs, etc.
 - **Messaging Platforms** — Telegram, Discord, Slack bot tokens, etc.
 - **Agent Settings** — non-secret env vars like `API_SERVER_ENABLED`
 
@@ -935,9 +935,55 @@ For deploys behind reverse proxies that don't reliably forward those headers (ma
 ```yaml
 dashboard:
   public_url: "https://dashboard.example.com/hermes"
+  trusted_proxies:
+    - "172.20.0.5"
 ```
 
 When set, the OAuth callback URL becomes `<public_url>/auth/callback` verbatim — `X-Forwarded-Prefix` is ignored on that code path because the operator has explicitly declared the public URL. This is intentional: stacking the prefix on top would double-prefix the common case where the prefix is already baked into `public_url`.
+
+The hostname in `public_url` is also accepted as an **exact** HTTP `Host` and
+WebSocket `Origin` value. This supports a reverse proxy that preserves the
+browser-facing hostname while forwarding to a dashboard bound to
+`127.0.0.1`. Wildcards and suffix matches are not allowed, so an attacker host
+such as `dashboard.example.com.evil.test` remains rejected by the DNS-rebinding
+guard.
+
+Declaring a non-loopback `public_url` always engages the dashboard auth gate,
+even when the backend binds to loopback. Configure a password or OAuth provider
+first; without one, Hermes fails closed at startup. This prevents the local SPA
+session token from becoming a remote authentication mechanism through the
+proxy. Uvicorn also enables proxy-header processing in this mode. Loopback
+proxies are trusted automatically. If the TLS terminator connects from another
+container or host, add its exact IP address to `dashboard.trusted_proxies`, or
+add a bounded CIDR for a dedicated proxy network when the address is dynamic:
+
+```yaml
+dashboard:
+  public_url: "https://dashboard.example.com/hermes"
+  trusted_proxies:
+    - "172.20.0.0/24"
+```
+
+Only listed peers may supply `X-Forwarded-Proto` and `X-Forwarded-For`.
+Hermes always preserves loopback trust and rejects `*`, `0.0.0.0/0`, and
+`::/0`. Trusting a network means every container or machine on that network
+can supply forwarding metadata, so prefer an exact proxy IP or a dedicated
+proxy-only network.
+
+```bash
+# Backend remains reachable only on this machine.
+hermes dashboard --host 127.0.0.1 --port 9119 --no-open
+```
+
+Point the TLS reverse proxy at `http://127.0.0.1:9119` and use
+the same external origin in `dashboard.public_url`.
+
+Tailscale Serve is one example of this deployment shape: it can terminate
+tailnet-only HTTPS on a `https://<machine>.<tailnet>.ts.net` hostname while
+proxying to the loopback dashboard. Use that exact HTTPS origin as
+`dashboard.public_url`. It is still treated as a non-loopback browser-facing
+origin and therefore requires a dashboard auth provider; this does not require
+making the service reachable from the public internet.
 
 Same precedence as the other dashboard settings — env wins over `config.yaml`:
 
@@ -949,7 +995,7 @@ Same precedence as the other dashboard settings — env wins over `config.yaml`:
 
 Validation rejects values without `http://` / `https://` scheme, without a host, or containing quote / angle / whitespace / control characters. A malformed value silently falls through to header reconstruction so the login flow keeps working rather than dispatching the user to a hostile URL.
 
-> **Note:** `public_url` overrides the OAuth callback URL only. The `Secure` cookie flag is still controlled by `request.url.scheme` (X-Forwarded-Proto under proxy_headers), so an `http://` `public_url` on a TLS-terminated public deploy will produce non-Secure cookies. This is an operator footgun — pair `public_url` with proper TLS termination upstream.
+> **Note:** `public_url` overrides the OAuth callback URL only. The `Secure` cookie flag is still controlled by `request.url.scheme`, using `X-Forwarded-Proto` only when the connecting peer is loopback or listed in `trusted_proxies`. Pair an HTTPS `public_url` with TLS termination and a bounded trusted-proxy entry when the proxy is not on loopback.
 
 ### OAuth flow
 
@@ -969,10 +1015,10 @@ Access tokens have a 15-minute TTL. **There is no refresh token in contract v1**
 | Name | Lifetime | Notes |
 |------|----------|-------|
 | `hermes_session_at` | Token TTL (15 min) | HttpOnly, SameSite=Lax, Secure-when-HTTPS |
-| `hermes_session_pkce` | 10 min | HttpOnly; holds the PKCE verifier + provider hint during the round trip |
+| `hermes_session_pkce` | 10 min | HttpOnly; holds the PKCE verifier + provider hint during the round trip. SameSite=None + Secure over HTTPS (must survive the cross-site IDP redirect chain — Chromium drops SameSite=Lax cookies set on a 302 in a cross-site chain); SameSite=Lax on loopback HTTP |
 | `hermes_session_rt` | unused in v1 | Reserved for forward-compat; not written when `refresh_token` is empty |
 
-All three are `Path=/` and `SameSite=Lax`. The `Secure` flag is set when the dashboard is reached over HTTPS (detected via the request URL scheme — honours `X-Forwarded-Proto` from an upstream TLS terminator under `proxy_headers=True`).
+All three are `Path=/`. The session cookies are `SameSite=Lax`; the PKCE cookie is `SameSite=None` when set over HTTPS (see table). The `Secure` flag is set when the dashboard is reached over HTTPS (detected via the request URL scheme — honours `X-Forwarded-Proto` from an upstream TLS terminator under `proxy_headers=True`).
 
 ### Logout
 

@@ -11,7 +11,7 @@ Batch delays are read from ``config.extra`` (config.yaml), not env vars.
 import asyncio
 
 from gateway.config import Platform, PlatformConfig
-from gateway.platforms.base import MessageEvent, MessageType
+from gateway.platforms.event import MessageEvent, MessageType
 from plugins.platforms.whatsapp.adapter import WhatsAppAdapter
 from gateway.session import SessionSource
 

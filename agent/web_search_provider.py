@@ -1,75 +1,34 @@
-"""
-Web Search Provider ABC
-=======================
+"""Web Search Provider ABC.
 
-Defines the pluggable-backend interface for web search and content extraction.
-Providers register instances via ``PluginContext.register_web_search_provider()``;
-the active one (selected via ``web.search_backend`` / ``web.extract_backend`` /
-``web.backend`` in ``config.yaml``) services every ``web_search`` /
-``web_extract`` tool call.
+The single plugin-facing surface every web provider (brave-free, ddgs, searxng,
+exa, parallel, tavily, keenable, firecrawl) implements; registered via
+``PluginContext.register_web_search_provider()`` and selected by
+``web.search_backend`` / ``web.extract_backend`` / ``web.backend``.
 
-Providers live in ``<repo>/plugins/web/<name>/`` (built-in, auto-loaded as
-``kind: backend``) or ``~/.hermes/plugins/web/<name>/`` (user, opt-in via
-``plugins.enabled``).
+Response shapes (legacy contract, the tool wrapper does not translate)::
 
-This ABC is the SINGLE plugin-facing surface for web providers — every
-provider in the tree (brave-free, ddgs, searxng, exa, parallel, tavily,
-firecrawl) implements it. The legacy in-tree ``tools.web_providers.base``
-ABCs were deleted in PR #25182 along with the per-vendor inline helpers
-in ``tools/web_tools.py``; the response-shape contract documented below
-is preserved bit-for-bit so the tool wrapper does not have to translate.
-
-Response shape (preserved from the legacy contract):
-
-Search results::
-
-    {
-        "success": True,
-        "data": {
-            "web": [
-                {"title": str, "url": str, "description": str, "position": int},
-                ...
-            ]
-        }
-    }
-
-Extract results::
-
-    {
-        "success": True,
-        "data": [
-            {"url": str, "title": str, "content": str,
-             "raw_content": str, "metadata": dict},
-            ...
-        ]
-    }
-
-On failure (either capability)::
-
-    {"success": False, "error": str}
+    search:  {"success": True, "data": {"web": [{"title", "url", "description", "position"}, ...]}}
+    extract: {"success": True, "data": [{"url", "title", "content", "raw_content", "metadata"}, ...]}
+    failure: {"success": False, "error": str}
 """
 
 from __future__ import annotations
 
 import abc
 import os
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
+
+from agent.provider_base import ProviderBase
 
 
 def get_provider_env(name: str) -> str:
-    """Config-aware env lookup for web providers.
+    """Config-aware env lookup (``os.environ`` first, then ``~/.hermes/.env``) so
+    credentials set through the config layer are visible in gateway sessions /
+    delegate children / subprocess runs. Stripped value, or ``""`` when unset.
 
-    Resolves *name* via :func:`hermes_cli.config.get_env_value` (checks
-    ``os.environ`` first, then ``~/.hermes/.env``) so credentials set
-    through Hermes' config layer are visible even when they were never
-    exported into the process environment — gateway sessions, delegate
-    children, and subprocess agent runs (issue #40190). Falls back to a
-    bare ``os.getenv`` when the config module is unavailable (stripped
-    installs, early import contexts).
-
-    Returns the stripped value, or ``""`` when unset.
+    Falls back to a bare ``os.getenv`` when the config module is unavailable (stripped installs, early
+    import contexts). See #40190.
     """
-    val: Optional[str] = None
     try:
         from hermes_cli.config import get_env_value
 
@@ -81,131 +40,49 @@ def get_provider_env(name: str) -> str:
     return (val or "").strip()
 
 
-# ---------------------------------------------------------------------------
-# ABC
-# ---------------------------------------------------------------------------
-
-
-class WebSearchProvider(abc.ABC):
-    """Abstract base class for a web search/extract backend.
-
-    Subclasses must implement :meth:`is_available` and at least one of
-    :meth:`search` / :meth:`extract`. The :meth:`supports_search` /
-    :meth:`supports_extract` capability flags let the registry route each
-    tool call to the right provider, and let multi-capability providers
-    (Firecrawl, Tavily, Exa, …) advertise multiple capabilities from a
-    single class.
-    """
-
-    @property
-    @abc.abstractmethod
-    def name(self) -> str:
-        """Stable short identifier used in ``web.search_backend`` /
-        ``web.extract_backend`` / ``web.backend`` config keys.
-
-        Lowercase, no spaces; hyphens permitted to preserve existing
-        user-visible names. Examples: ``brave-free``, ``ddgs``,
-        ``searxng``, ``firecrawl``.
-        """
-
-    @property
-    def display_name(self) -> str:
-        """Human-readable label shown in ``hermes tools``. Defaults to ``name``."""
-        return self.name
+class WebSearchProvider(ProviderBase):
+    """Abstract base class for a web search/extract backend: implement :meth:`is_available`
+    and at least one of :meth:`search` / :meth:`extract`; the ``supports_*`` flags route each capability."""
 
     @abc.abstractmethod
     def is_available(self) -> bool:
-        """Return True when this provider can service calls.
-
-        Typically a cheap check (env var present, optional Python dep
-        importable, instance URL set). Must NOT make network calls — this
-        runs at tool-registration time and on every ``hermes tools`` paint.
-        """
+        """True when this provider can service calls. Cheap check only (env var, importable
+        dep, instance URL) — NO network; runs at tool registration and on every ``hermes tools`` paint."""
 
     def supports_search(self) -> bool:
-        """Return True if this provider implements :meth:`search`."""
+        """True if this provider implements :meth:`search`."""
         return True
 
-    def supports_extract(self) -> bool:
-        """Return True if this provider implements :meth:`extract`.
+    def is_keyless_available(self) -> bool:
+        """True when this provider can serve calls WITHOUT credentials (public anonymous
+        free tiers such as Exa / Parallel MCP); used only when NO provider is configured or
+        keyed. Must never make :meth:`is_available` True, or the legacy preference walk would
+        route keyed users onto a higher-priority backend's free tier. Cheap, no network."""
+        return False
 
-        Both sync and async :meth:`extract` implementations are valid — the
-        dispatcher detects coroutine functions via
-        :func:`inspect.iscoroutinefunction` and awaits as needed. Sync
-        implementations that perform blocking I/O (HTTP, SDK calls) should
-        ideally wrap in :func:`asyncio.to_thread` at the call site; small
-        providers can keep their sync shape and let the dispatcher handle
-        threading.
-        """
+    def supports_extract(self) -> bool:
+        """True if this provider implements :meth:`extract` (sync or ``async def`` —
+        the dispatcher awaits coroutine functions)."""
         return False
 
     def search(self, query: str, limit: int = 5) -> Dict[str, Any]:
-        """Execute a web search.
-
-        Override when :meth:`supports_search` returns True. The default
-        raises NotImplementedError; callers should gate on
-        :meth:`supports_search` before calling.
-        """
+        """Execute a web search. Callers gate on :meth:`supports_search`."""
         raise NotImplementedError(
             f"{self.name} does not support search (override supports_search)"
         )
 
     def extract(self, urls: List[str], **kwargs: Any) -> Any:
-        """Extract content from one or more URLs.
-
-        Override when :meth:`supports_extract` returns True. The default
-        raises NotImplementedError; callers should gate on
-        :meth:`supports_extract` before calling.
-
-        Return shape: a list of result dicts matching what the legacy
-        :func:`tools.web_tools.web_extract_tool` post-processing pipeline
-        expects::
-
-            [
-                {
-                    "url": str,
-                    "title": str,
-                    "content": str,
-                    "raw_content": str,
-                    "metadata": dict,           # optional
-                    "error": str,               # optional, only on per-URL failure
-                },
-                ...
-            ]
-
-        Implementations MAY be ``async def`` — the dispatcher detects
-        coroutines via :func:`inspect.iscoroutinefunction` and awaits.
-
-        ``kwargs`` may carry forward-compat fields (``format``, ``include_raw``,
-        ``max_chars``) — implementations should ignore unknown keys.
-        """
+        """Extract content from URLs (callers gate on :meth:`supports_extract`); may be ``async def``.
+        Returns ``[{"url", "title", "content", "raw_content", "metadata"?, "error"?}, ...]`` (``error``
+        only on per-URL failure). Ignore unknown ``kwargs`` (``format``, ``include_raw``, ``max_chars``)."""
         raise NotImplementedError(
             f"{self.name} does not support extract (override supports_extract)"
         )
 
-    def get_setup_schema(self) -> Dict[str, Any]:
-        """Return provider metadata for the ``hermes tools`` picker.
 
-        Used by ``hermes_cli/tools_config.py`` to inject this provider as a
-        row in the Web Search / Web Extract picker. Shape::
-
-            {
-                "name": "Brave Search (Free)",
-                "badge": "free",
-                "tag": "No paid tier needed — uses Brave's free API.",
-                "env_vars": [
-                    {"key": "BRAVE_SEARCH_API_KEY",
-                     "prompt": "Brave Search API key",
-                     "url": "https://brave.com/search/api/"},
-                ],
-            }
-
-        Default: minimal entry derived from ``display_name``. Override to
-        expose API key prompts, badges, and instance URL fields.
-        """
-        return {
-            "name": self.display_name,
-            "badge": "",
-            "tag": "",
-            "env_vars": [],
-        }
+# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
+# Names external plugins imported from this module before the Sep 2026 decomposition.
+# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
+# The whole block is removed by reverting the commit that added it.
+from typing import Optional  # noqa: F401,E402
+# ---- END PLUGIN-COMPAT ----

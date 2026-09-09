@@ -9,6 +9,7 @@ import { useI18n } from '@/i18n'
 import { Package, Palette, Settings2, Wrench } from '@/lib/icons'
 import { $agentPlugins, isDesktopRelevantPlugin, loadAgentPlugins } from '@/store/agent-plugins'
 import { $gatewayState } from '@/store/session'
+import { TRANSLUCENCY_SUPPORTED } from '@/store/translucency'
 
 import { useHermesConfigRecord } from '../hooks/use-config-record'
 import { useOnProfileSwitch } from '../hooks/use-on-profile-switch'
@@ -135,14 +136,29 @@ export function useSettingsSearchCatalog(enabled: boolean) {
       label: appearance.uiScaleTitle,
       target: { setting: APPEARANCE_SETTING_IDS.uiScale, view: 'config:appearance' }
     },
+    // Linux has no translucency row to land on, and a palette hit that scrolls
+    // to nothing is worse than no hit.
+    ...(TRANSLUCENCY_SUPPORTED
+      ? [
+          {
+            context: appearanceContext,
+            description: appearance.translucencyDesc,
+            icon: Palette,
+            id: `setting:${APPEARANCE_SETTING_IDS.translucency}`,
+            keywords: ['opacity', 'transparent'],
+            label: appearance.translucencyTitle,
+            target: { setting: APPEARANCE_SETTING_IDS.translucency, view: 'config:appearance' as const }
+          }
+        ]
+      : []),
     {
       context: appearanceContext,
-      description: appearance.translucencyDesc,
+      description: appearance.userBubbleDesc,
       icon: Palette,
-      id: `setting:${APPEARANCE_SETTING_IDS.translucency}`,
-      keywords: ['opacity', 'transparent'],
-      label: appearance.translucencyTitle,
-      target: { setting: APPEARANCE_SETTING_IDS.translucency, view: 'config:appearance' }
+      id: `setting:${APPEARANCE_SETTING_IDS.userBubble}`,
+      keywords: ['opacity', 'transparent', 'message', 'bubble'],
+      label: appearance.userBubbleTitle,
+      target: { setting: APPEARANCE_SETTING_IDS.userBubble, view: 'config:appearance' }
     },
     {
       context: appearanceContext,
@@ -152,6 +168,15 @@ export function useSettingsSearchCatalog(enabled: boolean) {
       keywords: ['background', 'blur'],
       label: appearance.backdropTitle,
       target: { setting: APPEARANCE_SETTING_IDS.backdrop, view: 'config:appearance' }
+    },
+    {
+      context: appearanceContext,
+      description: appearance.introSplashDesc,
+      icon: Palette,
+      id: `setting:${APPEARANCE_SETTING_IDS.introSplash}`,
+      keywords: ['splash', 'wordmark', 'empty chat', 'new chat'],
+      label: appearance.introSplashTitle,
+      target: { setting: APPEARANCE_SETTING_IDS.introSplash, view: 'config:appearance' }
     },
     {
       context: appearanceContext,

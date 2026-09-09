@@ -7,7 +7,7 @@ import { Codicon } from '@/components/ui/codicon'
 import { DropdownMenuItem, dropdownMenuRow } from '@/components/ui/dropdown-menu'
 import type { HermesGateway } from '@/hermes'
 import { useI18n } from '@/i18n'
-import { modelOptionsQueryKey, requestModelOptions } from '@/lib/model-options'
+import { modelOptionsQueryKey, reconcileSelectionAfterCatalogRefresh, requestModelOptions } from '@/lib/model-options'
 import { currentPickerSelection } from '@/lib/model-status-label'
 import { DEFAULT_REASONING_EFFORT } from '@/lib/reasoning-effort'
 import { cn } from '@/lib/utils'
@@ -37,6 +37,7 @@ export interface ModelSelection {
 
 interface ModelMenuPanelProps {
   gateway?: HermesGateway
+  ownerConnectionId?: string
   onSelectModel: (selection: ModelSelection) => Promise<boolean> | void
   profile?: string
   requestGateway: <T>(method: string, params?: Record<string, unknown>) => Promise<T>
@@ -48,7 +49,13 @@ interface ModelMenuPanelProps {
  * surface's session, remember the pick as a global preset, keep the optimistic
  * stores honest, and roll back on a failed gateway write.
  */
-export function ModelMenuPanel({ gateway, onSelectModel, profile = 'default', requestGateway }: ModelMenuPanelProps) {
+export function ModelMenuPanel({
+  gateway,
+  onSelectModel,
+  ownerConnectionId,
+  profile = 'default',
+  requestGateway
+}: ModelMenuPanelProps) {
   const { t } = useI18n()
   const copy = t.shell.modelMenu
   const [refreshing, setRefreshing] = useState(false)
@@ -72,8 +79,9 @@ export function ModelMenuPanel({ gateway, onSelectModel, profile = 'default', re
   // back to the catalog's reported current, and a non-reactive read would
   // never repaint that fallback once the catalog resolved.
   const modelOptions = useQuery({
-    queryKey: modelOptionsQueryKey(profile, activeSessionId),
-    queryFn: (): Promise<ModelOptionsResponse> => requestModelOptions({ gateway, sessionId: activeSessionId })
+    queryKey: modelOptionsQueryKey(profile, activeSessionId, ownerConnectionId),
+    queryFn: (): Promise<ModelOptionsResponse> =>
+      requestModelOptions({ gateway, profile, request: requestGateway, sessionId: activeSessionId })
   })
 
   const { model: optionsModel, provider: optionsProvider } = currentPickerSelection(
@@ -93,11 +101,26 @@ export function ModelMenuPanel({ gateway, onSelectModel, profile = 'default', re
     setRefreshing(true)
 
     try {
-      const queryKey = modelOptionsQueryKey(profile, activeSessionId)
+      const queryKey = modelOptionsQueryKey(profile, activeSessionId, ownerConnectionId)
 
-      const next = await requestModelOptions({ gateway, refresh: true, sessionId: activeSessionId })
+      const next = await requestModelOptions({
+        gateway,
+        profile,
+        refresh: true,
+        request: requestGateway,
+        sessionId: activeSessionId
+      })
 
       queryClient.setQueryData<ModelOptionsResponse>(queryKey, next)
+
+      // Group / credential swaps can return a catalog that no longer contains
+      // the session's current model. The store + currentPickerSelection would
+      // otherwise keep painting the stale id (it is not in the new list).
+      const switchTo = reconcileSelectionAfterCatalogRefresh(optionsModel, next.providers)
+
+      if (switchTo) {
+        await onSelectModel({ ...switchTo, sessionId: activeSessionId || null })
+      }
     } catch {
       // Network/backend hiccup — fall back to a plain invalidate so the next
       // open re-fetches (still cached, but no worse than before).
@@ -237,7 +260,9 @@ export function ModelMenuPanel({ gateway, onSelectModel, profile = 'default', re
       }
       gateway={gateway}
       includeMoa
+      ownerConnectionId={ownerConnectionId}
       profile={profile}
+      request={requestGateway}
       sessionId={activeSessionId}
     />
   )

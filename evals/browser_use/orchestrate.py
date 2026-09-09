@@ -52,7 +52,13 @@ if os.path.exists(args.results):
 
 def reset_browser_state():
     """Kill lingering drivers and clear cookies between cells."""
-    subprocess.run(["pkill", "-f", "agent-browser"], capture_output=True)
+    if sys.platform == "win32":
+        subprocess.run(
+            ["taskkill", "/F", "/IM", "agent-browser.exe", "/T"],
+            capture_output=True,
+        )
+    else:
+        subprocess.run(["pkill", "-f", "agent-browser"], capture_output=True)
     code = "cdp('Network.clearBrowserCookies')\nprint('cleared')\n"
     try:
         subprocess.run(

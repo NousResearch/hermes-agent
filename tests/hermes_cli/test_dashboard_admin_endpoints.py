@@ -8,6 +8,9 @@ visible to the CLI data layer), not specific catalog values.
 """
 
 import pytest
+import hermes_cli.config as _cfg_mod
+import hermes_cli.web_server_files as _web_server_files
+import hermes_cli.web_server_gateway as _web_server_gateway
 
 
 def _client():
@@ -351,7 +354,7 @@ class TestWebhookEndpoints:
         import hermes_cli.web_server as ws
         from hermes_cli.config import load_config
 
-        ws._ACTION_PROCS.pop("gateway-restart", None)
+        _web_server_gateway._ACTION_PROCS.pop("gateway-restart", None)
         restart_calls = []
 
         class FakeRestartProc:
@@ -361,7 +364,7 @@ class TestWebhookEndpoints:
             restart_calls.append((subcommand, name))
             return FakeRestartProc()
 
-        monkeypatch.setattr(ws, "_spawn_hermes_action", fake_spawn_action)
+        monkeypatch.setattr(_web_server_gateway, "_spawn_hermes_action", fake_spawn_action)
 
         r = self.client.post("/api/webhooks/enable")
 
@@ -384,7 +387,7 @@ class TestWebhookEndpoints:
         import hermes_cli.web_server as ws
         from hermes_cli.config import load_config
 
-        ws._ACTION_PROCS.pop("gateway-restart", None)
+        _web_server_gateway._ACTION_PROCS.pop("gateway-restart", None)
 
         class FakeRunningProc:
             pid = 5151
@@ -392,12 +395,12 @@ class TestWebhookEndpoints:
             def poll(self):
                 return None
 
-        monkeypatch.setitem(ws._ACTION_PROCS, "gateway-restart", FakeRunningProc())
+        monkeypatch.setitem(_web_server_gateway._ACTION_PROCS, "gateway-restart", FakeRunningProc())
 
         def fail_spawn_action(subcommand, name):
             raise AssertionError("must not spawn a second concurrent restart")
 
-        monkeypatch.setattr(ws, "_spawn_hermes_action", fail_spawn_action)
+        monkeypatch.setattr(_web_server_gateway, "_spawn_hermes_action", fail_spawn_action)
 
         r = self.client.post("/api/webhooks/enable")
 
@@ -645,7 +648,7 @@ class TestSkillsHubSourcesEndpoint:
             return srcs
 
         monkeypatch.setattr(
-            "tools.skills_hub.create_source_router", _fake_router
+            "tools.skills_hub_search.create_source_router", _fake_router
         )
         r = self.client.get("/api/skills/hub/sources")
         assert r.status_code == 200
@@ -661,6 +664,42 @@ class TestSkillsHubSourcesEndpoint:
         assert isinstance(body["installed"], dict)
 
 
+class TestOfficialSkillsCatalogEndpoint:
+    @pytest.fixture(autouse=True)
+    def _setup(self, _isolate_hermes_home):
+        self.client, _ = _client()
+
+    def test_lists_full_catalog_with_installed_flags(self, monkeypatch):
+        # Serve the catalog from OptionalSkillSource.list_local() (no network),
+        # with the per-profile installed map marking already-installed rows.
+        metas = [
+            _FakeMeta("official/gifs/gif-search", "builtin", "official"),
+            _FakeMeta("official/creative/ascii-art", "builtin", "official"),
+        ]
+        monkeypatch.setattr(
+            "tools.skills_hub_official.OptionalSkillSource.list_local",
+            lambda self: metas,
+        )
+        monkeypatch.setattr(
+            "hermes_cli.web_routers.skills._installed_hub_identifiers",
+            lambda profile=None: {"official/gifs/gif-search": {"name": "gif-search"}},
+        )
+        r = self.client.get("/api/skills/hub/official")
+        assert r.status_code == 200
+        skills = r.json()["skills"]
+        by_ident = {s["identifier"]: s for s in skills}
+        assert set(by_ident) == {
+            "official/gifs/gif-search",
+            "official/creative/ascii-art",
+        }
+        # Category derived from the identifier's directory segment.
+        assert by_ident["official/gifs/gif-search"]["category"] == "gifs"
+        assert by_ident["official/creative/ascii-art"]["category"] == "creative"
+        # Installed flag comes from the profile's hub lock.
+        assert by_ident["official/gifs/gif-search"]["installed"] is True
+        assert by_ident["official/creative/ascii-art"]["installed"] is False
+
+
 class TestSkillsHubPreviewEndpoint:
     @pytest.fixture(autouse=True)
     def _setup(self, _isolate_hermes_home):
@@ -669,7 +708,7 @@ class TestSkillsHubPreviewEndpoint:
 
     def test_preview_returns_skill_md_text(self, monkeypatch):
         monkeypatch.setattr(
-            "tools.skills_hub.create_source_router", lambda: []
+            "tools.skills_hub_search.create_source_router", lambda: []
         )
         bundle = _FakeBundle("github/owner/repo/x")
         meta = _FakeMeta("github/owner/repo/x")
@@ -690,7 +729,7 @@ class TestSkillsHubPreviewEndpoint:
 
     def test_preview_404_when_unresolved(self, monkeypatch):
         monkeypatch.setattr(
-            "tools.skills_hub.create_source_router", lambda: []
+            "tools.skills_hub_search.create_source_router", lambda: []
         )
         monkeypatch.setattr(
             "hermes_cli.skills_hub._resolve_source_meta_and_bundle",
@@ -710,7 +749,7 @@ class TestSkillsHubScanEndpoint:
         from tools.skills_guard import ScanResult, Finding
 
         monkeypatch.setattr(
-            "tools.skills_hub.create_source_router", lambda: []
+            "tools.skills_hub_search.create_source_router", lambda: []
         )
         bundle = _FakeBundle("github/owner/repo/x", trust_level="community")
         monkeypatch.setattr(
@@ -721,7 +760,7 @@ class TestSkillsHubScanEndpoint:
         from pathlib import Path
 
         monkeypatch.setattr(
-            "tools.skills_hub.quarantine_bundle", lambda b: Path("/tmp/_fake_q")
+            "tools.skills_hub_install.quarantine_bundle", lambda b: Path("/tmp/_fake_q")
         )
 
         fake_result = ScanResult(
@@ -805,7 +844,7 @@ class TestUpdateCheckEndpoint:
     def test_git_install_reports_behind_count(self, monkeypatch):
         import hermes_cli.web_server as ws
 
-        monkeypatch.setattr(ws, "detect_install_method", lambda *a, **k: "git")
+        monkeypatch.setattr(_cfg_mod, "detect_install_method", lambda *a, **k: "git")
         # Stub the shared checker so the contract is deterministic (no network).
         import hermes_cli.banner as banner
 
@@ -834,9 +873,9 @@ class TestUpdateCheckEndpoint:
     def test_managed_runtime_dashboard_is_not_applyable(self, monkeypatch):
         import hermes_cli.web_server as ws
 
-        monkeypatch.setattr(ws, "_dashboard_local_update_managed_externally", lambda: True)
+        monkeypatch.setattr(_web_server_files, "_dashboard_local_update_managed_externally", lambda: True)
         monkeypatch.setattr(
-            ws,
+            _cfg_mod,
             "detect_install_method",
             lambda *a, **k: pytest.fail(
                 "managed runtime update check should not probe install method"
@@ -976,11 +1015,11 @@ def test_spawn_hermes_action_scrubs_gateway_loop_guard_env(monkeypatch, tmp_path
     import hermes_cli.web_server as ws
 
     monkeypatch.setenv("_HERMES_GATEWAY", "1")
-    monkeypatch.setattr(ws, "_ACTION_LOG_DIR", tmp_path)
+    monkeypatch.setattr(_web_server_gateway, "_ACTION_LOG_DIR", tmp_path)
     # Isolate the module-global proc registry: _spawn_hermes_action stores
     # _FakeProc (no poll()) in _ACTION_PROCS, and later tests' lifespan
     # shutdown (_terminate_desktop_managed_gateway) would trip over it.
-    monkeypatch.setattr(ws, "_ACTION_PROCS", {})
+    monkeypatch.setattr(_web_server_gateway, "_ACTION_PROCS", {})
 
     captured = {}
 
@@ -993,7 +1032,7 @@ def test_spawn_hermes_action_scrubs_gateway_loop_guard_env(monkeypatch, tmp_path
 
     monkeypatch.setattr(ws.subprocess, "Popen", _fake_popen)
 
-    ws._spawn_hermes_action(["gateway", "restart"], "gateway-restart")
+    _web_server_gateway._spawn_hermes_action(["gateway", "restart"], "gateway-restart")
 
     assert "_HERMES_GATEWAY" not in captured["env"]
     assert captured["env"]["HERMES_NONINTERACTIVE"] == "1"
@@ -1056,7 +1095,7 @@ def test_desktop_lifespan_terminates_managed_gateway_restart(monkeypatch):
     monkeypatch.setenv("HERMES_DESKTOP", "1")
     monkeypatch.setattr(ws, "_warm_gateway_module", lambda: None)
     monkeypatch.setattr(ws, "_start_desktop_cron_ticker", lambda *_args: None)
-    monkeypatch.setitem(ws._ACTION_PROCS, "gateway-restart", _FakeRunningProc())
+    monkeypatch.setitem(_web_server_gateway._ACTION_PROCS, "gateway-restart", _FakeRunningProc())
 
     client, _header = _client()
     with client:

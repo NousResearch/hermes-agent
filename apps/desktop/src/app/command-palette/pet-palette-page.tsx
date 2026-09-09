@@ -10,6 +10,7 @@
 import { useStore } from '@nanostores/react'
 import { useEffect, useMemo } from 'react'
 
+import { StatusRow } from '@/app/command-palette/status-row'
 import { HUD_ITEM, HUD_TEXT } from '@/app/floating-hud'
 import { useGatewayRequest } from '@/app/gateway/hooks/use-gateway-request'
 import { PetThumb } from '@/components/pet/pet-thumb'
@@ -59,15 +60,15 @@ export function PetPalettePage({ search, onGenerate }: PetPalettePageProps) {
   }
 
   if (status === 'loading' && !gallery) {
-    return <Status icon={<Loader2 className="size-3.5 animate-spin" />} text={copy.loading} />
+    return <StatusRow icon={<Loader2 className="size-3.5 animate-spin" />} text={copy.loading} />
   }
 
   if (status === 'stale') {
-    return <Status text={copy.staleBackend} tone="error" />
+    return <StatusRow text={copy.staleBackend} tone="error" />
   }
 
   if (!gallery?.pets.length && error) {
-    return <Status text={error} tone="error" />
+    return <StatusRow text={error} tone="error" />
   }
 
   const mutating = Boolean(busy)
@@ -95,7 +96,7 @@ export function PetPalettePage({ search, onGenerate }: PetPalettePageProps) {
       {error && <p className="px-2 pb-1 pt-1.5 text-[0.6875rem] text-(--ui-red)">{error}</p>}
 
       {shown.length === 0 ? (
-        <Status text={copy.empty} />
+        <StatusRow text={copy.empty} />
       ) : (
         shown.map(pet => {
           const isActive = enabled && pet.slug === active
@@ -196,19 +197,5 @@ export function PetInlineToggle() {
     >
       {busy ? <Loader2 className="size-4 animate-spin" /> : <PawPrint className="size-4" />}
     </button>
-  )
-}
-
-function Status({ icon, text, tone }: { icon?: React.ReactNode; text: string; tone?: 'error' }) {
-  return (
-    <div
-      className={cn(
-        'flex items-center justify-center gap-2 px-2 py-6 text-xs',
-        tone === 'error' ? 'text-(--ui-red)' : 'text-muted-foreground'
-      )}
-    >
-      {icon}
-      {text}
-    </div>
   )
 }

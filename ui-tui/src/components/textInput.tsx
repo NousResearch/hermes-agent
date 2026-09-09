@@ -52,7 +52,7 @@ type MinimalEnv = Record<string, string | undefined>
 
 const invert = (s: string) => INV + s + INV_OFF
 
-// Placeholder styling is EXPLICIT truecolor only — never SGR dim/inverse:
+// Placeholder styling is EXPLICIT color only — never SGR dim/inverse:
 // both are terminal-interpreted relative to the default fg/bg, and on
 // transparent profiles (terminal.background #00000000) they composite
 // against a black RGB the user never sees — the hint rendered as a slab.
@@ -64,11 +64,15 @@ const hintRgb = (hex?: string): [number, number, number] => {
   return [(n >> 16) & 0xff, (n >> 8) & 0xff, n & 0xff]
 }
 
-const colorizeHint = (s: string, hex?: string) => {
-  const [r, g, b] = hintRgb(hex)
+const hintHex = (hex?: string): string => (/^#[0-9a-f]{6}$/i.test(hex ?? '') ? hex! : HINT_FALLBACK)
 
-  return `${ESC}[38;2;${r};${g};${b}m${s}${ESC}[39m`
-}
+// Through Ink's own `colorize` (see fgSeq below): a hand-rolled 38;2;r;g;b
+// is worse than unparseable on a non-truecolor terminal — legacy
+// Terminal.app consumes the params one by one, and the `2` in `38;2;…`
+// lands as SGR 2 (dim ON) with no `22m` ever emitted. Every subsequent
+// frame's unstyled cells then paint dim until an unrelated bold span's
+// `22m` clears it: text randomly dims after the placeholder renders.
+export const colorizeHint = (s: string, hex?: string) => colorize(s, hintHex(hex), 'foreground')
 
 /**
  * The SGR foreground-open sequence for a theme tone, or '' when it has none.
@@ -110,12 +114,14 @@ export const colorizeEcho = (s: string, hex?: string) => {
 }
 
 /** Synthetic placeholder cursor: a hint-colored chip with luminance-picked
- *  ink, standing in for the hidden hardware cursor (bubbles pattern). */
-const hintCursorCell = (ch: string, hex?: string) => {
+ *  ink, standing in for the hidden hardware cursor (bubbles pattern).
+ *  Both halves go through `colorize` so the escapes match the terminal's
+ *  real color depth (same hazard as colorizeHint above). */
+export const hintCursorCell = (ch: string, hex?: string) => {
   const [r, g, b] = hintRgb(hex)
-  const ink = 0.2126 * r + 0.7152 * g + 0.0722 * b > 140 ? '0;0;0' : '255;255;255'
+  const ink = 0.2126 * r + 0.7152 * g + 0.0722 * b > 140 ? '#000000' : '#ffffff'
 
-  return `${ESC}[48;2;${r};${g};${b}m${ESC}[38;2;${ink}m${ch}${ESC}[39m${ESC}[49m`
+  return colorize(colorize(ch, ink, 'foreground'), hintHex(hex), 'background')
 }
 
 let _seg: Intl.Segmenter | null = null
@@ -776,6 +782,7 @@ export function TextInput({
   onSubmit,
   mask,
   mouseApiRef,
+  cursorSnapshotRef,
   voiceRecordKey = DEFAULT_VOICE_RECORD_KEY,
   placeholder = '',
   placeholderColor,
@@ -783,7 +790,10 @@ export function TextInput({
   color,
   focus = true
 }: TextInputProps) {
-  const [cur, setCur] = useState(value.length)
+  const [cur, setCur] = useState(() =>
+    cursorSnapshotRef?.current?.value === value ? cursorSnapshotRef.current.cursor : value.length
+  )
+
   const [sel, setSel] = useState<null | { end: number; start: number }>(null)
   const fwdDel = useFwdDelete(focus)
   const termFocus = useTerminalFocus()
@@ -916,7 +926,7 @@ export function TextInput({
     const ownEcho = self.current && value === vRef.current
     self.current = false
 
-    if (ownEcho) {
+    if (ownEcho || value === vRef.current) {
       return
     }
 
@@ -929,6 +939,17 @@ export function TextInput({
     undo.current = []
     redo.current = []
   }, [value])
+
+  // The composer unmounts while full-screen monitors own input. Keep its
+  // insertion point with the shell, not with transient steer/secret inputs.
+  useEffect(
+    () => () => {
+      if (cursorSnapshotRef) {
+        cursorSnapshotRef.current = { cursor: curRef.current, value: vRef.current }
+      }
+    },
+    [cursorSnapshotRef]
+  )
 
   useEffect(() => {
     if (!focus) {
@@ -1344,7 +1365,7 @@ export function TextInput({
       // actually get voice toggled instead of a paste (Copilot round-7
       // follow-up on #19835). The pass-through predicate is a no-op for
       // ordinary typing and plain paste when voice is unbound to 'v'.
-      if (shouldPassThroughToGlobalHandler(inp, k, voiceRecordKey)) {
+      if (event.keypress.name === 'f7' || shouldPassThroughToGlobalHandler(inp, k, voiceRecordKey)) {
         flushKeyBurst()
 
         return
@@ -1441,7 +1462,10 @@ export function TextInput({
         return swap(undo, redo)
       }
 
-      if ((mod && inp === 'y') || (mod && k.shift && inp === 'z')) {
+      // Extended-key terminals (kitty CSI-u / modifyOtherKeys) deliver a shifted
+      // letter as its uppercase char, so Cmd+Shift+Z arrives as inp 'Z' — match
+      // case-insensitively like the copy/paste chords above.
+      if ((mod && inp === 'y') || (mod && k.shift && inp.toLowerCase() === 'z')) {
         return swap(redo, undo)
       }
 
@@ -1768,12 +1792,18 @@ export interface PasteEvent {
   value: string
 }
 
+export interface InputCursorSnapshot {
+  cursor: number
+  value: string
+}
+
 interface TextInputProps {
   /** Hex/ansi256 tone for `/skill`, `@ref`, and `[[ token ]]` spans. */
   accentColor?: string
   /** Hex color for typed text (theme text); terminal default when omitted. */
   color?: string
   columns?: number
+  cursorSnapshotRef?: MutableRefObject<InputCursorSnapshot | null>
   focus?: boolean
   mask?: string
   mouseApiRef?: MutableRefObject<null | TextInputMouseApi>
@@ -1825,6 +1855,7 @@ export const shouldPassThroughToGlobalHandler = (
   (key.ctrl && input === 'c') ||
   (key.ctrl && input === 'x') ||
   (key.ctrl && input === 'o') ||
+  (key.ctrl && input === 't') ||
   key.tab ||
   (key.shift && key.tab) ||
   key.pageUp ||

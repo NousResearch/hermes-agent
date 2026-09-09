@@ -1,37 +1,22 @@
-"""Server-rendered /login page.
+"""Server-rendered /login page (no React, no SPA bundle, no injected token).
 
-No React, no JavaScript dependency. Listed providers come from the
-registry; clicking a provider sends a GET to
-``/auth/login?provider=<name>``.
+Providers come from the registry; an OAuth provider renders an anchor to
+``/auth/login?provider=<name>``, a ``supports_password`` provider renders a
+credential form wired by :data:`_PASSWORD_FORM_SCRIPT`. Styling mirrors the
+``@nous-research/ui`` design system; fonts load from the SPA's ``/fonts/``
+mount, which the gate allowlists pre-auth.
 
-Visual styling mirrors the Nous Research design system (the
-``@nous-research/ui`` package the React dashboard uses): the same
-``Collapse`` / ``Rules Compressed`` typeface, amber-on-dark colour
-tokens (``#170d02`` / ``#ffac02`` / ``#fff``), uppercase + wide-tracking
-brand chrome, and the inset-bevel button shadow. Fonts are served
-out of the SPA's ``/fonts/`` directory which the dashboard-auth gate
-already allowlists pre-auth (see ``_GATE_PUBLIC_PREFIXES`` in
-``middleware.py``), so the page renders without needing the React
-bundle loaded.
-
-Test-stable class names: the existing test suite extracts the
-``class="provider-btn"`` anchor href to walk the OAuth flow. That
-class name MUST NOT change without updating
-``tests/hermes_cli/test_dashboard_auth_401_reauth.py``.
+The ``class="provider-btn"`` anchor is test-stable: the suite extracts its
+href to walk the OAuth flow.
 """
 from __future__ import annotations
 
 import html
+from urllib.parse import quote
 
 from hermes_cli.dashboard_auth import list_session_providers
 
-# Inline minimal CSS. The dashboard's full skin lives in the React
-# bundle, which we deliberately do NOT load here — the login page must
-# not depend on the SPA build being present or on the injected session
-# token.
-#
-# Single curly braces are placeholders for ``str.format``; CSS curlies
-# are doubled (``{{`` / ``}}``).
+# Single curly braces are ``str.format`` placeholders; CSS curlies are doubled.
 _LOGIN_HTML_TEMPLATE = """\
 <!doctype html>
 <html lang="en">
@@ -385,30 +370,29 @@ _EMPTY_HTML = """\
     font-family: 'Courier New', monospace;
     font-size: 0.9em;
   }
+  a { color: var(--midground); }
 </style>
 </head>
 <body>
 <main>
 <h1>Sign-in unavailable</h1>
 <p>This dashboard is bound to a non-loopback host but no authentication
-providers are installed.</p>
-<p>Install <code>plugins/dashboard-auth-nous</code> (default) or another
-auth provider, or restart with <code>--insecure</code> to bypass the
-auth gate (not recommended on untrusted networks).</p>
+providers are available.</p>
+<p>Configure the bundled username/password provider or an OAuth provider.
+See the <a href="https://hermes-agent.nousresearch.com/docs/user-guide/features/web-dashboard#authentication-gated-mode">dashboard
+authentication documentation</a> for setup instructions.</p>
+<p>For auth-free local use, bind to <code>127.0.0.1</code> and connect through
+an SSH tunnel or Tailscale.</p>
 </main>
 </body>
 </html>
 """
 
 
-# Inline script that wires every password provider form to POST JSON to
-# ``/auth/password-login`` and navigate on success. Emitted ONLY when at
-# least one ``supports_password`` provider is listed (OAuth-only login
-# pages stay script-free, preserving the no-JS contract for that case).
-#
-# Plain string (NOT run through ``str.format``), so braces are literal —
-# do not double them. A single delegated submit handler covers all forms;
-# the provider name is read from the form's ``data-provider`` attribute.
+# Emitted ONLY when a ``supports_password`` provider is listed, so OAuth-only
+# login pages stay script-free. Plain string (not ``str.format``): braces are
+# literal. One delegated submit handler covers every form; the provider name
+# comes from the form's ``data-provider`` attribute.
 _PASSWORD_FORM_SCRIPT = """\
 <script>
 (function () {
@@ -458,56 +442,36 @@ _PASSWORD_FORM_SCRIPT = """\
 def render_login_html(*, next_path: str = "") -> str:
     """Return the full HTML for ``GET /login``.
 
-    ``next_path`` — when set, the post-login landing path the user
-    originally requested. Threaded into each provider button's ``href``
-    as a ``next=`` query parameter so the OAuth round trip carries it
-    end-to-end. The caller (``routes.login_page``) is responsible for
-    validating ``next_path`` against the same-origin rules before we
-    emit it; we still HTML-escape it as defence in depth.
+    ``next_path`` is threaded into each provider button/form so the OAuth round
+    trip carries it end-to-end. The caller validates it same-origin; it is
+    HTML-escaped here as defence in depth.
     """
     providers = list_session_providers()
     if not providers:
         return _EMPTY_HTML
-
-    if next_path:
-        # URL-encode then HTML-escape. The URL-encode step matches the
-        # gate's ``_safe_next_target`` output shape (also URL-encoded),
-        # so a value that round-tripped from /login?next=... back into
-        # the button href is byte-identical.
-        from urllib.parse import quote
-        next_qs = f"&next={html.escape(quote(next_path, safe=''), quote=True)}"
-    else:
-        next_qs = ""
-
-    buttons = []
-    needs_password_script = False
-    for p in providers:
-        if getattr(p, "supports_password", False):
-            needs_password_script = True
-            buttons.append(_render_password_form(p, next_path))
-        else:
-            buttons.append(
-                f'      <a class="provider-btn" '
-                f'href="/auth/login?provider={html.escape(p.name, quote=True)}{next_qs}">'
-                f'Sign in with {html.escape(p.display_name)}</a>'
-            )
-    script = _PASSWORD_FORM_SCRIPT if needs_password_script else ""
+    # URL-encode then HTML-escape, matching the gate's ``_safe_next_target``
+    # shape so a round-tripped value is byte-identical.
+    next_qs = f"&next={html.escape(quote(next_path, safe=''), quote=True)}" if next_path else ""
+    buttons = [
+        _render_password_form(p, next_path) if getattr(p, "supports_password", False) else
+        f'      <a class="provider-btn" '
+        f'href="/auth/login?provider={html.escape(p.name, quote=True)}{next_qs}">'
+        f'Sign in with {html.escape(p.display_name)}</a>'
+        for p in providers
+    ]
+    needs_password_script = any(getattr(p, "supports_password", False) for p in providers)
     return _LOGIN_HTML_TEMPLATE.format(
         provider_buttons="\n".join(buttons),
-        password_script=script,
+        password_script=_PASSWORD_FORM_SCRIPT if needs_password_script else "",
     )
 
 
 def _render_password_form(provider, next_path: str) -> str:
-    """Render a username/password form for a ``supports_password`` provider.
+    """Username/password form for a ``supports_password`` provider.
 
-    The form is wired by :data:`_PASSWORD_FORM_SCRIPT` (a single delegated
-    submit handler) to POST JSON to ``/auth/password-login`` and navigate
-    on success. ``next_path`` is carried in a hidden field; it has already
-    been validated same-origin by the caller and is HTML-escaped here as
-    defence in depth. The provider ``name`` is emitted in a ``data-``
-    attribute (not a hidden input) so the script reads it without trusting
-    form-field ordering.
+    ``next_path`` rides in a hidden field (already validated by the caller,
+    HTML-escaped here). The provider name is a ``data-`` attribute so the
+    script does not depend on field ordering.
     """
     pname = html.escape(provider.name, quote=True)
     plabel = html.escape(provider.display_name)

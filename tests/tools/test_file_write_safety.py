@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from tools.file_operations import _is_write_denied
+from agent.file_safety import is_write_denied as _is_write_denied
 
 
 class TestStaticDenyList:
@@ -233,27 +233,27 @@ class TestCheckSensitivePathMacOSBypass:
     """Verify _check_sensitive_path blocks /private/etc paths (issue #8734)."""
 
     def test_etc_hosts_blocked(self):
-        from tools.file_tools import _check_sensitive_path
+        from tools.file_tools_write_guards import _check_sensitive_path
         assert _check_sensitive_path("/etc/hosts") is not None
 
     def test_private_etc_hosts_blocked(self):
-        from tools.file_tools import _check_sensitive_path
+        from tools.file_tools_write_guards import _check_sensitive_path
         assert _check_sensitive_path("/private/etc/hosts") is not None
 
     def test_private_etc_ssh_config_blocked(self):
-        from tools.file_tools import _check_sensitive_path
+        from tools.file_tools_write_guards import _check_sensitive_path
         assert _check_sensitive_path("/private/etc/ssh/sshd_config") is not None
 
     def test_private_var_blocked(self):
-        from tools.file_tools import _check_sensitive_path
+        from tools.file_tools_write_guards import _check_sensitive_path
         assert _check_sensitive_path("/private/var/db/something") is not None
 
     def test_boot_still_blocked(self):
-        from tools.file_tools import _check_sensitive_path
+        from tools.file_tools_write_guards import _check_sensitive_path
         assert _check_sensitive_path("/boot/grub/grub.cfg") is not None
 
     def test_safe_path_allowed(self):
-        from tools.file_tools import _check_sensitive_path
+        from tools.file_tools_write_guards import _check_sensitive_path
         assert _check_sensitive_path("/tmp/safe_file.txt") is None
 
 
@@ -395,7 +395,7 @@ class TestProtectedInstructionFiles:
 
     @pytest.fixture(autouse=True)
     def _gate_on(self, monkeypatch):
-        import tools.file_tools as ft
+        import tools.file_tools_write_guards as ft
         monkeypatch.setattr(
             ft, "_protected_instruction_config", lambda: (True, [])
         )
@@ -447,6 +447,7 @@ class TestProtectedInstructionFiles:
     def test_prompts_even_under_yolo(self, tmp_path, approvals, monkeypatch):
         """The whole point: auto-approve/yolo must NOT bypass this gate."""
         import tools.approval as A
+        from tools import approval_context
         monkeypatch.setattr(A, "_YOLO_MODE_FROZEN", True)
         target = tmp_path / "AGENTS.md"
         approvals["answer"] = "deny"
@@ -463,6 +464,19 @@ class TestProtectedInstructionFiles:
         self._write(target, "second")
         assert len(approvals["calls"]) == 2
 
+    def test_cli_prompt_is_told_no_scope_persists(self, tmp_path, approvals):
+        """The prompt must not advertise a scope this gate discards.
+
+        Since nothing is persisted, a rendered "session"/"always" option
+        re-prompts on the very next write and reads as a broken gate
+        (#81887).
+        """
+        approvals["answer"] = "once"
+        self._write(tmp_path / "SOUL.md")
+        call = approvals["calls"][0]
+        assert call["allow_session"] is False
+        assert call["allow_permanent"] is False
+
     def test_regular_file_never_prompts(self, tmp_path, approvals):
         res = self._write(tmp_path / "notes.md", "hello")
         assert not res.get("error"), res
@@ -476,7 +490,7 @@ class TestProtectedInstructionFiles:
         assert not target.exists()
 
     def test_config_disabled_skips_gate(self, tmp_path, approvals, monkeypatch):
-        import tools.file_tools as ft
+        import tools.file_tools_write_guards as ft
         monkeypatch.setattr(
             ft, "_protected_instruction_config", lambda: (False, [])
         )
@@ -485,7 +499,7 @@ class TestProtectedInstructionFiles:
         assert approvals["calls"] == []
 
     def test_extra_patterns_from_config(self, tmp_path, approvals, monkeypatch):
-        import tools.file_tools as ft
+        import tools.file_tools_write_guards as ft
         monkeypatch.setattr(
             ft, "_protected_instruction_config", lambda: (True, ["*.mdc"])
         )
@@ -548,7 +562,7 @@ class TestProtectedInstructionFiles:
         self, tmp_path, approvals, monkeypatch
     ):
         """~/.hermes itself is governed by existing guards, not this gate."""
-        import tools.file_tools as ft
+        import tools.file_tools_write_guards as ft
         fake_home = tmp_path / ".hermes"
         (fake_home / "notes").mkdir(parents=True)
         monkeypatch.setattr(
@@ -625,8 +639,9 @@ class TestProtectedInstructionFiles:
 
     def test_gateway_notify_resolve_once_allows(self, tmp_path):
         import tools.approval as A
+        from tools import approval_context
         session_key = "protected-files-test-session"
-        token = A.set_current_session_key(session_key)
+        token = approval_context.set_current_session_key(session_key)
         try:
             def notify(approval_data):
                 # Buttons must not offer persistent scopes for this gate.
@@ -642,7 +657,37 @@ class TestProtectedInstructionFiles:
             finally:
                 A.unregister_gateway_notify(session_key)
         finally:
-            A.reset_current_session_key(token)
+            approval_context.reset_current_session_key(token)
+
+    def test_gateway_payload_renders_only_once_and_deny(self, tmp_path):
+        """End-to-end: what this gate emits, a TUI/desktop client can render.
+
+        The transport used to derive its button set from ``allow_permanent``
+        alone, so it re-added a "session" scope the gate refuses to persist —
+        users tapped it and got re-prompted on every write (#81887). Asserting
+        the two layers together is what catches that drift.
+        """
+        import tools.approval as A
+        from tools import approval_context
+        from tui_gateway.server import _approval_request_payload
+
+        session_key = "protected-files-payload-session"
+        token = approval_context.set_current_session_key(session_key)
+        rendered = {}
+        try:
+            def notify(approval_data):
+                rendered.update(_approval_request_payload(approval_data))
+                A.resolve_gateway_approval(session_key, "once")
+
+            A.register_gateway_notify(session_key, notify)
+            try:
+                self._write(tmp_path / "SOUL.md", "gateway approved")
+            finally:
+                A.unregister_gateway_notify(session_key)
+        finally:
+            approval_context.reset_current_session_key(token)
+
+        assert rendered["choices"] == ["once", "deny"]
 
 
 if __name__ == "__main__":

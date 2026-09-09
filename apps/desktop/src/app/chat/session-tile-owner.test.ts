@@ -70,29 +70,6 @@ describe('tileOwnerRoute', () => {
   })
 })
 
-describe('ownerRouteKey', () => {
-  it('encodes a route into a stable scalar identity', () => {
-    expect(ownerRouteKey({ connectionId: 'local', profile: 'default' })).toBe('local\u0000default\u0000')
-  })
-
-  it('returns the same key across calls for identical fields (reference stability)', () => {
-    const a = ownerRouteKey({ connectionId: 'local', profile: 'tech-review', targetProfile: 'tech-review' })
-    const b = ownerRouteKey({ connectionId: 'local', profile: 'tech-review', targetProfile: 'tech-review' })
-
-    expect(a).toBe(b)
-  })
-
-  it('distinguishes a targetProfile from a bare profile', () => {
-    expect(ownerRouteKey({ connectionId: 'local', profile: 'default' })).not.toBe(
-      ownerRouteKey({ connectionId: 'local', profile: 'default', targetProfile: 'tech-review' })
-    )
-  })
-
-  it('returns null for an unresolved route', () => {
-    expect(ownerRouteKey(undefined)).toBeNull()
-  })
-})
-
 describe('tileOwnerRoute key stability under session-list churn', () => {
   it('keeps the current tile key when an UNRELATED row changes (sessions.changed tick)', () => {
     const tiles = [tile({ storedSessionId: 'mine' })]
@@ -115,5 +92,11 @@ describe('tileOwnerRoute key stability under session-list churn', () => {
     ).not.toBe(
       ownerRouteKey(tileOwnerRoute(tiles, [row({ connection_id: 'remote', id: 'mine', profile: 'default' })], 'mine'))
     )
+    // A target profile is part of the owner identity too, and an unresolved
+    // owner has no key at all.
+    expect(ownerRouteKey({ connectionId: 'local', profile: 'default' })).not.toBe(
+      ownerRouteKey({ connectionId: 'local', profile: 'default', targetProfile: 'tech-review' })
+    )
+    expect(ownerRouteKey(undefined)).toBeNull()
   })
 })

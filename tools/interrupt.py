@@ -20,12 +20,15 @@ if _DEBUG_INTERRUPT:
 # Interrupted thread idents + optional user-safe cause (never the user's message text).
 _interrupted_threads: set[int] = set()
 _interrupt_reasons: dict[int, str] = {}
+# Threads asked to YIELD: hand a long-running foreground command to the background
+# instead of killing it, so a mid-turn user message is not parked behind it.
+_yield_threads: set[int] = set()
 _lock = threading.Lock()
 
 
 def set_interrupt(active: bool, thread_id: int | None = None, *, reason: str | None = None) -> None:
     """Set or clear the interrupt for *thread_id* (default: current thread); ``reason`` is
-    an optional user-safe cause."""
+    an optional user-safe cause. Clearing also drops a pending yield request."""
     tid = thread_id if thread_id is not None else threading.current_thread().ident
     with _lock:
         (_interrupted_threads.add if active else _interrupted_threads.discard)(tid)
@@ -33,6 +36,8 @@ def set_interrupt(active: bool, thread_id: int | None = None, *, reason: str | N
             _interrupt_reasons[tid] = reason
         else:
             _interrupt_reasons.pop(tid, None)
+        if not active:
+            _yield_threads.discard(tid)
         _snapshot = set(_interrupted_threads) if _DEBUG_INTERRUPT else None
     if _DEBUG_INTERRUPT:
         logger.info(
@@ -56,6 +61,34 @@ def is_thread_interrupted(thread_id: int | None) -> bool:
         return False
     with _lock:
         return thread_id in _interrupted_threads
+
+
+def request_yield(thread_id: int) -> None:
+    """Ask the tool running on *thread_id* to yield: a foreground terminal command hands
+    its live process to the background registry and returns at once, so a user's mid-turn
+    message (``redirect()`` during tool execution) is delivered instead of parked behind it.
+    The command itself is never killed; that is what ``set_interrupt`` is for."""
+    with _lock:
+        _yield_threads.add(thread_id)
+
+
+def is_thread_yield_requested(thread_id: int | None) -> bool:
+    """Whether a yield is pending for *thread_id* (``None`` never is)."""
+    if thread_id is None:
+        return False
+    with _lock:
+        return thread_id in _yield_threads
+
+
+def consume_yield(thread_id: int | None) -> bool:
+    """Atomically take the pending yield for *thread_id*; True if one was pending."""
+    if thread_id is None:
+        return False
+    with _lock:
+        if thread_id in _yield_threads:
+            _yield_threads.discard(thread_id)
+            return True
+        return False
 
 
 def run_if_not_interrupted(callback: Callable[[], None]) -> bool:

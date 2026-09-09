@@ -198,6 +198,18 @@ class MemoryStore:
                    "ORDER BY trust_score DESC LIMIT ?")
             return [dict(r) for r in self._conn.execute(sql, params).fetchall()]
 
+    def record_retrievals(self, fact_ids: list[int]) -> None:
+        """Increment usage once for every distinct fact returned to a caller."""
+        ids = list(dict.fromkeys(fact_ids))
+        if not ids:
+            return
+        with self._lock:
+            placeholders = ", ".join("?" for _ in ids)
+            self._write(
+                f"UPDATE facts SET retrieval_count = retrieval_count + 1 WHERE fact_id IN ({placeholders})",
+                ids,
+            )
+
     def record_feedback(self, fact_id: int, helpful: bool) -> dict:
         """Adjust trust asymmetrically: helpful -> +0.05 and helpful_count += 1; unhelpful -> -0.10.
         Returns {fact_id, old_trust, new_trust, helpful_count}. Raises KeyError if fact_id is unknown."""

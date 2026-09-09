@@ -12,7 +12,7 @@ import re
 from pathlib import Path
 from typing import Any, Dict, List
 
-from agent.memory_provider import MemoryProvider
+from agent.memory_provider import MemoryProvider, RecallStatus
 from tools.registry import tool_error
 from utils import is_truthy_value
 from .store import MemoryStore
@@ -103,6 +103,7 @@ class HolographicMemoryProvider(MemoryProvider):
         self._config = config or _load_plugin_config()
         self._store = self._retriever = None
         self._min_trust = float(self._config.get("min_trust_threshold", 0.3))
+        self._last_recall_count = 0
 
     @property
     def name(self) -> str:
@@ -160,15 +161,23 @@ class HolographicMemoryProvider(MemoryProvider):
         return "# Holographic Memory\n" + body + "Use fact_feedback to rate facts after using them (trains trust scores)."
 
     def prefetch(self, query: str, *, session_id: str = "") -> str:
+        self._last_recall_count = 0
         if not self._retriever or not query:
             return ""
         try:
             results = self._retriever.search(query, min_trust=self._min_trust, limit=5)
+            self._record_retrievals(results)
+            self._last_recall_count = len(results)
             lines = [f"- [{r.get('trust_score', r.get('trust', 0)):.1f}] {r.get('content', '')}" for r in results]
             return "## Holographic Memory\n" + "\n".join(lines) if results else ""
         except Exception as e:
             logger.debug("Holographic prefetch failed: %s", e)
             return ""
+
+    def recall_status(self) -> RecallStatus | None:
+        if not self._last_recall_count:
+            return None
+        return RecallStatus(provider_label="Holographic", count=self._last_recall_count)
 
     def get_tool_schemas(self) -> List[Dict[str, Any]]:
         return [FACT_STORE_SCHEMA, FACT_FEEDBACK_SCHEMA]
@@ -210,17 +219,32 @@ class HolographicMemoryProvider(MemoryProvider):
 
     def _entity_query(self, method: str, a: dict) -> str:
         """'probe' / 'related': single-entity retriever queries."""
-        return _results(getattr(self._retriever, method)(a["entity"], category=a.get("category"), limit=_limit(a)))
+        return _results(self._record_retrievals(
+            getattr(self._retriever, method)(a["entity"], category=a.get("category"), limit=_limit(a))
+        ))
+
+    def _record_retrievals(self, results: list[dict]) -> list[dict]:
+        """Persist usage telemetry without letting an advisory counter break recall."""
+        if self._store:
+            try:
+                self._store.record_retrievals([
+                    fact_id for result in results if isinstance((fact_id := result.get("fact_id")), int)
+                ])
+            except Exception as exc:
+                logger.debug("Holographic retrieval tracking failed: %s", exc)
+        return results
 
     _TOOL_HANDLERS = {
         "fact_store": _tool_handler({
             "add": lambda self, a: json.dumps({"fact_id": self._store.add_fact(
                 a["content"], category=a.get("category", "general"), tags=a.get("tags", "")), "status": "added"}),
-            "search": lambda self, a: _results(self._retriever.search(
-                a["query"], category=a.get("category"), min_trust=float(a.get("min_trust", self._min_trust)), limit=_limit(a))),
+            "search": lambda self, a: _results(self._record_retrievals(self._retriever.search(
+                a["query"], category=a.get("category"), min_trust=float(a.get("min_trust", self._min_trust)), limit=_limit(a)
+            ))),
             "probe": lambda self, a: self._entity_query("probe", a),
             "related": lambda self, a: self._entity_query("related", a),
-            "reason": lambda self, a: _results(self._retriever.reason(a["entities"], category=a.get("category"), limit=_limit(a)))
+            "reason": lambda self, a: _results(self._record_retrievals(self._retriever.reason(
+                a["entities"], category=a.get("category"), limit=_limit(a))))
             if a.get("entities") else tool_error("reason requires 'entities' list"),
             "contradict": lambda self, a: _results(self._retriever.contradict(category=a.get("category"), limit=_limit(a))),
             "update": lambda self, a: json.dumps({"updated": self._store.update_fact(

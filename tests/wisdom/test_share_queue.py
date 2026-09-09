@@ -412,7 +412,8 @@ def test_share_copy_and_controls_keep_publication_separate(sharing):
         "Review first",
         "Share",
     ]
-    assert "Nothing is shared without your approval" in view.to_text()
+    assert "Nothing is shared without your approval" not in view.to_text()
+    assert view.items[0].detail.rstrip().endswith("Would you like to share it?")
     view = advice_view([
         {
             "advice": {
@@ -423,7 +424,8 @@ def test_share_copy_and_controls_keep_publication_separate(sharing):
             "interaction": shown,
         }
     ])
-    assert "You can review the skill before publishing" in view.to_text()
+    assert "You can review the skill before publishing" not in view.to_text()
+    assert view.items[0].detail.rstrip().endswith("Would you like to share it?")
     assert "handoff package" not in view.to_text()
     assert "✅ Security check (local preflight)" in view.to_text()
     assert "will be scanned" not in view.to_text()

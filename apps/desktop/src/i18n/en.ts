@@ -1488,7 +1488,7 @@ export const en: Translations = {
       publishToTeam: 'Publish to team',
       submitForApproval: 'Submit for approval',
       publishLocalNotice: 'Confirming uploads this exact package and publishes it to your team after the required checks.',
-      submitLocalNotice: 'Confirming uploads this exact package for your organisation to approve. It stays unpublished until moderation is complete.',
+      submitLocalNotice: 'Confirming uploads this exact package for your organization to approve. It stays unpublished until moderation is complete.',
       reloadReview: 'Reload review',
       editReview:
         'Edit the description, SKILL.md, or declarative manifest here. Saving creates a new private revision, reruns scans, and returns new hashes; it does not rewrite your local source skill.',

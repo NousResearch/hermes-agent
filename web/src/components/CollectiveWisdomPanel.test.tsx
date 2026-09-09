@@ -216,7 +216,7 @@ describe('CollectiveWisdomPanel', () => {
     expect(await screen.findByText(/Your organization \(Nous Research\) has enabled Collective Wisdom/)).toBeTruthy()
     expect(screen.getByText('First Skill')).toBeTruthy()
     expect(screen.getByText('A friendly description for people.')).toBeTruthy()
-    expect(screen.getByText(/Hermes detected another skill that could be useful to your team/)).toBeTruthy()
+    expect(screen.getByText(/Hermes detected another skill you created that could be useful to your team/)).toBeTruthy()
   })
 
   it('keeps all files local until the final moderation confirmation', async () => {

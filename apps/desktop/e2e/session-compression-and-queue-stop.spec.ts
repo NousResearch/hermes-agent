@@ -5,7 +5,7 @@
 import { expect, test, type Page } from '@playwright/test'
 
 import { type MockBackendFixture, setupMockBackend, waitForAppReady } from './fixtures'
-import { MOCK_REPLY, receivedUserTexts, restartMockServer } from './mock-server'
+import { MOCK_REPLY, receivedUserTexts, restartMockServer } from '../../../tests-js/scripts/mock-server'
 
 async function send(page: Page, text: string, delay = 15): Promise<void> {
   const composer = page.locator('[contenteditable="true"]').first()

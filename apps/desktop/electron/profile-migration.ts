@@ -294,6 +294,7 @@ export function migrateActiveProfileIfMissing(desktopProfileConfigPath: string, 
   if (!decision || decision.profile === 'default') {
     if (existing?.migrated) {
       deps.writeJson(desktopProfileConfigPath, { profile: null })
+
       return true
     }
 

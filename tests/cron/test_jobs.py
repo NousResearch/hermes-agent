@@ -645,6 +645,8 @@ class TestMarkJobRun:
         assert updated is not None
         assert updated["state"] == "completed"
         assert updated["last_delivery_error"] == "platform 'telegram' not configured"
+        # A terminal completion that never reached the user is not a success.
+        assert updated["last_status"] == "delivery_failed"
 
     def test_completed_oneshot_visible_in_list(self, tmp_cron_dir):
         """list_jobs(include_disabled=True) surfaces the completed record."""
@@ -654,6 +656,7 @@ class TestMarkJobRun:
         assert job["id"] in listed
         assert listed[job["id"]]["state"] == "completed"
         assert listed[job["id"]]["last_delivery_error"] == "send failed: 502"
+        assert listed[job["id"]]["last_status"] == "delivery_failed"
         # Default (enabled-only) listing hides it, matching paused/disabled jobs.
         assert job["id"] not in {j["id"] for j in list_jobs()}
 
@@ -672,13 +675,53 @@ class TestMarkJobRun:
         assert updated["last_error"] == "timeout"
 
     def test_delivery_error_tracked_separately(self, tmp_cron_dir):
-        """Agent succeeds but delivery fails — both tracked independently."""
+        """Agent succeeds but delivery fails — surfaced, not hidden behind ok.
+
+        Regression guard for #83993: recording ``last_status="ok"`` made a run
+        the user never received look like a quiet success everywhere that keys
+        off "ok". The agent error stays independent of the delivery error, and
+        the delivery failure is not an agent failure (no streak).
+        """
         job = create_job(prompt="Report", schedule="every 1h")
-        mark_job_run(job["id"], success=True, delivery_error="platform 'telegram' not configured")
+        mark_job_run(job["id"], success=True, delivery_error="send failed: 502")
         updated = get_job(job["id"])
-        assert updated["last_status"] == "ok"
+        assert updated["last_status"] == "delivery_failed"
         assert updated["last_error"] is None
-        assert updated["last_delivery_error"] == "platform 'telegram' not configured"
+        assert updated["last_delivery_error"] == "send failed: 502"
+        assert updated["failure_streak"] == 0
+
+    def test_success_without_delivery_error_stays_ok(self, tmp_cron_dir):
+        """A fully successful run is still plain "ok"."""
+        job = create_job(prompt="Report", schedule="every 1h")
+        mark_job_run(job["id"], success=True)
+        assert get_job(job["id"])["last_status"] == "ok"
+        # An empty delivery error is no error at all.
+        mark_job_run(job["id"], success=True, delivery_error="")
+        assert get_job(job["id"])["last_status"] == "ok"
+
+    def test_agent_failure_still_error_with_delivery_error(self, tmp_cron_dir):
+        """An agent failure outranks delivery: still "error", still a streak."""
+        job = create_job(prompt="Report", schedule="every 1h")
+        mark_job_run(
+            job["id"], success=False, error="timeout",
+            delivery_error="send failed: 502",
+        )
+        updated = get_job(job["id"])
+        assert updated["last_status"] == "error"
+        assert updated["last_error"] == "timeout"
+        assert updated["failure_streak"] == 1
+
+    def test_explicit_status_override_wins_over_delivery_failed(self, tmp_cron_dir):
+        """An explicit terminal status (T1-26 blocked_config) still wins."""
+        job = create_job(prompt="Report", schedule="every 1h")
+        mark_job_run(
+            job["id"], success=True,
+            delivery_error="send failed: 502",
+            status="blocked_config",
+        )
+        updated = get_job(job["id"])
+        assert updated["last_status"] == "blocked_config"
+        assert updated["last_delivery_error"] == "send failed: 502"
 
     def test_failure_streak_increments_and_resets(self, tmp_cron_dir):
         """failure_streak counts consecutive agent failures; success resets."""

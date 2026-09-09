@@ -71,7 +71,8 @@ class TestValidateAudioFile:
     def test_too_large(self, tmp_path):
         f = tmp_path / "big.ogg"
         f.write_bytes(b"x")
-        from tools.transcription_tools import _validate_audio_file, MAX_FILE_SIZE
+        from tools.transcription_tools import _validate_audio_file
+        from tools.transcription_common import MAX_FILE_SIZE
         real_stat = f.stat()
         with patch.object(type(f), "stat", return_value=os.stat_result((
             real_stat.st_mode, real_stat.st_ino, real_stat.st_dev,

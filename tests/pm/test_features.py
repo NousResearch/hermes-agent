@@ -46,6 +46,8 @@ def test_features_path_in_bundle_uses_payload_root(rooted):
 
 
 def test_installed_extras_reports_only_anchor_resolved(tmp_path, monkeypatch):
+    import sys
+
     repo = tmp_path / "repo"
     repo.mkdir()
     (repo / "pyproject.toml").write_text(
@@ -70,7 +72,7 @@ def test_installed_extras_reports_only_anchor_resolved(tmp_path, monkeypatch):
         "ANCHORS",
         {**extras_mod.ANCHORS, "present": "somepkg", "absent": "missingmod"},
     )
-    got = feats.installed_extras(repo, venv)
+    got = feats.installed_extras(repo, venv, python_exe=Path(sys.executable))
     assert "present" in got
     assert "absent" not in got
 

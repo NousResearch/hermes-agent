@@ -17,9 +17,15 @@ from scripts.bundles import native
 
 
 def test_bundle_stages_git_tree_and_runs_native_children_before_manifest(tmp_path, monkeypatch):
+    from hermes_cli.runtime_paths import site_packages
+
+    interpreter = tmp_path / "staged-python"
+    subprocess.run([sys.executable, "-m", "venv", "--without-pip", str(interpreter)],
+                   capture_output=True, check=True, timeout=60)
+    target_python = interpreter / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
     repo = tmp_path / "repo"
     repo.mkdir()
-    (repo / "pyproject.toml").write_text('[project]\nname="fixture"\nversion="1.0.0"\nrequires-python=">=3.11"\n[tool.uv]\npackage=false\n', encoding="utf-8")
+    (repo / "pyproject.toml").write_text('[project]\nname="fixture"\nversion="1.0.0"\nrequires-python=">=3.11"\n[project.optional-dependencies]\npayloadtest=[]\n[tool.uv]\npackage=false\n', encoding="utf-8")
     uv = shutil.which("uv")
     assert uv, "native bundle test requires uv"
     env = {**os.environ, "UV_OFFLINE": "1", "UV_PYTHON_DOWNLOADS": "never", "UV_CACHE_DIR": str(tmp_path / "cache")}
@@ -31,21 +37,37 @@ def test_bundle_stages_git_tree_and_runs_native_children_before_manifest(tmp_pat
     monkeypatch.setattr("pm.paths.repo_root", lambda: repo)
     monkeypatch.setattr(native, "_bundle_package_names", lambda: [])
     monkeypatch.setattr(native, "_install_names", lambda names: 0)
-    monkeypatch.setattr(native, "_store", lambda: SimpleNamespace(root=output / "tools", entry=lambda _: Path(sys.executable).parent))
+    monkeypatch.setattr(native, "_store", lambda: SimpleNamespace(root=output / "tools", entry=lambda _: target_python.parent))
     monkeypatch.setattr(native, "_facts", lambda: SimpleNamespace(get=lambda _: {"entry": "python"}, entries_in_use=lambda: []))
-    monkeypatch.setattr(native, "get_package", lambda _: SimpleNamespace(binary=lambda *args: Path(sys.executable)))
+    monkeypatch.setattr(native, "get_package", lambda _: SimpleNamespace(binary=lambda *args: target_python))
     monkeypatch.setattr(native, "pm_uv", lambda: (uv, dict(env)))
     monkeypatch.setattr(native, "_arch_guard", lambda store: [])
     monkeypatch.setattr("scripts.bundles.payload.relativize_links", lambda root: 0)
-    monkeypatch.setattr("pm.features.installed_extras", lambda *args: [])
+    monkeypatch.setattr("pm.extras.ANCHORS", {"payloadtest": "bundle_probe.present"})
     monkeypatch.setattr("pm.packages.uv_cache_dir", lambda: tmp_path / "empty-cache")
     real_run = native._run_live
     calls = []
+    witness = tmp_path / "inventory-python.json"
+    fail_inventory = False
 
     def child(argv, *, cwd, env):
         calls.append(argv[1])
         assert not (output / "manifest.json").exists()
-        return real_run(argv, cwd=cwd, env=env)
+        result = real_run(argv, cwd=cwd, env=env)
+        if argv[1] == "sync" and result[0] == 0:
+            site = site_packages(output / "venv")
+            if fail_inventory:
+                shutil.rmtree(site)
+            else:
+                package = site / "bundle_probe"
+                package.mkdir()
+                (package / "__init__.py").write_text(
+                    "import json, pathlib, sys\n"
+                    f"pathlib.Path({str(witness)!r}).write_text(json.dumps(sys.executable), encoding='utf-8')\n",
+                    encoding="utf-8",
+                )
+                (package / "present.py").write_text("", encoding="utf-8")
+        return result
 
     monkeypatch.setattr(native, "_run_live", child)
     monkeypatch.setenv("HERMES_RUNTIME_DIR", str(tmp_path / "original"))
@@ -53,6 +75,16 @@ def test_bundle_stages_git_tree_and_runs_native_children_before_manifest(tmp_pat
     assert calls == ["venv", "sync"]
     assert (output / "hermes-agent/pyproject.toml").is_file()
     assert json.loads((output / "manifest.json").read_text())["repo"] == "hermes-agent"
+    feature_file = output / "enabled-features.json"
+    assert json.loads(feature_file.read_text(encoding="utf-8"))["extras"] == ["payloadtest"]
+    assert Path(json.loads(witness.read_text(encoding="utf-8"))) == target_python
+    assert os.environ["HERMES_RUNTIME_DIR"] == str(tmp_path / "original")
+
+    before = feature_file.read_bytes()
+    fail_inventory = True
+    assert native.stage_native(SimpleNamespace(out=str(output), ref="HEAD")) == 1
+    assert not (output / "manifest.json").exists()
+    assert feature_file.read_bytes() == before
     assert os.environ["HERMES_RUNTIME_DIR"] == str(tmp_path / "original")
 
     monkeypatch.setattr(native, "_run_live", lambda *a, **kw: (1, "injected failure"))

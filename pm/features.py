@@ -20,6 +20,10 @@ from typing import Optional
 FEATURES_FILENAME = "enabled-features.json"
 
 
+class FeatureProbeError(RuntimeError):
+    """A failed inventory must not become an empty feature list."""
+
+
 def features_path(base_dir: Optional[Path] = None) -> Path:
     """Where the enabled-features file lives. In a bundle, the payload
     root (beside manifest.json — bundle-written, sealed-shipped). At
@@ -68,44 +72,51 @@ def declared_extras(repo_dir: Path) -> list[str]:
     return sorted(data.get("project", {}).get("optional-dependencies", {}))
 
 
-def installed_extras(repo_dir: Path, venv_dir: Path) -> list[str]:
-    """The extras that ACTUALLY installed on this target: every declared
-    extra whose pm anchor import resolves in the venv. Markers-gated
-    extras show up as missing anchors — the honest per-target record of
-    what `uv sync --all-extras` put on THIS machine."""
-    from pm.extras import ANCHORS
+def installed_extras(repo_dir: Path, venv_dir: Path, *, python_exe: Path) -> list[str]:
+    """Inventory every required anchor in one isolated target process.
 
-    installed: list[str] = []
-    for extra in declared_extras(repo_dir):
-        anchor = ANCHORS.get(extra, extra.replace("-", "_"))
-        if isinstance(anchor, str):
-            anchor = (anchor,)
-        if all(_importable_in(anchor_member, venv_dir) for anchor_member in anchor):
-            installed.append(extra)
-    return sorted(installed)
+    The staged interpreter owns the site layout. Only the selected tree's
+    .pth files are processed, so editable packages keep their launch behavior.
+    """
+    import subprocess
 
+    from pm.extras import _anchors
 
-def _importable_in(anchor: str, venv_dir: Path) -> bool:
-    """Does the anchor import resolve inside venv_dir's site-packages?"""
-    import importlib.util
-    import sys
-    import sysconfig
-    from pathlib import Path as _P
-
-    sites = set()
-    pure = sysconfig.get_paths(vars={"base": str(venv_dir)}).get("purelib")
-    if pure:
-        sites.add(_P(pure))
-    plat = sysconfig.get_paths(vars={"base": str(venv_dir)}).get("platlib")
-    if plat:
-        sites.add(_P(plat))
-
-    saved = list(sys.path)
-    try:
-        sys.path = [str(s) for s in sites]
+    required = {extra: _anchors(extra) for extra in declared_extras(repo_dir)}
+    anchors = sorted({anchor for group in required.values() for anchor in group})
+    probe = """
+import contextlib, importlib.util, json, os, site, sys, sysconfig
+base, anchors = sys.argv[1], json.loads(sys.argv[2])
+paths = sysconfig.get_paths(vars={"base": base, "platbase": base})
+sites = dict.fromkeys(paths[key] for key in ("purelib", "platlib"))
+if not any(os.path.isdir(path) for path in sites):
+    raise RuntimeError("target dependency tree has no site-packages")
+result = {}
+with contextlib.redirect_stdout(sys.stderr):
+    for path in sites:
+        site.addsitedir(path)
+    for anchor in anchors:
         try:
-            return importlib.util.find_spec(anchor) is not None
+            result[anchor] = importlib.util.find_spec(anchor) is not None
         except (ImportError, ValueError):
-            return False
-    finally:
-        sys.path = saved
+            result[anchor] = False
+print(json.dumps(result))
+"""
+    try:
+        child = subprocess.run(
+            [str(python_exe), "-B", "-I", "-S", "-c", probe,
+             str(venv_dir.resolve()), json.dumps(anchors)],
+            cwd=repo_dir, capture_output=True, text=True, encoding="utf-8",
+            errors="replace", timeout=60, check=True,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        detail = (getattr(exc, "stderr", None) or str(exc)).strip()
+        raise FeatureProbeError(f"feature inventory failed on {python_exe}: {detail}") from exc
+    try:
+        resolved = json.loads(child.stdout)
+    except ValueError as exc:
+        raise FeatureProbeError("feature inventory returned invalid JSON") from exc
+    if (not isinstance(resolved, dict) or set(resolved) != set(anchors)
+            or any(type(value) is not bool for value in resolved.values())):
+        raise FeatureProbeError("feature inventory returned incomplete anchor results")
+    return sorted(extra for extra, group in required.items() if all(resolved[anchor] for anchor in group))

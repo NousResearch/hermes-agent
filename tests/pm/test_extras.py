@@ -76,9 +76,13 @@ def test_available_missing_module():
     assert extras.available("no-such-extra-anywhere") is False
 
 
-def test_available_counts_sys_modules_fakes(monkeypatch):
-    monkeypatch.setitem(sys.modules, "hindsight", SimpleNamespace())
-    assert extras.available("hindsight") is True
+@pytest.mark.parametrize(("extra", "module"), [
+    ("hindsight", "hindsight_client"),
+    ("teams", "microsoft_teams.apps"),
+])
+def test_available_counts_sys_modules_fakes(monkeypatch, extra, module):
+    monkeypatch.setitem(sys.modules, module, SimpleNamespace())
+    assert extras.available(extra) is True
 
 
 def test_available_unknown_extra_uses_underscore_guess(monkeypatch):

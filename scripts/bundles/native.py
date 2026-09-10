@@ -155,12 +155,14 @@ def _stage_native(args) -> int:
             return 1
     print("✓ venv (relocatable, all extras, on the staged interpreter)")
 
-    # The frozen feature set: the EXACT extras that installed on this
-    # target (markers gate some off per-platform). This file is the
-    # lazy-off contract — pm sync never deviates from it.
-    from pm.features import installed_extras, write_features
+    # Inventory the staged interpreter before publishing the bundle contract.
+    from pm.features import FeatureProbeError, installed_extras, write_features
 
-    features = installed_extras(repo_dir, venv_dir)
+    try:
+        features = installed_extras(repo_dir, venv_dir, python_exe=python_bin)
+    except FeatureProbeError as exc:
+        print(f"✗ features: {exc}")
+        return 1
     write_features(features, out)
     print(f"✓ enabled-features.json ({len(features)} extras recorded)")
 

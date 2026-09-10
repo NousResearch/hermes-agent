@@ -289,6 +289,7 @@ def cmd_update(args) -> int:
     target = args.target or current_target()
 
     resolved = []
+    failures = []
     for name in names:
         package = get_package(name)
         targets = [t for t in ALL_TARGETS if package.missing_reason(t) is None]
@@ -300,6 +301,7 @@ def cmd_update(args) -> int:
             decision = resolve_package(package, targets, lockfile.version(name))
         except Exception as e:  # an upstream index outage must not kill the whole check
             decision = Resolved(name, lockfile.version(name), package.version_style, reason=f"resolve failed: {e}")
+            failures.append(name)
         resolved.append(decision)
 
     # ── report ────────────────────────────────────────────────────────────
@@ -318,6 +320,9 @@ def cmd_update(args) -> int:
             print(f"{d.name:<{width}}  {d.locked or '—'} → {d.version}{per}")
         else:
             print(f"{d.name:<{width}}  {d.locked} up to date")
+    if failures:
+        print(f"pm update: resolution failed for {', '.join(failures)}; no changes applied")
+        return 1
     if args.check:
         if args.uv:
             print("uv deps: would run `uv update` + venv sync")

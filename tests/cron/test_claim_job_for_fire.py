@@ -7,6 +7,7 @@ claim for a given fire. Single-machine deployments always win (unaffected).
 These exercise the real store against a temp HERMES_HOME (no mocks) per the
 E2E-over-mocks discipline for file-touching code.
 """
+import contextlib
 import threading
 import time
 
@@ -104,7 +105,8 @@ def test_mark_job_run_clears_claim(temp_home):
     assert claim_job_for_fire(jid) is True
 
 
-def test_fire_claim_heartbeat_refreshes_only_expected_owner(temp_home, monkeypatch):
+@pytest.mark.parametrize("exit_error", [None, RuntimeError, KeyboardInterrupt])
+def test_fire_claim_heartbeat_refreshes_only_expected_owner(temp_home, monkeypatch, exit_error):
     from datetime import datetime, timedelta
 
     import cron.jobs as jobs
@@ -130,6 +132,42 @@ def test_fire_claim_heartbeat_refreshes_only_expected_owner(temp_home, monkeypat
         job["id"],
         expected_owner="replacement-owner",
     ) is False
+
+    # Protected heartbeats are read-only, but even a failed long side effect
+    # must leave a fresh lease before releasing its fence to other claimants.
+    late = claimed_at + timedelta(seconds=jobs.FIRE_CLAIM_TTL_SECONDS + 60)
+    monkeypatch.setattr(jobs, "_hermes_now", lambda: late)
+    expected = pytest.raises(exit_error, match="fixture exit") if exit_error else contextlib.nullcontext()
+    original_refresh = jobs._refresh_claim
+
+    def failing_refresh(*_args):
+        raise OSError("fixture disk failure")
+
+    with expected:
+        with jobs.fire_claim_fence(job["id"], expected_owner=claimed["by"]) as owned:
+            assert owned
+            before = (temp_home / "cron" / "jobs.json").read_bytes()
+            assert jobs.heartbeat_fire_claim(job["id"], expected_owner=claimed["by"])
+            assert (temp_home / "cron" / "jobs.json").read_bytes() == before
+            with jobs.fire_claim_fence(job["id"], expected_owner=claimed["by"]) as nested:
+                assert nested
+            with jobs.use_cron_store(temp_home / "other-profile"):
+                assert not jobs.heartbeat_fire_claim(job["id"], expected_owner=claimed["by"])
+            assert jobs.heartbeat_fire_claim(job["id"], expected_owner=claimed["by"])
+            if exit_error:
+                if exit_error is KeyboardInterrupt:
+                    monkeypatch.setattr(jobs, "_refresh_claim", failing_refresh)
+                raise exit_error("fixture exit")
+    monkeypatch.setattr(jobs, "_refresh_claim", original_refresh)
+    stored = jobs.get_job(job["id"])
+    assert isinstance(stored, dict)
+    assert stored["fire_claim"]["at"] == late.isoformat()
+    assert jobs.claim_job_for_fire(job["id"]) is False
+    # The protected-owner shortcut must be gone after normal AND exceptional exit.
+    with monkeypatch.context() as unavailable:
+        unavailable.setattr(jobs, "_acquire_flock", lambda *_: False)
+        with pytest.raises(RuntimeError, match="could not acquire"):
+            jobs.heartbeat_fire_claim(job["id"], expected_owner=claimed["by"])
 
 
 def test_reclaimed_fire_uses_new_owner_token(temp_home, monkeypatch):

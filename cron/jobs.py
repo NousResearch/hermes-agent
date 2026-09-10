@@ -87,6 +87,7 @@ _jobs_lock_state = threading.local()
 _fire_fence_locks: Dict[str, threading.RLock] = {}
 _fire_fence_locks_guard = threading.Lock()
 _fire_fence_lock_state = threading.local()
+_protected_fire_owners: Dict[str, str] = {}
 
 # Upper bound on waiting for the cross-process .jobs.lock. Every cron function funnels through
 # _jobs_lock(), so blocking forever on a wedged sibling process would freeze the ticker and every
@@ -361,7 +362,40 @@ def fire_claim_fence(job_id: str, *, expected_owner: str):
             job = next((item for item in load_jobs() if item.get("id") == job_id), None)
             claim = job.get("fire_claim") if isinstance(job, dict) else None
             owns_claim = isinstance(claim, dict) and claim.get("by") == expected_owner
-        yield owns_claim
+        if not owns_claim:
+            yield False
+            return
+        store = _current_cron_store()
+        key = f"{os.getpid()}::{store.cron_dir.resolve()}::{job_id}"
+        with _fire_fence_locks_guard:
+            previous = _protected_fire_owners.get(key)
+            _protected_fire_owners[key] = expected_owner
+        body_error = None
+        try:
+            yield True
+        except BaseException as exc:
+            body_error = exc
+            raise
+        finally:
+            try:
+                # Delivery can outlive the lease. Refresh before releasing its
+                # real fence so a waiting claimant cannot reclaim that gap.
+                token = _cron_store_override.set(store)
+                try:
+                    _with_job(job_id, lambda jobs, _i, job: _refresh_claim(
+                        jobs, job.get("fire_claim"), expected_owner), False)
+                finally:
+                    _cron_store_override.reset(token)
+            except BaseException:
+                if body_error is None:
+                    raise
+                logger.exception("Could not renew fire claim while unwinding its side effect")
+            finally:
+                with _fire_fence_locks_guard:
+                    if previous is None:
+                        _protected_fire_owners.pop(key, None)
+                    else:
+                        _protected_fire_owners[key] = previous
 
 
 # Fields that must never change after creation: ``id`` is a path component under OUTPUT_DIR, so an
@@ -2591,12 +2625,38 @@ def claim_job_for_fire(
 
 
 def heartbeat_fire_claim(job_id: str, *, expected_owner: str) -> bool:
-    """Refresh an active ``fire_claim`` without extending another owner's lease: an execution may
-    outlive the TTL, and the owner check stops a stale runner from refreshing a recovered claim."""
-    def apply(jobs, _i, job):
-        return _refresh_claim(jobs, job.get("fire_claim"), expected_owner)
+    """Renew ownership, or confirm that its side-effect fence still protects it.
 
-    return _under_fire_fence(job_id, lambda: _with_job(job_id, apply, False))
+    A delivery's real cross-process fence excludes replacement owners. Do not
+    time out against that same worker's delivery lock: its context refreshes
+    the lease before unlocking. All other renewals retain the fail-closed fence.
+    """
+    key = f"{os.getpid()}::{_current_cron_store().cron_dir.resolve()}::{job_id}"
+
+    def protected_owner():
+        with _fire_fence_locks_guard:
+            protected = _protected_fire_owners.get(key) == expected_owner
+        if not protected:
+            return None
+        job = get_job(job_id)
+        claim = job.get("fire_claim") if isinstance(job, dict) else None
+        return isinstance(claim, dict) and claim.get("by") == expected_owner
+
+    protected = protected_owner()
+    if protected is not None:
+        return protected
+
+    with _fire_job_lock(job_id) as acquired:
+        if not acquired:
+            # Delivery may have entered its fence after the first lookup.
+            protected = protected_owner()
+            if protected is not None:
+                return protected
+            # Unavailable locking is not proof that the owner changed. The
+            # scheduler retries transient exceptions within its existing grace.
+            raise RuntimeError("Fire claim heartbeat could not acquire its fence")
+        return _with_job(job_id, lambda jobs, _i, job: _refresh_claim(
+            jobs, job.get("fire_claim"), expected_owner), False)
 
 
 # Completed one-shots are retained in jobs.json (final status stays inspectable) and pruned by

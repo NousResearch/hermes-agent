@@ -20,6 +20,16 @@ This pulls the latest code from `main`, updates dependencies, and prompts you to
 `hermes update` automatically detects new configuration options and prompts you to add them. If you skipped that prompt, you can manually run `hermes config check` to see missing options, then `hermes config migrate` to interactively add them.
 :::
 
+### Passive update notices
+
+Pinned or noninteractive installations can disable passive CLI version and banner update checks:
+
+```bash
+hermes config set updates.check false
+```
+
+This suppresses both cached update notices and passive update-check network requests. The default is `true`. Explicit `hermes update --check` and `hermes update` still work; this setting does not control the Desktop application's updater.
+
 ### What happens during an update
 
 When you run `hermes update`, the following steps occur:
@@ -29,7 +39,14 @@ When you run `hermes update`, the following steps occur:
 3. **Post-pull syntax validation + auto-rollback** — after the pull, Hermes compiles the nine critical files every `hermes` invocation imports at startup. If any fails to parse (e.g. an orphan merge-conflict marker, an accidentally truncated file), Hermes runs `git reset --hard <pre-pull-sha>` to roll the install back so your shell stays bootable. Re-run `hermes update` once the upstream fix lands.
 4. **Dependency install** — runs `uv pip install -e ".[all]"` to pick up new or changed dependencies
 5. **Config migration** — detects new config options added since your version and prompts you to set them
-6. **Gateway auto-restart** — running gateways are refreshed after the update completes so the new code takes effect immediately. Service-managed gateways (systemd on Linux, launchd on macOS) are restarted through the service manager. Manual gateways are relaunched automatically when Hermes can map the running PID back to a profile.
+6. **Desktop rebuild (stage-and-swap)** — if the Hermes Desktop app was built from this checkout, it is rebuilt so the GUI matches the new code. The rebuild packs into a temporary staging directory next to `apps/desktop/release/`, verifies the staged app, and only then renames it over the previous build. A rebuild that fails at any point — corrupt Electron download, missing dependency, disk full — leaves the previous app untouched and launchable; the update reports `⚠ Update partially complete` and `hermes desktop` retries the rebuild.
+7. **Gateway auto-restart** — running gateways are refreshed after the update completes so the new code takes effect immediately. Service-managed gateways (systemd on Linux, launchd on macOS) are restarted through the service manager. Manual gateways are relaunched automatically when Hermes can map the running PID back to a profile. Manually-launched `hermes serve` / `hermes dashboard` backends (for example a network-bound serve powering a remote Desktop) are handled the same way: each backend records its bind address in the install's spawn ledger at startup, so the update stops it before the code swap and relaunches it afterward on the **same host and port** — a remote Desktop pointed at that endpoint reconnects instead of stranding. Backends owned by a running Desktop app are left to the app's own respawn.
+
+### Missing Windows updater files
+
+If the maintained updater script is missing (for example after antivirus quarantine), the legacy update forwarder fails instead of reporting a successful hand-off. Repair the installation and review the security software's quarantine report before retrying; do not disable antivirus protection. Before reporting success, the maintained updater checks the CLI import, Windows executable header, ASAR header and packaged main entry, readable renderer HTML with a local module entry, initial module files, and current build stamp. These are minimum artifact checks, not a full dependency audit or an application/backend launch test. Missing Python is reported before waiting for Desktop shutdown; dependency repair is still allowed to run as part of the update. Electron checks maintained handoff prerequisites before stopping backends when that layout is present; genuine legacy-flat updater layouts remain supported, so not every missing updater file is detected before backend shutdown.
+
+On Windows, a Desktop reopened during packaging is stopped again immediately before the staged build is promoted. This cleanup is restricted to executables inside that checkout's Desktop release tree; unrelated installations are not stopped. A remaining lock still makes staged promotion fail rather than bypassing the rename error.
 
 ### Updating against a non-default branch: `--branch`
 
@@ -87,13 +104,25 @@ Want to know if an update is available before pulling? Run `hermes update --chec
 
 ### Fleet preview: `hermes update --plan`
 
-Before updating a machine that runs several profiles or services, `hermes update --plan` prints the full update plan without changing anything: the install kind (git checkout, Docker image, Nix/apt managed), every running Hermes service across all profiles with its supervisor (systemd, launchd, manual) and the code version it is actually serving, and the restart mechanism each one will get. On image- or package-managed installs the plan reports that the install is not updatable in place and names the right update command instead. Read-only and safe on a live fleet.
+Before updating a machine that runs several profiles or services, `hermes update --plan` prints the full update plan without changing anything: the install kind (git checkout, Docker image, Nix/apt managed), every running Hermes service across all profiles with its supervisor (systemd, launchd, manual) and the code version it is actually serving, and the restart mechanism each one will get. Manually-launched `hermes serve` / `hermes dashboard` backends appear too (from the spawn ledger), with their recorded bind endpoint and a "stop before code swap, relaunch with recorded launch args" restart mechanism. On image- or package-managed installs the plan reports that the install is not updatable in place and names the right update command instead. Read-only and safe on a live fleet.
 
 The same inventory is embedded in every real update's receipt (`~/.hermes/logs/update_receipts/`), so after an update you can compare what the updater saw against what it did.
 
 ### Update receipts and the fleet version check
 
 Every `hermes update` run writes a machine-readable receipt to `~/.hermes/logs/update_receipts/` (last 20 kept, `latest.json` always points at the most recent): the pre-update fleet plan, each step taken, anything skipped and why, the gateway restart outcome, and the final fleet version matrix. After the restart phase the updater compares each live gateway's running code against the freshly updated checkout and prints a per-profile matrix — a gateway still serving pre-update code is reported loudly with the exact restart command, and the update exits non-zero so automation never treats a mixed-version fleet as healthy. Both `--plan` and the fleet check ask each running gateway directly over its local control socket (`gateway.sock` in the profile's data directory, a named pipe on Windows) when available, so version and supervisor information comes from the gateway itself; gateways from older versions are still discovered through their state files as before.
+
+### Interrupted gateway restarts
+
+If an earlier update pulled code but did not finish restarting the fleet, the next
+`hermes update` retries even when the checkout is already current. An empty process
+scan does not prove recovery: failed systemd units and installed launchd jobs may
+have no live PID. The pending restart marker is retained if supervisor discovery
+fails, a restart fails, or a requested service cannot be verified active. The update
+exits nonzero and reports the affected services; recover them with the printed
+commands and retry `hermes update`.
+
+A failed historical receipt does not by itself prove that gateways are still stale. Startup and gateway-status warnings, as well as update catch-up, check the live fleet before acting on receipt-only restart obligations. Every recorded gateway profile must have a live successor on the current checkout; an unrelated current gateway cannot stand in for a missing, down, unknown-version, or non-gateway runtime. A manual gateway restart can therefore settle the warning without rewriting a failed update as successful. A separate pending marker remains authoritative because it can belong to a newer interrupted update whose inventory never reached the receipt.
 
 ### Full pre-update backup: `--backup`
 
@@ -259,6 +288,10 @@ uv pip install -e ".[all]"
 :::warning
 Rolling back may cause config incompatibilities if new options were added. Run `hermes config check` after rolling back and remove any unrecognized options from `config.yaml` if you encounter errors.
 :::
+
+### Image-managed installs (Docker): the provenance marker
+
+Published Docker images bake a small read-only marker (`/etc/hermes/image-provenance.json`) that authoritatively identifies the filesystem as image-managed. `hermes update`, `hermes update --check`, and the dashboard's Update button all consult it before touching anything: on an image-managed install they refuse cleanly (exit code 2), print the actual update command (`docker pull nousresearch/hermes-agent:latest`), and write a `refused` receipt so fleet tooling can see the attempt happened. The marker wins even when a source checkout is bind-mounted into the container — the refusal is based on what the running filesystem *is*, not what it looks like. A damaged marker still refuses (fail-closed). Nix- and apt-managed installs refuse through the same gate using the existing detection.
 
 ### Note for Nix users
 

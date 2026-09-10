@@ -3,38 +3,30 @@
 manifest_version: 1
 
 name: youdotcom
-description: Search, extract, and research current web content with You.com.
+description: Search and extract current web content with You.com.
 source: https://you.com/docs/build-with-agents/mcp-server.md
 
 transport:
   type: http
   # Free profile exposes unauthenticated you-search only.
   url: https://api.you.com/mcp?profile=free
-  # When MCP_YOUDOTCOM_API_KEY is present, switch to the full remote endpoint
-  # and send the bearer token. Set YDC_ALLOWED_TOOLS to opt into a scoped tool
-  # set, including optional tools like you-finance.
+  # When YDC_API_KEY is present, switch to the full remote endpoint
+  # and send the bearer token, unlocking you-search and you-contents.
   url_env_overrides:
-    MCP_YOUDOTCOM_API_KEY+YDC_ALLOWED_TOOLS: https://api.you.com/mcp?tools=${YDC_ALLOWED_TOOLS}
-    MCP_YOUDOTCOM_API_KEY: https://api.you.com/mcp
+    YDC_API_KEY: https://api.you.com/mcp
 
 auth:
   type: api_key
   env:
-    - name: MCP_YOUDOTCOM_API_KEY
+    - name: YDC_API_KEY
       prompt: "You.com API key (optional; blank uses free search-only mode)"
       required: false
       secret: true
-    - name: YDC_ALLOWED_TOOLS
-      prompt: "You.com allowed tools (optional; requires API key, e.g. you-search,you-research,you-contents,you-finance)"
-      required: false
-      secret: false
 
 post_install: |
-  Without MCP_YOUDOTCOM_API_KEY, You.com runs in the free search-only profile.
-  Add MCP_YOUDOTCOM_API_KEY from https://you.com/platform and reinstall this
-  catalog entry to enable content extraction and research tools.
-  Add YDC_ALLOWED_TOOLS, for example
-  you-search,you-research,you-contents,you-finance, to opt into you-finance.
+  Without YDC_API_KEY, You.com runs in the free search-only profile.
+  Add YDC_API_KEY from https://you.com/platform and reinstall this
+  catalog entry to unlock page extraction (you-contents) alongside search.
 
   You can re-run the tool checklist any time with:
     hermes mcp configure youdotcom

@@ -298,7 +298,7 @@ class TestDetectMessageType:
         return QQAdapter._detect_message_type(media_urls, media_types)
 
     def test_no_media(self):
-        from gateway.platforms.base import MessageType
+        from gateway.platforms.event import MessageType
         assert self._fn([], []) == MessageType.TEXT
 
 
@@ -437,6 +437,55 @@ class TestWaitForReconnection:
         result = await adapter.send("test_openid", "Hello, world!")
         assert result.success
         assert result.message_id == "msg_123"
+
+
+# ---------------------------------------------------------------------------
+# Regression for #78183: httpx timeout empty-string defeats _is_timeout_error
+# ---------------------------------------------------------------------------
+
+class TestQQTimeoutErrorNormalization:
+    """When an httpx timeout has an empty string representation, qqbot's send
+    paths must preserve the exception type name so the base-layer timeout guard
+    (_is_timeout_error) can still recognise it and suppress the duplicate-
+    delivery plain-text fallback."""
+
+    def _make_adapter(self, **extra):
+        from gateway.platforms.qqbot import QQAdapter
+        return QQAdapter(_make_config(app_id="a", client_secret="b", **extra))
+
+    @pytest.mark.asyncio
+    async def test_send_chunk_preserves_read_timeout_type(self):
+        from gateway.platforms.base import BasePlatformAdapter
+
+        adapter = self._make_adapter()
+
+        async def _boom(*args, **kwargs):
+            raise httpx.ReadTimeout("")
+
+        adapter._send_c2c_text = _boom
+
+        result = await adapter._send_chunk("test_openid", "hello world")
+
+        assert not result.success
+        assert result.error, "error must not be empty"
+        assert BasePlatformAdapter._is_timeout_error(result.error), (
+            f"_is_timeout_error must recognise {result.error!r}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_send_chunk_non_empty_error_unchanged(self):
+        """A normal exception with a message must keep its original text."""
+        adapter = self._make_adapter()
+
+        async def _boom(*args, **kwargs):
+            raise RuntimeError("Server error '500 Internal Server Error'")
+
+        adapter._send_c2c_text = _boom
+
+        result = await adapter._send_chunk("test_openid", "hello world")
+
+        assert not result.success
+        assert "500 Internal Server Error" in (result.error or "")
 
 
 # ---------------------------------------------------------------------------
@@ -871,13 +920,13 @@ class TestDefaultInteractionDispatch:
                 "id": "i",
                 "chat_type": 2,
                 "user_openid": "u-42",
-                "data": {"resolved": {"button_data": "approve:agent:main:qqbot:c2c:u-42:allow-once"}},
+                "data": {"resolved": {"button_data": "approve:agent:main:qqbot:dm:u-42:allow-once"}},
             })
             await adapter._default_interaction_dispatch(event)
         finally:
             tools.approval.resolve_gateway_approval = orig
 
-        assert resolve_calls == [("agent:main:qqbot:c2c:u-42", "once", False)]
+        assert resolve_calls == [("agent:main:qqbot:dm:u-42", "once", False)]
 
 
     @pytest.mark.asyncio

@@ -307,6 +307,11 @@ display:
 > writes to your memory/skill stores, are unaffected by this setting. Set it
 > per-platform via `display.platforms.<platform>.memory_notifications`.
 
+Successful skill batches name each applied operation in both `on` and `verbose`
+mode, including supporting-file writes/removals and skill deletion. Staged writes
+awaiting approval and rolled-back batches are not reported as completed changes.
+Batch summaries use the applied results rather than assuming requested writes ran.
+
 ## Running the review on a cheaper model (`auxiliary.background_review`)
 
 The review runs on your **main chat model** by default, replaying the
@@ -332,6 +337,14 @@ identical and skill capture near-identical to the main-model review.
 Leave it at `auto` (or set it to your main model) and nothing changes — the
 review keeps running on the main model with the full warm-cache replay.
 
+### Same-model review reasoning
+
+A review using the same model as the parent **always inherits the parent's reasoning effort**. Setting `auxiliary.background_review.reasoning_effort` does not override it, whether the route is `auto` or explicitly selects the parent provider/model.
+
+Reasoning settings, the system prompt, the full conversation snapshot, and tool definitions stay byte-identical to the parent at fork birth so the review can reuse its prompt-cache prefix. Changing only the review's thinking level would break that parity. There is no independent-effort switch for same-model reviews.
+
+To reduce review work without changing the main conversation's effort, adjust `memory.nudge_interval` / `skills.creation_nudge_interval`, disable automatic reviews as described below, or route reviews to a different model. A different-model route uses a digest and does not share the parent's warm prefix; its separate task-effort bug is tracked in [#94825](https://github.com/NousResearch/hermes-agent/issues/94825). These frequency and routing controls do not decouple same-model reasoning.
+
 ### Disabling automatic reviews (`enabled`)
 
 The review fork can burn a meaningful share of total tokens on busy hosts.
@@ -349,6 +362,57 @@ With `enabled: false`, automatic post-turn forks do not spawn; manual
 Fork usage is persisted in `session_model_usage` with `task='background_review'`
 and a completion line is written to `agent.log`
 (`Background review complete: thread=bg-review calls=… in=… out=… result=…`).
+
+### Allowing a narrowly scoped extra review tool (`extra_tools`)
+
+Background review can use memory, skill-management, and read-only file tools
+by default. If a profile provides another tool that is safe for unattended
+review, opt it in by name:
+
+```yaml
+auxiliary:
+  background_review:
+    extra_tools:
+      - propose_shared_memory
+```
+
+The tool must already be available to the parent agent; this setting only adds
+it to the review fork's runtime whitelist. It does not enable arbitrary tools,
+and tools not listed here remain denied. Keep the list narrow and prefer tools
+that stage a proposal for human review rather than applying external or
+destructive changes directly. The default is an empty list.
+
+### Local models: reviews wait for an idle GPU (`defer`)
+
+On a cloud provider the review finishes in seconds and runs alongside
+whatever you do next. When the review's runtime is the **managed local
+llama-server** (Settings → Local models), the same fork occupies the GPU your
+next prompt needs — for minutes on a large model — and sending a new prompt
+cancels it, discarding the learning. So on the managed local runtime, reviews
+are **deferred by default**: queued at turn end and executed once the machine
+has been quiet for a short settle window. Nothing about the review itself
+changes — same model, same full-transcript replay, same writes — only the
+execution moment moves.
+
+```yaml
+auxiliary:
+  background_review:
+    defer: auto            # auto (default) | never
+    defer_max_age_s: 1800  # run a queued review anyway after this long
+```
+
+| Value | Behaviour |
+|-------|-----------|
+| `auto` (default) | Reviews whose runtime resolves to the managed local server are queued and run at idle; every other runtime (cloud, external servers) spawns immediately as before. |
+| `never` | Old behavior everywhere: spawn immediately at turn end, even on the managed local GPU. |
+
+Queued reviews coalesce per session (a newer turn's snapshot replaces the
+older one — the review replays the whole conversation, so nothing is lost),
+a review preempted by a new prompt is re-queued instead of discarded, and a
+review that has waited longer than `defer_max_age_s` runs even if the machine
+never goes idle. Explicit `/refine` always runs immediately. The queue is
+in-memory: reviews still pending when the app exits are dropped, same as an
+in-flight fork would have been.
 
 ## Controlling skill writes (`skills.write_approval`)
 

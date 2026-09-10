@@ -1283,6 +1283,11 @@ def _block(event: str, sid: str, payload: dict, timeout: float | None = 300, bat
     if batch_qids is not None:
         # Cancel-all (respond with no question_id) resolves via _answers with "" — a plain cancel, not a partial result.
         if answer_present:
+            # A renderer that does not speak `question_id` answers bare. For a one-question batch that
+            # reply IS the answer; filing it under the sole qid keeps it from being parsed as a batch
+            # result dict and silently discarded (every response returning blank). Empty stays a cancel.
+            if answer and len(batch_qids) == 1:
+                return json.dumps({"answers": {batch_qids[0]: answer}}, ensure_ascii=False)
             return answer
         result: dict[str, object] = {"answers": batch_answers or {}}
         if not answered:
@@ -1312,7 +1317,16 @@ def _clarify_block(sid: str, q, c, multi_select=False, questions=None) -> str:
     if questions:
         wire = [{"qid": e["qid"], "question": e["question"], "choices": e["choices"], "multi_select": bool(e["multi_select"])}
                 for e in questions]
-        return _block("clarify.request", sid, {"questions": wire}, timeout=_clarify_timeout_seconds(),
+        payload = {"questions": wire}
+        if len(wire) == 1:
+            # A one-question batch is semantically identical to a single-question clarify, but a
+            # `questions`-only payload is invisible to renderers that predate the batch shape: the
+            # Hermes-Relay Android client reads only `question`/`choices` and degrades to a bare
+            # "The agent needs clarification" text box, losing the question AND the options. Both key
+            # sets ride along — batch-aware clients keep reading `questions`, simple ones render rows.
+            payload.update(question=wire[0]["question"], choices=wire[0]["choices"],
+                           multi_select=wire[0]["multi_select"])
+        return _block("clarify.request", sid, payload, timeout=_clarify_timeout_seconds(),
                       batch_qids=[e["qid"] for e in questions])
     payload = {"question": q, "choices": c, "multi_select": True} if multi_select else {"question": q, "choices": c}
     return _block("clarify.request", sid, payload, timeout=_clarify_timeout_seconds())

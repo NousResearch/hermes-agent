@@ -237,13 +237,19 @@ himalaya message delete 42
 添加标志：
 
 ```bash
-himalaya flag add 42 --flag seen
+himalaya flag add 42 seen
 ```
 
 移除标志：
 
 ```bash
-himalaya flag remove 42 --flag seen
+himalaya flag remove 42 seen
+```
+
+多账户场景下，请将 `--account` 保留在 flag 子命令上：
+
+```bash
+himalaya flag add 42 seen --account work
 ```
 
 ## 多账户

@@ -3,7 +3,9 @@ import { useEffect, useState } from 'react'
 import unicodeSpinners from 'unicode-animations'
 
 import { artWidth, caduceus, CADUCEUS_WIDTH, logo, LOGO_WIDTH } from '../banner.js'
+import { TERMUX_TUI_MODE } from '../config/env.js'
 import { mix } from '../lib/color.js'
+import { terminalFloor } from '../lib/inputMetrics.js'
 import { flat } from '../lib/text.js'
 import type { Theme } from '../theme.js'
 import type { PanelSection, SessionInfo } from '../types.js'
@@ -80,7 +82,7 @@ const ruleIn = (label: string, w: number) => {
 
 function CompactBanner({ cols, t }: { cols: number; t: Theme }) {
   // -4 keeps a margin so exact-edge rows don't trip terminal pending-wrap.
-  const w = Math.max(28, cols - 4)
+  const w = terminalFloor(cols - 4, 28, TERMUX_TUI_MODE)
 
   // No `opaque` (see ArtLines): the dashed rules are glyphs and the tagline's
   // centering spaces carry the text's own fg style, so every cell paints with
@@ -211,12 +213,12 @@ const TOOLSETS_MAX = 8
 
 export function SessionPanel({ info, maxWidth, sid, t }: SessionPanelProps) {
   const term = useStdout().stdout?.columns ?? 100
-  const cols = Math.max(20, Math.min(term, maxWidth ?? term))
+  const cols = terminalFloor(Math.min(term, maxWidth ?? term), 20, TERMUX_TUI_MODE)
   const heroLines = caduceus(t.color, t.bannerHero || undefined)
   const leftW = Math.min((artWidth(heroLines) || CADUCEUS_WIDTH) + 4, Math.floor(cols * 0.4))
   const wide = cols >= 90 && leftW + 40 < cols
-  const w = Math.max(20, wide ? cols - leftW - 14 : cols - 12)
-  const lineBudget = Math.max(12, w - 2)
+  const w = terminalFloor(wide ? cols - leftW - 14 : cols - 12, 20, TERMUX_TUI_MODE)
+  const lineBudget = terminalFloor(w - 2, 12, TERMUX_TUI_MODE)
   const strip = (s: string) => (s.endsWith('_tools') ? s.slice(0, -6) : s)
 
   // Hierarchy: labels lead in the label tone; member lists recede in the

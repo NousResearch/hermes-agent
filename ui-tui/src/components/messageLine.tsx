@@ -8,7 +8,7 @@ import { splitComposerHighlights } from '../domain/composerHighlights.js'
 import { sectionMode } from '../domain/details.js'
 import { userDisplay } from '../domain/messages.js'
 import { ROLE } from '../domain/roles.js'
-import { transcriptBodyWidth, transcriptGutterWidth } from '../lib/inputMetrics.js'
+import { terminalFloor, transcriptBodyWidth, transcriptGutterWidth } from '../lib/inputMetrics.js'
 import {
   boundedLiveRenderText,
   compactPreview,
@@ -128,7 +128,7 @@ export const MessageLine = memo(function MessageLine({
   }
 
   if (msg.role === 'tool') {
-    const maxChars = Math.max(24, cols - 14)
+    const maxChars = terminalFloor(cols - 14, 24, TERMUX_TUI_MODE)
     const stripped = hasAnsi(msg.text) ? stripAnsi(msg.text) : msg.text
     const safeAnsi = hasAnsi(msg.text) ? sanitizeAnsiForRender(msg.text) : msg.text
     const preview = compactPreview(stripped, maxChars) || '(empty tool result)'

@@ -1,7 +1,9 @@
 import { Box, Text, useInput, useStdout } from '@hermes/ink'
 import { useEffect, useState } from 'react'
 
+import { TERMUX_TUI_MODE } from '../config/env.js'
 import type { GatewayClient } from '../gatewayClient.js'
+import { terminalFloor } from '../lib/inputMetrics.js'
 import { rpcErrorMessage } from '../lib/rpc.js'
 import type { Theme } from '../theme.js'
 
@@ -26,7 +28,7 @@ export function SkillsHub({ gw, maxWidth, onClose, t }: SkillsHubProps) {
 
   const { stdout } = useStdout()
   const terminalWidth = Math.max(1, (stdout?.columns ?? 80) - 6)
-  const preferredWidth = Math.max(MIN_WIDTH, Math.min(MAX_WIDTH, terminalWidth))
+  const preferredWidth = terminalFloor(Math.min(MAX_WIDTH, terminalWidth), MIN_WIDTH, TERMUX_TUI_MODE)
   const width = clampOverlayWidth(preferredWidth, maxWidth)
 
   useEffect(() => {

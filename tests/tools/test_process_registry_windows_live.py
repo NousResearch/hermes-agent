@@ -75,7 +75,7 @@ class TestWindowsSpawnParity:
         monkeypatch.setattr(
             "gateway.restart.is_gateway_supervisor_process", lambda: True
         )
-        monkeypatch.setattr(pr, "_SYSTEMD_SCOPE_AVAILABLE", None)
+        monkeypatch.setattr(pr, "_SYSTEMD_SCOPE_RESULT", None)
 
         scope_builds = []
         monkeypatch.setattr(
@@ -92,7 +92,7 @@ class TestWindowsSpawnParity:
         assert done.systemd_unit == ""
         assert scope_builds == [], "Windows must never build a systemd scope argv"
         # The availability probe must not have flipped to True on Windows.
-        assert pr._SYSTEMD_SCOPE_AVAILABLE is not True
+        assert pr._SYSTEMD_SCOPE_RESULT is None or not pr._SYSTEMD_SCOPE_RESULT.available
 
     def test_kill_process_windows_plain_path(self, registry):
         """kill_process on Windows works without any systemd unit cleanup."""

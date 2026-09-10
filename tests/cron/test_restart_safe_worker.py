@@ -83,12 +83,123 @@ def test_restart_safe_gateway_child_fails_closed_without_scope(monkeypatch):
 
     monkeypatch.setattr(process_registry, "_is_supervised_gateway_process", lambda: True)
     monkeypatch.setenv("INVOCATION_ID", "managed-service")
-    monkeypatch.setattr(process_registry, "_systemd_run_user_scope_available", lambda: False)
+    monkeypatch.setattr(
+        process_registry, "_systemd_run_user_scope_result",
+        lambda: process_registry._SystemdScopeResult(False, "", False, 0.0),
+    )
 
     with pytest.raises(RuntimeError, match="systemd-run --user --scope is unavailable"):
         process_registry.restart_safe_gateway_child_argv(
             ["python", "worker.py"], unit_suffix="cron-job-1"
         )
+
+
+@pytest.mark.linux_only
+@pytest.mark.parametrize(
+    "probe_failure,is_bus_failure",
+    [
+        pytest.param(
+            b"Failed to find executable true: No such file or directory",
+            False,
+            id="command-not-found",
+        ),
+        pytest.param(
+            FileNotFoundError(2, "No such file or directory", "/missing/systemd-run"),
+            False,
+            id="probe-exec-failure",
+        ),
+        pytest.param(
+            b"Failed to connect to user bus: No medium found",
+            True,
+            id="user-bus-unavailable",
+        ),
+    ],
+)
+def test_restart_safe_gateway_child_distinguishes_probe_failure_from_user_bus(
+    monkeypatch, probe_failure, is_bus_failure
+):
+    """Cron's persisted error must prescribe linger only for a user-bus failure."""
+    import tools.process_registry as process_registry
+
+    monkeypatch.setattr(process_registry, "_is_supervised_gateway_process", lambda: True)
+    monkeypatch.setenv("INVOCATION_ID", "managed-service")
+    monkeypatch.setattr(process_registry, "_SYSTEMD_SCOPE_RESULT", None)
+    monkeypatch.setattr(
+        "shutil.which", lambda name: "/test/systemd-run" if name == "systemd-run" else None
+    )
+
+    def fail_probe(argv, **kwargs):
+        if isinstance(probe_failure, OSError):
+            raise probe_failure
+        return subprocess.CompletedProcess(
+            argv, 1 if is_bus_failure else 127, stderr=probe_failure
+        )
+
+    probe = Mock(side_effect=fail_probe)
+    monkeypatch.setattr(process_registry.subprocess, "run", probe)
+
+    # The diagnosis must survive caching: a second cron handoff sees the same cause.
+    for _ in range(2):
+        with pytest.raises(RuntimeError) as raised:
+            process_registry.restart_safe_gateway_child_argv(
+                [sys.executable, "worker.py"], unit_suffix="cron-probe-diagnostic"
+            )
+        message = str(raised.value).lower()
+        if is_bus_failure:
+            assert "user" in message and ("bus" in message or "d-bus" in message)
+            assert "loginctl enable-linger" in message
+        else:
+            assert "d-bus" not in message and "user bus" not in message, message
+            assert "linger" not in message, message
+            assert "probe" in message, message
+            assert "execut" in message or "command" in message, message
+    assert probe.call_count == 1
+
+    # Hold a caller's result while another thread expires and refreshes the cache
+    # with the opposite diagnosis. Its error must still use the retained snapshot.
+    from concurrent.futures import ThreadPoolExecutor
+    from dataclasses import FrozenInstanceError
+    import threading
+
+    get_result = process_registry._systemd_run_user_scope_result
+    original = get_result()
+    with pytest.raises(FrozenInstanceError):
+        original.bus_failure = not original.bus_failure
+    captured = threading.Event()
+    release = threading.Event()
+
+    def paused_result():
+        result = get_result()
+        captured.set()
+        assert release.wait(timeout=5)
+        return result
+
+    monkeypatch.setattr(process_registry, "_systemd_run_user_scope_result", paused_result)
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        pending = executor.submit(
+            process_registry.restart_safe_gateway_child_argv,
+            [sys.executable, "worker.py"], unit_suffix="cron-refresh-race",
+        )
+        try:
+            assert captured.wait(timeout=5)
+            monkeypatch.setattr(
+                process_registry.time, "monotonic",
+                lambda: original.probed_at + process_registry._SYSTEMD_SCOPE_FAILURE_TTL_SECONDS + 1,
+            )
+            probe.side_effect = lambda argv, **kwargs: subprocess.CompletedProcess(
+                argv, 127 if is_bus_failure else 1,
+                stderr=(b"Failed to find executable true: No such file or directory"
+                        if is_bus_failure else b"Failed to connect to user bus: No medium found"),
+            )
+            refreshed = get_result()
+            assert refreshed is not original
+            assert refreshed.bus_failure is not original.bus_failure
+            assert probe.call_count == 2
+        finally:
+            release.set()
+        with pytest.raises(RuntimeError) as raced:
+            pending.result(timeout=5)
+    assert str(raced.value).lower() == message
 
 
 def test_restart_safe_gateway_child_is_unchanged_outside_managed_gateway(monkeypatch):
@@ -109,7 +220,7 @@ def test_restart_safe_gateway_child_never_probes_systemd_off_linux(monkeypatch):
     probe = Mock(side_effect=AssertionError("systemd probe ran off Linux"))
     monkeypatch.setattr(process_registry, "_IS_LINUX", False)
     monkeypatch.setattr(process_registry, "_is_supervised_gateway_process", lambda: True)
-    monkeypatch.setattr(process_registry, "_systemd_run_user_scope_available", probe)
+    monkeypatch.setattr(process_registry, "_systemd_run_user_scope_result", probe)
     monkeypatch.setenv("INVOCATION_ID", "managed-service")
 
     assert process_registry.restart_safe_gateway_child_argv(

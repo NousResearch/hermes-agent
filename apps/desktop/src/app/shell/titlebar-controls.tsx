@@ -23,7 +23,7 @@ import {
   togglePanesFlipped,
   toggleSidebarOpen
 } from '@/store/layout'
-import { $unreadSessionCount } from '@/store/session-dot-state'
+import { $sessionNoticeCount } from '@/store/session-dot-state'
 
 import { appViewForPath, isOverlayView } from '../routes'
 
@@ -138,9 +138,9 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
   const fileBrowserOpen = useStore($fileBrowserOpen)
   const panesFlipped = useStore($panesFlipped)
   const sidebarOpen = useStore($sidebarOpen)
-  const unreadCount = useStore($unreadSessionCount)
-  const unreadBadge = unreadCount > 0 ? unreadCount : undefined
-  const unreadHint = unreadBadge ? ` · ${t.titlebar.unreadSessions(unreadBadge)}` : ''
+  const noticeCount = useStore($sessionNoticeCount)
+  const noticeBadge = noticeCount > 0 ? noticeCount : undefined
+  const noticeHint = noticeBadge ? ` · ${t.titlebar.sessionNotices(noticeBadge)}` : ''
 
   const toggleHaptics = () => {
     if (!hapticsMuted) {
@@ -167,10 +167,10 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
   const leftToolbarTools: TitlebarTool[] = [
     {
       actionId: 'view.toggleSidebar',
-      badge: panesFlipped ? undefined : unreadBadge,
+      badge: panesFlipped ? undefined : noticeBadge,
       icon: <TitlebarIcon name="layout-sidebar-left" />,
       id: 'sidebar',
-      label: `${leftLabel}${panesFlipped ? '' : unreadHint}`,
+      label: `${leftLabel}${panesFlipped ? '' : noticeHint}`,
       onSelect: () => {
         triggerHaptic('tap')
         leftEdge.toggle()
@@ -191,10 +191,10 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
 
   const rightSidebarTool: TitlebarTool = {
     actionId: 'view.toggleRightSidebar',
-    badge: panesFlipped ? unreadBadge : undefined,
+    badge: panesFlipped ? noticeBadge : undefined,
     icon: <TitlebarIcon name="layout-sidebar-right" />,
     id: 'right-sidebar',
-    label: `${rightLabel}${panesFlipped ? unreadHint : ''}`,
+    label: `${rightLabel}${panesFlipped ? noticeHint : ''}`,
     onSelect: () => {
       triggerHaptic('tap')
       rightEdge.toggle()

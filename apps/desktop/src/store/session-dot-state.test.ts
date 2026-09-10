@@ -16,10 +16,10 @@ import {
 import {
   $delegatingSessionIds,
   $sessionDotStateById,
-  $unreadSessionCount,
+  $sessionNoticeCount,
   hasLiveTurn,
-  showsRunningArc,
-  unreadSessionCount
+  sessionNoticeCount,
+  showsRunningArc
 } from './session-dot-state'
 import { clearAllSessionStates, publishSessionState } from './session-states'
 import { $unreadWriteGuard } from './session-unread-remote'
@@ -165,24 +165,29 @@ describe('persisted unread (backend watermark)', () => {
   })
 })
 
-describe('unreadSessionCount', () => {
-  it('counts listed unread rows and skips archived', () => {
+describe('sessionNoticeCount', () => {
+  it('counts listed unread and needs-input rows and skips archived', () => {
     expect(
-      unreadSessionCount({ a: 'unread', b: 'working', c: 'unread' }, [
+      sessionNoticeCount({ a: 'unread', b: 'needs-input', c: 'unread', d: 'working' }, [
         { id: 'a' },
         { id: 'b' },
         { archived: true, id: 'c' },
+        { id: 'd' },
         { id: 'missing' }
       ])
-    ).toBe(1)
+    ).toBe(2)
   })
 
   it('does not count alias keys that are not listed rows', () => {
-    expect(unreadSessionCount({ tip: 'unread', root: 'unread' }, [{ id: 'tip' }])).toBe(1)
+    expect(sessionNoticeCount({ tip: 'unread', root: 'unread' }, [{ id: 'tip' }])).toBe(1)
+  })
+
+  it('does not double-count a row present in two visible lists', () => {
+    expect(sessionNoticeCount({ same: 'needs-input' }, [{ id: 'same' }], [{ id: 'same' }])).toBe(1)
   })
 })
 
-describe('$unreadSessionCount (titlebar badge)', () => {
+describe('$sessionNoticeCount (collapsed-sidebar badge)', () => {
   beforeEach(() => {
     clearAllSessionStates()
     $sessions.set([])
@@ -208,13 +213,20 @@ describe('$unreadSessionCount (titlebar badge)', () => {
     // The cron row itself still paints unread in the sidebar cron section...
     expect($sessionDotStateById.get()['cron-1']).toBe('unread')
     // ...but the titlebar badge stays quiet.
-    expect($unreadSessionCount.get()).toBe(0)
+    expect($sessionNoticeCount.get()).toBe(0)
   })
 
   it('counts an unread regular session', () => {
     setSessions([storedRow('reg-1', { unread: true })])
 
-    expect($unreadSessionCount.get()).toBe(1)
+    expect($sessionNoticeCount.get()).toBe(1)
+  })
+
+  it('counts a regular session that needs input', () => {
+    setSessions([storedRow('reg-1')])
+    publishSessionState('runtime-1', { ...createClientSessionState('reg-1'), needsInput: true })
+
+    expect($sessionNoticeCount.get()).toBe(1)
   })
 
   it('counts regular + messaging but never cron', () => {
@@ -223,7 +235,7 @@ describe('$unreadSessionCount (titlebar badge)', () => {
     setCronSessions([storedRow('cron-1', { source: 'cron' })])
     $unreadFinishedSessionIds.set(['msg-1', 'cron-1'])
 
-    expect($unreadSessionCount.get()).toBe(2)
+    expect($sessionNoticeCount.get()).toBe(2)
   })
 
   it('mark-all-read clears regular and cron unread alike', () => {
@@ -231,12 +243,12 @@ describe('$unreadSessionCount (titlebar badge)', () => {
     setCronSessions([storedRow('cron-1', { source: 'cron' })])
     $unreadFinishedSessionIds.set(['reg-1', 'cron-1'])
 
-    expect($unreadSessionCount.get()).toBe(1)
+    expect($sessionNoticeCount.get()).toBe(1)
     expect($sessionDotStateById.get()['cron-1']).toBe('unread')
 
     markAllSessionsRead()
 
-    expect($unreadSessionCount.get()).toBe(0)
+    expect($sessionNoticeCount.get()).toBe(0)
     expect($sessionDotStateById.get()['cron-1']).not.toBe('unread')
   })
 })

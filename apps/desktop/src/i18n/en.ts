@@ -279,7 +279,7 @@ export const en: Translations = {
     swapSidebarSides: 'Swap sidebar sides',
     hideRightSidebar: 'Hide right sidebar',
     showRightSidebar: 'Show right sidebar',
-    unreadSessions: count => (count === 1 ? '1 unread session' : `${count} unread sessions`),
+    sessionNotices: count => (count === 1 ? '1 session needs attention' : `${count} sessions need attention`),
     muteHaptics: 'Mute haptics',
     unmuteHaptics: 'Unmute haptics',
     openSettings: 'Open settings',

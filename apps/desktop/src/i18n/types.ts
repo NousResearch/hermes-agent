@@ -316,7 +316,7 @@ export interface Translations {
     swapSidebarSides: string
     hideRightSidebar: string
     showRightSidebar: string
-    unreadSessions: (count: number) => string
+    sessionNotices: (count: number) => string
     muteHaptics: string
     unmuteHaptics: string
     openSettings: string

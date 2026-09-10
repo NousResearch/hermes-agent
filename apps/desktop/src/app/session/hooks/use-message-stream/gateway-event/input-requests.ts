@@ -1,6 +1,7 @@
 import { pendingClarifyToolPayload } from '@/app/session/hooks/use-session-actions/restore-pending-clarify'
 import { translateNow } from '@/i18n'
 import { restorePendingClarifyToolCall, settlePendingClarifyToolCall } from '@/lib/chat-messages'
+import { formatSessionNotificationTitle, notificationSessionTitle } from '@/lib/notification-session-title'
 import {
   $clarifyRequests,
   clearClarifyRequest,
@@ -13,9 +14,24 @@ import { $gateway } from '@/store/gateway'
 import { setMcpSetupRequest } from '@/store/mcp-setup'
 import { dispatchNativeNotification } from '@/store/native-notifications'
 import { receiveApprovalRequest, setSecretRequest, setSudoRequest } from '@/store/prompts'
+import { $messagingSessions, $sessions } from '@/store/session'
 import { requestScrollToBottom } from '@/store/thread-scroll'
 
 import type { GatewayEventContext } from './types'
+
+function promptNotificationTitle(ctx: GatewayEventContext, baseTitle: string): string {
+  const { deps, event, sessionId } = ctx
+  const storedSessionId = sessionId ? deps.sessionStateByRuntimeIdRef.current.get(sessionId)?.storedSessionId : null
+
+  const title = notificationSessionTitle([...$sessions.get(), ...$messagingSessions.get()], {
+    connectionId: event.connectionId,
+    profile: event.profile,
+    runtimeSessionId: sessionId,
+    storedSessionId
+  })
+
+  return formatSessionNotificationTitle(baseTitle, title)
+}
 
 /** The blocking-input family: clarify / MCP setup consent / approval / sudo /
  *  secret requests. The Python side is blocked on the matching *.respond, so
@@ -102,7 +118,7 @@ export function handleInputRequestEvent(ctx: GatewayEventContext): boolean {
         body: questions.map(q => q.question).join(' · '),
         kind: 'input',
         sessionId,
-        title: translateNow('notifications.native.inputTitle')
+        title: promptNotificationTitle(ctx, translateNow('notifications.native.inputTitle'))
       })
     } else if (requestId && question) {
       if (rawChoices != null && choices.length === 0) {
@@ -150,7 +166,7 @@ export function handleInputRequestEvent(ctx: GatewayEventContext): boolean {
         body: question,
         kind: 'input',
         sessionId,
-        title: translateNow('notifications.native.inputTitle')
+        title: promptNotificationTitle(ctx, translateNow('notifications.native.inputTitle'))
       })
     }
 
@@ -219,7 +235,7 @@ export function handleInputRequestEvent(ctx: GatewayEventContext): boolean {
         body: reason || server,
         kind: 'input',
         sessionId,
-        title: translateNow('notifications.native.inputTitle')
+        title: promptNotificationTitle(ctx, translateNow('notifications.native.inputTitle'))
       })
     }
 
@@ -261,7 +277,7 @@ export function handleInputRequestEvent(ctx: GatewayEventContext): boolean {
       body: command || description,
       kind: 'approval',
       sessionId,
-      title: translateNow('notifications.native.approvalTitle')
+      title: promptNotificationTitle(ctx, translateNow('notifications.native.approvalTitle'))
     })
 
     return true
@@ -283,7 +299,7 @@ export function handleInputRequestEvent(ctx: GatewayEventContext): boolean {
         body: translateNow('notifications.native.inputBody'),
         kind: 'input',
         sessionId,
-        title: translateNow('notifications.native.inputTitle')
+        title: promptNotificationTitle(ctx, translateNow('notifications.native.inputTitle'))
       })
     }
 
@@ -314,7 +330,7 @@ export function handleInputRequestEvent(ctx: GatewayEventContext): boolean {
         body: promptText || envVar || translateNow('notifications.native.inputBody'),
         kind: 'input',
         sessionId,
-        title: translateNow('notifications.native.inputTitle')
+        title: promptNotificationTitle(ctx, translateNow('notifications.native.inputTitle'))
       })
     }
 

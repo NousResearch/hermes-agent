@@ -183,31 +183,35 @@ export const $sessionDotStateById = computed(
   }
 )
 
-/** Listed, non-archived rows whose resolved status is unread. Alias keys in
- *  `$sessionDotStateById` are ignored unless they are themselves a listed row. */
-export function unreadSessionCount(
+/** Listed, non-archived rows that have something new OR need an answer. Alias
+ *  keys in `$sessionDotStateById` are ignored unless they are themselves a
+ *  listed row. The resolved state is mutually exclusive, so a session that is
+ *  both unread and blocked still contributes exactly one notice. */
+export function sessionNoticeCount(
   byId: Readonly<Record<string, SessionDotState>>,
   ...lists: Array<readonly { archived?: boolean; id: string }[]>
 ): number {
-  let n = 0
+  const counted = new Set<string>()
 
   for (const rows of lists) {
     for (const row of rows) {
-      if (!row.archived && byId[row.id] === 'unread') {
-        n++
+      const state = byId[row.id]
+
+      if (!row.archived && (state === 'needs-input' || state === 'unread')) {
+        counted.add(row.id)
       }
     }
   }
 
-  return n
+  return counted.size
 }
 
-/** The titlebar badge. Cron sessions are deliberately EXCLUDED: cron runs
+/** The collapsed-sidebar badge. Cron sessions are deliberately EXCLUDED: cron runs
  *  finish unwatched by design, so counting them turns the badge into a cron
  *  run counter that is permanently lit (#93552). Their unread state stays
  *  visible where it belongs — the sidebar's cron section rows — and
  *  "mark all as read" still acks them (ackAllSessionsRead iterates cron rows). */
-export const $unreadSessionCount = computed(
+export const $sessionNoticeCount = computed(
   [$sessionDotStateById, $sessions, $messagingSessions],
-  (byId, sessions, messaging) => unreadSessionCount(byId, sessions, messaging)
+  (byId, sessions, messaging) => sessionNoticeCount(byId, sessions, messaging)
 )

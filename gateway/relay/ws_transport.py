@@ -72,6 +72,11 @@ def _env_disconnect_budget_s() -> float:
             budget = max(0.0, float(raw))
     return budget
 
+# Close REASON a connector attaches to a 4401 when the upgrade token merely
+# EXPIRED (vs. the secret being revoked). A 4401 with this reason is never a
+# revocation. Connectors predating the reason send plain "unauthorized".
+_RELAY_EXPIRED_CLOSE_REASON = "expired"
+
 
 def _ws_dial_url(url: str) -> str:
     """Normalize the configured connector BASE URL to the ``ws(s)://…/relay`` dial target.
@@ -294,6 +299,12 @@ async def _await_bounded(aw: Awaitable[Any]) -> None:
         pass
 
 
+# Ceiling on the brokered-suspend redial hold. Must outlast the client's own
+# broker deadline (scale_to_zero.BROKERED_SUSPEND_TIMEOUT_S) or the supervisor
+# reconnects while the stop is still in flight.
+REDIAL_HOLD_MAX_S = 60.0
+
+
 class WebSocketRelayTransport:
     """RelayTransport over a WebSocket connection the gateway dials to the connector."""
 
@@ -402,8 +413,9 @@ class WebSocketRelayTransport:
 
     async def _dial_and_start(self) -> None:
         """Open the socket, start the reader, send hello(s). Used by connect() and
-        by the reconnect supervisor on a re-dial."""
+        by the reconnect supervisor / fresh-token retry on a re-dial."""
         self._descriptor_ready = asyncio.get_running_loop().create_future()
+        self._dial_generation += 1
         # Fresh handshake generation: a reconnected connector re-sends one
         # descriptor per hello, so stale descriptors must not survive.
         self._descriptor = None
@@ -418,6 +430,14 @@ class WebSocketRelayTransport:
         if headers:
             kwargs["additional_headers"] = headers
         self._ws = await websockets.connect(self._url, **kwargs)  # type: ignore[union-attr]
+        if self._auth_retry_pending:
+            # The upgrade was ACCEPTED, so this connection's freshly minted token
+            # reached an auth outcome: it is the fresh-token retry generation. A
+            # 4401 on it (after the descriptor) is the second strike. Stamped
+            # here, not before connect(), so a non-auth connect failure (network,
+            # timeout) leaves the marker for the dial that actually gets judged.
+            self._auth_retry_generation = self._dial_generation
+            self._auth_retry_pending = False
         self._reader = asyncio.create_task(self._read_loop(), name="relay-ws-reader")
         # One hello PER fronted identity; the connector accumulates them (first
         # sets the session default). The FIRST descriptor resolves handshake().
@@ -468,8 +488,10 @@ class WebSocketRelayTransport:
                 if grace > 0:
                     with contextlib.suppress(Exception):  # grace is best-effort
                         await asyncio.wait(pending, timeout=grace)
-            for attr in ("_supervisor", "_reader"):
-                task = getattr(self, attr)
+            # getattr default: some teardown tests build the transport via
+            # object.__new__, so _auth_retry may be absent.
+            for attr in ("_supervisor", "_auth_retry", "_reader"):
+                task = getattr(self, attr, None)
                 if task is not None:
                     task.cancel()
                     await _await_bounded(task)
@@ -586,12 +608,17 @@ class WebSocketRelayTransport:
         backlog); an unexpected close re-dials immediately (the platform proxy never
         sees load drop, never suspends). Here the reader's fall-through still arms
         the supervisor on the dormant cadence; on resume the re-dial makes the
-        connector drain the buffered backlog. Returns the go_idle ack result; the
-        close happens regardless. No-op (False) when never connected.
+        connector drain the buffered backlog. Returns the go_idle ack result; on a
+        MISSED ack it returns WITHOUT closing — the caller refuses to suspend without
+        one, so closing would only cost a needless reconnect. No-op (False) when
+        never connected.
         """
         if self._ws is None:
             return False
         acked = await self.go_idle(timeout_s=timeout_s)
+        if not acked:
+            # Nothing will suspend us, so stay connected and keep serving.
+            return False
         # Mark dormant BEFORE closing so the supervisor takes the dormant cadence.
         self._dormant = True
         try:
@@ -683,6 +710,11 @@ class WebSocketRelayTransport:
                         if line.strip():
                             await self._handle_frame(line)
             except Exception as exc:  # noqa: BLE001 - log + let the task end; reconnection handled below
+                # A post-handshake 4401 is a revocation ONLY if it also hits a fresh
+                # token: an EXPIRED token gets the same 4401 (a scale-to-zero suspend
+                # mid-dial makes that routine), so the first one is provisional —
+                # re-dial once, now, with a fresh token. Reason "expired" is never a
+                # revocation.
                 if self._close_code_of(exc) == _RELAY_UNAUTHORIZED_CLOSE_CODE and self._handshake_succeeded:
                     reason = self._close_reason_of(exc)
                     if reason == _RELAY_EXPIRED_CLOSE_REASON:
@@ -709,15 +741,21 @@ class WebSocketRelayTransport:
                         )
                 elif not self._closing:
                     logger.warning("relay ws read loop ended: %s", exc)
-            # Socket closed. Unless this was a deliberate disconnect() or a terminal
-            # revocation (re-dialing a dead credential just spins), arm the
-            # supervisor: it re-dials and starts a fresh reader.
-            if (
-                self._reconnect
-                and not self._closing
-                and not self._auth_revoked
-                and (self._supervisor is None or self._supervisor.done())
-            ):
+            # Socket closed. Exactly ONE dialer may be live at a time: the reader
+            # that dies while a dialer is already mid-dial (socket installed,
+            # hello still in flight) must NOT start a second one — that dialer's
+            # own failure handling re-dials, and the pending flag above makes
+            # that re-dial the fresh-token retry. A provisional 4401 with no
+            # dialer live takes the immediate fresh-token re-dial (no backoff);
+            # any other close arms the backoff supervisor unless this was a
+            # deliberate disconnect() or a terminal revocation.
+            if self._closing or self._dialer_running():
+                pass
+            elif auth_retry_scheduled:
+                self._auth_retry = asyncio.create_task(
+                    self._redial_with_fresh_token(), name="relay-ws-auth-retry"
+                )
+            elif self._reconnect and not self._auth_revoked:
                 self._supervisor = asyncio.create_task(self._reconnect_loop(), name="relay-ws-reconnect")
         finally:
             # Drop the dead handle (identity-guarded) so every `_ws is None`
@@ -733,6 +771,13 @@ class WebSocketRelayTransport:
             self._fail_pending(
                 lambda fut: fut.set_result({"success": False, "error": "relay transport connection lost"})
             )
+
+    def _dialer_running(self) -> bool:
+        """True while the backoff supervisor or the fresh-token retry is live."""
+        return any(
+            task is not None and not task.done()
+            for task in (self._supervisor, getattr(self, "_auth_retry", None))
+        )
 
     @staticmethod
     def _close_code_of(exc: BaseException) -> Optional[int]:
@@ -820,6 +865,9 @@ class WebSocketRelayTransport:
             await asyncio.sleep(backoff)
             if self._closing:
                 return
+            await self._await_redial_hold()
+            if self._closing:
+                return
             try:
                 await self._dial_and_start()
                 logger.info("relay ws reconnected")
@@ -829,6 +877,31 @@ class WebSocketRelayTransport:
                     return
                 logger.warning("relay ws reconnect failed: %s", exc)
                 backoff = min(backoff * 2, self._reconnect_max_backoff_s)
+
+    def hold_redial(self) -> None:
+        """Park the reconnect supervisor until release_redial() or the hold cap."""
+        self._redial_release.clear()
+        self._redial_held = True
+
+    def release_redial(self) -> None:
+        """Let the supervisor re-dial again (a brokered suspend that failed)."""
+        self._redial_held = False
+        self._redial_release.set()
+
+    async def _await_redial_hold(self) -> None:
+        """Block a pending re-dial while a brokered suspend is in flight: it would
+        clear the dormant flip. Bounded, so a lost suspend still reconnects."""
+        if not self._redial_held:
+            return
+        try:
+            await asyncio.wait_for(
+                self._redial_release.wait(), timeout=self._redial_hold_max_s
+            )
+        except asyncio.TimeoutError:
+            logger.info("relay: brokered suspend did not land, reconnecting")
+        finally:
+            self._redial_held = False
+            self._redial_release.clear()
 
     # ── inbound frame dispatch ───────────────────────────────────────────
     async def _handle_frame(self, line: str) -> None:

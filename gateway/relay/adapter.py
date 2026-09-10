@@ -22,8 +22,9 @@ from typing import Any, Callable, Dict, Optional, Tuple, Union
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
-    BasePlatformAdapter, MessageEvent, MessageType, ProcessingOutcome, SendResult,
+    BasePlatformAdapter, SendResult,
 )
+from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 from gateway.relay.descriptor import CapabilityDescriptor
 from gateway.relay.egress import (
     EGRESS_DECLINE_CODE,
@@ -123,6 +124,7 @@ class RelayAdapter(BasePlatformAdapter):
         # platforms on one WS and a reply must egress through the platform the
         # inbound came from. Empty for a single-platform gateway (connector default).
         self._platform_by_chat: Dict[str, str] = {}
+        # Chats the connector has refused (see the terminal-decline latch).
         # chat_id -> (thread_id, initial_name) of the auto-thread the CONNECTOR
         # created for our latest send; read by the semantic thread-rename lane.
         self._auto_thread_by_chat: Dict[str, Tuple[str, str]] = {}
@@ -358,10 +360,22 @@ class RelayAdapter(BasePlatformAdapter):
         return None
 
     async def _outbound(self, chat_id: str, action: Dict[str, Any]) -> Dict[str, Any]:
-        """Send one outbound frame tagged with the chat's underlying platform."""
-        return await self._transport.send_outbound(  # type: ignore[union-attr]
+        """Send one outbound frame tagged with the chat's underlying platform.
+
+        P5(b): the second frame path (the first is ``_gated_op``). Lanes that
+        return bool/None by contract — typing, delete, thread create/rename —
+        come through here, and a silent degrade made an AUTHORIZATION refusal
+        indistinguishable from "op unsupported" in the logs. The return
+        contract is unchanged; the refusal is recorded.
+        """
+        op = str(action.get("op", "?"))
+        result = await self._transport.send_outbound(  # type: ignore[union-attr]
             action, platform=self._platform_by_chat.get(str(chat_id))
         )
+        if isinstance(result, dict):
+            if not result.get("success") and is_egress_decline(result):
+                log_decline(op, chat_id, result)
+        return result
 
     async def _gated_op(
         self,
@@ -371,6 +385,7 @@ class RelayAdapter(BasePlatformAdapter):
         decline_level: Optional[int] = logging.WARNING,
         subject: Any = None,
         platform: Optional[str] = None,
+        surface_declines: bool = False,
     ) -> Optional[Dict[str, Any]]:
         """Emit one best-effort, op-gated frame; None when the caller must fall back.
 
@@ -389,6 +404,24 @@ class RelayAdapter(BasePlatformAdapter):
             logger.debug("relay %s transport failure", op, exc_info=True)
             return None
         if not result.get("success"):
+            # P5(b): an AUTHORIZATION decline is not lane unavailability. This
+            # helper's `None` means "lane absent — do your fallback", and the
+            # fallbacks re-address the SAME chat by another route (media -> a
+            # text notice, prompt -> numbered text). The connector authorized
+            # that destination and REFUSED it, so degrading launders a security
+            # decision into "op unsupported" and delivers the content anyway.
+            # Callers whose fallback would leak pass surface_declines=True and
+            # turn this into a failed lane; cosmetic ops (typing, card stop)
+            # keep the old None contract.
+            if is_egress_decline(result):
+                # Every lane records an authorization decline — the cosmetic
+                # ones (typing, delete, thread create/rename, card stop) still
+                # degrade to None, but a silent degrade made a security refusal
+                # indistinguishable from "op unsupported" in the logs.
+                log_decline(op, chat_id if subject is None else subject, result)
+                if surface_declines:
+                    return result
+                return None
             if decline_level is not None:
                 logger.log(
                     decline_level, "relay %s declined for %s: %s",
@@ -462,13 +495,35 @@ class RelayAdapter(BasePlatformAdapter):
         if result.get("ambiguous"):
             # Ack lost (transport timeout, returned rather than raised): same
             # contract as the except branch — keep interception armed.
-            return SendResult(success=False, error=str(result.get("error") or "draft ack lost"))
+            #
+            # RAW BODY PRESERVED. Dropping it made `declined_send` fall through
+            # to the error-text branch, and an ambiguous result whose text
+            # happens to carry the decline marker ("... egress declined: ack
+            # lost") then read as a DEFINITE refusal and terminated the run.
+            # Ambiguous means the frame may well have been delivered, so it is
+            # a transport outcome, never an authorization one.
+            return SendResult(
+                success=False,
+                error=str(result.get("error") or "draft ack lost"),
+                raw_response=result,
+            )
         # DEFINITE connector rejection: disarm. The stream consumer falls back to
         # edit-based streaming and its turn-final must go out as a REAL send, not a
         # seal on a stream the connector just declared unusable.
         if self._open_draft_by_chat.get(chat_key) == draft_id:
             self._open_draft_by_chat.pop(chat_key, None)
-        return SendResult(success=False, error=str(result.get("error") or "draft failed"))
+        # P5(b): carry the structured body. The stream consumer reads a bare
+        # draft failure as "draft transport unusable", disables drafts, and
+        # falls through to a plain send — a second op against the chat the
+        # connector just refused. Verified end to end with the real
+        # GatewayStreamConsumer: ops were ['draft', 'send'].
+        if is_egress_decline(result):
+            log_decline("draft", chat_id, result)
+        return SendResult(
+            success=False,
+            error=str(result.get("error") or decline_error(result) or "draft failed"),
+            raw_response=result,
+        )
 
     async def _seal_open_draft(
         self,
@@ -521,60 +576,28 @@ class RelayAdapter(BasePlatformAdapter):
                 self._sealed_draft_by_chat.pop(draft_key, None)
             raise
         if result is None:
-            return SendResult(success=False, error="draft seal ambiguous after retry (transport ack lost)")
+            # Same ambiguity contract as send_draft: the retry's ack was lost,
+            # so the seal may have been applied. Marked explicitly rather than
+            # left to text inference.
+            return SendResult(
+                success=False,
+                error="draft seal ambiguous after retry (transport ack lost)",
+                raw_response={"success": False, "ambiguous": True},
+            )
         if result.get("success"):
             # The connector returns the stream's ts as the message identity.
             return SendResult(success=True, message_id=str(result.get("message_id") or "") or None)
-        return SendResult(success=False, error=str(result.get("error") or "draft seal failed"))
-
-    async def _absorb_into_open_draft(
-        self, chat_id: str, content: str, metadata: Dict[str, Any], interim: bool
-    ) -> Optional[SendResult]:
-        """Seal an open native stream with this turn-final; None = do a plain send.
-
-        An open stream absorbs the turn-final whichever egress door it arrives
-        through (send / send_for_platform) — otherwise the stream is left frozen
-        mid-word AND the final posts as a duplicate. A failed seal must NOT swallow
-        the final: the consumer already disabled the draft transport, so fall through
-        to a plain send (the orphaned stream is sealed connector-side). Interim sends
-        (commentary, tail flush, lifecycle acks) never seal.
-        """
-        if interim:
-            return None
-        key = self._match_open_draft(str(chat_id), metadata)
-        if key is None:
-            return None
-        seal = await self._seal_open_draft(chat_id, content, metadata, draft_key=key)
-        if seal.success:
-            return seal
-        logger.warning("relay seal failed (%s); delivering turn-final as plain send", seal.error)
-        return None
-
-    async def _card_frame(
-        self, chat_id: str, op: str, reply_to: Optional[str], metadata: Dict[str, Any], **fields: Any
-    ) -> Union[SendResult, Dict[str, Any]]:
-        """Emit one task-card op: the connector result dict, or a failed SendResult
-        when the lane is unavailable / the transport raised.
-
-        Card frames are advisory and run inside the progress loop / turn-cleanup
-        path: an escaping exception there skipped final delivery, so transport
-        errors degrade to the TurnRunner's text fallback instead of raising.
-        """
-        if not self.supports_native_task_cards():
-            return SendResult(success=False, error="connector does not advertise task_card")
-        if self._transport is None:
-            return SendResult(success=False, error="no transport")
-        frame = {
-            "op": op,
-            "chat_id": chat_id,
-            "card_id": self._card_key(reply_to, metadata),
-            **fields,
-            "metadata": self._with_scope(chat_id, metadata),
-        }
-        try:
-            return await self._outbound(chat_id, frame)
-        except Exception as e:
-            return SendResult(success=False, error=f"{op} transport error: {e}")
+        # P5(b): carry the structured body. Without it the caller cannot tell a
+        # lane failure (fall through to a plain send, correct) from an
+        # AUTHORIZATION decline (a plain send re-delivers the very content the
+        # connector refused, to the same chat).
+        if is_egress_decline(result):
+            log_decline("draft_seal", chat_id, result)
+        return SendResult(
+            success=False,
+            error=str(result.get("error") or decline_error(result) or "draft seal failed"),
+            raw_response=result,
+        )
 
     async def _absorb_into_open_draft(
         self, chat_id: str, content: str, metadata: Dict[str, Any], interim: bool
@@ -666,7 +689,17 @@ class RelayAdapter(BasePlatformAdapter):
             return result
         if result.get("success"):
             return SendResult(success=True)
-        return SendResult(success=False, error=str(result.get("error") or "task_card failed"))
+        # P5(b): carry the structured body. The TurnRunner reads a bare failure
+        # as "card lane unavailable" and sends fallback TEXT to the same chat —
+        # the same decline-laundering fixed for media and prompt, in a sibling
+        # content lane.
+        if is_egress_decline(result):
+            log_decline("task_card", chat_id, result)
+        return SendResult(
+            success=False,
+            error=str(result.get("error") or decline_error(result) or "task_card failed"),
+            raw_response=result,
+        )
 
     async def stop_native_task_card_progress(
         self,
@@ -679,7 +712,14 @@ class RelayAdapter(BasePlatformAdapter):
         result = await self._card_frame(chat_id, "task_card_stop", reply_to, dict(metadata or {}))
         if isinstance(result, SendResult):
             return result
-        return SendResult(success=bool(result.get("success")))
+        # P5(b): carry the connector's reason. Dropping `error` reported a
+        # refusal as a bare failure, which reads as "the card lane is broken"
+        # rather than "this destination was refused".
+        return SendResult(
+            success=bool(result.get("success")),
+            error=result.get("error"),
+            raw_response=result,
+        )
 
     async def abandon_open_draft(
         self, chat_id: str, content: str, metadata: Optional[Dict[str, Any]] = None,
@@ -1216,6 +1256,31 @@ class RelayAdapter(BasePlatformAdapter):
             logger.debug("relay go_dormant failed", exc_info=True)
             return False
 
+    def hold_redial(self) -> bool:
+        """Park the transport's reconnect supervisor. False if it did not take.
+
+        The caller suspends on the strength of this, so a swallowed failure here
+        would report protection that was never installed.
+        """
+        return self._toggle_transport_redial("hold_redial")
+
+    def release_redial(self) -> bool:
+        """Undo hold_redial() when the suspend did not land."""
+        return self._toggle_transport_redial("release_redial")
+
+    def _toggle_transport_redial(self, method_name: str) -> bool:
+        # Still never raises into the idle path, but a stub transport or a
+        # throwing toggle now reports False instead of passing for success.
+        method = getattr(self._transport, method_name, None)
+        if not callable(method):
+            return False
+        try:
+            method()
+        except Exception:  # noqa: BLE001 - never blocks the idle path
+            logger.debug("relay %s failed", method_name, exc_info=True)
+            return False
+        return True
+
     async def send_for_platform(
         self,
         logical_platform: Any,
@@ -1256,6 +1321,9 @@ class RelayAdapter(BasePlatformAdapter):
             },
             platform=platform_value,
         )
+        if isinstance(result, dict):
+            if not result.get("success") and is_egress_decline(result):
+                log_decline("send", chat_id, result)
         return _send_result(result, raw_response=result)
 
     def _format_hints(
@@ -1613,7 +1681,15 @@ class RelayAdapter(BasePlatformAdapter):
             },
             platform=follow_up_platform,
         )
-        return _send_result(result)
+        # CARRY THE STRUCTURED DECLINE. This lane is addressed by `session_key`,
+        # not `chat_id`, so it has no latch identity — the latch is per chat and
+        # inventing one from a session key would be exactly the text-derived
+        # identity that blocker 2 was about. What it must NOT do is discard the
+        # connector's verdict: dropping `raw_response` is precisely how the
+        # `edit_message` lane laundered declines into a plain send.
+        if isinstance(result, dict) and not result.get("success") and is_egress_decline(result):
+            log_decline("follow_up", session_key, result)
+        return _send_result(result, raw_response=result)
 
     # ── Phase 2 media ─────────────────────────────────────────────────────
 
@@ -1683,11 +1759,20 @@ class RelayAdapter(BasePlatformAdapter):
         }
         if filename:
             action["filename"] = filename
-        # A structured connector decline (size cap, platform rejection) is logged;
-        # the caller's fallback still delivers the caption/notice.
-        result = await self._gated_op(chat_id, action)
+        # A capacity decline (size cap, platform rejection) is logged and the
+        # caller's fallback still delivers the caption/notice; an
+        # AUTHORIZATION decline must NOT degrade that way (surface_declines).
+        result = await self._gated_op(chat_id, action, surface_declines=True)
         if result is None:
             return None
+        if not result.get("success"):
+            # An AUTHORIZATION refusal, surfaced by _gated_op. Returning None
+            # would hand the caller back to its fallback — a DIFFERENT op
+            # against the SAME destination the connector just refused. Report
+            # a failed lane instead, carrying the decline verbatim.
+            return SendResult(
+                success=False, error=decline_error(result), raw_response=result
+            )
         return SendResult(success=True, message_id=result.get("message_id"), raw_response=result)
 
     # Each media override tries the native ``send_media`` lane, then falls back to
@@ -1844,9 +1929,17 @@ class RelayAdapter(BasePlatformAdapter):
         }
         if timeout_s is not None:
             action["timeout_s"] = int(timeout_s)
-        result = await self._gated_op(chat_id, action)
+        result = await self._gated_op(chat_id, action, surface_declines=True)
         if result is None:
             return None
+        if not result.get("success"):
+            # An AUTHORIZATION refusal, surfaced by _gated_op. Returning None
+            # would hand the caller back to its fallback — a DIFFERENT op
+            # against the SAME destination the connector just refused. Report
+            # a failed lane instead, carrying the decline verbatim.
+            return SendResult(
+                success=False, error=decline_error(result), raw_response=result
+            )
         return SendResult(success=True, message_id=result.get("message_id"), raw_response=result)
 
     async def _mint_and_send_prompt(
@@ -1866,7 +1959,12 @@ class RelayAdapter(BasePlatformAdapter):
             chat_id, prompt_kind=prompt_kind, text=text, prompt_id=prompt_id, options=options,
             metadata=metadata,
         )
-        if result is None:
+        if result is None or not getattr(result, "success", False):
+            # P5(b): a DECLINE now returns a failed SendResult rather than
+            # None, and the registration must come down on that path too. A
+            # prompt card the connector refused never rendered, so leaving it
+            # pending lets the user's next unrelated message be captured as the
+            # answer to a prompt they never saw.
             self._pending_prompts.pop(prompt_id, None)
         return result
 

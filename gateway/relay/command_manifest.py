@@ -87,12 +87,4 @@ def build_relay_command_manifest() -> List[Dict[str, Any]]:
              _opt("text", "The prompt to run")),
         _cmd("btw", "Ask a side question about the current conversation",
              _opt("text", "The question to answer")),
-
-        # KENSEI CUSTOM: /generate-image - gateway-side native-Codex image
-        # generation via the content engine (handler: slash_commands.py).
-        _cmd("generate-image",
-             "Generate one private native-Codex image via the content engine. "
-             "Optional extended style menu: style=...|blend=slug1+slug2",
-             _opt("args", "prompt=...|style=...|stage-root=...|job-id=...|backend=codex|"
-                  "aspect-ratio=landscape|blend=slug1+slug2")),
     ]

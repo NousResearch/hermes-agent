@@ -729,6 +729,23 @@ def _approval_send_outcome(future, timeout: float) -> str:
         return "failed"
     if getattr(result, "success", False):
         return "sent"
+    # P5(b) KENSEI re-anchor (upstream 866332bfb5): a connector DECLINE is not a
+    # lane failure. The connector authorized the destination and refused it;
+    # re-sending the same content as plain text into that same chat is the
+    # exfiltration the egress guard exists to stop. CLASSIFY THE STRUCTURED
+    # RESPONSE, NOT THE ERROR STRING (raw_response carries ambiguous + code).
+    from gateway.relay.egress import declined_send
+
+    _raw = getattr(result, "raw_response", None)
+    if isinstance(_raw, dict) and _raw.get("ambiguous"):
+        logger.warning("Prompt send AMBIGUOUS (lost ack): %s", _raw.get("error"))
+        return "ambiguous"
+    if declined_send(result):
+        logger.warning(
+            "Prompt send DECLINED by connector egress guard: %s",
+            getattr(result, "error", None),
+        )
+        return "declined"
     logger.warning("Prompt send failed: %s", getattr(result, "error", None) or "unknown error")
     return "failed"
 

@@ -96,6 +96,52 @@ class TestDetectToolFailureStructured:
         result = json.dumps({"success": True, "data": "hello"})
         assert _detect_tool_failure("web_search", result) == (False, "")
 
+    def test_success_true_with_zero_failed_count_not_flagged(self):
+        """Regression for #107581: {\"success\": true, \"failed\": 0} is success."""
+        result = json.dumps({"success": True, "failed": 0, "processed": 12})
+        assert _detect_tool_failure("mcp__qase__qase_ci_report", result) == (False, "")
+
+    def test_success_true_with_null_error_not_flagged(self):
+        """Regression for #107581: {\"success\": true, \"error\": null} is success."""
+        result = json.dumps({"success": True, "error": None, "data": "ok"})
+        assert _detect_tool_failure("read_file", result) == (False, "")
+
+    def test_positive_failed_count_is_flagged(self):
+        """Positive failed count (even without success: false) is a failure."""
+        result = json.dumps({"failed": 3, "processed": 10})
+        is_failure, suffix = _detect_tool_failure("tool", result)
+        assert is_failure is True
+        assert "failed=3" in suffix
+
+    def test_success_false_without_error_message_flagged(self):
+        """success: false alone (no error text) is a failure, reports [failed]."""
+        result = json.dumps({"success": False})
+        is_failure, suffix = _detect_tool_failure("tool", result)
+        assert is_failure is True
+        assert suffix == " [failed]"
+
+    def test_truthy_error_string_flagged(self):
+        """Truthy error strings (even with no success field) are failures."""
+        result = json.dumps({"error": "Network timeout"})
+        is_failure, suffix = _detect_tool_failure("web_search", result)
+        assert is_failure is True
+        assert "Network timeout" in suffix
+
+    def test_nested_diagnostic_data_with_success_true_not_flagged(self):
+        """Regression for #107581: nested diagnostic data doesn't trigger false positive."""
+        result = json.dumps({
+            "success": True,
+            "data": {"diagnostics": {"error_count": 0, "failed_checks": 0}},
+        })
+        assert _detect_tool_failure("tool", result) == (False, "")
+
+    def test_plain_text_error_string_fallback(self):
+        """Plain text Error prefix (non-JSON) is still caught."""
+        result = "Error: unexpected EOF while parsing"
+        is_failure, suffix = _detect_tool_failure("tool", result)
+        assert is_failure is True
+        assert suffix == " [error]"
+
 
 
 class TestGetCuteToolMessageFailureSuffix:

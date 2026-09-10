@@ -38,3 +38,18 @@ def test_install_sh_stamps_code_tree_not_home() -> None:
         "dir may be shared with a Docker gateway whose 'docker' stamp would "
         "clobber it and block host-side `hermes update`"
     )
+
+
+
+def test_git_install_stamp_is_guarded_by_git_metadata() -> None:
+    text = INSTALL_SH.read_text()
+
+    guarded = re.findall(
+        r'if \[ -d "\$INSTALL_DIR/\.git" \]; then\s+'
+        r'echo "git" > "\$INSTALL_DIR/\.install_method"\s+fi',
+        text,
+    )
+    assert len(guarded) >= 2, (
+        "both installer completion paths must leave .install_method absent "
+        "for intentionally git-free release runtimes"
+    )

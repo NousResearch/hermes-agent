@@ -1542,10 +1542,9 @@ class TestWindowsAutostartRepair:
         which.assert_not_called()
 
     @pytest.mark.windows_only
-    def test_windows_installer_runs_autostart_repair_after_success(self):
-        """``windows_only``: the PowerShell install argv and the autostart
-        repair hook are both inside the ``is_windows`` branch, so on Linux the
-        fake selected a branch whose `powershell` doesn't exist on PATH."""
+    def test_windows_installer_uses_no_autostart_and_skips_repair(self):
+        """``windows_only``: fresh installs pass ``-NoAutoStart`` and must
+        NOT re-register the logon task post-install (#95372, #97389)."""
         from unittest.mock import MagicMock
         from hermes_cli import tools_config_cua as tools_config
 
@@ -1569,10 +1568,11 @@ class TestWindowsAutostartRepair:
              patch("subprocess.Popen", side_effect=fake_popen), \
              patch.object(tools_config, "_clear_stale_cua_install_lock"), \
              patch.object(tools_config, "_repair_cua_driver_autostart_windows", return_value=True) as repair, \
+             patch.object(tools_config, "_cua_driver_autostart_registered_windows", return_value=False), \
              patch.object(tools_config, "_print_warning"), \
              patch.object(tools_config, "_print_info"), \
              patch.object(tools_config, "_print_success"):
-            ok = tools_config._run_cua_driver_installer(label="Refreshing", verbose=False)
+            ok = tools_config._run_cua_driver_installer(label="Installing", verbose=False)
 
         assert ok is True
         assert captured["kwargs"].get("shell") is False
@@ -1580,10 +1580,9 @@ class TestWindowsAutostartRepair:
         assert captured["cmd"][:4] == [
             "powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
         ]
-        repair.assert_called_once_with(
-            r"C:\Users\Ha Trung\AppData\Local\Programs\Cua\cua-driver\bin\cua-driver.exe",
-            verbose=False,
-        )
+        assert "-NoAutoStart" in captured["cmd"][-1]
+        assert "| iex" not in captured["cmd"][-1]
+        repair.assert_not_called()
 
     @pytest.mark.windows_only
     def test_autostart_repair_quotes_username_space_path_via_file_path(self):
@@ -1749,12 +1748,213 @@ class TestUnattendedRefreshPreflights:
         assert "-NoAutoStart" in joined
         assert "scriptblock" in joined
 
-    def test_windows_explicit_command_keeps_plain_oneliner(self):
-        """Explicit installs keep upstream's documented `irm | iex` shape
-        (autostart re-registration included — human present for UAC)."""
+    def test_windows_explicit_command_passes_noautostart(self):
+        """Explicit installs also invoke install.ps1 with -NoAutoStart:
+        autostart is opt-in since #95372/#97389, and the post-install
+        repair path no longer re-registers the task."""
         ok, popen, _, _, _ = self._run(None, system="Windows")
         assert ok is True
         cmd = popen.call_args.args[0]
         joined = " ".join(cmd)
-        assert "-NoAutoStart" not in joined
-        assert "| iex" in joined
+        assert "-NoAutoStart" in joined
+        assert "| iex" not in joined
+
+
+class TestCuaDriverAutostartOptIn:
+    """Autostart is opt-in since #95372/#97389: installs never register
+    the logon task, readiness ignores it, and ``hermes computer-use
+    autostart`` manages the legacy task left by older installers."""
+
+    def test_install_ready_ignores_missing_logon_task(self):
+        from hermes_cli import tools_config_cua as tools_config
+
+        with patch.object(
+            tools_config, "_cua_driver_contract_status",
+            return_value={"ready": True, "version": "0.20.0", "reason": ""},
+        ), patch.object(
+            tools_config, "_cua_driver_autostart_registered_windows",
+            return_value=False,
+        ) as registered:
+            assert tools_config._cua_driver_install_ready() is True
+            registered.assert_not_called()
+
+    def test_install_not_ready_when_contract_broken(self):
+        from hermes_cli import tools_config_cua as tools_config
+
+        with patch.object(
+            tools_config, "_cua_driver_contract_status",
+            return_value={"ready": False, "version": "0.19.4", "reason": "too old"},
+        ), patch.object(
+            tools_config, "_cua_driver_autostart_registered_windows",
+            return_value=True,
+        ):
+            assert tools_config._cua_driver_install_ready() is False
+
+    def test_compatible_existing_install_skips_autostart_repair(self):
+        """A compatible driver stays untouched: no reinstall, no repair
+        registration — just the on-demand note. Deterministic on every
+        lane via the platform seam."""
+        from hermes_cli import tools_config_cua as tools_config
+
+        with patch("platform.system", return_value="Windows"), \
+             patch.object(
+                 tools_config.shutil, "which",
+                 side_effect=lambda n: "/usr/local/bin/" + n
+                 if n in {"cua-driver", "curl"} else None,
+             ), \
+             patch.object(
+                 tools_config, "_run_cua_driver_installer"
+             ) as runner, \
+             patch.object(
+                 tools_config, "_cua_driver_contract_status",
+                 return_value={"ready": True, "version": "0.20.0", "reason": ""},
+             ), \
+             patch.object(
+                 tools_config, "_repair_cua_driver_autostart_windows",
+                 return_value=True,
+             ) as repair, \
+             patch.object(
+                 tools_config, "_cua_driver_autostart_registered_windows",
+                 return_value=False,
+             ), \
+             patch.object(
+                 tools_config, "_print_info"
+             ) as info, \
+             patch("subprocess.run"):
+            assert tools_config.install_cua_driver(upgrade=False) is True
+            runner.assert_not_called()
+            repair.assert_not_called()
+            assert any("on demand" in c.args[0] for c in info.call_args_list)
+
+    @pytest.mark.windows_only
+    def test_disable_reports_already_on_demand_when_missing(self):
+        from hermes_cli import tools_config_cua as tools_config
+
+        with patch.object(
+            tools_config, "_cua_driver_autostart_registered_windows",
+            return_value=False,
+        ), patch(
+            "subprocess.run"
+        ) as run, patch.object(
+            tools_config, "_print_success"
+        ):
+            assert tools_config._disable_cua_driver_autostart_windows() is True
+            run.assert_not_called()
+
+    @pytest.mark.windows_only
+    def test_disable_issues_schtasks_change_disable(self):
+        from hermes_cli import tools_config_cua as tools_config
+
+        calls = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append(cmd)
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        with patch.object(
+            tools_config, "_cua_driver_autostart_registered_windows",
+            return_value=True,
+        ), patch(
+            "subprocess.run", side_effect=fake_run
+        ), patch.object(
+            tools_config, "_print_success"
+        ), patch.object(
+            tools_config, "_print_info"
+        ):
+            assert tools_config._disable_cua_driver_autostart_windows() is True
+
+        assert calls == [
+            ["schtasks.exe", "/Change", "/TN", "cua-driver-serve", "/Disable"]
+        ]
+
+    @pytest.mark.windows_only
+    def test_disable_failure_points_at_elevation(self):
+        from hermes_cli import tools_config_cua as tools_config
+
+        def fake_run(cmd, **kwargs):
+            return SimpleNamespace(
+                returncode=1, stdout="", stderr="ERROR: Access is denied."
+            )
+
+        with patch.object(
+            tools_config, "_cua_driver_autostart_registered_windows",
+            return_value=True,
+        ), patch(
+            "subprocess.run", side_effect=fake_run
+        ), patch.object(
+            tools_config, "_print_warning"
+        ) as warning, patch.object(
+            tools_config, "_print_info"
+        ) as info:
+            assert tools_config._disable_cua_driver_autostart_windows() is False
+            warning.assert_called_once()
+            assert any("elevated" in c.args[0] for c in info.call_args_list)
+
+    @pytest.mark.windows_only
+    def test_state_probe_parses_scheduler_state(self):
+        from hermes_cli import tools_config_cua as tools_config
+
+        def fake_run(cmd, **kwargs):
+            return SimpleNamespace(returncode=0, stdout="Disabled\n", stderr="")
+
+        with patch.object(
+            tools_config.shutil, "which",
+            return_value=r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe",
+        ), patch(
+            "subprocess.run", side_effect=fake_run
+        ):
+            state = tools_config._cua_driver_autostart_state_windows()
+
+        assert state == {"supported": True, "registered": True, "task_state": "Disabled"}
+
+    @pytest.mark.windows_only
+    def test_state_probe_missing_task_is_unregistered(self):
+        from hermes_cli import tools_config_cua as tools_config
+
+        def fake_run(cmd, **kwargs):
+            return SimpleNamespace(returncode=0, stdout="missing\n", stderr="")
+
+        with patch.object(
+            tools_config.shutil, "which", return_value="powershell"
+        ), patch(
+            "subprocess.run", side_effect=fake_run
+        ):
+            state = tools_config._cua_driver_autostart_state_windows()
+
+        assert state == {"supported": True, "registered": False, "task_state": ""}
+
+    @pytest.mark.windows_only
+    def test_failed_install_hint_keeps_no_autostart(self):
+        """A failed install's copy-paste retry hint must not silently
+        recreate the task (#97389 repro step)."""
+        from unittest.mock import MagicMock
+        from hermes_cli import tools_config_cua as tools_config
+
+        fake_proc = MagicMock()
+        fake_proc.pid = 1
+        fake_proc.returncode = 1
+        fake_proc.communicate.return_value = ("boom", None)
+
+        with patch.object(
+            tools_config.shutil, "which", return_value=None
+        ), patch(
+            "subprocess.Popen", return_value=fake_proc
+        ), patch.object(
+            tools_config, "_clear_stale_cua_install_lock"
+        ), patch.object(
+            tools_config, "_cua_driver_autostart_registered_windows",
+            return_value=False,
+        ), patch.object(
+            tools_config, "_print_warning"
+        ) as warning, patch.object(
+            tools_config, "_print_info"
+        ) as info, patch.object(
+            tools_config, "_print_success"
+        ):
+            ok = tools_config._run_cua_driver_installer(label="Installing", verbose=False)
+
+        assert ok is False
+        assert any("Re-run manually" in c.args[0] for c in warning.call_args_list)
+        joined = "\n".join(c.args[0] for c in info.call_args_list)
+        assert "-NoAutoStart" in joined
+        assert "| iex" not in joined

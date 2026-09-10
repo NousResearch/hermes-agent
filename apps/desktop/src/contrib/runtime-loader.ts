@@ -431,6 +431,11 @@ async function scanDiskPlugins(): Promise<void> {
     }
 
     const seen = new Set<string>()
+    // Folder names are claimed across both doors. A hybrid install copies the
+    // desktop half into desktop-plugins/<name> AND leaves plugins/<name>/desktop
+    // in the agent tree; loading both registers the same plugin id twice
+    // (#100412). Standalone is scanned first and wins.
+    const claimedOrigins = new Set<string>()
 
     for (const root of roots) {
       let entries
@@ -442,6 +447,10 @@ async function scanDiskPlugins(): Promise<void> {
       }
 
       for (const dir of entries.filter(e => e.isDirectory)) {
+        if (claimedOrigins.has(dir.name)) {
+          continue
+        }
+
         let file: string | null
 
         try {
@@ -454,6 +463,7 @@ async function scanDiskPlugins(): Promise<void> {
           continue // Ordinary agent package with no Desktop half — not an error.
         }
 
+        claimedOrigins.add(dir.name)
         seen.add(file)
 
         if (disk.has(file)) {

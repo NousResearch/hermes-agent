@@ -19,6 +19,7 @@ import { FileTypeIcon } from '@/components/ui/file-type-icon'
 import { ToolIcon } from '@/components/ui/tool-icon'
 import { translateNow } from '@/i18n'
 import { openExternalLink } from '@/lib/external-link'
+import { copyFilePath } from '@/store/file-actions'
 import { $rightRailActiveTabId, type RightRailTabId, selectRightRailTab } from '@/store/layout'
 import {
   $browserPages,
@@ -63,8 +64,22 @@ export function browserTabExternalUrl(tabId: string): null | string {
   return url && !NON_EXTERNAL_URL.test(url) ? url : null
 }
 
-function browserTabMenuPrefix(tabId: string) {
-  if (targetFor(tabId)?.kind !== 'url') {
+function previewTabMenuPrefix(tabId: string) {
+  const target = targetFor(tabId)
+
+  if (target?.kind === 'file' && target.path) {
+    const path = target.path
+
+    return (kit: MenuKit) =>
+      renderActionItem(kit, {
+        icon: 'copy',
+        key: 'copy-path',
+        label: translateNow('fileMenu.copyPath'),
+        onSelect: () => void copyFilePath(path)
+      })
+  }
+
+  if (target?.kind !== 'url') {
     return undefined
   }
 
@@ -265,7 +280,7 @@ const watchPreviewTileMirror = paneMirror<{ id: string }>({
   // A Browser is a vessel, so there can be more of it — a file peek is one of
   // a kind and leaves the strip's "+" to whatever else the zone holds.
   newTab: tabId => (targetFor(tabId)?.kind === 'url' ? newBrowserTab : undefined),
-  tabMenuPrefix: browserTabMenuPrefix,
+  tabMenuPrefix: previewTabMenuPrefix,
   render: tabId => <PreviewTilePane tabId={tabId} />,
   close: tabId => {
     forgetBrowserPage(tabId)

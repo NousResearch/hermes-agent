@@ -11,7 +11,7 @@ import {
 } from "lucide-react";
 import { api } from "@/lib/api";
 import type {
-  AnalyticsResponse,
+  NormalizedAnalyticsResponse,
   AnalyticsDailyEntry,
   AnalyticsModelEntry,
   AnalyticsSkillEntry,
@@ -405,7 +405,7 @@ function SkillTable({ skills }: { skills: AnalyticsSkillEntry[] }) {
 
 export default function AnalyticsPage() {
   const [days, setDays] = useState(30);
-  const [data, setData] = useState<AnalyticsResponse | null>(null);
+  const [data, setData] = useState<NormalizedAnalyticsResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   // Gated on `dashboard.show_token_analytics` (default off).  When off the

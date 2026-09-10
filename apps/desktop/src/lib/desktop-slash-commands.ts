@@ -206,7 +206,12 @@ const DESKTOP_COMMAND_SPECS: readonly DesktopCommandSpec[] = [
     argumentMode: 'options'
   },
   { name: '/title', description: 'Rename the current session', surface: action('title'), argumentMode: 'text' },
-  { name: '/help', description: 'Show desktop slash commands', aliases: ['/commands'], surface: action('help') },
+  {
+    name: '/help',
+    description: 'Show desktop slash commands (/help all includes unavailable commands)',
+    aliases: ['/commands'],
+    surface: action('help')
+  },
   {
     name: '/browser',
     description: 'Manage browser CDP connection [connect|disconnect|status] (local gateway only)',
@@ -583,6 +588,19 @@ export function desktopSlashUnavailableMessage(command: string): string | null {
   }
 
   return null
+}
+
+/** Commands deliberately omitted from Desktop suggestions, including aliases. */
+export function desktopOmittedSlashCommands(catalog: CommandsCatalogLike): string[] {
+  const candidates = [
+    ...Object.keys(catalog.commands ?? {}),
+    ...Object.keys(catalog.canon ?? {}),
+    ...ALL_SPECS.flatMap(spec => [spec.name, ...(spec.aliases ?? [])])
+  ]
+
+  return [...new Set(candidates.map(normalizeCommand))].filter(
+    command => !isDesktopSlashSuggestion(command) || resolveDesktopCommand(command)?.surface.kind === 'picker'
+  )
 }
 
 export function desktopSlashDescription(command: string, fallback = ''): string {

@@ -122,6 +122,17 @@ CONTEXT_OVERFLOW_BLOCKED_WARNING_TEMPLATE = (
     "session or /compress to retry immediately."
 )
 
+# NO-OP diagnostic, not a failure: the commit-site anti-growth guard refused a compression whose generated
+# summary was larger than what it would replace — nothing was dropped and no user action is needed, so it must
+# NOT reach chat surfaces. The gateway noise regex (_TELEGRAM_NOISY_STATUS_RE, gateway/run.py) derives its
+# suppressing pattern from THIS constant so a reword cannot drift past the filter. Manual /compress reports the
+# same refusal with its own headline (agent/manual_compression_feedback.py) and must stay visible; that
+# carve-out is pinned in tests/gateway/test_telegram_noise_filter.py.
+COMPRESSION_REFUSED_WOULD_GROW_WARNING = (
+    "⚠️ Compression refused: the generated summary would have GROWN the conversation instead of "
+    "shrinking it. No messages were dropped — conversation continues unchanged."
+)
+
 # Formatted from the same constants the emission sites use, so noise-filter tests exercise the ACTUAL wording.
 ROUTINE_COMPRESSION_STATUS_SAMPLES = (
     COMPACTION_STATUS, COMPACTION_HEARTBEAT_STATUS, COMPACTION_DONE_STATUS,
@@ -2880,10 +2891,7 @@ def _salvage_or_refuse_grown_transcript(
         with contextlib.suppress(Exception):
             agent.context_compressor._last_compress_refused_would_grow = True
         with contextlib.suppress(Exception):
-            agent._emit_warning(
-                "⚠️ Compression refused: the generated summary would have GROWN the conversation instead of "
-                "shrinking it. No messages were dropped — conversation continues unchanged."
-            )
+            agent._emit_warning(COMPRESSION_REFUSED_WOULD_GROW_WARNING)
         _existing_sp = _existing_system_prompt(agent, system_message)
         _emit_aborted_attempt_telemetry(agent, attempt_started_at, "would_grow")
         # Count the refusal as an ineffective-compaction strike so the anti-thrash

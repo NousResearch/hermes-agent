@@ -72,6 +72,15 @@ describe('reading a page for the marks it declares', () => {
     )
   })
 
+  test('decodes HTML-encoded query separators in declared icon URLs', () => {
+    const found = iconCandidatesFromHtml(
+      '<link rel="icon" href="/~gitbook/image?url=icon.png&amp;width=48&amp;height=48">',
+      'https://developers.gamma.app'
+    )
+
+    assert.equal(found[0].url, 'https://developers.gamma.app/~gitbook/image?url=icon.png&width=48&height=48')
+  })
+
   test('a <base href> wins over the page URL, as a browser would resolve it', () => {
     const found = iconCandidatesFromHtml(
       '<base href="https://cdn.acme.test/"><link rel="icon" href="mark.png">',
@@ -209,6 +218,10 @@ describe('deciding whether bytes are actually an image', () => {
     // content-type: image/png often enough that believing the header is how
     // you end up rendering a broken-image box.
     assert.equal(imageMime('image/png', HTML_BYTES), '')
+  })
+
+  test('sniffing works when the server omits content type', () => {
+    assert.equal(imageMime(undefined, PNG), 'image/png')
   })
 
   test('an SVG whose opening tag is past the sniff window is trusted on its header', () => {

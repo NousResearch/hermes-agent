@@ -217,6 +217,18 @@ class TestExecuteCodeIntegration:
 class TestTerminalIntegration:
     """Verify that the passthrough is checked in terminal's env sanitizers."""
 
+    def test_multiplex_unscoped_child_keeps_registered_process_value(self, monkeypatch):
+        """Restart-safe workers may forward explicitly allowlisted process env."""
+        from tools.environments.local import build_subprocess_env
+
+        register_env_passthrough(["SERVICE_TOKEN"])
+        monkeypatch.setenv("SERVICE_TOKEN", "process-session-token")
+        ss.set_multiplex_active(True)
+
+        child_env = build_subprocess_env(scrub_secrets=True, inherit_profile_home=True)
+
+        assert child_env["SERVICE_TOKEN"] == "process-session-token"
+
     def test_background_terminal_uses_active_profile_for_passthrough(self, monkeypatch):
         """Background/PTY terminal children must use the routed profile value."""
         from tools.environments.local import _sanitize_subprocess_env

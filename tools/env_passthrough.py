@@ -117,9 +117,10 @@ def resolve_passthrough_value(name: str, fallback: str | None = None) -> str | N
     """Resolve an allowlisted variable without crossing profile boundaries. ``fallback``
     is what the caller would have forwarded before secret scopes existed (a snapshot of
     ``os.environ`` / the profile ``.env``). An active multiplex scope is authoritative:
-    a missing key returns ``None``, never the process-global env, and an unscoped read
-    raises the fail-closed ``UnscopedSecretError``. Outside multiplexing an installed
-    scope keeps overlay semantics and an unscoped caller keeps its fallback."""
+    a missing key returns ``None``, never the process-global env. An unscoped multiplex
+    caller may forward a present fallback only when the key is explicitly allowlisted;
+    otherwise resolution fails closed. Outside multiplexing an installed scope keeps
+    overlay semantics and an unscoped caller keeps its fallback."""
     from agent.secret_scope import (
         _is_global_env, current_secret_scope, get_secret, is_multiplex_active)
     # Global terminal/runtime settings are not profile secrets; ``fallback`` is
@@ -128,6 +129,8 @@ def resolve_passthrough_value(name: str, fallback: str | None = None) -> str | N
         return fallback
     multiplex_active = is_multiplex_active()
     if current_secret_scope() is None:
+        if multiplex_active and fallback is not None and is_env_passthrough(name):
+            return fallback
         return get_secret(name) if multiplex_active else fallback
     return get_secret(name, None if multiplex_active else fallback)
 

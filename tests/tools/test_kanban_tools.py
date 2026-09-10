@@ -14,6 +14,22 @@ from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 from hermes_cli import kanban_db_connect as kbc  # module-level: fleet tests use it outside the local-import helpers
+from hermes_cli import profiles as _profiles
+
+# Captured at import (collection), before any autouse fixture runs. The fleet's
+# ``_neutralize_kanban_assignee_phantom_guard`` (tests/conftest.py) makes
+# ``profile_exists`` always True for kanban nodeids so synthetic assignees are not
+# parked; upstream's reviewer-guard tests (#106163) need the real predicate, and
+# restore it locally rather than weakening the fleet neutraliser for everyone.
+_REAL_PROFILE_EXISTS = _profiles.profile_exists
+
+
+def _use_real_profile_exists(monkeypatch):
+    # String target: resolve the CURRENT hermes_cli.profiles — some fleet tests purge
+    # hermes_cli.* from sys.modules and re-import, so the module object imported above
+    # can be stale by the time this runs. The captured function reads HERMES_HOME at
+    # call time, so it is still the real predicate.
+    monkeypatch.setattr("hermes_cli.profiles.profile_exists", _REAL_PROFILE_EXISTS)
 
 
 # ---------------------------------------------------------------------------
@@ -304,6 +320,46 @@ def test_complete_orchestrator_with_kanban_children_is_accepted(worker_env, monk
         assert run.summary == "decomposed goal into children"
     finally:
         conn.close()
+def test_request_review_rejects_unknown_reviewer_without_mutation(monkeypatch, worker_env, tmp_path):
+    """#106163: a non-profile ``reviewer`` (e.g. the literal "reviewer") must be
+    refused with an error the model sees, leaving the task running under the
+    implementer — never parked in ``review`` on an assignee nobody can spawn."""
+    _use_real_profile_exists(monkeypatch)
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+    from tools import kanban_tools as kt
+
+    (tmp_path / ".hermes" / "profiles" / "verifier").mkdir(parents=True)
+    with kbc.connect() as conn:
+        before = kb.get_task(conn, worker_env)
+        before_events = kb.list_events(conn, worker_env)
+    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(before.current_run_id))
+
+    out = json.loads(kt._handle_request_review({"summary": "Ready for review.", "reviewer": "reviewer"}))
+
+    assert "'reviewer'" in out["error"] and "verifier" in out["error"]
+    with kbc.connect() as conn:
+        after = kb.get_task(conn, worker_env)
+        assert (after.status, after.assignee, after.current_run_id) == ("running", "test-worker", before.current_run_id)
+        assert kb.list_events(conn, worker_env) == before_events
+
+
+def test_request_review_accepts_installed_profile(monkeypatch, worker_env, tmp_path):
+    _use_real_profile_exists(monkeypatch)
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+    from tools import kanban_tools as kt
+
+    (tmp_path / ".hermes" / "profiles" / "verifier").mkdir(parents=True)
+    with kbc.connect() as conn:
+        monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(kb.get_task(conn, worker_env).current_run_id))
+
+    out = json.loads(kt._handle_request_review({"summary": "Ready for review.", "reviewer": "verifier"}))
+
+    assert out["ok"] is True
+    with kbc.connect() as conn:
+        task = kb.get_task(conn, worker_env)
+        assert (task.status, task.assignee) == ("review", "verifier")
 
 
 def test_complete_goal_mode_rejected_by_judge(monkeypatch, tmp_path):
@@ -569,6 +625,35 @@ def test_create_happy_path(worker_env):
         assert child.assignee == "peer"
     finally:
         conn.close()
+
+
+@pytest.mark.parametrize("explicit", [{"workspace_kind": "scratch"}, {"project": ""}])
+@pytest.mark.parametrize("target_scoped", [False, True])
+def test_create_explicit_scratch_ignores_ambient_board_project(
+    worker_env, tmp_path, explicit, target_scoped,
+):
+    """#106342: an explicit scratch / empty project wins over the project the
+    session's current board (and, when scoped, the target board itself) carries.
+    Omitting both still inherits the target board's project."""
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import projects_db as pdb
+    from tools import kanban_tools as kt
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    with pdb.connect_closing() as pconn:
+        project_id = pdb.create_project(pconn, name="Ambient", primary_path=str(repo))
+    kb.write_board_metadata("default", project_id=project_id)
+    kb.create_board("target", name="Target", project_id=project_id if target_scoped else "")
+
+    def create(**extra):
+        result = json.loads(kt._handle_create(
+            {"board": "target", "title": "card", "assignee": "peer", **extra}))
+        assert result["ok"] is True
+        return result["workspace_kind"], result["project_id"]
+
+    assert create(**explicit) == ("scratch", None)
+    assert create() == (("worktree", project_id) if target_scoped else ("scratch", None))
 
 
 def test_link_happy_path(worker_env):

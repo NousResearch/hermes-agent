@@ -53,11 +53,6 @@ def _register_subagent(record: Dict[str, Any]) -> None:
         return
     record.setdefault("accepting_steer", True)
     with _active_subagents_lock:
-        owner = record.get("owner_session_record")
-        if owner is not None and record.get("owner_transport") is not None:
-            # Child construction can finish after its captured dispatch transport
-            # was replaced. The exact session object retains generation authority.
-            record["owner_transport"] = owner.get("transport")
         _active_subagents[sid] = record
 
 def _unregister_subagent(subagent_id: str, *, agent: Any = None) -> None:
@@ -110,9 +105,19 @@ def interrupt_subagent(subagent_id: str) -> bool:
         return False
 
 def _subagent_transport_matches(record, transport) -> bool:
+    """Authority follows the owning session's LIVE transport slot, read at check time.
+
+    ``owner_transport`` on the record is only the capture-time marker that a gateway session
+    commissioned the child (``None`` = no RPC authority ever). The slot is authoritative because
+    every reattach path (prompt.submit, queued drain, resume, activate, viewer failover) already
+    mutates it; a per-record copy needed a matching registry sync at each of those sites and two
+    were missed (#106663). Records whose owner is not a session dict keep the exact-object rule."""
     from tui_gateway.transport import FanoutTransport
 
-    bound = record.get("owner_transport")
+    if record.get("owner_transport") is None:
+        return False
+    owner = record.get("owner_session_record")
+    bound = owner.get("transport") if isinstance(owner, dict) else record.get("owner_transport")
     return bound is transport or (isinstance(bound, FanoutTransport) and bound.contains(transport))
 
 

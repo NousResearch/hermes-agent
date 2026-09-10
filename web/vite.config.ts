@@ -79,6 +79,16 @@ export default defineConfig({
     alias: {
       "@": path.resolve(__dirname, "./src"),
       "@hermes/shared": path.resolve(__dirname, "../apps/shared/src"),
+      // The dashboard ships its own corrected copy of the upstream
+      // `@nous-research/ui` `Select` (portal-based dropdown, see
+      // src/components/ui/select.tsx). Aliasing the published module keeps
+      // every existing `Select` usage working while ensuring the option menu
+      // is never clipped by / buried under an ancestor stacking context —
+      // the upstream component renders it `absolute` inside the trigger.
+      "@nous-research/ui/ui/components/select": path.resolve(
+        __dirname,
+        "src/components/ui/select.tsx",
+      ),
     },
     // When @nous-research/ui is symlinked via `file:../../design-language`,
     // Node's module resolution would pick up shared deps from

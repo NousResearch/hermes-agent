@@ -30,6 +30,18 @@ def unbind_native_transport(authority, actor):
     getattr(authority, '_native_legacy_transports', {}).pop(actor.transport_id, None)
 
 
+def require_history_claim(authority, conn, actor, sid):
+    """Import receipts confer ownership; merely knowing an old ID does not."""
+    from hermes_state_mutation_binding import BINDING_PREFIX
+    row = conn.execute('SELECT session_key,chat_id,origin_json FROM sessions WHERE id=?', (sid,)).fetchone()
+    if row is None or any(row):
+        return
+    if conn.execute('SELECT 1 FROM state_meta WHERE key=?', (BINDING_PREFIX + sid,)).fetchone():
+        return  # authorize_history checks the already committed importer identity.
+    if getattr(authority, '_native_legacy_transports', {}).get(actor.transport_id) != actor:
+        raise RuntimeStoreError('permission_denied')
+
+
 def resolve_local_target(authority, actor, sid):
     """Resolve physical history IDs without silently adopting canonical corruption."""
     db = authority.db
@@ -44,7 +56,8 @@ def resolve_local_target(authority, actor, sid):
     if bound or str(row.get('chat_id') or '').startswith('local-'):
         ref = SessionRef(authority.profile_id, row['chat_id'])
         authority.authorize(actor, ref, 'session:read')
-        return ref
+        from gateway.session_local_recovery import restore_local_session
+        return restore_local_session(authority, ref.session_id) if bound else ref
     return adopt_legacy_session(authority, actor, row)
 
 

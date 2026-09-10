@@ -36,7 +36,7 @@ def _target(authority, actor):
     authority.authorize(actor, ref, 'session:submit')
     live = authority.sessions[ref.session_id]
     entry = authority.runner.session_store.lookup_by_session_key(live.route)
-    if live.source.platform != Platform.LOCAL or entry is None or entry.session_id != tip:
+    if live.source.platform != Platform.LOCAL or entry is None:
         raise RuntimeStoreError('admission_conflict')
     return ref, live, entry
 

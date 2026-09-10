@@ -30,12 +30,18 @@ async def test_legacy_history_adoption_is_native_owned_atomic_and_retryable(tmp_
     original = db.get_session('old-cli')
     runner = SimpleNamespace(session_store=store, _session_db=db, adapters={}, _draining=False)
     authority = await initialize_session_authority(runner, profile_id=str(tmp_path), instance_id='first')
-    caps = frozenset({'session:create', 'session:read', 'session:submit'})
+    caps = frozenset({'session:create', 'session:read', 'session:submit', 'session:control'})
     remote = Principal('remote', str(tmp_path), caps, 'remote-socket')
     native = Principal('native', str(tmp_path), caps, 'native-socket')
     authority._native_legacy_transports = {native.transport_id: native}
     with pytest.raises(RuntimeStoreError, match='not_found'):
         resolve_titled_session(authority, remote, 'My retained work')
+    from gateway.session_mutations import mutate_session
+    from gateway.session_contract import SessionRef
+    with pytest.raises(RuntimeStoreError, match='permission_denied'):
+        await mutate_session(authority, remote, SessionRef(authority.profile_id, 'old-cli'),
+            {'session_id': 'old-cli', 'request_id': 'steal', 'expected_revision': original['runtime_revision'],
+             'operation': 'rename', 'payload': {'title': 'stolen'}})
     assert db.get_session('old-cli') == original
     ref = resolve_titled_session(authority, native, 'My retained work')
     assert ref == resolve_titled_session(authority, native, 'old-cli')
@@ -110,4 +116,13 @@ async def test_legacy_adoption_refuses_live_owner_and_foreign_profile_without_wr
             assert not conn.execute("SELECT 1 FROM state_meta WHERE key LIKE 'gateway.local_policy.v1:%'").fetchall()
     finally:
         release_active_session(lease)
-    assert resolve_titled_session(authority, native, 'old-live')
+    ref = resolve_titled_session(authority, native, 'old-live')
+    db.set_session_title(ref.session_id, 'Bot Chat')
+    from hermes_state_local_lineage import reset_local_target
+    from hermes_state_local import local_receipt
+    receipt = local_receipt(db, ref.session_id)
+    entry = dict(receipt['entry'], session_id='reset-tip')
+    reset_local_target(db, epoch=authority.epoch, parent_session_id=ref.session_id, entry=entry)
+    from gateway.session_bot import _target
+    submitter = Principal(native.subject, native.profile_id, native.capabilities | {'session:submit'}, native.transport_id)
+    assert _target(authority, submitter)[2].session_id == 'reset-tip'

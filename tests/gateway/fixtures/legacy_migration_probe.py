@@ -65,8 +65,8 @@ def probe(base, legacy_root, owner_root=None):
             cwd=legacy_root, env=env, stdin=subprocess.DEVNULL, check=True, timeout=30)
         env['PYTHONPATH'] = str(root)
         with daemon(root, home, env, barrier=False) as (_, desc):
-            first, retry = asyncio.run(run(desc))
             cli(root, '--resume', sid, '-q', 'CLI_NEW_INPUT')
+            first, retry = asyncio.run(run(desc))
         async def restarted(desc):
             async with websocket(home, desc) as ws:
                 result = await rpc(ws, 'session.resume', session_id=sid)

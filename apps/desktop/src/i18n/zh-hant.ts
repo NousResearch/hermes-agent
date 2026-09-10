@@ -3148,7 +3148,7 @@ export const zhHant = defineLocale({
         unavailable: '未提供',
         empty: '已提供，但為空',
         receivedPayload: '這是桌面端收到的承載內容。',
-        loadMore: '載入更多',
+        nextChunk: '下一段',
         sections: {
           arguments: '引數',
           command: '指令',

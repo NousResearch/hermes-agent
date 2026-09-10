@@ -2803,7 +2803,7 @@ export const ar = defineLocale({
         unavailable: 'غير متوفر',
         empty: 'متوفر، لكنه فارغ',
         receivedPayload: 'هذه هي الحمولة التي استلمها تطبيق سطح المكتب.',
-        loadMore: 'تحميل المزيد',
+        nextChunk: 'المقطع التالي',
         sections: {
           arguments: 'الوسائط',
           command: 'الأمر',

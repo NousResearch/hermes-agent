@@ -3642,7 +3642,7 @@ export const ru = defineLocale({
         unavailable: 'Не предоставлено',
         empty: 'Предоставлено, но пусто',
         receivedPayload: 'Это данные, полученные Desktop.',
-        loadMore: 'Загрузить ещё',
+        nextChunk: 'Следующий фрагмент',
         sections: {
           arguments: 'Аргументы',
           command: 'Команда',

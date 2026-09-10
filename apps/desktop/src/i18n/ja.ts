@@ -3260,7 +3260,7 @@ export const ja = defineLocale({
         unavailable: '提供されていません',
         empty: '提供されていますが空です',
         receivedPayload: 'これは Desktop が受信したペイロードです。',
-        loadMore: 'さらに読み込む',
+        nextChunk: '次の範囲',
         sections: {
           arguments: '引数',
           command: 'コマンド',

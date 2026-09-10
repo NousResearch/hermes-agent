@@ -607,9 +607,8 @@ function ToolEntry({ part }: ToolEntryProps) {
             {toolViewMode !== 'technical' && (
               <Button
                 aria-label={copy.detailsAction}
-                className="h-5 gap-1 rounded-md px-1 text-[0.7rem]"
                 onClick={() => setDetailsOpen(true)}
-                size="xs"
+                size="micro"
                 type="button"
                 variant="ghost"
               >

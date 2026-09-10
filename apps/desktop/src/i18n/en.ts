@@ -3710,7 +3710,7 @@ export const en: Translations = {
         unavailable: 'Not provided',
         empty: 'Provided, but empty',
         receivedPayload: 'This is the payload Desktop received.',
-        loadMore: 'Load more',
+        nextChunk: 'Next chunk',
         sections: {
           arguments: 'Arguments',
           command: 'Command',

@@ -3844,7 +3844,7 @@ export const zh: Translations = {
         unavailable: '未提供',
         empty: '已提供，但为空',
         receivedPayload: '这是桌面端收到的载荷。',
-        loadMore: '加载更多',
+        nextChunk: '下一段',
         sections: {
           arguments: '参数',
           command: '命令',

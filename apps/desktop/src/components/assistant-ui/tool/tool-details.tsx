@@ -1,6 +1,6 @@
 'use client'
 
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { CopyButton } from '@/components/ui/copy-button'
@@ -14,7 +14,6 @@ import { cn } from '@/lib/utils'
 import { parseMaybeObject, type ToolPart } from './fallback-model'
 
 const DETAIL_WINDOW_CHARS = 20_000
-const SEARCH_CONTEXT_CHARS = 2_000
 const MAX_SEARCH_MATCHES = 1_000
 
 export type ToolDetailSectionId = 'arguments' | 'command' | 'diff' | 'metadata' | 'result' | 'stderr' | 'stdout'
@@ -113,27 +112,44 @@ interface ToolDetailsDialogProps {
 export function ToolDetailsDialog({ inlineDiff, onOpenChange, open, part }: ToolDetailsDialogProps) {
   const { t } = useI18n()
   const copy = t.assistant.tool.details
-  const sections = useMemo(() => buildToolDetailSections(part, inlineDiff), [inlineDiff, part])
+  const [sections] = useState(() => buildToolDetailSections(part, inlineDiff))
   const [selectedId, setSelectedId] = useState<ToolDetailSectionId>('arguments')
   const [query, setQuery] = useState('')
   const [activeMatch, setActiveMatch] = useState(0)
   const [wrap, setWrap] = useState(true)
-  const [visibleChars, setVisibleChars] = useState(DETAIL_WINDOW_CHARS)
+  const [windowStart, setWindowStart] = useState(0)
+  const activeMatchRef = useRef<HTMLElement>(null)
   const selected = sections.find(item => item.id === selectedId) ?? sections[0]!
   const matches = useMemo(() => findTextMatches(selected.copyText, query), [query, selected.copyText])
   const normalizedMatch = matches.length ? Math.min(activeMatch, matches.length - 1) : 0
   const matchOffset = matches[normalizedMatch]
-  const searchStart = matchOffset === undefined ? 0 : Math.max(0, matchOffset - SEARCH_CONTEXT_CHARS)
-  const searchEnd = Math.min(selected.copyText.length, searchStart + DETAIL_WINDOW_CHARS)
-  const visibleText = query ? selected.copyText.slice(searchStart, searchEnd) : selected.copyText.slice(0, visibleChars)
-  const hasMore = !query && visibleChars < selected.copyText.length
+  const maxWindowStart = Math.max(0, selected.copyText.length - DETAIL_WINDOW_CHARS)
+
+  const searchStart =
+    matchOffset === undefined
+      ? windowStart
+      : Math.min(maxWindowStart, Math.max(0, matchOffset - Math.floor(DETAIL_WINDOW_CHARS / 2)))
+
+  const visibleStart = query ? searchStart : windowStart
+  const visibleEnd = Math.min(selected.copyText.length, visibleStart + DETAIL_WINDOW_CHARS)
+
+  const visibleText = selected.copyText.slice(visibleStart, visibleEnd)
+  const visibleMatchOffset = matchOffset === undefined ? -1 : matchOffset - visibleStart
+  const visibleMatchLength = Math.min(query.length, visibleText.length - visibleMatchOffset)
+  const hasVisibleMatch = Boolean(query && visibleMatchOffset >= 0 && visibleMatchLength > 0)
+  const hasMore = !query && visibleEnd < selected.copyText.length
+
   const sectionLabel = (id: ToolDetailSectionId) => copy.sections[id]
+
+  useEffect(() => {
+    activeMatchRef.current?.scrollIntoView?.({ block: 'center', inline: 'center' })
+  }, [normalizedMatch, query, selected.id])
 
   const chooseSection = (id: ToolDetailSectionId) => {
     setSelectedId(id)
     setQuery('')
     setActiveMatch(0)
-    setVisibleChars(DETAIL_WINDOW_CHARS)
+    setWindowStart(0)
   }
 
   return (
@@ -186,7 +202,7 @@ export function ToolDetailsDialog({ inlineDiff, onOpenChange, open, part }: Tool
                 type="button"
                 variant="ghost"
               >
-                <ChevronLeft className="size-3.5" />
+                <ChevronLeft />
               </Button>
               <Button
                 aria-label={copy.nextMatch}
@@ -196,7 +212,7 @@ export function ToolDetailsDialog({ inlineDiff, onOpenChange, open, part }: Tool
                 type="button"
                 variant="ghost"
               >
-                <ChevronRight className="size-3.5" />
+                <ChevronRight />
               </Button>
               <Button onClick={() => setWrap(value => !value)} size="xs" type="button" variant="ghost">
                 {wrap ? copy.unwrap : copy.wrap}
@@ -220,7 +236,21 @@ export function ToolDetailsDialog({ inlineDiff, onOpenChange, open, part }: Tool
                   wrap ? 'whitespace-pre-wrap break-words' : 'whitespace-pre break-normal'
                 )}
               >
-                {visibleText}
+                {hasVisibleMatch ? (
+                  <>
+                    {visibleText.slice(0, visibleMatchOffset)}
+                    <mark
+                      className="bg-(--ui-row-active-background) text-inherit"
+                      data-match-offset={matchOffset}
+                      ref={activeMatchRef}
+                    >
+                      {visibleText.slice(visibleMatchOffset, visibleMatchOffset + visibleMatchLength)}
+                    </mark>
+                    {visibleText.slice(visibleMatchOffset + visibleMatchLength)}
+                  </>
+                ) : (
+                  visibleText
+                )}
               </LogView>
             )}
           </div>
@@ -228,12 +258,12 @@ export function ToolDetailsDialog({ inlineDiff, onOpenChange, open, part }: Tool
             <span>{copy.receivedPayload}</span>
             {hasMore ? (
               <Button
-                onClick={() => setVisibleChars(value => value + DETAIL_WINDOW_CHARS)}
+                onClick={() => setWindowStart(value => value + DETAIL_WINDOW_CHARS)}
                 size="xs"
                 type="button"
                 variant="ghost"
               >
-                {copy.loadMore}
+                {copy.nextChunk}
               </Button>
             ) : null}
           </div>

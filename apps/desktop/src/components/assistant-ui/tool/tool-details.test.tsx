@@ -56,6 +56,26 @@ describe('findTextMatches', () => {
 })
 
 describe('ToolDetailsDialog', () => {
+  it('snapshots full serialization for each dialog mount', () => {
+    const firstPart = { result: { output: 'first' }, toolName: 'terminal', type: 'tool-call' as const }
+    const secondPart = { result: { output: 'second' }, toolName: 'terminal', type: 'tool-call' as const }
+
+    const { rerender, unmount } = render(
+      <ToolDetailsDialog inlineDiff="" onOpenChange={() => undefined} open part={firstPart} />
+    )
+
+    fireEvent.click(screen.getByRole('tab', { name: 'stdout' }))
+    expect(screen.getByRole('tabpanel').textContent).toBe('first')
+
+    rerender(<ToolDetailsDialog inlineDiff="" onOpenChange={() => undefined} open part={secondPart} />)
+    expect(screen.getByRole('tabpanel').textContent).toBe('first')
+
+    unmount()
+    render(<ToolDetailsDialog inlineDiff="" onOpenChange={() => undefined} open part={secondPart} />)
+    fireEvent.click(screen.getByRole('tab', { name: 'stdout' }))
+    expect(screen.getByRole('tabpanel').textContent).toBe('second')
+  })
+
   it('selects and copies exact short output instead of the command', async () => {
     const writeClipboard = vi.fn().mockResolvedValue(undefined)
     desktopWindow.hermesDesktop = { writeClipboard } as unknown as Window['hermesDesktop']
@@ -80,9 +100,11 @@ describe('ToolDetailsDialog', () => {
     await waitFor(() => expect(writeClipboard).toHaveBeenCalledWith('ok'))
   })
 
-  it('searches beyond the first render window, toggles wrapping and dismisses', () => {
+  it('scrolls each active full-text match into view, toggles wrapping and dismisses', async () => {
     const onOpenChange = vi.fn()
-    const output = `${'a'.repeat(25_000)}far-away-match${'b'.repeat(25_000)}`
+    const scrollIntoView = vi.fn()
+    Element.prototype.scrollIntoView = scrollIntoView
+    const output = `${'a'.repeat(25_000)}far-away-match${'b'.repeat(25_000)}far-away-match`
 
     render(
       <ToolDetailsDialog
@@ -94,17 +116,53 @@ describe('ToolDetailsDialog', () => {
     )
 
     fireEvent.click(screen.getByRole('tab', { name: 'stdout' }))
+    scrollIntoView.mockClear()
     fireEvent.change(screen.getByRole('textbox', { name: 'Search selected section' }), {
       target: { value: 'far-away-match' }
     })
 
-    expect(screen.getByText('1/1')).toBeTruthy()
-    expect(screen.getByRole('tabpanel').textContent).toContain('far-away-match')
+    expect(screen.getByText('1/2')).toBeTruthy()
+    const firstMatch = screen.getByText('far-away-match')
+    expect(firstMatch.getAttribute('data-match-offset')).toBe('25000')
+    await waitFor(() => expect(scrollIntoView).toHaveBeenCalled())
+
+    fireEvent.click(screen.getByRole('button', { name: 'Next match' }))
+    expect(screen.getByText('2/2')).toBeTruthy()
+    const secondMatch = screen.getByText('far-away-match')
+    expect(secondMatch.getAttribute('data-match-offset')).toBe('50014')
+    await waitFor(() => expect(scrollIntoView).toHaveBeenCalledTimes(2))
+
+    fireEvent.click(screen.getByRole('button', { name: 'Previous match' }))
+    expect(screen.getByText('1/2')).toBeTruthy()
+    await waitFor(() => expect(scrollIntoView).toHaveBeenCalledTimes(3))
 
     fireEvent.click(screen.getByRole('button', { name: 'No wrap' }))
     expect(screen.getByRole('button', { name: 'Wrap' })).toBeTruthy()
 
     fireEvent.click(screen.getByRole('button', { name: 'Close' }))
     expect(onOpenChange).toHaveBeenCalledWith(false)
+  })
+
+  it('advances through a long single line without growing the mounted payload', () => {
+    const output = `${'a'.repeat(20_000)}${'b'.repeat(20_000)}tail`
+
+    render(
+      <ToolDetailsDialog
+        inlineDiff=""
+        onOpenChange={() => undefined}
+        open
+        part={{ result: { output }, toolName: 'terminal', type: 'tool-call' }}
+      />
+    )
+
+    fireEvent.click(screen.getByRole('tab', { name: 'stdout' }))
+    expect(screen.getByRole('tabpanel').textContent).toBe('a'.repeat(20_000))
+
+    fireEvent.click(screen.getByRole('button', { name: 'Next chunk' }))
+    expect(screen.getByRole('tabpanel').textContent).toBe('b'.repeat(20_000))
+
+    fireEvent.click(screen.getByRole('button', { name: 'Next chunk' }))
+    expect(screen.getByRole('tabpanel').textContent).toBe('tail')
+    expect(screen.getByRole('tabpanel').textContent?.length).toBeLessThanOrEqual(20_000)
   })
 })

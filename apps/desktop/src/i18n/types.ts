@@ -3241,7 +3241,7 @@ export interface Translations {
         unavailable: string
         empty: string
         receivedPayload: string
-        loadMore: string
+        nextChunk: string
         sections: {
           arguments: string
           command: string

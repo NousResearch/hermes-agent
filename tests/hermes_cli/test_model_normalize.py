@@ -114,17 +114,28 @@ class TestDeepseekVSeriesPassThrough:
 # ── DeepSeek post-2026-07-24 alias remapping ───────────────────────────
 
 class TestDeepseekCanonicalAndReasonerMapping:
-    """Retired aliases and fuzzy names rewrite to deepseek-v4-flash.
+    """Retired aliases and fuzzy names rewrite to the current first-class id.
 
     DeepSeek cut off ``deepseek-chat`` / ``deepseek-reasoner`` on
-    2026-07-24; sending them on the wire returns HTTP 400.
+    2026-07-24; sending them on the wire returns HTTP 400. The id DeepSeek
+    documents today is ``deepseek-flash`` (V4.1-Flash), so that is the
+    rewrite target rather than the retired ``deepseek-v4-flash``.
     """
 
 
     def test_provider_path_rewrites_reasoner(self):
         assert (
             normalize_model_for_provider("deepseek-reasoner", "deepseek")
-            == "deepseek-v4-flash"
+            == "deepseek-flash"
+        )
+
+    def test_current_first_class_id_passes_through(self):
+        """``deepseek-flash`` must reach the wire unchanged — it is the id
+        DeepSeek documents today, so rewriting it would be a downgrade."""
+        assert _normalize_for_deepseek("deepseek-flash") == "deepseek-flash"
+        assert (
+            normalize_model_for_provider("deepseek-flash", "deepseek")
+            == "deepseek-flash"
         )
 
     @pytest.mark.parametrize("model", [
@@ -134,8 +145,8 @@ class TestDeepseekCanonicalAndReasonerMapping:
         "deepseek-reasoning-preview",
         "deepseek-cot-experimental",
     ])
-    def test_reasoner_keywords_map_to_v4_flash(self, model):
-        assert _normalize_for_deepseek(model) == "deepseek-v4-flash"
+    def test_reasoner_keywords_map_to_flash(self, model):
+        assert _normalize_for_deepseek(model) == "deepseek-flash"
 
 
 # ── Regression: issue #78796 ───────────────────────────────────────────

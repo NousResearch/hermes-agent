@@ -339,10 +339,13 @@ DEFAULT_CONTEXT_LENGTHS = {
     # Google / Gemma ("gemma4" is Ollama-style naming, e.g. gemma4:31b-cloud)
     "gemini": 1048576,
     "gemma-4": 256000, "gemma4": 256000, "gemma-4-31b": 256000, "gemma-3": 131072, "gemma": 8192,
-    # DeepSeek — V4 family is 1M; deepseek-chat/-reasoner alias v4-flash modes.
+    # DeepSeek — V4.1 family is 1M. The first-class id is now ``deepseek-flash``; the older
+    # ``deepseek-v4-flash`` / ``deepseek-chat`` / ``deepseek-reasoner`` still resolve server-side
+    # to V4.1-Flash, so every one of them stays at 1M. Bare ``deepseek`` keeps 128K on purpose:
+    # it is the short catch-all, and _longest_key_match prefers the longer (correct) key.
     # https://api-docs.deepseek.com/zh-cn/quick_start/pricing
     "deepseek-v4-pro": 1_000_000, "deepseek-v4-flash": 1_000_000, "deepseek-chat": 1_000_000,
-    "deepseek-reasoner": 1_000_000, "deepseek": 128000,
+    "deepseek-reasoner": 1_000_000, "deepseek-flash": 1_000_000, "deepseek": 128000,
     # Meta; Muse Spark family (1.1/1.2/1.3, -contributor(-free), meta/ prefixed) is 1M per OpenRouter,
     # models.dev and api.commandcode.ai /models — keep the "muse-spark" prefix (bare "muse" would match
     # muse-image/muse-voice). Thinking Machines inkling (covers inkling-small and :free/:batch variants)

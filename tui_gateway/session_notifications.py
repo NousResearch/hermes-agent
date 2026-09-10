@@ -626,11 +626,22 @@ def _wire_desktop_sinks() -> None:
 
     def _owner_sid(session) -> str:
         # session may be None (process already finished/pruned) — the tab can still linger and be closed.
-        session_key = str(getattr(session, "session_key", "") or "") if session is not None else ""
-        if not session_key:
-            return ""
+        origin_ui_session_id = str(getattr(session, "origin_ui_session_id", "") or "")
+        session_key = str(getattr(session, "session_key", "") or "")
         with _sessions_lock:
-            return next((sid for sid, s in _sessions.items() if str(s.get("session_key") or "") == session_key), "")
+            if origin_ui_session_id:
+                owner = _sessions.get(origin_ui_session_id)
+                if owner is not None and not owner.get("_finalized"):
+                    return origin_ui_session_id
+            if not session_key:
+                return ""
+            # Closed origins and legacy checkpoints use the newest live continuation.
+            live_matches = [
+                (float(s.get("last_active") or s.get("created_at") or 0.0), sid)
+                for sid, s in _sessions.items()
+                if str(s.get("session_key") or "") == session_key and not s.get("_finalized")
+            ]
+            return max(live_matches)[1] if live_matches else ""
     if getattr(process_registry, "on_output", None) is None:
         process_registry.on_output = lambda session, chunk: _emit(
             "agent.terminal.output", _owner_sid(session), {"process_id": session.id, "chunk": chunk})

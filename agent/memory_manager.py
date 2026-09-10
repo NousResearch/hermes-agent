@@ -492,10 +492,23 @@ class MemoryManager:
             return
         optional_kwargs = {"messages": messages, "turn_author": turn_author}
 
+        snapshot_providers = [p for p in providers
+                              if getattr(p, "sync_turn_snapshot_version", 0) == 1]
+        snapshot = None
+        if snapshot_providers:
+            from agent.memory_sync_snapshot import snapshot_completed_turn
+            snapshot = snapshot_completed_turn(
+                messages, session_id=session_id, user_content=user_content,
+                assistant_content=assistant_content)
+
         def _sync(provider: MemoryProvider) -> None:
             kwargs: Dict[str, Any] = {"session_id": session_id}
             for keyword, value in optional_kwargs.items():
-                if value is not None and self._provider_sync_accepts(provider, keyword):
+                if value is None or not self._provider_sync_accepts(provider, keyword):
+                    continue
+                if keyword == "messages" and provider in snapshot_providers:
+                    kwargs[keyword] = snapshot
+                else:
                     kwargs[keyword] = value
             provider.sync_turn(clean_user_content, assistant_content, **kwargs)
 

@@ -23,6 +23,52 @@ _None._
 
 ## Resolved
 
+### DECISION-2026-09-09-001 — Drive provisioning — bundle a Python toolchain on the drive, and how?
+
+- **Opened:** 2026-09-09 · **Base:** hermes@0e9fc2cc15 (0 behind upstream/main)
+- **Run:** RUN-2026-09-09-002 (opened + decided + implemented same run)
+- **Source:** `D:\logs\CODEX-BUNDLED-PYTHON-FEASIBILITY.md` (feasibility pass this
+  session); the Sandbox clean-machine gap noted after `NF-v0.8.2` — a recipient
+  drive still assumed `python`/`uv` already existed on the host `PATH`.
+- **Confidence:** Confirmed Fact — the feasibility pass read both the python.org
+  embeddable's limitations and `bootstrap-north-forge.ps1` / `nf-venv-state.ps1` /
+  `nf-readiness.ps1` in the tree; the "no conflict with R1" claim is from that read
+  and is now covered by tests.
+- **Supersedes:** — (adjacent to `DECISION-2026-09-06-003`, the drive-native
+  install model this completes; does not replace it).
+- **The call:** which interpreter artifact to ship on a drive, and how it gets
+  there, so `bootstrap` can build its venv with nothing on the recipient's PATH.
+- **Options:**
+  - **A — python.org Windows *embeddable* package + get-pip/virtualenv layering.**
+    Official artifact, ~45–55 MB usable. But the embeddable is deliberately not a
+    venv base: no `pip`/`ensurepip`, and its `._pth` isolation breaks venv `site`
+    activation unless edited/deleted. More moving parts, more fragile across minor
+    bumps.
+  - **B — bundle `uv.exe` + a `python-build-standalone` CPython 3.11** (the
+    distribution `uv` itself uses; relocatable, makes working venvs, carries pip).
+    `uv venv --python <bundled path>` then needs no pip in the base and no `._pth`
+    surgery. ~45–90 MB.
+  - **How it arrives:** committed via git/LFS · fetched at recipient first-launch ·
+    **admin prepares one master and copies it per drive during provisioning.**
+- **Decided:** 2026-09-09 (`RUN-2026-09-09-002`) — chose **B**, staged as a
+  **drive sibling `<parent>\<leaf>-toolchain\`** (mirroring `-venv` / `-data`),
+  **never git-tracked**, **prepared once by the admin and copied onto each drive
+  during provisioning** — not fetched at recipient first-launch, not stored via
+  git/LFS. Rationale: matches the existing sibling-folder pattern; keeps the
+  offline-capable promise intact (no first-launch network); keeps clones lean.
+  Resolution order in `bootstrap`: **bundled toolchain → host PATH (admin/dev
+  fallback only, logged as "using host toolchain (admin/dev)") → the existing
+  clear error, unchanged.** Implementing change: **`CHG-2026-09-09-003`**
+  (`scripts/lib/nf-toolchain.ps1` new read-only resolver; `bootstrap-north-forge.ps1`
+  resolution-order change only; `docs/BUILDING-A-DRIVE.md` +
+  `docs/toolchain/THIRD-PARTY-NOTICES.txt`; behavioural tests incl. a
+  zero-PATH bundled build). No change to R1's ownership classifier or readiness
+  probe — the toolchain folder is an input to venv creation, never a venv, and
+  nothing in R1 classifies, deletes, or trusts it.
+- **Blocking:** was blocking the Sandbox clean-machine retest; now unblocked.
+- **Owner:** Kenneth C. Walker Jr.
+- **Status:** DECIDED
+
 ### DECISION-2026-09-07-002 — Rebrand-claim wording — "engine used unmodified" / "full rebrand"
 
 - **Opened:** 2026-09-07 · **Base:** hermes@233757037d (6 behind upstream/main)
@@ -367,3 +413,4 @@ _None._
 | DECISION-2026-09-07-001 | 2026-09-07 | Branding | Keep the stock Hermes launch splash, or swap it? | DECIDED — C (swap via a North Forge skin), landed `CHG-2026-09-07-012`; reaffirmed `RUN-2026-09-07-006` (deferral floated then withdrawn, never executed) | 2026-09-07 |
 | DECISION-2026-09-07-003 | 2026-09-07 | Access architecture | What is an "edition", and how is Basic tier enforced? | DECIDED — A (edition = Hermes profile; HMAC-signed `provisioning.json` + gates at every profile-selection path), landed `CHG-2026-09-07-022` (`NF-v0.6.0`). Signature is tamper-evident not tamper-proof; hardened key store deferred to `DECISION-2026-09-06-003` | 2026-09-07 |
 | DECISION-2026-09-07-002 | 2026-09-07 | Branding wording | "engine used unmodified" / "full rebrand" broader than the code (Codex F-07) | **DECIDED** — A (tighten wording), `RUN-2026-09-08-004` / `CHG-2026-09-08-010`+`-011`. README ×2 + 3 translations + BRANDING ×2 reworded; `cli.py` welcome + `_parser.py` chat description moved to North Forge; BRANDING names the deliberately-Hermes surfaces | 2026-09-08 |
+| DECISION-2026-09-09-001 | 2026-09-09 | Drive provisioning | Bundle a Python toolchain on the drive, and how? | **DECIDED** — B (bundle `uv.exe` + a `python-build-standalone` CPython 3.11 as a never-git-tracked drive sibling `<parent>\<leaf>-toolchain\`, admin-prepared once and copied per drive — not fetched at first-launch, not git/LFS). `RUN-2026-09-09-002` / `CHG-2026-09-09-003` (`NF-v0.9.0`). Resolution order: bundled → host PATH (admin/dev, logged) → existing error. No change to R1 | 2026-09-09 |

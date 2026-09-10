@@ -8,6 +8,76 @@ Heading format: `## [NF-vX.Y.Z] — YYYY-MM-DD — hermes@<sha> (N behind upstre
 
 ---
 
+## [NF-v0.9.0] — 2026-09-09 — hermes@0e9fc2cc15 (0 behind upstream/main)
+
+**`RUN-2026-09-09-002` — `DECISION-2026-09-09-001` decided + implemented same
+run: a North Forge drive can now carry its own Python toolchain, so
+`bootstrap-north-forge.ps1` builds its venv with nothing on the recipient's
+`PATH` and no network.** **MINOR** — new drive-provisioning capability + a new
+admin workflow, on top of upstream; no schema or engine change, no change to R1.
+Committed on base `hermes@a60c74b52a` (`NF-v0.8.2` HEAD), then
+`git pull --rebase origin main` and pushed. `DECISION-2026-09-09-001`: chose
+**B** — bundle `uv.exe` + a `python-build-standalone` CPython 3.11 as a
+**never-git-tracked drive sibling `<parent>\<leaf>-toolchain\`**, admin-prepared
+once and copied per drive (not fetched at first-launch, not git/LFS). Feasibility
+groundwork: `D:\logs\CODEX-BUNDLED-PYTHON-FEASIBILITY.md`.
+
+Verification (Windows-native, `scripts/run_tests.sh` targeted):
+`test_bootstrap_north_forge_path_safety` 29 (25 pre-existing + 4 toolchain, incl.
+a **zero-PATH bundled build** — real uv staged + a junction to a
+`python-build-standalone` CPython, `PATH` scrubbed to System32),
+`test_bootstrap_launcher_hardening` 15, `test_nf_preflight_readiness` 10,
+`test_session_listing` 18. No regression in R1's state-matrix. Full `run_tests.sh`
+not run — same standing reason (`.git/index.lock` contention + the pre-existing
+`tests/acp/**` · `tests/agent/**` baseline).
+
+### Added
+
+- **CHG-2026-09-09-003** — **Drive-native bundled Python toolchain: `bootstrap`
+  resolves a shipped toolchain before it ever looks at `PATH`.** New
+  `scripts/lib/nf-toolchain.ps1` — a **read-only** resolver `Get-NfBundledToolchain`
+  (+ `Test-NfExecutable`) that locates `<parent>\<leaf>-toolchain\uv\uv.exe` and
+  `\python\python.exe` (a sibling of the checkout, mirroring `-venv` / `-data`),
+  sanity-checks both are present non-empty `.exe`s, and returns
+  `{ Root; UvExe; PyExe; Present }`. It never downloads, writes, deletes, exits,
+  or emits. `scripts/bootstrap-north-forge.ps1` dot-sources it alongside
+  `nf-readiness.ps1` / `nf-venv-state.ps1` and its venv-creation branch now
+  resolves the toolchain **bundled first, host `PATH` second**:
+  1. bundled `uv` + bundled interpreter → `uv venv --python <bundled python.exe>`
+     (fully offline, no `PATH`, no uv-managed download);
+  2. `uv` present (bundled or host) but no bundled interpreter →
+     `uv venv --python 3.11` *(unchanged from before)*;
+  3. no `uv` → host `python -m venv` *(unchanged)*;
+  4. nothing → `"No 'uv' and no 'python' on PATH. Install Python 3.11+ or uv, then
+     re-run."` **verbatim, unchanged.**
+  Every run logs a stable `[bootstrap] toolchain uv=<bundled|host|none>
+  python=<...> bundled_root=<path>` line; a `PATH` fallback is additionally
+  logged `using host toolchain (admin/dev)` so it is never silently confused
+  with the bundled path. The `UV_CACHE_DIR` volume-pin now keys on the resolved
+  uv (`$uvExe`) rather than a bare `Get-Command uv`. **No change to R1**: the
+  `-toolchain` folder is an *input* to venv creation, a fourth sibling that never
+  overlaps the checkout / venv / data dir; `nf-venv-state.ps1` (ownership) and
+  `nf-readiness.ps1` (readiness) never look at it, and the
+  create/rebuild/refuse/`none` state table is entirely upstream of toolchain
+  resolution — a `-Force` rebuild still deletes only `-venv`. New
+  `docs/BUILDING-A-DRIVE.md` (the one-time admin toolchain-prep + per-drive copy)
+  and `docs/toolchain/THIRD-PARTY-NOTICES.txt` (CPython/PSF, uv Apache-2.0-or-MIT,
+  python-build-standalone — copied into each drive's toolchain folder). Tests:
+  `tests/test_bootstrap_north_forge_path_safety.py` +4
+  (`test_bundled_toolchain_builds_venv_with_zero_path_dependency`,
+  `test_no_bundled_toolchain_falls_back_to_host_path_logged_distinctly`,
+  `test_no_toolchain_anywhere_gives_the_exact_existing_error`,
+  `test_toolchain_resolver_source_is_read_only_and_not_ownership_evidence`); the
+  R1 fake-repo helpers in `test_bootstrap_north_forge_path_safety.py` and
+  `test_bootstrap_launcher_hardening.py` now also copy `nf-toolchain.ps1`. Paths:
+  `scripts/lib/nf-toolchain.ps1`, `scripts/bootstrap-north-forge.ps1`,
+  `docs/BUILDING-A-DRIVE.md`, `docs/toolchain/THIRD-PARTY-NOTICES.txt`,
+  `tests/test_bootstrap_north_forge_path_safety.py`,
+  `tests/test_bootstrap_launcher_hardening.py`. Ref: `DECISION-2026-09-09-001`.
+  Run: RUN-2026-09-09-002.
+
+---
+
 ## [NF-v0.8.2] — 2026-09-09 — hermes@0e9fc2cc15 (0 behind upstream/main — rebased onto origin/main)
 
 **`RUN-2026-09-09-001` — landed two AGENT-D changes that were code-complete and

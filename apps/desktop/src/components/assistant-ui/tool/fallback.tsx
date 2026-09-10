@@ -74,6 +74,7 @@ import {
 } from './fallback-model'
 import { isToolCallPart, summarizeToolRun } from './run-summary'
 import { ToolRunTicker } from './run-ticker'
+import { ToolDetailsDialog } from './tool-details'
 
 // `true` when a ToolEntry is rendered inside an embedding wrapper that owns
 // the per-row chrome (timer / preview). The flat ToolGroupSlot sets this
@@ -354,6 +355,7 @@ function ToolEntry({ part }: ToolEntryProps) {
   const messageRunning = useAuiState(selectMessageRunning)
   const embedded = useContext(ToolEmbedContext)
   const toolViewMode = useStore($toolViewMode)
+  const [detailsOpen, setDetailsOpen] = useState(false)
 
   // `ToolFallback` rebuilds the `part` wrapper each render, defeating the memos
   // below and re-running buildToolView (full JSON.stringify of result) on every
@@ -474,8 +476,8 @@ function ToolEntry({ part }: ToolEntryProps) {
     toolViewMode === 'technical'
   )
 
-  // copyAction reads the uncapped view.detail; clampForDisplay below only bounds
-  // what's painted, so the row's Copy button still yields the full output.
+  // Keep the compact row's existing convenience-copy action. The Details
+  // inspector owns exact, independently selectable source payloads.
   const copyAction = useMemo(() => toolCopyPayload(stablePart, view), [stablePart, view])
 
   const diffStats = useMemo(
@@ -601,18 +603,33 @@ function ToolEntry({ part }: ToolEntryProps) {
       {isPending && <PendingToolApproval part={part} />}
       {open && (
         <div className="relative grid w-full min-w-0 max-w-full gap-1.5 overflow-hidden p-1.5">
-          {copyAction.text && (
-            <CopyButton
-              appearance="inline"
-              className="absolute right-4 top-1.5 z-10 h-5 gap-0 rounded-md px-1 opacity-5 transition-opacity group-hover/tool-block:opacity-100 hover:opacity-100 focus-visible:opacity-100"
-              iconClassName="size-3"
-              label={copyAction.label}
-              showLabel={false}
-              side="left"
-              stopPropagation
-              text={copyAction.text}
-            />
-          )}
+          <div className="absolute right-4 top-1.5 z-10 flex items-center gap-0.5 opacity-5 transition-opacity group-hover/tool-block:opacity-100 focus-within:opacity-100 hover:opacity-100">
+            {toolViewMode !== 'technical' && (
+              <Button
+                aria-label={copy.detailsAction}
+                className="h-5 gap-1 rounded-md px-1 text-[0.7rem]"
+                onClick={() => setDetailsOpen(true)}
+                size="xs"
+                type="button"
+                variant="ghost"
+              >
+                <Codicon name="list-tree" size="0.75rem" />
+                {copy.detailsAction}
+              </Button>
+            )}
+            {copyAction.text && (
+              <CopyButton
+                appearance="inline"
+                className="h-5 gap-0 rounded-md px-1"
+                iconClassName="size-3"
+                label={copyAction.label}
+                showLabel={false}
+                side="left"
+                stopPropagation
+                text={copyAction.text}
+              />
+            )}
+          </div>
           {part.toolName === 'terminal' && toolViewMode !== 'technical' && (
             <TerminalTranscript command={view.terminalCommand} exitCode={view.terminalExitCode} />
           )}
@@ -709,6 +726,14 @@ function ToolEntry({ part }: ToolEntryProps) {
             ))}
           {toolViewMode === 'technical' && <ToolPayloadDisclosure args={part.args} result={part.result} />}
         </div>
+      )}
+      {detailsOpen && (
+        <ToolDetailsDialog
+          inlineDiff={view.inlineDiff}
+          onOpenChange={setDetailsOpen}
+          open={detailsOpen}
+          part={stablePart}
+        />
       )}
     </div>
   )

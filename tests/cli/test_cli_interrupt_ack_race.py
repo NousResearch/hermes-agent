@@ -186,6 +186,30 @@ def test_chat_preserves_structured_failure_before_display_error():
     assert cli._last_run_result["failure_reason"] == "timeout"
 
 
+def test_chat_records_credential_failure_for_one_shot_exit_status():
+    cli = _make_cli()
+
+    with patch.object(cli, "_ensure_runtime_credentials", return_value=False):
+        assert cli.chat("original") is None
+
+    assert cli._last_run_result == {"failed": True, "failure_reason": "auth"}
+
+
+def test_chat_records_agent_init_failure_for_one_shot_exit_status():
+    cli = _make_cli()
+    cli.agent = None
+
+    with patch.object(cli, "_ensure_runtime_credentials", return_value=True), \
+         patch.object(cli, "_resolve_turn_agent_config", return_value={
+             "signature": cli._active_agent_route_signature,
+             "model": None, "runtime": None, "request_overrides": None,
+         }), \
+         patch.object(cli, "_init_agent", return_value=False):
+        assert cli.chat("original") is None
+
+    assert cli._last_run_result == {"failed": True, "failure_reason": "unknown"}
+
+
 
 
 def test_chat_persists_clean_input_when_a_queued_note_changes_api_message():

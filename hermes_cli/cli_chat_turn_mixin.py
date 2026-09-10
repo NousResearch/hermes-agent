@@ -45,6 +45,7 @@ class CLIChatTurnMixin:
         self._last_turn_interrupted = False
 
         if not self._ensure_runtime_credentials():
+            self._last_run_result = {"failed": True, "failure_reason": "auth"}
             return None
 
         turn_route = self._resolve_turn_agent_config(message)
@@ -54,9 +55,11 @@ class CLIChatTurnMixin:
             _cprint(f"{_DIM}Initializing agent...{_RST}")
         if not self._init_agent(model_override=turn_route["model"], runtime_override=turn_route["runtime"],
                                 request_overrides=turn_route.get("request_overrides")):
+            self._last_run_result = {"failed": True, "failure_reason": "unknown"}
             return None
         agent = self.agent
         if agent is None:
+            self._last_run_result = {"failed": True, "failure_reason": "unknown"}
             return None
         message = self._chat_route_images(message, images)
 

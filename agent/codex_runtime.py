@@ -688,13 +688,28 @@ class _CodexResponseAssembler:
         # Reuse the announced position when known (fresh tail sequence for unannounced items); the .done
         # event's own output_index wins over the announced one.
         done_id = str(_event_field(done_item, "id", ""))
+        done_call_id = str(_event_field(done_item, "call_id", "") or "")
+        pending_aliases = []
+        if done_call_id:
+            pending_aliases = [
+                (pending_id, pending)
+                for pending_id, pending in self.pending_function_calls.items()
+                if str(_event_field(pending.get("item"), "call_id", "") or "") == done_call_id
+            ]
         announced_sequence, announced_index = self.announced_output_order.get(done_id, (None, None))
+        if announced_sequence is None and pending_aliases:
+            _, announced_alias = min(pending_aliases, key=lambda alias: alias[1]["sequence"])
+            announced_sequence = announced_alias["sequence"]
+            announced_index = announced_alias["output_index"]
         if announced_sequence is None:
             announced_sequence, self.next_output_sequence = self.next_output_sequence, self.next_output_sequence + 1
         self.output_indexes.append(_event_field(event, "output_index", announced_index))
         self.output_sequences.append(announced_sequence)
-        # Confirmed by the authoritative done event; never settle it twice.
+        # Confirmed by the authoritative done event; never settle it twice. Some Responses
+        # backends use a different item id for .done, so also coalesce aliases by call_id.
         self.pending_function_calls.pop(done_id, None)
+        for pending_id, _pending in pending_aliases:
+            self.pending_function_calls.pop(pending_id, None)
         if _message_phase(done_item) == "commentary" and self.on_commentary_message is not None:
             commentary_text = "".join(self.commentary_text_deltas).strip() or _output_text_of(done_item)
             if commentary_text:

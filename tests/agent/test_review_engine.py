@@ -15,6 +15,7 @@ import pytest
 
 from agent import review_engine as re_mod
 from agent.review_engine import (
+    _REVIEW_OUTPUT_SCHEMA,
     build_review_task,
     format_dispatch_note,
     snapshot_recent_messages,
@@ -152,6 +153,63 @@ def test_load_review_credentials_cfg_missing_section(monkeypatch):
     assert re_mod._load_review_credentials_cfg() is None
 
 
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {
+            "verdict": "APPROVE", "artifact": "commit:abc123",
+            "checks_completed": ["tests passed"], "tool_failures": [], "unresolved": [],
+        },
+        {
+            "verdict": "REQUEST_CHANGES", "artifact": "capture:42",
+            "checks_completed": ["visual check"], "tool_failures": [], "unresolved": ["contrast defect"],
+        },
+        {
+            "verdict": "INCOMPLETE", "artifact": "branch:feature",
+            "checks_completed": ["diff inspected"], "tool_failures": ["browser unavailable"],
+            "unresolved": ["live UI not inspected"],
+        },
+    ],
+)
+def test_review_output_schema_accepts_contract_verdicts(payload):
+    from tools.delegation_output_schema import validate_output
+
+    assert validate_output(json.dumps(payload), _REVIEW_OUTPUT_SCHEMA) == (True, [])
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {
+            "verdict": "APPROVE", "artifact": "commit:abc123",
+            "checks_completed": ["tests passed"], "tool_failures": ["visual tool failed"], "unresolved": [],
+        },
+        {
+            "verdict": "APPROVE", "artifact": "commit:abc123",
+            "checks_completed": ["tests passed"], "tool_failures": [], "unresolved": ["not deployed"],
+        },
+        {
+            "verdict": "INCOMPLETE", "artifact": "commit:abc123",
+            "checks_completed": ["diff inspected"], "tool_failures": [], "unresolved": [],
+        },
+        {
+            "verdict": "PASS", "artifact": "commit:abc123",
+            "checks_completed": ["tests passed"], "tool_failures": [], "unresolved": [],
+        },
+        {
+            "verdict": "REQUEST_CHANGES", "artifact": "",
+            "checks_completed": ["diff inspected"], "tool_failures": [], "unresolved": ["fix needed"],
+        },
+    ],
+)
+def test_review_output_schema_rejects_fail_open_results(payload):
+    from tools.delegation_output_schema import validate_output
+
+    valid, errors = validate_output(json.dumps(payload), _REVIEW_OUTPUT_SCHEMA)
+    assert valid is False
+    assert errors
+
+
 # ---------------------------------------------------------------------------
 # delegate_task credentials_cfg override (the internal /review routing hook)
 # ---------------------------------------------------------------------------
@@ -251,6 +309,8 @@ def test_start_review_dispatches_background_and_completes(monkeypatch):
     assert "check the tests" in built["context"]
     assert built["goal"].startswith("Review: ")
     assert re_mod._REVIEW_GOAL in built["context"]
+    assert "OUTPUT CONTRACT (machine-validated)" in built["context"]
+    assert fake_child._delegate_output_schema == _REVIEW_OUTPUT_SCHEMA
 
     # The completion re-enters via the shared queue like any subagent.
     deadline = time.monotonic() + 5.0

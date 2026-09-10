@@ -120,6 +120,35 @@ def test_control_stream_with_done_still_authoritative():
     assert final.status == "completed"
 
 
+def test_done_call_coalesces_pending_alias_with_same_call_id():
+    """GitHub Responses may use different item ids for added and done events."""
+    events = _stream_completed_without_done()
+    events.insert(
+        -1,
+        SimpleNamespace(
+            type="response.output_item.done",
+            output_index=0,
+            item=SimpleNamespace(
+                type="function_call",
+                id="fc_1_done",
+                call_id="call_1",
+                name="get_weather",
+                arguments='{"city": "SF"}',
+            ),
+        ),
+    )
+    final = _consume_codex_event_stream(events, model="gpt-test")
+
+    calls = [
+        item
+        for item in final.output
+        if getattr(item, "type", "") == "function_call"
+    ]
+    assert len(calls) == 1
+    assert calls[0].id == "fc_1_done"
+    assert calls[0].arguments == '{"city": "SF"}'
+
+
 def test_no_terminal_frame_does_not_settle_pending_function_call():
     """EOF/interruption before any terminal frame must NOT settle the pending
     call: unconfirmed stream state must not become executable authority.

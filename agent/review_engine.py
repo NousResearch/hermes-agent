@@ -34,6 +34,29 @@ _REVIEW_GOAL = (
     "only read, and a clear final verdict with recommended next steps."
 )
 
+_REVIEW_OUTPUT_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "verdict": {"type": "string", "enum": ["APPROVE", "REQUEST_CHANGES", "INCOMPLETE"]},
+        "artifact": {"type": "string", "minLength": 1},
+        "checks_completed": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}},
+        "tool_failures": {"type": "array", "items": {"type": "string", "minLength": 1}},
+        "unresolved": {"type": "array", "items": {"type": "string", "minLength": 1}},
+    },
+    "required": ["verdict", "artifact", "checks_completed", "tool_failures", "unresolved"],
+    "allOf": [
+        {
+            "if": {"properties": {"verdict": {"const": "APPROVE"}}, "required": ["verdict"]},
+            "then": {"properties": {"tool_failures": {"maxItems": 0}, "unresolved": {"maxItems": 0}}},
+        },
+        {
+            "if": {"properties": {"verdict": {"const": "INCOMPLETE"}}, "required": ["verdict"]},
+            "then": {"properties": {"unresolved": {"minItems": 1}}},
+        },
+    ],
+}
+
 
 def _message_text(message: Dict[str, Any]) -> str:
     """Display text of a message; multimodal parts are joined, non-text parts noted."""
@@ -168,7 +191,10 @@ def start_review(parent_agent, messages: List[Dict[str, Any]], user_prompt: str 
     credentials_cfg = _load_review_credentials_cfg()
 
     from tools.delegate_tool import delegate_task
-    raw = delegate_task(goal=goal, context=context, background=True, parent_agent=parent_agent, credentials_cfg=credentials_cfg)
+    raw = delegate_task(
+        goal=goal, context=context, background=True, parent_agent=parent_agent,
+        credentials_cfg=credentials_cfg, output_schema=_REVIEW_OUTPUT_SCHEMA,
+    )
     try:
         result = json.loads(raw)
     except Exception:

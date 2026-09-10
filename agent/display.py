@@ -908,6 +908,19 @@ def _detect_tool_failure(tool_name: str, result: str | None) -> tuple[bool, str]
         return False, ""
     data = safe_json_loads(result)
 
+    # web_extract always returns a structured results list whose entries include
+    # an ``error`` key on both success (null) and failure (message).  The generic
+    # string heuristic below therefore produces a false positive for every
+    # successful extraction.  Honor the tool's canonical per-result error value
+    # instead, while preserving failures for mixed or all-error batches.
+    if tool_name == "web_extract" and isinstance(data, dict):
+        results = data.get("results")
+        if isinstance(results, list):
+            for entry in results:
+                if isinstance(entry, dict) and entry.get("error"):
+                    return True, f" [{_trim_error(str(entry['error']))}]"
+            return False, ""
+
     # Terminal: non-zero exit code is the canonical failure signal.
     if tool_name == "terminal":
         exit_code = data.get("exit_code") if isinstance(data, dict) else None

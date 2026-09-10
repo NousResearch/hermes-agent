@@ -96,6 +96,18 @@ class TestDetectToolFailureStructured:
         result = json.dumps({"success": True, "data": "hello"})
         assert _detect_tool_failure("web_search", result) == (False, "")
 
+    def test_web_extract_null_nested_error_not_flagged(self):
+        result = json.dumps({
+            "results": [
+                {
+                    "url": "https://example.com",
+                    "content": "Example Domain",
+                    "error": None,
+                }
+            ]
+        })
+        assert _detect_tool_failure("web_extract", result) == (False, "")
+
 
 
 class TestGetCuteToolMessageFailureSuffix:

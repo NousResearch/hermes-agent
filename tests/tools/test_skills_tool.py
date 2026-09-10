@@ -399,6 +399,57 @@ class TestSkillView:
         # The caller gets the same helpful listing as a truly missing file.
         assert "references/api.md" in result["available_files"]["references"]
 
+    def test_view_path_fields_are_posix_separated(self, tmp_path):
+        """Every model-facing relative path in a skill_view result must be
+        "/"-separated (#105745).
+
+        The fields are built from ``Path.relative_to()``, whose ``str()`` is
+        "\\"-separated on Windows — which misroutes linked files into the
+        "other" available-files group and puts OS-native separators into
+        ``path``/``linked_files``. Asserted unconditionally so the POSIX shape
+        is locked on every host.
+        """
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            skill_dir = _make_skill(tmp_path, "my-skill")
+            refs_dir = skill_dir / "references"
+            refs_dir.mkdir()
+            (refs_dir / "api.md").write_text("# API Docs\nEndpoint info.")
+
+            result = json.loads(skill_view("my-skill"))
+            listing = json.loads(skill_view("my-skill", file_path="references"))
+
+        assert result["path"] == "my-skill/SKILL.md"
+        assert result["linked_files"]["references"] == ["references/api.md"]
+        assert listing["available_files"]["references"] == ["references/api.md"]
+
+    # ``windows_only`` rather than ``skipif(os.name != "nt")``: the Windows CI
+    # job selects ``-m windows_only``, so a bare skipif would leave this
+    # skipped on Linux AND unselected there — dead on every host. On Windows
+    # these asserts catch a ``str(relative_to())`` regression for real.
+    @pytest.mark.windows_only
+    def test_view_path_fields_are_posix_separated_on_windows(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            skill_dir = _make_skill(tmp_path, "my-skill")
+            refs_dir = skill_dir / "references"
+            refs_dir.mkdir()
+            (refs_dir / "api.md").write_text("# API Docs\nEndpoint info.")
+
+            result = json.loads(skill_view("my-skill"))
+            listing = json.loads(skill_view("my-skill", file_path="references"))
+
+        assert result["path"] == "my-skill/SKILL.md"
+        assert result["linked_files"]["references"] == ["references/api.md"]
+        assert listing["available_files"]["references"] == ["references/api.md"]
+        # references/api.md must land in its support-dir group, not "other".
+        assert "other" not in listing["available_files"]
+        # No OS-native separator leaks into any model-facing field.
+        assert "\\" not in result["path"]
+        assert all(
+            "\\" not in f for files in result["linked_files"].values() for f in files)
+        assert all(
+            "\\" not in f
+            for group in listing["available_files"].values() for f in group)
+
     def test_disabled_skill_blocked_enabled_allowed(self, tmp_path):
         with (
             patch("tools.skills_tool.SKILLS_DIR", tmp_path),
@@ -911,6 +962,33 @@ class TestSkillViewCollisionDetection:
         assert any("external" in p for p in result["matches"])
         assert "hint" in result
 
+    # ``windows_only`` (see TestSkillView for the marker rationale): on Windows
+    # ``str(Path)`` is "\\"-separated, which breaks the 'category/skill-name'
+    # subpath these refusal paths exist to surface (#105745).
+    @pytest.mark.windows_only
+    def test_collision_matches_are_posix_separated_on_windows(self, tmp_path):
+        local_dir = tmp_path / "local"
+        external_dir = tmp_path / "external"
+        local_dir.mkdir()
+        external_dir.mkdir()
+
+        _make_skill(
+            local_dir,
+            "explore-codebase",
+            category="foundations/runtime",
+            body="LOCAL VERSION",
+        )
+        _make_skill(external_dir, "explore-codebase", body="EXTERNAL VERSION")
+
+        p1, p2 = self._patch_dirs(local_dir, [external_dir])
+        with p1, p2:
+            raw = skill_view("explore-codebase")
+
+        result = json.loads(raw)
+        assert result["success"] is False
+        assert len(result["matches"]) == 2
+        assert any("foundations/runtime" in p for p in result["matches"])
+        assert all("\\" not in p for p in result["matches"])
 
     def test_support_markdown_does_not_collide_with_real_skill(self, tmp_path):
         """Supporting reference docs named <skill>.md are not skills.
@@ -969,3 +1047,33 @@ class TestSkillViewCollisionDetection:
         assert result["success"] is False
         assert "Ambiguous" in result["error"]
         assert len(result["matches"]) == 2
+
+
+class TestPluginSkillLinkedFilesPosixSeparators:
+    """``_plugin_skill_linked_files`` feeds the model-facing ``linked_files``
+    field of plugin skill_view results, so entries must be "/"-separated
+    (#105745) — the usage hint shows 'references/api.md' as the file_path form.
+    """
+
+    def test_entries_are_posix_separated(self, tmp_path):
+        from tools.skills_tool_plugin import _plugin_skill_linked_files
+
+        refs = tmp_path / "references"
+        refs.mkdir()
+        (refs / "api.md").write_text("# API")
+
+        assert _plugin_skill_linked_files(tmp_path) == {
+            "references": ["references/api.md"]}
+
+    # ``windows_only`` (see TestSkillView for the marker rationale): on Windows
+    # ``str(relative_to())`` is "\\"-separated in this field (#105745).
+    @pytest.mark.windows_only
+    def test_entries_are_posix_separated_on_windows(self, tmp_path):
+        from tools.skills_tool_plugin import _plugin_skill_linked_files
+
+        refs = tmp_path / "references"
+        refs.mkdir()
+        (refs / "api.md").write_text("# API")
+
+        assert _plugin_skill_linked_files(tmp_path) == {
+            "references": ["references/api.md"]}

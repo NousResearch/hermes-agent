@@ -114,6 +114,27 @@ function readClarifyArgs(args: unknown): ClarifyArgs {
   }
 }
 
+/** Lift a one-entry `questions[]` payload onto the single-question fields.
+ *
+ * After the advertised schema became `questions[]`, an ordinary two-choice
+ * clarify arrives as `{ questions: [{ question, choices }] }` with no
+ * top-level `question`. The single card already paints from those fields
+ * without waiting for qids; leaving the entry nested routes to the batch
+ * card, which spins until `request.questions` arrives. */
+function unwrapOneEntryArgs(fromArgs: ClarifyArgs): ClarifyArgs {
+  if (!fromArgs.questions || fromArgs.questions.length !== 1) {
+    return fromArgs
+  }
+
+  const only = fromArgs.questions[0]
+
+  return {
+    choices: fromArgs.choices ?? only.choices,
+    multiSelect: fromArgs.multiSelect || Boolean(only.multiSelect),
+    question: fromArgs.question || only.question
+  }
+}
+
 interface ClarifyBatchResponse {
   id?: string
   question?: string
@@ -389,13 +410,21 @@ function ClarifyToolPending(props: ToolCallMessagePartProps) {
     return <ToolFallback {...props} />
   }
 
-  // Batch: the gateway request carries qid-keyed questions. Args alone can't
-  // drive the form (no qids to respond with), so batch waits for the request.
-  if (request?.questions?.length || fromArgs.questions) {
-    return <ClarifyToolBatchPending onAnswered={() => setAnswered(true)} request={request} />
+  // Batch only when the gateway sent qid-keyed questions, or the model
+  // emitted 2+ questions. A one-entry `questions[]` is the advertised
+  // single-question shape — routing it to the batch card left an infinite
+  // spinner whenever `clarify.request` was missing or still single-shaped.
+  if (request?.questions?.length || (fromArgs.questions?.length ?? 0) > 1) {
+    return <ClarifyToolBatchPending fromArgs={fromArgs} onAnswered={() => setAnswered(true)} request={request} />
   }
 
-  return <ClarifyToolSinglePending fromArgs={fromArgs} onAnswered={() => setAnswered(true)} request={request} />
+  return (
+    <ClarifyToolSinglePending
+      fromArgs={unwrapOneEntryArgs(fromArgs)}
+      onAnswered={() => setAnswered(true)}
+      request={request}
+    />
+  )
 }
 
 function ClarifyToolSinglePending({
@@ -949,15 +978,35 @@ const emptyStage = { choices: [] as string[], draft: '' }
  * back-to-back and completes the batch. Staged answers stay editable up to
  * that moment. The per-question wire protocol is unchanged (the TUI/CLI
  * still lock incrementally); this card just batches its locks at the end. */
-function ClarifyToolBatchPending({ onAnswered, request }: { onAnswered: () => void; request: ClarifyRequest | null }) {
+function ClarifyToolBatchPending({
+  fromArgs,
+  onAnswered,
+  request
+}: {
+  fromArgs: ClarifyArgs
+  onAnswered: () => void
+  request: ClarifyRequest | null
+}) {
   const { t } = useI18n()
   const copy = t.assistant.clarify
   const gateway = useStore($gateway)
 
-  // qids only exist on the gateway request — args are a hydration-race
-  // fallback for display, never answerable (no ids to respond with).
-  const questions = request?.questions ?? []
-  const ready = Boolean(request?.requestId) && questions.length > 0
+  // qids live on the gateway request. Args can still paint the questions
+  // (synthetic q0..qN, same index scheme the tool assigns) so a missed or
+  // late clarify.request does not leave an empty spinner.
+  const questions = useMemo(() => {
+    if (request?.questions?.length) {
+      return request.questions
+    }
+
+    return (fromArgs.questions ?? []).map((entry, index) => ({
+      choices: entry.choices ?? null,
+      multiSelect: Boolean(entry.multiSelect),
+      qid: `q${index}`,
+      question: entry.question
+    }))
+  }, [fromArgs.questions, request?.questions])
+  const ready = Boolean(request?.requestId) && Boolean(request?.questions?.length)
 
   const [staged, setStaged] = useState<Record<string, { choices: string[]; draft: string }>>({})
   const [submitting, setSubmitting] = useState(false)
@@ -1123,7 +1172,7 @@ function ClarifyToolBatchPending({ onAnswered, request }: { onAnswered: () => vo
     [allStaged, confirmAll]
   )
 
-  if (!ready) {
+  if (questions.length === 0) {
     return (
       <ClarifyShell aria-label={copy.loadingQuestion} className="my-1.5 grid min-h-12 place-items-center" role="status">
         <Loader2 aria-hidden className="size-4 animate-spin text-(--ui-text-tertiary)" />
@@ -1142,7 +1191,7 @@ function ClarifyToolBatchPending({ onAnswered, request }: { onAnswered: () => vo
         </div>
         {questions.map(question => (
           <BatchQuestionBlock
-            disabled={submitting}
+            disabled={submitting || !ready}
             key={question.qid}
             locked={false}
             onDraft={value => draftFor(question, value)}
@@ -1157,7 +1206,7 @@ function ClarifyToolBatchPending({ onAnswered, request }: { onAnswered: () => vo
         <Button disabled={submitting} onClick={() => void cancelAll()} size="xs" type="button" variant="text">
           {copy.skip}
         </Button>
-        <Button disabled={submitting || !allStaged} size="xs" type="submit">
+        <Button disabled={submitting || !ready || !allStaged} size="xs" type="submit">
           {submitting ? (
             <Loader2 className="size-3 animate-spin" />
           ) : (

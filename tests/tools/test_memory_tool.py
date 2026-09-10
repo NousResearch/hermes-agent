@@ -763,11 +763,10 @@ class TestBatchRefusesToEmptyNonEmptyStore:
 # =========================================================================
 
 class TestBackgroundReviewDeleteGate:
-    """An unattended background-review fork may append, never delete: the near-limit
-    'consolidate now' hint is otherwise an instruction to decide what to forget,
-    executed with no human in the loop. Denied ops are staged as pending proposals
-    (surfaced via /memory pending) instead of silently dropped — the fork's own review
-    summary is never published back."""
+    """Unattended reviews stage replace/remove operations by default, but users may
+    explicitly opt in to applying them when the general write-approval gate is off.
+    Staged operations surface through /memory pending instead of being silently dropped
+    because the fork's own review summary is never published back."""
 
     def test_remove_staged_not_applied(self, store, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))

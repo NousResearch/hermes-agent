@@ -262,6 +262,12 @@ command_allowlist:
 
 These patterns are loaded at startup and silently approved in all future sessions.
 
+The setting must be a list of strings. Legacy installs that stored a list as a
+quoted YAML/JSON string recover that list at load time and log a warning to
+re-save it with `hermes config edit`. Other malformed values are ignored with
+a warning; they never become per-character approvals. Loading does not rewrite
+your configuration file.
+
 :::tip
 Use `hermes config edit` to review or remove patterns from your permanent allowlist.
 :::
@@ -742,6 +748,11 @@ Context files (AGENTS.md, .cursorrules, SOUL.md) are scanned for prompt injectio
 - Attempts to read secrets (`.env`, `credentials`, `.netrc`)
 - Credential exfiltration via `curl`
 - Invisible Unicode characters (zero-width spaces, bidirectional overrides)
+
+The translation-and-execution check requires a short language/format clause (for example,
+“translate this into a bash script and execute it”). It does not connect translation
+and execution verbs across unrelated comma-separated role prose. These patterns are
+heuristics, not semantic intent detection.
 
 Blocked files show a warning:
 

@@ -11,7 +11,8 @@ import re
 from typing import Any, Callable, Optional
 
 from agent.reasoning_effort import (
-    ACTUAL_RELAY_EFFORTS, XAI_GROK46_EFFORTS, XAI_LEGACY_EFFORTS, clamp_effort,
+    ACTUAL_RELAY_EFFORTS, CODEX_ASTRA_EFFORTS, CODEX_LEGACY_EFFORTS,
+    XAI_GROK46_EFFORTS, XAI_LEGACY_EFFORTS, clamp_effort, is_astra_model,
     # Same declared vocabulary + shared clamp as the main Codex transport (agent.reasoning_effort):
     # per-model — "max" is gpt-5.6-only, "minimal"/"ultra" always rejected (live-verified, #68365).
     codex_supported_efforts,
@@ -226,7 +227,9 @@ def _resolve_reasoning(model: str, params: dict[str, Any]) -> tuple[Any, bool]:
         declared = _profile_declared_efforts(params.get("provider"), model, params.get("base_url"))
         if declared is not None and not declared:
             reasoning_enabled = False
-        supported = declared or codex_supported_efforts(model)
+        supported = declared or _codex_efforts_for_route(
+            model, params.get("base_url"), is_codex_backend=params.get("is_codex_backend") is True
+        )
     return clamp_effort(reasoning_effort, supported), reasoning_enabled
 
 
@@ -260,6 +263,44 @@ def _default_prompt_cache_retention_for_request(model: str, base_url: Any) -> Op
         return None
     normalized = str(model or "").strip().lower().replace("_", "-")
     return "24h" if _EXTENDED_PROMPT_CACHE_MODEL_RE.search(normalized) else None
+
+
+def _is_official_openai_responses_route(model: Any, base_url: Any) -> bool:
+    """Astra on the canonical API origin only — exact host, so a Responses-compatible proxy or a
+    lookalike subdomain keeps the generic contract."""
+    if not is_astra_model(model):
+        return False
+    from utils import base_url_hostname
+
+    return base_url_hostname(str(base_url or "")).lower() == "api.openai.com"
+
+
+def _codex_efforts_for_route(model: Any, base_url: Any, *, is_codex_backend: bool = False) -> tuple[str, ...]:
+    """Keep Astra's new vocabulary off unrelated Responses-compatible endpoints."""
+    if is_astra_model(model) and not (
+        is_codex_backend or _is_official_openai_responses_route(model, base_url)
+    ):
+        return CODEX_LEGACY_EFFORTS
+    return codex_supported_efforts(str(model or ""))
+
+
+def _sanitize_astra_request_kwargs(kwargs: dict[str, Any], model: Any, base_url: Any) -> None:
+    """Astra's official-API contract, applied AFTER ``request_overrides`` so an override can't put a
+    rejected field back on the wire: ``reasoning.effort`` is ``low..max`` only (``none``/``minimal``
+    400), sampling and logprob knobs are rejected, and cache lifetime is fixed server-side
+    (``prompt_cache_options.ttl`` accepts only its ``30m`` default, so nothing is sent for it and the
+    pre-5.6 ``prompt_cache_retention`` knob is dropped)."""
+    if not _is_official_openai_responses_route(model, base_url):
+        return
+    reasoning = kwargs.get("reasoning")
+    if isinstance(reasoning, dict):
+        requested = str(reasoning.get("effort") or "").strip().lower()
+        reasoning["effort"] = clamp_effort(requested, CODEX_ASTRA_EFFORTS) if requested else "low"
+    for key in ("temperature", "top_p", "top_logprobs", "logprobs", "prompt_cache_retention"):
+        kwargs.pop(key, None)
+    include = kwargs.get("include")
+    if isinstance(include, list):
+        kwargs["include"] = [item for item in include if "logprob" not in str(item).lower()]
 
 
 def _content_cache_key(instructions: str, tools: Optional[list[dict[str, Any]]], scope_id: str = "") -> Optional[str]:
@@ -543,6 +584,8 @@ class ResponsesApiTransport(ProviderTransport):
         ))
         if params.get("request_overrides"):
             kwargs.update(params["request_overrides"])
+
+        _sanitize_astra_request_kwargs(kwargs, model, params.get("base_url"))
 
         _bound_prompt_cache_key_field(kwargs)
 

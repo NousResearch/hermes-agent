@@ -612,11 +612,31 @@ def _prior_tool_keys(prior_snapshot: List[Dict]) -> Tuple[set, set]:
 
 def _action_lines(data: Dict, detail: Dict, verbose: bool) -> List[str]:
     """Summary line(s) for one successful notify-tool result (``[]`` when nothing to report)."""
+    if data.get("staged"):
+        return []
     message = data.get("message", "")
     target = data.get("target", "") or detail.get("target", "")
     is_skill = detail.get("tool") == "skill_manage"
+    if is_skill and "results" in data:
+        # The requested operations are not evidence of applied writes (approval
+        # and atomic rollback can leave all of them unapplied).
+        verbs = {"create": "created", "patch": "patched", "edit": "rewritten",
+                 "write_file": "written", "remove_file": "removed", "delete": "deleted"}
+        results = data.get("results")
+        if not data.get("operations_applied") or not isinstance(results, list):
+            return []
+        lines = []
+        for result in results:
+            if not isinstance(result, dict) or result.get("success") is not True:
+                continue
+            verb = verbs.get(result.get("action"))
+            if verb and result.get("name"):
+                path = f" ({result['file_path']})" if result.get("file_path") else ""
+                lines.append(f"Skill '{result['name']}' {verb}{path}")
+        return lines
     lower = message.lower()
-    if not verbose and ("created" in lower or "updated" in lower or (is_skill and "patched" in lower)):
+    if not verbose and ("created" in lower or "updated" in lower or
+                        (is_skill and any(word in lower for word in ("patched", "deleted", "written")))):
         return [message]
     if not is_skill and not target:
         return []
@@ -851,7 +871,7 @@ def build_cache_parity_fork(
     # finalize the parent's still-active session row. suppress_status_output: fork status/warning
     # emits go via _print_fn/status_callback, which bypass the stdout redirect.
     review_agent._skip_mcp_refresh = review_agent._persist_disabled = review_agent.suppress_status_output = True
-    review_agent._session_json_enabled = review_agent._end_session_on_close = False
+    review_agent._end_session_on_close = False
     review_agent._session_db = None
     review_agent.session_id = agent.session_id
     # Same model only: share the warm cached system prompt (~26% cost cut; a rebuilt prompt misses

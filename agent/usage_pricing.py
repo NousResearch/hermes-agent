@@ -109,6 +109,7 @@ class PricingEntry:
     input_cost_per_million_above: Optional[Decimal] = None
     output_cost_per_million_above: Optional[Decimal] = None
     cache_read_cost_per_million_above: Optional[Decimal] = None
+    cache_write_cost_per_million_above: Optional[Decimal] = None
 
 
 @dataclass(frozen=True)
@@ -240,6 +241,20 @@ for _provider, _url, _version, _rows in _SNAPSHOTS:
         for _model in ((_models,) if isinstance(_models, str) else _models):
             _OFFICIAL_DOCS_PRICING[(_provider, _model)] = _entry
 del _SNAPSHOTS, _provider, _url, _version, _rows, _models, _rates, _entry, _model
+
+# GPT-6 Astra uses whole-request pricing above the 272K prompt tier.  Keep this
+# account-gated model out of generic static catalogs, but retain published billing
+# metadata for an explicitly selected route.
+_OFFICIAL_DOCS_PRICING[("openai", "gpt-6-astra")] = _snap(
+    "10.00", "50.00", "1.00", "12.50",
+    url="https://developers.openai.com/api/docs/models/gpt-6-astra",
+    version="openai-gpt-6-astra-2026-09",
+    tier_threshold_tokens=272_000,
+    input_cost_per_million_above=Decimal("20.00"),
+    output_cost_per_million_above=Decimal("75.00"),
+    cache_read_cost_per_million_above=Decimal("2.00"),
+    cache_write_cost_per_million_above=Decimal("25.00"),
+)
 
 # Context-tiered Gemini Pro: above 200k prompt tokens the *_above rates apply to
 # the whole request (see PricingEntry).
@@ -558,7 +573,7 @@ def estimate_usage_cost(
         (usage.output_tokens, entry.output_cost_per_million, entry.output_cost_per_million_above, ()),
         (usage.cache_read_tokens, entry.cache_read_cost_per_million, entry.cache_read_cost_per_million_above,
          ("cache-read pricing unavailable for route",)),
-        (usage.cache_write_tokens, entry.cache_write_cost_per_million, None,
+        (usage.cache_write_tokens, entry.cache_write_cost_per_million, entry.cache_write_cost_per_million_above,
          ("cache-write pricing unavailable for route",)),
     ):
         if above and rate_above is not None:

@@ -31,6 +31,17 @@ history that appears to revert.
 
 
 
+## Codex app-server input ownership
+
+The agent persists an accepted user input before starting its Codex turn. Codex
+then projects that input as a leading `userMessage` notification. At the runtime
+splice boundary, Hermes excludes only that leading item when it exactly matches
+the text serialized into `turn/start`, including rich-input coercion. Later or
+nonmatching user events remain intact, as do separately accepted identical turns.
+This also applies to synthetic/keyless input; it does not depend on a platform
+message ID. Existing historical duplicates are not rewritten. The gateway skips
+its transcript write when the agent reports that it owns persistence.
+
 ## Architecture Overview
 
 ```

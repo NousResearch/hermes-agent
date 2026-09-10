@@ -50,6 +50,9 @@ DEFAULT_CONFIG = {
         # Turn cap. null = unlimited (default; caps caused silent mid-task truncation). Positive int
         # caps; "none"/"unlimited"/"inf"/0/-1 also mean unlimited (resolve_turn_limit).
         "max_turns": None,
+        # Optional one-time model-visible checkpoint warning before a finite turn cap is exhausted.
+        # null = off; set a ratio strictly between 0 and 1 (for example, 0.75).
+        "budget_warning_ratio": None,
         # Wall-clock budget (seconds) per run. null = off. When set: one-time wrap-up notice at 80%
         # elapsed; implicit provider stale timeouts capped to remaining budget. CLI equivalent:
         # `hermes chat --run-budget N`.
@@ -1170,9 +1173,9 @@ DEFAULT_CONFIG = {
             "keyword": "jarvis",
         },
     },
-    
+
     "human_delay": {"mode": "off", "min_ms": 800, "max_ms": 2500},
-    
+
     # Context engine — how the context window is managed near the token limit. "compressor" =
     # built-in lossy summarization; or a plugin name (e.g. "lcm") installed in
     # plugins/context_engine/<name>/ or ~/.hermes/plugins/.
@@ -2023,10 +2026,7 @@ DEFAULT_CONFIG = {
         # Minimum hours between auto-maintenance runs (tracked in state.db state_meta, shared across
         # processes).
         "min_interval_hours": 24,
-        # Legacy ~/.hermes/sessions/session_{sid}.json snapshots rewritten every turn. state.db is
-        # canonical (superset); snapshots consumed GBs on heavy users. Enable only for an external
-        # tool that reads the JSON files directly.
-        "write_json_snapshots": False,
+
         # Notice about the compact FTS layout (reclaims ~60%+ of state.db). OPT-IN: legacy indexes
         # stay until `hermes sessions optimize-storage` runs, since the rebuild is disk-heavy on
         # large DBs. advise = `hermes update` prints a one-line notice with reclaimable size when a

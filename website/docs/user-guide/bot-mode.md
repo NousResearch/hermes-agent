@@ -122,6 +122,11 @@ Bot-to-bot delivery is per-invocation: the receiving Bot picks the message up wh
 
 ### Failed turns retry safely
 
+Local one-shot delivery preserves the active-session refusal code separately from
+its human-readable message. `SESSION_NOT_OWNED` produces `target_busy`; an
+unreadable coordination registry is not mislabeled as another owner. Older local
+CLIs without the code marker still use the historical refusal wording.
+
 A failed delivery turn is retried at most once, and only when a retry can actually help. Transient failures (target runtime offline, delivery timeout, provider rate limit or server error) re-run the same Bot Chat session unchanged. A context-overflow failure also re-runs the same session — the retried turn compacts the over-threshold transcript via the standard context-compression pass before calling the model, so the retry fits where the original didn't. Auth, quota, and configuration failures never auto-retry: a second attempt cannot fix them and only burns quota, so the failure is surfaced immediately. A retried turn never starts a fresh session — your Bot Chat history and context stay intact.
 
 ### When a delivery fails: typed reasons

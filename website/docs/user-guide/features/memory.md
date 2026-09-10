@@ -307,6 +307,11 @@ display:
 > writes to your memory/skill stores, are unaffected by this setting. Set it
 > per-platform via `display.platforms.<platform>.memory_notifications`.
 
+Successful skill batches name each applied operation in both `on` and `verbose`
+mode, including supporting-file writes/removals and skill deletion. Staged writes
+awaiting approval and rolled-back batches are not reported as completed changes.
+Batch summaries use the applied results rather than assuming requested writes ran.
+
 ## Running the review on a cheaper model (`auxiliary.background_review`)
 
 The review runs on your **main chat model** by default, replaying the

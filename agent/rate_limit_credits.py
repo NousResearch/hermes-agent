@@ -67,6 +67,30 @@ class RateLimitCreditsMixin:
         aggregated ``Message`` drops them). Fail-open."""
         self._capture_rate_limits(http_response)
         self._capture_credits(http_response)
+        # Attribute the response to credentials on the actual HTTP request,
+        # not merely pool bookkeeping. Never log the credential values.
+        pool_entry_id = getattr(self, "_credential_pool_entry_id", None)
+        if getattr(self, "provider", None) == "anthropic" and pool_entry_id:
+            try:
+                request_headers = http_response.request.headers
+                bearer = request_headers.get("authorization", "")
+                sent_keys = [key for key in (
+                    request_headers.get("x-api-key", ""),
+                    bearer[7:] if bearer.startswith("Bearer ") else "",
+                ) if key]
+                matches_selected = bool(sent_keys) and all(
+                    key == getattr(self, "api_key", None) == getattr(self, "_anthropic_api_key", None)
+                    for key in sent_keys
+                )
+                logger.info(
+                    "%sAnthropic wire receipt: pool_entry=%s matches_selected=%s "
+                    "status=%s request_id=%s requested_model=%s",
+                    getattr(self, "log_prefix", ""), pool_entry_id,
+                    matches_selected, http_response.status_code,
+                    http_response.headers.get("request-id", ""), getattr(self, "model", None),
+                )
+            except Exception:
+                logger.debug("Anthropic wire receipt unavailable")
 
     def _capture_credits(self, http_response: Any) -> None:
         """Parse x-nous-credits-* headers, cache CreditsState, fire threshold notices.

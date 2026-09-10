@@ -13,6 +13,7 @@ from agent.auxiliary_client import (
     _acquire_sync_aux_semaphore,
     _acquire_async_aux_semaphore,
     _get_task_max_concurrency,
+    _release_sync_semaphore_after_stream,
     _reset_aux_semaphores,
 )
 
@@ -116,6 +117,33 @@ class TestSemaphoreCache:
 
 
 class TestSyncCallEnforcesLimit:
+    def test_stream_close_before_iteration_releases_permit(self):
+        semaphore = threading.BoundedSemaphore(1)
+        semaphore.acquire()
+        stream = _release_sync_semaphore_after_stream(iter(["chunk"]), semaphore)
+
+        stream.close()
+        stream.close()
+
+        assert semaphore.acquire(blocking=False) is True
+        semaphore.release()
+
+    def test_stream_iteration_error_releases_permit(self):
+        semaphore = threading.BoundedSemaphore(1)
+        semaphore.acquire()
+
+        def broken_stream():
+            raise RuntimeError("provider stream failed")
+            yield
+
+        stream = _release_sync_semaphore_after_stream(broken_stream(), semaphore)
+
+        with pytest.raises(RuntimeError, match="provider stream failed"):
+            next(stream)
+
+        assert semaphore.acquire(blocking=False) is True
+        semaphore.release()
+
     def test_call_llm_caps_concurrent_inflight(self):
         limit = 2
         n_callers = 6

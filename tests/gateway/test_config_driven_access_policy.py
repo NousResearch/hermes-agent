@@ -41,6 +41,7 @@ _OWN_POLICY_PLATFORMS = [
     Platform.YUANBAO,
     Platform.QQBOT,
     Platform.WHATSAPP,
+    Platform.FEISHU,
 ]
 
 
@@ -52,6 +53,7 @@ def _clear_auth_env(monkeypatch) -> None:
         "QQ_ALLOWED_USERS",
         "QQ_GROUP_ALLOWED_USERS",
         "WHATSAPP_ALLOWED_USERS",
+        "FEISHU_ALLOWED_USERS",
         "TELEGRAM_ALLOWED_USERS",
         "GATEWAY_ALLOWED_USERS",
         "GATEWAY_ALLOW_ALL_USERS",
@@ -60,6 +62,7 @@ def _clear_auth_env(monkeypatch) -> None:
         "YUANBAO_ALLOW_ALL_USERS",
         "QQ_ALLOW_ALL_USERS",
         "WHATSAPP_ALLOW_ALL_USERS",
+        "FEISHU_ALLOW_ALL_USERS",
     ):
         monkeypatch.delenv(key, raising=False)
 
@@ -113,6 +116,7 @@ def test_base_adapter_defaults_to_not_owning_access_policy():
         ("gateway.platforms.yuanbao", "YuanbaoAdapter"),
         ("gateway.platforms.qqbot.adapter", "QQAdapter"),
         ("plugins.platforms.whatsapp.adapter", "WhatsAppAdapter"),
+        ("plugins.platforms.feishu.adapter", "FeishuAdapter"),
     ],
 )
 def test_own_policy_adapters_declare_the_flag(module_path, class_name):

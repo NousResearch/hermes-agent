@@ -1837,6 +1837,41 @@ class TestRestartLoopGuard:
         for ts in (1000.0, 1150.0, 1300.0, 1450.0):
             assert rlg.check_and_record(0, 60, now=ts) is False
 
+    def test_clock_rollback_does_not_self_prune_valid_chain(self):
+        """A distant future entry must be skipped, not break the walk: breaking
+        exits before reaching valid earlier boots and silently loses the chain."""
+        import gateway.restart_loop_guard as rlg
+
+        # Sorted reverse iteration sees [2000, 1100, 1050]:
+        #   2000 is 940s past ts (gap 300) → skipped
+        #   1100 is a forward entry within gap → adjacent
+        #   1050 is within gap of ts → chained
+        assert rlg._chain_ending_at(
+            [2000.0, 1100.0, 1050.0], 1060.0, 300.0
+        ) == [1050.0, 1100.0]
+
+    def test_distant_future_entry_is_not_chained(self):
+        """A clock rollback can leave a far-future boot in the log. It is bounded by
+        ``gap`` like any other link: one such entry plus a healthy 2-boot chain would
+        otherwise reach the trip threshold on unrelated history, turning the fail-open
+        contract into a fail-closed trip."""
+        import gateway.restart_loop_guard as rlg
+
+        # 5000 is 3950s ahead of ts (gap 300) → dropped; 1040/1030 stay linked.
+        assert rlg._chain_ending_at(
+            [5000.0, 1040.0, 1030.0], 1050.0, 300.0
+        ) == [1030.0, 1040.0]
+
+    def test_future_entry_within_gap_stays_adjacent(self):
+        """A *recent* future entry keeps its adjacency — the bound only drops ones
+        too far ahead of the reference time."""
+        import gateway.restart_loop_guard as rlg
+
+        assert rlg._chain_ending_at(
+            [1100.0, 1040.0], 1050.0, 300.0
+        ) == [1040.0, 1100.0]
+
+
 class TestTerminalToolGatewayLifecycleGuardRemote:
     """Remote-backend and two-session cwd regression coverage."""
 

@@ -63,11 +63,23 @@ def _chain_ending_at(boots: List[float], ts: float, gap: float) -> List[float]:
     """Unbroken chain of boots leading up to ``ts`` (oldest first): walks backwards
     while each gap stays within ``gap``; the first wider gap ends the chain (older
     boots are a resolved episode).  Empty when nothing is recent — how a healthy
-    gateway forgets a loop."""
+    gateway forgets a loop.
+
+    A future entry (``t > ts``, from a clock rollback or a restored state file) counts
+    as adjacent only while it lies within ``gap`` of ``ts``: without that bound one
+    large backward step chains in arbitrarily old history and trips the breaker,
+    turning the documented fail-open contract into a fail-closed one.
+    """
     chain: List[float] = []
     prev = ts
     for t in sorted(boots, reverse=True):
-        if t > ts:  # clock moved backwards (NTP step, restored file): future entry is adjacent, not a break
+        if t > ts:
+            # Clock moved backwards (NTP step, restored state file). Treat a *recent*
+            # future entry as adjacent rather than dropping the whole chain — but bound
+            # it by ``gap`` like any other link: one large backward step must not chain
+            # in arbitrarily old history and trip the breaker (fail-open → fail-closed).
+            if t - ts > gap:
+                continue
             chain.append(t)
             continue
         if prev - t > gap:

@@ -1,0 +1,190 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "neon-genie/run-envelope/1.0.0",
+  "title": "NeonGenieRunEnvelope",
+  "description": "Canonical entry point for a Neon Genie packaging or sealed run. Downstream consumers (Wayfinder, orchestrators) should open this file first.",
+  "type": "object",
+  "required": [
+    "schema_id",
+    "schema_version",
+    "run_id",
+    "skill_version",
+    "authority",
+    "resolved_profiles",
+    "mode_status",
+    "primary_artifact",
+    "artifacts",
+    "promotion",
+    "receipt",
+    "generator"
+  ],
+  "properties": {
+    "schema_id": {
+      "type": "string",
+      "const": "neon-genie/run-envelope"
+    },
+    "schema_version": {
+      "type": "string",
+      "pattern": "^\\d+\\.\\d+\\.\\d+$"
+    },
+    "run_id": {
+      "type": "string",
+      "minLength": 8
+    },
+    "request_id": {
+      "type": "string"
+    },
+    "skill": {
+      "type": "string",
+      "const": "neon-genie"
+    },
+    "skill_version": {
+      "type": "string"
+    },
+    "created_at": {
+      "type": "string"
+    },
+    "authority": {
+      "type": "string",
+      "const": "advisory_only"
+    },
+    "grants_execution": {
+      "type": "boolean",
+      "const": false
+    },
+    "request": {
+      "type": "object",
+      "properties": {
+        "request_id": { "type": "string" },
+        "summary": { "type": "string" },
+        "brief_path": { "type": "string" },
+        "recipe": { "type": "string" },
+        "requested_profiles": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      }
+    },
+    "resolved_profiles": {
+      "type": "array",
+      "items": { "type": "string" },
+      "minItems": 1
+    },
+    "mode_status": {
+      "type": "object",
+      "required": ["OPEN", "ALIGN", "ASCEND", "CLEAR", "SEAL"],
+      "properties": {
+        "OPEN": { "type": "string" },
+        "ALIGN": { "type": "string" },
+        "ASCEND": { "type": "string" },
+        "CLEAR": { "type": "string" },
+        "SEAL": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
+    "primary_artifact": {
+      "type": "object",
+      "required": ["type", "path", "artifact_id"],
+      "properties": {
+        "type": { "type": "string" },
+        "path": { "type": "string" },
+        "artifact_id": { "type": "string" },
+        "content_hash": { "type": "string" }
+      }
+    },
+    "artifacts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["artifact_id", "type", "path", "content_hash"],
+        "properties": {
+          "artifact_id": { "type": "string" },
+          "type": { "type": "string" },
+          "path": { "type": "string" },
+          "content_hash": { "type": "string" },
+          "parent_artifact_ids": {
+            "type": "array",
+            "items": { "type": "string" }
+          },
+          "schema_id": { "type": "string" },
+          "schema_version": { "type": "string" }
+        }
+      }
+    },
+    "data_requests": {
+      "type": "array"
+    },
+    "gate_results": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "gate": { "type": "string" },
+          "status": { "type": "string" },
+          "detail": { "type": "string" }
+        }
+      }
+    },
+    "promotion": {
+      "type": "object",
+      "required": ["state"],
+      "properties": {
+        "state": { "type": "string" },
+        "blocking_gates": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "open_blocking_requests": {
+          "type": "array"
+        }
+      }
+    },
+    "receipt": {
+      "description": "Inline receipt object and/or relative path to run-receipt.json",
+      "type": "object"
+    },
+    "receipt_path": {
+      "type": "string"
+    },
+    "privacy": { "$ref": "privacy-context.schema.json" },
+    "privacy_mode": { "enum": ["local_only", "external_research_allowed", "custom"] },
+    "external_actions": { "type": "array" },
+    "artifact_paths": { "type": "array" },
+    "telemetry_status": { "const": "disabled" },
+    "deletion_instructions": { "type": "string" },
+    "content_hash": {
+      "type": "string",
+      "description": "sha256 of envelope body without content_hash field"
+    },
+    "generator": {
+      "type": "object",
+      "required": ["skill", "version", "tool"],
+      "properties": {
+        "skill": { "type": "string" },
+        "version": { "type": "string" },
+        "tool": { "type": "string" }
+      }
+    },
+    "wayfinder": {
+      "type": "object",
+      "description": "Canonical Wayfinder ingestion hints",
+      "properties": {
+        "ingest": { "type": "string", "const": "run-envelope.json" },
+        "product_intent_changes_require_neon_genie_review": { "type": "boolean" },
+        "handoff_path": { "type": "string" }
+      }
+    },
+    "selected_profiles": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Deprecated alias for resolved_profiles"
+    },
+    "outputs": {
+      "type": "array",
+      "description": "Deprecated alias for artifacts (v0 compatibility)"
+    },
+    "canonical_sources": { "type": "array" },
+    "assumptions": { "type": "array" }
+  },
+  "additionalProperties": true
+}

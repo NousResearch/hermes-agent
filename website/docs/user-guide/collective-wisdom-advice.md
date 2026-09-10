@@ -38,6 +38,12 @@ Local qualifications stay with their originating conversation. If no eligible
 conversation is active, activity waits. Other surfaces show the same advice
 passively; opening them does not run another assessment.
 
+When multiple publication events for a skill are waiting, Hermes keeps only
+the newest version eligible for automatic advice. Duplicate events do not
+produce another recommendation. Historical notices and delivery receipts stay
+available, and explicitly requested reviews are not discarded. A newer arrival
+cannot retract a message already sent.
+
 - Use **Review first** to inspect canonical checks and requirements.
 - Use the native **Install**, **Update**, or sharing control to consent.
 - In the native or Dashboard CLI, use `/wisdom inbox`, then its exact

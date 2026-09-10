@@ -246,6 +246,41 @@ class MediationStore:
                 (org, event_key),
             ).fetchone()[0]
 
+    def _coalesce_feed(
+        self, db: sqlite3.Connection, org: str, *, skill_id: str | None = None,
+    ) -> set[str]:
+        """Retire unsent duplicates; report obsolete in-flight work without erasing it."""
+        rows = db.execute(
+            """SELECT id,state FROM (
+                SELECT id,state,ROW_NUMBER() OVER (
+                    PARTITION BY json_extract(reference_json,'$.skill_id')
+                    ORDER BY json_extract(reference_json,'$.version') DESC,rowid
+                ) AS position FROM wisdom_assessment
+                WHERE organization_id=? AND event_key LIKE 'feed:%'
+                AND (? IS NULL OR json_extract(reference_json,'$.skill_id')=?)
+                AND json_extract(reference_json,'$.kind')='skill'
+                AND COALESCE(json_type(reference_json,'$.user_requested'),'null')!='true'
+                AND json_type(reference_json,'$.skill_id')='text'
+                AND json_extract(reference_json,'$.skill_id')!=''
+                AND json_type(reference_json,'$.version')='integer'
+                AND json_extract(reference_json,'$.version')>0
+            ) WHERE position>1 AND state IN
+                ('pending','assessing','ready','fallback','delivering')""",
+            (org, skill_id, skill_id),
+        ).fetchall()
+        unsent = [(row["id"],) for row in rows if row["state"] != "delivering"]
+        if unsent:
+            db.executemany(
+                "UPDATE wisdom_consent SET state='stale' WHERE assessment_id=? AND state='pending'",
+                unsent,
+            )
+            db.executemany(
+                """UPDATE wisdom_assessment SET state='retired',lease_token=NULL,
+                lease_until=NULL,updated_at=? WHERE id=?""",
+                [(self.clock(), identity) for (identity,) in unsent],
+            )
+        return {row["id"] for row in rows}
+
     def reconcile_feed(self, org: str, event_id: str, reference: dict[str, Any]) -> str:
         """Repair old recommendation/notice classification without another delivery."""
         with self.store.transaction() as db:
@@ -255,6 +290,10 @@ class MediationStore:
                 (identity,),
             ).fetchone()
             if json.loads(row["reference_json"]).get("kind") == reference["kind"]:
+                if reference["kind"] == "skill" and row["state"] in {
+                    "pending", "assessing", "ready", "fallback", "delivering",
+                }:
+                    self._coalesce_feed(db, org, skill_id=reference.get("skill_id"))
                 return identity
             # A send in flight is uncertain, not permission to send again.
             terminal = row["state"] in {
@@ -278,6 +317,7 @@ class MediationStore:
                 "UPDATE wisdom_consent SET state='stale' WHERE assessment_id=? AND state='pending'",
                 (identity,),
             )
+            self._coalesce_feed(db, org, skill_id=reference.get("skill_id"))
             return identity
 
     def retire(self, org: str, job: dict[str, Any]) -> bool:
@@ -320,6 +360,7 @@ class MediationStore:
         now = self.clock()
         with self.store.transaction() as db:
             self._check_org(db, org)
+            self._coalesce_feed(db, org)
             session = db.execute(
                 """SELECT * FROM wisdom_agent_session WHERE organization_id=?
                 AND session_key=? AND alive_until>? AND available=1
@@ -501,6 +542,7 @@ class MediationStore:
         now = self.clock()
         with self.store.transaction() as db:
             self._check_org(db, org)
+            self._coalesce_feed(db, org)
             if request_id is not None:
                 owned = db.execute(
                     """SELECT 1 FROM wisdom_assessment WHERE id=? AND organization_id=?
@@ -542,6 +584,8 @@ class MediationStore:
     ) -> bool:
         with self.store.transaction() as db:
             self._check_org(db, org)
+            if assessment_id in self._coalesce_feed(db, org):
+                return False
             now = self.clock()
             owned = db.execute(
                 """SELECT s.platform,s.address_json FROM wisdom_assessment a

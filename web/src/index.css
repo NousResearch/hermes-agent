@@ -129,15 +129,51 @@ code, kbd, pre, samp, .font-mono, .font-mono-ui {
   overflow: hidden;
 }
 
+/* ---------------------------------------------------------------------- */
+/* Mobile (≤768px): keep the desktop FIXED-COLUMN model, but size the      */
+/* column to the VISIBLE region instead of the full viewport.              */
+/*                                                                        */
+/* Desktop is a fixed `h-dvh` column (html/#root overflow:hidden; the App  */
+/* shell is `h-dvh`); long pages scroll in their own internal containers,  */
+/* the document itself never scrolls. On mobile we preserve that exact     */
+/* model but set the column height to `--app-h` = viewport − the bottom    */
+/* inset. The inset is the soft keyboard OR a parked bottom URL bar        */
+/* (Firefox Mobile's ~56px bar), published as the inline                   */
+/* `--hermes-mobile-bottom-inset` on <html> by lib/mobile-viewport-inset.ts.*/
+/*                                                                        */
+/* Why this fixes the three reported mobile problems:                     */
+/*   • prompt cut off at the bottom — when the keyboard/bar grows,         */
+/*     --app-h shrinks and every .hermes-dvh-surface shrinks with it, so   */
+/*     the bottom row (the prompt, the nav items) lifts ABOVE the chrome   */
+/*     instead of sitting under it; the terminal refits to fewer rows.     */
+/*   • can't touch to scroll the transcript — handled by ChatPage's        */
+/*     coarse-pointer touch→xterm-viewport handler (touch-action:none).    */
+/*   • pull-to-refresh — the document never scrolls (fixed column) and     */
+/*     `overscroll-behavior: contain` stops a downward drag inside any     */
+/*     scrollable child from chaining up to the document's refresh edge.   */
+/*                                                                        */
+/* Desktop (≥769px) is byte-for-byte untouched: `--app-h` is only defined  */
+/* inside this media block, so .hermes-dvh-surface has no effect there and */
+/* the shell keeps its `h-dvh` / `max-h-dvh`.                              */
+/* ---------------------------------------------------------------------- */
 @media (max-width: 768px) {
-  html,
-  body,
-  #root {
-    min-height: 100dvh;
-    height: auto;
-    max-height: none;
-    overflow-x: hidden;
-    overflow-y: auto;
+  html {
+    /* Visible page height: full viewport minus the mobile bottom inset
+       (0px by default). The inset var is an inline style on this same
+       <html> element, so the calc picks it up live as the tracker updates. */
+    --app-h: calc(100dvh - var(--hermes-mobile-bottom-inset, 0px));
+    /* A downward drag that bottoms out inside a child scroller must not
+       chain to the top-level document and trigger pull-to-refresh. */
+    overscroll-behavior: contain;
+  }
+
+  /* The fixed-column surfaces (app shell, off-canvas nav drawer, the
+     model-tools panel) shrink to the visible region. This overrides the
+     `h-dvh` / `max-h-dvh` utilities (same specificity, later in source),
+     so the bottom row stays above the keyboard / URL bar. */
+  .hermes-dvh-surface {
+    height: var(--app-h);
+    max-height: var(--app-h);
   }
 }
 

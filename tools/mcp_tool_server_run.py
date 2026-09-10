@@ -12,6 +12,7 @@ from tools.mcp_tool_common import _core, _get_lifecycle_seconds, _jittered, _res
 from tools import mcp_tool_errors as _errors
 from tools import mcp_tool_registration as _registration
 from tools import mcp_tool_sampling as _sampling
+from tools.mcp_windows import InvalidMcpNetworkError, validate_mcp_network
 
 logger = logging.getLogger("tools.mcp_tool")
 
@@ -171,6 +172,7 @@ class MCPServerRunMixin:
             return True
         try:
             _errors._validate_remote_mcp_url(self.name, config.get("url"))
+            validate_mcp_network(config["url"], config.get("network", "auto"))
             # Content-type preflight (Streamable HTTP only; SSE serves text/event-stream): a
             # web-app root returns HTML and would hang the SDK for connect_timeout. Skipped once
             # _ready was ever set and for OAuth servers (a token-less probe sees HTML/401).
@@ -179,8 +181,9 @@ class MCPServerRunMixin:
                 await self._preflight_content_type(
                     config["url"], headers=dict(config.get("headers") or {}),
                     ssl_verify=config.get("ssl_verify", True),
-                    client_cert=_errors._resolve_client_cert(self.name, config))
-        except (_errors.InvalidMcpUrlError, _errors.NonMcpEndpointError) as exc:
+                    client_cert=_errors._resolve_client_cert(self.name, config),
+                    **({"network": config["network"]} if "network" in config else {}))
+        except (_errors.InvalidMcpUrlError, _errors.NonMcpEndpointError, InvalidMcpNetworkError) as exc:
             logger.warning("%s", exc)
             self._publish_error(exc)  # fail fast and non-retryably
             return False

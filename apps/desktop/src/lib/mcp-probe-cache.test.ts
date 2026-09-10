@@ -39,6 +39,13 @@ describe('probeKey', () => {
     )
   })
 
+  it('invalidates results when the same URL targets a different network namespace', () => {
+    const server = { url: 'http://localhost:8080/mcp', network: 'local' }
+    expect(probeKey('unity', server, 'default')).not.toBe(
+      probeKey('unity', { ...server, network: 'windows' }, 'default')
+    )
+  })
+
   it('ignores non-connection fields so cosmetic edits still hit the cache', () => {
     const server = { url: 'https://api.example/mcp' }
     expect(probeKey('s', server, 'default')).toBe(probeKey('s', { ...server, description: 'hi' }, 'default'))

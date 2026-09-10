@@ -1429,6 +1429,10 @@ platform_toolsets:
 #   headers: HTTP headers (e.g., for authentication)
 #
 # Optional per-server settings:
+#   network: auto | local | windows (HTTP/SSE only; default: auto).
+#     On WSL, auto tries local loopback first, then Windows loopback over
+#     Windows interop. windows explicitly selects the Windows listener;
+#     local disables bridging. Other hosts and non-loopback URLs stay direct.
 #   timeout: tool call timeout in seconds (default: 120)
 #   connect_timeout: initial connection timeout (default: 60)
 #   keepalive_interval: liveness ping cadence in seconds (default: 180).

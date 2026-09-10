@@ -1153,6 +1153,46 @@ class CLISessionMixin:
                 finalize_context_engine_compression_notification(self.agent, committed=False)
                 print(f"  ❌ Compression failed: {e}")
 
+    def _handle_native_compact_command(self, cmd_original: str = ""):
+        """Force a native checkpoint on the current eligible Codex OAuth session."""
+        if not self.agent:
+            print("(._.) No active agent -- send a message first.")
+            return
+        if len(self.conversation_history or ()) < 2:
+            print("(._.) Not enough conversation to compact (need a completed assistant turn).")
+            return
+
+        from agent.context_compressor import stamp_db_persisted_markers
+        from agent.native_compaction import manual_native_responses_compaction
+
+        original_history = self.conversation_history
+        with self._busy_command("Creating native Codex checkpoint...", blocks_input=False):
+            try:
+                result = manual_native_responses_compaction(self.agent, original_history)
+                session_db = getattr(self.agent, "_session_db", None)
+                if session_db is not None:
+                    # The projection changes an existing assistant row rather than appending a new turn.
+                    # Rewrite active rows only: a native checkpoint must never delete the readable
+                    # compaction archive that session_search uses for provider-switch recovery.
+                    session_db.replace_messages(
+                        self.session_id,
+                        result.messages,
+                        active_only=True,
+                        reject_active_turn_lease=True,
+                    )
+                    stamp_db_persisted_markers(result.messages)
+                    self.agent._flushed_db_message_ids = set()
+                    self.agent._last_flushed_db_idx = len(result.messages)
+                    self.agent._db_flush_scan_prefix = result.messages[:]
+                self.conversation_history = result.messages
+                self.agent._session_messages = result.messages
+                print(
+                    f"  ✅ Native Codex context compacted: stored "
+                    f"{result.checkpoint_count} replayable checkpoint(s)."
+                )
+            except Exception as exc:
+                print(f"  ❌ Native compaction failed: {exc}")
+
     def _persist_prompt_summary(self, icon: str, label: str, detail: str, outcome: str) -> None:
         """Print a one-line scrollback summary of a resolved modal prompt (approval/clarify
         panels vanish on repaint); gated by ``display.persist_prompts``."""

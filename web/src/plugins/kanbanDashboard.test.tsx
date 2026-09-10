@@ -29,10 +29,26 @@ const emptyBoard = {
 let container: HTMLDivElement;
 let root: Root;
 let resolveUpload: ((response: { ok: boolean; status: number; text: () => Promise<string> }) => void) | undefined;
+let fakeSockets: FakeWebSocket[];
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 class FakeWebSocket {
-  close() {}
+  onclose: ((event: { code: number }) => void) | null = null;
+  onmessage: ((event: { data: string }) => void) | null = null;
+
+  constructor() {
+    fakeSockets.push(this);
+  }
+
+  close() {
+    this.onclose?.({ code: 1000 });
+  }
+
+  emitTaskEvent() {
+    this.onmessage?.({
+      data: JSON.stringify({ cursor: 2, events: [{ task_id: "t_old_board" }] }),
+    });
+  }
 }
 
 async function waitFor(condition: () => boolean, timeoutMs = 5000) {
@@ -59,6 +75,7 @@ function setTextareaValue(element: HTMLTextAreaElement, value: string) {
 beforeEach(async () => {
   vi.resetAllMocks();
   localStorage.clear();
+  fakeSockets = [];
   apiMocks.buildWsUrl.mockResolvedValue("ws://localhost/api/plugins/kanban/events");
   apiMocks.authedFetch.mockResolvedValue({ ok: true });
 
@@ -69,7 +86,13 @@ beforeEach(async () => {
     }
     if (url.includes("/config")) return { render_markdown: true };
     if (url.includes("/boards")) {
-      return { boards: [{ slug: "default", name: "Default" }], current: "default" };
+      return {
+        boards: [
+          { slug: "default", name: "Default", total: 1 },
+          { slug: "other", name: "Other", total: 1 },
+        ],
+        current: "default",
+      };
     }
     if (url.includes("/board")) {
       boardLoads += 1;
@@ -95,6 +118,18 @@ beforeEach(async () => {
   await act(async () => root.render(<KanbanPage />));
   await waitFor(() => Boolean(container.querySelector('[title="Create task in this column"]')));
 });
+
+async function switchToOtherBoard() {
+  const trigger = Array.from(container.querySelectorAll("button"))
+    .find(element => element.textContent?.includes("Default"));
+  await act(async () => click(trigger ?? null));
+  const option = Array.from(container.querySelectorAll('[role="option"]'))
+    .find(element => element.textContent?.includes("Other"));
+  await act(async () => click(option ?? null));
+  await waitFor(() => apiMocks.fetchJSON.mock.calls.some(
+    ([url]) => String(url).includes("board=other"),
+  ));
+}
 
 afterEach(async () => {
   await act(async () => root?.unmount());
@@ -153,6 +188,57 @@ describe("kanban dashboard clipboard uploads", () => {
       ([url]) => String(url).includes("/board") && !String(url).includes("/boards"),
     )).toHaveLength(boardLoadsBeforeUploadSettlement);
     expect(container.textContent).toContain(
+      "Task created, but attachment upload failed: image too large",
+    );
+  });
+
+  it("ignores events from a WebSocket closed by a board switch", async () => {
+    await waitFor(() => fakeSockets.length > 0);
+    const oldSocket = fakeSockets[fakeSockets.length - 1];
+    await switchToOtherBoard();
+    const boardLoadsAfterSwitch = apiMocks.fetchJSON.mock.calls.filter(
+      ([url]) => String(url).includes("/board") && !String(url).includes("/boards"),
+    ).length;
+
+    await act(async () => {
+      oldSocket.emitTaskEvent();
+      await new Promise(resolve => setTimeout(resolve, 300));
+    });
+
+    expect(apiMocks.fetchJSON.mock.calls.filter(
+      ([url]) => String(url).includes("/board") && !String(url).includes("/boards"),
+    )).toHaveLength(boardLoadsAfterSwitch);
+  });
+
+  it("does not show a delayed upload error on another board", async () => {
+    await act(async () => click(container.querySelector('[title="Create task in this column"]')));
+    const description = container.querySelector<HTMLTextAreaElement>('textarea[placeholder*="Paste screenshots here"]');
+    const title = Array.from(container.querySelectorAll<HTMLTextAreaElement>("textarea"))
+      .find(element => element !== description);
+    if (!title || !description) throw new Error("create fields not rendered");
+    await act(async () => setTextareaValue(title, "Task with delayed screenshot"));
+    apiMocks.authedFetch.mockImplementationOnce(() => new Promise(resolve => {
+      resolveUpload = resolve;
+    }));
+    const image = new File([new Uint8Array([1])], "shot.png", { type: "image/png" });
+    const paste = new Event("paste", { bubbles: true, cancelable: true });
+    Object.defineProperty(paste, "clipboardData", {
+      value: { items: [], files: { 0: image, length: 1 } },
+    });
+    await act(async () => description.dispatchEvent(paste));
+    await act(async () => container.querySelector("form")?.dispatchEvent(
+      new Event("submit", { bubbles: true, cancelable: true }),
+    ));
+    await waitFor(() => !container.querySelector("form"));
+
+    await switchToOtherBoard();
+    await act(async () => resolveUpload?.({
+      ok: false,
+      status: 413,
+      text: async () => JSON.stringify({ detail: "image too large" }),
+    }));
+
+    expect(container.textContent).not.toContain(
       "Task created, but attachment upload failed: image too large",
     );
   });

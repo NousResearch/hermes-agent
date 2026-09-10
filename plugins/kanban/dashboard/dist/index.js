@@ -664,10 +664,11 @@
 
     const cursorRef = useRef(0);
     const reloadTimerRef = useRef(null);
-    const wsRef = useRef(null);
     const wsBackoffRef = useRef(1000);
-    const wsClosedRef = useRef(false);
+    const boardSelectionRef = useRef(board);
     const boardRequestRef = useRef(0);
+    const createOperationRef = useRef(0);
+    boardSelectionRef.current = board;
 
     // --- load config once ---------------------------------------------------
     useEffect(function () {
@@ -686,6 +687,8 @@
 
     // --- fetch full board ---------------------------------------------------
     const loadBoard = useCallback(() => {
+      if (board !== boardSelectionRef.current) return Promise.resolve();
+      const requestedBoard = board;
       const requestId = ++boardRequestRef.current;
       const qs = new URLSearchParams();
       if (tenantFilter) qs.set("tenant", tenantFilter);
@@ -693,17 +696,19 @@
       const url = qs.toString() ? `${API}/board?${qs}` : `${API}/board`;
       return SDK.fetchJSON(withBoard(url, board))
         .then(function (data) {
-          if (requestId !== boardRequestRef.current) return;
+          if (requestId !== boardRequestRef.current || requestedBoard !== boardSelectionRef.current) return;
           setBoardData(data);
           cursorRef.current = data.latest_event_id || 0;
           setError(null);
         })
         .catch(function (err) {
-          if (requestId !== boardRequestRef.current) return;
+          if (requestId !== boardRequestRef.current || requestedBoard !== boardSelectionRef.current) return;
           setError(String(err && err.message ? err.message : err));
         })
         .finally(function () {
-          if (requestId === boardRequestRef.current) setLoading(false);
+          if (requestId === boardRequestRef.current && requestedBoard === boardSelectionRef.current) {
+            setLoading(false);
+          }
         });
     }, [tenantFilter, includeArchived, board]);
 
@@ -752,9 +757,11 @@
     // --- WebSocket ---------------------------------------------------------
     useEffect(function () {
       if (!boardData) return undefined;
-      wsClosedRef.current = false;
+      let cancelled = false;
+      let reconnectTimer = null;
+      let ws = null;
       function openWs() {
-        if (wsClosedRef.current) return;
+        if (cancelled) return;
         // Build the WS URL via the host SDK so the correct auth param is used
         // in BOTH modes: single-use ?ticket= in gated OAuth mode, ?token= in
         // loopback. Reading window.__HERMES_SESSION_TOKEN__ directly (the old
@@ -770,12 +777,11 @@
         // Regression: #20879.
         if (board) wsParams.board = board;
         SDK.buildWsUrl(`${API}/events`, wsParams).then(function (url) {
-          if (wsClosedRef.current) return;
-          let ws;
+          if (cancelled) return;
           try { ws = new WebSocket(url); } catch (_e) { return; }
-          wsRef.current = ws;
           ws.onopen = function () { wsBackoffRef.current = 1000; };
           ws.onmessage = function (ev) {
+            if (cancelled) return;
             try {
               const msg = JSON.parse(ev.data);
               if (msg && Array.isArray(msg.events) && msg.events.length > 0) {
@@ -793,7 +799,7 @@
             } catch (_e) { /* ignore */ }
           };
           ws.onclose = function (ev) {
-            if (wsClosedRef.current) return;
+            if (cancelled) return;
             if (ev && ev.code === 1008) {
               setError(tx(t, "wsAuthFailed",
                 "WebSocket auth failed — reload the page to refresh the session token."));
@@ -801,21 +807,22 @@
             }
             const delay = Math.min(wsBackoffRef.current, 30000);
             wsBackoffRef.current = Math.min(wsBackoffRef.current * 2, 30000);
-            setTimeout(openWs, delay);
+            reconnectTimer = setTimeout(openWs, delay);
           };
         }).catch(function () {
           // Ticket mint / URL build failed (e.g. session expired). Back off
           // and retry; a hard auth failure surfaces via the 1008 close path.
-          if (wsClosedRef.current) return;
+          if (cancelled) return;
           const delay = Math.min(wsBackoffRef.current, 30000);
           wsBackoffRef.current = Math.min(wsBackoffRef.current * 2, 30000);
-          setTimeout(openWs, delay);
+          reconnectTimer = setTimeout(openWs, delay);
         });
       }
       openWs();
       return function () {
-        wsClosedRef.current = true;
-        try { wsRef.current && wsRef.current.close(); } catch (_e) { /* noop */ }
+        cancelled = true;
+        if (reconnectTimer) clearTimeout(reconnectTimer);
+        try { ws && ws.close(); } catch (_e) { /* noop */ }
       };
     }, [!!boardData, board, scheduleReload]);
 
@@ -1008,6 +1015,13 @@
     }, [selectedIds, requestMoveConfirm, requestCompletionSummary, performMoveTask]);
 
     const createTask = useCallback(function (body, attachments) {
+      const operationId = ++createOperationRef.current;
+      const originBoard = board;
+      const showActionError = function (message) {
+        if (operationId === createOperationRef.current) {
+          setActionError({ board: originBoard, message: message });
+        }
+      };
       setActionError(null);
       return SDK.fetchJSON(withBoard(`${API}/tasks`, board), {
         method: "POST",
@@ -1019,7 +1033,7 @@
         // the task was created successfully — but the user should know
         // their ready task will sit idle until the gateway is up.
         if (res && res.warning) {
-          setActionError(tx(t, "taskCreatedWarning", "Task created, but: ") + res.warning);
+          showActionError(tx(t, "taskCreatedWarning", "Task created, but: ") + res.warning);
         }
         const taskId = res && res.task && res.task.id;
         loadBoard();
@@ -1028,7 +1042,7 @@
         uploadTaskAttachments(taskId, board, attachments).catch(function (e) {
           // The task already exists; report the background failure without
           // reopening the create flow where a retry could duplicate the card.
-          setActionError(tx(t, "taskCreatedUploadFailed",
+          showActionError(tx(t, "taskCreatedUploadFailed",
             "Task created, but attachment upload failed: ") + String(e.message || e));
         });
         return res;
@@ -1179,6 +1193,7 @@
       // Optimistic UI: clear the current grid + show loading, reset the
       // event cursor so the WS reopens aligned to the new board's
       // latest_event_id on the next loadBoard.
+      boardSelectionRef.current = nextSlug;
       boardRequestRef.current += 1;
       setBoardData(null);
       cursorRef.current = 0;
@@ -1345,7 +1360,9 @@
          onDelete: deleteSelected,
        }) : null,
         error ? h("div", { className: "text-xs text-destructive px-2" }, error) : null,
-        actionError ? h("div", { className: "text-xs text-destructive px-2" }, actionError) : null,
+        actionError && actionError.board === board
+          ? h("div", { className: "text-xs text-destructive px-2" }, actionError.message)
+          : null,
         h(KanbanDialogs, {
           dialogProps: kanbanDialogs.dialogProps,
           dialogState: kanbanDialogs.dialogState,

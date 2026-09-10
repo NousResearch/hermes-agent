@@ -334,3 +334,55 @@ class TestResolveServerLazy:
 
     def test_explicit_false(self):
         assert _mcp_discovery._resolve_server_lazy("s", {"command": "npx", "lazy": False}) is False
+
+
+from tools.mcp_tool_schema import _build_utility_schemas
+from tools.registry import ToolRegistry
+
+
+def _cached_tool_schema(name, description):
+    return {"name": name, "description": description,
+            "inputSchema": {"type": "object", "properties": {}},
+            "annotations": {"readOnlyHint": True}}
+
+
+def _cache_entry_with(tools, utility_keys=()):
+    return {"fingerprint": "abc", "tools": tools,
+            "utility_tools": [e for e in _build_utility_schemas("srv")
+                              if e["handler_key"] in utility_keys]}
+
+
+class TestLazyRegistrationResolvesNameCollisions:
+    """The cache path resolves name collisions exactly like the live path.
+
+    ``_register_candidates`` has three call sites; the live path
+    (``_register_server_tools``) and the shared-scope path both pass their
+    candidates through ``_resolve_name_collisions`` first. The lazy path did
+    not, so a server booted with ``lazy: true`` from the schema cache skipped
+    collision resolution entirely and the last candidate silently won.
+    """
+
+    def _register(self, entry):
+        registry = ToolRegistry()
+        with patch("tools.registry.registry", registry), \
+             patch("tools.mcp_tool_registration._track_mcp_tool_server"):
+            return registry, _mcp_registration._register_from_cache_sync("srv", {}, entry)
+
+    def test_cached_native_tool_wins_over_generated_utility(self):
+        """A generated utility must not replace the server's own tool of the same name."""
+        registry, registered = self._register(
+            _cache_entry_with([_cached_tool_schema("read_resource", "Native read-resource tool")],
+                              utility_keys=("read_resource",)))
+
+        assert registered == ["mcp__srv__read_resource"]
+        assert registry.get_schema("mcp__srv__read_resource")["description"] == "Native read-resource tool"
+
+    def test_cached_normalization_collision_skips_all_ambiguous_tools(self):
+        """Two native names that normalize to one registry name are skipped, not raced."""
+        registry, registered = self._register(
+            _cache_entry_with([_cached_tool_schema("read-file", "HYPHEN tool"),
+                               _cached_tool_schema("read_file", "UNDERSCORE tool"),
+                               _cached_tool_schema("safe_tool", "fine")]))
+
+        assert registered == ["mcp__srv__safe_tool"]
+        assert registry.get_entry("mcp__srv__read_file") is None

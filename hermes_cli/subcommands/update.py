@@ -44,7 +44,7 @@ def build_update_parser(subparsers, *, cmd_update: Callable) -> None:
             "never silently ride along across updates.")
     update_parser.add_argument(
         "--branch", default=None, metavar="NAME",
-        help="Update against this branch instead of the default (main). "
+        help="Update against this branch instead of updates.branch (main by default). "
             "If the local checkout is on a different branch, hermes will "
             "switch to the requested branch first (auto-stashing any "
             "uncommitted changes).")

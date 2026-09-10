@@ -11,6 +11,7 @@ import time
 from pathlib import Path
 from urllib.parse import urlparse
 from hermes_constants import get_hermes_home
+from hermes_cli.update_cmd_branch import resolve_update_branch
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 # rich and prompt_toolkit are imported lazily: this module sits on the TUI gateway's critical
@@ -322,26 +323,26 @@ def _github_branch_tip(repo_slug: str, branch: str) -> Optional[str]:
     return sha if _is_full_sha(sha) else None
 
 
-def _upstream_main_sha() -> Optional[str]:
-    """Tip SHA of upstream main; API first, HTTPS ``ls-remote`` (no auth, no prompts) as fallback."""
-    sha = _github_branch_tip(_OFFICIAL_REPO_CANONICAL.removeprefix("github.com/"), "main")
+def _upstream_branch_sha(branch: str) -> Optional[str]:
+    """Tip SHA of an upstream branch; API first, HTTPS ``ls-remote`` fallback."""
+    sha = _github_branch_tip(_OFFICIAL_REPO_CANONICAL.removeprefix("github.com/"), branch)
     if sha:
         return sha
-    result = _git_run(["ls-remote", _UPSTREAM_REPO_URL, "refs/heads/main"], timeout=10, network=True)
+    result = _git_run(["ls-remote", _UPSTREAM_REPO_URL, f"refs/heads/{branch}"], timeout=10, network=True)
     if result is None or result.returncode != 0 or not result.stdout:
         return None
     return result.stdout.split()[0] or None
 
 
-def _check_via_rev(local_rev: str) -> Optional[int]:
-    """Compare an embedded git revision to upstream main via the API (see ``_tips_behind``)."""
+def _check_via_rev(local_rev: str, branch: str = "main") -> Optional[int]:
+    """Compare an embedded git revision to an upstream branch via the API (see ``_tips_behind``)."""
     global _last_target_rev
-    _last_target_rev = _upstream_main_sha()
+    _last_target_rev = _upstream_branch_sha(branch)
     return _tips_behind(local_rev, _last_target_rev)
 
 
-def _check_via_local_git(repo_dir: Path) -> Optional[int]:
-    """Count commits behind origin/main in a local checkout.
+def _check_via_local_git(repo_dir: Path, branch: str = "main") -> Optional[int]:
+    """Count commits behind the configured origin branch in a local checkout.
 
     Passive checks never run ``git fetch``: every CLI/TUI/gateway start used to negotiate a pack
     with GitHub, and across the install base that was tens of millions of fetch requests a day
@@ -357,10 +358,10 @@ def _check_via_local_git(repo_dir: Path) -> Optional[int]:
         return None
     canonical = _canonical_github_remote(origin_url)
     if canonical.startswith("github.com/"):
-        target_rev = _github_branch_tip(canonical.removeprefix("github.com/"), "main")
+        target_rev = _github_branch_tip(canonical.removeprefix("github.com/"), branch)
     else:
         # Non-GitHub origin: one ls-remote for the tip (ref advertisement only, no pack transfer).
-        result = _git_run(["ls-remote", "origin", "refs/heads/main"], cwd=repo_dir, timeout=10, network=True)
+        result = _git_run(["ls-remote", "origin", f"refs/heads/{branch}"], cwd=repo_dir, timeout=10, network=True)
         target_rev = result.stdout.split()[0] if result is not None and result.returncode == 0 and result.stdout else None
     global _last_target_rev
     _last_target_rev = target_rev
@@ -379,8 +380,9 @@ def _read_json(path: Path) -> Optional[dict]:
 def check_for_updates(*, passive: bool = False) -> Optional[int]:
     """Check whether a Hermes update is available.
 
-    If ``HERMES_REVISION`` is set (nix builds embed it), compare it to upstream main; otherwise
-    compare the local checkout's HEAD. Both go through the GitHub API, never ``git fetch``.
+    If ``HERMES_REVISION`` is set (nix builds embed it), compare it to the configured upstream
+    branch; otherwise compare the local checkout's HEAD. Both go through the GitHub API, never
+    ``git fetch`` for GitHub origins.
     """
     def _read_config_opt_out():
         from hermes_cli.config import load_config
@@ -388,6 +390,8 @@ def check_for_updates(*, passive: bool = False) -> Optional[int]:
 
     if passive and _quiet(_read_config_opt_out) is True:
         return None
+
+    branch = _quiet(resolve_update_branch, "main")
 
     cache_file = get_hermes_home() / ".update_check"
     embedded_rev = os.environ.get("HERMES_REVISION") or None
@@ -408,18 +412,18 @@ def check_for_updates(*, passive: bool = False) -> Optional[int]:
     head_rev = _git_stdout(["rev-parse", "HEAD"], cwd=repo_dir) if repo_dir is not None else None
     cached = _read_json(cache_file)
     if cached is not None and cached.get("rev") == embedded_rev and cached.get("ver") == VERSION \
-            and cached.get("head") == head_rev:
+            and cached.get("head") == head_rev and cached.get("branch", "main") == branch:
         ttl = _UPDATE_CHECK_CACHE_SECONDS if cached.get("behind") is not None else _UPDATE_CHECK_FAILURE_CACHE_SECONDS
         if now - cached.get("ts", 0) < ttl:
             return cached.get("behind")
     if embedded_rev:
-        behind = _check_via_rev(embedded_rev)
+        behind = _check_via_rev(embedded_rev, branch)
     else:
         # No checkout and no embedded revision — status can't be determined.
-        behind = _check_via_local_git(repo_dir) if repo_dir is not None else None
+        behind = _check_via_local_git(repo_dir, branch) if repo_dir is not None else None
     _quiet(lambda: cache_file.write_text(
         json.dumps({"ts": now, "behind": behind, "rev": embedded_rev, "ver": VERSION,
-                    "head": head_rev or embedded_rev, "target": _last_target_rev}),
+                    "head": head_rev or embedded_rev, "target": _last_target_rev, "branch": branch}),
         encoding="utf-8"))
     return behind
 
@@ -460,11 +464,13 @@ def _compute_git_banner_state(repo_dir: Optional[Path] = None) -> Optional[dict]
     repo_dir = repo_dir or _resolve_repo_dir()
     if repo_dir is None:
         return _baked_banner_state()
-    upstream, local = (_git_stdout(["rev-parse", "--short=8", rev], cwd=repo_dir) for rev in ("origin/main", "HEAD"))
+    branch = _quiet(resolve_update_branch, "main")
+    target_ref = f"origin/{branch}"
+    upstream, local = (_git_stdout(["rev-parse", "--short=8", rev], cwd=repo_dir) for rev in (target_ref, "HEAD"))
     if not upstream or not local:
-        # Live-git lookup failed (e.g. shallow clone without origin/main).
+        # Live-git lookup failed (e.g. shallow clone without the configured target ref).
         return _baked_banner_state()
-    ahead = _git_count(["rev-list", "--count", "origin/main..HEAD"], cwd=repo_dir) or 0
+    ahead = _git_count(["rev-list", "--count", f"{target_ref}..HEAD"], cwd=repo_dir) or 0
     return {"upstream": upstream, "local": local, "ahead": max(ahead, 0)}
 
 

@@ -868,6 +868,19 @@ class TestUpdateCheckEndpoint:
         # git/pip installs can apply the update in place from the dashboard.
         assert body["can_apply"] is True
 
+    def test_git_install_reports_commits_from_shared_update_check(self, monkeypatch):
+        monkeypatch.setattr(_cfg_mod, "detect_install_method", lambda *a, **k: "git")
+        import hermes_cli.banner as banner
+
+        monkeypatch.setattr(banner, "check_for_updates", lambda: 2)
+        commits = [{"sha": "abc1234", "summary": "change", "author": "Dev", "at": 1}]
+        monkeypatch.setattr(banner, "upstream_commits_behind", lambda: commits)
+
+        body = self.client.get("/api/hermes/update/check").json()
+
+        assert body["behind"] == 2
+        assert body["commits"] == commits
+
 
 
     def test_managed_runtime_dashboard_is_not_applyable(self, monkeypatch):

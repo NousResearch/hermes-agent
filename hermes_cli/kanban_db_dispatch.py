@@ -1010,6 +1010,7 @@ def _record_task_failure(
     if failure_limit is None:
         failure_limit = DEFAULT_FAILURE_LIMIT
     error = error[:500]
+    auto_blocked_hook: Optional[dict[str, Any]] = None
     with _kb.write_txn(conn):
         row = conn.execute(
             "SELECT consecutive_failures, status, max_retries, current_run_id "
@@ -1017,6 +1018,7 @@ def _record_task_failure(
         ).fetchone()
         if row is None:
             return False
+        run_id = row["current_run_id"]
         retry_status = (
             _kb._retry_status_for_run(conn, task_id, row["current_run_id"])
             if release_claim
@@ -1078,7 +1080,6 @@ def _record_task_failure(
             "trigger_outcome": outcome,
             "retry_status": retry_status,
         }
-        run_id = None
         if end_run:
             # Only the spawn path has an open run to close.
             run_id = _kb._end_run(
@@ -1094,7 +1095,26 @@ def _record_task_failure(
         if event_payload_extra:
             payload.update(event_payload_extra)
         _kb._append_event(conn, task_id, "gave_up", payload, run_id=run_id)
-        return True
+        if _kb._kanban_observer_consumed("on_kanban_task_auto_blocked"):
+            auto_blocked_hook = {
+                "run_id": run_id,
+                "outcome": outcome,
+                "error": error,
+                "error_fingerprint": _error_fingerprint(error),
+                "consecutive_failures": failures,
+                "failure_limit": effective_limit,
+                "retry_status": retry_status,
+            }
+    if auto_blocked_hook is not None:
+        try:
+            task = _kb.get_task(conn, task_id)
+            _kb._fire_task_hook(
+                "on_kanban_task_auto_blocked", task, task_id, auto_blocked_hook.pop("run_id"),
+                status=task.status if task else "blocked", **auto_blocked_hook,
+            )
+        except Exception as exc:  # pragma: no cover - defensive
+            _log.debug("kanban auto-block hook failed: %s", exc)
+    return True
 
 
 def _set_worker_pid(conn: sqlite3.Connection, task_id: str, pid: int) -> None:

@@ -159,6 +159,13 @@ VALID_HOOKS: Set[str] = {
     #   (privacy: task ids, assignees, workspace paths).
     "on_kanban_worker_spawned", "on_kanban_worker_exited", "on_kanban_worker_stale_claim",
     "on_kanban_task_updated", "on_kanban_dispatch_tick",
+    # on_kanban_task_auto_blocked fires after the circuit-breaker transition
+    # commits, from every failure path that reaches its effective limit. Adds:
+    #   outcome: str (the triggering failure outcome), error: str,
+    #   error_fingerprint: str, consecutive_failures: int,
+    #   failure_limit: int, retry_status: str, status: "blocked".
+    # The hook is observer-only and short-circuits when no subscriber exists.
+    "on_kanban_task_auto_blocked",
     # gateway_platform_event: normalized envelopes only, never raw SDK objects or adapter handles.
     # Kwargs: platform, event_type, payload (event_type-local; see hooks.md). New event types land
     # only together with real fire-sites.

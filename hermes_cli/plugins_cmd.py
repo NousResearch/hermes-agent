@@ -381,6 +381,9 @@ def _install_plugin_python_deps(
         else:
             console.print("[dim]Skipped Node deps — run `hermes plugins install` again to retry.[/dim]\n")
 
+    if not deps and not has_pyproject:
+        return True, None
+
     plugin_name = manifest.get("name", "this plugin")
     console.print(
         f"\n[bold]{plugin_name}[/bold] declares Python dependencies:"

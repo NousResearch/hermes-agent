@@ -5644,63 +5644,6 @@
           "exclusion_reason"
         ]
       },
-      "WisdomSuggestionCreateRequest": {
-        "type": "object",
-        "properties": {
-          "skill_key": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 256
-          },
-          "skill_id": {
-            "type": "string"
-          },
-          "content_hash": {
-            "type": "string"
-          },
-          "event_type": {
-            "type": "string",
-            "enum": [
-              "skill_ready_to_share",
-              "teammate_published",
-              "update_available"
-            ]
-          },
-          "event_id": {
-            "type": "string"
-          },
-          "rationale_summary": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 512
-          }
-        },
-        "required": [
-          "skill_key",
-          "content_hash",
-          "rationale_summary"
-        ],
-        "additionalProperties": false
-      },
-      "WisdomSuggestionOutcomeRequest": {
-        "type": "object",
-        "properties": {
-          "outcome": {
-            "type": "string",
-            "enum": [
-              "suggested",
-              "accepted",
-              "declined",
-              "dismissed",
-              "expired"
-            ]
-          }
-        },
-        "required": [
-          "outcome"
-        ],
-        "additionalProperties": false
-      },
       "WisdomMuteResponse": {
         "type": "object",
         "properties": {
@@ -6003,74 +5946,6 @@
           "created_at",
           "delivered_at"
         ]
-      },
-      "WisdomEventCreateRequest": {
-        "type": "object",
-        "properties": {
-          "event_type": {
-            "type": "string",
-            "enum": [
-              "skill_ready_to_share",
-              "teammate_published",
-              "update_available"
-            ]
-          },
-          "skill_id": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 256,
-            "pattern": "^[^\\u0000-\\u001f\\u007f-\\u009f]+$"
-          },
-          "skill_key": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 256,
-            "pattern": "^[^\\u0000-\\u001f\\u007f-\\u009f]+$"
-          },
-          "skill_version": {
-            "type": "integer",
-            "exclusiveMinimum": 0,
-            "maximum": 2147483647
-          },
-          "content_hash": {
-            "type": "string",
-            "pattern": "^sha256:[a-f0-9]{64}$"
-          },
-          "dedup_key": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 256,
-            "pattern": "^[^\\u0000-\\u001f\\u007f-\\u009f]+$"
-          }
-        },
-        "required": [
-          "event_type"
-        ],
-        "additionalProperties": false,
-        "description": "Published events require skill_id; skill_key, if provided, must equal it. Omitted skill_version resolves to the current published version. A supplied hash must match that exact version. Local skill_ready_to_share events require skill_key and content_hash and forbid published references. dedup_key is a deprecated compatibility hint and does not control identity; identity is server-derived from org, recipient, type and exact reference."
-      },
-      "WisdomEventDeliverRequest": {
-        "type": "object",
-        "properties": {
-          "agent_title": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 120
-          },
-          "agent_explanation": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 600
-          },
-          "professionalism_review": {
-            "$ref": "#/components/schemas/WisdomProfessionalismReview"
-          }
-        },
-        "required": [
-          "agent_title",
-          "agent_explanation"
-        ],
-        "additionalProperties": false
       },
       "WisdomEventActRequest": {
         "type": "object",
@@ -12079,7 +11954,9 @@
         }
       },
       "post": {
-        "summary": "Record a suggestion the client agent made (outcome=suggested).",
+        "deprecated": true,
+        "summary": "Retired legacy recommendation write; use native delivery.",
+        "description": "Authenticated calls return 410 native_delivery_required without parsing or persisting the body. Private names, usage and advice must stay local. Use deliveries/claim and deliveries/{id}/settle for opaque delivery receipts, deliveries/{id}/outcomes for durable operation results, and suppressions for Not Now. Read-only history remains available. Upgrade Hermes and reopen Collective Wisdom; never replay private payloads to another endpoint.",
         "tags": [
           "wisdom",
           "wisdom-agent-led"
@@ -12089,36 +11966,7 @@
             "bearerAuth": []
           }
         ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/WisdomSuggestionCreateRequest"
-              }
-            }
-          }
-        },
         "responses": {
-          "201": {
-            "description": "Recorded.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/WisdomSuggestionRecord"
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "Malformed body.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
           "401": {
             "description": "Missing/invalid bearer.",
             "content": {
@@ -12131,6 +11979,16 @@
           },
           "403": {
             "description": "Missing wisdom scope, NAS-admin claim, or org_role.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "410": {
+            "description": "native_delivery_required; upgrade to native controls. Nothing was sent or changed.",
             "content": {
               "application/json": {
                 "schema": {
@@ -12154,7 +12012,9 @@
     },
     "/v1/sync/wisdom/agent-led/suggestions/{id}/outcome": {
       "post": {
-        "summary": "Set a suggestion's outcome; declined/dismissed apply policy suppression.",
+        "deprecated": true,
+        "summary": "Retired legacy recommendation write; use native delivery.",
+        "description": "Authenticated calls return 410 native_delivery_required without parsing or persisting the body. Private names, usage and advice must stay local. Use deliveries/claim and deliveries/{id}/settle for opaque delivery receipts, deliveries/{id}/outcomes for durable operation results, and suppressions for Not Now. Read-only history remains available. Upgrade Hermes and reopen Collective Wisdom; never replay private payloads to another endpoint.",
         "tags": [
           "wisdom",
           "wisdom-agent-led"
@@ -12168,43 +12028,14 @@
           {
             "schema": {
               "type": "string",
-              "description": "Suggestion id."
+              "description": "Legacy record id."
             },
             "required": true,
             "name": "id",
             "in": "path"
           }
         ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/WisdomSuggestionOutcomeRequest"
-              }
-            }
-          }
-        },
         "responses": {
-          "200": {
-            "description": "Updated.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/WisdomSuggestionRecord"
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "Bad outcome.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
           "401": {
             "description": "Missing/invalid bearer.",
             "content": {
@@ -12225,8 +12056,135 @@
               }
             }
           },
-          "404": {
-            "description": "Not the caller's suggestion.",
+          "410": {
+            "description": "native_delivery_required; upgrade to native controls. Nothing was sent or changed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Agent-led surface not configured on this deployment.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/sync/wisdom/agent-led/events": {
+      "post": {
+        "deprecated": true,
+        "summary": "Retired legacy recommendation write; use native delivery.",
+        "description": "Authenticated calls return 410 native_delivery_required without parsing or persisting the body. Private names, usage and advice must stay local. Use deliveries/claim and deliveries/{id}/settle for opaque delivery receipts, deliveries/{id}/outcomes for durable operation results, and suppressions for Not Now. Read-only history remains available. Upgrade Hermes and reopen Collective Wisdom; never replay private payloads to another endpoint.",
+        "tags": [
+          "wisdom",
+          "wisdom-agent-led"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "401": {
+            "description": "Missing/invalid bearer.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Missing wisdom scope, NAS-admin claim, or org_role.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "410": {
+            "description": "native_delivery_required; upgrade to native controls. Nothing was sent or changed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Agent-led surface not configured on this deployment.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/sync/wisdom/agent-led/events/{id}/deliver": {
+      "post": {
+        "deprecated": true,
+        "summary": "Retired legacy recommendation write; use native delivery.",
+        "description": "Authenticated calls return 410 native_delivery_required without parsing or persisting the body. Private names, usage and advice must stay local. Use deliveries/claim and deliveries/{id}/settle for opaque delivery receipts, deliveries/{id}/outcomes for durable operation results, and suppressions for Not Now. Read-only history remains available. Upgrade Hermes and reopen Collective Wisdom; never replay private payloads to another endpoint.",
+        "tags": [
+          "wisdom",
+          "wisdom-agent-led"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "Legacy record id."
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "401": {
+            "description": "Missing/invalid bearer.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Missing wisdom scope, NAS-admin claim, or org_role.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "410": {
+            "description": "native_delivery_required; upgrade to native controls. Nothing was sent or changed.",
             "content": {
               "application/json": {
                 "schema": {
@@ -12467,122 +12425,6 @@
         }
       }
     },
-    "/v1/sync/wisdom/agent-led/events": {
-      "post": {
-        "summary": "Compose (or find by canonical identity) an event for the caller.",
-        "description": "Server fills evidence, safety and popularity summaries and mints signed action tokens. Same recipient, event type and exact reference ⇒ 200 with deduplicated=true and no new row, regardless of the legacy dedup_key hint. Published references must exist in this organization and be active; a supplied version/hash must match. No recipient override is accepted.",
-        "tags": [
-          "wisdom",
-          "wisdom-agent-led"
-        ],
-        "security": [
-          {
-            "bearerAuth": []
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/WisdomEventCreateRequest"
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "Existing (dedup).",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/WisdomProactiveEventResponse"
-                }
-              }
-            }
-          },
-          "201": {
-            "description": "Created.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/WisdomProactiveEventResponse"
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "Malformed body.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "Missing/invalid bearer.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "403": {
-            "description": "Missing wisdom scope, NAS-admin claim, or org_role.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "Published reference not found in org or hash mismatch.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "409": {
-            "description": "Stored event identity conflict.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "410": {
-            "description": "Published reference inactive or invalidated.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "503": {
-            "description": "Agent-led surface not configured on this deployment.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
     "/v1/sync/wisdom/agent-led/events/{id}": {
       "get": {
         "summary": "Read one proactive event (recipient only) with fresh action tokens.",
@@ -12660,153 +12502,6 @@
           },
           "503": {
             "description": "Agent-led surface not configured on this deployment.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/v1/sync/wisdom/agent-led/events/{id}/deliver": {
-      "post": {
-        "summary": "Submit agent-authored title/explanation and deliver the event.",
-        "description": "Agent text is untrusted: bounded, control-character-free, scanned with the org's sensitive-content rules. Delivery honours the recipient mute (202 muted) and reserves weekly capacity atomically (429 when full). A configured sink and matching transport acknowledgement are required. One 120-second lease owns the send; the transport wait is bounded to 30 seconds. Definite non-sends permit at most three attempts. Missing/ambiguous acknowledgements or expired owners leave uncertain state and retain capacity: never blindly resend. Receipt and suggestion history commit together. A lost response can follow a successful commit; read/retry the same event, never create a replacement. Acknowledged deliveries return 200 idempotently. No receipt means no success.",
-        "tags": [
-          "wisdom",
-          "wisdom-agent-led"
-        ],
-        "security": [
-          {
-            "bearerAuth": []
-          }
-        ],
-        "parameters": [
-          {
-            "schema": {
-              "type": "string",
-              "description": "Event id."
-            },
-            "required": true,
-            "name": "id",
-            "in": "path"
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/WisdomEventDeliverRequest"
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "Delivered (or no-op).",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/WisdomProactiveEventResponse"
-                }
-              }
-            }
-          },
-          "202": {
-            "description": "Suppressed: recipient muted.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/WisdomProactiveEventResponse"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "Missing/invalid bearer.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "403": {
-            "description": "Missing wisdom scope, NAS-admin claim, or org_role.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "Not found / not the recipient.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "409": {
-            "description": "Delivery in progress, uncertain, exhausted, or policy/reference changed.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "410": {
-            "description": "Published reference inactive or invalidated.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Agent text invalid or blocked by scan.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "429": {
-            "description": "Weekly recommendation cap reached.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "502": {
-            "description": "Definite non-send or uncertain send/commit; inspect error and existing event before retrying.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "503": {
-            "description": "Agent-led surface or acknowledged delivery sink not configured.",
             "content": {
               "application/json": {
                 "schema": {

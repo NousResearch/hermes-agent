@@ -23,8 +23,8 @@ import { dismissNotification, notify, notifyError } from '@/store/notifications'
 import { setPetScale } from '@/store/pet-gallery'
 import { $petGenInput, openPetGenerate } from '@/store/pet-generate'
 import {
-  $activeGatewayProfile,
   $newChatProfile,
+  ambientNewChatProfile,
   captureNewChatSource,
   ensureGatewayProfile,
   normalizeProfileKey
@@ -887,7 +887,11 @@ export function useSlashCommand(deps: SlashCommandDeps) {
         // the current empty draft) at that profile's backend.
         profile: async ({ arg }) => {
           const target = arg.trim()
-          const current = normalizeProfileKey($activeGatewayProfile.get())
+          // Show the profile the NEXT new chat will use (what /profile actually
+          // controls), not the live gateway's realized profile — which lags an
+          // in-flight swap and, under All Profiles, names the last-opened profile
+          // instead of the default door a new chat takes.
+          const current = normalizeProfileKey(ambientNewChatProfile())
 
           if (!target) {
             notify({ kind: 'success', message: copy.profileStatus(current) })

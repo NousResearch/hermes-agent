@@ -1276,11 +1276,16 @@ export function upsertOptimisticSession(
   // until the aggregator re-fetches. An explicitly routed create ($newChatRoute
   // / a tile's route) names its EXACT owner: the backend profile that route
   // serves, on that route's connection. The live gateway's profile is only the
-  // owner for an unrouted create — in All-profiles / Bot routing the ambient
-  // profile stays on `default` while the session lives on another backend (and
-  // a concurrent source switch can move the active gateway before this row is
-  // inserted), so a row stamped `default` then misroutes every session-scoped
-  // RPC that resolves its owner off the row ("session not found" on turn two).
+  // owner for an unrouted create — and for the unrouted All-Profiles case,
+  // resolveNewChatOwnerRoute returns null so desktopSessionCreateParams first
+  // swaps the gateway to `default` (ensureGatewayProfile('default')); by the
+  // time this row is stamped $activeGatewayProfile therefore reads `default`,
+  // the profile the session actually lives on. Do NOT assume the ambient
+  // profile is `default` in All-Profiles mode elsewhere — it is only so here
+  // because of that preceding swap. A concurrent source switch can still move
+  // the active gateway before this row is inserted, so a row stamped with the
+  // wrong profile then misroutes every session-scoped RPC that resolves its
+  // owner off the row ("session not found" on turn two).
   const profileKey = normalizeProfileKey(owner ? owner.targetProfile || owner.profile : $activeGatewayProfile.get())
   const connectionId = owner?.connectionId.trim() || ''
 

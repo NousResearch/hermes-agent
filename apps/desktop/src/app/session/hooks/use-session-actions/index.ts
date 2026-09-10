@@ -44,6 +44,7 @@ import {
   $profiles,
   $showAllProfiles,
   type AgentProfileRoute,
+  ambientNewChatProfile,
   ensureGatewayAgent,
   ensureGatewayProfile,
   normalizeProfileKey,
@@ -308,7 +309,7 @@ async function desktopSessionCreateParams(
     provider: isManualSelection ? $currentProvider.get().trim() : ''
   }
 
-  const profile = capturedRoute?.profile || $newChatProfile.get() || normalizeProfileKey($activeGatewayProfile.get())
+  const profile = capturedRoute?.profile || $newChatProfile.get() || ambientNewChatProfile()
 
   if (capturedRoute) {
     await ensureGatewayAgent(capturedRoute.connectionId, profile)

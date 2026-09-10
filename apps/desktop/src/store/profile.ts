@@ -328,6 +328,18 @@ export function resolveNewChatOwnerRoute(forProfile?: string): AgentProfileRoute
 
   const intentProfile = forProfile ? normalizeProfileKey(forProfile) : $newChatProfile.get()
 
+  // No explicit intent while browsing All Profiles: there is no active context
+  // to inherit a connection from (the ambient gateway is just the last-opened
+  // profile's socket). Take the primary/default door instead of routing the
+  // create through a stale, possibly-remote connection. The null return is
+  // load-bearing downstream: desktopSessionCreateParams then runs
+  // ensureGatewayProfile('default'), which swaps the live gateway to default
+  // BEFORE the create, so the optimistic sidebar row (stamped off
+  // $activeGatewayProfile in use-session-actions/utils) reads `default` too.
+  if (!intentProfile && $showAllProfiles.get()) {
+    return null
+  }
+
   const connectionId = (
     (intentProfile
       ? ($newChatConnectionId.get() ?? profilePickConnectionId(intentProfile))
@@ -784,6 +796,22 @@ $showAllProfiles.subscribe(value => persistBoolean(SHOW_ALL_PROFILES_STORAGE_KEY
 export const $profileScope = computed([$showAllProfiles, $activeGatewayProfile], (showAll, gateway) =>
   showAll ? ALL_PROFILES : normalizeProfileKey(gateway)
 )
+
+// The profile a plain new chat (no explicit picker intent) inherits. Normally
+// the live gateway's profile — the context the user is looking at. But the
+// "All profiles" browse view has NO single active context: it is served off
+// every profile's databases at once, and $activeGatewayProfile still names
+// whichever profile was opened most recently. Inheriting that dropped fresh
+// chats into that stale profile instead of the primary. Fall to the primary
+// (default) there, matching the convention cron already uses for writes made
+// while browsing all profiles (ALL_PROFILES → "default").
+export function ambientNewChatProfile(): string {
+  if ($showAllProfiles.get()) {
+    return 'default'
+  }
+
+  return normalizeProfileKey($activeGatewayProfile.get())
+}
 
 // Switch the active context to `name`: leave "All profiles" mode, point new
 // chats at it, and swap the single live gateway onto its backend (which moves

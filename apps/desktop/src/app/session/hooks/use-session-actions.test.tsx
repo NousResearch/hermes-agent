@@ -24,7 +24,14 @@ import { $clarifyRequests, clearClarifyRequest, setClarifyRequest } from '@/stor
 import { clearSessionDraft, stashSessionDraft, takeSessionDraft } from '@/store/composer'
 import { requestGatewayForAgent, requestGatewayForProfile } from '@/store/gateway'
 import { $pinnedSessionIds } from '@/store/layout'
-import { $activeGatewayProfile, $newChatProfile, $newChatRoute, $profiles, ensureGatewayProfile } from '@/store/profile'
+import {
+  $activeGatewayProfile,
+  $newChatProfile,
+  $newChatRoute,
+  $profiles,
+  ensureGatewayProfile,
+  setShowAllProfiles
+} from '@/store/profile'
 import { $projectScope, $projectTree, ALL_PROJECTS } from '@/store/projects'
 import {
   $activeSessionId,
@@ -728,6 +735,7 @@ describe('createBackendSessionForSend profile routing', () => {
     $newChatProfile.set(null)
     $newChatRoute.set(null)
     $activeGatewayProfile.set('default')
+    setShowAllProfiles(false)
     $projectScope.set(ALL_PROJECTS)
     $projectTree.set([])
     $currentCwd.set('')
@@ -751,6 +759,19 @@ describe('createBackendSessionForSend profile routing', () => {
     })
 
     expect(params).toMatchObject({ profile: 'coder' })
+  })
+
+  it('routes a plain new chat under All Profiles to default, not the last-active profile', async () => {
+    // The browse view has no single active context: $activeGatewayProfile still
+    // names whichever profile was opened most recently. A plain New session must
+    // land on the primary (default), never that stale profile.
+    const params = await createWith(() => {
+      $activeGatewayProfile.set('felix')
+      $newChatProfile.set(null)
+      setShowAllProfiles(true)
+    })
+
+    expect(params).toMatchObject({ profile: 'default' })
   })
 
   it('honours an explicit per-profile "+" selection', async () => {

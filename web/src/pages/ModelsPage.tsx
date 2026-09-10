@@ -767,7 +767,7 @@ function MoaModelsModal({
       aggregator_temperature: draft.aggregator_temperature,
       reference_timeout: draft.reference_timeout,
       degraded_reference_policy: draft.degraded_reference_policy,
-      max_tokens: draft.max_tokens,
+
       enabled: draft.enabled,
     };
     setDraft((prev) => ({

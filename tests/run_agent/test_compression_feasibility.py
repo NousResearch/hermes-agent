@@ -66,6 +66,47 @@ def _make_agent(
     return agent
 
 
+@pytest.mark.parametrize("main_context,aux_context", [(1_000_000, 512_000), (400_000, 80_000)])
+def test_aux_sync_keeps_lean_tail_policy(main_context, aux_context):
+    """Lowering only the trigger must not change window-relative retention."""
+    agent = _make_agent(main_context=main_context)
+    compressor = agent.context_compressor = ContextCompressor(
+        "test-main-model", config_context_length=main_context,
+        threshold_percent=0.85, quiet_mode=True,
+    )
+    before = compressor.tail_token_budget
+    agent._emit_status = lambda message: None
+    client = MagicMock(base_url="http://localhost/v1", api_key="test-key")
+    with patch("agent.auxiliary_client.get_text_auxiliary_client", return_value=(client, "aux")), \
+         patch("agent.model_metadata.get_model_context_length", return_value=aux_context):
+        agent._check_compression_model_feasibility()
+        assert compressor.threshold_tokens == aux_context
+        assert compressor.tail_token_budget == before
+        # Repeated feasibility and subsequent model recalibration retain policy.
+        agent._check_compression_model_feasibility()
+        assert compressor.tail_token_budget == before
+        compressor.update_model("test-main-model", context_length=main_context)
+        assert compressor.tail_token_budget == before
+
+
+def test_aux_sync_legacy_tail_follows_lowered_threshold():
+    """Explicit legacy retention follows the current trigger, not its old cache."""
+    agent = _make_agent(main_context=1_000_000)
+    compressor = agent.context_compressor = ContextCompressor(
+        "test-main-model", config_context_length=1_000_000,
+        threshold_percent=0.85, tail_mode="legacy", quiet_mode=True,
+    )
+    before = compressor.tail_token_budget
+    agent._emit_status = lambda message: None
+    client = MagicMock(base_url="http://localhost/v1", api_key="test-key")
+    with patch("agent.auxiliary_client.get_text_auxiliary_client", return_value=(client, "aux")), \
+         patch("agent.model_metadata.get_model_context_length", return_value=512_000):
+        agent._check_compression_model_feasibility()
+    assert compressor.threshold_tokens == 512_000
+    assert compressor.tail_token_budget < before
+    assert compressor.tail_token_budget == int(compressor.threshold_tokens * compressor.summary_target_ratio)
+
+
 # ── Core warning logic ──────────────────────────────────────────────
 
 
@@ -231,10 +272,10 @@ def test_init_feasibility_check_uses_aux_context_override_from_config():
 
     with (
         patch("hermes_cli.config.load_config", return_value=cfg), patch("hermes_cli.config.load_config_readonly", return_value=cfg),
-        patch("run_agent.get_tool_definitions", return_value=[]),
-        patch("run_agent.check_toolset_requirements", return_value={}),
-        patch("run_agent.OpenAI"),
-        patch("run_agent.ContextCompressor", new=_StubCompressor),
+        patch("model_tools.get_tool_definitions", return_value=[]),
+        patch("model_tools.check_toolset_requirements", return_value={}),
+        patch("agent.process_bootstrap.OpenAI"),
+        patch("agent.agent_init.ContextCompressor", new=_StubCompressor),
         patch("agent.auxiliary_client.get_text_auxiliary_client", return_value=(mock_client, "custom/big-model")),
         patch("agent.model_metadata.get_model_context_length", return_value=1_000_000) as mock_ctx_len,
     ):

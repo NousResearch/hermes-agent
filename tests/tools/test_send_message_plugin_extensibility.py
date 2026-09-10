@@ -153,7 +153,7 @@ def test_host_send_honors_sync_and_async_plugin_handlers(plugin_platform, async_
 
 
 def test_cli_and_cron_share_plugin_target_normalization(plugin_platform, monkeypatch, capsys):
-    from cron.scheduler import _resolve_single_delivery_target
+    from cron.scheduler_delivery import _resolve_single_delivery_target
     from hermes_cli.send_cmd import cmd_send
 
     name, _entry, _seen = plugin_platform
@@ -247,7 +247,7 @@ with patch("gateway.config.load_gateway_config", return_value=config), \
      patch("gateway.mirror.mirror_to_session", return_value=True):
     host_send = json.loads(send_message_tool({"target": "fmsg:@Alice@Example.COM",
                                               "message": "hello", "subject": "hi"}))
-from cron.scheduler import _resolve_single_delivery_target
+from cron.scheduler_delivery import _resolve_single_delivery_target
 cron = _resolve_single_delivery_target({}, "fmsg:@Alice@Example.COM")
 print(json.dumps({"host_send": host_send, "cron": cron,
                   "model_registered": registry.get_entry("send_message") is not None}))
@@ -274,7 +274,7 @@ print(json.dumps({"host_send": host_send, "cron": cron,
 
 def test_registry_standalone_send_forwards_subject_kwarg():
     """_registry_standalone_send forwards extras (subject) to senders that declare them (#102884)."""
-    from tools.send_message_tool import _registry_standalone_send
+    from tools.send_message_senders import _registry_standalone_send
 
     seen: dict = {}
 

@@ -756,6 +756,10 @@ export interface Translations {
       tabStripAuto: string
       tabStripAlways: string
       tabStripNever: string
+      appActionsTitle: string
+      appActionsDesc: string
+      appActionsLeft: string
+      appActionsRight: string
       terminalFontTitle: string
       terminalFontDesc: string
       terminalFontPlaceholder: string

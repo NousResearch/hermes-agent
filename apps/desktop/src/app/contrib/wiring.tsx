@@ -52,6 +52,7 @@ import { requestGatewayForProfile } from '@/store/gateway'
 import { $pinnedSessionIds, pinSession, restoreWorktree, unpinSession } from '@/store/layout'
 import { notifyError } from '@/store/notifications'
 import { $previewTarget } from '@/store/preview'
+import { $titlebarAppActionsSide, titlebarAppActionsClusterCounts } from '@/store/titlebar-app-actions'
 import {
   $activeGatewayProfile,
   $freshSessionRequest,
@@ -1200,14 +1201,15 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   }
 
   const titlebarToolsRight = titlebarToolsRightCss(nativeOverlayWidth, titlebarChrome)
-  // Right cluster: settings, layout, HUD, flip, right-sidebar toggle.
-  const SYSTEM_TOOL_COUNT = 5
+  const appActionsSide = useStore($titlebarAppActionsSide)
   const paneToolCount = rightTitlebarTools.filter(tool => !tool.hidden).length
-  const systemToolsWidth = titlebarToolsWidthCss(SYSTEM_TOOL_COUNT)
+  const leftExtraCount = leftTitlebarTools.filter(tool => !tool.hidden).length
+  const clusters = titlebarAppActionsClusterCounts(appActionsSide, leftExtraCount, 0)
+  const systemToolsWidth = titlebarToolsWidthCss(clusters.right)
   const titlebarToolsWidth =
     paneToolCount > 0 ? `calc(${systemToolsWidth} + ${titlebarToolsWidthCss(paneToolCount)})` : systemToolsWidth
 
-  const leftToolsWidth = titlebarToolsWidthCss(1 + leftTitlebarTools.filter(tool => !tool.hidden).length)
+  const leftToolsWidth = titlebarToolsWidthCss(clusters.left)
 
   return (
     <ContribWiringContext.Provider value={api}>

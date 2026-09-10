@@ -96,6 +96,7 @@ class WSTransport:
         #: for legacy-token/stdio. RPC params can never populate it: sole identity authority for browser controllers.
         self.auth_identity = auth_identity
         self._closed = False
+        self._last_inbound_at = time.monotonic()
         # Token-coalescing buffer. The lock guards the buffer + "armed" flag against worker threads
         # calling write(); the timer handle is only ever touched on the loop thread.
         self._token_lock = threading.Lock()
@@ -168,6 +169,13 @@ class WSTransport:
     @property
     def closed(self) -> bool:
         return self._closed
+
+    @property
+    def last_inbound_at(self) -> float:
+        return self._last_inbound_at
+
+    def mark_inbound(self) -> None:
+        self._last_inbound_at = time.monotonic()
 
     async def write_async(self, obj: dict) -> bool:
         """Send from the owning loop; awaits until the frame is on the wire. Buffered tokens are flushed
@@ -267,6 +275,7 @@ async def handle_ws(ws: Any, *, auth_identity: dict | None = None, subprotocol: 
     authority for browser-controller registration); callers that omit it (harnesses, embedded TUI child) get None."""
     peer, transport = _ws_peer_label(ws), None
     messages = parse_errors = dispatch_crashes = send_failures = 0
+    heartbeat_pings = 0
     disconnect_reason = "not_connected"
 
     async def _reply(frame: dict, reason: str, msg: str, *args: Any) -> None:
@@ -336,6 +345,7 @@ async def handle_ws(ws: Any, *, auth_identity: dict | None = None, subprotocol: 
             line = raw.strip()
             if not line:
                 continue
+            transport.mark_inbound()
             messages += 1
             try:
                 req = json.loads(line)
@@ -348,6 +358,7 @@ async def handle_ws(ws: Any, *, auth_identity: dict | None = None, subprotocol: 
             req_id = req.get("id") if isinstance(req, dict) else None
             req_method = req.get("method") if isinstance(req, dict) else None
             if req_method == "gateway.ping":
+                heartbeat_pings += 1
                 await _reply({"jsonrpc": "2.0", "result": {"ok": True}, "id": req_id}, "send_failed_after_heartbeat",
                              "ws heartbeat reply send failed peer=%s id=%s", peer, req_id)
                 continue
@@ -398,8 +409,14 @@ async def handle_ws(ws: Any, *, auth_identity: dict | None = None, subprotocol: 
             await ws.close()
         except Exception as exc:
             _log.debug("ws close failed peer=%s error=%s", peer, exc)
+        if transport is not None:
+            last_inbound_ago = time.monotonic() - transport.last_inbound_at
+        else:
+            last_inbound_ago = -1.0
         _log.info(
             "ws closed peer=%s reason=%s messages=%d parse_errors=%d "
-            "dispatch_crashes=%d send_failures=%d reaped_sessions=%d detached_sessions=%d",
-            peer, disconnect_reason, messages, parse_errors, dispatch_crashes, send_failures, reaped_sessions, detached_sessions,
+            "dispatch_crashes=%d send_failures=%d heartbeat_pings=%d "
+            "last_inbound_ago=%.1fs reaped_sessions=%d detached_sessions=%d",
+            peer, disconnect_reason, messages, parse_errors, dispatch_crashes, send_failures, heartbeat_pings,
+            last_inbound_ago, reaped_sessions, detached_sessions,
         )

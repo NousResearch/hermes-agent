@@ -771,10 +771,64 @@ _CRON_SUBCOMMANDS = {
     "pause": lambda a: _job_action("pause", a.job_id, "Paused"),
     "resume": lambda a: cron_resume(a),
     "run": lambda a: _job_action("run", a.job_id, "Triggered"),
-    "remove": lambda a: _job_action("remove", a.job_id, "Removed")}
+    "remove": lambda a: _job_action("remove", a.job_id, "Removed"),
+    "restore": lambda a: cron_restore(a)}
 _CRON_SUBCOMMANDS["history"] = _CRON_SUBCOMMANDS["runs"]
 _CRON_SUBCOMMANDS["add"] = _CRON_SUBCOMMANDS["create"]
 _CRON_SUBCOMMANDS["rm"] = _CRON_SUBCOMMANDS["delete"] = _CRON_SUBCOMMANDS["remove"]
+_CRON_SUBCOMMANDS["replace-jobs"] = _CRON_SUBCOMMANDS["restore"]
+
+
+def cron_restore(args) -> int:
+    """Disaster-recovery: wholesale-replace jobs.json via save_jobs(replace=True).
+
+    The ONLY sanctioned path to full silent store replacement. Refuses to run without
+    the explicit ``--confirm`` flag (a bare ``hermes cron restore`` is a no-op), and
+    validates the backup before touching the live store. ``--dry-run`` validates and
+    reports without writing. Escapes the D2 shrink-guard on purpose (replace=True);
+    that is exactly what makes this a high-stakes command worth the confirmation gate.
+    """
+    from cron.jobs import load_jobs, save_jobs
+
+    src = Path(getattr(args, "file", "")).expanduser()
+    confirm = bool(getattr(args, "confirm", False))
+    dry_run = bool(getattr(args, "dry_run", False))
+
+    if not src.is_file():
+        print(color(f"Backup file not found: {src}", Colors.RED))
+        return 1
+
+    # Validate the backup shape before anything destructive.
+    try:
+        data = json.loads(src.read_text(encoding="utf-8"))
+        jobs = data.get("jobs") if isinstance(data, dict) else data
+        if not isinstance(jobs, list):
+            raise ValueError("expected {'jobs': [...]} or a bare list")
+        for j in jobs:
+            if not isinstance(j, dict) or not j.get("id"):
+                raise ValueError("every job record must be a dict with an 'id'")
+    except Exception as exc:
+        print(color(f"Invalid backup file {src}: {exc}", Colors.RED))
+        return 1
+
+    current = load_jobs()
+    print(f"Current jobs.json: {len(current)} job(s)")
+    print(f"Backup {src}: {len(jobs)} job(s)")
+    if dry_run:
+        print("--dry-run: validated; live store NOT modified.")
+        return 0
+
+    if not confirm:
+        print(color(
+            "Refusing: `hermes cron restore` wholesale-replaces your entire jobs.json "
+            "from the backup (silent replace, skips the anti-wipe guard).",
+            Colors.YELLOW))
+        print(color("Pass --confirm to acknowledge and proceed.", Colors.RED))
+        return 1
+
+    save_jobs(jobs, replace=True)
+    print(color(f"Restored {len(jobs)} job(s) from {src}.", Colors.GREEN))
+    return 0
 
 
 def cron_command(args):

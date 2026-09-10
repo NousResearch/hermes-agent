@@ -598,3 +598,99 @@ class TestModelSwitchMarkerNotTitleable:
         assert apply_instant_title(db, "sess-1", "南京市秦淮区 小时级天气预报") == (
             "南京市秦淮区 小时级天气预报"
         )
+
+
+class TestDisplayKindMarkerNotTitleable:
+    """Regression: any ``display_kind``-tagged row must never become the session title.
+
+    ``tools/process_registry_notifications._format_batch_delegation`` re-injects a finished
+    background subagent fan-out as a nominal ``role="user"`` turn (the model needs it in the
+    conversation), persisted with ``display_kind="async_delegation_complete"`` — the same tag
+    ``agent.context_compressor._is_actionable_user_turn`` already excludes generically from
+    compaction anchoring. ``title_generator`` used to only check the raw persisted text against a
+    hand-maintained prefix list (``_MACHINE_PREFIXES``), which the delegation marker's
+    ``"[ASYNC DELEGATION BATCH COMPLETE — ..."`` text was never added to: a session left untitled
+    through its opening turn (e.g. the opener was itself a compaction handoff) that next receives a
+    delegation-completion notice would title itself off the raw bracketed marker text instead of
+    ever asking a person something.
+
+    ``is_titleable_user_message`` / ``apply_instant_title`` / ``maybe_auto_title`` now take an
+    optional ``display_kind`` and reject the turn outright when it is set, regardless of the text —
+    catching this marker (and ``personality_switch``, which had no prefix-list entry at all) without
+    growing the prefix list per new marker.
+    """
+
+    DELEGATION_MARKER = (
+        "[ASYNC DELEGATION BATCH COMPLETE — deleg-42]\n"
+        "A background fan-out unit you dispatched earlier — 2 subagent(s) — has finished; "
+        "its consolidated results are below."
+    )
+
+    def test_marker_text_alone_would_be_titleable(self):
+        """Sanity check: nothing about the raw text itself disqualifies it — only the tag does."""
+        from agent.title_generator import is_titleable_user_message
+
+        assert is_titleable_user_message(self.DELEGATION_MARKER) is True
+
+    def test_marker_with_display_kind_is_not_titleable(self):
+        from agent.title_generator import is_titleable_user_message
+
+        assert is_titleable_user_message(self.DELEGATION_MARKER, display_kind="async_delegation_complete") is False
+
+    def test_any_display_kind_tag_disqualifies_a_turn(self):
+        """Generic guard: not just this one marker's name — the personality-switch marker (which
+        has no _MACHINE_PREFIXES entry at all) is caught the same way."""
+        from agent.title_generator import is_titleable_user_message
+
+        assert is_titleable_user_message("[System: The user has changed the assistant's personality...]",
+                                          display_kind="personality_switch") is False
+        assert is_titleable_user_message("ordinary question", display_kind="internal_notification") is False
+
+    def test_real_user_turn_excludes_tagged_rows_from_the_turn_count(self):
+        from agent.title_generator import _is_real_user_turn
+
+        assert _is_real_user_turn(
+            {"role": "user", "content": self.DELEGATION_MARKER, "display_kind": "async_delegation_complete"}
+        ) is False
+
+    def test_instant_title_skips_a_tagged_marker(self):
+        from agent.title_generator import apply_instant_title
+
+        db = MagicMock()
+        db.get_session_title_source.return_value = None
+
+        assert apply_instant_title(db, "sess-1", self.DELEGATION_MARKER, display_kind="async_delegation_complete") is None
+
+    def test_maybe_auto_title_skips_a_tagged_marker_as_the_opening_turn(self):
+        """A session still untitled by the time a delegation-completion turn arrives must not be
+        named off it — end-to-end through the real entry point (mirrors
+        test_leaves_an_already_titled_session_alone_on_later_turns's real-SessionDB style)."""
+        import tempfile
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as tmp:
+            db = SessionDB(Path(tmp) / "state.db")
+            db.create_session(session_id="sess-1", source="cli")
+            with patch("agent.title_generator.auto_title_session") as mock_auto:
+                maybe_auto_title(db, "sess-1", self.DELEGATION_MARKER, [], display_kind="async_delegation_complete")
+            assert db.get_session_title("sess-1") is None
+            mock_auto.assert_not_called()
+
+    def test_real_question_after_a_tagged_marker_still_titles(self):
+        """The marker must not consume the session's one titling opportunity (same bug shape as
+        test_real_question_after_marker_still_titles for the model-switch marker)."""
+        db = MagicMock()
+        db.get_session_title.return_value = None
+        db.get_session_title_source.return_value = None
+        history = [
+            {"role": "user", "content": self.DELEGATION_MARKER, "display_kind": "async_delegation_complete"},
+            {"role": "user", "content": "what's the weather in Nanjing"},
+        ]
+
+        with patch("agent.title_generator.auto_title_session") as mock_auto:
+            import threading
+
+            called = threading.Event()
+            mock_auto.side_effect = lambda *a, **k: called.set()
+            maybe_auto_title(db, "sess-1", "what's the weather in Nanjing", history)
+            assert called.wait(timeout=10), "auto_title never ran after the tagged marker"

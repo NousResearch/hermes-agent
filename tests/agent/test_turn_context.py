@@ -495,3 +495,36 @@ def test_prologue_does_not_title_machine_driven_runs(platform):
     overwritten or never read.
     """
     assert not _title_turn(platform).called
+
+
+def test_prologue_threads_display_kind_of_the_turns_user_message():
+    """The current turn's ``display_kind`` (async-delegation-complete / model-switch /
+    personality-switch / internal-notification / ...) travels with the extracted text into
+    ``maybe_auto_title``, so a synthetic marker turn is recognisable as non-titleable at the real
+    entry point (agent.title_generator.is_titleable_user_message's display_kind guard) and not just
+    when its raw text happens to match a hand-maintained prefix list."""
+    from agent import turn_context
+
+    with patch("agent.title_generator.maybe_auto_title") as titler:
+        turn_context._maybe_title_session_at_turn_start(
+            _TitlingAgent("cli"),
+            [{
+                "role": "user",
+                "content": "[ASYNC DELEGATION BATCH COMPLETE — deleg-1]\nresults below",
+                "display_kind": "async_delegation_complete",
+            }],
+        )
+    assert titler.called
+    assert titler.call_args.kwargs["display_kind"] == "async_delegation_complete"
+
+
+def test_prologue_passes_no_display_kind_for_an_ordinary_message():
+    from agent import turn_context
+
+    with patch("agent.title_generator.maybe_auto_title") as titler:
+        turn_context._maybe_title_session_at_turn_start(
+            _TitlingAgent("cli"),
+            [{"role": "user", "content": "Fix the login button"}],
+        )
+    assert titler.called
+    assert titler.call_args.kwargs["display_kind"] is None

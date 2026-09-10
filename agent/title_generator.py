@@ -152,8 +152,18 @@ def _summarize_user_message(user_message: str) -> str:
     return strip_control_wrappers(user_message if described is None else described)
 
 
-def is_titleable_user_message(user_message: str) -> bool:
-    """False for machine-authored openers and turns that reduce to nothing once scaffolding is stripped."""
+def is_titleable_user_message(user_message: str, display_kind: Optional[str] = None) -> bool:
+    """False for machine-authored openers and turns that reduce to nothing once scaffolding is stripped.
+
+    ``display_kind`` is the persisted timeline tag of the message (``model_switch``,
+    ``personality_switch``, ``async_delegation_complete``, ``internal_notification``, ...) when the
+    caller has the full message dict, not just its text. ANY tag disqualifies the turn — mirrors
+    ``ContextCompressor._is_actionable_user_turn``'s generic ``display_kind`` exclusion instead of
+    growing ``_MACHINE_PREFIXES`` with one literal string per new marker (a marker that changes its
+    wording, or a marker whose text simply isn't in the list yet, would otherwise leak straight into
+    the session title)."""
+    if display_kind:
+        return False
     return (isinstance(user_message, str) and bool(user_message.strip()) and not user_message.lstrip().startswith(_MACHINE_PREFIXES)
             and bool(_summarize_user_message(user_message).strip()))
 
@@ -333,12 +343,13 @@ def _persist_session_title(session_db, session_id, title, *, source, dedupe=True
         return _set(deduped)
 
 
-def apply_instant_title(session_db, session_id: str, user_message: str, title_callback: Optional[TitleCallback] = None) -> Optional[str]:
+def apply_instant_title(session_db, session_id: str, user_message: str, title_callback: Optional[TitleCallback] = None,
+                         *, display_kind: Optional[str] = None) -> Optional[str]:
     """Write the derived title inline. Returns it, or None (no usable text, or a ``derived``+ title exists). Never raises."""
     if not session_db or not session_id:
         return None
     try:
-        title = derive_title(user_message) if is_titleable_user_message(user_message) else None
+        title = derive_title(user_message) if is_titleable_user_message(user_message, display_kind=display_kind) else None
         persisted = _persist_session_title(session_db, session_id, title, source="derived", dedupe=False) if title else None
         if persisted:
             _notify_title(title_callback, persisted, "derived", "Instant-title")
@@ -402,7 +413,10 @@ def _is_real_user_turn(message: Any) -> bool:
     if not isinstance(message, dict) or message.get("role") != "user":
         return False
     content = message.get("content")
-    return is_titleable_user_message(content if isinstance(content, str) else flatten_message_text(content))
+    return is_titleable_user_message(
+        content if isinstance(content, str) else flatten_message_text(content),
+        display_kind=message.get("display_kind"),
+    )
 
 
 def _session_is_untitled(session_db, session_id: str) -> bool:
@@ -424,19 +438,27 @@ def maybe_auto_title(
     main_runtime: dict = None,
     title_callback: Optional[TitleCallback] = None,
     runtime_validator: Optional[RuntimeValidator] = None,
+    *,
+    display_kind: Optional[str] = None,
 ) -> None:
-    """Instant inline title, then a daemon-thread upgrade. Call at the START of a turn, before the model."""
+    """Instant inline title, then a daemon-thread upgrade. Call at the START of a turn, before the model.
+
+    ``display_kind`` is the current turn's persisted timeline tag, when the caller has the full
+    message dict (see ``is_titleable_user_message``); a synthetic marker never becomes the title.
+    """
     if not session_db or not session_id or not user_message:
         return
     # History may be pre- or post-message. Skip only when BOTH past the opening turn AND named: count alone
     # left a machinery-opened session nameless; title alone never titles on an old store.
     user_msg_count = sum(1 for m in (conversation_history or []) if _is_real_user_turn(m))
-    if (user_msg_count > 1 and not _session_is_untitled(session_db, session_id)) or not is_titleable_user_message(user_message):
+    if (user_msg_count > 1 and not _session_is_untitled(session_db, session_id)) or not is_titleable_user_message(
+        user_message, display_kind=display_kind
+    ):
         return
     if not _auto_title_enabled():  # config read after the cheap guards so the file isn't touched every turn
         logger.debug("Auto-title skipped: auxiliary.title_generation.enabled=false")
         return
-    apply_instant_title(session_db, session_id, user_message, title_callback)
+    apply_instant_title(session_db, session_id, user_message, title_callback, display_kind=display_kind)
     threading.Thread(
         target=auto_title_session,
         args=(session_db, session_id, user_message),

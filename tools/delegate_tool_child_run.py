@@ -36,6 +36,22 @@ def _usage_counter(child: Any, canonical: str, legacy: Optional[str] = None) -> 
     return _num(getattr(child, legacy, 0)) if legacy else 0
 
 
+def _child_api_calls(child: Any) -> int:
+    """Attempt count from the live AIAgent contract, then private/public fallbacks."""
+    summary = getattr(child, "get_activity_summary", None)
+    if callable(summary):
+        try:
+            payload = summary()
+            counted = _num(
+                payload.get("api_call_count", 0) if isinstance(payload, dict) else 0
+            )
+            if counted:
+                return counted
+        except Exception:
+            pass
+    return _usage_counter(child, "_api_call_count", "api_call_count")
+
+
 def _str_or_none(value: Any) -> Optional[str]:
     return value if isinstance(value, str) else None
 
@@ -71,7 +87,7 @@ def _fabricated_entry(idx: int, status: str, error: str, child: Any, duration: f
         "status": status,
         "summary": None,
         "error": error,
-        "api_calls": _num(getattr(child, "api_call_count", 0)),
+        "api_calls": _child_api_calls(child),
         "duration_seconds": duration,
         **_child_observability(child),
         "_child_role": getattr(child, "_delegate_role", None),
@@ -710,9 +726,7 @@ class _ChildRun:
         is_timeout = isinstance(exc, (FuturesTimeoutError, TimeoutError))
         duration = self.elapsed()
         logger.warning("Subagent %d %s after %.1fs", task_index, "timed out" if is_timeout else f"raised {type(exc).__name__}", duration)
-        child_api_calls = 0
-        with _quiet(None):
-            child_api_calls = int(child.get_activity_summary().get("api_call_count", 0) or 0)
+        child_api_calls = _child_api_calls(child)
         # A timeout BEFORE any API call is a black box without a diagnostic dump.
         before_first_call = is_timeout and child_api_calls == 0
         diagnostic_path: Optional[str] = None

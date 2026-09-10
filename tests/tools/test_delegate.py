@@ -634,7 +634,11 @@ class TestDelegateObservability(unittest.TestCase):
         child.session_cache_read_tokens = 4
         child.session_cache_write_tokens = 0
         child.session_reasoning_tokens = 2
-        child.api_call_count = 3
+        # Live AIAgent stores attempts on _api_call_count and exposes them
+        # through get_activity_summary(); api_call_count is not a public attr.
+        del child.api_call_count
+        child._api_call_count = 3
+        child.get_activity_summary.return_value = {"api_call_count": 3}
 
         entry = _fabricated_entry(3, "error", "outer failure", child=child)
 

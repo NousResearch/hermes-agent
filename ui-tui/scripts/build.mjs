@@ -1,14 +1,21 @@
 #!/usr/bin/env node
 // Bundles src/entry.tsx into a single self-contained dist/entry.js.
 // No runtime node_modules needed.
-import { build } from 'esbuild'
 import { readFileSync, writeFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, resolve } from 'node:path'
+import { createRequire as __cr } from 'node:module'
 
+const require = __cr(import.meta.url)
 const here = dirname(fileURLToPath(import.meta.url))
 const root = resolve(here, '..')
 const out = resolve(root, 'dist/entry.js')
+
+// Clear stale ESBUILD_BINARY_PATH that may point to a different esbuild
+// version (e.g. ~/.hermes/esbuild-built 0.28.0 vs local node_modules 0.27.7),
+// which would cause "Host version does not match binary version" on Android.
+delete process.env.ESBUILD_BINARY_PATH
+const { build } = require('esbuild')
 
 // `react-devtools-core` is only imported when DEV=true at runtime (Ink dev
 // mode). Stub it out so the bundle doesn't carry the dep.

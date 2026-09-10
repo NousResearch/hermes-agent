@@ -407,21 +407,8 @@ def btbn_versions(target: str) -> list[str]:
     return list(btbn_index().get(target, {}))
 
 
-def pbs_build_tags(minor: str, target: str) -> list[str]:
-    """python-build-standalone release tags (20260814, ...) newest-first that
-    actually ship the requested cpython <minor> install_only asset for
-    `target`. The release list carries assets + digests, so one fetch per
-    page is enough — scan newest-first and stop at the first tag with the
-    asset (pbs builds every supported line per release)."""
-    triple = {
-        "win32-x64": "x86_64-pc-windows-msvc",
-        "win32-arm64": "aarch64-pc-windows-msvc",
-        "linux-x64": "x86_64-unknown-linux-gnu",
-        "linux-arm64": "aarch64-unknown-linux-gnu",
-        "darwin-x64": "x86_64-apple-darwin",
-        "darwin-arm64": "aarch64-apple-darwin",
-    }[target]
-    wanted = f"cpython-{minor}."
+def pbs_versions(minor: str, triple: str) -> list[str]:
+    """Return the exact interpreter identity advertised by the newest matching release."""
     for page in range(1, 3):
         data = _get_json(f"https://api.github.com/repos/astral-sh/python-build-standalone/releases?per_page=30&page={page}")
         if not data:
@@ -430,14 +417,13 @@ def pbs_build_tags(minor: str, target: str) -> list[str]:
             if release.get("draft") or release.get("prerelease"):
                 continue
             tag = release.get("tag_name", "")
-            if not re.fullmatch(r"\d{8}", tag):
+            if not re.fullmatch(r"[0-9]{8}", tag):
                 continue
-            if any(
-                a["name"].startswith(wanted)
-                and a["name"].endswith(f"-{triple}-install_only.tar.gz")
-                for a in release.get("assets", [])
-            ):
-                return [tag]
+            pattern = rf"cpython-({re.escape(minor)}\.[0-9]+\+{tag})-{re.escape(triple)}-install_only\.tar\.gz"
+            for asset in release.get("assets", []):
+                match = re.fullmatch(pattern, asset.get("name", ""))
+                if match:
+                    return [match.group(1)]
         if len(data) < 30:
             break
     return []

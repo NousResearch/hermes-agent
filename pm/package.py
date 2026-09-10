@@ -93,7 +93,7 @@ class Package:
         update driver intersects across targets (per version_style) and
         only ever pins a version every relevant target can serve. ``locked``
         is the current lockfile version when the resolver needs it (python
-        keeps its 3.11 line and bumps only the +<build-tag>)."""
+        keeps its minor line and takes patch/build identity from the asset)."""
         return []
 
 

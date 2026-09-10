@@ -30,7 +30,7 @@ from pm.update import (
     martin_riedl_versions,
     node_latest_versions,
     npm_dist_tags,
-    pbs_build_tags,
+    pbs_versions,
 )
 
 _RUST_TRIPLE = {
@@ -282,15 +282,13 @@ class Python(_BionicDebArm, BinaryPackage, DebPackage):
         )
 
     def latest_versions(self, target: str, locked=None) -> list[str]:
-        # Stay on the locked python minor line (3.14); bump only the
-        # +<build-tag>. A major/minor bump is a deliberate decision, never
-        # an auto-update. The bionic row is a manual termux-main pin -- no
-        # python-build-standalone build exists for it, so leave it locked.
+        # Keep the locked minor line. The advertised asset owns patch and build.
+        # Bionic remains a manual pin from a separate supplier.
         if target == "linux-arm64-bionic" or not locked or "+" not in locked:
             return []
         pyver = locked.partition("+")[0]
         minor = ".".join(pyver.split(".")[:2])
-        return [f"{pyver}+{tag}" for tag in pbs_build_tags(minor, target)]
+        return pbs_versions(minor, _RUST_TRIPLE[target])
 
 
 def _uv_lock_digest(path: Path) -> bytes:

@@ -44,8 +44,9 @@ def _store():
     else:
         os.close(fd)
     metadata = path.lstat()
+    owner_uid = os.getuid() if hasattr(os, "getuid") else None
     if (not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1
-            or (os.name != "nt" and (metadata.st_mode & 0o077 or metadata.st_uid != os.getuid()))):
+            or (os.name != "nt" and (metadata.st_mode & 0o077 or metadata.st_uid != owner_uid))):
         raise RecoveryRequired("monitor recovery store is not a private regular file")
     with closing(sqlite3.connect(path, timeout=5)) as db, db:
         db.row_factory = sqlite3.Row

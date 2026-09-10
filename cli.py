@@ -2875,6 +2875,10 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
         # deleted during shutdown. Set by process_command() when the user runs /exit --delete or /quit
         # --delete. Ported from google-gemini/gemini-cli#19332.
         self._pending_relaunch: list[str] | None = None
+        # North Forge Full-tier in-session admin trigger (CHG-2026-09-10-001): set
+        # when the operator typed the drive's admin passcode; handled next to
+        # _pending_relaunch after the app tears down (main thread, real terminal).
+        self._pending_nf_reconfig = False
         self._last_ctrl_c_time = 0
         # Blocking-prompt overlays (clarify / sudo / approval / slash-confirm / model picker).
         self._clarify_state = self._clarify_multi_base = None
@@ -3489,6 +3493,11 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
             if not is_seeded_query:
                 if self.handle_bang_shell(user_input):
                     return
+                # North Forge Full-tier in-session admin trigger: the drive's admin
+                # passcode typed as a bare message opens Setup Run. Basic tier /
+                # unprovisioned / wrong attempt -> returns False, routes normally.
+                if self._maybe_handle_nf_admin_phrase(user_input):
+                    return
                 if _looks_like_slash_command(user_input):
                     user_input = self._tui_run_slash_input(user_input)
                     if user_input is None:
@@ -3926,6 +3935,13 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
         if self._pending_relaunch:
             from hermes_cli.relaunch import relaunch
             relaunch(self._pending_relaunch, preserve_inherited=False)
+
+        # North Forge Full-tier in-session admin trigger: run Setup Run interactively
+        # here (real terminal, main thread) then re-exec `hermes` to resume. Same
+        # placement rationale as the /update relaunch above.
+        if self._pending_nf_reconfig:
+            from hermes_cli.nf_admin import run_nf_reconfig_and_resume
+            run_nf_reconfig_and_resume()
 
     def _tui_shutdown(self):
         """Teardown after the app exits: interrupt agent, stop voice/pet, persist + close session, cleanup, exit summary."""

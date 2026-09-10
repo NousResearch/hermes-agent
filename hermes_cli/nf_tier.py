@@ -487,6 +487,28 @@ def admin_passcode_is_set(root: Path | str | None = None) -> bool:
     return admin_path(root).is_file()
 
 
+def admin_attempt_log_path(root: Path | str | None = None) -> Path:
+    """Owner-review log of admin-passcode attempts. Colocated with ``.nf-admin``
+    (under ``<nf-root>/north-forge/``), out of the git tree."""
+    return nf_dir(root) / "admin-attempts.log"
+
+
+def log_admin_attempt(event: str, *, source: str = "", root: Path | str | None = None) -> None:
+    """Append one line to the admin-attempt log for the owner's review. The event
+    is a short slug (``reconfig-opened`` / ``passcode-mismatch`` /
+    ``reconfig-completed exit=N`` / …). The passcode itself is NEVER recorded.
+    Never raises — logging must not break a session or a Setup Run."""
+    try:
+        lp = admin_attempt_log_path(root)
+        lp.parent.mkdir(parents=True, exist_ok=True)
+        line = "{}\t{}\t{}\t{}\n".format(_now_iso(), event, source or "-", _whoami())
+        with lp.open("a", encoding="utf-8") as fh:
+            fh.write(line)
+        _chmod_600(lp)
+    except Exception:
+        pass
+
+
 # ------------------------------------------------------------------------- __main__
 
 

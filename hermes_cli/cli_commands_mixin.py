@@ -2665,6 +2665,37 @@ class CLICommandsMixin:
         self._pending_relaunch = ["update"]
         return True
 
+    def _maybe_handle_nf_admin_phrase(self, text: str) -> bool:
+        """North Forge Full-tier in-session admin trigger (CHG-2026-09-10-001).
+
+        The drive's admin passcode typed as a bare message opens the SAME Setup Run
+        (``scripts/nf-setup.ps1``) reconfiguration nf-setup provides — tier / pin /
+        edition — without a re-provision-from-scratch cycle. Returns True only when
+        it consumed the input (a correct passcode on a Full-tier drive). On Basic
+        tier, an unprovisioned drive, plain upstream Hermes, or a wrong/blank
+        attempt it returns False and the input routes normally — zero observable
+        difference. Recognized attempts (hit or plausible miss on a Full drive) are
+        logged for the owner via ``nf_tier.log_admin_attempt``; the passcode is
+        never recorded. Never raises."""
+        try:
+            from hermes_cli.nf_admin import maybe_recognize_admin_phrase
+            verdict = maybe_recognize_admin_phrase(text)
+        except Exception:
+            return False
+        if verdict != "open":
+            return False
+        # Same deferral as /update: run Setup Run on the main thread after the app
+        # tears down (real terminal), then re-exec `hermes` to resume the session.
+        self._pending_nf_reconfig = True
+        self._should_exit = True
+        app = getattr(self, "_app", None)
+        try:
+            if app is not None and app.is_running:
+                app.exit()
+        except Exception:
+            pass
+        return True
+
     def _handle_voice_command(self, command: str):
         """Handle /voice [on|off|tts|status] command."""
         subcommand = _command_arg(command, lower=True) or ("off" if self._voice_mode else "on")

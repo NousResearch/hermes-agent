@@ -2197,17 +2197,6 @@ def _update_preflight_handled(args) -> bool:
         managed_error("update Hermes Agent")
         return True
 
-    # Informational flags never enter the updater: --install-id prints the
-    # identifier and --set-channel atomically persists a valid channel
-    # record; both exit here, before the update lock, git, network,
-    # backups, or process pause. Implementation lives in the channel topic
-    # module, not this file.
-    if getattr(args, "install_id", False) or getattr(args, "set_channel", None):
-        from hermes_cli.update_channel import handle_channel_flags
-
-        handle_channel_flags(args)
-        return True
-
     # --plan is read-only and deployment-kind aware, so it runs BEFORE the
     # docker/nix/apt refusal gates: on an image/package-managed install the
     # plan itself reports "not updatable in place" plus the right mechanism.

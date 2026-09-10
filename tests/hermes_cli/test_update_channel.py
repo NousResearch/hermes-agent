@@ -16,7 +16,6 @@ from hermes_cli.update_channel import (
     CHANNEL_CANARY,
     CHANNEL_STABLE,
     default_channel,
-    handle_channel_flags,
     install_id,
     resolve_update_channel,
     set_install_channel,
@@ -311,59 +310,70 @@ class TestSetChannelCLI:
 
             shutil.rmtree(home)
 
-    def test_stored_record_outranks_running_stamp_in_switch_text(
+    def test_metadata_commands_precede_managed_refusal_and_write_once(
         self, tmp_path, monkeypatch, capsys
     ):
-        """The reported previous channel comes from the stored per-install
-        record when one exists — not from what the running artifact implies."""
-        home = self._home(tmp_path, monkeypatch)
-        root = tmp_path  # == HERMES_INSTALL_ROOT (see sentinel fixture)
-        (root / "install-stamp.json").write_text(json.dumps({
-            "schemaVersion": 2,
-            "updateMechanism": "electron-updater",
-            "displayVersion": "0.28.0-canary.20260818",
-        }))
         import yaml
+        import utils
+        from hermes_cli import config, main
 
-        (home / "config.yaml").write_text(
-            yaml.safe_dump(
-                {"update": {"installs": {
-                    install_id(root): {"path": str(root), "channel": "stable"}
-                }}}
-            )
-        )
-        from types import SimpleNamespace
-
-        args = SimpleNamespace(
-            check=False, gateway=False, branch=None, channel=None,
-            set_channel="canary", install_id=False, plan=False,
-        )
-        with pytest.raises(SystemExit) as exc:
-            handle_channel_flags(args)
-        assert exc.value.code == 0
-        assert "Channel set to 'canary' (was 'stable')" in capsys.readouterr().out
-
-    def test_hint_requires_a_valid_canary_shape(self, tmp_path, monkeypatch, capsys):
-        """A ``displayVersion`` only reads as canary when it validates as a
-        canary version shape — 'nightly' builds must not claim the canary
-        switch text."""
         home = self._home(tmp_path, monkeypatch)
-        root = tmp_path  # == HERMES_INSTALL_ROOT (see sentinel fixture)
-        (root / "install-stamp.json").write_text(json.dumps({
-            "schemaVersion": 2,
-            "updateMechanism": "electron-updater",
-            "displayVersion": "0.28.0-nightly.123",
-        }))
-        from types import SimpleNamespace
+        monkeypatch.setenv("HERMES_MANAGED", "nix")
+        assert config.is_managed()
+        root, other = tmp_path, tmp_path / "sibling"
+        _stamp(root, "self")
+        initial = {"model": {"provider": "fixture"}, **_config_for(other, "stable")}
+        cfg = home / "config.yaml"
+        cfg.write_text("# retain user comment\n" + yaml.safe_dump(initial), encoding="utf-8")
+        before = cfg.read_bytes()
 
-        args = SimpleNamespace(
-            check=False, gateway=False, branch=None, channel=None,
-            set_channel="stable", install_id=False, plan=False,
-        )
         with pytest.raises(SystemExit) as exc:
-            handle_channel_flags(args)
+            main.cmd_update(self._args(install_id=True))
         assert exc.value.code == 0
-        assert "Channel set to 'stable' (was 'stable')" in capsys.readouterr().out
+        assert capsys.readouterr().out.strip() == install_id(root)
+        assert cfg.read_bytes() == before
+
+        writes = []
+        original = utils.atomic_roundtrip_yaml_update
+
+        def write(path, key, value):
+            writes.append((path, key))
+            return original(path, key, value)
+
+        monkeypatch.setattr(utils, "atomic_roundtrip_yaml_update", write)
+        with pytest.raises(SystemExit) as exc:
+            main.cmd_update(self._args(set_channel="canary"))
+        assert exc.value.code == 0
+        assert writes == [(cfg, f"update.installs.{install_id(root)}")]
+        expected = initial
+        expected["update"]["installs"][install_id(root)] = {"path": str(root), "channel": "canary"}
+        assert yaml.safe_load(cfg.read_text(encoding="utf-8")) == expected
+        assert cfg.read_text(encoding="utf-8").startswith("# retain user comment\n")
+        output = capsys.readouterr().out
+        assert f"Update channel for {install_id(root)}: canary" in output
+        assert "forward-incompatible" in output
+        assert not (home / "logs" / "update_receipts").exists()
+
+    def test_metadata_refusals_leave_config_unchanged(self, tmp_path, monkeypatch, capsys):
+        from hermes_cli import main
+
+        home = self._home(tmp_path, monkeypatch)
+        monkeypatch.setenv("HERMES_MANAGED", "nix")
+        cfg = home / "config.yaml"
+        before = b"# retain user comment\nmodel:\n  provider: fixture\n"
+        cfg.write_bytes(before)
+        for mechanism, channel, message in (
+            ("self", "bogus", "unknown channel"),
+            ("external", "stable", "owned by"),
+            ("app-installer", "canary", "owned by"),
+        ):
+            _stamp(tmp_path, mechanism)
+            with pytest.raises(SystemExit) as exc:
+                main.cmd_update(self._args(set_channel=channel))
+            assert exc.value.code == 2
+            assert message in capsys.readouterr().out
+            assert cfg.read_bytes() == before
+        assert not (home / "logs" / "update_receipts").exists()
 
     def _args(self, **kw):
         from types import SimpleNamespace

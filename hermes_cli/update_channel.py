@@ -36,7 +36,6 @@ from hermes_cli.runtime_paths import install_key, installs_root
 import logging
 import os
 import re
-import sys
 from pathlib import Path
 from typing import Any, Optional
 
@@ -262,89 +261,6 @@ def _write_channel_record(sha16: str, path: str, channel: str) -> None:
     new_record["path"] = path  # DATA, for humans + doctor GC
     new_record["channel"] = channel
     atomic_roundtrip_yaml_update(config_path, f"update.installs.{sha16}", new_record)
-
-
-def _stable_wait_target(canary_version: str) -> str:
-    """The stable release a canary install waits for: the canary's own base
-    version (canary is current-stable patch+1; ``v0.28.0`` from
-    ``v0.28.0-canary.20260818171926``)."""
-    base = re.sub(r"-canary\.\d+$", "", canary_version.strip())
-    return base if base.startswith("v") else f"v{base}"
-
-
-def _stamp_channel_hint(stamp: dict) -> Optional[str]:
-    """The channel the RUNNING artifact implies, for stamps without a clean
-    ``tag`` (desktop About-page stamps carry ``displayVersion`` like
-    ``0.28.0-canary.20260818`` — the ``v`` prefix ``is_canary_tag`` requires
-    is restored before the shape check, so validation stays with the single
-    canary authority). Switch text only; resolution stays with
-    :func:`resolve_update_channel`."""
-    if stamp.get("updateMechanism") not in ("electron-updater", "app-installer"):
-        return None
-    version = str(stamp.get("tag") or stamp.get("displayVersion") or "")
-    if not version:
-        return None
-    candidate = version if version.startswith("v") else f"v{version}"
-    return CHANNEL_CANARY if is_canary_tag(candidate) else None
-
-
-def _set_channel_from_cli(channel: str) -> None:
-    """Persist ``--set-channel`` and print the switch text. Never updates.
-
-    Runs before the update lock, git, network, backups, or process pause:
-    this is a configuration action, not an update. The reported previous
-    channel prefers the stored per-install record over what the running
-    artifact implies.
-    """
-    from hermes_cli.config import read_raw_config
-
-    root = _default_root()
-    stamp = _read_stamp(root)
-    stored = channel_record(read_raw_config(), root).get("channel")
-    if isinstance(stored, str) and stored.strip().lower() in VALID_CHANNELS:
-        previous = stored.strip().lower()
-    else:
-        previous = _stamp_channel_hint(stamp) or resolve_update_channel(None, root)
-    try:
-        sha16 = set_install_channel(channel, root)
-    except ValueError as exc:
-        print(f"error: {exc}")
-        sys.exit(1)
-
-    print(f"Channel set to '{channel}' (was '{previous}') for install {sha16}.")
-    version = str(stamp.get("tag") or stamp.get("displayVersion") or "")
-    if previous == CHANNEL_CANARY and channel == CHANNEL_STABLE:
-        print(f"  You are on canary build {version}.")
-        print(
-            f"  Stable updates begin at { _stable_wait_target(version) } —"
-            " canary outversions it until that release ships."
-        )
-        print("  Not patient? Switch back: hermes update --set-channel canary")
-        print("  Docs: https://hermes-agent.nousresearch.com")
-    elif channel == CHANNEL_CANARY:
-        print(
-            "  Canary builds are forward-incompatible: a canary install"
-            " only updates to artifacts that ship after it. Downgrading"
-            " means reinstalling."
-        )
-    sys.exit(0)
-
-
-def handle_channel_flags(args) -> None:
-    """Preflight for the informational update flags.
-
-    ``--install-id`` prints this install's id and path; ``--set-channel``
-    atomically persists a valid channel record. Both terminate the command
-    here — the caller never reaches the update lock, git, network, backup,
-    or process-pause paths.
-    """
-    if getattr(args, "install_id", False):
-        root = _default_root()
-        print(f"{install_id(root)}  {root}")
-        sys.exit(0)
-    channel = getattr(args, "set_channel", None)
-    if channel:
-        _set_channel_from_cli(channel)
 
 
 def stale_channel_records(config: Optional[dict]) -> list[tuple[str, dict, str]]:

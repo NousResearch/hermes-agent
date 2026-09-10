@@ -1662,16 +1662,11 @@ stt:
 code_execution:
   timeout: 300         # Max seconds per script before kill (default: 300 = 5 min)
   max_tool_calls: 50   # Max RPC tool calls per execution (default: 50; <= 0 = unlimited)
-  # kernel_mode: per-call | session (default: per-call for remote backends, session for local)
-  #   per-call — fresh child process per execute_code call; no state carries over.
-  #   session  — one persistent kernel per (task, mode, interpreter, cwd, tool-set):
-  #              variables, imports, and loaded data survive across calls, so
-  #              multi-step data work stops re-loading its inputs. A timed-out/
-  #              interrupted cell kills the kernel; pass reset=true to discard
-  #              state deliberately. Remote terminal backends currently run per-call.
-  #              Security scrubbing, tool whitelist, and output redaction are
-  #              identical in both modes.
-  # kernel_mode: per-call
+  # Session kernels are always on: one persistent kernel per (task, mode,
+  # interpreter, cwd, tool-set), so variables, imports, and loaded data survive
+  # across execute_code calls and multi-step data work stops re-loading its
+  # inputs. A timed-out/interrupted cell kills the kernel; pass reset=true to
+  # discard state deliberately.
   # kernel_idle_timeout: 1800   # Reap kernels idle longer than this (seconds)
   # max_session_kernels: 4      # Process-wide LRU cap on live kernels
 

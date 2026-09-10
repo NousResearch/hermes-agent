@@ -254,11 +254,21 @@ class TestToolCallLimit(unittest.TestCase):
         self.assertFalse(_tool_call_limit_reached(4, 5))
         self.assertTrue(_tool_call_limit_reached(5, 5))
 
-    def test_negative_limit_is_rejected(self):
+    def test_negative_limit_disables_it_same_as_zero(self):
+        """The documented contract (cli-config.yaml.example) is `<= 0 = unlimited`,
+        and _tool_call_limit_reached already treats every non-positive value as
+        unbounded -- the config validator must not reject exactly the values the
+        adjacent limit predicate treats as valid."""
+        from tools.code_execution_tool import _configured_max_tool_calls, _tool_call_limit_reached
+
+        self.assertEqual(_configured_max_tool_calls({"max_tool_calls": -1}), -1)
+        self.assertFalse(_tool_call_limit_reached(100_000, -1))
+
+    def test_non_integer_limit_is_rejected(self):
         from tools.code_execution_tool import _configured_max_tool_calls
 
-        with self.assertRaisesRegex(ValueError, "cannot be negative"):
-            _configured_max_tool_calls({"max_tool_calls": -1})
+        with self.assertRaisesRegex(ValueError, "must be an integer"):
+            _configured_max_tool_calls({"max_tool_calls": "unlimited"})
 
 
 @unittest.skipIf(sys.platform == "win32", "UDS not available on Windows")

@@ -56,10 +56,11 @@ def _tool_call_limit_reached(count: int, max_tool_calls: int) -> bool:
 
 
 def _configured_max_tool_calls(cfg: dict) -> int:
-    """``code_execution.max_tool_calls`` from *cfg*, validated non-negative."""
+    """``code_execution.max_tool_calls`` from *cfg*. Any value ``<= 0`` (including negative,
+    per the documented example) disables the limit; see ``_tool_call_limit_reached``."""
     value = cfg.get("max_tool_calls", DEFAULT_MAX_TOOL_CALLS)
-    if not isinstance(value, int) or isinstance(value, bool) or value < 0:
-        raise ValueError(f"code_execution.max_tool_calls cannot be negative: {value!r}")
+    if not isinstance(value, int) or isinstance(value, bool):
+        raise ValueError(f"code_execution.max_tool_calls must be an integer: {value!r}")
     return value
 
 

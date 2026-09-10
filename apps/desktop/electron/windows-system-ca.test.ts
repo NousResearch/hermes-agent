@@ -61,7 +61,7 @@ test('installs Windows system CAs without dropping existing defaults', () => {
   })
 })
 
-test('does not inspect or replace CAs outside Windows', () => {
+test.each(['darwin', 'linux'] as const)('does not inspect or replace CAs on %s', platform => {
   let reads = 0
 
   const tlsApi: NodeTlsCaApi = {
@@ -75,7 +75,7 @@ test('does not inspect or replace CAs outside Windows', () => {
     }
   }
 
-  const result = installWindowsSystemCaTrust(tlsApi, 'darwin')
+  const result = installWindowsSystemCaTrust(tlsApi, platform)
 
   assert.equal(reads, 0)
   assert.deepEqual(result, {

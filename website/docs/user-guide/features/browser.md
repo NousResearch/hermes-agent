@@ -20,6 +20,16 @@ Hermes Agent includes a full browser automation toolset with multiple backend op
 
 In all modes, the agent can navigate websites, interact with page elements, fill forms, and extract information.
 
+:::tip Which mode do I need?
+Most setups need none of the configuration below. Pick the first line that matches you:
+
+- **You just want the agent to browse the web.** Do nothing. With no cloud key set and no `/browser connect` endpoint, Hermes drives a packaged Chromium through the Browser Use CLI by default; `agent-browser` resolves itself on first use. Your own Chrome is never touched. See [Browser Use mode](#browser-use-mode-default).
+- **You want the agent to use your existing logins.** Set `browser.use_real_profile: true` in `~/.hermes/config.yaml`. See [Real profile browsing](#real-profile-browsing-use-your-own-logins).
+- **You want to attach to a Chrome, Brave, Chromium, or Edge window you can watch.** Run `/browser connect` with nothing after it. It is a CLI slash command: type it in `hermes` or `hermes chat` in a terminal, not in a Discord, Telegram, or WebUI chat. It auto-launches or attaches to a local browser at `http://127.0.0.1:9222`; the `ws://host:port` argument is only for a browser running somewhere else. See [Local Chromium-family browser via CDP](#local-chromium-family-browser-via-cdp-browser-connect).
+- **You have a paid Nous Portal subscription.** Pick **Nous Subscription** as the browser provider via `hermes tools`. No separate API keys are needed.
+- **You want a cloud browser with anti-bot tooling.** Add the provider key from [Setup](#setup) and select the provider in `hermes tools` → Browser Automation.
+:::
+
 ## Overview
 
 Pages are represented as **accessibility trees** (text-based snapshots), making them ideal for LLM agents. Interactive elements get ref IDs (like `@e1`, `@e2`) that the agent uses for clicking and typing.

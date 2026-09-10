@@ -66,7 +66,8 @@ MODIFY_VERB_RE = (
     r'|\bmodif(?:y|ies|ied|ying|ication)s?\b|\bupdat(?:e|es|ed|ing)\b'
     r'|\bappend(?:s|ed|ing)?\b|\bprepend(?:s|ed|ing)?\b'
     r'|\binject(?:s|ed|ing)?\b|\boverwrit(?:e|es|ing)\b|\boverwritten\b'
-    r'|\breplac(?:e|es|ed|ing)\b|\balter(?:s|ed|ing)?\b|\badd(?:s|ed|ing)\b)')
+    r'|\breplac(?:e|es|ed|ing)\b|\balter(?:s|ed|ing)?\b|\badd(?:s|ed|ing)\b'
+    r'|\bdelet(?:e|es|ed|ing)\b|\bremov(?:e|es|ed|ing)\b)')
 
 _AGENT_CONFIG_FILES = r'(?:AGENTS\.md|CLAUDE\.md|\.cursorrules|\.clinerules)'
 _HERMES_CONFIG_FILES = r'\.hermes/(?:config\.yaml|SOUL\.md)'
@@ -87,14 +88,17 @@ def _shell_write_re(file_alt: str) -> str:
 
 
 def _prose_modify_re(file_alt: str) -> str:
-    """Prose instructing modification of *file_alt*: an imperative-position verb (line start / bullet), or a mid-line
-    verb with a directive marker ("you must", "please", "make sure to"). Descriptive prose ("skills that edit
-    AGENTS.md") misses; the verb→file gap forbids commas so enumerations ("Write skills, AGENTS.md, CLAUDE.md") miss."""
+    """Prose instructing modification of *file_alt*: an imperative-position verb (line start / bullet), a mid-line
+    verb with a directive marker ("you must", "please", "make sure to"), or the passive/file-first order ("AGENTS.md
+    gets updated", ".cursorrules file must be replaced"). Descriptive prose ("skills that edit AGENTS.md") misses;
+    the verb→file gap forbids commas so enumerations ("Write skills, AGENTS.md, CLAUDE.md") miss."""
     return (
         rf'^\s*(?:[-*+]\s+|\d+[.)]\s+)?{MODIFY_VERB_RE}[^\n,]{{0,80}}?{file_alt}\b'
         rf'|(?:\byou\s+(?:must|should|need\s+to)\s+|\bplease\s+'
         rf'|\bmake\s+sure\s+(?:to\s+|you\s+)|\bbe\s+sure\s+to\s+)'
-        rf'{MODIFY_VERB_RE}[^\n,]{{0,80}}?{file_alt}\b')
+        rf'{MODIFY_VERB_RE}[^\n,]{{0,80}}?{file_alt}\b'
+        rf'|{file_alt}\b[^\n,]{{0,40}}?\b(?:gets?|is|are|was|were'
+        rf'|must\s+be|will\s+be|should\s+be|has\s+been|have\s+been)\s+{MODIFY_VERB_RE}')
 
 
 def _content_contract_re(file_alt: str) -> str:

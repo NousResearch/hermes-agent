@@ -1,0 +1,39 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: adlicio
+description: >-
+  Customer-voice research: comments and reviews from Reddit, YouTube,
+  Amazon, TikTok, Instagram, Trustpilot, app stores and 20+ other
+  sources, plus Meta Ad Library competitor ads and brand reports.
+source: https://tryadlicio.com/mcp
+
+# Vendor-hosted remote MCP (URL-only, Hermes never spawns a local process
+# for this entry). Native OAuth 2.1 + Dynamic Client Registration, so
+# Hermes's MCP client and mcp_oauth_manager handle discovery, PKCE, token
+# exchange, and refresh. No API key.
+transport:
+  type: http
+  url: https://mcp.tryadlicio.com/mcp
+
+auth:
+  type: oauth
+
+# Composer-suggestion triggers.
+suggest:
+  keywords:
+    - adlicio
+    - voice of customer
+    - customer research
+  hosts:
+    - tryadlicio.com
+
+post_install: |
+  On first connection Hermes opens a browser to authorize with
+  Adlicio (or run `hermes mcp login adlicio`). Approve access,
+  then restart the session so tools load.
+
+  The server needs an Adlicio All Access plan. A free account can
+  connect and see the tools, but most tools spend research credits.
+  search_reddit and search_youtube cost no credits.

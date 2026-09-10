@@ -174,6 +174,35 @@ def _resume_panel_colors() -> tuple:
 class CLIAgentSetupMixin:
     """Agent construction + session-resume display methods for ``HermesCLI``."""
 
+    def _current_interim_assistant_callback(self):
+        """Keep progress narration independent of reasoning visibility and token streaming."""
+        from cli import CLI_CONFIG
+        display = CLI_CONFIG.get("display") or {}
+        if (
+            getattr(self, "tool_progress_mode", "all") == "off"
+            or not display.get("interim_assistant_messages", True)
+        ):
+            return None
+        return self._on_interim_assistant
+
+    def _on_interim_assistant(self, text: str, *, already_streamed: bool = False) -> None:
+        """Render a completed interim in its own assistant box, never inside reasoning.
+
+        Reuse the normal renderer even with token streaming disabled. Settle both
+        boundaries so commentary cannot make the eventual final look already streamed.
+        The agent owns redaction and per-turn delivery deduplication.
+        """
+        if already_streamed or not isinstance(text, str):
+            return
+        from tools.ansi_strip import sanitize_display_text
+        visible = sanitize_display_text(text).strip()
+        if not visible:
+            return
+        self._flush_reasoning_preview(force=True)
+        self._stream_delta(None)
+        self._stream_delta(visible)
+        self._stream_delta(None)
+
     def _ensure_runtime_credentials(self) -> bool:
         """Re-resolve provider credentials before agent use so key rotation / token
         refresh are picked up without restarting the CLI. False on auth failure."""
@@ -266,8 +295,8 @@ class CLIAgentSetupMixin:
 
     def _resolve_fallback_runtime(self, primary_exc):
         """Primary provider resolution failed: on an AuthError try each fallback entry in
-        order and switch the CLI's requested_provider/model to the first that resolves.
-        None when the error is not auth-related or no fallback resolves."""
+        order and switch to the first that resolves. None when the error is not auth-related
+        or no fallback resolves."""
         from cli import _cprint, logger
         from hermes_cli.auth import AuthError
         from hermes_cli.runtime_provider import resolve_runtime_provider
@@ -344,7 +373,7 @@ class CLIAgentSetupMixin:
             select_provider_and_model()
         except (KeyboardInterrupt, EOFError, SystemExit):
             print()
-            _cprint("  Setup cancelled. Run 'hermes model' any time.")
+            _cprint("  Setup cancelled. Run 'hermes model' to try again.")
             return False
         except Exception as exc:
             logger.debug("first-run provider setup failed: %s", exc)
@@ -535,6 +564,7 @@ class CLIAgentSetupMixin:
                 session_id=self.session_id, platform="cli", session_db=self._session_db,
                 clarify_callback=clarify_callback,
                 reasoning_callback=self._current_reasoning_callback(),
+                interim_assistant_callback=self._current_interim_assistant_callback(),
                 fallback_model=self._fallback_model, thinking_callback=self._on_thinking,
                 checkpoints_enabled=self.checkpoints_enabled,
                 checkpoint_max_snapshots=self.checkpoint_max_snapshots,
@@ -594,7 +624,7 @@ class CLIAgentSetupMixin:
         """Return a safe-resume error without materializing transcript rows.
 
         ``tip_only`` matches call sites that load only the tip session's rows — counting
-        the full lineage there would over-reject heavily-compressed sessions with a small
+        the full lineage there would over-reject compressed sessions with a small
         tip. Generic guard failures fail OPEN; only a genuine over-limit result blocks."""
         if not self._session_db:
             return None

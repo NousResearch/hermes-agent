@@ -40,6 +40,7 @@ from agent.codex_headers import (
     is_official_codex_base_url as _is_official_codex_base_url,
 )
 from agent.codex_runtime import _codex_event_has_content
+from agent.sdk_transform_bypass import bypass_chat_sdk_request_transform
 
 # `openai.OpenAI` is imported lazily (~240 ms cold); `OpenAI` below is a proxy
 # so in-module calls, `auxiliary_client.OpenAI` reads and
@@ -2631,14 +2632,14 @@ def _relay_sync_stream(
 ) -> Any:
     from agent.auxiliary_wire import prepare_chat_messages
 
-    kwargs = prepare_chat_messages(client, kwargs)
+    kwargs = bypass_chat_sdk_request_transform(prepare_chat_messages(client, kwargs), client)
     route = _relay_auxiliary_metadata(provider=provider, api_mode=api_mode)
     if route is None:
         return client.chat.completions.create(**kwargs)
     provider_name, fallback_model, metadata = route
     from agent import relay_llm
     return relay_llm.stream_current(
-        kwargs, lambda request: client.chat.completions.create(**request), name=provider_name,
+        kwargs, lambda request: client.chat.completions.create(**bypass_chat_sdk_request_transform(request, client)), name=provider_name,
         model_name=str(kwargs.get("model") or fallback_model), finalizer=dict, metadata=metadata,
         completed_response_predicate=lambda value: hasattr(value, "choices"),
     )
@@ -6865,13 +6866,13 @@ def _create_with_progress_once(
     # total ceiling instead of idling out (#114938). Progress ticks only for
     # substantive stream payloads or a completed usable response.
     if (not _aux_progress_active() and not force_stream) or _client_streams_internally(client):
-        response = client.chat.completions.create(**kwargs)
+        response = client.chat.completions.create(**bypass_chat_sdk_request_transform(kwargs, client))
         if not _client_streams_internally(client):
             _notify_aux_provider_response()
         return response
     stream_kwargs, model, total_ceiling = _stream_request_plan(kwargs)
     try:
-        chunks = client.chat.completions.create(**stream_kwargs)
+        chunks = client.chat.completions.create(**bypass_chat_sdk_request_transform(stream_kwargs, client))
     except Exception as exc:
         # Genuine provider failures aren't streaming's fault — surface unchanged so the
         # recovery chains see the same error as a plain call.
@@ -6883,7 +6884,7 @@ def _create_with_progress_once(
         logger.debug("Auxiliary %s: streamed request failed (%s); retrying non-streaming",
                      task or "call", exc)
         _notify_aux_dispatch()
-        response = client.chat.completions.create(**kwargs)
+        response = client.chat.completions.create(**bypass_chat_sdk_request_transform(kwargs, client))
         _notify_aux_provider_response()
         return response
     # Some shims (MoA quiet mode, defensive adapters) return a complete response despite
@@ -7071,7 +7072,7 @@ async def _aggregate_chat_stream_async(
 async def _acreate_with_stream(client: Any, kwargs: Dict[str, Any], task: Optional[str] = None) -> Any:
     """Async create() for stream-only providers: ``stream=True`` + aggregate the async chunks."""
     stream_kwargs, model, total_ceiling = _stream_request_plan(kwargs)
-    chunks = await client.chat.completions.create(**stream_kwargs)
+    chunks = await client.chat.completions.create(**bypass_chat_sdk_request_transform(stream_kwargs, client))
     if hasattr(chunks, "choices"):  # shims may hand back a complete response despite stream=True
         return chunks
     return await _aggregate_chat_stream_async(chunks, model=model, total_ceiling=total_ceiling)
@@ -7090,13 +7091,13 @@ async def _acreate_with_progress(
     _notify_aux_dispatch()
     # Same contract as the sync twin (#114938): dispatch alone is not progress.
     if (not _aux_progress_active() and not force_stream) or _async_client_streams_internally(client):
-        response = await client.chat.completions.create(**kwargs)
+        response = await client.chat.completions.create(**bypass_chat_sdk_request_transform(kwargs, client))
         if not _async_client_streams_internally(client):
             _notify_aux_provider_response()
         return response
     stream_kwargs, model, total_ceiling = _stream_request_plan(kwargs)
     try:
-        chunks = await client.chat.completions.create(**stream_kwargs)
+        chunks = await client.chat.completions.create(**bypass_chat_sdk_request_transform(stream_kwargs, client))
     except Exception as exc:
         # Only a rejected stream NEGOTIATION falls back to a plain call (mirrors the sync wrapper); a
         # failure mid-consumption below reaches the classified recovery ladder instead of silently
@@ -7107,7 +7108,7 @@ async def _acreate_with_progress(
         logger.debug("Auxiliary %s: streamed async request failed (%s); retrying non-streaming",
                      task or "call", exc)
         _notify_aux_dispatch()
-        response = await client.chat.completions.create(**kwargs)
+        response = await client.chat.completions.create(**bypass_chat_sdk_request_transform(kwargs, client))
         _notify_aux_provider_response()
         return response
     if hasattr(chunks, "choices"):  # shims may hand back a complete response despite stream=True

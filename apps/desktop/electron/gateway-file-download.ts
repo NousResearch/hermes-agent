@@ -129,6 +129,41 @@ export async function resolveGatewayFileBackend<T>(
   return { connection, connectionId, profile }
 }
 
+export interface PoolTokenEntry {
+  port?: null | number | string
+  token?: null | string
+}
+
+/**
+ * The pooled backend token for the backend serving `baseUrl`, matched by
+ * port. Pooled local children keep per-profile tokens; the primary local token
+ * is resolved from the live connection state instead of process.env, so the
+ * file-save path looks them up here instead. Only entries carrying a token can
+ * match (ssh/remote pool entries never set one); returns null when no pool entry
+ * serves that port.
+ */
+export function matchPoolTokenForGatewayUrl(baseUrl: string, entries: Iterable<PoolTokenEntry>): string | null {
+  let port = ''
+
+  try {
+    port = new URL(baseUrl).port
+  } catch {
+    return null
+  }
+
+  if (!port) {
+    return null
+  }
+
+  for (const entry of entries) {
+    if (entry && entry.token && String(entry.port) === port) {
+      return entry.token
+    }
+  }
+
+  return null
+}
+
 // Sibling temp name for an in-flight download. It lives in the destination's own
 // directory so the final step is a same-volume rename (and stays inside whatever
 // directory the save dialog approved). The name is short and fixed rather than

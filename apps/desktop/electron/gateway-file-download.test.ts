@@ -12,6 +12,7 @@ import {
   gatewayFilePath,
   gatewayFileRequestPaths,
   isNotFoundError,
+  matchPoolTokenForGatewayUrl,
   parseDataUrlToBuffer,
   pumpStreamToFile,
   resolveGatewayFileBackend,
@@ -479,4 +480,27 @@ test('resolveGatewayFileBackend preserves the legacy route when no connection ow
   assert.equal(route.connectionId, null)
   assert.equal(route.profile, 'coder')
   assert.deepEqual(route.connection, { baseUrl: 'http://local.invalid' })
+})
+
+test('matchPoolTokenForGatewayUrl returns the token of the entry serving the url port', () => {
+  const entries = [
+    { port: null, token: null },
+    { port: 11111, token: 'other-profile-token' },
+    { port: 54321, token: 'owning-backend-token' }
+  ]
+
+  assert.equal(matchPoolTokenForGatewayUrl('http://127.0.0.1:54321', entries), 'owning-backend-token')
+  assert.equal(matchPoolTokenForGatewayUrl('http://127.0.0.1:11111', entries), 'other-profile-token')
+})
+
+test('matchPoolTokenForGatewayUrl ignores token-less entries and unusable urls', () => {
+  // ssh/remote pool entries never set a token; a null port stringifies to
+  // 'null' and must never equal a real port.
+  const entries = [{ port: null, token: null }, { port: 54321, token: null }]
+
+  assert.equal(matchPoolTokenForGatewayUrl('http://127.0.0.1:54321', entries), null)
+  assert.equal(matchPoolTokenForGatewayUrl('http://127.0.0.1:99999', [{ port: 54321, token: 't' }]), null)
+  assert.equal(matchPoolTokenForGatewayUrl('http://127.0.0.1', [{ port: 80, token: 't' }]), null)
+  assert.equal(matchPoolTokenForGatewayUrl('not-a-url', [{ port: 54321, token: 't' }]), null)
+  assert.equal(matchPoolTokenForGatewayUrl('http://127.0.0.1:54321', []), null)
 })

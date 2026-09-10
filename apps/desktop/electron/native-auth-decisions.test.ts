@@ -11,12 +11,14 @@ import assert from 'node:assert/strict'
 import { test } from 'vitest'
 
 import {
+  isLoopbackGatewayUrl,
   normalizeAdvertisedAuthProviders,
   oauthGuardMayHardFail,
   oauthSessionIsLive,
   oauthTicketFailureAuthMessage,
   resolveGatedDownloadAuth,
   resolveJsonBody,
+  resolveLocalFileToken,
   resolveOauthRestAuth,
   resolveReadinessProbeAuth
 } from './native-auth-decisions'
@@ -170,4 +172,106 @@ test('resolveGatedDownloadAuth uses the session token for token and local modes'
   })
   assert.deepEqual(resolveGatedDownloadAuth('local', null, 'sess'), { kind: 'token', token: 'sess' })
   assert.deepEqual(resolveGatedDownloadAuth(undefined, null, null), { kind: 'token', token: null })
+})
+
+// --- 7. loopback file-token ladder (guards the local-gateway 401 in #104023) ---
+
+test('isLoopbackGatewayUrl accepts only http(s) loopback targets', () => {
+  assert.equal(isLoopbackGatewayUrl('http://127.0.0.1:54321'), true)
+  assert.equal(isLoopbackGatewayUrl('https://127.0.0.1:54321/api/fs/download'), true)
+  assert.equal(isLoopbackGatewayUrl('http://localhost:54321'), true)
+  assert.equal(isLoopbackGatewayUrl('http://LOCALHOST:54321'), true)
+  assert.equal(isLoopbackGatewayUrl('http://[::1]:54321'), true)
+  assert.equal(isLoopbackGatewayUrl('https://[::1]/api/status'), true)
+})
+
+test('isLoopbackGatewayUrl rejects remote, non-http, and malformed targets', () => {
+  assert.equal(isLoopbackGatewayUrl('http://192.168.1.10:54321'), false)
+  assert.equal(isLoopbackGatewayUrl('https://example.com'), false)
+  assert.equal(isLoopbackGatewayUrl('http://127.0.0.1.evil.com:54321'), false)
+  assert.equal(isLoopbackGatewayUrl('http://localhost.evil.com/'), false)
+  assert.equal(isLoopbackGatewayUrl('ws://127.0.0.1:54321/api/ws'), false)
+  assert.equal(isLoopbackGatewayUrl('file:///home/user/report.pdf'), false)
+  assert.equal(isLoopbackGatewayUrl('not-a-url'), false)
+  assert.equal(isLoopbackGatewayUrl(''), false)
+  assert.equal(isLoopbackGatewayUrl(null), false)
+  assert.equal(isLoopbackGatewayUrl(undefined), false)
+})
+
+test('resolveLocalFileToken prefers the descriptor token unchanged', () => {
+  assert.equal(
+    resolveLocalFileToken('http://127.0.0.1:54321', {
+      connectionToken: 'descriptor-token',
+      isLocalConnection: true,
+      primaryToken: 'primary-token',
+      poolToken: 'pool-token'
+    }),
+    'descriptor-token'
+  )
+  assert.equal(
+    resolveLocalFileToken('https://gateway.example.com', { connectionToken: 'descriptor-token' }),
+    'descriptor-token'
+  )
+})
+
+test('resolveLocalFileToken falls back to pool then primary token on local loopback only', () => {
+  const loopback = 'http://127.0.0.1:54321'
+
+  assert.equal(
+    resolveLocalFileToken(loopback, {
+      isLocalConnection: true,
+      poolToken: 'pool-token',
+      primaryToken: 'primary-token'
+    }),
+    'pool-token'
+  )
+  assert.equal(
+    resolveLocalFileToken(loopback, { isLocalConnection: true, primaryToken: 'primary-token' }),
+    'primary-token'
+  )
+  // Empty strings count as absent and fall through.
+  assert.equal(
+    resolveLocalFileToken(loopback, {
+      connectionToken: '',
+      isLocalConnection: true,
+      poolToken: '',
+      primaryToken: 'primary'
+    }),
+    'primary'
+  )
+  assert.equal(resolveLocalFileToken(loopback, { isLocalConnection: true }), null)
+  assert.equal(resolveLocalFileToken(loopback), null)
+})
+
+test('resolveLocalFileToken never leaks fallbacks to a remote loopback target', () => {
+  const sshForward = 'http://127.0.0.1:54321'
+
+  // An SSH gateway is reached through a local port, but it is still remote;
+  // URL host alone is not proof that the backend is local.
+  assert.equal(
+    resolveLocalFileToken(sshForward, {
+      isLocalConnection: false,
+      poolToken: 'pool-token',
+      primaryToken: 'primary-token'
+    }),
+    null
+  )
+  assert.equal(resolveLocalFileToken(sshForward, { primaryToken: 'primary-token' }), null)
+})
+
+test('resolveLocalFileToken never leaks fallbacks to a non-loopback target', () => {
+  const remote = 'https://gateway.example.com'
+
+  assert.equal(
+    resolveLocalFileToken(remote, {
+      isLocalConnection: true,
+      poolToken: 'pool-token',
+      primaryToken: 'primary-token'
+    }),
+    null
+  )
+  assert.equal(resolveLocalFileToken(remote, { isLocalConnection: true, primaryToken: 'primary-token' }), null)
+  assert.equal(resolveLocalFileToken('not-a-url', { isLocalConnection: true, primaryToken: 'primary-token' }), null)
+  assert.equal(resolveLocalFileToken(null, { isLocalConnection: true, primaryToken: 'primary-token' }), null)
+  assert.equal(resolveLocalFileToken(undefined, { isLocalConnection: true, primaryToken: 'primary-token' }), null)
 })

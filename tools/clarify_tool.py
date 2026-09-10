@@ -4,6 +4,7 @@ callback (cli.py, gateway/run.py, tui_gateway)."""
 
 import inspect
 import json
+import re
 from typing import Dict, List, Optional, Callable
 
 MAX_CHOICES = 4  # the UI always appends an "Other (type your answer)" row
@@ -15,6 +16,31 @@ TIMEOUT_RESPONSE = ("The user did not provide a response within the time limit. 
 # Applied to the first choice here (not per-surface) so every adapter renders it identically.
 RECOMMENDED_LABEL = "(Recommended)"
 _UNAVAILABLE = "Clarify tool is not available in this execution context."
+
+# ---- Consent guard (#107068) --------------------------------------------------
+# When no human answers, the harness answers for them ("pick the best option
+# yourself"). If an offered option carries authorization semantics, that
+# instruction converts silence into consent. These detect the two halves of the
+# problem: which callback results are harness-authored non-answers, and which
+# option texts ask the user to grant authorization.
+_AUTO_DECIDE_SENTINEL_PREFIXES = (
+    "[single-query mode:",           # hermes chat -q headless callback
+    "[oneshot mode:",                # oneshot (-z) headless callback
+    "[user did not respond",         # gateway bounded-wait expiry
+    "[clarify prompt could not be delivered",
+)
+_CONSENT_PATTERNS = tuple(re.compile(p, re.IGNORECASE) for p in (
+    r"\bauthori[sz]e\b",
+    r"\ballow\s+me\b",
+    r"\blet\s+me\b",
+    r"\bconsent\b",
+    r"\bgrant(?:s|ed|ing)?\s+me\b",
+    r"\bpermi(?:t|ts|tted|ssion)\b",
+    r"\bapprov(?:e|es|ed|ing|al|als)\b",
+    r"\bbypass\b",
+    r"授权|批准|准许",
+))
+_CONSENT_GUARD_PREFIX = "[clarify consent guard:"
 
 
 def _flatten_choice(c) -> str:
@@ -101,6 +127,116 @@ def _is_timeout(raw) -> bool:
     return raw is None or (isinstance(raw, str) and raw.strip() == TIMEOUT_RESPONSE)
 
 
+def _is_auto_decide_sentinel(raw) -> bool:
+    """True when a clarify callback result is a harness-authored non-answer.
+
+    Covers every surface's no-user reply: the timeout sentinel (CLI modal,
+    legacy callback), the headless -q / -z instruction strings, the gateway
+    bounded-wait expiry and undeliverable notes, and the TUI bridge's empty
+    string. A real user answer never matches (#107068).
+    """
+    if not isinstance(raw, str):
+        return False
+    stripped = raw.strip()
+    return stripped in ("", TIMEOUT_RESPONSE) or stripped.startswith(_AUTO_DECIDE_SENTINEL_PREFIXES)
+
+
+def _is_consent_semantic(text: str) -> bool:
+    """True when an option's text asks the user to grant authorization.
+
+    Word-boundary regexes over the authorization verbs ("authorize", "allow
+    me", "let me", "consent", "grant me", "permit", "approve", "bypass", plus
+    the CJK 授权/批准/准许 — coverage converged with #107265) so
+    hyphenated near-misses like "authorized-personnel" or "pre-consented"
+    do not trip it.
+    """
+    if not isinstance(text, str):
+        return False
+    return any(p.search(text) for p in _CONSENT_PATTERNS)
+
+
+def resolve_auto_decide_allow_consent(config: Optional[dict]) -> bool:
+    """Read ``clarify.auto_decide_allow_consent`` (default False = guard on).
+
+    Fail-closed: missing section, missing key, non-bool, or read failure all
+    keep the guard armed. Only the literal boolean ``True`` opts back into the
+    legacy pick-from-all-options auto-decide — this key is itself an escape
+    hatch for human-authorization policy, so a quoted ``"false"`` or any
+    other malformed value must never disable the guard (#107068).
+    """
+    try:
+        clarify_cfg = (config or {}).get("clarify") if isinstance(config, dict) else None
+        if not isinstance(clarify_cfg, dict):
+            return False
+        value = clarify_cfg.get("auto_decide_allow_consent")
+        # Typed authority: anything that is not the literal boolean True
+        # (quoted "true"/"false", numbers, containers) keeps the guard armed.
+        return value is True
+    except Exception:
+        return False
+
+
+def _guarded_auto_decide_answer(question: str, choices: Optional[List[str]], raw: str) -> str:
+    """Fail-closed rewrite of a no-user auto-decide answer (#107068).
+
+    Authorization-semantic options are excluded from what the agent may pick;
+    when EVERY option is authorization-semantic the agent is told to proceed
+    WITHOUT the authorization instead of self-authorizing. Returns ``raw``
+    unchanged when the guard is disabled or no option is consent-semantic.
+    """
+    try:
+        from hermes_cli.config import load_config
+        config = load_config() if load_config else None
+    except Exception:
+        config = None
+    if resolve_auto_decide_allow_consent(config):
+        return raw
+    bare = [strip_recommended(str(c)) for c in (choices or [])]
+    excluded = [c for c in bare if _is_consent_semantic(c)]
+    if not excluded:
+        return raw  # nothing consent-semantic: keep the surface's own wording
+    screened = [c for c in bare if not _is_consent_semantic(c)]
+    if screened:
+        return (
+            f"{_CONSENT_GUARD_PREFIX} no user answered {question!r}, and silence "
+            f"cannot grant authorization. Excluded (require explicit human consent): "
+            f"{excluded}. Pick only from: {screened}.]"
+        )
+    return (
+        f"{_CONSENT_GUARD_PREFIX} no user answered {question!r}, and silence "
+        f"cannot grant authorization. Every offered option requires explicit human "
+        f"consent ({excluded}); none was given. Do not self-authorize: proceed "
+        f"WITHOUT the authorization (choose a non-authorized path or stop and report).]"
+    )
+
+
+def _apply_consent_guard(raw_response, question, shown: Optional[List[str]]):
+    """Screen a callback result for the consent guard (#107068).
+
+    Returns the rewritten guard instruction when a harness-authored no-user
+    sentinel met consent-semantic options, else the original object untouched
+    (identity preserved) so the caller's normal answer processing — including
+    multi-select list cleaning — proceeds exactly as before. A real user answer
+    is never screened: a human clicking the authorize option IS consent.
+    """
+    if shown and _is_auto_decide_sentinel(raw_response):
+        return _guarded_auto_decide_answer(question, shown, str(raw_response))
+    return raw_response
+
+
+def _finalize_answer(raw_response, question, shown: Optional[List[str]], multi: bool):
+    """Consent guard + presentation cleaning, in that order (#107068).
+
+    A rewritten guard instruction stays ONE scalar string — it is harness
+    prose, not a multi-select answer, so the comma-splitting list parse must
+    not mangle it. Real answers flow through ``_clean_answer`` as before.
+    """
+    guarded = _apply_consent_guard(raw_response, question, shown)
+    if isinstance(guarded, str) and guarded.startswith(_CONSENT_GUARD_PREFIX):
+        return guarded
+    return _clean_answer(guarded, multi)
+
+
 # ============================================================================= Batch (multi-question)
 # support — issue #18450 =============================================================================
 def _normalize_questions(questions) -> tuple:
@@ -142,10 +278,19 @@ def _batch_result(normalized: List[dict], answers: dict, timed_out: bool) -> str
     responses = []
     for entry in normalized:
         raw = answers.get(entry["qid"])
+        if raw:
+            resp = _finalize_answer(raw, entry["question"], entry["choices"], entry["multi_select"])
+        elif timed_out and entry["choices"]:
+            # A blank after a timeout is a no-user auto-decide, not a deliberate
+            # human skip — screen it through the consent guard like every other
+            # harness-authored non-answer (#107068).
+            resp = _finalize_answer("", entry["question"], entry["choices"], entry["multi_select"])
+        else:
+            resp = ""
         responses.append({
             **({"id": entry["id"]} if entry["id"] else {}),
             "question": entry["question"], "choices_offered": entry["choices_offered"],
-            "user_response": _clean_answer(raw, entry["multi_select"]) if raw else ""})
+            "user_response": resp})
     result: Dict[str, object] = {"responses": responses}
     if timed_out:
         result["timed_out"] = True
@@ -226,7 +371,9 @@ def clarify_tool(question: str, choices: Optional[List[str]] = None, multi_selec
     except Exception as exc:
         return tool_error(f"Failed to get user input: {exc}")
     return json.dumps({"question": question, "choices_offered": choices,
-                       "user_response": _clean_answer(raw_response, multi_select and choices is not None)},
+                       "user_response": _finalize_answer(
+                           raw_response, question, shown,
+                           multi_select and choices is not None)},
                       ensure_ascii=False)
 
 

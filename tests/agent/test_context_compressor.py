@@ -233,6 +233,45 @@ class TestSummarizeToolResultClarify:
 
             assert summary == "[clarify] asked user a question", sentinel
 
+    def test_live_single_query_producer_is_recognized_as_sentinel(self):
+        """Producer→recognizer drift guard for the -q headless callback
+        (#94943): its ``[single-query mode:`` output must be filtered too."""
+        from hermes_cli.cli_agent_setup_mixin import _single_query_clarify_callback
+
+        sentinels = (
+            _single_query_clarify_callback("Deploy when?", choices=["a", "b"]),
+            _single_query_clarify_callback(
+                "Deploy when?", choices=["a", "b"], multi_select=True
+            ),
+            _single_query_clarify_callback("Deploy when?"),
+        )
+        for sentinel in sentinels:
+            content = json.dumps({"user_response": sentinel})
+
+            summary = _summarize_tool_result("clarify", "{}", content)
+
+            assert summary == "[clarify] asked user a question", sentinel
+
+    def test_consent_guard_prose_never_quoted_as_user_answer(self):
+        """The #107068 guard rewrite is harness instruction, not a user
+        answer — compression must never quote it as one."""
+        from tools.clarify_tool import clarify_tool
+
+        def headless_cb(question, choices, multi_select=False):
+            return ("[single-query mode: no user available. Pick the best "
+                    "option and continue.]")
+
+        content = clarify_tool(
+            "Proceed?",
+            choices=["authorize me to compute the rows", "layout only"],
+            callback=headless_cb,
+        )
+
+        summary = _summarize_tool_result("clarify", "{}", content)
+
+        assert summary == "[clarify] asked user a question"
+        assert "authorize" not in summary.lower()
+
     def test_preserves_batch_user_response_from_responses_list(self):
         """Batch clarify (``questions=[...]``) nests answers inside ``responses[].user_response``;
         the summarizer must surface them, not just 'asked user a question' (#106077)."""

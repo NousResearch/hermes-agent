@@ -222,6 +222,34 @@ def test_failed_persist_keeps_the_result_fail_closed():
     assert all(not is_projected_tool_result(m["content"]) for m in msgs if m.get("role") == "tool")
 
 
+def test_rows_sharing_or_missing_a_call_id_recover_their_own_bytes():
+    """Two rows with the same (or no) ``tool_call_id`` must not share one spillover file: the
+    stub has to point at the bytes of ITS row, not at whichever row wrote first."""
+    cc = _compressor(tool_result_projection_min_tokens=2_000, tool_result_projection_min_reclaim_tokens=1_000)
+    rows = [("dup", "A" * BIG_CHARS), ("dup", "B" * BIG_CHARS), ("", "C" * BIG_CHARS), ("", "D" * BIG_CHARS)]
+    msgs = [{"role": "system", "content": "sys"}]
+    for idx, (cid, payload) in enumerate(rows):
+        msgs.append(_assistant_call(cid or f"call_{idx}"))
+        msgs.append(_tool_msg(cid, payload))
+    for i in range(6):  # fresh tail
+        msgs.append(_assistant_call(f"call_t{i}"))
+        msgs.append(_tool_msg(f"call_t{i}", "ok"))
+
+    assert project_stale_tool_results(_agent(cc), msgs) == 4
+
+    tool_rows = [m for m in msgs if m.get("role") == "tool" and m.get("tool_call_id") in {"dup", ""}]
+    assert len(tool_rows) == 4
+    seen = {}
+    for row, (_cid, payload) in zip(tool_rows, rows):
+        stub = row["content"]
+        assert is_projected_tool_result(stub)
+        path = next(line for line in stub.splitlines() if "spillover" in line).rsplit(": ", 1)[1]
+        seen[path] = payload
+    assert len(seen) == 4, "each row needs its own file"
+    for path, payload in seen.items():
+        assert Path(path).read_text(encoding="utf-8") == payload
+
+
 def test_already_persisted_results_reuse_their_file_instead_of_rewriting_it():
     """A ``<persisted-output>`` row is already recoverable: the stub must point at the SAME file."""
     cc = _compressor(tool_result_projection_min_tokens=2_000, tool_result_projection_min_reclaim_tokens=1_000)

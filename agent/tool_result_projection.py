@@ -352,8 +352,13 @@ def _stub_for(msg: Dict[str, Any], tool_name: str, tool_args: str) -> Optional[s
     content = msg.get("content")
     if not isinstance(content, str) or not content or _is_multimodal(content):
         return None
-    tool_call_id = str(msg.get("tool_call_id") or "") or "tool_result"
-    path = _recovery_path(content, tool_call_id)
+    digest = hashlib.sha256(content.encode("utf-8", errors="replace")).hexdigest()
+    # The store's filename is derived from the key and an existing file is reused, so the key
+    # must identify the BYTES and not just the call: a row without a tool_call_id, or two rows
+    # sharing one (imported/merged history), would otherwise point a stub at another row's
+    # content. Keying on the content digest makes a collision mean "same bytes".
+    store_key = f"{str(msg.get('tool_call_id') or '') or 'tool_result'}_{digest[:16]}"
+    path = _recovery_path(content, store_key)
     if not path:
         # Invariant 2: no recoverable home, no projection.
         return None
@@ -362,7 +367,7 @@ def _stub_for(msg: Dict[str, Any], tool_name: str, tool_args: str) -> Optional[s
         tool_args=tool_args,
         content_len=len(content),
         line_count=content.count("\n") + 1,
-        digest=hashlib.sha256(content.encode("utf-8", errors="replace")).hexdigest()[:16],
+        digest=digest[:16],
         recovery_path=path,
         already_persisted="<persisted-output>" in content,
     )

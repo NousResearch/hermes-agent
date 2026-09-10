@@ -6,6 +6,7 @@ import pytest
 from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_db_connect as kbc
 from hermes_cli import kanban_continue as cont
+from hermes_cli import kanban_db_dispatch as kbd
 
 
 class _Conn:
@@ -60,6 +61,143 @@ def test_normal_ready_delegates_to_implement(monkeypatch, task):
     assert result["selected_action"] == "implement"
     assert result["delegated_command"] == "implement"
     assert seen == ["t_123 --board default"]
+
+
+def test_rate_limited_active_cooldown_stops_before_implementation(monkeypatch, task):
+    seen = []
+    recovery_result = cont._recovery_result
+    _wire(monkeypatch, task, lambda text: seen.append(text) or pytest.fail("implementation must not occur"))
+    monkeypatch.setattr(cont, "_recovery_result", recovery_result)
+    monkeypatch.setattr(
+        cont.kb,
+        "latest_run",
+        lambda _conn, _task_id: SimpleNamespace(outcome="rate_limited"),
+    )
+    monkeypatch.setattr(
+        cont.kbd,
+        "recovery_requirement_for_task",
+        lambda _conn, _task_id: "rate_limit_cooldown",
+    )
+
+    result = cont.run_continue_slash("t_123")
+
+    assert result["recovery_required"] is True
+    assert result["selected_action"] == "recover-required"
+    assert result["delegated_command"] is None
+    assert result["dispatch_status"] == "recovery_required"
+    assert seen == []
+
+
+def test_rate_limited_real_sqlite_reproduction_is_read_only(kanban_home, monkeypatch):
+    monkeypatch.setenv("HERMES_KANBAN_RATE_LIMIT_COOLDOWN_SECONDS", "300")
+    monkeypatch.setattr(cont, "continue_command_enabled", lambda: True)
+    delegated = []
+
+    with kbc.connect() as conn:
+        task_id = kb.create_task(conn, title="rate limited", assignee="rozmilo-codex")
+        conn.execute("UPDATE tasks SET status = 'ready' WHERE id = ?", (task_id,))
+        assert kb.claim_task(conn, task_id, claimer="test:rate-limit") is not None
+        run_id = kb.get_task(conn, task_id).current_run_id
+        now = int(__import__("time").time())
+        with kb.write_txn(conn):
+            conn.execute(
+                "UPDATE task_runs SET status='rate_limited', outcome='rate_limited', "
+                "ended_at=? WHERE id=?",
+                (now, run_id),
+            )
+            conn.execute(
+                "UPDATE tasks SET status='ready', current_run_id=NULL, claim_lock=NULL, "
+                "claim_expires=NULL, worker_pid=NULL WHERE id=?",
+                (task_id,),
+            )
+            kb._append_event(conn, task_id, "rate_limited", {"retry_status": "ready"}, run_id=run_id)
+        before = {
+            "task": tuple(conn.execute(
+                "SELECT status, current_run_id, claim_lock, claim_expires, worker_pid "
+                "FROM tasks WHERE id=?", (task_id,),
+            ).fetchone()),
+            "runs": conn.execute("SELECT COUNT(*) FROM task_runs WHERE task_id=?", (task_id,)).fetchone()[0],
+            "events": conn.execute("SELECT COUNT(*) FROM task_events WHERE task_id=?", (task_id,)).fetchone()[0],
+        }
+
+    monkeypatch.setattr(
+        cont.implement, "run_implement_slash",
+        lambda text: delegated.append(text) or pytest.fail("implementation must not occur"),
+    )
+    result = cont.run_continue_slash(task_id)
+
+    assert result["recovery_required"] is True
+    assert result["selected_action"] == "recover-required"
+    assert result["delegated_command"] is None
+    assert result["dispatch_status"] == "recovery_required"
+    assert delegated == []
+    with kbc.connect() as conn:
+        after = {
+            "task": tuple(conn.execute(
+                "SELECT status, current_run_id, claim_lock, claim_expires, worker_pid "
+                "FROM tasks WHERE id=?", (task_id,),
+            ).fetchone()),
+            "runs": conn.execute("SELECT COUNT(*) FROM task_runs WHERE task_id=?", (task_id,)).fetchone()[0],
+            "events": conn.execute("SELECT COUNT(*) FROM task_events WHERE task_id=?", (task_id,)).fetchone()[0],
+        }
+    assert after == before
+
+
+def test_rate_limit_expiry_matches_dispatcher_eligibility(kanban_home, monkeypatch):
+    monkeypatch.setenv("HERMES_KANBAN_RATE_LIMIT_COOLDOWN_SECONDS", "300")
+    now = 5_000_000
+    with kbc.connect() as conn:
+        task_id = kb.create_task(conn, title="expired rate limit", assignee="a")
+        conn.execute("UPDATE tasks SET status='ready', last_failure_error=? WHERE id=?", ("rate-limited", task_id))
+        kb.claim_task(conn, task_id, claimer="test:expired")
+        run_id = kb.get_task(conn, task_id).current_run_id
+        conn.execute(
+            "UPDATE task_runs SET status='rate_limited', outcome='rate_limited', ended_at=? WHERE id=?",
+            (now, run_id),
+        )
+        conn.execute("UPDATE tasks SET status='ready', current_run_id=NULL WHERE id=?", (task_id,))
+        conn.commit()
+        monkeypatch.setattr(kbd.time, "time", lambda: now + 301)
+        assert kbd.check_respawn_guard(conn, task_id) is None
+        assert kbd.recovery_requirement_for_task(conn, task_id) is None
+
+
+@pytest.mark.parametrize("outcome", [
+    "crashed", "timed_out", "spawn_failed", "reclaimed", "stale", "gave_up",
+])
+def test_current_failure_outcomes_require_recovery(kanban_home, outcome):
+    with kbc.connect() as conn:
+        task_id = kb.create_task(conn, title=outcome, assignee="a")
+        kb.claim_task(conn, task_id, claimer=f"test:{outcome}")
+        run_id = kb.get_task(conn, task_id).current_run_id
+        now = int(__import__("time").time())
+        conn.execute(
+            "UPDATE task_runs SET status=?, outcome=?, ended_at=? WHERE id=?",
+            (outcome, outcome, now, run_id),
+        )
+        conn.execute("UPDATE tasks SET status='ready', current_run_id=NULL WHERE id=?", (task_id,))
+        conn.commit()
+        assert kbd.recovery_requirement_for_task(conn, task_id) == outcome
+
+
+def test_requeued_failure_is_not_permanently_recovery_required(kanban_home):
+    with kbc.connect() as conn:
+        task_id = kb.create_task(conn, title="requeued", assignee="a")
+        kb.claim_task(conn, task_id, claimer="test:history")
+        run_id = kb.get_task(conn, task_id).current_run_id
+        now = int(__import__("time").time())
+        conn.execute(
+            "UPDATE task_runs SET status='crashed', outcome='crashed', ended_at=? WHERE id=?",
+            (now, run_id),
+        )
+        conn.execute(
+            "UPDATE tasks SET status='ready', current_run_id=NULL, last_failure_error=? WHERE id=?",
+            ("quota/auth failure from old attempt", task_id),
+        )
+        conn.commit()
+        with kb.write_txn(conn):
+            kb._append_event(conn, task_id, "status", {"status": "ready"})
+        assert kbd.recovery_requirement_for_task(conn, task_id) is None
 
 
 def test_changes_requested_delegates_to_fix_review(monkeypatch, task):

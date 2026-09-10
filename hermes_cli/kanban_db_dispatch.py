@@ -64,6 +64,11 @@ _RESPAWN_GUARD_SUCCESS_WINDOW = 3600  # 1 hour
 # ``HERMES_KANBAN_RATE_LIMIT_COOLDOWN_SECONDS``.
 DEFAULT_RATE_LIMIT_COOLDOWN_SECONDS = 300  # 5 minutes
 
+_RECOVERY_REQUIRED_OUTCOMES = frozenset({
+    "crashed", "timed_out", "spawn_failed", "reclaimed", "stale", "gave_up",
+    "rate_limited",
+})
+
 # Within this window a GitHub PR URL in a comment blocks re-spawn.
 _RESPAWN_GUARD_PR_WINDOW = 86400  # 24 hours
 
@@ -1214,6 +1219,59 @@ def check_respawn_guard(
             return "active_pr"
 
     return None
+
+
+def recovery_requirement_for_task(
+    conn: sqlite3.Connection, task_id: str,
+) -> Optional[str]:
+    """Return the dispatcher-owned recovery reason for a task, read-only.
+
+    The current guard owns retry/cooldown eligibility. A closed failure run is
+    authoritative until a later lifecycle requeue event or a newer run
+    supersedes it; this prevents an old failure from poisoning a genuinely
+    requeued task while still making ``/continue`` stop before routing.
+    """
+    guard_reason = check_respawn_guard(conn, task_id)
+    if guard_reason == "rate_limit_cooldown":
+        return guard_reason
+
+    latest = conn.execute(
+        "SELECT id, outcome, ended_at FROM task_runs "
+        "WHERE task_id = ? AND ended_at IS NOT NULL "
+        "ORDER BY ended_at DESC, id DESC LIMIT 1",
+        (task_id,),
+    ).fetchone()
+    if latest is None:
+        return None
+
+    # ``check_respawn_guard`` deliberately returns None once a rate-limit
+    # cooldown expires.  That is an eligibility decision, not a recovery
+    # requirement; do not turn the historical rate-limited run into a permanent
+    # /recover gate.
+    if latest["outcome"] == "rate_limited":
+        return None
+
+    if latest["outcome"] not in _RECOVERY_REQUIRED_OUTCOMES:
+        return guard_reason if guard_reason == "blocker_auth" else None
+
+    failure_event = conn.execute(
+        "SELECT MAX(id) AS event_id FROM task_events "
+        "WHERE task_id = ? AND run_id = ?",
+        (task_id, int(latest["id"])),
+    ).fetchone()
+    failure_event_id = int(failure_event["event_id"] or 0)
+    requeued = conn.execute(
+        "SELECT 1 FROM task_events "
+        "WHERE task_id = ? AND id > ? "
+        "AND kind IN ('status', 'promoted', 'unblocked', 'requeued', 'recovered') "
+        "LIMIT 1",
+        (task_id, failure_event_id),
+    ).fetchone()
+    if requeued:
+        return None
+    if guard_reason == "blocker_auth":
+        return guard_reason
+    return str(latest["outcome"])
 
 
 def _profile_exists_fn() -> Optional[Callable[[str], bool]]:

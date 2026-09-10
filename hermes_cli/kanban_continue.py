@@ -7,6 +7,7 @@ from typing import Any, Optional
 
 from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_db_connect as kbc
+from hermes_cli import kanban_db_dispatch as kbd
 from hermes_cli import kanban_db_routing as kbr
 from hermes_cli import kanban_fix_review as fix_review
 from hermes_cli import kanban_implement as implement
@@ -16,7 +17,6 @@ from utils import is_truthy_value
 
 
 _GATE_KEY = "continue_command"
-_FAILED_OUTCOMES = frozenset({"crashed", "timed_out", "spawn_failed", "reclaimed", "gave_up"})
 
 
 def _kanban_config() -> dict[str, Any]:
@@ -112,13 +112,13 @@ def _active_result(conn, task: kb.Task, board: str) -> Optional[dict[str, Any]]:
 
 
 def _recovery_result(conn, task: kb.Task, board: str) -> Optional[dict[str, Any]]:
-    latest = kb.latest_run(conn, task.id)
-    if latest and latest.outcome in _FAILED_OUTCOMES:
+    reason = kbd.recovery_requirement_for_task(conn, task.id)
+    if reason is not None:
         return _result(
             task_id=task.id, board=board, task_status=task.status,
             continuation_state="recovery-required", selected_action="recover-required",
             dispatch_status="recovery_required", recovery_required=True,
-            message="authoritative failed/stale run requires /recover; no retry was performed",
+            message=f"authoritative recovery state ({reason}) requires /recover; no retry was performed",
         )
     return None
 

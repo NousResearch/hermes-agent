@@ -873,21 +873,61 @@ def _configured_aux_model(sections: tuple, env_vars: tuple) -> Optional[str]:
     return next((v for v in (os.getenv(e, "").strip() for e in env_vars) if v), None)
 
 
+def _vision_hard_timeout() -> float:
+    """Outer wall-time cap for the whole vision_analyze call chain.
+
+    Sub-steps carry their own timeouts (download 30s, encode bounded by
+    _MAX_BASE64_BYTES, LLM 120s) but they stack: a size-rejection retry
+    re-downloads nothing yet re-encodes and re-calls, and _call_vision_llm
+    retries once on empty content — a slow provider can legally exceed
+    2x120s + encode + a second resize. Observed in production: a wedged
+    provider call hung the tool call for 362s with no outer bound and no
+    cancellation point. Cap the whole chain so the caller always gets an
+    answer within a configurable ceiling (auxiliary.vision.hard_timeout,
+    default 180s).
+    """
+    try:
+        from hermes_cli.config import cfg_get, load_config
+        _ht = cfg_get(load_config(), "auxiliary", "vision", "hard_timeout")
+        if _ht is not None:
+            return float(_ht)
+    except Exception:
+        pass
+    return 180.0
+
+
 async def _handle_vision_analyze(args: Dict[str, Any], **kw: Any) -> str:
     image_url, question, region = args.get("image_url", ""), args.get("question", ""), args.get("region")
     task_id = kw.get("task_id")
-    # No concurrency gate around the whole analysis — the CPU burst is bounded inside the
-    # encode/resize step, so multi-image fan-out keeps full request concurrency.
-    if _should_use_native_vision_fast_path():
-        logger.info("vision_analyze: native fast path")
-        return await _vision_analyze_native(image_url, question, task_id=task_id, region=region)
 
-    # Legacy path: aux LLM describes the image and we return its text.
-    full_prompt = (
-        "Fully describe and explain everything about this image, then answer the "
-        f"following question:\n\n{question}")
-    model = _configured_aux_model(("vision",), ("AUXILIARY_VISION_MODEL",))
-    return await vision_analyze_tool(image_url, full_prompt, model, task_id=task_id, region=region)
+    async def _analyze() -> str:
+        # No concurrency gate around the whole analysis — the CPU burst is bounded inside the
+        # encode/resize step, so multi-image fan-out keeps full request concurrency.
+        if _should_use_native_vision_fast_path():
+            logger.info("vision_analyze: native fast path")
+            return await _vision_analyze_native(image_url, question, task_id=task_id, region=region)
+
+        # Legacy path: aux LLM describes the image and we return its text.
+        full_prompt = (
+            "Fully describe and explain everything about this image, then answer the "
+            f"following question:\n\n{question}")
+        model = _configured_aux_model(("vision",), ("AUXILIARY_VISION_MODEL",))
+        return await vision_analyze_tool(image_url, full_prompt, model, task_id=task_id, region=region)
+
+    try:
+        return await asyncio.wait_for(_analyze(), timeout=_vision_hard_timeout())
+    except asyncio.TimeoutError:
+        logger.error("vision_analyze hit the %.0fs hard timeout — image_url=%s",
+                     _vision_hard_timeout(), image_url[:80])
+        return json.dumps({
+            "success": False,
+            "error": "Vision analysis timed out (hard timeout)",
+            "analysis": (
+                "The vision analysis exceeded its total wall-time cap and was "
+                "cancelled. This happens with slow providers or very large "
+                "images. Retry, or lower auxiliary.vision.hard_timeout."
+            ),
+        }, indent=2, ensure_ascii=False)
 
 
 registry.register(

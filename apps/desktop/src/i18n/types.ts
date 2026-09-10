@@ -1633,6 +1633,10 @@ export interface Translations {
       actionFailed: (name: string) => string
       running: string
       viewLog: string
+      tailExhausted: string
+      tailDegraded: string
+      recheckStatus: string
+      recheckStatusBusy: string
     }
   }
 

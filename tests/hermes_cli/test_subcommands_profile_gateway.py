@@ -83,3 +83,9 @@ def test_gateway_enroll_dispatch():
     assert ns.token == "tok"
     assert ns.connector_url == "wss://connector.example.com/relay"
     assert ns.gateway_id == "gw-1"
+
+
+def test_gateway_stop_accepts_drain():
+    ns = _gateway_parser().parse_args(["gateway", "stop", "--drain"])
+    assert ns.gateway_command == "stop"
+    assert ns.drain is True

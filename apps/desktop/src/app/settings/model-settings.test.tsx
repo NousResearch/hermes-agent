@@ -131,6 +131,7 @@ describe('ModelSettings', () => {
 
     await waitFor(() => expect(getGlobalModelInfo).toHaveBeenCalled())
     await waitFor(() => expect(getGlobalModelOptions).toHaveBeenCalled())
+    expect(await screen.findByText('Default model')).toBeTruthy()
 
     // Open the provider Select — only configured providers should be listed.
     const triggers = await screen.findAllByRole('combobox')

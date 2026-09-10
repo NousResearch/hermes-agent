@@ -48,6 +48,7 @@ export function ModelSettingsSkeleton() {
   return (
     <div className="grid gap-6" data-slot="model-settings-skeleton">
       <section>
+        <Skeleton className="mb-2 h-4 w-28" />
         <Skeleton className="mb-3 h-3 w-72 max-w-full" />
         <div className="flex flex-wrap items-center gap-2">
           <Skeleton className="h-8 w-40" />
@@ -837,6 +838,7 @@ export function ModelSettings({ onMainModelChanged, scopeProfile }: ModelSetting
   return (
     <div className="grid gap-6">
       <section>
+        <p className="mb-2 text-sm font-medium">{m.defaultTitle}</p>
         <p className="mb-3 text-xs text-muted-foreground">{m.appliesDesc}</p>
         <div className="flex flex-wrap items-center gap-2">
           <Select onValueChange={setSelectedProvider} value={selectedProvider}>

@@ -1133,7 +1133,9 @@ export const en: Translations = {
     },
     model: {
       loading: 'Loading model configuration...',
-      appliesDesc: 'Applies to new sessions. Use the model picker in the composer to hot-swap the active chat.',
+      defaultTitle: 'Default model',
+      appliesDesc:
+        'Used by chats without a custom model. Use the model picker in the composer to hot-swap the active chat.',
       provider: 'Provider',
       model: 'Model',
       applying: 'Applying...',

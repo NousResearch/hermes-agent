@@ -3026,9 +3026,11 @@ def _normalize_empty_agent_response(
     non-failed turn -- this is the silent-drop pattern observed after ``/stop`` where the next user message
     hits a stale generation token and returns an empty result, leaving the platform with nothing to send.
     (#31884)
+
+    Failed context-overflow turns rewrite even when ``final_response`` already holds the raw HTTP
+    400 envelope. Returning that envelope unchanged lets chat sanitizers replace it with a generic
+    provider-failed reply, so the user never sees /compact (#1630 message layer).
     """
-    if response:
-        return response
     if agent_result.get("failed"):
         # ``error`` can be an EXPLICIT None (bypasses dict.get default) -> would render "failed: None".
         error_detail = agent_result.get("error") or "unknown error"
@@ -3051,9 +3053,13 @@ def _normalize_empty_agent_response(
             return (
                 "⚠️ Session too large for the model's context window.\n"
                 "Use /compact to compress the conversation, or /reset to start fresh.")
+        if response:
+            return response
         return (
             f"The request failed: {str(error_detail)[:300]}\n"
             "Try again or use /reset to start a fresh session.")
+    if response:
+        return response
 
     api_calls = int(agent_result.get("api_calls", 0) or 0)
     if agent_result.get("interrupted"):

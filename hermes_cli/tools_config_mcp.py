@@ -152,9 +152,19 @@ def _configure_mcp_tools_interactive(config: dict):
 
 def _apply_toolset_change(config: dict, platform: str, toolset_names: List[str], action: str):
     """Add or remove built-in toolsets for a platform."""
-    from hermes_cli.tools_config import _get_platform_tools, _save_platform_tools
+    from hermes_cli.tools_config import (
+        _get_effective_configurable_toolsets,
+        _get_platform_tools,
+        _save_platform_tools,
+    )
 
     enabled = _get_platform_tools(config, platform, include_default_mcp_servers=False)
+    configurable = {
+        key
+        for key, _, _ in _get_effective_configurable_toolsets()
+        if _toolset_allowed_for_platform(key, platform)
+    }
+    enabled &= configurable
     updated = enabled - set(toolset_names) if action == "disable" else enabled | set(toolset_names)
     _save_platform_tools(config, platform, updated)
 

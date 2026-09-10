@@ -207,6 +207,27 @@ def test_save_platform_tools_preserves_mcp_server_names():
     assert "terminal" not in saved_toolsets
 
 
+@pytest.mark.parametrize(
+    ("toolset_names", "action", "expected"),
+    [
+        (["homeassistant"], "disable", ["terminal", "web"]),
+        (["browser"], "enable", ["browser", "terminal", "web"]),
+    ],
+)
+def test_apply_toolset_change_does_not_persist_runtime_injected_toolsets(
+    monkeypatch, toolset_names, action, expected
+):
+    config = {"platform_toolsets": {"cli": ["web", "terminal"]}}
+    monkeypatch.setattr(
+        "hermes_cli.tools_config._get_platform_tools",
+        lambda *args, **kwargs: {"web", "terminal", "kanban"},
+    )
+
+    _apply_toolset_change(config, "cli", toolset_names, action)
+
+    assert config["platform_toolsets"]["cli"] == expected
+
+
 
 
 

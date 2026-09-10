@@ -1,0 +1,21 @@
+name: hermes-plugin-netbox
+repo: https://github.com/andrewvieyra/hermes-plugin-netbox
+sha: 8ff1fc408e765294664e6ed96c4a5a437b76ceef
+description: 'NetBox change management: query DCIM/IPAM objects, build a reviewed field-level diff, apply
+  with a journal and roll back.'
+maintainer: andrewvieyra
+tier: community
+docs_url: https://github.com/andrewvieyra/hermes-plugin-netbox
+platforms: []
+capabilities:
+  provides_tools:
+  - netbox_query
+  - netbox_plan
+  - netbox_apply
+  - netbox_rollback
+  - netbox_plans
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+  - NETBOX_URL
+  - NETBOX_TOKEN

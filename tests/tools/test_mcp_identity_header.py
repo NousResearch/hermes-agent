@@ -43,13 +43,13 @@ import pytest
 
 class TestResolveIdentityHeader:
     def test_returns_none_when_unset(self):
-        from tools.mcp_tool import _resolve_identity_header
+        from tools.mcp_tool_errors import _resolve_identity_header
 
         assert _resolve_identity_header("srv", {}) is None
         assert _resolve_identity_header("srv", {"url": "https://x"}) is None
 
     def test_static_mode_returns_name_value(self):
-        from tools.mcp_tool import _resolve_identity_header
+        from tools.mcp_tool_errors import _resolve_identity_header
 
         result = _resolve_identity_header("srv", {
             "identity_header": {
@@ -61,7 +61,7 @@ class TestResolveIdentityHeader:
         assert result == ("X-User-Id", "alice")
 
     def test_static_is_default_value_from(self):
-        from tools.mcp_tool import _resolve_identity_header
+        from tools.mcp_tool_errors import _resolve_identity_header
 
         result = _resolve_identity_header("srv", {
             "identity_header": {"name": "X-User-Id", "value": "bob"},
@@ -69,7 +69,7 @@ class TestResolveIdentityHeader:
         assert result == ("X-User-Id", "bob")
 
     def test_profile_mode_uses_active_profile_name(self):
-        from tools.mcp_tool import _resolve_identity_header
+        from tools.mcp_tool_errors import _resolve_identity_header
 
         with patch(
             "hermes_cli.profiles.get_active_profile_name",
@@ -84,7 +84,7 @@ class TestResolveIdentityHeader:
         assert result == ("X-Hermes-Profile", "workbot")
 
     def test_missing_name_warns_and_returns_none(self, caplog):
-        from tools.mcp_tool import _resolve_identity_header
+        from tools.mcp_tool_errors import _resolve_identity_header
 
         with caplog.at_level(logging.WARNING):
             result = _resolve_identity_header("srv", {
@@ -94,7 +94,7 @@ class TestResolveIdentityHeader:
         assert any("identity_header" in r.message for r in caplog.records)
 
     def test_static_missing_value_warns_and_returns_none(self, caplog):
-        from tools.mcp_tool import _resolve_identity_header
+        from tools.mcp_tool_errors import _resolve_identity_header
 
         with caplog.at_level(logging.WARNING):
             result = _resolve_identity_header("srv", {
@@ -104,7 +104,7 @@ class TestResolveIdentityHeader:
         assert any("identity_header" in r.message for r in caplog.records)
 
     def test_unknown_value_from_warns_and_returns_none(self, caplog):
-        from tools.mcp_tool import _resolve_identity_header
+        from tools.mcp_tool_errors import _resolve_identity_header
 
         with caplog.at_level(logging.WARNING):
             result = _resolve_identity_header("srv", {
@@ -118,7 +118,7 @@ class TestResolveIdentityHeader:
         assert any("identity_header" in r.message for r in caplog.records)
 
     def test_non_dict_config_warns_and_returns_none(self, caplog):
-        from tools.mcp_tool import _resolve_identity_header
+        from tools.mcp_tool_errors import _resolve_identity_header
 
         with caplog.at_level(logging.WARNING):
             result = _resolve_identity_header("srv", {

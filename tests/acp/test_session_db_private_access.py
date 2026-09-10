@@ -63,9 +63,9 @@ class TestUpdateSessionMeta:
         call_count = [0]
         original = db._execute_write
 
-        def patched(fn):
+        def patched(fn, *args, **kwargs):
             call_count[0] += 1
-            return original(fn)
+            return original(fn, *args, **kwargs)
 
         db._execute_write = patched
         db.update_session_meta("s4", json.dumps({"cwd": "."}), model="m")
@@ -135,11 +135,18 @@ class TestNoPrviateDBAccess:
 class TestPersistRoundTrip:
     """End-to-end: save a session and verify DB state is correct."""
 
+    # A session row is only minted once the session has history — an empty ACP
+    # session is deliberately not persisted (see _persist), because ACP clients
+    # open sessions they never prompt. These tests seed one message first so
+    # they exercise the metadata round-trip they actually care about.
+
     def test_cwd_persisted_via_update_session_meta(self, tmp_path):
         db = _tmp_db(tmp_path)
         manager = SessionManager(agent_factory=_mock_agent, db=db)
 
         state = manager.create_session(cwd="/original")
+        state.history.append({"role": "user", "content": "hi"})
+        manager.save_session(state.session_id)
         assert db.get_session(state.session_id) is not None
 
         # Simulate cwd change and save
@@ -155,6 +162,9 @@ class TestPersistRoundTrip:
         manager = SessionManager(agent_factory=_mock_agent, db=db)
 
         state = manager.create_session()
+        state.history.append({"role": "user", "content": "hi"})
+        manager.save_session(state.session_id)
+
         state.model = "new-model-xyz"
         manager.save_session(state.session_id)
 
@@ -167,6 +177,8 @@ class TestPersistRoundTrip:
         manager = SessionManager(agent_factory=_mock_agent, db=db)
 
         state = manager.create_session()
+        state.history.append({"role": "user", "content": "hi"})
+        manager.save_session(state.session_id)
         # Manually set a model in DB
         db.update_session_meta(state.session_id, json.dumps({"cwd": "."}), model="stored-model")
 
